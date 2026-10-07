@@ -51,6 +51,9 @@ export interface Registration {
   cwd: string;
   pid: number;
   parent_pid: number;
+  /** Pi's session file, the session's transcript; left out when Pi has
+   * none (an older daemon ignores it). */
+  transcript_path?: string;
 }
 
 /** A harness session as the daemon reports it. */

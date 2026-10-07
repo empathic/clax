@@ -57,17 +57,25 @@ function withBin(bin: string): NodeJS.ProcessEnv {
 
 /** An Clax home whose daemon answers `/healthz` and then never answers
  * `POST /api/sessions` (`hang: "register"`) or any `PATCH` (`hang: "patch"`);
- * `seen` lists the requests it received, as `METHOD path`. */
+ * `seen` lists the requests it received, as `METHOD path`, and
+ * `registrations` the bodies of the registrations it answered. */
 async function hungHome(hang: "register" | "patch") {
   const home = join(scratch, `hung-${Math.random().toString(36).slice(2)}`);
   mkdirSync(home, { recursive: true });
   const seen: string[] = [];
+  const registrations: any[] = [];
   const server = createHttpServer((req, res) => {
     seen.push(`${req.method} ${req.url}`);
     const reply = (body: unknown) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(body)); };
     if (req.url === "/healthz") return reply({ version: "0.1.0" });
     if (req.method === "POST" && req.url === "/api/sessions" && hang !== "register") {
-      return reply({ session: { id: "s1", harness: "pi", harness_session_id: "h", cwd: "/", pid: 1, parent_pid: 1, started_at: "", last_seen_at: "", ended_at: null } });
+      let raw = "";
+      req.on("data", c => { raw += c; });
+      req.on("end", () => {
+        registrations.push(JSON.parse(raw));
+        reply({ session: { id: "s1", harness: "pi", harness_session_id: "h", cwd: "/", pid: 1, parent_pid: 1, started_at: "", last_seen_at: "", ended_at: null } });
+      });
+      return;
     }
     // Otherwise never answer.
   });
@@ -76,7 +84,7 @@ async function hungHome(hang: "register" | "patch") {
   writeFileSync(join(home, "daemon.json"), JSON.stringify({
     port, pid: process.pid, token: "t", started_at: "2026-01-01T00:00:00Z", bind: "127.0.0.1", version: "0.1.0",
   }));
-  return { home, seen, close: () => { server.closeAllConnections(); server.close(); } };
+  return { home, seen, registrations, close: () => { server.closeAllConnections(); server.close(); } };
 }
 
 async function sessions(): Promise<any[]> {
@@ -362,6 +370,23 @@ describe("clax Pi extension", () => {
       const { ctx } = fakeContext(scratch, "pi-hung-start");
       await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
       expect(hung.seen).toContain("POST /api/sessions");
+    } finally {
+      hung.close();
+    }
+  });
+
+  it("registers with Pi's session file as the transcript path, and without one when Pi has none", async () => {
+    const hung = await hungHome("patch");
+    try {
+      for (const [id, file] of [["pi-file", "/sessions/pi-file.jsonl"], ["pi-no-file", undefined]] as const) {
+        const pi = new FakePi();
+        claxExtension({ home: hung.home, env: withBin(join(scratch, "no-such-clax")) })(pi.api);
+        const { ctx } = fakeContext(scratch, id, file);
+        await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+      }
+      expect(hung.registrations).toHaveLength(2);
+      expect(hung.registrations[0]).toMatchObject({ harness: "pi", harness_session_id: "pi-file", transcript_path: "/sessions/pi-file.jsonl" });
+      expect(hung.registrations[1]).not.toHaveProperty("transcript_path");
     } finally {
       hung.close();
     }

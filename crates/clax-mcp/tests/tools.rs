@@ -727,6 +727,7 @@ fn claude_registration() -> clax_core::RegisterSession {
         cwd: "/work".into(),
         pid: Some(4_000_000_000),
         parent_pid: Some(4_000_000_001),
+        transcript_path: None,
     }
 }
 
@@ -786,6 +787,7 @@ async fn a_working_directory_filled_in_later_is_used_after_the_next_heartbeat() 
             cwd: String::new(),
             pid: Some(4_000_000_000),
             parent_pid: Some(4_000_000_001),
+            transcript_path: None,
         },
     );
     let dir = tempfile::tempdir().unwrap();

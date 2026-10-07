@@ -278,6 +278,7 @@ async fn a_session_started_before_its_daemon_still_tells_clax_urls_from_pages() 
         cwd: "/work".into(),
         pid: None,
         parent_pid: None,
+        transcript_path: None,
     };
     let client = DaemonClient::managed(find.clone(), find, reg);
     assert!(client.ensure_session().await.is_err(), "no daemon yet");
@@ -322,6 +323,7 @@ async fn a_first_watch_on_a_clax_url_watches_the_artifact() {
         cwd: "/work".into(),
         pid: None,
         parent_pid: None,
+        transcript_path: None,
     };
     let client = DaemonClient::managed(find.clone(), find, reg);
     let tools = ClaxTools::new(client, String::new(), None, ts.home.log_path());

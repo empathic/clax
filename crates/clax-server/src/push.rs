@@ -261,7 +261,7 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
                     }
                 }
                 if error.is_none()
-                    && let Err(e) = crate::working::mark_items(&ctx, store, &sid, &marked)
+                    && let Err(e) = crate::working::mark_items(&ctx, &clax_core::audit::AuditCtx::DAEMON, store, &sid, &marked)
                 {
                     tracing::warn!(session = %sid, error = %e, "marking a queued session working failed");
                 }

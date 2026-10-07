@@ -19,13 +19,14 @@ export interface FakeContext {
   notes: { message: string; type?: string }[];
 }
 
-/** A context for a session with ID `sessionId` working in `cwd`. */
-export function fakeContext(cwd: string, sessionId: string): FakeContext {
+/** A context for a session with ID `sessionId` working in `cwd`, whose
+ * session file is `sessionFile` (none when not given). */
+export function fakeContext(cwd: string, sessionId: string, sessionFile?: string): FakeContext {
   const notes: { message: string; type?: string }[] = [];
   const ctx = {
     cwd,
     hasUI: false,
-    sessionManager: { getSessionId: () => sessionId },
+    sessionManager: { getSessionId: () => sessionId, getSessionFile: () => sessionFile },
     ui: { notify: (message: string, type?: string) => { notes.push({ message, type }); } },
   } as unknown as ExtensionCommandContext;
   return { ctx, notes };

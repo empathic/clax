@@ -25,8 +25,9 @@ pub trait Daemon {
 /// Joins the harness's session ID to the session registered for the same
 /// harness process (`parent_pid` is the hook's parent; `ancestor_pids`,
 /// nearest first, cover a wrapper shell between the hook and the harness),
-/// filling `cwd` and recording `codex_home` when given. Returns the
-/// daemon's answer, `{"session": …}`.
+/// filling `cwd`, recording the harness's transcript file
+/// (`transcript_path`, or Grok Build's `transcriptPath`) and `codex_home`
+/// when given. Returns the daemon's answer, `{"session": …}`.
 ///
 /// # Errors
 /// When the input has no session ID or the daemon request fails.
@@ -52,10 +53,31 @@ pub fn join(
     if let Some(cwd) = &input.cwd {
         body["cwd"] = json!(cwd);
     }
+    if let Some(t) = input.transcript_path.as_deref().filter(|t| !t.is_empty()) {
+        body["transcript_path"] = json!(t);
+    }
     if let Some(h) = codex_home {
         body["codex_home"] = json!(h);
     }
-    daemon.post("/api/sessions/join", &body)
+    match daemon.post("/api/sessions/join", &body) {
+        // A daemon from before transcript paths refuses the field: join
+        // without it.
+        Err(e) if refuses_transcript_path(&e) => {
+            if let Some(b) = body.as_object_mut() {
+                b.remove("transcript_path");
+            }
+            daemon.post("/api/sessions/join", &body)
+        }
+        r => r,
+    }
+}
+
+/// Whether `e` is an older daemon's refusal of the join's
+/// `transcript_path` as an unknown field (`invalid_json`), not a refusal of
+/// its value.
+fn refuses_transcript_path(e: &anyhow::Error) -> bool {
+    let msg = e.to_string();
+    msg.starts_with("invalid_json:") && msg.contains("unknown field `transcript_path`")
 }
 
 /// Joins the harness's session ID to the session registered for the same
@@ -303,6 +325,98 @@ mod tests {
         assert_eq!(calls.len(), 1, "no prompt_hook request: {calls:?}");
         assert_eq!(calls[0].1, "/api/sessions/join");
         assert_eq!(calls[0].2["harness"], "grok");
+    }
+
+    #[test]
+    fn join_stores_transcript_path_for_claude_codex_and_grok() {
+        for (harness, stdin) in [
+            (
+                "claude",
+                r#"{"session_id":"s1","cwd":"/w","transcript_path":"/t/claude.jsonl"}"#,
+            ),
+            (
+                "codex",
+                r#"{"session_id":"s1","cwd":"/w","transcript_path":"/t/codex.jsonl"}"#,
+            ),
+            (
+                "grok",
+                r#"{"hookEventName":"SessionStart","sessionId":"s1","cwd":"/w","transcriptPath":"/t/grok.jsonl"}"#,
+            ),
+        ] {
+            let d = Fake::default();
+            join(harness, 42, &[], &HookInput::parse(stdin), None, &d).unwrap();
+            let calls = d.calls.borrow();
+            assert_eq!(calls[0].1, "/api/sessions/join");
+            assert_eq!(
+                calls[0].2["transcript_path"],
+                format!("/t/{harness}.jsonl"),
+                "{harness}"
+            );
+        }
+        // Without one, or with an empty one, the join names none.
+        for stdin in [
+            r#"{"session_id":"s1"}"#,
+            r#"{"session_id":"s1","transcript_path":""}"#,
+        ] {
+            let d = Fake::default();
+            join("claude", 42, &[], &HookInput::parse(stdin), None, &d).unwrap();
+            assert!(d.calls.borrow()[0].2.get("transcript_path").is_none());
+        }
+    }
+
+    /// A daemon that refuses the join body as an older one does when it
+    /// carries `transcript_path` (or with `invalid` as a newer one refuses
+    /// a bad value).
+    struct OldDaemon {
+        refusal: &'static str,
+        bodies: RefCell<Vec<Value>>,
+    }
+    impl Daemon for OldDaemon {
+        fn browser_url(&self, path: &str) -> String {
+            format!("http://h:1{path}")
+        }
+        fn get(&self, _: &str) -> anyhow::Result<Value> {
+            Ok(json!({}))
+        }
+        fn get_with_timeout(&self, path: &str, _: Duration) -> anyhow::Result<Value> {
+            self.get(path)
+        }
+        fn post(&self, _: &str, body: &Value) -> anyhow::Result<Value> {
+            self.bodies.borrow_mut().push(body.clone());
+            if body.get("transcript_path").is_some() {
+                bail!("{}", self.refusal);
+            }
+            Ok(json!({"session": {"id": "S"}}))
+        }
+        fn patch(&self, _: &str, _: &Value) -> anyhow::Result<Value> {
+            Ok(json!({}))
+        }
+    }
+
+    #[test]
+    fn a_join_retries_without_the_transcript_path_an_older_daemon_refuses() {
+        let input =
+            HookInput::parse(r#"{"session_id":"s1","cwd":"/w","transcript_path":"/t/a.jsonl"}"#);
+        let d = OldDaemon {
+            refusal: "invalid_json: Failed to deserialize the JSON body into the target type: transcript_path: unknown field `transcript_path`, expected one of `harness`, `parent_pid`, `harness_session_id`, `cwd`, `ancestor_pids`, `codex_home` at line 1 column 120",
+            bodies: RefCell::new(vec![]),
+        };
+        assert_eq!(
+            join("claude", 42, &[], &input, None, &d).unwrap()["session"]["id"],
+            "S"
+        );
+        let bodies = d.bodies.borrow();
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(bodies[0]["transcript_path"], "/t/a.jsonl");
+        assert!(bodies[1].get("transcript_path").is_none());
+        assert_eq!(bodies[1]["cwd"], "/w");
+        // A refusal of the value itself is not retried.
+        let d = OldDaemon {
+            refusal: "invalid_session: transcript_path must be at most 4096 bytes, without control characters",
+            bodies: RefCell::new(vec![]),
+        };
+        assert!(join("claude", 42, &[], &input, None, &d).is_err());
+        assert_eq!(d.bodies.borrow().len(), 1);
     }
 
     #[test]

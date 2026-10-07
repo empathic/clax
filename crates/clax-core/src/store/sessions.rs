@@ -1,9 +1,10 @@
 //! Harness sessions: registration, joining by parent PID, liveness, and reaping.
 
 use super::Store;
+use crate::audit::{Actor, AgentActor, AuditCtx, AuditKind, AuditRecord, SystemReason};
 use crate::model::Session;
 use crate::{CoreError, Result, new_ulid};
-use rusqlite::{OptionalExtension, Row, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -18,6 +19,11 @@ pub struct RegisterSession {
     pub pid: Option<u32>,
     #[serde(default)]
     pub parent_pid: Option<u32>,
+    /// The harness's transcript file, where the harness's extension API
+    /// names one (Pi's session file). Not sent when absent, so an older
+    /// daemon is not asked to read it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<String>,
 }
 
 /// What a reaper pass ended, which feedback it released, and which open
@@ -66,6 +72,115 @@ fn fetch(tx: &Transaction<'_>, id: &str) -> Result<Session> {
     )?)
 }
 
+/// Session `id` as the agent actor of the events it makes (audit spec
+/// §5.2), read on `c`; `None` when no session has that ID.
+pub(super) fn agent_of(c: &Connection, id: &str) -> Result<Option<AgentActor>> {
+    Ok(c.prepare_cached(
+        "SELECT harness, harness_session_id, agent_handle, transcript_path
+         FROM sessions WHERE id = ?1",
+    )?
+    .query_row(params![id], |r| {
+        Ok(AgentActor {
+            session_id: Some(id.to_string()),
+            harness: Some(r.get(0)?),
+            harness_session_id: r.get(1)?,
+            agent_handle: Some(r.get(2)?),
+            transcript_path: r.get(3)?,
+        })
+    })
+    .optional()?)
+}
+
+/// What a `session.start` or `session.join` records of a session (spec
+/// §6.8), and what a refresh must change for a join to be recorded.
+#[derive(PartialEq)]
+struct Facts {
+    harness_session_id: Option<String>,
+    cwd: String,
+    transcript_path: Option<String>,
+    pid: Option<u32>,
+}
+
+fn facts(c: &Connection, id: &str) -> Result<Facts> {
+    Ok(c.prepare_cached(
+        "SELECT harness_session_id, cwd, transcript_path, pid FROM sessions WHERE id = ?1",
+    )?
+    .query_row(params![id], |r| {
+        Ok(Facts {
+            harness_session_id: r.get(0)?,
+            cwd: r.get(1)?,
+            transcript_path: r.get(2)?,
+            pid: r.get(3)?,
+        })
+    })?)
+}
+
+impl Store {
+    /// Records `kind` (`session.start` or `session.join`) of session `id`
+    /// in `tx`: its facts, made by the session's own agent through `ctx`'s
+    /// channel, git state and tool call.
+    fn record_session(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        kind: AuditKind,
+        id: &str,
+        harness: &str,
+    ) -> Result<()> {
+        let f = facts(tx, id)?;
+        let agent = agent_of(tx, id)?.ok_or(CoreError::NotFound)?;
+        let ctx = AuditCtx {
+            actor: Actor::Agent(agent),
+            ..ctx.clone()
+        };
+        let mut rec = AuditRecord::new(kind, Store::now())
+            .with("harness", harness)
+            .with("harness_session_id", f.harness_session_id)
+            .with("cwd", f.cwd)
+            .with("transcript_path", f.transcript_path)
+            .with("pid", f.pid);
+        rec.ids.session = Some(id.to_string());
+        self.record_audit(tx, &ctx, rec)?;
+        Ok(())
+    }
+
+    /// Records `session.end` of session `id` in `tx` under `ctx`, for
+    /// `reason`; a system actor names the session's agent in `for_actor`.
+    fn record_session_end(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        id: &str,
+        reason: &str,
+    ) -> Result<()> {
+        let rec = AuditRecord::new(AuditKind::SessionEnd, Store::now()).with("reason", reason);
+        let mut rec = with_for_actor(tx, ctx, rec, id, AgentActor::default)?;
+        rec.ids.session = Some(id.to_string());
+        self.record_audit(tx, ctx, rec)?;
+        Ok(())
+    }
+}
+
+/// `rec` with `for_actor`, session `sid`'s agent (else `fallback()`), when
+/// `ctx`'s actor is Clax itself: a change Clax makes on an agent's behalf
+/// names that agent.
+pub(super) fn with_for_actor(
+    c: &Connection,
+    ctx: &AuditCtx,
+    rec: AuditRecord,
+    sid: &str,
+    fallback: impl FnOnce() -> AgentActor,
+) -> Result<AuditRecord> {
+    if !matches!(ctx.actor, Actor::System { .. }) {
+        return Ok(rec);
+    }
+    let who = agent_of(c, sid)?.unwrap_or_else(fallback);
+    Ok(rec.with(
+        "for_actor",
+        serde_json::to_value(Actor::Agent(who)).expect("serialisable actor"),
+    ))
+}
+
 /// The id of a live row matching `where_clause`, newest first.
 fn find_live(
     tx: &Transaction<'_>,
@@ -101,7 +216,14 @@ impl Store {
     /// restarted shim, under one harness process share a row). Otherwise a new
     /// row is inserted. A refresh overwrites `pid` and `parent_pid` only when
     /// the caller supplies them, and fills an empty `cwd` (a hook-only row).
-    pub fn register_session(&self, mut r: RegisterSession) -> Result<Session> {
+    /// A given `transcript_path` replaces the recorded one.
+    ///
+    /// A new row records `session.start`; a refresh that changes the
+    /// session's harness session ID, `cwd`, `pid` or transcript path records
+    /// `session.join`;
+    /// a refresh that changes none of them records nothing. Either is the
+    /// session's own agent's, through `ctx`'s channel, git state and call.
+    pub fn register_session(&self, ctx: &AuditCtx, mut r: RegisterSession) -> Result<Session> {
         if r.harness_session_id.as_deref() == Some("") {
             r.harness_session_id = None;
         }
@@ -135,20 +257,25 @@ impl Store {
                 (None, None) => None,
             };
             if let Some(id) = existing {
+                let before = facts(tx, &id)?;
                 tx.execute(
                     "UPDATE sessions SET pid = COALESCE(?2, pid), parent_pid = COALESCE(?3, parent_pid),
                         harness_session_id = COALESCE(harness_session_id, ?4), last_seen_at = ?5,
-                        cwd = CASE WHEN cwd = '' THEN ?6 ELSE cwd END
+                        cwd = CASE WHEN cwd = '' THEN ?6 ELSE cwd END,
+                        transcript_path = COALESCE(?7, transcript_path)
                      WHERE id = ?1",
-                    params![id, r.pid, r.parent_pid, r.harness_session_id, now, r.cwd],
+                    params![id, r.pid, r.parent_pid, r.harness_session_id, now, r.cwd, r.transcript_path],
                 )?;
+                if facts(tx, &id)? != before {
+                    self.record_session(tx, ctx, AuditKind::SessionJoin, &id, &r.harness)?;
+                }
                 return fetch(tx, &id);
             }
             let id = new_ulid();
             tx.execute(
                 "INSERT INTO sessions (id, harness, harness_session_id, cwd, pid, parent_pid,
-                    started_at, last_seen_at, agent_handle)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8)",
+                    started_at, last_seen_at, agent_handle, transcript_path)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9)",
                 params![
                     id,
                     r.harness,
@@ -157,9 +284,11 @@ impl Store {
                     r.pid,
                     r.parent_pid,
                     now,
-                    crate::new_agent_handle()
+                    crate::new_agent_handle(),
+                    r.transcript_path
                 ],
             )?;
+            self.record_session(tx, ctx, AuditKind::SessionStart, &id, &r.harness)?;
             fetch(tx, &id)
         })
     }
@@ -173,12 +302,21 @@ impl Store {
     /// do not heartbeat: unless a shim adopts one, it is reaped after the idle
     /// window ([`Store::SESSION_IDLE_SECS`]).
     /// `ancestor_pids` (nearest first) are tried after `parent_pid` when no row matches.
+    /// A given `transcript_path` replaces the recorded one.
+    ///
+    /// A new row records `session.start`; a join that changes the session's
+    /// harness session ID, `cwd` or transcript path records `session.join`;
+    /// one that changes none of them records nothing. Either is the
+    /// session's own agent's, through `ctx`'s channel, git state and call.
+    #[allow(clippy::too_many_arguments)]
     pub fn join_session(
         &self,
+        ctx: &AuditCtx,
         harness: &str,
         parent_pid: u32,
         harness_session_id: &str,
         cwd: Option<&str>,
+        transcript_path: Option<&str>,
         ancestor_pids: &[u32],
     ) -> Result<Session> {
         self.with_tx(|tx| {
@@ -209,23 +347,29 @@ impl Store {
             };
             let id = match existing {
                 Some(id) => {
+                    let before = facts(tx, &id)?;
                     tx.execute(
                         "UPDATE sessions SET harness_session_id = COALESCE(harness_session_id, ?2),
                             parent_pid = COALESCE(parent_pid, ?3), last_seen_at = ?4,
-                            cwd = CASE WHEN cwd = '' THEN COALESCE(?5, cwd) ELSE cwd END
+                            cwd = CASE WHEN cwd = '' THEN COALESCE(?5, cwd) ELSE cwd END,
+                            transcript_path = COALESCE(?6, transcript_path)
                          WHERE id = ?1",
-                        params![id, harness_session_id, parent_pid, now, cwd],
+                        params![id, harness_session_id, parent_pid, now, cwd, transcript_path],
                     )?;
+                    if facts(tx, &id)? != before {
+                        self.record_session(tx, ctx, AuditKind::SessionJoin, &id, harness)?;
+                    }
                     id
                 }
                 None => {
                     let id = new_ulid();
                     tx.execute(
                         "INSERT INTO sessions (id, harness, harness_session_id, cwd, pid, parent_pid,
-                            started_at, last_seen_at, agent_handle)
-                         VALUES (?1, ?2, ?3, ?6, NULL, ?4, ?5, ?5, ?7)",
-                        params![id, harness, harness_session_id, parent_pid, now, cwd.unwrap_or(""), crate::new_agent_handle()],
+                            started_at, last_seen_at, agent_handle, transcript_path)
+                         VALUES (?1, ?2, ?3, ?6, NULL, ?4, ?5, ?5, ?7, ?8)",
+                        params![id, harness, harness_session_id, parent_pid, now, cwd.unwrap_or(""), crate::new_agent_handle(), transcript_path],
                     )?;
+                    self.record_session(tx, ctx, AuditKind::SessionStart, &id, harness)?;
                     id
                 }
             };
@@ -255,15 +399,17 @@ impl Store {
     ///
     /// # Errors
     /// `NotFound` when no such session exists.
-    pub fn end_session(&self, id: &str) -> Result<Session> {
-        self.end_session_touched(id).map(|e| e.session)
+    pub fn end_session(&self, ctx: &AuditCtx, id: &str) -> Result<Session> {
+        self.end_session_touched(ctx, id).map(|e| e.session)
     }
 
     /// [`Store::end_session`], also returning the feedback it released (rows
     /// deleted because another live session is a target of the same comment,
     /// or untargeted for the next session that publishes or watches) and the
-    /// IDs of the open questions it withdrew.
-    pub fn end_session_touched(&self, id: &str) -> Result<EndedSession> {
+    /// IDs of the open questions it withdrew. Ending a live session records
+    /// `session.end` (reason `explicit`) under `ctx`; ending an ended one
+    /// records nothing.
+    pub fn end_session_touched(&self, ctx: &AuditCtx, id: &str) -> Result<EndedSession> {
         self.with_tx(|tx| {
             let now = Store::now();
             let n = tx.execute(
@@ -271,6 +417,7 @@ impl Store {
                 params![id, now],
             )?;
             let (touched, withdrawn_questions) = if n > 0 {
+                self.record_session_end(tx, ctx, id, "explicit")?;
                 (
                     super::feedback::release_session(tx, id)?,
                     super::questions::withdraw_session(tx, id, &now)?,
@@ -356,23 +503,8 @@ impl Store {
     /// §5.2): its harness, harness session ID, agent handle and transcript
     /// path. Ended sessions count: the agent still acted. `None` when no
     /// session has that ID.
-    pub fn session_actor(&self, id: &str) -> Result<Option<crate::audit::AgentActor>> {
-        self.with_read(|c| {
-            Ok(c.prepare_cached(
-                "SELECT harness, harness_session_id, agent_handle, transcript_path
-                 FROM sessions WHERE id = ?1",
-            )?
-            .query_row(params![id], |r| {
-                Ok(crate::audit::AgentActor {
-                    session_id: Some(id.to_string()),
-                    harness: Some(r.get(0)?),
-                    harness_session_id: r.get(1)?,
-                    agent_handle: Some(r.get(2)?),
-                    transcript_path: r.get(3)?,
-                })
-            })
-            .optional()?)
-        })
+    pub fn session_actor(&self, id: &str) -> Result<Option<AgentActor>> {
+        self.with_read(|c| agent_of(c, id))
     }
 
     /// Sessions, newest first; only those not ended when `live_only`.
@@ -396,7 +528,8 @@ impl Store {
     /// longer alive, releasing their watches and undelivered feedback as
     /// [`Store::end_session_touched`] does, and withdrawing their open
     /// questions. Returns the sessions ended, the feedback released, and the
-    /// questions withdrawn.
+    /// questions withdrawn. Each session ended records `session.end` (reason
+    /// `ttl`) as `system:ttl`, naming the session's agent in `for_actor`.
     pub fn reap_sessions(&self, idle: Duration, pid_alive: &dyn Fn(u32) -> bool) -> Result<Reaped> {
         let cutoff =
             (chrono::Utc::now() - idle).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
@@ -432,6 +565,7 @@ impl Store {
                 if n == 0 {
                     continue;
                 }
+                self.record_session_end(tx, &AuditCtx::system(SystemReason::Ttl), &id, "ttl")?;
                 reaped
                     .touched
                     .merge(super::feedback::release_session(tx, &id)?);
@@ -475,13 +609,16 @@ mod tests {
             cwd: "/work".into(),
             pid,
             parent_pid: parent,
+            transcript_path: None,
         }
     }
 
     #[test]
     fn session_actor_names_the_harness_session_and_transcript() {
         let (_d, st) = store();
-        let s = st.register_session(reg(Some("hs-1"), None, None)).unwrap();
+        let s = st
+            .register_session(DAEMON, reg(Some("hs-1"), None, None))
+            .unwrap();
         st.writer
             .run(|c| {
                 c.execute(
@@ -491,7 +628,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        st.end_session(&s.id).unwrap();
+        st.end_session(DAEMON, &s.id).unwrap();
         assert_eq!(
             st.session_actor(&s.id).unwrap(),
             Some(crate::audit::AgentActor {
@@ -598,10 +735,10 @@ mod tests {
     fn register_with_harness_id_is_idempotent() {
         let (_d, store) = store();
         let a = store
-            .register_session(reg(Some("h1"), Some(10), Some(5)))
+            .register_session(DAEMON, reg(Some("h1"), Some(10), Some(5)))
             .unwrap();
         let b = store
-            .register_session(reg(Some("h1"), Some(11), None))
+            .register_session(DAEMON, reg(Some("h1"), Some(11), None))
             .unwrap();
         assert_eq!(a.id, b.id);
         assert_eq!(b.pid, Some(11));
@@ -612,9 +749,13 @@ mod tests {
     #[test]
     fn register_after_end_starts_a_new_session() {
         let (_d, store) = store();
-        let a = store.register_session(reg(Some("h1"), None, None)).unwrap();
-        store.end_session(&a.id).unwrap();
-        let b = store.register_session(reg(Some("h1"), None, None)).unwrap();
+        let a = store
+            .register_session(DAEMON, reg(Some("h1"), None, None))
+            .unwrap();
+        store.end_session(DAEMON, &a.id).unwrap();
+        let b = store
+            .register_session(DAEMON, reg(Some("h1"), None, None))
+            .unwrap();
         assert_ne!(a.id, b.id);
     }
 
@@ -622,10 +763,12 @@ mod tests {
     fn shim_first_then_hook_joins() {
         let (_d, store) = store();
         let shim = store
-            .register_session(reg(None, Some(10), Some(5)))
+            .register_session(DAEMON, reg(None, Some(10), Some(5)))
             .unwrap();
         assert_eq!(shim.harness_session_id, None);
-        let joined = store.join_session("claude", 5, "h1", None, &[]).unwrap();
+        let joined = store
+            .join_session(DAEMON, "claude", 5, "h1", None, None, &[])
+            .unwrap();
         assert_eq!(joined.id, shim.id);
         assert_eq!(joined.harness_session_id.as_deref(), Some("h1"));
         assert_eq!(joined.pid, Some(10));
@@ -636,14 +779,14 @@ mod tests {
     fn hook_joins_a_shim_row_registered_under_an_ancestor() {
         let (_d, store) = store();
         let shim = store
-            .register_session(reg(None, Some(10), Some(5)))
+            .register_session(DAEMON, reg(None, Some(10), Some(5)))
             .unwrap();
         let other = store
-            .register_session(reg(None, Some(11), Some(7)))
+            .register_session(DAEMON, reg(None, Some(11), Some(7)))
             .unwrap();
         // Hook's parent is a wrapper shell (4); the harness (5) is next.
         let joined = store
-            .join_session("claude", 4, "h1", None, &[5, 7])
+            .join_session(DAEMON, "claude", 4, "h1", None, None, &[5, 7])
             .unwrap();
         assert_eq!(joined.id, shim.id, "nearest matching ancestor wins");
         assert_eq!(joined.harness_session_id.as_deref(), Some("h1"));
@@ -655,10 +798,12 @@ mod tests {
     #[test]
     fn hook_first_then_shim_adopts() {
         let (_d, store) = store();
-        let hook = store.join_session("claude", 5, "h1", None, &[]).unwrap();
+        let hook = store
+            .join_session(DAEMON, "claude", 5, "h1", None, None, &[])
+            .unwrap();
         assert_eq!(hook.pid, None);
         let shim = store
-            .register_session(reg(None, Some(10), Some(5)))
+            .register_session(DAEMON, reg(None, Some(10), Some(5)))
             .unwrap();
         assert_eq!(shim.id, hook.id);
         assert_eq!(shim.pid, Some(10));
@@ -671,17 +816,19 @@ mod tests {
     fn hook_cwd_is_used_for_new_rows_and_fills_empty_ones() {
         let (_d, store) = store();
         let hook = store
-            .join_session("claude", 5, "h1", Some("/hook"), &[])
+            .join_session(DAEMON, "claude", 5, "h1", Some("/hook"), None, &[])
             .unwrap();
         assert_eq!(hook.cwd, "/hook");
         let shim = store
-            .register_session(reg(None, Some(10), Some(5)))
+            .register_session(DAEMON, reg(None, Some(10), Some(5)))
             .unwrap();
         assert_eq!(shim.cwd, "/hook", "an existing cwd is kept");
-        let empty = store.join_session("codex", 8, "c1", None, &[]).unwrap();
+        let empty = store
+            .join_session(DAEMON, "codex", 8, "c1", None, None, &[])
+            .unwrap();
         assert_eq!(empty.cwd, "");
         let filled = store
-            .join_session("codex", 8, "c1", Some("/late"), &[])
+            .join_session(DAEMON, "codex", 8, "c1", Some("/late"), None, &[])
             .unwrap();
         assert_eq!(filled.id, empty.id);
         assert_eq!(filled.cwd, "/late");
@@ -691,15 +838,17 @@ mod tests {
     fn registrations_without_id_under_one_parent_share_a_row() {
         let (_d, store) = store();
         let a = store
-            .register_session(reg(None, Some(10), Some(5)))
+            .register_session(DAEMON, reg(None, Some(10), Some(5)))
             .unwrap();
         let b = store
-            .register_session(reg(None, Some(11), Some(5)))
+            .register_session(DAEMON, reg(None, Some(11), Some(5)))
             .unwrap();
         assert_eq!(a.id, b.id);
         assert_eq!(b.pid, Some(11));
         assert_eq!(store.list_sessions(true).unwrap().len(), 1);
-        let joined = store.join_session("claude", 5, "h1", None, &[]).unwrap();
+        let joined = store
+            .join_session(DAEMON, "claude", 5, "h1", None, None, &[])
+            .unwrap();
         assert_eq!(joined.id, a.id);
     }
 
@@ -707,7 +856,7 @@ mod tests {
     fn stale_row_is_not_adopted_by_parent() {
         let (_d, store) = store();
         let old = store
-            .register_session(reg(None, Some(10), Some(5)))
+            .register_session(DAEMON, reg(None, Some(10), Some(5)))
             .unwrap();
         store
             .with_write(|c| {
@@ -723,7 +872,7 @@ mod tests {
             })
             .unwrap();
         let new = store
-            .register_session(reg(None, Some(12), Some(5)))
+            .register_session(DAEMON, reg(None, Some(12), Some(5)))
             .unwrap();
         assert_ne!(new.id, old.id);
     }
@@ -731,10 +880,16 @@ mod tests {
     #[test]
     fn hook_join_is_idempotent_and_other_harnesses_stay_apart() {
         let (_d, store) = store();
-        let a = store.join_session("claude", 5, "h1", None, &[]).unwrap();
-        let b = store.join_session("claude", 5, "h1", None, &[]).unwrap();
+        let a = store
+            .join_session(DAEMON, "claude", 5, "h1", None, None, &[])
+            .unwrap();
+        let b = store
+            .join_session(DAEMON, "claude", 5, "h1", None, None, &[])
+            .unwrap();
         assert_eq!(a.id, b.id);
-        let other = store.join_session("codex", 5, "h1", None, &[]).unwrap();
+        let other = store
+            .join_session(DAEMON, "codex", 5, "h1", None, None, &[])
+            .unwrap();
         assert_ne!(a.id, other.id);
     }
 
@@ -742,10 +897,10 @@ mod tests {
     fn shim_with_harness_id_adopts_hookless_row_by_parent() {
         let (_d, store) = store();
         let shim = store
-            .register_session(reg(None, Some(10), Some(5)))
+            .register_session(DAEMON, reg(None, Some(10), Some(5)))
             .unwrap();
         let again = store
-            .register_session(reg(Some("h1"), Some(10), Some(5)))
+            .register_session(DAEMON, reg(Some("h1"), Some(10), Some(5)))
             .unwrap();
         assert_eq!(shim.id, again.id);
         assert_eq!(again.harness_session_id.as_deref(), Some("h1"));
@@ -754,13 +909,15 @@ mod tests {
     #[test]
     fn heartbeat_and_end() {
         let (_d, store) = store();
-        let s = store.register_session(reg(None, Some(10), None)).unwrap();
+        let s = store
+            .register_session(DAEMON, reg(None, Some(10), None))
+            .unwrap();
         std::thread::sleep(Duration::from_millis(5));
         let beat = store.heartbeat(&s.id).unwrap();
         assert!(beat.last_seen_at > s.last_seen_at);
-        let ended = store.end_session(&s.id).unwrap();
+        let ended = store.end_session(DAEMON, &s.id).unwrap();
         assert!(ended.ended_at.is_some());
-        let again = store.end_session(&s.id).unwrap();
+        let again = store.end_session(DAEMON, &s.id).unwrap();
         assert_eq!(again.ended_at, ended.ended_at);
         assert_eq!(
             store.heartbeat(&s.id).unwrap().last_seen_at,
@@ -771,16 +928,147 @@ mod tests {
         assert_eq!(store.list_sessions(false).unwrap().len(), 1);
     }
 
+    /// The kinds and bodies of the events after `seq`.
+    fn recorded(st: &Store, seq: i64) -> Vec<(String, serde_json::Value, serde_json::Value)> {
+        st.events_after(seq, 100)
+            .unwrap()
+            .into_iter()
+            .map(|e| {
+                (
+                    e.kind,
+                    serde_json::from_str(&e.actor).unwrap(),
+                    serde_json::from_str(&e.body).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn session_changes_record_start_join_and_end_and_refreshes_record_nothing() {
+        let (_d, st) = store();
+        let s = st
+            .register_session(DAEMON, reg(None, Some(10), Some(5)))
+            .unwrap();
+        let ev = recorded(&st, 0);
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0].0, "session.start");
+        // The session's own agent, through the caller's channel.
+        assert_eq!(ev[0].1["type"], "agent");
+        assert_eq!(ev[0].1["session_id"], s.id.as_str());
+        assert_eq!(ev[0].2["via"], "daemon");
+        assert_eq!(
+            (&ev[0].2["harness"], &ev[0].2["cwd"], &ev[0].2["pid"]),
+            (
+                &serde_json::json!("claude"),
+                &serde_json::json!("/work"),
+                &serde_json::json!(10)
+            )
+        );
+        assert_eq!(ev[0].2["harness_session_id"], serde_json::Value::Null);
+        let seq = st.newest_seq().unwrap();
+        // A refresh within the idle window changes nothing recorded.
+        st.register_session(DAEMON, reg(None, Some(10), Some(5)))
+            .unwrap();
+        st.heartbeat(&s.id).unwrap();
+        assert_eq!(st.newest_seq().unwrap(), seq);
+        // The hook joins the harness session ID, then its transcript.
+        st.join_session(DAEMON, "claude", 5, "h1", None, None, &[])
+            .unwrap();
+        st.join_session(DAEMON, "claude", 5, "h1", None, None, &[])
+            .unwrap();
+        st.join_session(DAEMON, "claude", 5, "h1", None, Some("/t/h1.jsonl"), &[])
+            .unwrap();
+        let ev = recorded(&st, seq);
+        let kinds: Vec<&str> = ev.iter().map(|e| e.0.as_str()).collect();
+        assert_eq!(kinds, ["session.join", "session.join"]);
+        assert_eq!(ev[0].2["harness_session_id"], "h1");
+        assert_eq!(ev[0].2["transcript_path"], serde_json::Value::Null);
+        assert_eq!(ev[1].2["transcript_path"], "/t/h1.jsonl");
+        assert_eq!(ev[1].1["transcript_path"], "/t/h1.jsonl");
+        // The shim restarted under another pid: a join.
+        let seq = st.newest_seq().unwrap();
+        st.register_session(DAEMON, reg(Some("h1"), Some(11), Some(5)))
+            .unwrap();
+        assert_eq!(recorded(&st, seq)[0].2["pid"], 11);
+        let seq = st.newest_seq().unwrap();
+        st.end_session(DAEMON, &s.id).unwrap();
+        st.end_session(DAEMON, &s.id).unwrap();
+        let ev = recorded(&st, seq);
+        assert_eq!(ev.len(), 1, "ending an ended session records nothing");
+        assert_eq!(
+            (ev[0].0.as_str(), &ev[0].2["reason"]),
+            ("session.end", &serde_json::json!("explicit"))
+        );
+        assert_eq!(ev[0].2["for_actor"]["session_id"], s.id.as_str());
+        // A hook runs first; the shim adopts its row with its pid and Pi's
+        // kind of transcript path: a join.
+        let hook = st
+            .join_session(DAEMON, "codex", 77, "cx-9", Some("/w"), None, &[])
+            .unwrap();
+        let seq = st.newest_seq().unwrap();
+        let adopted = st
+            .register_session(
+                DAEMON,
+                RegisterSession {
+                    harness: "codex".into(),
+                    harness_session_id: Some("cx-9".into()),
+                    cwd: "/w".into(),
+                    pid: Some(78),
+                    parent_pid: Some(77),
+                    transcript_path: Some("/t/cx-9.jsonl".into()),
+                },
+            )
+            .unwrap();
+        assert_eq!(adopted.id, hook.id);
+        let ev = recorded(&st, seq);
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0].0, "session.join");
+        assert_eq!(
+            (&ev[0].2["pid"], &ev[0].2["transcript_path"]),
+            (&serde_json::json!(78), &serde_json::json!("/t/cx-9.jsonl"))
+        );
+        // Reaped: Clax ends it for the idle agent.
+        let idle = st
+            .register_session(DAEMON, reg(Some("idle"), None, None))
+            .unwrap();
+        st.writer
+            .run(|c| {
+                c.execute(
+                    "UPDATE sessions SET last_seen_at = '2000-01-01T00:00:00.000Z' WHERE id = ?1",
+                    params![idle.id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let seq = st.newest_seq().unwrap();
+        let reaped = st
+            .reap_sessions(Duration::from_secs(300), &|_| false)
+            .unwrap();
+        assert_eq!(reaped.ended, std::slice::from_ref(&idle.id));
+        let ev = recorded(&st, seq);
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0].0, "session.end");
+        assert_eq!(
+            ev[0].1,
+            serde_json::json!({"type": "system", "reason": "ttl"})
+        );
+        assert_eq!(ev[0].2["reason"], "ttl");
+        assert_eq!(ev[0].2["for_actor"]["session_id"], idle.id.as_str());
+        assert_eq!(ev[0].2["for_actor"]["harness_session_id"], "idle");
+    }
+
     #[test]
     fn reaper_ends_only_idle_sessions_with_dead_or_unknown_pids() {
         let (_d, store) = store();
         let dead = store
-            .register_session(reg(Some("dead"), Some(1001), None))
+            .register_session(DAEMON, reg(Some("dead"), Some(1001), None))
             .unwrap();
         let alive = store
-            .register_session(reg(Some("alive"), Some(1002), None))
+            .register_session(DAEMON, reg(Some("alive"), Some(1002), None))
             .unwrap();
-        let hook_only = store.join_session("claude", 7, "hook", None, &[]).unwrap();
+        let hook_only = store
+            .join_session(DAEMON, "claude", 7, "hook", None, None, &[])
+            .unwrap();
         // Everything is fresh: nothing is idle yet.
         let pid_alive = |pid: u32| pid == 1002;
         assert_eq!(
@@ -793,7 +1081,7 @@ mod tests {
         );
         std::thread::sleep(Duration::from_millis(300));
         let fresh = store
-            .register_session(reg(Some("fresh"), Some(1003), None))
+            .register_session(DAEMON, reg(Some("fresh"), Some(1003), None))
             .unwrap();
         // Wide enough that `fresh` stays unreaped on a loaded test run.
         let reaped = store
@@ -812,10 +1100,10 @@ mod tests {
         use crate::store::threads::NewThread;
         let (_d, store) = store();
         let s = store
-            .register_session(reg(Some("dead"), Some(1001), None))
+            .register_session(DAEMON, reg(Some("dead"), Some(1001), None))
             .unwrap();
         let aid = artifact(&store, Some(&s.id));
-        store.ensure_watch(&s.id, &aid).unwrap();
+        store.ensure_watch(DAEMON, &s.id, &aid).unwrap();
         let t = store
             .create_thread(
                 DAEMON,
@@ -849,7 +1137,7 @@ mod tests {
     fn push_errors_are_recorded_and_cleared_without_touching_codex_home() {
         let (_d, store) = store();
         let s = store
-            .join_session("codex", 5, "cx-1", Some("/w"), &[])
+            .join_session(DAEMON, "codex", 5, "cx-1", Some("/w"), None, &[])
             .unwrap();
         assert_eq!(store.push_error(&s.id).unwrap(), None);
         store
@@ -875,7 +1163,7 @@ mod tests {
     fn codex_home_is_stored_per_session() {
         let (_d, store) = store();
         let s = store
-            .join_session("codex", 5, "cx-1", Some("/w"), &[])
+            .join_session(DAEMON, "codex", 5, "cx-1", Some("/w"), None, &[])
             .unwrap();
         assert_eq!(store.codex_home(&s.id).unwrap(), None);
         store.set_codex_home(&s.id, "/tmp/cxh").unwrap();

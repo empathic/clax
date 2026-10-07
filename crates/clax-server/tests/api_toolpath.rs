@@ -422,7 +422,7 @@ async fn every_mutation_records_one_event() {
     let mut table: Vec<Row> = vec![(
         "create",
         events_since(&ts, seq),
-        vec!["artifact.create", "version.publish"],
+        vec!["artifact.create", "version.publish", "watch.start"],
         "agent",
         true,
     )];
@@ -624,7 +624,13 @@ async fn every_mutation_records_one_event() {
     table.push((
         "live watch",
         events_since(&ts, seq),
-        vec!["artifact.create", "live.page", "live.snapshot"],
+        vec![
+            "artifact.create",
+            "live.page",
+            "live.snapshot",
+            "watch.start",
+            "watch.start",
+        ],
         "agent",
         true,
     ));
@@ -763,7 +769,7 @@ async fn every_mutation_records_one_event() {
         (
             "feedback poll",
             agent(ts.client.get(format!("{feedback}?tier=wait&wait=0"))),
-            vec!["feedback.delivered"],
+            vec!["feedback.delivered", "working.start"],
             "agent",
             true,
         ),
@@ -812,24 +818,302 @@ async fn every_mutation_records_one_event() {
         table.push((name, events_since(&ts, seq), want, actor, with_call));
     }
 
+    // Watches, working records, rules, moves and sessions (§6.3–§6.5,
+    // §6.8), in turn.
+    let watch_a = format!("{b}/api/sessions/{sid}/watches/{aid}");
+    let working_a = format!("{b}/api/sessions/{sid}/working/{aid}");
+    let scope = format!("{b}/api/sessions/{sid}/live-watches");
+    let rules = format!("{b}/api/live/rules");
+    let join = json!({
+        "harness": "claude", "parent_pid": 4242, "harness_session_id": "hs-every",
+        "transcript_path": "/t/hs-every.jsonl"
+    });
+    // A second agent watching only the page the move takes a thread from.
+    let watcher = ts.register_session("claude", "hs-watcher").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let later_steps: Vec<(&str, reqwest::RequestBuilder, Vec<&str>, &str, bool)> = vec![
+        (
+            "turn end",
+            agent(
+                ts.client
+                    .post(format!("{b}/api/sessions/{sid}/working/end")),
+            )
+            .json(&json!({})),
+            vec!["working.stop"],
+            "agent",
+            true,
+        ),
+        (
+            "working",
+            agent(ts.client.put(&working_a)).json(&json!({"message": "Tightening"})),
+            vec!["working.start"],
+            "agent",
+            true,
+        ),
+        (
+            "working update",
+            agent(ts.client.put(&working_a)).json(&json!({"message": "Still tightening"})),
+            vec![],
+            "agent",
+            true,
+        ),
+        (
+            "working renew",
+            agent(
+                ts.client
+                    .post(format!("{b}/api/sessions/{sid}/working/renew")),
+            ),
+            vec![],
+            "agent",
+            true,
+        ),
+        (
+            "working clear",
+            agent(ts.client.delete(&working_a)),
+            vec!["working.stop"],
+            "agent",
+            true,
+        ),
+        (
+            "working again",
+            agent(ts.client.put(&working_a)).json(&json!({})),
+            vec!["working.start"],
+            "agent",
+            true,
+        ),
+        (
+            "turn end with a record",
+            agent(
+                ts.client
+                    .post(format!("{b}/api/sessions/{sid}/working/end")),
+            )
+            .json(&json!({})),
+            vec!["working.stop"],
+            "agent",
+            true,
+        ),
+        (
+            "watch disarm",
+            agent(ts.client.put(&watch_a)).json(&json!({"replies_armed": false})),
+            vec!["watch.update"],
+            "agent",
+            true,
+        ),
+        (
+            "watch unchanged",
+            agent(ts.client.put(&watch_a)).json(&json!({"replies_armed": false})),
+            vec![],
+            "agent",
+            true,
+        ),
+        (
+            "unwatch",
+            agent(ts.client.delete(&watch_a)),
+            vec!["watch.stop"],
+            "agent",
+            true,
+        ),
+        (
+            "unwatch of no watch",
+            agent(ts.client.delete(&watch_a)),
+            vec![],
+            "agent",
+            true,
+        ),
+        (
+            "watch",
+            agent(ts.client.put(&watch_a)),
+            vec!["watch.start"],
+            "agent",
+            true,
+        ),
+        (
+            "scope disarm",
+            agent(ts.client.put(&scope))
+                .json(&json!({"url": "http://localhost:5173/billing", "replies_armed": false})),
+            vec!["watch.update", "watch.update"],
+            "agent",
+            true,
+        ),
+        (
+            "watcher",
+            owner(
+                ts.client
+                    .put(format!("{b}/api/sessions/{watcher}/watches/{page}")),
+            ),
+            vec!["watch.start"],
+            "agent",
+            false,
+        ),
+        (
+            "move",
+            owner(ts.client.post(format!("{b}/api/live/threads/{tid}/move")))
+                .json(&json!({"page_url": "http://localhost:5173/billing"})),
+            // Each version the thread names is copied to its new page.
+            // The watcher of the source page follows the thread.
+            vec![
+                "live.snapshot",
+                "live.snapshot",
+                "live.snapshot",
+                "thread.move",
+                "watch.start",
+            ],
+            "owner",
+            false,
+        ),
+        (
+            "scope unwatch",
+            agent(
+                ts.client
+                    .delete(format!("{scope}?url=http://localhost:5173/billing")),
+            ),
+            vec!["watch.stop", "watch.stop"],
+            "agent",
+            true,
+        ),
+        (
+            "scope unwatch of no scope",
+            agent(
+                ts.client
+                    .delete(format!("{scope}?url=http://localhost:5173/billing")),
+            ),
+            vec![],
+            "agent",
+            true,
+        ),
+        (
+            "rule",
+            owner(ts.client.post(&rules))
+                .json(&json!({"origin": "http://localhost:5173", "pattern": "/none/:id"})),
+            vec!["live.rule"],
+            "owner",
+            false,
+        ),
+        (
+            "rule again",
+            owner(ts.client.post(&rules))
+                .json(&json!({"origin": "http://localhost:5173", "pattern": "/none/:id"})),
+            vec![],
+            "owner",
+            false,
+        ),
+        (
+            "join",
+            agent(ts.client.post(format!("{b}/api/sessions/join"))).json(&join),
+            vec!["session.join"],
+            "agent",
+            true,
+        ),
+        (
+            "join again",
+            agent(ts.client.post(format!("{b}/api/sessions/join"))).json(&join),
+            vec![],
+            "agent",
+            true,
+        ),
+        (
+            "heartbeat",
+            agent(ts.client.patch(format!("{b}/api/sessions/{sid}")))
+                .json(&json!({"heartbeat": true})),
+            vec![],
+            "agent",
+            true,
+        ),
+        (
+            "register",
+            owner(ts.client.post(format!("{b}/api/sessions"))).json(&json!({
+                "harness": "codex", "harness_session_id": "cx-every", "cwd": "/w", "pid": 77
+            })),
+            vec!["session.start"],
+            "agent",
+            false,
+        ),
+        (
+            "register again",
+            owner(ts.client.post(format!("{b}/api/sessions"))).json(&json!({
+                "harness": "codex", "harness_session_id": "cx-every", "cwd": "/w", "pid": 77
+            })),
+            vec![],
+            "agent",
+            false,
+        ),
+    ];
+    let mut rule_id = None;
+    let mut codex = None;
+    for (name, req, want, actor, with_call) in later_steps {
+        let seq = last_seq(&ts);
+        let (code, v) = status(req).await;
+        assert!((200..300).contains(&code), "{name}: {code} {v}");
+        table.push((name, events_since(&ts, seq), want, actor, with_call));
+        if name == "rule" {
+            rule_id = Some(v["rule"]["id"].as_str().unwrap().to_string());
+        }
+        if name == "register" {
+            codex = Some(v["session"]["id"].as_str().unwrap().to_string());
+        }
+    }
+    let seq = last_seq(&ts);
+    let rule_id = rule_id.unwrap();
+    let (code, v) = status(owner(ts.client.delete(format!("{rules}/{rule_id}")))).await;
+    assert_eq!(code, 200, "{v}");
+    table.push((
+        "rule delete",
+        events_since(&ts, seq),
+        vec!["live.rule", "live.rule"],
+        "owner",
+        false,
+    ));
+    let codex = codex.unwrap();
+    let seq = last_seq(&ts);
+    let (code, v) = status(
+        owner(ts.client.patch(format!("{b}/api/sessions/{codex}"))).json(&json!({"ended": true})),
+    )
+    .await;
+    assert_eq!(code, 200, "{v}");
+    table.push((
+        "session end",
+        events_since(&ts, seq),
+        vec!["session.end"],
+        "agent",
+        false,
+    ));
+
+    // A record ends with its artifact.
+    assert_eq!(
+        status(agent(ts.client.put(&working_a)).json(&json!({})))
+            .await
+            .0,
+        200
+    );
     let seq = last_seq(&ts);
     let (code, v) = status(owner(ts.client.delete(&a))).await;
     assert_eq!(code, 204, "{v}");
     table.push((
         "delete",
         events_since(&ts, seq),
-        vec!["artifact.delete"],
+        vec!["artifact.delete", "working.stop"],
         "owner",
         false,
     ));
 
-    for (name, recs, want, actor, with_call) in &table {
-        assert_eq!(kinds(recs), *want, "{name}");
+    let wrong: Vec<String> = table
+        .iter()
+        .filter(|(_, recs, want, ..)| kinds(recs) != *want)
+        .map(|(name, recs, want, ..)| format!("{name}: {:?}, want {want:?}", kinds(recs)))
+        .collect();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    for (name, recs, _, actor, with_call) in &table {
         for r in recs {
             assert_eq!(r.actor["type"], *actor, "{name}: {r:?}");
             assert_eq!(r.call_id.is_some(), *with_call, "{name}: {r:?}");
             assert_eq!(r.body["call"].is_object(), *with_call, "{name}: {r:?}");
-            assert!(r.artifact_id.is_some(), "{name}: {r:?}");
+            // Sessions, rules and scope watches belong to no artifact.
+            let install = r.kind.starts_with("session.")
+                || r.kind == "live.rule"
+                || r.body["target"] == "scope";
+            assert_eq!(r.artifact_id.is_none(), install, "{name}: {r:?}");
         }
     }
     let ops: Vec<&str> = table
@@ -867,6 +1151,177 @@ async fn every_mutation_records_one_event() {
         (&json!("Tracker"), &json!(2))
     );
     let row = |name: &str| &table.iter().find(|t| t.0 == name).unwrap().1;
+    let gone = &row("delete")[1];
+    assert_eq!(
+        (&gone.body["reason"], gone.session_id.as_deref()),
+        (&json!("deleted"), Some(sid.as_str()))
+    );
+
+    // Watches (§6.4): each start, update and stop names its target and
+    // session.
+    let disarm = &row("watch disarm")[0];
+    assert_eq!(
+        (&disarm.body["target"], &disarm.body["fields"]),
+        (&json!("artifact"), &json!({"replies_armed": false}))
+    );
+    assert!(disarm.body.get("cause").is_none());
+    assert_eq!(disarm.session_id.as_deref(), Some(sid.as_str()));
+    assert_eq!(disarm.artifact_id.as_deref(), Some(aid.as_str()));
+    assert_eq!(row("unwatch")[0].body["replies_armed"], false);
+    let made = row("live watch");
+    assert_eq!(
+        kinds(made),
+        [
+            "artifact.create",
+            "live.page",
+            "live.snapshot",
+            "watch.start",
+            "watch.start"
+        ]
+    );
+    let billing = made[0].artifact_id.clone().unwrap();
+    assert_eq!(
+        (
+            &made[3].body["target"],
+            &made[3].body["path"],
+            &made[3].origin
+        ),
+        (
+            &json!("scope"),
+            &json!("/billing"),
+            &Some("http://localhost:5173".to_string())
+        )
+    );
+    assert_eq!(
+        (
+            &made[4].body["target"],
+            &made[4].body["source"],
+            made[4].artifact_id.as_deref()
+        ),
+        (&json!("page"), &json!("scope"), Some(billing.as_str()))
+    );
+    assert_eq!(made[4].body["cause"], "scope");
+    assert!(made[3].body.get("cause").is_none());
+    let disarmed = row("scope disarm");
+    assert_eq!(
+        (&disarmed[0].body["target"], &disarmed[0].body["fields"]),
+        (&json!("scope"), &json!({"replies_armed": false}))
+    );
+    assert_eq!(
+        (
+            &disarmed[1].body["target"],
+            &disarmed[1].body["fields"],
+            &disarmed[1].body["cause"]
+        ),
+        (
+            &json!("page"),
+            &json!({"replies_armed": false}),
+            &json!("scope")
+        )
+    );
+    assert_eq!(disarmed[1].artifact_id.as_deref(), Some(billing.as_str()));
+    let unwatched = row("scope unwatch");
+    assert_eq!(
+        (&unwatched[0].body["target"], &unwatched[1].body["target"]),
+        (&json!("scope"), &json!("page"))
+    );
+    assert_eq!(unwatched[1].artifact_id.as_deref(), Some(billing.as_str()));
+
+    // Working records (§6.5): heartbeats and updates record nothing.
+    let started = &row("working")[0];
+    assert_eq!(
+        (&started.body["message"], &started.body["thread_ids"]),
+        (&json!("Tightening"), &json!([]))
+    );
+    assert!(started.body["key"].is_string());
+    let cleared = &row("working clear")[0];
+    assert_eq!(cleared.body["key"], started.body["key"]);
+    assert_eq!(cleared.body["reason"], "explicit");
+    assert!(cleared.body["duration_ms"].as_i64().unwrap() >= 0);
+    assert!(cleared.body.get("for_actor").is_none());
+    assert_eq!(row("turn end with a record")[0].body["reason"], "explicit");
+
+    // A move (§6.3): the source page and the target, both artifacts named.
+    let moved = row("move");
+    // The thread's two versions, then the page's own current one on top.
+    let sources: Vec<(&Value, &Value)> = moved[..3]
+        .iter()
+        .map(|r| (&r.body["source"]["artifact_id"], &r.body["source"]["n"]))
+        .collect();
+    assert_eq!(
+        sources,
+        [
+            (&json!(page), &json!(1)),
+            (&json!(page), &json!(2)),
+            (&json!(billing), &json!(1))
+        ]
+    );
+    let mv = &moved[3];
+    assert_eq!(mv.artifact_id.as_deref(), Some(page.as_str()));
+    assert_eq!(mv.artifact2_id.as_deref(), Some(billing.as_str()));
+    assert_eq!(mv.body["from_artifact_id"], page.as_str());
+    assert_eq!(mv.body["to_artifact_id"], billing.as_str());
+    assert_eq!(mv.body["move_kind"], "move");
+    assert_eq!(mv.body["rule_id"], Value::Null);
+    assert!(mv.body["move_id"].is_string());
+    assert!(
+        mv.body["to_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("http://localhost:5173/billing"),
+        "{:?}",
+        mv.body
+    );
+    // The watch the move carried, after it, naming it.
+    let carried = &moved[4];
+    assert_eq!(
+        (
+            carried.session_id.as_deref(),
+            carried.artifact_id.as_deref(),
+            &carried.body["cause"],
+            &carried.body["move_id"],
+            &carried.body["source"]
+        ),
+        (
+            Some(watcher.as_str()),
+            Some(billing.as_str()),
+            &json!("move"),
+            &mv.body["move_id"],
+            &json!("direct")
+        )
+    );
+
+    // Rules (§6.3).
+    let set = &row("rule")[0];
+    assert_eq!(
+        (&set.body["op"], &set.body["pattern"], &set.body["rule_id"]),
+        (&json!("set"), &json!("/none/:id"), &json!(rule_id))
+    );
+    assert_eq!(set.origin.as_deref(), Some("http://localhost:5173"));
+    let ops: Vec<&Value> = row("rule delete").iter().map(|r| &r.body["op"]).collect();
+    assert_eq!(ops, [&json!("delete"), &json!("drop")]);
+    assert_eq!(row("rule delete")[1].body["rule_id"], rule_id.as_str());
+
+    // Sessions (§6.8): steps of the install path, as the session's agent.
+    let joined = &row("join")[0];
+    assert_eq!(joined.body["transcript_path"], "/t/hs-every.jsonl");
+    assert_eq!(joined.actor["transcript_path"], "/t/hs-every.jsonl");
+    assert_eq!(joined.body["harness_session_id"], "hs-every");
+    assert_eq!(joined.session_id.as_deref(), Some(sid.as_str()));
+    let started = &row("register")[0];
+    assert_eq!(
+        (
+            &started.body["harness"],
+            &started.body["cwd"],
+            &started.body["pid"]
+        ),
+        (&json!("codex"), &json!("/w"), &json!(77))
+    );
+    assert_eq!(started.actor["session_id"], codex.as_str());
+    assert_eq!(started.body["via"], "mcp");
+    let ended = &row("session end")[0];
+    assert_eq!(ended.body["reason"], "explicit");
+    assert_eq!(ended.session_id.as_deref(), Some(codex.as_str()));
     let opened = &row("thread")[0];
     assert_eq!(opened.body["version_n"], 2);
     assert_eq!(opened.body["anchor"]["selector"], "body > main > h2");
@@ -921,6 +1376,9 @@ async fn every_mutation_records_one_event() {
         }
     }
     assert_eq!(row("thread delete")[0].body["moved"], false);
+    let marked = &row("feedback poll")[1];
+    assert_eq!(marked.body["thread_ids"], json!([t1]));
+    assert_eq!(marked.session_id.as_deref(), Some(sid.as_str()));
 }
 
 /// The thread a request made, and the events it recorded.
@@ -1171,7 +1629,11 @@ async fn event_under_call_carries_call_id() {
         .unwrap();
     assert_eq!(res.status(), 201);
     let recs = events_since(&ts, seq);
-    assert_eq!(kinds(&recs), ["artifact.create", "version.publish"]);
+    // The publish watches the artifact for the session.
+    assert_eq!(
+        kinds(&recs),
+        ["artifact.create", "version.publish", "watch.start"]
+    );
     for r in &recs {
         assert_eq!(r.call_id.as_deref(), Some(call().call_id.as_str()));
         assert_eq!(r.body["call"]["tool"], "publish");
@@ -1550,7 +2012,10 @@ async fn delivery_retry_is_not_recorded() {
     let first = take().await;
     assert_eq!(first.as_array().map(Vec::len), Some(1), "{first}");
     let recs = events_since(&ts, seq);
-    assert_eq!(kinds(&recs), ["feedback.delivered"]);
+    // The feedback marks the session working on the artifact.
+    assert_eq!(kinds(&recs), ["feedback.delivered", "working.start"]);
+    assert_eq!(recs[1].body["via"], "hook");
+    assert_eq!(recs[1].session_id.as_deref(), Some(sid.as_str()));
     assert_eq!(recs[0].body["tier"], "stop_hook");
     assert_eq!(recs[0].body["via"], "hook");
     assert_eq!(recs[0].actor["session_id"], sid.as_str());
@@ -1826,4 +2291,482 @@ async fn a_refused_thread_request_writes_nothing() {
         "the requester's row, as ensure_viewer makes it"
     );
     assert_eq!(last_seq(&ts), seq, "{:?}", events_since(&ts, seq));
+}
+
+/// A server whose working registry reads `clock`.
+async fn server_at(clock: std::sync::Arc<clax_core::working::ManualClock>) -> TestServer {
+    TestServer::spawn_with(move |s| {
+        s.working = std::sync::Arc::new(clax_core::working::Working::new(clock))
+    })
+    .await
+}
+
+#[tokio::test]
+async fn ttl_expiry_records_system_stop_with_for_actor() {
+    let clock = std::sync::Arc::new(clax_core::working::ManualClock::at("2026-10-07T10:00:00Z"));
+    let ts = server_at(clock.clone()).await;
+    let session = ts.register_session("claude", "hs-ttl").await;
+    let sid = session["id"].as_str().unwrap().to_string();
+    let aid = ts.publish_as(&sid, "T", "<main></main>").await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let put = |aid: &str| {
+        ts.authed(
+            ts.client
+                .put(format!("{}/api/sessions/{sid}/working/{aid}", ts.base)),
+        )
+        .json(&json!({"message": "Working"}))
+    };
+    assert_eq!(status(put(&aid)).await.0, 200);
+    let started = events_since(&ts, 0)
+        .into_iter()
+        .find(|r| r.kind == "working.start")
+        .unwrap();
+    // The sweep records a lapsed record's end as Clax's, for the agent.
+    clock.advance(30);
+    let seq = last_seq(&ts);
+    clax_server::working::sweep_and_announce(&ts.store, &ts.working, &ts.events).await;
+    assert_eq!(last_seq(&ts), seq, "nothing lapsed yet");
+    clock.advance(130);
+    clax_server::working::sweep_and_announce(&ts.store, &ts.working, &ts.events).await;
+    let recs = events_since(&ts, seq);
+    assert_eq!(kinds(&recs), ["working.stop"]);
+    let stop = &recs[0];
+    assert_eq!(stop.actor, json!({"type": "system", "reason": "ttl"}));
+    assert_eq!(stop.body["via"], "daemon");
+    assert_eq!(stop.body["reason"], "ttl");
+    assert_eq!(stop.body["key"], started.body["key"]);
+    // It ended when it lapsed, 120 s after its last renewal.
+    assert_eq!(stop.body["duration_ms"], 120_000);
+    assert_eq!(stop.body["for_actor"]["type"], "agent");
+    assert_eq!(stop.body["for_actor"]["session_id"], sid.as_str());
+    assert_eq!(stop.body["for_actor"]["harness_session_id"], "hs-ttl");
+    assert_eq!(
+        (stop.session_id.as_deref(), stop.artifact_id.as_deref()),
+        (Some(sid.as_str()), Some(aid.as_str()))
+    );
+    // A lapsed record a later change finds before the sweep is recorded the
+    // same way, before that change's own events.
+    assert_eq!(status(put(&aid)).await.0, 200);
+    clock.advance(500);
+    let seq = last_seq(&ts);
+    let other = ts.publish_as(&sid, "U", "<main></main>").await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(status(put(&other)).await.0, 200);
+    let recs: Vec<Rec> = events_since(&ts, seq)
+        .into_iter()
+        .filter(|r| r.kind.starts_with("working."))
+        .collect();
+    assert_eq!(kinds(&recs), ["working.stop", "working.start"]);
+    assert_eq!(recs[0].actor["reason"], "ttl");
+    assert_eq!(recs[0].body["duration_ms"], 120_000);
+    assert_eq!(recs[0].artifact_id.as_deref(), Some(aid.as_str()));
+    assert_eq!(recs[1].actor["type"], "agent");
+}
+
+#[tokio::test]
+async fn heartbeat_records_nothing() {
+    let ts = TestServer::spawn().await;
+    let session = ts.register_session("claude", "hs-beat").await;
+    let sid = session["id"].as_str().unwrap().to_string();
+    let aid = ts.publish_as(&sid, "T", "<main></main>").await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let b = ts.base.clone();
+    assert_eq!(
+        status(
+            ts.authed(
+                ts.client
+                    .put(format!("{b}/api/sessions/{sid}/working/{aid}"))
+            )
+            .json(&json!({}))
+        )
+        .await
+        .0,
+        200
+    );
+    let seq = last_seq(&ts);
+    for _ in 0..3 {
+        let (code, v) = status(
+            ts.authed(ts.client.patch(format!("{b}/api/sessions/{sid}")))
+                .json(&json!({"heartbeat": true})),
+        )
+        .await;
+        assert_eq!(code, 200, "{v}");
+        let (code, v) = status(
+            ts.authed(
+                ts.client
+                    .post(format!("{b}/api/sessions/{sid}/working/renew")),
+            ),
+        )
+        .await;
+        assert_eq!((code, &v["renewed"]), (200, &json!(1)), "{v}");
+        // A shim registering again, and a hook joining again, change
+        // nothing the records hold.
+        let (code, v) = status(
+            ts.authed(ts.client.post(format!("{b}/api/sessions")))
+                .json(&json!({"harness": "claude", "harness_session_id": "hs-beat", "cwd": "/w"})),
+        )
+        .await;
+        assert_eq!((code, &v["session"]["id"]), (201, &json!(sid)), "{v}");
+        let (code, v) = status(
+            ts.authed(ts.client.post(format!("{b}/api/sessions/join")))
+                .json(
+                    &json!({"harness": "claude", "parent_pid": 1, "harness_session_id": "hs-beat"}),
+                ),
+        )
+        .await;
+        assert_eq!((code, &v["session"]["id"]), (200, &json!(sid)), "{v}");
+    }
+    assert_eq!(last_seq(&ts), seq, "{:?}", events_since(&ts, seq));
+}
+
+#[tokio::test]
+async fn join_records_the_transcript_path_for_each_harness() {
+    let ts = TestServer::spawn().await;
+    let b = ts.base.clone();
+    for harness in ["claude", "codex", "grok"] {
+        // A hook that runs before the shim makes the row; the shim adopts it.
+        let seq = last_seq(&ts);
+        let transcript = format!("/t/{harness}.jsonl");
+        let (code, v) = status(
+            ts.authed(ts.client.post(format!("{b}/api/sessions/join")))
+                .header("x-clax-via", "hook")
+                .json(&json!({
+                    "harness": harness, "parent_pid": 9000, "harness_session_id": format!("{harness}-1"),
+                    "cwd": "/w", "transcript_path": transcript
+                })),
+        )
+        .await;
+        assert_eq!(code, 200, "{v}");
+        let sid = v["session"]["id"].as_str().unwrap().to_string();
+        let recs = events_since(&ts, seq);
+        assert_eq!(kinds(&recs), ["session.start"], "{harness}");
+        let r = &recs[0];
+        assert_eq!(r.body["transcript_path"], transcript.as_str());
+        assert_eq!(r.body["harness"], harness);
+        assert_eq!(r.body["via"], "hook");
+        assert_eq!(r.actor["session_id"], sid.as_str());
+        assert_eq!(r.actor["transcript_path"], transcript.as_str());
+        assert!(r.artifact_id.is_none(), "a session is never a path");
+        // A resumed harness session names a new transcript: a join.
+        let seq = last_seq(&ts);
+        let resumed = format!("/t/{harness}-resumed.jsonl");
+        let (code, v) = status(
+            ts.authed(ts.client.post(format!("{b}/api/sessions/join")))
+                .json(&json!({
+                    "harness": harness, "parent_pid": 9000, "harness_session_id": format!("{harness}-1"),
+                    "transcript_path": resumed
+                })),
+        )
+        .await;
+        assert_eq!(code, 200, "{v}");
+        let recs = events_since(&ts, seq);
+        assert_eq!(kinds(&recs), ["session.join"], "{harness}");
+        assert_eq!(recs[0].body["transcript_path"], resumed.as_str());
+        assert_eq!(
+            ts.store
+                .session_actor(&sid)
+                .unwrap()
+                .unwrap()
+                .transcript_path,
+            Some(resumed)
+        );
+    }
+    // A transcript path with control characters is refused, and records
+    // nothing.
+    let seq = last_seq(&ts);
+    let (code, v) = status(
+        ts.authed(ts.client.post(format!("{b}/api/sessions/join")))
+            .json(&json!({
+                "harness": "claude", "parent_pid": 9001, "harness_session_id": "bad",
+                "transcript_path": "/t/a\nb"
+            })),
+    )
+    .await;
+    assert_eq!(code, 400, "{v}");
+    assert_eq!(last_seq(&ts), seq);
+    // Pi names its session file when it registers.
+    let (code, v) = status(
+        ts.authed(ts.client.post(format!("{b}/api/sessions")))
+            .header("x-clax-via", "pi")
+            .json(&json!({
+                "harness": "pi", "harness_session_id": "pi-1", "cwd": "/w",
+                "transcript_path": "/s/pi-1.jsonl"
+            })),
+    )
+    .await;
+    assert_eq!(code, 201, "{v}");
+    let recs = events_since(&ts, seq);
+    assert_eq!(kinds(&recs), ["session.start"]);
+    assert_eq!(recs[0].body["transcript_path"], "/s/pi-1.jsonl");
+    assert_eq!(recs[0].body["via"], "pi");
+    let seq = last_seq(&ts);
+    let (code, v) = status(
+        ts.authed(ts.client.post(format!("{b}/api/sessions")))
+            .json(&json!({
+                "harness": "pi", "harness_session_id": "pi-2", "cwd": "/w",
+                "transcript_path": "x".repeat(4097)
+            })),
+    )
+    .await;
+    assert_eq!(
+        (code, &v["error"]["code"]),
+        (400, &json!("invalid_session"))
+    );
+    assert_eq!(last_seq(&ts), seq);
+}
+
+#[tokio::test]
+async fn merge_records_each_moved_thread_with_both_artifacts() {
+    let ts = TestServer::spawn().await;
+    let sam = ts.viewer(Some("Sam")).await;
+    let b = ts.base.clone();
+    let mut pages = Vec::new();
+    for path in ["/users/1", "/users/2"] {
+        let (code, v) = status(
+            ts.client
+                .post(format!("{b}/api/live/threads"))
+                .header("cookie", format!("clax_viewer={}", sam.cookie))
+                .multipart(live_form(
+                    &format!("http://localhost:5173{path}"),
+                    "<main>Save</main>",
+                )),
+        )
+        .await;
+        assert_eq!(code, 201, "{v}");
+        pages.push((
+            v["page"]["artifact_id"].as_str().unwrap().to_string(),
+            v["thread"]["id"].as_str().unwrap().to_string(),
+        ));
+    }
+    let moves = |recs: &[Rec]| -> Vec<(String, String, String, String)> {
+        recs.iter()
+            .filter(|r| r.kind == "thread.move")
+            .map(|r| {
+                assert_eq!(r.body["from_artifact_id"], json!(r.artifact_id));
+                assert_eq!(r.body["to_artifact_id"], json!(r.artifact2_id));
+                assert_eq!(r.origin.as_deref(), Some("http://localhost:5173"));
+                (
+                    r.artifact_id.clone().unwrap(),
+                    r.artifact2_id.clone().unwrap(),
+                    r.body["move_kind"].as_str().unwrap().to_string(),
+                    r.body["rule_id"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+
+    let seq = last_seq(&ts);
+    let (code, v) = status(
+        ts.authed(ts.client.post(format!("{b}/api/live/rules")))
+            .json(&json!({"origin": "http://localhost:5173", "pattern": "/users/:id"})),
+    )
+    .await;
+    assert_eq!(code, 201, "{v}");
+    assert_eq!(v["moved"].as_array().unwrap().len(), 2, "{v}");
+    let rule = v["rule"]["id"].as_str().unwrap().to_string();
+    let canon = v["page"]["artifact_id"].as_str().unwrap().to_string();
+    let recs = events_since(&ts, seq);
+    assert_eq!(recs[0].kind, "live.rule");
+    assert_eq!(recs[0].body["op"], "set");
+    for r in &recs {
+        assert_eq!(r.actor["type"], "owner", "{r:?}");
+    }
+    let mut merged = moves(&recs);
+    merged.sort();
+    let mut want: Vec<_> = pages
+        .iter()
+        .map(|(page, _)| {
+            (
+                page.clone(),
+                canon.clone(),
+                "merge".to_string(),
+                rule.clone(),
+            )
+        })
+        .collect();
+    want.sort();
+    assert_eq!(merged, want);
+    let threads: Vec<&str> = recs
+        .iter()
+        .filter(|r| r.kind == "thread.move")
+        .map(|r| r.body["move_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(threads.len(), 2);
+    assert_ne!(threads[0], threads[1]);
+
+    // Deleting the rule moves each thread back to its own page.
+    let seq = last_seq(&ts);
+    let (code, v) = status(ts.authed(ts.client.delete(format!("{b}/api/live/rules/{rule}")))).await;
+    assert_eq!(code, 200, "{v}");
+    let recs = events_since(&ts, seq);
+    assert_eq!(recs[0].kind, "live.rule");
+    assert_eq!(recs[0].body["op"], "delete");
+    let mut back = moves(&recs);
+    back.sort();
+    let mut want: Vec<_> = pages
+        .iter()
+        .map(|(page, _)| {
+            (
+                canon.clone(),
+                page.clone(),
+                "unmerge".to_string(),
+                rule.clone(),
+            )
+        })
+        .collect();
+    want.sort();
+    assert_eq!(back, want);
+    // A rule already gone: refused, nothing recorded.
+    let seq = last_seq(&ts);
+    let (code, _) = status(ts.authed(ts.client.delete(format!("{b}/api/live/rules/{rule}")))).await;
+    assert_eq!(code, 404);
+    assert_eq!(last_seq(&ts), seq);
+}
+
+#[tokio::test]
+async fn working_ends_name_their_cause() {
+    let ts = TestServer::spawn().await;
+    let sam = ts.viewer(Some("Sam")).await;
+    let session = ts.register_session("claude", "hs-cause").await;
+    let sid = session["id"].as_str().unwrap().to_string();
+    let aid = ts
+        .publish_as(&sid, "T", "<main><h2>Quarterly goals</h2></main>")
+        .await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let b = ts.base.clone();
+    let threads: Vec<String> = {
+        let mut v = Vec::new();
+        for i in 0..4 {
+            let t = ts.thread(&aid, 1, &format!("t{i}")).await;
+            let tid = t["id"].as_str().unwrap().to_string();
+            ts.send_thread(&aid, &tid).await;
+            v.push(tid);
+        }
+        v
+    };
+    let work = |tids: Vec<&str>| {
+        ts.authed(
+            ts.client
+                .put(format!("{b}/api/sessions/{sid}/working/{aid}")),
+        )
+        .json(&json!({"thread_ids": tids}))
+    };
+    let viewer =
+        |r: reqwest::RequestBuilder| r.header("cookie", format!("clax_viewer={}", sam.cookie));
+    let agent = |r: reqwest::RequestBuilder| ts.authed(r).header("x-clax-session", &sid);
+    let t = |tid: &str, rest: &str| format!("{b}/api/artifacts/{aid}/threads/{tid}{rest}");
+    // Each step makes a record naming one thread, then ends that thread.
+    let steps: Vec<(reqwest::RequestBuilder, &str, &str, &str)> = vec![
+        (
+            viewer(ts.client.post(t(&threads[0], "/resolve"))),
+            "thread.resolve",
+            "resolved",
+            "viewer",
+        ),
+        (
+            viewer(ts.client.delete(t(&threads[1], ""))),
+            "thread.delete",
+            "deleted",
+            "viewer",
+        ),
+        (
+            agent(ts.client.post(t(&threads[2], "/resolve"))).json(&json!({"as": "agent"})),
+            "thread.resolve",
+            "resolved",
+            "agent",
+        ),
+        (
+            agent(ts.client.post(t(&threads[3], "/comments")))
+                .json(&json!({"body": "Done", "author_kind": "agent"})),
+            "comment.add",
+            "explicit",
+            "agent",
+        ),
+    ];
+    for (i, (req, kind, reason, actor)) in steps.into_iter().enumerate() {
+        assert_eq!(status(work(vec![&threads[i]])).await.0, 200);
+        let seq = last_seq(&ts);
+        let (code, v) = status(req).await;
+        assert!((200..300).contains(&code), "{kind}: {code} {v}");
+        let recs = events_since(&ts, seq);
+        assert!(recs.iter().any(|r| r.kind == kind), "{:?}", kinds(&recs));
+        let stop = recs.iter().find(|r| r.kind == "working.stop").unwrap();
+        assert_eq!(stop.body["reason"], reason, "{kind}");
+        assert_eq!(stop.actor["type"], actor, "{kind}");
+        assert!(stop.body.get("for_actor").is_none());
+    }
+
+    // The session ends with a record live: its end, then the record's.
+    assert_eq!(status(work(vec![])).await.0, 200);
+    let seq = last_seq(&ts);
+    let (code, v) = status(
+        ts.authed(ts.client.patch(format!("{b}/api/sessions/{sid}")))
+            .json(&json!({"ended": true})),
+    )
+    .await;
+    assert_eq!(code, 200, "{v}");
+    let recs = events_since(&ts, seq);
+    assert_eq!(kinds(&recs), ["session.end", "working.stop"]);
+    assert_eq!(recs[1].body["reason"], "session_end");
+    assert_eq!(recs[1].actor["session_id"], sid.as_str());
+
+    // The reaper ends an idle session's records as Clax's, for the agent.
+    let idle = ts.register_session("claude", "hs-idle").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let other = ts.publish_as(&idle, "U", "<main></main>").await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        status(
+            ts.authed(
+                ts.client
+                    .put(format!("{b}/api/sessions/{idle}/working/{other}"))
+            )
+            .json(&json!({}))
+        )
+        .await
+        .0,
+        200
+    );
+    db(&ts)
+        .execute(
+            "UPDATE sessions SET last_seen_at = '2000-01-01T00:00:00.000Z' WHERE id = ?1",
+            [&idle],
+        )
+        .unwrap();
+    let seq = last_seq(&ts);
+    let (feedback, store) = (ts.feedback.clone(), ts.store.clone());
+    let reaped = tokio::task::spawn_blocking(move || {
+        clax_server::daemon::reap_idle(
+            &feedback,
+            &store,
+            std::time::Duration::from_secs(300),
+            &|_| false,
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(reaped.ended, std::slice::from_ref(&idle));
+    let recs = events_since(&ts, seq);
+    assert_eq!(kinds(&recs), ["session.end", "working.stop"]);
+    for r in &recs {
+        assert_eq!(r.actor, json!({"type": "system", "reason": "ttl"}));
+        assert_eq!(r.body["for_actor"]["session_id"], idle.as_str());
+    }
+    assert_eq!(
+        (&recs[0].body["reason"], &recs[1].body["reason"]),
+        (&json!("ttl"), &json!("session_end"))
+    );
 }

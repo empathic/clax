@@ -272,7 +272,7 @@ async fn expiry_is_hidden_at_once_and_announced_by_the_sweep() {
         .await
         .unwrap();
     assert_eq!(w["working"], json!([]));
-    clax_server::working::sweep_and_announce(&ts.working, &ts.events);
+    clax_server::working::sweep_and_announce(&ts.store, &ts.working, &ts.events).await;
     let gone = ev.next_named("working").await;
     assert_eq!(
         gone,

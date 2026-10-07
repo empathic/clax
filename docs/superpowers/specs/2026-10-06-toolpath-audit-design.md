@@ -421,26 +421,60 @@ a link no other event carries.
 |---|---|---|
 | `live.page` | `origin, path` | `ensure_live_page` creating a page |
 | `live.snapshot` | the `version.publish` body plus `origin, path` | `store_snapshot` (in place of `version.publish`); a version a move or merge copies onto a page also has `source{artifact_id, n}` (and `artifact2_id` the source), with the source's addresses |
-| `thread.move` | `from_artifact_id, from_url, to_artifact_id, to_url, move_kind (move\|merge\|unmerge), rule_id, move_id` | each `thread_moves` row (`artifact_id` is the source; `artifact2_id` is the target) |
-| `live.rule` | `rule_id, op (set\|delete)`, then the `LiveRule` fields | rule changes |
+| `thread.move` | `from_artifact_id, from_url, to_artifact_id, to_url, move_kind (move\|merge\|unmerge), rule_id, move_id` | each `thread_moves` row, in the move's transaction, by the requester (the owner, for a rule's merge or unmerge too). `artifact_id` is the source, `artifact2_id` the target, with `thread_id` and `origin` |
+| `live.rule` | `rule_id, op (set\|delete\|drop), origin, pattern, created_at, deleting` (no separate `id`) | `set`: a new rule, or a re-add of one being deleted (re-adding a rule in force records nothing); `delete`: taking it out of force; `drop`: removing it for good once its threads are back. `origin` column set; no artifact |
 
 ### 6.4 Watches
 
 | Kind | Body |
 |---|---|
-| `watch.start` | `target (artifact\|page\|scope), replies_armed, source (direct\|scope), origin?, path?` |
-| `watch.stop` | the same |
+| `watch.start` | `target (artifact\|page\|scope), replies_armed, source (direct\|scope), origin?, path?, cause?, move_id?` |
+| `watch.stop` | `target, replies_armed, source, origin?, path?` |
+| `watch.update` | `target, origin?, path?, fields {replies_armed?, source?}, cause?` |
+
+- `target` is `scope` for a scope watch (a `live_watches` row; no
+  artifact), `page` for a watch on a live page (with the page's `origin` and
+  `path`), else `artifact`. The `session_id` column is the watcher's
+  session; `artifact_id` the watched artifact.
+- A new watch records `watch.start`; a change of an existing watch's arming,
+  or a scope-made watch becoming direct, records `watch.update` with the
+  fields that changed; a removal records `watch.stop`. A write that changes
+  nothing records nothing.
+- A page watch Clax makes or re-arms for a session, rather than the session
+  asking for it, carries `cause`: `scope` when a scope watch of the session
+  covers the page (on the scope watch itself, when a page is made, or when a
+  thread's path brings a page under the scope, recorded after that
+  thread's `thread.open` and `comment.add`), or `move` with the
+  `move_id` when a move carries the watchers of a thread to its new page
+  (recorded after that `thread.move`). Its actor is the requester whose
+  change caused it.
+- Watches removed with their session (`session.end`) or their artifact
+  (`artifact.delete`) are implied by that event and not recorded apart.
 
 ### 6.5 Working records
 
 | Kind | Body |
 |---|---|
 | `working.start` | `key, message, thread_ids[]` |
-| `working.stop` | `key, reason (explicit\|ttl\|session_end), duration_ms` |
+| `working.stop` | `key, reason (explicit\|ttl\|session_end\|resolved\|deleted), duration_ms` |
 
-Working state stays in memory. Start and stop are recorded; heartbeats are
-not. A TTL expiry is recorded with actor `system:ttl`, and the original agent
-goes in `body.for_actor`.
+Working state stays in memory. Start and stop are recorded; heartbeats,
+renewals and updates of a record that goes on are not. Each event has the
+record's artifact and session in its columns.
+
+- `reason`: `explicit` when its session cleared it, replied to its last
+  thread, published, or ended its turn; `resolved` when its last thread was
+  resolved (by its agent or a viewer); `deleted` when its last thread or its
+  artifact was deleted; `session_end` when its session ended; `ttl` when it
+  lapsed.
+- A TTL expiry is recorded with actor `system:ttl`, whether the sweep or a
+  later change finds the lapsed record, and `duration_ms` runs to the lapse
+  (last heartbeat + 120 s), not to its removal. Any event a system actor
+  records for an agent's record names the agent in `body.for_actor`.
+- The events are recorded after the in-memory change, in their own
+  transaction. They pair by `key`: between records of one (session,
+  artifact), `seq` order need not be the registry's order (a stop of one
+  record may follow the start of the next).
 
 ### 6.6 Questions
 
@@ -503,11 +537,25 @@ artifact). Otherwise it belongs to the install path.
 | Kind | Body |
 |---|---|
 | `session.start` | `harness, harness_session_id, cwd, transcript_path, pid` (+ `git`) |
-| `session.join` | the same, when a hook joins a harness session ID to a registered session |
-| `session.end` | `reason` |
+| `session.join` | the same, when a hook join or a re-registration changes the session's harness session ID, `cwd`, transcript path or `pid` |
+| `session.end` | `reason (explicit\|ttl)` (+ `for_actor` under a system actor) |
 
-These are steps in the install path. A session is an actor, never a path
-(O7).
+These are steps in the install path, with the session in the `session_id`
+column and no artifact. A session is an actor, never a path (O7).
+
+- `session.start` and `session.join` are made by the session's own agent
+  (read after the write, so the actor carries the new transcript path),
+  through the request's channel, git state and tool call.
+- A registration or join that only refreshes the session (a shim
+  re-registering, a hook joining again) records nothing; heartbeats record
+  nothing.
+- `session.end` with `explicit` is the agent side ending its session, as its
+  agent. The reaper ends idle sessions with `ttl`, as `system:ttl`, naming
+  the agent in `for_actor`. Ending an ended session records nothing.
+- The transcript path comes from hook input (`transcript_path`, or Grok
+  Build's `transcriptPath`) on join, and from the extension API (Pi's
+  session file) on registration. A hook joining an older daemon that
+  refuses the field joins again without it.
 
 ### 6.9 What `via` means
 

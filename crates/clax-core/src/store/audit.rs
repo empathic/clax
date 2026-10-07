@@ -8,8 +8,10 @@
 //! block.
 
 use super::Store;
+use super::sessions::with_for_actor;
 use crate::Result;
-use crate::audit::{AuditCtx, AuditIds, AuditRecord};
+use crate::audit::{AgentActor, AuditCtx, AuditIds, AuditKind, AuditRecord, SystemReason};
+use crate::working::{StopReason, Transition};
 use rusqlite::{Row, params};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -111,6 +113,22 @@ fn row_to_event(r: &Row<'_>) -> rusqlite::Result<AuditRow> {
         body: r.get(11)?,
         backfilled: r.get(12)?,
     })
+}
+
+/// A `working.start` event, without IDs (spec §6.5).
+fn working_start(key: &str, message: &Option<String>, thread_ids: &[String]) -> AuditRecord {
+    AuditRecord::new(AuditKind::WorkingStart, Store::now())
+        .with("key", key)
+        .with("message", message.clone())
+        .with("thread_ids", thread_ids.to_vec())
+}
+
+/// A `working.stop` event, without IDs (spec §6.5).
+fn working_stop(key: &str, reason: StopReason, duration_ms: i64) -> AuditRecord {
+    AuditRecord::new(AuditKind::WorkingStop, Store::now())
+        .with("key", key)
+        .with("reason", reason.as_str())
+        .with("duration_ms", duration_ms)
 }
 
 /// The stored body of `rec` under `ctx`: the record's fields plus the
@@ -235,6 +253,73 @@ impl Store {
         })
     }
 
+    /// Records the starts and ends of working records in `changes` (spec
+    /// §6.5), in one transaction: `working.start {key, message,
+    /// thread_ids}` and `working.stop {key, reason, duration_ms}`, each on
+    /// its artifact and session. Working state lives in memory, so these
+    /// are recorded once the registry has changed; nothing is written when
+    /// there is nothing to record. An end for [`StopReason::Ttl`] is
+    /// recorded as `system:ttl`, any other event under `ctx`; a system actor
+    /// names the session's agent in `for_actor`.
+    ///
+    /// [`StopReason::Ttl`]: crate::working::StopReason::Ttl
+    pub fn record_working(&self, ctx: &AuditCtx, changes: &[Transition]) -> Result<()> {
+        if changes.is_empty() {
+            return Ok(());
+        }
+        let ttl = AuditCtx::system(SystemReason::Ttl);
+        self.with_tx(|tx| {
+            for t in changes {
+                let (ctx, rec, sid, aid, fallback) = match t {
+                    Transition::Started {
+                        session_id,
+                        artifact_id,
+                        key,
+                        message,
+                        thread_ids,
+                    } => (
+                        ctx,
+                        working_start(key, message, thread_ids),
+                        session_id,
+                        artifact_id,
+                        AgentActor::default(),
+                    ),
+                    Transition::Stopped {
+                        session_id,
+                        artifact_id,
+                        key,
+                        harness,
+                        agent,
+                        reason,
+                        duration_ms,
+                    } => (
+                        if *reason == StopReason::Ttl {
+                            &ttl
+                        } else {
+                            ctx
+                        },
+                        working_stop(key, *reason, *duration_ms),
+                        session_id,
+                        artifact_id,
+                        AgentActor {
+                            harness: Some(harness.clone()),
+                            agent_handle: Some(agent.clone()),
+                            ..AgentActor::default()
+                        },
+                    ),
+                };
+                let mut rec = with_for_actor(tx, ctx, rec, sid, || AgentActor {
+                    session_id: Some(sid.clone()),
+                    ..fallback
+                })?;
+                rec.ids.artifact = Some(aid.clone());
+                rec.ids.session = Some(sid.clone());
+                self.record_audit(tx, ctx, rec)?;
+            }
+            Ok(())
+        })
+    }
+
     /// The highest `seq` recorded, or 0 when there is none.
     pub fn newest_seq(&self) -> Result<i64> {
         self.with_read(|c| {
@@ -269,6 +354,72 @@ pub(crate) mod tests {
         let mut r = AuditRecord::new(AuditKind::ArtifactUpdate, Store::now()).with("title", title);
         r.ids.artifact = Some("01ARZ3NDEKTSV4RRFFQ69G5FAV".into());
         r
+    }
+
+    #[test]
+    fn working_events_under_a_system_actor_name_the_agent() {
+        use crate::store::test_util::{DAEMON, session};
+        use crate::working::{StopReason, Transition};
+        let (_d, st) = store();
+        let sid = session(&st, "codex", "cx-1");
+        let start = Transition::Started {
+            session_id: sid.clone(),
+            artifact_id: "a1".into(),
+            key: "k1".into(),
+            message: None,
+            thread_ids: vec!["t1".into()],
+        };
+        let stop = |reason| Transition::Stopped {
+            session_id: sid.clone(),
+            artifact_id: "a1".into(),
+            key: "k1".into(),
+            harness: "codex".into(),
+            agent: "a_x".into(),
+            reason,
+            duration_ms: 5,
+        };
+        let seq = st.newest_seq().unwrap();
+        st.record_working(DAEMON, &[start.clone(), stop(StopReason::Ttl)])
+            .unwrap();
+        st.record_working(&ctx(), &[start, stop(StopReason::Explicit)])
+            .unwrap();
+        let ev: Vec<(String, serde_json::Value, serde_json::Value)> = st
+            .events_after(seq, 10)
+            .unwrap()
+            .into_iter()
+            .map(|e| {
+                assert_eq!(e.ids.session.as_deref(), Some(sid.as_str()));
+                assert_eq!(e.ids.artifact.as_deref(), Some("a1"));
+                (
+                    e.kind,
+                    serde_json::from_str(&e.actor).unwrap(),
+                    serde_json::from_str(&e.body).unwrap(),
+                )
+            })
+            .collect();
+        let kinds: Vec<&str> = ev.iter().map(|e| e.0.as_str()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "working.start",
+                "working.stop",
+                "working.start",
+                "working.stop"
+            ]
+        );
+        assert_eq!(ev[0].1["reason"], "daemon");
+        assert_eq!(ev[1].1["reason"], "ttl");
+        for e in &ev[..2] {
+            assert_eq!(e.2["for_actor"]["session_id"], sid.as_str());
+            assert_eq!(e.2["for_actor"]["harness_session_id"], "cx-1");
+        }
+        for e in &ev[2..] {
+            assert_eq!(e.1["type"], "owner");
+            assert!(e.2.get("for_actor").is_none());
+        }
+        // Nothing to record: no transaction, no event.
+        st.record_working(DAEMON, &[]).unwrap();
+        assert_eq!(st.events_after(seq, 10).unwrap().len(), 4);
     }
 
     #[test]

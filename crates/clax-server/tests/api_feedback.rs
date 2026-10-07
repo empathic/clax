@@ -266,13 +266,17 @@ async fn long_poll_is_exempt_from_the_request_timeout() {
     let waiters: Arc<FeedbackWaiters> = held.get().unwrap().clone();
     let sid = ts
         .store
-        .register_session(RegisterSession {
-            harness: "claude".into(),
-            harness_session_id: Some("h1".into()),
-            cwd: "/tmp/p".into(),
-            pid: None,
-            parent_pid: None,
-        })
+        .register_session(
+            &clax_core::audit::AuditCtx::DAEMON,
+            RegisterSession {
+                harness: "claude".into(),
+                harness_session_id: Some("h1".into()),
+                cwd: "/tmp/p".into(),
+                pid: None,
+                parent_pid: None,
+                transcript_path: None,
+            },
+        )
         .unwrap()
         .id;
     let req = ts.authed(

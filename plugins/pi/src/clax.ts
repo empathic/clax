@@ -701,6 +701,8 @@ class Tools {
         pid: process.pid,
         parent_pid: process.ppid,
       };
+      const transcript = ctx.sessionManager.getSessionFile?.();
+      if (transcript) registration.transcript_path = transcript;
       const refresh = async () => endpointOf(await ensure(this.home, { env: this.env, port: this.opts.port }));
       const find = async () => {
         const info = await discover(this.home);

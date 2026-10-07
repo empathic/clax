@@ -1060,7 +1060,7 @@ pub async fn add_rule(
     let rc = RefileCtx::of(&s, audit);
     let (rule, created, page, moved, remaining) = s
         .store_call(move |st| {
-            let (rule, created) = st.add_live_rule(&origin, &pattern)?;
+            let (rule, created) = st.add_live_rule(&rc.audit, &origin, &pattern)?;
             let (refiles, remaining) = st.merge_candidates(&rule, MAX_REFILE)?;
             if refiles.is_empty() {
                 let page = match st.find_live_page(&canonical.key)? {
@@ -1128,7 +1128,9 @@ pub async fn delete_rule(
     let rc = RefileCtx::of(&s, audit);
     let (rule, moved, remaining, deleting) = s
         .store_call(move |st| {
-            let rule = st.mark_rule_deleted(&id)?.ok_or(CoreError::NotFound)?;
+            let rule = st
+                .mark_rule_deleted(&rc.audit, &id)?
+                .ok_or(CoreError::NotFound)?;
             let (back, remaining) = st.unmerge_candidates(&rule, MAX_REFILE)?;
             let mut moves = Vec::new();
             let mut fresh: Vec<String> = Vec::new();
@@ -1171,7 +1173,7 @@ pub async fn delete_rule(
             let deleting = remaining > 0;
             if !deleting {
                 // Not when a re-add put it back in force meanwhile.
-                st.drop_rule(&rule.id)?;
+                st.drop_rule(&rc.audit, &rule.id)?;
             }
             let moved: Vec<String> = done.moved.into_iter().map(|m| m.thread_id).collect();
             Ok((rule, moved, remaining, deleting))

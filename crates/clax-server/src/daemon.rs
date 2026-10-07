@@ -74,6 +74,33 @@ pub fn remove_daemon_info(home: &Home) {
     let _ = std::fs::remove_file(home.daemon_json());
 }
 
+/// One reaper pass: ends the sessions unseen for `idle` whose process is
+/// gone ([`Store::reap_sessions`]), hands on the feedback they released,
+/// and ends their working records as `system:ttl` (reason `session_end`,
+/// naming the agent in `for_actor`).
+///
+/// # Errors
+/// When the store fails.
+pub fn reap_idle(
+    ctx: &crate::feedback::FeedbackCtx,
+    store: &Store,
+    idle: Duration,
+    pid_alive: &dyn Fn(u32) -> bool,
+) -> clax_core::Result<clax_core::Reaped> {
+    let r = store.reap_sessions(idle, pid_alive)?;
+    crate::feedback::apply(ctx, store, &r.touched);
+    let ttl = clax_core::audit::AuditCtx::system(clax_core::audit::SystemReason::Ttl);
+    for id in &r.ended {
+        ctx.waiters.forget(id);
+        let (ended, _) = ctx
+            .working
+            .end_session(id, clax_core::working::End::SessionEnd);
+        crate::working::settle(store, &ttl, &ctx.events, &ctx.working, &ended);
+        ctx.followers.forget(id);
+    }
+    Ok(r)
+}
+
 /// True when a process with `pid` exists. Probes with `kill(pid, 0)`: success or
 /// `EPERM` (the process exists but belongs to another user) both count as alive;
 /// `ESRCH` and out-of-range pids (0, or beyond `i32::MAX`) do not.
@@ -320,6 +347,7 @@ pub async fn serve(
     };
     let reaper_store = store.clone();
     let optimize_store = store.clone();
+    let sweep_store = store.clone();
     let drain_store = store.clone();
     let token = generate_token();
     let started_at = Store::now();
@@ -433,20 +461,8 @@ pub async fn serve(
             let st = reap_state.clone();
             let reaped = reaper_store
                 .call(move |store| {
-                    let r = store.reap_sessions(SESSION_IDLE, &pid_alive)?;
-                    crate::feedback::apply(&ctx, store, &r.touched);
+                    let r = reap_idle(&ctx, store, SESSION_IDLE, &pid_alive)?;
                     crate::questions::announce_ids(&st, store, &r.withdrawn_questions);
-                    for id in &r.ended {
-                        ctx.waiters.forget(id);
-                        crate::working::announce(
-                            &ctx.events,
-                            &ctx.working,
-                            &ctx.working
-                                .end_session(id, clax_core::working::End::SessionEnd)
-                                .0,
-                        );
-                        ctx.followers.forget(id);
-                    }
                     Ok(r)
                 })
                 .await;
@@ -474,7 +490,7 @@ pub async fn serve(
         let mut every = tokio::time::interval(crate::working::SWEEP_INTERVAL);
         loop {
             every.tick().await;
-            crate::working::sweep_and_announce(&sweep_working, &sweep_events);
+            crate::working::sweep_and_announce(&sweep_store, &sweep_working, &sweep_events).await;
             crate::presence::sweep_and_announce(&state_presence, &sweep_events);
             state_stream.sweep();
         }

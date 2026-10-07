@@ -95,19 +95,84 @@ pub struct SetWorking {
     pub message: Option<String>,
 }
 
-/// The artifacts whose working list changed.
+/// Why a working record ended (audit spec 2026-10-06 §6.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopReason {
+    /// Its session cleared it, replied to its last thread, published, or
+    /// ended its turn.
+    Explicit,
+    /// It lapsed [`WORKING_TTL_SECS`] after its last renewal.
+    Ttl,
+    /// Its session ended.
+    SessionEnd,
+    /// Its last thread was resolved, by its agent or a viewer.
+    Resolved,
+    /// Its last thread, or its artifact, was deleted.
+    Deleted,
+}
+
+impl StopReason {
+    /// The recorded name: `explicit`, `ttl`, `session_end`, `resolved` or
+    /// `deleted`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StopReason::Explicit => "explicit",
+            StopReason::Ttl => "ttl",
+            StopReason::SessionEnd => "session_end",
+            StopReason::Resolved => "resolved",
+            StopReason::Deleted => "deleted",
+        }
+    }
+}
+
+/// A record's start or end, as the audit journal records it (spec §6.5).
+/// Renewals and updates of a record that goes on are neither.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Transition {
+    /// A record was made, with its first message and threads.
+    Started {
+        session_id: String,
+        artifact_id: String,
+        key: String,
+        message: Option<String>,
+        thread_ids: Vec<String>,
+    },
+    /// A record ended, `duration_ms` after it started. A lapsed record
+    /// ends when it lapsed, however much later it is removed, and with
+    /// reason [`StopReason::Ttl`].
+    Stopped {
+        session_id: String,
+        artifact_id: String,
+        key: String,
+        harness: String,
+        agent: String,
+        reason: StopReason,
+        duration_ms: i64,
+    },
+}
+
+/// What a registry change did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Changed(pub BTreeSet<String>);
+pub struct Changed {
+    /// The artifacts whose working list changed.
+    pub artifacts: BTreeSet<String>,
+    /// The records that started or ended on the way, in order.
+    pub transitions: Vec<Transition>,
+}
 
 impl Changed {
     pub fn merge(&mut self, other: Changed) {
-        self.0.extend(other.0);
+        self.artifacts.extend(other.artifacts);
+        self.transitions.extend(other.transitions);
     }
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.artifacts.is_empty()
     }
     fn one(aid: &str) -> Changed {
-        Changed([aid.to_string()].into())
+        Changed {
+            artifacts: [aid.to_string()].into(),
+            transitions: Vec::new(),
+        }
     }
 }
 
@@ -128,6 +193,16 @@ pub enum End {
 impl End {
     fn finishes(self) -> bool {
         matches!(self, End::Done | End::TurnEnd)
+    }
+
+    /// The reason the audit journal records for a record ended this way
+    /// (a lapsed record is recorded as [`StopReason::Ttl`] whatever ends it).
+    fn stop_reason(self) -> StopReason {
+        match self {
+            End::SessionEnd => StopReason::SessionEnd,
+            End::Lapse => StopReason::Ttl,
+            End::Done | End::TurnEnd | End::Publish | End::Thread => StopReason::Explicit,
+        }
     }
 }
 
@@ -247,26 +322,70 @@ impl Working {
         now - r.heartbeat < Duration::seconds(WORKING_TTL_SECS)
     }
 
+    /// The record of `who` on `aid`, made when missing (`true`), renewed.
     fn upsert<'a>(
         map: &'a mut BTreeMap<Key, Record>,
         who: &Actor,
         aid: &str,
         now: DateTime<Utc>,
-    ) -> &'a mut Record {
+    ) -> (bool, &'a mut Record) {
+        let mut made = false;
         let r = map
             .entry((who.session_id.clone(), aid.to_string()))
-            .or_insert_with(|| Record {
-                key: crate::new_ulid(),
-                agent: who.agent.clone(),
-                harness: who.harness.clone(),
-                message: None,
-                threads: Vec::new(),
-                had_threads: false,
-                started_at: now,
-                heartbeat: now,
+            .or_insert_with(|| {
+                made = true;
+                Record {
+                    key: crate::new_ulid(),
+                    agent: who.agent.clone(),
+                    harness: who.harness.clone(),
+                    message: None,
+                    threads: Vec::new(),
+                    had_threads: false,
+                    started_at: now,
+                    heartbeat: now,
+                }
             });
         r.heartbeat = now;
-        r
+        (made, r)
+    }
+
+    fn started(sid: &str, aid: &str, r: &Record) -> Transition {
+        Transition::Started {
+            session_id: sid.to_string(),
+            artifact_id: aid.to_string(),
+            key: r.key.clone(),
+            message: r.message.clone(),
+            thread_ids: r.threads.clone(),
+        }
+    }
+
+    /// The end of record (`sid`, `aid`) at `now` for `reason`; a record
+    /// that had already lapsed ended then, for [`StopReason::Ttl`].
+    fn stopped(
+        &self,
+        sid: &str,
+        aid: &str,
+        r: &Record,
+        reason: StopReason,
+        now: DateTime<Utc>,
+    ) -> Transition {
+        let (end, reason) = if self.live(r, now) {
+            (now, reason)
+        } else {
+            (
+                r.heartbeat + Duration::seconds(WORKING_TTL_SECS),
+                StopReason::Ttl,
+            )
+        };
+        Transition::Stopped {
+            session_id: sid.to_string(),
+            artifact_id: aid.to_string(),
+            key: r.key.clone(),
+            harness: r.harness.clone(),
+            agent: r.agent.clone(),
+            reason,
+            duration_ms: (end - r.started_at).num_milliseconds().max(0),
+        }
     }
 
     fn session_view(sid: &str, aid: &str, r: &Record) -> SessionWorking {
@@ -281,10 +400,13 @@ impl Working {
     /// Drops lapsed records from `map` first, so a lapsed record is never updated in place.
     fn prune(&self, map: &mut BTreeMap<Key, Record>, now: DateTime<Utc>) -> Changed {
         let mut changed = Changed::default();
-        map.retain(|(_, aid), r| {
+        map.retain(|(sid, aid), r| {
             let keep = self.live(r, now);
             if !keep {
-                changed.0.insert(aid.clone());
+                changed.artifacts.insert(aid.clone());
+                changed
+                    .transitions
+                    .push(self.stopped(sid, aid, r, StopReason::Ttl, now));
             }
             keep
         });
@@ -297,7 +419,7 @@ impl Working {
         let now = self.now();
         let mut map = self.records.lock().unwrap();
         let mut changed = self.prune(&mut map, now);
-        let r = Self::upsert(&mut map, who, aid, now);
+        let (made, r) = Self::upsert(&mut map, who, aid, now);
         if let Some(t) = s.thread_ids {
             r.threads.clear();
             r.had_threads = false;
@@ -307,6 +429,11 @@ impl Working {
             r.message = Some(m);
         }
         changed.merge(Changed::one(aid));
+        if made {
+            changed
+                .transitions
+                .push(Self::started(&who.session_id, aid, r));
+        }
         (Self::session_view(&who.session_id, aid, r), changed)
     }
 
@@ -318,10 +445,15 @@ impl Working {
         let before = map
             .get(&(who.session_id.clone(), aid.to_string()))
             .map(|r| r.threads.clone());
-        let r = Self::upsert(&mut map, who, aid, now);
+        let (made, r) = Self::upsert(&mut map, who, aid, now);
         r.add(threads);
         if before.as_ref() != Some(&r.threads) {
             changed.merge(Changed::one(aid));
+        }
+        if made {
+            changed
+                .transitions
+                .push(Self::started(&who.session_id, aid, r));
         }
         changed
     }
@@ -352,6 +484,18 @@ impl Working {
         threads: Option<&[String]>,
         why: End,
     ) -> (Changed, Vec<Ended>) {
+        self.clear_for(sid, aid, threads, why, why.stop_reason())
+    }
+
+    /// [`Working::clear`], ending a removed record for `reason`.
+    fn clear_for(
+        &self,
+        sid: &str,
+        aid: &str,
+        threads: Option<&[String]>,
+        why: End,
+        reason: StopReason,
+    ) -> (Changed, Vec<Ended>) {
         let now = self.now();
         let mut map = self.records.lock().unwrap();
         let key = (sid.to_string(), aid.to_string());
@@ -370,26 +514,32 @@ impl Working {
                 r.had_threads && r.threads.is_empty()
             }
         };
+        let mut changed = Changed::one(aid);
         let mut ended = Vec::new();
-        if removed {
-            map.remove(&key);
+        if removed && let Some(r) = map.remove(&key) {
+            changed
+                .transitions
+                .push(self.stopped(sid, aid, &r, reason, now));
             if why.finishes() {
                 ended.extend(before);
             }
         }
-        (Changed::one(aid), ended)
+        (changed, ended)
     }
 
-    /// The session replied to or resolved `tid`: renews the session, then
-    /// takes `tid` out of its record on `aid`.
-    pub fn thread_done(&self, sid: &str, aid: &str, tid: &str) -> Changed {
+    /// The session replied to ([`StopReason::Explicit`]) or resolved
+    /// ([`StopReason::Resolved`]) `tid`: renews the session, then takes
+    /// `tid` out of its record on `aid`, ending the record for `reason`
+    /// when it was its last thread.
+    pub fn thread_done(&self, sid: &str, aid: &str, tid: &str, reason: StopReason) -> Changed {
         self.renew(sid);
-        self.clear(sid, aid, Some(&[tid.to_string()]), End::Thread)
+        self.clear_for(sid, aid, Some(&[tid.to_string()]), End::Thread, reason)
             .0
     }
 
-    /// `tid` was resolved by a viewer or deleted: out of every record on `aid`.
-    pub fn thread_gone(&self, aid: &str, tid: &str) -> Changed {
+    /// `tid` was resolved by a viewer ([`StopReason::Resolved`]) or deleted
+    /// ([`StopReason::Deleted`]): out of every record on `aid`.
+    pub fn thread_gone(&self, aid: &str, tid: &str, reason: StopReason) -> Changed {
         let sessions: Vec<String> = {
             let map = self.records.lock().unwrap();
             map.keys()
@@ -399,7 +549,10 @@ impl Working {
         };
         let mut changed = Changed::default();
         for s in sessions {
-            changed.merge(self.clear(&s, aid, Some(&[tid.to_string()]), End::Thread).0);
+            changed.merge(
+                self.clear_for(&s, aid, Some(&[tid.to_string()]), End::Thread, reason)
+                    .0,
+            );
         }
         changed
     }
@@ -415,7 +568,10 @@ impl Working {
         self.records.lock().unwrap().retain(|(s, aid), r| {
             let keep = s != sid;
             if !keep {
-                changed.0.insert(aid.clone());
+                changed.artifacts.insert(aid.clone());
+                changed
+                    .transitions
+                    .push(self.stopped(s, aid, r, why.stop_reason(), now));
                 if why.finishes() && self.live(r, now) {
                     ended.push(r.ended(s, aid));
                 }
@@ -425,16 +581,21 @@ impl Working {
         (changed, ended)
     }
 
-    /// Every record on `aid`.
+    /// Every record on `aid`, ended for [`StopReason::Deleted`].
     pub fn artifact_gone(&self, aid: &str) -> Changed {
-        let mut map = self.records.lock().unwrap();
-        let n = map.len();
-        map.retain(|(_, a), _| a != aid);
-        if map.len() == n {
-            Changed::default()
-        } else {
-            Changed::one(aid)
-        }
+        let now = self.now();
+        let mut changed = Changed::default();
+        self.records.lock().unwrap().retain(|(s, a), r| {
+            let keep = a != aid;
+            if !keep {
+                changed.artifacts.insert(a.clone());
+                changed
+                    .transitions
+                    .push(self.stopped(s, a, r, StopReason::Deleted, now));
+            }
+            keep
+        });
+        changed
     }
 
     /// Removes lapsed records; the artifacts whose list changed.
@@ -564,7 +725,7 @@ mod tests {
     fn mark_creates_then_adds_threads_and_keeps_the_key() {
         let (_c, w) = fixture();
         assert_eq!(
-            w.mark(&claude("s1"), "a1", &ids(&["t1"])).0,
+            w.mark(&claude("s1"), "a1", &ids(&["t1"])).artifacts,
             ["a1".to_string()].into()
         );
         let key = w.for_artifact("a1")[0].key.clone();
@@ -650,7 +811,7 @@ mod tests {
             w.for_artifact("a1").is_empty(),
             "hidden at 120 s, before any sweep"
         );
-        assert_eq!(w.sweep().0, ["a1".to_string()].into());
+        assert_eq!(w.sweep().artifacts, ["a1".to_string()].into());
         assert!(w.sweep().is_empty(), "swept once");
         assert_eq!(w.renew("s1"), 0, "a lapsed record is not revived");
     }
@@ -659,9 +820,12 @@ mod tests {
     fn replying_to_the_last_named_thread_clears_the_record() {
         let (_c, w) = fixture();
         w.mark(&claude("s1"), "a1", &ids(&["t1", "t2"]));
-        w.thread_done("s1", "a1", "t1");
+        w.thread_done("s1", "a1", "t1", StopReason::Explicit);
         assert_eq!(w.for_artifact("a1")[0].thread_ids, ids(&["t2"]));
-        assert!(!w.thread_done("s1", "a1", "t2").is_empty());
+        assert!(
+            !w.thread_done("s1", "a1", "t2", StopReason::Explicit)
+                .is_empty()
+        );
         assert!(w.for_artifact("a1").is_empty());
     }
 
@@ -676,7 +840,10 @@ mod tests {
                 message: Some("Refactoring".into()),
             },
         );
-        assert!(w.thread_done("s1", "a1", "t9").is_empty());
+        assert!(
+            w.thread_done("s1", "a1", "t9", StopReason::Explicit)
+                .is_empty()
+        );
         assert_eq!(w.for_artifact("a1").len(), 1);
     }
 
@@ -693,7 +860,7 @@ mod tests {
             "a1",
             &ids(&["t1", "t2"]),
         );
-        w.thread_gone("a1", "t1");
+        w.thread_gone("a1", "t1", StopReason::Resolved);
         let v = w.for_artifact("a1");
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].harness, "codex");
@@ -707,7 +874,7 @@ mod tests {
         w.mark(&claude("s1"), "a2", &[]);
         w.mark(&claude("s2"), "a2", &[]);
         assert_eq!(
-            w.end_session("s1", End::SessionEnd).0.0,
+            w.end_session("s1", End::SessionEnd).0.artifacts,
             ["a1".to_string(), "a2".to_string()].into()
         );
         assert_eq!(w.for_artifact("a2").len(), 1);
@@ -792,6 +959,105 @@ mod tests {
         assert_eq!(v[0].agent, "a_beef");
         assert_eq!(w.for_session("s2")[0].session_id, "s2");
         assert_eq!(w.for_session("s2")[0].artifact_id, "a1");
+    }
+
+    fn started_keys(c: &Changed) -> Vec<&str> {
+        c.transitions
+            .iter()
+            .filter_map(|t| match t {
+                Transition::Started { key, .. } => Some(key.as_str()),
+                Transition::Stopped { .. } => None,
+            })
+            .collect()
+    }
+
+    fn stops(c: &Changed) -> Vec<(StopReason, i64)> {
+        c.transitions
+            .iter()
+            .filter_map(|t| match t {
+                Transition::Stopped {
+                    reason,
+                    duration_ms,
+                    ..
+                } => Some((*reason, *duration_ms)),
+                Transition::Started { .. } => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn records_report_their_starts_and_ends_but_not_renewals() {
+        let (c, w) = fixture();
+        let (_, made) = w.set(
+            &claude("s1"),
+            "a1",
+            SetWorking {
+                thread_ids: Some(ids(&["t1"])),
+                message: Some("m".into()),
+            },
+        );
+        let key = w.for_artifact("a1")[0].key.clone();
+        assert_eq!(
+            made.transitions,
+            [Transition::Started {
+                session_id: "s1".into(),
+                artifact_id: "a1".into(),
+                key: key.clone(),
+                message: Some("m".into()),
+                thread_ids: ids(&["t1"]),
+            }]
+        );
+        // Updates, renewals and marks of a record that goes on: nothing.
+        assert!(
+            w.set(&claude("s1"), "a1", SetWorking::default())
+                .1
+                .transitions
+                .is_empty()
+        );
+        assert!(
+            w.mark(&claude("s1"), "a1", &ids(&["t2"]))
+                .transitions
+                .is_empty()
+        );
+        w.renew("s1");
+        assert!(
+            w.clear("s1", "a1", Some(&ids(&["t1"])), End::Done)
+                .0
+                .transitions
+                .is_empty()
+        );
+        c.advance(5);
+        // Its last thread resolved: an end for that reason, 5 s after it
+        // started.
+        assert_eq!(
+            stops(&w.thread_done("s1", "a1", "t2", StopReason::Resolved)),
+            [(StopReason::Resolved, 5000)]
+        );
+        // A viewer's resolve or a delete of the last thread, and a deleted
+        // artifact, name their cause.
+        w.mark(&claude("s5"), "a6", &ids(&["t6"]));
+        assert_eq!(
+            stops(&w.thread_gone("a6", "t6", StopReason::Deleted)),
+            [(StopReason::Deleted, 0)]
+        );
+        w.mark(&claude("s5"), "a6", &[]);
+        assert_eq!(stops(&w.artifact_gone("a6")), [(StopReason::Deleted, 0)]);
+        // A mark makes a record too.
+        assert_eq!(started_keys(&w.mark(&claude("s1"), "a2", &[])).len(), 1);
+        assert_eq!(
+            stops(&w.end_session("s1", End::SessionEnd).0),
+            [(StopReason::SessionEnd, 0)]
+        );
+        // A lapsed record ends when it lapsed, whoever removes it.
+        w.mark(&claude("s2"), "a3", &[]);
+        c.advance(300);
+        assert_eq!(stops(&w.artifact_gone("a3")), [(StopReason::Ttl, 120_000)]);
+        w.mark(&claude("s3"), "a4", &[]);
+        c.advance(121);
+        let swept = w.mark(&claude("s4"), "a5", &[]);
+        assert_eq!(stops(&swept), [(StopReason::Ttl, 120_000)]);
+        assert_eq!(started_keys(&swept).len(), 1);
+        assert!(w.sweep().transitions.is_empty());
     }
 
     #[test]

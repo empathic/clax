@@ -756,6 +756,13 @@ live rows so that a shim and a hook for the same conversation share one row:
   hook's ancestors, nearest first (up to six); failing that, it inserts a
   hook-only row for a later shim registration to adopt.
 - A given `cwd` fills an empty one on the matched row.
+- A join's or registration's `transcript_path` (the harness's transcript
+  file: as hook input names it, `transcript_path` or Grok Build's
+  `transcriptPath`, on join; Pi's session file on registration) replaces
+  the recorded one; one without it keeps it, and an empty one counts as
+  none. One longer than 4096 bytes or with control characters is 400
+  `invalid_session`. A hook whose join an older daemon refuses for the
+  unknown field joins again without it.
 
 Rows end when the shim's stdin closes or it receives SIGTERM (3 s deadline),
 when a `SessionEnd` hook or Pi's `session_shutdown` ends them, or when the

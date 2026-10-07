@@ -1,10 +1,11 @@
 //! Working routes (spec §6, §10 "Working").
 
 use super::artifacts::{body, parse_id, path};
+use crate::audit::DeferredAudit;
 use crate::auth::RequireToken;
 use crate::error::ApiError;
 use crate::state::AppState;
-use crate::working::announce;
+use crate::working::settle;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
@@ -82,10 +83,12 @@ pub struct SetBody {
 }
 
 /// `PUT /api/sessions/<sid>/working/<aid>` (W): creates or updates the
-/// record; given fields replace. `{working, message_truncated}`.
+/// record; given fields replace. `{working, message_truncated}`. A new
+/// record records `working.start` as the session's agent.
 pub async fn put(
     State(s): State<AppState>,
     _t: RequireToken,
+    audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
     req: Result<Json<SetBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -100,6 +103,7 @@ pub async fn put(
     let view = s
         .store_call(move |st| {
             let sess = live(st, &sid)?;
+            let audit = audit.for_session(st, &sid)?;
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
             if let Some(t) = &b.thread_ids {
                 check_threads(st, &id, t)?;
@@ -117,7 +121,7 @@ pub async fn put(
                     message,
                 },
             );
-            announce(&events, &w, &changed);
+            settle(st, &audit, &events, &w, &changed);
             Ok(view)
         })
         .await?;
@@ -134,10 +138,11 @@ pub struct ClearQuery {
 /// `DELETE /api/sessions/<sid>/working/<aid>` (W): the record, or with
 /// `?thread_ids=a,b` only those threads. `{cleared, working}` (`working` is
 /// what remains, or null). A record this ends is finished work: a
-/// `finished` inbox item.
+/// `finished` inbox item; it records `working.stop` as the session's agent.
 pub async fn delete(
     State(s): State<AppState>,
     _t: RequireToken,
+    audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
     q: Result<Query<ClearQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -154,8 +159,9 @@ pub async fn delete(
     let (cleared, left) = s
         .store_call(move |st| {
             let sess = live(st, &sid)?;
+            let audit = audit.for_session(st, &sid)?;
             let (changed, ended) = w.clear(&sid, id.as_str(), threads.as_deref(), End::Done);
-            announce(&events, &w, &changed);
+            settle(st, &audit, &events, &w, &changed);
             finished(st, &ended, &sess.harness);
             let left = w
                 .for_session(&sid)
@@ -224,10 +230,12 @@ pub async fn renew(
 }
 
 /// `POST /api/sessions/<sid>/working/end` (W; the turn ended): `{cleared}`.
-/// Each record it ends is finished work: a `finished` inbox item.
+/// Each record it ends is finished work: a `finished` inbox item, and
+/// records `working.stop` (reason `explicit`) as the session's agent.
 pub async fn end(
     State(s): State<AppState>,
     _t: RequireToken,
+    audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let sid = path(p)?;
@@ -235,10 +243,11 @@ pub async fn end(
     let n = s
         .store_call(move |st| {
             let sess = live(st, &sid)?;
+            let audit = audit.for_session(st, &sid)?;
             let (changed, ended) = w.end_session(&sid, End::TurnEnd);
-            announce(&events, &w, &changed);
+            settle(st, &audit, &events, &w, &changed);
             finished(st, &ended, &sess.harness);
-            Ok(changed.0.len())
+            Ok(changed.artifacts.len())
         })
         .await?;
     Ok(Json(json!({"cleared": n})))
@@ -260,6 +269,6 @@ pub async fn skew(
 ) -> Result<Json<Value>, ApiError> {
     let b = body(req)?;
     s.working.skew(b.secs);
-    crate::working::sweep_and_announce(&s.working, &s.events);
+    crate::working::sweep_and_announce(&s.store, &s.working, &s.events).await;
     Ok(Json(json!({"now": s.working.now().to_rfc3339()})))
 }

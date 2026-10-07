@@ -316,13 +316,17 @@ pub(crate) mod test_util {
     /// A live session of `harness` with harness session ID `hsid`; returns its ID.
     pub fn session(store: &Store, harness: &str, hsid: &str) -> String {
         store
-            .register_session(RegisterSession {
-                harness: harness.into(),
-                harness_session_id: Some(hsid.into()),
-                cwd: "/w".into(),
-                pid: None,
-                parent_pid: None,
-            })
+            .register_session(
+                DAEMON,
+                RegisterSession {
+                    harness: harness.into(),
+                    harness_session_id: Some(hsid.into()),
+                    cwd: "/w".into(),
+                    pid: None,
+                    parent_pid: None,
+                    transcript_path: None,
+                },
+            )
             .unwrap()
             .id
     }

@@ -5,8 +5,9 @@
 use super::Store;
 use super::live::{LivePage, PAGES_OF_ORIGIN, materialize};
 use super::threads::threads_of_many;
+use super::watches::{Cause, Wrote};
 use crate::anchor::Anchor;
-use crate::audit::{AuditCtx, content_manifest_sha256, sha256_hex};
+use crate::audit::{AuditCtx, AuditKind, AuditRecord, content_manifest_sha256, sha256_hex};
 use crate::live::{PageKey, PathPattern, winning_rule};
 use crate::model::{FileMeta, Thread, Version};
 use crate::publish::INDEX;
@@ -101,14 +102,16 @@ pub(crate) const PICKS_TO: &str =
 /// ...and a pick that could not (page `?2` has its pick ID) is dropped.
 pub(crate) const PICKS_LEFT: &str =
     "DELETE FROM live_picks WHERE thread_id = ?1 AND artifact_id <> ?2";
-/// The live sessions watching page `?1` watch page `?2` too, as they did.
+/// The live sessions watching page `?1` watch page `?2` too, as they did;
+/// returns each watch it made.
 pub(crate) const WATCHES_TO: &str =
     "INSERT OR IGNORE INTO watches (session_id, artifact_id, replies_armed, created_at, source)
     SELECT w.session_id, ?2, w.replies_armed, ?3, w.source FROM watches w
     CROSS JOIN sessions s ON s.id = w.session_id
-    WHERE w.artifact_id = ?1 AND s.ended_at IS NULL";
+    WHERE w.artifact_id = ?1 AND s.ended_at IS NULL
+    RETURNING session_id, replies_armed, source";
 /// The live sessions thread `?1` was sent to, or has feedback not yet
-/// acknowledged for, watch page `?2`.
+/// acknowledged for, watch page `?2`; returns each watch it made.
 pub(crate) const TARGETS_TO: &str =
     "INSERT OR IGNORE INTO watches (session_id, artifact_id, replies_armed, created_at, source)
     SELECT x.sid, ?2, 1, ?3, 'direct' FROM
@@ -116,7 +119,27 @@ pub(crate) const TARGETS_TO: &str =
          UNION SELECT target_session_id FROM feedback
             WHERE thread_id = ?1 AND acknowledged_at IS NULL) x
     CROSS JOIN sessions s ON s.id = x.sid
-    WHERE x.sid IS NOT NULL AND s.ended_at IS NULL";
+    WHERE x.sid IS NOT NULL AND s.ended_at IS NULL
+    RETURNING session_id, replies_armed, source";
+
+/// Runs [`WATCHES_TO`] or [`TARGETS_TO`] (`sql`) for thread or page `from`
+/// and page `to`; returns each watch it made, as `(session, arming,
+/// source)`.
+fn carry_watches(
+    tx: &rusqlite::Transaction<'_>,
+    sql: &str,
+    from: &str,
+    to: &str,
+    now: &str,
+) -> Result<Vec<(String, bool, String)>> {
+    let mut q = tx.prepare_cached(sql)?;
+    let made = q
+        .query_map(params![from, to, now], |r| {
+            Ok((r.get(0)?, r.get::<_, i64>(1)? != 0, r.get(2)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(made)
+}
 
 fn row_to_rule(r: &rusqlite::Row<'_>) -> rusqlite::Result<LiveRule> {
     Ok(LiveRule {
@@ -143,6 +166,20 @@ fn rule_by_id(c: &Connection, id: &str) -> Result<Option<LiveRule>> {
         row_to_rule,
     )
     .optional()?)
+}
+
+/// The `live.rule` event of rule `r` for `op` (`set` or `delete`): the
+/// rule's ID and op, then its fields (spec §6.3).
+fn rule_record(r: &LiveRule, op: &str) -> AuditRecord {
+    let mut rec = AuditRecord::new(AuditKind::LiveRule, Store::now())
+        .with("rule_id", r.id.as_str())
+        .with("op", op)
+        .with("origin", r.origin.as_str())
+        .with("pattern", r.pattern.as_str())
+        .with("created_at", r.created_at.as_str())
+        .with("deleting", r.deleting);
+    rec.ids.origin = Some(r.origin.clone());
+    rec
 }
 
 /// Where a page key's comments go: the canonical page of the rule that maps
@@ -685,6 +722,7 @@ fn commit_refile(
             )?;
         }
         for p in group {
+            let mut carried = Vec::new();
             let mut version_n = p.version_n;
             if p.from != to.artifact_id {
                 version_n = *map
@@ -707,15 +745,21 @@ fn commit_refile(
                 tx.execute(PICKS_TO, params![p.tid, to.artifact_id])?;
                 tx.execute(PICKS_LEFT, params![p.tid, to.artifact_id])?;
                 // Its agents keep hearing of it on its new page.
-                tx.execute(WATCHES_TO, params![p.from, to.artifact_id, now])?;
-                tx.execute(TARGETS_TO, params![p.tid, to.artifact_id, now])?;
+                carried = carry_watches(tx, WATCHES_TO, &p.from, &to.artifact_id, &now)?;
+                carried.extend(carry_watches(
+                    tx,
+                    TARGETS_TO,
+                    &p.tid,
+                    &to.artifact_id,
+                    &now,
+                )?);
                 super::inbox::thread_moved(tx, &p.tid, &to.artifact_id)?;
             }
             let key = PageKey {
                 origin: to.origin.clone(),
                 path: p.live_path.clone().unwrap_or_else(|| to.path.clone()),
             };
-            materialize(tx, &to.artifact_id, &key)?;
+            let watching = materialize(tx, &to.artifact_id, &key)?;
             let mut anchor = p.anchor.clone();
             anchor.route = p.route.clone();
             tx.execute(
@@ -729,22 +773,56 @@ fn commit_refile(
                     p.live_path
                 ],
             )?;
+            let move_id = new_ulid();
+            let to_url = thread_url(&to, p.live_path.as_deref(), p.route.as_deref());
             tx.execute(
                 "INSERT INTO thread_moves (id, thread_id, from_artifact_id, from_url,
                     to_artifact_id, to_url, moved_by, kind, rule_id, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
-                    new_ulid(),
+                    move_id,
                     p.tid,
                     p.from,
                     p.from_url,
                     to.artifact_id,
-                    thread_url(&to, p.live_path.as_deref(), p.route.as_deref()),
+                    to_url,
                     how.by,
                     how.kind,
                     how.rule_id,
                     now
                 ],
+            )?;
+            let mut rec = AuditRecord::new(AuditKind::ThreadMove, now.as_str())
+                .with("from_artifact_id", p.from.as_str())
+                .with("from_url", p.from_url.as_str())
+                .with("to_artifact_id", to.artifact_id.as_str())
+                .with("to_url", to_url)
+                .with("move_kind", how.kind)
+                .with("rule_id", how.rule_id.clone())
+                .with("move_id", move_id.as_str());
+            rec.ids.artifact = Some(p.from.clone());
+            rec.ids.artifact2 = Some(to.artifact_id.clone());
+            rec.ids.thread = Some(p.tid.clone());
+            rec.ids.origin = Some(to.origin.clone());
+            st.record_audit(tx, ctx, rec)?;
+            // The watches the move made, after it.
+            for (sid, armed, source) in carried {
+                st.record_page_watches(
+                    tx,
+                    ctx,
+                    &to.artifact_id,
+                    &[(sid, armed, Wrote::Inserted)],
+                    &source,
+                    Some(Cause::Move(&move_id)),
+                )?;
+            }
+            st.record_page_watches(
+                tx,
+                ctx,
+                &to.artifact_id,
+                &watching,
+                "scope",
+                Some(Cause::Scope),
             )?;
         }
     }
@@ -797,11 +875,17 @@ impl Store {
 
     /// Adds the rule `pattern` to `origin`; a rule already there is answered
     /// as it is (`false`: not new), and one being deleted is put back in
-    /// force.
+    /// force. A new rule, or one put back, records `live.rule` (op `set`)
+    /// under `ctx`.
     ///
     /// # Errors
     /// `too_many_rules` past [`MAX_RULES`] rules in force for the origin.
-    pub fn add_live_rule(&self, origin: &str, pattern: &PathPattern) -> Result<(LiveRule, bool)> {
+    pub fn add_live_rule(
+        &self,
+        ctx: &AuditCtx,
+        origin: &str,
+        pattern: &PathPattern,
+    ) -> Result<(LiveRule, bool)> {
         self.with_tx(|tx| {
             // A joined site's rules are its key's (spec §7.2).
             let origin = &super::joined::site_key(tx, origin)?;
@@ -813,11 +897,14 @@ impl Store {
                 )
                 .optional()?;
             if let Some(mut r) = old {
-                tx.execute(
-                    "UPDATE live_rules SET deleted_at = NULL WHERE id = ?1",
-                    params![r.id],
-                )?;
-                r.deleting = false;
+                if r.deleting {
+                    tx.execute(
+                        "UPDATE live_rules SET deleted_at = NULL WHERE id = ?1",
+                        params![r.id],
+                    )?;
+                    r.deleting = false;
+                    self.record_audit(tx, ctx, rule_record(&r, "set"))?;
+                }
                 return Ok((r, false));
             }
             if rules_in(tx, origin)?.len() >= MAX_RULES {
@@ -837,40 +924,60 @@ impl Store {
                 "INSERT INTO live_rules (id, origin, pattern, created_at) VALUES (?1, ?2, ?3, ?4)",
                 params![r.id, r.origin, r.pattern, r.created_at],
             )?;
+            self.record_audit(tx, ctx, rule_record(&r, "set"))?;
             Ok((r, true))
         })
     }
 
     /// Takes the rule `id` out of force (it maps nothing from now on) while
     /// its threads are moved back ([`Store::unmerge_candidates`]); `None`
-    /// when there is no such rule.
+    /// when there is no such rule. Taking it out of force records
+    /// `live.rule` (op `delete`) under `ctx`; a rule already being deleted
+    /// records nothing.
     ///
     /// # Errors
     /// Database errors only.
-    pub fn mark_rule_deleted(&self, id: &str) -> Result<Option<LiveRule>> {
+    pub fn mark_rule_deleted(&self, ctx: &AuditCtx, id: &str) -> Result<Option<LiveRule>> {
         self.with_tx(|tx| {
-            tx.execute(
+            let n = tx.execute(
                 "UPDATE live_rules SET deleted_at = ?2 WHERE id = ?1 AND deleted_at IS NULL",
                 params![id, Store::now()],
             )?;
-            rule_by_id(tx, id)
+            let rule = rule_by_id(tx, id)?;
+            if n > 0
+                && let Some(r) = &rule
+            {
+                self.record_audit(tx, ctx, rule_record(r, "delete"))?;
+            }
+            Ok(rule)
         })
     }
 
     /// Removes the rule `id` for good, once its threads are moved back,
     /// unless a re-add put it back in force meanwhile; whether it did.
+    /// Removing it records `live.rule` (op `drop`) under `ctx`.
     ///
     /// # Errors
     /// Database errors only.
-    pub fn drop_rule(&self, id: &str) -> Result<bool> {
-        self.with_write(|c| {
+    pub fn drop_rule(&self, ctx: &AuditCtx, id: &str) -> Result<bool> {
+        self.with_tx(|tx| {
             // Only while still being deleted: a re-add meanwhile put it
             // back in force.
-            let n = c.execute(
-                "DELETE FROM live_rules WHERE id = ?1 AND deleted_at IS NOT NULL",
-                params![id],
-            )?;
-            Ok(n > 0)
+            let gone = tx
+                .query_row(
+                    "DELETE FROM live_rules WHERE id = ?1 AND deleted_at IS NOT NULL
+                     RETURNING id, origin, pattern, created_at, deleted_at IS NOT NULL",
+                    params![id],
+                    row_to_rule,
+                )
+                .optional()?;
+            match gone {
+                Some(r) => {
+                    self.record_audit(tx, ctx, rule_record(&r, "drop"))?;
+                    Ok(true)
+                }
+                None => Ok(false),
+            }
         })
     }
 
@@ -1356,7 +1463,7 @@ mod tests {
     }
 
     fn rule(st: &Store, pattern: &str) -> LiveRule {
-        st.add_live_rule(ORIGIN, &PathPattern::parse(pattern).unwrap())
+        st.add_live_rule(DAEMON, ORIGIN, &PathPattern::parse(pattern).unwrap())
             .unwrap()
             .0
     }
@@ -1379,7 +1486,7 @@ mod tests {
         let b = page(&st, "/b", "<p>b1");
         let watcher = session(&st, "claude", "w");
         let target = session(&st, "claude", "t");
-        st.watch(&watcher, &a, true).unwrap();
+        st.watch(DAEMON, &watcher, &a, true).unwrap();
         let t = thread(&st, &a, Some("?x=1"));
         // An address linked to a later snapshot of /a, and one pending.
         st.mark_pending(&a, &t.id, "explicit", "claude").unwrap();
@@ -1691,6 +1798,46 @@ mod tests {
     }
 
     #[test]
+    fn a_thread_made_at_a_mapped_path_starts_the_scope_watches_covering_it() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "s");
+        rule(&st, "/users/:id");
+        let canon = page(&st, "/users/:id", "<p>c");
+        st.live_watch(DAEMON, &sid, &key("/users/3"), true).unwrap();
+        let seq = st.newest_seq().unwrap();
+        st.create_live_thread(
+            DAEMON,
+            &canon,
+            new_thread(&st, &canon, None),
+            None,
+            Some("/users/3"),
+        )
+        .unwrap()
+        .unwrap();
+        let ev = st.events_after(seq, 10).unwrap();
+        let kinds: Vec<&str> = ev.iter().map(|e| e.kind.as_str()).collect();
+        // The thread, then the watch it brought about.
+        assert_eq!(kinds, ["thread.open", "comment.add", "watch.start"]);
+        let body: serde_json::Value = serde_json::from_str(&ev[2].body).unwrap();
+        assert_eq!(
+            (
+                &body["target"],
+                &body["source"],
+                &body["cause"],
+                &body["path"]
+            ),
+            (
+                &serde_json::json!("page"),
+                &serde_json::json!("scope"),
+                &serde_json::json!("scope"),
+                &serde_json::json!("/users/:id")
+            )
+        );
+        assert_eq!(ev[2].ids.session.as_deref(), Some(sid.as_str()));
+        assert_eq!(ev[2].ids.artifact.as_deref(), Some(canon.as_str()));
+    }
+
+    #[test]
     fn rules_map_lookups_merge_in_batches_and_unmerge() {
         let (_d, st) = store();
         let one = page(&st, "/users/1", "<p>1");
@@ -1749,7 +1896,7 @@ mod tests {
         );
 
         // Deleting the rule: lookups stop mapping, then the threads go back.
-        let gone = st.mark_rule_deleted(&id.id).unwrap().unwrap();
+        let gone = st.mark_rule_deleted(DAEMON, &id.id).unwrap().unwrap();
         assert!(gone.deleting);
         assert_eq!(
             st.resolve_live_key(&key("/users/3")).unwrap().rule,
@@ -1761,10 +1908,10 @@ mod tests {
         targets.sort();
         // `/users/*` still maps them: they go to its canonical page.
         assert_eq!(targets, vec!["/users/*", "/users/*"]);
-        st.drop_rule(&id.id).unwrap();
+        st.drop_rule(DAEMON, &id.id).unwrap();
         assert_eq!(st.live_rule(&id.id).unwrap(), None);
         // Without any rule, a thread goes back to its own path's page.
-        st.mark_rule_deleted(&all.id).unwrap();
+        st.mark_rule_deleted(DAEMON, &all.id).unwrap();
         let (back, _) = st.unmerge_candidates(&all, 10).unwrap();
         assert!(back.is_empty(), "/users/* merged nothing itself");
         let (back, _) = st.unmerge_candidates(&gone, 10).unwrap();
@@ -1793,7 +1940,7 @@ mod tests {
         assert!(st.unmerge_candidates(&gone, 10).unwrap().0.is_empty());
         // Adding a deleted rule again puts it back in force.
         let (again, new) = st
-            .add_live_rule(ORIGIN, &PathPattern::parse("/users/*").unwrap())
+            .add_live_rule(DAEMON, ORIGIN, &PathPattern::parse("/users/*").unwrap())
             .unwrap();
         assert!(!new && !again.deleting && again.id == all.id);
     }
@@ -1803,7 +1950,7 @@ mod tests {
         let (_d, st) = store();
         let one = session(&st, "claude", "one");
         let two = session(&st, "claude", "two");
-        st.live_watch(&one, &key("/users/1"), true).unwrap();
+        st.live_watch(DAEMON, &one, &key("/users/1"), true).unwrap();
         let canon = st
             .ensure_live_page(DAEMON, &key("/users/:id"), "U", None)
             .unwrap();
@@ -1829,10 +1976,10 @@ mod tests {
         assert_eq!(body["live_path"], "/users/1", "the path the rule mapped");
         assert_eq!(watchers(&st, &canon), vec![one.clone()]);
         // A scope made later covers it by the same path; removing it too.
-        let (_, covered) = st.live_watch(&two, &key("/users/1"), true).unwrap();
+        let (_, covered) = st.live_watch(DAEMON, &two, &key("/users/1"), true).unwrap();
         assert_eq!(covered, vec![canon.to_string()]);
         assert_eq!(
-            st.live_unwatch(&two, &key("/users/1")).unwrap(),
+            st.live_unwatch(DAEMON, &two, &key("/users/1")).unwrap(),
             vec![canon.to_string()]
         );
         assert_eq!(watchers(&st, &canon), vec![one]);
@@ -1861,16 +2008,16 @@ mod tests {
     fn a_deleted_rule_put_back_in_force_is_not_dropped() {
         let (_d, st) = store();
         let r = rule(&st, "/users/:id");
-        st.mark_rule_deleted(&r.id).unwrap();
+        st.mark_rule_deleted(DAEMON, &r.id).unwrap();
         // A re-add lands between the un-merge and the drop.
         let (back, new) = st
-            .add_live_rule(ORIGIN, &PathPattern::parse("/users/:id").unwrap())
+            .add_live_rule(DAEMON, ORIGIN, &PathPattern::parse("/users/:id").unwrap())
             .unwrap();
         assert!(!new && !back.deleting);
-        assert!(!st.drop_rule(&r.id).unwrap());
+        assert!(!st.drop_rule(DAEMON, &r.id).unwrap());
         assert_eq!(st.live_rules(ORIGIN).unwrap(), vec![back]);
-        st.mark_rule_deleted(&r.id).unwrap();
-        assert!(st.drop_rule(&r.id).unwrap());
+        st.mark_rule_deleted(DAEMON, &r.id).unwrap();
+        assert!(st.drop_rule(DAEMON, &r.id).unwrap());
         assert_eq!(st.live_rule(&r.id).unwrap(), None);
     }
 
@@ -2075,13 +2222,13 @@ mod tests {
         let a = page(&st, "/a", "<p>a");
         let b = page(&st, "/b", "<p>b");
         let sid = session(&st, "claude", "s");
-        st.live_watch(&sid, &key("/a"), true).unwrap();
+        st.live_watch(DAEMON, &sid, &key("/a"), true).unwrap();
         assert_eq!(watchers(&st, &a), vec![sid.clone()]);
         let t = thread(&st, &a, None);
         st.refile_threads(DAEMON, &[to(&b, &t.id)], &by(KIND_MOVE), &[])
             .unwrap();
         assert_eq!(watchers(&st, &b), vec![sid.clone()]);
-        let mut removed = st.live_unwatch(&sid, &key("/a")).unwrap();
+        let mut removed = st.live_unwatch(DAEMON, &sid, &key("/a")).unwrap();
         removed.sort();
         let mut want = vec![a.to_string(), b.to_string()];
         want.sort();
@@ -2094,16 +2241,25 @@ mod tests {
         let (_d, st) = store();
         for i in 0..MAX_RULES {
             st.add_live_rule(
+                DAEMON,
                 "http://x",
                 &PathPattern::parse(&format!("/r{i}/:id")).unwrap(),
             )
             .unwrap();
         }
         let err = st
-            .add_live_rule("http://x", &PathPattern::parse("/last/:id").unwrap())
+            .add_live_rule(
+                DAEMON,
+                "http://x",
+                &PathPattern::parse("/last/:id").unwrap(),
+            )
             .unwrap_err();
         assert!(matches!(err, CoreError::Invalid { code, .. } if code == "too_many_rules"));
-        st.add_live_rule("http://y", &PathPattern::parse("/last/:id").unwrap())
-            .unwrap();
+        st.add_live_rule(
+            DAEMON,
+            "http://y",
+            &PathPattern::parse("/last/:id").unwrap(),
+        )
+        .unwrap();
     }
 }
