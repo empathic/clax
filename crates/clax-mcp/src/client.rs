@@ -785,6 +785,53 @@ impl DaemonClient {
         .await
     }
 
+    /// `POST /api/sessions/<sid>/questions` with `source: "ask"`: `{question,
+    /// mode, terminal_after_s, surface_open}`.
+    pub async fn ask_create(
+        &self,
+        questions: &[clax_core::questions::Question],
+        artifact: Option<&str>,
+    ) -> Result<Value> {
+        let body = json!({"source": "ask", "questions": questions, "artifact_id": artifact});
+        self.json(|c| {
+            c.request(
+                reqwest::Method::POST,
+                &format!("{}/questions", c.session_path()),
+            )
+            .json(&body)
+        })
+        .await
+    }
+
+    /// `GET /api/sessions/<sid>/questions/<qid>?wait=<wait_s>`: `{question,
+    /// waited_s}`; the deadline is `wait_s` plus 10 s. `qid` must be a ULID.
+    pub async fn ask_wait(&self, qid: &str, wait_s: u64) -> Result<Value> {
+        let q = [("wait", wait_s.to_string())];
+        let deadline = Duration::from_secs(wait_s + 10);
+        self.json(|c| {
+            c.request(
+                reqwest::Method::GET,
+                &format!("{}/questions/{qid}", c.session_path()),
+            )
+            .query(&q)
+            .timeout(deadline)
+        })
+        .await
+    }
+
+    /// `POST /api/sessions/<sid>/questions/<qid>/withdraw`: `{question}`; 409
+    /// `question_closed` when it is not open. `qid` must be a ULID.
+    pub async fn ask_withdraw(&self, qid: &str) -> Result<Value> {
+        self.json(|c| {
+            c.request(
+                reqwest::Method::POST,
+                &format!("{}/questions/{qid}/withdraw", c.session_path()),
+            )
+            .json(&json!({}))
+        })
+        .await
+    }
+
     /// `GET /api/sessions/<sid>/notices?wait=<wait_s>`: `{notices, lines,
     /// waited_s}`; the deadline is `wait_s` plus 10 s. Like `heartbeat`, it
     /// finds a running daemon but never starts one.

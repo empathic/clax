@@ -863,3 +863,237 @@ async fn a_late_answer_ends_wait_for_feedback_and_rides_on_a_tool_result_once() 
     assert!(v.get("answers").is_none(), "handed over once");
     assert!(trailing.is_none());
 }
+
+/// Tools attributed to a fresh session of `harness` on `ts`.
+async fn harness_tools(ts: &TestServer, harness: &str, hsid: &str) -> ClaxTools {
+    let s: Session = serde_json::from_value(ts.register_session(harness, hsid).await).unwrap();
+    let sid = s.id.clone();
+    ClaxTools::new(
+        DaemonClient::new(ts.base.clone(), ts.token.clone(), Some(sid)),
+        format!("http://localhost:{}", ts.addr.port()),
+        Some(s),
+        ts.home.log_path(),
+    )
+}
+
+/// `ask` with `args`; its JSON block, asserting a success.
+async fn ask(tools: &ClaxTools, args: Value) -> Value {
+    let r = tools
+        .ask(Parameters(serde_json::from_value(args).unwrap()))
+        .await
+        .unwrap();
+    blocks(&r).0
+}
+
+/// `ask` with `args`; its error code, asserting an error.
+async fn ask_err(tools: &ClaxTools, args: Value) -> String {
+    let r = tools
+        .ask(Parameters(serde_json::from_value(args).unwrap()))
+        .await
+        .unwrap();
+    assert_eq!(r.is_error, Some(true), "{r:?}");
+    let v: Value = serde_json::from_str(&r.content[0].as_text().unwrap().text).unwrap();
+    v["error"]["code"].as_str().unwrap().to_string()
+}
+
+fn which() -> Value {
+    json!([{"question": "Which?", "header": "Pick", "options": [{"label": "A"}, {"label": "B"}]}])
+}
+
+#[tokio::test]
+async fn ask_returns_the_answer_and_resumes_after_call_again() {
+    let (ts, clock) = TestServer::spawn_question_clock().await;
+    let tools = harness_tools(&ts, "claude", "ask-1").await;
+    let t = tools.clone();
+    let first =
+        tokio::spawn(async move { ask(&t, json!({"questions": which(), "timeout_s": 1})).await });
+    clock.wait_for(Duration::from_secs(1), 1).await;
+    clock.fire(Duration::from_secs(1));
+    let first = first.await.unwrap();
+    assert_eq!(first["status"], "open");
+    assert_eq!(first["call_again"], true);
+    assert_eq!(first["surface_open"], false, "no owner surface is open");
+    assert_eq!(first["answers"], Value::Null);
+    let qid = first["question_id"].as_str().unwrap().to_string();
+    assert_eq!(
+        first["url"],
+        format!("http://localhost:{}/inbox?q={qid}", ts.addr.port())
+    );
+
+    let (t, q) = (tools.clone(), qid.clone());
+    let waiting =
+        tokio::spawn(async move { ask(&t, json!({"question_id": q, "timeout_s": 60})).await });
+    ts.wait_question_waiters(&qid, 1).await;
+    ts.answer_question(&qid, json!({"answers": [{"selected": ["B"]}]}))
+        .await;
+    let got = waiting.await.unwrap();
+    assert_eq!(got["status"], "answered");
+    assert_eq!(got["call_again"], false);
+    assert!(got.get("surface_open").is_none(), "{got}");
+    assert_eq!(
+        got["answers"],
+        json!([{"question": "Which?", "header": "Pick", "selected": ["B"], "text": null}])
+    );
+    assert!(got["note"].as_str().unwrap().contains("own words"));
+    assert!(got.get("feedback").is_some());
+    assert!(got.get("answers").is_some());
+    // The answer was handed over by `ask`, so no feedback tier repeats it.
+    let (v, trailing) = blocks(&tools.status(Parameters(StatusArgs {})).await.unwrap());
+    assert!(v.get("answers").is_none(), "{v}");
+    assert!(trailing.is_none());
+}
+
+#[tokio::test]
+async fn ask_reports_an_open_surface_and_its_page() {
+    let (ts, clock) = TestServer::spawn_question_clock().await;
+    let _owner = ts.stream_as_owner(&["questions"]).await;
+    let page = ts.publish("Dash", &[("index.html", "<p>dash</p>")]).await;
+    let aid = page["artifact"]["id"].as_str().unwrap().to_string();
+    let tools = harness_tools(&ts, "claude", "ask-surface").await;
+    let t = tools.clone();
+    let a = aid.clone();
+    let first = tokio::spawn(async move {
+        ask(
+            &t,
+            json!({"questions": which(), "url_or_id": a, "timeout_s": 2}),
+        )
+        .await
+    });
+    clock.wait_for(Duration::from_secs(2), 1).await;
+    clock.fire(Duration::from_secs(2));
+    let first = first.await.unwrap();
+    assert_eq!(first["surface_open"], true);
+    let qid = first["question_id"].as_str().unwrap();
+    let row = ts.store.question(qid).unwrap().unwrap();
+    assert_eq!(row.artifact_id.as_deref(), Some(aid.as_str()));
+    // A declined question carries no answers.
+    let res = ts
+        .client
+        .post(format!("{}/api/questions/{qid}/decline", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let got = ask(&tools, json!({"question_id": qid})).await;
+    assert_eq!(
+        (&got["status"], &got["answers"], &got["call_again"]),
+        (&json!("declined"), &Value::Null, &json!(false))
+    );
+}
+
+#[tokio::test]
+async fn ask_cancel_and_foreign_ids() {
+    let ts = TestServer::spawn().await;
+    let tools = harness_tools(&ts, "claude", "ask-own").await;
+    let other = harness_tools(&ts, "codex", "ask-other").await;
+    let created = ts
+        .ask(
+            tools_session(&tools).await.as_str(),
+            json!({"source": "ask", "questions": [{"question": "Q", "header": "H"}]}),
+        )
+        .await;
+    let qid = created["question"]["id"].as_str().unwrap();
+    assert_eq!(
+        ask_err(&other, json!({"question_id": qid})).await,
+        "not_found"
+    );
+    assert_eq!(
+        ask_err(&other, json!({"question_id": qid, "cancel": true})).await,
+        "not_found"
+    );
+    let c = ask(&tools, json!({"question_id": qid, "cancel": true})).await;
+    assert_eq!(
+        (&c["status"], &c["call_again"]),
+        (&json!("withdrawn"), &json!(false))
+    );
+    // Cancelling again reports what closed it.
+    let c = ask(&tools, json!({"question_id": qid, "cancel": true})).await;
+    assert_eq!(c["status"], "withdrawn");
+
+    assert_eq!(ask_err(&tools, json!({})).await, "invalid_args");
+    assert_eq!(
+        ask_err(&tools, json!({"questions": which(), "question_id": qid})).await,
+        "invalid_args"
+    );
+    assert_eq!(
+        ask_err(&tools, json!({"questions": which(), "cancel": true})).await,
+        "invalid_args"
+    );
+    assert_eq!(
+        ask_err(&tools, json!({"question_id": "../../x"})).await,
+        "invalid_args"
+    );
+    assert_eq!(
+        ask_err(
+            &tools,
+            json!({"questions": [{"question": "Q", "header": "Thirteen char"}]})
+        )
+        .await,
+        "invalid_question"
+    );
+    assert_eq!(
+        ask_err(
+            &tools,
+            json!({"questions": which(), "url_or_id": "not an id"})
+        )
+        .await,
+        "invalid_id"
+    );
+}
+
+/// The session ID `tools` act for, from `status`.
+async fn tools_session(tools: &ClaxTools) -> String {
+    let (v, _) = blocks(&tools.status(Parameters(StatusArgs {})).await.unwrap());
+    v["session"]["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn cancelling_an_answered_question_hands_the_answer_over_once() {
+    let ts = TestServer::spawn().await;
+    let tools = harness_tools(&ts, "claude", "ask-late").await;
+    let sid = tools_session(&tools).await;
+    let qid = ts
+        .ask(&sid, json!({"source": "ask", "questions": which()}))
+        .await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ts.answer_question(&qid, json!({"answers": [{"selected": ["A"]}]}))
+        .await;
+    let c = ask(&tools, json!({"question_id": qid, "cancel": true})).await;
+    assert_eq!(c["status"], "answered");
+    assert_eq!(c["answers"][0]["selected"], json!(["A"]));
+    let (v, _) = blocks(&tools.status(Parameters(StatusArgs {})).await.unwrap());
+    assert!(v.get("answers").is_none(), "handed over once: {v}");
+}
+
+#[tokio::test]
+async fn ask_waits_50_s_by_default_under_codex() {
+    assert_eq!(clax_mcp::tools::default_ask_wait("codex"), 50);
+    assert_eq!(clax_mcp::tools::default_ask_wait("claude"), 600);
+    assert_eq!(clax_mcp::tools::default_ask_wait("grok"), 600);
+    let (ts, clock) = TestServer::spawn_question_clock().await;
+    let tools = harness_tools(&ts, "codex", "ask-codex").await;
+    let t = tools.clone();
+    let call = tokio::spawn(async move { ask(&t, json!({"questions": which()})).await });
+    clock.wait_for(Duration::from_secs(50), 1).await;
+    clock.fire(Duration::from_secs(50));
+    assert_eq!(call.await.unwrap()["status"], "open");
+}
+
+#[tokio::test]
+async fn ask_needs_a_session() {
+    let ts = TestServer::spawn().await;
+    let tools = ClaxTools::new(
+        DaemonClient::new(ts.base.clone(), ts.token.clone(), None),
+        format!("http://localhost:{}", ts.addr.port()),
+        None,
+        ts.home.log_path(),
+    );
+    assert_eq!(
+        ask_err(&tools, json!({"questions": which()})).await,
+        "no_session"
+    );
+}

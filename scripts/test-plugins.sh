@@ -167,7 +167,7 @@ done
 if out="$(scripts/check-version.sh 2>&1)"; then pass "every written version agrees (scripts/check-version.sh)"
 else fail "$out"; fi
 
-# The Rust tools and the Pi extension carry the same twenty-three tool descriptions,
+# The Rust tools and the Pi extension carry the same twenty-four tool descriptions,
 # word for word (plugins/pi/test/fixtures/contract.json lists them).
 if out="$(python3 - plugins/pi/test/fixtures/contract.json crates/clax-mcp/src/tools.rs plugins/pi/src/clax.ts 2>&1 <<'PY'
 import json, sys
@@ -180,11 +180,11 @@ for src in sys.argv[2:4]:
         quoted = '"' + t["description"].replace("\\", "\\\\").replace('"', '\\"') + '"'
         if quoted not in text:
             missing.append(f"{src}: {t['name']}")
-if len(tools) != 23 or missing:
-    print("; ".join(missing) or f"{len(tools)} tools in the fixture, not 23")
+if len(tools) != 24 or missing:
+    print("; ".join(missing) or f"{len(tools)} tools in the fixture, not 24")
     sys.exit(1)
 PY
-)"; then pass "the twenty-three tool descriptions match in tools.rs and clax.ts"
+)"; then pass "the twenty-four tool descriptions match in tools.rs and clax.ts"
 else fail "tool descriptions differ from plugins/pi/test/fixtures/contract.json: $out"; fi
 
 # Every Claude marketplace plugin source is an existing directory.
