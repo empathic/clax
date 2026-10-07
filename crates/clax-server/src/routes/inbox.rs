@@ -162,7 +162,10 @@ fn query_of<T>(q: Result<Query<T>, QueryRejection>) -> Result<T, ApiError> {
 /// the next page (a decimal string) or null. `total`, the number matching,
 /// is there when the query has text or a filter (`read` other than `all`
 /// included), counted up to 10,000 and `"10000+"` beyond. Default
-/// `read=all`. 400 `invalid_query` for a bad filter, date or cursor.
+/// `read=all`. `unread` and `total` are read just after the page, not in
+/// its snapshot: under concurrent writes they may differ from it by the
+/// changes since, which the `inbox` topic then announces. 400
+/// `invalid_query` for a bad filter, date or cursor.
 pub async fn list(
     State(s): State<AppState>,
     _o: SameOrigin,
@@ -236,7 +239,7 @@ pub async fn list(
 /// `GET /api/inbox/summary` (owner) → `{unread, questions, latest}`: the
 /// unread count, the open questions' views oldest first, and the five
 /// newest unread items other than questions, for the gallery and the top
-/// bar.
+/// bar. Each part is read on its own, one just after another.
 pub async fn summary(
     State(s): State<AppState>,
     _o: SameOrigin,

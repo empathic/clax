@@ -15,7 +15,9 @@
     "large_artifacts": 3,
     "assets": 6,
     "db_docs": 1000,
-    "inbox_replies": 2000,
+    "inbox_threads": 64,
+    "inbox_replies": 4400,
+    "inbox_versions": 1280,
     "inbox_questions": 20
   },
   "quick": {

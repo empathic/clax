@@ -933,6 +933,16 @@ impl Hub {
             .any(|c| g.chans.get(c).is_some_and(|ch| !ch.subs.is_empty()))
     }
 
+    /// Whether a stream, attached or detached within [`GRACE`], holds the
+    /// `inbox` topic: whether inbox events have anyone to reach.
+    pub fn holds_inbox(&self) -> bool {
+        let mut g = self.lock();
+        sweep_locked(&mut g, Instant::now());
+        g.chans
+            .get(&Chan::Inbox)
+            .is_some_and(|ch| !ch.subs.is_empty())
+    }
+
     /// Drops streams detached for longer than [`GRACE`].
     pub fn sweep(&self) {
         sweep_locked(&mut self.lock(), Instant::now());
@@ -1701,9 +1711,10 @@ mod tests {
         let hub = Hub::new(Default::default());
         let c = viewer(Level::Owner, Some("u_o"));
         assert!(!hub.holds_owner_topics());
+        assert!(!hub.holds_inbox());
         let mut i = hub.open(c.clone(), true, None, None);
         hub.update(&i.id, &c, &[Topic::Inbox], &[]).unwrap();
-        assert!(hub.holds_owner_topics());
+        assert!(hub.holds_owner_topics() && hub.holds_inbox());
         let mut q = hub.open(c.clone(), true, None, None);
         hub.update(&q.id, &c, &[Topic::Questions, Topic::Gallery], &[])
             .unwrap();

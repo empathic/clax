@@ -1218,7 +1218,8 @@ fn thread_ref(c: &Connection, tid: &str) -> Result<Option<ThreadRef>> {
 impl Store {
     /// What each of `items` reads from its sources, in the same order, read
     /// in one snapshot: point lookups by key, so the cost follows the items,
-    /// not the history or the threads' lengths.
+    /// not the history or the threads' lengths. Questions are not read here
+    /// (a question item's view reads its question separately).
     pub fn inbox_sources(&self, items: &[ItemRow]) -> Result<Vec<Sources>> {
         use std::collections::HashMap;
         let owner = |c: &Connection| owner_pid(c);
