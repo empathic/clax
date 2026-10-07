@@ -1744,6 +1744,9 @@ async fn a_refused_owner_write_writes_nothing() {
             reqwest::Method::POST,
             "/api/live/threads/01J9Z3K4M5N6P7Q8R9S0T1V2W3/move".to_string(),
         ),
+        (reqwest::Method::POST, "/api/live/sites/join".to_string()),
+        (reqwest::Method::POST, "/api/live/sites/split".to_string()),
+        (reqwest::Method::POST, "/api/live/sites/answer".to_string()),
     ] {
         let res = ts
             .client

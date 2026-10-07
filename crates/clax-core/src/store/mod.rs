@@ -49,6 +49,7 @@ pub mod artifacts;
 pub mod assets;
 pub mod attention;
 pub mod audit;
+pub mod backfill;
 pub mod batches;
 pub mod changelog;
 pub mod docs;
@@ -99,13 +100,27 @@ pub struct Store {
 }
 
 impl Store {
-    /// Opens (creating when missing) the home's database and migrates it to
-    /// the current schema on the write connection.
+    /// Opens (creating when missing) the home's database, migrates it to
+    /// the current schema on the write connection, and records the history
+    /// from before the audit there once per home (the audit backfill, see
+    /// [`backfill`]), so the store records no change before the history it
+    /// follows.
     pub fn open(home: &Home) -> Result<Store> {
+        Store::open_reporting(home, &mut |_| {})
+    }
+
+    /// [`Store::open`], reporting the audit backfill's progress to
+    /// `report` while it runs (only on the first open after the audit
+    /// schema arrives, when there is history to record).
+    pub fn open_reporting(
+        home: &Home,
+        report: &mut dyn FnMut(&backfill::Progress),
+    ) -> Result<Store> {
         home.ensure_dirs()?;
         let path = home.db_path();
         let mut conn = exec::open_writer(&path)?;
         migrate(&mut conn)?;
+        backfill::run(&mut conn, home, report)?;
         conn.execute_batch(&format!(
             "PRAGMA analysis_limit={ANALYSIS_LIMIT}; PRAGMA optimize=0x10002;"
         ))?;
@@ -233,6 +248,21 @@ impl Store {
     pub(crate) fn with_write<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         self.writer.run(|conn| f(conn))
     }
+}
+
+/// The schema version (`user_version`) of `home`'s database, read without
+/// changing it; `None` when there is no database.
+///
+/// # Errors
+/// When the database cannot be read.
+pub fn schema_version(home: &Home) -> Result<Option<u32>> {
+    let path = home.db_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let c = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    c.busy_timeout(exec::BUSY_TIMEOUT)?;
+    Ok(Some(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
 }
 
 /// Applies every migration past the database's `user_version`, each (its

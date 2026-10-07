@@ -91,6 +91,20 @@ fn remove_file_if_present(path: &std::path::Path) -> Result<()> {
     }
 }
 
+/// The `asset.upload` record of `asset` (audit spec §6.1), at its
+/// creation; `sha256` is the hex hash of its bytes (`None` when they cannot
+/// be read: the backfill of a missing blob).
+pub(super) fn upload_record(asset: &Asset, sha256: Option<&str>) -> AuditRecord {
+    let mut rec = AuditRecord::new(AuditKind::AssetUpload, asset.created_at.as_str())
+        .with("asset_id", asset.id.as_str())
+        .with("path", format!("/_blob/{}", asset.id))
+        .with("sha256", sha256.map(|h| format!("sha256:{h}")))
+        .with("size", asset.size)
+        .with("content_type", asset.content_type.as_str());
+    rec.ids.artifact = Some(asset.artifact_id.clone());
+    rec
+}
+
 impl Store {
     /// Stores `bytes` as a new asset of artifact `id`.
     ///
@@ -141,13 +155,7 @@ impl Store {
             let _ = std::fs::remove_file(&tmp_path);
             return Err(e.into());
         }
-        let mut rec = AuditRecord::new(AuditKind::AssetUpload, asset.created_at.as_str())
-            .with("asset_id", asset.id.as_str())
-            .with("path", format!("/_blob/{}", asset.id))
-            .with("sha256", format!("sha256:{}", sha256_hex(bytes)))
-            .with("size", asset.size)
-            .with("content_type", asset.content_type.as_str());
-        rec.ids.artifact = Some(asset.artifact_id.clone());
+        let rec = upload_record(&asset, Some(&sha256_hex(bytes)));
         let inserted = self.with_tx(|c| {
             c.execute("INSERT INTO assets (id, artifact_id, content_type, size, ext, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![asset.id, asset.artifact_id, asset.content_type, asset.size as i64, asset.ext, asset.created_at])?;

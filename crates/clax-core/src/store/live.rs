@@ -382,6 +382,17 @@ fn scope_arming(tx: &Connection, sid: &str, keys: &[PageKey]) -> Result<Option<b
         .reduce(|a, b| a || b))
 }
 
+/// The `live.page` record of the page `aid` keyed `origin` + `path`
+/// (audit spec §6.3), at `at`.
+pub(super) fn page_record(at: &str, aid: &str, origin: &str, path: &str) -> AuditRecord {
+    let mut rec = AuditRecord::new(AuditKind::LivePage, at)
+        .with("origin", origin)
+        .with("path", path);
+    rec.ids.artifact = Some(aid.to_string());
+    rec.ids.origin = Some(origin.to_string());
+    rec
+}
+
 impl Store {
     /// The live page `key` names, if it exists (including one whose first
     /// version is still being written).
@@ -482,11 +493,7 @@ impl Store {
                 super::artifacts::row_to_artifact,
             )??;
             self.record_audit(tx, ctx, super::artifacts::create_record(&a, &now))?;
-            let mut rec = AuditRecord::new(AuditKind::LivePage, now)
-                .with("origin", key.origin.as_str())
-                .with("path", key.path.as_str());
-            rec.ids.artifact = Some(id.as_str().to_string());
-            rec.ids.origin = Some(key.origin.clone());
+            let rec = page_record(&now, id.as_str(), &key.origin, &key.path);
             self.record_audit(tx, ctx, rec)?;
             self.record_page_watches(
                 tx,

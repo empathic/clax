@@ -721,14 +721,6 @@ mod l10 {
             "the latency gate's calibration read; changes no history",
         ),
         (
-            "sites::split",
-            "joined-site events (spec §6.12) are plan Task 8's",
-        ),
-        (
-            "sites::answer",
-            "joined-site events (spec §6.12) are plan Task 8's",
-        ),
-        (
             "questions::create",
             "question.* events (spec §6.6) are plan Task 15's",
         ),

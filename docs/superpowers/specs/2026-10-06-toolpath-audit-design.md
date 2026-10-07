@@ -120,7 +120,7 @@ decisions.
 | O5 | The owner accepted the remaining review answers. Q2: `at-revision` goes into the correlation RFC. Q3: a deleted artifact's history is kept, and purging comes later. Q4: redaction hashes are unsalted. Q5: the kind is hosted at `https://toolpath.net/kinds/clax-audit/v1.0.0`. The RFC amendment and the kind page are Toolpath-repo work, deferred with O6. Clax writes the kind URI and the `at-revision` relation now. | Owner decisions (review Q2–Q5). |
 | O6 | **Scope is recording only.** Clax writes the journal and exports with complete cross-link references. Import, correlation and the Toolpath-repo changes are future work and not scheduled. No recorded reference is limited by what Toolpath reads today: every harness, Grok included, gets the same references. | Owner correction: "we're just recording Clax logs as toolpath". |
 | O7 | **Clax's paths are not agent coding sessions.** Paths follow artifacts: an artifact's life, a live page's review history, and the install's audit trail. Their kind is `clax-audit`, never `agent-coding-session`. Agent sessions are actors and references to other paths, never containers. | Owner correction: Toolpath's general path model, not its session kind. |
-| L1 | **One source of truth: an `audit_events` table** (migration 21, §5.1). A row is written in the same SQLite transaction as the change it records. The journal and every export are pure projections of this table. | The row is atomic with the change, so no event is lost or invented. Crash recovery means "re-project from the last sequence number". Export covers history from before the journal existed (L12). The `EventBus` is not used: its one tap slot is taken, its broadcast drops events on lag, and its events carry no actor. |
+| L1 | **One source of truth: an `audit_events` table** (the audit migration, §5.1). A row is written in the same SQLite transaction as the change it records. The journal and every export are pure projections of this table. | The row is atomic with the change, so no event is lost or invented. Crash recovery means "re-project from the last sequence number". Export covers history from before the journal existed (L12). The `EventBus` is not used: its one tap slot is taken, its broadcast drops events on lag, and its events carry no actor. |
 | L2 | **The file append is off the writer path.** A committed transaction only nudges an appender thread through `sync_channel(1)` `try_send`. The appender reads new rows through the reader pool, in batches of at most 512, and appends them. The writer pays one small `INSERT` and nothing more. | This meets the owner's constraint. The queue is bounded at one wake-up plus one batch. Backpressure costs lag, never loss, because rows wait in the table. |
 | L3 | **The journal is the install's audit trail: one stream, rotated into segments.** Each segment is one `.path.jsonl` file holding one Toolpath `Path`. A segment's steps form a linear chain in sequence order (§7). A segment rolls at the UTC day boundary or at 64 MiB, whichever comes first. | The JSONL RFC puts one path in each file. One stream gives a total order and the cheapest append: one open file, written sequentially. Rolling at the day boundary makes "what happened on Tuesday" one file. |
 | L4 | **Steps chain linearly; structure lives in `meta.refs`.** Within a path, a step's only parent is the previous step of that path. Relationships are typed refs: a reply points at its thread, a version at the threads it addresses, a move at its source and target. | Toolpath calls any step outside the ancestry of `head` a dead end, meaning abandoned work. Clax's natural shape is a version chain with thread branches. That shape would label every unaddressed thread "abandoned", which is false. A linear chain has no dead ends, an unambiguous head and a deterministic order. |
@@ -131,7 +131,7 @@ decisions.
 | L9 | **Git context is captured by the agent side and sent in an `x-clax-git` header** (base64url JSON, §9) on each mutating request. The daemon validates the header's shape and size, and records it as the agent side reported it. | O2 says the context comes from the harness's working directory, and only the agent side knows that directory. A header leaves every endpoint's body schema unchanged. |
 | L10 | **Git capture has a 300 ms deadline.** The git commands run concurrently with `GIT_OPTIONAL_LOCKS=0`. When the deadline passes, the action proceeds and `git_capture: "timeout"` is recorded. | Publish latency adds to time to usable when the agent waits on the result. A provenance field must never block or fail the action. |
 | L11 | **Harness IDs are recorded as the harness reports them,** together with the transcript path where one is known. Clax does not resolve a Claude session chain. | Claude Code rotates a session across files, and Toolpath keys the chain by its oldest segment. The ID Clax sees may belong to a later segment. The reported ID plus the transcript path is enough for a reader to find the chain (O6). |
-| L12 | **Migration 21 backfills** existing history into `audit_events`, marked `backfilled: true`. That covers versions (hashing their stored files), threads, comments, resolves, sends, addressed links, moves and sessions. Backfilled steps have no git context, no tool calls and no working records. | Export covers the whole install from day one, and the journal's first segment is complete. It is a one-time pass at daemon start (§13). |
+| L12 | **A one-time backfill** records existing history into `audit_events`, marked `backfilled: true`, once per home: the install row `backfill` marks it done (never the schema version). It covers sessions, artifacts, versions (hashing their stored files), assets (hashing their blobs), live pages and merged-away pages, joined sites and their answers, threads, comments, resolves, sends, deliveries, addressed links, moves, watches and questions (§6.12). Backfilled steps have no git context, no tool calls and no working records. | Export covers the whole install from day one, and the journal's first segment is complete. It runs in `Store::open` before the daemon serves (§13). |
 | L13 | **Versions gain a stored content hash.** `versions.content_sha256` is the SHA-256 of a canonical manifest of each file's path, SHA-256 and size (§5.3), computed at write time. | Provenance must say which bytes were published. The file hashes come from bytes already in memory, at under 1 ms per MiB. |
 | L14 | **The build commit is embedded at build time** as `CLAX_BUILD_COMMIT` by `clax-cli/build.rs` and handed to the rest at startup (§5.5). It is `unknown` when there is no git. | O3 requires it, and nothing embeds it today. |
 | L15 | **Journal fsync is coalesced.** `sync_data` runs at most once a second while lines arrive, and always on rotation and shutdown (§7.4). | The table is the durable record. A line lost to power failure is re-appended from its sequence number on the next start. |
@@ -238,12 +238,15 @@ The components are:
 
 ## 5. Data model
 
-### 5.1 Migration 21: the audit journal
+### 5.1 The audit migration
 
-Migration 19 is the questions spec's and migration 20 is the inbox's; this
-work takes 21 (owner, 2026-10-06). If the numbers shift before landing,
-whichever lands later renumbers. No branch edits a migration that has
-shipped.
+It is migration 20 on this branch, after main's joined sites (19). The
+owner's ruling on numbers: whichever branch lands on main first keeps the
+next free number, and a later branch renumbers before merging (if this one
+lands first, agent-questions' questions and inbox become 21 and 22). No
+unmerged branch's build runs on the owner's real home, since a migration
+that reaches a real home fixes its number. No branch edits a migration that
+has shipped.
 
 ```sql
 CREATE TABLE audit_events (
@@ -270,7 +273,7 @@ CREATE INDEX audit_events_at        ON audit_events(at);
 CREATE TABLE install (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 -- ('id', <ULID>) minted once by this migration: the opaque install ID
 
-ALTER TABLE versions ADD COLUMN content_sha256 TEXT;     -- §5.3; NULL only before backfill
+ALTER TABLE versions ADD COLUMN content_sha256 TEXT;     -- §5.3; NULL before the backfill, or when a file is missing
 ALTER TABLE sessions ADD COLUMN transcript_path TEXT;    -- L16
 ```
 
@@ -294,6 +297,11 @@ Properties of the table:
 {"type":"anonymous"}
 {"type":"system","reason":"ttl|rule|backfill|daemon"}
 ```
+
+A system actor's event about someone names them in `body.for_actor`, an
+actor object as above: an agent for TTL ends and the like, and, under
+`system:backfill`, whoever the history says acted (an agent by its session,
+a viewer, or the owner).
 
 The route takes the actor from `Identity` and from the `x-clax-session`
 session:
@@ -423,6 +431,11 @@ a link no other event carries.
 | `live.snapshot` | the `version.publish` body plus `origin, path` | `store_snapshot` (in place of `version.publish`); a version a move or merge copies onto a page also has `source{artifact_id, n}` (and `artifact2_id` the source), with the source's addresses |
 | `thread.move` | `from_artifact_id, from_url, to_artifact_id, to_url, move_kind (move\|merge\|unmerge), rule_id, move_id` | each `thread_moves` row, in the move's transaction, by the requester (the owner, for a rule's merge or unmerge too). `artifact_id` is the source, `artifact2_id` the target, with `thread_id` and `origin` |
 | `live.rule` | `rule_id, op (set\|delete\|drop), origin, pattern, created_at, deleting` (no separate `id`) | `set`: a new rule, or a re-add of one being deleted (re-adding a rule in force records nothing); `delete`: taking it out of force; `drop`: removing it for good once its threads are back. `origin` column set; no artifact |
+| `live.join` | `origin, with, site, joined[origins], rules_moved[rule IDs], rules_dropped[rule IDs]` | a join that changes the sites (the owner's request to join `origin` to `with`'s site, keyed `site`); `origin` column the site's key. Its thread moves are `thread.move` with `move_kind: join` |
+| `live.split` | `origin, before_site, site, never_with[origins]` | `origin` split off the site keyed `before_site` (keyed `site` after); the pairs it is not suggested with again are implied |
+| `live.page_rekey` | `from_origin, to_origin, path` | a live page keyed under another origin of its site (a join, the settling of one, or a split) |
+| `live.page_merge` | `origin, path, merged_into` | a page a join emptied, merged away into its site's page of its path (`artifact2_id`), kept whole; its watchers move with it |
+| `live.join_answer` | `origin, with, answer (never\|later), until` | the owner's answer to a suggested join. Marking an origin used is not recorded (§6.11) |
 
 ### 6.4 Watches
 
@@ -579,8 +592,58 @@ transaction under the single writer. Consumers sort by `seq`, not by `at`.
 
 Clax does not record presence, heartbeats, feedback-tier escalations after
 the first delivery, stream subscriptions, reads other than tool calls,
-extension credential grants, or daemon start and stop (`daemon.log` has
-these).
+extension credential grants, a joined site's last-used marks, or daemon
+start and stop (`daemon.log` has these).
+
+### 6.12 Backfilled events
+
+The backfill (L12, §13) records the history from before the audit with the
+kinds above, each body built by the same builder as live recording. A
+backfilled event has `backfilled = 1`, actor `system:backfill`, `via:
+daemon`, no `git` and no `call`, and names who acted in `for_actor` where
+the history keeps it. It also carries:
+
+- `inferred`: the body fields the history holds only as they are now, or
+  that the backfill derived:
+  - `artifact.create`: `title`, `icon`, `capabilities`, `contract_version`;
+  - `version.publish` and `live.snapshot`: `title`, `carried` (paths whose
+    hash and size equal the previous version's: a carry and a re-upload of
+    the same bytes look alike), `addresses`, and `origin`/`path` when a live
+    page's key is gone;
+  - `session.start`: `harness_session_id`, `cwd`, `transcript_path`, `pid`
+    (a rejoin changes them); `session.end`: `reason` (`ttl` when it ended at
+    least the reaper's idle time after it was last seen, else `explicit`);
+  - `thread.open`: `version_n`, `live_path`, `has_clip` (moves change
+    them); `thread.resolve`: `resolved_by`, `addressed_version`;
+    `thread.addressed`: `source`;
+  - `thread.send`: `target` (the agent when every row went to the session
+    the thread targets now, else `watchers`);
+  - `watch.start`: `replies_armed`, `source`, `cause`;
+  - `live.page` of a merged-away page: `at` (its artifact's creation);
+    `live.page_merge`: `merged_into`; `live.join`: `origin`, `joined` (the
+    origins that joined the site at one time).
+- `null` for what the history cannot give: `version.publish.by_page`, a
+  `live.join`'s `with` and rules.
+- On a version's file: `missing: true` (`sha256: null`) when the stored
+  file cannot be read, `size_mismatch: true` when its length differs from
+  the size recorded (its hash is not kept); the version then has no
+  `content_sha256`. `files_unreadable: true` when its file list does not
+  parse. An asset whose blob is gone has `sha256: null, missing: true`.
+
+A resolve link rides its version's event only on a live page, when the
+version made it (the page's pending address, linked by its snapshot, within
+a second), else its
+thread's `thread.resolve` when made with that resolve, else it is a
+`thread.addressed` at the link's time (a reopened thread keeps its link).
+
+| Kind | Body |
+|---|---|
+| `backfill.skip` | `table, row_id, reason`: a source row the backfill could not convert, recorded in its place |
+
+Not reconstructed, because the history keeps no trace of them: earlier
+resolve and reopen cycles, rows since hard-deleted, `feedback.release`,
+rules, splits (apart from the answers they left), working records, document
+writes and tool calls.
 
 ## 7. The journal
 
@@ -1187,9 +1250,20 @@ This rule is the same for Claude Code, Codex, Pi, Gemini and Grok (O4).
   run concurrently; plan Task 12 measures it. The Claude Code PostToolUse
   hook costs about 20 ms per call (accepted, O4). Time to usable is measured
   from the link, after the publish has returned.
-- **Backfill.** It runs once, in migration 21's transaction. The plan's
-  budget is under 3 s at the perf-seed scale, with progress logged every
-  10,000 rows.
+- **Backfill.** It runs once per home in `Store::open`, after the
+  migrations and before the daemon serves (owner ruling T8-1): one
+  transaction plans it (a staging table numbered in history order), then
+  short transactions of at most 500 rows or 64 MiB of hashed files record
+  it, each deleting what it recorded, so an interrupted backfill resumes
+  without duplicates and memory holds one batch. The plan's budget is under
+  3 s at the perf-seed scale (measured: 0.22 s release, 1.6 s of CPU in a
+  debug build); 10× the perf seed (159,506 events) takes 2.1–3.8 s, a
+  hash-heavy home of 150 versions and 500 MiB 0.4 s (warm cache), at a peak
+  of 16–31 MB of memory. The log names the phase (planning, hashing files,
+  recording) with rows done of rows staged and bytes hashed every 2 s and
+  after each batch that hashed 16 MiB. The daemon publishes the same in
+  `starting.json`, and the client that started it waits while it moves on
+  (§14).
 - **Export.** It streams. Memory is bounded by one path's steps plus the
   `ActorDef` set.
 
@@ -1210,6 +1284,12 @@ This rule is the same for Claude Code, Codex, Pi, Gemini and Grok (O4).
 | Unrenderable row (a bug) | A `clax.unrenderable` step is written, and the failure is logged. |
 | `journal = false` | The table is still written, and the journal catches up when turned back on. |
 | Questions spec not landed | Its kinds simply never occur. |
+| A backfill source row cannot be converted | `backfill.skip {table, row_id, reason}` is recorded in its place, and the backfill goes on. |
+| Database or disk error during the backfill | The daemon does not start; the next start resumes from the last committed batch, with no duplicate. |
+| A long first start (the backfill) | The daemon reports its progress in `starting.json`; the client waits while it moves on (30 s without progress, or 10 minutes in a heartbeat-only phase, gives up), clients queued on the start lock say they are waiting, and `clax status` shows it. |
+| A source time that is not text | That row records `backfill.skip`, and the backfill goes on. |
+| The schema version cannot be read before an upgrade's swap | The swap is refused and the running daemon kept. |
+| An upgrade whose new daemon fails after moving the schema on | The previous build, which cannot open the database, is not restarted; the error says so, and the next start of the new build carries on. |
 
 ## 15. Testing
 

@@ -624,7 +624,7 @@ fn record_copy(
     v.addresses = stmt
         .query_map(params![src.0, src.1], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
-    let mut rec = super::artifacts::version_record(a, &v, &[], false, Some(to)).with(
+    let mut rec = super::artifacts::version_record(a, &v, &[], Some(false), Some(to)).with(
         "source",
         serde_json::json!({"artifact_id": src.0, "n": src.1}),
     );
@@ -792,18 +792,18 @@ fn commit_refile(
                     now
                 ],
             )?;
-            let mut rec = AuditRecord::new(AuditKind::ThreadMove, now.as_str())
-                .with("from_artifact_id", p.from.as_str())
-                .with("from_url", p.from_url.as_str())
-                .with("to_artifact_id", to.artifact_id.as_str())
-                .with("to_url", to_url)
-                .with("move_kind", how.kind)
-                .with("rule_id", how.rule_id.clone())
-                .with("move_id", move_id.as_str());
-            rec.ids.artifact = Some(p.from.clone());
-            rec.ids.artifact2 = Some(to.artifact_id.clone());
-            rec.ids.thread = Some(p.tid.clone());
-            rec.ids.origin = Some(to.origin.clone());
+            let rec = move_record(&MoveFacts {
+                at: &now,
+                move_id: &move_id,
+                thread_id: &p.tid,
+                from: &p.from,
+                from_url: &p.from_url,
+                to: &to.artifact_id,
+                to_url: &to_url,
+                kind: how.kind,
+                rule_id: how.rule_id.as_deref(),
+                origin: Some(&to.origin),
+            });
             st.record_audit(tx, ctx, rec)?;
             // The watches the move made, after it.
             for (sid, armed, source) in carried {
@@ -854,6 +854,39 @@ pub(super) fn candidates(c: &Connection, sql: &str, arg: &str) -> Result<Vec<Can
             (id, aid, live_path, route)
         })
         .collect())
+}
+
+/// One thread move, as `thread.move` records it.
+pub(super) struct MoveFacts<'a> {
+    pub at: &'a str,
+    pub move_id: &'a str,
+    pub thread_id: &'a str,
+    pub from: &'a str,
+    pub from_url: &'a str,
+    pub to: &'a str,
+    pub to_url: &'a str,
+    pub kind: &'a str,
+    pub rule_id: Option<&'a str>,
+    /// The live-page origin of the target page.
+    pub origin: Option<&'a str>,
+}
+
+/// The `thread.move` record of a move (audit spec §6.3): `artifact_id` the
+/// source, `artifact2_id` the target.
+pub(super) fn move_record(m: &MoveFacts<'_>) -> AuditRecord {
+    let mut rec = AuditRecord::new(AuditKind::ThreadMove, m.at)
+        .with("from_artifact_id", m.from)
+        .with("from_url", m.from_url)
+        .with("to_artifact_id", m.to)
+        .with("to_url", m.to_url)
+        .with("move_kind", m.kind)
+        .with("rule_id", m.rule_id)
+        .with("move_id", m.move_id);
+    rec.ids.artifact = Some(m.from.to_string());
+    rec.ids.artifact2 = Some(m.to.to_string());
+    rec.ids.thread = Some(m.thread_id.to_string());
+    rec.ids.origin = m.origin.map(str::to_string);
+    rec
 }
 
 impl Store {

@@ -102,7 +102,7 @@ fn on_artifact(c: &Connection, mut rec: AuditRecord, sid: &str, aid: &str) -> Re
 }
 
 /// `rec` with `cause` (and a move's `move_id`), when there is one.
-fn with_cause(rec: AuditRecord, cause: Option<Cause<'_>>) -> AuditRecord {
+pub(super) fn with_cause(rec: AuditRecord, cause: Option<Cause<'_>>) -> AuditRecord {
     match cause {
         None => rec,
         Some(Cause::Scope) => rec.with("cause", "scope"),
@@ -120,7 +120,20 @@ pub(super) fn artifact_watch_record(
     armed: bool,
     source: &str,
 ) -> Result<AuditRecord> {
-    let rec = AuditRecord::new(kind, Store::now())
+    artifact_watch_record_at(c, kind, &Store::now(), sid, aid, armed, source)
+}
+
+/// [`artifact_watch_record`] at `at`.
+pub(super) fn artifact_watch_record_at(
+    c: &Connection,
+    kind: AuditKind,
+    at: &str,
+    sid: &str,
+    aid: &str,
+    armed: bool,
+    source: &str,
+) -> Result<AuditRecord> {
+    let rec = AuditRecord::new(kind, at)
         .with("replies_armed", armed)
         .with("source", source);
     on_artifact(c, rec, sid, aid)
@@ -147,7 +160,19 @@ pub(super) fn scope_watch_record(
     path: &str,
     armed: bool,
 ) -> AuditRecord {
-    let rec = AuditRecord::new(kind, Store::now())
+    scope_watch_record_at(kind, &Store::now(), sid, origin, path, armed)
+}
+
+/// [`scope_watch_record`] at `at`.
+pub(super) fn scope_watch_record_at(
+    kind: AuditKind,
+    at: &str,
+    sid: &str,
+    origin: &str,
+    path: &str,
+    armed: bool,
+) -> AuditRecord {
+    let rec = AuditRecord::new(kind, at)
         .with("replies_armed", armed)
         .with("source", "direct");
     on_scope(rec, sid, origin, path)

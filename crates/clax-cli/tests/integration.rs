@@ -9,6 +9,7 @@ mod cli;
 mod comments;
 mod common;
 mod extension;
+mod first_start;
 mod follow;
 mod grok_dedupe;
 mod init;

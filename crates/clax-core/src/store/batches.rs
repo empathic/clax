@@ -3,7 +3,7 @@
 
 use super::Store;
 use super::feedback::{SendTarget, live_targets_of, send_in, send_target_value};
-use crate::audit::{AuditCtx, AuditKind, AuditRecord};
+use crate::audit::AuditCtx;
 use crate::feedback::{FeedbackBatch, Touched};
 use crate::working::clean_line;
 use crate::{ArtifactId, CoreError, Result, new_ulid};
@@ -151,12 +151,15 @@ impl Store {
             for t in &sent {
                 tx.execute("INSERT INTO batch_threads (batch_id, thread_id) VALUES (?1, ?2)", params![batch_id, t])?;
             }
-            let mut rec = AuditRecord::new(AuditKind::ThreadSend, Store::now())
-                .with("target", send_target_value(tx, to.as_deref())?)
-                .with("feedback_ids", feedback_ids)
-                .with("batch_id", batch_id.as_str())
-                .with("thread_ids", sent.clone());
-            rec.ids.artifact = Some(aid.to_string());
+            let rec = super::feedback::send_record(
+                &Store::now(),
+                aid.as_str(),
+                None,
+                send_target_value(tx, to.as_deref())?,
+                feedback_ids,
+                Some(&batch_id),
+                sent.clone(),
+            );
             self.record_audit(tx, ctx, rec)?;
             let batch = FeedbackBatch { id: batch_id, size: sent.len() as u32, note, sent_by: b.sent_by };
             Ok(BatchResult { batch, sent, unchanged, touched })

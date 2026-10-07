@@ -574,7 +574,17 @@ daemon to shut down: SSE streams end (browsers reconnect to the same port)
 and long polls return what they have. In-flight requests get 5 s, and one
 that is cut off fails with a connection error the agent can retry. It then
 waits up to 7 s for the old daemon to exit (then sends SIGTERM and waits 3 s
-more), starts its own, and waits for `/healthz`. A newer daemon, one of the
+more), starts its own, and waits for `/healthz`: 5 s for a daemon that
+reports nothing, and, while a starting daemon reports progress in
+`starting.json` (opening its database, then the audit log's one-time record
+of the existing history: `{pid, phase, done, total, bytes, heartbeat_at}`),
+as long as it keeps moving: 30 s without progress (rows done or bytes
+hashed advancing), or 10 minutes in a phase that reports only a heartbeat
+(opening, planning), gives it up. A client waiting for the start lock
+meanwhile says it is waiting for the daemon's first start. The
+waiting client prints what it is doing to stderr every 2 s, and `clax
+status` reports it (`starting: …`; `--json`: `{"running": false,
+"starting": {…}}`). A newer daemon, one of the
 same version, or one whose version does not parse, is kept, with one warning.
 `daemon.json` records the daemon's `version` and `exe` (the canonical path of
 its executable). Every replacement is a line in `logs/daemon.log`. If the old
@@ -590,7 +600,12 @@ executable is started again on the same port and bind address, and the error
 says so and names the log. When that executable is missing, was overwritten
 in place by the failed build (as `cargo install` and `just install` do), or
 fails too, no daemon is running, and the error says so and how to recover:
-`clax stop`, install a build that starts, run the command again.
+`clax stop`, install a build that starts, run the command again. The
+previous build is not started again when the new daemon had already moved
+the database to a newer schema, which the previous build cannot open: the
+error says so, and running the command again starts the new build, which
+carries on where it stopped. A replacement whose database schema cannot
+be read beforehand is refused, keeping the running daemon.
 
 Failed-upgrade hold: a failed upgrade is recorded in
 `logs/failed-upgrade.json`, keyed by the target version, the canonical

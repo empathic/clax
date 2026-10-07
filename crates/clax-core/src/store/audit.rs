@@ -156,6 +156,56 @@ fn body_json(ctx: &AuditCtx, rec: AuditRecord) -> String {
     serde_json::to_string(&body).expect("serialisable body")
 }
 
+/// Inserts one event row: the single INSERT behind [`Store::record_audit`]
+/// and the backfill.
+fn insert_row(
+    tx: &rusqlite::Transaction<'_>,
+    at: &str,
+    kind: &str,
+    actor: &str,
+    ids: &AuditIds,
+    body: &str,
+    backfilled: bool,
+) -> Result<()> {
+    tx.prepare_cached(
+        "INSERT INTO audit_events (at, kind, actor, artifact_id, artifact2_id, thread_id,
+            session_id, question_id, call_id, origin, body, backfilled)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+    )?
+    .execute(params![
+        at,
+        kind,
+        actor,
+        ids.artifact,
+        ids.artifact2,
+        ids.thread,
+        ids.session,
+        ids.question,
+        ids.call,
+        ids.origin,
+        body,
+        backfilled
+    ])?;
+    Ok(())
+}
+
+/// Inserts `rec` as a backfilled event (spec L12): `backfilled = 1`, made
+/// by Clax itself (`system:backfill`) through the `daemon` channel, with no
+/// git context and no tool call. For the backfill alone, which runs before
+/// the store serves and so has no nudge to fire.
+pub(super) fn insert_backfilled(tx: &rusqlite::Transaction<'_>, rec: AuditRecord) -> Result<()> {
+    let ctx = AuditCtx::system(SystemReason::Backfill);
+    let actor = serde_json::to_string(&ctx.actor).expect("serialisable actor");
+    let kind = rec.kind.as_str();
+    let at = rec.at.clone();
+    let ids = AuditIds {
+        call: None,
+        ..rec.ids.clone()
+    };
+    let body = body_json(&ctx, rec);
+    insert_row(tx, &at, kind, &actor, &ids, &body, true)
+}
+
 impl Store {
     /// Records `rec`, made under `ctx`, in `tx`: the event commits or rolls
     /// back with the change it describes. Returns its `seq`. The event's
@@ -189,24 +239,12 @@ impl Store {
             _ => None,
         });
         let body = body_json(ctx, rec);
-        tx.prepare_cached(
-            "INSERT INTO audit_events (at, kind, actor, artifact_id, artifact2_id, thread_id,
-                session_id, question_id, call_id, origin, body)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        )?
-        .execute(params![
-            at,
-            kind,
-            actor,
-            ids.artifact,
-            ids.artifact2,
-            ids.thread,
-            session_id,
-            ids.question,
-            call_id,
-            ids.origin,
-            body
-        ])?;
+        let ids = AuditIds {
+            session: session_id,
+            call: call_id,
+            ..ids
+        };
+        insert_row(tx, &at, kind, &actor, &ids, &body, false)?;
         self.audit.recorded.store(true, Ordering::Relaxed);
         Ok(tx.last_insert_rowid())
     }

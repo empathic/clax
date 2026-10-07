@@ -46,6 +46,12 @@ impl Home {
     pub fn daemon_json(&self) -> PathBuf {
         self.root.join("daemon.json")
     }
+    /// `starting.json`: what a daemon that has not yet written
+    /// `daemon.json` is doing (opening the store, recording the audit
+    /// backfill), for the client that started it and `clax status`.
+    pub fn starting_json(&self) -> PathBuf {
+        self.root.join("starting.json")
+    }
     pub fn daemon_lock(&self) -> PathBuf {
         self.root.join("daemon.lock")
     }

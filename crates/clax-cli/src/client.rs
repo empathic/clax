@@ -3,12 +3,167 @@
 use anyhow::{Context, anyhow, bail};
 use clax_core::Home;
 use clax_server::daemon::{
-    DaemonInfo, DaemonLock, browser_host, pid_alive, probe_host, read_daemon_info,
+    DaemonInfo, DaemonLock, StartingInfo, browser_host, pid_alive, probe_host, read_daemon_info,
+    read_starting_info,
 };
 use nix::sys::signal::Signal;
 use std::net::{IpAddr, Ipv4Addr};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+
+/// How long a daemon this client starts may take: `start` to answer when it
+/// reports nothing, and `progress` between reports of progress once it
+/// reports some (`starting.json`: a first start that records the audit
+/// backfill may take minutes, and is waited for while it moves on).
+#[derive(Clone, Copy, Debug)]
+pub struct StartWindows {
+    pub start: Duration,
+    pub progress: Duration,
+    /// How long a phase with no measurable progress (opening the store,
+    /// planning the backfill) may last on its heartbeat alone.
+    pub unmeasured: Duration,
+}
+
+impl StartWindows {
+    /// 5 s to answer, then 30 s between reports of progress, and at most
+    /// 10 minutes in a phase that reports only a heartbeat.
+    pub fn current() -> StartWindows {
+        StartWindows {
+            start: Duration::from_secs(5),
+            progress: Duration::from_secs(30),
+            unmeasured: Duration::from_secs(600),
+        }
+    }
+}
+
+/// Follows a starting daemon's `starting.json`: extends the deadline while
+/// it reports progress (rows done or bytes hashed advancing, or a new
+/// phase), or, in a phase it cannot measure, a heartbeat until that phase
+/// has lasted [`StartWindows::unmeasured`]; and tells the person every 2 s
+/// what it is doing.
+struct StartWatch {
+    pid: u32,
+    windows: StartWindows,
+    deadline: Instant,
+    seen: Option<StartingInfo>,
+    progressed: bool,
+    /// When the phase last seen began, as this client saw it.
+    phase_since: Instant,
+    /// A phase outlasted its cap on its heartbeat alone.
+    stalled: bool,
+    said: Option<Instant>,
+}
+
+impl StartWatch {
+    fn new(pid: u32, windows: StartWindows) -> StartWatch {
+        StartWatch {
+            pid,
+            windows,
+            deadline: Instant::now() + windows.start,
+            seen: None,
+            progressed: false,
+            phase_since: Instant::now(),
+            stalled: false,
+            said: None,
+        }
+    }
+
+    fn poll(&mut self, home: &Home) {
+        let Some(now) = read_starting_info(home).filter(|s| s.pid == self.pid) else {
+            return;
+        };
+        let new_phase = self.seen.as_ref().is_none_or(|was| was.phase != now.phase);
+        if new_phase {
+            self.phase_since = Instant::now();
+        }
+        let advanced = self
+            .seen
+            .as_ref()
+            .is_some_and(|was| (was.done, was.bytes) != (now.done, now.bytes));
+        let beat = now.unmeasured()
+            && self
+                .seen
+                .as_ref()
+                .is_some_and(|was| was.heartbeat_at != now.heartbeat_at);
+        let capped = self.phase_since.elapsed() >= self.windows.unmeasured;
+        if new_phase || advanced {
+            self.stalled = false;
+        } else if now.unmeasured() && capped {
+            self.stalled = true;
+        }
+        let moved = new_phase || advanced || (beat && !capped);
+        if moved {
+            self.progressed = true;
+            self.deadline = self.deadline.max(Instant::now() + self.windows.progress);
+        }
+        if now.phase != "opening"
+            && self
+                .said
+                .is_none_or(|t| t.elapsed() >= Duration::from_secs(2))
+        {
+            eprintln!("clax: the daemon is starting: {}", now.line());
+            self.said = Some(Instant::now());
+        }
+        self.seen = Some(now);
+    }
+
+    /// Why the daemon was given up on.
+    fn why(&self) -> String {
+        if self.stalled {
+            format!(
+                "stayed {} for {}s without progress{}",
+                self.seen
+                    .as_ref()
+                    .map_or("starting", |s| match s.phase.as_str() {
+                        "opening" => "opening its database",
+                        _ => "planning the audit backfill",
+                    }),
+                self.windows.unmeasured.as_secs(),
+                self.seen
+                    .as_ref()
+                    .map(|s| format!(" (pid {})", s.pid))
+                    .unwrap_or_default()
+            )
+        } else if self.progressed {
+            format!(
+                "made no progress for {}s while starting{}",
+                self.windows.progress.as_secs(),
+                self.seen
+                    .as_ref()
+                    .map(|s| format!(" ({})", s.line()))
+                    .unwrap_or_default()
+            )
+        } else {
+            format!(
+                "did not become ready within {}s",
+                self.windows.start.as_secs_f64()
+            )
+        }
+    }
+}
+
+/// Takes the start lock, waiting for it; while another client holds it and a
+/// daemon reports its start in `starting.json`, tells `say` every 2 s what
+/// that daemon is doing (a first start may record the audit backfill for a
+/// while).
+fn acquire_saying(home: &Home, say: &mut dyn FnMut(&str)) -> std::io::Result<DaemonLock> {
+    let mut said: Option<Instant> = None;
+    loop {
+        if let Some(lock) = DaemonLock::try_acquire(home)? {
+            return Ok(lock);
+        }
+        if let Some(s) = read_starting_info(home).filter(|s| pid_alive(s.pid))
+            && said.is_none_or(|t| t.elapsed() >= Duration::from_secs(2))
+        {
+            say(&format!(
+                "clax: waiting for the daemon's first start: {}",
+                s.line()
+            ));
+            said = Some(Instant::now());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
 
 pub struct Client {
     pub base: String,
@@ -168,6 +323,7 @@ fn roll_back(
     exe: &std::path::Path,
     bind: IpAddr,
     err: &anyhow::Error,
+    windows: StartWindows,
 ) -> anyhow::Error {
     let log = home.log_path();
     let head = format!(
@@ -206,7 +362,7 @@ fn roll_back(
             previous.display()
         ));
     }
-    let msg = match Client::spawn(home, previous, target.port, bind, true) {
+    let msg = match Client::spawn(home, previous, target.port, bind, true, windows) {
         Ok(c) => {
             log_line(
                 home,
@@ -476,7 +632,8 @@ impl Client {
             return Ok(c);
         }
         home.ensure_dirs()?;
-        let _lock = DaemonLock::acquire(home).context("acquiring daemon lock")?;
+        let _lock =
+            acquire_saying(home, &mut |m| eprintln!("{m}")).context("acquiring daemon lock")?;
         if let Some(c) = Client::discover_with(home, &probe) {
             return Ok(c);
         }
@@ -492,18 +649,21 @@ impl Client {
         port: u16,
         bind: IpAddr,
     ) -> anyhow::Result<Client> {
-        Client::spawn(home, exe, port, bind, false)
+        Client::spawn(home, exe, port, bind, false, StartWindows::current())
     }
 
-    /// As [`Client::spawn_locked`]; with `stop_if_late`, a daemon that has
-    /// not answered by the deadline is stopped (`SIGTERM`, then `SIGKILL`
-    /// after 3 s) so it cannot take the port a rollback needs.
+    /// As [`Client::spawn_locked`], within `windows`: the deadline moves on
+    /// while the daemon reports progress in `starting.json`. With
+    /// `stop_if_late`, a daemon that has not answered by the deadline is
+    /// stopped (`SIGTERM`, then `SIGKILL` after 3 s) so it cannot take the
+    /// port a rollback needs.
     fn spawn(
         home: &Home,
         exe: &std::path::Path,
         port: u16,
         bind: IpAddr,
         stop_if_late: bool,
+        windows: StartWindows,
     ) -> anyhow::Result<Client> {
         let probe = probe_client().context("building probe client")?;
         let log = std::fs::OpenOptions::new()
@@ -543,8 +703,8 @@ impl Client {
         std::thread::spawn(move || {
             let _ = exited_tx.send(child.wait());
         });
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
+        let mut watch = StartWatch::new(child_pid, windows);
+        while Instant::now() < watch.deadline {
             if let Ok(status) = exited.try_recv() {
                 let status = status?;
                 bail!(
@@ -557,6 +717,7 @@ impl Client {
             {
                 return Ok(c);
             }
+            watch.poll(home);
             std::thread::sleep(Duration::from_millis(100));
         }
         if stop_if_late {
@@ -568,14 +729,12 @@ impl Client {
                 let _ = exited.recv_timeout(Duration::from_secs(2));
             }
             bail!(
-                "daemon did not become ready within 5s and was stopped; see {}",
+                "daemon {} and was stopped; see {}",
+                watch.why(),
                 home.log_path().display()
             )
         }
-        bail!(
-            "daemon did not become ready within 5s; see {}",
-            home.log_path().display()
-        )
+        bail!("daemon {}; see {}", watch.why(), home.log_path().display())
     }
 
     /// As [`Client::connect`], but a running daemon older than this binary is
@@ -666,9 +825,29 @@ impl Client {
         accept: impl Fn(&DaemonInfo) -> bool,
         upgrade: Option<&str>,
     ) -> anyhow::Result<Client> {
+        Client::replace_within(home, old, exe, accept, upgrade, StartWindows::current())
+    }
+
+    /// [`Client::replace`], waiting for the new daemon within `windows`.
+    ///
+    /// The previous build is not restarted when the new daemon moved the
+    /// database to a schema newer than it was (a migration, or the audit
+    /// backfill's start, committed before it failed): the previous build
+    /// could not open it. The error then says so and that no daemon is
+    /// running; the next start of the new build carries on where it
+    /// stopped.
+    pub fn replace_within(
+        home: &Home,
+        old: &Client,
+        exe: &std::path::Path,
+        accept: impl Fn(&DaemonInfo) -> bool,
+        upgrade: Option<&str>,
+        windows: StartWindows,
+    ) -> anyhow::Result<Client> {
         let exe = &canonical(exe);
         home.ensure_dirs()?;
-        let _lock = DaemonLock::acquire(home).context("acquiring daemon lock")?;
+        let _lock =
+            acquire_saying(home, &mut |m| eprintln!("{m}")).context("acquiring daemon lock")?;
         let current = Client::discover(home);
         if let Some(c) = &current
             && c.info.pid != old.info.pid
@@ -702,11 +881,37 @@ impl Client {
         );
         tracing::info!("replacing {what} with {}", exe.display());
         log_line(home, &format!("replacing {what} with {}", exe.display()));
+        // Whether a failed start moved the schema on decides whether the
+        // previous build may be restarted, so the swap needs it known.
+        let schema = clax_core::store::schema_version(home).map_err(|e| {
+            let msg = format!(
+                "could not read the database's schema version before replacing the clax daemon v{} with {}: {e}; the running daemon was kept. Run the command again; if this persists, see {}",
+                target.version,
+                exe.display(),
+                home.log_path().display()
+            );
+            log_line(home, &msg);
+            anyhow::Error::new(UpgradeFailed(msg))
+        })?;
         stop_for_replacement(home, &target, answered)?;
-        let new = match Client::spawn(home, exe, target.port, bind, true) {
+        let new = match Client::spawn(home, exe, target.port, bind, true, windows) {
             Ok(c) => c,
             Err(e) => {
-                let e = roll_back(home, &target, exe, bind, &e);
+                let now = clax_core::store::schema_version(home).ok().flatten();
+                if let (Some(was), Some(now)) = (schema, now)
+                    && now > was
+                {
+                    let msg = format!(
+                        "the new clax daemon ({}) failed to start on port {}: {e:#}. It had already moved the database from schema {was} to {now}, which the previous daemon v{} cannot open, so it was not restarted and no clax daemon is running. Run the command again to start the new build, which carries on where it stopped; see {} for why it failed",
+                        exe.display(),
+                        target.port,
+                        target.version,
+                        home.log_path().display()
+                    );
+                    log_line(home, &msg);
+                    return Err(anyhow::Error::new(UpgradeFailed(msg)));
+                }
+                let e = roll_back(home, &target, exe, bind, &e, windows);
                 let Some(ours) = upgrade else { return Err(e) };
                 record_failed_upgrade(home, ours, exe, &target.version, &format!("{e:#}"));
                 // The hold only keeps a running daemon.
@@ -911,6 +1116,20 @@ pub(crate) mod tests {
         hang: bool,
         listen: Option<u16>,
     ) -> std::path::PathBuf {
+        fake_exe_with(dir, name, version, hang, listen, "")
+    }
+
+    /// [`fake_exe`] that runs the Python `start` (which sees `home` and
+    /// `starting(phase, done, total)`, writing `starting.json` as a daemon
+    /// does while it starts) before it listens.
+    fn fake_exe_with(
+        dir: &std::path::Path,
+        name: &str,
+        version: &str,
+        hang: bool,
+        listen: Option<u16>,
+        start: &str,
+    ) -> std::path::PathBuf {
         let path = dir.join(name);
         let script = format!(
             r#"#!{python}
@@ -928,6 +1147,13 @@ pids = os.path.join(os.path.dirname(home), "pids")
 os.makedirs(pids, exist_ok=True)
 open(os.path.join(pids, str(os.getpid())), "w").close()
 threading.Timer(120, lambda: os._exit(0)).start()
+def starting(phase, done, total):
+    tmp = os.path.join(home, "starting.json.tmp")
+    with open(tmp, "w") as f:
+        json.dump({{"pid": os.getpid(), "phase": phase, "done": done, "total": total,
+                   "bytes": 0, "heartbeat_at": str(time.time())}}, f)
+    os.rename(tmp, os.path.join(home, "starting.json"))
+{start}
 class H(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def reply(self, body):
@@ -1127,6 +1353,188 @@ srv.serve_forever()
             .unwrap();
         assert!(!pid_alive(pid), "the late daemon was stopped");
         stop(&home);
+    }
+
+    /// Windows for a test: 5 s to report anything (a stand-in's Python can
+    /// take seconds to launch under load), then 1 s between reports.
+    const QUICK: StartWindows = StartWindows {
+        start: Duration::from_secs(5),
+        progress: Duration::from_secs(1),
+        unmeasured: Duration::from_secs(60),
+    };
+
+    /// As [`QUICK`], with a start window a slow start outlasts: 3 s.
+    const SHORT_START: StartWindows = StartWindows {
+        start: Duration::from_secs(3),
+        progress: Duration::from_secs(1),
+        unmeasured: Duration::from_secs(60),
+    };
+
+    #[test]
+    fn a_slow_start_that_reports_progress_is_waited_for_and_not_rolled_back() {
+        let dir = Scratch::new();
+        let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
+        let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
+        // 4.4 s of backfill, past the start window, reported every 200 ms.
+        let slow = fake_exe_with(
+            dir.path(),
+            "slow",
+            "0.0.2",
+            false,
+            None,
+            "for i in range(22):\n    starting('recording', i, 22)\n    time.sleep(0.2)",
+        );
+        let new = Client::replace_within(&home, &old, &slow, |_| false, None, SHORT_START)
+            .expect("the slow start is waited for");
+        assert_eq!(new.info.version, "0.0.2");
+        assert!(!log(&home).contains("rolled back"), "{}", log(&home));
+        stop(&home);
+    }
+
+    #[test]
+    fn a_start_that_stops_progressing_is_given_up_and_rolled_back() {
+        let dir = Scratch::new();
+        let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
+        let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
+        let stuck = fake_exe_with(
+            dir.path(),
+            "stuck",
+            "0.0.2",
+            false,
+            None,
+            "starting('recording', 3, 10)\ntime.sleep(60)",
+        );
+        let e = format!(
+            "{:#}",
+            Client::replace_within(&home, &old, &stuck, |_| false, None, QUICK)
+                .err()
+                .expect("replace fails")
+        );
+        assert!(e.contains("made no progress for 1s"), "{e}");
+        assert!(e.contains("3 of 10 rows"), "{e}");
+        assert!(e.contains("running again"), "{e}");
+        stop(&home);
+    }
+
+    #[test]
+    fn a_new_daemon_that_moved_the_schema_on_is_not_rolled_back_to_the_old_build() {
+        let dir = Scratch::new();
+        let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
+        let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
+        rusqlite::Connection::open(home.db_path())
+            .unwrap()
+            .pragma_update(None, "user_version", 19)
+            .unwrap();
+        // It migrates the database on, then fails.
+        let bad = fake_exe_with(
+            dir.path(),
+            "migrates",
+            "0.0.2",
+            false,
+            None,
+            "import sqlite3\nc = sqlite3.connect(os.path.join(home, 'clax.db'))\nc.execute('PRAGMA user_version = 20')\nc.commit()\nos._exit(1)",
+        );
+        let e = format!(
+            "{:#}",
+            Client::replace_within(&home, &old, &bad, |_| false, None, QUICK)
+                .err()
+                .expect("replace fails")
+        );
+        assert!(e.contains("from schema 19 to 20"), "{e}");
+        assert!(e.contains("no clax daemon is running"), "{e}");
+        assert!(
+            Client::discover(&home).is_none(),
+            "the old build was not restarted"
+        );
+        assert!(!log(&home).contains("rolled back"), "{}", log(&home));
+    }
+
+    #[test]
+    fn a_start_stuck_in_a_phase_it_cannot_measure_is_given_up_after_its_cap() {
+        let dir = Scratch::new();
+        let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
+        let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
+        // Planning forever, with a live heartbeat.
+        let hung = fake_exe_with(
+            dir.path(),
+            "hung",
+            "0.0.2",
+            false,
+            None,
+            "while True:\n    starting('planning', 0, 0)\n    time.sleep(0.2)",
+        );
+        let windows = StartWindows {
+            unmeasured: Duration::from_secs(2),
+            ..QUICK
+        };
+        let e = format!(
+            "{:#}",
+            Client::replace_within(&home, &old, &hung, |_| false, None, windows)
+                .err()
+                .expect("replace fails")
+        );
+        assert!(
+            e.contains("stayed planning the audit backfill for 2s without progress"),
+            "{e}"
+        );
+        assert!(e.contains("running again"), "{e}");
+        stop(&home);
+    }
+
+    #[test]
+    fn a_swap_whose_schema_cannot_be_read_first_is_refused_and_keeps_the_daemon() {
+        let dir = Scratch::new();
+        let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
+        let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
+        // A database that cannot be opened.
+        std::fs::create_dir(home.db_path()).unwrap();
+        let new = fake_exe(dir.path(), "new", "0.0.2", false, None);
+        let e = format!(
+            "{:#}",
+            Client::replace_within(&home, &old, &new, |_| false, None, QUICK)
+                .err()
+                .expect("replace is refused")
+        );
+        assert!(
+            e.contains("could not read the database's schema version"),
+            "{e}"
+        );
+        assert!(e.contains("the running daemon was kept"), "{e}");
+        let still = Client::discover(&home).expect("the old daemon runs");
+        assert_eq!(still.info.pid, old.info.pid);
+        stop(&home);
+    }
+
+    #[test]
+    fn a_client_queued_behind_a_first_start_says_it_is_waiting() {
+        let dir = Scratch::new();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        let held = DaemonLock::acquire(&home).unwrap();
+        // The daemon starting: this test's own process stands in for it.
+        std::fs::write(
+            home.starting_json(),
+            serde_json::json!({"pid": std::process::id(), "phase": "recording", "done": 5,
+                "total": 9, "bytes": 0, "heartbeat_at": "t"})
+            .to_string(),
+        )
+        .unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let h = home.clone();
+        let waiter = std::thread::spawn(move || {
+            acquire_saying(&h, &mut |m| {
+                let _ = tx.send(m.to_string());
+            })
+            .map(drop)
+        });
+        let said = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(
+            said.contains("waiting for the daemon's first start"),
+            "{said}"
+        );
+        assert!(said.contains("5 of 9 rows"), "{said}");
+        drop(held);
+        waiter.join().unwrap().unwrap();
     }
 
     #[test]
