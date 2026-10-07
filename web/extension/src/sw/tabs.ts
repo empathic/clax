@@ -123,6 +123,8 @@ type Deps = {
 /** How long a closed tab's ID is kept, so an answer still in flight for it writes no record. */
 export const CLOSED_MS = 5 * 60_000;
 
+/** What the person is told while the native host is slow to answer. */
+export const HOST_SLOW = "Clax is taking a while to start. It carries on as soon as it has.";
 /** What the person is told when the overlay could not be put in a page between two documents. */
 export const PAGE_LOADING = "The page was still loading. Try again.";
 const failure = (e: unknown) => {
@@ -537,6 +539,16 @@ export class Tabs {
       await this.ensureOverlay(tabId);
     } catch (e) {
       this.fail(tabId, e);
+    }
+  }
+
+  /** The native host is slow to answer the pairing (`slow`), or answered:
+   * each tab Clax is on with no other error says so, or stops saying so. */
+  hostSlow(slow: boolean): void {
+    for (const s of [...this.tabs.values()]) {
+      if (!s.on) continue;
+      if (slow && !s.error) this.set(s.tabId, { ...s, error: { code: "host_slow", message: HOST_SLOW } });
+      else if (!slow && s.error?.code === "host_slow") this.set(s.tabId, { ...s, error: null });
     }
   }
 

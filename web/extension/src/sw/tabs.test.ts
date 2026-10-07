@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HubMsg, TabMsg } from "../../../shell/src/stream-hub";
 import { MAX_FAR, type PageView, type SiteView, type WorkerToOverlay, type WorkerToPanel } from "../messages";
 import { FakeEvent } from "../../test/fake-chrome";
-import { type TabState, Tabs, applyEvent, emptyTab, type TabsApi, CLOSED_MS } from "./tabs";
+import { type TabState, Tabs, applyEvent, emptyTab, type TabsApi, CLOSED_MS, HOST_SLOW } from "./tabs";
 
 const AID = "7q3k9mzx2b4t";
 const AID2 = "8r4m0nzy3c5v";
@@ -456,6 +456,20 @@ describe("Tabs", () => {
     h.between.set(4, 2);
     await h.tabs.toggle(4, URL1);
     expect(h.tabs.state(4)).toMatchObject({ commentMode: false, error: { code: "page_loading" } });
+  });
+
+  it("tells each tab Clax is on that the native host is slow, without hiding another failure, and stops when it answers", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    h.tabs.turnOn(4, URL1, "http://localhost:5173");
+    h.tabs.turnOn(5, URL1, "http://localhost:5173");
+    h.tabs.fail(5, Object.assign(new Error("down"), { code: "daemon_unreachable" }));
+    h.tabs.hostSlow(true);
+    expect(h.tabs.state(4)?.error).toEqual({ code: "host_slow", message: HOST_SLOW });
+    expect(h.tabs.state(5)?.error?.code).toBe("daemon_unreachable");
+    h.tabs.hostSlow(false);
+    expect(h.tabs.state(4)?.error).toBeNull();
+    expect(h.tabs.state(5)?.error?.code).toBe("daemon_unreachable");
   });
 
   it("forgets the grant when Chrome refused a capture for want of it, until a gesture grants it again", async () => {

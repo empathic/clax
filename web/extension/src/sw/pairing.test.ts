@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PairError, Pairer, REPAIR_MS, type PairEnv } from "./pairing";
+import { PAIR_SLOW_MS, PairError, Pairer, REPAIR_MS, type PairEnv } from "./pairing";
 
 const CRED = `cxe_${"A".repeat(43)}`;
 function env(replies: unknown[], version = "0.9.0") {
@@ -21,6 +21,48 @@ function env(replies: unknown[], version = "0.9.0") {
 const paired = (daemon = "http://localhost:7480", v = "0.9.0") => ({ type: "paired", v: 1, daemon, credential: CRED, clax_version: v });
 
 describe("Pairer", () => {
+  it("says when the native host is slow to answer, keeps waiting for it, and pairs on its late answer, with one host for a Retry too", async () => {
+    let answer!: (v: unknown) => void;
+    const timers: { at: number; fn: () => void; off: boolean }[] = [];
+    let clock = 0;
+    const advance = (ms: number) => { clock += ms; for (const t of timers) if (!t.off && t.at <= clock) { t.off = true; t.fn(); } };
+    const e = env([]);
+    const sent: unknown[] = [];
+    const slowEnv = {
+      ...e,
+      sendNative: (_h: string, m: object) => { sent.push(m); return new Promise(r => { answer = r; }); },
+      after: (ms: number, fn: () => void) => { const t = { at: clock + ms, fn, off: false }; timers.push(t); return () => { t.off = true; }; },
+    };
+    const p = new Pairer(slowEnv as unknown as PairEnv);
+    const told: boolean[] = [];
+    p.onSlow = s => told.push(s);
+    const first = p.pair();
+    advance(PAIR_SLOW_MS - 1);
+    expect(told).toEqual([]);
+    advance(1);
+    expect(told).toEqual([true]);
+    // The person's Retry waits for the same pairing: no second native host.
+    const retry = p.pair(true);
+    expect(retry).toBe(first);
+    expect(sent).toHaveLength(1);
+    // The host answers late: the pairing is kept, and the slowness is over.
+    answer(paired());
+    expect((await first).daemon).toBe("http://localhost:7480");
+    expect(e.store.pairing).toMatchObject({ daemon: "http://localhost:7480" });
+    expect(told).toEqual([true, false]);
+  });
+
+  it("says nothing of slowness for a pairing answered in time, and stops its timer", async () => {
+    const timers: { fn: () => void; off: boolean }[] = [];
+    const e = env([paired()]);
+    const p = new Pairer({ ...e, after: (_ms: number, fn: () => void) => { const t = { fn, off: false }; timers.push(t); return () => { t.off = true; }; } } as unknown as PairEnv);
+    const told: boolean[] = [];
+    p.onSlow = s => told.push(s);
+    await p.pair();
+    expect(timers.every(t => t.off)).toBe(true);
+    expect(told).toEqual([]);
+  });
+
   it("pairs once and keeps the pairing in session storage", async () => {
     const e = env([paired()]);
     const p = new Pairer(e as unknown as PairEnv);

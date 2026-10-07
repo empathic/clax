@@ -569,6 +569,31 @@ test("after Escape or Cancel in the composer, the panel's Comment turns comment 
   await pick();
 });
 
+test("a native host slow to start: the panel says Clax is taking a while, with Retry, and Clax carries on once it answers", async ({ live }) => {
+  const { siteUrl } = live;
+  const h = hook(live);
+  // The host Chrome starts takes longer than PAIR_SLOW_MS (15 s) to answer, as on a stalled machine.
+  const launcher = join(live.daemon.home, "extension", "host", "launch.sh");
+  writeFileSync(launcher, readFileSync(launcher, "utf8").replace("\nexec ", "\nsleep 18\nexec "));
+  const page = await live.ctx.newPage();
+  await page.goto(siteUrl);
+  const tabId = await tabIdOf(live, siteUrl);
+  await h.comment(tabId, siteUrl);
+  const panel = await SidePanel.open(live, page, tabId);
+  await expect.poll(() => panel.text()).toContain("Clax is taking a while to start. It carries on as soon as it has.");
+  expect(await panel.text()).toContain("Retry");
+  // Retry waits for the same start: no second host.
+  await panel.click(/^ ?Retry$/);
+  await expect.poll(async () => (await live.sw.evaluate(() => chrome.storage.session.get("pairing"))).pairing?.daemon ?? null).toBe(live.daemon.base);
+  await expect.poll(() => panel.text()).not.toContain("taking a while");
+  await expect.poll(async () => (await h.state(tabId))?.error ?? null).toBeNull();
+  await page.locator("#save").click();
+  const composer = await until(() => page.frames().find(f => f.url().includes("/composer.html")));
+  await composer.locator("textarea").waitFor();
+  const log = readFileSync(join(live.daemon.home, "logs", "native-host.log"), "utf8");
+  expect(log.match(/native-host paired/g)).toHaveLength(1);
+});
+
 test.describe("holding only the dev server's origin, as the release build does once a person allows it", () => {
   test.use({ variant: "origin" });
 

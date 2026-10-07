@@ -1256,6 +1256,7 @@ What is protected, from whom:
 | Failure | What happens |
 |---|---|
 | Native host not registered (plugin-only install, `clax init` never run) | `sendNativeMessage` fails with "Specified native messaging host not found"; the panel says "Run `clax init` (or /clax:extension in Claude Code), then reload" with a copy button. |
+| Native host slow to answer (a busy machine stalls starting it) | After 15 s without an answer each tab Clax is on says "Clax is taking a while to start. It carries on as soon as it has." with Retry, which waits for the same host (never two at once). A late answer still pairs, and the notice goes. |
 | Daemon cannot start | The host answers `daemon_unavailable` with the log path; the panel shows it and a Retry button. |
 | Daemon restarted on another port, or credential revoked | A request fails with a network error or 401 `unknown_credential`; the worker re-pairs once (at most every 10 s) and retries the request once; after a network error a comment, a send or a batch send is not sent again (the daemon may have done it): it fails with `daemon_unreachable`, and the panel's Retry pairs again. A new thread is sent again: every attempt names its pick (`pick_id` in `POST /api/live/threads`), of which the daemon makes one thread. Within 10 s of the last pairing it fails with `daemon_unreachable` (or the 401); the panel's Retry pairs again at once. |
 | Loaders an earlier, per-origin build registered | Unregistered at each worker start, with that build's list of origins: they would bring Clax to every tab of their origin. |
