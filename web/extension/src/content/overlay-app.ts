@@ -28,10 +28,13 @@ export const SNAPSHOT_CHECK_MS = 1000;
 export const SNAPSHOT_EVERY_MS = 10_000;
 /** The keep-alive ping to the worker (spec §9.5). */
 export const PING_MS = 20_000;
-/** The composer frame's size in CSS pixels: room for the quote, the clip's
- * thumbnail, three lines of text, the buttons and a notice. */
+/** The composer frame's width, and its height until the composer says how
+ * tall its content is (`composer-size`), in CSS pixels: room for the quote,
+ * the clip's thumbnail, three lines of text, the buttons and a notice. */
 const FRAME_W = 360;
 const FRAME_H = 300;
+/** The least height the overlay fits a composer frame to. */
+const MIN_FRAME_H = 120;
 /** How long a composer frame waits, hidden, for the worker to confirm its
  * page connected before the overlay closes it (the worker's own wait is shorter). */
 export const COMPOSER_CONFIRM_MS = 10_000;
@@ -235,7 +238,7 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
   /** The composer's frame; `shown` once the worker confirmed the pick's
    * composer page connected; `lost` once the worker said it no longer holds
    * the pick (comment mode is then back, and a new pick replaces the frame). */
-  let composer: { pickId: string; frame: HTMLIFrameElement; shown: boolean; lost: boolean; wait: unknown } | null = null;
+  let composer: { pickId: string; frame: HTMLIFrameElement; rect: Rect; shown: boolean; lost: boolean; wait: unknown } | null = null;
   /** Comment mode as the worker's state has it, unless a composer holds the page. */
   const syncMode = () => mode.set(!!state?.commentMode && (composer === null || composer.lost));
   const closeComposer = () => {
@@ -350,11 +353,23 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
     };
     f.addEventListener("load", () => { if (++loads >= 2) abandon(); });
     const left = Math.min(Math.max(8, rect.x + rect.w + 12), win.innerWidth - FRAME_W - 8);
-    const top = Math.min(Math.max(8, rect.y), win.innerHeight - FRAME_H - 8);
     f.style.left = `${Math.max(8, left)}px`;
-    f.style.top = `${Math.max(8, top)}px`;
+    place(f, rect, FRAME_H);
     root.appendChild(f);
-    composer = { pickId, frame: f, shown: false, lost: false, wait: timers.set(abandon, COMPOSER_CONFIRM_MS) };
+    composer = { pickId, frame: f, rect, shown: false, lost: false, wait: timers.set(abandon, COMPOSER_CONFIRM_MS) };
+  }
+
+  /** Sets the composer frame's height and puts its top beside the pick, inside the viewport. */
+  function place(f: HTMLIFrameElement, rect: Rect, h: number): void {
+    f.style.height = `${h}px`;
+    f.style.top = `${Math.max(8, Math.min(Math.max(8, rect.y), win.innerHeight - h - 8))}px`;
+  }
+
+  /** The composer said how tall its content is: the frame fits it, within the viewport. */
+  function composerSize(pickId: string, height: number): void {
+    const c = composer;
+    if (!c || c.pickId !== pickId) return;
+    place(c.frame, c.rect, Math.max(MIN_FRAME_H, Math.min(height, win.innerHeight - 16)));
   }
 
   // The automatic snapshot after an agent addressed a thread (spec L11):
@@ -400,6 +415,7 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
       case "captured": break; // the answer to `capture`
       case "open-composer": composerFor(m.pickId, m.rect); break;
       case "composer-ready": composerReady(m.pickId); break;
+      case "composer-size": composerSize(m.pickId, m.height); break;
       case "close-composer":
         if (composer?.pickId !== m.pickId) break;
         closeComposer();

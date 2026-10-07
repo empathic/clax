@@ -176,6 +176,9 @@ describe("Picks", () => {
     p.fire({ t: "ready" });
     await flush();
     expect(p.sent[0]).toEqual({ t: "draft", anchor, clipUrl: "data:image/png;base64,iVBORw==", clipError: null, capturing: false });
+    // The composer's content height goes to the overlay, which fits the frame to it.
+    p.fire({ t: "size", height: 212 });
+    expect(overlay.at(-1)).toEqual({ tabId: 5, m: { t: "composer-size", pickId: ID(1), height: 212 } });
   });
 
   it("cancels a pick whose composer does not connect within the wait", async () => {

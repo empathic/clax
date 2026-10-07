@@ -191,6 +191,11 @@ describe("messages", () => {
     expect(isFromWorker({ t: "state", page: null, route: null, threads: [], commentMode: false, pending: false })).toBe(true);
     expect(isFromWorker({ t: "pick-lost", pickId: "a".repeat(32) })).toBe(true);
     expect(isFromWorker({ t: "pick-lost", pickId: "x" })).toBe(false);
+    expect(isFromWorker({ t: "composer-size", pickId: "a".repeat(32), height: 240 })).toBe(true);
+    for (const height of [0, 2.5, 2001, "240", Number.NaN]) expect(isFromWorker({ t: "composer-size", pickId: "a".repeat(32), height })).toBe(false);
+    expect(isFromComposer({ t: "size", height: 240 })).toBe(true);
+    expect(isFromComposer({ t: "size", height: -1 })).toBe(false);
+    expect(isFromComposer({ t: "size", height: 240, extra: 1 })).toBe(false);
     // Types no part sends.
     for (const t of ["snapshot-now", "comment-mode", "stream-status"]) expect(isFromWorker({ t, on: true, up: true })).toBe(false);
     expect(isFromWorker({ t: "snapshot-now" })).toBe(false);

@@ -8,11 +8,13 @@
   // When the worker lets go of the port unasked (Chrome stopped it), the
   // composer says so and tells the worker (`lost`), which gives comment mode
   // back on the page; the text stays until the person closes the composer
-  // (`dismiss`). Cancel never throws on a closed port.
+  // (`dismiss`). Cancel never throws on a closed port. The composer tells
+  // the worker how tall its content is (`size`), whenever that changes, and
+  // the overlay fits the frame to it.
   import Composer from "../../../shell/src/ui/Composer.svelte";
   import type { Draft } from "../../../shell/src/view/composer-model";
   import { dataUrlBlob } from "../data-url";
-  import { type ComposerNote, isToComposer } from "../messages";
+  import { type ComposerNote, MAX_COMPOSER_HEIGHT, isToComposer } from "../messages";
   import { type Shortcut, readShortcut } from "../shortcut";
   import { clipMessage } from "./clip-message";
 
@@ -72,6 +74,22 @@
     p.postMessage({ t: "ready" });
   });
 
+  let fit = $state<HTMLElement | undefined>();
+  $effect(() => {
+    const el = fit;
+    const RO = (win as Window & { ResizeObserver?: typeof ResizeObserver }).ResizeObserver;
+    if (!el || !RO) return;
+    let told = 0;
+    const ro = new RO(() => {
+      const height = Math.ceil(el.getBoundingClientRect().height);
+      if (gone || height < 1 || height === told) return;
+      told = height;
+      try { port.postMessage({ t: "size", height: Math.min(height, MAX_COMPOSER_HEIGHT) }); } catch { /* the worker let go; the frame keeps its size */ }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+
   $effect(() => {
     const w = win;
     const blur = () => { if (typed.trim()) away = true; };
@@ -104,12 +122,14 @@
   }
 </script>
 
-{#if notice}<p class="notice" role="alert">{notice}</p>{/if}
-{#if draft}
-  <Composer {draft} onCancel={cancel} onSubmit={submit} onText={t => { typed = t; }} />
-{:else}
-  <p class="wait">Preparing the comment…</p>
-{/if}
+<div class="fit" bind:this={fit}>
+  {#if notice}<p class="notice" role="alert">{notice}</p>{/if}
+  {#if draft}
+    <Composer {draft} onCancel={cancel} onSubmit={submit} onText={t => { typed = t; }} />
+  {:else}
+    <p class="wait">Preparing the comment…</p>
+  {/if}
+</div>
 
 <style>
   /* The shell's composer floats over its stage; here it is the whole frame,
@@ -118,6 +138,8 @@
   :global(.composer) { position: static; width: auto; border: 0; border-top: 3px solid var(--you); border-radius: 0; box-shadow: none; }
   /* The clip is the whole viewport with the pick outlined: a thumbnail of all of it. */
   :global(.composer .clip) { width: 100%; height: 64px; max-height: 64px; object-fit: contain; object-position: center; }
+  /* Its own block formatting context: its height is all of the content's, margins included. */
+  .fit { display: flow-root; }
   .wait { margin: 16px; font-size: 14px; color: var(--muted); }
   .notice { margin: 0; padding: 6px 12px; font-size: 13px; line-height: 1.35; background: var(--comment-hl); color: var(--fg); border-bottom: 1px solid var(--border); }
 </style>
