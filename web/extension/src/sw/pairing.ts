@@ -6,6 +6,12 @@
 export const HOST = "dev.empathic.clax";
 /** The least time between two pairings a failure asked for. */
 export const REPAIR_MS = 10_000;
+/** How long a pairing may take before the person is told Clax is slow to
+ * start. Chrome starts the native host as a new process each time, which
+ * normally answers in a second or two; on a busy machine starting it was
+ * seen to stall for tens of seconds. The pairing keeps waiting: a late
+ * answer still pairs. */
+export const PAIR_SLOW_MS = 15_000;
 
 export type Pairing = { daemon: string; credential: string; claxVersion: string };
 
@@ -21,6 +27,8 @@ export interface PairEnv {
   manifestVersion: string;
   reload(): void;
   now(): number;
+  /** Runs `fn` after `ms`; returns what cancels it. */
+  after?(ms: number, fn: () => void): () => void;
 }
 
 const numeric = (v: string) => /^\d+\.\d+\.\d+/.exec(v)?.[0] ?? v;
@@ -50,6 +58,9 @@ function parse(reply: unknown): Pairing {
 export class Pairer {
   private inflight: Promise<Pairing> | null = null;
   private last = Number.NEGATIVE_INFINITY;
+  /** Told `true` when the pairing in flight has taken PAIR_SLOW_MS, and
+   * `false` once that pairing ends, however it ends. */
+  onSlow: ((slow: boolean) => void) | null = null;
   constructor(private readonly env: PairEnv) {}
 
   /** The stored pairing, else a new one. */
@@ -58,13 +69,17 @@ export class Pairer {
     return isPairing(stored) ? stored : this.pair();
   }
 
-  /** A new pairing; concurrent callers share it, and another within
-   * `REPAIR_MS` of the last is refused (`paired_recently`) unless `retry`
-   * (the person asked to try again). */
+  /** A new pairing; concurrent callers share it, a Retry included (never
+   * two native hosts at once), and another within `REPAIR_MS` of the last
+   * is refused (`paired_recently`) unless `retry` (the person asked to try
+   * again). */
   pair(retry = false): Promise<Pairing> {
     if (this.inflight) return this.inflight;
     if (!retry && this.env.now() - this.last < REPAIR_MS) return Promise.reject(new PairError("paired_recently", "Clax paired a moment ago; try again shortly"));
     this.last = this.env.now();
+    let slow = false;
+    const after = this.env.after ?? ((ms, fn) => { const h = setTimeout(fn, ms); return () => clearTimeout(h); });
+    const cancel = after(PAIR_SLOW_MS, () => { slow = true; this.onSlow?.(true); });
     this.inflight = (async () => {
       try {
         const p = parse(await this.env.sendNative(HOST, { type: "pair", v: 1, extension_version: this.env.manifestVersion }));
@@ -73,6 +88,8 @@ export class Pairer {
         return p;
       } finally {
         this.inflight = null;
+        cancel();
+        if (slow) this.onSlow?.(false);
       }
     })();
     return this.inflight;

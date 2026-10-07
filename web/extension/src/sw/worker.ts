@@ -70,6 +70,7 @@ export function createWorker(d: WorkerDeps): Worker {
   tabs = new Tabs({ api, hub, toOverlay: d.toOverlay, inject: d.inject, present: d.present, store: d.store, windowOf: d.windowOf, sites });
   const t = tabs;
   api.onRepair = () => t.repaired();
+  pairer.onSlow = slow => t.hostSlow(slow);
   const picks = new Picks({
     api, capture: d.capture, toOverlay: d.toOverlay,
     pendingIds: tabId => t.pendingIds(tabId),

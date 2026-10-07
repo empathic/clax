@@ -4,7 +4,7 @@
 // credential can change or resume it.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PageView } from "../messages";
-import { REPAIR_MS } from "./pairing";
+import { PAIR_SLOW_MS, REPAIR_MS } from "./pairing";
 import { composerTab, createWorker, type Worker } from "./worker";
 
 const AID = "7q3k9mzx2b4t";
@@ -169,6 +169,26 @@ async function up(): Promise<string> {
 }
 
 describe("the worker", () => {
+  it("tells the tab when the native host is slow to pair, and goes on once its late answer comes", async () => {
+    const pair = d.pair.bind(d);
+    // The fake host answers late (sendNative awaits what it returns).
+    d.pair = (() => new Promise(r => { setTimeout(() => r(pair()), PAIR_SLOW_MS + 5000); })) as unknown as typeof d.pair;
+    try {
+      w.tabs.turnOn(4, URL1, "http://localhost:5173");
+      const routed = w.tabs.route(4, URL1);
+      await vi.advanceTimersByTimeAsync(PAIR_SLOW_MS);
+      expect(w.tabs.state(4)?.error).toMatchObject({ code: "host_slow" });
+      expect(pairings).toBe(1);
+      await vi.advanceTimersByTimeAsync(5000);
+      await routed;
+      await settle();
+      expect(pairings).toBe(1);
+      expect(w.tabs.state(4)).toMatchObject({ error: null, page: { artifact_id: AID } });
+    } finally {
+      d.pair = pair;
+    }
+  });
+
   it("opens a new stream and refetches after a request pairs again, leaving the old stream", async () => {
     const A = await up();
     const oldStream = d.open()[0];
