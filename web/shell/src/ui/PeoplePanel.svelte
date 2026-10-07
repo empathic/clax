@@ -126,8 +126,8 @@
       {/if}
     </div>
   {/each}
-  {#if s.askName}<p class="ask" role="status">Add your name to reopen the thread: people see it beside what you do.</p>{/if}
   <div class="prow edit">
+    {#if s.askName}<p class="ask" role="status">Add your name to reopen the thread: people see it beside what you do.</p>{/if}
     <span>You are {#if s.me?.display_name}<b class="nm">{s.me.display_name}</b>{/if}</span>
     <ViewerName setNotice={ctl.setNotice} onViewer={v => ctl.setMe(v)} />
     <label class="share"><input type="checkbox" checked={s.shareWhere} onchange={e => ctl.setShareWhere(e.currentTarget.checked)} /> Share where I'm looking</label>
@@ -141,7 +141,7 @@
     .people { position: absolute; top: 56px; left: 16px; z-index: 20; width: 420px; max-height: 70vh; overflow: auto; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius); box-shadow: var(--elev-lg); padding: 6px 0 8px; }
     .people h3 { margin: 10px 16px 6px; font: 600 13px var(--font); color: var(--muted); display: flex; align-items: center; gap: 8px; }
     .people h3 .sw { width: 7px; height: 14px; } .people .ph .sw { border-radius: 0 7px 7px 0; background: var(--you); } .people .ah .sw { border-radius: 7px 0 0 7px; background: var(--agent); }
-    .ask { margin: 8px 16px 0; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--accent-tint); color: var(--fg); font-size: 13px; line-height: 1.45; }
+    .prow.edit .ask { flex-basis: 100%; margin: 0; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--accent-tint); color: var(--fg); font-size: 13px; line-height: 1.45; }
     .prow { display: grid; grid-template-columns: 52px 1fr; gap: 2px 10px; padding: 7px 16px; align-items: start; }
     .prow b { font: 600 14px/1.25 var(--font); } .prow b small { font: 400 12px var(--font); color: var(--muted); margin-left: 6px; }
     .prow p { grid-column: 2; margin: 0; font-size: 12.5px; line-height: 1.45; } .prow .tok { grid-row: span 2; justify-self: start; }
