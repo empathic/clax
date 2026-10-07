@@ -951,3 +951,310 @@ fn a_claude_code_tool_hook_in_a_grok_session_stands_down() {
         "{log}"
     );
 }
+
+/// The question of `claude-pre-tool-use-ask.json`.
+const ASKED: &str = "Which layout should the report use?";
+
+/// `question` events of an owner's stream (the token's) holding the
+/// `questions` topic, which keeps a Clax surface of the owner's open.
+struct Surface {
+    rx: std::sync::mpsc::Receiver<(String, Value)>,
+}
+
+impl Surface {
+    fn open(d: &Daemon) -> Surface {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let res = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .timeout(None)
+            .build()
+            .unwrap()
+            .get(format!("{}/api/stream", d.base()))
+            .bearer_auth(d.token())
+            .send()
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            let mut event = String::new();
+            for line in std::io::BufReader::new(res).lines() {
+                let Ok(line) = line else { return };
+                if let Some(e) = line.strip_prefix("event: ") {
+                    event = e.to_string();
+                } else if let Some(data) = line.strip_prefix("data: ")
+                    && tx
+                        .send((
+                            event.clone(),
+                            serde_json::from_str(data).unwrap_or(Value::Null),
+                        ))
+                        .is_err()
+                {
+                    return;
+                }
+            }
+        });
+        let s = Surface { rx };
+        let id = s.next("ready")["stream"].as_str().unwrap().to_string();
+        let res = d
+            .http()
+            .post(format!("{}/api/stream/{id}", d.base()))
+            .bearer_auth(d.token())
+            .json(&serde_json::json!({"subscribe": ["questions"]}))
+            .send()
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        s
+    }
+
+    /// The data of the next `name` event, within 10 s.
+    fn next(&self, name: &str) -> Value {
+        loop {
+            let (e, data) = self
+                .rx
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap_or_else(|_| panic!("no {name} event"));
+            if e == name {
+                return data;
+            }
+        }
+    }
+}
+
+impl Daemon {
+    /// Registers the session a Claude Code shim would for `hsid`.
+    fn claude_session(&self, hsid: &str) {
+        let res = self
+            .http()
+            .post(format!("{}/api/sessions", self.base()))
+            .bearer_auth(self.token())
+            .json(&serde_json::json!({"harness": "claude", "harness_session_id": hsid, "cwd": "/tmp/project"}))
+            .send()
+            .unwrap();
+        assert!(res.status().is_success());
+    }
+    fn post_authed(&self, path: &str, body: Value) -> Value {
+        let res = self
+            .http()
+            .post(format!("{}{path}", self.base()))
+            .bearer_auth(self.token())
+            .json(&body)
+            .send()
+            .unwrap();
+        assert!(res.status().is_success(), "{path}: {}", res.status());
+        res.json().unwrap()
+    }
+    fn get_authed(&self, path: &str) -> Value {
+        self.http()
+            .get(format!("{}{path}", self.base()))
+            .bearer_auth(self.token())
+            .send()
+            .unwrap()
+            .json()
+            .unwrap()
+    }
+    /// Returns once a poll holds question `qid`.
+    fn polled(&self, qid: &str) {
+        let v = self.get_authed(&format!("/api/_test/questions/{qid}/waiters?until=1"));
+        assert_eq!(v["count"], 1, "the hook polls {qid}");
+    }
+    fn hooks_log(&self) -> String {
+        std::fs::read_to_string(self.home().join("logs/hooks.log")).unwrap()
+    }
+}
+
+/// Runs `clax hook --agent claude ask` with the fixture's input in the
+/// background.
+fn ask_in_background(d: &Daemon) -> std::thread::JoinHandle<Ran> {
+    let home = d.home();
+    std::thread::spawn(move || {
+        hook(
+            &home,
+            "claude",
+            "ask",
+            &fixture("claude-pre-tool-use-ask.json"),
+        )
+    })
+}
+
+/// Starts `ask` with a surface open, and returns the surface, the running
+/// hook and the question's ID once the hook polls it.
+fn asking(d: &Daemon) -> (Surface, std::thread::JoinHandle<Ran>, String) {
+    d.claude_session("cc-ask-1");
+    let s = Surface::open(d);
+    let run = ask_in_background(d);
+    let q = s.next("question");
+    let qid = q["question"]["id"].as_str().unwrap().to_string();
+    assert_eq!(q["question"]["source"], "hook");
+    d.polled(&qid);
+    (s, run, qid)
+}
+
+#[test]
+fn ask_answered_in_clax_answers_the_tool_call() {
+    let d = Daemon::start();
+    let (_s, run, qid) = asking(&d);
+    d.post_authed(
+        &format!("/api/questions/{qid}/answer"),
+        serde_json::json!({"answers": [{"selected": ["Cards"]}]}),
+    );
+    let r = run.join().unwrap();
+    assert_eq!(r.code, Some(0));
+    let v = one_line_json(&r.stdout);
+    let out = &v["hookSpecificOutput"];
+    assert_eq!(out["hookEventName"], "PreToolUse");
+    assert_eq!(out["permissionDecision"], "allow");
+    let input: Value = serde_json::from_slice(&fixture("claude-pre-tool-use-ask.json")).unwrap();
+    assert_eq!(
+        out["updatedInput"]["questions"],
+        input["tool_input"]["questions"]
+    );
+    assert_eq!(out["updatedInput"]["answers"][ASKED], "Cards");
+    assert_eq!(
+        out["updatedInput"]["annotations"][ASKED]["preview"],
+        "[ ] [ ] [ ]"
+    );
+    let log = d.hooks_log();
+    assert!(
+        log.contains(" hook agent=claude event=ask ")
+            && log.contains(" ask mode=wait outcome=answered waited_s="),
+        "{log}"
+    );
+    assert!(
+        !log.contains("layout") && !log.contains("Cards"),
+        "no question or answer text: {log}"
+    );
+}
+
+#[test]
+fn ask_skipped_in_clax_denies_the_tool_call() {
+    let d = Daemon::start();
+    let (_s, run, qid) = asking(&d);
+    d.post_authed(
+        &format!("/api/questions/{qid}/decline"),
+        serde_json::json!({}),
+    );
+    let r = run.join().unwrap();
+    let out = &one_line_json(&r.stdout)["hookSpecificOutput"];
+    assert_eq!(out["permissionDecision"], "deny");
+    assert_eq!(out["permissionDecisionReason"], clax_hooks::ask::DECLINED);
+    assert!(d.hooks_log().contains(" ask mode=wait outcome=declined "));
+}
+
+#[test]
+fn ask_moved_to_the_terminal_or_timed_out_prints_nothing_and_asked_records_the_answer() {
+    let d = Daemon::start();
+    // Answer in the terminal, pressed in Clax.
+    let (_s, run, qid) = asking(&d);
+    d.post_authed(
+        &format!("/api/questions/{qid}/release"),
+        serde_json::json!({}),
+    );
+    let r = run.join().unwrap();
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
+    assert!(d.hooks_log().contains(" ask mode=wait outcome=released "));
+    // The terminal's answer reaches Clax through `asked`.
+    let r = hook(
+        &d.home(),
+        "claude",
+        "asked",
+        &fixture("claude-post-tool-use-ask.json"),
+    );
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
+    let q = d.get_authed(&format!("/api/questions/{qid}"));
+    assert_eq!(q["question"]["status"], "answered");
+    assert_eq!(q["question"]["answered_via"], "terminal");
+    assert_eq!(
+        q["question"]["answers"][0]["selected"],
+        serde_json::json!(["Table"])
+    );
+
+    // The wait runs out (ended at once by the debug expire route): the hook
+    // releases the question itself.
+    let d = Daemon::start();
+    let (_s, run, qid) = asking(&d);
+    let v = d.post_authed(
+        &format!("/api/_test/questions/{qid}/expire"),
+        serde_json::json!({}),
+    );
+    assert_eq!(v["expired"], 1);
+    let r = run.join().unwrap();
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
+    assert_eq!(
+        d.get_authed(&format!("/api/questions/{qid}"))["question"]["status"],
+        "released"
+    );
+    assert!(d.hooks_log().contains(" ask mode=wait outcome=timeout "));
+}
+
+#[test]
+fn ask_without_a_surface_goes_to_the_terminal_at_once() {
+    let d = Daemon::start();
+    d.claude_session("cc-ask-1");
+    let r = hook(
+        &d.home(),
+        "claude",
+        "ask",
+        &fixture("claude-pre-tool-use-ask.json"),
+    );
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
+    assert!(r.elapsed < Duration::from_secs(2), "{:?}", r.elapsed);
+    assert!(
+        d.hooks_log()
+            .contains(" ask mode=terminal outcome=terminal waited_s=0")
+    );
+    let listed = d.get_authed("/api/questions?status=all");
+    assert_eq!(listed["questions"][0]["status"], "released");
+}
+
+#[test]
+fn ask_fails_open_and_other_harnesses_do_nothing() {
+    // No daemon: nothing printed, exit 0, an error logged.
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("ax");
+    let r = hook(
+        &home,
+        "claude",
+        "ask",
+        &fixture("claude-pre-tool-use-ask.json"),
+    );
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
+    let log = std::fs::read_to_string(home.join("logs/hooks.log")).unwrap();
+    assert!(log.contains("outcome=error"), "{log}");
+    // An unknown session, another tool, and other harnesses.
+    let d = Daemon::start();
+    let r = hook(
+        &d.home(),
+        "claude",
+        "ask",
+        &fixture("claude-pre-tool-use-ask.json"),
+    );
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
+    assert!(d.hooks_log().contains(" ask mode=- outcome=error "));
+    let r = hook(
+        &d.home(),
+        "claude",
+        "ask",
+        &fixture("claude-post-tool-use.json"),
+    );
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
+    assert!(d.hooks_log().contains(" ask mode=- outcome=skipped "));
+    for agent in ["codex", "grok"] {
+        for event in ["ask", "asked"] {
+            let r = hook(
+                &d.home(),
+                agent,
+                event,
+                &fixture("claude-pre-tool-use-ask.json"),
+            );
+            assert_eq!(
+                (r.code, r.stdout.as_str()),
+                (Some(0), ""),
+                "{agent} {event}"
+            );
+        }
+    }
+    assert_eq!(
+        d.get_authed("/api/questions?status=all")["questions"],
+        serde_json::json!([])
+    );
+}

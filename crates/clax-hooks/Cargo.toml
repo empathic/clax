@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+clax-core = { path = "../clax-core" }
 serde.workspace = true
 serde_json.workspace = true
 

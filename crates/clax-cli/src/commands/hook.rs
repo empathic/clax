@@ -1,5 +1,6 @@
 use crate::client::Client;
 use clax_core::Home;
+use clax_hooks::ask::{self, Asked, Budget};
 use clax_hooks::events::{self, Daemon};
 use clax_hooks::input::HookInput;
 use clax_hooks::output::HookOutput;
@@ -31,6 +32,22 @@ const TOOL_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 const GROK_END_DEADLINE: Duration = Duration::from_millis(1200);
 /// Each Grok `session-end` daemon request is abandoned after this long.
 const GROK_END_REQUEST_TIMEOUT: Duration = Duration::from_millis(1000);
+/// `ask` (PreToolUse on `AskUserQuestion`): reading stdin, finding the
+/// daemon, the session lookup and the question's creation share this
+/// deadline; past it the hook prints nothing and the terminal dialog opens.
+/// The long poll that follows has its own timeout (see [`ask::Budget`]).
+const ASK_SETUP_DEADLINE: Duration = Duration::from_secs(2);
+/// Each `ask` daemon request other than the long poll is abandoned after this long.
+const ASK_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
+/// After the setup, `ask` gives up waiting on its worker after this long: the
+/// longest poll (3300 s plus [`ask::Budget`]'s 10 s) and its release, with a
+/// margin. Claude Code stops the hook at 3600 s.
+const ASK_POLL_DEADLINE: Duration = Duration::from_secs(3330);
+/// The whole `asked` (PostToolUse on `AskUserQuestion`) invocation is
+/// abandoned after this long.
+const ASKED_DEADLINE: Duration = Duration::from_secs(2);
+/// Each `asked` daemon request is abandoned after this long.
+const ASKED_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 /// How many ancestors above the hook's parent are reported for session joining.
 const MAX_ANCESTORS: usize = 6;
 
@@ -76,6 +93,8 @@ fn budget(agent: Agent, event: Event) -> (Duration, Duration) {
         (_, Event::Stop) => (STOP_DEADLINE, FEEDBACK_REQUEST_TIMEOUT),
         (_, Event::Prompt) => (PROMPT_DEADLINE, FEEDBACK_REQUEST_TIMEOUT),
         (_, Event::Tool) => (TOOL_DEADLINE, TOOL_REQUEST_TIMEOUT),
+        (_, Event::Ask) => (ASK_SETUP_DEADLINE, ASK_REQUEST_TIMEOUT),
+        (_, Event::Asked) => (ASKED_DEADLINE, ASKED_REQUEST_TIMEOUT),
     }
 }
 
@@ -88,6 +107,8 @@ impl Event {
             Event::Stop => "stop",
             Event::Prompt => "prompt",
             Event::Tool => "tool",
+            Event::Ask => "ask",
+            Event::Asked => "asked",
         }
     }
 }
@@ -114,6 +135,12 @@ pub enum Event {
     Prompt,
     /// A tool call finished; renew the session's working records.
     Tool,
+    /// Claude Code is about to show AskUserQuestion; offer it in Clax first
+    /// (Claude Code only).
+    Ask,
+    /// AskUserQuestion was answered in the terminal; record the answer in
+    /// Clax (Claude Code only).
+    Asked,
 }
 
 #[derive(clap::Args)]
@@ -143,21 +170,31 @@ impl Daemon for Client {
     }
 }
 
-/// Appends this run's line to hooks.log (see [`crate::hooklog`]).
-pub fn log_run(home: &Home, agent: &str, event: &str, started: Instant, stderr: Option<&str>) {
+/// Appends this run's line to hooks.log (see [`crate::hooklog`]), with
+/// `detail` (`key=value` pairs, never hook input) at its end.
+pub fn log_run(
+    home: &Home,
+    agent: &str,
+    event: &str,
+    started: Instant,
+    stderr: Option<&str>,
+    detail: Option<&str>,
+) {
     let bin = std::env::current_exe().unwrap_or_default();
-    crate::hooklog::append(
-        home,
-        &crate::hooklog::hook_line(
-            chrono::Utc::now(),
-            agent,
-            event,
-            &bin,
-            started.elapsed(),
-            0,
-            stderr,
-        ),
+    let mut line = crate::hooklog::hook_line(
+        chrono::Utc::now(),
+        agent,
+        event,
+        &bin,
+        started.elapsed(),
+        0,
+        stderr,
     );
+    if let Some(d) = detail {
+        line.push(' ');
+        line.push_str(d);
+    }
+    crate::hooklog::append(home, &line);
 }
 
 /// Runs the hook. Never fails the harness: any error or timeout prints one
@@ -170,6 +207,9 @@ pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     let started = Instant::now();
     let parent_pid = std::os::unix::process::parent_id();
     let (agent, event) = (a.agent, a.event);
+    if matches!(event, Event::Ask) {
+        run_ask(home, agent, started);
+    }
     let (deadline, _) = budget(agent, event);
     // The notice is worked out beside the hook's own work, within its deadline.
     let notice_rx = matches!((agent, event), (Agent::Codex, Event::SessionStart)).then(|| {
@@ -219,6 +259,7 @@ pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         event.name(),
         started,
         error.as_deref(),
+        None,
     );
     // Exit now: a timed-out worker may still be blocked on stdin or the network.
     std::process::exit(0);
@@ -449,10 +490,123 @@ fn handle(
         Event::Stop => events::stop(agent.harness(), &input, &client),
         Event::Prompt => events::prompt(agent.harness(), &input, &client),
         Event::Tool => events::tool(agent.harness(), &input, &client),
+        Event::Asked if matches!(agent, Agent::Claude) => ask::asked(&input, &client),
+        // `ask` runs in `run_ask`; neither is wired for other harnesses.
+        Event::Ask | Event::Asked => Ok(HookOutput::none()),
     };
     out.map(Some)
 }
 
+/// What `run_ask`'s worker reports.
+enum AskMsg {
+    /// The long poll is starting: the setup is over.
+    Polling,
+    /// The run is over.
+    Done(Asked),
+    /// The run stood down (a Grok Build session) or the agent is not Claude
+    /// Code: nothing is printed or logged here.
+    Quiet,
+    /// No daemon could be reached.
+    Failed(String),
+}
+
+/// A [`Daemon`] that reports when the long poll starts.
+struct Reporting<'a> {
+    client: &'a Client,
+    tx: mpsc::Sender<AskMsg>,
+}
+
+impl Daemon for Reporting<'_> {
+    fn browser_url(&self, path: &str) -> String {
+        self.client.browser_url(path)
+    }
+    fn get(&self, path: &str) -> anyhow::Result<serde_json::Value> {
+        Daemon::get(self.client, path)
+    }
+    fn get_with_timeout(&self, path: &str, timeout: Duration) -> anyhow::Result<serde_json::Value> {
+        let _ = self.tx.send(AskMsg::Polling);
+        Daemon::get_with_timeout(self.client, path, timeout)
+    }
+    fn post(&self, path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        Daemon::post(self.client, path, body)
+    }
+    fn patch(&self, path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        Daemon::patch(self.client, path, body)
+    }
+}
+
+/// `clax hook ask`: runs outside [`run`]'s single deadline, because its
+/// long poll may hold for up to `terminal_after_s`. Everything before the
+/// poll has [`ASK_SETUP_DEADLINE`]; the poll its own timeout. Prints the
+/// decision, if any, logs `ask mode=… outcome=… waited_s=…` (never question
+/// or answer text), and exits 0.
+fn run_ask(home: &Home, agent: Agent, started: Instant) -> ! {
+    let (tx, rx) = mpsc::channel();
+    let worker_home = home.clone();
+    std::thread::spawn(move || {
+        let msg = ask_worker(agent, &worker_home, tx.clone());
+        let _ = tx.send(msg);
+    });
+    let setup = ASK_SETUP_DEADLINE.saturating_sub(started.elapsed());
+    let msg = match rx.recv_timeout(setup) {
+        Ok(AskMsg::Polling) => rx.recv_timeout(ASK_POLL_DEADLINE),
+        other => other,
+    };
+    let (asked, error) = match msg {
+        Ok(AskMsg::Quiet) => std::process::exit(0),
+        Ok(AskMsg::Done(a)) => (Some(a), None),
+        Ok(AskMsg::Failed(e)) => (None, Some(e)),
+        Ok(AskMsg::Polling) => (None, Some("polled twice".to_string())),
+        Err(_) => (None, Some("timed out".to_string())),
+    };
+    if let Some(line) = asked.as_ref().and_then(|a| a.out.to_line()) {
+        let _ = writeln!(std::io::stdout(), "{line}");
+    }
+    if let Some(e) = &error {
+        eprintln!("clax hook: {e}");
+    }
+    let detail = match &asked {
+        Some(a) => format!(
+            "ask mode={} outcome={} waited_s={}",
+            a.mode.unwrap_or("-"),
+            a.outcome.as_str(),
+            a.waited.as_secs()
+        ),
+        None => "ask mode=- outcome=error waited_s=0".to_string(),
+    };
+    log_run(
+        home,
+        agent.harness(),
+        Event::Ask.name(),
+        started,
+        error.as_deref(),
+        Some(&detail),
+    );
+    // Exit now: a timed-out worker may still be blocked on stdin or the network.
+    std::process::exit(0);
+}
+
+fn ask_worker(agent: Agent, home: &Home, tx: mpsc::Sender<AskMsg>) -> AskMsg {
+    if !matches!(agent, Agent::Claude) {
+        return AskMsg::Quiet;
+    }
+    let mut stdin = String::new();
+    let _ = std::io::stdin().read_to_string(&mut stdin);
+    let input = HookInput::parse(&stdin);
+    if crate::host::grok_runs_hook(|k| std::env::var(k).ok(), &input) {
+        crate::host::log_standdown(home, "hook");
+        return AskMsg::Quiet;
+    }
+    let Some(client) = Client::discover(home) else {
+        return AskMsg::Failed("no clax daemon is running".to_string());
+    };
+    let client = client.with_timeout(ASK_REQUEST_TIMEOUT);
+    let daemon = Reporting {
+        client: &client,
+        tx,
+    };
+    AskMsg::Done(ask::ask_logged(&input, &daemon, Budget::default()))
+}
 #[cfg(test)]
 mod tests {
     use super::*;

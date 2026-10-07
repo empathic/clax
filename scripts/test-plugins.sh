@@ -153,11 +153,37 @@ def cmds(hooks, event):
 ok = all(h["command"].endswith("exec hook --agent claude stop") and h["timeout"] == 10 for h in cmds(claude, "Stop")) and cmds(claude, "Stop")
 ok = ok and all(h["command"].endswith("exec hook --agent claude prompt") and isinstance(h["timeout"], int) for h in cmds(claude, "UserPromptSubmit")) and cmds(claude, "UserPromptSubmit")
 ok = ok and all('"${PLUGIN_ROOT}/scripts/ensure-clax.sh" exec hook --agent codex stop' in h["command"] and h["timeout"] == 10 for h in cmds(codex, "Stop")) and cmds(codex, "Stop")
-ok = ok and [h["command"] for h in cmds(claude, "PostToolUse")] == ['"${CLAUDE_PLUGIN_ROOT}/scripts/tool-hook.sh" claude'] and all(h["timeout"] == 5 for h in cmds(claude, "PostToolUse"))
+ok = ok and [h["command"] for h in claude["PostToolUse"][0]["hooks"]] == ['"${CLAUDE_PLUGIN_ROOT}/scripts/tool-hook.sh" claude'] and "matcher" not in claude["PostToolUse"][0] and all(h["timeout"] == 5 for h in cmds(claude, "PostToolUse"))
 ok = ok and [h["command"] for h in cmds(codex, "PostToolUse")] == ['bash "${PLUGIN_ROOT}/scripts/tool-hook.sh" codex'] and all(h["timeout"] == 5 for h in cmds(codex, "PostToolUse"))
 sys.exit(0 if ok else 1)
 PY
 then pass "Stop, prompt and PostToolUse hooks are wired"; else fail "the Claude Stop/UserPromptSubmit/PostToolUse or Codex Stop/PostToolUse hooks are missing or misconfigured"; fi
+
+# Claude Code's AskUserQuestion is mirrored into Clax (agent questions spec
+# §6.6): `ask` before the call (3600 s, with its status message) and `asked`
+# after it (5 s), each matched to AskUserQuestion only. The Codex and Grok
+# plugins wire neither.
+if python3 - plugins/claude-code/hooks/hooks.json plugins/clax/hooks/hooks.json plugins/clax-grok/hooks/hooks.json \
+    docs/contract.md docs/superpowers/specs/2026-10-06-agent-questions-and-inbox-design.md 2>/dev/null <<'PY'
+import json, sys
+claude = json.load(open(sys.argv[1]))["hooks"]
+prefix = '"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh" exec hook --agent claude '
+pre = claude.get("PreToolUse", [])
+ok = len(pre) == 1 and pre[0].get("matcher") == "AskUserQuestion"
+ok = ok and pre[0]["hooks"] == [{"type": "command", "command": prefix + "ask", "timeout": 3600,
+    "statusMessage": "Asking in Clax: answer there, or choose Answer in the terminal"}]
+post = [e for e in claude.get("PostToolUse", []) if e.get("matcher") == "AskUserQuestion"]
+ok = ok and len(post) == 1 and post[0]["hooks"] == [{"type": "command", "command": prefix + "asked", "timeout": 5}]
+for other in sys.argv[2:4]:
+    text = open(other).read()
+    ok = ok and "AskUserQuestion" not in text and " ask" not in text
+# The contract and the spec quote the status message word for word.
+for doc in sys.argv[4:]:
+    ok = ok and pre[0]["hooks"][0]["statusMessage"] in " ".join(open(doc).read().split())
+sys.exit(0 if ok else 1)
+PY
+then pass "the Claude Code plugin mirrors AskUserQuestion (ask, asked); Codex and Grok do not"
+else fail "the Claude Code PreToolUse/PostToolUse AskUserQuestion hooks are missing or misconfigured (spec §6.6)"; fi
 
 for f in plugins/claude-code/commands/comments.md plugins/claude-code/commands/watch.md plugins/claude-code/commands/wait.md plugins/claude-code/commands/extension.md; do
     [ -f "$f" ] || fail "$f is missing"

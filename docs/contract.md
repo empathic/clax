@@ -2077,12 +2077,20 @@ in `wait` mode, polls it for up to `terminal_after_s` seconds: an answer
 or a skip answers the tool call from Clax; on its timer or **Answer in the
 terminal** the question is released and the terminal dialog opens. `asked`
 records the terminal dialog's answers on a released question (`questions:
-terminal`). The session lookup and creation have 2 s together (1 s per
-request), the wait `terminal_after_s` plus 10 s, `asked` 2 s. Every
-failure exits 0 with no output, leaving the terminal dialog to run. Each
-run logs `ask mode=<wait|terminal> outcome=<answered|declined|released|
-timeout|terminal|error> waited_s=<n>` to `hooks.log`, never question or
-answer text. The Codex and Grok plugins wire neither hook.
+terminal`). Reading the input, finding the daemon, the session lookup and
+the creation have 2 s together (1 s per request); the wait has
+`terminal_after_s` plus 10 s; `asked` has 2 s (1 s per request). If the
+wait runs out and the release loses to an answer given in that instant,
+`ask` takes the answer. Every failure exits 0 with no output, leaving the
+terminal dialog to run. Each `ask` run appends `ask mode=<wait|terminal|->
+outcome=<answered|declined|released|timeout|terminal|error|skipped>
+waited_s=<n>` to its `hooks.log` line, never question or answer text:
+`mode` is `-` when the daemon chose none (no daemon, no live session, or
+the input not an `AskUserQuestion` call), `released` also covers a
+question withdrawn while the hook waited, `skipped` is input that is not
+an `AskUserQuestion` call, and `waited_s` is how long the poll was held.
+Under `--agent codex` or `--agent grok` both commands exit 0 at once. The
+Codex and Grok plugins wire neither hook.
 
 ### `[questions]` in `config.toml`
 

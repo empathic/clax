@@ -143,7 +143,7 @@ pub fn session_end(
 ///
 /// # Errors
 /// When the input has no `session_id` or the daemon cannot be asked.
-fn live_session(
+pub(crate) fn live_session(
     harness: &str,
     input: &HookInput,
     daemon: &dyn Daemon,
