@@ -73,9 +73,13 @@ describe("Panel", () => {
     await vi.waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Right-click the page and choose Comment with Clax to comment with a screenshot."));
   });
 
-  it("offers to start when Clax is off on the tab", () => {
-    render(Panel, { props: { link: link(state({ enabled: false, page: null, threads: [] })) as never } });
-    expect(screen.getByText(/Click the Clax button or press/)).toBeTruthy();
+  it("offers to start when Clax is off on the tab, naming the command's shortcut or else the context menu", async () => {
+    const off = state({ enabled: false, page: null, threads: [] });
+    render(Panel, { props: { link: link(off) as never, shortcut: Promise.resolve("⌥⇧C") } });
+    await vi.waitFor(() => expect(screen.getByText("Click the Clax button or press ⌥⇧C on a page to comment on it.")).toBeTruthy());
+    cleanup();
+    render(Panel, { props: { link: link(off) as never, shortcut: Promise.resolve(null) } });
+    expect(screen.getByText("Click the Clax button, or right-click a page and choose Comment with Clax, to comment on it.")).toBeTruthy();
   });
 
   it("says when the worker's stream is down, so what it shows may be stale", () => {

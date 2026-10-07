@@ -22,7 +22,7 @@
   import Merge from "./Merge.svelte";
   import SiteTools from "./SiteTools.svelte";
   import MoveTo from "./MoveTo.svelte";
-  import { type Shortcut, panelHint, readShortcut } from "../shortcut";
+  import { type Shortcut, offHint, panelHint, readShortcut } from "../shortcut";
   import { DEFAULT_PREFS, type Prefs, loadPrefs, savePrefs } from "./prefs";
   import { FILTERS, type Filter, groups, matches, pageLabel } from "./site-model";
 
@@ -194,7 +194,7 @@
       {/key}
     {/if}
     {#if !s.enabled}
-      <p class="hint">Click the Clax button or press ⌥⇧C on a page to comment on it.</p>
+      <p class="hint">{offHint(keys)}</p>
     {:else}
       {#if s.page || anyFar}
         <div class="tools">
