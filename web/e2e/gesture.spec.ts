@@ -501,6 +501,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     form.set("version", "1");
     expect((await fetch(`${d.base}/api/artifacts/${id}/threads`, { method: "POST", body: form })).status).toBe(201);
     const f = await openArtifact(page, d.base, id, 1, mode);
+    // The page reports focus on its button only once its setup is done.
+    await expect(f.locator("#t")).toHaveAttribute("data-ready", "yes");
     const threads = page.getByRole("button", { name: /^Threads/ });
     await expect(threads).toHaveText("Threads 1");
     if ((await threads.getAttribute("aria-pressed")) !== "true") await threads.click();
