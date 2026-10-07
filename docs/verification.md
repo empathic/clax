@@ -742,7 +742,9 @@ Found by this test and fixed, each with a regression test:
 
 - The toolbar icon, its permission prompt and the per-origin grant (the
   test build holds `<all_urls>` or a fixed origin; the worker's test hook
-  stands in for the click). `activeTab` lapsing on navigation.
+  stands in for the click). `activeTab` lapsing at a navigation to
+  another origin (a same-origin reload keeps it: checked in Chromium
+  through CDP's `Extensions.triggerAction`, a real action click).
 - The side panel opened by the icon in that tab (the test opens Chrome's
   real side panel, but through `chrome.sidePanel.open({tabId})` from an
   extension page), and the icon's second click turning Clax off in the tab
@@ -760,9 +762,9 @@ Found by this test and fixed, each with a regression test:
   only the order of the calls: `sidePanel.setOptions`, `sidePanel.open`,
   `permissions.request`, all before any `await`).
 - Declining the permission: the panel says Clax will turn off in this tab
-  when the page reloads. Then reload, and check by hand whether same-origin
-  reloads keep `activeTab`: if Chrome keeps it, the worker may still read
-  the tab and Clax stays on; if not, Clax turns off. Record which.
+  when the page reloads. Chrome keeps `activeTab` across a same-origin
+  reload, so the worker may still read the tab: check by hand whether Clax
+  then stays on, and record which.
 - An on tab dragged into another window: its panel goes with it, shows
   that tab's threads, and "Turn off in this tab" turns off that tab (the
   panel is pinned to its tab, `?tab=`; unit tests hold the pinning and the
