@@ -13,16 +13,24 @@ process loops on cheap requests (`/healthz`, `/a/<id>`, `/c/<id>/v/1/`,
 - docs:batch: a batch of 50 documents of 250 KB each every quarter second;
 - polls + SSE: ten feedback and ten notices long polls, ten event streams,
   and presence reports that feed the streams;
-- big publish: an artifact of 300 files and 16 MB every half second.
+- big publish: an artifact of 300 files and 16 MB every half second;
+- inbox tab: the owner's inbox refreshed and searched once a second
+  (GET /api/inbox?read=unread, a search for a common word, the summary).
 
-Each round also times GET /api/viewers/me/attention alone, nothing else
-running. A probe's p95 and max are taken per round; the gate judges the
+The seed also fills the owner's inbox: the owner comments on eight threads
+(as the CLI does, with the token, after a browser of the owner's made the
+owner viewer) and sends them, agents reply on them round-robin, and agents
+ask questions.
+
+Each round also times GET /api/viewers/me/attention alone, and the three
+inbox requests alone, nothing else running. A probe's p95 and max are taken per round; the gate judges the
 median over rounds, so one burst of machine load in one round does not fail
 it. Requests still in flight when a window closes are waited for and count.
 
 Budgets live in scripts/perf-daemon-budget.json:
 - `cheap_p95_ms`, `cheap_max_ms`: every probe under every load;
 - `attention_alone_ms`: the median of the attention request alone;
+- `inbox_alone_ms`: the median of the inbox tab's three requests, each alone;
 - `quiet_idle_p95_ms`, `max_scale`: the limits are the budgets times
   clamp(idle p95 / quiet_idle_p95_ms, 1, max_scale), the idle p95 measured
   in the same run, so a machine busy with other work gets proportionally
@@ -31,13 +39,20 @@ Budgets live in scripts/perf-daemon-budget.json:
 - `seed`: the seeded home's shape;
 - `quick`: what `--quick` (quality_gates.sh) overrides: shorter windows,
   judged by the same budgets and the same idle scaling. The seed stays
-  whole: it takes about a second, and with fewer threads a regression in
-  the attention queries would show less.
+  whole: with fewer threads a regression in the attention queries would
+  show less, and with fewer inbox items one in the inbox queries would.
+  `inbox_replies` is 2000, not the 5000 first planned: 5000 replies on
+  eight threads took 6.5 s to seed (each reply answers with its whole
+  thread, so the cost grows with the threads' length), 2000 take about 2 s.
+  The inbox requests' cost follows a page, not the history (their query
+  plans are checked in clax-core), so the smaller history measures the same
+  thing; 2000 replies is already 2,300 unread items.
 
 Exits 0 when every median is within its limit, 1 when one is not, 2 on a
 setup failure. The scratch home and the daemon are removed on every exit.
 """
 import base64
+import hashlib
 import http.client
 import json
 import math
@@ -291,19 +306,22 @@ def seed(port, token, cfg):
                              {"x-clax-session": sessions[i % len(sessions)]})
         expect(st == 201, f"publish: {st} {d[:200]!r}")
         aid = json.loads(d)["artifact"]["id"]
+        tids = []
         for t in range(cfg["threads_per_artifact"]):
             body, ct = multipart([("anchor", None, None, ANCHOR), ("body", None, None, f"comment {t}".encode()),
                                   ("version", None, None, b"1")])
             st, d, _, _ = cl.req("POST", f"/api/artifacts/{aid}/threads", body, {**ck, "Content-Type": ct}, auth=False)
             expect(st == 201, f"thread: {st} {d[:200]!r}")
             tid = json.loads(d)["thread"]["id"]
+            tids.append(tid)
             for k in range(cfg["comments_per_thread"] - 1):
                 st, d, _, _ = cl.req("POST", f"/api/artifacts/{aid}/threads/{tid}/comments", {"body": f"reply {k}"}, ck, auth=False)
                 expect(st in (200, 201), f"reply: {st} {d[:200]!r}")
-        return aid
+        return aid, tids
 
     with ThreadPoolExecutor(8) as ex:
-        aids = list(ex.map(one, range(cfg["artifacts"])))
+        made = list(ex.map(one, range(cfg["artifacts"])))
+    aids = [a for a, _ in made]
 
     # A few large artifacts, and assets on the first ones.
     for i in range(cfg["large_artifacts"]):
@@ -324,9 +342,60 @@ def seed(port, token, cfg):
         writes = [{"op": "set", "path": f"rows/r{b}_{i}", "data": {"n": b * 50 + i, "note": "row " * 50}} for i in range(50)]
         st, d, _, _ = c.req("POST", f"/api/artifacts/{db_aid}/docs:batch", {"writes": writes, "lww": True})
         expect(st == 200, f"docs:batch seed: {st} {d[:200]!r}")
+    t_inbox = time.perf_counter()
+    inbox = seed_inbox(port, token, cfg, made, sessions, client)
     c.close()
     return {"viewer": viewer, "aids": aids, "probe_aid": aids[0], "db_aid": db_aid, "sessions": sessions,
-            "seconds": time.perf_counter() - t0}
+            "seconds": time.perf_counter() - t0, "inbox_seconds": time.perf_counter() - t_inbox, **inbox}
+
+
+INBOX_THREADS = 8
+
+
+def owner_cookie(port, token):
+    """The owner cookie a browser of the owner's holds (identity.rs)."""
+    value = hashlib.sha256(b"clax owner cookie\n" + token.encode()).hexdigest()
+    return {"Cookie": f"clax_owner_{port}={value}"}
+
+
+def seed_inbox(port, token, cfg, made, sessions, client):
+    """The owner's inbox: the owner comments on one thread of each of eight
+    artifacts (away from the probed ones) and sends it; agents reply on
+    those threads round-robin, 20 requests in flight; agents ask questions."""
+    c = Client(port, token)
+    st, d, _, _ = c.req("GET", "/api/viewers/me", headers=owner_cookie(port, token), auth=False)
+    expect(st == 200, f"no owner viewer: {st} {d[:200]!r}")
+    threads = []
+    for aid, tids in made[10:10 + INBOX_THREADS]:
+        tid = tids[0]
+        st, d, _, _ = c.req("POST", f"/api/artifacts/{aid}/threads/{tid}/comments", {"body": "please fix the header"})
+        expect(st == 201, f"owner comment: {st} {d[:200]!r}")
+        st, d, _, _ = c.req("POST", f"/api/artifacts/{aid}/threads/{tid}/send", {})
+        expect(st == 200, f"send: {st} {d[:200]!r}")
+        threads.append((aid, tid))
+    expect(len(threads) == INBOX_THREADS, "too few artifacts for the inbox threads")
+
+    def reply(k):
+        aid, tid = threads[k % len(threads)]
+        st, d, _, _ = client().req("POST", f"/api/artifacts/{aid}/threads/{tid}/comments",
+                                   {"body": f"note {k} about the header", "author_kind": "agent"},
+                                   {"x-clax-session": sessions[k % len(sessions)]})
+        expect(st == 201, f"agent reply: {st} {d[:200]!r}")
+
+    with ThreadPoolExecutor(20) as ex:
+        list(ex.map(reply, range(cfg["inbox_replies"])))
+    for k in range(cfg["inbox_questions"]):
+        st, d, _, _ = c.req("POST", f"/api/sessions/{sessions[k % len(sessions)]}/questions",
+                            {"source": "ask", "questions": [{"question": f"Which header {k}?", "header": "Header",
+                                                             "options": [{"label": "Top"}, {"label": "Side"}]}]})
+        expect(st == 201, f"ask: {st} {d[:200]!r}")
+    st, d, _, _ = c.req("GET", "/api/inbox/summary")
+    expect(st == 200, f"inbox summary: {st}")
+    unread = json.loads(d)["unread"]
+    # Each reply is an item only when the owner is in its thread.
+    expect(unread >= cfg["inbox_replies"], f"the inbox holds {unread} unread items, not the seeded replies")
+    c.close()
+    return {"inbox_unread": unread}
 
 
 # --- loads ------------------------------------------------------------------------
@@ -446,6 +515,22 @@ class Loads:
             t.join(3)
         return f"20 long polls of {wait} s, 10 streams read {sum(lines)} lines, {n} presence reports"
 
+    def inbox_tab(self, deadline):
+        """One open inbox tab: the unread list, a search and the summary in
+        parallel, once a second."""
+        cs = [self.client() for _ in INBOX_REQUESTS]
+        n = 0
+        with ThreadPoolExecutor(len(cs)) as ex:
+            while time.time() < deadline:
+                t0 = time.time()
+                fs = [ex.submit(cl.req, "GET", path) for cl, path in zip(cs, INBOX_REQUESTS)]
+                expect(all(f.result()[0] == 200 for f in fs), "inbox tab refresh failed")
+                n += 1
+                time.sleep(max(0, min(1 - (time.time() - t0), deadline - time.time())))
+        for cl in cs:
+            cl.close()
+        return f"{n} refreshes"
+
     def big_publish(self, deadline):
         """A new artifact of 300 files and 16 MB every half second."""
         c, ts = self.client(), []
@@ -460,7 +545,9 @@ class Loads:
 
 
 PHASES = [("idle", "idle"), ("gallery tab", "gallery_tab"), ("10 galleries", "galleries"),
-          ("docs:batch", "docs_batch"), ("polls + SSE", "polls_sse"), ("big publish", "big_publish")]
+          ("docs:batch", "docs_batch"), ("polls + SSE", "polls_sse"), ("big publish", "big_publish"),
+          ("inbox tab", "inbox_tab")]
+INBOX_REQUESTS = ["/api/inbox?read=unread", "/api/inbox?q=header", "/api/inbox/summary"]
 
 
 # --- measuring and judging -------------------------------------------------------
@@ -515,6 +602,28 @@ def attention_alone(d, st, n=ATTENTION_SAMPLES):
     return statistics.median(ts)
 
 
+INBOX_SAMPLES = 7
+
+
+def inbox_alone(d, n=INBOX_SAMPLES):
+    """The median of the inbox tab's three requests, each alone (the
+    owner, with the token), and each request's own median."""
+    c = Client(d.port, d.token)
+    for path in INBOX_REQUESTS:
+        c.req("GET", path)  # warm-up
+    every, each = [], {}
+    for path in INBOX_REQUESTS:
+        ts = []
+        for _ in range(n):
+            s, _, dt, _ = c.req("GET", path)
+            expect(s == 200, f"{path}: {s}")
+            ts.append(dt * 1000)
+        each[path] = statistics.median(ts)
+        every.extend(ts)
+    c.close()
+    return statistics.median(every), each
+
+
 def main(binary, budget_path, quick):
     cfg = json.load(open(budget_path))
     if quick:
@@ -530,20 +639,28 @@ def main(binary, budget_path, quick):
               f"{len(st['aids']) * seed_cfg['threads_per_artifact'] * seed_cfg['comments_per_thread']} comments by one viewer, "
               f"{seed_cfg['large_artifacts']} large artifacts, {seed_cfg['assets']} assets, {seed_cfg['db_docs']} documents, "
               f"{len(st['sessions'])} sessions in {st['seconds']:.1f} s", flush=True)
+        print(f"seeded the inbox: {seed_cfg['inbox_replies']} agent replies on {INBOX_THREADS} owner threads, "
+              f"{seed_cfg['inbox_questions']} questions, {st['inbox_unread']} unread items in {st['inbox_seconds']:.1f} s",
+              flush=True)
         loads = Loads(d.port, d.token, st)
         rounds, window = cfg["rounds"], cfg["window_s"]
         per = {name: {label: [] for label in CHEAP} for name, _ in PHASES}
         infos = {name: [] for name, _ in PHASES}
         attention = []
+        inbox = []
         for r in range(rounds):
             t0 = time.perf_counter()
             attention.append(attention_alone(d, st))
+            inbox_med, inbox_each = inbox_alone(d)
+            inbox.append(inbox_med)
             for name, method in PHASES:
                 res, info = run_phase(d, loads, st, method, window)
                 for label in CHEAP:
                     per[name][label].append(res[label])
                 infos[name].append(info)
-            print(f"round {r + 1}/{rounds}: {time.perf_counter() - t0:.1f} s, attention alone {attention[-1]:.0f} ms", flush=True)
+            print(f"round {r + 1}/{rounds}: {time.perf_counter() - t0:.1f} s, attention alone {attention[-1]:.0f} ms, "
+                  f"inbox alone {inbox[-1]:.1f} ms (" + ", ".join(f"{p} {v:.1f}" for p, v in inbox_each.items()) + ")",
+                  flush=True)
     except SetupError as e:
         print(f"perf-daemon: setup failed: {e}", file=sys.stderr)
         if d is not None:
@@ -563,10 +680,11 @@ def main(binary, budget_path, quick):
     scale = min(cfg["max_scale"], max(1.0, idle_p95 / quiet))
     lim_p95, lim_max = cfg["cheap_p95_ms"] * scale, cfg["cheap_max_ms"] * scale
     lim_att = cfg["attention_alone_ms"] * scale
+    lim_inbox = cfg["inbox_alone_ms"] * scale
 
     print()
     print(f"idle p95 {idle_p95:.1f} ms (quiet is {quiet} ms or less): limits scaled by {scale:.2f}: "
-          f"p95 {lim_p95:.0f} ms, max {lim_max:.0f} ms, attention alone {lim_att:.0f} ms")
+          f"p95 {lim_p95:.0f} ms, max {lim_max:.0f} ms, attention alone {lim_att:.0f} ms, inbox alone {lim_inbox:.0f} ms")
     print(f"medians over {rounds} rounds of {window} s windows{' (quick)' if quick else ''}")
     print()
     print(f"{'load':<14} {'probe':<24} {'n':>5} {'p95 ms':>9} {'max ms':>9}  verdict")
@@ -589,6 +707,11 @@ def main(binary, budget_path, quick):
     if not att_ok:
         failed.append("attention alone")
     print(f"{'alone':<14} {'GET attention (median)':<24} {len(attention) * ATTENTION_SAMPLES:>5} {att:>9.1f} {'':>9}  {'ok' if att_ok else 'FAIL'}")
+    inb = med(inbox)
+    inb_ok = inb <= lim_inbox
+    if not inb_ok:
+        failed.append("inbox alone")
+    print(f"{'alone':<14} {'inbox_alone_ms (median)':<24} {len(inbox) * INBOX_SAMPLES * len(INBOX_REQUESTS):>5} {inb:>9.1f} {'':>9}  {'ok' if inb_ok else 'FAIL'}")
     print()
     for name, _ in PHASES[1:]:
         print(f"{name}: " + "; ".join(infos[name]))

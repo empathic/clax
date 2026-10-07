@@ -2,6 +2,7 @@
   "cheap_p95_ms": 50,
   "cheap_max_ms": 250,
   "attention_alone_ms": 50,
+  "inbox_alone_ms": 50,
   "quiet_idle_p95_ms": 5,
   "max_scale": 3,
   "rounds": 3,
@@ -13,7 +14,9 @@
     "sessions": 50,
     "large_artifacts": 3,
     "assets": 6,
-    "db_docs": 1000
+    "db_docs": 1000,
+    "inbox_replies": 2000,
+    "inbox_questions": 20
   },
   "quick": {
     "window_s": 0.5

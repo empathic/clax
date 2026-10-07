@@ -979,6 +979,20 @@ async fn hook_mode_is_terminal_without_a_surface() {
     assert_eq!(r["mode"], "terminal");
     let _surface = ts.stream_as_owner(&["questions"]).await;
     b["tool_use_id"] = json!("t3");
+    let r: Value = post(&ts, &format!("/api/sessions/{sid}/questions"), b.clone())
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        (r["mode"].as_str(), r["surface_open"].as_bool()),
+        (Some("wait"), Some(true))
+    );
+    // A stream holding only `inbox` is a surface too.
+    let ts = TestServer::spawn().await;
+    let sid = session(&ts, "h1").await;
+    let _inbox = ts.stream_as_owner(&["inbox"]).await;
+    b["tool_use_id"] = json!("t4");
     let r: Value = post(&ts, &format!("/api/sessions/{sid}/questions"), b)
         .await
         .json()

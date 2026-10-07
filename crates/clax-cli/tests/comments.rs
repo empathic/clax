@@ -765,3 +765,100 @@ fn status_lists_who_is_working_on_what() {
     );
     assert!(d.ok(&["status"]).contains("no agent is working"));
 }
+
+#[test]
+fn inbox_lists_shows_and_marks_as_the_owner() {
+    let d = Daemon::start();
+    d.name_maria();
+    d.ok(&["comments", "name", "Alex"]);
+    let sid = d.session("h1");
+    let review = d.publish(
+        Some(&sid),
+        "Review",
+        json!({"index.html": {"content": "<main><h2>Quarterly goals</h2></main>", "encoding": "utf8"}}),
+        json!({}),
+    );
+    let tid = d.thread(
+        &review,
+        "index.html",
+        "body > main > h2",
+        "Quarterly goals",
+        "@agent Two columns",
+    );
+    d.ok(&["comments", "reply", &tid, "And the footer"]);
+    let res = d
+        .http()
+        .post(format!(
+            "{}/api/artifacts/{review}/threads/{tid}/comments",
+            d.base()
+        ))
+        .bearer_auth(d.token())
+        .header("x-clax-session", &sid)
+        .json(&json!({"body": "Footer \x1b[31mred\x1b[0m \u{202e}txet", "author_kind": "agent"}))
+        .send()
+        .unwrap();
+    assert!(res.status().is_success());
+
+    // Unread items, newest first, numbered.
+    let text = d.ok(&["inbox"]);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "{text}");
+    for (line, kind) in lines.iter().zip(["reply", "published"]) {
+        for want in ["claude", kind, "Review", "●"] {
+            assert!(line.contains(want), "{line:?} lacks {want}");
+        }
+    }
+    assert!(lines[0].trim_start().starts_with("1 "), "{text}");
+    assert!(lines[1].trim_start().starts_with("2 "), "{text}");
+    // cli_escapes_agent_text: no terminal control reaches the terminal.
+    assert!(
+        !text.contains('\x1b') && !text.contains('\u{202e}'),
+        "{text:?}"
+    );
+    assert!(
+        text.contains("\\x1b[31mred") && text.contains("\\u{202e}txet"),
+        "{text}"
+    );
+
+    // --json prints the route's object; words search.
+    let v = d.json(&["inbox", "footer"]);
+    let items = v["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{v}");
+    assert_eq!(items[0]["kind"], "reply");
+    assert_eq!(v["unread"], 2);
+    let reply_id = items[0]["id"].as_str().unwrap().to_string();
+
+    // Numbers name the last listing's lines; show marks read. The search
+    // listing above numbered only the reply.
+    let shown = d.ok(&["inbox", "show", "1"]);
+    assert!(
+        shown.contains("reply") && shown.contains("Review"),
+        "{shown}"
+    );
+    assert!(!shown.contains('\x1b'), "{shown:?}");
+    assert!(
+        shown.contains(&format!("/a/{review}?thread={tid}")),
+        "{shown}"
+    );
+    let v = d.json(&["inbox", "--all"]);
+    let reply = v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == reply_id.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(reply["read"], true);
+    assert_eq!(v["unread"], 1);
+
+    let out = d.ok(&["inbox", "read", "--all"]);
+    assert!(out.starts_with("marked 1"), "{out}");
+    assert_eq!(d.ok(&["inbox"]).trim(), "no unread items");
+
+    let out = d.ok(&["inbox", "unread", &reply_id]);
+    assert!(out.contains("marked 1 unread"), "{out}");
+    let v = d.json(&["inbox"]);
+    assert_eq!(v["items"][0]["id"], reply_id.as_str());
+    let e = d.fails(&["inbox", "show", "9"]);
+    assert!(e.contains("no item 9"), "{e}");
+}

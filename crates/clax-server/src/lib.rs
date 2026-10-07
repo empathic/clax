@@ -11,6 +11,7 @@ pub mod feedback;
 pub mod host;
 pub mod http_cache;
 pub mod identity;
+pub mod inbox;
 pub mod live;
 pub mod presence;
 pub mod push;

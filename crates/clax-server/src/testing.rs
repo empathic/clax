@@ -123,6 +123,7 @@ impl TestServer {
         };
         f(&mut state);
         state.stream.listen(&state.events);
+        crate::inbox::listen(&state);
         let events = state.events.clone();
         let store = state.store.clone();
         let working = state.working.clone();
@@ -484,6 +485,22 @@ impl TestViewer {
     }
 }
 
+impl TestViewer {
+    /// `PUT /api/viewers/me/looked`: this viewer looked at `tids` of `aid`;
+    /// asserts a success.
+    pub async fn look(&self, aid: &str, tids: &[&str]) {
+        let res = self
+            .client
+            .put(format!("{}/api/viewers/me/looked", self.base))
+            .header("cookie", format!("clax_viewer={}", self.cookie))
+            .json(&serde_json::json!({"artifact_id": aid, "thread_ids": tids}))
+            .send()
+            .await
+            .unwrap();
+        assert!(res.status().is_success(), "{}", res.status());
+    }
+}
+
 impl TestServer {
     /// Creates a viewer, named `name` when given.
     pub async fn viewer(&self, name: Option<&str>) -> TestViewer {
@@ -806,6 +823,128 @@ impl TestServer {
             .await
             .unwrap();
         assert_eq!(v["count"], n, "{n} polls of {qid} within 5 s");
+    }
+}
+
+impl TestServer {
+    /// A thread the owner leaves (in a browser of the owner's) on version 1
+    /// of `aid` and sends to the agent; returns the thread view.
+    pub async fn thread_as_owner(&self, aid: &str, body: &str) -> serde_json::Value {
+        let form = reqwest::multipart::Form::new()
+            .text("anchor", element_anchor().to_string())
+            .text("body", body.to_string())
+            .text("version", "1");
+        let res = self
+            .client
+            .post(format!("{}/api/artifacts/{aid}/threads", self.base))
+            .header("cookie", self.owner_cookie())
+            .multipart(form)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 201);
+        let t: serde_json::Value = res.json().await.unwrap();
+        let tid = t["thread"]["id"].as_str().unwrap();
+        let res = self
+            .client
+            .post(format!(
+                "{}/api/artifacts/{aid}/threads/{tid}/send",
+                self.base
+            ))
+            .header("cookie", self.owner_cookie())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        res.json::<serde_json::Value>().await.unwrap()["thread"].clone()
+    }
+
+    /// An agent reply of session `sid` on thread `tid` of `aid`, through the
+    /// comments route; returns the comment.
+    pub async fn reply_as_agent(
+        &self,
+        sid: &str,
+        aid: &str,
+        tid: &str,
+        body: &str,
+    ) -> serde_json::Value {
+        let res = self
+            .authed(self.client.post(format!(
+                "{}/api/artifacts/{aid}/threads/{tid}/comments",
+                self.base
+            )))
+            .header("x-clax-session", sid)
+            .json(&serde_json::json!({"body": body, "author_kind": "agent"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 201, "{}", res.text().await.unwrap());
+        res.json::<serde_json::Value>().await.unwrap()["comment"].clone()
+    }
+
+    /// `PUT /api/viewers/me/looked` as a browser of the owner's; asserts a
+    /// success.
+    pub async fn look_as_owner(&self, aid: &str, tids: &[&str]) {
+        let res = self
+            .client
+            .put(format!("{}/api/viewers/me/looked", self.base))
+            .header("cookie", self.owner_cookie())
+            .json(&serde_json::json!({"artifact_id": aid, "thread_ids": tids}))
+            .send()
+            .await
+            .unwrap();
+        assert!(res.status().is_success(), "{}", res.status());
+    }
+
+    /// `PUT /api/sessions/<sid>/working/<aid>` with `body`; asserts 200.
+    pub async fn put_working(&self, sid: &str, aid: &str, body: serde_json::Value) {
+        let res = self
+            .authed(
+                self.client
+                    .put(format!("{}/api/sessions/{sid}/working/{aid}", self.base)),
+            )
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200, "{}", res.text().await.unwrap());
+    }
+
+    /// `DELETE /api/sessions/<sid>/working/<aid>`: the agent says it is
+    /// done; asserts 200.
+    pub async fn delete_working(&self, sid: &str, aid: &str) {
+        let res = self
+            .authed(
+                self.client
+                    .delete(format!("{}/api/sessions/{sid}/working/{aid}", self.base)),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200, "{}", res.text().await.unwrap());
+    }
+
+    /// Moves the working clock `secs` forward and sweeps (the debug skew
+    /// route); asserts 200.
+    pub async fn skew_working(&self, secs: i64) {
+        let res = self
+            .post_json("/api/_test/working/skew", serde_json::json!({"secs": secs}))
+            .await;
+        assert_eq!(res.status(), 200);
+    }
+
+    /// Deletes thread `tid` of `aid` as the owner (the token); asserts a
+    /// success.
+    pub async fn delete_thread_as_owner(&self, aid: &str, tid: &str) {
+        let res = self
+            .authed(
+                self.client
+                    .delete(format!("{}/api/artifacts/{aid}/threads/{tid}", self.base)),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert!(res.status().is_success(), "{}", res.status());
     }
 }
 

@@ -63,6 +63,15 @@ pub enum Cmd {
     /// buttons do in your browser; replies carry the name `clax comments
     /// name` sets.
     Comments(commands::comments::Args),
+    /// What agents sent back: replies, versions, new artifacts, questions
+    /// and finished work, newest first.
+    ///
+    /// With no argument, the unread items; --all adds read ones, --read
+    /// shows only those; words search the items. Lines are numbered:
+    /// `clax inbox show 1` prints the first of the last listing and marks it
+    /// read; `read` and `unread` take numbers or item IDs, and `read --all`
+    /// marks every item the listing's filters and search match.
+    Inbox(commands::inbox::Args),
     /// List an artifact's versions: label, publisher, time, and the threads
     /// each addressed.
     Versions(commands::versions::Args),
@@ -231,6 +240,7 @@ fn main() {
         Cmd::Read(a) => commands::read::run(&cli, &home, a),
         Cmd::Asset(c) => commands::asset::run(&cli, &home, c),
         Cmd::Comments(a) => commands::comments::run(&cli, &home, a),
+        Cmd::Inbox(a) => commands::inbox::run(&cli, &home, a),
         Cmd::Versions(a) => commands::versions::run(&cli, &home, a),
         Cmd::Db(c) => commands::db::run(&cli, &home, c),
         Cmd::Open(a) => commands::open::run(&cli, &home, a),
@@ -260,6 +270,48 @@ mod tests {
 
     fn cli(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).unwrap()
+    }
+
+    #[test]
+    fn inbox_takes_search_words_filters_and_subcommands() {
+        let Cmd::Inbox(a) = cli(&["clax", "inbox", "footer", "green"]).cmd else {
+            panic!("inbox");
+        };
+        assert_eq!(a.search, ["footer", "green"]);
+        assert!(a.cmd.is_none());
+        let Cmd::Inbox(a) = cli(&["clax", "inbox", "--kind", "reply", "-n", "5", "header"]).cmd
+        else {
+            panic!("inbox");
+        };
+        assert_eq!(
+            (a.filters.kinds.as_slice(), a.search.as_slice(), a.limit),
+            (&["reply".to_string()][..], &["header".to_string()][..], 5)
+        );
+        let Cmd::Inbox(a) = cli(&[
+            "clax", "inbox", "read", "--all", "--kind", "reply", "--search", "header",
+        ])
+        .cmd
+        else {
+            panic!("inbox");
+        };
+        let Some(commands::inbox::Cmd::Read {
+            all: true,
+            filters,
+            search: Some(search),
+            ..
+        }) = a.cmd
+        else {
+            panic!("read --all");
+        };
+        assert_eq!(
+            (filters.kinds.as_slice(), search.as_str()),
+            (&["reply".to_string()][..], "header")
+        );
+        let Cmd::Inbox(a) = cli(&["clax", "inbox", "show", "1"]).cmd else {
+            panic!("inbox");
+        };
+        assert!(matches!(a.cmd, Some(commands::inbox::Cmd::Show { .. })));
+        assert!(Cli::try_parse_from(["clax", "inbox", "--kind", "nope"]).is_err());
     }
 
     #[test]

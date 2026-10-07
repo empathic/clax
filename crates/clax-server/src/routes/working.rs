@@ -9,7 +9,7 @@ use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use clax_core::model::Session;
-use clax_core::working::{Actor, End, MAX_WORKING_THREADS, SetWorking, clean_message};
+use clax_core::working::{Actor, End, Ended, MAX_WORKING_THREADS, SetWorking, clean_message};
 use clax_core::{ArtifactId, CoreError, Store};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -23,6 +23,17 @@ fn live(st: &Store, sid: &str) -> clax_core::Result<Session> {
             "the session has ended",
         )),
         Some(s) => Ok(s),
+    }
+}
+
+/// Records each of `ended` (work its agent said it finished) as a
+/// `finished` inbox item. The records have ended either way; an item that
+/// could not be written is logged.
+fn finished(st: &Store, ended: &[Ended], harness: &str) {
+    for e in ended {
+        if let Err(err) = st.note_finished(e, harness) {
+            tracing::warn!(error = %err, "finished work not recorded in the inbox");
+        }
     }
 }
 
@@ -122,7 +133,8 @@ pub struct ClearQuery {
 
 /// `DELETE /api/sessions/<sid>/working/<aid>` (W): the record, or with
 /// `?thread_ids=a,b` only those threads. `{cleared, working}` (`working` is
-/// what remains, or null).
+/// what remains, or null). A record this ends is finished work: a
+/// `finished` inbox item.
 pub async fn delete(
     State(s): State<AppState>,
     _t: RequireToken,
@@ -141,9 +153,10 @@ pub async fn delete(
     let (w, events) = (s.working.clone(), s.events.clone());
     let (cleared, left) = s
         .store_call(move |st| {
-            live(st, &sid)?;
-            let (changed, _ended) = w.clear(&sid, id.as_str(), threads.as_deref(), End::Done);
+            let sess = live(st, &sid)?;
+            let (changed, ended) = w.clear(&sid, id.as_str(), threads.as_deref(), End::Done);
             announce(&events, &w, &changed);
+            finished(st, &ended, &sess.harness);
             let left = w
                 .for_session(&sid)
                 .into_iter()
@@ -211,6 +224,7 @@ pub async fn renew(
 }
 
 /// `POST /api/sessions/<sid>/working/end` (W; the turn ended): `{cleared}`.
+/// Each record it ends is finished work: a `finished` inbox item.
 pub async fn end(
     State(s): State<AppState>,
     _t: RequireToken,
@@ -220,9 +234,10 @@ pub async fn end(
     let (w, events) = (s.working.clone(), s.events.clone());
     let n = s
         .store_call(move |st| {
-            live(st, &sid)?;
-            let (changed, _ended) = w.end_session(&sid, End::TurnEnd);
+            let sess = live(st, &sid)?;
+            let (changed, ended) = w.end_session(&sid, End::TurnEnd);
             announce(&events, &w, &changed);
+            finished(st, &ended, &sess.harness);
             Ok(changed.0.len())
         })
         .await?;

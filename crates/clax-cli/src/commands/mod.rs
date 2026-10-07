@@ -9,6 +9,7 @@ pub mod extension;
 pub mod feedback;
 pub mod haiku;
 pub mod hook;
+pub mod inbox;
 pub mod init;
 pub mod list;
 pub mod mcp;
