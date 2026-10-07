@@ -47,6 +47,8 @@
   let inside = false;
   // What a close says to assistive technology; empty on a card mounted closed.
   let said = $state("");
+  // Shown under the closed label when the person's action was not taken ("Not answered").
+  let notTaken = $state("");
   // The status the person's pending action would close the question with.
   let pending: QuestionStatus | null = null;
   // Whether the card was open when this instance last looked.
@@ -59,7 +61,12 @@
   const preview = $derived(previewOf(spec, focused, draft[tab]));
   const open = $derived(p.q.status === "open");
   const base = $derived(`q-${p.q.id}`);
-  const regain = () => { if (inside && card?.isConnected && !card.contains(document.activeElement)) card.focus(); };
+  // Takes focus back only when it went nowhere (<body>): focus the person
+  // moved elsewhere while the action was pending stays where they put it.
+  const regain = () => {
+    const a = document.activeElement;
+    if (inside && card?.isConnected && (!a || a === document.body)) card.focus();
+  };
   const NOT_TAKEN: Partial<Record<QuestionStatus, string>> = { answered: "Not answered", declined: "Not skipped", released: "Not moved" };
   $effect(() => {
     if (open) { wasOpen = true; return; }
@@ -68,7 +75,8 @@
     const label = closedLabel(p.q);
     const was = pending;
     const instead = was !== null && (p.q.status !== was || (was === "answered" && p.q.answered_via === "terminal"));
-    said = instead ? `${NOT_TAKEN[was!]}: ${label}` : label;
+    notTaken = instead ? NOT_TAKEN[was!]! : "";
+    said = instead ? `${notTaken}: ${label}` : label;
     pending = null;
     regain();
   });
@@ -156,6 +164,8 @@
   </header>
   {#if !open}
     <p class="closed">{closedLabel(p.q)}</p>
+    <!-- The status region says the whole sentence; this is its visible part. -->
+    {#if notTaken}<p class="instead" aria-hidden="true">{notTaken}</p>{/if}
     <dl class="answers">
       {#each p.q.questions as s, i (s.question)}
         <div><dt>{cutHeader(s.header)}</dt><dd class="q">{s.question}</dd>{#if p.q.answers}<dd class="a">{answerText(i)}</dd>{/if}</div>
@@ -213,9 +223,8 @@
   {/if}
   <!-- One live region for the card's life: while open, the trail's hint (a key
        asked for an action on a trail the page may have steered) or a failure;
-       once closed, what closed it, shown only when the person's action was
-       not taken. -->
-  <p class="act-hint" class:sr={!open && !said.startsWith("Not ")} role="status">{open ? (hint ?? "") : said}</p>
+       once closed, what closed it (read, not shown: the card shows it). -->
+  <p class="act-hint" class:sr={!open} role="status">{open ? (hint ?? "") : said}</p>
 </article>
 
 <style>
@@ -266,6 +275,6 @@
   .act-hint { margin: 6px 0 0; font-size: 12px; color: var(--muted); text-align: right; }
   .act-hint:empty { margin: 0; }
   .act-hint.sr { position: absolute; width: 1px; height: 1px; margin: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  .closed-card .act-hint:not(.sr) { text-align: left; color: var(--fg); }
+  .instead { margin: -2px 0 6px; font-size: 12.5px; color: var(--danger); }
   @media (pointer: coarse) { .opt input[data-opt] { width: 20px; height: 20px; } }
 </style>
