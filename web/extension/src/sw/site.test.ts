@@ -81,6 +81,21 @@ describe("Sites", () => {
     expect(h.sites.view(O)).toBeNull();
   });
 
+  it("applies an action's answer to its thread at once, keeping the listing's own fields", async () => {
+    const h = harness();
+    h.sites.follow([O]);
+    h.hear({ t: "live", topics: [`site:${O}`] });
+    await tick();
+    const { page_path: _, ...answer } = { ...thread(T2, A2, 2), status: "resolved" };
+    h.sites.applied(O, answer as never);
+    expect(h.sites.view(O)?.pages[1].threads[0]).toMatchObject({ status: "resolved", page_path: "/a", comments: [{ body: "body 1" }, { body: "body 2" }] });
+    expect(h.changed).toEqual([O, O]);
+    // A thread of a page the listing lacks, or of another origin, changes nothing.
+    h.sites.applied(O, thread(T1, A3) as never);
+    h.sites.applied("http://localhost:9", thread(T1, A1) as never);
+    expect(h.changed).toEqual([O, O]);
+  });
+
   it("loads the listing when the topic goes live, applies the deltas, and fetches it again when one does not add up", async () => {
     const h = harness();
     h.sites.follow([O]);

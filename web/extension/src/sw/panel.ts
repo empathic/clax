@@ -1,7 +1,9 @@
 // A side panel's actions (spec 2026-10-05 §9.4): each message `isFromPanel`
 // took acts on the tab the panel shows. Thread actions go to the daemon for
-// the tab's live page, and the thread the daemon answers with is applied at
-// once (the stream brings it too). A failure is told to the panel as
+// the tab's live page, or for the page of its site the thread is on (§7.1),
+// and the thread the daemon answers with is applied at once (the stream
+// brings it too). A thread's clip is fetched here, with the credential, for
+// the panel, which holds none. A failure is told to the panel as
 // `failed {code, message}`; one a new pairing can fix is also kept as the
 // tab's error, so the panel's Retry pairs again for it.
 import { MAX_SITES, type PanelToWorker, RETRYABLE, type WorkerToPanel } from "../messages";
@@ -12,9 +14,9 @@ import type { Sites } from "./site";
 import type { Tabs } from "./tabs";
 
 export type PanelDeps = {
-  api: Pick<Api, "sendThread" | "sendBatch" | "comment" | "resolve" | "reopen" | "looked" | "setName" | "move" | "addRule" | "deleteRule" | "suggest" | "sites" | "join" | "split" | "answer">;
+  api: Pick<Api, "sendThread" | "sendBatch" | "comment" | "resolve" | "reopen" | "looked" | "setName" | "move" | "addRule" | "deleteRule" | "suggest" | "sites" | "join" | "split" | "answer" | "clip">;
   tabs: Pick<Tabs, "ready" | "state" | "admits" | "route" | "applied" | "fail" | "setViewer" | "select" | "setCommentMode" | "commentOn" | "openThread" | "opening">;
-  sites: Pick<Sites, "load" | "origins">;
+  sites: Pick<Sites, "load" | "origins" | "view" | "applied">;
   /** Whether `url`'s server answers a short request (decision 3, 2026-10-06: a
    * thread opens on the first origin of its site that answers). */
   probe(url: string): Promise<boolean>;
@@ -43,6 +45,10 @@ const failed = (e: unknown): Extract<WorkerToPanel, { t: "failed" }> => {
   return { t: "failed", code: typeof err?.code === "string" ? err.code : "failed", message: typeof err?.message === "string" ? err.message : String(e) };
 };
 
+/** The thread `id` of the listing of the site Clax is on for at `on`. */
+const siteThread = (d: PanelDeps, on: string | null | undefined, id: string) =>
+  d.sites.view(on ?? null)?.pages.flatMap(p => p.threads).find(t => t.id === id);
+
 export async function panelAction(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: (r: WorkerToPanel) => void): Promise<void> {
   try {
     await act(d, tabId, m, reply);
@@ -70,6 +76,12 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: 
       if (s?.url) await d.tabs.route(tabId, s.url, true);
       return;
     case "select": d.tabs.select(tabId, m.threadId); return;
+    case "clip": {
+      // Of the tab's page, or of another page of its site; null for a thread it knows of neither, or one with no clip.
+      const t = s?.threads.find(x => x.id === m.threadId) ?? siteThread(d, s?.on, m.threadId);
+      reply({ t: "clip", req: m.req, url: t?.clip_url ? await d.api.clip(t.artifact_id, t.id).catch(() => null) : null });
+      return;
+    }
     case "comment-mode":
       if (!m.on) { d.tabs.setCommentMode(tabId, false); return; }
       if (!d.tabs.admits(tabId) && !(await d.allUrls())) {
@@ -154,6 +166,18 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: 
     }
   }
   if ("req" in m) throw changed();
+  // A thread of another page of the tab's site (spec §7.1) is acted on at
+  // its own page, and the answer applied to the site's listing.
+  if ((m.t === "send" || m.t === "reply" || m.t === "resolve" || m.t === "reopen") && on && !s.threads.some(t => t.id === m.threadId)) {
+    const t = siteThread(d, on, m.threadId);
+    if (t) {
+      const aid = t.artifact_id;
+      const r = m.t === "send" ? await d.api.sendThread(aid, t.id, m.to) : m.t === "reply" ? await d.api.comment(aid, t.id, m.body)
+        : m.t === "resolve" ? await d.api.resolve(aid, t.id) : await d.api.reopen(aid, t.id);
+      d.sites.applied(on, r.thread);
+      return;
+    }
+  }
   const page = s?.page;
   if (!page) throw new PanelFailure("no_page", "This tab shows no live page.");
   const aid = page.artifact_id;

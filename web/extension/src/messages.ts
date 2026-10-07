@@ -18,6 +18,8 @@ export const MAX_TITLE = 1000;
 /** A transport bound in UTF-16 code units; the daemon enforces the 8 MiB cap on the snapshot's bytes. */
 export const MAX_SNAPSHOT_CHARS = 8 * 1024 * 1024;
 export const MAX_ROUTE = 512;
+/** The longest clip the worker hands a panel, as a `data:` URL: a 5 MiB PNG (the daemon's bound) in base64. */
+export const MAX_CLIP_URL = 7_000_000;
 /** Why a pick carries a placeholder or no snapshot: the serializer's
  * `error`, or `failed` when the serializer threw. */
 export type SnapshotError = "too_large" | "failed";
@@ -160,10 +162,14 @@ export type WorkerToPanel =
   /** Whether the tab's origin may be the same app as another site (null: no suggestion). */
   | { t: "suggestion"; origin: string; suggestion: Suggestion | null }
   /** Every site Clax has live pages of, for "Same app as…". */
-  | { t: "sites"; sites: SiteChoice[] };
+  | { t: "sites"; sites: SiteChoice[] }
+  /** The clip `clip` asked for, as a `data:image/png` URL; null when the thread has none or it could not be fetched. */
+  | { t: "clip"; req: number; url: string | null };
 
 export type PanelToWorker =
   | { t: "watch-tab"; tabId: number }
+  /** `send`, `reply`, `resolve` and `reopen` act on a thread of the tab's
+   * page, or of another page of its site (spec §7.1), at that thread's own page. */
   | { t: "send"; threadId: string; to: string | null }
   | { t: "send-batch"; threadIds: string[]; note: string | null; to: string | null }
   | { t: "reply"; threadId: string; body: string }
@@ -179,6 +185,8 @@ export type PanelToWorker =
   | { t: "turn-off"; tabId: number }
   /** A thread of another page of the site: the tab goes to its page, where the overlay highlights it once found. */
   | { t: "open-thread"; threadId: string }
+  /** A thread's clip (the tab's page's or another page's of its site), which the panel cannot fetch itself: answered by `clip`. */
+  | { t: "clip"; req: number; threadId: string }
   /** Moves a thread of the site to the page `pageUrl` names (of the tab's origin). */
   | { t: "move"; threadId: string; pageUrl: string }
   /** One batch of a new merge rule for `origin`, which must be the origin
@@ -334,6 +342,7 @@ export function isToPanel(m: unknown): m is WorkerToPanel {
     case "step": return has("req", "moved", "remaining") && count(m.req) && count(m.moved) && count(m.remaining);
     case "suggestion": return has("origin", "suggestion") && origin(m.origin) && (m.suggestion === null || suggestion(m.suggestion));
     case "sites": return has("sites") && Array.isArray(m.sites) && m.sites.length <= MAX_SITES && m.sites.every(siteChoice);
+    case "clip": return has("req", "url") && count(m.req) && (m.url === null || (str(m.url, MAX_CLIP_URL) && m.url.startsWith("data:image/png;base64,")));
     default: return false;
   }
 }
@@ -390,6 +399,7 @@ export function isFromPanel(m: unknown): m is PanelToWorker {
       && typeof m.artifactId === "string" && ARTIFACT_ID.test(m.artifactId);
     case "turn-off": return has("tabId") && count(m.tabId);
     case "open-thread": return has("threadId") && ulid(m.threadId);
+    case "clip": return has("req", "threadId") && count(m.req) && ulid(m.threadId);
     case "move": return has("threadId", "pageUrl") && ulid(m.threadId) && url(m.pageUrl);
     case "rule": return has("req", "origin", "pattern") && count(m.req) && origin(m.origin)
       && typeof m.pattern === "string" && m.pattern.length <= MAX_PATTERN && /^\/[\x21-\x7e]*$/.test(m.pattern);

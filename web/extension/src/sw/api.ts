@@ -10,6 +10,8 @@ import type { Thread, Viewer } from "../../../shell/src/threads";
 import type { PresenceView } from "../../../shell/src/view/presence-model";
 import type { Working } from "../../../shell/src/view/working-model";
 import type { PageView, SiteInfo, SiteRule, SiteView } from "../messages";
+import { bytesDataUrl } from "../data-url";
+import { MAX_CLIP } from "./capture";
 import { PairError, type Pairer, type Pairing } from "./pairing";
 
 export class ApiFailure extends Error {
@@ -131,6 +133,14 @@ export class Api {
   async comment(aid: string, tid: string, body: string) { ids(aid, [tid]); return this.send<{ thread: Thread }>("POST", `/api/artifacts/${aid}/threads/${tid}/comments`, { body }, true); }
   async sendThread(aid: string, tid: string, to: string | null) { ids(aid, [tid]); return this.send<{ thread: Thread }>("POST", `/api/artifacts/${aid}/threads/${tid}/send`, to ? { to } : {}, true); }
   async sendBatch(aid: string, tids: string[], note: string | null, to: string | null) { ids(aid, tids); return this.send<{ threads: Thread[] }>("POST", `/api/artifacts/${aid}/threads:send`, { thread_ids: tids, note, to }, true); }
+  /** A thread's clip as a `data:image/png` URL; null when it has none, or it is not a PNG of at most `MAX_CLIP` bytes. */
+  async clip(aid: string, tid: string): Promise<string | null> {
+    ids(aid, [tid]);
+    const res = await this.request(`/api/artifacts/${aid}/threads/${tid}/clip`);
+    if (!res.ok || res.headers.get("content-type") !== "image/png") return null;
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    return bytes.length <= MAX_CLIP ? bytesDataUrl(bytes, "image/png") : null;
+  }
   async resolve(aid: string, tid: string) { ids(aid, [tid]); return this.send<{ thread: Thread }>("POST", `/api/artifacts/${aid}/threads/${tid}/resolve`, {}); }
   async reopen(aid: string, tid: string) { ids(aid, [tid]); return this.send<{ thread: Thread }>("POST", `/api/artifacts/${aid}/threads/${tid}/reopen`, {}); }
   /** The owner viewer: the extension acts as the owner. */

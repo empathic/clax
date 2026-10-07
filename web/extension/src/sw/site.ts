@@ -129,6 +129,17 @@ export class Sites {
     this.d.changed(origin);
   }
 
+  /** A thread an action on another page of the site answered with,
+   * applied at once (the site's topic brings it too); the listing's own
+   * fields (`page_path`, `page_url`, `moves`) stay when the answer lacks them. */
+  applied(origin: string, thread: Thread): void {
+    const e = this.m.get(origin);
+    const at = e?.view?.pages.findIndex(p => p.page.artifact_id === thread.artifact_id) ?? -1;
+    if (!e?.view || at < 0) return;
+    e.view = { ...e.view, pages: e.view.pages.map((p, k) => (k === at ? { ...p, threads: p.threads.map(t => (t.id === thread.id ? { ...t, ...thread } : t)) } : p)) };
+    this.d.changed(origin);
+  }
+
   /** One hub message for the client `site:<origin>`. */
   fromHub(id: string, msg: HubMsg): void {
     const origin = id.slice(5);

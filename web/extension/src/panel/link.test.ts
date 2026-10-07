@@ -55,6 +55,33 @@ describe("PanelLink", () => {
     expect(link.state?.tabId).toBe(5);
   });
 
+  it("asks the worker for a thread's clip, takes only a PNG data URL, and answers null on a failure or a lost worker", async () => {
+    vi.useFakeTimers();
+    const f = fakes();
+    link = new PanelLink(2, { runtime: f.runtime as never, tabs: f.tabs as never, search: "", doc: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } as never });
+    const p = f.ports[0];
+    p.onMessage.fire({ t: "tab", state: { tabId: 5, error: null } });
+    p.onMessage.fire({ t: "failed", code: "no_page", message: "No live page." });
+    const T = "01J9CCCCCCCCCCCCCCCCCCCCCC";
+    const a = link.clip(T);
+    expect(p.sent.at(-1)).toEqual({ t: "clip", req: 1, threadId: T });
+    // Asking for a clip is not an action: the failure shown stays.
+    expect(link.state?.error).toEqual({ code: "no_page", message: "No live page." });
+    p.onMessage.fire({ t: "clip", req: 1, url: "javascript:alert(1)" });
+    p.onMessage.fire({ t: "clip", req: 1, url: "data:image/png;base64,iVBORw0KGgo=" });
+    expect(await a).toBe("data:image/png;base64,iVBORw0KGgo=");
+    const b = link.clip(T);
+    p.onMessage.fire({ t: "failed", code: "no_tab", message: "The panel shows no tab.", req: 2 });
+    expect(await b).toBeNull();
+    expect(link.failures).toBe(1);
+    const c = link.clip(T);
+    await vi.advanceTimersByTimeAsync(REQUEST_MS);
+    expect(await c).toBeNull();
+    const d = link.clip(T);
+    p.onDisconnect.fire();
+    expect(await d).toBeNull();
+  });
+
   it("keeps the tab's site as the worker last told it", () => {
     const f = fakes();
     link = new PanelLink(2, { runtime: f.runtime as never, tabs: f.tabs as never, search: "", doc: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } as never });

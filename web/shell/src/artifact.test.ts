@@ -346,7 +346,11 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => lastResolve()?.join() === "tI", "resolution of the index's threads only");
     const card = root.querySelector('[data-thread="tA"]')!;
     expect(card.querySelector(".file-label")!.textContent).toBe("on about.html");
+    // Its head opens it in place; "Go to page" opens its page.
     card.querySelector<HTMLButtonElement>("button.card-head")!.click();
+    await waitFor(() => card.querySelector('input[aria-label="Reply"]'), "the card opened in place");
+    expect(location.pathname).toBe(`/a/${ID}`);
+    card.querySelector<HTMLButtonElement>("button.go-page")!.click();
     // One history entry: the shell URL is pushed and the frame is moved in place.
     await waitFor(() => location.pathname === `/a/${ID}/about.html`, "the shell URL names about.html");
     expect(posted.some(m => m.type === "clax:scroll-to")).toBe(false);
@@ -585,7 +589,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     win.postMessage = (() => {}) as typeof win.postMessage;
     const open = async () => {
       const card = await waitFor(() => root.querySelector('[data-thread="tA"]'), "the card");
-      card.querySelector<HTMLButtonElement>("button.card-head")!.click();
+      card.querySelector<HTMLButtonElement>("button.go-page")!.click();
       await waitFor(() => location.pathname === `/a/${ID}/about.html`, "navigated");
     };
     // A fast Back abandons the jump without a notice.

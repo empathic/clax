@@ -1,34 +1,58 @@
 <script lang="ts">
-  // "Elsewhere on this site" (owner decision 2026-10-06): the threads of the
-  // site's other pages, grouped under each page's path (a merged page under
-  // its pattern) with its open, addressed and resolved counts, newest
-  // activity first; each group collapsible. A card opens its thread on its
-  // own page in this tab; "Pinned here" says its anchor was found on this
+  // "Elsewhere on this site" (owner decisions 2026-10-06, 2026-10-07): the
+  // threads of the site's other pages, grouped under each page's path (a
+  // merged page under its pattern) with its open, addressed and resolved
+  // counts, newest activity first; each group collapsible. A card is the
+  // shell's thread card, folded to its summary: it opens in place, where the
+  // thread is read, answered, resolved or reopened and sent to the agent
+  // without the tab moving; "Go to page ↗" opens it on its own page in this
+  // tab. Any number of cards may be open at once, kept by thread ID while
+  // the listing changes. "Pinned here" says its anchor was found on this
   // screen too. Everything shown is text.
   import type { AnchorResult } from "../../../bridge/src/protocol";
   import { relativeTime } from "../../../shell/src/format";
-  import { type Thread, anchorLabel } from "../../../shell/src/threads";
+  import { type Thread, type Viewer, resolvedByLabel } from "../../../shell/src/threads";
+  import ThreadCard from "../../../shell/src/ui/ThreadCard.svelte";
+  import { agentName, historyOf } from "../../../shell/src/view/history-model";
   import MoveTo from "./MoveTo.svelte";
   import { type Group, type Status, lastActivity, statusOf } from "./site-model";
 
   type Target = { url: string; label: string };
   type Props = {
     groups: Group[]; resolved: Record<string, AnchorResult>; selected: string | null; collapsed: string[]; now?: Date;
+    /** The owner, to name it on threads it resolved. */
+    me?: Viewer | null;
     targets(t: Thread): Target[];
     onToggle(label: string, open: boolean): void;
+    /** "Go to page ↗": the tab opens the thread's page. */
     onOpen(t: Thread): void;
     onMove(t: Thread, url: string): void;
+    onReply(t: Thread, body: string): void;
+    /** Resolves an open thread, reopens a resolved one. */
+    onResolve(t: Thread): void;
+    onSend(t: Thread): void;
+    clip(t: Thread): Promise<string | null>;
   };
-  let { groups, resolved, selected, collapsed, now, targets, onToggle, onOpen, onMove }: Props = $props();
+  let { groups, resolved, selected, collapsed, now, me = null, targets, onToggle, onOpen, onMove, onReply, onResolve, onSend, clip }: Props = $props();
   let moving = $state<string | null>(null);
+  let unfolded = $state<string[]>([]);
   const STATUS: Record<Status, string> = { open: "Open", addressed: "Addressed", resolved: "Resolved" };
   const total = $derived(groups.reduce((n, g) => n + g.threads.length, 0));
-  const replies = (t: Thread) => t.comments.length - 1;
   const reveal = (el: HTMLElement, on: boolean) => {
     const go = (v: boolean) => { if (v) el.scrollIntoView?.({ block: "nearest" }); };
     go(on);
     return { update: go };
   };
+  const fold = (t: Thread) => ({
+    open: unfolded.includes(t.id),
+    onToggle: (o: boolean) => { unfolded = o ? [...unfolded, t.id] : unfolded.filter(x => x !== t.id); },
+  });
+  const names = (t: Thread) => (by: string) => by.startsWith("agent:") ? agentName(by.slice(6)) : resolvedByLabel(by, me, t.resolved_by_name);
+  // The panel holds only the tab's page's versions: an event of another
+  // page is tagged with a version only where the thread names it (the
+  // version it was made on, those that addressed it).
+  const history = (t: Thread) => historyOf(t, [], names(t)).map(e => (e.verb === "commented" || e.agent ? e : { ...e, v: null }));
+  const noop = () => {};
 </script>
 
 <section class="elsewhere" aria-label="Elsewhere on this site">
@@ -48,27 +72,24 @@
       </summary>
       {#each g.threads as t (t.id)}
         {@const st = statusOf(t)}
-        <article class="far" class:selected={t.id === selected} use:reveal={t.id === selected}>
-          <button type="button" class="go" onclick={() => onOpen(t)} title={`Open on ${t.page_path ?? g.page.path}`}>
-            <span class="top">
-              <span class="anchor">{anchorLabel(t.anchor)}</span>
-              <span class={`st ${st}`}>{STATUS[st]}</span>
-            </span>
-            <span class="body">{t.comments[0]?.body ?? ""}</span>
-            <span class="meta">
-              <span>{t.comments[0]?.author_name ?? ""}</span>
-              {#if replies(t) > 0}<span>{replies(t)} {replies(t) === 1 ? "reply" : "replies"}</span>{/if}
-              <span>{relativeTime(lastActivity(t), now)}</span>
+        <div class="far" use:reveal={t.id === selected}>
+          <ThreadCard {t} now={now ?? new Date()} {me} {selected} file={t.anchor.file} history={history(t)} outdated={false} agent="agent"
+            when={relativeTime(lastActivity(t), now)} fold={fold(t)} {clip}
+            onSelect={noop} {onSend} {onResolve} {onReply}>
+            {#snippet badge()}<span class={`state ${st}`}>{STATUS[st]}</span>{/snippet}
+            {#snippet meta()}
               {#if g.page.merged && t.page_path}<span class="at" title={t.page_path}>at {t.page_path}</span>{/if}
               {#if resolved[t.id]?.found}<span class="here">Pinned here</span>{/if}
-            </span>
-          </button>
+            {/snippet}
+            {#snippet tools()}
+              <button type="button" class="ghost" onclick={() => (moving = moving === t.id ? null : t.id)}>Move…</button>
+              <button type="button" class="ghost" aria-label={`Go to page ${t.page_path ?? g.page.path}`} onclick={() => onOpen(t)}>Go to page ↗</button>
+            {/snippet}
+          </ThreadCard>
           {#if moving === t.id}
             <MoveTo targets={targets(t)} onMove={url => { moving = null; onMove(t, url); }} onCancel={() => (moving = null)} />
-          {:else}
-            <div class="tools"><button type="button" class="ghost" onclick={() => (moving = t.id)}>Move…</button></div>
           {/if}
-        </article>
+        </div>
       {/each}
     </details>
   {/each}
@@ -91,19 +112,12 @@
   .n.open::before { background: var(--you); }
   .n.addressed::before { background: var(--agent); }
   .n.resolved::before { background: var(--border-strong); }
-  .far { margin: 6px 0 8px; padding: 10px 12px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); }
-  .far.selected { border-color: var(--border-strong); box-shadow: var(--elev); }
-  .go { display: grid; gap: 4px; width: 100%; min-height: 0; padding: 0; border: 0; background: none; text-align: left; white-space: normal; color: var(--fg); font: 400 13.5px/1.5 var(--font); }
-  .go:not(:disabled):hover { background: none; }
-  .top { display: flex; gap: 8px; align-items: center; min-width: 0; }
-  .anchor { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12.5px; }
-  .st { flex: none; font: 500 11px/16px var(--font); padding: 0 6px; border-radius: var(--radius-xs); background: var(--hover); color: var(--muted); }
-  .st.open { background: var(--comment-hl); color: var(--you-ink); }
-  .st.addressed { background: var(--accent-tint); color: var(--agent-ink); }
-  .body { display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; white-space: pre-wrap; }
-  .meta { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 12px; color: var(--muted); min-width: 0; }
-  .meta > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  .far { margin: 6px 0 8px; }
+  .far :global(.thread-card) { margin-bottom: 0; }
+  .state { flex: none; font: 500 11px/16px var(--font); padding: 0 6px; border-radius: var(--radius-xs); background: var(--hover); color: var(--muted); }
+  .state.open { background: var(--comment-hl); color: var(--you-ink); }
+  .state.addressed { background: var(--accent-tint); color: var(--agent-ink); }
   .here { color: var(--you-ink); font-weight: 500; }
-  .tools { display: flex; justify-content: flex-end; margin-top: 2px; }
-  .tools button { min-height: 26px; padding: 2px 8px; font-size: 12.5px; color: var(--muted); }
+  .far :global(.actions button) { min-height: 26px; padding: 2px 8px; font-size: 12.5px; }
+  .far :global(.actions button.ghost) { color: var(--muted); }
 </style>

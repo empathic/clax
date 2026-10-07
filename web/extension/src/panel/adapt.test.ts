@@ -11,8 +11,8 @@ describe("adapt", () => {
     expect(pageOfRoute("#/users/7")).toBe("#/users/7");
   });
 
-  it("drops a thread's clip URL, which an extension page cannot load without the credential", () => {
+  it("keeps a thread's clip URL, which says the worker has a clip to fetch for the panel", () => {
     const t = { id: "x", has_clip: true, clip_url: "/api/artifacts/a/threads/x/clip", anchor: { kind: "element", selector: "body", file: "index.html" } } as never;
-    expect(asPages([t])[0].clip_url).toBeNull();
+    expect(asPages([t])[0].clip_url).toBe("/api/artifacts/a/threads/x/clip");
   });
 });

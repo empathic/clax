@@ -135,6 +135,12 @@ describe("messages", () => {
 
   it("checks the panel's site-wide requests and the worker's answers", () => {
     expect(isFromPanel({ t: "open-thread", threadId: ULID })).toBe(true);
+    expect(isFromPanel({ t: "clip", req: 1, threadId: ULID })).toBe(true);
+    expect(isFromPanel({ t: "clip", req: -1, threadId: ULID })).toBe(false);
+    expect(isFromPanel({ t: "clip", threadId: ULID })).toBe(false);
+    expect(isToPanel({ t: "clip", req: 1, url: "data:image/png;base64,iVBORw0KGgo=" })).toBe(true);
+    expect(isToPanel({ t: "clip", req: 1, url: null })).toBe(true);
+    for (const url of ["http://localhost:7480/x.png", "data:text/html;base64,PGI+", "data:image/svg+xml;base64,PHN2Zz4=", `data:image/png;base64,${"A".repeat(7_000_000)}`]) expect(isToPanel({ t: "clip", req: 1, url })).toBe(false);
     expect(isFromPanel({ t: "open-thread", threadId: "x" })).toBe(false);
     expect(isFromPanel({ t: "open-thread", threadId: ULID, url: "http://localhost:5173/" })).toBe(false);
     expect(isFromPanel({ t: "move", threadId: ULID, pageUrl: "http://localhost:5173/users/7" })).toBe(true);
