@@ -1103,6 +1103,39 @@ async fn an_answer_a_question_poll_holds_reaches_only_that_poll() {
 }
 
 #[tokio::test]
+async fn a_held_answer_left_untaken_wakes_the_feedback_poll_when_the_hold_ends() {
+    let ts = TestServer::spawn().await;
+    let sid = session(&ts, "h1").await;
+    let qid = ts.ask(&sid, body()).await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let req = ts.authed(ts.client.get(format!(
+        "{}/api/sessions/{sid}/questions/{qid}?wait=60",
+        ts.base
+    )));
+    let ask = tokio::spawn(async move { req.send().await });
+    ts.wait_question_waiters(&qid, 1).await;
+    let req = ts.authed(
+        ts.client
+            .get(format!("{}/api/sessions/{sid}/feedback?wait=60", ts.base)),
+    );
+    let waiter =
+        tokio::spawn(async move { req.send().await.unwrap().json::<Value>().await.unwrap() });
+    ts.wait_feedback_waiters(&sid, 1).await;
+    // Answered with no wake-up (closed in the store), then the poll lets go.
+    ts.store
+        .close_question(&qid, clax_core::store::questions::Close::Decline)
+        .unwrap();
+    ask.abort();
+    let got = tokio::time::timeout(Duration::from_secs(5), waiter)
+        .await
+        .expect("the feedback poll was woken when the hold ended")
+        .unwrap();
+    assert_eq!(got["answers"][0]["id"], qid.as_str());
+}
+
+#[tokio::test]
 async fn a_late_answers_age_is_read_from_the_question_clock() {
     let clock = std::sync::Arc::new(clax_core::working::ManualClock::at(&clax_core::Store::now()));
     let c = clock.clone();

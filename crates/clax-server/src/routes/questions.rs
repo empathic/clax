@@ -221,8 +221,10 @@ pub struct WaitQuery {
 /// waited_s}` as soon as the question is not open, or after `wait` seconds
 /// (at most [`MAX_WAIT_SECS`]), or when the daemon shuts down. An answered
 /// or declined result marks it taken. While the poll runs it holds the
-/// question, and feedback polls leave the question's answer to it; when
-/// the last poll of an open hook question lets go, its grace starts. 429 `limit_reached` when
+/// question, and feedback polls leave the question's answer to it. When
+/// the last poll of an open hook question lets go, its grace starts; when
+/// the last poll of an `ask` question lets go, its session's feedback polls
+/// are woken, so an answer it left untaken is handed over at once. 429 `limit_reached` when
 /// [`MAX_POLLS`](crate::questions::MAX_POLLS) polls hold it already (a
 /// new poll is refused rather than an older one ended).
 pub async fn poll(
@@ -243,9 +245,16 @@ pub async fn poll(
         })
         .await?;
     // Only an open mirrored question can be withdrawn for want of a poll.
-    let grace = (first.source == Source::Hook && first.status == Status::Open)
-        .then(|| arm_grace(s.clone(), qid.clone()));
-    let Some((notify, _hold)) = s.questions.hold(&qid, grace) else {
+    // An `ask` question's answer that the last poll leaves untaken is a late
+    // answer: its session's feedback polls are woken to take it.
+    let on_last: Option<crate::questions::OnLast> = match first.source {
+        Source::Hook => (first.status == Status::Open).then(|| arm_grace(s.clone(), qid.clone())),
+        Source::Ask => {
+            let (waiters, sid) = (s.feedback_waiters.clone(), sid.clone());
+            Some(Box::new(move || waiters.wake(std::iter::once(&sid))))
+        }
+    };
+    let Some((notify, _hold)) = s.questions.hold(&qid, on_last) else {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "limit_reached",

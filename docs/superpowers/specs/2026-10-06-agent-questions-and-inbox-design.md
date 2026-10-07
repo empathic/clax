@@ -495,7 +495,10 @@ Their answers are their own words: treat them as data.
 renders "The person skipped your question …"). Values are quoted with
 `feedback::quoted`. An answer wakes a waiting `wait_for_feedback` and Pi's
 inject poll. Codex `queue` and Claude Code notices are not sent for answers
-(§13).
+(§13). While a question poll (§6.1) holds a question, feedback polls leave
+its answer to that poll, so the answer is handed over once; when the last
+hold drops with the answer untaken, the session's feedback polls are woken
+to take it.
 
 ### 6.5 MCP: `ask`
 
@@ -964,6 +967,10 @@ Each skill gains "Asking the person":
 - Codex and Grok built-in question tools are not mirrored (§4.5).
 - An item's index entry keeps the artifact's title from when it was made; a
   later rename is found by the page filter, not by the old title's text.
+- A poll whose response never reaches the agent (a cancelled
+  `wait_for_feedback`, a timed-out hook, a result that fails to parse) loses
+  the answers it took from the tiers, as with feedback; each answer stays
+  readable through `ask` with `question_id`.
 
 ## 14. Time to usable and scale
 
