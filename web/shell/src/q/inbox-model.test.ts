@@ -39,12 +39,12 @@ describe("inbox model", () => {
   });
 
   it("strips control and bidirectional characters from a notification and cuts its body at 180", () => {
-    const n = notificationText(item("reply", { reply: { comment_id: "c", body: "‮evil\u0007 done‏⁦", addressed: false } }));
+    const n = notificationText(item("reply", { reply: { comment_id: "c", body: "\u202eevil\u0007 done\u200f\u2066", addressed: false } }));
     expect(n).toEqual({ title: "claude replied on Quarterly Review", body: "evil done" });
     const long = notificationText(item("reply", { reply: { comment_id: "c", body: "y".repeat(400), addressed: false } }));
     expect([...long.body]).toHaveLength(180);
     expect(long.body.endsWith("y…")).toBe(true);
-    const t = notificationText(item("published", { artifact: { id: "x", title: "Sales‮\u0000 board", kind: "html", page_url: null } }));
+    const t = notificationText(item("published", { artifact: { id: "x", title: "Sales\u202e\u0000 board", kind: "html", page_url: null } }));
     expect(t.title).toBe("claude published Sales board");
     expect(notificationText(item("published", { published: { description: "y".repeat(180) } })).body).toBe("y".repeat(180));
   });

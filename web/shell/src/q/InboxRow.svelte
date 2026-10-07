@@ -44,7 +44,7 @@
     <time datetime={p.item.created_at}>{relativeTime(p.item.created_at, p.now ?? new Date())}</time>
   </button>
   <button type="button" class="dot" aria-label={p.item.read ? "Mark unread" : "Mark read"} title={p.item.read ? "Mark unread" : "Mark read"}
-    onclick={e => { e.stopPropagation(); p.onToggle(p.item); }}><span aria-hidden="true"></span></button>
+    onclick={() => p.onToggle(p.item)}><span aria-hidden="true"></span></button>
 </li>
 
 <style>

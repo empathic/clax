@@ -77,7 +77,7 @@ export function filterToUrl(f: InboxFilter): string {
 // C0 and C1 controls, the Arabic letter mark, LRM and RLM, the embeddings
 // and overrides, and the isolates: none may steer a notification's text.
 // oxlint-disable-next-line no-control-regex -- matching control characters is the point
-const UNSAFE = /[\u0000-\u001f\u007f-\u009f؜‎‏‪-‮⁦-⁩]/g;
+const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 
 const clean = (s: string): string => s.replace(/\s+/g, " ").replace(UNSAFE, "").replace(/ {2,}/g, " ").trim();
 
