@@ -13,6 +13,7 @@ use axum::body::Bytes;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use clax_core::audit::AuditCtx;
 use clax_core::{ArtifactId, CoreError, Event};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -100,6 +101,7 @@ fn scope_label(origin: &str, path: &str) -> String {
 pub async fn live_put(
     State(s): State<AppState>,
     _t: RequireToken,
+    audit: AuditCtx,
     p: Result<Path<String>, PathRejection>,
     b: Result<Json<LiveWatchBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -123,7 +125,7 @@ pub async fn live_put(
             let title = page_url
                 .split_once("://")
                 .map_or(page_url.as_str(), |(_, rest)| rest);
-            let e = live_ids.ensure_page(st, &pu.key, title, None, &[])?;
+            let e = live_ids.ensure_page(st, &audit, &pu.key, title, None, &[])?;
             if e.new_version {
                 events.publish(Event::Version {
                     artifact_id: e.artifact.id.clone(),

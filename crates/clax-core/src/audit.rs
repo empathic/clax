@@ -47,7 +47,10 @@ kinds! {
     ArtifactUpdate = "artifact.update",
     ArtifactDelete = "artifact.delete",
     AssetUpload = "asset.upload",
+    AssetDelete = "asset.delete",
     DocWrite = "doc.write",
+    DocMove = "doc.move",
+    ViewerClaim = "viewer.claim",
     ThreadOpen = "thread.open",
     CommentAdd = "comment.add",
     ThreadResolve = "thread.resolve",
@@ -276,8 +279,12 @@ pub struct AuditCtx {
 }
 
 impl AuditCtx {
+    /// Clax itself, through the `daemon` channel, for no more specific
+    /// reason: maintenance, and changes made outside any request.
+    pub const DAEMON: AuditCtx = AuditCtx::system(SystemReason::Daemon);
+
     /// Clax itself, for `reason`, through the `daemon` channel.
-    pub fn system(reason: SystemReason) -> AuditCtx {
+    pub const fn system(reason: SystemReason) -> AuditCtx {
         AuditCtx {
             actor: Actor::System { reason },
             via: Via::Daemon,
@@ -405,7 +412,10 @@ mod tests {
             "artifact.update",
             "artifact.delete",
             "asset.upload",
+            "asset.delete",
             "doc.write",
+            "doc.move",
+            "viewer.claim",
             "thread.open",
             "comment.add",
             "thread.resolve",

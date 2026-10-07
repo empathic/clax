@@ -553,6 +553,7 @@ fn install_id(tx: &rusqlite::Transaction<'_>) -> crate::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{AUDIT_MIGRATION, MIGRATIONS};
+    use crate::store::test_util::DAEMON;
     use crate::{Home, Store, is_public_id};
     use rusqlite::{Connection, params};
 
@@ -716,7 +717,8 @@ mod tests {
         let st = Store::open(&home).unwrap();
         assert_eq!(st.owner().unwrap(), None, "stored data cannot tell");
         assert_eq!(
-            st.claim_for_owner(COOKIE).unwrap(),
+            st.claim_for_owner(crate::audit::Via::Shell, COOKIE)
+                .unwrap(),
             crate::store::viewers::Claim::Nothing,
             "a viewer of unknown origin is never claimed"
         );
@@ -1045,7 +1047,7 @@ mod tests {
             lww: true,
         };
         let w = st
-            .doc_set(&id, "t/c", serde_json::json!({}), pin, &admin)
+            .doc_set(DAEMON, &id, "t/c", serde_json::json!({}), pin, &admin)
             .unwrap();
         assert_eq!(w.doc.unwrap().version, 6);
     }

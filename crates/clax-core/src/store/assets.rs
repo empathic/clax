@@ -1,6 +1,7 @@
 //! Per-artifact asset store: uploaded images, media, fonts, and data files served at /_blob/<id>.
 
 use super::Store;
+use crate::audit::{AuditCtx, AuditKind, AuditRecord, sha256_hex};
 use crate::model::Asset;
 use crate::{ArtifactId, CoreError, Result, new_ulid};
 use rusqlite::{OptionalExtension, Row, params};
@@ -96,13 +97,20 @@ impl Store {
     /// The bytes are written to `<id>.<ext>.tmp` and renamed into place before the row is
     /// inserted, so a visible row always has its file; if the insert fails the file is
     /// removed (should that removal fail, the orphaned file is unreferenced and harmless).
-    /// The size cap ([`MAX_ASSET_BYTES`]) is inclusive.
+    /// The size cap ([`MAX_ASSET_BYTES`]) is inclusive. The row's transaction
+    /// records `asset.upload` under `ctx`, with the bytes' SHA-256.
     ///
     /// # Errors
     /// `Invalid { code: "unsupported_type" }` for a type failing [`is_supported`],
     /// `Invalid { code: "asset_too_large" }` when `bytes` exceeds the cap,
     /// `NotFound` when the artifact does not exist, and I/O or database errors otherwise.
-    pub fn add_asset(&self, id: &ArtifactId, content_type: &str, bytes: &[u8]) -> Result<Asset> {
+    pub fn add_asset(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        content_type: &str,
+        bytes: &[u8],
+    ) -> Result<Asset> {
         if !is_supported(content_type) {
             return Err(CoreError::invalid(
                 "unsupported_type",
@@ -133,9 +141,17 @@ impl Store {
             let _ = std::fs::remove_file(&tmp_path);
             return Err(e.into());
         }
+        let mut rec = AuditRecord::new(AuditKind::AssetUpload, asset.created_at.as_str())
+            .with("asset_id", asset.id.as_str())
+            .with("path", format!("/_blob/{}", asset.id))
+            .with("sha256", format!("sha256:{}", sha256_hex(bytes)))
+            .with("size", asset.size)
+            .with("content_type", asset.content_type.as_str());
+        rec.ids.artifact = Some(asset.artifact_id.clone());
         let inserted = self.with_tx(|c| {
             c.execute("INSERT INTO assets (id, artifact_id, content_type, size, ext, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![asset.id, asset.artifact_id, asset.content_type, asset.size as i64, asset.ext, asset.created_at])?;
+            self.record_audit(c, ctx, rec)?;
             Ok(())
         });
         if let Err(e) = inserted {
@@ -187,20 +203,30 @@ impl Store {
         })
     }
 
-    /// Deletes an asset's file, then its row.
+    /// Deletes an asset's file, then its row. Removing the row records
+    /// `asset.delete` under `ctx` in its transaction.
     ///
     /// A file that is already missing is tolerated, so a retry after a file error still
     /// removes the row.
     ///
     /// # Errors
     /// `NotFound` when no such asset exists, and I/O or database errors otherwise.
-    pub fn delete_asset(&self, asset_id: &str) -> Result<()> {
-        let Some((_, path)) = self.get_asset(asset_id)? else {
+    pub fn delete_asset(&self, ctx: &AuditCtx, asset_id: &str) -> Result<()> {
+        let Some((asset, path)) = self.get_asset(asset_id)? else {
             return Err(CoreError::NotFound);
         };
         remove_file_if_present(&path)?;
         self.with_tx(|c| {
-            c.execute("DELETE FROM assets WHERE id = ?1", params![asset_id])?;
+            let n = c.execute("DELETE FROM assets WHERE id = ?1", params![asset_id])?;
+            if n > 0 {
+                let mut rec = AuditRecord::new(AuditKind::AssetDelete, Store::now())
+                    .with("asset_id", asset.id.as_str())
+                    .with("path", format!("/_blob/{}", asset.id))
+                    .with("size", asset.size)
+                    .with("content_type", asset.content_type.as_str());
+                rec.ids.artifact = Some(asset.artifact_id.clone());
+                self.record_audit(c, ctx, rec)?;
+            }
             Ok(())
         })
     }
@@ -289,6 +315,7 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
+    use crate::store::test_util::DAEMON;
     use crate::{CoreError, Home, Store};
 
     fn store() -> (tempfile::TempDir, Store) {
@@ -301,18 +328,20 @@ mod tests {
     fn add_get_list_delete() {
         let (_d, store) = store();
         let id = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
-        let a = store.add_asset(&id, "image/png", &[1, 2, 3]).unwrap();
+        let a = store
+            .add_asset(DAEMON, &id, "image/png", &[1, 2, 3])
+            .unwrap();
         assert_eq!(a.ext, "png");
         assert_eq!(a.size, 3);
         let (got, path) = store.get_asset(&a.id).unwrap().unwrap();
         assert_eq!(got, a);
         assert_eq!(std::fs::read(&path).unwrap(), vec![1, 2, 3]);
         assert_eq!(store.list_assets(&id).unwrap().len(), 1);
-        store.delete_asset(&a.id).unwrap();
+        store.delete_asset(DAEMON, &a.id).unwrap();
         assert!(store.get_asset(&a.id).unwrap().is_none());
         assert!(!path.exists());
         assert!(matches!(
-            store.delete_asset(&a.id),
+            store.delete_asset(DAEMON, &a.id),
             Err(CoreError::NotFound)
         ));
     }
@@ -323,7 +352,7 @@ mod tests {
         let id = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
         assert!(matches!(
             store
-                .add_asset(&id, "application/x-msdownload", &[0])
+                .add_asset(DAEMON, &id, "application/x-msdownload", &[0])
                 .unwrap_err(),
             CoreError::Invalid {
                 code: "unsupported_type",
@@ -332,7 +361,7 @@ mod tests {
         ));
         let big = vec![0u8; super::MAX_ASSET_BYTES as usize + 1];
         assert!(matches!(
-            store.add_asset(&id, "image/png", &big).unwrap_err(),
+            store.add_asset(DAEMON, &id, "image/png", &big).unwrap_err(),
             CoreError::Invalid {
                 code: "asset_too_large",
                 ..
@@ -345,7 +374,7 @@ mod tests {
         let (_d, store) = store();
         let id = crate::ArtifactId::generate();
         assert!(matches!(
-            store.add_asset(&id, "image/png", &[0]).unwrap_err(),
+            store.add_asset(DAEMON, &id, "image/png", &[0]).unwrap_err(),
             CoreError::NotFound
         ));
     }
@@ -372,7 +401,7 @@ mod tests {
         let (_d, store) = store();
         let id = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
         let bytes = vec![0u8; super::MAX_ASSET_BYTES as usize];
-        store.add_asset(&id, "image/png", &bytes).unwrap();
+        store.add_asset(DAEMON, &id, "image/png", &bytes).unwrap();
         let dir = store.home().assets_dir(&id);
         assert!(
             std::fs::read_dir(&dir).unwrap().all(|e| !e
@@ -391,7 +420,7 @@ mod tests {
             .with_write(|c| Ok(c.execute_batch("DROP TABLE assets")?))
             .unwrap();
         assert!(matches!(
-            store.add_asset(&id, "image/png", &[1]).unwrap_err(),
+            store.add_asset(DAEMON, &id, "image/png", &[1]).unwrap_err(),
             CoreError::Db(_)
         ));
         let dir = store.home().assets_dir(&id);
@@ -406,10 +435,10 @@ mod tests {
     fn delete_removes_row_even_if_file_is_already_gone() {
         let (_d, store) = store();
         let id = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
-        let a = store.add_asset(&id, "image/png", &[1]).unwrap();
+        let a = store.add_asset(DAEMON, &id, "image/png", &[1]).unwrap();
         let (_, path) = store.get_asset(&a.id).unwrap().unwrap();
         std::fs::remove_file(&path).unwrap();
-        store.delete_asset(&a.id).unwrap();
+        store.delete_asset(DAEMON, &a.id).unwrap();
         assert!(store.get_asset(&a.id).unwrap().is_none());
     }
 
@@ -418,9 +447,11 @@ mod tests {
         let (_d, store) = store();
         let live = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
         let gone = store.insert_artifact_for_test("B", "2026-01-01T00:00:00.000Z");
-        let a = store.add_asset(&live, "image/png", &[1]).unwrap();
-        let b = store.add_asset(&gone, "image/png", &[1, 2]).unwrap();
-        store.delete_artifact(&gone).unwrap();
+        let a = store.add_asset(DAEMON, &live, "image/png", &[1]).unwrap();
+        let b = store
+            .add_asset(DAEMON, &gone, "image/png", &[1, 2])
+            .unwrap();
+        store.delete_artifact(DAEMON, &gone).unwrap();
         let rows = store.list_all_asset_rows().unwrap();
         assert_eq!(rows.len(), 2);
         let ra = rows.iter().find(|r| r.asset.id == a.id).unwrap();
@@ -434,7 +465,7 @@ mod tests {
         let (_d, store) = store();
         let id = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
         assert!(store.stray_asset_temp_files().unwrap().is_empty());
-        let a = store.add_asset(&id, "image/png", &[1]).unwrap();
+        let a = store.add_asset(DAEMON, &id, "image/png", &[1]).unwrap();
         let tmp = store.home().assets_dir(&id).join("X.png.tmp");
         std::fs::write(&tmp, b"x").unwrap();
         assert_eq!(store.stray_asset_temp_files().unwrap(), vec![tmp]);
@@ -446,10 +477,10 @@ mod tests {
         let (_d, store) = store();
         let live = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
         let gone = store.insert_artifact_for_test("B", "2026-01-01T00:00:00.000Z");
-        let keep = store.add_asset(&live, "image/png", &[1]).unwrap();
-        let drop_row = store.add_asset(&gone, "image/png", &[2]).unwrap();
+        let keep = store.add_asset(DAEMON, &live, "image/png", &[1]).unwrap();
+        let drop_row = store.add_asset(DAEMON, &gone, "image/png", &[2]).unwrap();
         let (_, drop_path) = store.get_asset(&drop_row.id).unwrap().unwrap();
-        store.delete_artifact(&gone).unwrap();
+        store.delete_artifact(DAEMON, &gone).unwrap();
         // Simulate a directory removal that failed: the file is still there.
         std::fs::create_dir_all(drop_path.parent().unwrap()).unwrap();
         std::fs::write(&drop_path, b"x").unwrap();

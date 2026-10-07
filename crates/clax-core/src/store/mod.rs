@@ -274,6 +274,8 @@ fn migrate(conn: &mut Connection) -> Result<()> {
 
 #[cfg(test)]
 pub(crate) mod test_util {
+    /// The audit context of changes a test makes: Clax itself.
+    pub const DAEMON: &crate::audit::AuditCtx = &crate::audit::AuditCtx::DAEMON;
     use crate::anchor::{Anchor, AnchorKind};
     use crate::publish::{PublishRequest, validate};
     use crate::{ArtifactId, Home, RegisterSession, Store};
@@ -292,7 +294,7 @@ pub(crate) mod test_util {
         }))
         .unwrap();
         let (a, _) = store
-            .create_artifact(validate(req).unwrap(), session)
+            .create_artifact(DAEMON, validate(req).unwrap(), session)
             .unwrap();
         ArtifactId::parse(&a.id).unwrap()
     }
@@ -305,7 +307,9 @@ pub(crate) mod test_util {
             "files": {"index.html": {"content": "<main></main>", "encoding": "utf8"}}
         }))
         .unwrap();
-        let (a, _) = store.create_artifact(validate(req).unwrap(), None).unwrap();
+        let (a, _) = store
+            .create_artifact(DAEMON, validate(req).unwrap(), None)
+            .unwrap();
         ArtifactId::parse(&a.id).unwrap()
     }
 

@@ -7,6 +7,7 @@ use crate::error::ApiError;
 use axum::extract::{ConnectInfo, FromRequestParts};
 use axum::http::request::Parts;
 use axum::http::{Extensions, HeaderMap};
+use clax_core::audit::AuditCtx;
 use clax_core::live::PageKey;
 use clax_core::store::live::EnsuredPage;
 use clax_core::{CoreError, Store};
@@ -65,7 +66,8 @@ impl LiveIds {
 
     /// [`Store::ensure_live_page_linking`] (a version it writes links the
     /// threads of `pending` still pending on the page), recording the page
-    /// in this set before anything announces it. Every server path that finds or creates a
+    /// in this set before anything announces it; the store records the
+    /// changes under `ctx`. Every server path that finds or creates a
     /// live page goes through here, so none can leave one out of the set.
     ///
     /// # Errors
@@ -73,12 +75,13 @@ impl LiveIds {
     pub fn ensure_page(
         &self,
         st: &Store,
+        ctx: &AuditCtx,
         key: &PageKey,
         title: &str,
         snapshot: Option<&[u8]>,
         pending: &[String],
     ) -> clax_core::Result<EnsuredPage> {
-        let e = st.ensure_live_page_linking(key, title, snapshot, pending)?;
+        let e = st.ensure_live_page_linking(ctx, key, title, snapshot, pending)?;
         self.insert(&e.artifact.id, &e.origin);
         Ok(e)
     }
@@ -431,7 +434,12 @@ mod store_tests {
         let st = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
         let pages: Vec<String> = ["/a", "/b", "/c"]
             .into_iter()
-            .map(|p| st.ensure_live_page(&key(p), "t", None).unwrap().artifact.id)
+            .map(|p| {
+                st.ensure_live_page(&AuditCtx::DAEMON, &key(p), "t", None)
+                    .unwrap()
+                    .artifact
+                    .id
+            })
             .collect();
         let ids = LiveIds::load(&st).unwrap();
         for p in &pages {
@@ -450,9 +458,10 @@ mod store_tests {
             origin: "http://localhost:5174".into(),
             path: path.into(),
         };
-        st.ensure_live_page(&key("/"), "t", None).unwrap();
+        st.ensure_live_page(&clax_core::audit::AuditCtx::DAEMON, &key("/"), "t", None)
+            .unwrap();
         let b = st
-            .ensure_live_page(&other("/"), "t", None)
+            .ensure_live_page(&clax_core::audit::AuditCtx::DAEMON, &other("/"), "t", None)
             .unwrap()
             .artifact
             .id;
@@ -476,7 +485,7 @@ mod store_tests {
         let st = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
         let ids = LiveIds::default();
         let e = ids
-            .ensure_page(&st, &key("/"), "t", Some(b"<p>"), &[])
+            .ensure_page(&st, &AuditCtx::DAEMON, &key("/"), "t", Some(b"<p>"), &[])
             .unwrap();
         assert!(ids.contains(&e.artifact.id));
     }

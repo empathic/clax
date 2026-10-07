@@ -13,6 +13,7 @@ use axum::extract::{Multipart, Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::CoreError;
+use clax_core::audit::AuditCtx;
 use serde_json::{Value, json};
 
 pub(crate) fn multipart_error(status: StatusCode, message: String) -> ApiError {
@@ -33,6 +34,7 @@ pub(crate) fn multipart_error(status: StatusCode, message: String) -> ApiError {
 pub async fn upload(
     State(s): State<AppState>,
     _t: RequireToken,
+    audit: AuditCtx,
     aid: Result<Path<String>, PathRejection>,
     mp: Result<Multipart, MultipartRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
@@ -63,7 +65,7 @@ pub async fn upload(
             .await
             .map_err(|e| multipart_error(e.status(), e.body_text()))?;
         let asset = s
-            .store_call(move |st| st.add_asset(&id, &content_type, &bytes))
+            .store_call(move |st| st.add_asset(&audit, &id, &content_type, &bytes))
             .await?;
         let url = format!("/_blob/{}", asset.id);
         return Ok((
@@ -95,12 +97,13 @@ pub async fn list(
 pub async fn delete(
     State(s): State<AppState>,
     _t: RequireToken,
+    audit: AuditCtx,
     params: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<StatusCode, ApiError> {
     let (aid, asset_id) = path(params)?;
     let id = parse_id(&aid)?;
     s.store_call(move |st| match st.get_asset(&asset_id)? {
-        Some((a, _)) if a.artifact_id == id.as_str() => st.delete_asset(&asset_id),
+        Some((a, _)) if a.artifact_id == id.as_str() => st.delete_asset(&audit, &asset_id),
         _ => Err(CoreError::NotFound),
     })
     .await?;

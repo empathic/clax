@@ -16,6 +16,7 @@ use crate::viewer::SameOrigin;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
+use clax_core::audit::AuditCtx;
 use clax_core::db::invalid_argument;
 use clax_core::store::docs::{
     Acquire, BatchOp, BatchWrite, DocChange, DocQuery, Pin, StrReplace, parse_where,
@@ -78,6 +79,7 @@ pub async fn put(
     State(s): State<AppState>,
     _o: SameOrigin,
     who: CallerParts,
+    audit: AuditCtx,
     p: DocParams,
     req: Result<Json<WriteBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -88,6 +90,7 @@ pub async fn put(
     let w = s
         .store_call(move |st| {
             let w = st.doc_set(
+                &audit,
                 &id,
                 &doc,
                 b.data,
@@ -109,6 +112,7 @@ pub async fn patch(
     State(s): State<AppState>,
     _o: SameOrigin,
     who: CallerParts,
+    audit: AuditCtx,
     p: DocParams,
     req: Result<Json<WriteBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -119,6 +123,7 @@ pub async fn patch(
     let w = s
         .store_call(move |st| {
             let w = st.doc_update(
+                &audit,
                 &id,
                 &doc,
                 b.data,
@@ -147,6 +152,7 @@ pub async fn delete(
     State(s): State<AppState>,
     _o: SameOrigin,
     who: CallerParts,
+    audit: AuditCtx,
     p: DocParams,
     q: Result<Query<DeleteQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -157,6 +163,7 @@ pub async fn delete(
     let w = s
         .store_call(move |st| {
             let w = st.doc_delete(
+                &audit,
                 &id,
                 &doc,
                 Pin {
@@ -248,6 +255,7 @@ pub async fn batch(
     State(s): State<AppState>,
     _o: SameOrigin,
     who: CallerParts,
+    audit: AuditCtx,
     aid: Result<Path<String>, PathRejection>,
     req: Result<JsonBytes, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -282,7 +290,7 @@ pub async fn batch(
     let events = s.events.clone();
     let written = s
         .store_call(move |st| {
-            let ws = st.doc_batch(&id, writes, lww, &who.resolve_for(st, &id)?)?;
+            let ws = st.doc_batch(&audit, &id, writes, lww, &who.resolve_for(st, &id)?)?;
             announce(
                 &events,
                 id.as_str(),
@@ -321,6 +329,7 @@ pub async fn str_replace(
     State(s): State<AppState>,
     _o: SameOrigin,
     who: CallerParts,
+    audit: AuditCtx,
     aid: Result<Path<String>, PathRejection>,
     req: Result<Json<StrReplaceBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -336,6 +345,7 @@ pub async fn str_replace(
                 replace_all: b.replace_all,
             };
             let w = st.doc_str_replace(
+                &audit,
                 &id,
                 &b.path,
                 r,
@@ -368,6 +378,7 @@ pub async fn acquire(
     State(s): State<AppState>,
     _o: SameOrigin,
     who: CallerParts,
+    audit: AuditCtx,
     aid: Result<Path<String>, PathRejection>,
     req: Result<Json<AcquireBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -377,6 +388,7 @@ pub async fn acquire(
     let a = s
         .store_call(move |st| {
             let (a, change) = st.doc_acquire(
+                &audit,
                 &id,
                 &b.path,
                 Acquire {

@@ -172,6 +172,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use crate::publish::{PublishRequest, validate};
+    use crate::store::test_util::DAEMON;
     use crate::store::test_util::{anchor, artifact, store};
     use crate::{ArtifactId, NewThread, Store};
 
@@ -206,7 +207,7 @@ mod tests {
         .unwrap();
         let mut p = validate(req)?;
         p.working_threads = working.to_vec();
-        st.publish_version(id, p, None).map(|(_, v)| v)
+        st.publish_version(DAEMON, id, p, None).map(|(_, v)| v)
     }
 
     #[test]

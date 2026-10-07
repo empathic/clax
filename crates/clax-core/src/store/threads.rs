@@ -980,6 +980,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::test_util::DAEMON;
     use crate::store::test_util::{anchor, artifact, store};
 
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\nfake-png-body";
@@ -1034,7 +1035,7 @@ mod tests {
             }
         }))
         .unwrap();
-        st.publish_version(&aid, crate::publish::validate(req).unwrap(), None)
+        st.publish_version(DAEMON, &aid, crate::publish::validate(req).unwrap(), None)
             .unwrap();
         let on = |n: u32, file: &str| {
             let mut nt = new_thread("x", None);
@@ -1218,7 +1219,7 @@ mod tests {
         let (_d, st) = store();
         let aid = artifact(&st, None);
         let t = st.create_thread(&aid, new_thread("x", None)).unwrap();
-        st.delete_artifact(&aid).unwrap();
+        st.delete_artifact(DAEMON, &aid).unwrap();
         assert_eq!(st.get_thread(&t.id).unwrap(), None);
         assert!(matches!(
             st.list_threads(&aid, true, None, 10),
@@ -1295,7 +1296,7 @@ mod tests {
     fn thread_on_a_deleted_artifact_writes_no_clip() {
         let (_d, st) = store();
         let aid = artifact(&st, None);
-        st.delete_artifact(&aid).unwrap();
+        st.delete_artifact(DAEMON, &aid).unwrap();
         let e = st
             .create_thread(&aid, new_thread("x", Some(PNG.to_vec())))
             .unwrap_err();
@@ -1317,7 +1318,7 @@ mod tests {
                 s.spawn(|| {
                     let _ = st.create_thread(&aid, new_thread("x", Some(PNG.to_vec())));
                 });
-                s.spawn(|| st.delete_artifact(&aid).unwrap());
+                s.spawn(|| st.delete_artifact(DAEMON, &aid).unwrap());
             });
             assert!(
                 !st.home().artifact_dir(&aid).exists(),

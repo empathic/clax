@@ -379,10 +379,13 @@ appears on every event made under a tool call (§6.7).
 |---|---|---|
 | `artifact.create` | `title, kind (html\|live), icon, capabilities, contract_version` | first publish, or live-page creation |
 | `version.publish` | `n, label, note, title, files{path:{sha256,size,content_type}}, content_sha256, carried[paths], addresses[thread IDs], by_page` | `Store::write_version` |
-| `artifact.update` | `fields{title?, description?, icon?, pinned?}` | pin, unpin, metadata edits |
+| `artifact.update` | `fields{title?, description?, icon?, pinned?, capabilities?}` | pin, unpin, metadata edits (a patch that sets no field records nothing) |
 | `artifact.delete` | `title, current_version` | delete |
 | `asset.upload` | `asset_id, path, sha256, size, content_type` | asset store writes |
-| `doc.write` | `collection, doc_id, version, op (set\|update\|delete\|str_replace), sha256` (no content) | `db_*` writes from the page or the agent |
+| `asset.delete` | `asset_id, path, size, content_type` | asset deletes |
+| `doc.write` | `collection, doc_id, version, op (set\|update\|delete\|str_replace\|acquire), sha256` (no content; `null` for a delete) | `db_*` writes from the page or the agent; `acquire` is a lease grant that merges data |
+| `doc.move` | `from, to, collection, doc_id, version, sha256` (no content) | a private document following a viewer claimed for the owner (`claim_for_owner`); the actor is the owner |
+| `viewer.claim` | `from_public_id, to_public_id` | a claim that retires a public ID (the CLI's owner row giving way to a browser, or a viewer merged into the owner), in the claim's transaction; actor the owner. A record naming `from_public_id` resolves to `to_public_id` |
 
 ### 6.2 Threads and comments
 
@@ -402,7 +405,7 @@ appears on every event made under a tool call (§6.7).
 | Kind | Body | Recorded at |
 |---|---|---|
 | `live.page` | `origin, path` | `ensure_live_page` creating a page |
-| `live.snapshot` | the `version.publish` body plus `origin, path` | `store_snapshot` (in place of `version.publish`) |
+| `live.snapshot` | the `version.publish` body plus `origin, path` | `store_snapshot` (in place of `version.publish`); a version a move or merge copies onto a page also has `source{artifact_id, n}` (and `artifact2_id` the source), with the source's addresses |
 | `thread.move` | `from_artifact_id, from_url, to_artifact_id, to_url, move_kind (move\|merge\|unmerge), rule_id, move_id` | each `thread_moves` row (`artifact_id` is the source; `artifact2_id` is the target) |
 | `live.rule` | `rule_id, op (set\|delete)`, then the `LiveRule` fields | rule changes |
 

@@ -14,6 +14,7 @@ use crate::viewer::SameOrigin;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{Query, State};
+use clax_core::audit::AuditCtx;
 use clax_core::store::joined::JoinedSite;
 use clax_core::store::site::{KIND_JOIN, KIND_MERGE, MAX_REFILE, MoveBy, Refile};
 use clax_core::{Event, Store};
@@ -191,7 +192,14 @@ fn join_batch(
             path: rule.pattern.clone(),
         };
         let title = canonical.page_url();
-        let (to, made) = target_page(st, &rc.live_ids, &rc.feedback.events, &canonical, &title)?;
+        let (to, made) = target_page(
+            st,
+            &rc.audit,
+            &rc.live_ids,
+            &rc.feedback.events,
+            &canonical,
+            &title,
+        )?;
         let how = MoveBy {
             by: mover(st, who)?,
             kind: KIND_MERGE,
@@ -227,13 +235,14 @@ pub async fn join(
     State(s): State<AppState>,
     _o: SameOrigin,
     who: Identity,
+    audit: AuditCtx,
     body: Result<Json<JoinBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     owner_writes(&who)?;
     let b = super::artifacts::body(body)?;
     let origin = origin_of(&s, &b.origin)?;
     let with = origin_of(&s, &b.with)?;
-    let rc = RefileCtx::of(&s);
+    let rc = RefileCtx::of(&s, audit);
     let st2 = s.clone();
     let (site, joined, moved, remaining) = s
         .store_call(move |st| {

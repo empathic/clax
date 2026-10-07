@@ -421,7 +421,8 @@ async fn test_slow_publish(
             }))
             .expect("valid publish request"),
         )?;
-        let (artifact, version) = st.create_artifact(p, None)?;
+        let (artifact, version) =
+            st.create_artifact(&clax_core::audit::AuditCtx::DAEMON, p, None)?;
         events.publish(clax_core::Event::Version {
             artifact_id: artifact.id,
             n: version.n,
@@ -680,6 +681,213 @@ mod l10 {
             }
         }
         assert!(checked > 20, "found only {checked} GET handlers");
+    }
+
+    /// The handlers that take [`AuditCtx`](clax_core::audit::AuditCtx) and
+    /// record some of their changes (the pages and snapshots they make) but
+    /// not yet their main event: the kinds each still owes, and the plan task
+    /// (plan 2026-10-06-toolpath-audit) that records them. Remove an entry
+    /// with the change that records its kinds.
+    const PARTLY_AUDITED: &[(&str, &str)] = &[
+        ("live::thread", "thread.open, comment.add (§6.2): Task 6"),
+        ("live::move_thread", "thread.move (§6.3): Task 7"),
+        ("live::add_rule", "live.rule, thread.move (§6.3): Task 7"),
+        ("live::delete_rule", "live.rule, thread.move (§6.3): Task 7"),
+        ("watches::live_put", "watch.start (§6.4): Task 7"),
+    ];
+
+    /// The handlers of routes that are not `GET` and take no
+    /// [`AuditCtx`](clax_core::audit::AuditCtx), and why they record nothing.
+    const UNAUDITED: &[(&str, &str)] = &[
+        ("sessions::register", "sessions (§6.8): not recorded yet"),
+        ("sessions::join", "sessions (§6.8): not recorded yet"),
+        ("sessions::patch", "sessions (§6.8): not recorded yet"),
+        (
+            "threads::create",
+            "threads and comments (§6.2): not recorded yet",
+        ),
+        (
+            "threads::comment",
+            "threads and comments (§6.2): not recorded yet",
+        ),
+        (
+            "threads::resolve",
+            "threads and comments (§6.2): not recorded yet",
+        ),
+        (
+            "threads::reopen",
+            "threads and comments (§6.2): not recorded yet",
+        ),
+        (
+            "threads::delete",
+            "threads and comments (§6.2): not recorded yet",
+        ),
+        ("threads::send", "sends (§6.2): not recorded yet"),
+        ("threads::send_batch", "sends (§6.2): not recorded yet"),
+        ("feedback::ack", "deliveries (§6.2): not recorded yet"),
+        ("watches::put", "watches (§6.4): not recorded yet"),
+        ("watches::delete", "watches (§6.4): not recorded yet"),
+        ("watches::live_delete", "watches (§6.4): not recorded yet"),
+        ("working::put", "working records (§6.5): not recorded yet"),
+        ("working::end", "working records (§6.5): not recorded yet"),
+        (
+            "working::delete",
+            "working records (§6.5): not recorded yet",
+        ),
+        ("working::renew", "a heartbeat (§6.11)"),
+        (
+            "working::skew",
+            "debug builds only; shifts the working clock",
+        ),
+        ("extension::mint", "an extension credential grant (§6.11)"),
+        ("extension::revoke", "an extension credential grant (§6.11)"),
+        ("stream::update", "a stream subscription (§6.11)"),
+        ("viewers::set_presence", "presence (§6.11)"),
+        ("viewers::set_seen", "a viewer's read marks, not history"),
+        ("viewers::set_looked", "a viewer's read marks, not history"),
+        ("viewers::set_me", "a viewer's own name, not history"),
+        (
+            "sample::sample",
+            "a page's model request; changes no history",
+        ),
+        (
+            "sample::tool_result",
+            "a page's model request; changes no history",
+        ),
+        (
+            "perf::calibrate",
+            "the latency gate's calibration read; changes no history",
+        ),
+        (
+            "sites::split",
+            "joined-site events (spec §6.12) are plan Task 8's",
+        ),
+        (
+            "sites::answer",
+            "joined-site events (spec §6.12) are plan Task 8's",
+        ),
+        (
+            "questions::create",
+            "question.* events (spec §6.6) are plan Task 15's",
+        ),
+        (
+            "questions::terminal",
+            "question.* events (spec §6.6) are plan Task 15's",
+        ),
+        (
+            "questions::withdraw",
+            "question.* events (spec §6.6) are plan Task 15's",
+        ),
+        (
+            "questions::release",
+            "question.* events (spec §6.6) are plan Task 15's",
+        ),
+        (
+            "questions::answer",
+            "question.* events (spec §6.6) are plan Task 15's",
+        ),
+        (
+            "questions::decline",
+            "question.* events (spec §6.6) are plan Task 15's",
+        ),
+        (
+            "questions::release_owner",
+            "question.* events (spec §6.6) are plan Task 15's",
+        ),
+        (
+            "questions::expire",
+            "debug builds only; ends a question's polls, changing no history",
+        ),
+        (
+            "feedback::expire",
+            "debug builds only; ends a session's feedback polls, changing no history",
+        ),
+        (
+            "inbox::read_many",
+            "the owner's inbox read marks, not history (§6.11)",
+        ),
+        (
+            "inbox::read_one",
+            "the owner's inbox read marks, not history (§6.11)",
+        ),
+        (
+            "inbox::unread_one",
+            "the owner's inbox read marks, not history (§6.11)",
+        ),
+    ];
+
+    /// Every handler of a route that is not `GET` either resolves the audit
+    /// context (and records what it changes, or is listed in
+    /// [`PARTLY_AUDITED`] with the kinds it still owes) or is listed in
+    /// [`UNAUDITED`] with the reason it records nothing, so a new route that
+    /// changes history cannot leave it out of the record unnoticed.
+    #[test]
+    fn every_change_route_resolves_the_audit_context_or_says_why_not() {
+        let src = include_str!("mod.rs");
+        let src = &src[..src.find("mod l10 {").unwrap()];
+        let ident = |c: char| c.is_ascii_lowercase() || c == '_' || c == ':';
+        let mut used = std::collections::HashSet::new();
+        let mut partly_used = std::collections::HashSet::new();
+        let mut missing = Vec::new();
+        let mut checked = 0;
+        for (path, text) in routes(src) {
+            for verb in ["post(", "put(", "patch(", "delete("] {
+                let mut rest = text.as_str();
+                while let Some(i) = rest.find(verb) {
+                    let before = rest[..i].chars().next_back();
+                    let after = &rest[i + verb.len()..];
+                    rest = after;
+                    if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+                        continue;
+                    }
+                    let name: String = after.chars().take_while(|c| ident(*c)).collect();
+                    let Some((m, f)) = name.split_once("::") else {
+                        // An inline handler: INLINE says what it is.
+                        continue;
+                    };
+                    let sig = function(module_source(m), f);
+                    let sig = &sig[..sig.find('{').unwrap()];
+                    let listed = UNAUDITED.iter().find(|(h, _)| *h == name);
+                    let partly = PARTLY_AUDITED.iter().any(|(h, _)| *h == name);
+                    if sig.contains("AuditCtx") {
+                        assert!(
+                            listed.is_none(),
+                            "{verb}{path}) ({name}) takes AuditCtx: drop it from UNAUDITED"
+                        );
+                        if partly {
+                            partly_used.insert(name.clone());
+                        }
+                    } else if partly {
+                        panic!(
+                            "{verb}{path}) ({name}) takes no AuditCtx but PARTLY_AUDITED lists it"
+                        );
+                    } else if listed.is_some() {
+                        used.insert(name.clone());
+                    } else {
+                        missing.push(format!("{verb}{path}) ({name})"));
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "these take no AuditCtx: take it, or list them in UNAUDITED with the reason:\n{}",
+            missing.join("\n")
+        );
+        assert!(checked > 30, "found only {checked} handlers");
+        for (h, _) in UNAUDITED {
+            assert!(
+                used.contains(*h),
+                "UNAUDITED lists {h}, which is no such handler"
+            );
+        }
+        for (h, _) in PARTLY_AUDITED {
+            assert!(
+                partly_used.contains(*h),
+                "PARTLY_AUDITED lists {h}, which is no such handler"
+            );
+        }
     }
 
     #[test]

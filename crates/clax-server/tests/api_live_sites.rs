@@ -524,7 +524,9 @@ async fn an_unfinished_join_is_listed_and_holds_off_other_joins_and_splits_until
         kind: clax_core::store::site::KIND_JOIN,
         rule_id: None,
     };
-    store.refile_threads(&moves, &how, &[]).unwrap();
+    store
+        .refile_threads(&clax_core::audit::AuditCtx::DAEMON, &moves, &how, &[])
+        .unwrap();
     // Its pending page is listed, marked, with what is left.
     let listing = site(&ts, A).await;
     assert_eq!(listing["site"]["joining"], 1, "{listing}");
