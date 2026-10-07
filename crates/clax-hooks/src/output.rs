@@ -25,6 +25,13 @@ impl HookOutput {
         HookOutput(Some(json!({"decision": "block", "reason": reason})))
     }
 
+    /// This output with `message` shown to the person (`systemMessage`).
+    pub fn with_system_message(self, message: &str) -> HookOutput {
+        let mut v = self.0.unwrap_or_else(|| json!({}));
+        v["systemMessage"] = json!(message);
+        HookOutput(Some(v))
+    }
+
     pub fn value(&self) -> Option<&Value> {
         self.0.as_ref()
     }
@@ -51,6 +58,19 @@ mod tests {
         assert_eq!(
             HookOutput::block("no").value(),
             Some(&json!({"decision": "block", "reason": "no"}))
+        );
+        assert_eq!(
+            HookOutput::none().with_system_message("m").value(),
+            Some(&json!({"systemMessage": "m"}))
+        );
+        assert_eq!(
+            HookOutput::additional_context("SessionStart", "hi")
+                .with_system_message("m")
+                .value(),
+            Some(&json!({
+                "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "hi"},
+                "systemMessage": "m",
+            }))
         );
     }
 }

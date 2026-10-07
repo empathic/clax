@@ -33,10 +33,20 @@
 //! credentials and removes the extension ([`super::extension::uninstall`]). A failed
 //! extension step is reported under `extension` and never fails the command.
 //!
+//! For Codex, `init` then puts back the person's settings for the plugin
+//! that removing it deleted (its approval settings, under
+//! `[plugins."clax@clax"]`), and offers the approvals that keep Codex from
+//! stopping mid-task to ask before a Clax tool
+//! ([`crate::codex_approvals`]): it prints the `config.toml` lines and adds
+//! them only when the person confirms, or with `--yes`. Without a terminal
+//! and without `--yes` it adds nothing and says how to.
+//!
 //! Each harness is one entry in [`HARNESSES`].
 
 use super::doctor_agent::Dirs;
+use crate::codex_approvals;
 use clax_core::Home;
+use clax_mcp::tools::ClaxTools;
 use serde_json::{Map, Value, json};
 use std::path::{Component, Path, PathBuf};
 
@@ -118,6 +128,10 @@ pub struct Args {
         value_parser = clap::builder::PossibleValuesParser::new(HARNESSES.iter().map(|h| h.name))
     )]
     pub agents: Vec<String>,
+    /// Add the Codex approval settings `init` offers without asking first.
+    /// Without it, `init` asks on a terminal and otherwise adds nothing.
+    #[arg(long)]
+    pub yes: bool,
 }
 
 /// One harness command; a failure of a `required` one fails the harness.
@@ -524,6 +538,173 @@ fn run_steps(h: &Harness, ctx: &Ctx, actions: Actions, done: &str) -> Value {
     json!({"agent": h.name, "status": status, "detail": notes.join("\n"), "commands": commands})
 }
 
+/// The person's settings for the Clax plugin in Codex's `config.toml`,
+/// read before `codex plugin remove` deletes them; an error when the file
+/// cannot be read or parsed.
+fn codex_saved_settings(ctx: &Ctx) -> Result<Option<toml_edit::Table>, String> {
+    let path = codex_approvals::config_path(&ctx.dirs.codex_home);
+    let Some(text) = codex_approvals::read_config(&path)? else {
+        return Ok(None);
+    };
+    text.parse::<toml_edit::DocumentMut>()
+        .map_err(|e| format!("could not parse {} ({e})", path.display()))?;
+    Ok(codex_approvals::plugin_settings(&text))
+}
+
+/// Whether `answer` (a line the person typed) says yes.
+fn is_yes(answer: &str) -> bool {
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+/// Asks on the terminal whether to add `lines` to `path`.
+fn confirm(tools: &[&str], lines: &str, path: &Path) -> bool {
+    use std::io::Write;
+    let mut err = std::io::stderr();
+    let _ = write!(
+        err,
+        "\nCodex asks before each call of these Clax tools, which change or remove artifacts or page data: {}.\nSo that Codex does not stop mid-task to ask, `clax init` can add these lines to {}:\n\n{lines}\nAdd them? [y/N] ",
+        tools.join(", "),
+        path.display()
+    );
+    let _ = err.flush();
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer).is_ok() && is_yes(&answer)
+}
+
+/// After Codex registered the plugin: puts back the `saved` settings that
+/// re-registering removed, then offers the approvals for the Clax tools
+/// Codex would still ask about, adding them when `yes` or the person
+/// confirms on a terminal. The outcome as JSON; a failure is reported
+/// there, never fatal.
+fn codex_settings(ctx: &Ctx, saved: Result<Option<toml_edit::Table>, String>, yes: bool) -> Value {
+    use std::io::IsTerminal;
+    let path = codex_approvals::config_path(&ctx.dirs.codex_home);
+    let failed = |detail: String| json!({"status": "failed", "config": path, "detail": detail});
+    let saved = match saved {
+        Ok(s) => s,
+        Err(e) => return failed(format!("{e}; Clax's settings there were not carried over")),
+    };
+    let mut text = match codex_approvals::read_config(&path) {
+        Ok(t) => t.unwrap_or_default(),
+        Err(e) => return failed(e),
+    };
+    let mut restored = false;
+    if let Some(saved) = saved {
+        match codex_approvals::restore(&text, &saved) {
+            Ok(t) if t != text => {
+                if let Err(e) = codex_approvals::write_config(&path, &t) {
+                    return failed(format!("could not write {}: {e}", path.display()));
+                }
+                text = t;
+                restored = true;
+            }
+            Ok(_) => {}
+            Err(e) => return failed(format!("could not put back Clax's settings: {e}")),
+        }
+    }
+    let assessment = match codex_approvals::assess(Some(&text), &ClaxTools::tools()) {
+        Ok(a) => a,
+        Err(e) => return failed(format!("could not parse {} ({e})", path.display())),
+    };
+    let kept: Vec<String> = assessment
+        .kept()
+        .iter()
+        .map(|k| format!("{} (approval_mode = \"{}\")", k.tool, k.mode))
+        .collect();
+    let kept_note = (!kept.is_empty()).then(|| {
+        format!(
+            "Codex still asks before {}, as your config.toml sets",
+            kept.join(", ")
+        )
+    });
+    let tools = assessment.addable();
+    let out = |status: &str, detail: Option<String>| {
+        let detail = [detail, kept_note.clone()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("; ");
+        json!({
+            "status": status,
+            "config": path,
+            "restored": restored,
+            "tools": tools,
+            "lines": codex_approvals::lines(&tools),
+            "detail": detail,
+        })
+    };
+    if tools.is_empty() {
+        return out("unchanged", None);
+    }
+    let lines = codex_approvals::lines(&tools);
+    let terminal = std::io::stdin().is_terminal();
+    let consent = yes || (terminal && confirm(&tools, &lines, &path));
+    if !consent {
+        let status = if terminal { "declined" } else { "not_added" };
+        return out(
+            status,
+            Some(format!(
+                "Codex will ask before each call of {}; to stop it asking, run `{} --yes` or add the lines below to {}",
+                tools.join(", "),
+                codex_approvals::SETUP_COMMAND,
+                path.display()
+            )),
+        );
+    }
+    match codex_approvals::add_approvals(&text, &tools)
+        .and_then(|t| codex_approvals::write_config(&path, &t).map_err(|e| e.to_string()))
+    {
+        Ok(()) => out("added", None),
+        Err(e) => failed(format!(
+            "could not add the approvals to {}: {e}",
+            path.display()
+        )),
+    }
+}
+
+/// The text lines for a Codex harness's `approvals` result.
+fn approvals_lines(a: &Value) -> Vec<String> {
+    let Some(status) = a["status"].as_str() else {
+        return Vec::new();
+    };
+    let config = a["config"].as_str().unwrap_or_default();
+    let tools = a["tools"]
+        .as_array()
+        .map(|t| {
+            t.iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    if a["restored"] == true {
+        out.push(format!(
+            "codex settings: put back Clax's settings in {config} that re-registering removed"
+        ));
+    }
+    let detail = a["detail"].as_str().filter(|d| !d.is_empty());
+    let mut l = match status {
+        "added" => format!("codex approvals: added for {tools} in {config}"),
+        "unchanged" => "codex approvals: nothing to add".to_string(),
+        s => format!("codex approvals: {s}"),
+    };
+    if let Some(d) = detail {
+        l.push_str(&format!(" ({d})"));
+    }
+    out.push(l);
+    if matches!(status, "not_added" | "declined") {
+        out.push(
+            a["lines"]
+                .as_str()
+                .unwrap_or_default()
+                .trim_end()
+                .to_string(),
+        );
+    }
+    out
+}
+
 /// `init`: sets the `bin` setting to this executable. `uninit`: removes it
 /// when it names this executable. The outcome as JSON; a failure is
 /// reported there, never fatal.
@@ -672,12 +853,18 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
         if install {
             actions.steps.extend((h.additions)(&root));
         }
-        let r = run_steps(
+        let codex_saved = (install && h.name == "codex").then(|| codex_saved_settings(&ctx));
+        let mut r = run_steps(
             h,
             &ctx,
             actions,
             if install { "registered" } else { "removed" },
         );
+        if let Some(saved) = codex_saved
+            && r["status"] == "registered"
+        {
+            r["approvals"] = codex_settings(&ctx, saved, a.yes);
+        }
         match r["status"].as_str() {
             Some("registered") => {
                 recorded.insert(h.name.into(), (h.record)(&root));
@@ -734,6 +921,7 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
                 l.push_str(&format!(" ({d})"));
             }
             lines.push(l);
+            lines.extend(approvals_lines(&r["approvals"]));
         }
         lines.push(format!(
             "bin setting: {} ({})",
@@ -801,6 +989,16 @@ pub fn uninit(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_y_or_yes_is_consent() {
+        for a in ["y\n", "Y", " yes \n", "YES"] {
+            assert!(is_yes(a), "{a:?}");
+        }
+        for a in ["", "\n", "n", "no", "yep", "ok"] {
+            assert!(!is_yes(a), "{a:?}");
+        }
+    }
 
     #[test]
     fn lexical_resolves_dot_dot_without_touching_the_filesystem() {

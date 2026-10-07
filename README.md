@@ -47,6 +47,13 @@ including registrations under Clax's previous name. Start a new session in
 each harness afterwards. Moving or deleting the clone afterwards changes
 nothing.
 
+For Codex, `clax init` also offers, once, to approve the Clax tools that
+replace or remove data (`delete` and the `db_*` writes), which Codex
+otherwise stops to ask about mid-task: it prints the lines for
+`~/.codex/config.toml` and adds them when you say yes (`--yes` for
+scripts). The other tools run without asking. `plugins/clax/README.md`
+("Tool approval") has the details.
+
 For Grok Build, `clax init` installs the clax-grok plugin (`grok plugin
 install <dir> --trust`) whenever `grok` is on your `PATH`, including when
 Grok is the only harness installed; `clax uninit` uninstalls it. Grok also
