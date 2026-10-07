@@ -40,7 +40,7 @@ describe("InboxRow", () => {
     const m = mount(InboxRow, { item: gone, now, onOpen: vi.fn(), onToggle: vi.fn() });
     expect(m.root.querySelector(".text")!.textContent).toBe("(deleted)");
     m.unmount();
-    const evil = "<img src=x onerror=alert(1)>‮evil";
+    const evil = "<img src=x onerror=alert(1)>\u202eevil";
     const m2 = mount(InboxRow, { item: item("reply", { artifact: { id: "a", title: evil, kind: "html", page_url: null }, reply: { comment_id: "c", body: evil, addressed: false } }), now, onOpen: vi.fn(), onToggle: vi.fn() });
     expect(m2.root.querySelector("img")).toBeNull();
     expect(m2.root.querySelector(".title")!.textContent).toBe(`claude replied on ${evil}`);

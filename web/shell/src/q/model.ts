@@ -2,7 +2,7 @@
 // §5.3, §9.1): the person's draft answers, when each question is answered,
 // the body the owner route takes, which preview to show, and the card's
 // names for agents and closed states. Pure: no DOM.
-import type { AnswerBody, QAgent, QuestionSpec, QuestionView } from "../api";
+import type { AnswerBody, QAgent, QOption, QuestionSpec, QuestionView } from "../api";
 
 /** One entry per question: the picked labels (in option order) and the
  * "Other" or free text as typed. */
@@ -87,4 +87,12 @@ export function closedLabel(q: QuestionView): string {
 export function cutHeader(h: string): string {
   const cs = [...h];
   return cs.length > HEADER ? `${cs.slice(0, HEADER - 1).join("").trimEnd()}…` : h;
+}
+
+/** An option's label as shown: a recommended option's label loses a
+ * trailing "(Recommended)" (any case), which a mirrored label keeps, since
+ * the card shows a Recommended chip. The stored label, which keys the
+ * answer, is unchanged. */
+export function shownLabel(o: QOption): string {
+  return (o.recommended && o.label.replace(/\s*\(recommended\)\s*$/i, "")) || o.label;
 }

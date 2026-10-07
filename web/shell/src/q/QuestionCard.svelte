@@ -4,21 +4,23 @@
   // One agent question (spec 2026-10-06-agent-questions-and-inbox-design
   // §9.1): who asks and about what, one chip per question (tabs when
   // several, each marked done when answered), options with descriptions and
-  // a Recommended chip (left out when a mirrored label already ends with
-  // "(Recommended)"), "Other…", a preview beside the options when the
-  // card is wide (stacked when narrow), free text, and Answer / Skip /
-  // Answer in the terminal. Keys while focus is in the card: arrows between
+  // a Recommended chip (a mirrored label's trailing "(Recommended)" is not
+  // shown twice), "Other…", a preview beside the options when the card is
+  // wide (stacked when narrow), free text, and Answer / Skip / Answer in
+  // the terminal. Keys while focus is in the card: arrows between
   // options, Space toggles, 1–4 pick, Enter answers once every question has
   // an answer. Answer, Skip and Answer in the terminal follow the keyboard
   // trail rule (`guardedAction`). A closed question says what closed it and
-  // shows its answers. Every string from the agent is text; previews are
+  // shows its answers; a card that closes while mounted announces it (and,
+  // when something else closed it first, that the person's action was not
+  // taken), and keeps focus when it held it. Every string from the agent is text; previews are
   // verbatim in a <pre>. Its styles travel with the question module's lazy
   // chunk (injected on mount).
   import { untrack } from "svelte";
-  import type { AnswerBody, QuestionView } from "../api";
+  import { ApiError, type AnswerBody, type QuestionStatus, type QuestionView } from "../api";
   import { relativeTime } from "../format";
   import { guardedAction, keyboardTrail } from "../view/trail";
-  import { agentLabel, closedLabel, complete, cutHeader, emptyDraft, pick, previewOf, toBody, typeOther } from "./model";
+  import { agentLabel, closedLabel, complete, cutHeader, emptyDraft, pick, previewOf, shownLabel, toBody, typeOther } from "./model";
 
   type Props = {
     q: QuestionView;
@@ -39,8 +41,16 @@
   let busy = $state(false);
   let hint = $state<string | null>(null);
   let card: HTMLElement | undefined = $state();
-  // Focus was in the card when it last moved: a card that closes under it takes focus itself, not <body>.
+  // Focus is in the card. Focus that leaves to nowhere because its control
+  // was disabled (a pending action) or removed (the card closing) still
+  // counts, so the card can take it back instead of leaving it on <body>.
   let inside = false;
+  // What a close says to assistive technology; empty on a card mounted closed.
+  let said = $state("");
+  // The status the person's pending action would close the question with.
+  let pending: QuestionStatus | null = null;
+  // Whether the card was open when this instance last looked.
+  let wasOpen = untrack(() => p.q.status === "open");
   $effect(() => keyboardTrail.onClear(() => { hint = null; }));
   const who = $derived(agentLabel(p.q.agent, (p.others ?? [p.q]).map(o => o.agent)));
   const done = $derived(complete(p.q, draft));
@@ -49,17 +59,40 @@
   const preview = $derived(previewOf(spec, focused, draft[tab]));
   const open = $derived(p.q.status === "open");
   const base = $derived(`q-${p.q.id}`);
-  $effect(() => { if (!open && inside) card?.focus(); });
+  const regain = () => { if (inside && card?.isConnected && !card.contains(document.activeElement)) card.focus(); };
+  const NOT_TAKEN: Partial<Record<QuestionStatus, string>> = { answered: "Not answered", declined: "Not skipped", released: "Not moved" };
+  $effect(() => {
+    if (open) { wasOpen = true; return; }
+    if (!wasOpen) return;
+    wasOpen = false;
+    const label = closedLabel(p.q);
+    const was = pending;
+    const instead = was !== null && (p.q.status !== was || (was === "answered" && p.q.answered_via === "terminal"));
+    said = instead ? `${NOT_TAKEN[was!]}: ${label}` : label;
+    pending = null;
+    regain();
+  });
+  const onFocusOut = (e: FocusEvent) => {
+    const to = e.relatedTarget as Node | null;
+    if (to) { inside = !!card?.contains(to); return; }
+    const from = e.target as HTMLElement;
+    // Settle once the change that moved focus has applied.
+    queueMicrotask(() => { inside = !from.isConnected || (from as HTMLButtonElement).disabled === true; });
+  };
 
+  /** The hint for a failed action: the daemon's message for a refusal, else the connection. */
+  const failed = (err: unknown): string =>
+    err instanceof ApiError && err.status ? `Not sent: ${err.message.replace(/^\d+ /, "")}` : "Not sent: Clax did not answer. Try again.";
   // Runs `f` for activation `e` of a consequential action unless the trail says to click.
-  const run = (e: Event, verb: string, f: () => Promise<void>) => {
+  const run = (e: Event, verb: string, closes: QuestionStatus, f: () => Promise<void>) => {
     if (busy) return;
     hint = guardedAction(e, verb, () => {
       busy = true;
-      f().then(() => { busy = false; }, () => { busy = false; hint = "Not sent: Clax did not answer. Try again."; });
+      pending = closes;
+      f().then(() => { busy = false; }, err => { busy = false; pending = null; hint = failed(err); queueMicrotask(regain); });
     });
   };
-  const answer = (e: Event) => { if (ready) run(e, "answer", () => p.onAnswer(toBody(p.q, draft))); };
+  const answer = (e: Event) => { if (ready) run(e, "answer", "answered", () => p.onAnswer(toBody(p.q, draft))); };
   const choose = (label: string) => { draft = pick(p.q, tab, label, draft); };
   const other = { get: () => draft[tab].text, set: (v: string) => { draft = typeOther(p.q, tab, v, draft); } };
   const show = (i: number) => { tab = i; focused = null; };
@@ -105,7 +138,8 @@
   const answerText = (i: number): string => {
     const a = p.q.answers?.[i];
     if (!a) return "—";
-    const parts = [...a.selected, ...(a.text ? [p.q.questions[i].options.length ? `Other: ${a.text}` : a.text] : [])];
+    const opts = p.q.questions[i].options;
+    const parts = [...a.selected.map(l => { const o = opts.find(x => x.label === l); return o ? shownLabel(o) : l; }), ...(a.text ? [p.q.questions[i].options.length ? `Other: ${a.text}` : a.text] : [])];
     return parts.length ? parts.join(", ") : "—";
   };
 </script>
@@ -113,7 +147,7 @@
 <!-- Keys act only while focus is in the card; every control is reachable by Tab, so the article's handler adds shortcuts, not a path. -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_noninteractive_tabindex -->
 <article class="qcard" class:closed-card={!open} data-question={p.q.id} aria-label={`${who} asks`} tabindex="-1" bind:this={card}
-  onkeydown={onKey} onfocusin={() => { inside = true; }} onfocusout={e => { inside = !!card?.contains(e.relatedTarget as Node | null); }}>
+  onkeydown={onKey} onfocusin={() => { inside = true; }} onfocusout={onFocusOut}>
   <header class="qhead">
     <strong class="who">{who}</strong>
     {#if p.q.agent?.project}<span class="proj">in {p.q.agent.project}</span>{/if}
@@ -132,24 +166,25 @@
       <div class="chips" role="tablist" aria-label="Questions">
         {#each p.q.questions as s, i (s.question)}
           <button type="button" class="chip" class:done={done[i]} role="tab" id={`${base}-tab-${i}`} aria-controls={`${base}-panel`} aria-selected={tab === i}
-            tabindex={tab === i ? 0 : -1} onclick={() => show(i)}>{#if done[i]}<span class="tick" aria-hidden="true">✓</span>{/if}{cutHeader(s.header)}</button>
+            title={s.header} aria-label={done[i] ? `${s.header}, answered` : s.header} tabindex={tab === i ? 0 : -1} onclick={() => show(i)}>{#if done[i]}<span class="tick" aria-hidden="true">✓</span>{/if}{cutHeader(s.header)}</button>
         {/each}
       </div>
     {:else}
-      <span class="chip solo">{cutHeader(spec.header)}</span>
+      <span class="chip solo" title={spec.header}>{cutHeader(spec.header)}</span>
     {/if}
     <div class="panel" id={`${base}-panel`} role={p.q.questions.length > 1 ? "tabpanel" : undefined} aria-labelledby={p.q.questions.length > 1 ? `${base}-tab-${tab}` : undefined}>
       <p class="qtext" id={`${base}-text-${tab}`}>{spec.question}</p>
       {#key tab}
       <div class="body" class:with-preview={preview !== null}>
         {#if spec.options.length}
-          <div class="opts" role={spec.multi_select ? "group" : "radiogroup"} aria-labelledby={`${base}-text-${tab}`} onmouseleave={() => { focused = null; }}>
+          <div class="opts" role={spec.multi_select ? "group" : "radiogroup"} aria-labelledby={`${base}-text-${tab}`} onmouseleave={() => { focused = null; }}
+            onfocusout={e => { if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node | null)) focused = null; }}>
             {#each spec.options as o, j (o.label)}
               <label class="opt" class:on={draft[tab].selected.includes(o.label)} onmouseenter={() => { focused = o.label; }} onfocusin={() => { focused = o.label; }}>
                 <input type={spec.multi_select ? "checkbox" : "radio"} name={`${base}-${tab}`} value={o.label} data-opt
                   checked={draft[tab].selected.includes(o.label)} onclick={() => choose(o.label)} />
                 <span class="num" aria-hidden="true">{j + 1}</span>
-                <span class="txt"><span class="lbl">{o.label}</span>{#if o.recommended && !/\(recommended\)\s*$/i.test(o.label)}<span class="rec">Recommended</span>{/if}
+                <span class="txt"><span class="lbl">{shownLabel(o)}</span>{#if o.recommended}<span class="rec">Recommended</span>{/if}
                   {#if o.description}<span class="desc">{o.description}</span>{/if}</span>
               </label>
             {/each}
@@ -170,14 +205,17 @@
     </div>
     <footer class="acts">
       <button type="button" class="primary" disabled={busy || !ready} onclick={answer}>Answer {who}</button>
-      <button type="button" disabled={busy} onclick={e => run(e, "skip", p.onDecline)}>Skip</button>
+      <button type="button" disabled={busy} onclick={e => run(e, "skip", "declined", p.onDecline)}>Skip</button>
       {#if p.q.source === "hook" && p.onRelease}
-        <button type="button" disabled={busy} onclick={e => run(e, "move it to the terminal", p.onRelease!)}>Answer in the terminal</button>
+        <button type="button" disabled={busy} onclick={e => run(e, "move it to the terminal", "released", p.onRelease!)}>Answer in the terminal</button>
       {/if}
     </footer>
-    <!-- Said when a key asked for an action on a trail the page may have steered (`keyboardTrail`). -->
-    <p class="act-hint" role="status">{hint ?? ""}</p>
   {/if}
+  <!-- One live region for the card's life: while open, the trail's hint (a key
+       asked for an action on a trail the page may have steered) or a failure;
+       once closed, what closed it, shown only when the person's action was
+       not taken. -->
+  <p class="act-hint" class:sr={!open && !said.startsWith("Not ")} role="status">{open ? (hint ?? "") : said}</p>
 </article>
 
 <style>
@@ -227,5 +265,7 @@
   .answers .a { font-size: 13.5px; }
   .act-hint { margin: 6px 0 0; font-size: 12px; color: var(--muted); text-align: right; }
   .act-hint:empty { margin: 0; }
+  .act-hint.sr { position: absolute; width: 1px; height: 1px; margin: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .closed-card .act-hint:not(.sr) { text-align: left; color: var(--fg); }
   @media (pointer: coarse) { .opt input[data-opt] { width: 20px; height: 20px; } }
 </style>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { view } from "./fixtures";
-import { agentLabel, closedLabel, complete, cutHeader, emptyDraft, pick, previewOf, toBody, typeOther } from "./model";
+import { agentLabel, closedLabel, complete, cutHeader, emptyDraft, pick, previewOf, shownLabel, toBody, typeOther } from "./model";
 
 describe("question model", () => {
   it("tracks completeness per kind and builds the body", () => {
@@ -61,5 +61,13 @@ describe("question model", () => {
     expect(closedLabel(view({ status: "answered", answered_via: "shell" }))).toBe("Answered");
     expect(cutHeader("Layout")).toBe("Layout");
     expect(cutHeader("Twelve chars")).toBe("Twelve chars");
+  });
+
+  it("shows a recommended label without its trailing (Recommended)", () => {
+    expect(shownLabel({ label: "Vitest (Recommended)", recommended: true })).toBe("Vitest");
+    expect(shownLabel({ label: "Vitest  (recommended) ", recommended: true })).toBe("Vitest");
+    expect(shownLabel({ label: "(Recommended)", recommended: true })).toBe("(Recommended)");
+    expect(shownLabel({ label: "Jest (Recommended)" })).toBe("Jest (Recommended)");
+    expect(shownLabel({ label: "Two", recommended: true })).toBe("Two");
   });
 });
