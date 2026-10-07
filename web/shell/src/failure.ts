@@ -2,6 +2,9 @@ import { ApiError } from "./api";
 
 export const SEND_FAILED = "Could not send to the agent";
 export const RESOLVE_FAILED = "Could not resolve";
+export const REOPEN_FAILED = "Could not reopen";
+/** Said when a viewer with neither a name nor the owner's token asks to reopen: the daemon would refuse. */
+export const REOPEN_NAME = "Add your name to reopen threads";
 export const POST_FAILED = "Could not post";
 export const NAME_FAILED = "Could not save your name";
 export const NAME_LOAD_FAILED = "Could not load your name";

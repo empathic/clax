@@ -1,5 +1,10 @@
 <svelte:options css="injected" />
 
+<script lang="ts" module>
+  /** The threads of other pages open in place, by ID (IDs are unique across artifacts). */
+  let unfolded: string[] = $state([]);
+</script>
+
 <script lang="ts">
   // Open threads: those on the page shown and found (numbered like the pins),
   // then those on other pages of the version (labelled "on <file>"). Below,
@@ -15,6 +20,7 @@
   import { agentName, historyOf, isOutdated } from "../view/history-model";
   import { needsTicking, pageLabel, sidebarSections } from "../view/sidebar-model";
   import { type Working, agentNames, newestFirst, stripText, threadAgent, threadMarker } from "../view/working-model";
+  import { tick } from "svelte";
   import SendButton from "./SendButton.svelte";
   import ThreadCard from "./ThreadCard.svelte";
   import { ticker } from "./ticker.svelte";
@@ -116,12 +122,27 @@
   const unsentCount = $derived(unsent(p.threads).length);
   let unsentHint: string | null = $state(null);
   $effect(() => keyboardTrail.onClear(() => { unsentHint = null; }));
-  const resolve = (t: Thread) => { if (t.status === "open") justResolved = { id: t.id, until: Date.now() + RESOLVE_OPEN_MS }; p.onResolve(t); };
+  // A card resolved or reopened from inside it moves to another group, where
+  // it is a new card: focus follows it to its head once its status changed.
+  let refocus: { id: string; status: string } | null = $state(null);
+  let aside: HTMLElement | undefined = $state();
+  const resolve = (t: Thread) => {
+    if (t.status === "open") justResolved = { id: t.id, until: Date.now() + RESOLVE_OPEN_MS };
+    if (document.activeElement?.closest(".thread-card")?.getAttribute("data-thread") === t.id) refocus = { id: t.id, status: t.status };
+    p.onResolve(t);
+  };
+  $effect(() => {
+    const r = refocus;
+    const t = r && p.threads.find(x => x.id === r.id);
+    if (!r || (t && t.status === r.status)) return;
+    refocus = null;
+    if (t) void tick().then(() => [...(aside?.querySelectorAll<HTMLElement>(".thread-card") ?? [])].find(c => c.dataset.thread === t.id)?.querySelector<HTMLElement>(".card-head")?.focus());
+  });
   // A thread on another page the version holds folds to its summary and opens
   // in place, so it is read and answered without leaving this page; "Go to
   // page" opens its page (`onSelect`). Any number may be open at once, kept
-  // by thread ID through every change of the list.
-  let unfolded: string[] = $state([]);
+  // by thread ID (`unfolded`, for the page's life) through every change of
+  // the list and while the sidebar is closed.
   const far = (t: Thread) => t.anchor.file !== s.file && (p.holds?.(t.anchor.file) ?? true);
   const foldOf = (t: Thread) => far(t)
     ? { open: unfolded.includes(t.id), onToggle: (o: boolean) => { unfolded = o ? [...unfolded, t.id] : unfolded.filter(x => x !== t.id); } }
@@ -148,7 +169,7 @@
   {/each}
 {/snippet}
 
-<aside class="sidebar" aria-label="Comment threads">
+<aside class="sidebar" aria-label="Comment threads" bind:this={aside}>
   {#each newestFirst(p.working ?? []) as w (w.key)}
     {#await import("./WorkingStrip.svelte") then { default: WorkingStrip }}
       <WorkingStrip {w} text={stripText(w, agentsByHandle, s.numbers, new Set(p.mine ?? []))} commenting={p.commenting ?? false} />
@@ -209,17 +230,10 @@
     .gh.oth .sw { border-radius: 0 8px 8px 0; box-shadow: inset 0 0 0 1.5px var(--you); }
     .gh.set .sw { border-radius: 50%; width: 10px; height: 10px; background: var(--border-strong); }
     .tail { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 8px; }
-    /* Batch send (spec §8): the shared Send and its agent picker. */
-    .send button.primary, button.primary.send-unsent { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
-    .send button.primary:not(:disabled):hover, button.primary.send-unsent:not(:disabled):hover { background: var(--accent-hover); border-color: var(--accent-hover); }
-    .send { display: inline-flex; position: relative; }
-    .send .caret { min-width: 28px; padding: 0 6px; border-left: 1px solid color-mix(in srgb, var(--on-accent) 35%, transparent); font-family: var(--mono); }
-    .send > button.primary:not(:last-child) { border-top-right-radius: 0; border-bottom-right-radius: 0; }
-    .send .caret { border-top-left-radius: 0; border-bottom-left-radius: 0; }
-    .send-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 160px; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius); box-shadow: var(--elev-lg); display: flex; flex-direction: column; padding: 4px 0; }
-    .send-menu button { justify-content: flex-start; border: 0; border-radius: 0; min-height: 32px; }
-    .send-menu button[aria-checked="true"]::before { content: "✓"; margin-right: 6px; }
+    /* Batch send (spec §8): Send every unsent thread. */
+    button.primary.send-unsent { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+    button.primary.send-unsent:not(:disabled):hover { background: var(--accent-hover); border-color: var(--accent-hover); }
     .send-unsent { width: 100%; margin-bottom: 4px; }
-    @media (max-width: 700px) { .send-menu button, .send-unsent { min-height: 40px; } }
+    @media (max-width: 700px) { .send-unsent { min-height: 40px; } }
   }
 </style>

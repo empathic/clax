@@ -23,7 +23,9 @@ function setup(over: { remaining?: number; page?: typeof page | null; admits?: b
   const api = (name: string, ret: unknown) => async (...a: unknown[]) => {
     calls.push(`${name} ${a.map(x => JSON.stringify(x)).join(" ")}`);
     if (over.fail === name) throw new ApiFailure(over.failCode ?? "not_found", "No such thread.", 404);
-    return ret;
+    // A thread's answer is the thread asked about.
+    const r = ret as { thread?: { id: string } };
+    return r?.thread && typeof a[1] === "string" ? { ...r, thread: { ...r.thread, id: a[1] } } : ret;
   };
   const d: PanelDeps = {
     api: {
@@ -40,6 +42,7 @@ function setup(over: { remaining?: number; page?: typeof page | null; admits?: b
       suggest: api("suggest", { origin: "http://localhost:5173", site: SITE, suggestions: [{ origin: "http://localhost:7702", site: { ...SITE, origins: [{ origin: "http://localhost:7702", joined_at: null, last_used_at: null }] }, reason: "path", path: "/app" }] }),
       sites: api("sites", { sites: [{ site: SITE }] }),
       clip: api("clip", "data:image/png;base64,iVBORw0KGgo="),
+      artifact: api("artifact", { artifact: { participants: { people: [], agents: [{ handle: `a_${"1".repeat(22)}`, harness: "claude", live: true }] } }, versions: [{ n: 1, created_at: "t" }] }),
     } as never,
     tabs: {
       ready: async () => { waited++; await over.restoring; },
@@ -83,16 +86,34 @@ describe("panelAction on the tab's site", () => {
     await s.run({ t: "reopen", threadId: T3 });
     await s.run({ t: "send", threadId: T3, to: null });
     expect(s.calls).toEqual([
-      `comment "${FAR_AID}" "${T3}" "@agent look"`, `site-applied http://localhost:5173 ${T1} open`,
-      `resolve "${FAR_AID}" "${T3}"`, `site-applied http://localhost:5173 ${T1} resolved`,
-      `reopen "${FAR_AID}" "${T3}"`, `site-applied http://localhost:5173 ${T1} open`,
-      `sendThread "${FAR_AID}" "${T3}" null`, `site-applied http://localhost:5173 ${T1} open`,
+      `comment "${FAR_AID}" "${T3}" "@agent look"`, `site-applied http://localhost:5173 ${T3} open`,
+      `resolve "${FAR_AID}" "${T3}"`, `site-applied http://localhost:5173 ${T3} resolved`,
+      `reopen "${FAR_AID}" "${T3}"`, `site-applied http://localhost:5173 ${T3} open`,
+      `sendThread "${FAR_AID}" "${T3}" null`, `site-applied http://localhost:5173 ${T3} open`,
     ]);
     expect(s.out).toEqual([]);
     // A thread of the tab's page is still acted on there.
     const here = setup({ far: [{ id: T3, artifact_id: FAR_AID, clip_url: null }] });
     await here.run({ t: "resolve", threadId: T1 });
     expect(here.calls).toEqual([`resolve "${AID}" "${T1}"`, `applied 4 ${T1}`]);
+  });
+
+  it("marks another page's threads looked at their own page, and the tab's page's at the tab's", async () => {
+    const s = setup({ far: [{ id: T3, artifact_id: FAR_AID, clip_url: null }] });
+    await s.run({ t: "looked", threadIds: [T3] });
+    await s.run({ t: "looked", threadIds: [T1] });
+    expect(s.calls).toEqual([`looked "${FAR_AID}" ["${T3}"]`, `looked "${AID}" ["${T1}"]`]);
+  });
+
+  it("tells the panel the live agents and versions of another page of the site, and null for a thread it does not list", async () => {
+    const s = setup({ far: [{ id: T3, artifact_id: FAR_AID, clip_url: null }] });
+    await s.run({ t: "far-page", req: 7, threadId: T3 });
+    await s.run({ t: "far-page", req: 8, threadId: T1 });
+    expect(s.calls).toEqual([`artifact "${FAR_AID}"`]);
+    expect(s.out).toEqual([
+      { t: "far-page", req: 7, page: { artifactId: FAR_AID, agents: [{ handle: `a_${"1".repeat(22)}`, harness: "claude", live: true }], versions: [{ n: 1, created_at: "t" }] } },
+      { t: "far-page", req: 8, page: null },
+    ]);
   });
 
   it("fetches a thread's clip for the panel, of the tab's page or another page of its site, and answers null for one without", async () => {

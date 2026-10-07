@@ -9,7 +9,7 @@ import { HINT_MS, frameGesture, onShieldPress, pickHintAllowed, setForwardedKeys
 import { CapabilityHost, type CommentsUi } from "../caps/host";
 import { REQUEST_STUCK, connTrouble } from "../conn-notice";
 import { Lifecycle, onPageCache, retrying } from "../lifecycle";
-import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, report, scopedNotice } from "../failure";
+import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, REOPEN_NAME, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
 import { artifactOrigin, cachedOriginOk, pageSrc, probeOrigin } from "../origin";
 import { parseShellPath, shellPath } from "../route";
@@ -187,6 +187,8 @@ export class ArtifactController {
   private resumeAfter: string | null = null;
   // What the open composer holds, so a page's open never replaces typed text.
   private composerText = "";
+  /** The thread a viewer asked to reopen before naming itself: reopened once it has a name. */
+  private reopenAfterName: Thread | null = null;
   // A page anchors threads itself (comments.customAnchors): pins come from
   // its placements only, and the frame is not asked to resolve anchors.
   private customLive = false;
@@ -1370,7 +1372,11 @@ export class ArtifactController {
   copyLink(): void { navigator.clipboard.writeText(location.origin + this.here(this.pinnedVersion) + location.hash).catch(() => {}); }
   reloadLatest(): void { nav.assign(this.here(null)); }
   dismissNotice(): void { this.set({ notice: null }); }
-  setMe(v: Viewer): void { this.set({ me: v }); }
+  setMe(v: Viewer): void {
+    this.set({ me: v });
+    const t = this.reopenAfterName;
+    if (t && v.display_name) { this.reopenAfterName = null; this.noticeFor(REOPEN_NAME)(null); this.resolveThread(t); }
+  }
   hover(t: Thread | null): void { this.set({ hovered: t?.id ?? null }); }
   /** A pin's click: the sidebar opens on its thread. */
   openPin(t: Thread): void { this.set({ panel: true }); this.selectThread(t); }
@@ -1411,8 +1417,19 @@ export class ArtifactController {
   sendUnsent(): Promise<void> { return this.sendIds(unsent(this.s.threads).map(t => t.id)); }
   /** The agent picker: every Send goes to `handle` from now on, remembered for this artifact. */
   chooseTarget(handle: string): void { rememberTarget(this.id, handle); this.set({ sendTo: handle }); }
-  /** Resolves an open thread; reopens a resolved one (the owner shell with its token). */
-  resolveThread(t: Thread): void { this.saveThread(t.status === "open" ? resolveThread(this.id, t.id) : getToken().then(k => reopenThread(this.id, t.id, k)), RESOLVE_FAILED); }
+  /** Resolves an open thread; reopens a resolved one, as the daemon lets
+   * the owner shell (its token) or a named viewer. A viewer with neither is
+   * asked for its name (the people menu), and the thread reopens once it
+   * has one. */
+  resolveThread(t: Thread): void {
+    if (t.status === "open") { this.saveThread(resolveThread(this.id, t.id), RESOLVE_FAILED); return; }
+    void getToken().then(k => {
+      if (k || this.s.me?.display_name) { this.saveThread(reopenThread(this.id, t.id, k), REOPEN_FAILED); return; }
+      this.reopenAfterName = t;
+      this.noticeFor(REOPEN_NAME)(`${REOPEN_NAME}: type it under People.`);
+      this.set({ menu: "people" });
+    });
+  }
   reply(t: Thread, body: string): void { this.saveThread(addComment(this.id, t.id, body), POST_FAILED); }
   composerInput(text: string): void { this.composerText = text; }
   /** The composer for `pickId` has focus: the bridge may render its clip now. */

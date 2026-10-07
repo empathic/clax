@@ -17,7 +17,7 @@
   import { presenceMap, roster } from "../../../shell/src/view/presence-model";
   import { unsent } from "../../../shell/src/view/batch-model";
   import { sidebarSections } from "../../../shell/src/view/sidebar-model";
-  import { type PanelState, type PanelToWorker, RETRYABLE, type SiteChoice, type SiteView, type Suggestion } from "../messages";
+  import { type FarPage, type PanelState, type PanelToWorker, RETRYABLE, type SiteChoice, type SiteView, type Suggestion } from "../messages";
   import { asPages, pageOfRoute } from "./adapt";
   import Elsewhere from "./Elsewhere.svelte";
   import Merge from "./Merge.svelte";
@@ -33,6 +33,7 @@
   type Link = {
     state: PanelState | null; up?: boolean; site?: SiteView | null; failures?: number; post(m: PanelToWorker): void; request?(m: Ask): Promise<Step>;
     clip?(threadId: string): Promise<string | null>;
+    farPage?(threadId: string): Promise<FarPage | null>;
     suggestion?: { origin: string; suggestion: Suggestion | null } | null; sites?: SiteChoice[] | null;
   };
   type Area = Parameters<typeof loadPrefs>[0];
@@ -112,19 +113,27 @@
     const asked = others.length ? permit(others) : Promise.resolve(true);
     void asked.then(() => link.post({ t: "open-thread", threadId: t.id }));
   }
-  /** Each thread's clip, asked of the worker once per clip (the panel cannot fetch it). */
+  /** The clips last shown (at most CLIPS), asked of the worker once each while kept (the panel cannot fetch them). */
+  const CLIPS = 20;
   const clips = new Map<string, Promise<string | null>>();
   function clip(t: Thread): Promise<string | null> {
     const key = `${t.id} ${t.clip_url}`;
     let p = clips.get(key);
-    if (!p) {
+    if (p) clips.delete(key);
+    else {
       p = link.clip?.(t.id) ?? Promise.resolve(null);
       // A clip that did not come is asked for again next time.
-      void p.then(u => { if (u === null) clips.delete(key); });
-      clips.set(key, p);
+      void p.then(u => { if (u === null && clips.get(key) === p) clips.delete(key); });
     }
+    clips.set(key, p);
+    for (const k of clips.keys()) { if (clips.size <= CLIPS) break; clips.delete(k); }
     return p;
   }
+  /** The site's other pages whose threads are open in place, by artifact ID: their live agents and versions. */
+  let farPages = $state<Record<string, FarPage>>({});
+  /** The site's threads open in place, by ID, for the panel's life. */
+  let unfolded = $state<string[]>([]);
+  const unfold = (t: Thread) => { void link.farPage?.(t.id).then(p => { if (p) farPages = { ...farPages, [p.artifactId]: p }; }); };
   const toggleResolved = (t: Thread) => link.post({ t: t.status === "open" ? "resolve" : "reopen", threadId: t.id });
   const reply = (t: Thread, body: string) => link.post({ t: "reply", threadId: t.id, body });
   const suggestion = $derived(link.suggestion && link.suggestion.origin === tabOrigin ? link.suggestion.suggestion : null);
@@ -255,11 +264,12 @@
       <p class="hint">No comments on this page yet. Press Comment, then click what you want to comment on.</p>
     {/if}
     {#if s.enabled && anyFar}
-      <!-- Another page's thread goes to every live agent of its page: the agent picker names this page's. -->
       <Elsewhere groups={far} resolved={s.resolved} selected={s.selected} collapsed={prefs.collapsed} {now} {targets}
-        me={s.viewer ? { ...s.viewer, created_at: "" } : null} {clip}
-        onToggle={toggleGroup} onOpen={openThread} onMove={move} onReply={reply} onResolve={toggleResolved}
-        onSend={t => link.post({ t: "send", threadId: t.id, to: null })} />
+        me={s.viewer ? { ...s.viewer, created_at: "" } : null} {clip} pages={farPages} {chosen} {unfolded}
+        onFold={(id, o) => (unfolded = o ? [...unfolded, id] : unfolded.filter(x => x !== id))}
+        onToggle={toggleGroup} onOpen={openThread} onUnfold={unfold} onMove={move} onReply={reply} onResolve={toggleResolved}
+        onSend={(t, to) => link.post({ t: "send", threadId: t.id, to })} onChoose={h => (chosen = h)}
+        onSeen={t => link.post({ t: "looked", threadIds: [t.id] })} />
     {/if}
     {#if s.enabled && site}
       <!-- A run belongs to its site: another site's panel starts afresh, and the run stops. -->

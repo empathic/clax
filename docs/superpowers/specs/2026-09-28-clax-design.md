@@ -775,9 +775,13 @@ file under `v/<digits>/` is reachable only through the versioned form):
   exists (resolved by selector or quote while its `html_hash` differs), the
   clip, the messages (people's with a red-orange rule on the left, an
   agent's with a green rule on the right, `<agent> · addressed in vN` when
-  linked), one line of version-tagged history (`v3 alex commented · v4 Mia
-  replied · claude worked on it · v5 claude addressed it · alex resolved`),
-  and Reply, Resolve and `Send to <agent> ▾`. Any viewer may resolve a
+  linked), each message with its author, its version (the one it was made
+  on, or current when a person replied; none for an agent's reply) and its
+  time (`alex v3 · 5 min ago`), then one line of version-tagged history
+  for what the messages do not say (`v4 alex sent it with 2 others · claude
+  working on it · v5 claude addressed it · v5 alex resolved`; owner ruling
+  2026-10-07: the comments are not repeated there), and Reply, Resolve (or
+  Reopen) and `Send to <agent> ▾`. Any viewer may resolve a
   thread, and an agent may resolve a thread sent to it; the history records
   who. Clicking a thread scrolls the frame to its anchor and
   flashes it (a static outline under reduced motion). A thread on another
@@ -787,10 +791,16 @@ file under `v/<digits>/` is reachable only through the versioned form):
   resolved or reopened and sent exactly as on its own page, the frame and
   the URL staying put and nothing selected; Escape inside it folds it again,
   focus on its head (owner decision 2026-10-07). Any number may be open at
-  once, kept by thread ID while the list changes. Its "Go to page ↗"
+  once, kept by thread ID while the list changes and while the sidebar is
+  closed, for the page's life. Its "Go to page ↗"
   navigates there first and selects it, as clicking it did before. A
-  resolved thread's card offers Reopen (the daemon's rule: a named viewer or
-  the owner). A thread's clip shows as a thumbnail that opens the whole clip
+  folded card is not looked at (Q4); open, it is. A card resolved or
+  reopened from inside it moves to its new group with focus on its head.
+  A resolved thread's card offers Reopen (the daemon's rule: a named
+  viewer or the owner shell's token); a viewer with neither is asked for
+  its name under People ("Add your name to reopen threads"), and the
+  thread reopens once it has one; a failure reads "Could not reopen: …".
+  A thread's clip shows as a thumbnail that opens the whole clip
   over the page, closed by Escape, a click outside it or Close. Pins
   show only for the page in the frame: red-orange; split red-orange and
   green while an agent works on the thread; white with a green ring and a

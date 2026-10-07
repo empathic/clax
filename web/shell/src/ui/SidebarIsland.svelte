@@ -1,15 +1,15 @@
 <script lang="ts">
   // The sidebar island: the comment threads, once the artifact is loaded and
-  // the frame mode decided;
-  // then the phone's Page | Threads switch, after them so the Tab order
-  // follows the screen. The thread list's code and styles load after the first
-  // paint (`loadSidebar`); until then an empty sidebar holds its width, so the
-  // frame is laid out once at its final size.
+  // the frame mode decided; then the phone's Page | Threads switch, after
+  // them so the Tab order follows the screen. The thread list's code and
+  // styles, and the controller's wiring of it (ShellSidebar), load after the
+  // first paint (`loadSidebar`); until then an empty sidebar holds its
+  // width, so the frame is laid out once at its final size.
   import { fromStore } from "svelte/store";
   import { type ArtifactController, viewReady } from "../view/artifact-controller";
   import { afterPaint } from "../view/after-paint";
   import PhoneTabs from "./PhoneTabs.svelte";
-  import type SidebarT from "./Sidebar.svelte";
+  import type SidebarT from "./ShellSidebar.svelte";
   import { loadSidebar, sidebarPrefetch } from "./sidebar-chunk";
 
   // An island's controller is fixed for its lifetime: the mount passes it once.
@@ -34,15 +34,7 @@
   {#if s.panel && !Sidebar}
     <aside class="sidebar" aria-label="Comment threads" aria-busy="true"></aside>
   {:else if s.panel && Sidebar}
-    <Sidebar threads={s.threads} resolved={s.resolved} selected={s.selected} file={s.file} holds={f => ctl.holds(f, s)} me={s.me}
-      versions={s.data.versions} shown={ctl.shown(s)} agent={s.data.artifact.owner_harness || "agent"}
-      working={s.working} commenting={s.commenting} agents={s.agents} mine={s.attention?.open_in ?? []}
-      decided={s.decided} onSeen={t => ctl.look(t)}
-      onSelect={t => ctl.selectThread(t)} onHover={t => ctl.hover(t)} onSend={t => ctl.sendThread(t)}
-      onResolve={t => ctl.resolveThread(t)} onReply={(t, body) => ctl.reply(t, body)}
-      selection={s.selection} batchNote={s.batchNote} batchBusy={s.batchBusy} sendTo={s.sendTo}
-      onToggle={(t, shift, order) => ctl.toggleSelect(t, shift, order)} onClear={() => ctl.clearSelection()} onNote={v => ctl.setBatchNote(v)}
-      onSendSelection={() => void ctl.sendSelection()} onSendUnsent={() => void ctl.sendUnsent()} onChoose={h => ctl.chooseTarget(h)} />
+    <Sidebar {ctl} {s} />
   {/if}
   <PhoneTabs panel={s.panel} open={ctl.openCount(s)} onPage={() => { if (s.panel) ctl.togglePanel(); }} onThreads={() => { if (!s.panel) ctl.togglePanel(); }} />
 {/if}

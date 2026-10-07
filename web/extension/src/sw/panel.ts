@@ -2,8 +2,9 @@
 // took acts on the tab the panel shows. Thread actions go to the daemon for
 // the tab's live page, or for the page of its site the thread is on (§7.1),
 // and the thread the daemon answers with is applied at once (the stream
-// brings it too). A thread's clip is fetched here, with the credential, for
-// the panel, which holds none. A failure is told to the panel as
+// brings it too). A thread's clip, and the agents and versions of another
+// page of the site, are fetched here, with the credential, for the panel,
+// which holds none. A failure is told to the panel as
 // `failed {code, message}`; one a new pairing can fix is also kept as the
 // tab's error, so the panel's Retry pairs again for it.
 import { MAX_SITES, type PanelToWorker, RETRYABLE, type WorkerToPanel } from "../messages";
@@ -14,7 +15,7 @@ import type { Sites } from "./site";
 import type { Tabs } from "./tabs";
 
 export type PanelDeps = {
-  api: Pick<Api, "sendThread" | "sendBatch" | "comment" | "resolve" | "reopen" | "looked" | "setName" | "move" | "addRule" | "deleteRule" | "suggest" | "sites" | "join" | "split" | "answer" | "clip">;
+  api: Pick<Api, "sendThread" | "sendBatch" | "comment" | "resolve" | "reopen" | "looked" | "setName" | "move" | "addRule" | "deleteRule" | "suggest" | "sites" | "join" | "split" | "answer" | "clip" | "artifact">;
   tabs: Pick<Tabs, "ready" | "state" | "admits" | "route" | "applied" | "fail" | "setViewer" | "select" | "setCommentMode" | "commentOn" | "openThread" | "opening">;
   sites: Pick<Sites, "load" | "origins" | "view" | "applied">;
   /** Whether `url`'s server answers a short request (decision 3, 2026-10-06: a
@@ -76,6 +77,14 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: 
       if (s?.url) await d.tabs.route(tabId, s.url, true);
       return;
     case "select": d.tabs.select(tabId, m.threadId); return;
+    case "far-page": {
+      // The page of a thread of the site's listing: its live agents (the Send
+      // button's picker there) and its versions (its comments' tags).
+      const t = siteThread(d, s?.on, m.threadId);
+      const art = t ? await d.api.artifact(t.artifact_id).catch(() => null) : null;
+      reply({ t: "far-page", req: m.req, page: art && t ? { artifactId: t.artifact_id, agents: art.artifact.participants?.agents ?? [], versions: art.versions } : null });
+      return;
+    }
     case "clip": {
       // Of the tab's page, or of another page of its site; null for a thread it knows of neither, or one with no clip.
       const t = s?.threads.find(x => x.id === m.threadId) ?? siteThread(d, s?.on, m.threadId);
@@ -168,6 +177,11 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: 
   if ("req" in m) throw changed();
   // A thread of another page of the tab's site (spec §7.1) is acted on at
   // its own page, and the answer applied to the site's listing.
+  if (m.t === "looked" && on && m.threadIds.length && !m.threadIds.some(id => s.threads.some(t => t.id === id))) {
+    const far = m.threadIds.map(id => siteThread(d, on, id));
+    const aid = far[0]?.artifact_id;
+    if (aid && far.every(t => t?.artifact_id === aid)) { await d.api.looked(aid, m.threadIds); return; }
+  }
   if ((m.t === "send" || m.t === "reply" || m.t === "resolve" || m.t === "reopen") && on && !s.threads.some(t => t.id === m.threadId)) {
     const t = siteThread(d, on, m.threadId);
     if (t) {

@@ -234,6 +234,9 @@ test("a thread on another page is read, answered, resolved and reopened in place
   await expect(head).toHaveAttribute("aria-expanded", "true");
   await card.getByRole("button", { name: "Reopen" }).click();
   await expect.poll(async () => (await api(d.base, d.token, `/api/artifacts/${id}/threads/${tid}`)).thread.status).toBe("open");
+  // The card moved back to Open, a new card there, still open, with focus on its head.
+  await expect(page.locator(`.section-open [data-thread="${tid}"]`).getByRole("button", { name: "Resolve" })).toBeVisible();
+  await expect(head).toBeFocused();
   await expect(page).toHaveURL(`${d.base}/a/${id}`);
   await expect(page.locator("iframe.frame")).toHaveAttribute("src", new RegExp(`/v/1/$`));
   // Escape folds it, focus on its head.
@@ -248,4 +251,26 @@ test("a page the version does not hold gets a message instead of a frame", async
   await page.goto(`${d.base}/a/${artifact.id}/nope.html`);
   await expect(page.locator(".stage .empty")).toContainText("v1 has no page nope.html");
   await expect(page.locator("iframe.frame")).toHaveCount(0);
+});
+
+test("a viewer with no name is asked for one before a reopen, and the thread reopens once it has one", async ({ page }) => {
+  const { artifact } = await publish(d.base, d.token, "Reopen by name", { "index.html": INDEX, "about.html": ABOUT });
+  const id = artifact.id;
+  const form = new FormData();
+  form.set("anchor", JSON.stringify({ kind: "element", selector: "body > main > h2", quote: "Our team", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "about.html" }));
+  form.set("body", "Name the team.");
+  form.set("version", "1");
+  const tid = (await (await fetch(`${d.base}/api/artifacts/${id}/threads`, { method: "POST", body: form })).json()).thread.id as string;
+  await api(d.base, d.token, `/api/artifacts/${id}/threads/${tid}/resolve`, { method: "POST", body: "{}" });
+  await openArtifact(page, d.base, id, 1, "subdomain", { lan: true });
+  await page.locator(".section-resolved summary").click();
+  const card = page.locator(`[data-thread="${tid}"]`);
+  await card.locator("button.card-head").click();
+  await card.getByRole("button", { name: "Reopen" }).click();
+  await expect(page.getByText("Add your name to reopen threads: type it under People.")).toBeVisible();
+  const name = page.getByLabel("Your name");
+  await name.fill("Mia");
+  await name.press("Enter");
+  await expect.poll(async () => (await api(d.base, d.token, `/api/artifacts/${id}/threads/${tid}`)).thread.status).toBe("open");
+  await expect(page.getByText("Add your name to reopen threads: type it under People.")).toHaveCount(0);
 });

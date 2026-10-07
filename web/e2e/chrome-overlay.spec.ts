@@ -371,6 +371,15 @@ test("the panel lists the site's other pages, answers and resolves their threads
   const png = await scratch.screenshot({ clip: { x: 0, y: 0, width: 480, height: 160 } });
   await scratch.close();
   const b = await liveThread(live, one, "main > h1", "Settings", "User one heading note", png);
+  // Two agents watch the site: another page's thread offers that page's picker, as there.
+  const agent = async (harness: string) => {
+    const r = await api(live, "/api/sessions", { method: "POST", body: JSON.stringify({ harness, harness_session_id: `e2e-${harness}`, cwd: "/tmp", pid: null, parent_pid: null }) });
+    const id: string = r.session?.id ?? r.id;
+    await api(live, `/api/sessions/${id}/live-watches`, { method: "PUT", body: JSON.stringify({ url: siteUrl }) });
+    return id;
+  };
+  const claude = await agent("claude");
+  const codex = await agent("codex");
   const c = await liveThread(live, two, "main > h1", "Settings", "User two heading note");
   const site = async () => (await api(live, `/api/live/site?origin=${encodeURIComponent(origin)}`)) as { rules: { pattern: string }[]; pages: { page: { path: string; merged: boolean }; threads: { id: string }[] }[] };
   const pageOf = async (tid: string) => (await site()).pages.find(p => p.threads.some(t => t.id === tid))?.page.path ?? null;
@@ -416,6 +425,15 @@ test("the panel lists the site's other pages, answers and resolves their threads
   await expect.poll(() => panel.eval<boolean>(`!document.querySelector("input[aria-label='Your name']")`)).toBe(true);
   await expect.poll(() => press(b, "Reopen")).toBe(true);
   await expect.poll(async () => (await threadB()).status).toBe("open");
+  // Send names that page's agent, and its picker sends to another.
+  // The first live agent of that page, as there; the picker names the other.
+  const first = await until(() => inCard(b, `[...card.querySelectorAll(".send button.primary")][0]?.textContent.match(/^Send to (claude|codex)$/)?.[1] ?? null`)) as string;
+  const other = first === "claude" ? "codex" : "claude";
+  await inCard(b, `(card.querySelector("button[aria-label='Choose the agent']").click(), true)`);
+  await expect.poll(() => inCard(b, `(() => { const x = [...card.querySelectorAll("[role=menuitemradio]")].find(x => x.textContent === ${JSON.stringify(other)}); x?.click(); return !!x; })()`)).toBe(true);
+  await expect.poll(() => press(b, `Send to ${other}`)).toBe(true);
+  const fb = await api(live, `/api/sessions/${other === "codex" ? codex : claude}/feedback?tier=wait&wait=10`);
+  expect(fb.feedback.map((f: { thread_id: string }) => f.thread_id)).toContain(b);
   expect(page.url()).toBe(home);
   expect((await h.state(tabId))?.selected ?? null).toBeNull();
   await expect.poll(() => inCard(b, `card.querySelector(".card-head").getAttribute("aria-expanded")`)).toBe("true");
