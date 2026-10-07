@@ -136,8 +136,6 @@ export type PanelState = {
   viewer: { public_id: string; display_name: string | null } | null;
   commentMode: boolean;
   enabled: boolean;
-  /** The person refused the site's permission when turning Clax on: a reload of the page will turn it off. */
-  declined: boolean;
   selected: string | null;
   error: { code: string; message: string } | null;
   /** Who is on the page now (its `presence:<aid>` topic, which the worker follows for this panel). */

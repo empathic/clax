@@ -502,8 +502,14 @@ the browser quits), so a restarted worker picks every on tab up again.
   has not read its tabs back when the icon is clicked cannot tell whether
   the tab is on, and cannot wait (`sidePanel.open` must be called within the
   gesture): it opens the panel, and closes it again once it finds the tab
-  was on. When the person refuses the permission, the panel says Clax will
-  turn off in the tab when the page reloads.
+  was on. When the person refuses the permission, Clax stays on in the
+  tab: Chrome keeps the gesture's `activeTab` through reloads and
+  navigations within the origin, which lets the worker read the tab's URL
+  and inject the overlay again. The side panel's Comment (L8) turns comment
+  mode on only once the page has the overlay, injecting it when it has
+  none (the tab may be between two documents), and otherwise says the
+  page was still loading; without `activeTab` it names the command, as
+  the icon in a tab Clax is on would turn it off.
 - **Navigation.** On each `tabs.onUpdated` of an on tab that carries a URL
   or a load status, the worker reads the tab's URL: another origin turns
   Clax off there, as does any such update whose URL the extension may not
@@ -847,8 +853,14 @@ animation frames, and asks the worker to capture. The worker calls
 (`#ed5439`, the pin colour), scales to at most 1600 px on the long side, and
 encodes PNG; over 5 MiB it halves the scale, up to three times, then gives up
 with `clip_too_large`. Without `activeTab` the thread is posted with no clip
-and `clip_error: "no_capture_permission"`, which the composer shows ("press ⌥⇧C on the page to comment with a
-screenshot"; in a tab Clax is on its button would turn Clax off).
+and `clip_error: "no_capture_permission"`, which the composer shows after
+"No screenshot: " ("press ⌥⇧C on the page before your next pick to include
+one", naming the shortcut Chrome assigned the command, or the page's
+context menu when it has none; in a tab Clax is on, the icon would turn it
+off). The worker then records the tab as holding no grant, so the side
+panel's Comment says how to get one until a gesture grants it; the command
+in such a tab turns comment mode on rather than flipping it. Every such
+wording is in `web/extension/src/shortcut.ts`.
 
 ### 8.2 The snapshot
 
@@ -1118,9 +1130,8 @@ dropped and counted.
   Cancel never throws on a closed port.
 - Panel ↔ worker (port `panel:<windowId>`): `watch-tab` → `tab {state}`, where `state` is `{tabId, url, page, route,
   threads, resolved, versions, working, participants, viewer, commentMode,
-  enabled, declined, selected, error, presence?}` (`enabled`: Clax is on in
-  the tab; `declined`: the person refused the site's permission when
-  turning it on, so a reload will turn it off; `resolved`: the overlay's anchor results by thread ID;
+  enabled, selected, error, presence?}` (`enabled`: Clax is on in
+  the tab; `resolved`: the overlay's anchor results by thread ID;
   `presence`: who is on the page, §9.5), and pushes on change, with
   `stream-status {up}` on `watch-tab` and whenever the stream goes up or
   down; `send`, `send-batch`, `reply`, `resolve`, `reopen`, `looked`,
@@ -1261,7 +1272,7 @@ What is protected, from whom:
 | The composer page never connects | The worker cancels the pick 5 s after `open-composer`; the overlay closes the hidden frame and says "The comment box did not open. Pick again to comment." |
 | Page removes or restyles the overlay host | Re-added once; then the panel says the page removed Clax's overlay. Pins use `all: initial` and the top layer (`popover`). |
 | Tab Clax is on reloads, or navigates within its origin | Clax stays on: once the new document has loaded the worker injects the overlay into that tab again; comment mode is off; the `activeTab` grant stays, as Chrome withdraws it only at a navigation to another origin (checked in Chromium: a same-origin reload or navigation keeps it, another origin ends it), so the side panel's Comment keeps working. It probes the tab for the overlay at `loading` and again at `complete` (an in-page navigation keeps its overlay), and a probe answered after a new document or an injection it saw meanwhile resets nothing. |
-| Tab Clax is on navigates to another origin | Clax turns off in the tab: its panel is disabled, its state dropped. The worker sees the new URL where it may read it; any navigation update whose URL it may not read (an origin it holds no permission for; Chrome keeps `activeTab` across a same-origin reload, so a person who declined the permission keeps Clax on through one) turns it off too, at `loading`. Back on the first origin it stays off until the person turns it on again; a page restored from the back/forward cache asks the worker at once, is refused, and its overlay stops. |
+| Tab Clax is on navigates to another origin | Clax turns off in the tab: its panel is disabled, its state dropped. The worker sees the new URL where it may read it; any navigation update whose URL it may not read (an origin it holds no permission for, and no `activeTab` grant covers: Chrome keeps that grant across same-origin reloads and navigations and withdraws it at another origin) turns it off too, at `loading`. Back on the first origin it stays off until the person turns it on again; a page restored from the back/forward cache asks the worker at once, is refused, and its overlay stops. |
 | Another tab of the same site, or a new tab | Nothing: no overlay, no panel, no state, whatever permission Clax holds; a message from an overlay there is dropped. |
 | Tab closed, or replaced under a new ID (prerender, discard) | Its state, pick and stream topics go; a replacing tab starts off. A closed tab's ID is kept for 5 minutes, so an answer still in flight writes no record for it. |
 | On tab moved to another window | Its panel goes with it and still acts on it (`?tab=`); presence is reported for its new window. |

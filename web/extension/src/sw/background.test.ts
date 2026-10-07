@@ -356,12 +356,28 @@ describe("Clax on per tab", () => {
     await settle();
   });
 
-  it("notes on the tab that a reload will turn Clax off when the person refused the site's permission", async () => {
+  it("keeps Clax on when the person refused the site's permission: Chrome keeps the gesture's grant within the origin", async () => {
     const bg = start(c);
     c.permissions.request = (async () => false) as typeof c.permissions.request;
     click(tab(1));
     await settle();
-    expect(bg.tabs.panelState(1)).toMatchObject({ enabled: true, declined: true });
+    expect(bg.tabs.panelState(1)).toMatchObject({ enabled: true, commentMode: true });
+  });
+
+  it("turns comment mode on, rather than flipping it off, at a command in a tab whose grant Chrome refused", async () => {
+    const bg = start(c);
+    command(tab(1));
+    await settle();
+    expect(bg.tabs.state(1)).toMatchObject({ commentMode: true, active: true });
+    // A capture refused for want of activeTab: the panel tells the person to press the command.
+    bg.tabs.revoke(1);
+    command(tab(1));
+    await settle();
+    expect(bg.tabs.state(1)).toMatchObject({ commentMode: true, active: true });
+    // With the grant held, the command flips as before.
+    command(tab(1));
+    await settle();
+    expect(bg.tabs.state(1)?.commentMode).toBe(false);
   });
 
   it("ignores a gesture on a page that is not http or https", async () => {

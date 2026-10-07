@@ -22,6 +22,7 @@
   import Merge from "./Merge.svelte";
   import SiteTools from "./SiteTools.svelte";
   import MoveTo from "./MoveTo.svelte";
+  import { type Shortcut, panelHint, readShortcut } from "../shortcut";
   import { DEFAULT_PREFS, type Prefs, loadPrefs, savePrefs } from "./prefs";
   import { FILTERS, type Filter, groups, matches, pageLabel } from "./site-model";
 
@@ -38,7 +39,10 @@
   const chromePermit = (origins: string[]): Promise<boolean> => {
     try { return chrome.permissions.request({ origins: origins.map(o => `${o}/*`) }).catch(() => false); } catch { return Promise.resolve(true); }
   };
-  let { link, now, store = local(), permit = chromePermit }: { link: Link; now?: Date; store?: Area; permit?(origins: string[]): Promise<boolean> } = $props();
+  /** `shortcut`: the keyboard command's shortcut, which the panel names when Comment needs a grant. */
+  let { link, now, store = local(), permit = chromePermit, shortcut = readShortcut() }: { link: Link; now?: Date; store?: Area; permit?(origins: string[]): Promise<boolean>; shortcut?: Promise<Shortcut> } = $props();
+  let keys = $state<Shortcut>(null);
+  $effect(() => { void shortcut.then(k => { keys = k; }); });
   const s = $derived(link.state);
   const site = $derived(link.site ?? null);
   let name = $state("");
@@ -113,23 +117,16 @@
   const BATCH = 20;
   /** How the panel words a failure code: text, and a command to run with its copy button. */
   type Help = { before: string; command?: string; after?: string };
-  const help = new Map<string, Help>([
+  const help = $derived(new Map<string, Help>([
     ["host_missing", { before: "Clax is not set up for Chrome yet. Run", command: "clax init", after: "(or /clax:extension in Claude Code), then click Retry." }],
     ["daemon_unavailable", { before: "Clax could not start. See ~/.clax/logs/daemon.log, then click Retry." }],
-    // The tab is on: its button would turn Clax off there.
-    ["no_capture_permission", { before: "Press ⌥⇧C on the page to comment with a screenshot." }],
-  ]);
+    ["no_capture_permission", { before: panelHint(keys) }],
+  ]));
   const shownHelp = $derived(s?.error ? (help.get(s.error.code) ?? { before: s.error.message }) : null);
-  /** The failure the person dismissed (by code and message), hidden until
-   * another comes, or an action fails again. */
+  /** The failure the person dismissed, by code, message and how many
+   * actions had failed: hidden until another comes, or an action fails again. */
   let dismissed = $state<string | null>(null);
-  let seenFailures: number | undefined;
-  $effect(() => {
-    const n = link.failures ?? 0;
-    if (seenFailures !== undefined && n !== seenFailures) dismissed = null;
-    seenFailures = n;
-  });
-  const errorKey = $derived(s?.error ? `${s.error.code}\n${s.error.message}` : null);
+  const errorKey = $derived(s?.error ? `${s.error.code}\n${s.error.message}\n${link.failures ?? 0}` : null);
   let copied = $state(false);
   function copy(text: string): void {
     void navigator.clipboard?.writeText(text).then(() => { copied = true; }, () => {});
@@ -189,9 +186,6 @@
         <input aria-label="Your name" maxlength="60" autocomplete="name" placeholder="How others see you" value={name}
           oninput={e => (name = e.currentTarget.value)} onkeydown={e => { if (e.key === "Enter") saveName(); }} onblur={saveName} />
       </label>
-    {/if}
-    {#if s.enabled && s.declined}
-      <p class="hint" role="status">Clax will turn off in this tab when the page reloads, as Chrome was not allowed access to this site.</p>
     {/if}
     {#if tabOrigin && site && suggestion}
       {#key tabOrigin}

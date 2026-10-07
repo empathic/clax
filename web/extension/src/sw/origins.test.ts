@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { fakeChrome, type FakeChrome } from "../../test/fake-chrome";
-import { ask, bootNonce, dropLoaders, injectOverlay, originOf, overlayPresent, sameOrigin, type OriginsEnv } from "./origins";
+import { ask, bootNonce, dropLoaders, injectOverlay, originOf, overlayPresent, probeDocument, sameOrigin, type OriginsEnv } from "./origins";
 
 let c: FakeChrome;
 const BOOT = "b".repeat(32);
@@ -73,14 +73,14 @@ describe("origins", () => {
     c.scripting.executeScript = (async (inj: { files?: string[]; func?: (...a: unknown[]) => unknown; args?: unknown[] }) => {
       c.calls.push({ api: "scripting.executeScript", args: [inj] });
       if (inj.func) return [{ documentId: "doc-1", result: inj.func(...(inj.args ?? [])) }];
-      if (fail) throw new Error("Frame with ID 0 was removed.");
+      if (fail) throw new Error("Script failed to load.");
       const boot = g.claxBoot;
       g.claxOverlayStarted = { alive: (b: unknown) => b === boot, stop: () => {} };
       return [{ result: undefined }];
     }) as unknown as typeof c.scripting.executeScript;
     const files = () => c.calls.filter(x => x.api === "scripting.executeScript" && (x.args[0] as { files?: string[] }).files).length;
     try {
-      await expect(injectOverlay(env(), 7, location.origin)).rejects.toThrow("removed");
+      await expect(injectOverlay(env(), 7, location.origin)).rejects.toThrow("failed to load");
       expect(await overlayPresent(env(), 7)).toBe(false);
       fail = false;
       expect(await injectOverlay(env(), 7, location.origin)).toBe(true);
@@ -115,6 +115,30 @@ describe("origins", () => {
     const b = await bootNonce(c.storage.session as never, random)();
     expect(b).not.toBe(a);
     expect(b).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it("probes again when the tab moved to another document before the injection, and gives up quietly the second time", async () => {
+    const g = globalThis as { claxOverlayStarted?: unknown; claxBoot?: string };
+    let docs = 0;
+    let gone = 1;
+    c.scripting.executeScript = (async (inj: { files?: string[]; func?: (...a: unknown[]) => unknown; args?: unknown[]; target: { documentIds?: string[] } }) => {
+      if (inj.func === probeDocument) return [{ documentId: `doc-${++docs}`, result: inj.func(...(inj.args ?? [])) }];
+      // The document probed is gone by the time the injection reaches it.
+      if (gone-- > 0) throw new Error(`No document with id ${inj.target.documentIds![0]} in tab with id 7`);
+      if (inj.func) return [{ result: inj.func(...(inj.args ?? [])) }];
+      g.claxOverlayStarted = { alive: () => true, stop: () => {} };
+      return [{ result: undefined }];
+    }) as unknown as typeof c.scripting.executeScript;
+    try {
+      expect(await injectOverlay(env(), 7, location.origin)).toBe(true);
+      expect(docs).toBe(2);
+      delete g.claxOverlayStarted;
+      gone = 2;
+      expect(await injectOverlay(env(), 7, location.origin)).toBeNull();
+    } finally {
+      delete g.claxOverlayStarted;
+      delete g.claxBoot;
+    }
   });
 
   it("reads a tab it cannot reach as having no overlay", async () => {

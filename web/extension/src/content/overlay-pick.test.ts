@@ -187,13 +187,24 @@ describe("a pick", () => {
     expect(frames()).toHaveLength(0);
   });
 
-  it("closes the composer for its pick and turns comment mode back on after a post", async () => {
+  it("closes the composer for its pick and turns comment mode back on after a post, as the worker's state has it", async () => {
+    const state = (commentMode: boolean) => ({ t: "state", page: null, route: null, threads: [], commentMode, pending: false });
+    tell(state(true));
     await opened();
     tell({ t: "composer-ready", pickId: PICK });
     await run();
     tell({ t: "close-composer", pickId: PICK, posted: true });
     expect(frames()).toHaveLength(0);
     expect(mode.on).toBe(true);
+    // The side panel turned comment mode off while the composer was open: it stays off after the post.
+    nextId = PICK2;
+    mode.handlers!.pickElement(save());
+    await run();
+    tell({ t: "open-composer", pickId: PICK2, rect: RECT });
+    tell(state(false));
+    tell({ t: "close-composer", pickId: PICK2, posted: true });
+    expect(frames()).toHaveLength(0);
+    expect(mode.on).toBe(false);
   });
 
   it("says why when the worker closes a composer that never connected, for a while", async () => {
@@ -229,6 +240,7 @@ describe("a pick", () => {
   });
 
   it("closes a lost pick's composer when the worker relays the person's close, and comment mode stays", async () => {
+    tell({ t: "state", page: null, route: null, threads: [], commentMode: true, pending: false });
     await opened();
     tell({ t: "composer-ready", pickId: PICK });
     await run();

@@ -11,9 +11,10 @@ const page = { artifact_id: AID, origin: "http://localhost:5173", path: "/app", 
 const thread = (id: string, status = "open") => ({ id, artifact_id: AID, status });
 
 const SITE = { key: "http://localhost:5173", name: "http://localhost:5174", joined: true, origins: [{ origin: "http://localhost:5174", joined_at: "t", last_used_at: "t2" }, { origin: "http://localhost:5173", joined_at: "t", last_used_at: "t1" }] };
-function setup(over: { remaining?: number; page?: typeof page | null; admits?: boolean; allUrls?: boolean; fail?: string; failCode?: string; error?: string; site?: string[]; down?: string[]; denied?: string[] } = {}) {
+function setup(over: { remaining?: number; page?: typeof page | null; admits?: boolean; allUrls?: boolean; fail?: string; failCode?: string; error?: string; site?: string[]; down?: string[]; denied?: string[]; loading?: boolean; restoring?: Promise<void> } = {}) {
   const calls: string[] = [];
   const out: WorkerToPanel[] = [];
+  let waited = 0;
   const pg = over.page === undefined ? page : over.page;
   const api = (name: string, ret: unknown) => async (...a: unknown[]) => {
     calls.push(`${name} ${a.map(x => JSON.stringify(x)).join(" ")}`);
@@ -36,6 +37,11 @@ function setup(over: { remaining?: number; page?: typeof page | null; admits?: b
       sites: api("sites", { sites: [{ site: SITE }] }),
     } as never,
     tabs: {
+      ready: async () => { waited++; await over.restoring; },
+      commentOn: async (tabId: number) => {
+        if (over.loading) throw Object.assign(new Error("The page was still loading. Try again."), { code: "page_loading" });
+        calls.push(`comment-on ${tabId}`);
+      },
       state: () => (pg === null ? undefined : { url: URL1, page: pg, overlay: true, on: "http://localhost:5173", error: over.error ? { code: over.error, message: "m" } : null } as never),
       admits: () => over.admits ?? false,
       route: async (tabId: number, url: string, fresh?: boolean) => { calls.push(`route ${tabId} ${url} ${!!fresh}`); return {} as never; },
@@ -57,7 +63,7 @@ function setup(over: { remaining?: number; page?: typeof page | null; admits?: b
     turnOff: async tabId => { calls.push(`turn-off ${tabId}`); },
   };
   const run = (m: PanelToWorker, tabId: number | null = 4) => panelAction(d, tabId, m, r => out.push(r));
-  return { calls, out, run };
+  return { calls, out, run, waited: () => waited };
 }
 
 describe("panelAction on the tab's site", () => {
@@ -228,14 +234,33 @@ describe("panelAction", () => {
   it("refuses comment mode without a way to take the screenshot", async () => {
     const s = setup();
     await s.run({ t: "comment-mode", on: true });
-    expect(s.out).toEqual([{ t: "failed", code: "no_capture_permission", message: "Clax needs a click on its button to take screenshots on this tab." }]);
+    expect(s.out).toEqual([{ t: "failed", code: "no_capture_permission", message: "Clax needs the keyboard command on the page to take screenshots on this tab." }]);
     await s.run({ t: "comment-mode", on: false });
     expect(s.calls).toEqual(["comment-mode 4 false"]);
+    // On only through `commentOn`, which makes sure of the page's overlay first.
     const clicked = setup({ admits: true });
     await clicked.run({ t: "comment-mode", on: true });
     const all = setup({ allUrls: true });
     await all.run({ t: "comment-mode", on: true });
-    expect([...clicked.calls, ...all.calls]).toEqual(["comment-mode 4 true", "comment-mode 4 true"]);
+    expect([...clicked.calls, ...all.calls]).toEqual(["comment-on 4", "comment-on 4"]);
+  });
+
+  it("tells the panel when the overlay could not be put in the page, rather than turning comment mode on with nothing listening", async () => {
+    const s = setup({ admits: true, loading: true });
+    await s.run({ t: "comment-mode", on: true });
+    expect(s.out).toEqual([{ t: "failed", code: "page_loading", message: "The page was still loading. Try again." }]);
+  });
+
+  it("waits for a restarted worker to read its tabs back before acting", async () => {
+    let restored!: () => void;
+    const s = setup({ admits: true, restoring: new Promise<void>(r => { restored = r; }) });
+    const acting = s.run({ t: "comment-mode", on: true });
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(s.waited()).toBe(1);
+    expect(s.calls).toEqual([]);
+    restored();
+    await acting;
+    expect(s.calls).toEqual(["comment-on 4"]);
   });
 
   it("goes to a route of the page, and only to one", async () => {

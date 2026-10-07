@@ -49,6 +49,7 @@ function setup(opts: { clip?: { png: Blob } | { error: string }; fail?: unknown;
   const overlay: { tabId: number; m: WorkerToOverlay }[] = [];
   const told: { tabId: number; page: unknown }[] = [];
   const captures: unknown[][] = [];
+  const revoked: number[] = [];
   let now = 0;
   let pending = opts.pending ?? [];
   let fail = opts.fail;
@@ -71,12 +72,13 @@ function setup(opts: { clip?: { png: Blob } | { error: string }; fail?: unknown;
     toOverlay: (tabId, m) => overlay.push({ tabId, m }),
     pendingIds: () => pending,
     posted: (tabId, p) => told.push({ tabId, page: p }),
+    revoked: tabId => revoked.push(tabId),
     tabActive: async () => !opts.inactive,
     now: () => now,
     after: (ms, fn) => { timers.push({ at: now + ms, fn }); },
   });
   return {
-    picks, posted, snapshots, overlay, told, captures,
+    picks, posted, snapshots, overlay, told, captures, revoked,
     advance: (ms: number) => {
       now += ms;
       const due = timers.filter(t => t.at <= now);
@@ -107,6 +109,17 @@ describe("Picks", () => {
     p.fire({ t: "ready" });
     await flush();
     expect(p.sent.at(-1)).toEqual({ t: "draft", anchor, clipUrl: null, clipError: "no_capture_permission", capturing: false });
+  });
+
+  it("tells the tab's record Chrome holds no grant when a capture is refused for want of one, and only then", async () => {
+    const refused = setup({ clip: { error: "no_capture_permission" } });
+    await refused.picks.capture(5, 9, capture(ID(1)));
+    expect(refused.revoked).toEqual([5]);
+    const other = setup({ clip: { error: "restricted_page" } });
+    await other.picks.capture(5, 9, capture(ID(1)));
+    const ok = setup();
+    await ok.picks.capture(5, 9, capture(ID(1)));
+    expect([...other.revoked, ...ok.revoked]).toEqual([]);
   });
 
   it("refuses a second capture under the tab's current pick ID", async () => {

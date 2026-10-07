@@ -1,5 +1,5 @@
 import { flushSync } from "svelte";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, type Mounted } from "../../../shell/src/test/svelte";
 import { clipMessage } from "./clip-message";
 import ComposerFrame from "./ComposerFrame.svelte";
@@ -39,7 +39,7 @@ beforeEach(() => {
   urls.revokeObjectURL = () => {};
   port = fakePort();
   notes = [];
-  view = mount(ComposerFrame as never, { port, pickId: PICK, notify: (m: unknown) => { notes.push(m); } });
+  view = mount(ComposerFrame as never, { port, pickId: PICK, notify: (m: unknown) => { notes.push(m); }, shortcut: Promise.resolve("⌥⇧C") });
 });
 afterEach(() => {
   view.unmount();
@@ -53,6 +53,13 @@ const notice = () => view.root.querySelector(".notice")?.textContent?.trim() ?? 
 const post = () => { textarea().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true })); flushSync(); };
 
 describe("the composer page", () => {
+  it("names the command's shortcut when the pick has no screenshot for want of a grant", async () => {
+    port.tell(draft({ clipError: "no_capture_permission" }));
+    await settle();
+    // The status is spoken two frames after the composer shows.
+    await vi.waitFor(() => { flushSync(); expect(view.root.textContent).toContain("No screenshot: press ⌥⇧C on the page before your next pick to include one"); });
+  });
+
   it("asks for its draft, then shows the composer for the pick with its clip", async () => {
     expect(port.sent).toEqual([{ t: "ready" }]);
     expect(view.root.querySelector("textarea")).toBeNull();
@@ -174,7 +181,9 @@ describe("the composer page", () => {
 
 describe("clipMessage", () => {
   it("says why there is no screenshot, and how to get one", () => {
-    expect(clipMessage("no_capture_permission")).toBe("press ⌥⇧C on the page to comment with a screenshot");
+    // The command grants the screenshot (the toolbar icon would turn Clax off in this tab): named by its shortcut, else the context menu.
+    expect(clipMessage("no_capture_permission", "⌥⇧C")).toBe("press ⌥⇧C on the page before your next pick to include one");
+    expect(clipMessage("no_capture_permission", null)).toBe("right-click the page and choose Comment with Clax before your next pick to include one");
     expect(clipMessage("clip_too_large")).toMatch(/5 MiB/);
     expect(clipMessage("restricted_page")).toMatch(/does not capture/);
     expect(clipMessage("capture_failed")).toMatch(/could not capture/);

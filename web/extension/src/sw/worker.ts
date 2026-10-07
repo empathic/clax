@@ -74,6 +74,7 @@ export function createWorker(d: WorkerDeps): Worker {
     api, capture: d.capture, toOverlay: d.toOverlay,
     pendingIds: tabId => t.pendingIds(tabId),
     posted: (tabId, page) => t.posted(tabId, page),
+    revoked: tabId => t.revoke(tabId),
     tabActive: d.tabActive,
     now: d.now ?? (() => Date.now()),
   });
