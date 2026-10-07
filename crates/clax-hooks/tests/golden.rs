@@ -1163,6 +1163,12 @@ fn ask_moved_to_the_terminal_or_timed_out_prints_nothing_and_asked_records_the_a
     let q = d.get_authed(&format!("/api/questions/{qid}"));
     assert_eq!(q["question"]["status"], "answered");
     assert_eq!(q["question"]["answered_via"], "terminal");
+    let log = d.hooks_log();
+    assert!(log.contains(" event=asked "), "{log}");
+    assert!(
+        !log.contains("Table") && !log.contains("layout"),
+        "no question or answer text: {log}"
+    );
     assert_eq!(
         q["question"]["answers"][0]["selected"],
         serde_json::json!(["Table"])

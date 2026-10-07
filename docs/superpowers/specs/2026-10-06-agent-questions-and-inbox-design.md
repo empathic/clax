@@ -557,7 +557,8 @@ asked` (PostToolUse), in `plugins/claude-code/hooks/hooks.json`:
 
 Budgets: reading the input, finding the daemon, the session lookup and
 creation 2 s together (1 s per request); the wait `terminal_after_s` plus
-10 s; `asked` 2 s (1 s per request). Every failure exits 0 with no output.
+10 s, then at most 3 s (1 s per request) to release the question; `asked`
+2 s (1 s per request). Every failure exits 0 with no output.
 Each run logs `ask mode=<wait|terminal|-> outcome=<answered|declined|
 released|timeout|terminal|error|skipped> waited_s=<n>` to `hooks.log`
 (`-`: the daemon chose no mode; `skipped`: not an `AskUserQuestion` call),
