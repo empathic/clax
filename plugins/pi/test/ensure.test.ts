@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { binaryVersion, ensure, findBinary, SERVE_TIMEOUT_MS } from "../src/daemon.ts";
+import { binaryVersion, ensure, findBinary, SERVE_TIMEOUT_MS, WRAPPER } from "../src/daemon.ts";
 import { buildClax, claxBin } from "./daemon-fixture.ts";
 import { fakeExe } from "./fake-exe.ts";
 
@@ -86,10 +86,18 @@ describe("ensure", () => {
     await expect(findBinary(home, withBin("/no/such/clax"))).rejects.toThrow(/CLAX_BIN is set to '\/no\/such\/clax'/);
   });
 
-  it("with no binary named, says how to get one (or that the pinned release could not be installed)", async () => {
+  it("with no binary named, says how to get one, or that the pinned release could not be installed", async () => {
+    // The package's wrapper is the one findBinary runs, so the reason follows
+    // its pin. The release base is a closed port on 127.0.0.1: a pinned
+    // wrapper's download fails at once and never reaches the network.
+    const pin = /^PINNED_VERSION="(.*)"$/m.exec(readFileSync(WRAPPER, "utf8"))?.[1];
+    expect(pin).toBeDefined();
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(scratch, "nohome"), CLAX_RELEASE_BASE_URL: "http://127.0.0.1:9" };
     delete env.CLAX_BIN;
-    await expect(ensure(join(scratch, "nobin"), { env })).rejects.toThrow(/pins no Clax release yet.*clax bin set|could not install clax/);
+    const reason = pin
+      ? new RegExp(`could not install clax ${pin.replaceAll(".", "\\.")}: .*http://127\\.0\\.0\\.1:9/`)
+      : /pins no Clax release yet.*clax bin set/;
+    await expect(ensure(join(scratch, "nobin"), { env })).rejects.toThrow(reason);
   });
 
   it("reads a binary's version only when it reports itself as clax", async () => {
