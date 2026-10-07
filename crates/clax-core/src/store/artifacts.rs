@@ -223,6 +223,10 @@ impl Store {
                 params![id.as_str()],
             )?;
             tx.execute(
+                "DELETE FROM live_merged_pages WHERE artifact_id = ?1",
+                params![id.as_str()],
+            )?;
+            tx.execute(
                 "DELETE FROM live_pending WHERE artifact_id = ?1",
                 params![id.as_str()],
             )?;

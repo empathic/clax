@@ -93,6 +93,8 @@ export function startBackground(c: typeof chrome) {
   async function comment(tabId: number, url: string, origin: string): Promise<void> {
     await tabs.ready();
     showPanel(tabId);
+    // A title saying why Clax turned off in the tab (`follow`) is told.
+    quietly(() => c.action.setTitle({ tabId, title: "Comment with Clax" }));
     tabs.turnOn(tabId, url, origin);
     await tabs.toggle(tabId, url);
   }
@@ -155,12 +157,31 @@ export function startBackground(c: typeof chrome) {
       if (on === null) return;
       const url = change.url ?? tab.url;
       const now = url === undefined ? null : origins.originOf(url);
-      // Another origin of the tab's joined site keeps Clax on, now for that origin (spec §7.2).
-      if (now !== on && !(now && tabs.moveOn(tabId, now))) { off(tabId); return; }
+      if (now !== on) { void follow(tabId, now, change.status); return; }
       if (change.status === undefined) void tabs.navigated(tabId, true);
       else if (change.status === "loading" || change.status === "complete") void tabs.navigated(tabId, change.status === "complete");
     });
   });
+
+  /** The tab Clax is on in went to `now`, another origin: one of the tab's
+   * joined site whose permission Chrome granted keeps Clax on, for that
+   * origin (spec §7.2); any other turns it off, saying why on the button
+   * when the site's origin lacks the permission. */
+  async function follow(tabId: number, now: string | null, status: string | undefined): Promise<void> {
+    const on = tabs.onOrigin(tabId);
+    if (!on || !now || !sites.origins(on).includes(now)) { off(tabId); return; }
+    const held = await c.permissions.contains({ origins: [origins.patternOf(now)] }).catch(() => false);
+    const cur = tabs.onOrigin(tabId);
+    // Another event of this navigation moved it meanwhile: this one's load still counts.
+    if (cur !== on && cur !== now) return;
+    if (cur === on && (!held || !tabs.moveOn(tabId, now))) {
+      off(tabId);
+      if (!held) quietly(() => c.action.setTitle({ tabId, title: `Clax turned off: Chrome has not allowed it on ${now.replace(/^\w+:\/\//, "")}. Click to turn it on there.` }));
+      return;
+    }
+    if (status === undefined) void tabs.navigated(tabId, true);
+    else if (status === "loading" || status === "complete") void tabs.navigated(tabId, status === "complete");
+  }
 
   /** An overlay message comes from the top frame of a tab Clax is on, of
    * the origin it is on for (spec §9.4); a URL it names is of that origin. */
@@ -199,6 +220,7 @@ export function startBackground(c: typeof chrome) {
     navigate: async (tabId, url) => { await c.tabs.update(tabId, { url }); },
     probe: url => origins.probeServer(url),
     title: async tabId => (await c.tabs.get(tabId)).title ?? "",
+    allowed: origin => c.permissions.contains({ origins: [origins.patternOf(origin)] }).catch(() => false),
     turnOff: async tabId => off(tabId),
   };
 

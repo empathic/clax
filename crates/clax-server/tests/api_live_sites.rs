@@ -152,9 +152,27 @@ async fn a_suggested_join_lists_both_origins_threads_together_and_is_idempotent(
     let listing = site(&ts, B).await;
     assert_eq!(listing["site"]["key"], A);
     assert_eq!(listing["origin"], B);
-    // B's / page was merged into the site's, and deleted once empty.
-    let res = ts.get_authed(&format!("/api/artifacts/{b_home}")).await;
-    assert_eq!(res.status(), 404);
+    // B's / page was merged into the site's once empty, and kept whole: its
+    // link and its snapshot (which no thread names now) are still served,
+    // and it is out of the gallery's listing.
+    let (st, b) = json_of(ts.get_authed(&format!("/api/artifacts/{b_home}")).await).await;
+    assert_eq!(st, 200);
+    assert_eq!(b["artifact"]["live"]["merged_into"], a_home.as_str());
+    let snap = ts
+        .get_authed(&format!(
+            "/api/artifacts/{b_home}/versions/1/files/index.html"
+        ))
+        .await;
+    assert_eq!(snap.status(), 200);
+    assert!(snap.text().await.unwrap().contains(&format!("{B}/")));
+    let list = json_of(ts.get_authed("/api/artifacts").await).await.1;
+    assert!(
+        list["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|a| a["id"] != b_home.as_str())
+    );
     // A lookup from B finds the site's page of the path; a comment from B lands there.
     let p = json_of(
         ts.get_authed(&format!("/api/live/pages?url={}", enc(&format!("{B}/"))))
@@ -475,4 +493,81 @@ async fn the_sites_routes_are_hidden_from_the_lan_and_admitted_for_the_extension
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
+}
+
+/// A server whose store the test can reach, to leave a join or an un-merge
+/// half done as an interrupted client would.
+async fn with_store() -> (TestServer, std::sync::Arc<clax_core::Store>) {
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let s2 = slot.clone();
+    let ts = TestServer::spawn_with(move |st| {
+        *s2.lock().unwrap() = Some(st.store.clone());
+    })
+    .await;
+    let store = slot.lock().unwrap().take().unwrap();
+    (ts, store)
+}
+
+#[tokio::test]
+async fn an_unfinished_join_is_listed_and_holds_off_other_joins_and_splits_until_finished() {
+    let (ts, store) = with_store().await;
+    let v = ts.viewer(Some("Ana")).await;
+    comment(&ts, &v.cookie, &format!("{A}/x"), "X").await;
+    comment(&ts, &v.cookie, &format!("{B}/x"), "X").await;
+    comment(&ts, &v.cookie, &format!("{B}/x"), "X").await;
+    comment(&ts, &v.cookie, "http://localhost:7704/y", "Y").await;
+    // The join's first batch only, as a client that stopped would leave it.
+    store.join_origins(B, A).unwrap();
+    let (moves, _) = store.join_candidates(A, 1).unwrap();
+    let how = clax_core::store::site::MoveBy {
+        by: "viewer:x".into(),
+        kind: clax_core::store::site::KIND_JOIN,
+        rule_id: None,
+    };
+    store.refile_threads(&moves, &how, &[]).unwrap();
+    // Its pending page is listed, marked, with what is left.
+    let listing = site(&ts, A).await;
+    assert_eq!(listing["site"]["joining"], 1, "{listing}");
+    assert!(
+        listing["pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["page"]["pending"] == true)
+    );
+    let code = |v: &Value| v["error"]["code"].as_str().unwrap_or("").to_string();
+    let (st, e) = join(&ts, "http://localhost:7704", A).await;
+    assert_eq!((st, code(&e)), (409, "joining".into()));
+    let (st, e) = json_of(
+        ts.post_json("/api/live/sites/split", json!({"origin": B}))
+            .await,
+    )
+    .await;
+    assert_eq!((st, code(&e)), (409, "joining".into()));
+    // Joining the same pair again finishes it; then the others go through.
+    let (st, j) = join(&ts, B, A).await;
+    assert_eq!((st, j["remaining"].clone()), (200, json!(0)));
+    assert_eq!(site(&ts, A).await["site"]["joining"], 0);
+    let (st, _) = join(&ts, "http://localhost:7704", A).await;
+    assert_eq!(st, 200);
+}
+
+#[tokio::test]
+async fn a_join_waits_for_an_unmerge_under_way() {
+    let (ts, store) = with_store().await;
+    let v = ts.viewer(Some("Ana")).await;
+    comment(&ts, &v.cookie, &format!("{A}/users/1"), "U").await;
+    comment(&ts, &v.cookie, &format!("{B}/"), "B").await;
+    let res = ts
+        .post_json(
+            "/api/live/rules",
+            json!({"origin": A, "pattern": "/users/:id"}),
+        )
+        .await;
+    let rule: Value = res.json().await.unwrap();
+    store
+        .mark_rule_deleted(rule["rule"]["id"].as_str().unwrap())
+        .unwrap();
+    let (st, e) = join(&ts, B, A).await;
+    assert_eq!((st, e["error"]["code"].clone()), (409, json!("unmerging")));
 }

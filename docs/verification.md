@@ -796,6 +796,14 @@ Found by this test and fixed, each with a regression test:
   at phone width the menu stays on screen). A live page card's address is
   the port used last. An agent in a real session watching one port gets the
   comments of the other, and its `watch` result lists both origins.
+  A join made in the gallery asks Chrome nothing (a page cannot): the first
+  thread opened from the panel on the other port asks for it, and a tab
+  that goes there without it turns Clax off, its button saying why. A join
+  stopped midway (close the panel during a join of more than 200 threads):
+  the panel says how many threads are left with Continue joining, the
+  gallery with Finish joining, and another join or a split waits for it.
+  A page merged away by a join keeps its `/a/<id>` link and snapshots and
+  is gone from the gallery.
 - Alt+Shift+C and the page's context menu entry (each turns Clax on in its
   tab, the panel enabled but not opened; where Clax is on, each flips
   comment mode).

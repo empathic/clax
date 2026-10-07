@@ -380,11 +380,12 @@ test("the panel lists the site's other pages, opens and pins their threads, move
 
 test("two ports of one app join into one site: suggested, joined, listed and pinned together, watched as one, and opened on an address that answers", async ({ live }, testInfo) => {
   // Two dev servers, a join, two navigations and a probe of a stopped server: more than one loop's work.
-  testInfo.setTimeout(testInfo.timeout + 60_000);
+  testInfo.setTimeout(testInfo.timeout + 30_000);
   const h = hook(live);
   // The same app on a second port, as a dev server that moved would serve it.
   const port = await freePort();
-  const second = await createServer({ root: live.siteDir, configFile: false, logLevel: "silent", server: { port, host: "127.0.0.1", strictPort: true } });
+  // Bound on the host name its URL uses, so the probe and the navigation reach it as named.
+  const second = await createServer({ root: live.siteDir, configFile: false, logLevel: "silent", server: { port, host: "localhost", strictPort: true } });
   await second.listen();
   const O1 = new URL(live.siteUrl).origin;
   const O2 = `http://localhost:${port}`;

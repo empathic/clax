@@ -44,11 +44,13 @@ impl LiveIds {
     /// # Errors
     /// The store's.
     pub fn load(st: &Store) -> clax_core::Result<LiveIds> {
+        // Pages a join merged away stay live pages: hidden from the LAN.
         let ids = LiveIds(
             RwLock::new(
                 st.live_pages()?
                     .into_iter()
                     .map(|p| (p.artifact_id, p.origin))
+                    .chain(st.merged_live_pages()?)
                     .collect(),
             ),
             RwLock::default(),

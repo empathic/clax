@@ -67,3 +67,23 @@ describe("GallerySites", () => {
     expect(m.root.querySelector("section")).toBeNull();
   });
 });
+
+describe("GallerySites: a join not finished", () => {
+  it("says so and finishes it from the menu", async () => {
+    const calls: Call[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+      const ok = (v: unknown) => new Response(JSON.stringify(v), { status: 200 });
+      if (url === "/api/token") return ok({ token: "tok" });
+      if (url === "/api/live/sites") return ok({ sites: [{ ...joined, joining: 2 }] });
+      if (url === "/api/live/sites/join") return ok({ remaining: 0, moved: ["a", "b"] });
+      return new Response("{}", { status: 404 });
+    }));
+    const m = mount(GallerySites, {});
+    await settle();
+    expect(m.root.textContent).toContain("Join not finished: 2 threads left to merge");
+    [...m.root.querySelectorAll("button")].find(b => b.textContent === "Finish joining")!.click();
+    await settle();
+    expect(calls.filter(c => c.url === "/api/live/sites/join").map(c => c.body)).toEqual([{ origin: B, with: A }]);
+  });
+});

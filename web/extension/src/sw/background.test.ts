@@ -133,6 +133,43 @@ describe("Clax on per tab", () => {
     expect(bg.tabs.state(1)).toBeUndefined();
   });
 
+  it("keeps Clax on across the origins of its joined site that Chrome allows, and turns it off, saying why, at one it does not", async () => {
+    const O2 = "http://localhost:5174";
+    const bg = start(c);
+    // The tab's site joins ORIGIN and O2 (spec §7.2).
+    (bg.sites as unknown as { origins(o: string): string[] }).origins = () => [O2, ORIGIN];
+    click(tab(1));
+    await settle();
+    // Chrome allows O2: Clax follows the tab there.
+    c.granted.add(`${O2}/*`);
+    elsewhere.get(c)!.set(1, O2);
+    updated(1, { status: "loading", url: `${O2}/` }, `${O2}/`);
+    await settle();
+    expect(bg.tabs.state(1)?.on).toBe(O2);
+    // Its loading and complete events at once: the new document gets the overlay.
+    reload(1);
+    elsewhere.get(c)!.set(1, O2);
+    updated(1, { status: "loading", url: `${ORIGIN}/a` }, `${ORIGIN}/a`);
+    elsewhere.get(c)!.delete(1);
+    updated(1, { status: "complete", url: `${ORIGIN}/a` }, `${ORIGIN}/a`);
+    await settle();
+    expect(bg.tabs.state(1)?.on).toBe(ORIGIN);
+    expect(bg.tabs.state(1)?.overlay).toBe(true);
+    // Back at ORIGIN, whose permission the click asked for, it follows again.
+    elsewhere.get(c)!.delete(1);
+    updated(1, { status: "loading", url: URL1 }, URL1);
+    await settle();
+    expect(bg.tabs.state(1)?.on).toBe(ORIGIN);
+    // Not allowed at O2 any more: off, and the button says why.
+    c.granted.delete(`${O2}/*`);
+    updated(1, { status: "loading", url: `${O2}/x` }, `${O2}/x`);
+    await settle();
+    expect(bg.tabs.state(1)).toBeUndefined();
+    expect(panelOf(1)).toEqual({ tabId: 1, enabled: false });
+    const title = c.calls.filter(x => x.api === "action.setTitle").at(-1)?.args[0] as { tabId: number; title: string };
+    expect(title).toEqual({ tabId: 1, title: "Clax turned off: Chrome has not allowed it on localhost:5174. Click to turn it on there." });
+  });
+
   it("turns Clax off when a loaded tab's URL is out of the extension's reach (another origin it holds no permission for)", async () => {
     const bg = start(c);
     click(tab(1));

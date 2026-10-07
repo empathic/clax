@@ -35,22 +35,34 @@ pub(crate) fn site_view(site: &JoinedSite) -> Value {
 
 /// `GET /api/live/sites` (the owner): every site with live pages, the most
 /// recently active first, as `{sites: [{site, pages, threads,
-/// last_activity}]}` ([`site_view`]); one entry per joined site.
+/// last_activity, joining}]}` ([`site_view`]; `joining`: threads a join
+/// not finished has still to re-file); one entry per joined site.
 pub async fn list(
     State(s): State<AppState>,
     _o: SameOrigin,
     who: Identity,
 ) -> Result<Json<Value>, ApiError> {
     owner_reads(&who)?;
-    let sites = s.store_call(|st| st.live_sites()).await?;
+    let sites = s
+        .store_call(|st| {
+            st.live_sites()?
+                .into_iter()
+                .map(|x| {
+                    let left = st.joining_threads(&x.site.key)?;
+                    Ok((x, left))
+                })
+                .collect::<clax_core::Result<Vec<_>>>()
+        })
+        .await?;
     let out: Vec<Value> = sites
         .iter()
-        .map(|x| {
+        .map(|(x, left)| {
             json!({
                 "site": site_view(&x.site),
                 "pages": x.pages,
                 "threads": x.threads,
                 "last_activity": x.last_activity,
+                "joining": left,
             })
         })
         .collect();
@@ -118,9 +130,21 @@ pub struct JoinBody {
     with: String,
 }
 
+/// Tells the site's `site:` topics and the gallery that the site changed:
+/// its origins, or which of its pages are keyed where.
+fn announce_site(s: &AppState, st: &Store, key: &str) -> clax_core::Result<()> {
+    let site = st.joined_site(key)?;
+    s.events.publish(Event::Site {
+        site: site.key.clone(),
+        origins: site.origin_names(),
+        left: Vec::new(),
+    });
+    Ok(())
+}
+
 /// One batch of a join's work: the threads of the pages it left pending
 /// re-filed onto the site's pages of their paths ([`KIND_JOIN`]), the
-/// emptied pages deleted; once none is left, the site's merge rules applied
+/// emptied pages merged away (kept whole); once none is left, the site's merge rules applied
 /// across it ([`KIND_MERGE`]). Returns the re-filed thread IDs and how many
 /// threads are left for the next request.
 fn join_batch(
@@ -142,10 +166,12 @@ fn join_batch(
         remaining += done.deferred;
         moved.extend(done.moved.into_iter().map(|m| m.thread_id));
     }
-    let (empty, rekeyed) = st.settle_joined_pages(key)?;
+    // An emptied page is merged away, never deleted: kept whole, out of
+    // the listings. Clients reload the site and the gallery on `site`.
+    let (merged, rekeyed) = st.settle_joined_pages(key)?;
     s.live_ids.rekey(&rekeyed, key);
-    for aid in &empty {
-        rc.discard_if_empty(st, aid)?;
+    if !merged.is_empty() || !rekeyed.is_empty() {
+        announce_site(s, st, key)?;
     }
     if !moves.is_empty() {
         return Ok((moved, remaining));
@@ -188,11 +214,14 @@ fn join_batch(
 /// threads list together, and a watch on any of its origins covers them
 /// all, origins joined later included. A page of `origin` whose path the
 /// site has a page of is merged into it as moves are, at most
-/// [`MAX_REFILE`] threads a request (each batch one transaction), and
-/// deleted once empty; then the site's merge rules apply across it. Answers
+/// [`MAX_REFILE`] threads a request (each batch one transaction), and once
+/// empty merged away: kept whole (its artifact, link and snapshots), out of
+/// the listings; then the site's merge rules apply across it. Answers
 /// `{site, joined, moved, remaining}` (`joined`: this call joined them;
 /// `moved`: the re-filed thread IDs; `remaining`: threads left: repeat the
-/// request, which is idempotent, until it is 0). 400 `same_origin`,
+/// request, which is idempotent, until it is 0). 409 `joining` while
+/// either site has a join not finished (repeat that join first), 409
+/// `unmerging` while either has an un-merge under way; 400 `same_origin`,
 /// `unknown_site`, `too_many_origins`, `too_many_rules`.
 pub async fn join(
     State(s): State<AppState>,
@@ -244,7 +273,7 @@ pub struct SplitBody {
 /// A site left with one origin is that origin's own. Clax does not suggest
 /// the pair again. Answers `{split, origin, site}` (`split`: false, and
 /// nothing written, when `origin` joined no site; `site`: what is left).
-/// 400 `joining` while the site's key has a join to finish.
+/// 409 `joining` while the site has a join to finish.
 pub async fn split(
     State(s): State<AppState>,
     _o: SameOrigin,

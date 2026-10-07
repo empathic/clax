@@ -40,7 +40,7 @@ export function fakeChrome() {
     tabs: { captureVisibleTab: rec("tabs.captureVisibleTab", "data:image/png;base64,"), sendMessage: rec("tabs.sendMessage"), update: rec("tabs.update"), get: rec("tabs.get"),
       onUpdated: new FakeEvent<[number, chrome.tabs.TabChangeInfo, chrome.tabs.Tab]>(), onRemoved: new FakeEvent<[number]>(), onReplaced: new FakeEvent<[number, number]>(), onActivated: new FakeEvent<[{ tabId: number; windowId: number }]>() },
     sidePanel: { open: rec("sidePanel.open"), setOptions: rec("sidePanel.setOptions") },
-    action: { onClicked: new FakeEvent<[chrome.tabs.Tab]>() },
+    action: { onClicked: new FakeEvent<[chrome.tabs.Tab]>(), setTitle: rec("action.setTitle") },
     commands: { onCommand: new FakeEvent<[string, chrome.tabs.Tab]>() },
     contextMenus: {
       // Chrome keeps menu items across some updates, and refuses a second item with the same ID.

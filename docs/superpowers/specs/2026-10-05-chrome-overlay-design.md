@@ -775,11 +775,14 @@ Owner decisions, 2026-10-06 (binding):
    enablement is otherwise unchanged); joining asks Chrome for the site's
    other origins under the click, so the overlay can follow.
 
-1. **Model.** Migration 22 (19 to 21 are other branches') adds
+1. **Model.** One migration, the last (its number is assigned at merge:
+   it is renumbered after agent-questions and toolpath-audit land), adds
    `live_sites (origin PRIMARY KEY, site, joined_at, last_used_at)`: a row
    per origin of a joined site, the key's own included; an origin without
-   a row is a site of its own, keyed by itself. `live_site_answers (a, b,
-   answer, until, created_at)` keeps Never and Not now per ordered pair.
+   a row is a site of its own, keyed by itself. `live_merged_pages
+   (artifact_id, origin, path, merged_into, merged_at)` keeps the pages a
+   join merged away. `live_site_answers (a, b, answer, until, created_at)`
+   keeps Never and Not now per ordered pair.
    `thread_moves.kind` admits `join`. Every query by origin (a page by key,
    the site's pages, its rules, the scope watches covering a page, a pick)
    resolves the origin to its site's key in SQL, so the rest of §7.1 runs
@@ -787,26 +790,38 @@ Owner decisions, 2026-10-06 (binding):
 2. **Joining** `origin` to the site of `with` keeps `with`'s key. In one
    transaction: the joining origins get rows; each of their pages whose
    path the site lacks is re-keyed; their rules become the site's (a
-   pattern the site has is dropped); every page of the site is watched by
-   the scope watches of every origin of it. The pages whose path the site
-   has stay under their origin, pending: each request re-files at most 200
-   of their threads onto the site's page of the path (64 MiB of snapshots,
-   as moves), then deletes a pending page left empty after handing its
-   watchers on (its snapshots no thread names go with it); once none is
-   pending the site's rules are applied across it. The client repeats the
-   request while `remaining` is above 0; a repeat is idempotent.
+   pattern the site has is dropped); when any origin of the site has a
+   scope watch, every page of the site is watched by them. The pages whose
+   path the site has stay under their origin, pending (listed with the
+   site's, marked `pending`): each request re-files at most 200 of their
+   threads onto the site's page of the path (64 MiB of snapshots, as
+   moves). A pending page left empty hands its watchers on and is merged
+   away, never deleted (owner ruling 2026-10-07: joining deletes no data):
+   its row moves to `live_merged_pages`, naming the site's page, so it is
+   no longer a key (its origin may make a page of that path again after a
+   split) and leaves the listings and the gallery, while its artifact, its
+   `/a/<id>` link and every snapshot stay. Once none is pending the site's
+   rules are applied across it. The client repeats the request while
+   `remaining` is above 0; a repeat is idempotent. While a join of either
+   site is not finished, another join of them, and any split, is refused
+   (409 `joining`): the owner continues it first (the panel says how many
+   threads are left, with Continue joining; the gallery with Finish
+   joining). A join is refused (409 `unmerging`) while either site has an
+   un-merge under way, so no rule or un-merge is lost.
 3. **Splitting** removes the origin's row. What the site holds stays with
    it (history stays: threads made on the split origin are not moved back);
    from then on the origin's lookups and new pages are its own. When the
    key is split off, the key moves to the most recently used origin left,
-   with the site's pages and rules; that is refused (`joining`) while a
-   join of the site is not finished. A site of one origin left loses its
-   row. The pair is answered Never. Scope watches keep what they made.
+   with the site's pages and rules. Any split is refused (409 `joining`)
+   while a join of the site is not finished. A site of one origin left
+   loses its row. The pair is answered Never. Scope watches keep what they
+   made until the session removes a scope watch: then those no scope of it
+   covers go, the split-off origin's included.
 4. **Realtime.** A live page's events go to the `site:` topic of every
    origin of its site (the daemon keeps the memberships in memory with the
    live pages, reloaded at each join and split), and a `site` event names
-   the site's origins and those that left. The extension's listing reloads
-   on it.
+   the site's origins and those that left. The extension's listing and
+   the gallery's cards reload on it (the gallery hears it too).
 5. **Who.** All of it is under `/api/live/sites/` (hidden from the LAN,
    L10, and in the router's coverage test); reads need an owner
    credential, writes the token or the extension's credential; the

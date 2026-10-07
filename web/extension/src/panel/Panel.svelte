@@ -99,6 +99,13 @@
     askedFor = o;
     link.post({ t: "suggest" });
   });
+  /** A thread of the site opens on any of its addresses: Chrome is asked for
+   * the others under the click (no prompt for those it allows already). */
+  function openThread(t: Thread): void {
+    const others = (site?.site?.origins ?? []).map(o => o.origin).filter(o => o !== tabOrigin);
+    const asked = others.length ? permit(others) : Promise.resolve(true);
+    void asked.then(() => link.post({ t: "open-thread", threadId: t.id }));
+  }
   const suggestion = $derived(link.suggestion && link.suggestion.origin === tabOrigin ? link.suggestion.suggestion : null);
   const people = $derived(roster(s?.participants?.people ?? [], s?.presence ?? []));
   const viewUrl = $derived(s?.page && /^https?:\/\//.test(s.page.url) ? s.page.url : null);
@@ -231,7 +238,7 @@
     {/if}
     {#if s.enabled && anyFar}
       <Elsewhere groups={far} resolved={s.resolved} selected={s.selected} collapsed={prefs.collapsed} {now} {targets}
-        onToggle={toggleGroup} onOpen={t => link.post({ t: "open-thread", threadId: t.id })} onMove={move} />
+        onToggle={toggleGroup} onOpen={openThread} onMove={move} />
     {/if}
     {#if s.enabled && site}
       <!-- A run belongs to its site: another site's panel starts afresh, and the run stops. -->
