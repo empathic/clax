@@ -30,8 +30,29 @@ with_limits() {
         exit 1
     fi
 }
-with_limits "$HERE/ensure-clax.sh" "$ROOT/wrapper/ensure-clax.sh" 120 120
+# with_pin SRC DEST VERSION SUM...: a copy of the wrapper SRC at DEST that
+# pins VERSION with the four checksums SUM (aarch64-apple-darwin,
+# x86_64-apple-darwin, x86_64-unknown-linux-musl, aarch64-unknown-linux-musl),
+# whatever SRC pins: "" and four "" pin nothing. Every case runs such a copy,
+# so the suite is the same whether the checked-in wrapper pins a release.
+with_pin() {
+    mkdir -p "${2%/*}"
+    sed -e "s/^PINNED_VERSION=\".*\"$/PINNED_VERSION=\"$3\"/" \
+        -e "s/^SHA256_AARCH64_APPLE_DARWIN=\".*\"$/SHA256_AARCH64_APPLE_DARWIN=\"$4\"/" \
+        -e "s/^SHA256_X86_64_APPLE_DARWIN=\".*\"$/SHA256_X86_64_APPLE_DARWIN=\"$5\"/" \
+        -e "s/^SHA256_X86_64_UNKNOWN_LINUX_MUSL=\".*\"$/SHA256_X86_64_UNKNOWN_LINUX_MUSL=\"$6\"/" \
+        -e "s/^SHA256_AARCH64_UNKNOWN_LINUX_MUSL=\".*\"$/SHA256_AARCH64_UNKNOWN_LINUX_MUSL=\"$7\"/" "$1" > "$2"
+    if ! grep -qx "PINNED_VERSION=\"$3\"" "$2" || ! grep -qx "SHA256_AARCH64_APPLE_DARWIN=\"$4\"" "$2" \
+        || ! grep -qx "SHA256_X86_64_APPLE_DARWIN=\"$5\"" "$2" || ! grep -qx "SHA256_X86_64_UNKNOWN_LINUX_MUSL=\"$6\"" "$2" \
+        || ! grep -qx "SHA256_AARCH64_UNKNOWN_LINUX_MUSL=\"$7\"" "$2"; then
+        echo "FAIL: $1 lacks a PINNED_VERSION or SHA256_* line; update with_pin" >&2
+        exit 1
+    fi
+}
+with_limits "$HERE/ensure-clax.sh" "$ROOT/wrapper/limits/ensure-clax.sh" 120 120
+# The wrapper with no pin, for every case before the managed-install ones.
 SCRIPT="$ROOT/wrapper/ensure-clax.sh"
+with_pin "$ROOT/wrapper/limits/ensure-clax.sh" "$SCRIPT" "" "" "" "" ""
 V="$(sed -n 's/^CLAX_VERSION="\(.*\)"$/\1/p' "$SCRIPT")"
 # The interpreter itself, not a version-manager shim that needs the real PATH.
 PY="$(python3 -c 'import sys; print(sys.executable)')"
@@ -51,6 +72,48 @@ for t in bash sh env awk head tail grep sed tr cat mktemp mv mkdir rm chmod date
     curl tar gzip shasum sha256sum perl find uname sysctl; do
     if p="$(command -v "$t" 2>/dev/null)" && [ -x "$p" ]; then ln -sf "$p" "$TOOLS/$t"; fi
 done
+# curl runs through a guard that refuses, and records in $TOOLS/offhost.log,
+# any URL not on 127.0.0.1, where the fake releases are served: no case may
+# reach the network, whatever the wrapper under test pins.
+mv "$TOOLS/curl" "$TOOLS/real-curl"
+fake_exe "$TOOLS/curl" <<'SH'
+#!/bin/sh
+for a in "$@"; do
+    case "$a" in
+        http://127.0.0.1:*) ;;
+        *://*) echo "$a" >> "${0%/*}/offhost.log"; echo "curl: $a is not on 127.0.0.1" >&2; exit 7 ;;
+    esac
+done
+exec "${0%/*}/real-curl" "$@"
+SH
+
+# --- Fake releases ------------------------------------------------------------
+# Fake releases of clax $P for every target, served by fake-release-server.py:
+# /ok (the release), /none (404), /wrong (archives whose checksums differ from
+# the pinned ones) and /gate (held until $REL/gate-open exists). Every case's
+# CLAX_RELEASE_BASE_URL names this server; the cases that pin nothing must
+# make no request to it at all.
+P=9.1.0
+REL="$ROOT/release"
+TARGETS="aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-musl aarch64-unknown-linux-musl"
+mkdir -p "$ROOT/payload" "$REL/good/v$P" "$REL/wrong/v$P" "$ROOT/wstage"
+printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\necho "managed: $*"\n' "$P" > "$ROOT/payload/clax"
+chmod +x "$ROOT/payload/clax"
+for t in $TARGETS; do
+    "$HERE/package-release.sh" archive "$P" "$t" "$ROOT/payload/clax" "$REL/good/v$P" > /dev/null
+    mkdir -p "$ROOT/wstage/clax-$P-$t"
+    printf '#!/bin/sh\necho "clax %s"\n# tampered\n' "$P" > "$ROOT/wstage/clax-$P-$t/clax"
+    chmod +x "$ROOT/wstage/clax-$P-$t/clax"
+    (cd "$ROOT/wstage" && tar -czf "$REL/wrong/v$P/clax-$P-$t.tar.gz" "clax-$P-$t")
+done
+"$HERE/package-release.sh" sums "$REL/good/v$P" > /dev/null
+REQLOG="$ROOT/requests.log"
+: > "$REQLOG"
+"$PY" "$HERE/fake-release-server.py" "$REL" "$REQLOG" "$ROOT/port" &
+SERVER_PID=$!
+i=0
+while [ ! -s "$ROOT/port" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
+BASE="http://127.0.0.1:$(cat "$ROOT/port" 2>/dev/null)"
 
 # A fake clax at $1/clax whose --version prints $2; any other run prints its
 # arguments.
@@ -74,6 +137,8 @@ new_env() {
     export PATH="$FAKEBIN:$TOOLS"
     unset CLAX_BIN CLAX_HOME CLAX_SOURCE_DIR CLAX_INSTALL_DIR CLAX_CONFIG_DIR CLAX_RELEASE_BASE_URL CLAX_RELEASE_VERSION
     unset GROK_SESSION_ID GROK_HOOK_EVENT GROK_PLUGIN_ROOT GROK_HOME CLAUDE_PID CLAUDE_CODE_SESSION_ID CLAUDE_PLUGIN_ROOT CLAUDE_PROJECT_DIR CLAX_SESSION_ID
+    # The fake server, never GitHub; the managed-install cases name a mode.
+    export CLAX_RELEASE_BASE_URL="$BASE/none"
 }
 run() { OUT="$("$TOOLS/bash" "$SCRIPT" "$@" 2>"$SANDBOX/stderr" < /dev/null)"; RC=$?; ERR="$(cat "$SANDBOX/stderr")"; }
 run_at() { local s="$1"; shift; OUT="$("$TOOLS/bash" "$s" "$@" 2>"$SANDBOX/stderr" < /dev/null)"; RC=$?; ERR="$(cat "$SANDBOX/stderr")"; }
@@ -611,48 +676,21 @@ if [ "$RC" = 0 ] && [ -z "$OUT" ] && echo "$ERR" | grep -q "pins no Clax release
     pass "the previous name's variables, binary and home are ignored and left untouched"
 else fail "the previous name's variables, binary and home are ignored (rc=$RC out=$OUT err=$ERR)"; fi
 
+if [ ! -s "$REQLOG" ]; then pass "the cases that pin nothing make no download request"
+else fail "the cases that pin nothing make no download request (reqs=$(cat "$REQLOG"))"; fi
+
 # --- The managed install of the pinned release ----------------------------------
-# Fake releases of clax $P for every target, served by fake-release-server.py:
-# /ok (the release), /none (404), /wrong (archives whose checksums differ from
-# the pinned ones) and /gate (held until $REL/gate-open exists). A copy of the
-# wrapper pins $P with the good archives' checksums.
-P=9.1.0
-REL="$ROOT/release"
-TARGETS="aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-musl aarch64-unknown-linux-musl"
-mkdir -p "$ROOT/payload" "$REL/good/v$P" "$REL/wrong/v$P" "$ROOT/wstage"
-printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\necho "managed: $*"\n' "$P" > "$ROOT/payload/clax"
-chmod +x "$ROOT/payload/clax"
-for t in $TARGETS; do
-    "$HERE/package-release.sh" archive "$P" "$t" "$ROOT/payload/clax" "$REL/good/v$P" > /dev/null
-    mkdir -p "$ROOT/wstage/clax-$P-$t"
-    printf '#!/bin/sh\necho "clax %s"\n# tampered\n' "$P" > "$ROOT/wstage/clax-$P-$t/clax"
-    chmod +x "$ROOT/wstage/clax-$P-$t/clax"
-    (cd "$ROOT/wstage" && tar -czf "$REL/wrong/v$P/clax-$P-$t.tar.gz" "clax-$P-$t")
-done
-"$HERE/package-release.sh" sums "$REL/good/v$P" > /dev/null
-REQLOG="$ROOT/requests.log"
-: > "$REQLOG"
-"$PY" "$HERE/fake-release-server.py" "$REL" "$REQLOG" "$ROOT/port" &
-SERVER_PID=$!
-i=0
-while [ ! -s "$ROOT/port" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
-BASE="http://127.0.0.1:$(cat "$ROOT/port" 2>/dev/null)"
+# A copy of the wrapper pins $P with the good archives' checksums.
 PINNED="$ROOT/wrapper/pinned/ensure-clax.sh"
-mkdir -p "${PINNED%/*}"
-cp "$SCRIPT" "$PINNED"
 sum_of() { awk -v f="clax-$P-$1.tar.gz" '$2 == f { print $1 }' "$REL/good/v$P/SHA256SUMS"; }
-sed -i.bak -e "s/^PINNED_VERSION=\"\"$/PINNED_VERSION=\"$P\"/" \
-    -e "s/^SHA256_AARCH64_APPLE_DARWIN=\"\"$/SHA256_AARCH64_APPLE_DARWIN=\"$(sum_of aarch64-apple-darwin)\"/" \
-    -e "s/^SHA256_X86_64_APPLE_DARWIN=\"\"$/SHA256_X86_64_APPLE_DARWIN=\"$(sum_of x86_64-apple-darwin)\"/" \
-    -e "s/^SHA256_X86_64_UNKNOWN_LINUX_MUSL=\"\"$/SHA256_X86_64_UNKNOWN_LINUX_MUSL=\"$(sum_of x86_64-unknown-linux-musl)\"/" \
-    -e "s/^SHA256_AARCH64_UNKNOWN_LINUX_MUSL=\"\"$/SHA256_AARCH64_UNKNOWN_LINUX_MUSL=\"$(sum_of aarch64-unknown-linux-musl)\"/" "$PINNED"
-rm -f "$PINNED.bak"
+with_pin "$SCRIPT" "$PINNED" "$P" "$(sum_of aarch64-apple-darwin)" "$(sum_of x86_64-apple-darwin)" \
+    "$(sum_of x86_64-unknown-linux-musl)" "$(sum_of aarch64-unknown-linux-musl)"
 # The pinned wrapper with a 1 s first-run download wait, for the case about it.
 PINNED_SHORT="$ROOT/wrapper/pinned-short/ensure-clax.sh"
 with_limits "$PINNED" "$PINNED_SHORT" 120 1
 if [ "$("$TOOLS/bash" "$PINNED" pinned-version)" = "$P" ] && [ -z "$("$TOOLS/bash" "$SCRIPT" pinned-version)" ] \
     && ! grep -q '^SHA256_[A-Z0-9_]*=""$' "$PINNED"; then
-    pass "pinned-version prints the pin (empty in the checkout's wrapper until a release is pinned)"
+    pass "pinned-version prints the pin (empty in a wrapper that pins nothing)"
 else fail "pinned-version prints the pin"; fi
 
 # Runs the pinned wrapper against server mode $1.
@@ -803,6 +841,9 @@ prun ok exec status
 if [ "$RC" = 0 ] && echo "$ERR" | grep -q "warning: $FAKEBIN/clax is clax 0.0.1, but this plugin is clax $V"; then
     pass "a bin setting of another version warns"
 else fail "a bin setting of another version warns (err=$ERR)"; fi
+
+if [ ! -e "$TOOLS/offhost.log" ]; then pass "no case asked for a URL off 127.0.0.1"
+else fail "no case asked for a URL off 127.0.0.1 ($(cat "$TOOLS/offhost.log"))"; fi
 
 [ "$FAILED" = 0 ] && echo "all wrapper tests passed" || echo "wrapper tests FAILED"
 exit "$FAILED"
