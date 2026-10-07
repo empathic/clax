@@ -16,8 +16,10 @@ function doc(body: string, head = ""): Document {
   Object.defineProperty(d, "baseURI", { value: "http://localhost:5173/app/" });
   return d;
 }
+/** The serializer on a clock that stands still, so no test's verdict depends on how fast the machine runs it. */
+const ser = (d: Document, o: Parameters<typeof serializeSnapshot>[1] = {}) => serializeSnapshot(d, { now: () => 0, ...o });
 const snap = (d: Document) => {
-  const r = serializeSnapshot(d);
+  const r = ser(d);
   expect(r.error).toBeNull();
   assertClean(r.html);
   return r.html;
@@ -129,7 +131,7 @@ describe("serializeSnapshot", () => {
   it("gives a placeholder page past a cap", () => {
     const d = doc(`${"<i></i>".repeat(50)}`);
     d.title = "<Big>";
-    const r = serializeSnapshot(d, { maxElements: 10 });
+    const r = ser(d, { maxElements: 10 });
     expect(r.error).toBe("too_large");
     expect(r.html).toContain("&lt;Big&gt;");
     expect(r.html).toContain("Snapshot unavailable");
@@ -233,7 +235,7 @@ describe("serializeSnapshot", () => {
 
     it("skips the elements it is told to", () => {
       const d = doc(`<div id="keep">k</div><div id="mine">m</div>`);
-      expect(serializeSnapshot(d, { skip: [d.getElementById("mine")!] }).html).not.toContain("mine");
+      expect(ser(d, { skip: [d.getElementById("mine")!] }).html).not.toContain("mine");
     });
 
     it("cannot be broken out of a style element, in HTML or in SVG", () => {
@@ -367,25 +369,37 @@ describe("serializeSnapshot", () => {
     });
 
     it("reports very deep nesting as too large rather than overflowing the stack", () => {
-      const d = doc("");
-      let at: Element = d.body;
-      for (let i = 0; i < 1_100; i++) at = at.appendChild(d.createElement("div"));
-      expect(serializeSnapshot(d).error).toBe("too_large");
+      // Each chain is built from the leaf up, in a document with no frame:
+      // appending under a deep node costs jsdom a walk of its ancestors, so
+      // building from the root down is quadratic in the depth.
+      const nested = (depth: number) => {
+        const d = document.implementation.createHTMLDocument("Page");
+        let top = d.createElement("div");
+        for (let i = 1; i < depth; i++) {
+          const p = d.createElement("div");
+          p.appendChild(top);
+          top = p;
+        }
+        d.body.appendChild(top);
+        return d;
+      };
+      expect(ser(nested(1_100)).error).toBe("too_large");
+      expect(ser(nested(900)).error).toBeNull();
     });
   });
 
   describe("caps", () => {
     it("counts bytes of UTF-8, not UTF-16 code units", () => {
       const d = doc(`<p>${"é".repeat(600)}</p>`);
-      expect(serializeSnapshot(d, { maxBytes: 1000 }).error).toBe("too_large");
-      expect(serializeSnapshot(d, { maxBytes: 2000 }).error).toBeNull();
+      expect(ser(d, { maxBytes: 1000 }).error).toBe("too_large");
+      expect(ser(d, { maxBytes: 2000 }).error).toBeNull();
     });
 
     it("accepts a page exactly at the element cap and refuses one past it", () => {
       const d = doc(`<i></i>`);
       const n = d.getElementsByTagName("*").length;
-      expect(serializeSnapshot(d, { maxElements: n }).error).toBeNull();
-      expect(serializeSnapshot(d, { maxElements: n - 1 }).error).toBe("too_large");
+      expect(ser(d, { maxElements: n }).error).toBeNull();
+      expect(ser(d, { maxElements: n - 1 }).error).toBe("too_large");
     });
 
     it("measures the deadline on the injected clock only", () => {
@@ -400,10 +414,10 @@ describe("serializeSnapshot", () => {
 
     it("checks the deadline inside one long stylesheet, not only between elements", () => {
       const d = doc(`<p>x</p>`, `<style></style>`);
-      d.querySelector("style")!.textContent = Array.from({ length: 20_000 }, (_, i) => `.c${i} { background: url(i${i}.png) }`).join("\n");
+      d.querySelector("style")!.textContent = Array.from({ length: 4_000 }, (_, i) => `.c${i} { background: url(i${i}.png) }`).join("\n");
       let t = 0;
-      // About ten clock reads happen outside the stylesheet; the rest come from within it.
-      expect(serializeSnapshot(d, { deadlineMs: 50, now: () => (t += 1) }).error).toBe("too_large");
+      // About eight clock reads happen outside the stylesheet; some thirty more come from within it.
+      expect(serializeSnapshot(d, { deadlineMs: 20, now: () => (t += 1) }).error).toBe("too_large");
     });
 
     // Linear time, counted rather than timed: every loop of the serializer
@@ -425,7 +439,7 @@ describe("serializeSnapshot", () => {
         d.querySelector("img")!.setAttribute("srcset", Array.from({ length: n }, (_, i) => `i${String(i).padStart(5, "0")}.png 1w`).join(", "));
         return reads(d);
       };
-      const small = at(10_000), large = at(40_000);
+      const small = at(1_000), large = at(4_000);
       expect(small).toBeGreaterThan(10);
       expect(large).toBeLessThanOrEqual(4 * small + 8);
     });
@@ -437,17 +451,17 @@ describe("serializeSnapshot", () => {
         return d;
       };
       let t = 0;
-      expect(serializeSnapshot(img(120_000), { deadlineMs: 50, now: () => (t += 1) }).error).toBe("too_large");
-      const small = reads(img(30_000)), large = reads(img(120_000));
+      expect(serializeSnapshot(img(30_000), { deadlineMs: 50, now: () => (t += 1) }).error).toBe("too_large");
+      const small = reads(img(7_500)), large = reads(img(30_000));
       expect(small).toBeGreaterThan(10);
       expect(large).toBeLessThanOrEqual(4 * small + 8);
-      expect(serializeSnapshot(img(120_000), { deadlineMs: Infinity, now: () => 0 }).html).toContain("http://localhost:5173/app/c.png 2x");
+      expect(ser(img(30_000), { deadlineMs: Infinity }).html).toContain("http://localhost:5173/app/c.png 2x");
     });
 
     it("keeps the placeholder page's title short and escaped", () => {
       const d = doc("<i></i>");
       d.title = `</title><script>x</script>${"a".repeat(500)}`;
-      const r = serializeSnapshot(d, { maxElements: 1 });
+      const r = ser(d, { maxElements: 1 });
       expect(r.html).not.toContain("<script");
       expect(r.html.length).toBeLessThan(1000);
     });
