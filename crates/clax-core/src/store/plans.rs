@@ -296,6 +296,12 @@ fn inbox_queries() -> Vec<Hot> {
             &["inbox_by_artifact"],
         ),
         (
+            "inbox newest stamp",
+            ib::NEWEST_STAMP.into(),
+            vec![],
+            &["inbox_by_created"],
+        ),
+        (
             "inbox item of a question",
             ib::OF_QUESTION.into(),
             vec![t("Q00040")],

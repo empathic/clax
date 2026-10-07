@@ -464,6 +464,8 @@ pub(super) const READ_BY_SEEN: &str = "UPDATE inbox_items SET read_at = ?3
 /// Touches item `?1`, marking it read at `?2` when `?3` (keeping an earlier read time).
 pub(super) const QUESTION_TOUCH: &str = "UPDATE inbox_items
     SET read_at = CASE WHEN ?3 THEN coalesce(read_at, ?2) ELSE read_at END WHERE seq = ?1";
+/// The newest item's time (`inbox_by_created`, its last entry).
+pub(super) const NEWEST_STAMP: &str = "SELECT max(created_at) FROM inbox_items";
 pub(super) const OF_QUESTION: &str = "SELECT seq FROM inbox_items WHERE question_id = ?1";
 /// Whether the owner (`?1`, a public ID) is in thread `?2`.
 pub(super) const OWNER_IN: &str =
@@ -566,7 +568,7 @@ pub(super) fn shapes() -> Vec<(String, Built)> {
             },
         ),
         (
-            "UPTO_PAGE",
+            "UPTO_MARK_ALL",
             InboxQuery {
                 upto: Some(5000),
                 artifact: Some("art0007".into()),
@@ -697,6 +699,23 @@ fn entry(c: &Connection, aid: Option<&str>, harness: Option<&str>, text: &str) -
 
 /// Inserts the item and its index entry unless its key exists; its `seq`.
 fn insert(c: &Connection, n: New<'_>) -> Result<Option<i64>> {
+    insert_at(c, n, &Store::now())
+}
+
+/// The time to stamp a new item with: `now`, or the newest item's time when
+/// the clock stepped back, so stamps never go backwards and follow `seq`
+/// (date pages walk the `seq` range their dates give).
+fn stamp(c: &Connection, now: &str) -> Result<String> {
+    let newest: Option<String> = c.query_row(NEWEST_STAMP, [], |r| r.get(0))?;
+    Ok(match newest {
+        Some(t) if t.as_str() > now => t,
+        _ => now.to_string(),
+    })
+}
+
+/// [`insert`] with the clock reading `now`.
+fn insert_at(c: &Connection, n: New<'_>, now: &str) -> Result<Option<i64>> {
+    let created_at = stamp(c, now)?;
     let harness = match n.harness {
         Some(h) => Some(h.to_string()),
         None => harness_of(c, n.session_id)?,
@@ -717,7 +736,7 @@ fn insert(c: &Connection, n: New<'_>) -> Result<Option<i64>> {
             n.session_id,
             harness,
             n.detail.map(|d| d.to_string()),
-            Store::now()
+            created_at
         ],
     )?;
     if changed == 0 {
@@ -1942,5 +1961,55 @@ mod tests {
             matches!(busy, CoreError::Db(_)),
             "busy stays a database error"
         );
+    }
+
+    #[test]
+    fn stamps_never_go_backwards_when_the_clock_steps_back() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        let made = |key: &str, now: &str| {
+            st.with_tx(|tx| {
+                insert_at(
+                    tx,
+                    New {
+                        kind: Kind::Finished,
+                        key: key.into(),
+                        artifact_id: None,
+                        thread_id: None,
+                        comment_id: None,
+                        version_n: None,
+                        question_id: None,
+                        session_id: Some(&sid),
+                        harness: None,
+                        detail: None,
+                        text: String::new(),
+                    },
+                    now,
+                )
+            })
+            .unwrap()
+            .unwrap()
+        };
+        made("k1", "2026-01-01T00:00:05.000Z");
+        // The clock steps back two seconds.
+        let back = made("k2", "2026-01-01T00:00:03.000Z");
+        made("k3", "2026-01-01T00:00:06.000Z");
+        let stamps: Vec<String> = all(&st).into_iter().rev().map(|i| i.created_at).collect();
+        assert_eq!(
+            stamps,
+            [
+                "2026-01-01T00:00:05.000Z",
+                "2026-01-01T00:00:05.000Z",
+                "2026-01-01T00:00:06.000Z"
+            ]
+        );
+        let q = InboxQuery {
+            since: Some("2026-01-01T00:00:05.000Z".into()),
+            until: Some("2026-01-01T00:00:06.000Z".into()),
+            ..Default::default()
+        };
+        let page: Vec<i64> = st.inbox_list(&q).unwrap().0.iter().map(|i| i.seq).collect();
+        assert_eq!(page.len(), 2, "the stepped-back item is in its range");
+        assert!(page.contains(&back));
     }
 }
