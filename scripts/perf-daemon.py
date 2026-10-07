@@ -707,7 +707,7 @@ def main(binary, budget_path, quick):
           f"p95 {lim_p95:.0f} ms, max {lim_max:.0f} ms, attention alone {lim_att:.0f} ms, inbox alone {lim_inbox:.0f} ms")
     print(f"medians over {rounds} rounds of {window} s windows{' (quick)' if quick else ''}")
     print()
-    print(f"{'load':<14} {'probe':<24} {'n':>5} {'p95 ms':>9} {'max ms':>9}  verdict")
+    print(f"{'load':<14} {'probe':<28} {'n':>5} {'p95 ms':>9} {'max ms':>9}  verdict")
     failed = []
     for name, _ in PHASES:
         for label in CHEAP:
@@ -721,12 +721,12 @@ def main(binary, budget_path, quick):
                 verdict = "FAIL " + ", ".join(over) if over else "ok"
                 if over:
                     failed.append(f"{label} under {name}")
-            print(f"{name:<14} {label:<24} {n:>5} {v95:>9.1f} {vmax:>9.1f}  {verdict}")
+            print(f"{name:<14} {label:<28} {n:>5} {v95:>9.1f} {vmax:>9.1f}  {verdict}")
     att = med(attention)
     att_ok = att <= lim_att
     if not att_ok:
         failed.append("attention alone")
-    print(f"{'alone':<14} {'GET attention (median)':<24} {len(attention) * ATTENTION_SAMPLES:>5} {att:>9.1f} {'':>9}  {'ok' if att_ok else 'FAIL'}")
+    print(f"{'alone':<14} {'GET attention (median)':<28} {len(attention) * ATTENTION_SAMPLES:>5} {att:>9.1f} {'':>9}  {'ok' if att_ok else 'FAIL'}")
     # Each request is judged on its own median, so one slow request cannot
     # hide behind two fast ones.
     for path in INBOX_REQUESTS:
@@ -734,8 +734,8 @@ def main(binary, budget_path, quick):
         ok = v <= lim_inbox
         if not ok:
             failed.append(f"inbox alone {path}")
-        label = "GET " + path.removeprefix("/api")
-        print(f"{'inbox alone':<14} {label:<24} {len(inbox[path]) * INBOX_SAMPLES:>5} {v:>9.1f} {'':>9}  {'ok' if ok else 'FAIL'}")
+        label = "GET " + path
+        print(f"{'inbox alone':<14} {label:<28} {len(inbox[path]) * INBOX_SAMPLES:>5} {v:>9.1f} {'':>9}  {'ok' if ok else 'FAIL'}")
     print()
     for name, _ in PHASES[1:]:
         print(f"{name}: " + "; ".join(infos[name]))

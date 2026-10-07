@@ -2242,7 +2242,9 @@ questions. `/api/events` never carries either event.
 
 The changes of transactions that commit concurrently may be announced out
 of commit order. Clients order items by `seq` and upsert by `id`. While no
-stream holds `inbox`, nothing is announced.
+stream holds `inbox`, nothing is announced, so a client subscribes to
+`inbox` first and then fetches what it shows: no change falls between the
+fetch and the subscription.
 
 ### `clax inbox`
 
