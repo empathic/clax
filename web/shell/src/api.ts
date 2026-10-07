@@ -134,3 +134,61 @@ export async function getSampleStatus(id: string, token: string): Promise<Sample
     return null;
   }
 }
+
+// Agent questions and the owner's inbox (spec
+// 2026-10-06-agent-questions-and-inbox §5, §7.6, §8; docs/contract.md "Agent
+// questions", "The inbox"). Owner only. Every string in these shapes is
+// agent text or derived from it: untrusted, rendered as text. Their
+// fetchers live with the lazily loaded question module (`q/api.ts`).
+
+/** One option of a choice question. */
+export type QOption = { label: string; description?: string; preview?: string; recommended?: boolean };
+/** One question: `options` is empty for a free-text question. */
+export type QuestionSpec = { question: string; header: string; options: QOption[]; multi_select: boolean; other: boolean };
+/** The person's answer to one question: one or more labels and/or the "Other" text. */
+export type QAnswer = { selected: string[]; text: string | null };
+/** The answer body: one entry per question, in order. */
+export type AnswerBody = { answers: QAnswer[] };
+/** The asking agent; `project` is the last component of its working directory. */
+export type QAgent = { handle: string; harness: string; project: string };
+export type QuestionStatus = "open" | "answered" | "declined" | "released" | "withdrawn";
+/** The question view, as every owner route and `question` event gives it. */
+export type QuestionView = {
+  id: string; agent: QAgent | null;
+  /** The artifact or live page it is about; null for none, or when deleted. */
+  artifact: { id: string; title: string; kind: string } | null;
+  /** `hook` is a mirrored `AskUserQuestion`. */
+  source: "ask" | "hook"; status: QuestionStatus;
+  questions: QuestionSpec[]; answers: QAnswer[] | null;
+  answered_via: "shell" | "extension" | "cli" | "terminal" | null;
+  created_at: string; closed_at: string | null;
+};
+
+export type InboxKind = "reply" | "version" | "published" | "question" | "finished";
+/** A thread an item names; `summary` and `status` are null when it is gone. */
+export type InboxThread = { id: string; summary: string | null; status?: string | null };
+/** The inbox item view. Each kind fills its own field (`reply` also fills
+ * `thread`); a source's text fields are null when `gone`. `seq` orders items
+ * (higher is newer) and is the cursor and a bulk mark's `upto`. */
+export type InboxItem = {
+  id: string; seq: number; kind: InboxKind; read: boolean; created_at: string;
+  agent: QAgent | null;
+  /** `title` and `kind` are null when the artifact is deleted. */
+  artifact: { id: string; title: string | null; kind: string | null; page_url: string | null } | null;
+  thread: InboxThread | null;
+  reply: { comment_id: string; body: string | null; addressed: boolean } | null;
+  version: { n: number; note: string | null; addressed: InboxThread[] } | null;
+  published: { description: string | null } | null;
+  question: QuestionView | null;
+  work: { message: string | null; threads: InboxThread[] } | null;
+  gone: boolean;
+  /** Where opening the item leads (a path on the daemon). */
+  url: string;
+};
+/** One page of `GET /api/inbox`; `total` is present when the query filters. */
+export type InboxPage = { items: InboxItem[]; next_cursor: string | null; unread: number; total?: number | "10000+" };
+/** `GET /api/inbox/summary`: open questions oldest first, the five newest unread other items. */
+export type InboxSummary = { unread: number; questions: QuestionView[]; latest: InboxItem[] };
+/** The inbox page's search: text (`q`), kinds, an artifact ID, an agent
+ * (harness or handle), dates (`YYYY-MM-DD` or RFC 3339), and read state. */
+export type InboxFilter = { q?: string; kind?: InboxKind[]; artifact?: string; agent?: string; since?: string; until?: string; read?: "unread" | "read" | "all" };
