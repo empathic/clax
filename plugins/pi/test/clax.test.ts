@@ -497,6 +497,30 @@ async function sessionOf(harnessId: string): Promise<string> {
   return s.id;
 }
 
+/** Ends `wait_for_feedback` polls of session `sid` now, as if their wait ran
+ * out (a debug-build route), once `n` of them wait. */
+async function expireFeedback(sid: string, n = 1): Promise<void> {
+  expect((await api(daemon, `/api/_test/sessions/${sid}/feedback/waiters?until=${n}`)).count).toBe(n);
+  expect((await api(daemon, `/api/_test/sessions/${sid}/feedback/expire`, { method: "POST", body: "{}" })).expired).toBe(n);
+}
+
+/** Ends the poll on question `qid` now, as if its wait ran out (a
+ * debug-build route), once it waits. */
+async function expireQuestion(qid: string): Promise<void> {
+  expect((await api(daemon, `/api/_test/questions/${qid}/waiters?until=1`)).count).toBe(1);
+  expect((await api(daemon, `/api/_test/questions/${qid}/expire`, { method: "POST", body: "{}" })).expired).toBe(1);
+}
+
+/** The ID of the open question headed `header`, once there is one. */
+async function openQuestion(header: string): Promise<string> {
+  let id: string | undefined;
+  await expect.poll(async () => {
+    id = (await api(daemon, "/api/questions?status=open")).questions.find((q: any) => q.questions[0].header === header)?.id;
+    return id;
+  }, { timeout: 5_000 }).toBeDefined();
+  return id!;
+}
+
 /** An `ask` question set with one single-select question headed `header`. */
 function askBody(header: string) {
   return { source: "ask", questions: [{ question: "Which?", header, options: [{ label: "A" }, { label: "B" }] }] };
@@ -590,10 +614,11 @@ describe("comments", () => {
   it("wait_for_feedback returns within a second of a send and asks to call again", async () => {
     const { pi, ctx } = load(daemon.home, "pi-wait");
     const aid = parts(await pi.callToolAsPi("clax_publish", { html: "<h2>Goals</h2>", title: "Pi wait" }, ctx)).json.artifact_id;
+    const sid = await sessionOf("pi-wait");
     const waiting = pi.callToolAsPi("clax_wait_for_feedback", { url_or_id: aid, timeout_s: 5 }, ctx);
     // The timestamp is taken before the send starts, so it exists whichever finishes first.
     const sending = (async () => {
-      await new Promise(r => setTimeout(r, 300));
+      expect((await api(daemon, `/api/_test/sessions/${sid}/feedback/waiters?until=1`)).count).toBe(1);
       const at = Date.now();
       await browserThread(aid, "@agent live");
       return at;
@@ -604,7 +629,9 @@ describe("comments", () => {
     expect(answered - sentAt).toBeLessThan(1000);
     expect(r.json).toMatchObject({ call_again: false });
     expect(r.json.feedback).toHaveLength(1);
-    expect(parts(await pi.callToolAsPi("clax_wait_for_feedback", { timeout_s: 1 }, ctx)).json).toEqual({ feedback: [], waited_s: 1, call_again: true });
+    const empty = pi.callToolAsPi("clax_wait_for_feedback", { timeout_s: 30 }, ctx);
+    await expireFeedback(sid);
+    expect(parts(await empty).json).toEqual({ feedback: [], waited_s: 0, call_again: true });
   }, 20_000);
 
   it("tier 5: the extension long-polls and hands comments to Pi as a follow-up", async () => {
@@ -666,9 +693,11 @@ describe("comments", () => {
     const b = parts(await pi.callToolAsPi("clax_publish", { html: "<h2>Goals</h2>", title: "Pi busy" }, ctx)).json.artifact_id;
     await browserThread(b, "@agent on the other page");
     // Waiting on `a` hands over nothing; the comment on `b` is not appended.
-    const waited = await pi.callToolAsPi("clax_wait_for_feedback", { url_or_id: a, timeout_s: 1 }, ctx);
+    const waiting = pi.callToolAsPi("clax_wait_for_feedback", { url_or_id: a, timeout_s: 30 }, ctx);
+    await expireFeedback(await sessionOf("pi-tier1-skip"));
+    const waited = await waiting;
     expect(waited.content).toHaveLength(1);
-    expect(parts(waited).json).toEqual({ feedback: [], waited_s: 1, call_again: true });
+    expect(parts(waited).json).toEqual({ feedback: [], waited_s: 0, call_again: true });
     const foreign = { type: "tool_result", toolName: "clax_foreign", toolCallId: "call-2", input: {}, content: [{ type: "text", text: "{}" }], isError: false, details: undefined };
     for (const h of pi.handlers.get("tool_result") ?? []) expect(await h(foreign, ctx)).toBeUndefined();
     expect(parts(await pi.callToolAsPi("clax_list", {}, ctx)).json.feedback).toHaveLength(1);
@@ -721,7 +750,9 @@ describe("comments", () => {
     const sid = await sessionOf("pi-ask");
     // An earlier question, answered while nothing waits on it: a late answer.
     const late = await askAndAnswer(sid, "Earlier", "A");
-    const first = parts(await pi.callToolAsPi("clax_ask", { questions: askBody("Pick").questions, timeout_s: 1 }, ctx)).json;
+    const asking = pi.callToolAsPi("clax_ask", { questions: askBody("Pick").questions, timeout_s: 30 }, ctx);
+    await expireQuestion(await openQuestion("Pick"));
+    const first = parts(await asking).json;
     expect(first).toMatchObject({ status: "open", reply: null, call_again: true, surface_open: false, feedback: [] });
     expect(first.answers.map((a: any) => a.id)).toEqual([late]);
     const qid: string = first.question_id;
@@ -745,8 +776,7 @@ describe("comments", () => {
     // Q1 is open and no call waits on it (as after call_again); Q2 is asked.
     const q1 = (await api(daemon, `/api/sessions/${sid}/questions`, { method: "POST", body: JSON.stringify(askBody("One")) })).question.id;
     const waiting = pi.callToolAsPi("clax_ask", { questions: askBody("Two").questions, timeout_s: 30 }, ctx);
-    let q2: string | undefined;
-    while (!q2) q2 = (await api(daemon, "/api/questions?status=open")).questions.find((q: any) => q.questions[0].header === "Two")?.id;
+    const q2 = await openQuestion("Two");
     expect((await api(daemon, `/api/_test/questions/${q2}/waiters?until=1`)).count).toBe(1);
     await answer(q1, "A");
     await answer(q2, "B");

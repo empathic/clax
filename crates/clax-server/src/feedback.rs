@@ -21,6 +21,10 @@ pub struct FeedbackWaiters {
     active: Mutex<HashMap<String, usize>>,
     /// Notified whenever a `wait_for_feedback` long-poll starts or ends.
     changed: Notify,
+    /// Debug builds: how many of each session's `wait_for_feedback` polls
+    /// are still to end at once ([`FeedbackWaiters::expire`]).
+    #[cfg(debug_assertions)]
+    expired: Mutex<HashMap<String, usize>>,
 }
 
 impl FeedbackWaiters {
@@ -85,6 +89,39 @@ impl FeedbackWaiters {
         &self.changed
     }
 
+    /// Debug builds: ends every `wait_for_feedback` long-poll of
+    /// `session_id` now, as if its deadline had passed; how many that is.
+    #[cfg(debug_assertions)]
+    pub fn expire(&self, session_id: &str) -> usize {
+        let n = self.count(session_id);
+        if n > 0 {
+            self.expired
+                .lock()
+                .unwrap()
+                .insert(session_id.to_string(), n);
+            self.wake(std::iter::once(&session_id.to_string()));
+        }
+        n
+    }
+
+    /// Debug builds: whether a `wait_for_feedback` long-poll of
+    /// `session_id` is to end now ([`FeedbackWaiters::expire`]); each poll
+    /// takes it once.
+    #[cfg(debug_assertions)]
+    pub fn take_expired(&self, session_id: &str) -> bool {
+        let mut e = self.expired.lock().unwrap();
+        match e.get_mut(session_id) {
+            Some(n) if *n > 0 => {
+                *n -= 1;
+                if *n == 0 {
+                    e.remove(session_id);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Whether a `wait_for_feedback` long-poll (`tier=wait`) of `session_id`
     /// is in progress; tier 5 (`codex queue`, Pi `inject`) is skipped while it is.
     pub fn is_waiting(&self, session_id: &str) -> bool {
@@ -106,6 +143,12 @@ impl Drop for WaitGuard {
                 *n -= 1;
                 if *n == 0 {
                     active.remove(&self.session_id);
+                    #[cfg(debug_assertions)]
+                    self.waiters
+                        .expired
+                        .lock()
+                        .unwrap()
+                        .remove(&self.session_id);
                 }
             }
         }

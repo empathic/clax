@@ -236,9 +236,14 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             "/api/_test/questions/{qid}/waiters",
             get(questions::waiters),
         )
+        .route("/api/_test/questions/{qid}/expire", post(questions::expire))
         .route(
             "/api/_test/sessions/{id}/feedback/waiters",
             get(feedback::waiters),
+        )
+        .route(
+            "/api/_test/sessions/{id}/feedback/expire",
+            post(feedback::expire),
         );
     #[cfg(feature = "test-routes")]
     let api_fast = api_fast.layer(axum::middleware::from_fn(test_delay));
@@ -484,6 +489,8 @@ mod l10 {
         ("questions::terminal", Token),
         ("questions::waiters", Token),
         ("feedback::waiters", Token),
+        ("questions::expire", Token),
+        ("feedback::expire", Token),
         ("questions::list", Owner),
         ("questions::get_one", Owner),
         ("questions::answer", Owner),
