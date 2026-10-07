@@ -173,6 +173,14 @@ export const bestLink: LinkMaker = async (on, lost) => {
   return localLink(on, lost);
 };
 
+/** In tests only: every stream that had watchers, across the module copies
+ * a test file loads, so the setup can fail a test that leaves one open
+ * (linked, or with a timer pending, which would fire after the environment
+ * is torn down). */
+const watched: Set<EventStream> | null = import.meta.env.MODE === "test"
+  ? ((globalThis as { claxWatchedStreams?: Set<EventStream> }).claxWatchedStreams ??= new Set())
+  : null;
+
 export class EventStream {
   private watchers: Watcher[] = [];
   private link: Link | null = null;
@@ -200,6 +208,15 @@ export class EventStream {
 
   constructor(private readonly win: Window = window, private readonly makeLink: LinkMaker = bestLink) {}
 
+  /** The topics its watchers hold (tests). */
+  get watching(): string[] { return [...new Set(this.watchers.flatMap(w => [...w.topics]))].sort(); }
+
+  /** Whether it holds anything open: watchers, or a timer (tests). An idle
+   * link, holding no topic, keeps no timer and counts as closed. */
+  get open(): boolean {
+    return this.watchers.length > 0 || this.rejoin !== undefined || this.noticeTimer !== undefined || this.watchdog !== undefined;
+  }
+
   /** The topics this page holds now (tests). */
   get topics(): string[] { return this.sent ? this.sent.split("\n") : []; }
 
@@ -207,6 +224,7 @@ export class EventStream {
   watch(topics: readonly string[], on: (e: StreamEvent) => void): () => void {
     const w: Watcher = { topics: new Set(topics), on };
     this.watchers.push(w);
+    watched?.add(this);
     this.hook();
     this.schedule();
     return () => {
@@ -229,6 +247,7 @@ export class EventStream {
   /** Leaves the hub and forgets every watcher. */
   close(): void {
     this.watchers = [];
+    watched?.delete(this);
     this.leave();
     this.hiddenTimer?.();
     this.hiddenTimer = undefined;
@@ -287,6 +306,9 @@ export class EventStream {
   }
 
   private sync(): void {
+    // Nothing watches it any more: no hub to join again, and no stream-down
+    // notice for no one (its timer would outlive the page's views).
+    if (!this.watchers.length) this.idle();
     const topics = this.union();
     const key = topics.join("\n");
     if (!this.link) {
@@ -323,6 +345,15 @@ export class EventStream {
     })();
   }
 
+  /** No watcher is left: the timers that serve watchers stop; an idle link stays for the next. */
+  private idle(): void {
+    clearTimeout(this.rejoin);
+    this.rejoin = undefined;
+    clearTimeout(this.noticeTimer);
+    this.noticeTimer = undefined;
+    if (this.down) { this.down = false; connTrouble("stream", false, STREAM_DOWN, this.win.document); }
+  }
+
   /** Leaves the hub: its topics go, and the notice with them. */
   private leave(): void {
     clearTimeout(this.rejoin);
@@ -354,6 +385,7 @@ export class EventStream {
     this.losses++;
     clearTimeout(this.rejoin);
     this.rejoin = setTimeout(() => { this.rejoin = undefined; this.sync(); }, wait);
+    if (!this.watchers.length) this.idle();
   }
 
   private check(): void {

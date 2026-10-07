@@ -25,6 +25,16 @@ window.clearInterval = ((id?: number) => { open.delete(id); clearI(id); }) as ty
 // would evaluate against a half-loaded copy of the Svelte runtime.
 afterEach(async () => { await vi.dynamicImportSettled(); });
 
+// Every stream watch a test makes must end with the test (a component that
+// subscribes must unsubscribe when it goes): a stream left with watchers
+// stays linked, and its timers fire after the environment is torn down.
+afterEach(() => {
+  const streams = (globalThis as { claxWatchedStreams?: Set<{ watching: string[]; open: boolean }> }).claxWatchedStreams;
+  const left = streams ? [...streams].filter(s => s.open).map(s => s.watching) : [];
+  streams?.clear();
+  expect(left, "event streams left open after the test (watched, linked or with a timer pending)").toEqual([]);
+});
+
 afterAll(async () => {
   // The gesture module watches the shell document from the moment it loads;
   // stop the watch of the instance this file's tests used. A file that resets
