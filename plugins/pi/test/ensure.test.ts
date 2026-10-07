@@ -10,10 +10,22 @@ import { buildClax, claxBin } from "./daemon-fixture.ts";
 import { fakeExe } from "./fake-exe.ts";
 
 let scratch: string;
+/** A copy of the wrapper whose limit on `clax --version` (PROBE_SECS, 5 s)
+ * is 120 s, as scripts/test-ensure-clax.sh makes its copies: the tests that
+ * run the real binary are not about that limit, and on a loaded machine its
+ * `--version` can take longer. A case about the limit would use the shipped
+ * wrapper. */
+let wrapper: string;
+/** How long the tests let the real binary's `--version` take, for the same reason. */
+const VERSION_MS = 120_000;
 
 beforeAll(() => {
   buildClax();
   scratch = mkdtempSync(join(tmpdir(), "clax-pi-ensure-"));
+  wrapper = join(scratch, "ensure-clax.sh");
+  const text = readFileSync(WRAPPER, "utf8").replace(/^PROBE_SECS=\d+$/m, "PROBE_SECS=120");
+  if (!/^PROBE_SECS=120$/m.test(text)) throw new Error(`${WRAPPER} sets no PROBE_SECS line; update this copy`);
+  writeFileSync(wrapper, text);
 }, 320_000);
 
 afterAll(() => {
@@ -30,7 +42,7 @@ describe("ensure", () => {
   it("starts a daemon with `clax serve --json` when none is running", async () => {
     const home = join(scratch, "fresh");
     try {
-      const info = await ensure(home, { env: withBin(claxBin), port: 0 });
+      const info = await ensure(home, { env: withBin(claxBin), port: 0, wrapper });
       expect(info.port).toBeGreaterThan(0);
       expect((await fetch(`http://127.0.0.1:${info.port}/healthz`)).ok).toBe(true);
     } finally {
@@ -53,7 +65,7 @@ describe("ensure", () => {
         holder.once("exit", code => reject(new Error(`the lock holder exited with ${code}`)));
       });
       const t0 = Date.now();
-      const info = await ensure(home, { env: withBin(claxBin), port: 0 });
+      const info = await ensure(home, { env: withBin(claxBin), port: 0, wrapper });
       expect(Date.now() - t0).toBeGreaterThan(10_000);
       expect((await fetch(`http://127.0.0.1:${info.port}/healthz`)).ok).toBe(true);
     } finally {
@@ -71,8 +83,8 @@ describe("ensure", () => {
     fakeExe(join(onPath, "clax"), "#!/bin/sh\necho 'clax 0.0.1'\n");
     const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${onPath}:${process.env.PATH}` };
     delete env.CLAX_BIN;
-    expect(await findBinary(home, env)).toBe(claxBin);
-    expect(await findBinary(home, withBin(claxBin))).toBe(claxBin);
+    expect(await findBinary(home, env, wrapper)).toBe(claxBin);
+    expect(await findBinary(home, withBin(claxBin), wrapper)).toBe(claxBin);
   });
 
   it("rejects with the wrapper's reason when the binary named is unusable", async () => {
@@ -106,6 +118,6 @@ describe("ensure", () => {
     expect(await binaryVersion(other)).toBeNull();
     expect(await binaryVersion(join(scratch, "no-such-clax"))).toBeNull();
     const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
-    expect(await binaryVersion(claxBin)).toBe(version);
+    expect(await binaryVersion(claxBin, process.env, VERSION_MS)).toBe(version);
   });
 });
