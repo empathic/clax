@@ -141,6 +141,13 @@ describe("origins", () => {
     }
   });
 
+  it("says the page failed to load when the tab shows Chrome's error page, rather than retrying", async () => {
+    let calls = 0;
+    c.scripting.executeScript = (async () => { calls++; throw new Error("Frame with ID 0 is showing error page"); }) as unknown as typeof c.scripting.executeScript;
+    await expect(injectOverlay(env(), 7, location.origin)).rejects.toMatchObject({ code: "page_error", message: "The page failed to load." });
+    expect(calls).toBe(1);
+  });
+
   it("reads a tab it cannot reach as having no overlay", async () => {
     c.scripting.executeScript = (async () => { throw new Error("Cannot access contents of the page."); }) as unknown as typeof c.scripting.executeScript;
     expect(await overlayPresent(env(), 7)).toBe(false);

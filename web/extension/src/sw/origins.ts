@@ -124,7 +124,11 @@ export async function overlayPresent(env: OriginsEnv, tabId: number): Promise<bo
 
 /** Chrome's refusal to script a document the tab no longer shows (it
  * navigated between the probe and the injection, or mid-probe). */
-const GONE = /No document with id|frame was removed|Frame with ID 0/i;
+const GONE = /No document with id|frame was removed|No frame with id/i;
+/** Chrome's refusal to script a tab showing its own error page (the load failed). */
+const ERROR_PAGE = /showing error page/i;
+/** What the person is told when the tab shows Chrome's error page. */
+export const PAGE_ERROR = "The page failed to load.";
 
 /** Injects the overlay into the tab's top document, once per document (the
  * worker's record of a tab can lag a reload, or be lost with a restart),
@@ -148,7 +152,9 @@ export async function injectOverlay(env: OriginsEnv, tabId: number, origin: stri
       await env.scripting.executeScript({ target, files: ["overlay.js"] });
       return true;
     } catch (e) {
-      if (!GONE.test(String((e as { message?: unknown })?.message ?? e))) throw e;
+      const m = String((e as { message?: unknown })?.message ?? e);
+      if (ERROR_PAGE.test(m)) throw Object.assign(new Error(PAGE_ERROR), { code: "page_error" });
+      if (!GONE.test(m)) throw e;
       if (attempt >= 1) return null;
     }
   }
