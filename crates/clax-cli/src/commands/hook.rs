@@ -243,9 +243,10 @@ impl Notice {
 /// before Clax tools, with how to approve them once
 /// ([`crate::codex_approvals::notice`]). Shown once per set of tools (a
 /// marker per Codex home under `<home>/run/`, written by [`Notice::record`]
-/// once printed); `clax doctor` reports the tools after that. Not given to a session run by `codex exec` or `codex
-/// app-server`, which show no hook message to a person. Reads Codex's
-/// config and writes nothing there.
+/// once printed, or by `clax init` when the person declines that set);
+/// `clax doctor` reports the tools after that. Not given to a session run
+/// by `codex exec` or `codex app-server`, which show no hook message to a
+/// person. Reads Codex's config and writes nothing there.
 fn codex_notice(home: &Home, parent_pid: u32) -> Option<Notice> {
     use crate::codex_approvals as ca;
     let dirs = super::doctor_agent::Dirs::from_env(|k| std::env::var(k).ok())?;
@@ -269,8 +270,9 @@ fn codex_notice(home: &Home, parent_pid: u32) -> Option<Notice> {
 }
 
 /// Codex subcommands whose sessions show no hook message to a person.
-/// `ps` joins the arguments with spaces, so a prompt given as Codex's first
-/// argument whose first word is one of these reads as the subcommand; the
+/// Where only `ps` gives the arguments (macOS), they are joined with
+/// spaces, so a prompt given as Codex's first argument whose first word is
+/// one of these reads as the subcommand; the
 /// notice is then neither shown nor recorded, and `clax doctor` still
 /// reports the tools. `review` is left out: a prompt starting "review" is
 /// likelier than `codex review`, whose session start is rare.
@@ -301,12 +303,11 @@ const CODEX_VALUE_OPTIONS: &[&str] = &[
     "--add-dir",
 ];
 
-/// For one process's command line (`ps -o args=`): `None` when it is not
-/// Codex, else whether it is an interactive Codex: its first argument that
-/// is not an option or an option's value is not a headless subcommand (a
-/// prompt, or nothing, is interactive).
-fn interactive_codex(args: &str) -> Option<bool> {
-    let tokens: Vec<&str> = args.split_whitespace().collect();
+/// For one process's arguments: `None` when it is not Codex, else whether
+/// it is an interactive Codex: its first argument that is not an option or
+/// an option's value is not a headless subcommand (a prompt, or nothing, is
+/// interactive).
+fn interactive_codex(tokens: &[&str]) -> Option<bool> {
     let at = tokens.iter().take(2).position(|t| {
         let base = t.rsplit('/').next().unwrap_or(t);
         base == "codex" || base == "codex.js"
@@ -327,18 +328,43 @@ fn interactive_codex(args: &str) -> Option<bool> {
     Some(true)
 }
 
+/// The arguments in a `/proc/<pid>/cmdline` (NUL-separated, exact).
+fn cmdline_args(raw: &[u8]) -> Vec<String> {
+    raw.split(|b| *b == 0)
+        .filter(|a| !a.is_empty())
+        .map(|a| String::from_utf8_lossy(a).into_owned())
+        .collect()
+}
+
+/// A process's arguments: exact from `/proc/<pid>/cmdline` where there is
+/// one (Linux), else `ps -o args=` split at whitespace, which cannot tell a
+/// quoted prompt from separate words.
+fn process_args(pid: u32) -> Option<Vec<String>> {
+    if let Ok(raw) = std::fs::read(format!("/proc/{pid}/cmdline")) {
+        return Some(cmdline_args(&raw));
+    }
+    let out = std::process::Command::new("ps")
+        .args(["-o", "args=", "-p", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    Some(
+        String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
 /// Whether the nearest Codex among the hook's ancestors runs interactively;
 /// true when none is found.
 fn shown_to_a_person(parent_pid: u32) -> bool {
     std::iter::once(parent_pid)
         .chain(ancestors(parent_pid))
         .find_map(|pid| {
-            let out = std::process::Command::new("ps")
-                .args(["-o", "args=", "-p", &pid.to_string()])
-                .stderr(std::process::Stdio::null())
-                .output()
-                .ok()?;
-            interactive_codex(&String::from_utf8_lossy(&out.stdout))
+            let args = process_args(pid)?;
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            interactive_codex(&args)
         })
         .unwrap_or(true)
 }
@@ -433,45 +459,52 @@ mod tests {
 
     /// Command lines as `ps -o args=` showed them for a Codex TUI, `codex
     /// exec` and the app server.
+    fn interactive(line: &str) -> Option<bool> {
+        interactive_codex(&line.split_whitespace().collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn exact_arguments_keep_a_quoted_prompt_whole() {
+        let argv = cmdline_args(b"/usr/bin/codex\0-m\0gpt-6\0exec the plan\0");
+        assert_eq!(argv, ["/usr/bin/codex", "-m", "gpt-6", "exec the plan"]);
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        assert_eq!(interactive_codex(&argv), Some(true));
+        assert_eq!(interactive_codex(&["codex", "exec", "hi"]), Some(false));
+    }
+
     #[test]
     fn only_an_interactive_codex_is_shown_the_notice() {
         let bin =
             "/Users/u/.codex/packages/standalone/releases/0.160.1-aarch64-apple-darwin/bin/codex";
         assert_eq!(
-            interactive_codex(&format!("{bin} --dangerously-bypass-hook-trust")),
+            interactive(&format!("{bin} --dangerously-bypass-hook-trust")),
             Some(true)
         );
-        assert_eq!(interactive_codex("codex"), Some(true));
+        assert_eq!(interactive("codex"), Some(true));
         assert_eq!(
-            interactive_codex(&format!("{bin} exec --skip-git-repo-check hi")),
+            interactive(&format!("{bin} exec --skip-git-repo-check hi")),
             Some(false)
         );
-        assert_eq!(interactive_codex("codex app-server"), Some(false));
+        assert_eq!(interactive("codex app-server"), Some(false));
         assert_eq!(
-            interactive_codex("node /usr/lib/node_modules/@openai/codex/bin/codex.js exec x"),
+            interactive("node /usr/lib/node_modules/@openai/codex/bin/codex.js exec x"),
             Some(false)
         );
-        assert_eq!(interactive_codex("/bin/zsh -c codex exec"), None);
+        assert_eq!(interactive("/bin/zsh -c codex exec"), None);
         // Only the first argument that is not an option or its value counts.
         assert_eq!(
-            interactive_codex("codex fix the failing tests then exec them"),
+            interactive("codex fix the failing tests then exec them"),
             Some(true)
         );
         // `codex "review the tests"`, as `ps` shows it.
-        assert_eq!(interactive_codex("codex review the tests"), Some(true));
+        assert_eq!(interactive("codex review the tests"), Some(true));
+        assert_eq!(interactive("codex -m gpt-6 -c a=b exec hi"), Some(false));
         assert_eq!(
-            interactive_codex("codex -m gpt-6 -c a=b exec hi"),
+            interactive("codex --model gpt-6 --search app-server"),
             Some(false)
         );
-        assert_eq!(
-            interactive_codex("codex --model gpt-6 --search app-server"),
-            Some(false)
-        );
-        assert_eq!(interactive_codex("codex -c review=1 hello"), Some(true));
-        assert_eq!(interactive_codex("codex --enable x"), Some(true));
-        assert_eq!(
-            interactive_codex("bash ./scripts/ensure-clax.sh exec hook"),
-            None
-        );
+        assert_eq!(interactive("codex -c review=1 hello"), Some(true));
+        assert_eq!(interactive("codex --enable x"), Some(true));
+        assert_eq!(interactive("bash ./scripts/ensure-clax.sh exec hook"), None);
     }
 }

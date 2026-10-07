@@ -2895,8 +2895,9 @@ without asking the person. `clax doctor --agent codex` reports the same
 assessment as `codex_approvals`, and the plugin's `SessionStart` hook shows
 it to the person (Codex's `systemMessage`) once per set of tools, and not in
 sessions run by `codex exec` or `codex app-server` (Codex's first argument
-that is not an option, as `ps` shows it), which show no hook message (the
-set is recorded, once printed, in
+that is not an option, from `/proc/<pid>/cmdline` or else `ps`), which show
+no hook message (the set is recorded once printed, or when the person
+answers no at `init`'s prompt, in
 `~/.clax/run/codex-approvals-notice-<hash of the Codex home>`), naming `clax
 init --agent codex` when an executable `clax` is on `PATH` and the settings
 otherwise. Neither writes Codex's config.
