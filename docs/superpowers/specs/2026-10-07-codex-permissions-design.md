@@ -172,17 +172,19 @@ Codex entry's `approvals` and never fails `init`.
   executable `clax` on `PATH`, the setting to add). Only when the plugin is
   registered in Codex's config; it never writes that config. Shown once per
   set of tools, recorded only once printed, per Codex home
-  (`<clax home>/run/codex-approvals-notice-<hash>`); a "no" at the `init`
-  prompt is respected, and `clax doctor` is where the tools are reported
-  after that. Not shown when the nearest Codex ancestor's subcommand (its
-  first argument that is not an option or an option's value, as `ps` shows
-  it) is `exec`, `e`, `app-server`, `exec-server` or `mcp-server`: `codex
-  exec` printed no hook `systemMessage` in a run, and the app server serves
-  clients such as the Codex companion, with no person reading. `ps` joins
-  arguments with spaces, so a prompt given as the first argument whose first
-  word is one of these reads as that subcommand (the notice is then not
-  shown or recorded); `review` is not in the list, so `codex "review the
-  tests"` gets the notice.
+  (`<clax home>/run/codex-approvals-notice-<hash>`). A "no" at the `init`
+  prompt records the same marker for the set it declined, so the notice
+  does not ask again; `clax doctor` is where the tools are reported after
+  that. Not shown when the nearest Codex ancestor's subcommand (its first
+  argument that is not an option or an option's value) is `exec`, `e`,
+  `app-server`, `exec-server` or `mcp-server`: `codex exec` printed no hook
+  `systemMessage` in a run, and the app server serves clients such as the
+  Codex companion, with no person reading. The arguments are read exactly
+  from `/proc/<pid>/cmdline` where it exists (Linux); elsewhere (macOS) `ps
+  -o args=` joins them with spaces, so a prompt given as the first argument
+  whose first word is one of these reads as that subcommand (the notice is
+  then not shown or recorded). `review` is not in the list, so `codex
+  "review the tests"` gets the notice.
 
 ### 3.5 The shell (§2.4)
 
