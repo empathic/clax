@@ -1651,7 +1651,7 @@ mod tests {
         let (_d, store) = store();
         let aid = one_version(&store);
         let session = crate::store::test_util::session(&store, "claude", "h1");
-        store.watch(&session, &aid, true).unwrap();
+        store.watch(DAEMON, &session, &aid, true).unwrap();
         let t = store
             .create_thread(
                 DAEMON,

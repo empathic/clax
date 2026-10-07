@@ -202,7 +202,7 @@ pub async fn poll(
                 if t.tier == Tier::Queue {
                     return Ok((items, Default::default()));
                 }
-                crate::working::mark_items(&ctx, st, &t.session_id, &items)?;
+                crate::working::mark_items(&ctx, &audit, st, &t.session_id, &items)?;
                 Ok((items, late_answers(st, &t.session_id, &held, &*clock)?))
             })
             .await?;

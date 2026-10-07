@@ -75,6 +75,7 @@ pub fn registration(
         cwd,
         pid: Some(pid),
         parent_pid: Some(parent_pid),
+        transcript_path: None,
     }
 }
 
@@ -389,6 +390,7 @@ mod tests {
                 cwd: "/proj".into(),
                 pid: Some(10),
                 parent_pid: Some(9),
+                transcript_path: None,
             }
         );
     }

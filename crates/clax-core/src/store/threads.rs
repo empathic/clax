@@ -440,19 +440,23 @@ impl Store {
     /// when the version holds no file at `anchor.file`), `invalid_comment`, or
     /// `unknown_version` for bad input.
     pub fn create_thread(&self, ctx: &AuditCtx, id: &ArtifactId, t: NewThread) -> Result<Thread> {
-        self.create_thread_then(ctx, id, t, |_, _| Ok(None))
+        self.create_thread_then(ctx, id, t, |_, _| Ok((None, Vec::new())))
     }
 
     /// [`Store::create_thread`], running `then` with the new thread's ID in
     /// the transaction that writes it: an error from `then` rolls the thread
     /// back. `then` answers the `live_path` it set, which `thread.open`
-    /// records.
+    /// records, and the events of what else it changed, recorded under `ctx`
+    /// after the thread's own.
     pub(crate) fn create_thread_then(
         &self,
         ctx: &AuditCtx,
         id: &ArtifactId,
         t: NewThread,
-        then: impl FnOnce(&rusqlite::Transaction<'_>, &str) -> Result<Option<String>>,
+        then: impl FnOnce(
+            &rusqlite::Transaction<'_>,
+            &str,
+        ) -> Result<(Option<String>, Vec<crate::audit::AuditRecord>)>,
     ) -> Result<Thread> {
         t.anchor.validate()?;
         check_body(&t.body)?;
@@ -526,7 +530,7 @@ impl Store {
                 params![cid, tid, t.author_name, t.author_public_id, t.via_page, t.body, now],
             )?;
             insert_mentions(tx, &cid, &t.body)?;
-            let live_path = then(tx, &tid)?;
+            let (live_path, after) = then(tx, &tid)?;
             let open = thread_record(AuditKind::ThreadOpen, &now, id.as_str(), &tid)
                 .with("version_n", t.version_n)
                 .with("anchor", anchor_record(&t.anchor))
@@ -546,6 +550,9 @@ impl Store {
                 created_at: now.clone(),
             };
             self.record_audit(tx, ctx, comment_record(id.as_str(), &first))?;
+            for rec in after {
+                self.record_audit(tx, ctx, rec)?;
+            }
             Ok(clip)
         })?;
         if let Some(mut clip) = clip {

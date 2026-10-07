@@ -432,7 +432,7 @@ pub async fn create(
             let (artifact, version) = st.create_artifact(&audit, p, session.as_deref())?;
             if let Some(sid) = &session {
                 let aid = ArtifactId::parse(&artifact.id)?;
-                st.ensure_watch(sid, &aid)?;
+                st.ensure_watch(&audit, sid, &aid)?;
                 let touched = st.retarget_untargeted(&aid, sid)?;
                 crate::feedback::apply(&ctx, st, &touched);
             }
@@ -583,7 +583,8 @@ pub async fn delete(
     let live_ids = s.live_ids.clone();
     s.store_call(move |st| {
         st.delete_artifact(&audit, &id)?;
-        crate::working::announce(&events, &working, &working.artifact_gone(id.as_str()));
+        let gone = working.artifact_gone(id.as_str());
+        crate::working::settle(st, &audit, &events, &working, &gone);
         cache.remove_artifact(id.as_str());
         events.publish(Event::ArtifactDeleted {
             artifact_id: id.as_str().to_string(),
@@ -653,14 +654,14 @@ pub async fn publish(
             let (artifact, version) = st.publish_version(&audit, &id, p, session.as_deref())?;
             if let Some(sid) = &session {
                 let aid = ArtifactId::parse(&artifact.id)?;
-                st.ensure_watch(sid, &aid)?;
+                st.ensure_watch(&audit, sid, &aid)?;
                 let (changed, _) = ctx.working.clear(
                     sid,
                     artifact.id.as_str(),
                     None,
                     clax_core::working::End::Publish,
                 );
-                crate::working::announce(&ctx.events, &ctx.working, &changed);
+                crate::working::settle(st, &audit, &ctx.events, &ctx.working, &changed);
                 let touched = st.retarget_untargeted(&aid, sid)?;
                 crate::feedback::apply(&ctx, st, &touched);
             }

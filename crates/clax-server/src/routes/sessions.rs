@@ -1,6 +1,7 @@
 //! REST routes for harness sessions.
 
 use super::artifacts::{body, path};
+use crate::audit::DeferredAudit;
 use crate::auth::RequireToken;
 use crate::error::ApiError;
 use crate::push::CodexPush;
@@ -29,16 +30,44 @@ fn check_harness(harness: &str) -> Result<(), ApiError> {
     }
 }
 
-/// Registers a session; `harness` must be one of [`HARNESSES`].
+/// Registers a session; `harness` must be one of [`HARNESSES`]. A
+/// `transcript_path` (the harness's extension API's session file) is kept
+/// as a join's is. A new session records `session.start`, and a refresh
+/// that changes it `session.join`, as its own agent (audit spec §6.8).
 pub async fn register(
     State(s): State<AppState>,
     _t: RequireToken,
+    audit: DeferredAudit,
     req: Result<Json<RegisterSession>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let r = body(req)?;
+    let mut r = body(req)?;
     check_harness(&r.harness)?;
-    let session = s.store_call(move |st| st.register_session(r)).await?;
+    r.transcript_path = transcript(r.transcript_path)?;
+    let audit = audit.agent_side();
+    let session = s
+        .store_call(move |st| st.register_session(&audit, r))
+        .await?;
     Ok((StatusCode::CREATED, Json(json!({"session": session}))))
+}
+
+/// The longest `transcript_path` a registration or join may give, in bytes.
+pub const MAX_TRANSCRIPT_PATH: usize = 4096;
+
+/// A registration's or join's `transcript_path`: empty is none; one longer
+/// than [`MAX_TRANSCRIPT_PATH`] or with control characters is 400
+/// `invalid_session`.
+fn transcript(t: Option<String>) -> Result<Option<String>, ApiError> {
+    match t {
+        Some(t) if t.len() > MAX_TRANSCRIPT_PATH || t.chars().any(char::is_control) => {
+            Err(ApiError::bad_request(
+                "invalid_session",
+                format!(
+                    "transcript_path must be at most {MAX_TRANSCRIPT_PATH} bytes, without control characters"
+                ),
+            ))
+        }
+        t => Ok(t.filter(|t| !t.is_empty())),
+    }
 }
 
 #[derive(Deserialize)]
@@ -57,13 +86,20 @@ pub struct JoinBody {
     /// recorded earlier.
     #[serde(default)]
     codex_home: Option<String>,
+    /// The harness's transcript file, as its hook input names it; a join
+    /// without it keeps the recorded value.
+    #[serde(default)]
+    transcript_path: Option<String>,
 }
 
 /// Joins a harness session ID to its session (see `Store::join_session`) and,
 /// for Codex, records `codex_home`; a join without it keeps the recorded value.
+/// A join that makes or changes the session records `session.start` or
+/// `session.join`, as its own agent (audit spec §6.8).
 pub async fn join(
     State(s): State<AppState>,
     _t: RequireToken,
+    audit: DeferredAudit,
     req: Result<Json<JoinBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let b = body(req)?;
@@ -74,13 +110,17 @@ pub async fn join(
             "harness_session_id must not be empty",
         ));
     }
+    let transcript = transcript(b.transcript_path.clone())?;
+    let audit = audit.agent_side();
     let session = s
         .store_call(move |st| {
             let session = st.join_session(
+                &audit,
                 &b.harness,
                 b.parent_pid,
                 &b.harness_session_id,
                 b.cwd.as_deref(),
+                transcript.as_deref(),
                 &b.ancestor_pids,
             )?;
             if let Some(h) = b.codex_home.as_deref().filter(|_| b.harness == "codex") {
@@ -101,9 +141,13 @@ pub struct PatchBody {
     ended: bool,
 }
 
+/// `{"heartbeat": true}` renews the session (records nothing);
+/// `{"ended": true}` ends it, recording `session.end` as its agent and the
+/// ends of its working records.
 pub async fn patch(
     State(s): State<AppState>,
     _t: RequireToken,
+    audit: DeferredAudit,
     id: Result<Path<String>, PathRejection>,
     req: Result<Json<PatchBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -120,17 +164,15 @@ pub async fn patch(
     let session = s
         .store_call(move |st| {
             if b.ended {
-                let ended = st.end_session_touched(&id)?;
+                let audit = audit.for_session(st, &id)?;
+                let ended = st.end_session_touched(&audit, &id)?;
                 crate::feedback::apply(&ctx, st, &ended.touched);
                 crate::questions::announce_ids(&state, st, &ended.withdrawn_questions);
                 ctx.waiters.forget(&id);
-                crate::working::announce(
-                    &ctx.events,
-                    &ctx.working,
-                    &ctx.working
-                        .end_session(&id, clax_core::working::End::SessionEnd)
-                        .0,
-                );
+                let (stopped, _) = ctx
+                    .working
+                    .end_session(&id, clax_core::working::End::SessionEnd);
+                crate::working::settle(st, &audit, &ctx.events, &ctx.working, &stopped);
                 ctx.followers.forget(&id);
                 Ok(ended.session)
             } else {

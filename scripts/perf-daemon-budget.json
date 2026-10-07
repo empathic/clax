@@ -5,6 +5,9 @@
   "attention_alone_ratio": 1.55,
   "alone_ceiling_ms": 50,
   "inbox_alone_ms": 50,
+  "session_p50_ms": 10,
+  "session_p99_ms": 50,
+  "session_samples": 40,
   "quiet_idle_p95_ms": 5,
   "max_scale": 3,
   "queue_ratio": 2,
@@ -24,6 +27,7 @@
     "inbox_questions": 20
   },
   "quick": {
-    "window_s": 0.5
+    "window_s": 0.5,
+    "session_samples": 20
   }
 }

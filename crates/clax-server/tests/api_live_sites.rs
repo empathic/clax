@@ -568,7 +568,10 @@ async fn a_join_waits_for_an_unmerge_under_way() {
         .await;
     let rule: Value = res.json().await.unwrap();
     store
-        .mark_rule_deleted(rule["rule"]["id"].as_str().unwrap())
+        .mark_rule_deleted(
+            &clax_core::audit::AuditCtx::DAEMON,
+            rule["rule"]["id"].as_str().unwrap(),
+        )
         .unwrap();
     let (st, e) = join(&ts, B, A).await;
     assert_eq!((st, e["error"]["code"].clone()), (409, json!("unmerging")));

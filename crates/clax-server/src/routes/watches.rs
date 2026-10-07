@@ -4,6 +4,7 @@
 
 use super::artifacts::{body, parse_id, path};
 use super::live::{page_url, page_view};
+use crate::audit::DeferredAudit;
 use crate::auth::RequireToken;
 use crate::error::ApiError;
 use crate::feedback::apply;
@@ -13,7 +14,6 @@ use axum::body::Bytes;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use clax_core::audit::AuditCtx;
 use clax_core::{ArtifactId, CoreError, Event};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -25,10 +25,13 @@ struct WatchBody {
 }
 
 /// Watches the artifact (replies armed unless `replies_armed: false`) and
-/// hands the session any feedback on it that had no live target.
+/// hands the session any feedback on it that had no live target. A new
+/// watch, or a change of its arming, records `watch.start` as the session's
+/// agent (audit spec §6.4).
 pub async fn put(
     State(s): State<AppState>,
     _t: RequireToken,
+    audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
     raw: Bytes,
 ) -> Result<Json<Value>, ApiError> {
@@ -43,7 +46,8 @@ pub async fn put(
     let ctx = s.feedback_ctx();
     let watch = s
         .store_call(move |st| {
-            let w = st.watch(&sid, &id, b.replies_armed.unwrap_or(true))?;
+            let audit = audit.for_session(st, &sid)?;
+            let w = st.watch(&audit, &sid, &id, b.replies_armed.unwrap_or(true))?;
             let touched = st.retarget_untargeted(&id, &sid)?;
             apply(&ctx, st, &touched);
             Ok(w)
@@ -52,14 +56,21 @@ pub async fn put(
     Ok(Json(json!({"watch": watch})))
 }
 
+/// Stops watching the artifact; a watch that existed records `watch.stop`
+/// as the session's agent.
 pub async fn delete(
     State(s): State<AppState>,
     _t: RequireToken,
+    audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<StatusCode, ApiError> {
     let (sid, aid) = path(p)?;
     let id = parse_id(&aid)?;
-    s.store_call(move |st| st.unwatch(&sid, &id)).await?;
+    s.store_call(move |st| {
+        let audit = audit.for_session(st, &sid)?;
+        st.unwatch(&audit, &sid, &id)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -97,11 +108,13 @@ fn scope_label(origin: &str, path: &str) -> String {
 /// live target. The scope covers the same paths on every origin of the
 /// URL's site, origins joined later included (spec §7.2). Answers
 /// `{live_watch: {origin, path, scope, replies_armed}, page, site,
-/// covered}`; `site` names the site and its origins.
+/// covered}`; `site` names the site and its origins. The page it makes, the
+/// scope watch and the page watches it starts are recorded as the session's
+/// agent (audit spec §6.3, §6.4).
 pub async fn live_put(
     State(s): State<AppState>,
     _t: RequireToken,
-    audit: AuditCtx,
+    audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
     b: Result<Json<LiveWatchBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -121,6 +134,7 @@ pub async fn live_put(
                     format!("no live session {sid}"),
                 ));
             }
+            let audit = audit.for_session(st, &sid)?;
             let page_url = pu.key.page_url();
             let title = page_url
                 .split_once("://")
@@ -135,7 +149,8 @@ pub async fn live_put(
                     at: Some(e.version.created_at.clone()),
                 });
             }
-            let (w, covered) = st.live_watch(&sid, &pu.key, b.replies_armed.unwrap_or(true))?;
+            let (w, covered) =
+                st.live_watch(&audit, &sid, &pu.key, b.replies_armed.unwrap_or(true))?;
             for aid in &covered {
                 let touched = st.retarget_untargeted(&ArtifactId::parse(aid)?, &sid)?;
                 apply(&ctx, st, &touched);
@@ -167,9 +182,11 @@ pub struct LiveUnwatchQuery {
 /// `DELETE /api/sessions/<sid>/live-watches?url=` (W): removes the scope
 /// watch on the page `url` names and the watches only it justified. The
 /// live page itself stays. Answers `{page_url, removed: [artifact IDs]}`.
+/// The watches it stops are recorded as the session's agent.
 pub async fn live_delete(
     State(s): State<AppState>,
     _t: RequireToken,
+    audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
     q: Result<Query<LiveUnwatchQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -178,7 +195,10 @@ pub async fn live_delete(
     let pu = page_url(&s, &q.url)?;
     let page = pu.key.page_url();
     let removed = s
-        .store_call(move |st| st.live_unwatch(&sid, &pu.key))
+        .store_call(move |st| {
+            let audit = audit.for_session(st, &sid)?;
+            st.live_unwatch(&audit, &sid, &pu.key)
+        })
         .await?;
     Ok(Json(json!({"page_url": page, "removed": removed})))
 }

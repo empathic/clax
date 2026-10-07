@@ -690,32 +690,16 @@ mod l10 {
     /// not yet their main event: the kinds each still owes, and the plan task
     /// (plan 2026-10-06-toolpath-audit) that records them. Remove an entry
     /// with the change that records its kinds.
-    const PARTLY_AUDITED: &[(&str, &str)] = &[
-        ("live::move_thread", "thread.move (§6.3): Task 7"),
-        ("live::add_rule", "live.rule, thread.move (§6.3): Task 7"),
-        ("live::delete_rule", "live.rule, thread.move (§6.3): Task 7"),
-        ("watches::live_put", "watch.start (§6.4): Task 7"),
-    ];
+    const PARTLY_AUDITED: &[(&str, &str)] = &[];
 
-    /// The handlers of routes that are not `GET` and take no
-    /// [`AuditCtx`](clax_core::audit::AuditCtx), and why they record nothing.
+    /// The handlers of routes that are not `GET` and take no audit context
+    /// ([`AuditCtx`](clax_core::audit::AuditCtx) or
+    /// [`DeferredAudit`](crate::audit::DeferredAudit)), and why.
     const UNAUDITED: &[(&str, &str)] = &[
-        ("sessions::register", "sessions (§6.8): not recorded yet"),
-        ("sessions::join", "sessions (§6.8): not recorded yet"),
-        ("sessions::patch", "sessions (§6.8): not recorded yet"),
-        ("watches::put", "watches (§6.4): not recorded yet"),
-        ("watches::delete", "watches (§6.4): not recorded yet"),
-        ("watches::live_delete", "watches (§6.4): not recorded yet"),
-        ("working::put", "working records (§6.5): not recorded yet"),
-        ("working::end", "working records (§6.5): not recorded yet"),
-        (
-            "working::delete",
-            "working records (§6.5): not recorded yet",
-        ),
         ("working::renew", "a heartbeat (§6.11)"),
         (
             "working::skew",
-            "debug builds only; shifts the working clock",
+            "debug builds only; shifts the working clock (the lapses it causes are recorded by the sweep as system:ttl)",
         ),
         ("extension::mint", "an extension credential grant (§6.11)"),
         ("extension::revoke", "an extension credential grant (§6.11)"),

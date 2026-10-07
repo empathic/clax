@@ -197,6 +197,43 @@ impl DeferredAudit {
         }
     }
 
+    /// The audit context of a token holder acting for session `sid`, as
+    /// the routes under `/api/sessions/<sid>` do: that session's agent
+    /// (`session_id` alone when no such session exists), through the
+    /// channel the request names, else `mcp`. It reads the session row and
+    /// writes nothing. Without the token it is [`DeferredAudit::resolve`].
+    pub fn for_session(self, st: &clax_core::Store, sid: &str) -> clax_core::Result<AuditCtx> {
+        if !self.id.token {
+            return self.resolve(st);
+        }
+        let agent = st
+            .session_actor(sid)?
+            .unwrap_or_else(|| clax_core::audit::AgentActor {
+                session_id: Some(sid.to_string()),
+                ..Default::default()
+            });
+        Ok(AuditCtx {
+            actor: Actor::Agent(agent),
+            via: self.named.unwrap_or(Via::Mcp),
+            git: self.git,
+            call: self.call,
+        })
+    }
+
+    /// The context of a token holder registering or joining a session: the
+    /// channel it names (else `mcp`), its git state and its tool call. The
+    /// store records those events as the session's own agent, which it
+    /// names itself, so the actor here is the sessionless agent and no row
+    /// is read or written.
+    pub fn agent_side(self) -> AuditCtx {
+        AuditCtx {
+            actor: Actor::Agent(clax_core::audit::AgentActor::default()),
+            via: self.named.filter(|_| self.id.token).unwrap_or(Via::Mcp),
+            git: self.git,
+            call: self.call,
+        }
+    }
+
     /// The audit context: reads the session and viewer rows, and makes the
     /// viewer row of a first-time viewer or the owner as
     /// [`Identity::ensure_viewer`] does.

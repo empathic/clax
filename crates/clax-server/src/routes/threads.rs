@@ -24,6 +24,7 @@ use clax_core::store::batches::SendBatch;
 use clax_core::store::threads::{
     AUTHOR_AGENT, AUTHOR_VIEWER, DEFAULT_THREAD_PAGE, NewComment, NewThread, clip_problem,
 };
+use clax_core::working::StopReason;
 use clax_core::{Anchor, ArtifactId, CoreError, Event, SendTarget, Store};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -530,8 +531,10 @@ pub async fn comment(
                     st.add_comment(&audit, &tid, reply)?
                 };
                 touched.merge(st.acknowledge(&audit, &sess.id, std::slice::from_ref(&tid))?);
-                let changed = ctx.working.thread_done(&sess.id, id.as_str(), &tid);
-                crate::working::announce(&ctx.events, &ctx.working, &changed);
+                let changed =
+                    ctx.working
+                        .thread_done(&sess.id, id.as_str(), &tid, StopReason::Explicit);
+                crate::working::settle(st, &audit, &ctx.events, &ctx.working, &changed);
                 c
             } else {
                 let audit = audit.resolve(st)?;
@@ -769,10 +772,15 @@ pub async fn resolve(
             };
             touched.merge(withdrawn);
             let changed = match &resolver {
-                Some(sess) => ctx.working.thread_done(&sess.id, id.as_str(), &tid),
-                None => ctx.working.thread_gone(id.as_str(), &tid),
+                Some(sess) => {
+                    ctx.working
+                        .thread_done(&sess.id, id.as_str(), &tid, StopReason::Resolved)
+                }
+                None => ctx
+                    .working
+                    .thread_gone(id.as_str(), &tid, StopReason::Resolved),
             };
-            crate::working::announce(&ctx.events, &ctx.working, &changed);
+            crate::working::settle(st, &audit, &ctx.events, &ctx.working, &changed);
             ctx.events.publish(Event::ThreadResolved {
                 artifact_id: aid.clone(),
                 thread_id: tid.clone(),
@@ -918,8 +926,10 @@ pub async fn delete(
             }
             let audit = audit.resolve(st)?;
             let (_, touched) = st.delete_thread_touched(&audit, &tid)?;
-            let changed = ctx.working.thread_gone(id.as_str(), &tid);
-            crate::working::announce(&ctx.events, &ctx.working, &changed);
+            let changed = ctx
+                .working
+                .thread_gone(id.as_str(), &tid, StopReason::Deleted);
+            crate::working::settle(st, &audit, &ctx.events, &ctx.working, &changed);
             ctx.events.publish(Event::ThreadDeleted {
                 artifact_id: aid.clone(),
                 thread_id: tid.clone(),

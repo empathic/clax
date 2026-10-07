@@ -593,7 +593,7 @@ mod tests {
     fn an_ended_session_cannot_ask() {
         let (_d, st) = store();
         let s = session(&st, "claude", "h1");
-        st.end_session(&s).unwrap();
+        st.end_session(&crate::audit::AuditCtx::DAEMON, &s).unwrap();
         assert!(matches!(
             st.create_question(new(&s, Source::Ask, None)),
             Err(CoreError::Invalid {
@@ -783,7 +783,9 @@ mod tests {
             st.withdraw_hook_questions_on_start().unwrap(),
             vec![h.id.clone()]
         );
-        let ended = st.end_session_touched(&s).unwrap();
+        let ended = st
+            .end_session_touched(&crate::audit::AuditCtx::DAEMON, &s)
+            .unwrap();
         assert_eq!(ended.withdrawn_questions, vec![q.id.clone()]);
         assert!(ended.session.ended_at.is_some());
         assert_eq!(
@@ -792,7 +794,7 @@ mod tests {
         );
         // Ending it again withdraws nothing more.
         assert!(
-            st.end_session_touched(&s)
+            st.end_session_touched(&crate::audit::AuditCtx::DAEMON, &s)
                 .unwrap()
                 .withdrawn_questions
                 .is_empty()

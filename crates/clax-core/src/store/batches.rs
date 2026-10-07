@@ -223,7 +223,7 @@ mod tests {
         let (_d, st) = store();
         let sid = session(&st, "claude", "b1");
         let id = artifact(&st, Some(&sid));
-        st.ensure_watch(&sid, &id).unwrap();
+        st.ensure_watch(DAEMON, &sid, &id).unwrap();
         let ts: Vec<String> = (0..3).map(|i| thread(&st, &id, &format!("c{i}"))).collect();
         let r = st
             .send_batch(

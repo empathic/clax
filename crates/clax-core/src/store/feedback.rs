@@ -1021,7 +1021,7 @@ mod tests {
             st.take_notices(&grok, "http://h:1").unwrap().is_empty(),
             "unarmed: no notice"
         );
-        st.ensure_watch(&grok, &aid).unwrap();
+        st.ensure_watch(DAEMON, &grok, &aid).unwrap();
         let n = st.take_notices(&grok, "http://h:1").unwrap();
         assert_eq!(n.len(), 1);
         assert_eq!(n[0].thread_id, tid);
@@ -1040,7 +1040,7 @@ mod tests {
         let (_d, st) = store();
         let grok = session(&st, "grok", "g1");
         let aid = artifact(&st, Some(&grok));
-        st.ensure_watch(&grok, &aid).unwrap();
+        st.ensure_watch(DAEMON, &grok, &aid).unwrap();
         let tid = thread(&st, &aid, "hi");
         st.send_to_agent(DAEMON, &tid).unwrap();
         take(&st, &grok, Tier::Piggyback);
@@ -1052,13 +1052,13 @@ mod tests {
         let (_d, st) = store();
         let first = session(&st, "grok", "g1");
         let aid = artifact(&st, Some(&first));
-        st.ensure_watch(&first, &aid).unwrap();
+        st.ensure_watch(DAEMON, &first, &aid).unwrap();
         let tid = thread(&st, &aid, "hi");
         st.send_to_agent(DAEMON, &tid).unwrap();
         assert_eq!(st.take_notices(&first, "http://h:1").unwrap().len(), 1);
-        st.end_session(&first).unwrap();
+        st.end_session(DAEMON, &first).unwrap();
         let next = session(&st, "grok", "g2");
-        st.watch(&next, &aid, true).unwrap();
+        st.watch(DAEMON, &next, &aid, true).unwrap();
         st.retarget_untargeted(&aid, &next).unwrap();
         assert_eq!(st.take_notices(&next, "http://h:1").unwrap().len(), 1);
     }
@@ -1109,9 +1109,9 @@ mod tests {
         let aid = artifact(&st, Some(&owner));
         let w1 = session(&st, "codex", "w1");
         let w2 = session(&st, "pi", "w2");
-        st.watch(&w1, &aid, true).unwrap();
-        st.watch(&w2, &aid, false).unwrap();
-        st.end_session(&w2).unwrap();
+        st.watch(DAEMON, &w1, &aid, true).unwrap();
+        st.watch(DAEMON, &w2, &aid, false).unwrap();
+        st.end_session(DAEMON, &w2).unwrap();
         let tid = thread(&st, &aid, "hi");
         st.send_to_agent(DAEMON, &tid).unwrap();
         let mut got = targets(&st, &tid);
@@ -1126,7 +1126,7 @@ mod tests {
         let (_d, st) = store();
         let owner = session(&st, "claude", "o");
         let aid = artifact(&st, Some(&owner));
-        st.end_session(&owner).unwrap();
+        st.end_session(DAEMON, &owner).unwrap();
         let tid = thread(&st, &aid, "hi");
         st.send_to_agent(DAEMON, &tid).unwrap();
         assert_eq!(targets(&st, &tid), vec![None]);
@@ -1135,7 +1135,7 @@ mod tests {
             FeedbackPhase::AgentEnded
         );
         let late = session(&st, "claude", "late");
-        st.watch(&late, &aid, true).unwrap();
+        st.watch(DAEMON, &late, &aid, true).unwrap();
         let touched = st.retarget_untargeted(&aid, &late).unwrap();
         assert!(touched.targets.contains(&late));
         assert_eq!(targets(&st, &tid), vec![Some(late.clone())]);
@@ -1259,7 +1259,7 @@ mod tests {
         let owner = session(&st, "claude", "o");
         let watcher = session(&st, "codex", "w");
         let aid = artifact(&st, Some(&owner));
-        st.ensure_watch(&watcher, &aid).unwrap();
+        st.ensure_watch(DAEMON, &watcher, &aid).unwrap();
         let tid = thread(&st, &aid, "first");
         let stranger = session(&st, "codex", "s");
         let err = st
@@ -1288,7 +1288,7 @@ mod tests {
         };
         assert_eq!(bodies(&watcher), ["first", "second"]);
         assert!(bodies(&owner).is_empty());
-        st.end_session(&watcher).unwrap();
+        st.end_session(DAEMON, &watcher).unwrap();
         viewer_says(&st, &tid, "third");
         st.send_to_agent(DAEMON, &tid).unwrap();
         assert_eq!(
@@ -1297,7 +1297,7 @@ mod tests {
             "the target ended: the comment fans out"
         );
         let second = session(&st, "codex", "w2");
-        st.ensure_watch(&second, &aid).unwrap();
+        st.ensure_watch(DAEMON, &second, &aid).unwrap();
         st.send_to(DAEMON, &tid, SendTarget::Agent(&second))
             .unwrap();
         st.send_to(DAEMON, &tid, SendTarget::Everyone).unwrap();
@@ -1343,7 +1343,7 @@ mod tests {
         let (_d, st) = store();
         let owner = session(&st, "claude", "o");
         let aid = artifact(&st, Some(&owner));
-        st.watch(&owner, &aid, false).unwrap();
+        st.watch(DAEMON, &owner, &aid, false).unwrap();
         let tid = thread(&st, &aid, "hi");
         st.send_to_agent(DAEMON, &tid).unwrap();
         assert!(take(&st, &owner, Tier::StopHook).is_empty());
@@ -1360,7 +1360,7 @@ mod tests {
         let (_d, st) = store();
         let owner = session(&st, "claude", "o");
         let aid = artifact(&st, Some(&owner));
-        st.ensure_watch(&owner, &aid).unwrap();
+        st.ensure_watch(DAEMON, &owner, &aid).unwrap();
         let tid = thread(&st, &aid, "hi");
         st.send_to_agent(DAEMON, &tid).unwrap();
         assert_eq!(take(&st, &owner, Tier::StopHook).len(), 1);
@@ -1392,7 +1392,7 @@ mod tests {
         let (_d, st) = store();
         let owner = session(&st, "claude", "o");
         let aid = artifact(&st, Some(&owner));
-        st.ensure_watch(&owner, &aid).unwrap();
+        st.ensure_watch(DAEMON, &owner, &aid).unwrap();
         let tid = thread(&st, &aid, "hi");
         st.send_to_agent(DAEMON, &tid).unwrap();
         take(&st, &owner, Tier::StopHook);
@@ -1504,7 +1504,7 @@ mod tests {
         let (_d, st) = store();
         let owner = session(&st, "codex", "cx");
         let aid = artifact(&st, Some(&owner));
-        st.ensure_watch(&owner, &aid).unwrap();
+        st.ensure_watch(DAEMON, &owner, &aid).unwrap();
         let tid = thread(&st, &aid, "hi");
         st.send_to_agent(DAEMON, &tid).unwrap();
         let claimed = take(&st, &owner, Tier::Queue);
@@ -1524,7 +1524,7 @@ mod tests {
         let (_d, st) = store();
         let owner = session(&st, "codex", "cx");
         let aid = artifact(&st, Some(&owner));
-        st.watch(&owner, &aid, true).unwrap();
+        st.watch(DAEMON, &owner, &aid, true).unwrap();
         let tid = thread(&st, &aid, "hi");
         st.send_to_agent(DAEMON, &tid).unwrap();
         assert_eq!(
@@ -1544,9 +1544,9 @@ mod tests {
             "never queued twice"
         );
         // Handed to a new Codex session, the row may be queued for it.
-        st.end_session(&owner).unwrap();
+        st.end_session(DAEMON, &owner).unwrap();
         let next = session(&st, "codex", "cx2");
-        st.watch(&next, &aid, true).unwrap();
+        st.watch(DAEMON, &next, &aid, true).unwrap();
         st.retarget_untargeted(&aid, &next).unwrap();
         assert_eq!(
             st.feedback_state(&tid, true).unwrap().unwrap().tier,
@@ -1561,11 +1561,11 @@ mod tests {
         let owner = session(&st, "claude", "o");
         let aid = artifact(&st, Some(&owner));
         let other = session(&st, "codex", "w");
-        st.watch(&other, &aid, true).unwrap();
-        st.ensure_watch(&owner, &aid).unwrap();
+        st.watch(DAEMON, &other, &aid, true).unwrap();
+        st.ensure_watch(DAEMON, &owner, &aid).unwrap();
         let tid = thread(&st, &aid, "hi");
         st.send_to_agent(DAEMON, &tid).unwrap();
-        let touched = st.end_session_touched(&owner).unwrap().touched;
+        let touched = st.end_session_touched(DAEMON, &owner).unwrap().touched;
         assert!(
             touched
                 .threads
@@ -1577,7 +1577,7 @@ mod tests {
             vec![Some(other.clone())],
             "a live target remains, so the ended one's row is dropped"
         );
-        st.end_session(&other).unwrap();
+        st.end_session(DAEMON, &other).unwrap();
         assert_eq!(targets(&st, &tid), vec![None]);
         let next = session(&st, "claude", "n");
         st.retarget_untargeted(&aid, &next).unwrap();
@@ -1597,7 +1597,7 @@ mod tests {
             Some(Tier::Piggyback),
             "unarmed: the next tool call"
         );
-        st.ensure_watch(&grok, &aid).unwrap();
+        st.ensure_watch(DAEMON, &grok, &aid).unwrap();
         assert_eq!(
             st.feedback_state(&tid, false).unwrap().unwrap().tier,
             Some(Tier::StopHook)
@@ -1618,7 +1618,7 @@ mod tests {
             (FeedbackPhase::Sent, Some(Tier::Piggyback)),
             "unarmed owner waits on its next tool call"
         );
-        st.ensure_watch(&claude, &aid).unwrap();
+        st.ensure_watch(DAEMON, &claude, &aid).unwrap();
         assert_eq!(
             st.feedback_state(&tid, false).unwrap().unwrap().tier,
             Some(Tier::StopHook)
@@ -1638,7 +1638,7 @@ mod tests {
 
         let codex = session(&st, "codex", "cx");
         let a2 = artifact(&st, Some(&codex));
-        st.ensure_watch(&codex, &a2).unwrap();
+        st.ensure_watch(DAEMON, &codex, &a2).unwrap();
         let t2 = thread(&st, &a2, "hi");
         st.send_to_agent(DAEMON, &t2).unwrap();
         assert_eq!(
@@ -1652,14 +1652,14 @@ mod tests {
 
         let pi = session(&st, "pi", "p");
         let a3 = artifact(&st, Some(&pi));
-        st.ensure_watch(&pi, &a3).unwrap();
+        st.ensure_watch(DAEMON, &pi, &a3).unwrap();
         let t3 = thread(&st, &a3, "hi");
         st.send_to_agent(DAEMON, &t3).unwrap();
         assert_eq!(
             st.feedback_state(&t3, false).unwrap().unwrap().tier,
             Some(Tier::Inject)
         );
-        st.end_session(&pi).unwrap();
+        st.end_session(DAEMON, &pi).unwrap();
         let s = st.feedback_state(&t3, false).unwrap().unwrap();
         assert_eq!((s.state, s.tier), (FeedbackPhase::AgentEnded, None));
     }

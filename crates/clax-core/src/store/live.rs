@@ -3,6 +3,7 @@
 
 use super::Store;
 use super::threads::NewThread;
+use super::watches::{Cause, Wrote, page_watch_records};
 use crate::audit::{AuditCtx, AuditKind, AuditRecord};
 use crate::live::{KIND_LIVE, PageKey, placeholder_html};
 use crate::model::{Artifact, CONTRACT_VERSION, Thread, Version};
@@ -190,15 +191,29 @@ pub struct LiveWatch {
 }
 
 /// Makes `sid` a watcher of `aid` through a scope watch with `armed`
-/// arming; a direct watch keeps its own row and arming.
-fn scope_row(tx: &Connection, sid: &str, aid: &str, armed: bool) -> Result<()> {
-    tx.execute(
+/// arming; a direct watch keeps its own row and arming. What it wrote: a
+/// new watch, a scope watch's new arming, or nothing.
+fn scope_row(tx: &Connection, sid: &str, aid: &str, armed: bool) -> Result<Wrote> {
+    let before: Option<(bool, String)> = tx
+        .prepare_cached(
+            "SELECT replies_armed, source FROM watches WHERE session_id = ?1 AND artifact_id = ?2",
+        )?
+        .query_row(params![sid, aid], |r| {
+            Ok((r.get::<_, i64>(0)? != 0, r.get(1)?))
+        })
+        .optional()?;
+    let wrote = match before {
+        None => Wrote::Inserted,
+        Some((a, source)) if source == "scope" && a != armed => Wrote::Rearmed,
+        Some(_) => return Ok(Wrote::Unchanged),
+    };
+    tx.prepare_cached(
         "INSERT INTO watches (session_id, artifact_id, replies_armed, created_at, source)
          VALUES (?1, ?2, ?3, ?4, 'scope') ON CONFLICT(session_id, artifact_id)
          DO UPDATE SET replies_armed = excluded.replies_armed WHERE watches.source = 'scope'",
-        params![sid, aid, armed, Store::now()],
-    )?;
-    Ok(())
+    )?
+    .execute(params![sid, aid, armed, Store::now()])?;
+    Ok(wrote)
 }
 
 /// The live pages of the site of origin `?1` whose artifact is not deleted
@@ -219,12 +234,13 @@ pub(super) fn pages_of(tx: &Connection, origin: &str) -> Result<Vec<LivePage>> {
 
 /// The live page whose artifact is `aid`, on a given connection.
 pub(super) fn live_page_of_conn(c: &Connection, aid: &str) -> Result<Option<LivePage>> {
-    Ok(c.query_row(
-        "SELECT artifact_id, origin, path FROM live_pages WHERE artifact_id = ?1",
-        params![aid],
-        row_to_page,
+    Ok(
+        c.prepare_cached(
+            "SELECT artifact_id, origin, path FROM live_pages WHERE artifact_id = ?1",
+        )?
+        .query_row(params![aid], row_to_page)
+        .optional()?,
     )
-    .optional()?)
 }
 
 /// The scope watches of live sessions on any origin of the site whose key
@@ -242,8 +258,13 @@ pub(crate) const PENDING_OF: &str =
     "SELECT harness, created_at FROM live_pending WHERE thread_id = ?1";
 
 /// Makes every live session whose scope watch covers `key` a watcher of the
-/// new page `aid`, armed when any of its covering scopes is.
-pub(super) fn materialize(tx: &Connection, aid: &str, key: &PageKey) -> Result<()> {
+/// new page `aid`, armed when any of its covering scopes is. Returns what
+/// it wrote for each covering session, as `(session, arming, wrote)`.
+pub(super) fn materialize(
+    tx: &Connection,
+    aid: &str,
+    key: &PageKey,
+) -> Result<Vec<(String, bool, Wrote)>> {
     let rows: Vec<(String, String, bool)> = {
         let mut st = tx.prepare(SCOPES_OF_ORIGIN)?;
         st.query_map(params![key.origin], |r| {
@@ -267,10 +288,12 @@ pub(super) fn materialize(tx: &Connection, aid: &str, key: &PageKey) -> Result<(
             None => out.push((sid, armed)),
         }
     }
-    for (sid, armed) in &out {
-        scope_row(tx, sid, aid, *armed)?;
+    let mut written = Vec::new();
+    for (sid, armed) in out {
+        let wrote = scope_row(tx, &sid, aid, armed)?;
+        written.push((sid, armed, wrote));
     }
-    Ok(())
+    Ok(written)
 }
 
 /// The paths of the threads of live page `?1` made at another path than
@@ -452,7 +475,7 @@ impl Store {
                 "INSERT INTO live_pages (artifact_id, origin, path, created_at) VALUES (?1, ?2, ?3, ?4)",
                 params![id.as_str(), key.origin, key.path, now],
             )?;
-            materialize(tx, id.as_str(), key)?;
+            let watching = materialize(tx, id.as_str(), key)?;
             let a = tx.query_row(
                 &format!("{} WHERE id = ?1", super::artifacts::SELECT),
                 params![id.as_str()],
@@ -465,6 +488,14 @@ impl Store {
             rec.ids.artifact = Some(id.as_str().to_string());
             rec.ids.origin = Some(key.origin.clone());
             self.record_audit(tx, ctx, rec)?;
+            self.record_page_watches(
+                tx,
+                ctx,
+                id.as_str(),
+                &watching,
+                "scope",
+                Some(Cause::Scope),
+            )?;
             Ok((id, true, key.origin.clone()))
         })?;
         let current: u32 = self.with_read(|c| {
@@ -737,6 +768,7 @@ impl Store {
     ) -> Result<Option<Thread>> {
         let taken = std::cell::Cell::new(false);
         let made = self.create_thread_then(ctx, id, t, |tx, tid| {
+            let mut after = Vec::new();
             if let Some(path) = live_path {
                 tx.execute(
                     "UPDATE threads SET live_path = ?2 WHERE id = ?1",
@@ -748,12 +780,20 @@ impl Store {
                         origin: p.origin,
                         path: path.to_string(),
                     };
-                    materialize(tx, id.as_str(), &key)?;
+                    // Recorded after the thread that caused them.
+                    let watching = materialize(tx, id.as_str(), &key)?;
+                    after = page_watch_records(
+                        tx,
+                        id.as_str(),
+                        &watching,
+                        "scope",
+                        Some(Cause::Scope),
+                    )?;
                 }
             }
             let set = live_path.map(str::to_string);
             let Some(pick) = pick else {
-                return Ok(set);
+                return Ok((set, after));
             };
             tx.execute(
                 "DELETE FROM live_picks WHERE created_at < ?1
@@ -770,7 +810,7 @@ impl Store {
                 taken.set(true);
                 return Err(CoreError::Conflict { current: 0 });
             }
-            Ok(set)
+            Ok((set, after))
         });
         match made {
             Err(_) if taken.get() => Ok(None),
@@ -796,12 +836,16 @@ impl Store {
     /// makes it a watcher of every live page the scope covers. A scope-made
     /// watch is armed while any of the session's scope watches covering the
     /// page is; a direct watch keeps its own arming. Returns the watch and
-    /// the covered pages' artifact IDs.
+    /// the covered pages' artifact IDs. Under `ctx`, a new scope watch
+    /// records `watch.start` (target `scope`) and a change of its arming
+    /// `watch.update`; each page watch it starts or re-arms records its own
+    /// (target `page`, source and cause `scope`).
     ///
     /// # Errors
     /// `unknown_session` for a missing or ended session.
     pub fn live_watch(
         &self,
+        ctx: &AuditCtx,
         sid: &str,
         scope: &PageKey,
         replies_armed: bool,
@@ -818,12 +862,41 @@ impl Store {
                     format!("no live session {sid}"),
                 ));
             }
+            let before: Option<bool> = tx
+                .prepare_cached(
+                    "SELECT replies_armed FROM live_watches
+                     WHERE session_id = ?1 AND origin = ?2 AND path = ?3",
+                )?
+                .query_row(params![sid, scope.origin, scope.path], |r| {
+                    Ok(r.get::<_, i64>(0)? != 0)
+                })
+                .optional()?;
             tx.execute(
                 "INSERT INTO live_watches (session_id, origin, path, replies_armed, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(session_id, origin, path) DO UPDATE SET replies_armed = excluded.replies_armed",
+                 ON CONFLICT(session_id, origin, path) DO UPDATE SET replies_armed = excluded.replies_armed
+                 WHERE live_watches.replies_armed <> excluded.replies_armed",
                 params![sid, scope.origin, scope.path, replies_armed, Store::now()],
             )?;
+            let rec = match before {
+                None => Some(super::watches::scope_watch_record(
+                    AuditKind::WatchStart,
+                    sid,
+                    &scope.origin,
+                    &scope.path,
+                    replies_armed,
+                )),
+                Some(armed) if armed != replies_armed => Some(super::watches::scope_update_record(
+                    sid,
+                    &scope.origin,
+                    &scope.path,
+                    replies_armed,
+                )),
+                Some(_) => None,
+            };
+            if let Some(rec) = rec {
+                self.record_audit(tx, ctx, rec)?;
+            }
             // The scope covers the pages of its origin's site (spec §7.2).
             let site_scope = PageKey {
                 origin: super::joined::site_key(tx, &scope.origin)?,
@@ -834,7 +907,15 @@ impl Store {
                 let keys = page_keys(tx, &p)?;
                 if keys.iter().any(|k| k.covered_by(&site_scope)) {
                     let armed = scope_arming(tx, sid, &keys)?.unwrap_or(replies_armed);
-                    scope_row(tx, sid, &p.artifact_id, armed)?;
+                    let wrote = scope_row(tx, sid, &p.artifact_id, armed)?;
+                    self.record_page_watches(
+                        tx,
+                        ctx,
+                        &p.artifact_id,
+                        &[(sid.to_string(), armed, wrote)],
+                        "scope",
+                        Some(Cause::Scope),
+                    )?;
                     covered.push(p.artifact_id);
                 }
             }
@@ -860,15 +941,32 @@ impl Store {
     /// alone justified: a page another scope watch of the session covers
     /// keeps its watch, armed as those scopes say, and direct watches are
     /// never removed. Returns the artifact IDs of the pages no longer watched.
+    /// Under `ctx`, removing the scope watch records `watch.stop` (target
+    /// `scope`), each page watch removed records its own, and each one
+    /// re-armed records `watch.update` (cause `scope`).
     ///
     /// # Errors
     /// Database errors only.
-    pub fn live_unwatch(&self, sid: &str, scope: &PageKey) -> Result<Vec<String>> {
+    pub fn live_unwatch(&self, ctx: &AuditCtx, sid: &str, scope: &PageKey) -> Result<Vec<String>> {
         self.with_tx(|tx| {
-            tx.execute(
-                "DELETE FROM live_watches WHERE session_id = ?1 AND origin = ?2 AND path = ?3",
-                params![sid, scope.origin, scope.path],
-            )?;
+            let gone: Option<bool> = tx
+                .query_row(
+                    "DELETE FROM live_watches WHERE session_id = ?1 AND origin = ?2 AND path = ?3
+                     RETURNING replies_armed",
+                    params![sid, scope.origin, scope.path],
+                    |r| Ok(r.get::<_, i64>(0)? != 0),
+                )
+                .optional()?;
+            if let Some(armed) = gone {
+                let rec = super::watches::scope_watch_record(
+                    AuditKind::WatchStop,
+                    sid,
+                    &scope.origin,
+                    &scope.path,
+                    armed,
+                );
+                self.record_audit(tx, ctx, rec)?;
+            }
             let site_scope = PageKey {
                 origin: super::joined::site_key(tx, &scope.origin)?,
                 path: scope.path.clone(),
@@ -890,13 +988,36 @@ impl Store {
                 match scope_arming(tx, sid, &keys)? {
                     // Another scope of the session still covers it: its
                     // arming now follows the scopes left.
-                    Some(armed) => scope_row(tx, sid, &p.artifact_id, armed)?,
-                    None => {
-                        let n = tx.execute(
-                            "DELETE FROM watches WHERE session_id = ?1 AND artifact_id = ?2 AND source = 'scope'",
-                            params![sid, p.artifact_id],
+                    Some(armed) => {
+                        let wrote = scope_row(tx, sid, &p.artifact_id, armed)?;
+                        self.record_page_watches(
+                            tx,
+                            ctx,
+                            &p.artifact_id,
+                            &[(sid.to_string(), armed, wrote)],
+                            "scope",
+                            Some(Cause::Scope),
                         )?;
-                        if n > 0 {
+                    }
+                    None => {
+                        let gone: Option<bool> = tx
+                            .query_row(
+                                "DELETE FROM watches WHERE session_id = ?1 AND artifact_id = ?2 AND source = 'scope'
+                                 RETURNING replies_armed",
+                                params![sid, p.artifact_id],
+                                |r| Ok(r.get::<_, i64>(0)? != 0),
+                            )
+                            .optional()?;
+                        if let Some(armed) = gone {
+                            let rec = super::watches::artifact_watch_record(
+                                tx,
+                                AuditKind::WatchStop,
+                                sid,
+                                &p.artifact_id,
+                                armed,
+                                "scope",
+                            )?;
+                            self.record_audit(tx, ctx, rec)?;
                             removed.push(p.artifact_id);
                         }
                     }
@@ -1440,8 +1561,8 @@ mod tests {
         let (_d, st) = store();
         let sid = crate::store::test_util::session(&st, "claude", "h1");
         let other = crate::store::test_util::session(&st, "claude", "h2");
-        st.live_watch(&sid, &key("/"), true).unwrap();
-        st.live_watch(&other, &key("/docs"), false).unwrap();
+        st.live_watch(DAEMON, &sid, &key("/"), true).unwrap();
+        st.live_watch(DAEMON, &other, &key("/docs"), false).unwrap();
         let e = st
             .ensure_live_page(DAEMON, &key("/new"), "n", None)
             .unwrap();
@@ -1456,6 +1577,43 @@ mod tests {
             .unwrap();
         assert!(watched(&st, &sid).contains(&d.artifact.id));
         assert!(watched(&st, &other).contains(&d.artifact.id));
+        // Each scope watch the new page starts is recorded after the page.
+        let ev: Vec<(String, serde_json::Value, Option<String>)> = st
+            .events_after(0, 100)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.ids.artifact.as_deref() == Some(d.artifact.id.as_str()))
+            .map(|e| {
+                (
+                    e.kind,
+                    serde_json::from_str(&e.body).unwrap(),
+                    e.ids.session,
+                )
+            })
+            .collect();
+        let kinds: Vec<&str> = ev.iter().map(|e| e.0.as_str()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "artifact.create",
+                "live.page",
+                "watch.start",
+                "watch.start",
+                "live.snapshot"
+            ]
+        );
+        for (_, body, session) in &ev[2..4] {
+            assert_eq!(
+                (&body["target"], &body["source"], &body["path"]),
+                (
+                    &serde_json::json!("page"),
+                    &serde_json::json!("scope"),
+                    &serde_json::json!("/docs/a")
+                )
+            );
+            let armed = session.as_deref() == Some(sid.as_str());
+            assert_eq!(body["replies_armed"], armed, "{session:?}");
+        }
         let armed = st
             .list_watches(&other)
             .unwrap()
@@ -1464,7 +1622,7 @@ mod tests {
             .unwrap()
             .replies_armed;
         assert!(!armed, "the scope's arming");
-        st.unwatch(&sid, &ArtifactId::parse(&e.artifact.id).unwrap())
+        st.unwatch(DAEMON, &sid, &ArtifactId::parse(&e.artifact.id).unwrap())
             .unwrap();
         let again = st
             .ensure_live_page(DAEMON, &key("/new"), "n", None)
@@ -1473,6 +1631,106 @@ mod tests {
         assert!(
             !watched(&st, &sid).contains(&e.artifact.id),
             "only a new page is materialized"
+        );
+    }
+
+    /// The watch events after `seq`: kind, target, path, fields or arming,
+    /// and cause.
+    fn watch_events(st: &Store, seq: i64) -> Vec<(String, String, String, String, String)> {
+        st.events_after(seq, 100)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind.starts_with("watch."))
+            .map(|e| {
+                let b: serde_json::Value = serde_json::from_str(&e.body).unwrap();
+                let what = if e.kind == "watch.update" {
+                    b["fields"].to_string()
+                } else {
+                    b["replies_armed"].to_string()
+                };
+                (
+                    e.kind,
+                    b["target"].as_str().unwrap().to_string(),
+                    b["path"].as_str().unwrap_or("").to_string(),
+                    what,
+                    b["cause"].as_str().unwrap_or("").to_string(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn scope_watch_changes_record_starts_updates_and_stops() {
+        let (_d, st) = store();
+        let sid = crate::store::test_util::session(&st, "claude", "h1");
+        st.ensure_live_page(DAEMON, &key("/docs/x"), "d", None)
+            .unwrap();
+        let e = |k: &str, t: &str, p: &str, w: &str, c: &str| {
+            (
+                k.to_string(),
+                t.to_string(),
+                p.to_string(),
+                w.to_string(),
+                c.to_string(),
+            )
+        };
+        let up = r#"{"replies_armed":false}"#;
+        let down_to_up = r#"{"replies_armed":true}"#;
+        let seq = st.newest_seq().unwrap();
+        st.live_watch(DAEMON, &sid, &key("/"), true).unwrap();
+        assert_eq!(
+            watch_events(&st, seq),
+            [
+                e("watch.start", "scope", "/", "true", ""),
+                e("watch.start", "page", "/docs/x", "true", "scope")
+            ]
+        );
+        // A second scope that changes no page's arming; the first again.
+        let seq = st.newest_seq().unwrap();
+        st.live_watch(DAEMON, &sid, &key("/docs"), false).unwrap();
+        st.live_watch(DAEMON, &sid, &key("/"), true).unwrap();
+        assert_eq!(
+            watch_events(&st, seq),
+            [e("watch.start", "scope", "/docs", "false", "")]
+        );
+        // Removing the armed scope: the page follows the one left.
+        let seq = st.newest_seq().unwrap();
+        st.live_unwatch(DAEMON, &sid, &key("/")).unwrap();
+        assert_eq!(
+            watch_events(&st, seq),
+            [
+                e("watch.stop", "scope", "/", "true", ""),
+                e("watch.update", "page", "/docs/x", up, "scope")
+            ]
+        );
+        // Arming the scope left re-arms it and its page.
+        let seq = st.newest_seq().unwrap();
+        st.live_watch(DAEMON, &sid, &key("/docs"), true).unwrap();
+        assert_eq!(
+            watch_events(&st, seq),
+            [
+                e("watch.update", "scope", "/docs", down_to_up, ""),
+                e("watch.update", "page", "/docs/x", down_to_up, "scope")
+            ]
+        );
+        // A direct watch of the page takes it over: its source changes.
+        let id = st
+            .find_live_page(&key("/docs/x"))
+            .unwrap()
+            .unwrap()
+            .artifact_id;
+        let seq = st.newest_seq().unwrap();
+        st.watch(DAEMON, &sid, &ArtifactId::parse(&id).unwrap(), true)
+            .unwrap();
+        assert_eq!(
+            watch_events(&st, seq),
+            [e(
+                "watch.update",
+                "page",
+                "/docs/x",
+                r#"{"source":"direct"}"#,
+                ""
+            )]
         );
     }
 
@@ -1495,7 +1753,7 @@ mod tests {
             .unwrap()
             .artifact
             .id;
-        let (w, mut covered) = st.live_watch(&sid, &key("/"), true).unwrap();
+        let (w, mut covered) = st.live_watch(DAEMON, &sid, &key("/"), true).unwrap();
         assert_eq!(
             (w.origin.as_str(), w.path.as_str()),
             ("http://localhost:5173", "/")
@@ -1504,10 +1762,10 @@ mod tests {
         let mut all = vec![root.clone(), docs.clone(), direct.clone()];
         all.sort();
         assert_eq!(covered, all);
-        st.live_watch(&sid, &key("/docs"), true).unwrap();
-        st.watch(&sid, &ArtifactId::parse(&direct).unwrap(), true)
+        st.live_watch(DAEMON, &sid, &key("/docs"), true).unwrap();
+        st.watch(DAEMON, &sid, &ArtifactId::parse(&direct).unwrap(), true)
             .unwrap();
-        let removed = st.live_unwatch(&sid, &key("/")).unwrap();
+        let removed = st.live_unwatch(DAEMON, &sid, &key("/")).unwrap();
         assert_eq!(removed, vec![root.clone()]);
         let left = watched(&st, &sid);
         assert!(left.contains(&docs), "the /docs scope still covers it");
@@ -1525,8 +1783,8 @@ mod tests {
             .artifact
             .id;
         let id = ArtifactId::parse(&p).unwrap();
-        st.watch(&sid, &id, false).unwrap();
-        st.live_watch(&sid, &key("/"), true).unwrap();
+        st.watch(DAEMON, &sid, &id, false).unwrap();
+        st.live_watch(DAEMON, &sid, &key("/"), true).unwrap();
         let w = st.list_watches(&sid).unwrap();
         assert!(!w[0].replies_armed, "the direct watch keeps its arming");
         let q = st
@@ -1534,7 +1792,7 @@ mod tests {
             .unwrap()
             .artifact
             .id;
-        st.live_watch(&sid, &key("/"), false).unwrap();
+        st.live_watch(DAEMON, &sid, &key("/"), false).unwrap();
         let w = st.list_watches(&sid).unwrap();
         let armed = |aid: &str| {
             w.iter()
@@ -1546,7 +1804,7 @@ mod tests {
             !armed(&q),
             "watching the scope again sets its pages' arming"
         );
-        st.live_watch(&sid, &key("/"), true).unwrap();
+        st.live_watch(DAEMON, &sid, &key("/"), true).unwrap();
         let w = st.list_watches(&sid).unwrap();
         let armed = |aid: &str| {
             w.iter()
@@ -1556,7 +1814,7 @@ mod tests {
         };
         assert!(armed(&q));
         assert!(!armed(&p), "but not a direct watch's");
-        st.live_unwatch(&sid, &key("/")).unwrap();
+        st.live_unwatch(DAEMON, &sid, &key("/")).unwrap();
         assert_eq!(watched(&st, &sid), vec![p]);
     }
 
@@ -1564,8 +1822,8 @@ mod tests {
     fn ending_a_session_ends_its_scope_watches() {
         let (_d, st) = store();
         let sid = crate::store::test_util::session(&st, "claude", "h1");
-        st.live_watch(&sid, &key("/"), true).unwrap();
-        st.end_session(&sid).unwrap();
+        st.live_watch(DAEMON, &sid, &key("/"), true).unwrap();
+        st.end_session(DAEMON, &sid).unwrap();
         let rows: i64 = st
             .with_read(|c| {
                 Ok(c.query_row(
@@ -1581,7 +1839,7 @@ mod tests {
             .unwrap();
         assert!(!watched(&st, &sid).contains(&e.artifact.id));
         assert!(matches!(
-            st.live_watch(&sid, &key("/"), true),
+            st.live_watch(DAEMON, &sid, &key("/"), true),
             Err(crate::CoreError::Invalid { .. })
         ));
     }
@@ -1598,15 +1856,15 @@ mod tests {
                 .unwrap()
                 .replies_armed
         };
-        st.live_watch(&sid, &key("/"), true).unwrap();
-        st.live_watch(&sid, &key("/docs"), false).unwrap();
+        st.live_watch(DAEMON, &sid, &key("/"), true).unwrap();
+        st.live_watch(DAEMON, &sid, &key("/docs"), false).unwrap();
         let a = st
             .ensure_live_page(DAEMON, &key("/docs/a"), "a", None)
             .unwrap()
             .artifact
             .id;
         assert!(armed(&a), "the armed / scope covers it");
-        st.live_watch(&sid, &key("/docs"), false).unwrap();
+        st.live_watch(DAEMON, &sid, &key("/docs"), false).unwrap();
         assert!(
             armed(&a),
             "re-watching /docs unarmed leaves it armed through /"
@@ -1617,10 +1875,10 @@ mod tests {
             .artifact
             .id;
         assert!(armed(&b));
-        st.live_unwatch(&sid, &key("/")).unwrap();
+        st.live_unwatch(DAEMON, &sid, &key("/")).unwrap();
         assert!(!armed(&a), "only the unarmed /docs scope covers it now");
         assert!(!armed(&b));
-        st.live_watch(&sid, &key("/docs"), true).unwrap();
+        st.live_watch(DAEMON, &sid, &key("/docs"), true).unwrap();
         assert!(armed(&a));
     }
 }

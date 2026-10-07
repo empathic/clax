@@ -1085,12 +1085,17 @@ mod tests {
         page(&st, A, "/users/1", "App");
         page(&st, B, "/", "App");
         let pat = crate::live::PathPattern::parse("/users/:id").unwrap();
-        let (rule, _) = st.add_live_rule(A, &pat).unwrap();
-        st.add_live_rule(B, &pat).unwrap();
-        st.mark_rule_deleted(&rule.id).unwrap();
+        let (rule, _) = st
+            .add_live_rule(&crate::audit::AuditCtx::DAEMON, A, &pat)
+            .unwrap();
+        st.add_live_rule(&crate::audit::AuditCtx::DAEMON, B, &pat)
+            .unwrap();
+        st.mark_rule_deleted(&crate::audit::AuditCtx::DAEMON, &rule.id)
+            .unwrap();
         assert_eq!(code_of(st.join_origins(B, A)), "unmerging");
         assert_eq!(code_of(st.join_origins(A, B)), "unmerging");
-        st.drop_rule(&rule.id).unwrap();
+        st.drop_rule(&crate::audit::AuditCtx::DAEMON, &rule.id)
+            .unwrap();
         st.join_origins(B, A).unwrap();
         assert_eq!(st.live_rules(A).unwrap().len(), 1, "B's rule is the site's");
     }
@@ -1119,11 +1124,14 @@ mod tests {
         let a = page(&st, A, "/", "App");
         st.join_origins(B, A).unwrap();
         let sid = session(&st, "claude", "h2");
-        st.live_watch(&sid, &key(A, "/"), true).unwrap();
+        st.live_watch(&crate::audit::AuditCtx::DAEMON, &sid, &key(A, "/"), true)
+            .unwrap();
         // A, the key, is split off: the site's pages go with the key to B.
         st.split_origin(A).unwrap().unwrap();
         assert_eq!(st.live_page_of(&a).unwrap().unwrap().origin, B);
-        let removed = st.live_unwatch(&sid, &key(A, "/")).unwrap();
+        let removed = st
+            .live_unwatch(&crate::audit::AuditCtx::DAEMON, &sid, &key(A, "/"))
+            .unwrap();
         assert_eq!(removed, vec![a.as_str().to_string()]);
     }
 
@@ -1132,7 +1140,8 @@ mod tests {
         let (_d, st) = store();
         let a = page(&st, A, "/", "App");
         let sid = session(&st, "claude", "h1");
-        st.live_watch(&sid, &key(B, "/"), true).unwrap();
+        st.live_watch(&crate::audit::AuditCtx::DAEMON, &sid, &key(B, "/"), true)
+            .unwrap();
         let watching = |id: &ArtifactId| {
             st.with_read(|c| {
                 Ok(c.query_row(
@@ -1152,7 +1161,9 @@ mod tests {
         st.join_origins(C, B).unwrap();
         assert!(watching(&c_page), "and the pages of an origin joined later");
         // Removing the scope removes what it alone justified.
-        let removed = st.live_unwatch(&sid, &key(B, "/")).unwrap();
+        let removed = st
+            .live_unwatch(&crate::audit::AuditCtx::DAEMON, &sid, &key(B, "/"))
+            .unwrap();
         assert_eq!(removed.len(), 3);
     }
 
@@ -1201,7 +1212,8 @@ mod tests {
         page(&st, A, "/", "App");
         page(&st, B, "/users/1", "U");
         let pat = crate::live::PathPattern::parse("/users/:id").unwrap();
-        st.add_live_rule(B, &pat).unwrap();
+        st.add_live_rule(&crate::audit::AuditCtx::DAEMON, B, &pat)
+            .unwrap();
         st.join_origins(B, A).unwrap();
         let rules = st.live_rules(A).unwrap();
         assert_eq!(rules.len(), 1);

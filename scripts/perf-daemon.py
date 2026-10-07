@@ -26,8 +26,11 @@ artifacts' `published` items that is replies + versions + questions + 300.
 
 Each round also times the gallery's two requests (GET /api/artifacts and
 GET /api/viewers/me/attention) alone, interleaved with a calibration read
-(see `Calibration`), and the three inbox requests alone, nothing else
-running. A probe's p95 and max are taken per round; the gate judges the
+(see `Calibration`); the three inbox requests alone, nothing else running;
+and then, alone too, the session requests agents make all the time: a hook
+joining a session again (no change, so nothing is recorded), a shim
+heartbeat, and a join that changes the transcript path (a `session.join`
+event written). A probe's p95 and max are taken per round; the gate judges the
 median over rounds, so one burst of machine load in one round does not fail
 it. Requests still in flight when a window closes are waited for and count.
 
@@ -66,6 +69,8 @@ Budgets live in scripts/perf-daemon-budget.json:
   guard against a broken calibration;
 - `inbox_alone_ms`: each of the inbox tab's three requests alone: the
   median over rounds of each request's own median, each judged;
+- `session_p50_ms`, `session_p99_ms`: each session request's p50 and p99
+  over a round's `session_samples` (the median over rounds);
 - `quiet_idle_p95_ms`, `max_scale`: the limits are the budgets times
   clamp(idle p95 / quiet_idle_p95_ms, 1, max_scale), the idle p95 measured
   in the same run, so a machine busy with other work gets proportionally
@@ -773,6 +778,33 @@ def inbox_alone(d, n=INBOX_SAMPLES):
     return each
 
 
+SESSION_PROBES = ["POST join (refresh)", "PATCH heartbeat", "POST join (change)"]
+
+
+def sessions_alone(d, st, n):
+    """`n` timings of each session probe, alone, on the first seeded session."""
+    c = Client(d.port, d.token)
+    sid = st["sessions"][0]
+    join = {"harness": "claude", "parent_pid": 1, "harness_session_id": "perf-0"}
+    out = {}
+    for label in SESSION_PROBES:
+        ts = []
+        for i in range(n + 1):  # the first is a warm-up
+            if label == "PATCH heartbeat":
+                s, body, dt, _ = c.req("PATCH", f"/api/sessions/{sid}", {"heartbeat": True})
+            elif label == "POST join (change)":
+                s, body, dt, _ = c.req("POST", "/api/sessions/join", {**join, "transcript_path": f"/tmp/perf-{i % 2}.jsonl"})
+            else:
+                s, body, dt, _ = c.req("POST", "/api/sessions/join", join)
+            expect(s == 200, f"{label}: {s} {body[:200]!r}")
+            if i:
+                ts.append(dt * 1000)
+        ts.sort()
+        out[label] = {"p50": statistics.median(ts), "p99": ts[min(len(ts) - 1, math.ceil(0.99 * len(ts)) - 1)]}
+    c.close()
+    return out
+
+
 def main(binary, budget_path, quick):
     cfg = json.load(open(budget_path))
     if quick:
@@ -799,6 +831,7 @@ def main(binary, budget_path, quick):
         gallery = {path: [] for path, _ in GALLERY_REQUESTS}
         queued = {name: [] for name in QUEUED}
         inbox = {path: [] for path in INBOX_REQUESTS}
+        session_runs = []
         for r in range(rounds):
             t0 = time.perf_counter()
             gallery_each = gallery_alone(d, st, cal)
@@ -807,6 +840,7 @@ def main(binary, budget_path, quick):
             inbox_each = inbox_alone(d)
             for path, v in inbox_each.items():
                 inbox[path].append(v)
+            session_runs.append(sessions_alone(d, st, cfg["session_samples"]))
             for name, method in PHASES:
                 res, info = run_phase(d, loads, st, method, window)
                 if name in QUEUED:
@@ -850,6 +884,7 @@ def main(binary, budget_path, quick):
     lim_p95, lim_max = cfg["cheap_p95_ms"] * scale, cfg["cheap_max_ms"] * scale
     ceiling = cfg["alone_ceiling_ms"] * scale
     lim_inbox = cfg["inbox_alone_ms"] * scale
+    lim_s50, lim_s99 = cfg["session_p50_ms"] * scale, cfg["session_p99_ms"] * scale
     # Under a queued load: at least queue_ratio times the load's own requests.
     phase_scale = {name: max(scale, min(cfg["max_scale"], cfg["queue_ratio"] * med(xs) / cfg["cheap_p95_ms"]))
                    for name, xs in queued.items()}
@@ -912,6 +947,15 @@ def main(binary, budget_path, quick):
             failed.append(f"inbox alone {path}")
         label = "GET " + path
         print(f"{'inbox alone':<14} {label:<28} {len(inbox[path]) * INBOX_SAMPLES:>5} {v:>9.1f} {'':>9}  {'ok' if ok else 'FAIL'}")
+    print(f"{'alone':<14} {'session probe':<28} {'n':>5} {'p50 ms':>9} {'p99 ms':>9}  verdict (limits p50 {lim_s50:.0f}, p99 {lim_s99:.0f})")
+    for label in SESSION_PROBES:
+        v50 = med([x[label]["p50"] for x in session_runs])
+        v99 = med([x[label]["p99"] for x in session_runs])
+        over = [w for w, v, lim in (("p50", v50, lim_s50), ("p99", v99, lim_s99)) if v > lim]
+        if over:
+            failed.append(f"{label} alone")
+        n = len(session_runs) * cfg["session_samples"]
+        print(f"{'alone':<14} {label:<28} {n:>5} {v50:>9.1f} {v99:>9.1f}  {'FAIL ' + ', '.join(over) if over else 'ok'}")
     print()
     for name, _ in PHASES[1:]:
         print(f"{name}: " + "; ".join(infos[name]))

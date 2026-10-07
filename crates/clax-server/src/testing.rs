@@ -53,6 +53,8 @@ pub struct TestServer {
     pub store: Arc<Store>,
     /// The server's working registry.
     pub working: Arc<clax_core::working::Working>,
+    /// The server's feedback context, for driving its background passes.
+    pub feedback: crate::feedback::FeedbackCtx,
     /// The server's presence registry.
     pub presence: Arc<clax_core::presence::Presence>,
     /// The address the listener is bound to (may be unspecified, e.g. `0.0.0.0`).
@@ -130,6 +132,7 @@ impl TestServer {
         let events = state.events.clone();
         let store = state.store.clone();
         let working = state.working.clone();
+        let feedback = state.feedback_ctx();
         let presence = state.presence.clone();
         let extension_id = state.extension_id.clone();
         let app = build_router(state).layer(axum::middleware::from_fn(as_lan));
@@ -149,6 +152,7 @@ impl TestServer {
             events,
             store,
             working,
+            feedback,
             presence,
             addr,
             extension_id,
