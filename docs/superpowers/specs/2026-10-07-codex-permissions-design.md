@@ -126,12 +126,27 @@ After registering the Codex plugin, `clax init`:
 2. Works out which tools Codex would ask about, from the effective mode
    (tool, else server, else `auto`) and the annotations, skipping tools
    `enabled_tools`/`disabled_tools` hide and a disabled plugin.
-3. For those without an `approval_mode` of their own, prints the exact lines
-   (one `[plugins."clax@clax".mcp_servers.clax.tools.<tool>]` table with
-   `approval_mode = "approve"` each) and asks on the terminal; `--yes` adds
-   them without asking; with neither, nothing is added and the result says
-   how. Per-tool entries rather than a server default: they grant exactly the
-   tools the person saw, and a future tool is assessed afresh.
+3. For those the person has set nothing for (no tool `approval_mode` and no
+   server `default_tools_approval_mode`), prints what they do (from their
+   annotations: `delete` removes an artifact and all its versions, the `db_*`
+   writes replace page data that keeps no history, and once approved Codex
+   runs them without asking, including when acting on comments), the exact
+   lines (one `[plugins."clax@clax".mcp_servers.clax.tools.<tool>]` table
+   with `approval_mode = "approve"` each), and asks on the terminal; `--yes`
+   adds them without asking; with neither, nothing is added and the result
+   says how. Per-tool entries rather than a server default: they grant
+   exactly the tools the person saw, and a future tool is assessed afresh.
+   Any setting the person made, a server default included, is theirs: the
+   tools it makes ask are named with the setting and never offered, under
+   `--yes` too.
+4. After the answer, reads the file again and applies the restore and the
+   approvals to it as it is then, limited to tools that were shown and still
+   have no setting, and checks the file unchanged just before the write
+   (twice at most), so what Codex wrote while the prompt was open is kept.
+5. When registering fails after `codex plugin remove`, keeps the settings
+   read before it in `<clax home>/run/codex-plugin-settings.toml`; the next
+   successful run merges them in (the config's own settings win) and
+   removes the file.
 
 Edits use `toml_edit`: comments and layout are kept, a symbolic link is
 followed, the file's mode is kept, the write is atomic, nothing is removed or
@@ -141,14 +156,22 @@ Codex entry's `approvals` and never fails `init`.
 ### 3.4 Reporting
 
 - `clax doctor --agent codex` adds `codex_approvals`: passes when no tool
-  asks; warns naming `clax init --agent codex` when tools would ask; names
-  tools whose own `approval_mode` makes them ask; fails when the config
-  cannot be read or parsed.
+  asks; warns naming `clax init --agent codex` when tools the person has set
+  nothing for would ask; names the tools the person's own settings (on the
+  tool or the server) make ask, with the setting, as theirs; fails when the
+  config cannot be read or parsed. Its pass detail says profiles and project
+  config layers are not checked.
 - The `SessionStart` hook (§2.5) shows the person a one-line
-  `systemMessage` when tools would ask: which tools and `clax init --agent
-  codex` (or, with no `clax` on `PATH`, the setting to add). Once per set of
-  tools, recorded in `<clax home>/run/codex-approvals-notice`; only when the
-  plugin is registered in Codex's config; it never writes that config.
+  `systemMessage` when tools the person has set nothing for would ask:
+  which tools, what they do, and `clax init --agent codex` (or, with no
+  executable `clax` on `PATH`, the setting to add). Only when the plugin is
+  registered in Codex's config; it never writes that config. Shown once per
+  set of tools and again after seven days, recorded only once printed, per
+  Codex home (`<clax home>/run/codex-approvals-notice-<hash>`). Not shown when
+  the nearest Codex ancestor runs `exec` or `app-server` (as `ps` shows it):
+  `codex exec` printed no hook `systemMessage` in a run, and the app server
+  serves clients such as the Codex companion, with no person reading. The
+  seven-day repeat covers sessions that show nothing in other ways.
 
 ### 3.5 The shell (§2.4)
 
@@ -172,5 +195,8 @@ it would open all network access to every shell command.
   the doctor check assumes 0.160.1's rules.
 - A profile layer (`codex -p <name>`, `$CODEX_HOME/<name>.config.toml`) is
   not read by the assessment.
-- The interactive confirmation itself (a terminal) is exercised only by hand;
-  tests cover `--yes` and the no-terminal path.
+- The terminal prompt itself is exercised by hand; tests drive the same code
+  through the `ask` callback (yes, declined, no way to ask, a concurrent
+  write while asking).
+- Whether Codex's desktop app, which also uses the app server, shows hook
+  messages; the notice skips app-server sessions either way.

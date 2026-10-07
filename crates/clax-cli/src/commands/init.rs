@@ -556,14 +556,17 @@ fn is_yes(answer: &str) -> bool {
     matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
-/// Asks on the terminal whether to add `lines` to `path`.
-fn confirm(tools: &[&str], lines: &str, path: &Path) -> bool {
+/// Asks on the terminal whether to add `lines` to `path`, saying what the
+/// tools in `asking` do.
+fn confirm(asking: &[&codex_approvals::Asking], lines: &str, path: &Path) -> bool {
     use std::io::Write;
+    let tools: Vec<&str> = asking.iter().map(|a| a.tool.as_str()).collect();
     let mut err = std::io::stderr();
     let _ = write!(
         err,
-        "\nCodex asks before each call of these Clax tools, which change or remove artifacts or page data: {}.\nSo that Codex does not stop mid-task to ask, `clax init` can add these lines to {}:\n\n{lines}\nAdd them? [y/N] ",
+        "\nCodex asks before each call of these Clax tools: {}. {}\nSo that Codex does not stop mid-task to ask, `clax init` can add these lines to {}:\n\n{lines}\nAdd them? [y/N] ",
         tools.join(", "),
+        codex_approvals::consequences(asking),
         path.display()
     );
     let _ = err.flush();
@@ -571,90 +574,185 @@ fn confirm(tools: &[&str], lines: &str, path: &Path) -> bool {
     std::io::stdin().read_line(&mut answer).is_ok() && is_yes(&answer)
 }
 
-/// After Codex registered the plugin: puts back the `saved` settings that
-/// re-registering removed, then offers the approvals for the Clax tools
-/// Codex would still ask about, adding them when `yes` or the person
-/// confirms on a terminal. The outcome as JSON; a failure is reported
-/// there, never fatal.
-fn codex_settings(ctx: &Ctx, saved: Result<Option<toml_edit::Table>, String>, yes: bool) -> Value {
-    use std::io::IsTerminal;
-    let path = codex_approvals::config_path(&ctx.dirs.codex_home);
-    let failed = |detail: String| json!({"status": "failed", "config": path, "detail": detail});
+/// Where `init` keeps Clax's Codex plugin settings when registering failed
+/// after `codex plugin remove` deleted them, until a later `init` puts them
+/// back.
+fn pending_settings_path(home: &Home) -> PathBuf {
+    home.root().join("run/codex-plugin-settings.toml")
+}
+
+/// The settings kept by a failed registration, if any.
+fn load_pending(pending: &Path) -> Option<toml_edit::Table> {
+    let text = std::fs::read_to_string(pending).ok()?;
+    let doc = text.parse::<toml_edit::DocumentMut>().ok()?;
+    let t = doc.as_table().clone();
+    (!t.is_empty()).then_some(t)
+}
+
+/// Puts the `saved` settings back into the config at `path` and adds the
+/// approvals for those of `shown` that Codex would still ask about, on the
+/// config as it is now: read again here, so whatever Codex wrote meanwhile
+/// is kept, and checked unchanged just before the write (tried twice).
+/// Only tools the person was shown are added. The tools added, and whether
+/// settings were put back.
+fn write_settings(
+    path: &Path,
+    saved: Option<&toml_edit::Table>,
+    shown: &[&str],
+) -> Result<(Vec<String>, bool), String> {
+    for _ in 0..2 {
+        let fresh = codex_approvals::read_config(path)?.unwrap_or_default();
+        let restored_text = match saved {
+            Some(s) => codex_approvals::restore(&fresh, s)?,
+            None => fresh.clone(),
+        };
+        let a = codex_approvals::assess(Some(&restored_text), &ClaxTools::tools())?;
+        let add: Vec<&str> = a
+            .addable()
+            .into_iter()
+            .filter(|t| shown.contains(t))
+            .collect();
+        let next = if add.is_empty() {
+            restored_text.clone()
+        } else {
+            codex_approvals::add_approvals(&restored_text, &add)?
+        };
+        if codex_approvals::read_config(path)?.unwrap_or_default() != fresh {
+            continue;
+        }
+        if next != fresh {
+            codex_approvals::write_config(path, &next)
+                .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        }
+        return Ok((
+            add.into_iter().map(str::to_string).collect(),
+            restored_text != fresh,
+        ));
+    }
+    Err(format!(
+        "{} kept changing while it was being edited; nothing was written",
+        path.display()
+    ))
+}
+
+/// After Codex's re-registration: puts back the `saved` settings it
+/// removed (with any a failed earlier run kept at `pending`), then offers
+/// the approvals for the Clax tools Codex would still ask about that the
+/// person has set nothing for. `ask` gets those tools and the lines and
+/// says whether to add them: `Some(true)` yes, `Some(false)` declined,
+/// `None` no way to ask. When `registered` is false the settings are kept at
+/// `pending` for the next run instead. The outcome as JSON; a failure is
+/// reported there, never fatal.
+fn codex_settings(
+    path: &Path,
+    pending: &Path,
+    saved: Result<Option<toml_edit::Table>, String>,
+    registered: bool,
+    ask: impl FnOnce(&[&codex_approvals::Asking], &str) -> Option<bool>,
+) -> Option<Value> {
+    let failed =
+        |detail: String| Some(json!({"status": "failed", "config": path, "detail": detail}));
     let saved = match saved {
         Ok(s) => s,
         Err(e) => return failed(format!("{e}; Clax's settings there were not carried over")),
     };
-    let mut text = match codex_approvals::read_config(&path) {
+    let saved = match (saved, load_pending(pending)) {
+        (Some(mut s), Some(p)) => {
+            codex_approvals::merge_missing(&mut s, &p);
+            Some(s)
+        }
+        (s, p) => s.or(p),
+    };
+    if !registered {
+        let saved = saved?;
+        let mut doc = toml_edit::DocumentMut::new();
+        for (k, v) in saved.iter() {
+            doc.insert(k, v.clone());
+        }
+        let saved = doc.to_string();
+        let kept = std::fs::create_dir_all(pending.parent().unwrap_or(Path::new(".")))
+            .and_then(|_| std::fs::write(pending, &saved));
+        return failed(match kept {
+            Ok(()) => format!(
+                "registering failed, and Clax's settings in {} may be gone; they are kept in {} and the next successful `clax init` puts them back",
+                path.display(),
+                pending.display()
+            ),
+            Err(e) => format!(
+                "registering failed, and Clax's settings in {} may be gone; keeping them in {} failed ({e}); they were:\n{saved}",
+                path.display(),
+                pending.display()
+            ),
+        });
+    }
+    // Put the settings back first, so they survive whatever happens next.
+    let restored = match write_settings(path, saved.as_ref(), &[]) {
+        Ok((_, r)) => r,
+        Err(e) => return failed(format!("could not put back Clax's settings: {e}")),
+    };
+    let _ = std::fs::remove_file(pending);
+    let text = match codex_approvals::read_config(path) {
         Ok(t) => t.unwrap_or_default(),
         Err(e) => return failed(e),
     };
-    let mut restored = false;
-    if let Some(saved) = saved {
-        match codex_approvals::restore(&text, &saved) {
-            Ok(t) if t != text => {
-                if let Err(e) = codex_approvals::write_config(&path, &t) {
-                    return failed(format!("could not write {}: {e}", path.display()));
-                }
-                text = t;
-                restored = true;
-            }
-            Ok(_) => {}
-            Err(e) => return failed(format!("could not put back Clax's settings: {e}")),
-        }
-    }
     let assessment = match codex_approvals::assess(Some(&text), &ClaxTools::tools()) {
         Ok(a) => a,
         Err(e) => return failed(format!("could not parse {} ({e})", path.display())),
     };
-    let kept: Vec<String> = assessment
-        .kept()
-        .iter()
-        .map(|k| format!("{} (approval_mode = \"{}\")", k.tool, k.mode))
-        .collect();
-    let kept_note = (!kept.is_empty()).then(|| {
-        format!(
-            "Codex still asks before {}, as your config.toml sets",
-            kept.join(", ")
-        )
-    });
-    let tools = assessment.addable();
-    let out = |status: &str, detail: Option<String>| {
+    let kept_note = assessment.kept_note(path);
+    let out = |status: &str, tools: &[&str], detail: Option<String>| {
         let detail = [detail, kept_note.clone()]
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()
             .join("; ");
-        json!({
+        Some(json!({
             "status": status,
             "config": path,
             "restored": restored,
             "tools": tools,
-            "lines": codex_approvals::lines(&tools),
+            "lines": codex_approvals::lines(tools),
             "detail": detail,
-        })
+        }))
     };
+    let asking = assessment.addable_asking();
+    let tools = assessment.addable();
     if tools.is_empty() {
-        return out("unchanged", None);
+        return out("unchanged", &[], None);
     }
     let lines = codex_approvals::lines(&tools);
-    let terminal = std::io::stdin().is_terminal();
-    let consent = yes || (terminal && confirm(&tools, &lines, &path));
-    if !consent {
-        let status = if terminal { "declined" } else { "not_added" };
-        return out(
-            status,
-            Some(format!(
-                "Codex will ask before each call of {}; to stop it asking, run `{} --yes` or add the lines below to {}",
-                tools.join(", "),
-                codex_approvals::SETUP_COMMAND,
-                path.display()
-            )),
-        );
+    match ask(&asking, &lines) {
+        Some(true) => {}
+        answer => {
+            return out(
+                if answer.is_some() {
+                    "declined"
+                } else {
+                    "not_added"
+                },
+                &tools,
+                Some(format!(
+                    "Codex will ask before each call of {}; to stop it asking, run `{} --yes` or add the lines below to {}",
+                    tools.join(", "),
+                    codex_approvals::SETUP_COMMAND,
+                    path.display()
+                )),
+            );
+        }
     }
-    match codex_approvals::add_approvals(&text, &tools)
-        .and_then(|t| codex_approvals::write_config(&path, &t).map_err(|e| e.to_string()))
-    {
-        Ok(()) => out("added", None),
+    match write_settings(path, saved.as_ref(), &tools) {
+        Ok((added, _)) => {
+            let added: Vec<&str> = added.iter().map(String::as_str).collect();
+            out(
+                if added.is_empty() {
+                    "unchanged"
+                } else {
+                    "added"
+                },
+                &added,
+                None,
+            )
+        }
         Err(e) => failed(format!(
             "could not add the approvals to {}: {e}",
             path.display()
@@ -860,10 +958,31 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
             actions,
             if install { "registered" } else { "removed" },
         );
-        if let Some(saved) = codex_saved
-            && r["status"] == "registered"
-        {
-            r["approvals"] = codex_settings(&ctx, saved, a.yes);
+        if let Some(saved) = codex_saved {
+            let yes = a.yes;
+            let approvals = codex_settings(
+                &codex_approvals::config_path(&ctx.dirs.codex_home),
+                &pending_settings_path(home),
+                saved,
+                r["status"] == "registered",
+                |asking, lines| {
+                    use std::io::IsTerminal;
+                    if yes {
+                        Some(true)
+                    } else if std::io::stdin().is_terminal() {
+                        Some(confirm(
+                            asking,
+                            lines,
+                            &codex_approvals::config_path(&ctx.dirs.codex_home),
+                        ))
+                    } else {
+                        None
+                    }
+                },
+            );
+            if let Some(v) = approvals {
+                r["approvals"] = v;
+            }
         }
         match r["status"].as_str() {
             Some("registered") => {
@@ -989,6 +1108,123 @@ pub fn uninit(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const REGISTERED: &str = "[plugins.\"clax@clax\"]\nenabled = true\n";
+
+    fn settings_dir() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("codex/config.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let pending = d.path().join("ax/run/codex-plugin-settings.toml");
+        (d, path, pending)
+    }
+
+    /// What Codex writes while the person reads the prompt survives: the
+    /// lines are added to the config as it is after the answer.
+    #[test]
+    fn approvals_are_added_to_the_config_as_it_is_after_the_answer() {
+        let (_d, path, pending) = settings_dir();
+        std::fs::write(&path, REGISTERED).unwrap();
+        let v = codex_settings(&path, &pending, Ok(None), true, |asking, lines| {
+            assert_eq!(asking.len(), 6);
+            assert!(lines.contains("tools.delete]"));
+            // Codex's "Always allow" on db_set, and another key, meanwhile.
+            let now = std::fs::read_to_string(&path).unwrap();
+            std::fs::write(
+                &path,
+                format!("{now}\n[plugins.\"clax@clax\".mcp_servers.clax.tools.db_set]\napproval_mode = \"prompt\"\n\n[tui]\nx = 1\n"),
+            )
+            .unwrap();
+            Some(true)
+        })
+        .unwrap();
+        assert_eq!(v["status"], "added", "{v}");
+        let tools: Vec<&str> = v["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t.as_str().unwrap())
+            .collect();
+        assert!(
+            !tools.contains(&"db_set"),
+            "set meanwhile, so the person's: {v}"
+        );
+        assert!(tools.contains(&"delete"), "{v}");
+        let cfg = std::fs::read_to_string(&path).unwrap();
+        assert!(cfg.contains("[tui]\nx = 1\n"), "{cfg}");
+        assert!(
+            cfg.contains("tools.db_set]\napproval_mode = \"prompt\""),
+            "{cfg}"
+        );
+        assert!(
+            cfg.contains("tools.delete]\napproval_mode = \"approve\""),
+            "{cfg}"
+        );
+    }
+
+    #[test]
+    fn a_server_default_of_the_persons_is_left_and_named_even_with_yes() {
+        let (_d, path, pending) = settings_dir();
+        let cfg = format!(
+            "{REGISTERED}\n[plugins.\"clax@clax\".mcp_servers.clax]\ndefault_tools_approval_mode = \"prompt\"\n"
+        );
+        std::fs::write(&path, &cfg).unwrap();
+        let v = codex_settings(&path, &pending, Ok(None), true, |_, _| {
+            panic!("nothing is offered")
+        })
+        .unwrap();
+        assert_eq!(v["status"], "unchanged", "{v}");
+        assert!(
+            v["detail"]
+                .as_str()
+                .unwrap()
+                .contains("(your default_tools_approval_mode = \"prompt\")"),
+            "{v}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), cfg);
+    }
+
+    #[test]
+    fn declining_or_having_no_way_to_ask_writes_nothing() {
+        let (_d, path, pending) = settings_dir();
+        std::fs::write(&path, REGISTERED).unwrap();
+        let v = codex_settings(&path, &pending, Ok(None), true, |_, _| Some(false)).unwrap();
+        assert_eq!(v["status"], "declined", "{v}");
+        let v = codex_settings(&path, &pending, Ok(None), true, |_, _| None).unwrap();
+        assert_eq!(v["status"], "not_added", "{v}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), REGISTERED);
+    }
+
+    /// Settings a failed registration may have deleted are kept and put
+    /// back by the next successful run.
+    #[test]
+    fn settings_outlive_a_failed_registration() {
+        let (_d, path, pending) = settings_dir();
+        let seed = format!(
+            "{REGISTERED}\n[plugins.\"clax@clax\".mcp_servers.clax.tools.publish]\napproval_mode = \"prompt\"\n"
+        );
+        let saved = codex_approvals::plugin_settings(&seed);
+        assert!(saved.is_some());
+        std::fs::write(&path, "").unwrap();
+        let v = codex_settings(&path, &pending, Ok(saved), false, |_, _| unreachable!()).unwrap();
+        assert_eq!(v["status"], "failed", "{v}");
+        assert!(pending.exists());
+        // The next run's snapshot finds nothing; the kept settings return.
+        std::fs::write(&path, REGISTERED).unwrap();
+        let v = codex_settings(&path, &pending, Ok(None), true, |_, _| None).unwrap();
+        assert_eq!(v["restored"], true, "{v}");
+        assert!(!pending.exists());
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("tools.publish]\napproval_mode = \"prompt\"")
+        );
+        assert_eq!(
+            codex_settings(&path, &pending, Ok(None), false, |_, _| unreachable!()),
+            None,
+            "nothing to keep"
+        );
+    }
 
     #[test]
     fn only_y_or_yes_is_consent() {

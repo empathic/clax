@@ -170,16 +170,21 @@ pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     let started = Instant::now();
     let parent_pid = std::os::unix::process::parent_id();
     let (agent, event) = (a.agent, a.event);
-    let notice = match (agent, event) {
-        (Agent::Codex, Event::SessionStart) => codex_notice(home),
-        _ => None,
-    };
+    let (deadline, _) = budget(agent, event);
+    // The notice is worked out beside the hook's own work, within its deadline.
+    let notice_rx = matches!((agent, event), (Agent::Codex, Event::SessionStart)).then(|| {
+        let (tx, rx) = mpsc::channel();
+        let notice_home = home.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(codex_notice(&notice_home, parent_pid));
+        });
+        rx
+    });
     let worker_home = home.clone();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(handle(agent, event, parent_pid, &worker_home));
     });
-    let (deadline, _) = budget(agent, event);
     let (out, error) = match rx.recv_timeout(deadline) {
         // Stood down: logged by `handle`, nothing to print or log here.
         Ok(Ok(None)) => std::process::exit(0),
@@ -190,12 +195,20 @@ pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
             Some(format!("timed out after {deadline:?}")),
         ),
     };
+    let notice = notice_rx.and_then(|rx| {
+        rx.recv_timeout(deadline.saturating_sub(started.elapsed()))
+            .ok()
+            .flatten()
+    });
     let out = match &notice {
-        Some(n) => out.with_system_message(n),
+        Some(n) => out.with_system_message(&n.text),
         None => out,
     };
-    if let Some(line) = out.to_line() {
-        let _ = writeln!(std::io::stdout(), "{line}");
+    if let Some(line) = out.to_line()
+        && writeln!(std::io::stdout(), "{line}").is_ok()
+        && let Some(n) = &notice
+    {
+        n.record();
     }
     if let Some(e) = &error {
         eprintln!("clax hook: {e}");
@@ -211,12 +224,37 @@ pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     std::process::exit(0);
 }
 
+/// A session-start notice to show, and how to record that it was shown.
+struct Notice {
+    text: String,
+    marker: std::path::PathBuf,
+    tools: Vec<String>,
+}
+
+impl Notice {
+    /// Records the notice as shown today; called once it is printed.
+    fn record(&self) {
+        let tools: Vec<&str> = self.tools.iter().map(String::as_str).collect();
+        crate::codex_approvals::record_notice(&self.marker, &tools, today());
+    }
+}
+
+/// Days since the Unix epoch.
+fn today() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() / 86_400)
+}
+
 /// For a Codex session start: the notice that Codex will stop to ask
 /// before Clax tools, with how to approve them once
-/// ([`crate::codex_approvals::notice`]); given once per set of tools (the
-/// marker `<home>/run/codex-approvals-notice`). Reads Codex's config and
-/// writes nothing there.
-fn codex_notice(home: &Home) -> Option<String> {
+/// ([`crate::codex_approvals::notice`]). Due once per set of tools and
+/// then again after [`crate::codex_approvals::NOTICE_QUIET_DAYS`] (a marker
+/// per Codex home under `<home>/run/`, written by [`Notice::record`] once
+/// printed). Not given to a session run by `codex exec` or `codex
+/// app-server`, which show no hook message to a person. Reads Codex's
+/// config and writes nothing there.
+fn codex_notice(home: &Home, parent_pid: u32) -> Option<Notice> {
     use crate::codex_approvals as ca;
     let dirs = super::doctor_agent::Dirs::from_env(|k| std::env::var(k).ok())?;
     let path = ca::config_path(&dirs.codex_home);
@@ -225,19 +263,66 @@ fn codex_notice(home: &Home) -> Option<String> {
     if !a.registered {
         return None;
     }
-    let marker = home.root().join("run/codex-approvals-notice");
-    if !ca::first_notice(&marker, &a.addable()) {
+    let marker = ca::notice_marker(home.root(), &dirs.codex_home);
+    let tools = a.addable();
+    if !ca::notice_due(&marker, &tools, today()) || !shown_to_a_person(parent_pid) {
         return None;
     }
-    let command = clax_command();
-    ca::notice(&a, &path, command.as_deref())
+    let text = ca::notice(&a, &path, clax_command().as_deref())?;
+    Some(Notice {
+        text,
+        marker,
+        tools: tools.into_iter().map(str::to_string).collect(),
+    })
 }
 
-/// `clax` when a `clax` is on `PATH`, so the person can run it from a
-/// terminal; `None` otherwise (the plugin then runs a binary of its own).
+/// Codex subcommands whose sessions show no hook message to a person.
+const HEADLESS_CODEX: &[&str] = &[
+    "exec",
+    "e",
+    "app-server",
+    "review",
+    "exec-server",
+    "mcp-server",
+];
+
+/// For one process's command line (`ps -o args=`): `None` when it is not
+/// Codex, else whether it is an interactive Codex (no headless subcommand).
+fn interactive_codex(args: &str) -> Option<bool> {
+    let tokens: Vec<&str> = args.split_whitespace().collect();
+    let at = tokens.iter().take(2).position(|t| {
+        let base = t.rsplit('/').next().unwrap_or(t);
+        base == "codex" || base == "codex.js"
+    })?;
+    Some(!tokens[at + 1..].iter().any(|t| HEADLESS_CODEX.contains(t)))
+}
+
+/// Whether the nearest Codex among the hook's ancestors runs interactively;
+/// true when none is found.
+fn shown_to_a_person(parent_pid: u32) -> bool {
+    std::iter::once(parent_pid)
+        .chain(ancestors(parent_pid))
+        .find_map(|pid| {
+            let out = std::process::Command::new("ps")
+                .args(["-o", "args=", "-p", &pid.to_string()])
+                .stderr(std::process::Stdio::null())
+                .output()
+                .ok()?;
+            interactive_codex(&String::from_utf8_lossy(&out.stdout))
+        })
+        .unwrap_or(true)
+}
+
+/// `clax` when an executable `clax` is on `PATH`, so the person can run it
+/// from a terminal; `None` otherwise (the plugin then runs a binary of its
+/// own, and the notice names the settings instead).
 fn clax_command() -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
     std::env::split_paths(&std::env::var_os("PATH")?)
-        .any(|d| d.join("clax").is_file())
+        .any(|d| {
+            std::fs::metadata(d.join("clax"))
+                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
         .then(|| "clax".to_string())
 }
 
@@ -310,4 +395,36 @@ fn handle(
         Event::Tool => events::tool(agent.harness(), &input, &client),
     };
     out.map(Some)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Command lines as `ps -o args=` showed them for a Codex TUI, `codex
+    /// exec` and the app server.
+    #[test]
+    fn only_an_interactive_codex_is_shown_the_notice() {
+        let bin =
+            "/Users/u/.codex/packages/standalone/releases/0.160.1-aarch64-apple-darwin/bin/codex";
+        assert_eq!(
+            interactive_codex(&format!("{bin} --dangerously-bypass-hook-trust")),
+            Some(true)
+        );
+        assert_eq!(interactive_codex("codex"), Some(true));
+        assert_eq!(
+            interactive_codex(&format!("{bin} exec --skip-git-repo-check hi")),
+            Some(false)
+        );
+        assert_eq!(interactive_codex("codex app-server"), Some(false));
+        assert_eq!(
+            interactive_codex("node /usr/lib/node_modules/@openai/codex/bin/codex.js exec x"),
+            Some(false)
+        );
+        assert_eq!(interactive_codex("/bin/zsh -c codex exec"), None);
+        assert_eq!(
+            interactive_codex("bash ./scripts/ensure-clax.sh exec hook"),
+            None
+        );
+    }
 }

@@ -186,9 +186,11 @@ fn extension_check(ext: &serde_json::Value) -> serde_json::Value {
 
 /// `codex_approvals`: whether Codex would stop mid-task to ask before
 /// calling a Clax tool, under its `config.toml` at `path` (`text`: its
-/// contents, `None` when absent). Passes quietly when no tool asks; warns
-/// naming `clax init --agent codex` when tools ask that the person has not
-/// set a mode for, and names those whose own `approval_mode` makes them ask.
+/// contents, `None` when absent). Passes when no tool asks; warns naming
+/// `clax init --agent codex` when tools ask that the person has set nothing
+/// for, and names the tools the person's own settings make ask (on the tool
+/// or the server), with the setting, as theirs. Profiles
+/// (`codex -p`) and project config layers are not read.
 fn codex_approvals_check(
     path: &Path,
     text: Result<Option<String>, String>,
@@ -201,18 +203,7 @@ fn codex_approvals_check(
         Ok(a) => a,
         Err(e) => return check("codex_approvals", false, e),
     };
-    let kept: Vec<String> = a
-        .kept()
-        .iter()
-        .map(|k| format!("{} (approval_mode = \"{}\")", k.tool, k.mode))
-        .collect();
-    let kept = (!kept.is_empty()).then(|| {
-        format!(
-            "Codex asks before {}, as {} sets",
-            kept.join(", "),
-            path.display()
-        )
-    });
+    let kept = a.kept_note(path);
     let addable = a.addable();
     if !addable.is_empty() {
         let mut d = format!(
@@ -231,7 +222,7 @@ fn codex_approvals_check(
             "codex_approvals",
             true,
             format!(
-                "Codex runs every Clax tool without asking ({})",
+                "Codex runs every Clax tool without asking, by {} (profiles and project config layers not checked)",
                 path.display()
             ),
         ),
@@ -686,8 +677,29 @@ mod tests {
         let kept = codex_approvals_check(p, Ok(Some(own)), &tools);
         assert_eq!(kept["warn"], true, "{kept}");
         let d = kept["detail"].as_str().unwrap();
-        assert!(d.contains("delete (approval_mode = \"prompt\")"), "{d}");
+        assert!(
+            d.contains("delete (your approval_mode = \"prompt\" on `delete`)"),
+            "{d}"
+        );
         assert!(!d.contains("clax init"), "{d}");
+        let server = codex_approvals_check(
+            p,
+            Ok(Some(
+                "[plugins.\"clax@clax\".mcp_servers.clax]\ndefault_tools_approval_mode = \"prompt\"\n"
+                    .into(),
+            )),
+            &tools,
+        );
+        let d = server["detail"].as_str().unwrap();
+        assert_eq!(server["warn"], true, "{server}");
+        assert!(
+            d.contains("(your default_tools_approval_mode = \"prompt\")"),
+            "{d}"
+        );
+        assert!(
+            !d.contains("clax init"),
+            "the person's server default is theirs: {d}"
+        );
         let bad = codex_approvals_check(p, Ok(Some("[x\n".into())), &tools);
         assert_eq!(bad["ok"], false, "{bad}");
         let unreadable = codex_approvals_check(p, Err("could not read".into()), &tools);

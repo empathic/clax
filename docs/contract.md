@@ -60,7 +60,9 @@ false` on the rest, which only add (a publish keeps every earlier version) or
 toggle state (`pin`, `unpin`, `watch`, `comments_resolve`, `working`), or
 open a browser tab (`open`).
 `idempotentHint` is true on `delete`, `db_delete`, `pin`, `unpin`, `watch` and
-`comments_resolve`. `plugins/pi/test/fixtures/contract.json` lists them and
+`comments_resolve`. The read-only tools acknowledge comments they deliver,
+as every tool result does; that is delivery bookkeeping, and no annotation
+could exempt a Clax tool from it. `plugins/pi/test/fixtures/contract.json` lists them and
 `crates/clax-mcp` tests them. Codex's default approval mode (`auto`) runs
 read-only tools, and tools that are neither destructive nor open-world,
 without asking, so in Codex only the six destructive tools ask before a call
@@ -2866,14 +2868,22 @@ else the server's `default_tools_approval_mode`, else `auto`, applied to the
 tool's annotations as Codex does (`approve` never asks, `prompt` always,
 `writes` unless read-only, `auto` for destructive or open-world tools; tools
 left out by `enabled_tools` or named in `disabled_tools` never ask). For
-those with no `approval_mode` of their own, it prints the lines that approve
-them, one `[plugins."clax@clax".mcp_servers.clax.tools.<tool>]` table with
+those the person has set nothing for, neither on the tool nor through the
+server's `default_tools_approval_mode`, it prints what they do and the lines
+that approve them, one `[plugins."clax@clax".mcp_servers.clax.tools.<tool>]` table with
 `approval_mode = "approve"` each, and asks on the terminal whether to add
 them; `--yes` adds them without asking, and without a terminal and without
-`--yes` nothing is added. Adding keeps the file's comments and layout,
+`--yes` nothing is added. After the answer the file is read again and the
+lines are added to it as it is then (only for tools that were shown and
+still have no setting), checked unchanged just before the write, so what
+Codex wrote meanwhile is kept. Adding keeps the file's comments and layout,
 follows a symbolic link, never changes or removes a setting, and changes
-nothing when the lines are there. A tool whose own `approval_mode` makes
-Codex ask is left as it is and named. The Codex entry of `agents` reports
+nothing when the lines are there. A tool that asks because of a setting the
+person made, on the tool or the server, is left as it is and named with that
+setting, `--yes` included. When registering fails after `codex plugin
+remove`, the settings read before it are kept in
+`~/.clax/run/codex-plugin-settings.toml` and put back by the next successful
+`init`. The Codex entry of `agents` reports
 this as `"approvals": {"status": "added" | "unchanged" | "not_added" |
 "declined" | "failed", "config", "restored", "tools", "lines", "detail"}`
 (`restored`: settings were put back; `tools` and `lines`: what was or would
@@ -2881,10 +2891,12 @@ be added). A failure here never fails `init`. The plugin never ships
 approval settings itself: Codex would apply them from its `.mcp.json`
 without asking the person. `clax doctor --agent codex` reports the same
 assessment as `codex_approvals`, and the plugin's `SessionStart` hook shows
-it to the person once per set of tools (Codex's `systemMessage`; the set is
-recorded in `~/.clax/run/codex-approvals-notice`), naming `clax init --agent
-codex` when `clax` is on `PATH` and the settings otherwise. Neither writes
-Codex's config.
+it to the person (Codex's `systemMessage`) once per set of tools, again after
+seven days, and not in sessions run by `codex exec` or `codex app-server`,
+which show no hook message (the set and day are recorded, once printed, in
+`~/.clax/run/codex-approvals-notice-<hash of the Codex home>`), naming `clax
+init --agent codex` when an executable `clax` is on `PATH` and the settings
+otherwise. Neither writes Codex's config.
 
 `clax init` also runs `clax extension install` and reports its result as
 `"extension"` (below); `clax uninit` revokes every extension credential
