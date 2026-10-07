@@ -39,10 +39,11 @@ const GROK_END_REQUEST_TIMEOUT: Duration = Duration::from_millis(1000);
 const ASK_SETUP_DEADLINE: Duration = Duration::from_secs(2);
 /// Each `ask` daemon request other than the long poll is abandoned after this long.
 const ASK_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
-/// After the setup, `ask` gives up waiting on its worker after this long: the
-/// longest poll (3300 s plus [`ask::Budget`]'s 10 s) and its release, with a
-/// margin. Claude Code stops the hook at 3600 s.
-const ASK_POLL_DEADLINE: Duration = Duration::from_secs(3330);
+/// After the setup, `ask` gives up waiting on its worker this long after the
+/// poll's own timeout: up to three 1 s requests to release the question,
+/// with a margin. Claude Code stops the hook at 3600 s; the longest poll
+/// timeout is 3310 s.
+const ASK_AFTER_POLL: Duration = Duration::from_secs(5);
 /// The whole `asked` (PostToolUse on `AskUserQuestion`) invocation is
 /// abandoned after this long.
 const ASKED_DEADLINE: Duration = Duration::from_secs(2);
@@ -229,6 +230,11 @@ pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         // Stood down: logged by `handle`, nothing to print or log here.
         Ok(Ok(None)) => std::process::exit(0),
         Ok(Ok(Some(out))) => (out, None),
+        // `asked` carries the terminal's answers: its log keeps only the
+        // error code, never a message that could quote them.
+        Ok(Err(e)) if matches!(event, Event::Asked) => {
+            (HookOutput::none(), Some(error_code(&format!("{e:#}"))))
+        }
         Ok(Err(e)) => (HookOutput::none(), Some(format!("{e:#}"))),
         Err(_) => (
             HookOutput::none(),
@@ -423,6 +429,17 @@ fn clax_command() -> Option<String> {
         .then(|| "clax".to_string())
 }
 
+/// The daemon's error code that leads `error` (`code: message`), or
+/// "request failed"; never the message.
+fn error_code(error: &str) -> String {
+    error
+        .split_once(':')
+        .map(|(c, _)| c)
+        .filter(|c| !c.is_empty() && c.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+        .unwrap_or("request failed")
+        .to_string()
+}
+
 /// Handles one hook run; `None` means it stood down.
 fn handle(
     agent: Agent,
@@ -499,8 +516,8 @@ fn handle(
 
 /// What `run_ask`'s worker reports.
 enum AskMsg {
-    /// The long poll is starting: the setup is over.
-    Polling,
+    /// The long poll, with this timeout, is starting: the setup is over.
+    Polling(Duration),
     /// The run is over.
     Done(Asked),
     /// The run stood down (a Grok Build session) or the agent is not Claude
@@ -524,7 +541,7 @@ impl Daemon for Reporting<'_> {
         Daemon::get(self.client, path)
     }
     fn get_with_timeout(&self, path: &str, timeout: Duration) -> anyhow::Result<serde_json::Value> {
-        let _ = self.tx.send(AskMsg::Polling);
+        let _ = self.tx.send(AskMsg::Polling(timeout));
         Daemon::get_with_timeout(self.client, path, timeout)
     }
     fn post(&self, path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
@@ -549,14 +566,14 @@ fn run_ask(home: &Home, agent: Agent, started: Instant) -> ! {
     });
     let setup = ASK_SETUP_DEADLINE.saturating_sub(started.elapsed());
     let msg = match rx.recv_timeout(setup) {
-        Ok(AskMsg::Polling) => rx.recv_timeout(ASK_POLL_DEADLINE),
+        Ok(AskMsg::Polling(poll)) => rx.recv_timeout(poll + ASK_AFTER_POLL),
         other => other,
     };
     let (asked, error) = match msg {
         Ok(AskMsg::Quiet) => std::process::exit(0),
         Ok(AskMsg::Done(a)) => (Some(a), None),
         Ok(AskMsg::Failed(e)) => (None, Some(e)),
-        Ok(AskMsg::Polling) => (None, Some("polled twice".to_string())),
+        Ok(AskMsg::Polling(_)) => (None, Some("polled twice".to_string())),
         Err(_) => (None, Some("timed out".to_string())),
     };
     if let Some(line) = asked.as_ref().and_then(|a| a.out.to_line()) {
@@ -607,6 +624,7 @@ fn ask_worker(agent: Agent, home: &Home, tx: mpsc::Sender<AskMsg>) -> AskMsg {
     };
     AskMsg::Done(ask::ask_logged(&input, &daemon, Budget::default()))
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -660,5 +678,18 @@ mod tests {
         assert_eq!(interactive("codex -c review=1 hello"), Some(true));
         assert_eq!(interactive("codex --enable x"), Some(true));
         assert_eq!(interactive("bash ./scripts/ensure-clax.sh exec hook"), None);
+    }
+
+    #[test]
+    fn error_code_keeps_only_the_code() {
+        assert_eq!(
+            error_code("invalid_answer: \"Table\" is not an option"),
+            "invalid_answer"
+        );
+        assert_eq!(
+            error_code("error sending request for url (http://127.0.0.1:1/x): timed out"),
+            "request failed"
+        );
+        assert_eq!(error_code("no colon"), "request failed");
     }
 }

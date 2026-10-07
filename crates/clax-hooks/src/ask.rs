@@ -33,7 +33,10 @@ pub enum Outcome {
     Terminal,
     /// `terminal_after_s` passed with no answer; the hook released it.
     Timeout,
-    /// A request failed, or the session is not known to the daemon.
+    /// A request failed, or the session is not known to the daemon. Also a
+    /// malformed `answered` result: the poll has then marked the answer
+    /// taken, so Clax shows it answered although Claude never got it (the
+    /// daemon validates answers when they are given, so this is defensive).
     Error,
     /// The input is not an `AskUserQuestion` call.
     Skipped,
@@ -152,13 +155,20 @@ fn try_ask(
         None => {
             // Still open: the wait ran out. Hand it to the terminal; when the
             // release loses to an answer given in that instant, take the
-            // answer instead.
-            if daemon.post(&format!("{path}/release"), &json!({})).is_ok() {
+            // answer instead. A release that failed with the question still
+            // open is tried once more; failing again, it is an error.
+            let release = || daemon.post(&format!("{path}/release"), &json!({}));
+            if release().is_ok() {
                 (HookOutput::none(), Outcome::Timeout)
             } else {
                 let now = daemon.get(&format!("{path}?wait=0"))?;
-                settle(&tool_input, &now["question"])?
-                    .unwrap_or((HookOutput::none(), Outcome::Timeout))
+                match settle(&tool_input, &now["question"])? {
+                    Some(done) => done,
+                    None => {
+                        release()?;
+                        (HookOutput::none(), Outcome::Timeout)
+                    }
+                }
             }
         }
     };
@@ -418,6 +428,34 @@ mod tests {
         assert_eq!(
             out.value().unwrap()["hookSpecificOutput"]["updatedInput"]["answers"]["Which?"],
             "A"
+        );
+    }
+
+    #[test]
+    fn a_release_that_fails_with_the_question_open_is_retried_once() {
+        let d = Fake::new(vec![
+            sessions(),
+            created("wait"),
+            polled("600", "open", Value::Null),
+            released(false),
+            polled("0", "open", Value::Null),
+            released(true),
+        ]);
+        assert_eq!(
+            ask(&input(), &d, Budget::default()),
+            (HookOutput::none(), Outcome::Timeout)
+        );
+        let d = Fake::new(vec![
+            sessions(),
+            created("wait"),
+            polled("600", "open", Value::Null),
+            released(false),
+            polled("0", "open", Value::Null),
+            released(false),
+        ]);
+        assert_eq!(
+            ask(&input(), &d, Budget::default()),
+            (HookOutput::none(), Outcome::Error)
         );
     }
 

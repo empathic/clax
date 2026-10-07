@@ -175,8 +175,11 @@ ok = ok and pre[0]["hooks"] == [{"type": "command", "command": prefix + "ask", "
 post = [e for e in claude.get("PostToolUse", []) if e.get("matcher") == "AskUserQuestion"]
 ok = ok and len(post) == 1 and post[0]["hooks"] == [{"type": "command", "command": prefix + "asked", "timeout": 5}]
 for other in sys.argv[2:4]:
-    text = open(other).read()
-    ok = ok and "AskUserQuestion" not in text and " ask" not in text
+    hooks = json.load(open(other))["hooks"]
+    cmds = [h.get("command", "") for e in hooks.values() for entry in e for h in entry.get("hooks", [])]
+    matchers = [entry.get("matcher") for e in hooks.values() for entry in e]
+    ok = ok and "AskUserQuestion" not in matchers
+    ok = ok and not any(c.split()[-1:] in (["ask"], ["asked"]) for c in cmds)
 # The contract and the spec quote the status message word for word.
 for doc in sys.argv[4:]:
     ok = ok and pre[0]["hooks"][0]["statusMessage"] in " ".join(open(doc).read().split())

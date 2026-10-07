@@ -2079,7 +2079,9 @@ terminal** the question is released and the terminal dialog opens. `asked`
 records the terminal dialog's answers on a released question (`questions:
 terminal`). Reading the input, finding the daemon, the session lookup and
 the creation have 2 s together (1 s per request); the wait has
-`terminal_after_s` plus 10 s; `asked` has 2 s (1 s per request). If the
+`terminal_after_s` plus 10 s, then at most 3 s (1 s per request) to
+release the question; `asked` has 2 s (1 s per request), and its
+`hooks.log` line keeps only a failure's error code. If the
 wait runs out and the release loses to an answer given in that instant,
 `ask` takes the answer. Every failure exits 0 with no output, leaving the
 terminal dialog to run. Each `ask` run appends `ask mode=<wait|terminal|->
