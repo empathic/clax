@@ -34,7 +34,8 @@ impl StandDown {
     }
 
     #[tool(
-        description = "Says which Clax plugin serves this Grok session; this server does nothing else."
+        description = "Says which Clax plugin serves this Grok session; this server does nothing else.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn status(
         &self,
@@ -88,5 +89,10 @@ mod tests {
     fn the_status_tool_is_described_by_status_description() {
         let tools = StandDown::new(GROK_STANDDOWN).tool_router.list_all();
         assert_eq!(tools[0].description.as_deref(), Some(STATUS_DESCRIPTION));
+        let a = tools[0].annotations.as_ref().expect("annotated");
+        assert_eq!(
+            (a.read_only_hint, a.open_world_hint),
+            (Some(true), Some(false))
+        );
     }
 }
