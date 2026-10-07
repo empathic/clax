@@ -6,6 +6,7 @@ import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { CHILD_TIMEOUT_MS } from "../shell/src/test/timeouts";
 
 let root = "";
 afterEach(() => { if (root) rmSync(root, { recursive: true, force: true }); root = ""; });
@@ -37,11 +38,6 @@ const SHARED = {
   "x.css": `.shared-rule { color: red }`,
   "lazy.js": `import { v } from "./shared.js"; console.log("lazy", v());`,
 };
-
-/** Each test runs a child Node (a whole Vite build): bounded work that takes about a
- * second on an idle machine and many times that on a loaded one. The limit
- * is there to end a run that hangs, not to judge its speed. */
-const CHILD_TIMEOUT_MS = 60_000;
 
 describe("inlineCss", { timeout: CHILD_TIMEOUT_MS }, () => {
   it("inlines each entry's CSS when every chunk with CSS is static in the entries that load it", () => {

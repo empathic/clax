@@ -11,20 +11,22 @@ import { fakeExe } from "./fake-exe.ts";
 
 let scratch: string;
 /** A copy of the wrapper whose limit on `clax --version` (PROBE_SECS, 5 s)
- * is 120 s, as scripts/test-ensure-clax.sh makes its copies: the tests that
+ * is 15 s, as scripts/test-ensure-clax.sh makes its copies: the tests that
  * run the real binary are not about that limit, and on a loaded machine its
- * `--version` can take longer. A case about the limit would use the shipped
- * wrapper. */
+ * `--version` can take longer. 15 s fits inside each such test's own limit
+ * (20 s at least), so a probe that is truly stuck fails with the wrapper's
+ * reason; past the test's limit, that limit is the one that applies. A case
+ * about the probe limit would use the shipped wrapper. */
 let wrapper: string;
 /** How long the tests let the real binary's `--version` take, for the same reason. */
-const VERSION_MS = 120_000;
+const VERSION_MS = 15_000;
 
 beforeAll(() => {
   buildClax();
   scratch = mkdtempSync(join(tmpdir(), "clax-pi-ensure-"));
   wrapper = join(scratch, "ensure-clax.sh");
-  const text = readFileSync(WRAPPER, "utf8").replace(/^PROBE_SECS=\d+$/m, "PROBE_SECS=120");
-  if (!/^PROBE_SECS=120$/m.test(text)) throw new Error(`${WRAPPER} sets no PROBE_SECS line; update this copy`);
+  const text = readFileSync(WRAPPER, "utf8").replace(/^PROBE_SECS=\d+$/m, "PROBE_SECS=15");
+  if (!/^PROBE_SECS=15$/m.test(text)) throw new Error(`${WRAPPER} sets no PROBE_SECS line; update this copy`);
   writeFileSync(wrapper, text);
 }, 320_000);
 

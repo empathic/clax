@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type StreamEvent, pageStream } from "./stream";
 import { FakeWorker, workerWith } from "./test/fake-worker";
+import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
 import { subscribeGallery } from "./working-events";
 
 const A = "7q3k9mzx2b4t";
 
-describe("the page stream", () => {
+describe("the page stream", { timeout: MOUNT_TIMEOUT_MS }, () => {
   beforeEach(() => {
     FakeWorker.all = [];
     vi.stubGlobal("SharedWorker", FakeWorker);

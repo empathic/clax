@@ -3,6 +3,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { CHILD_TIMEOUT_MS } from "../shell/src/test/timeouts";
 
 let root = "";
 afterEach(() => { if (root) rmSync(root, { recursive: true, force: true }); root = ""; });
@@ -56,12 +57,6 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
   writeFileSync(join(web, "perf/bundle-budget.json"), JSON.stringify(budget));
   return spawnSync(process.execPath, [join(web, "scripts/bundle-size.mjs"), ...args], { encoding: "utf8" });
 }
-
-/** Each test runs a child Node (the script under test): bounded work that
- * takes a few hundred milliseconds on an idle machine and many times that on
- * a loaded one. The limit is there to end a run that hangs, not to judge its
- * speed. */
-const CHILD_TIMEOUT_MS = 60_000;
 
 describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
   const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partRoom: 10_000, partSample: 10_000, extOverlay: 10_000, extWorker: 10_000, extComposer: 10_000, extPanel: 10_000 };
