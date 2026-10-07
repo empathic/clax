@@ -94,14 +94,14 @@ pub(super) fn agent_of(c: &Connection, id: &str) -> Result<Option<AgentActor>> {
 /// What a `session.start` or `session.join` records of a session (spec
 /// §6.8), and what a refresh must change for a join to be recorded.
 #[derive(PartialEq)]
-struct Facts {
+pub(super) struct Facts {
     harness_session_id: Option<String>,
     cwd: String,
     transcript_path: Option<String>,
     pid: Option<u32>,
 }
 
-fn facts(c: &Connection, id: &str) -> Result<Facts> {
+pub(super) fn facts(c: &Connection, id: &str) -> Result<Facts> {
     Ok(c.prepare_cached(
         "SELECT harness_session_id, cwd, transcript_path, pid FROM sessions WHERE id = ?1",
     )?
@@ -113,6 +113,32 @@ fn facts(c: &Connection, id: &str) -> Result<Facts> {
             pid: r.get(3)?,
         })
     })?)
+}
+
+/// The `session.start` or `session.join` (`kind`) record of session `id`
+/// (audit spec §6.8): its harness and facts.
+pub(super) fn session_record(
+    kind: AuditKind,
+    at: &str,
+    id: &str,
+    harness: &str,
+    f: Facts,
+) -> AuditRecord {
+    let mut rec = AuditRecord::new(kind, at)
+        .with("harness", harness)
+        .with("harness_session_id", f.harness_session_id)
+        .with("cwd", f.cwd)
+        .with("transcript_path", f.transcript_path)
+        .with("pid", f.pid);
+    rec.ids.session = Some(id.to_string());
+    rec
+}
+
+/// The `session.end` record of session `id`, for `reason`.
+pub(super) fn session_end_record(at: &str, id: &str, reason: &str) -> AuditRecord {
+    let mut rec = AuditRecord::new(AuditKind::SessionEnd, at).with("reason", reason);
+    rec.ids.session = Some(id.to_string());
+    rec
 }
 
 impl Store {
@@ -133,13 +159,7 @@ impl Store {
             actor: Actor::Agent(agent),
             ..ctx.clone()
         };
-        let mut rec = AuditRecord::new(kind, Store::now())
-            .with("harness", harness)
-            .with("harness_session_id", f.harness_session_id)
-            .with("cwd", f.cwd)
-            .with("transcript_path", f.transcript_path)
-            .with("pid", f.pid);
-        rec.ids.session = Some(id.to_string());
+        let rec = session_record(kind, &Store::now(), id, harness, f);
         self.record_audit(tx, &ctx, rec)?;
         Ok(())
     }
@@ -153,9 +173,8 @@ impl Store {
         id: &str,
         reason: &str,
     ) -> Result<()> {
-        let rec = AuditRecord::new(AuditKind::SessionEnd, Store::now()).with("reason", reason);
-        let mut rec = with_for_actor(tx, ctx, rec, id, AgentActor::default)?;
-        rec.ids.session = Some(id.to_string());
+        let rec = session_end_record(&Store::now(), id, reason);
+        let rec = with_for_actor(tx, ctx, rec, id, AgentActor::default)?;
         self.record_audit(tx, ctx, rec)?;
         Ok(())
     }

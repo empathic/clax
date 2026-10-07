@@ -26,5 +26,5 @@ url.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-nix = { workspace = true, features = ["user"] }
+nix = { workspace = true, features = ["time", "user"] }
 tokio = { workspace = true, features = ["sync", "macros", "rt"] }

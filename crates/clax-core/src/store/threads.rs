@@ -81,7 +81,7 @@ fn check_body(body: &str) -> Result<()> {
 /// The anchor as `thread.open` records it (spec 2026-10-06-toolpath-audit
 /// §6.2): its kind, selector, text quote (`quote`, `prefix`, `suffix`),
 /// `html_hash`, file and route; not its geometry or custom name.
-fn anchor_record(a: &Anchor) -> serde_json::Value {
+pub(super) fn anchor_record(a: &Anchor) -> serde_json::Value {
     serde_json::json!({
         "kind": a.kind,
         "selector": a.selector,
@@ -97,7 +97,7 @@ fn anchor_record(a: &Anchor) -> serde_json::Value {
 /// The `comment.add` record of comment `c` on a thread of artifact `aid`
 /// (spec 2026-10-06-toolpath-audit §6.2). The body text is recorded as
 /// written; export redacts it on request (§11).
-fn comment_record(aid: &str, c: &Comment) -> AuditRecord {
+pub(super) fn comment_record(aid: &str, c: &Comment) -> AuditRecord {
     let mut r = AuditRecord::new(AuditKind::CommentAdd, c.created_at.as_str())
         .with("comment_id", c.id.as_str())
         .with("body", c.body.as_str())
@@ -108,6 +108,49 @@ fn comment_record(aid: &str, c: &Comment) -> AuditRecord {
     r.ids.artifact = Some(aid.to_string());
     r.ids.thread = Some(c.thread_id.clone());
     r
+}
+
+/// The `thread.open` record of thread `tid` on artifact `aid` (audit spec
+/// §6.2), made with comment `first_comment_id`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn open_record(
+    at: &str,
+    aid: &str,
+    tid: &str,
+    version_n: u32,
+    anchor: serde_json::Value,
+    live_path: Option<String>,
+    has_clip: bool,
+    first_comment_id: Option<&str>,
+) -> AuditRecord {
+    thread_record(AuditKind::ThreadOpen, at, aid, tid)
+        .with("version_n", version_n)
+        .with("anchor", anchor)
+        .with("live_path", live_path)
+        .with("has_clip", has_clip)
+        .with("first_comment_id", first_comment_id)
+}
+
+/// The `thread.resolve` record of thread `tid` (spec §6.2): who resolved
+/// it, and the version the resolve linked it to.
+pub(super) fn resolve_record(
+    at: &str,
+    aid: &str,
+    tid: &str,
+    resolved_by: Option<&str>,
+    addressed_version: Option<u32>,
+) -> AuditRecord {
+    thread_record(AuditKind::ThreadResolve, at, aid, tid)
+        .with("resolved_by", resolved_by)
+        .with("addressed_version", addressed_version)
+}
+
+/// The `thread.addressed` record of a resolve's link of thread `tid` to
+/// version `n` that no other event carries (spec §6.2).
+pub(super) fn addressed_record(at: &str, aid: &str, tid: &str, n: u32) -> AuditRecord {
+    thread_record(AuditKind::ThreadAddressed, at, aid, tid)
+        .with("version_n", n)
+        .with("source", crate::changelog::LinkSource::Resolve.as_str())
 }
 
 /// A record of `kind` about thread `tid` of artifact `aid`, at `at`.
@@ -531,12 +574,16 @@ impl Store {
             )?;
             insert_mentions(tx, &cid, &t.body)?;
             let (live_path, after) = then(tx, &tid)?;
-            let open = thread_record(AuditKind::ThreadOpen, &now, id.as_str(), &tid)
-                .with("version_n", t.version_n)
-                .with("anchor", anchor_record(&t.anchor))
-                .with("live_path", live_path)
-                .with("has_clip", t.clip.is_some())
-                .with("first_comment_id", cid.as_str());
+            let open = open_record(
+                &now,
+                id.as_str(),
+                &tid,
+                t.version_n,
+                anchor_record(&t.anchor),
+                live_path,
+                t.clip.is_some(),
+                Some(&cid),
+            );
             self.record_audit(tx, ctx, open)?;
             let first = Comment {
                 id: cid.clone(),
@@ -980,16 +1027,11 @@ impl Store {
             )?;
             let linked = then(tx, &t)?;
             if t.status != "resolved" {
-                let rec = thread_record(AuditKind::ThreadResolve, &now, &t.artifact_id, thread_id)
-                    .with("resolved_by", by)
-                    .with("addressed_version", linked);
+                let rec = resolve_record(&now, &t.artifact_id, thread_id, Some(by), linked);
                 self.record_audit(tx, ctx, rec)?;
             }
             if let Some(n) = linked.filter(|_| t.status == "resolved") {
-                let rec =
-                    thread_record(AuditKind::ThreadAddressed, &now, &t.artifact_id, thread_id)
-                        .with("version_n", n)
-                        .with("source", crate::changelog::LinkSource::Resolve.as_str());
+                let rec = addressed_record(&now, &t.artifact_id, thread_id, n);
                 self.record_audit(tx, ctx, rec)?;
             }
             let mut touched = crate::feedback::Touched::default();

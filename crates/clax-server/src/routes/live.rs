@@ -607,24 +607,11 @@ pub async fn snapshot(
     })))
 }
 
-/// 403 `forbidden` unless the request holds the token or comes through the
-/// extension gateway: who may move threads and change merge rules.
-pub(crate) fn owner_writes(who: &Identity) -> Result<(), ApiError> {
-    if who.token || who.extension {
-        Ok(())
-    } else {
-        Err(ApiError::forbidden(
-            "forbidden",
-            "only the owner (the token or the Clax extension) moves threads and changes rules",
-        ))
-    }
-}
-
-/// The owner, by the token or the Clax extension: who may move threads and
-/// change merge rules. Refuses anyone else with 403 `forbidden` during
+/// The owner, by the token or the Clax extension: who may move threads,
+/// change merge rules, and join or split sites. Refuses anyone else with 403 `forbidden` during
 /// extraction, so the extractors after it (the audit context, which may
 /// write a viewer row) never run for a refused request.
-pub struct OwnerWrite(Identity);
+pub struct OwnerWrite(pub(crate) Identity);
 
 impl axum::extract::FromRequestParts<AppState> for OwnerWrite {
     type Rejection = ApiError;

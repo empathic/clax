@@ -355,6 +355,34 @@ async fn a_split_origin_keys_its_own_pages_again_and_the_site_keeps_its_history(
     );
 }
 
+/// A join, its batches and a split over HTTP are recorded as the owner's,
+/// in order.
+#[tokio::test]
+async fn joins_and_splits_are_recorded_as_the_owners() {
+    let (ts, store) = with_store().await;
+    let v = ts.viewer(Some("Ana")).await;
+    comment(&ts, &v.cookie, &format!("{A}/"), "App").await;
+    comment(&ts, &v.cookie, &format!("{B}/"), "App").await;
+    let seq = store.newest_seq().unwrap();
+    assert_eq!(join(&ts, B, A).await.0, 200);
+    let res = ts
+        .post_json("/api/live/sites/split", json!({"origin": B}))
+        .await;
+    assert_eq!(res.status(), 200);
+    let ev = store.events_after(seq, 100).unwrap();
+    let kinds: Vec<&str> = ev
+        .iter()
+        .map(|e| e.kind.as_str())
+        .filter(|k| k.starts_with("live.") && *k != "live.snapshot")
+        .collect();
+    assert_eq!(kinds, ["live.join", "live.page_merge", "live.split"]);
+    for e in ev.iter().filter(|e| e.kind.starts_with("live.")) {
+        let actor: Value = serde_json::from_str(&e.actor).unwrap();
+        assert_eq!(actor["type"], "owner", "{e:?}");
+    }
+    assert!(ev.iter().any(|e| e.kind == "thread.move"));
+}
+
 #[tokio::test]
 async fn answers_keep_a_pair_from_being_suggested() {
     let ts = TestServer::spawn().await;
@@ -517,7 +545,9 @@ async fn an_unfinished_join_is_listed_and_holds_off_other_joins_and_splits_until
     comment(&ts, &v.cookie, &format!("{B}/x"), "X").await;
     comment(&ts, &v.cookie, "http://localhost:7704/y", "Y").await;
     // The join's first batch only, as a client that stopped would leave it.
-    store.join_origins(B, A).unwrap();
+    store
+        .join_origins(&clax_core::audit::AuditCtx::DAEMON, B, A)
+        .unwrap();
     let (moves, _) = store.join_candidates(A, 1).unwrap();
     let how = clax_core::store::site::MoveBy {
         by: "viewer:x".into(),

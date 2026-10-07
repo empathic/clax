@@ -64,6 +64,11 @@ kinds! {
     LiveSnapshot = "live.snapshot",
     ThreadMove = "thread.move",
     LiveRule = "live.rule",
+    LiveJoin = "live.join",
+    LiveSplit = "live.split",
+    LivePageRekey = "live.page_rekey",
+    LivePageMerge = "live.page_merge",
+    LiveJoinAnswer = "live.join_answer",
     WatchStart = "watch.start",
     WatchStop = "watch.stop",
     WatchUpdate = "watch.update",
@@ -79,6 +84,7 @@ kinds! {
     SessionStart = "session.start",
     SessionJoin = "session.join",
     SessionEnd = "session.end",
+    BackfillSkip = "backfill.skip",
 }
 
 impl std::fmt::Display for AuditKind {
@@ -115,7 +121,7 @@ pub enum SystemReason {
     Ttl,
     /// A live-page rule applied.
     Rule,
-    /// Migration 21's backfill of earlier history.
+    /// The audit backfill of earlier history.
     Backfill,
     /// Any other internal change.
     Daemon,
@@ -431,6 +437,11 @@ mod tests {
             "live.snapshot",
             "thread.move",
             "live.rule",
+            "live.join",
+            "live.split",
+            "live.page_rekey",
+            "live.page_merge",
+            "live.join_answer",
             "watch.start",
             "watch.stop",
             "watch.update",
@@ -446,6 +457,7 @@ mod tests {
             "session.start",
             "session.join",
             "session.end",
+            "backfill.skip",
         ];
         let names: Vec<&str> = AuditKind::ALL.iter().map(|k| k.as_str()).collect();
         assert_eq!(names, spec);

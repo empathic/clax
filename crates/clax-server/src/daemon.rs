@@ -8,7 +8,7 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::unix::fs::OpenOptionsExt;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, watch};
 
 pub const DEFAULT_PORT: u16 = 7480;
@@ -67,6 +67,148 @@ pub fn write_daemon_info(home: &Home, info: &DaemonInfo) -> io::Result<()> {
     f.write_all(&serde_json::to_vec_pretty(info).expect("serialisable"))?;
     f.sync_all()?;
     std::fs::rename(tmp, home.daemon_json())
+}
+
+/// What a starting daemon is doing before it serves, in `starting.json`:
+/// its `pid`; its `phase` (`opening` the store, then the audit backfill's
+/// `planning`, `hashing files`, `recording`); the backfill's rows `done` of
+/// `total` and bytes hashed; and `heartbeat_at`, renewed every second
+/// while it starts. Removed once it serves (or fails).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StartingInfo {
+    pub pid: u32,
+    pub phase: String,
+    pub done: u64,
+    pub total: u64,
+    pub bytes: u64,
+    pub heartbeat_at: String,
+}
+
+impl StartingInfo {
+    /// Whether the phase has no measurable progress, so a heartbeat alone
+    /// shows it working.
+    pub fn unmeasured(&self) -> bool {
+        self.phase == "opening" || self.phase == "planning"
+    }
+
+    /// One line for a person: what the daemon is doing.
+    pub fn line(&self) -> String {
+        if self.unmeasured() && self.total == 0 {
+            return format!("{} (pid {})", self.phase_text(), self.pid);
+        }
+        format!(
+            "{} (pid {}): {} of {} rows, {} MiB hashed",
+            self.phase_text(),
+            self.pid,
+            self.done,
+            self.total,
+            self.bytes >> 20
+        )
+    }
+
+    fn phase_text(&self) -> String {
+        match self.phase.as_str() {
+            "opening" => "opening its database".into(),
+            p => format!("recording existing history for the audit log ({p})"),
+        }
+    }
+}
+
+/// `starting.json`, when a starting daemon wrote one.
+pub fn read_starting_info(home: &Home) -> Option<StartingInfo> {
+    let text = std::fs::read_to_string(home.starting_json()).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Atomically replaces `starting.json` with `info`, as `daemon.json` is.
+fn write_starting_info(home: &Home, info: &StartingInfo) -> io::Result<()> {
+    use io::Write;
+    let tmp = home
+        .root()
+        .join(format!("starting.json.{}.tmp", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)?;
+    f.write_all(&serde_json::to_vec(info).expect("serialisable"))?;
+    std::fs::rename(tmp, home.starting_json())
+}
+
+/// Publishes this daemon's start in `starting.json` until dropped: the
+/// phase and backfill progress it is given, and a heartbeat every second
+/// from a thread of its own.
+pub struct Starting {
+    home: Home,
+    info: std::sync::Arc<std::sync::Mutex<StartingInfo>>,
+    stop: Option<std::sync::mpsc::Sender<()>>,
+    beat: Option<std::thread::JoinHandle<()>>,
+    written: Instant,
+}
+
+impl Starting {
+    /// Writes `starting.json` (phase `opening`) and starts the heartbeat.
+    pub fn begin(home: &Home) -> Starting {
+        let info = std::sync::Arc::new(std::sync::Mutex::new(StartingInfo {
+            pid: std::process::id(),
+            phase: "opening".into(),
+            done: 0,
+            total: 0,
+            bytes: 0,
+            heartbeat_at: Store::now(),
+        }));
+        let write = |home: &Home, info: &StartingInfo| {
+            if let Err(e) = write_starting_info(home, info) {
+                tracing::warn!(error = %e, "could not write starting.json");
+            }
+        };
+        write(home, &info.lock().unwrap_or_else(|e| e.into_inner()));
+        let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        let (h, i) = (home.clone(), info.clone());
+        let beat = std::thread::spawn(move || {
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                stopped.recv_timeout(Duration::from_secs(1))
+            {
+                let mut now = i.lock().unwrap_or_else(|e| e.into_inner());
+                now.heartbeat_at = Store::now();
+                write(&h, &now);
+            }
+        });
+        Starting {
+            home: home.clone(),
+            info,
+            stop: Some(stop),
+            beat: Some(beat),
+            written: Instant::now(),
+        }
+    }
+
+    /// Records the backfill's progress, writing it at most every 100 ms
+    /// within a phase.
+    pub fn progress(&mut self, p: &clax_core::store::backfill::Progress) {
+        let mut info = self.info.lock().unwrap_or_else(|e| e.into_inner());
+        let phase = p.phase.label().to_string();
+        let changed = info.phase != phase;
+        info.phase = phase;
+        (info.done, info.total, info.bytes) = (p.done, p.total, p.bytes);
+        if changed || self.written.elapsed() >= Duration::from_millis(100) {
+            if let Err(e) = write_starting_info(&self.home, &info) {
+                tracing::warn!(error = %e, "could not write starting.json");
+            }
+            self.written = Instant::now();
+        }
+    }
+}
+
+impl Drop for Starting {
+    fn drop(&mut self) {
+        drop(self.stop.take());
+        if let Some(b) = self.beat.take() {
+            let _ = b.join();
+        }
+        let _ = std::fs::remove_file(self.home.starting_json());
+    }
 }
 
 /// Removes `daemon.json`, ignoring errors (including a file that is already gone).
@@ -325,13 +467,20 @@ pub async fn serve(
     ready: Option<oneshot::Sender<DaemonInfo>>,
 ) -> anyhow::Result<()> {
     cfg.home.ensure_dirs()?;
+    // Until it serves, whoever started this daemon follows it in
+    // starting.json: a first start after an upgrade may record the audit
+    // backfill first.
+    let mut starting = Starting::begin(&cfg.home);
     match raise_open_file_limit() {
         Ok((before, after)) => tracing::info!(before, after, "open file limit"),
         Err(e) => tracing::warn!(error = %e, "could not read or raise the open file limit"),
     }
     let listener = bind_first_free(cfg.bind, cfg.port).await?;
     let port = listener.local_addr()?.port();
-    let store = Arc::new(Store::open(&cfg.home)?);
+    let store = Arc::new(Store::open_reporting(&cfg.home, &mut |p| {
+        starting.progress(p)
+    })?);
+    drop(starting);
     // Hooks that waited on the previous daemon are gone: their questions
     // are withdrawn (and kept, as every question is).
     let gone = store.withdraw_hook_questions_on_start()?;

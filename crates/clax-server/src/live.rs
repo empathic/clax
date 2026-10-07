@@ -465,9 +465,15 @@ mod store_tests {
             .unwrap()
             .artifact
             .id;
-        st.join_origins("http://localhost:5174", "http://localhost:5173")
+        st.join_origins(
+            &clax_core::audit::AuditCtx::DAEMON,
+            "http://localhost:5174",
+            "http://localhost:5173",
+        )
+        .unwrap();
+        let (merged, _) = st
+            .settle_joined_pages(&clax_core::audit::AuditCtx::DAEMON, "http://localhost:5173")
             .unwrap();
-        let (merged, _) = st.settle_joined_pages("http://localhost:5173").unwrap();
         assert_eq!(merged, vec![b.clone()]);
         assert!(
             st.live_page_of(&clax_core::ArtifactId::parse(&b).unwrap())

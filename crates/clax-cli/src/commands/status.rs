@@ -57,11 +57,22 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
                 text
             })
         }
-        None => super::print(
-            cli,
-            serde_json::json!({"running": false, "home": home.root()}),
-            |_| format!("not running (home {})", home.root().display()),
-        ),
+        None => match clax_server::daemon::read_starting_info(home)
+            .filter(|s| clax_server::daemon::pid_alive(s.pid))
+        {
+            // A daemon that has not answered yet: say what it is doing (a
+            // first start may record the audit backfill for a while).
+            Some(s) => super::print(
+                cli,
+                json!({"running": false, "starting": s, "home": home.root()}),
+                |_| format!("starting: {}", s.line()),
+            ),
+            None => super::print(
+                cli,
+                serde_json::json!({"running": false, "home": home.root()}),
+                |_| format!("not running (home {})", home.root().display()),
+            ),
+        },
     }
     // A config.toml that would stop the next start is named here, where a
     // person looking into "not running" will see it.

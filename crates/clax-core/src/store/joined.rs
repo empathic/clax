@@ -19,6 +19,7 @@
 use super::Store;
 use super::live::{LivePage, rematerialize};
 use super::site::{MAX_RULES, Refile, WATCHES_TO};
+use crate::audit::{AuditCtx, AuditKind, AuditRecord};
 use crate::live::same_host_family;
 use crate::{CoreError, Result};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -216,14 +217,115 @@ fn pair<'a>(a: &'a str, b: &'a str) -> (&'a str, &'a str) {
     if a < b { (a, b) } else { (b, a) }
 }
 
+/// A `live.join` (audit spec §6.3): `joined`, the origins that joined the
+/// site keyed `site` at the owner's request to join `origin` to `with`'s
+/// site, and the rules the join moved to the site's key or dropped as
+/// duplicates. `with` and the rules are `None` where only the joined state
+/// is known (the backfill).
+pub(super) fn join_record(
+    at: &str,
+    origin: &str,
+    with: Option<&str>,
+    site: &str,
+    joined: &[String],
+    rules: Option<(&[String], &[String])>,
+) -> AuditRecord {
+    let mut r = AuditRecord::new(AuditKind::LiveJoin, at)
+        .with("origin", origin)
+        .with("with", with)
+        .with("site", site)
+        .with("joined", joined.to_vec())
+        .with("rules_moved", rules.map(|r| r.0.to_vec()))
+        .with("rules_dropped", rules.map(|r| r.1.to_vec()));
+    r.ids.origin = Some(site.to_string());
+    r
+}
+
+/// A `live.split`: `origin` split off the site keyed `before_site`, which
+/// is keyed `site` after it; `never_with`, the origins the pair is not
+/// suggested with again.
+pub(super) fn split_record(
+    at: &str,
+    origin: &str,
+    before_site: &str,
+    site: &str,
+    never_with: &[String],
+) -> AuditRecord {
+    let mut r = AuditRecord::new(AuditKind::LiveSplit, at)
+        .with("origin", origin)
+        .with("before_site", before_site)
+        .with("site", site)
+        .with("never_with", never_with.to_vec());
+    r.ids.origin = Some(before_site.to_string());
+    r
+}
+
+/// A `live.page_rekey`: the live page `aid` of `path` now keyed under
+/// `to_origin` instead of `from_origin`.
+pub(super) fn rekey_record(
+    at: &str,
+    aid: &str,
+    from_origin: &str,
+    to_origin: &str,
+    path: &str,
+) -> AuditRecord {
+    let mut r = AuditRecord::new(AuditKind::LivePageRekey, at)
+        .with("from_origin", from_origin)
+        .with("to_origin", to_origin)
+        .with("path", path);
+    r.ids.artifact = Some(aid.to_string());
+    r.ids.origin = Some(to_origin.to_string());
+    r
+}
+
+/// A `live.page_merge`: the live page `aid` (`origin` + `path`) merged
+/// away into the page `merged_into` (`None` once that page is gone), kept
+/// whole. Its watchers move with it, implied by this event.
+pub(super) fn page_merge_record(
+    at: &str,
+    aid: &str,
+    origin: &str,
+    path: &str,
+    merged_into: Option<&str>,
+) -> AuditRecord {
+    let mut r = AuditRecord::new(AuditKind::LivePageMerge, at)
+        .with("origin", origin)
+        .with("path", path)
+        .with("merged_into", merged_into);
+    r.ids.artifact = Some(aid.to_string());
+    r.ids.artifact2 = merged_into.map(str::to_string);
+    r.ids.origin = Some(origin.to_string());
+    r
+}
+
+/// A `live.join_answer`: the owner's answer to the suggestion that the
+/// pair `a` < `b` is one app, with `until` for `later`.
+pub(super) fn answer_record(
+    at: &str,
+    a: &str,
+    b: &str,
+    answer: &str,
+    until: Option<&str>,
+) -> AuditRecord {
+    let mut r = AuditRecord::new(AuditKind::LiveJoinAnswer, at)
+        .with("origin", a)
+        .with("with", b)
+        .with("answer", answer)
+        .with("until", until);
+    r.ids.origin = Some(a.to_string());
+    r
+}
+
+/// Writes the owner's `answer` for the pair, returning its record.
 fn answer_in(
     c: &Connection,
     a: &str,
     b: &str,
     answer: &str,
     now: chrono::DateTime<chrono::Utc>,
-) -> Result<()> {
+) -> Result<AuditRecord> {
     let (a, b) = pair(a, b);
+    let now_s = Store::now();
     let until = (answer == ANSWER_LATER).then(|| {
         let d = chrono::Duration::from_std(LATER).expect("the delay fits");
         (now + d).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
@@ -232,9 +334,9 @@ fn answer_in(
         "INSERT INTO live_site_answers (a, b, answer, until, created_at) VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(a, b) DO UPDATE SET answer = excluded.answer, until = excluded.until,
             created_at = excluded.created_at",
-        params![a, b, answer, until, Store::now()],
+        params![a, b, answer, until, now_s],
     )?;
-    Ok(())
+    Ok(answer_record(&now_s, a, b, answer, until.as_deref()))
 }
 
 impl Store {
@@ -365,7 +467,7 @@ impl Store {
     /// site has no live page; `too_many_origins` past
     /// [`MAX_SITE_ORIGINS`]; `too_many_rules` when the site would hold more
     /// than [`MAX_RULES`] rules in force.
-    pub fn join_origins(&self, origin: &str, with: &str) -> Result<Joined> {
+    pub fn join_origins(&self, ctx: &AuditCtx, origin: &str, with: &str) -> Result<Joined> {
         if origin == with {
             return Err(CoreError::invalid(
                 "same_origin",
@@ -458,6 +560,24 @@ impl Store {
                 "UPDATE live_sites SET last_used_at = ?2 WHERE origin = ?1",
                 params![origin, now],
             )?;
+            let (mut moved, mut dropped) = (Vec::new(), Vec::new());
+            for (id, pattern, _) in rx {
+                if ry.iter().any(|(_, q, _)| *q == pattern) {
+                    tx.execute("DELETE FROM live_rules WHERE id = ?1", params![id])?;
+                    dropped.push(id);
+                } else {
+                    tx.execute(
+                        "UPDATE live_rules SET origin = ?2 WHERE id = ?1",
+                        params![id, ky],
+                    )?;
+                    moved.push(id);
+                }
+            }
+            self.record_audit(
+                tx,
+                ctx,
+                join_record(&now, origin, Some(with), &ky, &mx, Some((&moved, &dropped))),
+            )?;
             let mut rekeyed = Vec::new();
             for (page, target) in pending_pages(tx, &ky)? {
                 if target.is_none() {
@@ -465,17 +585,9 @@ impl Store {
                         "UPDATE live_pages SET origin = ?2 WHERE artifact_id = ?1",
                         params![page.artifact_id, ky],
                     )?;
+                    let rec = rekey_record(&now, &page.artifact_id, &page.origin, &ky, &page.path);
+                    self.record_audit(tx, ctx, rec)?;
                     rekeyed.push(page.artifact_id);
-                }
-            }
-            for (id, pattern, _) in rx {
-                if ry.iter().any(|(_, q, _)| *q == pattern) {
-                    tx.execute("DELETE FROM live_rules WHERE id = ?1", params![id])?;
-                } else {
-                    tx.execute(
-                        "UPDATE live_rules SET origin = ?2 WHERE id = ?1",
-                        params![id, ky],
-                    )?;
                 }
             }
             // Each scope of an origin of the site now covers every page of
@@ -580,7 +692,11 @@ impl Store {
     ///
     /// # Errors
     /// Database errors only.
-    pub fn settle_joined_pages(&self, key: &str) -> Result<(Vec<String>, Vec<String>)> {
+    pub fn settle_joined_pages(
+        &self,
+        ctx: &AuditCtx,
+        key: &str,
+    ) -> Result<(Vec<String>, Vec<String>)> {
         self.with_tx(|tx| {
             let (mut empty, mut rekeyed) = (Vec::new(), Vec::new());
             for (page, target) in pending_pages(tx, key)? {
@@ -597,6 +713,14 @@ impl Store {
                                 ..page.clone()
                             },
                         )?;
+                        let rec = rekey_record(
+                            &Store::now(),
+                            &page.artifact_id,
+                            &page.origin,
+                            key,
+                            &page.path,
+                        );
+                        self.record_audit(tx, ctx, rec)?;
                         rekeyed.push(page.artifact_id);
                     }
                     Some(to) => {
@@ -617,6 +741,14 @@ impl Store {
                                 "DELETE FROM live_pages WHERE artifact_id = ?1",
                                 params![page.artifact_id],
                             )?;
+                            let rec = page_merge_record(
+                                &now,
+                                &page.artifact_id,
+                                &page.origin,
+                                &page.path,
+                                Some(&to),
+                            );
+                            self.record_audit(tx, ctx, rec)?;
                             empty.push(page.artifact_id);
                         }
                     }
@@ -636,7 +768,7 @@ impl Store {
     /// # Errors
     /// `joining` while a join of the site is not finished (its pending
     /// pages would be split between the site and the origin).
-    pub fn split_origin(&self, origin: &str) -> Result<Option<Split>> {
+    pub fn split_origin(&self, ctx: &AuditCtx, origin: &str) -> Result<Option<Split>> {
         self.with_tx(|tx| {
             let Some(key): Option<String> = tx
                 .query_row(
@@ -654,6 +786,7 @@ impl Store {
             }
             let mut new_key = key.clone();
             let mut rekeyed = Vec::new();
+            let mut rekeyed_paths = Vec::new();
             if origin == key {
                 let Some(next) = before.origins.iter().find(|o| o.origin != origin) else {
                     return Ok(None);
@@ -663,10 +796,12 @@ impl Store {
                     "UPDATE live_sites SET site = ?2 WHERE site = ?1",
                     params![key, new_key],
                 )?;
-                let mut st = tx.prepare("SELECT artifact_id FROM live_pages WHERE origin = ?1")?;
-                rekeyed = st
-                    .query_map(params![key], |r| r.get(0))?
-                    .collect::<rusqlite::Result<Vec<String>>>()?;
+                let mut st =
+                    tx.prepare("SELECT artifact_id, path FROM live_pages WHERE origin = ?1")?;
+                rekeyed_paths = st
+                    .query_map(params![key], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<rusqlite::Result<Vec<(String, String)>>>()?;
+                rekeyed = rekeyed_paths.iter().map(|(a, _)| a.clone()).collect();
                 tx.execute(
                     "UPDATE live_pages SET origin = ?2 WHERE origin = ?1",
                     params![key, new_key],
@@ -685,10 +820,23 @@ impl Store {
             if left <= 1 {
                 tx.execute("DELETE FROM live_sites WHERE site = ?1", params![new_key])?;
             }
+            let mut never_with = Vec::new();
             for o in &before.origins {
                 if o.origin != origin {
                     answer_in(tx, origin, &o.origin, ANSWER_NEVER, chrono::Utc::now())?;
+                    never_with.push(o.origin.clone());
                 }
+            }
+            // The split, then the pages it re-keyed; its answers are
+            // implied by `never_with`.
+            let now = Store::now();
+            self.record_audit(
+                tx,
+                ctx,
+                split_record(&now, origin, &key, &new_key, &never_with),
+            )?;
+            for (aid, path) in &rekeyed_paths {
+                self.record_audit(tx, ctx, rekey_record(&now, aid, &key, &new_key, path))?;
             }
             Ok(Some(Split {
                 site: site_of_key(tx, &new_key)?,
@@ -704,8 +852,14 @@ impl Store {
     ///
     /// # Errors
     /// `invalid_answer` for any other answer; `same_origin`.
-    pub fn answer_join(&self, origin: &str, with: &str, answer: &str) -> Result<()> {
-        self.answer_join_at(origin, with, answer, chrono::Utc::now())
+    pub fn answer_join(
+        &self,
+        ctx: &AuditCtx,
+        origin: &str,
+        with: &str,
+        answer: &str,
+    ) -> Result<()> {
+        self.answer_join_at(ctx, origin, with, answer, chrono::Utc::now())
     }
 
     /// [`Store::answer_join`] as at `now`.
@@ -714,6 +868,7 @@ impl Store {
     /// As [`Store::answer_join`].
     pub fn answer_join_at(
         &self,
+        ctx: &AuditCtx,
         origin: &str,
         with: &str,
         answer: &str,
@@ -728,7 +883,11 @@ impl Store {
         if origin == with {
             return Err(CoreError::invalid("same_origin", "one origin is no pair"));
         }
-        self.with_write(|c| answer_in(c, origin, with, answer, now))
+        self.with_tx(|tx| {
+            let rec = answer_in(tx, origin, with, answer, now)?;
+            self.record_audit(tx, ctx, rec)?;
+            Ok(())
+        })
     }
 
     /// The sites `origin` may be the same app as, when it is a site of its
@@ -845,7 +1004,7 @@ mod tests {
     use crate::ArtifactId;
     use crate::live::PageKey;
     use crate::store::site::{KIND_JOIN, MoveBy};
-    use crate::store::test_util::{anchor, session, store};
+    use crate::store::test_util::{DAEMON, anchor, session, store};
     use crate::store::threads::NewThread;
 
     const A: &str = "http://localhost:7702";
@@ -862,7 +1021,7 @@ mod tests {
     fn page(st: &Store, origin: &str, path: &str, title: &str) -> ArtifactId {
         let e = st
             .ensure_live_page(
-                &crate::audit::AuditCtx::DAEMON,
+                DAEMON,
                 &key(origin, path),
                 title,
                 Some(format!("<p>{origin}{path}").as_bytes()),
@@ -874,7 +1033,7 @@ mod tests {
     fn thread(st: &Store, id: &ArtifactId) -> String {
         let n = st.get_artifact(id).unwrap().unwrap().current_version;
         st.create_live_thread(
-            &crate::audit::AuditCtx::DAEMON,
+            DAEMON,
             id,
             NewThread {
                 author_public_id: None,
@@ -908,10 +1067,9 @@ mod tests {
         loop {
             let (moves, remaining) = st.join_candidates(key, 2).unwrap();
             if !moves.is_empty() {
-                st.refile_threads(&crate::audit::AuditCtx::DAEMON, &moves, &by(), &[])
-                    .unwrap();
+                st.refile_threads(DAEMON, &moves, &by(), &[]).unwrap();
             }
-            let (empty, _) = st.settle_joined_pages(key).unwrap();
+            let (empty, _) = st.settle_joined_pages(DAEMON, key).unwrap();
             merged.extend(empty);
             if remaining == 0 && st.join_candidates(key, 2).unwrap().0.is_empty() {
                 return merged;
@@ -922,9 +1080,8 @@ mod tests {
     /// One batch of a join, as the route sends it: a join left unfinished.
     fn one_batch(st: &Store, key: &str) {
         let (moves, _) = st.join_candidates(key, 1).unwrap();
-        st.refile_threads(&crate::audit::AuditCtx::DAEMON, &moves, &by(), &[])
-            .unwrap();
-        st.settle_joined_pages(key).unwrap();
+        st.refile_threads(DAEMON, &moves, &by(), &[]).unwrap();
+        st.settle_joined_pages(DAEMON, key).unwrap();
     }
 
     fn code_of<T: std::fmt::Debug>(r: Result<T>) -> String {
@@ -939,7 +1096,7 @@ mod tests {
         let (_d, st) = store();
         let home = page(&st, A, "/", "App");
         let about = page(&st, B, "/about", "About");
-        let j = st.join_origins(B, A).unwrap();
+        let j = st.join_origins(DAEMON, B, A).unwrap();
         assert!(j.changed);
         assert_eq!(j.site.key, A);
         assert_eq!(j.site.newest(), B, "the joining origin was used last");
@@ -961,12 +1118,7 @@ mod tests {
         }
         // A new page of either origin is the site's.
         let e = st
-            .ensure_live_page(
-                &crate::audit::AuditCtx::DAEMON,
-                &key(B, "/new"),
-                "New",
-                None,
-            )
+            .ensure_live_page(DAEMON, &key(B, "/new"), "New", None)
             .unwrap();
         assert_eq!(e.origin, A);
         assert_eq!(
@@ -978,9 +1130,9 @@ mod tests {
         );
         assert_eq!(st.site_pages(B).unwrap().len(), 3);
         // Again: nothing changes.
-        let again = st.join_origins(B, A).unwrap();
+        let again = st.join_origins(DAEMON, B, A).unwrap();
         assert!(!again.changed && again.rekeyed.is_empty());
-        let again = st.join_origins(A, B).unwrap();
+        let again = st.join_origins(DAEMON, A, B).unwrap();
         assert!(!again.changed);
     }
 
@@ -991,16 +1143,10 @@ mod tests {
         let ta = thread(&st, &a);
         let b = page(&st, B, "/", "App");
         // A snapshot no thread names: kept with its page.
-        st.store_snapshot(
-            &crate::audit::AuditCtx::DAEMON,
-            &b,
-            "App",
-            b"<p>only B's",
-            false,
-        )
-        .unwrap();
+        st.store_snapshot(DAEMON, &b, "App", b"<p>only B's", false)
+            .unwrap();
         let tb: Vec<String> = (0..3).map(|_| thread(&st, &b)).collect();
-        let j = st.join_origins(B, A).unwrap();
+        let j = st.join_origins(DAEMON, B, A).unwrap();
         assert!(j.rekeyed.is_empty(), "the site has a page of /");
         let (first, remaining) = st.join_candidates(A, 2).unwrap();
         assert_eq!((first.len(), remaining), (2, 1));
@@ -1016,9 +1162,9 @@ mod tests {
         assert_eq!(st.site_pages(B).unwrap().len(), 1);
         assert!(st.live_sites().unwrap().iter().all(|x| x.pages == 1));
         // Split off, B's path is its own again: a new page, the old kept.
-        st.split_origin(B).unwrap().unwrap();
+        st.split_origin(DAEMON, B).unwrap().unwrap();
         let fresh = st
-            .ensure_live_page(&crate::audit::AuditCtx::DAEMON, &key(B, "/"), "App", None)
+            .ensure_live_page(DAEMON, &key(B, "/"), "App", None)
             .unwrap();
         assert_ne!(fresh.artifact.id, b.as_str());
         let mut on_a: Vec<String> = st
@@ -1047,6 +1193,83 @@ mod tests {
         assert!(st.join_candidates(A, 2).unwrap().0.is_empty());
     }
 
+    /// The kinds and bodies of the events recorded after `seq`.
+    fn recorded(st: &Store, seq: i64) -> Vec<(String, serde_json::Value)> {
+        st.events_after(seq, 1000)
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.kind, serde_json::from_str(&e.body).unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn joins_merges_rekeys_splits_and_answers_are_recorded() {
+        let (_d, st) = store();
+        let a = page(&st, A, "/", "App");
+        thread(&st, &a);
+        let b = page(&st, B, "/", "App");
+        let tb = thread(&st, &b);
+        let only_b = page(&st, B, "/only-b", "Only B");
+        let seq = st.newest_seq().unwrap();
+        st.join_origins(DAEMON, B, A).unwrap();
+        // Joining again changes nothing and records nothing.
+        st.join_origins(DAEMON, B, A).unwrap();
+        finish(&st, A);
+        let ev = recorded(&st, seq);
+        let kinds: Vec<&str> = ev.iter().map(|e| e.0.as_str()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "live.join",
+                "live.page_rekey",
+                "live.snapshot",
+                "live.snapshot",
+                "thread.move",
+                "live.page_merge"
+            ],
+            "{ev:?}"
+        );
+        assert_eq!(ev[0].1["origin"], B);
+        assert_eq!(ev[0].1["with"], A);
+        assert_eq!(ev[0].1["site"], A);
+        assert_eq!(ev[0].1["joined"], serde_json::json!([B]));
+        assert_eq!(ev[1].1["from_origin"], B);
+        assert_eq!(ev[1].1["to_origin"], A);
+        assert_eq!(ev[1].1["path"], "/only-b");
+        // The move copies the versions its thread names onto the site's page.
+        assert_eq!(ev[4].1["move_kind"], "join");
+        assert_eq!(ev[5].1["merged_into"], a.as_str());
+        let rows = st.events_after(seq, 1000).unwrap();
+        assert_eq!(rows[1].ids.artifact.as_deref(), Some(only_b.as_str()));
+        assert_eq!(rows[4].ids.thread.as_deref(), Some(tb.as_str()));
+        assert_eq!(rows[5].ids.artifact.as_deref(), Some(b.as_str()));
+        assert_eq!(rows[5].ids.artifact2.as_deref(), Some(a.as_str()));
+        let seq = st.newest_seq().unwrap();
+        // Splitting the key off moves the key and its pages to B.
+        st.split_origin(DAEMON, A).unwrap().unwrap();
+        assert!(st.split_origin(DAEMON, A).unwrap().is_none());
+        st.answer_join(DAEMON, C, A, ANSWER_LATER).unwrap();
+        let ev = recorded(&st, seq);
+        let kinds: Vec<&str> = ev.iter().map(|e| e.0.as_str()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "live.split",
+                "live.page_rekey",
+                "live.page_rekey",
+                "live.join_answer"
+            ],
+            "{ev:?}"
+        );
+        assert_eq!(ev[0].1["origin"], A);
+        assert_eq!(ev[0].1["before_site"], A);
+        assert_eq!(ev[0].1["site"], B);
+        assert_eq!(ev[0].1["never_with"], serde_json::json!([B]));
+        assert!(ev[1..3].iter().all(|e| e.1["to_origin"] == B));
+        assert_eq!(ev[3].1["answer"], "later");
+        assert!(ev[3].1["until"].is_string());
+    }
+
     #[test]
     fn a_join_or_split_waits_for_an_unfinished_join() {
         let (_d, st) = store();
@@ -1056,7 +1279,7 @@ mod tests {
         thread(&st, &b);
         thread(&st, &b);
         page(&st, C, "/y", "C");
-        st.join_origins(B, A).unwrap();
+        st.join_origins(DAEMON, B, A).unwrap();
         one_batch(&st, A);
         assert_eq!(st.joining_threads(A).unwrap(), 1);
         // Pending pages stay listed, marked so.
@@ -1067,16 +1290,16 @@ mod tests {
                 .any(|p| p.pending && p.page.artifact_id == b.as_str())
         );
         // Another join, either way, and any split wait for it.
-        assert_eq!(code_of(st.join_origins(C, A)), "joining");
-        assert_eq!(code_of(st.join_origins(A, C)), "joining");
-        assert_eq!(code_of(st.split_origin(B)), "joining");
-        assert_eq!(code_of(st.split_origin(A)), "joining");
+        assert_eq!(code_of(st.join_origins(DAEMON, C, A)), "joining");
+        assert_eq!(code_of(st.join_origins(DAEMON, A, C)), "joining");
+        assert_eq!(code_of(st.split_origin(DAEMON, B)), "joining");
+        assert_eq!(code_of(st.split_origin(DAEMON, A)), "joining");
         // The same join again finishes it; then they go through.
-        assert!(!st.join_origins(B, A).unwrap().changed);
+        assert!(!st.join_origins(DAEMON, B, A).unwrap().changed);
         finish(&st, A);
         assert_eq!(st.joining_threads(A).unwrap(), 0);
-        assert!(st.join_origins(C, A).unwrap().changed);
-        assert!(st.split_origin(B).unwrap().is_some());
+        assert!(st.join_origins(DAEMON, C, A).unwrap().changed);
+        assert!(st.split_origin(DAEMON, B).unwrap().is_some());
     }
 
     #[test]
@@ -1085,18 +1308,13 @@ mod tests {
         page(&st, A, "/users/1", "App");
         page(&st, B, "/", "App");
         let pat = crate::live::PathPattern::parse("/users/:id").unwrap();
-        let (rule, _) = st
-            .add_live_rule(&crate::audit::AuditCtx::DAEMON, A, &pat)
-            .unwrap();
-        st.add_live_rule(&crate::audit::AuditCtx::DAEMON, B, &pat)
-            .unwrap();
-        st.mark_rule_deleted(&crate::audit::AuditCtx::DAEMON, &rule.id)
-            .unwrap();
-        assert_eq!(code_of(st.join_origins(B, A)), "unmerging");
-        assert_eq!(code_of(st.join_origins(A, B)), "unmerging");
-        st.drop_rule(&crate::audit::AuditCtx::DAEMON, &rule.id)
-            .unwrap();
-        st.join_origins(B, A).unwrap();
+        let (rule, _) = st.add_live_rule(DAEMON, A, &pat).unwrap();
+        st.add_live_rule(DAEMON, B, &pat).unwrap();
+        st.mark_rule_deleted(DAEMON, &rule.id).unwrap();
+        assert_eq!(code_of(st.join_origins(DAEMON, B, A)), "unmerging");
+        assert_eq!(code_of(st.join_origins(DAEMON, A, B)), "unmerging");
+        st.drop_rule(DAEMON, &rule.id).unwrap();
+        st.join_origins(DAEMON, B, A).unwrap();
         assert_eq!(st.live_rules(A).unwrap().len(), 1, "B's rule is the site's");
     }
 
@@ -1105,7 +1323,7 @@ mod tests {
         let (_d, st) = store();
         page(&st, A, "/", "App");
         let t0 = chrono::Utc::now();
-        st.answer_join_at(B, A, ANSWER_LATER, t0).unwrap();
+        st.answer_join_at(DAEMON, B, A, ANSWER_LATER, t0).unwrap();
         let at = |h: i64| {
             st.join_suggestions_at(B, "/", "", t0 + chrono::Duration::hours(h))
                 .unwrap()
@@ -1114,7 +1332,7 @@ mod tests {
         assert_eq!(at(0), 0);
         assert_eq!(at(23), 0);
         assert_eq!(at(25), 1, "suggested again after a day");
-        st.answer_join_at(B, A, ANSWER_NEVER, t0).unwrap();
+        st.answer_join_at(DAEMON, B, A, ANSWER_NEVER, t0).unwrap();
         assert_eq!(at(24 * 365), 0);
     }
 
@@ -1122,16 +1340,13 @@ mod tests {
     fn removing_a_scope_removes_what_it_made_on_an_origin_split_off() {
         let (_d, st) = store();
         let a = page(&st, A, "/", "App");
-        st.join_origins(B, A).unwrap();
+        st.join_origins(DAEMON, B, A).unwrap();
         let sid = session(&st, "claude", "h2");
-        st.live_watch(&crate::audit::AuditCtx::DAEMON, &sid, &key(A, "/"), true)
-            .unwrap();
+        st.live_watch(DAEMON, &sid, &key(A, "/"), true).unwrap();
         // A, the key, is split off: the site's pages go with the key to B.
-        st.split_origin(A).unwrap().unwrap();
+        st.split_origin(DAEMON, A).unwrap().unwrap();
         assert_eq!(st.live_page_of(&a).unwrap().unwrap().origin, B);
-        let removed = st
-            .live_unwatch(&crate::audit::AuditCtx::DAEMON, &sid, &key(A, "/"))
-            .unwrap();
+        let removed = st.live_unwatch(DAEMON, &sid, &key(A, "/")).unwrap();
         assert_eq!(removed, vec![a.as_str().to_string()]);
     }
 
@@ -1140,8 +1355,7 @@ mod tests {
         let (_d, st) = store();
         let a = page(&st, A, "/", "App");
         let sid = session(&st, "claude", "h1");
-        st.live_watch(&crate::audit::AuditCtx::DAEMON, &sid, &key(B, "/"), true)
-            .unwrap();
+        st.live_watch(DAEMON, &sid, &key(B, "/"), true).unwrap();
         let watching = |id: &ArtifactId| {
             st.with_read(|c| {
                 Ok(c.query_row(
@@ -1153,17 +1367,15 @@ mod tests {
             .unwrap()
         };
         assert!(!watching(&a), "not joined yet");
-        st.join_origins(B, A).unwrap();
+        st.join_origins(DAEMON, B, A).unwrap();
         assert!(watching(&a), "the join makes B's scope cover A's pages");
         let later = page(&st, A, "/later", "Later");
         assert!(watching(&later), "and pages made later");
         let c_page = page(&st, C, "/c", "C");
-        st.join_origins(C, B).unwrap();
+        st.join_origins(DAEMON, C, B).unwrap();
         assert!(watching(&c_page), "and the pages of an origin joined later");
         // Removing the scope removes what it alone justified.
-        let removed = st
-            .live_unwatch(&crate::audit::AuditCtx::DAEMON, &sid, &key(B, "/"))
-            .unwrap();
+        let removed = st.live_unwatch(DAEMON, &sid, &key(B, "/")).unwrap();
         assert_eq!(removed.len(), 3);
     }
 
@@ -1171,11 +1383,11 @@ mod tests {
     fn splitting_keeps_history_with_the_site_and_restores_per_origin_keying() {
         let (_d, st) = store();
         let a = page(&st, A, "/", "App");
-        st.join_origins(B, A).unwrap();
-        st.join_origins(C, A).unwrap();
+        st.join_origins(DAEMON, B, A).unwrap();
+        st.join_origins(DAEMON, C, A).unwrap();
         assert_eq!(st.joined_site(C).unwrap().origins.len(), 3);
         // A member: its new pages are its own again; the site keeps its pages.
-        let s = st.split_origin(B).unwrap().unwrap();
+        let s = st.split_origin(DAEMON, B).unwrap().unwrap();
         assert_eq!(s.site.key, A);
         assert_eq!(s.site.origins.len(), 2);
         assert!(st.find_live_page(&key(B, "/")).unwrap().is_none());
@@ -1186,10 +1398,13 @@ mod tests {
                 .artifact_id,
             a.as_str()
         );
-        assert!(st.split_origin(B).unwrap().is_none(), "split already");
+        assert!(
+            st.split_origin(DAEMON, B).unwrap().is_none(),
+            "split already"
+        );
         // The key: the site's pages move to the newest origin left, which is
         // then alone, so the site is that origin's own.
-        let s = st.split_origin(A).unwrap().unwrap();
+        let s = st.split_origin(DAEMON, A).unwrap().unwrap();
         assert_eq!(s.site.key, C);
         assert!(!s.site.joined());
         assert_eq!(s.rekeyed, vec![a.as_str().to_string()]);
@@ -1212,9 +1427,8 @@ mod tests {
         page(&st, A, "/", "App");
         page(&st, B, "/users/1", "U");
         let pat = crate::live::PathPattern::parse("/users/:id").unwrap();
-        st.add_live_rule(&crate::audit::AuditCtx::DAEMON, B, &pat)
-            .unwrap();
-        st.join_origins(B, A).unwrap();
+        st.add_live_rule(DAEMON, B, &pat).unwrap();
+        st.join_origins(DAEMON, B, A).unwrap();
         let rules = st.live_rules(A).unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].origin, A);
@@ -1222,10 +1436,10 @@ mod tests {
         let r = st.resolve_live_key(&key(B, "/users/2")).unwrap();
         assert_eq!(r.key, key(A, "/users/:id"));
         assert!(
-            matches!(st.join_origins(A, A), Err(CoreError::Invalid { code, .. }) if code == "same_origin")
+            matches!(st.join_origins(DAEMON, A, A), Err(CoreError::Invalid { code, .. }) if code == "same_origin")
         );
         assert!(
-            matches!(st.join_origins(A, "http://localhost:9"), Err(CoreError::Invalid { code, .. }) if code == "unknown_site")
+            matches!(st.join_origins(DAEMON, A, "http://localhost:9"), Err(CoreError::Invalid { code, .. }) if code == "unknown_site")
         );
     }
 
@@ -1237,7 +1451,7 @@ mod tests {
         let other = page(&st, "http://localhost:9999", "/", "Other");
         let mv = |to: &ArtifactId| {
             st.refile_threads(
-                &crate::audit::AuditCtx::DAEMON,
+                DAEMON,
                 &[(
                     to.as_str().to_string(),
                     Refile {
@@ -1257,7 +1471,7 @@ mod tests {
         assert!(
             matches!(mv(&other), Err(CoreError::Invalid { code, .. }) if code == "cross_origin")
         );
-        st.join_origins("http://localhost:9999", A).unwrap();
+        st.join_origins(DAEMON, "http://localhost:9999", A).unwrap();
         // Joined: the other origin's page of / is pending, and a move onto it is within the site.
         assert!(mv(&other).is_ok());
     }
@@ -1284,13 +1498,13 @@ mod tests {
         page(&st, B, "/settings", "x");
         assert_eq!(st.join_suggestions(B, "/nowhere", "").unwrap().len(), 1);
         // Answered: not now, then never.
-        st.answer_join(B, A, ANSWER_LATER).unwrap();
+        st.answer_join(DAEMON, B, A, ANSWER_LATER).unwrap();
         assert!(st.join_suggestions(B, "/settings", "").unwrap().is_empty());
-        st.answer_join(B, A, ANSWER_NEVER).unwrap();
+        st.answer_join(DAEMON, B, A, ANSWER_NEVER).unwrap();
         assert!(st.join_suggestions(B, "/settings", "").unwrap().is_empty());
-        assert!(st.answer_join(B, A, "maybe").is_err());
+        assert!(st.answer_join(DAEMON, B, A, "maybe").is_err());
         // A joined origin is offered nothing.
-        st.join_origins(C, A).unwrap();
+        st.join_origins(DAEMON, C, A).unwrap();
         assert!(st.join_suggestions(C, "/settings", "").unwrap().is_empty());
     }
 
@@ -1302,7 +1516,7 @@ mod tests {
         page(&st, B, "/b", "B");
         page(&st, "http://localhost:9999", "/", "Other");
         assert_eq!(st.live_sites().unwrap().len(), 3);
-        st.join_origins(B, A).unwrap();
+        st.join_origins(DAEMON, B, A).unwrap();
         let sites = st.live_sites().unwrap();
         assert_eq!(sites.len(), 2);
         let s = sites.iter().find(|s| s.site.key == A).unwrap();

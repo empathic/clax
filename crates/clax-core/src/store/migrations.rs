@@ -496,8 +496,9 @@ pub const MIGRATIONS: &[&str] = &[
     // 23: the audit journal (spec 2026-10-06-toolpath-audit-design §5.1):
     // append-only events in commit order, the opaque install ID (128
     // random bits, minted by this migration's Rust step, `install_id`), each
-    // version's content hash and each session's transcript path. Events name artifacts without a
-    // foreign key, since they outlive deletion.
+    // version's content hash and each session's transcript path. Events
+    // name artifacts without a foreign key, since they outlive deletion.
+    // `Store::open` then records the history before it once (`backfill`).
     "CREATE TABLE audit_events (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
         at TEXT NOT NULL,
@@ -687,7 +688,16 @@ mod tests {
                 "install",
             ]
         );
-        assert_eq!(old, (None, None, 0));
+        // The backfill hashed the version (no files: the empty manifest)
+        // and recorded the session, the artifact and its version.
+        assert_eq!(
+            old,
+            (
+                Some(format!("sha256:{}", crate::audit::sha256_hex(b""))),
+                None,
+                3
+            )
+        );
         assert!(crate::store::audit::tests::is_install_id(
             &st.install_id().unwrap()
         ));

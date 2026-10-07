@@ -5,7 +5,7 @@
 //! from the LAN, L10), and admitted by the extension gateway's allowlist.
 
 use super::live::{
-    RefileCtx, clean_title, mover, origin_of, owner_reads, owner_writes, page_url, target_page,
+    OwnerWrite, RefileCtx, clean_title, mover, origin_of, owner_reads, page_url, target_page,
 };
 use crate::error::ApiError;
 use crate::identity::Identity;
@@ -169,7 +169,7 @@ fn join_batch(
     }
     // An emptied page is merged away, never deleted: kept whole, out of
     // the listings. Clients reload the site and the gallery on `site`.
-    let (merged, rekeyed) = st.settle_joined_pages(key)?;
+    let (merged, rekeyed) = st.settle_joined_pages(&rc.audit, key)?;
     s.live_ids.rekey(&rekeyed, key);
     if !merged.is_empty() || !rekeyed.is_empty() {
         announce_site(s, st, key)?;
@@ -234,19 +234,18 @@ fn join_batch(
 pub async fn join(
     State(s): State<AppState>,
     _o: SameOrigin,
-    who: Identity,
+    OwnerWrite(who): OwnerWrite,
     audit: AuditCtx,
     body: Result<Json<JoinBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    owner_writes(&who)?;
     let b = super::artifacts::body(body)?;
     let origin = origin_of(&s, &b.origin)?;
     let with = origin_of(&s, &b.with)?;
-    let rc = RefileCtx::of(&s, audit);
+    let rc = RefileCtx::of(&s, audit.clone());
     let st2 = s.clone();
     let (site, joined, moved, remaining) = s
         .store_call(move |st| {
-            let j = st.join_origins(&origin, &with)?;
+            let j = st.join_origins(&audit, &origin, &with)?;
             if j.changed {
                 st2.live_ids.rekey(&j.rekeyed, &j.site.key);
                 st2.live_ids.reload_sites(st)?;
@@ -286,17 +285,17 @@ pub struct SplitBody {
 pub async fn split(
     State(s): State<AppState>,
     _o: SameOrigin,
-    who: Identity,
+    _w: OwnerWrite,
+    audit: AuditCtx,
     body: Result<Json<SplitBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    owner_writes(&who)?;
     let b = super::artifacts::body(body)?;
     let origin = origin_of(&s, &b.origin)?;
     let o = origin.clone();
     let st2 = s.clone();
     let (split, site) = s
         .store_call(move |st| {
-            let Some(sp) = st.split_origin(&o)? else {
+            let Some(sp) = st.split_origin(&audit, &o)? else {
                 return Ok((false, st.joined_site(&o)?));
             };
             st2.live_ids.rekey(&sp.rekeyed, &sp.site.key);
@@ -332,15 +331,15 @@ pub struct AnswerBody {
 pub async fn answer(
     State(s): State<AppState>,
     _o: SameOrigin,
-    who: Identity,
+    _w: OwnerWrite,
+    audit: AuditCtx,
     body: Result<Json<AnswerBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    owner_writes(&who)?;
     let b = super::artifacts::body(body)?;
     let origin = origin_of(&s, &b.origin)?;
     let with = origin_of(&s, &b.with)?;
     let a = b.answer.clone();
-    s.store_call(move |st| st.answer_join(&origin, &with, &a))
+    s.store_call(move |st| st.answer_join(&audit, &origin, &with, &a))
         .await?;
     Ok(Json(json!({ "answer": b.answer })))
 }

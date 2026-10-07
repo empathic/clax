@@ -260,9 +260,33 @@ pub(crate) fn send_in(
     })
 }
 
+/// The `thread.send` record of one send on artifact `aid` (audit spec
+/// §6.2): to `target`, the rows it made, the threads it sent; `tid` the
+/// thread of a one-thread send, `batch_id` a batch's.
+pub(super) fn send_record(
+    at: &str,
+    aid: &str,
+    tid: Option<&str>,
+    target: serde_json::Value,
+    feedback_ids: Vec<String>,
+    batch_id: Option<&str>,
+    thread_ids: Vec<String>,
+) -> AuditRecord {
+    let mut r = AuditRecord::new(AuditKind::ThreadSend, at)
+        .with("target", target)
+        .with("feedback_ids", feedback_ids);
+    if let Some(b) = batch_id {
+        r = r.with("batch_id", b);
+    }
+    r = r.with("thread_ids", thread_ids);
+    r.ids.artifact = Some(aid.to_string());
+    r.ids.thread = tid.map(str::to_string);
+    r
+}
+
 /// The `feedback.delivered` record of row `feedback_id` of thread `tid` on
 /// artifact `aid`, handed to session `sid` by `tier` for the first time.
-fn delivered_record(
+pub(super) fn delivered_record(
     at: &str,
     aid: &str,
     tid: &str,
@@ -358,10 +382,15 @@ impl Store {
                 params![thread_id],
                 |r| r.get(0),
             )?;
-            let rec = thread_record(AuditKind::ThreadSend, &Store::now(), &aid, thread_id)
-                .with("target", send_target_value(tx, sent.to.as_deref())?)
-                .with("feedback_ids", sent.feedback_ids)
-                .with("thread_ids", vec![thread_id.to_string()]);
+            let rec = send_record(
+                &Store::now(),
+                &aid,
+                Some(thread_id),
+                send_target_value(tx, sent.to.as_deref())?,
+                sent.feedback_ids,
+                None,
+                vec![thread_id.to_string()],
+            );
             self.record_audit(tx, ctx, rec)?;
             Ok(())
         })?;

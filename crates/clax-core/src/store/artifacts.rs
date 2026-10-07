@@ -37,12 +37,14 @@ pub(super) fn create_record(a: &Artifact, at: &str) -> AuditRecord {
 /// The record of version `v` of `a` (spec §6.1, §6.3): `version.publish`,
 /// or `live.snapshot` with the page's origin and path when `page` is the
 /// live page it was written to. Each file names its `sha256:` hash, size and
-/// type; `carried` are the paths taken unchanged from the previous version.
+/// type; `carried` are the paths taken unchanged from the previous version;
+/// `by_page` whether the page wrote it (`None`: not known, as in the
+/// backfill).
 pub(super) fn version_record(
     a: &Artifact,
     v: &Version,
     carried: &[String],
-    by_page: bool,
+    by_page: Option<bool>,
     page: Option<&LivePage>,
 ) -> AuditRecord {
     let files: serde_json::Map<String, serde_json::Value> = v
@@ -82,6 +84,32 @@ pub(super) fn version_record(
     }
     r.ids.artifact = Some(a.id.clone());
     r
+}
+
+/// Where version `n` of `id` keeps the file `path`: `index.html` in the
+/// version's directory, any other file under its `files/`.
+pub(super) fn version_file_path(
+    home: &crate::Home,
+    id: &ArtifactId,
+    n: u32,
+    path: &str,
+) -> PathBuf {
+    let vdir = home.version_dir(id, n);
+    if path == INDEX {
+        vdir.join(INDEX)
+    } else {
+        vdir.join("files").join(path)
+    }
+}
+
+/// The `artifact.delete` record of `aid` (spec §6.1): its title and
+/// current version when deleted, at `at`.
+pub(super) fn delete_record(at: &str, aid: &str, title: &str, current: u32) -> AuditRecord {
+    let mut rec = AuditRecord::new(AuditKind::ArtifactDelete, at)
+        .with("title", title)
+        .with("current_version", current);
+    rec.ids.artifact = Some(aid.to_string());
+    rec
 }
 
 /// A stored JSON column that does not parse, as found by [`Store::corrupt_rows`].
@@ -284,11 +312,7 @@ impl Store {
             else {
                 return Err(CoreError::NotFound);
             };
-            let mut rec = AuditRecord::new(AuditKind::ArtifactDelete, now)
-                .with("title", title)
-                .with("current_version", current);
-            rec.ids.artifact = Some(id.as_str().to_string());
-            self.record_audit(tx, ctx, rec)?;
+            self.record_audit(tx, ctx, delete_record(&now, id.as_str(), &title, current))?;
             tx.execute(
                 "DELETE FROM docs WHERE artifact_id = ?1",
                 params![id.as_str()],
@@ -889,7 +913,7 @@ impl Store {
             if expected == 0 && a.kind != KIND_LIVE {
                 self.record_audit(tx, ctx, create_record(&a, &v.created_at))?;
             }
-            let rec = version_record(&a, &v, &carried_paths, p.by_page, page.as_ref());
+            let rec = version_record(&a, &v, &carried_paths, Some(p.by_page), page.as_ref());
             self.record_audit(tx, ctx, rec)?;
             std::fs::rename(&staging.0, &vdir)?;
             renamed.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -956,13 +980,10 @@ impl Store {
         let Some(meta) = v.files.get(path) else {
             return Ok(None);
         };
-        let vdir = self.home.version_dir(id, n);
-        let p = if path == INDEX {
-            vdir.join(INDEX)
-        } else {
-            vdir.join("files").join(path)
-        };
-        Ok(Some((p, meta.clone())))
+        Ok(Some((
+            version_file_path(&self.home, id, n, path),
+            meta.clone(),
+        )))
     }
 }
 
