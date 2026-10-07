@@ -42,6 +42,17 @@ async fn owner_tap(ts: &TestServer) -> Tap {
     Tap(ts.stream_as_owner(&["questions"]).await)
 }
 
+/// The late answers a `stop_hook` feedback poll of session `sid` takes now.
+async fn late(ts: &TestServer, sid: &str) -> Value {
+    let v: Value = ts
+        .get_authed(&format!("/api/sessions/{sid}/feedback?tier=stop_hook"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    v["answers"].clone()
+}
+
 async fn session(ts: &TestServer, hsid: &str) -> String {
     ts.register_session("claude", hsid).await["id"]
         .as_str()
@@ -879,6 +890,70 @@ async fn lan_viewer_and_foreign_origin_are_refused() {
 }
 
 #[tokio::test]
+async fn owner_routes_refuse_lan_owner_cookies_artifact_origins_and_viewers() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let sid = session(&ts, "h1").await;
+    let qid = ts.ask(&sid, body()).await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (lan, base) = ts.lan();
+    let v = ts.viewer(Some("Mia")).await;
+    let viewer = format!("clax_viewer={}", v.cookie);
+    let aid = ts.publish("page", &[("index.html", "<p>p</p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let page = format!("http://{aid}.localhost:{}", ts.addr.port());
+    for action in ["answer", "decline", "release"] {
+        let path = format!("/api/questions/{qid}/{action}");
+        let b = json!({"answers": [{"selected": ["A"]}]});
+        let with_body = |r: reqwest::RequestBuilder| {
+            if action == "answer" { r.json(&b) } else { r }
+        };
+        // A LAN peer presenting the owner cookie: the cookie needs a local peer.
+        let res = with_body(lan.post(format!("{base}{path}")))
+            .header("cookie", ts.owner_cookie())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 403, "LAN owner cookie, {action}");
+        // An artifact's own origin, with the owner cookie.
+        let res = with_body(ts.client.post(format!("{}{path}", ts.base)))
+            .header("cookie", ts.owner_cookie())
+            .header("origin", &page)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 403, "artifact origin, {action}");
+        // A local viewer cookie alone.
+        let res = with_body(ts.client.post(format!("{}{path}", ts.base)))
+            .header("cookie", &viewer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 403, "viewer cookie, {action}");
+    }
+    let res = lan
+        .get(format!("{base}/api/questions/{qid}"))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403, "LAN owner cookie, read");
+    let res = ts
+        .client
+        .get(format!("{}/api/questions", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .header("origin", &page)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403, "artifact origin, list");
+    assert_eq!(ts.question_status(&qid).await, "open");
+}
+
+#[tokio::test]
 async fn hook_mode_is_terminal_without_a_surface() {
     let ts = TestServer::spawn().await;
     let sid = session(&ts, "h1").await;
@@ -953,6 +1028,106 @@ async fn a_late_answer_is_handed_over_once_by_the_feedback_poll() {
         .unwrap();
     assert!(again["answers"].as_array().unwrap().is_empty());
     assert!(again["text"].is_null());
+}
+
+#[tokio::test]
+async fn an_answer_a_question_poll_holds_reaches_only_that_poll() {
+    let ts = TestServer::spawn().await;
+    let sid = session(&ts, "h1").await;
+    // Answered while a poll holds it (closed in the store, so the poll is
+    // not woken): no feedback poll takes it until the poll lets go.
+    let qid = ts.ask(&sid, body()).await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let req = ts.authed(ts.client.get(format!(
+        "{}/api/sessions/{sid}/questions/{qid}?wait=60",
+        ts.base
+    )));
+    let ask = tokio::spawn(async move { req.send().await });
+    ts.wait_question_waiters(&qid, 1).await;
+    ts.store
+        .close_question(&qid, clax_core::store::questions::Close::Decline)
+        .unwrap();
+    assert_eq!(
+        late(&ts, &sid).await,
+        json!([]),
+        "held by the question poll"
+    );
+    ask.abort();
+    ts.wait_question_waiters(&qid, 0).await;
+    assert_eq!(late(&ts, &sid).await[0]["id"], qid.as_str(), "let go");
+    // Each round races the question poll against a feedback poll woken by
+    // the same answer; the feedback poll then returns with the next
+    // question's answer alone.
+    let feedback = |ts: &TestServer| {
+        let req = ts.authed(
+            ts.client
+                .get(format!("{}/api/sessions/{sid}/feedback?wait=60", ts.base)),
+        );
+        tokio::spawn(async move { req.send().await.unwrap().json::<Value>().await.unwrap() })
+    };
+    for round in 0..10 {
+        let held = ts.ask(&sid, body()).await["question"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let req = ts.authed(ts.client.get(format!(
+            "{}/api/sessions/{sid}/questions/{held}?wait=60",
+            ts.base
+        )));
+        let ask =
+            tokio::spawn(async move { req.send().await.unwrap().json::<Value>().await.unwrap() });
+        ts.wait_question_waiters(&held, 1).await;
+        let waiter = feedback(&ts);
+        ts.wait_feedback_waiters(&sid, 1).await;
+        ts.answer_question(&held, json!({"answers": [{"selected": ["A"]}]}))
+            .await;
+        assert_eq!(ask.await.unwrap()["question"]["status"], "answered");
+        let next = ts.ask(&sid, body()).await["question"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        ts.answer_question(&next, json!({"answers": [{"selected": ["B"]}]}))
+            .await;
+        let got = waiter.await.unwrap();
+        let ids: Vec<&str> = got["answers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec![next.as_str()], "round {round}: {got}");
+        ts.wait_feedback_waiters(&sid, 0).await;
+    }
+}
+
+#[tokio::test]
+async fn a_late_answers_age_is_read_from_the_question_clock() {
+    let clock = std::sync::Arc::new(clax_core::working::ManualClock::at(&clax_core::Store::now()));
+    let c = clock.clone();
+    let ts = TestServer::spawn_with(move |s| s.question_clock = c).await;
+    let sid = session(&ts, "h1").await;
+    let qid = ts.ask(&sid, body()).await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ts.answer_question(&qid, json!({"answers": [{"selected": ["A"]}]}))
+        .await;
+    clock.advance(14 * 60 + 30);
+    let got: Value = ts
+        .get_authed(&format!("/api/sessions/{sid}/feedback?tier=stop_hook"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let text = got["text"].as_str().unwrap();
+    assert!(
+        text.starts_with(&format!(
+            "[clax] The person answered your question \"Pick\" ({qid}, asked 14 min ago):"
+        )),
+        "{text}"
+    );
 }
 
 #[tokio::test]

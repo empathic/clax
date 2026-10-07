@@ -279,12 +279,6 @@ fn question_queries() -> Vec<Hot> {
             &["questions_by_session"],
         ),
         (
-            "take late answers",
-            q::TAKE_LATE.into(),
-            vec![t("s1"), t("2026-01-01T00:00:00.000Z")],
-            &["questions_by_session"],
-        ),
-        (
             "open of a session",
             q::OPEN_OF_SESSION.into(),
             vec![t("s1")],

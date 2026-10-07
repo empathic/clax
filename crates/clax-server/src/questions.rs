@@ -39,6 +39,8 @@ pub const MAX_POLLS: usize = 4;
 #[derive(Default)]
 pub struct QuestionWaiters {
     inner: Mutex<Inner>,
+    /// Notified whenever a hold starts or ends.
+    changed: Notify,
 }
 
 #[derive(Default)]
@@ -83,6 +85,7 @@ impl QuestionWaiters {
         let notify = e.0.clone();
         g.armed.remove(qid);
         drop(g);
+        self.changed.notify_waiters();
         Some((
             notify,
             HoldGuard {
@@ -103,6 +106,11 @@ impl QuestionWaiters {
     /// How many polls hold `qid`.
     pub fn count(&self, qid: &str) -> usize {
         self.lock().held.get(qid).map_or(0, |e| e.1)
+    }
+
+    /// Notified whenever a hold starts or ends.
+    pub fn changed(&self) -> &Notify {
+        &self.changed
     }
 
     /// Starts a grace timer for `qid`, replacing any pending one; its
@@ -141,10 +149,38 @@ impl Drop for HoldGuard {
             }
             last
         };
+        self.waiters.changed.notify_waiters();
         if last && let Some(f) = self.on_last.take() {
             f();
         }
     }
+}
+
+/// `count()` once it equals `until`, or after 5 s; `count()` at once
+/// without `until`. `changed` is notified whenever the count may change.
+/// For the debug builds' waiter routes, so tests wait without polling.
+#[cfg(debug_assertions)]
+pub async fn count_until(
+    changed: &Notify,
+    count: impl Fn() -> usize,
+    until: Option<usize>,
+) -> usize {
+    let Some(n) = until else {
+        return count();
+    };
+    let reached = async {
+        loop {
+            let c = changed.notified();
+            tokio::pin!(c);
+            c.as_mut().enable();
+            if count() == n {
+                return;
+            }
+            c.await;
+        }
+    };
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), reached).await;
+    count()
 }
 
 /// The owner view of `q` (spec §5.4): never a session ID, PID or working

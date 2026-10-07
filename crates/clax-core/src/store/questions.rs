@@ -188,7 +188,6 @@ pub(crate) const CLOSED_BEFORE: &str = concat!(
      ORDER BY closed_at DESC, id DESC LIMIT ?3"
 );
 pub(crate) const LATE_ANSWERS: &str = concat!(select!(), late!());
-pub(crate) const TAKE_LATE: &str = concat!("UPDATE questions SET taken_at = ?2 ", late!());
 pub(crate) const OPEN_OF_SESSION: &str =
     "SELECT id FROM questions WHERE session_id = ?1 AND status = 'open'";
 pub(crate) const WITHDRAW_SESSION: &str =
@@ -456,13 +455,21 @@ impl Store {
     }
 
     /// Session `sid`'s answered and declined `ask` questions it has not yet
-    /// received, in the order they closed, marked received in the same
-    /// transaction so each is returned once.
-    pub fn take_late_answers(&self, sid: &str) -> Result<Vec<QuestionRow>> {
+    /// received and for which `skip` is false (given the question ID), in
+    /// the order they closed, marked received in the same transaction so each
+    /// is returned once. A skipped question stays unreceived; the daemon skips
+    /// those a question poll holds, so that poll alone hands them over.
+    pub fn take_late_answers(
+        &self,
+        sid: &str,
+        skip: impl Fn(&str) -> bool,
+    ) -> Result<Vec<QuestionRow>> {
         self.with_tx(|tx| {
             let mut out = rows(tx, LATE_ANSWERS, params![sid])?;
-            if !out.is_empty() {
-                tx.execute(TAKE_LATE, params![sid, Store::now()])?;
+            out.retain(|q| !skip(&q.id));
+            let now = Store::now();
+            for q in &out {
+                tx.execute(TAKE, params![q.id, now])?;
             }
             out.sort_unstable_by(|a, b| (&a.closed_at, &a.id).cmp(&(&b.closed_at, &b.id)));
             Ok(out)
@@ -723,14 +730,33 @@ mod tests {
         st.take_question(&taken.id).unwrap();
         st.close_question(&taken.id, Close::Decline).unwrap();
         let late: Vec<String> = st
-            .take_late_answers(&s)
+            .take_late_answers(&s, |_| false)
             .unwrap()
             .into_iter()
             .map(|q| q.id)
             .collect();
         assert_eq!(late, vec![q.id.clone(), d.id.clone()]);
-        assert!(st.take_late_answers(&s).unwrap().is_empty());
+        assert!(st.take_late_answers(&s, |_| false).unwrap().is_empty());
         assert!(st.question(&q.id).unwrap().unwrap().taken_at.is_some());
+    }
+
+    #[test]
+    fn a_skipped_late_answer_stays_for_a_later_take() {
+        let (_d, st) = store();
+        let s = session(&st, "claude", "h1");
+        let (held, _) = st.create_question(new(&s, Source::Ask, None)).unwrap();
+        let (free, _) = st.create_question(new(&s, Source::Ask, None)).unwrap();
+        for q in [&held, &free] {
+            st.close_question(&q.id, Close::Decline).unwrap();
+        }
+        let ids = |v: Vec<QuestionRow>| v.into_iter().map(|q| q.id).collect::<Vec<_>>();
+        let first = st.take_late_answers(&s, |id| id == held.id).unwrap();
+        assert_eq!(ids(first), vec![free.id.clone()]);
+        assert!(st.question(&held.id).unwrap().unwrap().taken_at.is_none());
+        assert_eq!(
+            ids(st.take_late_answers(&s, |_| false).unwrap()),
+            vec![held.id.clone()]
+        );
     }
 
     #[test]

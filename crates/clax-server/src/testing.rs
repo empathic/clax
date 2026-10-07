@@ -118,6 +118,7 @@ impl TestServer {
             questions: Arc::new(Default::default()),
             question_grace: Duration::from_secs(5),
             question_sleeper: Arc::new(crate::questions::TokioSleeper),
+            question_clock: Arc::new(clax_core::working::SystemClock),
             terminal_after_s: clax_core::config::TERMINAL_AFTER_S,
         };
         f(&mut state);
@@ -723,17 +724,17 @@ impl TestServer {
     }
 
     /// Returns once `n` `wait_for_feedback` polls of session `sid` are in
-    /// progress; panics after 5 s.
+    /// progress; panics when the daemon gives up waiting (5 s).
     pub async fn wait_feedback_waiters(&self, sid: &str, n: u64) {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        while self.feedback_waiters(sid).await != n {
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "{n} feedback polls of {sid} within 5 s"
-            );
-            tokio::task::yield_now().await;
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        let v: serde_json::Value = self
+            .get_authed(&format!(
+                "/api/_test/sessions/{sid}/feedback/waiters?until={n}"
+            ))
+            .await
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(v["count"], n, "{n} feedback polls of {sid} within 5 s");
     }
 
     /// A paired extension: a fresh credential for this server's extension
@@ -795,17 +796,16 @@ impl TestServer {
         v["count"].as_u64().expect("a count")
     }
 
-    /// Returns once `n` polls hold question `qid`; panics after 5 s.
+    /// Returns once `n` polls hold question `qid`; panics when the daemon
+    /// gives up waiting (5 s).
     pub async fn wait_question_waiters(&self, qid: &str, n: u64) {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        while self.question_waiters(qid).await != n {
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "{n} polls of {qid} within 5 s"
-            );
-            tokio::task::yield_now().await;
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        let v: serde_json::Value = self
+            .get_authed(&format!("/api/_test/questions/{qid}/waiters?until={n}"))
+            .await
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(v["count"], n, "{n} polls of {qid} within 5 s");
     }
 }
 

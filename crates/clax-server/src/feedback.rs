@@ -19,6 +19,8 @@ use tokio::sync::Notify;
 pub struct FeedbackWaiters {
     notifies: Mutex<HashMap<String, Arc<Notify>>>,
     active: Mutex<HashMap<String, usize>>,
+    /// Notified whenever a `wait_for_feedback` long-poll starts or ends.
+    changed: Notify,
 }
 
 impl FeedbackWaiters {
@@ -60,6 +62,7 @@ impl FeedbackWaiters {
             .unwrap()
             .entry(session_id.to_string())
             .or_default() += 1;
+        self.changed.notify_waiters();
         WaitGuard {
             waiters: self.clone(),
             session_id: session_id.to_string(),
@@ -77,6 +80,11 @@ impl FeedbackWaiters {
             .unwrap_or(0)
     }
 
+    /// Notified whenever a `wait_for_feedback` long-poll starts or ends.
+    pub fn changed(&self) -> &Notify {
+        &self.changed
+    }
+
     /// Whether a `wait_for_feedback` long-poll (`tier=wait`) of `session_id`
     /// is in progress; tier 5 (`codex queue`, Pi `inject`) is skipped while it is.
     pub fn is_waiting(&self, session_id: &str) -> bool {
@@ -92,13 +100,16 @@ pub struct WaitGuard {
 
 impl Drop for WaitGuard {
     fn drop(&mut self) {
-        let mut active = self.waiters.active.lock().unwrap();
-        if let Some(n) = active.get_mut(&self.session_id) {
-            *n -= 1;
-            if *n == 0 {
-                active.remove(&self.session_id);
+        {
+            let mut active = self.waiters.active.lock().unwrap();
+            if let Some(n) = active.get_mut(&self.session_id) {
+                *n -= 1;
+                if *n == 0 {
+                    active.remove(&self.session_id);
+                }
             }
         }
+        self.waiters.changed.notify_waiters();
     }
 }
 
