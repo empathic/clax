@@ -1003,6 +1003,12 @@ fn doctor_reports_codex_push_from_the_daemons_path() {
 /// wait finds EOF, where an end still open somewhere would leave nothing to
 /// read yet. Asked once the closing must already have happened, so the
 /// answer does not depend on how fast the machine is.
+///
+/// It relies on nextest running each test in a process of its own. Under
+/// `cargo test`, where tests are threads of one process, another test's fork
+/// can catch a copy of the pair before std marks it close-on-exec (macOS has
+/// no `socketpair` flag for that), and a child still running then would read
+/// as an end left open.
 fn other_ends_closed(ours: &std::os::unix::net::UnixStream) -> bool {
     use std::io::Read;
     ours.set_nonblocking(true).unwrap();
@@ -1070,9 +1076,31 @@ fn a_foreground_daemon_closes_inherited_descriptors() {
     // Drops this process's copy of the other end.
     drop(cmd);
     // The daemon closes inherited descriptors before anything else, then logs
-    // to stdout; it logs "codex push" after it has written daemon.json. Its
-    // log is read until that line (or its end, if the daemon exits first), so
-    // the wait is on the daemon, not on a clock.
+    // to stdout, and goes on logging after it has written daemon.json. Its log
+    // is read a line at a time until daemon.json names it, or to its end if it
+    // exits first, so the wait is on the daemon, not on a clock. A watchdog
+    // kills it only if it neither does so nor exits within HANG_GUARD, which
+    // ends the log too, so a daemon that never serves fails the test rather
+    // than hanging it.
+    const HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(90);
+    let home = e.dir.path().join("ax");
+    let pid = child.id();
+    let names_child = || {
+        std::fs::read_to_string(home.join("daemon.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|v| v["pid"].as_u64())
+            == Some(u64::from(pid))
+    };
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    let guard = std::thread::spawn(move || {
+        if done_rx.recv_timeout(HANG_GUARD) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+            use nix::sys::signal::{Signal, kill};
+            let _ = kill(nix::unistd::Pid::from_raw(pid as i32), Signal::SIGKILL);
+            return true;
+        }
+        false
+    });
     let mut log = std::io::BufReader::new(child.stdout.take().unwrap());
     let mut line = String::new();
     let mut seen = String::new();
@@ -1082,23 +1110,25 @@ fn a_foreground_daemon_closes_inherited_descriptors() {
             break false;
         }
         seen.push_str(&line);
-        if line.contains("codex push") {
+        if names_child() {
             break true;
         }
     };
     let closed = other_ends_closed(&ours);
-    let named = std::fs::read_to_string(e.dir.path().join("ax/daemon.json"))
-        .ok()
-        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-        .and_then(|v| v["pid"].as_u64());
     let alive = child.try_wait().unwrap().is_none();
+    // Stops the watchdog before the daemon is killed and reaped, so it can
+    // never signal a reused pid.
+    drop(done_tx);
     let _ = child.kill();
     let _ = child.wait();
-    assert!(ready, "the daemon ended before it served; its log:\n{seen}");
-    assert_eq!(
-        named,
-        Some(u64::from(child.id())),
-        "daemon.json does not name the daemon"
+    let hung = guard.join().unwrap();
+    assert!(
+        !hung,
+        "the daemon neither wrote daemon.json naming it nor exited within {HANG_GUARD:?}; its log:\n{seen}"
+    );
+    assert!(
+        ready,
+        "the daemon ended before daemon.json named it; its log:\n{seen}"
     );
     assert!(alive, "the daemon kept running after closing descriptors");
     assert!(closed, "the daemon kept an inherited descriptor open");
