@@ -883,4 +883,35 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(ctl.state.get().notice).toBeNull();
     ctl.dispose();
   });
+
+  it("forgets a reopen asked before a name when the notice is dismissed or the window passes", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const done = thread("t9", { status: "resolved", resolved_by: "viewer:u_1", resolved_at: "2026-09-30T11:00:00.000Z" });
+      const reopened: string[] = [];
+      const { ctl } = await started({ lan: true, threads: [done], routes: url => {
+        if (url.endsWith("/reopen")) { reopened.push(url); return { thread: { ...done, status: "open", resolved_by: null, resolved_at: null } }; }
+        return undefined;
+      } });
+      await vi.waitFor(() => expect(ctl.state.get().threads).toHaveLength(1));
+      const me = (name: string) => ({ public_id: "u_1", display_name: name, created_at: "x" });
+      // Dismissed: naming oneself later reopens nothing.
+      ctl.resolveThread(done);
+      await vi.waitFor(() => expect(ctl.state.get().menu).toBe("people"));
+      ctl.dismissNotice();
+      ctl.setMe(me("Mia"));
+      // Past the window: nothing either.
+      ctl.setMe({ ...me(""), display_name: null });
+      ctl.resolveThread(done);
+      await vi.waitFor(() => expect(ctl.state.get().notice).toContain("Add your name"));
+      const { REOPEN_NAME_MS } = await import("./artifact-controller");
+      vi.setSystemTime(Date.now() + REOPEN_NAME_MS + 1);
+      ctl.setMe(me("Mia"));
+      await Promise.resolve();
+      expect(reopened).toEqual([]);
+      ctl.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

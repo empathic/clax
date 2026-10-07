@@ -82,7 +82,11 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: 
       // button's picker there) and its versions (its comments' tags).
       const t = siteThread(d, s?.on, m.threadId);
       const art = t ? await d.api.artifact(t.artifact_id).catch(() => null) : null;
-      reply({ t: "far-page", req: m.req, page: art && t ? { artifactId: t.artifact_id, agents: art.artifact.participants?.agents ?? [], versions: art.versions } : null });
+      reply({ t: "far-page", req: m.req, page: art && t ? {
+        artifactId: t.artifact_id, agents: art.artifact.participants?.agents ?? [],
+        // Only what a version tag reads: no files, notes or labels cross.
+        versions: art.versions.map(v => ({ n: v.n, created_at: v.created_at, agent_harness: v.agent_harness ?? null })),
+      } : null });
       return;
     }
     case "clip": {

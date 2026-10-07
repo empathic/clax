@@ -15,7 +15,10 @@ export type HistoryEvent = { v: number | null; who: string; agent: boolean; verb
 
 export const agentName = (h: string | null | undefined): string => h || "agent";
 
-export function versionAt(versions: Version[], iso: string): number {
+/** What a version tag needs of a version (all the side panel has of another page's). */
+export type VersionTag = Pick<Version, "n" | "created_at" | "agent_harness">;
+
+export function versionAt(versions: VersionTag[], iso: string): number {
   let n = 1;
   for (const v of versions) if (v.created_at <= iso && v.n > n) n = v.n;
   return n;
@@ -23,13 +26,16 @@ export function versionAt(versions: Version[], iso: string): number {
 
 /** `names` turns a `resolved_by` value (`viewer:<public_id>`, `agent:<harness>`) into a name.
  * `more.working` names the agent working on the open thread now: the line ends with it. */
-export function historyOf(t: Thread, versions: Version[], names: (by: string) => string, more: { working?: string | null } = {}): HistoryEvent[] {
+export function historyOf(t: Thread, versions: VersionTag[], names: (by: string) => string, more: { working?: string | null } = {}): HistoryEvent[] {
   const out: { at: string; e: HistoryEvent }[] = [];
+  // A person's event is tagged with the version current then; with no
+  // versions known (another page's, not loaded yet), with none.
+  const current = (iso: string) => (versions.length ? versionAt(versions, iso) : null);
   // A batch send (spec §8): "sent it with 2 others · “Before the demo”".
   for (const b of t.sends ?? []) {
     const others = b.size - 1;
     const verb = "sent it" + (others > 0 ? ` with ${others} other${others === 1 ? "" : "s"}` : "") + (b.note ? ` · “${b.note}”` : "");
-    out.push({ at: b.sent_at, e: { v: versionAt(versions, b.sent_at), who: b.sent_by, agent: false, verb } });
+    out.push({ at: b.sent_at, e: { v: current(b.sent_at), who: b.sent_by, agent: false, verb } });
   }
   // A version no agent published (a live page's snapshot) is named by the
   // agent whose reply addressed the thread: the last one before it, else the first.
@@ -45,7 +51,7 @@ export function historyOf(t: Thread, versions: Version[], names: (by: string) =>
   }
   if (t.status === "resolved" && t.resolved_by && t.resolved_at) {
     const agent = t.resolved_by.startsWith("agent:");
-    out.push({ at: t.resolved_at, e: { v: agent ? null : versionAt(versions, t.resolved_at), who: names(t.resolved_by), agent, verb: "resolved" } });
+    out.push({ at: t.resolved_at, e: { v: agent ? null : current(t.resolved_at), who: names(t.resolved_by), agent, verb: "resolved" } });
   }
   // "~" sorts after every timestamp: working ends the line.
   if (more.working && t.status === "open") out.push({ at: "~", e: { v: null, who: more.working, agent: true, verb: "working on it" } });
@@ -57,7 +63,7 @@ export function historyOf(t: Thread, versions: Version[], names: (by: string) =>
  * first comment, the version it was made on; a person's reply, the version
  * current then (none while `versions` is not known); an agent's reply, none
  * (its address names one: `addressedNote`). */
-export function commentVersion(t: Thread, c: Comment, versions: Version[]): number | null {
+export function commentVersion(t: Thread, c: Comment, versions: VersionTag[]): number | null {
   if (c.author_kind === "agent") return null;
   if (c.id === t.comments[0]?.id) return t.version_n;
   return versions.length ? versionAt(versions, c.created_at) : null;
@@ -65,7 +71,7 @@ export function commentVersion(t: Thread, c: Comment, versions: Version[]): numb
 
 /** The version an agent's reply is labelled with ("addressed in vN"): the
  * first version that addressed the thread created at or after the reply. */
-export function addressedNote(t: Thread, c: Comment, versions: Version[]): number | null {
+export function addressedNote(t: Thread, c: Comment, versions: VersionTag[]): number | null {
   if (c.author_kind !== "agent") return null;
   const at = (n: number) => versions.find(v => v.n === n)?.created_at ?? "";
   return (t.addressed_in ?? []).find(n => at(n) >= c.created_at) ?? null;

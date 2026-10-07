@@ -141,10 +141,10 @@ describe("messages", () => {
     expect(isToPanel({ t: "clip", req: 1, url: "data:image/png;base64,iVBORw0KGgo=" })).toBe(true);
     expect(isToPanel({ t: "clip", req: 1, url: null })).toBe(true);
     expect(isFromPanel({ t: "far-page", req: 2, threadId: ULID })).toBe(true);
-    const fp = { artifactId: "7q3k9mzx2b4t", agents: [{ handle: `a_${"0".repeat(22)}`, harness: "claude", live: true }], versions: [{ artifact_id: "7q3k9mzx2b4t", n: 1, label: null, created_at: "t", files: {} }] };
+    const fp = { artifactId: "7q3k9mzx2b4t", agents: [{ handle: `a_${"0".repeat(22)}`, harness: "claude", live: true }], versions: [{ n: 1, created_at: "t", agent_harness: null }] };
     expect(isToPanel({ t: "far-page", req: 2, page: fp })).toBe(true);
     expect(isToPanel({ t: "far-page", req: 2, page: null })).toBe(true);
-    for (const page of [{ ...fp, artifactId: "x" }, { ...fp, agents: [{ handle: "<b>", harness: "claude", live: true }] }, { ...fp, versions: "v1" }, { ...fp, extra: 1 }]) expect(isToPanel({ t: "far-page", req: 2, page })).toBe(false);
+    for (const page of [{ ...fp, artifactId: "x" }, { ...fp, agents: [{ handle: "<b>", harness: "claude", live: true }] }, { ...fp, versions: "v1" }, { ...fp, extra: 1 }, { ...fp, versions: [{ n: 1, created_at: "t", agent_harness: null, files: {} }] }]) expect(isToPanel({ t: "far-page", req: 2, page })).toBe(false);
     for (const url of ["http://localhost:7480/x.png", "data:text/html;base64,PGI+", "data:image/svg+xml;base64,PHN2Zz4=", `data:image/png;base64,${"A".repeat(7_000_000)}`]) expect(isToPanel({ t: "clip", req: 1, url })).toBe(false);
     expect(isFromPanel({ t: "open-thread", threadId: "x" })).toBe(false);
     expect(isFromPanel({ t: "open-thread", threadId: ULID, url: "http://localhost:5173/" })).toBe(false);

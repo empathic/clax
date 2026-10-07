@@ -79,7 +79,7 @@ describe("Sidebar", () => {
     document.body.appendChild(root);
     const view = mount(Sidebar, { versions: [], shown: 1, agent: "claude", threads, resolved: {}, me, now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() }, root);
     expect(Array.from(root.querySelectorAll(".hist .ev:last-child")).map(e => e.textContent)).toEqual([
-      "v1 Alex resolved", "v1 Viewer resolved", "v1 Viewer resolved", "codex resolved", "v1 Mia resolved",
+      "Alex resolved", "Viewer resolved", "Viewer resolved", "codex resolved", "Mia resolved",
     ]);
     for (const h of root.querySelectorAll(".hist")) expect(h.textContent).not.toContain("u_");
     view.unmount();
@@ -571,5 +571,31 @@ describe("Sidebar: threads on other pages", () => {
     expect(card(c).closest(".section-open")).not.toBeNull();
     expect(document.activeElement).toBe(head(c));
     view.unmount();
+  });
+
+  it("takes no focus for a card whose resolve failed when its status changes later", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const { view, props, head, card, c, done } = setup();
+      (view.root.querySelector<HTMLDetailsElement>(".section-resolved")!).open = true;
+      head(c).click();
+      flush();
+      const reopen = Array.from(card(c).querySelectorAll<HTMLButtonElement>(".actions button")).find(x => x.textContent === "Reopen")!;
+      reopen.focus();
+      reopen.click();
+      // The reopen failed: nothing changed. Someone else reopens it a minute later, while the viewer types elsewhere.
+      vi.setSystemTime(Date.now() + 60_000);
+      const elsewhere = document.createElement("input");
+      document.body.append(elsewhere);
+      elsewhere.focus();
+      view.update({ ...props, threads: [here, props.threads[1], { ...done, status: "open" }] });
+      await Promise.resolve();
+      flush();
+      expect(document.activeElement).toBe(elsewhere);
+      elsewhere.remove();
+      view.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

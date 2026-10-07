@@ -747,10 +747,15 @@ the panel's search and filters run on the listing in the client.
    that agent as on the thread's own page), Resolve or Reopen, and `Send to
    <agent> ▾` with that page's agent picker: an open card asks the worker
    for its page's live agents and versions (`far-page {req, threadId}` →
-   `far-page {req, page: {artifactId, agents, versions} | null}`), and Send
-   names the agent picked in the panel when it is live on that page, else
-   that page's first live agent, as on the thread's own page; it is
-   disabled until the page is known. Escape inside it folds it again, focus
+   `far-page {req, page: {artifactId, agents, versions: [{n, created_at,
+   agent_harness}]} | null}`: no version's files, notes or labels cross),
+   and again when the open card is hovered or focused once that read is
+   30 s old, so the picker follows agents that came or went. Send names the
+   agent picked in the panel when it is live on that page, else that page's
+   first live agent, as on the thread's own page; it is disabled until the
+   page is known, and a read that failed says so beside it ("Could not load
+   this page's agents.") with Retry. Until the page's versions are known,
+   no event or reply carries a version tag (never a guessed one). Escape inside it folds it again, focus
    on its head. A folded card is not looked at; an open one is, at its own
    page (`looked`). Any number may be open at once, kept by thread ID for
    the panel's life (a filter or search that hides it does not fold it);

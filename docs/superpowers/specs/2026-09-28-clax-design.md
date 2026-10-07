@@ -777,7 +777,8 @@ file under `v/<digits>/` is reachable only through the versioned form):
   agent's with a green rule on the right, `<agent> · addressed in vN` when
   linked), each message with its author, its version (the one it was made
   on, or current when a person replied; none for an agent's reply) and its
-  time (`alex v3 · 5 min ago`), then one line of version-tagged history
+  time (`alex v3 · 5 min ago`; no version while the versions are not
+  known), then one line of version-tagged history
   for what the messages do not say (`v4 alex sent it with 2 others · claude
   working on it · v5 claude addressed it · v5 alex resolved`; owner ruling
   2026-10-07: the comments are not repeated there), and Reply, Resolve (or
@@ -795,11 +796,13 @@ file under `v/<digits>/` is reachable only through the versioned form):
   closed, for the page's life. Its "Go to page ↗"
   navigates there first and selects it, as clicking it did before. A
   folded card is not looked at (Q4); open, it is. A card resolved or
-  reopened from inside it moves to its new group with focus on its head.
+  reopened from inside it moves to its new group with focus on its head,
+  within 5 s of the press and only while focus went nowhere else.
   A resolved thread's card offers Reopen (the daemon's rule: a named
   viewer or the owner shell's token); a viewer with neither is asked for
   its name under People ("Add your name to reopen threads"), and the
-  thread reopens once it has one; a failure reads "Could not reopen: …".
+  thread reopens if it names itself within 2 minutes, the notice not
+  dismissed and the thread still resolved; a failure reads "Could not reopen: …".
   A thread's clip shows as a thumbnail that opens the whole clip
   over the page, closed by Escape, a click outside it or Close. Pins
   show only for the page in the frame: red-orange; split red-orange and

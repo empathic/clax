@@ -131,9 +131,23 @@
   }
   /** The site's other pages whose threads are open in place, by artifact ID: their live agents and versions. */
   let farPages = $state<Record<string, FarPage>>({});
+  /** When each page in `farPages` was read, and the pages whose read failed (Send says so, with Retry). */
+  const farAt = new Map<string, number>();
+  let farFailed = $state<Record<string, boolean>>({});
+  /** How old a page's agents may be before hovering or focusing its open card reads them again. */
+  const FAR_FRESH_MS = 30_000;
   /** The site's threads open in place, by ID, for the panel's life. */
   let unfolded = $state<string[]>([]);
-  const unfold = (t: Thread) => { void link.farPage?.(t.id).then(p => { if (p) farPages = { ...farPages, [p.artifactId]: p }; }); };
+  const unfold = (t: Thread) => {
+    const aid = t.artifact_id;
+    farAt.set(aid, Date.now());
+    void (link.farPage?.(t.id) ?? Promise.resolve(null)).then(p => {
+      if (p) { farPages = { ...farPages, [aid]: p }; farFailed = { ...farFailed, [aid]: false }; }
+      else { farAt.delete(aid); farFailed = { ...farFailed, [aid]: true }; }
+    });
+  };
+  /** An open card is about to be used (hovered or focused): its page's agents are read again when older than FAR_FRESH_MS. */
+  const freshen = (t: Thread) => { if (Date.now() - (farAt.get(t.artifact_id) ?? 0) > FAR_FRESH_MS) unfold(t); };
   const toggleResolved = (t: Thread) => link.post({ t: t.status === "open" ? "resolve" : "reopen", threadId: t.id });
   const reply = (t: Thread, body: string) => link.post({ t: "reply", threadId: t.id, body });
   const suggestion = $derived(link.suggestion && link.suggestion.origin === tabOrigin ? link.suggestion.suggestion : null);
@@ -265,7 +279,7 @@
     {/if}
     {#if s.enabled && anyFar}
       <Elsewhere groups={far} resolved={s.resolved} selected={s.selected} collapsed={prefs.collapsed} {now} {targets}
-        me={s.viewer ? { ...s.viewer, created_at: "" } : null} {clip} pages={farPages} {chosen} {unfolded}
+        me={s.viewer ? { ...s.viewer, created_at: "" } : null} {clip} pages={farPages} failed={farFailed} {chosen} {unfolded} onFreshen={freshen}
         onFold={(id, o) => (unfolded = o ? [...unfolded, id] : unfolded.filter(x => x !== id))}
         onToggle={toggleGroup} onOpen={openThread} onUnfold={unfold} onMove={move} onReply={reply} onResolve={toggleResolved}
         onSend={(t, to) => link.post({ t: "send", threadId: t.id, to })} onChoose={h => (chosen = h)}
