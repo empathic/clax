@@ -183,7 +183,12 @@ pub(crate) fn with_owner(
     v["owner_harness"] = json!(owner.map(|o| &o.harness));
     v["working"] = json!(working);
     v["participants"] = json!(participants);
-    if let Some(LivePart { page: p, origins }) = live {
+    if let Some(LivePart {
+        page: p,
+        origins,
+        merged_into,
+    }) = live
+    {
         let newest = origins.first().unwrap_or(&p.origin);
         v["live"] = json!({
             "origin": p.origin,
@@ -191,6 +196,9 @@ pub(crate) fn with_owner(
             "page_url": format!("{newest}{}", p.path),
             "origins": origins,
         });
+        if let Some(m) = merged_into {
+            v["live"]["merged_into"] = json!(m);
+        }
     }
     v
 }
@@ -199,6 +207,8 @@ pub(crate) fn with_owner(
 pub(crate) struct LivePart {
     pub page: LivePage,
     pub origins: Vec<String>,
+    /// A page a join merged away (spec §7.2): the page it was merged into.
+    pub merged_into: Option<String>,
 }
 
 /// The live page `a` is, when it is one.
@@ -207,10 +217,26 @@ pub(crate) fn live_part(st: &Store, a: &Artifact) -> clax_core::Result<Option<Li
         return Ok(None);
     }
     let Some(page) = st.live_page_of(&ArtifactId::parse(&a.id)?)? else {
-        return Ok(None);
+        let Some((origin, path, into)) = st.merged_live_page(&a.id)? else {
+            return Ok(None);
+        };
+        let page = LivePage {
+            artifact_id: a.id.clone(),
+            origin: origin.clone(),
+            path,
+        };
+        return Ok(Some(LivePart {
+            page,
+            origins: vec![origin],
+            merged_into: Some(into),
+        }));
     };
     let origins = st.joined_site(&page.origin)?.origin_names();
-    Ok(Some(LivePart { page, origins }))
+    Ok(Some(LivePart {
+        page,
+        origins,
+        merged_into: None,
+    }))
 }
 
 /// Leaves out the session IDs a token-less caller must not see (spec §14):
@@ -311,13 +337,24 @@ pub async fn list(
                         if origins.is_empty() {
                             origins.push(p.origin.clone());
                         }
-                        (p.artifact_id.clone(), LivePart { page: p, origins })
+                        (
+                            p.artifact_id.clone(),
+                            LivePart {
+                                page: p,
+                                origins,
+                                merged_into: None,
+                            },
+                        )
                     })
                     .collect();
                 let none = Participants::default();
+                // Pages a join merged away are kept, out of the listing.
+                let merged: std::collections::HashSet<String> =
+                    st.merged_live_pages()?.into_iter().map(|x| x.0).collect();
                 Ok(artifacts
                     .iter()
                     .filter(|a| local || a.kind != KIND_LIVE)
+                    .filter(|a| !merged.contains(&a.id))
                     .map(|a| {
                         let owner = a.owner_session_id.as_ref().and_then(|sid| owners.get(sid));
                         let working = all.get(&a.id).map(Vec::as_slice).unwrap_or(&[]);

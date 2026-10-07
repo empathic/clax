@@ -421,10 +421,13 @@ fn routes(ev: &Event) -> Vec<(Chan, Gate)> {
         Event::Working { .. } => vec![(Chan::Gallery, Gate::Any), (Chan::Working(a), Gate::Any)],
         Event::Presence { .. } => vec![(Chan::Presence(a), Gate::Any)],
         // Only owners' streams on this machine follow a site (L10).
+        // The gallery hears it too: a site's pages may be keyed elsewhere,
+        // or merged away, so its cards are fetched again.
         Event::Site { origins, left, .. } => origins
             .iter()
             .chain(left)
             .map(|o| (Chan::Site(o.clone()), Gate::Local))
+            .chain([(Chan::Gallery, Gate::Local)])
             .collect(),
         // The thread delta carries the newest comment and the resolve.
         Event::Comment { .. } | Event::ThreadResolved { .. } => vec![],

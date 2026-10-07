@@ -11,7 +11,7 @@
   import { getToken } from "../api";
 
   type Origin = { origin: string; last_used_at: string | null };
-  type Site = { site: { key: string; name: string; joined: boolean; origins: Origin[] }; pages: number; threads: number };
+  type Site = { site: { key: string; name: string; joined: boolean; origins: Origin[] }; pages: number; threads: number; joining?: number };
   let sites = $state<Site[] | null>(null);
   let token = $state<string | null>(null);
   let busy = $state<string | null>(null);
@@ -45,10 +45,16 @@
       await load();
     }
   }
-  const join = (s: Site, other: Site) => act(`Joining ${host(s.site.name)} and ${host(other.site.name)}`, async () => {
+  const join = (s: Site, other: Site) => joinKeys(s.site.key, other.site.key, s, other);
+  /** A join not finished: the same join again, which picks up where it stopped. */
+  const finish = (s: Site) => {
+    const o = s.site.origins.find(x => x.origin !== s.site.key)?.origin;
+    return o ? joinKeys(o, s.site.key, s, s) : Promise.resolve();
+  };
+  const joinKeys = (origin: string, withKey: string, s: Site, other: Site) => act(`Joining ${host(s.site.name)} and ${host(other.site.name)}`, async () => {
     let moved = 0;
     for (let i = 0; i < MAX_BATCHES; i++) {
-      const r = await post("/api/live/sites/join", { origin: s.site.key, with: other.site.key });
+      const r = await post("/api/live/sites/join", { origin, with: withKey });
       moved += r.moved?.length ?? 0;
       if (!r.remaining) return `Joined: ${host(s.site.name)} and ${host(other.site.name)} are one site${moved ? `, ${plural(moved, "thread")} merged` : ""}.`;
       if (!r.moved?.length) break;
@@ -75,6 +81,7 @@
             <strong title={s.site.name} style="font:600 13.5px/1.4 var(--mono)">{host(s.site.name)}</strong>
             {#if others.length}<span class="also muted small">also {others.map(o => host(o.origin)).join(", ")}</span>{/if}
             <span class="muted small">{plural(s.pages, "page")} · {plural(s.threads, "comment thread")}</span>
+            {#if s.joining}<span class="small error">Join not finished: {plural(s.joining, "thread")} left to merge</span>{/if}
           </div>
           {#if token}
             <details style="position:relative">
@@ -88,6 +95,7 @@
                 </label>
                 <button type="button" disabled={!picks[s.site.key] || !!busy}
                   onclick={() => { const o = sites?.find(x => x.site.key === picks[s.site.key]); if (o) void join(s, o); }}>Join</button>
+                {#if s.joining}<button type="button" disabled={!!busy} onclick={() => finish(s)}>Finish joining</button>{/if}
                 {#if s.site.joined}
                   {#each s.site.origins as o (o.origin)}
                     <button type="button" class="ghost" disabled={!!busy} onclick={() => split(o.origin)}>Split {host(o.origin)} off</button>

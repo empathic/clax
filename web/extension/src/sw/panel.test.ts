@@ -11,7 +11,7 @@ const page = { artifact_id: AID, origin: "http://localhost:5173", path: "/app", 
 const thread = (id: string, status = "open") => ({ id, artifact_id: AID, status });
 
 const SITE = { key: "http://localhost:5173", name: "http://localhost:5174", joined: true, origins: [{ origin: "http://localhost:5174", joined_at: "t", last_used_at: "t2" }, { origin: "http://localhost:5173", joined_at: "t", last_used_at: "t1" }] };
-function setup(over: { remaining?: number; page?: typeof page | null; admits?: boolean; allUrls?: boolean; fail?: string; failCode?: string; error?: string; site?: string[]; down?: string[] } = {}) {
+function setup(over: { remaining?: number; page?: typeof page | null; admits?: boolean; allUrls?: boolean; fail?: string; failCode?: string; error?: string; site?: string[]; down?: string[]; denied?: string[] } = {}) {
   const calls: string[] = [];
   const out: WorkerToPanel[] = [];
   const pg = over.page === undefined ? page : over.page;
@@ -50,6 +50,7 @@ function setup(over: { remaining?: number; page?: typeof page | null; admits?: b
     sites: { load: async (o: string) => { calls.push(`load ${o}`); }, origins: (o: string) => over.site ?? [o] },
     probe: async (url: string) => { calls.push(`probe ${url}`); return !(over.down ?? []).some(x => url.startsWith(x)); },
     title: async () => "My App",
+    allowed: async (o: string) => !(over.denied ?? []).includes(o),
     pairer: { pair: async (retry?: boolean) => { calls.push(`pair ${!!retry}`); return {} as never; } },
     allUrls: async () => over.allUrls ?? false,
     navigate: async (tabId, url) => { calls.push(`navigate ${tabId} ${url}`); },
@@ -77,6 +78,12 @@ describe("panelAction on the tab's site", () => {
     await none.run({ t: "open-thread", threadId: T1 });
     expect(none.calls.filter(c => c.startsWith("navigate"))).toEqual([]);
     expect(none.out).toEqual([{ t: "failed", code: "site_unreachable", message: "No address of this site answers (localhost:5174, localhost:5173). Start its server, then try again." }]);
+  });
+
+  it("opens a joined site's thread only on an address Chrome lets Clax into, besides the tab's own", async () => {
+    const s = setup({ site: ["http://localhost:5174", "http://localhost:5173"], denied: ["http://localhost:5174"] });
+    await s.run({ t: "open-thread", threadId: T1 });
+    expect(s.calls.filter(c => c.startsWith("probe") || c.startsWith("navigate"))).toEqual(["probe http://localhost:5173/users/7?x#/y", "navigate 4 http://localhost:5173/users/7?x#/y"]);
   });
 
   it("moves a thread to a page of another origin of the tab's joined site", async () => {

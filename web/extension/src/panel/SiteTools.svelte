@@ -99,6 +99,13 @@
     </div>
   {/if}
 {:else}
+{#if (info?.joining ?? 0) > 0}
+  {@const other = mine.find(o => o !== origin)}
+  <div class="suggest" role="group" aria-label="Join not finished">
+    <p>The join is not finished: {plural(info?.joining ?? 0, "thread")} left to merge here.</p>
+    {#if other}<div class="row"><button type="button" class="primary" disabled={!!busy} onclick={() => join(other, mine)}>Continue joining</button></div>{/if}
+  </div>
+{/if}
 <details class="addresses" ontoggle={e => { if (e.currentTarget.open) list(); }}>
   <summary><h2>Addresses{#if joined}<span class="count">{mine.length}</span>{/if}</h2></summary>
   {#if joined}

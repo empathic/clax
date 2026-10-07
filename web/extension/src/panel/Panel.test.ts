@@ -383,3 +383,36 @@ describe("Panel: joined sites", () => {
     expect(l.asked.at(-1)).toEqual({ t: "join", origin: O, with: C });
   });
 });
+
+describe("Panel: a join not finished", () => {
+  const O = "http://localhost:5173";
+  const A = "http://localhost:7702";
+  const settle = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+  it("says how many threads are left and continues the join, asking Chrome for the site's origins", async () => {
+    const site: SiteView = { origin: O, site: { key: A, name: O, joined: true, joining: 3, origins: [{ origin: O, joined_at: "t", last_used_at: "t2" }, { origin: A, joined_at: "t", last_used_at: "t1" }] }, rules: [], pages: [] };
+    const asked: unknown[] = [];
+    const permitted: string[][] = [];
+    const l = { ...link(state()), site, request: async (m: unknown) => { asked.push(m); return { moved: 3, remaining: 0 }; } };
+    render(Panel, { props: { link: l as never, permit: async (o: string[]) => { permitted.push(o); return true; } } });
+    const box = screen.getByRole("group", { name: "Join not finished" });
+    expect(box.textContent).toContain("3 threads left to merge");
+    await fireEvent.click(within(box).getByRole("button", { name: "Continue joining" }));
+    await settle();
+    expect(permitted).toEqual([[O, A]]);
+    expect(asked).toEqual([{ t: "join", origin: O, with: A }]);
+  });
+
+  it("asks Chrome for the site's other origins before it opens a thread there", async () => {
+    const T = "01J9BBBBBBBBBBBBBBBBBBBBBB";
+    const far = { ...thread, id: T, artifact_id: "8r4m0nzy3c5v", page_path: "/b", page_url: `${A}/b` };
+    const site: SiteView = { origin: O, site: { key: A, name: O, joined: true, origins: [{ origin: O, joined_at: "t", last_used_at: "t2" }, { origin: A, joined_at: "t", last_used_at: "t1" }] }, rules: [],
+      pages: [{ page: { artifact_id: "8r4m0nzy3c5v", origin: A, path: "/b", page_url: `${A}/b`, title: "/b", current_version: 1, url: "http://localhost:7480/a/8r4m0nzy3c5v" }, threads: [far as never] }] };
+    const permitted: string[][] = [];
+    const l = { ...link(state()), site };
+    const { container } = render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z"), permit: async (o: string[]) => { permitted.push(o); return true; } } });
+    await fireEvent.click(container.querySelector("article.far button.go")!);
+    await settle();
+    expect(permitted).toEqual([[A]]);
+    expect(l.sent).toContainEqual({ t: "open-thread", threadId: T });
+  });
+});

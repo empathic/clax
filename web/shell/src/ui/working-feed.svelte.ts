@@ -52,7 +52,7 @@ export class WorkingFeed {
         if (this.#soon.has(id)) return;
         const wait = Math.max(0, (this.#last.get(id) ?? 0) + 1000 - Date.now());
         this.#soon.set(id, setTimeout(() => { this.#soon.delete(id); this.#last.set(id, Date.now()); onChange(id); }, wait));
-      } else if (e.type === "ready" || e.type === "resync") onResync();
+      } else if (e.type === "ready" || e.type === "resync" || e.type === "site") onResync();
     });
   }
   stop(): void {

@@ -49,7 +49,9 @@ export const URL_TOO_LONG = "This page's address is too long for Clax.";
 /** `href` as the overlay sends it: null when it is over MAX_URL. */
 export const pageUrl = (href: string): string | null => (href.length > MAX_URL ? null : href);
 /** `merged`: the page is a merge rule's canonical page, whose path is the rule's `pattern`. */
-export type PageView = { artifact_id: string; origin: string; path: string; page_url: string; title: string; current_version: number; url: string; merged?: boolean; pattern?: string | null };
+export type PageView = { artifact_id: string; origin: string; path: string; page_url: string; title: string; current_version: number; url: string; merged?: boolean; pattern?: string | null;
+  /** A joined origin's page whose threads a join has not re-filed yet (the site listing's only). */
+  pending?: boolean };
 /** A merge rule of a site (`deleting` while its un-merge is under way). */
 export type SiteRule = { id: string; origin: string; pattern: string; page_url: string; created_at: string; deleting?: boolean };
 /** One origin of a site, as the daemon describes it. */
@@ -57,7 +59,9 @@ export type SiteOrigin = { origin: string; joined_at: string | null; last_used_a
 /** A site (spec §7.2): its key (the origin its pages are kept under), its
  * name (its most recently used origin), whether it joins several origins,
  * and its origins, the most recently used first. */
-export type SiteInfo = { key: string; name: string; joined: boolean; origins: SiteOrigin[] };
+export type SiteInfo = { key: string; name: string; joined: boolean; origins: SiteOrigin[];
+  /** Threads a join not finished has still to re-file (the listing's only). */
+  joining?: number };
 /** `GET /api/live/site`: the live pages of the origin's site that have
  * threads, each with its threads (resolved ones too), its merge rules, and
  * the site (absent from an older daemon). */
@@ -252,8 +256,8 @@ const result = (r: unknown) => shape(r, ["id", "found", "method", "rect"]) && ul
 
 const PAGE = ["artifact_id", "origin", "path", "page_url", "title", "current_version", "url"];
 /** A live page as the daemon describes it (`PageView`). */
-const page = (v: unknown): v is PageView => shape(v, PAGE, ["merged", "pattern"])
-  && (v.merged === undefined || bool(v.merged)) && (v.pattern === undefined || strOrNull(v.pattern, MAX_PATTERN)) && typeof v.artifact_id === "string" && ARTIFACT_ID.test(v.artifact_id)
+const page = (v: unknown): v is PageView => shape(v, PAGE, ["merged", "pattern", "pending"])
+  && (v.merged === undefined || bool(v.merged)) && (v.pending === undefined || bool(v.pending)) && (v.pattern === undefined || strOrNull(v.pattern, MAX_PATTERN)) && typeof v.artifact_id === "string" && ARTIFACT_ID.test(v.artifact_id)
   && str(v.origin, MAX_URL) && /^https?:\/\/[^/?#]+$/.test(v.origin) && str(v.path, MAX_URL) && v.path.startsWith("/")
   && url(v.page_url) && str(v.title, MAX_TITLE) && count(v.current_version) && url(v.url);
 

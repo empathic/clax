@@ -20,6 +20,8 @@ export type PanelDeps = {
   probe(url: string): Promise<boolean>;
   /** The tab's title, for a suggestion's match by title. */
   title(tabId: number): Promise<string>;
+  /** Whether Chrome lets Clax into `origin` (its host permission): a thread opens only where Clax can follow. */
+  allowed(origin: string): Promise<boolean>;
   pairer: Pick<Pairer, "pair">;
   /** Whether the extension holds `<all_urls>` (screenshots on any tab without a click). */
   allUrls(): Promise<boolean>;
@@ -91,6 +93,7 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: 
         if (!where) throw new PanelFailure("not_found", "That thread is not on this site any more.");
         // The most recently used address first; one that does not answer, the next (owner decision 2026-10-06).
         for (const o of where.origins) {
+          if (o !== on && !(await d.allowed(o))) continue;
           const url = o + where.path;
           if (await d.probe(url)) { d.tabs.opening(tabId, m.threadId, url); await d.navigate(tabId, url); return; }
         }

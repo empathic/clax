@@ -321,20 +321,16 @@ pub const MIGRATIONS: &[&str] = &[
         created_at TEXT NOT NULL
     );
     CREATE INDEX thread_moves_by_thread ON thread_moves(thread_id, created_at, id);",
-    // 19 and 20: reserved for agent questions and the inbox (another
-    // branch); 21: reserved for the Toolpath audit (another branch). Empty
-    // here, so joined sites keep the number agreed for them; each branch
-    // that lands replaces its own entry.
-    "",
-    "",
-    "",
-    // 22: joined sites (spec 2026-10-05-chrome-overlay-design §7.2): each
-    // origin the owner joined to a site, with the site's key (the origin
-    // whose live pages and rules hold the site's; it has a row of its own),
-    // when it joined and when Clax last used it; the owner's answers to
-    // suggested joins (`never`, or `later` until a time), per pair of
-    // origins in order; and `join` as a kind of thread move (a thread of a
-    // joined origin's page re-filed onto the site's page of the same path).
+    // Joined sites (spec 2026-10-05-chrome-overlay-design §7.2). Renumbered
+    // when agent-questions (19, 20) and toolpath-audit (21) land — goes
+    // last. Each origin the owner joined to a site, with the site's key (the
+    // origin whose live pages and rules hold the site's; it has a row of its
+    // own), when it joined and when Clax last used it; a joined origin's page
+    // merged into the site's page of its path once its threads moved there,
+    // kept whole (its artifact and snapshots) but no longer a live page's key;
+    // the owner's answers to suggested joins (`never`, or `later` until a
+    // time), per pair of origins in order; and `join` as a kind of thread
+    // move (a thread re-filed onto the site's page of the same path).
     "CREATE TABLE live_sites (
         origin TEXT PRIMARY KEY,
         site TEXT NOT NULL,
@@ -342,6 +338,13 @@ pub const MIGRATIONS: &[&str] = &[
         last_used_at TEXT NOT NULL
     );
     CREATE INDEX live_sites_by_site ON live_sites(site, origin);
+    CREATE TABLE live_merged_pages (
+        artifact_id TEXT PRIMARY KEY REFERENCES artifacts(id),
+        origin TEXT NOT NULL,
+        path TEXT NOT NULL,
+        merged_into TEXT NOT NULL,
+        merged_at TEXT NOT NULL
+    );
     CREATE TABLE live_site_answers (
         a TEXT NOT NULL,
         b TEXT NOT NULL,
@@ -517,17 +520,20 @@ mod tests {
     }
 
     #[test]
-    fn migration_22_keeps_thread_moves_and_admits_joins() {
+    fn the_joined_sites_migration_keeps_thread_moves_and_admits_joins() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         home.ensure_dirs().unwrap();
         {
             let mut c = Connection::open(home.db_path()).unwrap();
             let tx = c.transaction().unwrap();
-            for sql in &MIGRATIONS[..18] {
+            // Every migration before joined sites, the last.
+            let before = MIGRATIONS.len() - 1;
+            for sql in &MIGRATIONS[..before] {
                 tx.execute_batch(sql).unwrap();
             }
-            tx.pragma_update(None, "user_version", 18).unwrap();
+            tx.pragma_update(None, "user_version", before as u32)
+                .unwrap();
             tx.execute_batch(
                 "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
                     VALUES ('7q3k9mzx2b4t', 'T', 'x', 'x', 1, '0.2.61');

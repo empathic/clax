@@ -670,7 +670,9 @@ fn summary_status(t: &Value) -> &'static str {
 /// page of the origin's site (spec §7.2: of every origin joined to it) that
 /// has threads, newest activity first, as `{origin, site, rules, pages:
 /// [{page, summary: {open, addressed, resolved, last_activity}, threads}]}`.
-/// `site` is the origin's site ([`super::sites::site_view`]). `page` is [`page_view`]; `threads` are
+/// `site` is the origin's site ([`super::sites::site_view`]) with `joining`:
+/// how many threads a join not finished has still to re-file; their pages
+/// are listed too, their page views marked `pending: true`. `page` is [`page_view`]; `threads` are
 /// thread views (resolved ones too), newest activity first; `rules` the
 /// origin's merge rules ([`rule_view`]), oldest first.
 pub async fn site(
@@ -695,21 +697,25 @@ pub async fn site(
             let mut out = Vec::new();
             for p in pages {
                 let threads: Vec<Value> = views.by_ref().take(p.threads.len()).collect();
-                out.push((p.page, p.title, p.current_version, threads));
+                out.push((p.page, p.title, p.current_version, threads, p.pending));
             }
             Ok((out, st.live_rules(&o)?, joined))
         })
         .await?;
     let mut groups: Vec<(String, Value)> = pages
         .into_iter()
-        .filter(|(_, _, _, threads)| !threads.is_empty())
-        .map(|(page, title, current, mut threads)| {
+        .filter(|(_, _, _, threads, _)| !threads.is_empty())
+        .map(|(page, title, current, mut threads, pending)| {
             threads.sort_by_cached_key(|t| std::cmp::Reverse(last_activity(t)));
             let count = |st: &str| threads.iter().filter(|t| summary_status(t) == st).count();
             let last = threads.first().map(last_activity).unwrap_or_default();
             let rule = rules.iter().find(|r| r.pattern == page.path);
+            let mut view = page_json(&s, &page, &title, current, rule);
+            if pending {
+                view["pending"] = json!(true);
+            }
             let group = json!({
-                "page": page_json(&s, &page, &title, current, rule),
+                "page": view,
                 "summary": {
                     "open": count("open"),
                     "addressed": count("addressed"),
@@ -722,12 +728,24 @@ pub async fn site(
         })
         .collect();
     groups.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut site = super::sites::site_view(&joined);
+    site["joining"] = json!(pages_pending_threads(&groups));
     Ok(Json(json!({
         "origin": origin,
-        "site": super::sites::site_view(&joined),
+        "site": site,
         "rules": rules.iter().map(rule_view).collect::<Vec<_>>(),
         "pages": groups.into_iter().map(|(_, g)| g).collect::<Vec<_>>(),
     })))
+}
+
+/// How many threads of the listing's pending pages (spec §7.2: a join not
+/// finished) are still to be re-filed.
+fn pages_pending_threads(groups: &[(String, Value)]) -> usize {
+    groups
+        .iter()
+        .filter(|(_, g)| g["page"]["pending"] == true)
+        .map(|(_, g)| g["threads"].as_array().map_or(0, Vec::len))
+        .sum()
 }
 
 /// What a re-filing route needs besides the store.

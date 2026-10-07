@@ -2153,8 +2153,8 @@ own origin is 400 `own_origin`.
   it) and its rules, and also `site`; `site:<origin>` on `/api/stream`
   carries the site's events for every origin of it, origins joined later
   included, and a `site` event `{site, origins, left}` on every origin's
-  topic when an origin joins it or is split off (`left`: those no longer
-  of it). Moves and merge rules apply across the site (`cross_origin` only
+  topic, and on `gallery`, when an origin joins it, is split off, or a
+  join re-keys or merges away its pages (`left`: those no longer of it). Moves and merge rules apply across the site (`cross_origin` only
   for another site). A scope watch on any origin of the site covers the
   same paths on all of them, origins joined later included; `PUT
   /api/sessions/<sid>/live-watches` answers `site` too. A live page's
@@ -2182,14 +2182,21 @@ own origin is 400 `own_origin`.
   threads are re-filed onto the site's page as a move does (their move
   `kind: "join"`), at most 200 a request (fewer past 64 MiB of snapshots),
   each batch one transaction, and once empty it hands its watchers to the
-  site's page and is deleted (`artifact_deleted`; its snapshots that no
-  thread names go with it). The joining site's merge rules become the
+  site's page and is merged away: never deleted, it is no longer the key
+  of its path, leaves the site listing and `GET /api/artifacts`, and keeps
+  its artifact, its `/a/<id>` link and every snapshot; its view's
+  `live.merged_into` names the site's page. Until then its page is listed
+  with the site's, its view marked `pending: true`, and `GET
+  /api/live/site` and `GET /api/live/sites` say `joining`: how many of its
+  threads are left. The joining site's merge rules become the
   site's (one the site already has is dropped), and once no page is left
   to merge, the site's rules are applied across it (`kind: "merge"`), in
   the same batches. It answers `{site, joined, moved, remaining}`
   (`joined`: this request joined them; `moved`: the re-filed thread IDs);
   while `remaining` is above 0 the client repeats the request, which is
-  idempotent. 400 `same_origin`, `too_many_origins` (a site joins at most
+  idempotent. 409 `joining` while either site has a join not finished
+  (repeat that join first), 409 `unmerging` while either has an un-merge
+  under way; 400 `same_origin`, `too_many_origins` (a site joins at most
   16), `too_many_rules` (64 in force).
 - **`POST /api/live/sites/split`** `{origin}` splits `origin` off its
   site: from then on it is a site of its own, and its new pages and
@@ -2198,10 +2205,11 @@ own origin is 400 `own_origin`.
   `origin` was the site's key, the key moves to its most recently used
   origin left. A site left with one origin is that origin's own. The pair
   is answered `never`, so it is not suggested again. A scope watch made
-  before keeps the watches it made. It answers `{split, origin, site}`
-  (`split: false`, writing nothing, when `origin` joined no site; `site`:
-  what is left). 400 `joining` when `origin` is the site's key and a join
-  of the site is not finished.
+  before keeps the watches it made, until the session removes a scope
+  watch (then those no scope of it covers go). It answers `{split, origin,
+  site}` (`split: false`, writing nothing, when `origin` joined no site;
+  `site`: what is left). 409 `joining` while a join of the site is not
+  finished.
 - **`POST /api/live/sites/answer`** `{origin, with, answer}` records the
   owner's answer to the suggestion that `origin` is the same app as
   `with`: `never`, or `later` (not suggested for a day). It answers

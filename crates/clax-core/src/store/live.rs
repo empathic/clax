@@ -876,6 +876,29 @@ impl Store {
                     }
                 }
             }
+            // Scope-made watches on pages of other sites (an origin split
+            // off the site the scope covered, spec §7.2): gone when no scope
+            // of the session covers them any more.
+            let others: Vec<LivePage> = {
+                let mut st = tx.prepare(
+                    "SELECT p.artifact_id, p.origin, p.path FROM watches w
+                     JOIN live_pages p ON p.artifact_id = w.artifact_id
+                     WHERE w.session_id = ?1 AND w.source = 'scope'
+                        AND p.origin <> ?2",
+                )?;
+                st.query_map(params![sid, site_scope.origin], row_to_page)?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            for p in others {
+                let keys = page_keys(tx, &p)?;
+                if scope_arming(tx, sid, &keys)?.is_none() {
+                    tx.execute(
+                        "DELETE FROM watches WHERE session_id = ?1 AND artifact_id = ?2 AND source = 'scope'",
+                        params![sid, p.artifact_id],
+                    )?;
+                    removed.push(p.artifact_id);
+                }
+            }
             Ok(removed)
         })
     }

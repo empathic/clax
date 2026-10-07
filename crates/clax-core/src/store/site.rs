@@ -62,6 +62,14 @@ pub(crate) const SITE_PAGES: &str =
     FROM live_pages p JOIN artifacts a ON a.id = p.artifact_id
     WHERE p.origin = COALESCE((SELECT site FROM live_sites WHERE origin = ?1), ?1)
         AND a.deleted_at IS NULL";
+/// The pending pages of the site of origin `?1` (its other origins' pages a
+/// join has not settled yet), as [`SITE_PAGES`].
+pub(crate) const PENDING_SITE_PAGES: &str =
+    "SELECT p.artifact_id, p.origin, p.path, a.title, a.current_version
+    FROM live_sites s JOIN live_pages p ON p.origin = s.origin
+    JOIN artifacts a ON a.id = p.artifact_id
+    WHERE s.site = COALESCE((SELECT site FROM live_sites WHERE origin = ?1), ?1)
+        AND p.origin <> s.site AND a.deleted_at IS NULL";
 /// The threads of the pages of `?1` (a JSON array of artifact IDs), without
 /// comments: ID, page, `live_path` and anchor.
 pub(crate) const REFILE_CANDIDATES: &str = "SELECT t.id, t.artifact_id, t.live_path, t.anchor_json
@@ -156,6 +164,9 @@ pub struct SitePage {
     pub title: String,
     pub current_version: u32,
     pub threads: Vec<Thread>,
+    /// A joined origin's page whose threads a join has not re-filed onto
+    /// the site's page of its path yet (spec §7.2).
+    pub pending: bool,
 }
 
 /// One thread to re-file: where on its new page it now is.
@@ -845,9 +856,10 @@ impl Store {
     /// Database errors only.
     pub fn site_pages(&self, origin: &str) -> Result<Vec<SitePage>> {
         self.with_read(|c| {
-            let pages: Vec<(LivePage, String, u32)> = {
-                let mut st = c.prepare_cached(SITE_PAGES)?;
-                st.query_map(params![origin], |r| {
+            let mut pages: Vec<(LivePage, String, u32, bool)> = Vec::new();
+            for (sql, pending) in [(SITE_PAGES, false), (PENDING_SITE_PAGES, true)] {
+                let mut st = c.prepare_cached(sql)?;
+                for row in st.query_map(params![origin], |r| {
                     Ok((
                         LivePage {
                             artifact_id: r.get(0)?,
@@ -856,10 +868,12 @@ impl Store {
                         },
                         r.get(3)?,
                         r.get(4)?,
+                        pending,
                     ))
-                })?
-                .collect::<rusqlite::Result<_>>()?
-            };
+                })? {
+                    pages.push(row?);
+                }
+            }
             let ids: Vec<String> = pages.iter().map(|p| p.0.artifact_id.clone()).collect();
             let mut by_page: HashMap<String, Vec<Thread>> = HashMap::new();
             for t in threads_of_many(c, &ids)? {
@@ -867,7 +881,8 @@ impl Store {
             }
             Ok(pages
                 .into_iter()
-                .map(|(page, title, current_version)| SitePage {
+                .map(|(page, title, current_version, pending)| SitePage {
+                    pending,
                     threads: by_page.remove(&page.artifact_id).unwrap_or_default(),
                     page,
                     title,
