@@ -121,7 +121,9 @@ for t in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-musl aarc
     "$T/scripts/package-release.sh" archive "$V" "$t" "$T/bin/clax-v" "$REL/good/v$V" > /dev/null
 done
 "$T/scripts/package-release.sh" sums "$REL/good/v$V" > /dev/null
-grep -v aarch64-unknown-linux-musl "$REL/good/v$V/SHA256SUMS" | sed "s/$V/0.0.1/g" > "$REL/good/v0.0.1/SHA256SUMS"
+# Only the file names change: a pattern on the whole line could match inside a
+# checksum and write dots into it.
+grep -v aarch64-unknown-linux-musl "$REL/good/v$V/SHA256SUMS" | sed "s/  clax-${V//./\\.}-/  clax-0.0.1-/" > "$REL/good/v0.0.1/SHA256SUMS"
 : > "$T/requests.log"
 "$PY" "$HERE/scripts/fake-release-server.py" "$REL" "$T/requests.log" "$T/port" &
 SERVER_PID=$!
