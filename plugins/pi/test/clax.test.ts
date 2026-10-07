@@ -485,7 +485,6 @@ async function liveThread(url: string, body: string): Promise<{ aid: string; tid
   return { aid: r.page.artifact_id, tid: r.thread.id };
 }
 
-/** The JSON block and the trailing block of a tool result. */
 /** The daemon's ID of the Pi session `harnessId`. */
 async function sessionOf(harnessId: string): Promise<string> {
   const s = (await sessions()).find(x => x.harness_session_id === harnessId && x.ended_at === null);
@@ -511,6 +510,7 @@ async function askAndAnswer(sid: string, header: string, label: string): Promise
   return qid;
 }
 
+/** The JSON block and the trailing block of a tool result. */
 function parts(o: { content: { type: string; text?: string }[]; isError: boolean }) {
   expect(o.isError).toBe(false);
   return { json: JSON.parse(o.content[0].text!), trailing: o.content[1]?.text };
