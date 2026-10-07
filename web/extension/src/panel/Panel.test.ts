@@ -402,6 +402,17 @@ describe("Panel: a join not finished", () => {
     expect(asked).toEqual([{ t: "join", origin: O, with: A }]);
   });
 
+  it("continues the join even when Chrome is not allowed the other origins, saying Clax will not follow there", async () => {
+    const site: SiteView = { origin: O, site: { key: A, name: O, joined: true, joining: 3, origins: [{ origin: O, joined_at: "t", last_used_at: "t2" }, { origin: A, joined_at: "t", last_used_at: "t1" }] }, rules: [], pages: [] };
+    const asked: unknown[] = [];
+    const l = { ...link(state()), site, request: async (m: unknown) => { asked.push(m); return { moved: 3, remaining: 0 }; } };
+    render(Panel, { props: { link: l as never, permit: async () => false } });
+    await fireEvent.click(within(screen.getByRole("group", { name: "Join not finished" })).getByRole("button", { name: "Continue joining" }));
+    await settle();
+    expect(asked).toEqual([{ t: "join", origin: O, with: A }]);
+    expect(screen.getByText(/so Clax will not follow the tab there/).textContent).toContain("localhost:7702");
+  });
+
   it("asks Chrome for the site's other origins before it opens a thread there", async () => {
     const T = "01J9BBBBBBBBBBBBBBBBBBBBBB";
     const far = { ...thread, id: T, artifact_id: "8r4m0nzy3c5v", page_path: "/b", page_url: `${A}/b` };

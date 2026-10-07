@@ -3,6 +3,10 @@ import { flushSync } from "svelte";
 import GallerySites from "./ui/GallerySites.svelte";
 import { mount } from "./test/svelte";
 
+/** The gallery topic, as the Sites section subscribes to it. */
+const topic: { on: ((e: { type: string }) => void) | null } = { on: null };
+vi.mock("./working-events", () => ({ subscribeGallery: (on: (e: { type: string }) => void) => { topic.on = on; return () => { topic.on = null; }; } }));
+
 const A = "http://localhost:7702", B = "http://localhost:7703", C = "http://localhost:3000";
 const at = (o: string, t: string) => ({ origin: o, joined_at: "t", last_used_at: t });
 const joined = { site: { key: A, name: B, joined: true, origins: [at(B, "t2"), at(A, "t1")] }, pages: 3, threads: 5 };
@@ -85,5 +89,21 @@ describe("GallerySites: a join not finished", () => {
     [...m.root.querySelectorAll("button")].find(b => b.textContent === "Finish joining")!.click();
     await settle();
     expect(calls.filter(c => c.url === "/api/live/sites/join").map(c => c.body)).toEqual([{ origin: B, with: A }]);
+  });
+});
+
+describe("GallerySites and the gallery topic", () => {
+  it("lists the sites again on a site event, and stops listening when gone", async () => {
+    const calls = stub([]);
+    const m = mount(GallerySites, {});
+    await settle();
+    const lists = () => calls.filter(c => c.url === "/api/live/sites").length;
+    expect(lists()).toBe(1);
+    topic.on?.({ type: "thread" });
+    topic.on?.({ type: "site" });
+    await settle();
+    expect(lists()).toBe(2);
+    m.unmount();
+    expect(topic.on).toBeNull();
   });
 });

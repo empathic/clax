@@ -30,13 +30,16 @@
   /** The sites the tab's origin may join: every other one. */
   const choices = $derived((sites ?? []).filter(c => !c.origins.some(o => mine.includes(o))));
   let pick = $state("");
+  /** Whether Addresses is open: what a join or split says shows there, else above it. */
+  let open = $state(false);
   let busy = $state<string | null>(null);
   let note = $state<{ text: string; bad: boolean } | null>(null);
   let alive = true;
   $effect(() => () => { alive = false; });
   const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
-  async function join(target: string, all: string[]): Promise<void> {
+  /** Joins, or with `continuing` finishes a join already made, which needs no permission. */
+  async function join(target: string, all: string[], continuing = false): Promise<void> {
     if (busy) return;
     // Asked before any await, so the click still counts as the gesture Chrome needs.
     const allowed = permit(all);
@@ -45,7 +48,8 @@
     let moved = 0;
     let left = Infinity;
     try {
-      if (!(await allowed)) throw new Error(`Chrome was not allowed access to ${all.map(host).join(", ")}, so Clax cannot follow the site there.`);
+      const denied = !(await allowed);
+      if (denied && !continuing) throw new Error(`Chrome was not allowed access to ${all.map(host).join(", ")}, so Clax cannot follow the site there.`);
       for (let i = 0; ; i++) {
         if (!alive) return;
         const r = await request({ t: "join", origin, with: target });
@@ -55,7 +59,8 @@
         if (!r.moved || r.remaining >= left || i + 1 >= MAX_BATCHES) throw new Error(`Stopped with ${plural(r.remaining, "thread")} left to merge. Join again later to finish.`);
         left = r.remaining;
       }
-      note = { text: `Joined ${host(origin)} and ${host(target)}: one site${moved ? `, ${plural(moved, "thread")} merged` : ""}.`, bad: false };
+      const unfollowed = denied ? ` Chrome was not allowed access to ${all.filter(o => o !== origin).map(host).join(", ")}, so Clax will not follow the tab there.` : "";
+      note = { text: `Joined ${host(origin)} and ${host(target)}: one site${moved ? `, ${plural(moved, "thread")} merged` : ""}.${unfollowed}`, bad: false };
       pick = "";
     } catch (e) {
       note = { text: e instanceof Error ? e.message : String(e), bad: true };
@@ -103,10 +108,10 @@
   {@const other = mine.find(o => o !== origin)}
   <div class="suggest" role="group" aria-label="Join not finished">
     <p>The join is not finished: {plural(info?.joining ?? 0, "thread")} left to merge here.</p>
-    {#if other}<div class="row"><button type="button" class="primary" disabled={!!busy} onclick={() => join(other, mine)}>Continue joining</button></div>{/if}
+    {#if other}<div class="row"><button type="button" class="primary" disabled={!!busy} onclick={() => join(other, mine, true)}>Continue joining</button></div>{/if}
   </div>
 {/if}
-<details class="addresses" ontoggle={e => { if (e.currentTarget.open) list(); }}>
+<details class="addresses" ontoggle={e => { open = e.currentTarget.open; if (open) list(); }}>
   <summary><h2>Addresses{#if joined}<span class="count">{mine.length}</span>{/if}</h2></summary>
   {#if joined}
     <p class="hint">These addresses are one site: their pages and comments are shared, and an agent watching one hears them all.</p>
@@ -128,14 +133,16 @@
     </select>
   </label>
   <div class="row"><button type="button" class="primary" disabled={!chosen || !!busy} onclick={() => chosen && join(chosen.name, chosen.origins)}>Join</button></div>
-  {@render status()}
+  {#if open}{@render status()}{/if}
 </details>
+{#if !open}<div class="out">{@render status()}</div>{/if}
 {/if}
 
 <style>
   .suggest { margin: 12px var(--gutter) 0; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--card); }
   .suggest p { margin: 0 0 8px; font-size: 13px; overflow-wrap: anywhere; }
   .why { display: block; color: var(--muted); font-size: 12.5px; }
+  .out { padding: 0 var(--gutter); }
   .addresses { padding: 4px var(--gutter) 14px; border-top: 1px solid var(--border); }
   summary { list-style: none; cursor: pointer; }
   summary::-webkit-details-marker { display: none; }

@@ -18,7 +18,7 @@ export type Artifact = {
   /** A live page's key: its origin (its site's key), its path, the page on
    * its site's most recently used origin, and its site's origins, the most
    * recently used first (spec 2026-10-05 §7.2). */
-  live?: { origin: string; path: string; page_url: string; origins?: string[] } | null;
+  live?: { origin: string; path: string; page_url: string; origins?: string[]; merged_into?: string; merged_into_url?: string | null } | null;
 };
 /** `agents` is ordered live first, then most recently active; `live` means a send can reach it. */
 export type Participants = { people: { public_id: string; display_name: string | null; seen: number | null }[]; agents: { handle: string; harness: string; live: boolean }[] };

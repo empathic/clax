@@ -50,7 +50,11 @@ impl LiveIds {
                 st.live_pages()?
                     .into_iter()
                     .map(|p| (p.artifact_id, p.origin))
-                    .chain(st.merged_live_pages()?)
+                    .chain(
+                        st.merged_live_pages()?
+                            .into_iter()
+                            .map(|m| (m.artifact_id, m.origin)),
+                    )
                     .collect(),
             ),
             RwLock::default(),
@@ -436,6 +440,34 @@ mod store_tests {
         for p in st.live_page_ids().unwrap() {
             assert!(ids.contains(&p));
         }
+    }
+
+    #[test]
+    fn a_page_a_join_merged_away_is_still_a_live_page_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
+        let other = |path: &str| PageKey {
+            origin: "http://localhost:5174".into(),
+            path: path.into(),
+        };
+        st.ensure_live_page(&key("/"), "t", None).unwrap();
+        let b = st
+            .ensure_live_page(&other("/"), "t", None)
+            .unwrap()
+            .artifact
+            .id;
+        st.join_origins("http://localhost:5174", "http://localhost:5173")
+            .unwrap();
+        let (merged, _) = st.settle_joined_pages("http://localhost:5173").unwrap();
+        assert_eq!(merged, vec![b.clone()]);
+        assert!(
+            st.live_page_of(&clax_core::ArtifactId::parse(&b).unwrap())
+                .unwrap()
+                .is_none()
+        );
+        // The set a restarted daemon loads keeps it, so the LAN rule hides it.
+        let ids = LiveIds::load(&st).unwrap();
+        assert!(ids.contains(&b));
     }
 
     #[test]

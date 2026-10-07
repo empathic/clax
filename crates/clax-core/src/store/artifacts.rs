@@ -226,6 +226,12 @@ impl Store {
                 "DELETE FROM live_merged_pages WHERE artifact_id = ?1",
                 params![id.as_str()],
             )?;
+            // Pages a join merged into this one are released: listed and
+            // deletable again, never left hidden (spec §7.2).
+            tx.execute(
+                "UPDATE live_merged_pages SET merged_into = NULL WHERE merged_into = ?1",
+                params![id.as_str()],
+            )?;
             tx.execute(
                 "DELETE FROM live_pending WHERE artifact_id = ?1",
                 params![id.as_str()],
