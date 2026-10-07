@@ -170,7 +170,8 @@ test("comment on a dev server page, reach the agent, and follow a hot reload", a
 
   // The side panel lists it and sends it to the agent.
   await expect.poll(() => panel.text()).toContain("The save button needs more room");
-  await panel.click(/Send to claude/);
+  // The page's agents come with its details, which may follow its threads.
+  await expect.poll(() => panel.click(/Send to claude/).then(() => true, () => false)).toBe(true);
   const fb = await api(live, `/api/sessions/${sid}/feedback?tier=wait&wait=10`);
   expect(fb.text).toContain(`live page ${siteUrl}`);
   expect(fb.text).toContain("Snapshot: ");
