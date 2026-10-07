@@ -43,6 +43,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(toggle).toHaveAttribute("aria-pressed", "true");
 
     // First: an element. Comment mode is off while the composer is open.
+    // The hover waits for the page to be in comment mode: one before then
+    // goes to the page, and nothing outlines it until the pointer moves again.
+    await commentModeIn(frame);
     await frame.locator("#title").hover();
     await expect.poll(() => outlined(frame)).toBe(true);
     await frame.locator("#title").click();
