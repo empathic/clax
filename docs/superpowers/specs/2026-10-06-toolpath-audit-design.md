@@ -372,14 +372,19 @@ repeated in `body`.
 {
   "v": 1,
   "via": "mcp|hook|pi|cli|shell|extension|lan|daemon",
+  "clax_version": "0.3.1",
+  "clax_commit": "<build commit hex>|unknown",
   "git": { … } | absent,
   "git_capture": "ok|not-a-repo|timeout|unavailable|no-cwd|invalid" | absent,
   "call": {"call_id": "01JB…", "tool": "publish", "args_sha256": "sha256:…"} | absent
 }
 ```
 
-`git` appears on agent actions whose agent side captured it (O2, §9). `call`
-appears on every event made under a tool call (§6.7).
+`clax_version` and `clax_commit` name the build that recorded the event
+(the backfilling build, for a backfilled one), so a rendering names that
+build, never the one rendering it (§7.6). `git` appears on agent actions
+whose agent side captured it (O2, §9). `call` appears on every event made
+under a tool call (§6.7).
 
 **The recording rule.** An event is recorded exactly when the store writes,
 in the write's own transaction. A request that changes nothing (a resolve of
@@ -638,7 +643,7 @@ thread's `thread.resolve` when made with that resolve, else it is a
 
 | Kind | Body |
 |---|---|
-| `backfill.skip` | `table, row_id, reason`: a source row the backfill could not convert, recorded in its place |
+| `backfill.skip` | `table, row_id, reason`: a source row the backfill could not convert, recorded in its place. `reason` is a fixed phrase naming the fault, and at most a column and a type, never a value from the row |
 
 Not reconstructed, because the history keeps no trace of them: earlier
 resolve and reopen cycles, rows since hard-deleted, `feedback.release`,
@@ -686,8 +691,14 @@ segments older than that at rotation time. It never touches the table.
 ```
 
 - **`ActorDef`:** written the first time an actor appears in a segment,
-  before that actor's first step. Each definition is complete, because the
-  JSONL RFC overwrites rather than merges.
+  before that actor's first step, and again whenever the actor's definition
+  grows. One actor string can gather identities over time (a harness
+  session's later transcript segment, another Clax session under the same
+  harness session), so the writer keeps the definition it last wrote and
+  merges each new one into it: the new fields, and the union of both
+  identity lists sorted by `(system, id)`. Each definition written is
+  complete, because the JSONL RFC overwrites rather than merges. Export
+  merges the same way.
 - **`Head` and `PathClose`:** written only when a segment closes, at
   rotation or graceful shutdown. While a segment is open, its single-tip
   linear chain makes the head unambiguous.
@@ -748,8 +759,14 @@ no step is ever duplicated.
 
 ### 7.6 Determinism
 
-The renderer is a pure function of (row, install ID, render options):
+The renderer is a pure function of (row, install ID, render options), plus,
+for an export only, the browser base URL:
 
+- the build that recorded an event is stored in its envelope (§6) and
+  rendered from there; the rendering build contributes nothing;
+- the journal renders no browser URL (no `view` ref, no `meta.clax.url`),
+  because the port can change between writes. A line re-appended after a
+  restart on another port, or under a newer build, is byte-identical;
 - `serde_json`'s default `Map` is a `BTreeMap`, so keys come out sorted;
 - there are no clock reads and no `HashMap` iteration;
 - the output is compact.
@@ -989,13 +1006,13 @@ outside it become `-`, and the original value is kept in the `ActorDef`.
 
 | Actor | String | `ActorDef` |
 |---|---|---|
-| agent with a harness session ID | `agent:claude-code/<harness session ID>` | `name` "Claude Code"; `provider`: anthropic for claude, openai for codex, xai for grok, absent for pi. `identities`: `{system:"clax-session", id:<ULID>}`, `{system:"claude-code-session", id:<harness session ID>}`, `{system:"clax-agent", id:<agent handle>}`, and `{system:"claude-code-transcript", id:<transcript path>}` when known |
-| agent without one | `agent:claude-code/clax-<session ULID>` | the same, minus the harness identities |
+| agent with a harness session ID | `agent:claude-code/<harness session ID>` | `name` "Claude Code" (Codex, Pi, Grok; "Agent" when the harness is unknown); `provider`: anthropic for claude, openai for codex, xai for grok, absent for pi. `identities`: `{system:"clax-session", id:<ULID>}`, `{system:"claude-code-session", id:<harness session ID>}`, `{system:"clax-agent", id:<agent handle>}`, and `{system:"claude-code-transcript", id:<transcript path>}` when known |
+| agent without one | `agent:claude-code/clax-<session ULID>` (`agent:unknown/…` when the history no longer names the harness, or names it empty) | the same, minus the harness identities |
 | sessionless `/mcp` | `agent:clax-mcp` | `name` "MCP client (no session)" |
-| owner | `human:clax-owner` | `identities`: `{system:"clax", id:"<install ID>/<owner public ID>"}` (opaque) |
-| LAN viewer | `human:clax-viewer/<public ID>` | `name`: the display name (redactable). `identities`: `{system:"clax", id:"<install ID>/<public ID>"}` |
-| anonymous viewer | `human:clax-anonymous` | none |
-| Clax itself | `tool:clax/<version>` | `identities`: `{system:"clax-build", id:<commit>}` |
+| owner | `human:clax-owner` | `name` "Clax owner"; `identities`: `{system:"clax", id:"<install ID>/<owner public ID>"}` (opaque) |
+| LAN viewer | `human:clax-viewer/<public ID>` | `name`: the display name (left out under `--no-names`). `identities`: `{system:"clax", id:"<install ID>/<public ID>"}` |
+| anonymous viewer | `human:clax-anonymous` | `name` "Anonymous viewer" |
+| Clax itself (any system actor) | `tool:clax/<version>`, the version that recorded the event | `name` "Clax"; `identities`: `{system:"clax-build", id:<commit that recorded it>}`. The reason (`ttl`, `rule`, `backfill`, `daemon`) is `meta.clax.system_reason` |
 
 `agent:<provider>/<session>` is the base RFC's own example. The harness
 session is who acted, not where the step lives (O7). Clax does not know the
@@ -1017,10 +1034,36 @@ clax://<install>/a/<artifact>/d/<collection>/<doc>
 clax://<install>/s/<session>                       agent session (a reference target, not a path)
 clax://<install>/s/<session>/call/<call ID>        tool call
 clax://<install>/q/<question>                      question
+clax://<install>/a/<artifact>/asset/<asset ID>     asset
+clax://<install>/u/<public ID>                     a person (viewer.claim's key)
+clax://<install>/rule/<rule ID>                    live-page rule
+clax://<install>/site/<origin>                     joined site, by its key origin
+clax://<install>/call/<call ID>                    tool call of the sessionless /mcp route
+clax://<install>/step/<step ID>                    a recorded step (a tool call's produced)
+clax://<install>/backfill/<table>/<row ID>         a history row the backfill skipped
 ```
 
-Browser URLs depend on the port and host, so each step records them as a
-`view` ref rather than as a key.
+Every segment is percent-encoded down to RFC 3986's unreserved characters,
+and each form starts with its own literal, so a URI decodes one way only (a
+document's collection keeps its `/` structure; its last segment is the
+document ID). The keys:
+
+- the object named above for each kind: a version for `version.publish`
+  and `live.snapshot`, a comment for `comment.add`, a thread for the other
+  thread kinds, the document for `doc.*`, the asset for `asset.*`, the
+  question for `question.*`, the call for `tool.call` and `tool.call_id`;
+- a thread's URI nests under its artifact, so it changes when the thread
+  moves: a `thread.move` is keyed by the thread under its target, with a
+  `thread` ref to its old URI;
+- watch, working-record and session events are keyed by the session; a
+  batch `thread.send` by the artifact;
+- `live.join`, `live.split` and `live.join_answer` by `/site/<origin>`, the
+  site's key origin (for an answer, the asked origin).
+
+Browser URLs depend on the port and host, so a step records them as a
+`view` ref rather than as a key, and only in an export: journal steps carry
+no `view` ref and no `meta.clax.url` (§7.6). A moved thread's `view` is its
+destination artifact's.
 
 ### 10.3 Example step: an agent publish
 
@@ -1063,8 +1106,13 @@ Browser URLs depend on the port and host, so each step records them as a
 }
 ```
 
-Owner and viewer steps have the same shape with no `git`, `call`,
-`agent-session` or `transcript`. A `tool.call` step's change key is its
+`meta.clax` also holds the non-null ID columns (`artifact_id`,
+`artifact2_id`, `thread_id`, `session_id`, `question_id`, `call_id`,
+`origin`), `system_reason` when the actor is a system actor, and
+`for_actor` as an actor string when the body names one; the envelope's
+`clax_version` and `clax_commit` are the recording build's (`unknown` when
+a row lacks them). Owner and viewer steps have the same shape with no
+`git`, `call`, `agent-session` or `transcript`. A `tool.call` step's change key is its
 `clax://…/call/<ID>` URI, of type `clax.tool.call`.
 
 ### 10.4 `meta.refs` vocabulary
@@ -1086,7 +1134,9 @@ The correlation RFC requires readers to keep unknown `rel` values.
 | `answers` | `question.answer` → the question |
 | `produced` | a `tool.call` step → each step it produced (`toolpath:` within the graph, otherwise `clax://…`) |
 | `same-change` | a step ↔ its copy in another artifact path |
-| `view` | a step or path → its browser URL |
+| `session` | a step whose `session_id` column names a session (a delivery's receiving session, a release's target, a question's asker) → `clax://<install>/s/<session>`, unless that is already its `agent-session` |
+| `copied-from` | a `live.snapshot` a move or merge copied → `clax://<install>/a/<source>/v/<n>` |
+| `view` | a step or path → its browser URL, in exports only |
 | `continues` | a journal segment → the previous segment's file name |
 
 **HEAD is not `meta.source`.** In the correlation RFC, a shared
@@ -1118,14 +1168,23 @@ This is the owner's archive (O3). It lives under `~/.clax` (0700, files
 
 | Option | Replaces | With |
 |---|---|---|
-| `--no-text` | comment `body`, version `note` and `label`, artifact `title` and `description`, question and answer text, working `message` | `{"redacted":"text","sha256":"sha256:<hex of the UTF-8 original>"}` |
+| `--no-text` | comment `body`, version `note` and `label`, artifact `title` and `description`, question and answer text, working `message`, an anchor's quoted page text (`quote`, `prefix`, `suffix`), an artifact's declared `capabilities` (open-ended configuration), and free-form reasons (`backfill.skip`, `feedback.release`, `question.*`) | `{"redacted":"text","sha256":"sha256:<hex of the UTF-8 original>"}`; a structured value (questions, answers) hashes its JCS form (§12.2) |
 | `--no-names` | viewer `display_name`, `author_name` | `{"redacted":"name"}` (public IDs stay) |
-| `--no-paths` | `cwd`, `repo_root`, `transcript_path`, `file://` refs, the transcript identity | `{"redacted":"path","sha256":…}`; `file://` refs are dropped |
+| `--no-paths` | `cwd`, `repo_root`, `transcript_path`, URLs that can carry a query or fragment (an anchor's `route`, a `thread.move`'s `from_url` and `to_url`; a query can hold a token or a search), a git `remote_url` that is a local path (anything without a non-`file` scheme or the scp form `[user@]host:path`), `file://` refs, the transcript identity | `{"redacted":"path","sha256":…}`; `file://` refs, and an `at-revision` naming a local path, are dropped; the transcript identity becomes `{system:"<provider>-transcript-sha256", id:"sha256:…"}`, the only form the schema's identity (`{system, id}` strings) allows |
+| any option | a field with no class: one this build does not know, or any field of a kind it does not know | `{"redacted":"unclassified","sha256":…}` |
 
 - **Hashes stay joinable.** Redaction hashes are unsalted (O5), so redacted
   exports still join each other and the original can be verified. A short,
   guessable text can be confirmed by guessing; that is the owner's accepted
   trade.
+- **Deny by default.** Every body field of every kind, and every field of
+  the objects nested in one (an anchor, an `artifact.update`'s `fields`, an
+  actor in `for_actor`, the envelope's `git` and `call`), has a class:
+  safe (IDs, enums, counts, hashes, times, origins, URL paths without a
+  query or fragment), text, name
+  or path. A field with none is hashed under any option, so a field a
+  later change adds can never pass a redaction unseen; a test classifies
+  every field the recorders and the backfill write.
 - **Argument hashes are never redacted.** They are already hashes, and they
   are the join key (§12).
 - **The options used** are listed in `graph.meta.clax.redaction`.
@@ -1307,13 +1366,30 @@ This rule is the same for Claude Code, Codex, Pi, Gemini and Grok (O4).
   - `schema/toolpath.schema.json` is vendored from the Toolpath repo at a
     named commit, read-only, into `crates/clax-core/tests/toolpath/schema/`,
     with a `SOURCE` file naming that commit.
-  - Every golden export is validated against it with the `jsonschema`
-    dev-dependency.
-  - Every golden journal segment is first sealed by Clax's own test-side
-    reader, which implements the JSONL RFC's "Reading JSONL" algorithm, and
-    then validated against the schema.
+  - The Rust tests write golden documents byte for byte under
+    `crates/clax-core/tests/toolpath/expected/`: one export per redaction
+    option set (every kind in each), the sealed journal segment, and
+    unrenderable steps. The journal segment is sealed by Clax's own
+    test-side reader, which implements the JSONL RFC's "Reading JSONL"
+    algorithm.
+  - The web unit gate validates every golden document against the vendored
+    schema with Ajv (draft 2020-12, formats asserted;
+    `web/scripts/toolpath-schema.test.ts`). Clax takes no Rust schema
+    validator: `jsonschema` changed features under rusqlite and made
+    `clax-core` compile twice per run (owner ruling, Task 9 re-review).
+  - Renderings the Rust tests cannot fix as goldens (the store's recorders
+    and the backfill) are checked in Rust: actor strings against the
+    schema's pattern, timestamps as RFC 3339, and the shapes of steps,
+    changes, refs and actor definitions.
   - A test re-checks the actor pattern and the timestamp format against the
     vendored schema, so a schema update that changes them fails loudly.
+  - Negative controls, in both: broken documents (a bad actor, a bad
+    timestamp, a structural perspective without `type`) fail.
+  - The events the store's recorders and the backfill write, rendered
+    under every redaction option, conform, every field they hold has a
+    redaction class, and their texts appear without options and never
+    under all of them.
+  - Re-rendering is byte-identical across a port change and a newer build.
 - **Appender:**
   - `ManualClock` and an injected `JournalFs`;
   - rotation;

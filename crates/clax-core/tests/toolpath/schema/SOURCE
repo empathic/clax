@@ -1,0 +1,18 @@
+Vendored read-only from the Toolpath repository (https://github.com/empathic/toolpath).
+
+Commit: 77dc16a598bfe8fa832495b0c583160f6f4400b3 (77dc16a5)
+
+toolpath.schema.json
+  From: schema/toolpath.schema.json, a symbolic link at that commit to
+        crates/toolpath/schema/toolpath.schema.json; this is that file's content.
+  SHA-256: 6cbe247ca8e40e960ebfd9084ca842d930e0d92bb512d5ffb048277973460e42
+  Do not edit. To update, copy the file from a newer commit, update this file,
+  and rerun `cargo test -p clax-core toolpath` and, in web/,
+  `npx vitest run scripts/toolpath-schema.test.ts` (Ajv validates the
+  golden documents in expected/ against it).
+
+normalize_remote cases (crates/clax-core/src/toolpath/tests.rs,
+`normalize_remote_follows_toolpath_git`)
+  From: crates/toolpath-git/src/lib.rs at the same commit: the documented
+        cases of `normalize_git_url` (its doc comment and doc test) and its
+        unit tests `test_normalize_*`.

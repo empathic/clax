@@ -17,7 +17,7 @@ Agent steps carry complete cross-link references: harness, harness session ID, t
 - One pure renderer in `clax-core::toolpath` serves both the journal and export.
 - The MCP shim, `clax hook` and the Pi extension capture git state and hash tool arguments. They send both in headers, and post a `tool.call` record after each call returns.
 
-**Tech Stack:** Rust (rusqlite, axum, serde_json, sha2), clap, TypeScript (Pi extension). The dev-dependency `jsonschema` validates output against Toolpath's published schema.
+**Tech Stack:** Rust (rusqlite, axum, serde_json, sha2), clap, TypeScript (Pi extension). Ajv, in the web unit gate, validates the Rust-written golden documents against Toolpath's published schema (no Rust schema validator: Task 9 re-review ruling).
 
 **Spec:** `docs/superpowers/specs/2026-10-06-toolpath-audit-design.md` ("the spec"; §N refers to it).
 
@@ -45,6 +45,7 @@ Agent steps carry complete cross-link references: harness, harness session ID, t
   - No task depends on Toolpath reading a harness: every harness, Grok included, gets the same references.
   - Toolpath's repo is read-only reference, and only its schema is vendored, for tests.
 - **Paths follow artifacts.** No session-shaped path, and no session-only path fields. Sessions are actors and references (spec O7).
+- **Redaction classes (Task 9 ruling T9-I1).** A task that adds a kind or a body field gives it a class in `crates/clax-core/src/toolpath/redact.rs` (safe, text, name or path); `every_recorded_kind_is_classified_and_renders_conformant` fails until it does. Regenerate the goldens with `CLAX_UPDATE_GOLDEN=1 cargo test -p clax-core toolpath` and review the diff (Tasks 12, 14, 15).
 
 ## Review Focus
 
@@ -288,7 +289,7 @@ Every backfilled event gets `backfilled = 1` and `via: daemon`, and has no git c
   - golden histories and expected outputs;
   - `schema/toolpath.schema.json`, copied read-only from the Toolpath repo's `schema/` at commit `77dc16a5`, with a `SOURCE` file naming the commit;
   - `seal.rs`, a test-only reader that applies the JSONL RFC's "Reading JSONL" algorithm.
-- Modify: `crates/clax-core/Cargo.toml`, adding the dev-dependency `jsonschema`. Clax takes no dependency on any Toolpath crate.
+- Create: `web/scripts/toolpath-schema.test.ts`, validating the golden documents with Ajv (`ajv`, `ajv-formats` web dev-dependencies). Clax takes no dependency on any Toolpath crate, and no Rust schema validator (Task 9 re-review ruling).
 
 **Interfaces:**
 - `render_step(row, prev, env, opts)` renders a step as in spec §10:
@@ -329,6 +330,7 @@ Every backfilled event gets `backfilled = 1` and `via: daemon`, and has no git c
 - `Shape::{Artifacts, Journal}`.
 - `project_artifacts`, which returns one path per artifact plus the install path, with `same-change` on moves (spec §8.2).
 - `project_journal`.
+- Render with `toolpath::render` (step and actor definitions in one parse) under `RenderEnv::export(install, browser base)`. A path's `meta.actors` merges each actor's definitions with `merge_actor_def` (spec §7.2).
 - CLI flags as in spec §8.1.
 
 - [ ] **Step 1: Failing tests.**
@@ -361,6 +363,7 @@ Every backfilled event gets `backfilled = 1` and `via: daemon`, and has no git c
 - `JournalFs`: create, append, sync_data, set_len, rename, remove. There is no link operation.
 - `Appender::drain_now()`, for tests.
 - Behaviour follows spec §7. Files are 0600 and directories 0700, and a directory is fsynced after it is created.
+- Render under `RenderEnv::journal(install)` (no browser URLs, spec §7.6). Write an actor's `ActorDef` before its first step and again, merged with `merge_actor_def`, whenever its definition grows (spec §7.2). `segments_seal_and_validate_against_schema` seals with `tests/toolpath/seal.rs` and checks conformance in Rust; a segment the writer produces deterministically is also written as a golden `expected/*.path.json`, which the web unit gate validates with Ajv.
 
 - [ ] **Step 1: Failing tests.**
   - `first_start_writes_path_open_and_backfill`
@@ -393,6 +396,7 @@ Every backfilled event gets `backfilled = 1` and `via: daemon`, and has no git c
   - `crates/clax-mcp/src/tools.rs`: mint a `call_id` at each tool call and hash the arguments as received. After the result is returned, post `POST /api/sessions/<sid>/tool-calls` in the background.
   - `crates/clax-mcp/src/shim.rs`: capture at registration.
   - `crates/clax-server/src/audit.rs`: the tool-calls route records `tool.call` with `produced`.
+  - `crates/clax-core/src/toolpath/redact.rs`: `redaction_hash` hashes a structured value's JCS form through `args.rs` (spec §11), with a test that the redaction hash of a vector's arguments is its `args_sha256`.
 
 **Number formatting:** use a JCS crate (for example `serde_json_canonicalizer`), or a hand implementation over `ryu-js`. The vectors decide either way. Plain `serde_json` output fails vector 6.
 

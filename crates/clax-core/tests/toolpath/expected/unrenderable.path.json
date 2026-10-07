@@ -1,0 +1,139 @@
+{
+  "graph": {
+    "id": "g"
+  },
+  "paths": [
+    {
+      "path": {
+        "head": "e000000000007",
+        "id": "p"
+      },
+      "steps": [
+        {
+          "change": {
+            "clax://i": {
+              "structural": {
+                "kind": "future.thing",
+                "seq": 7,
+                "type": "clax.unrenderable"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "unknown",
+              "clax_version": "unknown",
+              "install": "i",
+              "kind": "future.thing",
+              "seq": 7,
+              "unrenderable": true
+            },
+            "description": "Could not render event e000000000007"
+          },
+          "step": {
+            "actor": "tool:clax/unknown",
+            "id": "e000000000007",
+            "parents": [
+              "e000000000006"
+            ],
+            "timestamp": "2026-10-06T15:00:07.000Z"
+          }
+        },
+        {
+          "change": {
+            "clax://i": {
+              "structural": {
+                "kind": "future.thing",
+                "seq": 7,
+                "type": "clax.unrenderable"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "unknown",
+              "clax_version": "unknown",
+              "install": "i",
+              "kind": "future.thing",
+              "seq": 7,
+              "unrenderable": true
+            },
+            "description": "Could not render event e000000000007"
+          },
+          "step": {
+            "actor": "tool:clax/unknown",
+            "id": "e000000000007",
+            "parents": [
+              "e000000000006"
+            ],
+            "timestamp": "2026-10-06T15:00:07.000Z"
+          }
+        },
+        {
+          "change": {
+            "clax://i": {
+              "structural": {
+                "kind": "future.thing",
+                "seq": 7,
+                "type": "clax.unrenderable"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "unknown",
+              "clax_version": "unknown",
+              "install": "i",
+              "kind": "future.thing",
+              "seq": 7,
+              "unrenderable": true
+            },
+            "description": "Could not render event e000000000007"
+          },
+          "step": {
+            "actor": "tool:clax/unknown",
+            "id": "e000000000007",
+            "parents": [
+              "e000000000006"
+            ],
+            "timestamp": "2026-10-06T15:00:07.000Z"
+          }
+        },
+        {
+          "change": {
+            "clax://i": {
+              "structural": {
+                "kind": null,
+                "seq": 7,
+                "type": "clax.unrenderable"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "unknown",
+              "clax_version": "unknown",
+              "install": "i",
+              "kind": null,
+              "seq": 7,
+              "unrenderable": true
+            },
+            "description": "Could not render event e000000000007"
+          },
+          "step": {
+            "actor": "tool:clax/unknown",
+            "id": "e000000000007",
+            "parents": [
+              "e000000000006"
+            ],
+            "timestamp": "2026-10-06T15:00:07.000Z"
+          }
+        }
+      ]
+    }
+  ]
+}
