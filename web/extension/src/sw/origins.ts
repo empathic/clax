@@ -1,7 +1,8 @@
 // Origins and the overlay's injection (spec 2026-10-05 O4, L8): a tab's
 // origin, the origin's optional host permission (Chrome's own prompt, none
-// when it is held), which lets the worker inject the overlay again after a
-// reload of a tab Clax is on, and the injection itself, once per document.
+// when it is held), which lets the worker read and script the origin's
+// tabs without a gesture's activeTab grant (Chrome keeps that grant through
+// reloads within the origin), and the injection itself, once per document.
 // Holding the permission turns Clax on in no tab.
 export type OriginsEnv = {
   permissions: Pick<typeof chrome.permissions, "request">;
@@ -121,22 +122,34 @@ export async function overlayPresent(env: OriginsEnv, tabId: number): Promise<bo
   return (await probe(env, tabId).catch(() => null))?.present === true;
 }
 
+/** Chrome's refusal to script a document the tab no longer shows (it
+ * navigated between the probe and the injection, or mid-probe). */
+const GONE = /No document with id|frame was removed|Frame with ID 0/i;
+
 /** Injects the overlay into the tab's top document, once per document (the
  * worker's record of a tab can lag a reload, or be lost with a restart),
  * and only into a document of `origin`, the one Clax is on for in the tab:
  * the document probed is the one injected (`documentIds`), so a navigation
  * meanwhile gets nothing. True when it injected it now; false when the
- * document has it; null when the tab's document is not of `origin`. An
- * overlay left over from an earlier load of the extension is not present,
- * so it is injected again; the new one stops the old. Presence is the
- * overlay's own mark, set once it started, so a failed injection is tried
- * again. */
+ * document has it; null when the tab's document is not of `origin`, or
+ * when the tab moved to another document between probe and injection twice
+ * running (its next load brings the overlay). An overlay left over from an
+ * earlier load of the extension is not present, so it is injected again;
+ * the new one stops the old. Presence is the overlay's own mark, set once
+ * it started, so a failed injection is tried again. */
 export async function injectOverlay(env: OriginsEnv, tabId: number, origin: string): Promise<boolean | null> {
-  const p = await probe(env, tabId);
-  if (!p || p.origin !== origin) return null;
-  if (p.present) return false;
-  const target = { tabId, documentIds: [p.documentId] };
-  await env.scripting.executeScript({ target, func: setBoot, args: [await env.boot()] });
-  await env.scripting.executeScript({ target, files: ["overlay.js"] });
-  return true;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const p = await probe(env, tabId);
+      if (!p || p.origin !== origin) return null;
+      if (p.present) return false;
+      const target = { tabId, documentIds: [p.documentId] };
+      await env.scripting.executeScript({ target, func: setBoot, args: [await env.boot()] });
+      await env.scripting.executeScript({ target, files: ["overlay.js"] });
+      return true;
+    } catch (e) {
+      if (!GONE.test(String((e as { message?: unknown })?.message ?? e))) throw e;
+      if (attempt >= 1) return null;
+    }
+  }
 }

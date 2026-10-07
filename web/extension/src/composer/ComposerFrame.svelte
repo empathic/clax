@@ -13,13 +13,15 @@
   import type { Draft } from "../../../shell/src/view/composer-model";
   import { dataUrlBlob } from "../data-url";
   import { type ComposerNote, isToComposer } from "../messages";
+  import { type Shortcut, readShortcut } from "../shortcut";
   import { clipMessage } from "./clip-message";
 
   type Port = Pick<chrome.runtime.Port, "postMessage" | "onMessage" | "onDisconnect">;
   /** Sends a one-off message to the worker (`chrome.runtime.sendMessage`). */
   type Notify = (m: ComposerNote) => Promise<unknown> | void;
   const runtimeNotify: Notify = m => chrome.runtime.sendMessage(m);
-  let { port, pickId, win = window, notify = runtimeNotify }: { port: Port; pickId: string; win?: Window; notify?: Notify } = $props();
+  /** `shortcut`: the keyboard command's shortcut, which the no-screenshot notice names. */
+  let { port, pickId, win = window, notify = runtimeNotify, shortcut = readShortcut() }: { port: Port; pickId: string; win?: Window; notify?: Notify; shortcut?: Promise<Shortcut> } = $props();
   const note = (m: ComposerNote) => {
     try { void Promise.resolve(notify(m)).catch(() => {}); } catch { /* the extension is gone */ }
   };
@@ -46,7 +48,10 @@
     p.onMessage.addListener((m: unknown) => {
       if (!isToComposer(m)) return;
       if (m.t === "draft") {
-        draft = { pickId: id, anchor: m.anchor, version: 0, clip: m.clipUrl ? dataUrlBlob(m.clipUrl) : null, clipError: clipMessage(m.clipError), capturing: m.capturing };
+        const { anchor, clipUrl, clipError, capturing } = m;
+        void shortcut.then(keys => {
+          draft = { pickId: id, anchor, version: 0, clip: clipUrl ? dataUrlBlob(clipUrl) : null, clipError: clipMessage(clipError, keys), capturing };
+        });
       } else if (m.t === "posted") {
         done = true;
         waiting?.ok();

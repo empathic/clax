@@ -89,14 +89,16 @@ export function startBackground(c: typeof chrome) {
 
   /** Turns Clax on in the tab (or keeps it on), records the gesture's
    * activeTab grant, and makes sure of the overlay: comment mode turns on
-   * when it was just injected, else flips. */
+   * when it was just injected or the tab had no grant before (the person
+   * was told to press the command to get screenshots), else flips. */
   async function comment(tabId: number, url: string, origin: string): Promise<void> {
     await tabs.ready();
     showPanel(tabId);
     // A title saying why Clax turned off in the tab (`follow`) is told.
     quietly(() => c.action.setTitle({ tabId, title: "Comment with Clax" }));
+    const granted = tabs.admits(tabId);
     tabs.turnOn(tabId, url, origin);
-    await tabs.toggle(tabId, url);
+    await tabs.toggle(tabId, url, !granted);
   }
 
   /** A gesture that grants activeTab (spec L8). The side panel (icon only)
@@ -115,14 +117,15 @@ export function startBackground(c: typeof chrome) {
       showPanel(tabId);
       quietly(() => c.sidePanel.open({ tabId }));
     }
-    // The permission lets the overlay be injected again after a reload; held, Chrome asks nothing.
-    const asked = origins.ask(originsEnv, origin);
+    // The permission lets the worker read and script the origin's tabs
+    // without a gesture's grant; held, Chrome asks nothing. Refused, Clax
+    // stays on: Chrome keeps the gesture's activeTab within the origin.
+    void origins.ask(originsEnv, origin);
     void (async () => {
       await tabs.ready();
       // A worker that had not read its tabs back at the click: the tab was on, so the icon turns it off.
       if (icon && !known && tabs.onOrigin(tabId) === origin) { off(tabId); return; }
       await comment(tabId, url, origin);
-      if (!(await asked)) tabs.declined(tabId);
     })();
   }
 

@@ -404,7 +404,8 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
         if (composer?.pickId !== m.pickId) break;
         closeComposer();
         if (m.reason === "timeout") notify("The comment box did not open. Pick again to comment.");
-        if (m.posted || state?.commentMode) mode.set(true);
+        // Comment mode as the worker's state has it: the side panel may have turned it off meanwhile.
+        syncMode();
         break;
       case "focus": case "scroll-to": {
         selected = m.threadId;

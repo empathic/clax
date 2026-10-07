@@ -742,9 +742,10 @@ Found by this test and fixed, each with a regression test:
 
 - The toolbar icon, its permission prompt and the per-origin grant (the
   test build holds `<all_urls>` or a fixed origin; the worker's test hook
-  stands in for the click). `activeTab` lapsing at a navigation to
-  another origin (a same-origin reload keeps it: checked in Chromium
-  through CDP's `Extensions.triggerAction`, a real action click).
+  stands in for the click). Chrome keeping `activeTab` through a
+  same-origin reload, and withdrawing it at another origin, is exercised
+  with a real action click (CDP's `Extensions.triggerAction`) in
+  `web/e2e/chrome-overlay.spec.ts`.
 - The side panel opened by the icon in that tab (the test opens Chrome's
   real side panel, but through `chrome.sidePanel.open({tabId})` from an
   extension page), and the icon's second click turning Clax off in the tab
@@ -761,10 +762,14 @@ Found by this test and fixed, each with a regression test:
   permission prompt appears, from the one gesture (the unit test asserts
   only the order of the calls: `sidePanel.setOptions`, `sidePanel.open`,
   `permissions.request`, all before any `await`).
-- Declining the permission: the panel says Clax will turn off in this tab
-  when the page reloads. Chrome keeps `activeTab` across a same-origin
-  reload, so the worker may still read the tab: check by hand whether Clax
-  then stays on, and record which.
+- Declining the permission: Clax stays on in the tab through a reload
+  (Chrome keeps the gesture's `activeTab` within the origin, so the worker
+  reads the tab and injects the overlay again); check by hand that the
+  pins come back and the panel's Comment works.
+- Discard a tab Clax is on (chrome://discards), restore it, press Comment
+  in the panel and pick: record whether the composer has a screenshot. If
+  Chrome dropped the grant, the composer says how to get one and the
+  panel's next Comment names the command.
 - An on tab dragged into another window: its panel goes with it, shows
   that tab's threads, and "Turn off in this tab" turns off that tab (the
   panel is pinned to its tab, `?tab=`; unit tests hold the pinning and the

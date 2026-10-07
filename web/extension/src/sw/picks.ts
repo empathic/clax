@@ -59,6 +59,8 @@ export type PicksDeps = {
   pendingIds(tabId: number): string[];
   /** A thread was posted on `page` from the tab. */
   posted?(tabId: number, page: PageView): void;
+  /** Chrome refused the tab's capture for want of activeTab. */
+  revoked?(tabId: number): void;
   /** Whether the tab is still its window's active tab (what `captureVisibleTab` captures). */
   tabActive?(tabId: number): Promise<boolean>;
   now(): number;
@@ -142,7 +144,10 @@ export class Picks {
     const shot = active ? await this.d.capture(windowId, m.rect, m.dpr) : { error: "capture_failed" };
     if (this.byTab.get(tabId) !== p) return null;
     if ("png" in shot) p.clip = shot.png;
-    else p.clipError = shot.error;
+    else {
+      p.clipError = shot.error;
+      if (shot.error === "no_capture_permission") this.d.revoked?.(tabId);
+    }
     // The overlay serializes the page once its composer is shown: what is pending now is what that snapshot covers.
     p.pending = this.d.pendingIds(tabId);
     p.opened = this.d.now();

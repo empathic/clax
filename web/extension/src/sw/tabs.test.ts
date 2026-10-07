@@ -67,6 +67,7 @@ function harness(store = memory(), docs = documents(), sites?: FakeSites) {
   const gates = new Map<string, Promise<void>>();
   const gate: { threads?: Promise<void>; thread?: Promise<void>; working?: Promise<void> } = {};
   const working = new Map<string, unknown[]>();
+  const between = new Map<number, number>();
   const api: TabsApi = {
     lookup: async (url: string) => { calls.push(`lookup ${url}`); await gates.get(url); const r = pages.get(url); if (!r) throw Object.assign(new Error("down"), { code: "daemon_unreachable" }); return r; },
     threads: async (aid: string) => { calls.push(`threads ${aid}`); const out = structuredClone(threads.get(aid) ?? []); await gate.threads; return out as never; },
@@ -81,14 +82,22 @@ function harness(store = memory(), docs = documents(), sites?: FakeSites) {
     api,
     hub: { receive: (id, msg) => hubIn.push({ id, msg }), detach: id => detached.push(id) },
     toOverlay: (tabId, m) => overlay.push({ tabId, m }),
-    inject: async tabId => { if (docs.has(tabId)) return false; docs.add(tabId); injected.push(tabId); return true; },
+    inject: async tabId => {
+      // The tab between two documents: the injection reaches none.
+      const n = between.get(tabId) ?? 0;
+      if (n > 0) { between.set(tabId, n - 1); return null; }
+      if (docs.has(tabId)) return false;
+      docs.add(tabId);
+      injected.push(tabId);
+      return true;
+    },
     present: async tabId => docs.has(tabId),
     store,
     sites,
   });
   /** The tab loads a new document: whatever was in the old one is gone. */
   const reload = (tabId: number) => docs.delete(tabId);
-  return { tabs, calls, hubIn, detached, overlay, injected, pages, threads, gates, gate, working, store, docs, reload };
+  return { tabs, calls, hubIn, detached, overlay, injected, pages, threads, gates, gate, working, store, docs, reload, between };
 }
 
 function port(name = "panel:1") {
@@ -406,6 +415,62 @@ describe("Tabs", () => {
     expect(h.tabs.admits(4)).toBe(true);
     await h.tabs.toggle(4, URL1);
     expect(h.injected).toEqual([4, 4]);
+    expect(h.tabs.state(4)?.commentMode).toBe(true);
+  });
+
+  it("turns comment mode on from the panel only once the page has the overlay, injecting it when it has none", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    h.tabs.turnOn(4, URL1, "http://localhost:5173");
+    await h.tabs.toggle(4, URL1);
+    h.tabs.setCommentMode(4, false);
+    // A new document whose load Chrome has not reported complete yet: no overlay in it.
+    h.reload(4);
+    await h.tabs.navigated(4, false);
+    expect(h.tabs.state(4)).toMatchObject({ overlay: false, commentMode: false });
+    await h.tabs.commentOn(4);
+    expect(h.injected).toEqual([4, 4]);
+    expect(h.tabs.state(4)).toMatchObject({ overlay: true, commentMode: true });
+    // The overlay heard comment mode only after it was injected.
+    expect(h.overlay.filter(o => o.m.t === "state").at(-1)?.m).toMatchObject({ commentMode: true });
+  });
+
+  it("tries the overlay once more when the tab was between documents, and says so when it still could not", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    h.tabs.turnOn(4, URL1, "http://localhost:5173");
+    await h.tabs.toggle(4, URL1);
+    h.tabs.setCommentMode(4, false);
+    h.reload(4);
+    await h.tabs.navigated(4, false);
+    h.between.set(4, 1);
+    await h.tabs.commentOn(4);
+    expect(h.tabs.state(4)).toMatchObject({ overlay: true, commentMode: true });
+    h.tabs.setCommentMode(4, false);
+    h.reload(4);
+    await h.tabs.navigated(4, false);
+    h.between.set(4, 2);
+    await expect(h.tabs.commentOn(4)).rejects.toMatchObject({ code: "page_loading", message: "The page was still loading. Try again." });
+    expect(h.tabs.state(4)).toMatchObject({ overlay: false, commentMode: false });
+    // A gesture that meets the same says so on the tab, for the panel.
+    h.between.set(4, 2);
+    await h.tabs.toggle(4, URL1);
+    expect(h.tabs.state(4)).toMatchObject({ commentMode: false, error: { code: "page_loading" } });
+  });
+
+  it("forgets the grant when Chrome refused a capture for want of it, until a gesture grants it again", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    h.tabs.turnOn(4, URL1, "http://localhost:5173");
+    await h.tabs.toggle(4, URL1);
+    expect(h.tabs.admits(4)).toBe(true);
+    h.tabs.revoke(4);
+    expect(h.tabs.admits(4)).toBe(false);
+    // The command (a gesture) grants it again, and turns comment mode on rather than flipping it off.
+    expect(h.tabs.state(4)?.commentMode).toBe(true);
+    h.tabs.turnOn(4, URL1, "http://localhost:5173");
+    await h.tabs.toggle(4, URL1, true);
+    expect(h.tabs.admits(4)).toBe(true);
     expect(h.tabs.state(4)?.commentMode).toBe(true);
   });
 

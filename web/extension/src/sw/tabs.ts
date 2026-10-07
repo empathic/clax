@@ -31,14 +31,12 @@ export type TabState = {
   active: boolean;
   /** The origin Clax is on for in the tab; null when it is off there. */
   on: string | null;
-  /** The person refused the origin's permission when turning Clax on: a reload will turn it off. */
-  declined: boolean;
   error: { code: string; message: string } | null;
 };
 
 export const emptyTab = (tabId: number, url: string): TabState => ({
   tabId, url, page: null, route: null, threads: [], working: [], resolved: {}, commentMode: false, overlay: false, pending: false, selected: null,
-  versions: [], participants: null, active: false, on: null, declined: false, error: null,
+  versions: [], participants: null, active: false, on: null, error: null,
 });
 
 /** A thread of a live page has `addressed_pending` while an agent's address waits for the page's next snapshot. */
@@ -125,6 +123,8 @@ type Deps = {
 /** How long a closed tab's ID is kept, so an answer still in flight for it writes no record. */
 export const CLOSED_MS = 5 * 60_000;
 
+/** What the person is told when the overlay could not be put in a page between two documents. */
+export const PAGE_LOADING = "The page was still loading. Try again.";
 const failure = (e: unknown) => {
   const err = e as { code?: unknown; message?: unknown };
   return { code: typeof err?.code === "string" ? err.code : "failed", message: typeof err?.message === "string" ? err.message : String(e) };
@@ -186,13 +186,15 @@ export class Tabs {
     const s = this.tabs.get(tabId);
     if (s && s.on !== origin) this.close(tabId);
     this.closed.delete(tabId);
-    this.set(tabId, { ...(s && s.on === origin ? s : emptyTab(tabId, url)), on: origin, active: true, declined: false });
+    this.set(tabId, { ...(s && s.on === origin ? s : emptyTab(tabId, url)), on: origin, active: true });
   }
 
-  /** The person refused the origin's permission while turning Clax on in the tab. */
-  declined(tabId: number): void {
+  /** Chrome refused to capture the tab for want of activeTab (it holds no
+   * grant the record thought it did): the side panel's Comment then says how
+   * to grant it, until the next gesture does. */
+  revoke(tabId: number): void {
     const s = this.tabs.get(tabId);
-    if (s?.on) this.set(tabId, { ...s, declined: true });
+    if (s?.active) this.set(tabId, { ...s, active: false });
   }
 
   state(tabId: number): TabState | undefined { return this.tabs.get(tabId); }
@@ -538,12 +540,6 @@ export class Tabs {
     }
   }
 
-  /** A gesture granted the tab activeTab. */
-  activate(tabId: number, url = ""): void {
-    const s = this.tabs.get(tabId) ?? emptyTab(tabId, url);
-    this.set(tabId, { ...s, active: true });
-  }
-
   /** The tab's error, for the panel (a failed step of turning Clax on). */
   fail(tabId: number, e: unknown): void {
     const s = this.tabs.get(tabId);
@@ -567,24 +563,47 @@ export class Tabs {
     return fresh;
   }
 
+  /** `ensureOverlay`, tried once more when the tab, still on, was between
+   * documents; a tab still on with no overlay after that fails
+   * (`page_loading`). Null when the tab was turned off or closed meanwhile. */
+  private async overlayFor(tabId: number): Promise<boolean | null> {
+    const stillOn = () => !!this.tabs.get(tabId)?.on && !this.closed.has(tabId);
+    let fresh = await this.ensureOverlay(tabId);
+    if (fresh === null && stillOn()) fresh = await this.ensureOverlay(tabId);
+    if (fresh === null && stillOn()) throw Object.assign(new Error(PAGE_LOADING), { code: "page_loading" });
+    return fresh;
+  }
+
   /** The icon, the command or the context menu: the overlay is made sure
    * of, and comment mode turns on when the overlay was just injected (a
-   * new document, whatever the record said), else flips. */
-  async toggle(tabId: number, url: string): Promise<void> {
+   * new document, whatever the record said) or `on` (the gesture granted
+   * activeTab the tab lacked), else flips. */
+  async toggle(tabId: number, url: string, on = false): Promise<void> {
     await this.loaded;
     if (this.closed.has(tabId)) return;
     if (!this.tabs.has(tabId)) this.tabs.set(tabId, emptyTab(tabId, url));
     let fresh: boolean | null;
     try {
-      fresh = await this.ensureOverlay(tabId);
+      fresh = await this.overlayFor(tabId);
     } catch (e) {
       this.fail(tabId, e);
       return;
     }
     const s = this.tabs.get(tabId);
     if (fresh === null || !s) return;
-    this.set(tabId, { ...s, commentMode: fresh || !s.commentMode });
+    this.set(tabId, { ...s, commentMode: fresh || on || !s.commentMode });
     void this.route(tabId, url, this.stale.has(tabId));
+  }
+
+  /** The side panel turned comment mode on: only once the tab's document
+   * has the overlay (injected now if it had none), so comment mode is never
+   * on with nothing in the page to pick with. Throws `page_loading` when the
+   * overlay could not be put there. */
+  async commentOn(tabId: number): Promise<void> {
+    await this.loaded;
+    if (await this.overlayFor(tabId) === null) return;
+    const s = this.tabs.get(tabId);
+    if (s) this.set(tabId, { ...s, commentMode: true });
   }
 
   /** A thread was posted from the tab on `page`: a page the tab did not
@@ -698,7 +717,7 @@ export class Tabs {
     this.d.toOverlay(tabId, threadId === null ? { t: "focus", threadId: null } : { t: "scroll-to", threadId });
   }
 
-  /** The panel turned comment mode on or off; the overlay follows the tab's state. */
+  /** The panel turned comment mode off (or on, as the record says, `commentOn` making sure of the overlay first); the overlay follows the tab's state. */
   setCommentMode(tabId: number, on: boolean): void {
     const s = this.tabs.get(tabId);
     if (s) this.set(tabId, { ...s, commentMode: on });
@@ -760,7 +779,7 @@ export class Tabs {
     return {
       tabId, url: s?.url ?? null, page: s?.page ?? null, route: s?.route ?? null, threads: s?.threads ?? [], resolved: s?.resolved ?? {},
       versions: s?.versions ?? [], working: s?.working ?? [], participants: s?.participants ?? null, viewer: this.viewer,
-      commentMode: s?.commentMode ?? false, enabled: !!s?.on, declined: !!s?.declined, selected: s?.selected ?? null, error: s?.error ?? null,
+      commentMode: s?.commentMode ?? false, enabled: !!s?.on, selected: s?.selected ?? null, error: s?.error ?? null,
     };
   }
 

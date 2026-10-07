@@ -13,7 +13,7 @@ import type { Tabs } from "./tabs";
 
 export type PanelDeps = {
   api: Pick<Api, "sendThread" | "sendBatch" | "comment" | "resolve" | "reopen" | "looked" | "setName" | "move" | "addRule" | "deleteRule" | "suggest" | "sites" | "join" | "split" | "answer">;
-  tabs: Pick<Tabs, "state" | "admits" | "route" | "applied" | "fail" | "setViewer" | "select" | "setCommentMode" | "openThread" | "opening">;
+  tabs: Pick<Tabs, "ready" | "state" | "admits" | "route" | "applied" | "fail" | "setViewer" | "select" | "setCommentMode" | "commentOn" | "openThread" | "opening">;
   sites: Pick<Sites, "load" | "origins">;
   /** Whether `url`'s server answers a short request (decision 3, 2026-10-06: a
    * thread opens on the first origin of its site that answers). */
@@ -54,6 +54,8 @@ export async function panelAction(d: PanelDeps, tabId: number | null, m: PanelTo
 }
 
 async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: (r: WorkerToPanel) => void): Promise<void> {
+  // A restarted worker reads its tabs back first: an action before then would find no tab.
+  await d.tabs.ready();
   // Neither needs a tab: the name is the owner's, the ping keeps the worker up.
   if (m.t === "set-name") { d.tabs.setViewer((await d.api.setName(m.name)).viewer); return; }
   // A request (`req`) is always answered: a step or a failure.
@@ -69,10 +71,11 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: 
       return;
     case "select": d.tabs.select(tabId, m.threadId); return;
     case "comment-mode":
-      if (m.on && !d.tabs.admits(tabId) && !(await d.allUrls())) {
-        throw new PanelFailure("no_capture_permission", "Clax needs a click on its button to take screenshots on this tab.");
+      if (!m.on) { d.tabs.setCommentMode(tabId, false); return; }
+      if (!d.tabs.admits(tabId) && !(await d.allUrls())) {
+        throw new PanelFailure("no_capture_permission", "Clax needs the keyboard command on the page to take screenshots on this tab.");
       }
-      d.tabs.setCommentMode(tabId, m.on);
+      await d.tabs.commentOn(tabId);
       return;
     case "turn-off":
       if (m.tabId !== tabId) throw changed();

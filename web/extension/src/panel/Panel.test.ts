@@ -15,7 +15,7 @@ function state(over: Partial<PanelState> = {}): PanelState {
     page: { artifact_id: "7q3k9mzx2b4t", origin: "http://localhost:5173", path: "/", page_url: "http://localhost:5173/", title: "Home", current_version: 1, url: "http://localhost:7480/a/7q3k9mzx2b4t" },
     threads: [thread as never], versions: [{ artifact_id: "7q3k9mzx2b4t", n: 1, label: null, created_at: "2026-10-05T10:00:00.000Z", files: {} }],
     working: [], participants: { people: [], agents: [{ handle: `a_${"1".repeat(22)}`, harness: "claude", live: true }] },
-    viewer: { public_id: "u_x", display_name: "Alex" }, commentMode: false, enabled: true, declined: false, selected: null, error: null, ...over,
+    viewer: { public_id: "u_x", display_name: "Alex" }, commentMode: false, enabled: true, selected: null, error: null, ...over,
   };
 }
 function link(s: PanelState, up?: boolean) {
@@ -53,9 +53,9 @@ describe("Panel", () => {
   it("shows an action's failure again after a dismissal when the action fails again", async () => {
     const error = { code: "no_capture_permission", message: "Clax needs a click on its button to take screenshots on this tab." };
     const l = { ...link(state({ error })), failures: 1 };
-    const { rerender } = render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });
-    // In a tab Clax is on, its button turns Clax off: the panel names the command instead.
-    expect(screen.getByRole("alert").textContent).toContain("Press ⌥⇧C");
+    const { rerender } = render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z"), shortcut: Promise.resolve("⌥⇧C") } });
+    // In a tab Clax is on, its button turns Clax off: the panel names the command's shortcut instead.
+    await vi.waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Press ⌥⇧C on the page to comment with a screenshot."));
     expect(screen.getByRole("alert").textContent).not.toContain("Clax button");
     await fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByRole("alert")).toBeNull();
@@ -65,6 +65,12 @@ describe("Panel", () => {
     // The person presses Comment again and it fails the same way: told again.
     await rerender({ link: { ...l, state: state({ error }), failures: 2 } as never });
     expect(screen.getByRole("alert").textContent).toContain("Press ⌥⇧C");
+  });
+
+  it("names the page's context menu when the command has no shortcut", async () => {
+    const error = { code: "no_capture_permission", message: "m" };
+    render(Panel, { props: { link: link(state({ error })) as never, now: new Date("2026-10-05T10:01:00.000Z"), shortcut: Promise.resolve(null) } });
+    await vi.waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Right-click the page and choose Comment with Clax to comment with a screenshot."));
   });
 
   it("offers to start when Clax is off on the tab", () => {
@@ -138,13 +144,6 @@ describe("Panel", () => {
     await view.rerender({ link: { ...l, state: { ...l.state, error: { code: "invalid_name", message: "Not a name." } } } as never, now: new Date("2026-10-05T10:01:00.000Z") });
     await fireEvent.keyDown(screen.getByLabelText("Your name"), { key: "Enter" });
     expect(l.sent.filter(m => m.t === "set-name")).toHaveLength(2);
-  });
-
-  it("says a reload will turn Clax off when the person refused the site's permission", async () => {
-    const view = render(Panel, { props: { link: link(state()) as never, now: new Date("2026-10-05T10:01:00.000Z") } });
-    expect(screen.queryByText(/turn off in this tab when the page reloads/)).toBeNull();
-    await view.rerender({ link: link(state({ declined: true })) as never });
-    expect(screen.getByText(/turn off in this tab when the page reloads/)).toBeTruthy();
   });
 
   it("turns Clax off in its tab, with or without a live page, and offers it only where Clax is on", async () => {
