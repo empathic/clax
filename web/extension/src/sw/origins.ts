@@ -124,7 +124,7 @@ export async function overlayPresent(env: OriginsEnv, tabId: number): Promise<bo
 
 /** Chrome's refusal to script a document the tab no longer shows (it
  * navigated between the probe and the injection, or mid-probe). */
-const GONE = /No document with id|frame was removed|No frame with id/i;
+const GONE = /No document with id|Frame with ID \d+ was removed|frame was removed|No frame with id/i;
 /** Chrome's refusal to script a tab showing its own error page (the load failed). */
 const ERROR_PAGE = /showing error page/i;
 /** What the person is told when the tab shows Chrome's error page. */

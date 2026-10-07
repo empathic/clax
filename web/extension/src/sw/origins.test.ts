@@ -135,6 +135,17 @@ describe("origins", () => {
       delete g.claxOverlayStarted;
       gone = 2;
       expect(await injectOverlay(env(), 7, location.origin)).toBeNull();
+      // Chrome words the same race as the top frame being removed.
+      delete g.claxOverlayStarted;
+      gone = 1;
+      const words = c.scripting.executeScript;
+      let removed = true;
+      c.scripting.executeScript = (async (inj: { func?: unknown }) => {
+        if (inj.func !== probeDocument && removed) { removed = false; throw new Error("Frame with ID 0 was removed."); }
+        return (words as unknown as (i: unknown) => Promise<unknown>)(inj);
+      }) as unknown as typeof c.scripting.executeScript;
+      gone = 0;
+      expect(await injectOverlay(env(), 7, location.origin)).toBe(true);
     } finally {
       delete g.claxOverlayStarted;
       delete g.claxBoot;
