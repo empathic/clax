@@ -455,11 +455,6 @@ pub fn consequences(asking: &[&Asking]) -> String {
     out
 }
 
-/// How long a shown notice stays quiet for the same set of tools: a notice
-/// can land in a session nobody reads (`codex exec` drops it), so it comes
-/// back after this many days.
-pub const NOTICE_QUIET_DAYS: u64 = 7;
-
 /// The marker recording the last notice for the Codex home `codex_home`,
 /// under the Clax home `clax_root`: one per Codex home.
 pub fn notice_marker(clax_root: &Path, codex_home: &Path) -> PathBuf {
@@ -471,30 +466,24 @@ pub fn notice_marker(clax_root: &Path, codex_home: &Path) -> PathBuf {
     clax_root.join(format!("run/codex-approvals-notice-{h:016x}"))
 }
 
-/// Whether the notice for `tools` is due on day `today` (days since the
-/// Unix epoch): when the marker records another set, or the same set shown
-/// [`NOTICE_QUIET_DAYS`] or more days ago. With no tools, the marker is
-/// removed, so the next set that asks is shown at once.
-pub fn notice_due(marker: &Path, tools: &[&str], today: u64) -> bool {
+/// Whether the notice for `tools` is due: when the marker records another
+/// set, or none. The notice is shown once per set of tools; `clax doctor`
+/// reports the tools any time after. With no tools, the marker is removed,
+/// so the next set that asks is shown.
+pub fn notice_due(marker: &Path, tools: &[&str]) -> bool {
     if tools.is_empty() {
         let _ = std::fs::remove_file(marker);
         return false;
     }
-    let Ok(recorded) = std::fs::read_to_string(marker) else {
-        return true;
-    };
-    let mut lines = recorded.lines();
-    let same = lines.next() == Some(tools.join(",").as_str());
-    let day = lines.next().and_then(|d| d.parse::<u64>().ok());
-    !(same && day.is_some_and(|d| today < d.saturating_add(NOTICE_QUIET_DAYS)))
+    std::fs::read_to_string(marker).map_or(true, |r| r.trim_end() != tools.join(","))
 }
 
-/// Records that the notice for `tools` was shown on day `today`.
-pub fn record_notice(marker: &Path, tools: &[&str], today: u64) {
+/// Records that the notice for `tools` was shown.
+pub fn record_notice(marker: &Path, tools: &[&str]) {
     if let Some(d) = marker.parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    let _ = std::fs::write(marker, format!("{}\n{today}\n", tools.join(",")));
+    let _ = std::fs::write(marker, format!("{}\n", tools.join(",")));
 }
 
 #[cfg(test)]
@@ -786,21 +775,19 @@ screen_reader_detection_done = true
     }
 
     #[test]
-    fn the_notice_is_quiet_for_a_week_per_set_of_tools() {
+    fn the_notice_is_due_once_per_set_of_tools() {
         let d = tempfile::tempdir().unwrap();
         let m = notice_marker(d.path(), Path::new("/home/u/.codex"));
         assert_ne!(m, notice_marker(d.path(), Path::new("/home/u/.codex-2")));
         let set = ["delete", "db_set"];
-        assert!(notice_due(&m, &set, 100), "never shown");
-        assert!(notice_due(&m, &set, 100), "due until recorded");
-        record_notice(&m, &set, 100);
-        assert!(!notice_due(&m, &set, 100));
-        assert!(!notice_due(&m, &set, 106));
-        assert!(notice_due(&m, &set, 107), "a week later");
-        assert!(notice_due(&m, &["delete"], 101), "another set");
-        assert!(!notice_due(&m, &[], 101));
+        assert!(notice_due(&m, &set), "never shown");
+        assert!(notice_due(&m, &set), "due until recorded");
+        record_notice(&m, &set);
+        assert!(!notice_due(&m, &set));
+        assert!(notice_due(&m, &["delete"]), "another set");
+        assert!(!notice_due(&m, &[]));
         assert!(!m.exists());
-        assert!(notice_due(&m, &set, 101));
+        assert!(notice_due(&m, &set));
     }
 
     #[test]

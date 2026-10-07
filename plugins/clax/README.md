@@ -146,8 +146,8 @@ the setting instead of offering them. Re-registering the plugin
 settings for the plugin, so `clax init` puts back the ones you had.
 `clax doctor --agent codex` reports which tools Codex would still ask about
 (`codex_approvals`), and the `SessionStart` hook tells you, with the
-command, when there are any: once per set of tools, again after a week, and
-not in `codex exec` or app-server sessions.
+command, when there are any: once per set of tools, and not in `codex exec`
+or app-server sessions.
 
 Clax ships no approval settings in the plugin: Codex would apply them
 without asking you. To approve every Clax tool instead, including future

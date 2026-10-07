@@ -1494,31 +1494,58 @@ fn publish_takes_a_note_and_addresses() {
     assert_eq!(v2["addressed"], serde_json::json!([]));
 }
 
+/// Runs `clax hook --agent codex session-start` as the child of a fake
+/// `codex` started with `codex_args`, so the hook's nearest Codex is that
+/// one whatever runs the tests; its stdout.
+fn codex_session_start(e: &Env, codex_args: &[&str]) -> String {
+    let fake = e.dir.path().join("fakebin/codex");
+    if !fake.exists() {
+        clax_fake_exe::install(
+            &fake,
+            "#!/bin/sh\n\"$CLAX_UNDER_TEST\" hook --agent codex session-start\nstatus=$?\nexit $status\n",
+        );
+    }
+    let mut c = Command::new(&fake);
+    c.args(codex_args)
+        .env("CLAX_UNDER_TEST", assert_cmd::cargo::cargo_bin("clax"))
+        .env("CLAX_HOME", e.dir.path().join("ax"))
+        .env("CLAX_CODEX_BIN", "")
+        .env("HOME", e.dir.path())
+        .env("PATH", "/usr/bin:/bin");
+    for var in [
+        "CODEX_HOME",
+        "CLAUDE_CONFIG_DIR",
+        "PI_CODING_AGENT_DIR",
+        "CLAUDE_PLUGIN_ROOT",
+        "PLUGIN_ROOT",
+    ] {
+        c.env_remove(var);
+    }
+    let out = c.write_stdin("{}").output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+
 #[test]
 fn a_codex_session_start_tells_the_person_once_which_tools_codex_asks_about() {
     let e = Env::new();
     let cfg = e.dir.path().join(".codex/config.toml");
     std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
     std::fs::write(&cfg, "[plugins.\"clax@clax\"]\nenabled = true\n").unwrap();
-    let start = || {
-        let out = e
-            .cmd()
-            .env("PATH", "/usr/bin:/bin")
-            .args(["hook", "--agent", "codex", "session-start"])
-            .write_stdin("{}")
-            .output()
-            .unwrap();
-        assert!(out.status.success());
-        String::from_utf8(out.stdout).unwrap()
-    };
-    let first = start();
+    // Under `codex exec` nobody reads it: neither shown nor recorded.
+    assert_eq!(codex_session_start(&e, &["exec", "hi"]), "");
+    let first = codex_session_start(&e, &["--model", "m"]);
     let v: serde_json::Value = serde_json::from_str(first.trim()).unwrap();
     let msg = v["systemMessage"].as_str().unwrap();
     assert!(msg.contains("delete"), "{msg}");
     assert!(msg.contains(&cfg.display().to_string()), "{msg}");
     // No `clax` on PATH: the notice names the setting instead of a command.
     assert!(msg.contains("approval_mode = \"approve\""), "{msg}");
-    assert_eq!(start(), "", "said once");
+    assert_eq!(codex_session_start(&e, &[]), "", "said once");
     assert_eq!(
         std::fs::read_to_string(&cfg).unwrap(),
         "[plugins.\"clax@clax\"]\nenabled = true\n",

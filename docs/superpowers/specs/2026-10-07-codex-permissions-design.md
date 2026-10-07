@@ -143,10 +143,15 @@ After registering the Codex plugin, `clax init`:
    approvals to it as it is then, limited to tools that were shown and still
    have no setting, and checks the file unchanged just before the write
    (twice at most), so what Codex wrote while the prompt was open is kept.
-5. When registering fails after `codex plugin remove`, keeps the settings
-   read before it in `<clax home>/run/codex-plugin-settings.toml`; the next
-   successful run merges them in (the config's own settings win) and
-   removes the file.
+5. Writes the settings it read to `<clax home>/run/codex-plugin-settings.toml`
+   immediately before `codex plugin remove`, and deletes the file as soon as
+   they are back. The file therefore exists only across the remove and
+   re-register window, and outlives a run only when that run failed in
+   between; a later `init` restores from it only then (the config's own
+   settings win). `clax uninit` deletes it. After a completed `init`
+   nothing is kept, so a setting the person removes later is never put
+   back. After consent, the approvals are added without restoring again, so
+   a setting removed while the prompt was open stays removed.
 
 Edits use `toml_edit`: comments and layout are kept, a symbolic link is
 followed, the file's mode is kept, the write is atomic, nothing is removed or
@@ -166,12 +171,18 @@ Codex entry's `approvals` and never fails `init`.
   which tools, what they do, and `clax init --agent codex` (or, with no
   executable `clax` on `PATH`, the setting to add). Only when the plugin is
   registered in Codex's config; it never writes that config. Shown once per
-  set of tools and again after seven days, recorded only once printed, per
-  Codex home (`<clax home>/run/codex-approvals-notice-<hash>`). Not shown when
-  the nearest Codex ancestor runs `exec` or `app-server` (as `ps` shows it):
-  `codex exec` printed no hook `systemMessage` in a run, and the app server
-  serves clients such as the Codex companion, with no person reading. The
-  seven-day repeat covers sessions that show nothing in other ways.
+  set of tools, recorded only once printed, per Codex home
+  (`<clax home>/run/codex-approvals-notice-<hash>`); a "no" at the `init`
+  prompt is respected, and `clax doctor` is where the tools are reported
+  after that. Not shown when the nearest Codex ancestor's subcommand (its
+  first argument that is not an option or an option's value, as `ps` shows
+  it) is `exec`, `e`, `app-server`, `exec-server` or `mcp-server`: `codex
+  exec` printed no hook `systemMessage` in a run, and the app server serves
+  clients such as the Codex companion, with no person reading. `ps` joins
+  arguments with spaces, so a prompt given as the first argument whose first
+  word is one of these reads as that subcommand (the notice is then not
+  shown or recorded); `review` is not in the list, so `codex "review the
+  tests"` gets the notice.
 
 ### 3.5 The shell (§2.4)
 

@@ -538,19 +538,6 @@ fn run_steps(h: &Harness, ctx: &Ctx, actions: Actions, done: &str) -> Value {
     json!({"agent": h.name, "status": status, "detail": notes.join("\n"), "commands": commands})
 }
 
-/// The person's settings for the Clax plugin in Codex's `config.toml`,
-/// read before `codex plugin remove` deletes them; an error when the file
-/// cannot be read or parsed.
-fn codex_saved_settings(ctx: &Ctx) -> Result<Option<toml_edit::Table>, String> {
-    let path = codex_approvals::config_path(&ctx.dirs.codex_home);
-    let Some(text) = codex_approvals::read_config(&path)? else {
-        return Ok(None);
-    };
-    text.parse::<toml_edit::DocumentMut>()
-        .map_err(|e| format!("could not parse {} ({e})", path.display()))?;
-    Ok(codex_approvals::plugin_settings(&text))
-}
-
 /// Whether `answer` (a line the person typed) says yes.
 fn is_yes(answer: &str) -> bool {
     matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
@@ -574,14 +561,16 @@ fn confirm(asking: &[&codex_approvals::Asking], lines: &str, path: &Path) -> boo
     std::io::stdin().read_line(&mut answer).is_ok() && is_yes(&answer)
 }
 
-/// Where `init` keeps Clax's Codex plugin settings when registering failed
-/// after `codex plugin remove` deleted them, until a later `init` puts them
-/// back.
+/// Where `init` keeps Clax's Codex plugin settings across `codex plugin
+/// remove` and the re-registration: written just before the removal,
+/// deleted once the settings are back. It outlives a run only when that run
+/// failed between the two, and the next `init` then puts them back;
+/// `uninit` deletes it.
 fn pending_settings_path(home: &Home) -> PathBuf {
     home.root().join("run/codex-plugin-settings.toml")
 }
 
-/// The settings kept by a failed registration, if any.
+/// The settings kept by an `init` that failed mid-way, if any.
 fn load_pending(pending: &Path) -> Option<toml_edit::Table> {
     let text = std::fs::read_to_string(pending).ok()?;
     let doc = text.parse::<toml_edit::DocumentMut>().ok()?;
@@ -635,13 +624,50 @@ fn write_settings(
     ))
 }
 
+/// Before `codex plugin remove`: the person's settings for the plugin (with
+/// any an `init` that failed mid-way kept at `pending`; the config's win),
+/// written to `pending` so a failure before they are back loses nothing.
+/// An error when the config cannot be read or parsed (nothing is kept, and
+/// nothing put back).
+fn keep_settings_for_removal(
+    path: &Path,
+    pending: &Path,
+) -> Result<Option<toml_edit::Table>, String> {
+    let now = match codex_approvals::read_config(path)? {
+        Some(text) => {
+            text.parse::<toml_edit::DocumentMut>()
+                .map_err(|e| format!("could not parse {} ({e})", path.display()))?;
+            codex_approvals::plugin_settings(&text)
+        }
+        None => None,
+    };
+    let saved = match (now, load_pending(pending)) {
+        (Some(mut s), Some(p)) => {
+            codex_approvals::merge_missing(&mut s, &p);
+            Some(s)
+        }
+        (s, p) => s.or(p),
+    };
+    if let Some(s) = &saved {
+        let mut doc = toml_edit::DocumentMut::new();
+        for (k, v) in s.iter() {
+            doc.insert(k, v.clone());
+        }
+        // When this fails, the settings are still put back from memory, and
+        // a failed registration prints them.
+        let _ = std::fs::create_dir_all(pending.parent().unwrap_or(Path::new(".")))
+            .and_then(|_| std::fs::write(pending, doc.to_string()));
+    }
+    Ok(saved)
+}
+
 /// After Codex's re-registration: puts back the `saved` settings it
-/// removed (with any a failed earlier run kept at `pending`), then offers
+/// removed and deletes `pending`, then offers
 /// the approvals for the Clax tools Codex would still ask about that the
 /// person has set nothing for. `ask` gets those tools and the lines and
 /// says whether to add them: `Some(true)` yes, `Some(false)` declined,
-/// `None` no way to ask. When `registered` is false the settings are kept at
-/// `pending` for the next run instead. The outcome as JSON; a failure is
+/// `None` no way to ask. When `registered` is false, `pending` keeps the
+/// settings for the next run. The outcome as JSON; a failure is
 /// reported there, never fatal.
 fn codex_settings(
     path: &Path,
@@ -656,33 +682,19 @@ fn codex_settings(
         Ok(s) => s,
         Err(e) => return failed(format!("{e}; Clax's settings there were not carried over")),
     };
-    let saved = match (saved, load_pending(pending)) {
-        (Some(mut s), Some(p)) => {
-            codex_approvals::merge_missing(&mut s, &p);
-            Some(s)
-        }
-        (s, p) => s.or(p),
-    };
     if !registered {
         let saved = saved?;
-        let mut doc = toml_edit::DocumentMut::new();
-        for (k, v) in saved.iter() {
-            doc.insert(k, v.clone());
-        }
-        let saved = doc.to_string();
-        let kept = std::fs::create_dir_all(pending.parent().unwrap_or(Path::new(".")))
-            .and_then(|_| std::fs::write(pending, &saved));
-        return failed(match kept {
-            Ok(()) => format!(
-                "registering failed, and Clax's settings in {} may be gone; they are kept in {} and the next successful `clax init` puts them back",
+        return failed(if pending.exists() {
+            format!(
+                "registering failed, and Clax's settings in {} may be gone; they are kept in {} and the next `clax init` puts them back",
                 path.display(),
                 pending.display()
-            ),
-            Err(e) => format!(
-                "registering failed, and Clax's settings in {} may be gone; keeping them in {} failed ({e}); they were:\n{saved}",
-                path.display(),
-                pending.display()
-            ),
+            )
+        } else {
+            format!(
+                "registering failed, and Clax's settings in {} may be gone; they were:\n{saved}",
+                path.display()
+            )
         });
     }
     // Put the settings back first, so they survive whatever happens next.
@@ -740,7 +752,8 @@ fn codex_settings(
             );
         }
     }
-    match write_settings(path, saved.as_ref(), &tools) {
+    // The settings went back above; a setting removed since stays removed.
+    match write_settings(path, None, &tools) {
         Ok((added, _)) => {
             let added: Vec<&str> = added.iter().map(String::as_str).collect();
             out(
@@ -937,6 +950,9 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
     if install {
         crate::plugins::materialize(&root)?;
     }
+    if !install && (a.agents.is_empty() || a.agents.iter().any(|n| n == "codex")) {
+        let _ = std::fs::remove_file(pending_settings_path(home));
+    }
     let chosen = HARNESSES
         .iter()
         .filter(|h| a.agents.is_empty() || a.agents.iter().any(|n| n == h.name));
@@ -951,7 +967,13 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
         if install {
             actions.steps.extend((h.additions)(&root));
         }
-        let codex_saved = (install && h.name == "codex").then(|| codex_saved_settings(&ctx));
+        let codex_saved = (install && h.name == "codex").then(|| {
+            keep_settings_for_removal(
+                &codex_approvals::config_path(&ctx.dirs.codex_home),
+                &pending_settings_path(home),
+            )
+        });
+
         let mut r = run_steps(
             h,
             &ctx,
@@ -1195,35 +1217,95 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), REGISTERED);
     }
 
-    /// Settings a failed registration may have deleted are kept and put
-    /// back by the next successful run.
+    const PUBLISH_PROMPT: &str =
+        "\n[plugins.\"clax@clax\".mcp_servers.clax.tools.publish]\napproval_mode = \"prompt\"\n";
+
+    /// Settings an `init` that failed mid-way may have lost are kept and
+    /// put back by the next run.
     #[test]
-    fn settings_outlive_a_failed_registration() {
+    fn settings_outlive_an_init_that_failed_mid_way() {
         let (_d, path, pending) = settings_dir();
-        let seed = format!(
-            "{REGISTERED}\n[plugins.\"clax@clax\".mcp_servers.clax.tools.publish]\napproval_mode = \"prompt\"\n"
-        );
-        let saved = codex_approvals::plugin_settings(&seed);
-        assert!(saved.is_some());
+        std::fs::write(&path, format!("{REGISTERED}{PUBLISH_PROMPT}")).unwrap();
+        let saved = keep_settings_for_removal(&path, &pending).unwrap();
+        assert!(saved.is_some() && pending.exists());
+        // `codex plugin remove`, then a failed registration.
         std::fs::write(&path, "").unwrap();
         let v = codex_settings(&path, &pending, Ok(saved), false, |_, _| unreachable!()).unwrap();
         assert_eq!(v["status"], "failed", "{v}");
+        assert!(
+            v["detail"].as_str().unwrap().contains("next `clax init`"),
+            "{v}"
+        );
         assert!(pending.exists());
-        // The next run's snapshot finds nothing; the kept settings return.
+        // The next run: nothing in the config, the kept settings return.
+        let saved = keep_settings_for_removal(&path, &pending).unwrap();
+        assert!(saved.is_some());
         std::fs::write(&path, REGISTERED).unwrap();
-        let v = codex_settings(&path, &pending, Ok(None), true, |_, _| None).unwrap();
+        let v = codex_settings(&path, &pending, Ok(saved), true, |_, _| None).unwrap();
         assert_eq!(v["restored"], true, "{v}");
         assert!(!pending.exists());
         assert!(
             std::fs::read_to_string(&path)
                 .unwrap()
-                .contains("tools.publish]\napproval_mode = \"prompt\"")
+                .contains("tools.publish]")
+        );
+    }
+
+    /// After a completed `init` nothing is kept, so a setting the person
+    /// removes afterwards stays removed.
+    #[test]
+    fn a_completed_init_keeps_nothing_to_resurrect() {
+        let (_d, path, pending) = settings_dir();
+        std::fs::write(&path, format!("{REGISTERED}{PUBLISH_PROMPT}")).unwrap();
+        let saved = keep_settings_for_removal(&path, &pending).unwrap();
+        std::fs::write(&path, REGISTERED).unwrap();
+        let v = codex_settings(&path, &pending, Ok(saved), true, |_, _| None).unwrap();
+        assert_eq!(v["restored"], true, "{v}");
+        assert!(!pending.exists(), "deleted once the settings are back");
+        // The person removes the setting; the next init has nothing to add back.
+        std::fs::write(&path, REGISTERED).unwrap();
+        assert!(
+            keep_settings_for_removal(&path, &pending)
+                .unwrap()
+                .is_none()
+        );
+        assert!(!pending.exists());
+        let v = codex_settings(&path, &pending, Ok(None), true, |_, _| None).unwrap();
+        assert_eq!(v["restored"], false, "{v}");
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("tools.publish]")
         );
         assert_eq!(
             codex_settings(&path, &pending, Ok(None), false, |_, _| unreachable!()),
             None,
-            "nothing to keep"
+            "a failed registration with nothing saved reports nothing"
         );
+    }
+
+    /// A setting removed while the prompt is open stays removed: the saved
+    /// settings are put back once, before the prompt.
+    #[test]
+    fn consent_does_not_put_back_settings_removed_meanwhile() {
+        let (_d, path, pending) = settings_dir();
+        std::fs::write(&path, format!("{REGISTERED}{PUBLISH_PROMPT}")).unwrap();
+        let saved = keep_settings_for_removal(&path, &pending).unwrap();
+        std::fs::write(&path, REGISTERED).unwrap();
+        let v = codex_settings(&path, &pending, Ok(saved), true, |_, _| {
+            assert!(
+                std::fs::read_to_string(&path)
+                    .unwrap()
+                    .contains("tools.publish]")
+            );
+            std::fs::write(&path, REGISTERED).unwrap();
+            Some(true)
+        })
+        .unwrap();
+        assert_eq!(v["status"], "added", "{v}");
+        let cfg = std::fs::read_to_string(&path).unwrap();
+        assert!(!cfg.contains("tools.publish]"), "{cfg}");
+        assert!(cfg.contains("tools.delete]"), "{cfg}");
     }
 
     #[test]

@@ -2880,10 +2880,12 @@ Codex wrote meanwhile is kept. Adding keeps the file's comments and layout,
 follows a symbolic link, never changes or removes a setting, and changes
 nothing when the lines are there. A tool that asks because of a setting the
 person made, on the tool or the server, is left as it is and named with that
-setting, `--yes` included. When registering fails after `codex plugin
-remove`, the settings read before it are kept in
-`~/.clax/run/codex-plugin-settings.toml` and put back by the next successful
-`init`. The Codex entry of `agents` reports
+setting, `--yes` included. The settings read before `codex plugin remove`
+are written to `~/.clax/run/codex-plugin-settings.toml` just before it and
+the file is deleted as soon as they are back, so it outlives a run only when
+that run failed in between; the next `init` then puts them back (the
+config's own settings win), and `clax uninit` deletes it. After a completed
+`init` nothing is kept, so a setting removed afterwards stays removed. The Codex entry of `agents` reports
 this as `"approvals": {"status": "added" | "unchanged" | "not_added" |
 "declined" | "failed", "config", "restored", "tools", "lines", "detail"}`
 (`restored`: settings were put back; `tools` and `lines`: what was or would
@@ -2891,9 +2893,10 @@ be added). A failure here never fails `init`. The plugin never ships
 approval settings itself: Codex would apply them from its `.mcp.json`
 without asking the person. `clax doctor --agent codex` reports the same
 assessment as `codex_approvals`, and the plugin's `SessionStart` hook shows
-it to the person (Codex's `systemMessage`) once per set of tools, again after
-seven days, and not in sessions run by `codex exec` or `codex app-server`,
-which show no hook message (the set and day are recorded, once printed, in
+it to the person (Codex's `systemMessage`) once per set of tools, and not in
+sessions run by `codex exec` or `codex app-server` (Codex's first argument
+that is not an option, as `ps` shows it), which show no hook message (the
+set is recorded, once printed, in
 `~/.clax/run/codex-approvals-notice-<hash of the Codex home>`), naming `clax
 init --agent codex` when an executable `clax` is on `PATH` and the settings
 otherwise. Neither writes Codex's config.

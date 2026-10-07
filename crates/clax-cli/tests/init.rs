@@ -911,3 +911,33 @@ fn an_unparseable_codex_config_is_reported_and_init_still_succeeds() {
     assert!(cfg.starts_with("[broken\n"), "{cfg}");
     assert!(!cfg.contains("approval_mode"), "{cfg}");
 }
+
+#[test]
+fn uninit_deletes_the_kept_codex_settings() {
+    let e = codex_env();
+    let kept = e.p("ax/run/codex-plugin-settings.toml");
+    std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
+    std::fs::write(
+        &kept,
+        "[mcp_servers.clax.tools.delete]\napproval_mode = \"approve\"\n",
+    )
+    .unwrap();
+    let (ok, v) = e.json(&["uninit", "--agent", "codex"]);
+    assert!(ok, "{v}");
+    assert!(!kept.exists());
+}
+
+#[test]
+fn a_completed_init_leaves_no_kept_codex_settings() {
+    let e = codex_env();
+    std::fs::create_dir_all(e.p("codex")).unwrap();
+    std::fs::write(
+        e.p("codex/config.toml"),
+        "[plugins.\"clax@clax\"]\nenabled = true\n\n[plugins.\"clax@clax\".mcp_servers.clax.tools.publish]\napproval_mode = \"prompt\"\n",
+    )
+    .unwrap();
+    let (ok, v) = e.json(&["init", "--agent", "codex"]);
+    assert!(ok, "{v}");
+    assert_eq!(codex_approvals(&v)["restored"], true, "{v}");
+    assert!(!e.p("ax/run/codex-plugin-settings.toml").exists());
+}
