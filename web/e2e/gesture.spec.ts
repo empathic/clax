@@ -136,14 +136,18 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // (the composer tier's residual, gesture.ts), five of them using up its
     // opens budget before the click lands; so the viewer rests until it
     // lapses, and the page, still pulling focus with the pointer on it, opens
-    // nothing before their click. (The button's box is read first, and the
-    // composer counted quietly: a Playwright read grants activation.)
+    // nothing before their click. (The button's box is read first, the
+    // composer counted quietly, and the click is a bare press and release
+    // where the pointer rests: a Playwright read grants activation, and a
+    // locator's click reads the frame before it presses, so the page's own
+    // calls in between would open the composer and use up its opens budget.)
     const b = (await f.locator("#b").boundingBox())!;
     await activationLapsed(page);
     await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 5 });
     await callsMore(page, 3);
     expect(await quietEval<number>(page, `document.querySelectorAll(".composer").length`)).toBe(0);
-    await f.locator("#b").click();
+    await page.mouse.down();
+    await page.mouse.up();
     await expect(f.locator("#clicked")).toHaveText(JSON.stringify({ opened: true }));
     await expect(page.locator(".composer")).toHaveCount(1);
   });
