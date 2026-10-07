@@ -559,9 +559,15 @@ test("after Escape or Cancel in the composer, the panel's Comment turns comment 
   };
   await expect.poll(pressed).toBe("true");
   // Escape in the composer's text. Dispatched in the frame: a key Playwright
-  // sends through CDP can wait forever for the frame Escape removes.
+  // sends through CDP can wait forever for the frame Escape removes. It is
+  // dispatched from a task of the frame's own, after the evaluate has
+  // answered: a dispatch Playwright awaits fails if the frame the event
+  // removes detaches before its answer arrives. `commentAgain` waits for the
+  // frame to go.
   const first = await pick();
-  await first.locator("textarea").dispatchEvent("keydown", { key: "Escape", bubbles: true });
+  await first.locator("textarea").evaluate((t: HTMLTextAreaElement) => {
+    setTimeout(() => t.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  });
   await commentAgain();
   const second = await pick();
   await second.getByRole("button", { name: "Cancel" }).click();
