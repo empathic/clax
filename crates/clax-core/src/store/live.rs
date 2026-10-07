@@ -597,11 +597,10 @@ impl Store {
 
     /// Links every pending address of the live page `id` to its version `n`
     /// (each with its `source`) and clears them; returns the linked thread
-    /// IDs, oldest address first.
-    ///
-    /// # Errors
-    /// Database errors only.
-    pub fn link_pending(&self, id: &ArtifactId, n: u32) -> Result<Vec<String>> {
+    /// IDs, oldest address first. Records nothing: production links inside
+    /// a snapshot's transaction, and the snapshot lists them.
+    #[cfg(test)]
+    pub(crate) fn link_pending(&self, id: &ArtifactId, n: u32) -> Result<Vec<String>> {
         self.with_tx(|tx| link_pending_in(tx, id, n, None))
     }
 
@@ -712,11 +711,12 @@ impl Store {
     /// As [`Store::create_thread`].
     pub fn create_picked_thread(
         &self,
+        ctx: &AuditCtx,
         id: &ArtifactId,
         t: NewThread,
         pick: &str,
     ) -> Result<Option<Thread>> {
-        self.create_live_thread(id, t, Some(pick), None)
+        self.create_live_thread(ctx, id, t, Some(pick), None)
     }
 
     /// [`Store::create_thread`] on the live page `id`, as
@@ -729,13 +729,14 @@ impl Store {
     /// As [`Store::create_thread`].
     pub fn create_live_thread(
         &self,
+        ctx: &AuditCtx,
         id: &ArtifactId,
         t: NewThread,
         pick: Option<&str>,
         live_path: Option<&str>,
     ) -> Result<Option<Thread>> {
         let taken = std::cell::Cell::new(false);
-        let made = self.create_thread_then(id, t, |tx, tid| {
+        let made = self.create_thread_then(ctx, id, t, |tx, tid| {
             if let Some(path) = live_path {
                 tx.execute(
                     "UPDATE threads SET live_path = ?2 WHERE id = ?1",
@@ -750,8 +751,9 @@ impl Store {
                     materialize(tx, id.as_str(), &key)?;
                 }
             }
+            let set = live_path.map(str::to_string);
             let Some(pick) = pick else {
-                return Ok(());
+                return Ok(set);
             };
             tx.execute(
                 "DELETE FROM live_picks WHERE created_at < ?1
@@ -768,7 +770,7 @@ impl Store {
                 taken.set(true);
                 return Err(CoreError::Conflict { current: 0 });
             }
-            Ok(())
+            Ok(set)
         });
         match made {
             Err(_) if taken.get() => Ok(None),
@@ -1096,7 +1098,9 @@ mod tests {
                             via_page: false,
                         };
                         start.wait();
-                        st.create_picked_thread(id, t, pick).unwrap().map(|t| t.id)
+                        st.create_picked_thread(DAEMON, id, t, pick)
+                            .unwrap()
+                            .map(|t| t.id)
                     })
                 })
                 .collect();
@@ -1122,6 +1126,7 @@ mod tests {
         anchor.route = Some("#/".into());
         let t = st
             .create_thread(
+                DAEMON,
                 &id,
                 super::NewThread {
                     version_n: 1,
@@ -1138,14 +1143,14 @@ mod tests {
         // the resolve is not written either.
         let other = crate::store::test_util::artifact(&st, None);
         let err = st
-            .resolve_thread_addressed(&other, &t.id, "agent:claude", "claude", true)
+            .resolve_thread_addressed(DAEMON, &other, &t.id, "agent:claude", "claude", true)
             .unwrap_err();
         assert!(matches!(err, crate::CoreError::NotFound), "{err:?}");
         assert_eq!(st.get_thread(&t.id).unwrap().unwrap().status, "open");
         assert_eq!(st.pending_address(&t.id).unwrap(), None);
 
         let (r, _) = st
-            .resolve_thread_addressed(&id, &t.id, "agent:claude", "claude", true)
+            .resolve_thread_addressed(DAEMON, &id, &t.id, "agent:claude", "claude", true)
             .unwrap();
         assert_eq!(r.status, "resolved");
         assert_eq!(
@@ -1189,6 +1194,7 @@ mod tests {
         anchor.route = Some("?a=1".into());
         let err = st
             .create_thread(
+                DAEMON,
                 &id,
                 crate::store::threads::NewThread {
                     author_public_id: None,
@@ -1213,6 +1219,7 @@ mod tests {
         .unwrap();
         let t = st
             .create_thread(
+                DAEMON,
                 &id,
                 crate::store::threads::NewThread {
                     author_public_id: None,
@@ -1294,7 +1301,7 @@ mod tests {
         let (_d, st) = store();
         let (id, tid) = live_thread(&st);
         st.mark_pending(&id, &tid, "explicit", "claude").unwrap();
-        st.delete_thread(&tid).unwrap();
+        st.delete_thread(DAEMON, &tid).unwrap();
         assert!(st.pending_address(&tid).unwrap().is_none());
         assert!(!st.has_pending(&id).unwrap());
     }
@@ -1305,6 +1312,7 @@ mod tests {
         }))
         .unwrap();
         st.create_thread(
+            DAEMON,
             id,
             crate::store::threads::NewThread {
                 author_public_id: None,
@@ -1401,7 +1409,7 @@ mod tests {
             via_page: false,
         };
         let c = st
-            .add_addressed_reply(&id, &tid, reply("Fixed"), "claude")
+            .add_addressed_reply(DAEMON, &id, &tid, reply("Fixed"), "claude")
             .unwrap();
         assert_eq!(c.body, "Fixed");
         assert_eq!(st.pending_address(&tid).unwrap().unwrap().0, "claude");
@@ -1412,7 +1420,7 @@ mod tests {
         };
         let b = another_thread(&st, &id);
         let err = st
-            .add_addressed_reply(&other, &b, reply("Fixed"), "claude")
+            .add_addressed_reply(DAEMON, &other, &b, reply("Fixed"), "claude")
             .unwrap_err();
         assert!(matches!(err, crate::CoreError::NotFound));
         assert!(st.pending_address(&b).unwrap().is_none());

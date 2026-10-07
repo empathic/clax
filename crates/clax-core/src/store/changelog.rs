@@ -33,10 +33,8 @@ fn thread_on(tx: &Transaction<'_>, aid: &str, tid: &str) -> Result<bool> {
         .is_some())
 }
 
-/// Links version `n` to `p.addresses` (each must be a thread of `aid`, else
-/// `unknown_thread`) and then to `p.working_threads` (skipping any that no
-/// longer exist). Runs inside the version's transaction.
-/// [`Store::link_on_resolve`] inside a transaction.
+/// Links an agent-resolved thread to its artifact's current version when it
+/// has no link yet, inside the resolve's transaction; the version linked.
 pub(crate) fn link_on_resolve_in(tx: &Transaction<'_>, thread_id: &str) -> Result<Option<u32>> {
     let linked: bool = tx
         .query_row(
@@ -61,6 +59,9 @@ pub(crate) fn link_on_resolve_in(tx: &Transaction<'_>, thread_id: &str) -> Resul
     Ok(Some(n))
 }
 
+/// Links version `n` to `p.addresses` (each must be a thread of `aid`, else
+/// `unknown_thread`) and then to `p.working_threads` (skipping any that no
+/// longer exist). Runs inside the version's transaction.
 pub(crate) fn link_version(
     tx: &Transaction<'_>,
     aid: &str,
@@ -120,7 +121,9 @@ impl Store {
 
     /// An agent resolved `thread_id`: links it to its artifact's current
     /// version when it has no link yet. The version linked, or `None`.
-    pub fn link_on_resolve(&self, thread_id: &str) -> Result<Option<u32>> {
+    /// Records nothing: production links inside the resolve's transaction.
+    #[cfg(test)]
+    pub(crate) fn link_on_resolve(&self, thread_id: &str) -> Result<Option<u32>> {
         self.with_tx(|tx| link_on_resolve_in(tx, thread_id))
     }
 
@@ -178,6 +181,7 @@ mod tests {
 
     fn thread(st: &Store, id: &ArtifactId) -> String {
         st.create_thread(
+            DAEMON,
             id,
             NewThread {
                 author_public_id: None,
@@ -285,7 +289,7 @@ mod tests {
         let id = artifact(&st, None);
         let t1 = thread(&st, &id);
         v2(&st, &id, None, &[&t1], &[]).unwrap();
-        st.delete_thread(&t1).unwrap();
+        st.delete_thread(DAEMON, &t1).unwrap();
         assert!(st.list_versions(&id).unwrap()[1].addresses.is_empty());
     }
 

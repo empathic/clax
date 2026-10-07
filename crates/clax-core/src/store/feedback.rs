@@ -2,14 +2,15 @@
 //! tier hands them over, acknowledgement, resends, and retargeting.
 
 use super::Store;
-use super::threads::{AUTHOR_VIEWER, thread_in};
+use super::threads::{AUTHOR_VIEWER, thread_in, thread_record};
 use crate::anchor::Anchor;
+use crate::audit::{AuditCtx, AuditKind, AuditRecord};
 use crate::feedback::{
     FeedbackBatch, FeedbackItem, FeedbackPhase, FeedbackState, Notice, Tier, Touched,
 };
 use crate::model::{Feedback, Thread};
 use crate::{ArtifactId, CoreError, Result, new_ulid};
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::collections::BTreeMap;
 
 /// What a caller wants handed over: rows targeted to `session_id`, for `tier`,
@@ -95,14 +96,15 @@ pub enum SendTarget<'a> {
 }
 
 /// The sessions `target` names for a thread of `aid`, writing the thread's
-/// target when the send sets or clears it.
+/// target when the send sets or clears it; and the one session the send is
+/// to, when it is to one (else it is to every live owner and watcher).
 fn targets_for(
     tx: &Transaction<'_>,
     thread_id: &str,
     aid: &str,
     owner: Option<&str>,
     target: SendTarget<'_>,
-) -> Result<Vec<String>> {
+) -> Result<(Vec<String>, Option<String>)> {
     let live = live_targets(tx, aid, owner)?;
     match target {
         SendTarget::Agent(sid) => {
@@ -116,14 +118,14 @@ fn targets_for(
                 "UPDATE threads SET target_session_id = ?2 WHERE id = ?1",
                 params![thread_id, sid],
             )?;
-            Ok(vec![sid.to_string()])
+            Ok((vec![sid.to_string()], Some(sid.to_string())))
         }
         SendTarget::Everyone => {
             tx.execute(
                 "UPDATE threads SET target_session_id = NULL WHERE id = ?1",
                 params![thread_id],
             )?;
-            Ok(live)
+            Ok((live, None))
         }
         SendTarget::Thread => {
             let stored: Option<String> = tx.query_row(
@@ -132,8 +134,8 @@ fn targets_for(
                 |r| r.get(0),
             )?;
             Ok(match stored {
-                Some(sid) if live.contains(&sid) => vec![sid],
-                _ => live,
+                Some(sid) if live.contains(&sid) => (vec![sid.clone()], Some(sid)),
+                _ => (live, None),
             })
         }
     }
@@ -150,17 +152,53 @@ pub(crate) fn live_targets_of(c: &Connection, aid: &str) -> Result<Vec<String>> 
     live_targets(c, aid, owner.as_deref())
 }
 
+/// What [`send_in`] wrote: the feedback rows it inserted, the one session
+/// the send went to (`None`: every live owner and watcher), and whether it
+/// changed anything (marked the thread sent, changed its target, or
+/// inserted a row).
+pub(crate) struct Sent {
+    pub feedback_ids: Vec<String>,
+    pub to: Option<String>,
+    pub changed: bool,
+}
+
+/// The stored target session of thread `thread_id`.
+fn stored_target(tx: &Transaction<'_>, thread_id: &str) -> Result<Option<String>> {
+    Ok(tx.query_row(
+        "SELECT target_session_id FROM threads WHERE id = ?1",
+        params![thread_id],
+        |r| r.get(0),
+    )?)
+}
+
+/// The `target` of a `thread.send` record (spec 2026-10-06-toolpath-audit
+/// §6.2): `{session_id, agent_handle}` of the one session a send went to,
+/// or `"watchers"` for every live owner and watcher.
+pub(crate) fn send_target_value(c: &Connection, to: Option<&str>) -> Result<serde_json::Value> {
+    let Some(sid) = to else {
+        return Ok("watchers".into());
+    };
+    let handle: Option<String> = c
+        .query_row(
+            "SELECT agent_handle FROM sessions WHERE id = ?1",
+            params![sid],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(serde_json::json!({"session_id": sid, "agent_handle": handle}))
+}
+
 /// Marks the thread sent to the agent and creates one row per (viewer
 /// comment without a row, target of `target`), each carrying `batch_id`.
-/// With no target, one untargeted row per comment. Returns how many rows it
-/// inserted. See [`Store::send_to_agent`] for the contract.
+/// With no target, one untargeted row per comment. Returns the rows it
+/// inserted and whom it sent to. See [`Store::send_to_agent`] for the contract.
 pub(crate) fn send_in(
     tx: &Transaction<'_>,
     thread_id: &str,
     batch_id: Option<&str>,
     target: SendTarget<'_>,
     touched: &mut Touched,
-) -> Result<usize> {
+) -> Result<Sent> {
     let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
     if t.status == "resolved" {
         return Err(CoreError::invalid(
@@ -177,9 +215,11 @@ pub(crate) fn send_in(
         "UPDATE threads SET sent_to_agent = 1 WHERE id = ?1",
         params![thread_id],
     )?;
-    let targets = targets_for(tx, thread_id, &t.artifact_id, owner.as_deref(), target)?;
+    let target_before = stored_target(tx, thread_id)?;
+    let (targets, to) = targets_for(tx, thread_id, &t.artifact_id, owner.as_deref(), target)?;
+    let retargeted = stored_target(tx, thread_id)? != target_before;
     let now = Store::now();
-    let mut inserted = 0;
+    let mut inserted = Vec::new();
     for c in t.comments.iter().filter(|c| c.author_kind == AUTHOR_VIEWER) {
         let has_row: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM feedback WHERE comment_id = ?1)",
@@ -190,20 +230,22 @@ pub(crate) fn send_in(
             continue;
         }
         if targets.is_empty() {
+            let fid = new_ulid();
             tx.execute(
                 "INSERT INTO feedback (id, thread_id, comment_id, target_session_id, created_at, untargeted_at, batch_id)
                  VALUES (?1, ?2, ?3, NULL, ?4, ?4, ?5)",
-                params![new_ulid(), thread_id, c.id, now, batch_id],
+                params![fid, thread_id, c.id, now, batch_id],
             )?;
-            inserted += 1;
+            inserted.push(fid);
         } else {
             for sid in &targets {
+                let fid = new_ulid();
                 tx.execute(
                     "INSERT INTO feedback (id, thread_id, comment_id, target_session_id, created_at, batch_id)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![new_ulid(), thread_id, c.id, sid, now, batch_id],
+                    params![fid, thread_id, c.id, sid, now, batch_id],
                 )?;
-                inserted += 1;
+                inserted.push(fid);
             }
             touched.targets.extend(targets.iter().cloned());
         }
@@ -211,7 +253,28 @@ pub(crate) fn send_in(
     touched
         .threads
         .insert((t.artifact_id.clone(), thread_id.to_string()));
-    Ok(inserted)
+    Ok(Sent {
+        changed: !t.sent_to_agent || retargeted || !inserted.is_empty(),
+        feedback_ids: inserted,
+        to,
+    })
+}
+
+/// The `feedback.delivered` record of row `feedback_id` of thread `tid` on
+/// artifact `aid`, handed to session `sid` by `tier` for the first time.
+fn delivered_record(
+    at: &str,
+    aid: &str,
+    tid: &str,
+    sid: &str,
+    feedback_id: &str,
+    tier: &str,
+) -> AuditRecord {
+    let mut r = thread_record(AuditKind::FeedbackDelivered, at, aid, tid)
+        .with("feedback_id", feedback_id)
+        .with("tier", tier);
+    r.ids.session = Some(sid.to_string());
+    r
 }
 
 struct Pending {
@@ -259,11 +322,16 @@ impl Store {
     /// are the context the reopening comment answers. Comments whose rows
     /// were delivered keep their rows and are not resent.
     ///
+    /// Each send that changes something is recorded as one `thread.send`
+    /// under `ctx`, in its transaction: whom it went to, the rows it made,
+    /// and the thread. A send that marks nothing new, keeps the target and
+    /// makes no row records nothing.
+    ///
     /// # Errors
     /// `NotFound` when the thread or its artifact is gone; `thread_resolved`
     /// for a resolved thread.
-    pub fn send_to_agent(&self, thread_id: &str) -> Result<(Thread, Touched)> {
-        self.send_to(thread_id, SendTarget::Thread)
+    pub fn send_to_agent(&self, ctx: &AuditCtx, thread_id: &str) -> Result<(Thread, Touched)> {
+        self.send_to(ctx, thread_id, SendTarget::Thread)
     }
 
     /// [`Store::send_to_agent`] with an explicit `target`: one agent (which
@@ -273,9 +341,30 @@ impl Store {
     /// # Errors
     /// As [`Store::send_to_agent`], plus `unknown_agent` when `target` names a
     /// session that is not a live owner or watcher of the artifact.
-    pub fn send_to(&self, thread_id: &str, target: SendTarget<'_>) -> Result<(Thread, Touched)> {
+    pub fn send_to(
+        &self,
+        ctx: &AuditCtx,
+        thread_id: &str,
+        target: SendTarget<'_>,
+    ) -> Result<(Thread, Touched)> {
         let mut touched = Touched::default();
-        self.with_tx(|tx| send_in(tx, thread_id, None, target, &mut touched).map(|_| ()))?;
+        self.with_tx(|tx| {
+            let sent = send_in(tx, thread_id, None, target, &mut touched)?;
+            if !sent.changed {
+                return Ok(());
+            }
+            let aid: String = tx.query_row(
+                "SELECT artifact_id FROM threads WHERE id = ?1",
+                params![thread_id],
+                |r| r.get(0),
+            )?;
+            let rec = thread_record(AuditKind::ThreadSend, &Store::now(), &aid, thread_id)
+                .with("target", send_target_value(tx, sent.to.as_deref())?)
+                .with("feedback_ids", sent.feedback_ids)
+                .with("thread_ids", vec![thread_id.to_string()]);
+            self.record_audit(tx, ctx, rec)?;
+            Ok(())
+        })?;
         let thread = self.get_thread(thread_id)?.ok_or(CoreError::NotFound)?;
         Ok((thread, touched))
     }
@@ -286,8 +375,14 @@ impl Store {
     /// (see [`Tier::resends`]) get `resend_count + 1` and `resent: true`;
     /// in-band tiers also acknowledge. Rows of deleted artifacts and resolved
     /// threads are never handed over. Items are oldest first.
+    ///
+    /// Each row handed over while undelivered is recorded as
+    /// `feedback.delivered` (its ID and `q.tier`, the session in the
+    /// `session_id` column) under `ctx`, in the hand-over's transaction; a
+    /// resend is not recorded.
     pub fn take_feedback(
         &self,
+        ctx: &AuditCtx,
         q: &TakeFeedback,
         browser_base: &str,
     ) -> Result<(Vec<FeedbackItem>, Touched)> {
@@ -398,6 +493,15 @@ impl Store {
                             acknowledged_at = CASE WHEN ?4 THEN ?2 ELSE acknowledged_at END WHERE id = ?1",
                         params![p.id, now, q.tier.as_str(), q.tier.in_band()],
                     )?;
+                    let rec = delivered_record(
+                        &now,
+                        &p.artifact_id,
+                        &p.thread_id,
+                        &q.session_id,
+                        &p.id,
+                        q.tier.as_str(),
+                    );
+                    self.record_audit(tx, ctx, rec)?;
                 }
             }
             Ok(good)
@@ -434,7 +538,16 @@ impl Store {
     /// another tier can deliver them, and marks them push-failed: `queue` does
     /// not take them again and [`Store::feedback_state`] reports them waiting
     /// on the in-band tiers, until the row is retargeted to another session.
-    pub fn release_feedback(&self, ids: &[String]) -> Result<Touched> {
+    /// Each released row is recorded as `feedback.release {feedback_id,
+    /// tier: "queue", reason}` under `ctx` (the target in the `session_id`
+    /// column), in the release's transaction, so its later delivery by
+    /// another tier follows a recorded release.
+    pub fn release_feedback(
+        &self,
+        ctx: &AuditCtx,
+        ids: &[String],
+        reason: &str,
+    ) -> Result<Touched> {
         let mut touched = Touched::default();
         let now = Store::now();
         self.with_tx(|tx| {
@@ -450,6 +563,12 @@ impl Store {
                         params![id],
                         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                     )?;
+                    let mut rec = thread_record(AuditKind::FeedbackRelease, &now, &aid, &tid)
+                        .with("feedback_id", id.as_str())
+                        .with("tier", Tier::Queue.as_str())
+                        .with("reason", reason);
+                    rec.ids.session = target.clone();
+                    self.record_audit(tx, ctx, rec)?;
                     touched.threads.insert((aid, tid));
                     touched.targets.extend(target);
                 }
@@ -461,9 +580,15 @@ impl Store {
 
     /// Records that `session_id` has seen the threads (it read, replied to, or
     /// resolved them). Rows not yet delivered are marked delivered by
-    /// `piggyback`, the in-band tool path.
-    pub fn acknowledge(&self, session_id: &str, thread_ids: &[String]) -> Result<Touched> {
-        self.acknowledge_where("thread_id", session_id, thread_ids)
+    /// `piggyback`, the in-band tool path, each recorded as
+    /// `feedback.delivered` under `ctx`.
+    pub fn acknowledge(
+        &self,
+        ctx: &AuditCtx,
+        session_id: &str,
+        thread_ids: &[String],
+    ) -> Result<Touched> {
+        self.acknowledge_where(ctx, "thread_id", session_id, thread_ids)
     }
 
     /// Like [`Store::acknowledge`], for `session_id`'s rows on exactly the
@@ -471,18 +596,32 @@ impl Store {
     /// (one the session has not seen) stays pending.
     pub fn acknowledge_comments(
         &self,
+        ctx: &AuditCtx,
         session_id: &str,
         comment_ids: &[String],
     ) -> Result<Touched> {
-        self.acknowledge_where("comment_id", session_id, comment_ids)
+        self.acknowledge_where(ctx, "comment_id", session_id, comment_ids)
     }
 
     /// Acknowledges `session_id`'s unacknowledged rows whose `column`
-    /// (`thread_id` or `comment_id`) is one of `ids`.
-    fn acknowledge_where(&self, column: &str, session_id: &str, ids: &[String]) -> Result<Touched> {
+    /// (`thread_id` or `comment_id`) is one of `ids`, recording the first
+    /// delivery of each that was undelivered.
+    fn acknowledge_where(
+        &self,
+        ctx: &AuditCtx,
+        column: &str,
+        session_id: &str,
+        ids: &[String],
+    ) -> Result<Touched> {
         debug_assert!(matches!(column, "thread_id" | "comment_id"));
         let now = Store::now();
         let mut touched = Touched::default();
+        let undelivered = format!(
+            "SELECT f.id, f.thread_id, t.artifact_id FROM feedback f JOIN threads t ON t.id = f.thread_id
+             WHERE f.{column} = ?1 AND f.target_session_id = ?2 AND f.acknowledged_at IS NULL
+                AND f.delivered_at IS NULL
+             ORDER BY f.created_at, f.id"
+        );
         let update = format!(
             "UPDATE feedback SET acknowledged_at = ?3, delivered_at = COALESCE(delivered_at, ?3),
                 delivery_tier = COALESCE(delivery_tier, 'piggyback'), last_sent_at = COALESCE(last_sent_at, ?3)
@@ -491,6 +630,18 @@ impl Store {
         );
         self.with_tx(|tx| {
             for id in ids {
+                let first: Vec<(String, String, String)> = {
+                    let mut stmt = tx.prepare_cached(&undelivered)?;
+                    stmt.query_map(params![id, session_id], |r| {
+                        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+                };
+                for (fid, tid, aid) in &first {
+                    let rec =
+                        delivered_record(&now, aid, tid, session_id, fid, Tier::Piggyback.as_str());
+                    self.record_audit(tx, ctx, rec)?;
+                }
                 let tids: Vec<String> = {
                     let mut stmt = tx.prepare(&update)?;
                     stmt.query_map(params![id, session_id, now], |r| r.get(0))?
@@ -833,6 +984,7 @@ mod tests {
 
     fn thread(st: &Store, aid: &ArtifactId, body: &str) -> String {
         st.create_thread(
+            DAEMON,
             aid,
             NewThread {
                 author_public_id: None,
@@ -855,7 +1007,7 @@ mod tests {
             artifact_id: None,
             include_resends: true,
         };
-        st.take_feedback(&q, BASE).unwrap().0
+        st.take_feedback(DAEMON, &q, BASE).unwrap().0
     }
 
     #[test]
@@ -864,7 +1016,7 @@ mod tests {
         let grok = session(&st, "grok", "g1");
         let aid = artifact(&st, Some(&grok));
         let tid = thread(&st, &aid, "hi");
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         assert!(
             st.take_notices(&grok, "http://h:1").unwrap().is_empty(),
             "unarmed: no notice"
@@ -890,7 +1042,7 @@ mod tests {
         let aid = artifact(&st, Some(&grok));
         st.ensure_watch(&grok, &aid).unwrap();
         let tid = thread(&st, &aid, "hi");
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         take(&st, &grok, Tier::Piggyback);
         assert!(st.take_notices(&grok, "http://h:1").unwrap().is_empty());
     }
@@ -902,7 +1054,7 @@ mod tests {
         let aid = artifact(&st, Some(&first));
         st.ensure_watch(&first, &aid).unwrap();
         let tid = thread(&st, &aid, "hi");
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         assert_eq!(st.take_notices(&first, "http://h:1").unwrap().len(), 1);
         st.end_session(&first).unwrap();
         let next = session(&st, "grok", "g2");
@@ -939,7 +1091,7 @@ mod tests {
         let owner = session(&st, "claude", "o");
         let aid = artifact(&st, Some(&owner));
         let tid = thread(&st, &aid, "hi");
-        let (t, touched) = st.send_to_agent(&tid).unwrap();
+        let (t, touched) = st.send_to_agent(DAEMON, &tid).unwrap();
         assert!(t.sent_to_agent);
         assert_eq!(targets(&st, &tid), vec![Some(owner.clone())]);
         assert!(touched.targets.contains(&owner));
@@ -961,7 +1113,7 @@ mod tests {
         st.watch(&w2, &aid, false).unwrap();
         st.end_session(&w2).unwrap();
         let tid = thread(&st, &aid, "hi");
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         let mut got = targets(&st, &tid);
         got.sort();
         let mut want = vec![Some(owner), Some(w1)];
@@ -976,7 +1128,7 @@ mod tests {
         let aid = artifact(&st, Some(&owner));
         st.end_session(&owner).unwrap();
         let tid = thread(&st, &aid, "hi");
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         assert_eq!(targets(&st, &tid), vec![None]);
         assert_eq!(
             st.feedback_state(&tid, false).unwrap().unwrap().state,
@@ -996,10 +1148,11 @@ mod tests {
         let owner = session(&st, "claude", "o");
         let aid = artifact(&st, Some(&owner));
         let tid = thread(&st, &aid, "first");
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         let delivered = take(&st, &owner, Tier::Piggyback);
         assert_eq!(delivered.len(), 1);
         st.add_comment(
+            DAEMON,
             &tid,
             NewComment {
                 author_public_id: None,
@@ -1011,9 +1164,10 @@ mod tests {
             },
         )
         .unwrap();
-        st.send_to_agent(&tid).unwrap();
-        st.resolve_thread(&tid, "viewer:anonymous").unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
+        st.resolve_thread(DAEMON, &tid, "viewer:anonymous").unwrap();
         st.add_comment(
+            DAEMON,
             &tid,
             NewComment {
                 author_public_id: None,
@@ -1025,7 +1179,7 @@ mod tests {
             },
         )
         .unwrap();
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         let items = take(&st, &owner, Tier::Piggyback);
         assert_eq!(
             items.iter().map(|i| i.body.as_str()).collect::<Vec<_>>(),
@@ -1040,10 +1194,11 @@ mod tests {
         let owner = session(&st, "claude", "o");
         let aid = artifact(&st, Some(&owner));
         let tid = thread(&st, &aid, "first");
-        st.send_to_agent(&tid).unwrap();
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         assert_eq!(st.feedback_rows(&tid).unwrap().len(), 1);
         st.add_comment(
+            DAEMON,
             &tid,
             NewComment {
                 author_public_id: None,
@@ -1055,13 +1210,14 @@ mod tests {
             },
         )
         .unwrap();
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         assert_eq!(
             st.feedback_rows(&tid).unwrap().len(),
             1,
             "agent comments are never forwarded"
         );
         st.add_comment(
+            DAEMON,
             &tid,
             NewComment {
                 author_public_id: None,
@@ -1073,7 +1229,7 @@ mod tests {
             },
         )
         .unwrap();
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         let items = take(&st, &owner, Tier::Piggyback);
         assert_eq!(
             items.iter().map(|i| i.body.as_str()).collect::<Vec<_>>(),
@@ -1083,6 +1239,7 @@ mod tests {
 
     fn viewer_says(st: &Store, tid: &str, body: &str) {
         st.add_comment(
+            DAEMON,
             tid,
             NewComment {
                 author_public_id: None,
@@ -1105,7 +1262,9 @@ mod tests {
         st.ensure_watch(&watcher, &aid).unwrap();
         let tid = thread(&st, &aid, "first");
         let stranger = session(&st, "codex", "s");
-        let err = st.send_to(&tid, SendTarget::Agent(&stranger)).unwrap_err();
+        let err = st
+            .send_to(DAEMON, &tid, SendTarget::Agent(&stranger))
+            .unwrap_err();
         assert!(matches!(
             err,
             CoreError::Invalid {
@@ -1117,9 +1276,10 @@ mod tests {
             st.feedback_rows(&tid).unwrap().is_empty(),
             "nothing was written"
         );
-        st.send_to(&tid, SendTarget::Agent(&watcher)).unwrap();
+        st.send_to(DAEMON, &tid, SendTarget::Agent(&watcher))
+            .unwrap();
         viewer_says(&st, &tid, "second");
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         let bodies = |sid: &str| {
             take(&st, sid, Tier::Piggyback)
                 .into_iter()
@@ -1130,7 +1290,7 @@ mod tests {
         assert!(bodies(&owner).is_empty());
         st.end_session(&watcher).unwrap();
         viewer_says(&st, &tid, "third");
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         assert_eq!(
             bodies(&owner),
             ["third"],
@@ -1138,10 +1298,11 @@ mod tests {
         );
         let second = session(&st, "codex", "w2");
         st.ensure_watch(&second, &aid).unwrap();
-        st.send_to(&tid, SendTarget::Agent(&second)).unwrap();
-        st.send_to(&tid, SendTarget::Everyone).unwrap();
+        st.send_to(DAEMON, &tid, SendTarget::Agent(&second))
+            .unwrap();
+        st.send_to(DAEMON, &tid, SendTarget::Everyone).unwrap();
         viewer_says(&st, &tid, "fourth");
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         assert_eq!(bodies(&owner), ["fourth"], "Everyone cleared the target");
         assert_eq!(bodies(&second), ["fourth"]);
     }
@@ -1152,7 +1313,7 @@ mod tests {
         let owner = session(&st, "claude", "o");
         let aid = artifact(&st, Some(&owner));
         let tid = thread(&st, &aid, "hi");
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         let items = take(&st, &owner, Tier::Piggyback);
         assert_eq!(items.len(), 1);
         let i = &items[0];
@@ -1184,7 +1345,7 @@ mod tests {
         let aid = artifact(&st, Some(&owner));
         st.watch(&owner, &aid, false).unwrap();
         let tid = thread(&st, &aid, "hi");
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         assert!(take(&st, &owner, Tier::StopHook).is_empty());
         assert!(take(&st, &owner, Tier::Queue).is_empty());
         let p = take(&st, &owner, Tier::PromptHook);
@@ -1201,7 +1362,7 @@ mod tests {
         let aid = artifact(&st, Some(&owner));
         st.ensure_watch(&owner, &aid).unwrap();
         let tid = thread(&st, &aid, "hi");
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         assert_eq!(take(&st, &owner, Tier::StopHook).len(), 1);
         assert!(
             take(&st, &owner, Tier::StopHook).is_empty(),
@@ -1233,7 +1394,7 @@ mod tests {
         let aid = artifact(&st, Some(&owner));
         st.ensure_watch(&owner, &aid).unwrap();
         let tid = thread(&st, &aid, "hi");
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         take(&st, &owner, Tier::StopHook);
         age(&st);
         let q = TakeFeedback {
@@ -1243,7 +1404,7 @@ mod tests {
             include_resends: false,
         };
         assert!(
-            st.take_feedback(&q, BASE).unwrap().0.is_empty(),
+            st.take_feedback(DAEMON, &q, BASE).unwrap().0.is_empty(),
             "stop_hook_active excludes resends"
         );
         assert!(
@@ -1261,8 +1422,10 @@ mod tests {
         let owner = session(&st, "claude", "o");
         let aid = artifact(&st, Some(&owner));
         let tid = thread(&st, &aid, "hi");
-        st.send_to_agent(&tid).unwrap();
-        let touched = st.acknowledge(&owner, std::slice::from_ref(&tid)).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
+        let touched = st
+            .acknowledge(DAEMON, &owner, std::slice::from_ref(&tid))
+            .unwrap();
         assert!(
             touched
                 .threads
@@ -1285,10 +1448,11 @@ mod tests {
         let other = session(&st, "codex", "x");
         let aid = artifact(&st, Some(&owner));
         let tid = thread(&st, &aid, "first");
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         let first = st.get_thread(&tid).unwrap().unwrap().comments[0].id.clone();
         let later = st
             .add_comment(
+                DAEMON,
                 &tid,
                 NewComment {
                     author_public_id: None,
@@ -1300,15 +1464,15 @@ mod tests {
                 },
             )
             .unwrap();
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         assert!(
-            st.acknowledge_comments(&other, std::slice::from_ref(&first))
+            st.acknowledge_comments(DAEMON, &other, std::slice::from_ref(&first))
                 .unwrap()
                 .is_empty(),
             "another session's acknowledgement touches nothing"
         );
         let touched = st
-            .acknowledge_comments(&owner, std::slice::from_ref(&first))
+            .acknowledge_comments(DAEMON, &owner, std::slice::from_ref(&first))
             .unwrap();
         assert!(
             touched
@@ -1342,10 +1506,10 @@ mod tests {
         let aid = artifact(&st, Some(&owner));
         st.ensure_watch(&owner, &aid).unwrap();
         let tid = thread(&st, &aid, "hi");
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         let claimed = take(&st, &owner, Tier::Queue);
         assert_eq!(claimed.len(), 1);
-        st.release_feedback(&[claimed[0].feedback_id.clone()])
+        st.release_feedback(DAEMON, &[claimed[0].feedback_id.clone()], "test")
             .unwrap();
         let row = &st.feedback_rows(&tid).unwrap()[0];
         assert_eq!(
@@ -1362,13 +1526,13 @@ mod tests {
         let aid = artifact(&st, Some(&owner));
         st.watch(&owner, &aid, true).unwrap();
         let tid = thread(&st, &aid, "hi");
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         assert_eq!(
             st.feedback_state(&tid, true).unwrap().unwrap().tier,
             Some(Tier::Queue)
         );
         let claimed = take(&st, &owner, Tier::Queue);
-        st.release_feedback(&[claimed[0].feedback_id.clone()])
+        st.release_feedback(DAEMON, &[claimed[0].feedback_id.clone()], "test")
             .unwrap();
         let s = st.feedback_state(&tid, true).unwrap().unwrap();
         assert_eq!(
@@ -1400,7 +1564,7 @@ mod tests {
         st.watch(&other, &aid, true).unwrap();
         st.ensure_watch(&owner, &aid).unwrap();
         let tid = thread(&st, &aid, "hi");
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         let touched = st.end_session_touched(&owner).unwrap().touched;
         assert!(
             touched
@@ -1427,7 +1591,7 @@ mod tests {
         let grok = session(&st, "grok", "g1");
         let aid = artifact(&st, Some(&grok));
         let tid = thread(&st, &aid, "hi");
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         assert_eq!(
             st.feedback_state(&tid, false).unwrap().unwrap().tier,
             Some(Tier::Piggyback),
@@ -1447,7 +1611,7 @@ mod tests {
         let aid = artifact(&st, Some(&claude));
         let tid = thread(&st, &aid, "hi");
         assert_eq!(st.feedback_state(&tid, false).unwrap(), None);
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         let s = st.feedback_state(&tid, false).unwrap().unwrap();
         assert_eq!(
             (s.state, s.tier),
@@ -1465,7 +1629,8 @@ mod tests {
             (s.state, s.tier),
             (FeedbackPhase::Delivered, Some(Tier::StopHook))
         );
-        st.acknowledge(&claude, std::slice::from_ref(&tid)).unwrap();
+        st.acknowledge(DAEMON, &claude, std::slice::from_ref(&tid))
+            .unwrap();
         assert_eq!(
             st.feedback_state(&tid, false).unwrap().unwrap().state,
             FeedbackPhase::Acknowledged
@@ -1475,7 +1640,7 @@ mod tests {
         let a2 = artifact(&st, Some(&codex));
         st.ensure_watch(&codex, &a2).unwrap();
         let t2 = thread(&st, &a2, "hi");
-        st.send_to_agent(&t2).unwrap();
+        st.send_to_agent(DAEMON, &t2).unwrap();
         assert_eq!(
             st.feedback_state(&t2, true).unwrap().unwrap().tier,
             Some(Tier::Queue)
@@ -1489,7 +1654,7 @@ mod tests {
         let a3 = artifact(&st, Some(&pi));
         st.ensure_watch(&pi, &a3).unwrap();
         let t3 = thread(&st, &a3, "hi");
-        st.send_to_agent(&t3).unwrap();
+        st.send_to_agent(DAEMON, &t3).unwrap();
         assert_eq!(
             st.feedback_state(&t3, false).unwrap().unwrap().tier,
             Some(Tier::Inject)
@@ -1505,13 +1670,13 @@ mod tests {
         let owner = session(&st, "claude", "o");
         let aid = artifact(&st, Some(&owner));
         let tid = thread(&st, &aid, "hi");
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         st.delete_artifact(DAEMON, &aid).unwrap();
         for tier in [Tier::Piggyback, Tier::Wait, Tier::PromptHook] {
             assert!(take(&st, &owner, tier).is_empty(), "{tier:?}");
         }
         assert!(matches!(
-            st.send_to_agent(&tid),
+            st.send_to_agent(DAEMON, &tid),
             Err(crate::CoreError::NotFound)
         ));
     }
@@ -1523,8 +1688,8 @@ mod tests {
         let aid = artifact(&st, Some(&owner));
         let bad = thread(&st, &aid, "bad");
         let good = thread(&st, &aid, "good");
-        st.send_to_agent(&bad).unwrap();
-        st.send_to_agent(&good).unwrap();
+        st.send_to_agent(DAEMON, &bad).unwrap();
+        st.send_to_agent(DAEMON, &good).unwrap();
         st.with_write(|c| {
             c.execute("UPDATE threads SET anchor_json = '{' WHERE id = ?1", [&bad])?;
             Ok(())
@@ -1551,6 +1716,7 @@ mod tests {
         let clip = Some(b"\x89PNG\r\n\x1a\nx".to_vec());
         let bad = st
             .create_thread(
+                DAEMON,
                 &a1,
                 NewThread {
                     author_public_id: None,
@@ -1565,8 +1731,8 @@ mod tests {
             .unwrap()
             .id;
         let good = thread(&st, &a2, "good");
-        st.send_to_agent(&bad).unwrap();
-        st.send_to_agent(&good).unwrap();
+        st.send_to_agent(DAEMON, &bad).unwrap();
+        st.send_to_agent(DAEMON, &good).unwrap();
         st.with_write(|c| {
             c.execute_batch("PRAGMA foreign_keys=OFF")?;
             c.execute(
@@ -1599,8 +1765,8 @@ mod tests {
         let owner = session(&st, "claude", "o");
         let aid = artifact(&st, Some(&owner));
         let tid = thread(&st, &aid, "hi");
-        st.send_to_agent(&tid).unwrap();
-        st.resolve_thread(&tid, "viewer:x").unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
+        st.resolve_thread(DAEMON, &tid, "viewer:x").unwrap();
         assert!(take(&st, &owner, Tier::Piggyback).is_empty());
     }
 
@@ -1610,8 +1776,8 @@ mod tests {
         let owner = session(&st, "claude", "o");
         let aid = artifact(&st, Some(&owner));
         let tid = thread(&st, &aid, "hi");
-        st.send_to_agent(&tid).unwrap();
-        let (t, touched) = st.resolve_thread_touched(&tid, "viewer:x").unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
+        let (t, touched) = st.resolve_thread_touched(DAEMON, &tid, "viewer:x").unwrap();
         assert_eq!(t.status, "resolved");
         assert!(st.feedback_rows(&tid).unwrap().is_empty());
         assert!(
@@ -1629,9 +1795,9 @@ mod tests {
         let owner = session(&st, "claude", "o");
         let aid = artifact(&st, Some(&owner));
         let tid = thread(&st, &aid, "hi");
-        st.send_to_agent(&tid).unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
         assert_eq!(take(&st, &owner, Tier::PromptHook).len(), 1);
-        st.resolve_thread(&tid, "viewer:x").unwrap();
+        st.resolve_thread(DAEMON, &tid, "viewer:x").unwrap();
         assert_eq!(st.feedback_rows(&tid).unwrap().len(), 1);
         assert_eq!(
             st.feedback_state(&tid, false).unwrap().unwrap().state,
@@ -1647,6 +1813,7 @@ mod tests {
         let a2 = artifact(&st, Some(&owner));
         let t1 = st
             .create_thread(
+                DAEMON,
                 &a1,
                 NewThread {
                     author_public_id: None,
@@ -1660,15 +1827,15 @@ mod tests {
             )
             .unwrap();
         let t2 = thread(&st, &a2, "two");
-        st.send_to_agent(&t1.id).unwrap();
-        st.send_to_agent(&t2).unwrap();
+        st.send_to_agent(DAEMON, &t1.id).unwrap();
+        st.send_to_agent(DAEMON, &t2).unwrap();
         let q = TakeFeedback {
             session_id: owner.clone(),
             tier: Tier::Wait,
             artifact_id: Some(a1.as_str().into()),
             include_resends: true,
         };
-        let (items, _) = st.take_feedback(&q, BASE).unwrap();
+        let (items, _) = st.take_feedback(DAEMON, &q, BASE).unwrap();
         assert_eq!(items.len(), 1);
         assert!(crate::feedback::render_item(&items[0]).contains("\nViewer: \"one\"\n"));
         let clip = items[0].clip_path.clone().unwrap();

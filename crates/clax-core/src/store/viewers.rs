@@ -479,7 +479,7 @@ impl Store {
 mod tests {
     use super::{Claim, MAX_NAME_CHARS, MAX_SEARCH_SCAN};
     use crate::audit::Via;
-    use crate::store::test_util::{artifact, store};
+    use crate::store::test_util::{DAEMON, artifact, store};
     use crate::{CoreError, new_ulid};
 
     #[test]
@@ -594,7 +594,7 @@ mod tests {
         let (_d, st) = store();
         let aid = artifact(&st, None);
         let cli = st.set_owner_name("Alex", false).unwrap();
-        st.create_thread(&aid, thread_by(&cli.public_id, "from the CLI"))
+        st.create_thread(DAEMON, &aid, thread_by(&cli.public_id, "from the CLI"))
             .unwrap();
         private_doc(
             &st,
@@ -718,9 +718,9 @@ mod tests {
         let safari = st.mint_viewer(&cookie, true).unwrap();
         st.upsert_viewer(&cookie, Some("Alex S")).unwrap();
         let t = st
-            .create_thread(&aid, thread_by(&safari.public_id, "hi"))
+            .create_thread(DAEMON, &aid, thread_by(&safari.public_id, "hi"))
             .unwrap();
-        st.resolve_thread(&t.id, &format!("viewer:{}", safari.public_id))
+        st.resolve_thread(DAEMON, &t.id, &format!("viewer:{}", safari.public_id))
             .unwrap();
         st.mark_seen(&safari.id, &aid, 1).unwrap();
         st.mark_looked(&safari.id, &aid, std::slice::from_ref(&t.id))

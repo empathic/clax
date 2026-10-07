@@ -433,8 +433,13 @@ pub async fn thread(
                 clip,
                 via_page: false,
             };
-            let made =
-                st.create_live_thread(&id, t, pick.as_deref(), resolved.live_path.as_deref())?;
+            let made = st.create_live_thread(
+                &audit,
+                &id,
+                t,
+                pick.as_deref(),
+                resolved.live_path.as_deref(),
+            )?;
             let thread = match (made, &pick) {
                 (Some(thread), _) => thread,
                 (None, Some(pick)) => {
@@ -443,7 +448,7 @@ pub async fn thread(
                 }
                 (None, None) => return Err(CoreError::NotFound),
             };
-            let view = announce_new_thread(st, &ctx, thread, mention, with_path)?;
+            let view = announce_new_thread(st, &ctx, &audit, thread, mention, with_path)?;
             let page = st.live_page_of(&id)?.ok_or(CoreError::NotFound)?;
             Ok(Answer {
                 made: true,

@@ -2,7 +2,8 @@
 //! transaction, as one batch with an optional note, delivered together.
 
 use super::Store;
-use super::feedback::{SendTarget, live_targets_of, send_in};
+use super::feedback::{SendTarget, live_targets_of, send_in, send_target_value};
+use crate::audit::{AuditCtx, AuditKind, AuditRecord};
 use crate::feedback::{FeedbackBatch, Touched};
 use crate::working::clean_line;
 use crate::{ArtifactId, CoreError, Result, new_ulid};
@@ -55,7 +56,16 @@ impl Store {
     /// Already-sent threads are accepted: they send only what they have not
     /// sent (as [`Store::send_to_agent`]) and are reported `unchanged` when
     /// that is nothing.
-    pub fn send_batch(&self, aid: &ArtifactId, b: SendBatch) -> Result<BatchResult> {
+    ///
+    /// The batch is recorded as one `thread.send` under `ctx`, in its
+    /// transaction: whom it went to, every row it made, the batch, and the
+    /// threads it sent.
+    pub fn send_batch(
+        &self,
+        ctx: &AuditCtx,
+        aid: &ArtifactId,
+        b: SendBatch,
+    ) -> Result<BatchResult> {
         let mut ids: Vec<String> = Vec::new();
         for t in b.thread_ids {
             if !ids.contains(&t) {
@@ -121,11 +131,14 @@ impl Store {
             let batch_id = new_ulid();
             let mut touched = Touched::default();
             let (mut sent, mut unchanged) = (Vec::new(), Vec::new());
+            let mut feedback_ids = Vec::new();
             for t in &ids {
-                if send_in(tx, t, Some(&batch_id), target, &mut touched)? > 0 {
-                    sent.push(t.clone());
-                } else {
+                let rows = send_in(tx, t, Some(&batch_id), target, &mut touched)?.feedback_ids;
+                if rows.is_empty() {
                     unchanged.push(t.clone());
+                } else {
+                    sent.push(t.clone());
+                    feedback_ids.extend(rows);
                 }
             }
             if sent.is_empty() {
@@ -138,6 +151,13 @@ impl Store {
             for t in &sent {
                 tx.execute("INSERT INTO batch_threads (batch_id, thread_id) VALUES (?1, ?2)", params![batch_id, t])?;
             }
+            let mut rec = AuditRecord::new(AuditKind::ThreadSend, Store::now())
+                .with("target", send_target_value(tx, to.as_deref())?)
+                .with("feedback_ids", feedback_ids)
+                .with("batch_id", batch_id.as_str())
+                .with("thread_ids", sent.clone());
+            rec.ids.artifact = Some(aid.to_string());
+            self.record_audit(tx, ctx, rec)?;
             let batch = FeedbackBatch { id: batch_id, size: sent.len() as u32, note, sent_by: b.sent_by };
             Ok(BatchResult { batch, sent, unchanged, touched })
         })
@@ -162,11 +182,13 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::test_util::DAEMON;
     use crate::store::test_util::{anchor, artifact, session, store};
     use crate::{NewThread, Store, TakeFeedback, Tier};
 
     fn thread(st: &Store, id: &ArtifactId, body: &str) -> String {
         st.create_thread(
+            DAEMON,
             id,
             NewThread {
                 version_n: 1,
@@ -205,6 +227,7 @@ mod tests {
         let ts: Vec<String> = (0..3).map(|i| thread(&st, &id, &format!("c{i}"))).collect();
         let r = st
             .send_batch(
+                DAEMON,
                 &id,
                 batch(&ts.iter().collect::<Vec<_>>(), Some("  Before the demo ")),
             )
@@ -220,6 +243,7 @@ mod tests {
         }
         let (items, _) = st
             .take_feedback(
+                DAEMON,
                 &TakeFeedback {
                     session_id: sid.clone(),
                     tier: Tier::Piggyback,
@@ -246,19 +270,25 @@ mod tests {
         let foreign = thread(&st, &other, "x");
         assert_eq!(
             code(
-                st.send_batch(&id, batch(&[&a, &foreign], None))
+                st.send_batch(DAEMON, &id, batch(&[&a, &foreign], None))
                     .unwrap_err()
             ),
             "unknown_thread"
         );
         let gone = crate::new_ulid();
         assert_eq!(
-            code(st.send_batch(&id, batch(&[&a, &gone], None)).unwrap_err()),
+            code(
+                st.send_batch(DAEMON, &id, batch(&[&a, &gone], None))
+                    .unwrap_err()
+            ),
             "unknown_thread"
         );
-        st.resolve_thread(&b, "viewer:anonymous").unwrap();
+        st.resolve_thread(DAEMON, &b, "viewer:anonymous").unwrap();
         assert_eq!(
-            code(st.send_batch(&id, batch(&[&a, &b], None)).unwrap_err()),
+            code(
+                st.send_batch(DAEMON, &id, batch(&[&a, &b], None))
+                    .unwrap_err()
+            ),
             "thread_resolved"
         );
         assert!(
@@ -267,20 +297,20 @@ mod tests {
         );
         assert!(st.thread_sends(&a).unwrap().is_empty());
         assert_eq!(
-            code(st.send_batch(&id, batch(&[], None)).unwrap_err()),
+            code(st.send_batch(DAEMON, &id, batch(&[], None)).unwrap_err()),
             "invalid_args"
         );
         let many: Vec<String> = (0..21).map(|_| crate::new_ulid()).collect();
         assert_eq!(
             code(
-                st.send_batch(&id, batch(&many.iter().collect::<Vec<_>>(), None))
+                st.send_batch(DAEMON, &id, batch(&many.iter().collect::<Vec<_>>(), None))
                     .unwrap_err()
             ),
             "invalid_args"
         );
         assert_eq!(
             code(
-                st.send_batch(&id, batch(&[&a], Some(&"n".repeat(281))))
+                st.send_batch(DAEMON, &id, batch(&[&a], Some(&"n".repeat(281))))
                     .unwrap_err()
             ),
             "note_too_long"
@@ -292,12 +322,17 @@ mod tests {
         let (_d, st) = store();
         let id = artifact(&st, None);
         let (a, b) = (thread(&st, &id, "a"), thread(&st, &id, "b"));
-        st.send_to_agent(&a).unwrap();
-        let r = st.send_batch(&id, batch(&[&a, &b, &b], None)).unwrap();
+        st.send_to_agent(DAEMON, &a).unwrap();
+        let r = st
+            .send_batch(DAEMON, &id, batch(&[&a, &b, &b], None))
+            .unwrap();
         assert_eq!((r.sent, r.unchanged), (vec![b.clone()], vec![a.clone()]));
         assert_eq!(r.batch.size, 1);
         assert_eq!(
-            code(st.send_batch(&id, batch(&[&a, &b], None)).unwrap_err()),
+            code(
+                st.send_batch(DAEMON, &id, batch(&[&a, &b], None))
+                    .unwrap_err()
+            ),
             "nothing_to_send"
         );
     }
@@ -307,8 +342,8 @@ mod tests {
         let (_d, st) = store();
         let id = artifact(&st, None);
         let a = thread(&st, &id, "a");
-        st.send_batch(&id, batch(&[&a], None)).unwrap();
-        st.delete_thread(&a).unwrap();
+        st.send_batch(DAEMON, &id, batch(&[&a], None)).unwrap();
+        st.delete_thread(DAEMON, &a).unwrap();
         assert!(st.thread_sends(&a).unwrap().is_empty());
     }
 }

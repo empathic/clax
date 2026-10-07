@@ -216,6 +216,53 @@ async fn non_zero_exit_releases_the_rows_and_keeps_the_session() {
         fb["feedback"][0]["thread_id"], tid,
         "the same session gets the row in-band"
     );
+    // The trail: the queue's claim, its release, then the in-band delivery.
+    let fid = fb["feedback"][0]["feedback_id"].as_str().unwrap();
+    let recs = deliveries(&ts);
+    let kinds: Vec<(&str, &str)> = recs
+        .iter()
+        .map(|(k, _, _, b)| (k.as_str(), b["tier"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("feedback.delivered", "queue"),
+            ("feedback.release", "queue"),
+            ("feedback.delivered", "piggyback")
+        ]
+    );
+    for (_, _, session, body) in &recs {
+        assert_eq!(session.as_deref(), Some(sid.as_str()));
+        assert_eq!(body["feedback_id"], fid);
+    }
+    assert_eq!(recs[0].1, json!({"type": "system", "reason": "daemon"}));
+    assert_eq!(recs[0].3["via"], "daemon");
+    assert_eq!(recs[1].1, json!({"type": "system", "reason": "daemon"}));
+    assert_eq!(recs[1].3["reason"], "codex queue exited with code 1");
+    assert_eq!(recs[2].1["session_id"], sid.as_str());
+}
+
+/// The recorded `feedback.*` events, oldest first: kind, actor, session
+/// column and body.
+fn deliveries(ts: &TestServer) -> Vec<(String, Value, Option<String>, Value)> {
+    let c = rusqlite::Connection::open(ts.home.db_path()).unwrap();
+    let mut q = c
+        .prepare(
+            "SELECT kind, actor, session_id, body FROM audit_events
+             WHERE kind LIKE 'feedback.%' ORDER BY seq",
+        )
+        .unwrap();
+    q.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            serde_json::from_str(&r.get::<_, String>(1)?).unwrap(),
+            r.get(2)?,
+            serde_json::from_str(&r.get::<_, String>(3)?).unwrap(),
+        ))
+    })
+    .unwrap()
+    .map(Result::unwrap)
+    .collect()
 }
 
 #[tokio::test]
