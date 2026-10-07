@@ -875,7 +875,9 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await vi.waitFor(() => expect(ctl.state.get().threads).toHaveLength(1));
     ctl.resolveThread(done);
     await vi.waitFor(() => expect(ctl.state.get().menu).toBe("people"));
-    expect(ctl.state.get().notice).toBe("Add your name to reopen threads: type it under People.");
+    // A request, not a failure: the people menu asks for it, and no notice shows.
+    expect(ctl.state.get().askName).toBe("t9");
+    expect(ctl.state.get().notice).toBeNull();
     expect(reopened).toEqual([]);
     ctl.setMe({ public_id: "u_1", display_name: "Mia", created_at: "x" });
     await vi.waitFor(() => expect(ctl.state.get().threads[0].status).toBe("open"));
@@ -884,7 +886,7 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     ctl.dispose();
   });
 
-  it("forgets a reopen asked before a name when the notice is dismissed or the window passes", async () => {
+  it("forgets a reopen asked before a name when the prompt closes with none, or the window passes", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const done = thread("t9", { status: "resolved", resolved_by: "viewer:u_1", resolved_at: "2026-09-30T11:00:00.000Z" });
@@ -895,15 +897,17 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
       } });
       await vi.waitFor(() => expect(ctl.state.get().threads).toHaveLength(1));
       const me = (name: string) => ({ public_id: "u_1", display_name: name, created_at: "x" });
-      // Dismissed: naming oneself later reopens nothing.
+      // Closed with no name: naming oneself later reopens nothing.
       ctl.resolveThread(done);
       await vi.waitFor(() => expect(ctl.state.get().menu).toBe("people"));
-      ctl.dismissNotice();
+      ctl.forgetReopen();
+      ctl.closeMenu();
+      expect(ctl.state.get().askName).toBeNull();
       ctl.setMe(me("Mia"));
       // Past the window: nothing either.
       ctl.setMe({ ...me(""), display_name: null });
       ctl.resolveThread(done);
-      await vi.waitFor(() => expect(ctl.state.get().notice).toContain("Add your name"));
+      await vi.waitFor(() => expect(ctl.state.get().askName).toBe("t9"));
       const { REOPEN_NAME_MS } = await import("./artifact-controller");
       vi.setSystemTime(Date.now() + REOPEN_NAME_MS + 1);
       ctl.setMe(me("Mia"));

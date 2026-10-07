@@ -267,10 +267,15 @@ test("a viewer with no name is asked for one before a reopen, and the thread reo
   const card = page.locator(`[data-thread="${tid}"]`);
   await card.locator("button.card-head").click();
   await card.getByRole("button", { name: "Reopen" }).click();
-  await expect(page.getByText("Add your name to reopen threads: type it under People.")).toBeVisible();
+  // A request in the people menu, not an error banner; focus is in the name field.
+  await expect(page.locator(".people .ask")).toHaveText("Add your name to reopen the thread: people see it beside what you do.");
+  await expect(page.locator(".banner.notice")).toHaveCount(0);
   const name = page.getByLabel("Your name");
-  await name.fill("Mia");
-  await name.press("Enter");
+  await expect(name).toBeFocused();
+  await page.keyboard.type("Mia");
+  await page.keyboard.press("Enter");
   await expect.poll(async () => (await api(d.base, d.token, `/api/artifacts/${id}/threads/${tid}`)).thread.status).toBe("open");
-  await expect(page.getByText("Add your name to reopen threads: type it under People.")).toHaveCount(0);
+  // Its work done, the menu closes and focus goes to the thread's card, now in Open.
+  await expect(page.locator(".people")).toHaveCount(0);
+  await expect(page.locator(`.section-open [data-thread="${tid}"] .card-head`)).toBeFocused();
 });

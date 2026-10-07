@@ -9,7 +9,7 @@ import { HINT_MS, frameGesture, onShieldPress, pickHintAllowed, setForwardedKeys
 import { CapabilityHost, type CommentsUi } from "../caps/host";
 import { REQUEST_STUCK, connTrouble } from "../conn-notice";
 import { Lifecycle, onPageCache, retrying } from "../lifecycle";
-import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, REOPEN_NAME, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, report, scopedNotice } from "../failure";
+import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
 import { artifactOrigin, cachedOriginOk, pageSrc, probeOrigin } from "../origin";
 import { parseShellPath, shellPath } from "../route";
@@ -97,6 +97,8 @@ export type ViewState = {
   shareWhere: boolean;
   /** The menu open from the top bar. */
   menu: "versions" | "people" | null;
+  /** The thread a viewer with no name asked to reopen: the people menu is open asking for the name. */
+  askName: string | null;
   /** This viewer's looked-at marks on this artifact's threads (thread ID to when). */
   looked: Record<string, string>;
   /** The artifact's agents, live first and most recently active first, as
@@ -191,7 +193,7 @@ export class ArtifactController {
   // What the open composer holds, so a page's open never replaces typed text.
   private composerText = "";
   /** The thread a viewer asked to reopen before naming itself, reopened if it
-   * names itself within REOPEN_NAME_MS and the notice was not dismissed. */
+   * names itself within REOPEN_NAME_MS, unless it closed the prompt with no name. */
   private reopenAfterName: { id: string; until: number } | null = null;
   // A page anchors threads itself (comments.customAnchors): pins come from
   // its placements only, and the frame is not asked to resolve anchors.
@@ -278,7 +280,7 @@ export class ArtifactController {
       panel: media("(min-width: 900px)"), narrow: media("(max-width: 480px)"),
       threads: [], resolved: {}, draft: null, selected: null, hovered: null, busy: 0,
       notice: null, hint: null, me: null, ask: null, file: startFile, sheet: null, working: [], attention: null,
-      decided: null, rally: false, menu: null, looked: {}, presence: [], shareWhere: readShareWhere(),
+      decided: null, rally: false, menu: null, askName: null, looked: {}, presence: [], shareWhere: readShareWhere(),
       agents: [], selection: EMPTY_SELECTION, batchNote: "", batchBusy: false, sendTo: null, sampleCalls: null,
     });
     this.threadLoad = new ThreadSync(f => this.set(s => ({ threads: f(s.threads) })));
@@ -898,7 +900,7 @@ export class ArtifactController {
         if (a && this.shortcut(a)) e.preventDefault();
       } else if (e.key === "Escape" && e.type === "keydown") {
         // Escape anywhere else closes the menu, else the sheet, or else ends comment mode here.
-        if (this.s.menu) this.set({ menu: null }); else if (this.s.sheet) this.set({ sheet: null }); else this.set({ commenting: false });
+        if (this.s.menu) this.closeMenu(); else if (this.s.sheet) this.set({ sheet: null }); else this.set({ commenting: false });
       }
     };
     // Who the keys belong to (`keysOwned`).
@@ -1368,20 +1370,21 @@ export class ArtifactController {
   }
 
   /** Opens menu `m` from the top bar, or closes it when open. */
-  openMenu(m: "versions" | "people"): void { this.set(s => ({ menu: s.menu === m ? null : m })); }
-  closeMenu(): void { this.set({ menu: null }); }
+  openMenu(m: "versions" | "people"): void { this.set(s => ({ menu: s.menu === m ? null : m, askName: null })); }
+  closeMenu(): void { this.set({ menu: null, askName: null }); }
+  /** The name prompt closed with no name given: the reopen it was for is forgotten. */
+  forgetReopen(): void { this.reopenAfterName = null; }
 
   /** The version menu: the latest is the unpinned URL. */
   chooseVersion(n: number): void { nav.assign(this.here(n === this.latest() ? null : n)); }
   copyLink(): void { navigator.clipboard.writeText(location.origin + this.here(this.pinnedVersion) + location.hash).catch(() => {}); }
   reloadLatest(): void { nav.assign(this.here(null)); }
-  dismissNotice(): void { this.reopenAfterName = null; this.set({ notice: null }); }
+  dismissNotice(): void { this.set({ notice: null }); }
   setMe(v: Viewer): void {
     this.set({ me: v });
     const r = this.reopenAfterName;
     if (!r || !v.display_name) return;
     this.reopenAfterName = null;
-    this.noticeFor(REOPEN_NAME)(null);
     // Only the thread as it is now, still resolved, and only soon after the ask.
     const t = this.s.threads.find(x => x.id === r.id);
     if (t?.status === "resolved" && Date.now() <= r.until) this.resolveThread(t);
@@ -1428,15 +1431,14 @@ export class ArtifactController {
   chooseTarget(handle: string): void { rememberTarget(this.id, handle); this.set({ sendTo: handle }); }
   /** Resolves an open thread; reopens a resolved one, as the daemon lets
    * the owner shell (its token) or a named viewer. A viewer with neither is
-   * asked for its name (the people menu), and the thread reopens once it
-   * has one. */
+   * asked for its name (the people menu, `askName`), and the thread reopens
+   * once it has one. */
   resolveThread(t: Thread): void {
     if (t.status === "open") { this.saveThread(resolveThread(this.id, t.id), RESOLVE_FAILED); return; }
     void getToken().then(k => {
       if (k || this.s.me?.display_name) { this.saveThread(reopenThread(this.id, t.id, k), REOPEN_FAILED); return; }
       this.reopenAfterName = { id: t.id, until: Date.now() + REOPEN_NAME_MS };
-      this.noticeFor(REOPEN_NAME)(`${REOPEN_NAME}: type it under People.`);
-      this.set({ menu: "people" });
+      this.set({ menu: "people", askName: t.id });
     });
   }
   reply(t: Thread, body: string): void { this.saveThread(addComment(this.id, t.id, body), POST_FAILED); }
