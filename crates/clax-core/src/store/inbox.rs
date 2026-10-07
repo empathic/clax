@@ -1411,8 +1411,13 @@ mod tests {
             "files": {"index.html": {"content": "<main><h2>Quarterly goals</h2></main>", "encoding": "utf8"}}
         }))
         .unwrap();
-        st.publish_version(aid, validate(req).unwrap(), Some(sid))
-            .unwrap();
+        st.publish_version(
+            &crate::audit::AuditCtx::DAEMON,
+            aid,
+            validate(req).unwrap(),
+            Some(sid),
+        )
+        .unwrap();
     }
 
     fn ask(st: &Store, sid: &str, aid: Option<&str>) -> String {
@@ -1541,7 +1546,9 @@ mod tests {
             origin: "http://localhost:5173".into(),
             path: "/p".into(),
         };
-        let e = st.ensure_live_page(&key, "p", None).unwrap();
+        let e = st
+            .ensure_live_page(&crate::audit::AuditCtx::DAEMON, &key, "p", None)
+            .unwrap();
         let lid = ArtifactId::parse(&e.artifact.id).unwrap();
         let lt = st
             .create_thread(
@@ -1594,7 +1601,8 @@ mod tests {
         let s = st.inbox_sources(&items).unwrap();
         assert!(s[reply].thread.is_none() && s[reply].reply.is_none());
         assert!(s[version].version.is_some());
-        st.delete_artifact(&aid).unwrap();
+        st.delete_artifact(&crate::audit::AuditCtx::DAEMON, &aid)
+            .unwrap();
         let s = st.inbox_sources(&items).unwrap();
         assert!(
             s.iter()

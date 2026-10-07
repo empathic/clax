@@ -3,6 +3,7 @@
 //! refusal, the snapshot policy, and hiding live pages from the LAN (whose
 //! requests arrive through [`TestServer::lan`], so they run on any machine).
 use crate::common;
+use clax_core::audit::AuditCtx;
 use clax_server::testing::FAKE_PNG;
 use common::TestServer;
 use serde_json::{Value, json};
@@ -1082,6 +1083,7 @@ async fn a_live_pages_blobs_and_snapshots_route_are_hidden_from_the_lan() {
     // (an older daemon, a hand-edited store) stays hidden all the same.
     let asset = store
         .add_asset(
+            &AuditCtx::DAEMON,
             &clax_core::ArtifactId::parse(aid).unwrap(),
             "image/png",
             FAKE_PNG,
@@ -1115,6 +1117,7 @@ async fn a_live_pages_blobs_and_snapshots_route_are_hidden_from_the_lan() {
     let hid = html["artifact"]["id"].as_str().unwrap();
     let a = store
         .add_asset(
+            &AuditCtx::DAEMON,
             &clax_core::ArtifactId::parse(hid).unwrap(),
             "image/png",
             FAKE_PNG,

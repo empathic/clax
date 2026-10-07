@@ -540,12 +540,14 @@ async fn a_lan_peer_replaying_the_owner_cookie_is_not_the_owner() {
 #[tokio::test]
 async fn the_cli_reads_the_owner_without_making_one_and_a_browser_claimed_later_keeps_its_id() {
     let ts = TestServer::spawn().await;
+    let v: Value = ts.get_authed("/api/viewers/me").await.json().await.unwrap();
+    assert_eq!(v["viewer"], Value::Null, "reading makes no owner");
+    // Acting through the CLI (here, publishing) makes the CLI's owner row,
+    // which gives way to the first browser claimed.
     let a = ts
         .publish("T", &[("index.html", "<main><h2>x</h2></main>")])
         .await;
     let aid = a["artifact"]["id"].as_str().unwrap().to_string();
-    let v: Value = ts.get_authed("/api/viewers/me").await.json().await.unwrap();
-    assert_eq!(v["viewer"], Value::Null, "reading makes no owner");
     // The CLI names the owner and replies before any browser was claimed.
     assert_eq!(put_name(&ts, None, "Alex").await.status(), 200);
     let t = ts.thread(&aid, 1, "first").await;

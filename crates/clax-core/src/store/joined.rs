@@ -862,6 +862,7 @@ mod tests {
     fn page(st: &Store, origin: &str, path: &str, title: &str) -> ArtifactId {
         let e = st
             .ensure_live_page(
+                &crate::audit::AuditCtx::DAEMON,
                 &key(origin, path),
                 title,
                 Some(format!("<p>{origin}{path}").as_bytes()),
@@ -906,7 +907,8 @@ mod tests {
         loop {
             let (moves, remaining) = st.join_candidates(key, 2).unwrap();
             if !moves.is_empty() {
-                st.refile_threads(&moves, &by(), &[]).unwrap();
+                st.refile_threads(&crate::audit::AuditCtx::DAEMON, &moves, &by(), &[])
+                    .unwrap();
             }
             let (empty, _) = st.settle_joined_pages(key).unwrap();
             merged.extend(empty);
@@ -919,7 +921,8 @@ mod tests {
     /// One batch of a join, as the route sends it: a join left unfinished.
     fn one_batch(st: &Store, key: &str) {
         let (moves, _) = st.join_candidates(key, 1).unwrap();
-        st.refile_threads(&moves, &by(), &[]).unwrap();
+        st.refile_threads(&crate::audit::AuditCtx::DAEMON, &moves, &by(), &[])
+            .unwrap();
         st.settle_joined_pages(key).unwrap();
     }
 
@@ -956,7 +959,14 @@ mod tests {
             );
         }
         // A new page of either origin is the site's.
-        let e = st.ensure_live_page(&key(B, "/new"), "New", None).unwrap();
+        let e = st
+            .ensure_live_page(
+                &crate::audit::AuditCtx::DAEMON,
+                &key(B, "/new"),
+                "New",
+                None,
+            )
+            .unwrap();
         assert_eq!(e.origin, A);
         assert_eq!(
             st.find_live_page(&key(A, "/new"))
@@ -980,7 +990,14 @@ mod tests {
         let ta = thread(&st, &a);
         let b = page(&st, B, "/", "App");
         // A snapshot no thread names: kept with its page.
-        st.store_snapshot(&b, "App", b"<p>only B's", false).unwrap();
+        st.store_snapshot(
+            &crate::audit::AuditCtx::DAEMON,
+            &b,
+            "App",
+            b"<p>only B's",
+            false,
+        )
+        .unwrap();
         let tb: Vec<String> = (0..3).map(|_| thread(&st, &b)).collect();
         let j = st.join_origins(B, A).unwrap();
         assert!(j.rekeyed.is_empty(), "the site has a page of /");
@@ -999,7 +1016,9 @@ mod tests {
         assert!(st.live_sites().unwrap().iter().all(|x| x.pages == 1));
         // Split off, B's path is its own again: a new page, the old kept.
         st.split_origin(B).unwrap().unwrap();
-        let fresh = st.ensure_live_page(&key(B, "/"), "App", None).unwrap();
+        let fresh = st
+            .ensure_live_page(&crate::audit::AuditCtx::DAEMON, &key(B, "/"), "App", None)
+            .unwrap();
         assert_ne!(fresh.artifact.id, b.as_str());
         let mut on_a: Vec<String> = st
             .list_threads(&a, true, None, 50)
@@ -1205,6 +1224,7 @@ mod tests {
         let other = page(&st, "http://localhost:9999", "/", "Other");
         let mv = |to: &ArtifactId| {
             st.refile_threads(
+                &crate::audit::AuditCtx::DAEMON,
                 &[(
                     to.as_str().to_string(),
                     Refile {

@@ -3,6 +3,7 @@
 
 use super::Store;
 use super::threads::NewThread;
+use crate::audit::{AuditCtx, AuditKind, AuditRecord};
 use crate::live::{KIND_LIVE, PageKey, placeholder_html};
 use crate::model::{Artifact, CONTRACT_VERSION, Thread, Version};
 use crate::publish::{Encoding, FileInput, INDEX, PublishRequest, ValidatedPublish};
@@ -404,14 +405,18 @@ impl Store {
     /// thread belongs on: a new page's version 1 is `snapshot`, or the
     /// placeholder without one; an existing page takes `snapshot` as a new
     /// version when it differs from the current one ([`Store::store_snapshot`]).
-    /// Concurrent first calls for one key settle on one page.
+    /// Concurrent first calls for one key settle on one page. Under `ctx`,
+    /// making the page records `artifact.create` and `live.page` in its
+    /// transaction, and each version written records `live.snapshot` in its
+    /// own.
     pub fn ensure_live_page(
         &self,
+        ctx: &AuditCtx,
         key: &PageKey,
         title: &str,
         snapshot: Option<&[u8]>,
     ) -> Result<EnsuredPage> {
-        self.ensure_live_page_linking(key, title, snapshot, &[])
+        self.ensure_live_page_linking(ctx, key, title, snapshot, &[])
     }
 
     /// [`Store::ensure_live_page`] that, when it writes a version, links to
@@ -420,6 +425,7 @@ impl Store {
     /// the pending threads it covers); other pending addresses stay pending.
     pub fn ensure_live_page_linking(
         &self,
+        ctx: &AuditCtx,
         key: &PageKey,
         title: &str,
         snapshot: Option<&[u8]>,
@@ -447,6 +453,18 @@ impl Store {
                 params![id.as_str(), key.origin, key.path, now],
             )?;
             materialize(tx, id.as_str(), key)?;
+            let a = tx.query_row(
+                &format!("{} WHERE id = ?1", super::artifacts::SELECT),
+                params![id.as_str()],
+                super::artifacts::row_to_artifact,
+            )??;
+            self.record_audit(tx, ctx, super::artifacts::create_record(&a, &now))?;
+            let mut rec = AuditRecord::new(AuditKind::LivePage, now)
+                .with("origin", key.origin.as_str())
+                .with("path", key.path.as_str());
+            rec.ids.artifact = Some(id.as_str().to_string());
+            rec.ids.origin = Some(key.origin.clone());
+            self.record_audit(tx, ctx, rec)?;
             Ok((id, true, key.origin.clone()))
         })?;
         let current: u32 = self.with_read(|c| {
@@ -467,17 +485,17 @@ impl Store {
             let html = snapshot
                 .map(<[u8]>::to_vec)
                 .unwrap_or_else(|| placeholder_html(key).into_bytes());
-            match self.write_snapshot(&id, 0, title, &html, pending) {
+            match self.write_snapshot(ctx, &id, 0, title, &html, pending) {
                 Ok((v, linked)) => (v, true, linked),
                 // Another first call wrote version 1 meanwhile: build on it.
                 Err(CoreError::Conflict { .. }) => match snapshot {
-                    Some(s) => self.snapshot_linking(&id, title, s, false, pending)?,
+                    Some(s) => self.snapshot_linking(ctx, &id, title, s, false, pending)?,
                     None => unchanged(1)?,
                 },
                 Err(e) => return Err(e),
             }
         } else if let Some(s) = snapshot {
-            self.snapshot_linking(&id, title, s, false, pending)?
+            self.snapshot_linking(ctx, &id, title, s, false, pending)?
         } else {
             unchanged(current)?
         };
@@ -497,7 +515,8 @@ impl Store {
     /// `index.html` and `force` is false; then the current version is
     /// returned. The flag says whether a version was written. When another
     /// snapshot of the page lands first, this one is compared with it and
-    /// written after it, so concurrent snapshots each get a version.
+    /// written after it, so concurrent snapshots each get a version. A
+    /// version written is recorded as `live.snapshot` under `ctx`.
     ///
     /// # Errors
     /// `NotFound` for a missing or deleted artifact; `not_live` for an
@@ -505,12 +524,13 @@ impl Store {
     /// snapshots keep landing first [`SNAPSHOT_ATTEMPTS`] times in a row.
     pub fn store_snapshot(
         &self,
+        ctx: &AuditCtx,
         id: &ArtifactId,
         title: &str,
         html: &[u8],
         force: bool,
     ) -> Result<(Version, bool)> {
-        self.snapshot_linking(id, title, html, force, &[])
+        self.snapshot_linking(ctx, id, title, html, force, &[])
             .map(|(v, new, _)| (v, new))
     }
 
@@ -519,6 +539,7 @@ impl Store {
     /// also returns the linked thread IDs.
     fn snapshot_linking(
         &self,
+        ctx: &AuditCtx,
         id: &ArtifactId,
         title: &str,
         html: &[u8],
@@ -546,7 +567,7 @@ impl Store {
                     ));
                 }
             }
-            match self.write_snapshot(id, a.current_version, title, html, pending) {
+            match self.write_snapshot(ctx, id, a.current_version, title, html, pending) {
                 Ok((v, linked)) => return Ok((v, true, linked)),
                 // Another snapshot took this version number: build on it.
                 Err(CoreError::Conflict { .. }) if attempt < SNAPSHOT_ATTEMPTS => attempt += 1,
@@ -591,12 +612,14 @@ impl Store {
     /// The check, the version and the links are one transaction. Returns the
     /// version and the linked thread IDs (oldest address first), or `None`,
     /// writing nothing, when none of `pending` is pending. Other pending
-    /// addresses stay pending.
+    /// addresses stay pending. The version is recorded as `live.snapshot`
+    /// under `ctx`.
     ///
     /// # Errors
     /// As [`Store::store_snapshot`].
     pub fn snapshot_pending(
         &self,
+        ctx: &AuditCtx,
         id: &ArtifactId,
         title: &str,
         html: &[u8],
@@ -617,6 +640,7 @@ impl Store {
             }
             let p = snapshot_publish(a.current_version, title, html)?;
             let written = self.write_version_then(
+                ctx,
                 id,
                 a.current_version,
                 &p,
@@ -908,6 +932,7 @@ impl Store {
     /// `pending` still pending on the page; returns them with the version.
     fn write_snapshot(
         &self,
+        ctx: &AuditCtx,
         id: &ArtifactId,
         expected: u32,
         title: &str,
@@ -916,7 +941,7 @@ impl Store {
     ) -> Result<(Version, Vec<String>)> {
         let p = snapshot_publish(expected, title, html)?;
         let (_, v, linked) =
-            self.write_version_then(id, expected, &p, &BTreeMap::new(), None, |tx, n| {
+            self.write_version_then(ctx, id, expected, &p, &BTreeMap::new(), None, |tx, n| {
                 link_pending_in(tx, id, n, Some(pending))
             })?;
         Ok((v, linked))
@@ -926,6 +951,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use crate::live::{KIND_LIVE, PageKey};
+    use crate::store::test_util::DAEMON;
     use crate::{ArtifactId, Home, Store};
 
     fn store() -> (tempfile::TempDir, Store) {
@@ -946,14 +972,14 @@ mod tests {
     #[test]
     fn live_page_ids_name_the_pages_that_are_not_deleted() {
         let (_d, st) = store();
-        let a = st.ensure_live_page(&key("/a"), "a", None).unwrap();
-        let b = st.ensure_live_page(&key("/b"), "b", None).unwrap();
+        let a = st.ensure_live_page(DAEMON, &key("/a"), "a", None).unwrap();
+        let b = st.ensure_live_page(DAEMON, &key("/b"), "b", None).unwrap();
         let mut ids = st.live_page_ids().unwrap();
         ids.sort();
         let mut want = vec![a.artifact.id.clone(), b.artifact.id.clone()];
         want.sort();
         assert_eq!(ids, want);
-        st.delete_artifact(&ArtifactId::parse(&a.artifact.id).unwrap())
+        st.delete_artifact(DAEMON, &ArtifactId::parse(&a.artifact.id).unwrap())
             .unwrap();
         assert_eq!(st.live_page_ids().unwrap(), vec![b.artifact.id.clone()]);
         let pages = st.live_pages().unwrap();
@@ -965,7 +991,7 @@ mod tests {
     fn a_page_created_without_a_snapshot_gets_a_placeholder_version() {
         let (_d, st) = store();
         let e = st
-            .ensure_live_page(&key("/"), "localhost:5173/", None)
+            .ensure_live_page(DAEMON, &key("/"), "localhost:5173/", None)
             .unwrap();
         assert!(e.created && e.new_version);
         assert_eq!(e.artifact.kind, KIND_LIVE);
@@ -988,23 +1014,23 @@ mod tests {
     fn a_first_comment_makes_its_snapshot_version_one_and_identical_snapshots_reuse_it() {
         let (_d, st) = store();
         let e = st
-            .ensure_live_page(&key("/s"), "Settings", Some(b"<!doctype html><p>a"))
+            .ensure_live_page(DAEMON, &key("/s"), "Settings", Some(b"<!doctype html><p>a"))
             .unwrap();
         assert_eq!((e.version.n, e.created, e.new_version), (1, true, true));
         let again = st
-            .ensure_live_page(&key("/s"), "Settings", Some(b"<!doctype html><p>a"))
+            .ensure_live_page(DAEMON, &key("/s"), "Settings", Some(b"<!doctype html><p>a"))
             .unwrap();
         assert_eq!(
             (again.version.n, again.created, again.new_version),
             (1, false, false)
         );
         let changed = st
-            .ensure_live_page(&key("/s"), "Settings", Some(b"<!doctype html><p>b"))
+            .ensure_live_page(DAEMON, &key("/s"), "Settings", Some(b"<!doctype html><p>b"))
             .unwrap();
         assert_eq!((changed.version.n, changed.new_version), (2, true));
         let id = ArtifactId::parse(&e.artifact.id).unwrap();
         let (v, new) = st
-            .store_snapshot(&id, "Settings", b"<!doctype html><p>b", true)
+            .store_snapshot(DAEMON, &id, "Settings", b"<!doctype html><p>b", true)
             .unwrap();
         assert_eq!(
             (v.n, new),
@@ -1017,7 +1043,7 @@ mod tests {
     #[test]
     fn concurrent_snapshots_of_one_page_each_get_a_version() {
         let (_d, st) = store();
-        let e = st.ensure_live_page(&key("/"), "x", None).unwrap();
+        let e = st.ensure_live_page(DAEMON, &key("/"), "x", None).unwrap();
         let id = ArtifactId::parse(&e.artifact.id).unwrap();
         const N: usize = 8;
         let start = std::sync::Barrier::new(N);
@@ -1028,7 +1054,9 @@ mod tests {
                     s.spawn(move || {
                         start.wait();
                         let html = format!("<!doctype html><p>{i}");
-                        let (v, new) = st.store_snapshot(id, "x", html.as_bytes(), false).unwrap();
+                        let (v, new) = st
+                            .store_snapshot(DAEMON, id, "x", html.as_bytes(), false)
+                            .unwrap();
                         assert!(new);
                         assert_eq!(index(st, id, v.n), html);
                         v.n
@@ -1045,7 +1073,7 @@ mod tests {
     fn concurrent_comments_for_one_pick_make_one_thread() {
         let (_d, st) = store();
         let e = st
-            .ensure_live_page(&key("/"), "x", Some(b"<!doctype html><p>a"))
+            .ensure_live_page(DAEMON, &key("/"), "x", Some(b"<!doctype html><p>a"))
             .unwrap();
         let id = ArtifactId::parse(&e.artifact.id).unwrap();
         let pick = "0123456789abcdef0123456789abcdef";
@@ -1087,7 +1115,7 @@ mod tests {
     fn an_agent_resolve_and_its_pending_address_are_written_together() {
         let (_d, st) = store();
         let e = st
-            .ensure_live_page(&key("/"), "x", Some(b"<!doctype html><p>a"))
+            .ensure_live_page(DAEMON, &key("/"), "x", Some(b"<!doctype html><p>a"))
             .unwrap();
         let id = ArtifactId::parse(&e.artifact.id).unwrap();
         let mut anchor = crate::store::test_util::anchor();
@@ -1132,11 +1160,11 @@ mod tests {
     #[test]
     fn deleting_a_live_page_frees_its_key() {
         let (_d, st) = store();
-        let e = st.ensure_live_page(&key("/"), "x", None).unwrap();
-        st.delete_artifact(&ArtifactId::parse(&e.artifact.id).unwrap())
+        let e = st.ensure_live_page(DAEMON, &key("/"), "x", None).unwrap();
+        st.delete_artifact(DAEMON, &ArtifactId::parse(&e.artifact.id).unwrap())
             .unwrap();
         assert!(st.find_live_page(&key("/")).unwrap().is_none());
-        let again = st.ensure_live_page(&key("/"), "x", None).unwrap();
+        let again = st.ensure_live_page(DAEMON, &key("/"), "x", None).unwrap();
         assert_ne!(again.artifact.id, e.artifact.id);
     }
 
@@ -1144,7 +1172,9 @@ mod tests {
     fn snapshots_are_refused_on_html_artifacts() {
         let (_d, st) = store();
         let id = st.insert_artifact_for_test("T", "2026-10-05T00:00:00.000Z");
-        let err = st.store_snapshot(&id, "T", b"<p>", false).unwrap_err();
+        let err = st
+            .store_snapshot(DAEMON, &id, "T", b"<p>", false)
+            .unwrap_err();
         assert!(matches!(err, crate::CoreError::Invalid { code, .. } if code == "not_live"));
     }
 
@@ -1175,7 +1205,7 @@ mod tests {
     }
     /// A thread on version 1 of a new live page `/p`.
     fn live_thread(st: &Store) -> (ArtifactId, String) {
-        let e = st.ensure_live_page(&key("/p"), "p", None).unwrap();
+        let e = st.ensure_live_page(DAEMON, &key("/p"), "p", None).unwrap();
         let id = ArtifactId::parse(&e.artifact.id).unwrap();
         let anchor: crate::Anchor = serde_json::from_value(serde_json::json!({
             "kind": "element", "selector": "body", "file": "index.html"
@@ -1226,7 +1256,7 @@ mod tests {
             "a resolve leaves an explicit address alone"
         );
         assert_eq!(st.pending_address(&tid).unwrap().unwrap().0, "claude");
-        let (v, _) = st.store_snapshot(&id, "p", b"<p>2", true).unwrap();
+        let (v, _) = st.store_snapshot(DAEMON, &id, "p", b"<p>2", true).unwrap();
         assert_eq!(st.link_pending(&id, v.n).unwrap(), vec![tid.clone()]);
         assert_eq!(st.addressed_in(&tid).unwrap(), vec![v.n]);
         assert_eq!(link_source(&st, &tid).as_deref(), Some("explicit"));
@@ -1299,7 +1329,13 @@ mod tests {
         st.mark_pending(&id, &a, "explicit", "claude").unwrap();
         st.mark_pending(&id, &b, "resolve", "codex").unwrap();
         let (v, linked) = st
-            .snapshot_pending(&id, "p", b"<p>1", &[b.clone(), a.clone(), c.clone()])
+            .snapshot_pending(
+                DAEMON,
+                &id,
+                "p",
+                b"<p>1",
+                &[b.clone(), a.clone(), c.clone()],
+            )
             .unwrap()
             .expect("two named threads are pending");
         assert_eq!(v.n, 2);
@@ -1318,13 +1354,13 @@ mod tests {
         st.mark_pending(&id, &a, "explicit", "claude").unwrap();
         st.mark_pending(&id, &b, "explicit", "claude").unwrap();
         let (_, linked) = st
-            .snapshot_pending(&id, "p", b"<p>1", std::slice::from_ref(&a))
+            .snapshot_pending(DAEMON, &id, "p", b"<p>1", std::slice::from_ref(&a))
             .unwrap()
             .unwrap();
         assert_eq!(linked, vec![a.clone()]);
         assert_eq!(st.pending_address(&b).unwrap().unwrap().0, "claude");
         let (v, linked) = st
-            .snapshot_pending(&id, "p", b"<p>1", std::slice::from_ref(&b))
+            .snapshot_pending(DAEMON, &id, "p", b"<p>1", std::slice::from_ref(&b))
             .unwrap()
             .unwrap();
         assert_eq!((v.n, linked), (3, vec![b.clone()]));
@@ -1337,12 +1373,12 @@ mod tests {
         let b = another_thread(&st, &id);
         st.mark_pending(&id, &b, "explicit", "claude").unwrap();
         assert!(
-            st.snapshot_pending(&id, "p", b"<p>1", std::slice::from_ref(&a))
+            st.snapshot_pending(DAEMON, &id, "p", b"<p>1", std::slice::from_ref(&a))
                 .unwrap()
                 .is_none()
         );
         assert!(
-            st.snapshot_pending(&id, "p", b"<p>1", &[])
+            st.snapshot_pending(DAEMON, &id, "p", b"<p>1", &[])
                 .unwrap()
                 .is_none()
         );
@@ -1371,7 +1407,7 @@ mod tests {
         assert_eq!(st.pending_address(&tid).unwrap().unwrap().0, "claude");
         // A thread of another page: neither the comment nor a mark is written.
         let (other, _) = {
-            let e = st.ensure_live_page(&key("/q"), "q", None).unwrap();
+            let e = st.ensure_live_page(DAEMON, &key("/q"), "q", None).unwrap();
             (ArtifactId::parse(&e.artifact.id).unwrap(), ())
         };
         let b = another_thread(&st, &id);
@@ -1398,14 +1434,18 @@ mod tests {
         let other = crate::store::test_util::session(&st, "claude", "h2");
         st.live_watch(&sid, &key("/"), true).unwrap();
         st.live_watch(&other, &key("/docs"), false).unwrap();
-        let e = st.ensure_live_page(&key("/new"), "n", None).unwrap();
+        let e = st
+            .ensure_live_page(DAEMON, &key("/new"), "n", None)
+            .unwrap();
         let w = st.list_watches(&sid).unwrap();
         assert!(
             w.iter()
                 .any(|w| w.artifact_id == e.artifact.id && w.replies_armed)
         );
         assert!(!watched(&st, &other).contains(&e.artifact.id));
-        let d = st.ensure_live_page(&key("/docs/a"), "d", None).unwrap();
+        let d = st
+            .ensure_live_page(DAEMON, &key("/docs/a"), "d", None)
+            .unwrap();
         assert!(watched(&st, &sid).contains(&d.artifact.id));
         assert!(watched(&st, &other).contains(&d.artifact.id));
         let armed = st
@@ -1418,7 +1458,9 @@ mod tests {
         assert!(!armed, "the scope's arming");
         st.unwatch(&sid, &ArtifactId::parse(&e.artifact.id).unwrap())
             .unwrap();
-        let again = st.ensure_live_page(&key("/new"), "n", None).unwrap();
+        let again = st
+            .ensure_live_page(DAEMON, &key("/new"), "n", None)
+            .unwrap();
         assert!(!again.created);
         assert!(
             !watched(&st, &sid).contains(&e.artifact.id),
@@ -1431,17 +1473,17 @@ mod tests {
         let (_d, st) = store();
         let sid = crate::store::test_util::session(&st, "claude", "h1");
         let root = st
-            .ensure_live_page(&key("/"), "r", None)
+            .ensure_live_page(DAEMON, &key("/"), "r", None)
             .unwrap()
             .artifact
             .id;
         let docs = st
-            .ensure_live_page(&key("/docs/x"), "d", None)
+            .ensure_live_page(DAEMON, &key("/docs/x"), "d", None)
             .unwrap()
             .artifact
             .id;
         let direct = st
-            .ensure_live_page(&key("/z"), "z", None)
+            .ensure_live_page(DAEMON, &key("/z"), "z", None)
             .unwrap()
             .artifact
             .id;
@@ -1470,7 +1512,7 @@ mod tests {
         let (_d, st) = store();
         let sid = crate::store::test_util::session(&st, "claude", "h1");
         let p = st
-            .ensure_live_page(&key("/p"), "p", None)
+            .ensure_live_page(DAEMON, &key("/p"), "p", None)
             .unwrap()
             .artifact
             .id;
@@ -1480,7 +1522,7 @@ mod tests {
         let w = st.list_watches(&sid).unwrap();
         assert!(!w[0].replies_armed, "the direct watch keeps its arming");
         let q = st
-            .ensure_live_page(&key("/q"), "q", None)
+            .ensure_live_page(DAEMON, &key("/q"), "q", None)
             .unwrap()
             .artifact
             .id;
@@ -1526,7 +1568,9 @@ mod tests {
             })
             .unwrap();
         assert_eq!(rows, 0);
-        let e = st.ensure_live_page(&key("/later"), "l", None).unwrap();
+        let e = st
+            .ensure_live_page(DAEMON, &key("/later"), "l", None)
+            .unwrap();
         assert!(!watched(&st, &sid).contains(&e.artifact.id));
         assert!(matches!(
             st.live_watch(&sid, &key("/"), true),
@@ -1549,7 +1593,7 @@ mod tests {
         st.live_watch(&sid, &key("/"), true).unwrap();
         st.live_watch(&sid, &key("/docs"), false).unwrap();
         let a = st
-            .ensure_live_page(&key("/docs/a"), "a", None)
+            .ensure_live_page(DAEMON, &key("/docs/a"), "a", None)
             .unwrap()
             .artifact
             .id;
@@ -1560,7 +1604,7 @@ mod tests {
             "re-watching /docs unarmed leaves it armed through /"
         );
         let b = st
-            .ensure_live_page(&key("/docs/b"), "b", None)
+            .ensure_live_page(DAEMON, &key("/docs/b"), "b", None)
             .unwrap()
             .artifact
             .id;

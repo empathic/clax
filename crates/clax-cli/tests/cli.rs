@@ -1,4 +1,5 @@
 use assert_cmd::Command;
+use clax_core::audit::AuditCtx;
 use predicates::prelude::*;
 
 use crate::common::Env;
@@ -375,7 +376,11 @@ fn doctor_names_corrupt_rows_and_still_checks_good_artifacts() {
             .unwrap(),
         )
         .unwrap();
-        store.create_artifact(p, None).unwrap().0.id
+        store
+            .create_artifact(&AuditCtx::DAEMON, p, None)
+            .unwrap()
+            .0
+            .id
     };
     let good = make("good");
     let bad = make("bad");
@@ -422,7 +427,14 @@ fn make_artifact(store: &clax_core::Store, title: &str) -> clax_core::ArtifactId
         .unwrap(),
     )
     .unwrap();
-    clax_core::ArtifactId::parse(&store.create_artifact(p, None).unwrap().0.id).unwrap()
+    clax_core::ArtifactId::parse(
+        &store
+            .create_artifact(&AuditCtx::DAEMON, p, None)
+            .unwrap()
+            .0
+            .id,
+    )
+    .unwrap()
 }
 
 fn doctor_check(e: &Env, args: &[&str], name: &str) -> serde_json::Value {
@@ -486,11 +498,19 @@ fn doctor_fix_clears_asset_problems() {
     let store = clax_core::Store::open(&home).unwrap();
     let live = make_artifact(&store, "live");
     let gone = make_artifact(&store, "gone");
-    let missing = store.add_asset(&live, "image/png", &[1, 2, 3]).unwrap();
-    let wrong = store.add_asset(&live, "image/png", &[1, 2, 3]).unwrap();
-    let fine = store.add_asset(&live, "image/png", &[1]).unwrap();
-    store.add_asset(&gone, "image/png", &[9]).unwrap();
-    store.delete_artifact(&gone).unwrap();
+    let missing = store
+        .add_asset(&AuditCtx::DAEMON, &live, "image/png", &[1, 2, 3])
+        .unwrap();
+    let wrong = store
+        .add_asset(&AuditCtx::DAEMON, &live, "image/png", &[1, 2, 3])
+        .unwrap();
+    let fine = store
+        .add_asset(&AuditCtx::DAEMON, &live, "image/png", &[1])
+        .unwrap();
+    store
+        .add_asset(&AuditCtx::DAEMON, &gone, "image/png", &[9])
+        .unwrap();
+    store.delete_artifact(&AuditCtx::DAEMON, &gone).unwrap();
     std::fs::remove_file(store.get_asset(&missing.id).unwrap().unwrap().1).unwrap();
     std::fs::write(
         store.get_asset(&wrong.id).unwrap().unwrap().1,
@@ -525,8 +545,8 @@ fn doctor_fix_clears_asset_problems() {
     assert_eq!(rows.len(), 3);
 
     // Once the live problems are repaired by hand the check passes.
-    store.delete_asset(&missing.id).unwrap();
-    store.delete_asset(&wrong.id).unwrap();
+    store.delete_asset(&AuditCtx::DAEMON, &missing.id).unwrap();
+    store.delete_asset(&AuditCtx::DAEMON, &wrong.id).unwrap();
     drop(store);
     assert_eq!(doctor_check(&e, &[], "assets")["ok"], true);
 }
@@ -538,7 +558,7 @@ fn doctor_fix_deletes_corrupt_rows_of_deleted_artifacts_only() {
     let store = clax_core::Store::open(&home).unwrap();
     let live = make_artifact(&store, "live");
     let gone = make_artifact(&store, "gone");
-    store.delete_artifact(&gone).unwrap();
+    store.delete_artifact(&AuditCtx::DAEMON, &gone).unwrap();
     drop(store);
     let db = rusqlite::Connection::open(home.db_path()).unwrap();
     db.execute(

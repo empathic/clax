@@ -7,6 +7,7 @@ use axum::{
     http::{HeaderMap, header},
     response::{IntoResponse, Response},
 };
+use clax_core::audit::Via;
 use clax_core::store::viewers::Claim;
 /// The bearer token, for the shell on this machine. Beyond the `/api` host
 /// check ([`crate::auth::require_api_host`]), the peer must be a loopback
@@ -56,7 +57,9 @@ pub async fn token(
         // and none can be trusted to be this browser's.
         if let [cookie] = crate::viewer::read_all(&headers).as_slice() {
             let cookie = cookie.clone();
-            let claimed = s.store_call(move |st| st.claim_for_owner(&cookie)).await?;
+            let claimed = s
+                .store_call(move |st| st.claim_for_owner(Via::Shell, &cookie))
+                .await?;
             tracing::debug!(?claimed, "claiming a browser viewer for the owner");
             let claimed_something = claimed != Claim::Nothing;
             let retired = match claimed {

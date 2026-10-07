@@ -116,6 +116,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use crate::CoreError;
+    use crate::store::test_util::DAEMON;
     use crate::store::test_util::{artifact, session, store};
 
     #[test]
@@ -159,7 +160,7 @@ mod tests {
             })
         ));
         let s2 = session(&st, "claude", "h2");
-        st.delete_artifact(&aid).unwrap();
+        st.delete_artifact(DAEMON, &aid).unwrap();
         assert!(matches!(
             st.watch(&s2, &aid, true),
             Err(CoreError::NotFound)

@@ -2,7 +2,9 @@
 
 use super::Store;
 use super::changelog::{fill_addresses, link_version};
-use crate::audit::{content_manifest_sha256, sha256_hex};
+use super::live::{LivePage, live_page_of_conn};
+use crate::audit::{AuditCtx, AuditKind, AuditRecord, content_manifest_sha256, sha256_hex};
+use crate::live::KIND_LIVE;
 use crate::model::{Artifact, CONTRACT_VERSION, FileMeta, Version};
 use crate::publish::{FileChange, INDEX, ValidatedPublish};
 use crate::{ArtifactId, CoreError, Result, new_ulid};
@@ -18,6 +20,68 @@ pub struct MetaPatch {
     pub pinned: Option<bool>,
     /// A full-set capabilities declaration that replaces the stored one.
     pub capabilities: Option<serde_json::Value>,
+}
+
+/// The `artifact.create` record of `a` (spec §6.1), at `at`.
+pub(super) fn create_record(a: &Artifact, at: &str) -> AuditRecord {
+    let mut r = AuditRecord::new(AuditKind::ArtifactCreate, at)
+        .with("title", a.title.as_str())
+        .with("kind", a.kind.as_str())
+        .with("icon", a.icon.clone())
+        .with("capabilities", a.capabilities.clone())
+        .with("contract_version", a.contract_version.as_str());
+    r.ids.artifact = Some(a.id.clone());
+    r
+}
+
+/// The record of version `v` of `a` (spec §6.1, §6.3): `version.publish`,
+/// or `live.snapshot` with the page's origin and path when `page` is the
+/// live page it was written to. Each file names its `sha256:` hash, size and
+/// type; `carried` are the paths taken unchanged from the previous version.
+pub(super) fn version_record(
+    a: &Artifact,
+    v: &Version,
+    carried: &[String],
+    by_page: bool,
+    page: Option<&LivePage>,
+) -> AuditRecord {
+    let files: serde_json::Map<String, serde_json::Value> = v
+        .files
+        .iter()
+        .map(|(path, m)| {
+            (
+                path.clone(),
+                serde_json::json!({
+                    "sha256": m.sha256.as_ref().map(|h| format!("sha256:{h}")),
+                    "size": m.size,
+                    "content_type": m.content_type,
+                }),
+            )
+        })
+        .collect();
+    let kind = if page.is_some() {
+        AuditKind::LiveSnapshot
+    } else {
+        AuditKind::VersionPublish
+    };
+    let mut r = AuditRecord::new(kind, v.created_at.as_str())
+        .with("n", v.n)
+        .with("label", v.label.clone())
+        .with("note", v.note.clone())
+        .with("title", a.title.as_str())
+        .with("files", files)
+        .with("content_sha256", v.content_sha256.clone())
+        .with("carried", carried.to_vec())
+        .with("addresses", v.addresses.clone())
+        .with("by_page", by_page);
+    if let Some(p) = page {
+        r = r
+            .with("origin", p.origin.as_str())
+            .with("path", p.path.as_str());
+        r.ids.origin = Some(p.origin.clone());
+    }
+    r.ids.artifact = Some(a.id.clone());
+    r
 }
 
 /// A stored JSON column that does not parse, as found by [`Store::corrupt_rows`].
@@ -46,7 +110,7 @@ fn json_column<T: serde::de::DeserializeOwned>(
 }
 
 /// Reads an artifact row; the inner result is `Corrupt` when a JSON column is malformed.
-fn row_to_artifact(r: &Row<'_>) -> rusqlite::Result<Result<Artifact>> {
+pub(super) fn row_to_artifact(r: &Row<'_>) -> rusqlite::Result<Result<Artifact>> {
     let id: String = r.get("id")?;
     let capabilities = match json_column(r, "capabilities_json", &id, None)? {
         Ok(c) => c,
@@ -87,7 +151,8 @@ fn skip_corrupt<T>(rows: Vec<Result<T>>) -> Result<Vec<T>> {
     Ok(out)
 }
 
-const SELECT: &str = "SELECT id, title, description, icon, created_at, updated_at, current_version,
+pub(super) const SELECT: &str =
+    "SELECT id, title, description, icon, created_at, updated_at, current_version,
     owner_session_id, pinned, capabilities_json, contract_version, kind FROM artifacts";
 
 /// The live artifact `id` (not deleted, at least one version) on `c`, or `None`.
@@ -122,8 +187,10 @@ impl Store {
         })
     }
 
-    pub fn set_pinned(&self, id: &ArtifactId, pinned: bool) -> Result<Artifact> {
+    /// Pins or unpins the artifact, recorded as `artifact.update` under `ctx`.
+    pub fn set_pinned(&self, ctx: &AuditCtx, id: &ArtifactId, pinned: bool) -> Result<Artifact> {
         self.update_meta(
+            ctx,
             id,
             MetaPatch {
                 pinned: Some(pinned),
@@ -136,11 +203,19 @@ impl Store {
     /// replaces the whole declaration; `{}` clears it) and leaves the others
     /// untouched; any other field therefore cannot be cleared through this
     /// call. The caller validates `capabilities`. Does not
-    /// bump `updated_at` (metadata edits are not new content).
+    /// bump `updated_at` (metadata edits are not new content). Recorded,
+    /// in the same transaction, as `artifact.update` under `ctx`, naming in
+    /// `fields` each field the patch sets, even to the value it had (an
+    /// explicit request); a patch that sets nothing records nothing.
     ///
     /// # Errors
     /// `NotFound` when the artifact does not exist or is deleted.
-    pub fn update_meta(&self, id: &ArtifactId, patch: MetaPatch) -> Result<Artifact> {
+    pub fn update_meta(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        patch: MetaPatch,
+    ) -> Result<Artifact> {
         self.with_tx(|tx| {
             let n = tx.execute(
                 "UPDATE artifacts SET
@@ -162,6 +237,23 @@ impl Store {
             if n == 0 {
                 return Err(CoreError::NotFound);
             }
+            let mut fields = serde_json::Map::new();
+            let mut set = |k: &str, v: Option<serde_json::Value>| {
+                if let Some(v) = v {
+                    fields.insert(k.to_string(), v);
+                }
+            };
+            set("title", patch.title.clone().map(Into::into));
+            set("description", patch.description.clone().map(Into::into));
+            set("icon", patch.icon.clone().map(Into::into));
+            set("pinned", patch.pinned.map(Into::into));
+            set("capabilities", patch.capabilities.clone());
+            if !fields.is_empty() {
+                let mut rec = AuditRecord::new(AuditKind::ArtifactUpdate, Store::now())
+                    .with("fields", fields);
+                rec.ids.artifact = Some(id.as_str().to_string());
+                self.record_audit(tx, ctx, rec)?;
+            }
             tx.query_row(
                 &format!("{SELECT} WHERE id = ?1"),
                 params![id.as_str()],
@@ -173,18 +265,30 @@ impl Store {
     /// Marks the artifact deleted, then removes its directory. Once the row is
     /// marked the delete has happened: a missing directory is fine, and any other
     /// removal failure is logged and leaves orphaned files rather than an error.
+    /// The mark is recorded, in its transaction, as `artifact.delete` under
+    /// `ctx`, with the title and current version it had.
     ///
     /// # Errors
     /// `NotFound` when the artifact does not exist or is already deleted.
-    pub fn delete_artifact(&self, id: &ArtifactId) -> Result<()> {
+    pub fn delete_artifact(&self, ctx: &AuditCtx, id: &ArtifactId) -> Result<()> {
         self.with_tx(|tx| {
-            let n = tx.execute(
-                "UPDATE artifacts SET deleted_at = ?2 WHERE id = ?1 AND deleted_at IS NULL",
-                params![id.as_str(), Store::now()],
-            )?;
-            if n == 0 {
+            let now = Store::now();
+            let Some((title, current)) = tx
+                .query_row(
+                    "UPDATE artifacts SET deleted_at = ?2 WHERE id = ?1 AND deleted_at IS NULL
+                     RETURNING title, current_version",
+                    params![id.as_str(), now],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?)),
+                )
+                .optional()?
+            else {
                 return Err(CoreError::NotFound);
-            }
+            };
+            let mut rec = AuditRecord::new(AuditKind::ArtifactDelete, now)
+                .with("title", title)
+                .with("current_version", current);
+            rec.ids.artifact = Some(id.as_str().to_string());
+            self.record_audit(tx, ctx, rec)?;
             tx.execute(
                 "DELETE FROM docs WHERE artifact_id = ?1",
                 params![id.as_str()],
@@ -529,7 +633,7 @@ fn put_paths(p: &ValidatedPublish) -> impl Iterator<Item = &String> {
 }
 
 /// Reads a version row; the inner result is `Corrupt` when `files_json` is malformed.
-fn row_to_version(r: &Row<'_>) -> rusqlite::Result<Result<Version>> {
+pub(super) fn row_to_version(r: &Row<'_>) -> rusqlite::Result<Result<Version>> {
     let artifact_id: String = r.get("artifact_id")?;
     let n: u32 = r.get("n")?;
     let files = match json_column(r, "files_json", &artifact_id, Some(n))? {
@@ -551,7 +655,7 @@ fn row_to_version(r: &Row<'_>) -> rusqlite::Result<Result<Version>> {
     }))
 }
 
-const SELECT_VERSION: &str =
+pub(super) const SELECT_VERSION: &str =
     "SELECT artifact_id, n, label, created_at, session_id, files_json, note, content_sha256,
         (SELECT agent_handle FROM sessions s WHERE s.id = versions.session_id) AS agent,
         (SELECT harness FROM sessions s WHERE s.id = versions.session_id) AS agent_harness
@@ -561,9 +665,11 @@ impl Store {
     /// Creates an artifact and writes its version 1. `p.files` are all stored;
     /// nothing is carried forward. The artifact is invisible until version 1 is
     /// recorded. `session_id` becomes the artifact's `owner_session_id` and the
-    /// version's `session_id`.
+    /// version's `session_id`. Version 1's transaction records, under `ctx`,
+    /// `artifact.create` and then `version.publish`.
     pub fn create_artifact(
         &self,
+        ctx: &AuditCtx,
         p: ValidatedPublish,
         session_id: Option<&str>,
     ) -> Result<(Artifact, Version)> {
@@ -592,7 +698,7 @@ impl Store {
             )?;
             Ok(())
         })?;
-        self.write_version(&id, 0, &p, &BTreeMap::new(), session_id)
+        self.write_version(ctx, &id, 0, &p, &BTreeMap::new(), session_id)
     }
 
     /// Publishes the next version of an existing artifact. `p.if_version` must
@@ -600,9 +706,11 @@ impl Store {
     /// when absent). Files of the previous version not named in `p.files` are
     /// carried forward; `Remove` entries drop a path; `index.html` is always
     /// taken from `p`. `Corrupt` when the artifact or its current version has a
-    /// malformed JSON column. `session_id` is recorded on the new version.
+    /// malformed JSON column. `session_id` is recorded on the new version,
+    /// and the version as `version.publish` under `ctx`.
     pub fn publish_version(
         &self,
+        ctx: &AuditCtx,
         id: &ArtifactId,
         p: ValidatedPublish,
         session_id: Option<&str>,
@@ -623,7 +731,7 @@ impl Store {
             .get_version(id, current.current_version)?
             .map(|v| v.files)
             .unwrap_or_default();
-        self.write_version(id, current.current_version, &p, &prev, session_id)
+        self.write_version(ctx, id, current.current_version, &p, &prev, session_id)
     }
 
     /// Stages the files of version `expected + 1` in a private directory,
@@ -636,23 +744,31 @@ impl Store {
     /// file keeps `prev`'s hash (or, when `prev` has none, its stored bytes
     /// are hashed). The version's `content_sha256` is the hash of that
     /// manifest ([`content_manifest_sha256`]).
+    ///
+    /// The transaction records the version under `ctx`: `version.publish`,
+    /// or `live.snapshot` on a live page; version 1 of an artifact that is
+    /// not a live page (whose creation is recorded when the page is made)
+    /// is preceded by `artifact.create`.
     pub(super) fn write_version(
         &self,
+        ctx: &AuditCtx,
         id: &ArtifactId,
         expected: u32,
         p: &ValidatedPublish,
         prev: &BTreeMap<String, FileMeta>,
         session_id: Option<&str>,
     ) -> Result<(Artifact, Version)> {
-        self.write_version_then(id, expected, p, prev, session_id, |_, _| Ok(()))
+        self.write_version_then(ctx, id, expected, p, prev, session_id, |_, _| Ok(()))
             .map(|(a, v, ())| (a, v))
     }
 
     /// [`Store::write_version`], also running `then` in the version's
     /// transaction once the version row and its links are written, with the
     /// new version's number; an error from `then` rolls the version back.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn write_version_then<T>(
         &self,
+        ctx: &AuditCtx,
         id: &ArtifactId,
         expected: u32,
         p: &ValidatedPublish,
@@ -665,6 +781,7 @@ impl Store {
             .keys()
             .filter(|path| *path != INDEX && !p.files.contains_key(*path))
             .collect();
+        let carried_paths: Vec<String> = carried.iter().map(|p| (*p).clone()).collect();
         check_collisions(carried.iter().copied().chain(put_paths(p)))?;
 
         let versions_dir = self.home.artifact_dir(id).join("versions");
@@ -764,6 +881,16 @@ impl Store {
                 row_to_version,
             )??;
             fill_addresses(tx, id, std::slice::from_mut(&mut v))?;
+            let page = if a.kind == KIND_LIVE {
+                live_page_of_conn(tx, id.as_str())?
+            } else {
+                None
+            };
+            if expected == 0 && a.kind != KIND_LIVE {
+                self.record_audit(tx, ctx, create_record(&a, &v.created_at))?;
+            }
+            let rec = version_record(&a, &v, &carried_paths, p.by_page, page.as_ref());
+            self.record_audit(tx, ctx, rec)?;
             std::fs::rename(&staging.0, &vdir)?;
             renamed.store(true, std::sync::atomic::Ordering::Relaxed);
             Ok((a, v, extra))
@@ -842,6 +969,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use crate::store::artifacts::MetaPatch;
+    use crate::store::test_util::DAEMON;
     use crate::{Home, Store};
 
     fn store() -> (tempfile::TempDir, Store) {
@@ -866,7 +994,7 @@ mod tests {
         let a = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
         let b = store.insert_artifact_for_test("B", "2026-01-02T00:00:00.000Z");
         let c = store.insert_artifact_for_test("C", "2026-01-03T00:00:00.000Z");
-        store.set_pinned(&a, true).unwrap();
+        store.set_pinned(DAEMON, &a, true).unwrap();
         let titles: Vec<String> = store
             .list_artifacts()
             .unwrap()
@@ -903,7 +1031,7 @@ mod tests {
         let (_d, store) = store();
         let mk = || {
             let (a, _) = store
-                .create_artifact(publish(&[("index.html", Some("v1"))], None), None)
+                .create_artifact(DAEMON, publish(&[("index.html", Some("v1"))], None), None)
                 .unwrap();
             crate::ArtifactId::parse(&a.id).unwrap()
         };
@@ -912,6 +1040,7 @@ mod tests {
         let old_bad = mk();
         store
             .publish_version(
+                DAEMON,
                 &old_bad,
                 publish(&[("index.html", Some("v2"))], Some(1)),
                 None,
@@ -975,7 +1104,12 @@ mod tests {
         ));
         assert!(matches!(
             store
-                .publish_version(&bad, publish(&[("index.html", Some("v2"))], Some(1)), None)
+                .publish_version(
+                    DAEMON,
+                    &bad,
+                    publish(&[("index.html", Some("v2"))], Some(1)),
+                    None
+                )
                 .unwrap_err(),
             crate::CoreError::Corrupt { .. }
         ));
@@ -1002,7 +1136,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let (_d, store) = store();
         let gone = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
-        store.delete_artifact(&gone).unwrap();
+        store.delete_artifact(DAEMON, &gone).unwrap();
         assert!(store.get_artifact(&gone).unwrap().is_none());
 
         if nix::unistd::geteuid().is_root() {
@@ -1015,7 +1149,7 @@ mod tests {
         std::fs::create_dir_all(&locked).unwrap();
         std::fs::write(locked.join("f"), "x").unwrap();
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
-        let result = store.delete_artifact(&stuck);
+        let result = store.delete_artifact(DAEMON, &stuck);
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
         result.unwrap();
         assert!(store.get_artifact(&stuck).unwrap().is_none());
@@ -1028,6 +1162,7 @@ mod tests {
         let id = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
         let a = store
             .update_meta(
+                DAEMON,
                 &id,
                 MetaPatch {
                     description: Some("d".into()),
@@ -1046,12 +1181,12 @@ mod tests {
         let id = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
         let dir = store.home().artifact_dir(&id);
         std::fs::create_dir_all(&dir).unwrap();
-        store.delete_artifact(&id).unwrap();
+        store.delete_artifact(DAEMON, &id).unwrap();
         assert!(store.get_artifact(&id).unwrap().is_none());
         assert!(store.list_artifacts().unwrap().is_empty());
         assert!(!dir.exists());
         assert!(matches!(
-            store.delete_artifact(&id),
+            store.delete_artifact(DAEMON, &id),
             Err(crate::CoreError::NotFound)
         ));
     }
@@ -1116,6 +1251,7 @@ mod tests {
         let (_d, store) = store();
         let (a, v) = store
             .create_artifact(
+                DAEMON,
                 publish(
                     &[("index.html", Some("<p>hi")), ("app.js", Some("1"))],
                     None,
@@ -1147,6 +1283,7 @@ mod tests {
         let (_d, store) = store();
         let (a, _) = store
             .create_artifact(
+                DAEMON,
                 publish(
                     &[
                         ("index.html", Some("v1")),
@@ -1161,6 +1298,7 @@ mod tests {
         let id = crate::ArtifactId::parse(&a.id).unwrap();
         let (a2, v2) = store
             .publish_version(
+                DAEMON,
                 &id,
                 publish(
                     &[
@@ -1203,6 +1341,7 @@ mod tests {
         let (_d, store) = store();
         let (a, v) = store
             .create_artifact(
+                DAEMON,
                 publish(
                     &[("index.html", Some("<p>hi</p>")), ("app.js", Some("x"))],
                     None,
@@ -1229,6 +1368,7 @@ mod tests {
         let (_d, store) = store();
         let (a, _) = store
             .create_artifact(
+                DAEMON,
                 publish(&[("index.html", Some("v1")), ("app.js", Some("x"))], None),
                 None,
             )
@@ -1239,7 +1379,12 @@ mod tests {
         let v1_app = store.home().version_dir(&id, 1).join("files/app.js");
         std::fs::write(&v1_app, "changed on disk").unwrap();
         let (_, v2) = store
-            .publish_version(&id, publish(&[("index.html", Some("v2"))], Some(1)), None)
+            .publish_version(
+                DAEMON,
+                &id,
+                publish(&[("index.html", Some("v2"))], Some(1)),
+                None,
+            )
             .unwrap();
         assert_eq!(v2.files["app.js"].sha256.as_deref(), Some(X_SHA256));
         assert_eq!(
@@ -1264,7 +1409,12 @@ mod tests {
             })
             .unwrap();
         let (_, v3) = store
-            .publish_version(&id, publish(&[("index.html", Some("v3"))], Some(2)), None)
+            .publish_version(
+                DAEMON,
+                &id,
+                publish(&[("index.html", Some("v3"))], Some(2)),
+                None,
+            )
             .unwrap();
         assert_eq!(
             v3.files["app.js"].sha256.as_deref(),
@@ -1280,15 +1430,25 @@ mod tests {
     fn stale_if_version_conflicts_and_writes_nothing() {
         let (_d, store) = store();
         let (a, _) = store
-            .create_artifact(publish(&[("index.html", Some("v1"))], None), None)
+            .create_artifact(DAEMON, publish(&[("index.html", Some("v1"))], None), None)
             .unwrap();
         let id = crate::ArtifactId::parse(&a.id).unwrap();
         let e = store
-            .publish_version(&id, publish(&[("index.html", Some("v2"))], Some(7)), None)
+            .publish_version(
+                DAEMON,
+                &id,
+                publish(&[("index.html", Some("v2"))], Some(7)),
+                None,
+            )
             .unwrap_err();
         assert!(matches!(e, crate::CoreError::Conflict { current: 1 }));
         let e = store
-            .publish_version(&id, publish(&[("index.html", Some("v2"))], None), None)
+            .publish_version(
+                DAEMON,
+                &id,
+                publish(&[("index.html", Some("v2"))], None),
+                None,
+            )
             .unwrap_err();
         assert!(matches!(
             e,
@@ -1325,6 +1485,7 @@ mod tests {
         for (a, b) in [("a", "a/b.js"), ("App.js", "app.js")] {
             let e = store
                 .create_artifact(
+                    DAEMON,
                     publish(
                         &[("index.html", Some("x")), (a, Some("1")), (b, Some("2"))],
                         None,
@@ -1348,6 +1509,7 @@ mod tests {
 
         let (a, _) = store
             .create_artifact(
+                DAEMON,
                 publish(&[("index.html", Some("v1")), ("a", Some("1"))], None),
                 None,
             )
@@ -1355,6 +1517,7 @@ mod tests {
         let id = crate::ArtifactId::parse(&a.id).unwrap();
         let e = store
             .publish_version(
+                DAEMON,
                 &id,
                 publish(
                     &[("index.html", Some("v2")), ("a/b.js", Some("2"))],
@@ -1372,6 +1535,7 @@ mod tests {
         ));
         let e = store
             .publish_version(
+                DAEMON,
                 &id,
                 publish(&[("index.html", Some("v2")), ("A", Some("2"))], Some(1)),
                 None,
@@ -1393,7 +1557,7 @@ mod tests {
         let home = Home::at(dir.path().join("ax"));
         let store = std::sync::Arc::new(Store::open(&home).unwrap());
         let (a, _) = store
-            .create_artifact(publish(&[("index.html", Some("v1"))], None), None)
+            .create_artifact(DAEMON, publish(&[("index.html", Some("v1"))], None), None)
             .unwrap();
         let id = crate::ArtifactId::parse(&a.id).unwrap();
         let handles: Vec<_> = ["left", "right"]
@@ -1403,6 +1567,7 @@ mod tests {
                 let id = id.clone();
                 std::thread::spawn(move || {
                     let r = store.publish_version(
+                        DAEMON,
                         &id,
                         publish(&[("index.html", Some(body))], Some(1)),
                         None,
@@ -1432,6 +1597,42 @@ mod tests {
             .filter(|n| n.starts_with(".tmp-"))
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+        // Only the winner's version is recorded.
+        let published: Vec<serde_json::Value> = store
+            .events_after(0, 100)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "version.publish")
+            .map(|e| serde_json::from_str::<serde_json::Value>(&e.body).unwrap()["n"].clone())
+            .collect();
+        assert_eq!(published, [1, 2]);
+    }
+
+    #[test]
+    fn a_publish_failing_after_its_record_rolls_the_record_back() {
+        let (_d, store) = store();
+        let (a, _) = store
+            .create_artifact(DAEMON, publish(&[("index.html", Some("v1"))], None), None)
+            .unwrap();
+        let id = crate::ArtifactId::parse(&a.id).unwrap();
+        let seq = store.events_after(0, 100).unwrap().last().unwrap().seq;
+        // A directory in version 2's place makes the rename, the last step
+        // of the transaction (after the event is written), fail.
+        let vdir = store.home().version_dir(&id, 2);
+        std::fs::create_dir_all(&vdir).unwrap();
+        std::fs::write(vdir.join("stray"), "x").unwrap();
+        assert!(
+            store
+                .publish_version(
+                    DAEMON,
+                    &id,
+                    publish(&[("index.html", Some("v2"))], Some(1)),
+                    None
+                )
+                .is_err()
+        );
+        assert_eq!(store.events_after(seq, 100).unwrap(), vec![]);
+        assert_eq!(store.get_artifact(&id).unwrap().unwrap().current_version, 1);
     }
 
     fn one_version(store: &Store) -> crate::ArtifactId {
@@ -1442,7 +1643,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        crate::ArtifactId::parse(&store.create_artifact(p, None).unwrap().0.id).unwrap()
+        crate::ArtifactId::parse(&store.create_artifact(DAEMON, p, None).unwrap().0.id).unwrap()
     }
 
     #[test]
@@ -1475,7 +1676,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        store.delete_artifact(&aid).unwrap();
+        store.delete_artifact(DAEMON, &aid).unwrap();
         store
             .with_write(|c| {
                 c.execute(
@@ -1563,8 +1764,8 @@ mod tests {
         let live = one_version(&store);
         let gone_caps = one_version(&store);
         let gone_files = one_version(&store);
-        store.delete_artifact(&gone_caps).unwrap();
-        store.delete_artifact(&gone_files).unwrap();
+        store.delete_artifact(DAEMON, &gone_caps).unwrap();
+        store.delete_artifact(DAEMON, &gone_files).unwrap();
         store
             .with_write(|c| {
                 c.execute(
@@ -1590,7 +1791,7 @@ mod tests {
     fn corrupt_artifact_and_version_rows_of_one_deleted_artifact_clear_together() {
         let (_d, store) = store();
         let gone = one_version(&store);
-        store.delete_artifact(&gone).unwrap();
+        store.delete_artifact(DAEMON, &gone).unwrap();
         store
             .with_write(|c| {
                 c.execute(

@@ -16,6 +16,7 @@ use axum::extract::multipart::MultipartRejection;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Multipart, Query, State};
 use axum::http::{HeaderMap, StatusCode};
+use clax_core::audit::AuditCtx;
 use clax_core::live::{PageKey, PageUrl, PathPattern, parse_page_url};
 use clax_core::model::Artifact;
 use clax_core::store::live::LivePage;
@@ -357,6 +358,7 @@ pub async fn thread(
     headers: HeaderMap,
     _o: SameOrigin,
     who: Identity,
+    audit: AuditCtx,
     mp: Result<Multipart, MultipartRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let mp = mp.map_err(|e| multipart_error(e.status(), e.body_text()))?;
@@ -405,7 +407,7 @@ pub async fn thread(
             // A snapshot of this path settles only addresses of threads
             // made at it (a merged page holds others).
             let pending = st.pending_at_path(&pending, &key.origin, &path)?;
-            let e = live_ids.ensure_page(st, &key, &title, Some(&snapshot), &pending)?;
+            let e = live_ids.ensure_page(st, &audit, &key, &title, Some(&snapshot), &pending)?;
             let id = ArtifactId::parse(&e.artifact.id)?;
             if e.new_version {
                 events.publish(Event::Version {
@@ -545,6 +547,7 @@ async fn read_snapshot_fields(mut mp: Multipart) -> Result<SnapshotFields, ApiEr
 pub async fn snapshot(
     State(s): State<AppState>,
     _o: SameOrigin,
+    audit: AuditCtx,
     mp: Result<Multipart, MultipartRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let mp = mp.map_err(|e| multipart_error(e.status(), e.body_text()))?;
@@ -564,7 +567,9 @@ pub async fn snapshot(
             let id = ArtifactId::parse(&p.artifact_id)?;
             // Only addresses of threads made at this path (see `thread`).
             let pending = st.pending_at_path(&f.pending, &p.origin, &path)?;
-            let Some((v, linked)) = st.snapshot_pending(&id, &title, &f.snapshot, &pending)? else {
+            let Some((v, linked)) =
+                st.snapshot_pending(&audit, &id, &title, &f.snapshot, &pending)?
+            else {
                 return Ok(None);
             };
             let a = st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
@@ -607,6 +612,30 @@ pub(crate) fn owner_writes(who: &Identity) -> Result<(), ApiError> {
             "forbidden",
             "only the owner (the token or the Clax extension) moves threads and changes rules",
         ))
+    }
+}
+
+/// The owner, by the token or the Clax extension: who may move threads and
+/// change merge rules. Refuses anyone else with 403 `forbidden` during
+/// extraction, so the extractors after it (the audit context, which may
+/// write a viewer row) never run for a refused request.
+pub struct OwnerWrite(Identity);
+
+impl axum::extract::FromRequestParts<AppState> for OwnerWrite {
+    type Rejection = ApiError;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let who = Identity::from_parts(&parts.headers, &parts.extensions, &state.token);
+        if who.token || who.extension {
+            Ok(OwnerWrite(who))
+        } else {
+            Err(ApiError::forbidden(
+                "forbidden",
+                "only the owner (the token or the Clax extension) moves threads and changes rules",
+            ))
+        }
     }
 }
 
@@ -748,20 +777,23 @@ fn pages_pending_threads(groups: &[(String, Value)]) -> usize {
         .sum()
 }
 
-/// What a re-filing route needs besides the store.
+/// What a re-filing route needs besides the store: `audit` is the
+/// request's, under which the re-filing's changes are recorded.
 #[derive(Clone)]
 pub(crate) struct RefileCtx {
     pub(crate) feedback: crate::feedback::FeedbackCtx,
     pub(crate) live_ids: std::sync::Arc<crate::live::LiveIds>,
     cache: std::sync::Arc<crate::wrap_cache::WrapCache>,
+    pub(crate) audit: AuditCtx,
 }
 
 impl RefileCtx {
-    pub(crate) fn of(s: &AppState) -> RefileCtx {
+    pub(crate) fn of(s: &AppState, audit: AuditCtx) -> RefileCtx {
         RefileCtx {
             feedback: s.feedback_ctx(),
             live_ids: s.live_ids.clone(),
             cache: s.wrap_cache.clone(),
+            audit,
         }
     }
 
@@ -774,7 +806,7 @@ impl RefileCtx {
         how: &MoveBy,
         fresh: &[String],
     ) -> clax_core::Result<Refiled> {
-        match st.refile_threads(moves, how, fresh) {
+        match st.refile_threads(&self.audit, moves, how, fresh) {
             Ok(done) => {
                 announce_refiled(st, &self.feedback, &done)?;
                 Ok(done)
@@ -795,7 +827,7 @@ impl RefileCtx {
         if !st.list_threads(&id, true, None, 1)?.0.is_empty() {
             return Ok(());
         }
-        st.delete_artifact(&id)?;
+        st.delete_artifact(&self.audit, &id)?;
         self.cache.remove_artifact(aid);
         self.feedback.events.publish(Event::ArtifactDeleted {
             artifact_id: aid.to_string(),
@@ -854,12 +886,13 @@ fn announce_refiled(
 /// announces a version it wrote; `fresh` when this call made it.
 pub(crate) fn target_page(
     st: &Store,
+    audit: &AuditCtx,
     live_ids: &crate::live::LiveIds,
     events: &clax_core::EventBus,
     key: &PageKey,
     title: &str,
 ) -> clax_core::Result<(String, bool)> {
-    let e = live_ids.ensure_page(st, key, title, None, &[])?;
+    let e = live_ids.ensure_page(st, audit, key, title, None, &[])?;
     if e.new_version {
         events.publish(Event::Version {
             artifact_id: e.artifact.id.clone(),
@@ -905,15 +938,15 @@ pub struct MoveBody {
 pub async fn move_thread(
     State(s): State<AppState>,
     _o: SameOrigin,
-    who: Identity,
+    OwnerWrite(who): OwnerWrite,
+    audit: AuditCtx,
     p: Result<axum::extract::Path<String>, axum::extract::rejection::PathRejection>,
     body: Result<Json<MoveBody>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    owner_writes(&who)?;
     let tid = super::artifacts::path(p)?;
     let b = super::artifacts::body(body)?;
     let pu = page_url(&s, &b.page_url)?;
-    let rc = RefileCtx::of(&s);
+    let rc = RefileCtx::of(&s, audit);
     let with_path = who.token;
     let (view, page, artifact, rule, moved) = s
         .store_call(move |st| {
@@ -930,7 +963,14 @@ pub async fn move_thread(
             }
             let r = st.resolve_live_key(&pu.key)?;
             let title = clean_title("", &pu.key.page_url());
-            let (to, made) = target_page(st, &rc.live_ids, &rc.feedback.events, &r.key, &title)?;
+            let (to, made) = target_page(
+                st,
+                &rc.audit,
+                &rc.live_ids,
+                &rc.feedback.events,
+                &r.key,
+                &title,
+            )?;
             let refile = Refile {
                 thread_id: tid.clone(),
                 live_path: r.live_path,
@@ -998,10 +1038,10 @@ pub struct RuleBody {
 pub async fn add_rule(
     State(s): State<AppState>,
     _o: SameOrigin,
-    who: Identity,
+    OwnerWrite(who): OwnerWrite,
+    audit: AuditCtx,
     body: Result<Json<RuleBody>, axum::extract::rejection::JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    owner_writes(&who)?;
     let b = super::artifacts::body(body)?;
     let pattern = PathPattern::parse(&b.pattern)?;
     let origin = origin_of(&s, &b.origin)?;
@@ -1012,7 +1052,7 @@ pub async fn add_rule(
             "the pattern is not a path as the URL parser writes it",
         ));
     }
-    let rc = RefileCtx::of(&s);
+    let rc = RefileCtx::of(&s, audit);
     let (rule, created, page, moved, remaining) = s
         .store_call(move |st| {
             let (rule, created) = st.add_live_rule(&origin, &pattern)?;
@@ -1027,6 +1067,7 @@ pub async fn add_rule(
             let title = canonical.key.page_url();
             let (to, made) = target_page(
                 st,
+                &rc.audit,
                 &rc.live_ids,
                 &rc.feedback.events,
                 &canonical.key,
@@ -1074,12 +1115,12 @@ pub async fn add_rule(
 pub async fn delete_rule(
     State(s): State<AppState>,
     _o: SameOrigin,
-    who: Identity,
+    OwnerWrite(who): OwnerWrite,
+    audit: AuditCtx,
     p: Result<axum::extract::Path<String>, axum::extract::rejection::PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    owner_writes(&who)?;
     let id = super::artifacts::path(p)?;
-    let rc = RefileCtx::of(&s);
+    let rc = RefileCtx::of(&s, audit);
     let (rule, moved, remaining, deleting) = s
         .store_call(move |st| {
             let rule = st.mark_rule_deleted(&id)?.ok_or(CoreError::NotFound)?;
@@ -1088,7 +1129,14 @@ pub async fn delete_rule(
             let mut fresh: Vec<String> = Vec::new();
             for (key, refile) in back {
                 let title = clean_title("", &key.page_url());
-                let made = target_page(st, &rc.live_ids, &rc.feedback.events, &key, &title);
+                let made = target_page(
+                    st,
+                    &rc.audit,
+                    &rc.live_ids,
+                    &rc.feedback.events,
+                    &key,
+                    &title,
+                );
                 let (to, made) = match made {
                     Ok(m) => m,
                     Err(e) => {

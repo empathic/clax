@@ -2,6 +2,8 @@
 //! viewer's credential) and named to others by a public ID.
 
 use super::Store;
+use crate::audit::{Actor, AuditCtx, AuditKind, AuditRecord, Via, sha256_hex};
+use crate::gitctx::GitField;
 use crate::ids::{is_public_id, is_ulid, new_public_id};
 use crate::model::Viewer;
 use crate::{CoreError, Result};
@@ -147,7 +149,13 @@ fn owner_row(c: &rusqlite::Connection) -> rusqlite::Result<Option<(Viewer, bool)
 /// looked-at marks (the later), and its private documents
 /// (`data/users/<from>/...` move under `data/users/<into>/` with a new
 /// version; one whose destination exists stays where it is).
-fn fold(tx: &rusqlite::Transaction<'_>, from: &Viewer, into: &Viewer) -> Result<()> {
+fn fold(
+    st: &Store,
+    ctx: &AuditCtx,
+    tx: &rusqlite::Transaction<'_>,
+    from: &Viewer,
+    into: &Viewer,
+) -> Result<()> {
     let (old, new) = (from.public_id.as_str(), into.public_id.as_str());
     tx.execute(
         "UPDATE comments SET author_public_id = ?2 WHERE author_public_id = ?1",
@@ -188,24 +196,48 @@ fn fold(tx: &rusqlite::Transaction<'_>, from: &Viewer, into: &Viewer) -> Result<
         "DELETE FROM viewer_threads WHERE viewer_id = ?1",
         params![from.id],
     )?;
-    move_private_docs(tx, old, new)?;
+    move_private_docs(st, ctx, tx, old, new)?;
     tx.execute("DELETE FROM viewers WHERE id = ?1", params![from.id])?;
+    Ok(())
+}
+
+/// Records `viewer.claim`: `from`'s public ID is retired in favour of `to`'s.
+fn record_claim(
+    st: &Store,
+    tx: &rusqlite::Transaction<'_>,
+    ctx: &AuditCtx,
+    from: &Viewer,
+    to: &Viewer,
+) -> Result<()> {
+    let rec = AuditRecord::new(AuditKind::ViewerClaim, Store::now())
+        .with("from_public_id", from.public_id.as_str())
+        .with("to_public_id", to.public_id.as_str());
+    st.record_audit(tx, ctx, rec)?;
     Ok(())
 }
 
 /// Moves every `data/users/<old>/...` document to `data/users/<new>/...`,
 /// each with the next version of its artifact; a document whose destination
-/// exists is left in place (and logged), and the destination kept.
-fn move_private_docs(tx: &rusqlite::Transaction<'_>, old: &str, new: &str) -> Result<()> {
+/// exists is left in place (and logged), and the destination kept. Each move
+/// is recorded as `doc.move` under `ctx`, with both paths and the document's
+/// hash, never its content.
+fn move_private_docs(
+    st: &Store,
+    ctx: &AuditCtx,
+    tx: &rusqlite::Transaction<'_>,
+    old: &str,
+    new: &str,
+) -> Result<()> {
     let from = format!("data/users/{old}/");
     let to = format!("data/users/{new}/");
-    let rows: Vec<(String, String)> = {
-        let mut st = tx
-            .prepare("SELECT artifact_id, path FROM docs WHERE substr(path, 1, length(?1)) = ?1")?;
-        st.query_map(params![from], |r| Ok((r.get(0)?, r.get(1)?)))?
+    let rows: Vec<(String, String, String)> = {
+        let mut stmt = tx.prepare(
+            "SELECT artifact_id, path, json FROM docs WHERE substr(path, 1, length(?1)) = ?1",
+        )?;
+        stmt.query_map(params![from], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<rusqlite::Result<_>>()?
     };
-    for (aid, path) in rows {
+    for (aid, path, json) in rows {
         let dest = format!("{to}{}", &path[from.len()..]);
         let taken: bool = tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM docs WHERE artifact_id = ?1 AND path = ?2)",
@@ -216,17 +248,28 @@ fn move_private_docs(tx: &rusqlite::Transaction<'_>, old: &str, new: &str) -> Re
             tracing::warn!(artifact = %aid, %path, %dest, "a private document stays at its old path: the owner already has one there");
             continue;
         }
-        let collection = crate::db::doc_path(&dest)?.collection;
+        let dp = crate::db::doc_path(&dest)?;
         let version: i64 = tx.query_row(
             "UPDATE artifacts SET doc_seq = doc_seq + 1 WHERE id = ?1 RETURNING doc_seq",
             params![aid],
             |r| r.get(0),
         )?;
-        tx.execute(
+        let now = Store::now();
+        let version: i64 = tx.query_row(
             "UPDATE docs SET path = ?3, collection = ?4, version = MAX(version + 1, ?5), updated_at = ?6
-             WHERE artifact_id = ?1 AND path = ?2",
-            params![aid, path, dest, collection, version, Store::now()],
+             WHERE artifact_id = ?1 AND path = ?2 RETURNING version",
+            params![aid, path, dest, dp.collection, version, now],
+            |r| r.get(0),
         )?;
+        let mut rec = AuditRecord::new(AuditKind::DocMove, now.as_str())
+            .with("from", path.as_str())
+            .with("to", dest.as_str())
+            .with("collection", dp.collection.as_str())
+            .with("doc_id", dp.id.as_str())
+            .with("version", version)
+            .with("sha256", format!("sha256:{}", sha256_hex(json.as_bytes())));
+        rec.ids.artifact = Some(aid.clone());
+        st.record_audit(tx, ctx, rec)?;
         tx.execute(
             "DELETE FROM leases WHERE artifact_id = ?1 AND path = ?2",
             params![aid, path],
@@ -319,8 +362,21 @@ impl Store {
     /// into it, its name kept when it has one). Otherwise the viewer is folded
     /// into the owner, which keeps its name when it has one
     /// ([`Claim::Merged`]). Either way the owner's private ID is new, so the
-    /// cookie names nothing afterwards.
-    pub fn claim_for_owner(&self, cookie: &str) -> Result<Claim> {
+    /// cookie names nothing afterwards. Each private document that follows
+    /// a folded viewer to the owner's public ID is recorded as `doc.move`,
+    /// and a claim that retires a public ID (the folded row's) as one
+    /// `viewer.claim {from_public_id, to_public_id}`, so records naming the
+    /// retired ID resolve to its successor; all made by the owner (as it is
+    /// after the claim) through `via`, in the claim's transaction.
+    pub fn claim_for_owner(&self, via: Via, cookie: &str) -> Result<Claim> {
+        let by = |owner: &Viewer| AuditCtx {
+            actor: Actor::Owner {
+                public_id: owner.public_id.clone(),
+            },
+            via,
+            git: GitField::Absent,
+            call: None,
+        };
         self.with_tx(|tx| {
             let Some(legacy) = tx
                 .query_row(
@@ -334,7 +390,8 @@ impl Store {
             };
             match owner_row(tx)? {
                 Some((owner, true)) => {
-                    fold(tx, &legacy, &owner)?;
+                    fold(self, &by(&owner), tx, &legacy, &owner)?;
+                    record_claim(self, tx, &by(&owner), &legacy, &owner)?;
                     if owner.display_name.is_none() && legacy.display_name.is_some() {
                         tx.execute(
                             "UPDATE viewers SET display_name = ?2 WHERE id = ?1",
@@ -346,7 +403,8 @@ impl Store {
                 earlier => {
                     let retired = match earlier {
                         Some((cli, _)) => {
-                            fold(tx, &cli, &legacy)?;
+                            fold(self, &by(&legacy), tx, &cli, &legacy)?;
+                            record_claim(self, tx, &by(&legacy), &cli, &legacy)?;
                             if cli.display_name.is_some() {
                                 tx.execute(
                                     "UPDATE viewers SET display_name = ?2 WHERE id = ?1",
@@ -420,6 +478,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::{Claim, MAX_NAME_CHARS, MAX_SEARCH_SCAN};
+    use crate::audit::Via;
     use crate::store::test_util::{artifact, store};
     use crate::{CoreError, new_ulid};
 
@@ -489,13 +548,18 @@ mod tests {
             lan.as_str(),
             "01J9Z3K4M5N6P7Q8R9S0T1V2W3",
         ] {
-            assert_eq!(st.claim_for_owner(c).unwrap(), Claim::Nothing, "{c}");
+            assert_eq!(
+                st.claim_for_owner(Via::Shell, c).unwrap(),
+                Claim::Nothing,
+                "{c}"
+            );
         }
         assert_eq!(st.owner().unwrap(), None);
         assert!(
             st.get_viewer(&lan).unwrap().is_some(),
             "the LAN viewer is untouched"
         );
+        assert!(claims(&st).is_empty());
     }
 
     #[test]
@@ -505,7 +569,7 @@ mod tests {
         let chrome = st.mint_viewer(&cookie, true).unwrap();
         st.upsert_viewer(&cookie, Some("Alex")).unwrap();
         assert_eq!(
-            st.claim_for_owner(&cookie).unwrap(),
+            st.claim_for_owner(Via::Shell, &cookie).unwrap(),
             Claim::Adopted { retired: None }
         );
         let owner = st.owner().unwrap().unwrap();
@@ -518,10 +582,11 @@ mod tests {
         assert_eq!(st.get_viewer(&cookie).unwrap(), None);
         assert!(st.upsert_viewer(&cookie, Some("x")).unwrap().public_id != owner.public_id);
         assert_eq!(
-            st.claim_for_owner(&cookie).unwrap(),
+            st.claim_for_owner(Via::Shell, &cookie).unwrap(),
             Claim::Nothing,
             "a fresh row is not local"
         );
+        assert!(claims(&st).is_empty(), "no public ID was retired");
     }
 
     #[test]
@@ -540,7 +605,7 @@ mod tests {
         let cookie = new_ulid();
         let chrome = st.mint_viewer(&cookie, true).unwrap();
         assert_eq!(
-            st.claim_for_owner(&cookie).unwrap(),
+            st.claim_for_owner(Via::Shell, &cookie).unwrap(),
             Claim::Adopted {
                 retired: Some(cli.public_id.clone())
             }
@@ -566,6 +631,70 @@ mod tests {
             doc_json(&st, &aid, &format!("data/users/{}/prefs", chrome.public_id)).as_deref(),
             Some("{\"cli\":1}")
         );
+        // The move is the owner's, through the shell, and names no content.
+        let moves = doc_moves(&st);
+        assert_eq!(moves.len(), 1);
+        let (actor, artifact, body) = &moves[0];
+        assert_eq!(
+            actor,
+            &serde_json::json!({"type": "owner", "public_id": chrome.public_id})
+        );
+        assert_eq!(artifact.as_deref(), Some(aid.as_str()));
+        assert_eq!(body["via"], "shell");
+        assert_eq!(body["from"], format!("data/users/{}/prefs", cli.public_id));
+        assert_eq!(body["to"], format!("data/users/{}/prefs", chrome.public_id));
+        assert_eq!(
+            body["sha256"],
+            format!("sha256:{}", crate::audit::sha256_hex(b"{\"cli\":1}"))
+        );
+        // The CLI's retired public ID resolves to the browser's.
+        assert_eq!(
+            claims(&st),
+            vec![(
+                chrome.public_id.clone(),
+                cli.public_id.clone(),
+                chrome.public_id.clone()
+            )]
+        );
+        assert!(!body.to_string().contains("\\\"cli\\\""), "{body}");
+    }
+
+    /// The events of `kind`: actor, artifact ID and body.
+    fn events_of(
+        st: &crate::Store,
+        kind: &str,
+    ) -> Vec<(serde_json::Value, Option<String>, serde_json::Value)> {
+        st.events_after(0, 100)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == kind)
+            .map(|e| {
+                (
+                    serde_json::from_str(&e.actor).unwrap(),
+                    e.ids.artifact,
+                    serde_json::from_str(&e.body).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    fn doc_moves(st: &crate::Store) -> Vec<(serde_json::Value, Option<String>, serde_json::Value)> {
+        events_of(st, "doc.move")
+    }
+
+    /// The `viewer.claim` events as (actor's public ID, from, to).
+    fn claims(st: &crate::Store) -> Vec<(String, String, String)> {
+        events_of(st, "viewer.claim")
+            .into_iter()
+            .map(|(actor, _, b)| {
+                let s = |v: &serde_json::Value| v.as_str().unwrap().to_string();
+                (
+                    s(&actor["public_id"]),
+                    s(&b["from_public_id"]),
+                    s(&b["to_public_id"]),
+                )
+            })
+            .collect()
     }
 
     fn thread_by(public_id: &str, body: &str) -> crate::store::threads::NewThread {
@@ -612,7 +741,7 @@ mod tests {
         private_doc(&st, &aid, &format!("{old}prefs"), "{\"theme\":\"safari\"}");
         private_doc(&st, &aid, &format!("{new}prefs"), "{\"theme\":\"owner\"}");
         assert_eq!(
-            st.claim_for_owner(&cookie).unwrap(),
+            st.claim_for_owner(Via::Shell, &cookie).unwrap(),
             Claim::Merged(safari.public_id.clone())
         );
         assert_eq!(st.get_viewer(&cookie).unwrap(), None, "the row is gone");
@@ -653,11 +782,31 @@ mod tests {
             doc_json(&st, &aid, &format!("{old}prefs")).as_deref(),
             Some("{\"theme\":\"safari\"}")
         );
+        // The merged viewer's public ID resolves to the owner's.
+        assert_eq!(
+            claims(&st),
+            vec![(
+                owner.public_id.clone(),
+                safari.public_id.clone(),
+                owner.public_id.clone()
+            )]
+        );
+        // Only the document that moved is recorded, as the owner's.
+        let moves = doc_moves(&st);
+        assert_eq!(moves.len(), 1);
+        assert_eq!(moves[0].0["public_id"], owner.public_id.as_str());
+        assert_eq!(
+            (&moves[0].2["from"], &moves[0].2["to"]),
+            (
+                &serde_json::json!(format!("{old}profile")),
+                &serde_json::json!(format!("{new}profile"))
+            )
+        );
         // A named owner keeps its name.
         let laptop = new_ulid();
         st.mint_viewer(&laptop, true).unwrap();
         st.upsert_viewer(&laptop, Some("Other")).unwrap();
-        st.claim_for_owner(&laptop).unwrap();
+        st.claim_for_owner(Via::Shell, &laptop).unwrap();
         assert_eq!(
             st.owner().unwrap().unwrap().display_name.as_deref(),
             Some("Alex S")

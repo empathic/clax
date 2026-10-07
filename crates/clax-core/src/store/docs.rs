@@ -10,8 +10,15 @@
 //! may not make fails as `DocNotFound`, as for a missing document; a missing
 //! artifact is `NotFound`. Leases (`acquire`) live beside the
 //! documents and coordinate only callers that use them.
+//!
+//! Each document changed is recorded, in the change's transaction, as
+//! `doc.write` under the writer's `AuditCtx`, with `op` naming the call
+//! (`set`, `update`, `delete`, `str_replace`, or `acquire` for a grant that
+//! merges data) and the SHA-256 of the stored JSON, never the content. A
+//! write that changes nothing (deleting a missing document) records nothing.
 
 use super::Store;
+use crate::audit::{AuditCtx, AuditKind, AuditRecord, sha256_hex};
 use crate::db::{Caller, Op, Rules, collection_path, doc_path, invalid_argument};
 use crate::{ArtifactId, CoreError, Result};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -538,8 +545,43 @@ impl Body {
     }
 }
 
+/// Where a write is recorded: `doc.write` with `op`, under `ctx`, in the
+/// write's transaction `tx`.
+struct Recorder<'a> {
+    st: &'a Store,
+    tx: &'a rusqlite::Transaction<'a>,
+    ctx: &'a AuditCtx,
+    op: &'static str,
+}
+
+impl Recorder<'_> {
+    /// Records the change to `path` (spec §6.1): its new version and the
+    /// SHA-256 of its stored JSON (`None`, a delete), never the content.
+    fn record(
+        &self,
+        id: &ArtifactId,
+        dp: &crate::db::DocPath,
+        version: Option<u64>,
+        json: Option<&str>,
+        at: &str,
+    ) -> Result<()> {
+        let mut rec = AuditRecord::new(AuditKind::DocWrite, at)
+            .with("collection", dp.collection.as_str())
+            .with("doc_id", dp.id.as_str())
+            .with("version", version)
+            .with("op", self.op)
+            .with(
+                "sha256",
+                json.map(|j| format!("sha256:{}", sha256_hex(j.as_bytes()))),
+            );
+        rec.ids.artifact = Some(id.as_str().to_string());
+        self.st.record_audit(self.tx, self.ctx, rec)?;
+        Ok(())
+    }
+}
+
 fn write_in(
-    c: &Connection,
+    rc: &Recorder<'_>,
     id: &ArtifactId,
     rules: &Rules,
     caller: &Caller,
@@ -547,6 +589,7 @@ fn write_in(
     pin: Pin,
     next: impl FnOnce(Option<&Doc>) -> Result<Option<Body>>,
 ) -> Result<Written> {
+    let c: &Connection = rc.tx;
     let dp = doc_path(path)?;
     if !rules.allows(&dp.path, Op::Write, caller) {
         return Err(CoreError::DocNotFound { path: dp.path });
@@ -583,6 +626,7 @@ fn write_in(
                  ON CONFLICT(artifact_id, path) DO UPDATE SET json = excluded.json, version = excluded.version, updated_at = excluded.updated_at",
                 params![id.as_str(), dp.path, dp.collection, body.json, version as i64, now],
             )?;
+            rc.record(id, &dp, Some(version), Some(&body.json), &now)?;
             let doc = Doc {
                 id: dp.path.rsplit('/').next().unwrap_or_default().to_string(),
                 path: dp.path.clone(),
@@ -611,7 +655,8 @@ fn write_in(
                 params![id.as_str(), dp.path],
             )?;
             if n > 0 {
-                next_version(c, id, current.as_ref().map_or(0, |d| d.version))?;
+                let version = next_version(c, id, current.as_ref().map_or(0, |d| d.version))?;
+                rc.record(id, &dp, Some(version), None, &Store::now())?;
             }
             Ok(Written {
                 path: dp.path.clone(),
@@ -660,6 +705,7 @@ impl Store {
     /// Replaces (or creates) the document with `data`.
     pub fn doc_set(
         &self,
+        ctx: &AuditCtx,
         id: &ArtifactId,
         path: &str,
         data: Value,
@@ -669,7 +715,13 @@ impl Store {
         let body = Body::new(data);
         self.with_tx(|tx| {
             let rules = rules_in(tx, id)?;
-            write_in(tx, id, &rules, caller, path, pin, |_| body.map(Some))
+            let rc = Recorder {
+                st: self,
+                tx,
+                ctx,
+                op: "set",
+            };
+            write_in(&rc, id, &rules, caller, path, pin, |_| body.map(Some))
         })
     }
 
@@ -680,6 +732,7 @@ impl Store {
     /// when the document is absent; `DocNotFound` when `caller` may not write it.
     pub fn doc_update(
         &self,
+        ctx: &AuditCtx,
         id: &ArtifactId,
         path: &str,
         patch: Value,
@@ -690,7 +743,13 @@ impl Store {
         check_body(&patch, true)?;
         self.with_tx(|tx| {
             let rules = rules_in(tx, id)?;
-            write_in(tx, id, &rules, caller, path, pin, |cur| {
+            let rc = Recorder {
+                st: self,
+                tx,
+                ctx,
+                op: "update",
+            };
+            write_in(&rc, id, &rules, caller, path, pin, |cur| {
                 Body::of(update_body(path, cur, patch))
             })
         })
@@ -699,6 +758,7 @@ impl Store {
     /// Deletes the document; deleting a missing document succeeds with `deleted: false`.
     pub fn doc_delete(
         &self,
+        ctx: &AuditCtx,
         id: &ArtifactId,
         path: &str,
         pin: Pin,
@@ -706,7 +766,13 @@ impl Store {
     ) -> Result<Written> {
         self.with_tx(|tx| {
             let rules = rules_in(tx, id)?;
-            write_in(tx, id, &rules, caller, path, pin, |_| Ok(None))
+            let rc = Recorder {
+                st: self,
+                tx,
+                ctx,
+                op: "delete",
+            };
+            write_in(&rc, id, &rules, caller, path, pin, |_| Ok(None))
         })
     }
 
@@ -719,6 +785,7 @@ impl Store {
     /// document is absent or `caller` may not write it.
     pub fn doc_str_replace(
         &self,
+        ctx: &AuditCtx,
         id: &ArtifactId,
         path: &str,
         r: StrReplace,
@@ -731,7 +798,8 @@ impl Store {
         }
         self.with_tx(|tx| {
             let rules = rules_in(tx, id)?;
-            write_in(tx, id, &rules, caller, path, pin, |cur| Body::of((|| {
+            let rc = Recorder { st: self, tx, ctx, op: "str_replace" };
+            write_in(&rc, id, &rules, caller, path, pin, |cur| Body::of((|| {
                 let cur = cur.ok_or_else(|| CoreError::DocNotFound { path: path.to_string() })?;
                 let mut data = cur.data.clone();
                 let Some(Value::String(text)) = data.get_mut(&r.field) else {
@@ -843,6 +911,7 @@ impl Store {
     /// before duplicates and bodies.
     pub fn doc_batch(
         &self,
+        ctx: &AuditCtx,
         id: &ArtifactId,
         writes: Vec<BatchWrite>,
         lww: bool,
@@ -898,17 +967,25 @@ impl Store {
                 .map(|(i, (path, if_version, op))| {
                     let pin = Pin { if_version, lww };
                     let path = path.as_str();
+                    let rc = |op| Recorder {
+                        st: self,
+                        tx,
+                        ctx,
+                        op,
+                    };
                     match op {
                         Prepared::Set(body) => {
-                            write_in(tx, id, &rules, caller, path, pin, |_| body.map(Some))
+                            write_in(&rc("set"), id, &rules, caller, path, pin, |_| {
+                                body.map(Some)
+                            })
                         }
                         Prepared::Update(patch) => {
-                            write_in(tx, id, &rules, caller, path, pin, |cur| {
+                            write_in(&rc("update"), id, &rules, caller, path, pin, |cur| {
                                 Body::of(update_body(path, cur, patch))
                             })
                         }
                         Prepared::Delete => {
-                            write_in(tx, id, &rules, caller, path, pin, |_| Ok(None))
+                            write_in(&rc("delete"), id, &rules, caller, path, pin, |_| Ok(None))
                         }
                     }
                     .map_err(|e| in_batch(i, path, e))
@@ -924,6 +1001,7 @@ impl Store {
     /// `resource_exhausted`.
     pub fn doc_acquire(
         &self,
+        ctx: &AuditCtx,
         id: &ArtifactId,
         path: &str,
         a: Acquire,
@@ -987,7 +1065,8 @@ impl Store {
             let empty = Value::Object(Map::new());
             let (version, change) = match a.data {
                 Some(patch) => {
-                    let w = write_in(tx, id, &rules, caller, &dp.path, Pin { if_version: None, lww: true }, |cur| {
+                    let rc = Recorder { st: self, tx, ctx, op: "acquire" };
+                    let w = write_in(&rc, id, &rules, caller, &dp.path, Pin { if_version: None, lww: true }, |cur| {
                         Body::new(merged(cur.map_or(&empty, |d| &d.data), patch)).map(Some)
                     })?;
                     (w.doc.map(|d| d.version), w.change)
@@ -1003,6 +1082,7 @@ impl Store {
 mod tests {
     use super::*;
     use crate::db::Level;
+    use crate::store::test_util::DAEMON;
     use crate::store::test_util::{artifact_with_caps, store};
     use serde_json::json;
 
@@ -1037,6 +1117,7 @@ mod tests {
         let id = artifact_with_caps(&st, json!({"db": {}}));
         let w = st
             .doc_set(
+                DAEMON,
                 &id,
                 "tasks/t1",
                 json!({"title": "Ship", "meta": {"a": 1}}),
@@ -1060,6 +1141,7 @@ mod tests {
         assert_eq!((d.id.as_str(), d.collection.as_str()), ("t1", "tasks"));
         let w = st
             .doc_update(
+                DAEMON,
                 &id,
                 "tasks/t1",
                 json!({"meta": {"b": 2}}),
@@ -1071,12 +1153,14 @@ mod tests {
             w.doc.unwrap().data,
             json!({"title": "Ship", "meta": {"a": 1, "b": 2}})
         );
-        let w = st.doc_delete(&id, "tasks/t1", pinned(2), &admin()).unwrap();
+        let w = st
+            .doc_delete(DAEMON, &id, "tasks/t1", pinned(2), &admin())
+            .unwrap();
         assert!(w.deleted);
         assert_eq!(w.change.unwrap().version, None);
         assert_eq!(st.doc_get(&id, "tasks/t1", &admin()).unwrap(), None);
         assert!(
-            !st.doc_delete(&id, "tasks/t1", Pin::default(), &admin())
+            !st.doc_delete(DAEMON, &id, "tasks/t1", Pin::default(), &admin())
                 .unwrap()
                 .deleted,
             "deleting nothing succeeds"
@@ -1087,24 +1171,45 @@ mod tests {
     fn existing_documents_need_a_pin_unless_last_writer_wins() {
         let (_d, st) = store();
         let id = artifact_with_caps(&st, json!({"db": {}}));
-        st.doc_set(&id, "tasks/t1", json!({"n": 1}), Pin::default(), &admin())
-            .unwrap();
-        match st.doc_set(&id, "tasks/t1", json!({"n": 2}), Pin::default(), &admin()) {
+        st.doc_set(
+            DAEMON,
+            &id,
+            "tasks/t1",
+            json!({"n": 1}),
+            Pin::default(),
+            &admin(),
+        )
+        .unwrap();
+        match st.doc_set(
+            DAEMON,
+            &id,
+            "tasks/t1",
+            json!({"n": 2}),
+            Pin::default(),
+            &admin(),
+        ) {
             Err(CoreError::DocPinRequired { path, current }) => {
                 assert_eq!((path.as_str(), current), ("tasks/t1", 1))
             }
             other => panic!("{other:?}"),
         }
-        match st.doc_set(&id, "tasks/t1", json!({"n": 2}), pinned(7), &admin()) {
+        match st.doc_set(
+            DAEMON,
+            &id,
+            "tasks/t1",
+            json!({"n": 2}),
+            pinned(7),
+            &admin(),
+        ) {
             Err(CoreError::DocConflict { current, .. }) => assert_eq!(current, Some(1)),
             other => panic!("{other:?}"),
         }
-        match st.doc_set(&id, "tasks/none", json!({}), pinned(1), &admin()) {
+        match st.doc_set(DAEMON, &id, "tasks/none", json!({}), pinned(1), &admin()) {
             Err(CoreError::DocConflict { current, .. }) => assert_eq!(current, None),
             other => panic!("{other:?}"),
         }
         assert_eq!(
-            st.doc_set(&id, "tasks/t1", json!({"n": 3}), page(), &admin())
+            st.doc_set(DAEMON, &id, "tasks/t1", json!({"n": 3}), page(), &admin())
                 .unwrap()
                 .doc
                 .unwrap()
@@ -1118,6 +1223,7 @@ mod tests {
         let (_d, st) = store();
         let id = artifact_with_caps(&st, json!({}));
         st.doc_set(
+            DAEMON,
             &id,
             "c/d",
             json!({"a": {"x": 1, "y": 2}, "b": [1, 2], "c": "keep"}),
@@ -1125,13 +1231,13 @@ mod tests {
             &admin(),
         )
         .unwrap();
-        let d = st.doc_update(&id, "c/d", json!({"a": {"y": {"__delete__": true}, "z": 3}, "b": [3], "n": {"m": {"__delete__": true}}}), page(), &admin())
+        let d = st.doc_update(DAEMON, &id, "c/d", json!({"a": {"y": {"__delete__": true}, "z": 3}, "b": [3], "n": {"m": {"__delete__": true}}}), page(), &admin())
             .unwrap().doc.unwrap();
         assert_eq!(
             d.data,
             json!({"a": {"x": 1, "z": 3}, "b": [3], "c": "keep", "n": {}})
         );
-        match st.doc_update(&id, "c/missing", json!({"a": 1}), page(), &admin()) {
+        match st.doc_update(DAEMON, &id, "c/missing", json!({"a": 1}), page(), &admin()) {
             Err(CoreError::Invalid {
                 code: "invalid_argument",
                 message,
@@ -1143,7 +1249,7 @@ mod tests {
             op: BatchOp::Update(json!({"a": 1})),
             if_version: None,
         }];
-        match st.doc_batch(&id, batch, true, &admin()) {
+        match st.doc_batch(DAEMON, &id, batch, true, &admin()) {
             Err(CoreError::InBatch { op: 0, error, .. }) => assert!(
                 matches!(
                     *error,
@@ -1156,7 +1262,14 @@ mod tests {
             ),
             other => panic!("{other:?}"),
         }
-        match st.doc_update(&id, "c/d", json!({"__delete__": true}), page(), &admin()) {
+        match st.doc_update(
+            DAEMON,
+            &id,
+            "c/d",
+            json!({"__delete__": true}),
+            page(),
+            &admin(),
+        ) {
             Err(CoreError::Invalid {
                 code: "invalid_argument",
                 message,
@@ -1167,6 +1280,7 @@ mod tests {
         assert!(
             matches!(
                 st.doc_update(
+                    DAEMON,
                     &id,
                     "c/d",
                     json!({"b": [{"__delete__": true}]}),
@@ -1198,7 +1312,7 @@ mod tests {
             json!({"s": "x".repeat(MAX_DOC_BYTES)}),
         ] {
             assert!(matches!(
-                st.doc_set(&id, "c/d", body, page(), &admin()),
+                st.doc_set(DAEMON, &id, "c/d", body, page(), &admin()),
                 Err(CoreError::Invalid {
                     code: "invalid_argument",
                     ..
@@ -1207,7 +1321,7 @@ mod tests {
         }
         assert!(
             matches!(
-                st.doc_set(&id, "c", json!({}), page(), &admin()),
+                st.doc_set(DAEMON, &id, "c", json!({}), page(), &admin()),
                 Err(CoreError::Invalid {
                     code: "invalid_argument",
                     ..
@@ -1226,6 +1340,7 @@ mod tests {
         );
         assert!(matches!(
             st.doc_set(
+                DAEMON,
                 &id,
                 "t/1",
                 json!({}),
@@ -1234,7 +1349,8 @@ mod tests {
             ),
             Err(CoreError::DocNotFound { .. })
         ));
-        st.doc_set(&id, "t/1", json!({}), page(), &admin()).unwrap();
+        st.doc_set(DAEMON, &id, "t/1", json!({}), page(), &admin())
+            .unwrap();
         assert!(
             st.doc_get(&id, "t/1", &who(Level::View, None))
                 .unwrap()
@@ -1243,7 +1359,14 @@ mod tests {
         );
         let open = artifact_with_caps(&st, json!({}));
         assert!(matches!(
-            st.doc_set(&open, "t/1", json!({}), page(), &who(Level::View, Some(A))),
+            st.doc_set(
+                DAEMON,
+                &open,
+                "t/1",
+                json!({}),
+                page(),
+                &who(Level::View, Some(A))
+            ),
             Err(CoreError::DocNotFound { .. })
         ));
     }
@@ -1255,6 +1378,7 @@ mod tests {
         let mine = format!("data/users/{A}/profile");
         let w = st
             .doc_set(
+                DAEMON,
                 &id,
                 &mine,
                 json!({"pick": 3}),
@@ -1276,7 +1400,7 @@ mod tests {
             assert!(st.doc_query(&id, &q, &c).unwrap().0.is_empty(), "{c:?}");
             assert!(
                 matches!(
-                    st.doc_set(&id, &mine, json!({}), page(), &c),
+                    st.doc_set(DAEMON, &id, &mine, json!({}), page(), &c),
                     Err(CoreError::DocNotFound { .. })
                 ),
                 "{c:?}"
@@ -1308,7 +1432,7 @@ mod tests {
                     if_version: None,
                 })
                 .collect();
-            st.doc_batch(&id, chunk, true, &admin()).unwrap();
+            st.doc_batch(DAEMON, &id, chunk, true, &admin()).unwrap();
         }
         let q = DocQuery {
             collection: "log".into(),
@@ -1341,6 +1465,7 @@ mod tests {
         let n = MAX_UNLIMITED_QUERY_BYTES / (MAX_DOC_BYTES - 64) + 1;
         for i in 0..n {
             st.doc_set(
+                DAEMON,
                 &id,
                 &format!("big/d{i:04}"),
                 json!({"at": i, "s": big}),
@@ -1388,11 +1513,18 @@ mod tests {
             ("c", json!({"n": 2, "tags": ["x", "y"], "s": "open"})),
             ("d", json!({"s": "open"})),
         ] {
-            st.doc_set(&id, &format!("tasks/{k}"), v, page(), &admin())
+            st.doc_set(DAEMON, &id, &format!("tasks/{k}"), v, page(), &admin())
                 .unwrap();
         }
-        st.doc_set(&id, "tasks/a/sub/z", json!({"n": 0}), page(), &admin())
-            .unwrap();
+        st.doc_set(
+            DAEMON,
+            &id,
+            "tasks/a/sub/z",
+            json!({"n": 0}),
+            page(),
+            &admin(),
+        )
+        .unwrap();
         let ids = |q: DocQuery| {
             st.doc_query(&id, &q, &admin())
                 .unwrap()
@@ -1524,7 +1656,7 @@ mod tests {
     fn batch_is_atomic_and_names_the_failing_path() {
         let (_d, st) = store();
         let id = artifact_with_caps(&st, json!({}));
-        st.doc_set(&id, "t/1", json!({"n": 1}), page(), &admin())
+        st.doc_set(DAEMON, &id, "t/1", json!({"n": 1}), page(), &admin())
             .unwrap();
         let writes = vec![
             BatchWrite {
@@ -1538,7 +1670,7 @@ mod tests {
                 if_version: Some(5),
             },
         ];
-        match st.doc_batch(&id, writes, false, &admin()) {
+        match st.doc_batch(DAEMON, &id, writes, false, &admin()) {
             Err(CoreError::InBatch { op, path, error }) => {
                 assert_eq!((op, path.as_str()), (1, "t/1"));
                 assert!(
@@ -1561,6 +1693,7 @@ mod tests {
         );
         let ok = st
             .doc_batch(
+                DAEMON,
                 &id,
                 vec![
                     BatchWrite {
@@ -1591,7 +1724,7 @@ mod tests {
                 if_version: None,
             },
         ];
-        match st.doc_batch(&id, dup, false, &admin()) {
+        match st.doc_batch(DAEMON, &id, dup, false, &admin()) {
             Err(CoreError::InBatch { op: 1, path, error }) => {
                 assert_eq!(path, "t/3");
                 assert!(matches!(
@@ -1612,7 +1745,7 @@ mod tests {
             })
             .collect();
         assert!(matches!(
-            st.doc_batch(&id, many, false, &admin()),
+            st.doc_batch(DAEMON, &id, many, false, &admin()),
             Err(CoreError::Invalid {
                 code: "invalid_argument",
                 ..
@@ -1625,6 +1758,7 @@ mod tests {
         let (_d, st) = store();
         let id = artifact_with_caps(&st, json!({}));
         st.doc_set(
+            DAEMON,
             &id,
             "p/1",
             json!({"html": "a-b-a", "n": 1}),
@@ -1639,34 +1773,62 @@ mod tests {
             replace_all: all,
         };
         assert!(matches!(
-            st.doc_str_replace(&id, "p/1", r("a", false, "html"), pinned(1), &admin()),
+            st.doc_str_replace(
+                DAEMON,
+                &id,
+                "p/1",
+                r("a", false, "html"),
+                pinned(1),
+                &admin()
+            ),
             Err(CoreError::Invalid {
                 code: "old_str_not_unique",
                 ..
             })
         ));
         assert!(matches!(
-            st.doc_str_replace(&id, "p/1", r("q", false, "html"), pinned(1), &admin()),
+            st.doc_str_replace(
+                DAEMON,
+                &id,
+                "p/1",
+                r("q", false, "html"),
+                pinned(1),
+                &admin()
+            ),
             Err(CoreError::Invalid {
                 code: "old_str_not_found",
                 ..
             })
         ));
         assert!(matches!(
-            st.doc_str_replace(&id, "p/1", r("a", false, "n"), pinned(1), &admin()),
+            st.doc_str_replace(DAEMON, &id, "p/1", r("a", false, "n"), pinned(1), &admin()),
             Err(CoreError::Invalid {
                 code: "invalid_argument",
                 ..
             })
         ));
         let d = st
-            .doc_str_replace(&id, "p/1", r("b", false, "html"), pinned(1), &admin())
+            .doc_str_replace(
+                DAEMON,
+                &id,
+                "p/1",
+                r("b", false, "html"),
+                pinned(1),
+                &admin(),
+            )
             .unwrap()
             .doc
             .unwrap();
         assert_eq!((d.data["html"].as_str(), d.version), (Some("a-Z-a"), 2));
         let d = st
-            .doc_str_replace(&id, "p/1", r("a", true, "html"), pinned(2), &admin())
+            .doc_str_replace(
+                DAEMON,
+                &id,
+                "p/1",
+                r("a", true, "html"),
+                pinned(2),
+                &admin(),
+            )
             .unwrap()
             .doc
             .unwrap();
@@ -1687,14 +1849,14 @@ mod tests {
             Ok(())
         }).unwrap();
         assert!(matches!(
-            st.doc_set(&id, "f/new", json!({}), page(), &admin()),
+            st.doc_set(DAEMON, &id, "f/new", json!({}), page(), &admin()),
             Err(CoreError::Invalid {
                 code: "quota_exceeded",
                 ..
             })
         ));
         assert!(
-            st.doc_set(&id, "f/0", json!({"n": 1}), page(), &admin())
+            st.doc_set(DAEMON, &id, "f/0", json!({"n": 1}), page(), &admin())
                 .is_ok(),
             "existing documents stay writable"
         );
@@ -1706,6 +1868,7 @@ mod tests {
         let id = artifact_with_caps(&st, json!({}));
         let acq = |holder: &str, data: Option<Value>| {
             st.doc_acquire(
+                DAEMON,
                 &id,
                 "locks/editor",
                 Acquire {
@@ -1744,6 +1907,7 @@ mod tests {
         assert!(acq("tab-b", None).0.acquired, "a lapsed lease is free");
         let (none, _) = st
             .doc_acquire(
+                DAEMON,
                 &id,
                 "locks/empty",
                 Acquire {
@@ -1760,6 +1924,7 @@ mod tests {
         );
         assert!(
             st.doc_acquire(
+                DAEMON,
                 &id,
                 "locks/e",
                 Acquire {
@@ -1777,8 +1942,10 @@ mod tests {
     fn deleting_the_artifact_erases_its_documents_and_leases() {
         let (_d, st) = store();
         let id = artifact_with_caps(&st, json!({}));
-        st.doc_set(&id, "t/1", json!({}), page(), &admin()).unwrap();
+        st.doc_set(DAEMON, &id, "t/1", json!({}), page(), &admin())
+            .unwrap();
         st.doc_acquire(
+            DAEMON,
             &id,
             "t/1",
             Acquire {
@@ -1789,7 +1956,7 @@ mod tests {
             &admin(),
         )
         .unwrap();
-        st.delete_artifact(&id).unwrap();
+        st.delete_artifact(DAEMON, &id).unwrap();
         let left: i64 = st
             .with_read(|c| {
                 Ok(c.query_row(
@@ -1819,26 +1986,28 @@ mod tests {
         let id = artifact_with_caps(&st, json!({}));
         let v = |w: Written| w.doc.unwrap().version;
         let a1 = v(st
-            .doc_set(&id, "t/a", json!({"n": 1}), page(), &admin())
+            .doc_set(DAEMON, &id, "t/a", json!({"n": 1}), page(), &admin())
             .unwrap());
         let b1 = v(st
-            .doc_set(&id, "t/b", json!({"n": 1}), page(), &admin())
+            .doc_set(DAEMON, &id, "t/b", json!({"n": 1}), page(), &admin())
             .unwrap());
         assert!(b1 > a1, "two documents get distinct increasing versions");
-        st.doc_delete(&id, "t/a", pinned(a1), &admin()).unwrap();
+        st.doc_delete(DAEMON, &id, "t/a", pinned(a1), &admin())
+            .unwrap();
         let a2 = v(st
-            .doc_set(&id, "t/a", json!({"n": 2}), page(), &admin())
+            .doc_set(DAEMON, &id, "t/a", json!({"n": 2}), page(), &admin())
             .unwrap());
         assert!(
             a2 > b1 && a2 > a1,
             "a recreated document never reuses a version: {a1} {b1} {a2}"
         );
-        match st.doc_set(&id, "t/a", json!({"n": 3}), pinned(a1), &admin()) {
+        match st.doc_set(DAEMON, &id, "t/a", json!({"n": 3}), pinned(a1), &admin()) {
             Err(CoreError::DocConflict { current, .. }) => assert_eq!(current, Some(a2)),
             other => panic!("a pin from before the delete must conflict: {other:?}"),
         }
         let batch = st
             .doc_batch(
+                DAEMON,
                 &id,
                 vec![BatchWrite {
                     path: "t/c".into(),
@@ -1853,6 +2022,7 @@ mod tests {
         assert!(c1 > a2);
         let (acq, _) = st
             .doc_acquire(
+                DAEMON,
                 &id,
                 "t/d",
                 Acquire {
@@ -1866,8 +2036,10 @@ mod tests {
         assert!(acq.version.unwrap() > c1);
         let other = artifact_with_caps(&st, json!({}));
         assert_eq!(
-            v(st.doc_set(&other, "t/a", json!({}), page(), &admin())
-                .unwrap()),
+            v(
+                st.doc_set(DAEMON, &other, "t/a", json!({}), page(), &admin())
+                    .unwrap()
+            ),
             1,
             "each artifact has its own sequence"
         );
@@ -1883,14 +2055,14 @@ mod tests {
             }
             other => panic!("{other:?}"),
         };
-        path_err(st.doc_update(&id, "odd", json!([1]), page(), &admin()));
+        path_err(st.doc_update(DAEMON, &id, "odd", json!([1]), page(), &admin()));
         let r = StrReplace {
             field: "f".into(),
             old_str: String::new(),
             new_str: "x".into(),
             replace_all: false,
         };
-        path_err(st.doc_str_replace(&id, "odd", r, page(), &admin()));
+        path_err(st.doc_str_replace(DAEMON, &id, "odd", r, page(), &admin()));
         let writes = vec![
             BatchWrite {
                 path: "t/1".into(),
@@ -1903,7 +2075,7 @@ mod tests {
                 if_version: None,
             },
         ];
-        match st.doc_batch(&id, writes, true, &admin()) {
+        match st.doc_batch(DAEMON, &id, writes, true, &admin()) {
             Err(CoreError::InBatch { op: 1, path, error }) => {
                 assert_eq!(path, "odd");
                 assert!(error.to_string().contains("document path"), "{error}");
@@ -1931,7 +2103,7 @@ mod tests {
                 if_version: None,
             },
         ];
-        match st.doc_batch(&id, writes, true, &who(Level::Interact, Some(A))) {
+        match st.doc_batch(DAEMON, &id, writes, true, &who(Level::Interact, Some(A))) {
             Err(CoreError::InBatch { op: 1, path, error }) => {
                 assert_eq!(path, "locked/x");
                 assert!(matches!(&*error, CoreError::DocNotFound { path } if path == "locked/x"));
@@ -1951,7 +2123,7 @@ mod tests {
             },
         ];
         assert!(matches!(
-            st.doc_batch(&id, writes, true, &admin()),
+            st.doc_batch(DAEMON, &id, writes, true, &admin()),
             Err(CoreError::InBatch { op: 1, .. })
         ));
         let writes = vec![BatchWrite {
@@ -1960,7 +2132,7 @@ mod tests {
             if_version: None,
         }];
         assert!(matches!(
-            st.doc_batch(&id, writes, true, &admin()),
+            st.doc_batch(DAEMON, &id, writes, true, &admin()),
             Err(CoreError::InBatch { op: 0, .. })
         ));
         assert_eq!(doc_count(&st, "docs"), 0);
@@ -1996,6 +2168,7 @@ mod tests {
         let id = artifact_with_caps(&st, json!({}));
         let acq = |path: &str| {
             st.doc_acquire(
+                DAEMON,
                 &id,
                 path,
                 Acquire {

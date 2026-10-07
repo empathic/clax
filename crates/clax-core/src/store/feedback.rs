@@ -824,6 +824,7 @@ fn state_of(thread_id: &str, rows: &[StateRow], codex_push: bool) -> FeedbackSta
 mod tests {
     use super::*;
     use crate::feedback::{FeedbackPhase, Tier};
+    use crate::store::test_util::DAEMON;
     use crate::store::test_util::{anchor, artifact, session, store};
     use crate::store::threads::{AUTHOR_AGENT, AUTHOR_VIEWER, NewComment, NewThread};
     use crate::{ArtifactId, Store};
@@ -1505,7 +1506,7 @@ mod tests {
         let aid = artifact(&st, Some(&owner));
         let tid = thread(&st, &aid, "hi");
         st.send_to_agent(&tid).unwrap();
-        st.delete_artifact(&aid).unwrap();
+        st.delete_artifact(DAEMON, &aid).unwrap();
         for tier in [Tier::Piggyback, Tier::Wait, Tier::PromptHook] {
             assert!(take(&st, &owner, tier).is_empty(), "{tier:?}");
         }

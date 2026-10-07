@@ -12,6 +12,7 @@ use axum::extract::{FromRequest, Request};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use clax_core::audit::AuditCtx;
 use clax_core::live::KIND_LIVE;
 use clax_core::model::{Artifact, Session};
 use clax_core::publish::{PublishRequest, require_title, validate};
@@ -412,6 +413,7 @@ pub async fn list(
 pub async fn create(
     State(s): State<AppState>,
     _t: RequireToken,
+    audit: AuditCtx,
     headers: HeaderMap,
     req: Result<JsonBytes, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
@@ -427,7 +429,7 @@ pub async fn create(
     let (artifact, version) = s
         .store_call(move |st| {
             let session = publishing_session(st, &session)?;
-            let (artifact, version) = st.create_artifact(p, session.as_deref())?;
+            let (artifact, version) = st.create_artifact(&audit, p, session.as_deref())?;
             if let Some(sid) = &session {
                 let aid = ArtifactId::parse(&artifact.id)?;
                 st.ensure_watch(sid, &aid)?;
@@ -541,6 +543,7 @@ pub async fn presence(
 pub async fn patch(
     State(s): State<AppState>,
     _t: RequireToken,
+    audit: AuditCtx,
     aid: Result<Path<String>, PathRejection>,
     req: Result<Json<PatchBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -552,6 +555,7 @@ pub async fn patch(
     let artifact = s
         .store_call(move |st| {
             st.update_meta(
+                &audit,
                 &id,
                 MetaPatch {
                     title: b.title,
@@ -569,6 +573,7 @@ pub async fn patch(
 pub async fn delete(
     State(s): State<AppState>,
     _t: RequireToken,
+    audit: AuditCtx,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<StatusCode, ApiError> {
     let id = parse_id(&path(aid)?)?;
@@ -577,7 +582,7 @@ pub async fn delete(
     let working = s.working.clone();
     let live_ids = s.live_ids.clone();
     s.store_call(move |st| {
-        st.delete_artifact(&id)?;
+        st.delete_artifact(&audit, &id)?;
         crate::working::announce(&events, &working, &working.artifact_gone(id.as_str()));
         cache.remove_artifact(id.as_str());
         events.publish(Event::ArtifactDeleted {
@@ -615,6 +620,7 @@ pub async fn list_versions(
 pub async fn publish(
     State(s): State<AppState>,
     _t: RequireToken,
+    audit: AuditCtx,
     headers: HeaderMap,
     aid: Result<Path<String>, PathRejection>,
     req: Result<JsonBytes, JsonRejection>,
@@ -633,6 +639,7 @@ pub async fn publish(
     let truncated = p.note_truncated;
     let session = session_header(&headers)?;
     let by_page = headers.get(VIA_HEADER).and_then(|v| v.to_str().ok()) == Some("page");
+    p.by_page = by_page;
     let events = s.events.clone();
     let ctx = s.feedback_ctx();
     let (artifact, version) = s
@@ -643,7 +650,7 @@ pub async fn publish(
             if let Some(sid) = &session {
                 p.working_threads = ctx.working.threads_of(sid, id.as_str());
             }
-            let (artifact, version) = st.publish_version(&id, p, session.as_deref())?;
+            let (artifact, version) = st.publish_version(&audit, &id, p, session.as_deref())?;
             if let Some(sid) = &session {
                 let aid = ArtifactId::parse(&artifact.id)?;
                 st.ensure_watch(sid, &aid)?;

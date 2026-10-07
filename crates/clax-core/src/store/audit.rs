@@ -141,7 +141,8 @@ fn body_json(ctx: &AuditCtx, rec: AuditRecord) -> String {
 impl Store {
     /// Records `rec`, made under `ctx`, in `tx`: the event commits or rolls
     /// back with the change it describes. Returns its `seq`. The event's
-    /// `call_id` is `rec`'s, or else the call `ctx` was made under.
+    /// `call_id` is `rec`'s, or else the call `ctx` was made under; its
+    /// `session_id` is `rec`'s, or else the Clax session of `ctx`'s agent.
     ///
     /// `tx` must be the transaction of a [`Store::with_tx`] job, which fires
     /// the audit nudge once it commits. Under any other transaction the
@@ -165,6 +166,10 @@ impl Store {
         let call_id = ids
             .call
             .or_else(|| ctx.call.as_ref().map(|c| c.call_id.clone()));
+        let session_id = ids.session.or_else(|| match &ctx.actor {
+            crate::audit::Actor::Agent(a) => a.session_id.clone(),
+            _ => None,
+        });
         let body = body_json(ctx, rec);
         tx.prepare_cached(
             "INSERT INTO audit_events (at, kind, actor, artifact_id, artifact2_id, thread_id,
@@ -178,7 +183,7 @@ impl Store {
             ids.artifact,
             ids.artifact2,
             ids.thread,
-            ids.session,
+            session_id,
             ids.question,
             call_id,
             ids.origin,
@@ -505,6 +510,48 @@ pub(crate) mod tests {
             st.events_for_call("01JB8Q2WXYZ0000000000000AB")
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn an_agent_actors_session_fills_the_session_column() {
+        let (_d, st) = store();
+        let agent = AuditCtx {
+            actor: Actor::Agent(crate::audit::AgentActor {
+                session_id: Some("01JB8Q2WXYZ0000000000000SS".into()),
+                ..Default::default()
+            }),
+            via: Via::Mcp,
+            git: GitField::Absent,
+            call: None,
+        };
+        let sessionless = AuditCtx {
+            actor: Actor::Agent(crate::audit::AgentActor::default()),
+            ..agent.clone()
+        };
+        let mut named = rec("n");
+        named.ids.session = Some("01JB8Q2WXYZ0000000000000TT".into());
+        st.with_tx(|tx| {
+            st.record_audit(tx, &agent, rec("a"))?;
+            st.record_audit(tx, &sessionless, rec("s"))?;
+            st.record_audit(tx, &ctx(), rec("o"))?;
+            st.record_audit(tx, &agent, named)
+        })
+        .unwrap();
+        let sessions: Vec<Option<String>> = st
+            .events_after(0, 10)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.ids.session)
+            .collect();
+        assert_eq!(
+            sessions,
+            vec![
+                Some("01JB8Q2WXYZ0000000000000SS".into()),
+                None,
+                None,
+                Some("01JB8Q2WXYZ0000000000000TT".into()),
+            ]
         );
     }
 }

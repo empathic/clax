@@ -6,7 +6,7 @@ use super::Store;
 use super::live::{LivePage, PAGES_OF_ORIGIN, materialize};
 use super::threads::threads_of_many;
 use crate::anchor::Anchor;
-use crate::audit::{content_manifest_sha256, sha256_hex};
+use crate::audit::{AuditCtx, content_manifest_sha256, sha256_hex};
 use crate::live::{PageKey, PathPattern, winning_rule};
 use crate::model::{FileMeta, Thread, Version};
 use crate::publish::INDEX;
@@ -560,6 +560,42 @@ fn same_bytes(
 /// past this, the rest of a batch waits for the next request.
 pub const MAX_STAGE_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Records version `n` of page `to` (artifact `a`), just copied from source
+/// version `src`, as `live.snapshot` under `ctx`: the copy's files, the
+/// source's addresses, and `source` naming the version it was copied from.
+fn record_copy(
+    tx: &rusqlite::Transaction<'_>,
+    st: &Store,
+    ctx: &AuditCtx,
+    a: &crate::model::Artifact,
+    to: &LivePage,
+    n: u32,
+    src: &(String, u32),
+) -> Result<()> {
+    let mut v = tx.query_row(
+        &format!(
+            "{} WHERE artifact_id = ?1 AND n = ?2",
+            super::artifacts::SELECT_VERSION
+        ),
+        params![to.artifact_id, n],
+        super::artifacts::row_to_version,
+    )??;
+    let mut stmt = tx.prepare_cached(
+        "SELECT thread_id FROM version_threads WHERE artifact_id = ?1 AND version_n = ?2
+         ORDER BY created_at, rowid",
+    )?;
+    v.addresses = stmt
+        .query_map(params![src.0, src.1], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut rec = super::artifacts::version_record(a, &v, &[], false, Some(to)).with(
+        "source",
+        serde_json::json!({"artifact_id": src.0, "n": src.1}),
+    );
+    rec.ids.artifact2 = Some(src.0.clone());
+    st.record_audit(tx, ctx, rec)?;
+    Ok(())
+}
+
 /// Re-files the planned threads, in one transaction on the writer, with the
 /// work staged beforehand: each page must still be at the version staging
 /// saw and each thread on its page with the links staging saw (else
@@ -570,6 +606,7 @@ pub const MAX_STAGE_BYTES: u64 = 64 * 1024 * 1024;
 fn commit_refile(
     tx: &rusqlite::Transaction<'_>,
     st: &Store,
+    ctx: &AuditCtx,
     plans: &[Plan],
     stages: &mut [GroupStage],
     how: &MoveBy,
@@ -613,6 +650,15 @@ fn commit_refile(
         }
         let mut map = g.reuse.clone();
         let mut n = current;
+        let page = if g.copies.is_empty() {
+            None
+        } else {
+            Some(tx.query_row(
+                &format!("{} WHERE id = ?1", super::artifacts::SELECT),
+                params![to.artifact_id],
+                super::artifacts::row_to_artifact,
+            )??)
+        };
         for copy in g.copies.drain(..) {
             n += 1;
             tx.execute(
@@ -621,6 +667,9 @@ fn commit_refile(
                  VALUES (?1, ?2, NULL, ?3, NULL, ?4, ?5, ?6)",
                 params![to.artifact_id, n, now, copy.files_json, copy.note, copy.content_sha256],
             )?;
+            if let Some(a) = &page {
+                record_copy(tx, st, ctx, a, &to, n, &copy.src)?;
+            }
             let vdir = st.home.version_dir(&to_id, n);
             std::fs::rename(&copy.dir.0, &vdir)?;
             renamed.push(vdir);
@@ -1042,8 +1091,13 @@ impl Store {
     /// `NotFound` for a missing thread or page; `not_live` for a thread not
     /// on a live page; `cross_origin` for a thread of another origin;
     /// `Conflict` when the threads or pages keep changing under the move.
+    ///
+    /// Each version copied onto a page is recorded, in the re-filing's
+    /// transaction, as `live.snapshot` under `ctx`, with the source's
+    /// addresses and a `source` naming the version it copies.
     pub fn refile_threads(
         &self,
+        ctx: &AuditCtx,
         moves: &[(String, Refile)],
         how: &MoveBy,
         fresh: &[String],
@@ -1106,8 +1160,8 @@ impl Store {
                 hook();
             }
             let mut renamed = Vec::new();
-            let result =
-                self.with_tx(|tx| commit_refile(tx, self, &plans, &mut stages, how, &mut renamed));
+            let result = self
+                .with_tx(|tx| commit_refile(tx, self, ctx, &plans, &mut stages, how, &mut renamed));
             match result {
                 Ok(written) => {
                     for (copy, src) in clips {
@@ -1237,6 +1291,7 @@ pub fn resolve_with(rules: &[LiveRule], key: &PageKey) -> Resolved {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::test_util::DAEMON;
     use crate::store::test_util::{anchor, session, store};
     use crate::store::threads::NewThread;
 
@@ -1252,7 +1307,7 @@ mod tests {
 
     fn page(st: &Store, path: &str, html: &str) -> ArtifactId {
         let e = st
-            .ensure_live_page(&key(path), path, Some(html.as_bytes()))
+            .ensure_live_page(DAEMON, &key(path), path, Some(html.as_bytes()))
             .unwrap();
         ArtifactId::parse(&e.artifact.id).unwrap()
     }
@@ -1328,6 +1383,7 @@ mod tests {
         // An address linked to a later snapshot of /a, and one pending.
         st.mark_pending(&a, &t.id, "explicit", "claude").unwrap();
         st.ensure_live_page_linking(
+            DAEMON,
             &key("/a"),
             "/a",
             Some(b"<p>a2"),
@@ -1344,9 +1400,14 @@ mod tests {
         })
         .unwrap();
         let old_clip = st.home().clip_path(&a, &t.id);
+        let before = st
+            .events_after(0, 1000)
+            .unwrap()
+            .last()
+            .map_or(0, |e| e.seq);
 
         let done = st
-            .refile_threads(&[to(&b, &t.id)], &by(KIND_MOVE), &[])
+            .refile_threads(DAEMON, &[to(&b, &t.id)], &by(KIND_MOVE), &[])
             .unwrap();
         assert_eq!(
             done.moved,
@@ -1388,6 +1449,54 @@ mod tests {
             [hash(&b, 2), hash(&b, 3), hash(&b, 4)]
         );
         assert_eq!(st.get_artifact(&b).unwrap().unwrap().current_version, 4);
+        // Each copy is recorded as a snapshot of /b naming its source and
+        // the source's addresses.
+        let copies: Vec<(Option<String>, serde_json::Value)> = st
+            .events_after(before, 100)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "live.snapshot")
+            .map(|e| (e.ids.artifact2, serde_json::from_str(&e.body).unwrap()))
+            .collect();
+        let seen: Vec<_> = copies
+            .iter()
+            .map(|(src, b)| {
+                (
+                    b["n"].clone(),
+                    src.clone(),
+                    b["source"].clone(),
+                    b["addresses"].clone(),
+                    b["path"].clone(),
+                )
+            })
+            .collect();
+        let src = |id: &ArtifactId, n: u32| serde_json::json!({"artifact_id": id.as_str(), "n": n});
+        assert_eq!(
+            seen,
+            vec![
+                (
+                    2.into(),
+                    Some(a.to_string()),
+                    src(&a, 1),
+                    serde_json::json!([]),
+                    "/b".into()
+                ),
+                (
+                    3.into(),
+                    Some(a.to_string()),
+                    src(&a, 2),
+                    serde_json::json!([t.id]),
+                    "/b".into()
+                ),
+                (
+                    4.into(),
+                    Some(b.to_string()),
+                    src(&b, 1),
+                    serde_json::json!([]),
+                    "/b".into()
+                ),
+            ]
+        );
         let moved = st.get_thread(&t.id).unwrap().unwrap();
         assert_eq!(moved.artifact_id, b.as_str());
         assert_eq!(moved.version_n, 2);
@@ -1416,11 +1525,11 @@ mod tests {
 
         // Moving it again to where it is changes nothing.
         let again = st
-            .refile_threads(&[to(&b, &t.id)], &by(KIND_MOVE), &[])
+            .refile_threads(DAEMON, &[to(&b, &t.id)], &by(KIND_MOVE), &[])
             .unwrap();
         assert!(again.moved.is_empty() && again.versions.is_empty());
         // Deleting the page it left keeps it whole.
-        st.delete_artifact(&a).unwrap();
+        st.delete_artifact(DAEMON, &a).unwrap();
         let kept = st.get_thread(&t.id).unwrap().unwrap();
         let x = st
             .thread_extras(std::slice::from_ref(&kept), false)
@@ -1460,7 +1569,7 @@ mod tests {
         assert!(legacy.content_sha256.is_none());
         assert!(legacy.files.values().all(|f| f.sha256.is_none()));
 
-        st.refile_threads(&[to(&b, &t.id)], &by(KIND_MOVE), &[])
+        st.refile_threads(DAEMON, &[to(&b, &t.id)], &by(KIND_MOVE), &[])
             .unwrap();
         // The copy records its files' hashes along with its content hash.
         let copy = st.get_version(&b, 2).unwrap().unwrap();
@@ -1483,12 +1592,12 @@ mod tests {
         let b = page(&st, "/b", "<p>b");
         let t = thread(&st, &a, None);
         let there = st
-            .refile_threads(&[to(&b, &t.id)], &by(KIND_MOVE), &[])
+            .refile_threads(DAEMON, &[to(&b, &t.id)], &by(KIND_MOVE), &[])
             .unwrap();
         assert_eq!(there.versions.len(), 2, "a copy, and /b's own on top");
         // Back to /a: its version 1 has the same bytes; nothing is written.
         let back = st
-            .refile_threads(&[to(&a, &t.id)], &by(KIND_MOVE), &[])
+            .refile_threads(DAEMON, &[to(&a, &t.id)], &by(KIND_MOVE), &[])
             .unwrap();
         assert!(back.versions.is_empty());
         assert_eq!(st.get_thread(&t.id).unwrap().unwrap().version_n, 1);
@@ -1496,7 +1605,7 @@ mod tests {
         // And to /b again: its copy is reused, and its current version
         // stays.
         let again = st
-            .refile_threads(&[to(&b, &t.id)], &by(KIND_MOVE), &[])
+            .refile_threads(DAEMON, &[to(&b, &t.id)], &by(KIND_MOVE), &[])
             .unwrap();
         assert!(again.versions.is_empty());
         assert_eq!(st.get_thread(&t.id).unwrap().unwrap().version_n, 2);
@@ -1513,7 +1622,12 @@ mod tests {
         let t2 = thread(&st, &c, None);
         // /c's snapshot is gone from disk: its link fails mid-way.
         std::fs::remove_file(st.home().version_dir(&c, 1).join(INDEX)).unwrap();
-        let err = st.refile_threads(&[to(&b, &t1.id), to(&b, &t2.id)], &by(KIND_MOVE), &[]);
+        let err = st.refile_threads(
+            DAEMON,
+            &[to(&b, &t1.id), to(&b, &t2.id)],
+            &by(KIND_MOVE),
+            &[],
+        );
         assert!(err.is_err());
         assert_eq!(st.get_artifact(&b).unwrap().unwrap().current_version, 1);
         assert_eq!(st.list_versions(&b).unwrap().len(), 1);
@@ -1534,6 +1648,7 @@ mod tests {
         let t = thread(&st, &a, None);
         let other = st
             .ensure_live_page(
+                DAEMON,
                 &PageKey {
                     origin: "http://localhost:3000".into(),
                     path: "/".into(),
@@ -1544,7 +1659,7 @@ mod tests {
             .unwrap();
         let other = ArtifactId::parse(&other.artifact.id).unwrap();
         let err = st
-            .refile_threads(&[to(&other, &t.id)], &by(KIND_MOVE), &[])
+            .refile_threads(DAEMON, &[to(&other, &t.id)], &by(KIND_MOVE), &[])
             .unwrap_err();
         assert!(matches!(err, CoreError::Invalid { code, .. } if code == "cross_origin"));
         let html = crate::store::test_util::artifact(&st, None);
@@ -1563,11 +1678,11 @@ mod tests {
             )
             .unwrap();
         let err = st
-            .refile_threads(&[to(&a, &h.id)], &by(KIND_MOVE), &[])
+            .refile_threads(DAEMON, &[to(&a, &h.id)], &by(KIND_MOVE), &[])
             .unwrap_err();
         assert!(matches!(err, CoreError::Invalid { code, .. } if code == "not_live"));
         assert!(matches!(
-            st.refile_threads(&[to(&a, "nope")], &by(KIND_MOVE), &[]),
+            st.refile_threads(DAEMON, &[to(&a, "nope")], &by(KIND_MOVE), &[]),
             Err(CoreError::NotFound)
         ));
         assert_eq!(st.get_artifact(&other).unwrap().unwrap().current_version, 1);
@@ -1602,7 +1717,9 @@ mod tests {
         assert_eq!((batch.len(), remaining), (1, 1));
         assert_eq!(batch[0].thread_id, t1.id);
         assert_eq!(batch[0].live_path.as_deref(), Some("/users/1"));
-        let canon = st.ensure_live_page(&key("/users/:id"), "U", None).unwrap();
+        let canon = st
+            .ensure_live_page(DAEMON, &key("/users/:id"), "U", None)
+            .unwrap();
         let canon_id = ArtifactId::parse(&canon.artifact.id).unwrap();
         let merge = MoveBy {
             by: "viewer:u_x".into(),
@@ -1613,11 +1730,13 @@ mod tests {
             b.into_iter().map(|r| (canon_id.to_string(), r)).collect()
         };
         let fresh = [canon_id.to_string()];
-        st.refile_threads(&moves(batch), &merge, &fresh).unwrap();
+        st.refile_threads(DAEMON, &moves(batch), &merge, &fresh)
+            .unwrap();
         let (batch, remaining) = st.merge_candidates(&id, 1).unwrap();
         assert_eq!((batch.len(), remaining), (1, 0));
         assert_eq!(batch[0].route.as_deref(), Some("#/tab"));
-        st.refile_threads(&moves(batch), &merge, &fresh).unwrap();
+        st.refile_threads(DAEMON, &moves(batch), &merge, &fresh)
+            .unwrap();
         assert!(st.merge_candidates(&id, 1).unwrap().0.is_empty());
         // The placeholder of the page made for the merge stays below.
         let v = st.list_versions(&canon_id).unwrap();
@@ -1659,7 +1778,7 @@ mod tests {
             .into_iter()
             .map(|(k, r)| (st.find_live_page(&k).unwrap().unwrap().artifact_id, r))
             .collect();
-        st.refile_threads(&moves, &unmerge, &[]).unwrap();
+        st.refile_threads(DAEMON, &moves, &unmerge, &[]).unwrap();
         assert_eq!(
             st.get_thread(&t1.id).unwrap().unwrap().artifact_id,
             one.as_str()
@@ -1683,7 +1802,9 @@ mod tests {
         let one = session(&st, "claude", "one");
         let two = session(&st, "claude", "two");
         st.live_watch(&one, &key("/users/1"), true).unwrap();
-        let canon = st.ensure_live_page(&key("/users/:id"), "U", None).unwrap();
+        let canon = st
+            .ensure_live_page(DAEMON, &key("/users/:id"), "U", None)
+            .unwrap();
         let canon = ArtifactId::parse(&canon.artifact.id).unwrap();
         assert!(watchers(&st, &canon).is_empty());
         st.create_live_thread(
@@ -1745,15 +1866,15 @@ mod tests {
         let (_d, st) = store();
         let a = page(&st, "/a", "<p>a");
         let c = page(&st, "/c", "<p>c");
-        let made = st.ensure_live_page(&key("/b"), "/b", None).unwrap();
+        let made = st.ensure_live_page(DAEMON, &key("/b"), "/b", None).unwrap();
         let b = ArtifactId::parse(&made.artifact.id).unwrap();
         let t1 = thread(&st, &a, None);
         let t2 = thread(&st, &c, None);
-        st.refile_threads(&[to(&b, &t1.id)], &by(KIND_MOVE), &[b.to_string()])
+        st.refile_threads(DAEMON, &[to(&b, &t1.id)], &by(KIND_MOVE), &[b.to_string()])
             .unwrap();
         // /b: v1 its placeholder, v2 /a's snapshot, current.
         assert_eq!(st.get_artifact(&b).unwrap().unwrap().current_version, 2);
-        st.refile_threads(&[to(&b, &t2.id)], &by(KIND_MOVE), &[])
+        st.refile_threads(DAEMON, &[to(&b, &t2.id)], &by(KIND_MOVE), &[])
             .unwrap();
         let cur = st.get_artifact(&b).unwrap().unwrap().current_version;
         assert_eq!(cur, 4);
@@ -1789,8 +1910,13 @@ mod tests {
             },
         )
         .unwrap();
-        st.refile_threads(&[to(&b, &t.id)], &by(KIND_MOVE), &[])
-            .unwrap();
+        st.refile_threads(
+            &crate::audit::AuditCtx::DAEMON,
+            &[to(&b, &t.id)],
+            &by(KIND_MOVE),
+            &[],
+        )
+        .unwrap();
         let q = |aid: &ArtifactId| crate::store::inbox::InboxQuery {
             artifact: Some(aid.to_string()),
             ..Default::default()
@@ -1821,7 +1947,8 @@ mod tests {
             })),
         );
         std::thread::scope(|s| {
-            let mover = s.spawn(|| st.refile_threads(&[to(&b, &t.id)], &by(KIND_MOVE), &[]));
+            let mover =
+                s.spawn(|| st.refile_threads(DAEMON, &[to(&b, &t.id)], &by(KIND_MOVE), &[]));
             staged_rx
                 .recv_timeout(std::time::Duration::from_secs(10))
                 .unwrap();
@@ -1868,10 +1995,11 @@ mod tests {
             })),
         );
         std::thread::scope(|s| {
-            let mover = s.spawn(|| st.refile_threads(&[to(&b, &t.id)], &by(KIND_MOVE), &[]));
+            let mover =
+                s.spawn(|| st.refile_threads(DAEMON, &[to(&b, &t.id)], &by(KIND_MOVE), &[]));
             staged_rx.recv_timeout(wait).unwrap();
             // A snapshot of /b lands after the first staging.
-            st.ensure_live_page(&key("/b"), "/b", Some(b"<p>b2"))
+            st.ensure_live_page(DAEMON, &key("/b"), "/b", Some(b"<p>b2"))
                 .unwrap();
             go_tx.send(()).unwrap();
             staged_rx.recv_timeout(wait).unwrap();
@@ -1911,7 +2039,12 @@ mod tests {
         })
         .unwrap();
         let done = st
-            .refile_threads(&[to(&b, &t1.id), to(&b, &t2.id)], &by(KIND_MOVE), &[])
+            .refile_threads(
+                DAEMON,
+                &[to(&b, &t1.id), to(&b, &t2.id)],
+                &by(KIND_MOVE),
+                &[],
+            )
             .unwrap();
         assert_eq!((done.moved.len(), done.deferred), (1, 1));
         assert_eq!(
@@ -1929,7 +2062,7 @@ mod tests {
         st.live_watch(&sid, &key("/a"), true).unwrap();
         assert_eq!(watchers(&st, &a), vec![sid.clone()]);
         let t = thread(&st, &a, None);
-        st.refile_threads(&[to(&b, &t.id)], &by(KIND_MOVE), &[])
+        st.refile_threads(DAEMON, &[to(&b, &t.id)], &by(KIND_MOVE), &[])
             .unwrap();
         assert_eq!(watchers(&st, &b), vec![sid.clone()]);
         let mut removed = st.live_unwatch(&sid, &key("/a")).unwrap();
