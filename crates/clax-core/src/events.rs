@@ -128,9 +128,11 @@ pub enum Event {
         item: serde_json::Value,
         unread: u32,
     },
-    /// Many items' read state changed at once: `ids` (null: refetch what
-    /// is shown) are now `read`; `unread` is the count after. Only the
-    /// `inbox` topic carries it.
+    /// Many items' read state changed at once (a transaction that changed
+    /// more items than the inbox listener announces one by one): clients
+    /// refetch what they show. `ids` is always `None` (serialised `null`,
+    /// "refetch"); `read` is always `true`, even after a bulk unread mark;
+    /// `unread` is the count after. Only the `inbox` topic carries it.
     InboxRead {
         ids: Option<Vec<String>>,
         read: bool,

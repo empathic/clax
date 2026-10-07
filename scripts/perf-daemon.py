@@ -17,10 +17,12 @@ process loops on cheap requests (`/healthz`, `/a/<id>`, `/c/<id>/v/1/`,
 - inbox tab: the owner's inbox refreshed and searched once a second
   (GET /api/inbox?read=unread, a search for a common word, the summary).
 
-The seed also fills the owner's inbox: the owner comments on eight threads
-(as the CLI does, with the token, after a browser of the owner's made the
-owner viewer) and sends them, agents reply on them round-robin, and agents
-ask questions.
+The seed also fills the owner's inbox to about spec §14's 6,000 items: the
+owner comments on one thread of each of `inbox_threads` artifacts (as the
+CLI does, with the token, after a browser of the owner's made the owner
+viewer) and sends them; agents reply on them round-robin, publish versions
+of those artifacts addressing them, and ask questions. With the seed
+artifacts' `published` items that is replies + versions + questions + 300.
 
 Each round also times GET /api/viewers/me/attention alone, and the three
 inbox requests alone, nothing else running. A probe's p95 and max are taken per round; the gate judges the
@@ -30,7 +32,8 @@ it. Requests still in flight when a window closes are waited for and count.
 Budgets live in scripts/perf-daemon-budget.json:
 - `cheap_p95_ms`, `cheap_max_ms`: every probe under every load;
 - `attention_alone_ms`: the median of the attention request alone;
-- `inbox_alone_ms`: the median of the inbox tab's three requests, each alone;
+- `inbox_alone_ms`: each of the inbox tab's three requests alone: the
+  median over rounds of each request's own median, each judged;
 - `quiet_idle_p95_ms`, `max_scale`: the limits are the budgets times
   clamp(idle p95 / quiet_idle_p95_ms, 1, max_scale), the idle p95 measured
   in the same run, so a machine busy with other work gets proportionally
@@ -41,12 +44,9 @@ Budgets live in scripts/perf-daemon-budget.json:
   judged by the same budgets and the same idle scaling. The seed stays
   whole: with fewer threads a regression in the attention queries would
   show less, and with fewer inbox items one in the inbox queries would.
-  `inbox_replies` is 2000, not the 5000 first planned: 5000 replies on
-  eight threads took 6.5 s to seed (each reply answers with its whole
-  thread, so the cost grows with the threads' length), 2000 take about 2 s.
-  The inbox requests' cost follows a page, not the history (their query
-  plans are checked in clax-core), so the smaller history measures the same
-  thing; 2000 replies is already 2,300 unread items.
+  The replies are spread over 64 threads (about 70 each): each reply's
+  response carries its whole thread, so on eight threads 5000 replies took
+  6.5 s to seed; on 64 the whole inbox seed (6,000 items) takes about 3 s.
 
 Exits 0 when every median is within its limit, 1 when one is not, 2 on a
 setup failure. The scratch home and the daemon are removed on every exit.
@@ -349,9 +349,6 @@ def seed(port, token, cfg):
             "seconds": time.perf_counter() - t0, "inbox_seconds": time.perf_counter() - t_inbox, **inbox}
 
 
-INBOX_THREADS = 8
-
-
 def owner_cookie(port, token):
     """The owner cookie a browser of the owner's holds (identity.rs)."""
     value = hashlib.sha256(b"clax owner cookie\n" + token.encode()).hexdigest()
@@ -359,21 +356,26 @@ def owner_cookie(port, token):
 
 
 def seed_inbox(port, token, cfg, made, sessions, client):
-    """The owner's inbox: the owner comments on one thread of each of eight
-    artifacts (away from the probed ones) and sends it; agents reply on
-    those threads round-robin, 20 requests in flight; agents ask questions."""
+    """The owner's inbox, about spec §14's 6,000 items: the published items
+    the seed's agent artifacts already made, then the owner comments on one
+    thread of each of `inbox_threads` artifacts (away from the probed ones)
+    and sends it; agents reply on those threads round-robin and publish
+    versions of those artifacts addressing them, 20 requests in flight;
+    agents ask questions. Replies are spread over many threads because each
+    reply's response carries its whole thread."""
     c = Client(port, token)
     st, d, _, _ = c.req("GET", "/api/viewers/me", headers=owner_cookie(port, token), auth=False)
     expect(st == 200, f"no owner viewer: {st} {d[:200]!r}")
+    n_threads = cfg["inbox_threads"]
+    expect(len(made) >= 10 + n_threads, "too few artifacts for the inbox threads")
     threads = []
-    for aid, tids in made[10:10 + INBOX_THREADS]:
+    for aid, tids in made[10:10 + n_threads]:
         tid = tids[0]
         st, d, _, _ = c.req("POST", f"/api/artifacts/{aid}/threads/{tid}/comments", {"body": "please fix the header"})
         expect(st == 201, f"owner comment: {st} {d[:200]!r}")
         st, d, _, _ = c.req("POST", f"/api/artifacts/{aid}/threads/{tid}/send", {})
         expect(st == 200, f"send: {st} {d[:200]!r}")
         threads.append((aid, tid))
-    expect(len(threads) == INBOX_THREADS, "too few artifacts for the inbox threads")
 
     def reply(k):
         aid, tid = threads[k % len(threads)]
@@ -382,20 +384,38 @@ def seed_inbox(port, token, cfg, made, sessions, client):
                                    {"x-clax-session": sessions[k % len(sessions)]})
         expect(st == 201, f"agent reply: {st} {d[:200]!r}")
 
+    per = cfg["inbox_versions"] // len(threads)
+
+    def versions(i):
+        aid, tid = threads[i]
+        cl = client()
+        for n in range(1, per + 1):
+            st, d, _, _ = cl.req("POST", f"/api/artifacts/{aid}/versions",
+                                 {"if_version": n, "note": f"header pass {n}", "addresses": [tid],
+                                  "files": {"index.html": {"content": f"<main><h2>Quarterly goals</h2><p>{n}</p></main>",
+                                                           "encoding": "utf8"}}},
+                                 {"x-clax-session": sessions[i % len(sessions)]})
+            expect(st == 201, f"version: {st} {d[:200]!r}")
+
     with ThreadPoolExecutor(20) as ex:
         list(ex.map(reply, range(cfg["inbox_replies"])))
+        list(ex.map(versions, range(len(threads))))
     for k in range(cfg["inbox_questions"]):
         st, d, _, _ = c.req("POST", f"/api/sessions/{sessions[k % len(sessions)]}/questions",
                             {"source": "ask", "questions": [{"question": f"Which header {k}?", "header": "Header",
                                                              "options": [{"label": "Top"}, {"label": "Side"}]}]})
         expect(st == 201, f"ask: {st} {d[:200]!r}")
+    st, d, _, _ = c.req("GET", "/api/inbox?read=all&kind=reply,version,question&limit=1")
+    expect(st == 200, f"inbox: {st}")
+    seeded = json.loads(d)["total"]
+    want = cfg["inbox_replies"] + per * len(threads) + cfg["inbox_questions"]
+    # A reply or a version is an item only when the owner is in its thread
+    # or commented on its artifact.
+    expect(seeded == want, f"the inbox holds {seeded} replies, versions and questions, not {want}")
     st, d, _, _ = c.req("GET", "/api/inbox/summary")
-    expect(st == 200, f"inbox summary: {st}")
     unread = json.loads(d)["unread"]
-    # Each reply is an item only when the owner is in its thread.
-    expect(unread >= cfg["inbox_replies"], f"the inbox holds {unread} unread items, not the seeded replies")
     c.close()
-    return {"inbox_unread": unread}
+    return {"inbox_unread": unread, "inbox_threads": len(threads), "inbox_versions": per * len(threads)}
 
 
 # --- loads ------------------------------------------------------------------------
@@ -606,12 +626,12 @@ INBOX_SAMPLES = 7
 
 
 def inbox_alone(d, n=INBOX_SAMPLES):
-    """The median of the inbox tab's three requests, each alone (the
-    owner, with the token), and each request's own median."""
+    """Each of the inbox tab's three requests alone (the owner, with the
+    token): {path: its median ms}."""
     c = Client(d.port, d.token)
     for path in INBOX_REQUESTS:
         c.req("GET", path)  # warm-up
-    every, each = [], {}
+    each = {}
     for path in INBOX_REQUESTS:
         ts = []
         for _ in range(n):
@@ -619,9 +639,8 @@ def inbox_alone(d, n=INBOX_SAMPLES):
             expect(s == 200, f"{path}: {s}")
             ts.append(dt * 1000)
         each[path] = statistics.median(ts)
-        every.extend(ts)
     c.close()
-    return statistics.median(every), each
+    return each
 
 
 def main(binary, budget_path, quick):
@@ -639,27 +658,28 @@ def main(binary, budget_path, quick):
               f"{len(st['aids']) * seed_cfg['threads_per_artifact'] * seed_cfg['comments_per_thread']} comments by one viewer, "
               f"{seed_cfg['large_artifacts']} large artifacts, {seed_cfg['assets']} assets, {seed_cfg['db_docs']} documents, "
               f"{len(st['sessions'])} sessions in {st['seconds']:.1f} s", flush=True)
-        print(f"seeded the inbox: {seed_cfg['inbox_replies']} agent replies on {INBOX_THREADS} owner threads, "
-              f"{seed_cfg['inbox_questions']} questions, {st['inbox_unread']} unread items in {st['inbox_seconds']:.1f} s",
-              flush=True)
+        print(f"seeded the inbox: {seed_cfg['inbox_replies']} agent replies on {st['inbox_threads']} owner threads, "
+              f"{st['inbox_versions']} versions, {seed_cfg['inbox_questions']} questions: "
+              f"{st['inbox_unread']} unread items in {st['inbox_seconds']:.1f} s", flush=True)
         loads = Loads(d.port, d.token, st)
         rounds, window = cfg["rounds"], cfg["window_s"]
         per = {name: {label: [] for label in CHEAP} for name, _ in PHASES}
         infos = {name: [] for name, _ in PHASES}
         attention = []
-        inbox = []
+        inbox = {path: [] for path in INBOX_REQUESTS}
         for r in range(rounds):
             t0 = time.perf_counter()
             attention.append(attention_alone(d, st))
-            inbox_med, inbox_each = inbox_alone(d)
-            inbox.append(inbox_med)
+            inbox_each = inbox_alone(d)
+            for path, v in inbox_each.items():
+                inbox[path].append(v)
             for name, method in PHASES:
                 res, info = run_phase(d, loads, st, method, window)
                 for label in CHEAP:
                     per[name][label].append(res[label])
                 infos[name].append(info)
             print(f"round {r + 1}/{rounds}: {time.perf_counter() - t0:.1f} s, attention alone {attention[-1]:.0f} ms, "
-                  f"inbox alone {inbox[-1]:.1f} ms (" + ", ".join(f"{p} {v:.1f}" for p, v in inbox_each.items()) + ")",
+                  "inbox alone " + ", ".join(f"{p} {v:.1f} ms" for p, v in inbox_each.items()),
                   flush=True)
     except SetupError as e:
         print(f"perf-daemon: setup failed: {e}", file=sys.stderr)
@@ -707,11 +727,15 @@ def main(binary, budget_path, quick):
     if not att_ok:
         failed.append("attention alone")
     print(f"{'alone':<14} {'GET attention (median)':<24} {len(attention) * ATTENTION_SAMPLES:>5} {att:>9.1f} {'':>9}  {'ok' if att_ok else 'FAIL'}")
-    inb = med(inbox)
-    inb_ok = inb <= lim_inbox
-    if not inb_ok:
-        failed.append("inbox alone")
-    print(f"{'alone':<14} {'inbox_alone_ms (median)':<24} {len(inbox) * INBOX_SAMPLES * len(INBOX_REQUESTS):>5} {inb:>9.1f} {'':>9}  {'ok' if inb_ok else 'FAIL'}")
+    # Each request is judged on its own median, so one slow request cannot
+    # hide behind two fast ones.
+    for path in INBOX_REQUESTS:
+        v = med(inbox[path])
+        ok = v <= lim_inbox
+        if not ok:
+            failed.append(f"inbox alone {path}")
+        label = "GET " + path.removeprefix("/api")
+        print(f"{'inbox alone':<14} {label:<24} {len(inbox[path]) * INBOX_SAMPLES:>5} {v:>9.1f} {'':>9}  {'ok' if ok else 'FAIL'}")
     print()
     for name, _ in PHASES[1:]:
         print(f"{name}: " + "; ".join(infos[name]))

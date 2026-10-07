@@ -133,7 +133,7 @@ async fn search_filters_paging_and_marks() {
     assert!(p2["next_cursor"].is_null());
     let all = get(&ts, "/api/inbox").await;
     assert!(all.get("total").is_none(), "no filter, no total");
-    assert_eq!(all["items"][0]["body"], Value::Null);
+    assert_eq!(all["items"][0]["kind"], "reply");
     assert_eq!(all["items"][0]["reply"]["body"], "the footer is green");
     let r: Value = ts
         .post_json(
@@ -401,4 +401,159 @@ async fn the_inbox_page_is_the_gallery() {
     let b = ts.get("/inbox").await;
     assert_eq!(a.status(), b.status());
     assert_eq!(a.text().await.unwrap(), b.text().await.unwrap());
+}
+
+#[tokio::test]
+async fn inbox_routes_refuse_lan_owner_cookies_artifact_origins_and_viewers() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let (sid, aid, tid) = owner_thread(&ts).await;
+    ts.reply_as_agent(&sid, &aid, &tid, "x").await;
+    let id = get(&ts, "/api/inbox?kind=reply").await["items"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (lan, base) = ts.lan();
+    let mia = ts.viewer(Some("Mia")).await;
+    let viewer = format!("clax_viewer={}", mia.cookie);
+    let page = format!("http://{aid}.localhost:{}", ts.addr.port());
+    let routes: Vec<(reqwest::Method, String, Option<Value>)> = vec![
+        (reqwest::Method::GET, "/api/inbox".into(), None),
+        (reqwest::Method::GET, "/api/inbox/summary".into(), None),
+        (reqwest::Method::GET, format!("/api/inbox/{id}"), None),
+        (
+            reqwest::Method::POST,
+            format!("/api/inbox/{id}/read"),
+            Some(json!({})),
+        ),
+        (
+            reqwest::Method::POST,
+            format!("/api/inbox/{id}/unread"),
+            Some(json!({})),
+        ),
+        (
+            reqwest::Method::POST,
+            "/api/inbox/read".into(),
+            Some(json!({"all": true})),
+        ),
+    ];
+    for (m, path, b) in &routes {
+        let with_body = |r: reqwest::RequestBuilder| match b {
+            Some(b) => r.json(b),
+            None => r,
+        };
+        // A LAN peer presenting the owner cookie: the cookie needs a local peer.
+        let res = with_body(lan.request(m.clone(), format!("{base}{path}")))
+            .header("cookie", ts.owner_cookie())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 403, "LAN owner cookie, {m} {path}");
+        // An artifact's own origin, with the owner cookie.
+        let res = with_body(ts.client.request(m.clone(), format!("{}{path}", ts.base)))
+            .header("cookie", ts.owner_cookie())
+            .header("origin", &page)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 403, "artifact origin, {m} {path}");
+        // A local viewer cookie alone.
+        let res = with_body(ts.client.request(m.clone(), format!("{}{path}", ts.base)))
+            .header("cookie", &viewer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 403, "viewer cookie, {m} {path}");
+    }
+    let s = get(&ts, "/api/inbox/summary").await;
+    assert_eq!(s["unread"], 2, "nothing was marked: {s}");
+}
+
+#[tokio::test]
+async fn the_extension_may_list_read_and_follow_the_inbox() {
+    let ts = TestServer::spawn().await;
+    let ext = ts.extension().await;
+    let (sid, aid, tid) = owner_thread(&ts).await;
+    ts.reply_as_agent(&sid, &aid, &tid, "Done").await;
+    let list: Value = ext.get("/api/inbox?kind=reply").await.json().await.unwrap();
+    let id = list["items"][0]["id"].as_str().unwrap().to_string();
+    assert_eq!(ext.get("/api/inbox/summary").await.status(), 200);
+    assert_eq!(ext.get(&format!("/api/inbox/{id}")).await.status(), 200);
+    let mut events = clax_server::testing::EventReader::from_response(ext.get("/api/stream").await);
+    let sid_stream = events.next_named("ready").await["stream"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = ext
+        .post(
+            &format!("/api/stream/{sid_stream}"),
+            json!({"subscribe": ["inbox"]}),
+        )
+        .await;
+    assert_eq!(r.status(), 200);
+    let r: Value = ext
+        .post(&format!("/api/inbox/{id}/read"), json!({}))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r["item"]["read"], true);
+    let e = events.next_named("inbox_item").await;
+    assert_eq!(
+        (e["item"]["id"].as_str(), e["item"]["read"].as_bool()),
+        (Some(id.as_str()), Some(true))
+    );
+    let r = ext.post("/api/inbox/read", json!({"all": true})).await;
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn the_hooks_timer_leaves_a_question_unread_and_the_owner_moving_it_reads_it() {
+    let ts = TestServer::spawn().await;
+    // An owner surface is open, so hook questions wait rather than go to
+    // the terminal at once.
+    let _surface = ts.stream_as_owner(&["questions"]).await;
+    let sid = ts.register_session("claude", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let hook = |t: &str| {
+        json!({"source": "hook", "tool_use_id": t, "questions": [{"question": "Which?",
+            "header": "Pick", "multiSelect": false, "options": [{"label": "A", "description": "a"},
+            {"label": "B", "description": "b"}]}]})
+    };
+    let timer = ts.ask(&sid, hook("t1")).await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let moved = ts.ask(&sid, hook("t2")).await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = ts
+        .post_json(
+            &format!("/api/sessions/{sid}/questions/{timer}/release"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let res = ts
+        .client
+        .post(format!("{}/api/questions/{moved}/release", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let items = get(&ts, "/api/inbox?kind=question").await;
+    let read_of = |qid: &str| {
+        items["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["question"]["id"] == qid)
+            .unwrap()["read"]
+            .as_bool()
+    };
+    assert_eq!(read_of(&timer), Some(false), "the hook's timer");
+    assert_eq!(read_of(&moved), Some(true), "Answer in the terminal");
 }

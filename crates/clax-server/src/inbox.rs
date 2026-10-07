@@ -17,8 +17,9 @@ pub fn view(st: &Store, i: &ItemRow) -> clax_core::Result<Value> {
     Ok(views(st, std::slice::from_ref(i))?.remove(0))
 }
 
-/// The views of `items`, in the same order, their sources read in one
-/// snapshot.
+/// The views of `items`, in the same order. Their sources are read in
+/// one snapshot ([`Store::inbox_sources`]); a question item's question is
+/// read after it.
 pub fn views(st: &Store, items: &[ItemRow]) -> clax_core::Result<Vec<Value>> {
     let sources = st.inbox_sources(items)?;
     items
@@ -158,7 +159,9 @@ fn announcement(db: &Store, changes: &[InboxChange]) -> clax_core::Result<Announ
 /// Installs the store's inbox listener: changes go through a channel to a
 /// task that reads their items and publishes one `inbox_item` per item, or
 /// one `inbox_read {ids: null}` when a transaction changed more than
-/// [`MAX_ITEM_EVENTS`]. Batches are announced in the order their
+/// [`MAX_ITEM_EVENTS`]. While no stream holds the `inbox` topic, changes
+/// are dropped unread (a client that subscribes fetches what it shows).
+/// Batches are announced in the order their
 /// transactions' listeners ran, which may differ from commit order for
 /// concurrent transactions; clients order items by `seq`.
 pub fn listen(s: &AppState) {
@@ -169,6 +172,10 @@ pub fn listen(s: &AppState) {
     let s = s.clone();
     tokio::spawn(async move {
         while let Some(changes) = rx.recv().await {
+            // Nobody to tell: no view is read or rendered.
+            if !s.stream.holds_inbox() {
+                continue;
+            }
             let out = s.store.call(move |db| announcement(db, &changes)).await;
             match out {
                 Ok(Announce::Refetch(unread)) => s.events.publish(Event::InboxRead {

@@ -2105,6 +2105,173 @@ How long a mirrored question waits in Clax before the terminal dialog
 opens. Read when the daemon starts; clamped to 0..3300 (a value out of
 range, or not an integer, is logged).
 
+## The inbox
+
+The owner's inbox holds everything agents send back, with a read mark per
+item and full-text search over all of it. Items are never deleted.
+
+### Items
+
+An item is made in the same transaction as its source:
+
+- **`reply`**: an agent comment on a thread the owner is in. The owner is
+  in a thread when they wrote in it, were mentioned in it, or resolved it.
+- **`version`**: an agent's version, other than the first, of an artifact
+  the owner commented on.
+- **`published`**: an agent session's new artifact.
+- **`question`**: an agent question.
+- **`finished`**: a working record its agent ended. Either the agent
+  cleared it (`DELETE …/working/<aid>`), or its turn ended
+  (`POST …/working/end`). A lapsed record makes no item, and neither does
+  one cleared by a publish, a reply or the session's end.
+
+An item becomes read in any of these ways:
+
+- the owner opens it;
+- for a `reply`, the owner looks at its thread;
+- for `version`, `published` and `finished`, the owner views the
+  artifact's version;
+- for a `question`, the owner answers, skips or moves it, or it is answered
+  in the terminal. The hook's own timer release and a withdrawal leave it
+  unread;
+- a bulk mark.
+
+Only owner credentials' writes mark items read.
+
+The item view:
+
+```json
+{
+  "id": "01JA…",
+  "seq": 4211,
+  "kind": "reply",
+  "read": false,
+  "created_at": "2026-10-07T09:12:03.120Z",
+  "agent": {"handle": "a_…", "harness": "claude", "project": "clax"},
+  "artifact": {"id": "7q3k9mzx2b4t", "title": "Quarterly Review", "kind": "html", "page_url": null},
+  "thread": {"id": "01J9…", "summary": "body > main > h2  «Quarterly goals»", "status": "open"},
+  "reply": {"comment_id": "01J9…", "body": "Done: two columns now.", "addressed": false},
+  "version": null,
+  "published": null,
+  "question": null,
+  "work": null,
+  "gone": false,
+  "url": "/a/7q3k9mzx2b4t?thread=01J9…"
+}
+```
+
+Each kind fills its own fields:
+
+- **`reply`** fills `thread` and `reply`. `addressed` is true for a reply
+  on a live page that recorded an address.
+- **`version`** fills `version: {n, note, addressed: [{id, summary}]}`.
+  `addressed` lists only the owner's threads.
+- **`published`** fills `published: {description}`.
+- **`question`** fills `question` with the question's view.
+- **`finished`** fills `work: {message, threads: [{id, summary}]}`.
+
+When the source no longer exists, `gone` is true. The view still keeps the
+item's own fields (kind, time, agent, IDs), and the source's text fields
+are null. `url` is where opening the item leads: the thread, `/a/<aid>/v/<n>`,
+the artifact, or `/inbox?q=<question>`. `seq` orders items, with higher
+being newer. It is also the cursor and the `upto` of a bulk mark.
+
+An item ID is a ULID. An item that migration 20 filled in from the history
+has `b` and 24 hex digits instead.
+
+### Routes
+
+Only the owner may call these: the token, the owner's browsers, and the
+paired extension. Anyone else gets 403 `forbidden`. The routes keep the
+viewer routes' `Origin` rules. Their errors are 400 `invalid_query` (a bad
+filter, date, cursor or body) and 404 `not_found`.
+
+- **`GET /api/inbox`** → `{items, next_cursor, unread, total?}`. Its query
+  parameters:
+  - `q`: search text. Every word must start a word of the item. FTS5
+    operators are taken as text, so no search text is an error.
+  - `kind`: comma-separated kinds.
+  - `artifact`: an artifact ID.
+  - `agent`: a harness, or an agent handle (`a_…`).
+  - `since`, `until`: a `YYYY-MM-DD` date (UTC) or an RFC 3339 time. An
+    `until` date covers the whole day.
+  - `read`: `unread`, `read` or `all`. Default `all`.
+  - `before`: a cursor.
+  - `limit`: default 50, clamped to 1..200.
+
+  The response:
+  - `items` are newest first.
+  - `next_cursor` is a decimal string to pass as `before`, or null.
+  - `total`, the number of matches, is present when the query has text or
+    any filter (`read` other than `all` counts as a filter). It counts up to
+    10,000, and is `"10000+"` beyond.
+  - `unread` and `total` are read just after the page, so under concurrent
+    writes they may differ from it by the changes the `inbox` topic then
+    announces.
+- **`GET /api/inbox/summary`** → `{unread, questions, latest}`: the
+  unread count, the open questions' views oldest first, and the five newest
+  unread items other than questions.
+- **`GET /api/inbox/<id>`** → `{item}`.
+- **`POST /api/inbox/<id>/read`** → `{item, unread}`.
+- **`POST /api/inbox/<id>/unread`** → `{item, unread}`.
+- **`POST /api/inbox/read`** → `{marked, unread}`. The body is one of:
+  - `{ids: [...]}`: at most 500 item IDs.
+  - `{all: true, filter?: {q, kind, artifact, agent, since, until}, upto?}`:
+    every unread item matching the filter. With `upto` (the newest `seq`
+    the client showed), only items up to it, so an item made since is not
+    marked unseen. `kind` may be a comma-separated string or an array.
+
+`/inbox` serves the gallery page, which shows the inbox.
+
+### The `inbox` topic
+
+`inbox` is a topic of `GET /api/stream`. Only an owner's stream may
+subscribe to it; anyone else gets 403 `forbidden`, which refuses the whole
+change. The extension's live-only stream may subscribe to it. A stream
+holding `inbox` or `questions` counts as an owner surface for mirrored
+questions. `/api/events` never carries either event.
+
+- **`inbox_item`**, `{topic: "inbox", item: <view>, unread}`, is sent when
+  an item is made, or its read state or its source changes. `unread` is the
+  count after the change. The daemon sends one event per item, even for a
+  bulk mark of 50 items or fewer.
+- **`inbox_read`**, `{topic: "inbox", ids: null, read: true, unread}`, is
+  sent instead when one transaction changed more than 50 items. It means
+  "refetch what you show". `ids` is always null, and `read` is always true,
+  even after a bulk unread mark.
+
+The changes of transactions that commit concurrently may be announced out
+of commit order. Clients order items by `seq` and upsert by `id`. While no
+stream holds `inbox`, nothing is announced.
+
+### `clax inbox`
+
+```
+clax inbox [--all|--read] [--kind K]... [--artifact A] [--agent H] [--since D] [--until D] [-n N] [SEARCH...]
+clax inbox show <item>
+clax inbox read <item>... | --all [--kind K]... [--artifact A] [--agent H] [--since D] [--until D] [--search TEXT]
+clax inbox unread <item>...
+```
+
+- **Listing.** With no flags, `clax inbox` lists unread items, newest
+  first. `-n` defaults to 20, at most 200. `--all` adds read items, and
+  `--read` shows only read ones.
+- **Dates.** A bare date is a local day: the CLI sends that day's local
+  midnight, and the next day's for `--until`.
+- **Numbering.** Lines are numbered from 1. The item IDs are kept in
+  `<home>/run/inbox-last.json` (mode 0600). `<item>` is such a number or an
+  item ID.
+- **show** prints the item in full and marks it read. For a question, it
+  prints the URL to answer it at; questions are not answered from the CLI.
+- **read --all** marks every unread item the flags given to it match.
+- **unread** marks items unread.
+
+The CLI is the owner (the token). Readable output escapes control and
+bidirectional characters. The global `--json` prints the route's objects:
+- a listing prints the list response;
+- `show` and `read` print their responses;
+- `unread` prints an array of the `unread` responses.
+
 ## Live pages
 
 A live page is an artifact of kind `live` that stands for a page on another

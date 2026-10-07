@@ -48,10 +48,10 @@ pub struct Filters {
     /// Only items from this agent: a harness (`claude`) or an agent handle (`a_…`).
     #[arg(long)]
     pub agent: Option<String>,
-    /// Only items made at or after this date (YYYY-MM-DD) or RFC 3339 time.
+    /// Only items made at or after this date (YYYY-MM-DD, a local day) or RFC 3339 time.
     #[arg(long)]
     pub since: Option<String>,
-    /// Only items made before this time, or up to the end of this date.
+    /// Only items made before this time, or up to the end of this date (a local day).
     #[arg(long)]
     pub until: Option<String>,
 }
@@ -156,16 +156,33 @@ fn params(a: &Filters, search: Option<String>) -> anyhow::Result<Vec<(&'static s
             .map_err(|_| anyhow::anyhow!("'{art}' is not an artifact ID or URL"))?;
         q.push(("artifact", id));
     }
-    for (k, v) in [
-        ("agent", &a.agent),
-        ("since", &a.since),
-        ("until", &a.until),
-    ] {
-        if let Some(v) = v {
-            q.push((k, v.clone()));
-        }
+    if let Some(v) = &a.agent {
+        q.push(("agent", v.clone()));
+    }
+    if let Some(v) = &a.since {
+        q.push(("since", local_day(v, false)));
+    }
+    if let Some(v) = &a.until {
+        q.push(("until", local_day(v, true)));
     }
     Ok(q)
+}
+
+/// A bare `YYYY-MM-DD` as the RFC 3339 time of that day's local midnight
+/// (with `end`, the next day's), so dates are the user's days, not UTC's;
+/// anything else as given, for the daemon to read or refuse.
+fn local_day(raw: &str, end: bool) -> String {
+    use chrono::{Local, NaiveDate, SecondsFormat};
+    let Ok(d) = NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d") else {
+        return raw.to_string();
+    };
+    let d = if end { d.succ_opt().unwrap_or(d) } else { d };
+    d.and_hms_opt(0, 0, 0)
+        .and_then(|t| t.and_local_timezone(Local).earliest())
+        .map_or_else(
+            || raw.to_string(),
+            |t| t.to_rfc3339_opts(SecondsFormat::Millis, false),
+        )
 }
 
 /// `s` percent-encoded for a query string: every byte but the unreserved
@@ -213,17 +230,25 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
             Ok(())
         }
         Some(Cmd::Unread { items }) => {
-            let mut last = json!({});
-            let mut n = 0;
-            for i in items {
-                let id = resolve(home, i)?;
-                last = c.post(&format!("/api/inbox/{id}/unread"), &json!({}))?;
-                n += 1;
+            let ids = items
+                .iter()
+                .map(|i| resolve(home, i))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let mut responses = Vec::new();
+            let mut changed = 0;
+            for id in &ids {
+                let was_read = c.get(&format!("/api/inbox/{id}"))?["item"]["read"] == true;
+                let r = c.post(&format!("/api/inbox/{id}/unread"), &json!({}))?;
+                changed += usize::from(was_read);
+                responses.push(r);
             }
             if cli.json {
-                println!("{}", json!({"marked": n, "unread": last["unread"]}));
+                println!("{}", Value::Array(responses));
             } else {
-                println!("marked {n} unread ({} unread)", last["unread"]);
+                let unread = responses
+                    .last()
+                    .map_or(Value::Null, |r| r["unread"].clone());
+                println!("marked {changed} unread ({unread} unread)");
             }
             Ok(())
         }
@@ -282,10 +307,20 @@ fn list(cli: &crate::Cli, home: &Home, c: &Client, a: &Args) -> anyhow::Result<(
         println!("{}", line(i, n + 1, width, paint, now));
     }
     if v["next_cursor"].is_string() {
-        println!(
-            "{}",
-            paint.dim(&format!("… more: clax inbox -n {}", (limit * 2).min(200)))
-        );
+        let shown = match &v["total"] {
+            Value::Null => format!("{} shown", items.len()),
+            t => format!(
+                "{} of {} shown",
+                items.len(),
+                t.as_str().map_or(t.to_string(), str::to_string)
+            ),
+        };
+        let hint = if limit < MAX_NUMBERED as u32 {
+            format!("raise -n (at most {MAX_NUMBERED})")
+        } else {
+            "narrow with --since, --until, --kind or more search words".to_string()
+        };
+        println!("{}", paint.dim(&format!("… {shown}; {hint}")));
     }
     Ok(())
 }
@@ -468,4 +503,35 @@ fn show(cli: &crate::Cli, c: &Client, id: &str) -> anyhow::Result<()> {
     }
     println!("{}", out.join("\n"));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{DateTime, Local, NaiveDate};
+
+    #[test]
+    fn a_bare_date_is_a_local_day() {
+        let local = |s: &str| {
+            DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .with_timezone(&Local)
+        };
+        let since = local(&local_day("2026-10-07", false));
+        let until = local(&local_day("2026-10-07", true));
+        assert_eq!(
+            since.date_naive(),
+            NaiveDate::from_ymd_opt(2026, 10, 7).unwrap()
+        );
+        assert_eq!(
+            until.date_naive(),
+            NaiveDate::from_ymd_opt(2026, 10, 8).unwrap()
+        );
+        assert_eq!(since.format("%H:%M:%S").to_string(), "00:00:00");
+        assert_eq!(
+            local_day("2026-10-07T10:00:00Z", true),
+            "2026-10-07T10:00:00Z"
+        );
+        assert_eq!(local_day("yesterday", false), "yesterday");
+    }
 }
