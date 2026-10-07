@@ -232,26 +232,18 @@ struct Notice {
 }
 
 impl Notice {
-    /// Records the notice as shown today; called once it is printed.
+    /// Records the notice as shown; called once it is printed.
     fn record(&self) {
         let tools: Vec<&str> = self.tools.iter().map(String::as_str).collect();
-        crate::codex_approvals::record_notice(&self.marker, &tools, today());
+        crate::codex_approvals::record_notice(&self.marker, &tools);
     }
-}
-
-/// Days since the Unix epoch.
-fn today() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() / 86_400)
 }
 
 /// For a Codex session start: the notice that Codex will stop to ask
 /// before Clax tools, with how to approve them once
-/// ([`crate::codex_approvals::notice`]). Due once per set of tools and
-/// then again after [`crate::codex_approvals::NOTICE_QUIET_DAYS`] (a marker
-/// per Codex home under `<home>/run/`, written by [`Notice::record`] once
-/// printed). Not given to a session run by `codex exec` or `codex
+/// ([`crate::codex_approvals::notice`]). Shown once per set of tools (a
+/// marker per Codex home under `<home>/run/`, written by [`Notice::record`]
+/// once printed); `clax doctor` reports the tools after that. Not given to a session run by `codex exec` or `codex
 /// app-server`, which show no hook message to a person. Reads Codex's
 /// config and writes nothing there.
 fn codex_notice(home: &Home, parent_pid: u32) -> Option<Notice> {
@@ -265,7 +257,7 @@ fn codex_notice(home: &Home, parent_pid: u32) -> Option<Notice> {
     }
     let marker = ca::notice_marker(home.root(), &dirs.codex_home);
     let tools = a.addable();
-    if !ca::notice_due(&marker, &tools, today()) || !shown_to_a_person(parent_pid) {
+    if !ca::notice_due(&marker, &tools) || !shown_to_a_person(parent_pid) {
         return None;
     }
     let text = ca::notice(&a, &path, clax_command().as_deref())?;
@@ -277,24 +269,62 @@ fn codex_notice(home: &Home, parent_pid: u32) -> Option<Notice> {
 }
 
 /// Codex subcommands whose sessions show no hook message to a person.
-const HEADLESS_CODEX: &[&str] = &[
-    "exec",
-    "e",
-    "app-server",
-    "review",
-    "exec-server",
-    "mcp-server",
+/// `ps` joins the arguments with spaces, so a prompt given as Codex's first
+/// argument whose first word is one of these reads as the subcommand; the
+/// notice is then neither shown nor recorded, and `clax doctor` still
+/// reports the tools. `review` is left out: a prompt starting "review" is
+/// likelier than `codex review`, whose session start is rare.
+const HEADLESS_CODEX: &[&str] = &["exec", "e", "app-server", "exec-server", "mcp-server"];
+
+/// Codex options that take a value as the next argument (`-c key=value`).
+const CODEX_VALUE_OPTIONS: &[&str] = &[
+    "-c",
+    "--config",
+    "-m",
+    "--model",
+    "-p",
+    "--profile",
+    "-P",
+    "--permission-profile",
+    "-C",
+    "--cd",
+    "-s",
+    "--sandbox",
+    "-a",
+    "--ask-for-approval",
+    "-i",
+    "--image",
+    "--enable",
+    "--disable",
+    "--local-provider",
+    "--remote",
+    "--add-dir",
 ];
 
 /// For one process's command line (`ps -o args=`): `None` when it is not
-/// Codex, else whether it is an interactive Codex (no headless subcommand).
+/// Codex, else whether it is an interactive Codex: its first argument that
+/// is not an option or an option's value is not a headless subcommand (a
+/// prompt, or nothing, is interactive).
 fn interactive_codex(args: &str) -> Option<bool> {
     let tokens: Vec<&str> = args.split_whitespace().collect();
     let at = tokens.iter().take(2).position(|t| {
         let base = t.rsplit('/').next().unwrap_or(t);
         base == "codex" || base == "codex.js"
     })?;
-    Some(!tokens[at + 1..].iter().any(|t| HEADLESS_CODEX.contains(t)))
+    let mut rest = tokens[at + 1..].iter();
+    while let Some(t) = rest.next() {
+        if *t == "--" {
+            return Some(true);
+        }
+        if t.starts_with('-') {
+            if CODEX_VALUE_OPTIONS.contains(t) {
+                rest.next();
+            }
+            continue;
+        }
+        return Some(!HEADLESS_CODEX.contains(t));
+    }
+    Some(true)
 }
 
 /// Whether the nearest Codex among the hook's ancestors runs interactively;
@@ -422,6 +452,23 @@ mod tests {
             Some(false)
         );
         assert_eq!(interactive_codex("/bin/zsh -c codex exec"), None);
+        // Only the first argument that is not an option or its value counts.
+        assert_eq!(
+            interactive_codex("codex fix the failing tests then exec them"),
+            Some(true)
+        );
+        // `codex "review the tests"`, as `ps` shows it.
+        assert_eq!(interactive_codex("codex review the tests"), Some(true));
+        assert_eq!(
+            interactive_codex("codex -m gpt-6 -c a=b exec hi"),
+            Some(false)
+        );
+        assert_eq!(
+            interactive_codex("codex --model gpt-6 --search app-server"),
+            Some(false)
+        );
+        assert_eq!(interactive_codex("codex -c review=1 hello"), Some(true));
+        assert_eq!(interactive_codex("codex --enable x"), Some(true));
         assert_eq!(
             interactive_codex("bash ./scripts/ensure-clax.sh exec hook"),
             None
