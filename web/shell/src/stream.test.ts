@@ -89,6 +89,57 @@ describe("EventStream", () => {
     expect(seen).toEqual([{ type: "ready" }]);
   });
 
+  it("keeps background topics while the page is hidden", async () => {
+    const seen: StreamEvent[] = [];
+    s.watch(["gallery"], e => seen.push(e));
+    s.watch(["questions", "inbox"], () => {}, { background: true });
+    await flush();
+    expect(links[0].topics).toEqual(["gallery", "inbox", "questions"]);
+    setVisibility("hidden");
+    await vi.advanceTimersByTimeAsync(HIDDEN_MS);
+    // It stays with the hub, holding only the background topics.
+    expect(links[0].closed).toBe(false);
+    expect(links[0].topics).toEqual(["inbox", "questions"]);
+    setVisibility("visible");
+    await flush();
+    expect(links).toHaveLength(1);
+    expect(links[0].topics).toEqual(["gallery", "inbox", "questions"]);
+    links[0].on({ t: "live", topics: ["gallery"] });
+    expect(seen).toEqual([{ type: "ready" }]);
+    // Hidden for good, it leaves all the same.
+    page("pagehide", false);
+    expect(links[0].closed).toBe(true);
+  });
+
+  it("reports focus to the hub when it joins and as it changes", async () => {
+    let focused = true;
+    vi.spyOn(document, "hasFocus").mockImplementation(() => focused);
+    s.watch(["inbox"], () => {}, { background: true });
+    await flush();
+    const focusMsgs = () => links[0].msgs.filter(m => m.t === "focus");
+    expect(focusMsgs()).toEqual([{ t: "focus", focused: true }]);
+    focused = false;
+    dispatchEvent(new Event("blur"));
+    focused = true;
+    dispatchEvent(new Event("focus"));
+    // Hidden counts as not focused, whatever the document says.
+    setVisibility("hidden");
+    // No change, nothing sent.
+    dispatchEvent(new Event("blur"));
+    expect(focusMsgs()).toEqual([{ t: "focus", focused: true }, { t: "focus", focused: false }, { t: "focus", focused: true }, { t: "focus", focused: false }]);
+  });
+
+  it("hands the hub's notify requests to its handlers", async () => {
+    const got: Record<string, unknown>[] = [];
+    const off = s.onNotify(d => got.push(d));
+    s.watch(["inbox"], () => {}, { background: true });
+    await flush();
+    links[0].on({ t: "notify", data: { topic: "inbox", item: { id: "I1" }, unread: 1 } });
+    off();
+    links[0].on({ t: "notify", data: { topic: "inbox", item: { id: "I2" }, unread: 2 } });
+    expect(got).toEqual([{ topic: "inbox", item: { id: "I1" }, unread: 1 }]);
+  });
+
   it("keeps its topics through a short hide", async () => {
     s.watch(["gallery"], () => {});
     await flush();

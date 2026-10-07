@@ -11,13 +11,13 @@ describe("InboxRow", () => {
   it("shows the title, text, age and a filled dot when unread", () => {
     const m = mount(InboxRow, { item: item("reply"), now, onOpen: vi.fn(), onToggle: vi.fn() });
     const li = m.root.querySelector("li")!;
-    expect(li.classList.contains("unread")).toBe(true);
+    expect(li.hasAttribute("data-unread")).toBe(true);
     expect(m.root.querySelector(".title")!.textContent).toBe("claude replied on Quarterly Review");
     expect(m.root.querySelector(".text")!.textContent).toBe("Done: two columns now. The table sorts too.");
     expect(m.root.querySelector("time")!.textContent).toBe("5 min ago");
     expect(m.root.querySelector(".dot")!.getAttribute("aria-label")).toBe("Mark read");
     m.update({ item: item("reply", { read: true }), now, onOpen: vi.fn(), onToggle: vi.fn() });
-    expect(li.classList.contains("unread")).toBe(false);
+    expect(li.hasAttribute("data-unread")).toBe(false);
     expect(m.root.querySelector(".dot")!.getAttribute("aria-label")).toBe("Mark unread");
     m.unmount();
   });

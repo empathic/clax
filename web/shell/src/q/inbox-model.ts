@@ -2,7 +2,7 @@
 // §9.7): an item's title and one-line text, the search kept in `/inbox`'s
 // URL, and a notification's text. Pure: no DOM.
 import type { InboxFilter, InboxItem, InboxKind } from "../api";
-import { agentLabel, cutHeader } from "./model";
+import { agentLabel, answerText, cutHeader } from "./model";
 
 export const INBOX_KINDS: readonly InboxKind[] = ["reply", "version", "published", "question", "finished"];
 
@@ -32,14 +32,18 @@ export function itemTitle(i: InboxItem, others: InboxItem[] = []): string {
   }
 }
 
+/** An answered question's answers on one line: "Layout: Two · Notes: ok". */
+const answersText = (q: NonNullable<InboxItem["question"]>): string | null =>
+  q.answers && q.questions.map((s, n) => `${cutHeader(s.header)}: ${answerText(q, n)}`).join(" · ");
+
 /** An item's text on one line: the reply's body, the version's note, the
- * new artifact's description, the first question, or the finished work's
- * message; "" when it has none. */
+ * new artifact's description, the answers to a question (else its first
+ * question), or the finished work's message; "" when it has none. */
 export function itemText(i: InboxItem): string {
   const t = i.kind === "reply" ? i.reply?.body
     : i.kind === "version" ? i.version?.note
     : i.kind === "published" ? i.published?.description
-    : i.kind === "question" ? i.question?.questions[0]?.question
+    : i.kind === "question" ? (i.question && answersText(i.question)) ?? i.question?.questions[0]?.question
     : i.work?.message;
   return (t ?? "").replace(/\s+/g, " ").trim();
 }

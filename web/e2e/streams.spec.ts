@@ -261,13 +261,37 @@ test("a hidden tab releases its topics, hears nothing, and catches up when it sh
   await setVisibility(hidden, "visible");
   await expect.poll(() => live(hidden), { timeout: 5000 }).toBeGreaterThan(liveBefore);
   await expect(card(hidden, id).locator(".v")).toHaveText("v2", { timeout: 5000 });
-  // With every tab hidden, no tab needs the stream: it closes, and opens
-  // again when one shows.
+  // With every tab hidden, these owner tabs keep only their background
+  // topics (`questions` and `inbox`, for notifications): the stream stays
+  // open, and neither tab hears the gallery's events.
   await setVisibility(hidden, "hidden");
   await setVisibility(shown, "hidden");
   for (const p of [hidden, shown]) await advance(p, HIDDEN_MS);
-  await expect.poll(async () => (await streams()).open, { timeout: 10_000 }).toBe(0);
+  const before = [await heard(hidden), await heard(shown)];
+  await publish(d.base, d.token, "Hidden", { "index.html": "<h1>H3</h1>" }, 2, id);
+  for (const p of [hidden, shown]) await settle(p);
+  expect([await heard(hidden), await heard(shown)], "hidden tabs hear no gallery events").toEqual(before);
+  expect((await streams()).open).toBe(1);
   await setVisibility(shown, "visible");
+  await expect(card(shown, id).locator(".v")).toHaveText("v3", { timeout: 5000 });
+  await ctx.close();
+});
+
+test("a hidden tab that is not the owner's holds no background topics: with every such tab hidden the stream closes", async ({ browser }) => {
+  test.setTimeout(30_000);
+  const id = (await publish(d.base, d.token, "Hidden", { "index.html": "<h1>H</h1>" })).artifact.id;
+  const ctx = await browser.newContext();
+  await controllableVisibility(ctx);
+  // The owner routes answer 403 to a viewer who is not the owner.
+  await ctx.route(/\/api\/(inbox|questions)/, r => r.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: { code: "forbidden" } }) }));
+  const [tab] = await openTabs(ctx, [`${d.base}/`], async p => {
+    await expect(card(p, id)).toBeVisible({ timeout: 20_000 });
+    await expect.poll(() => live(p), { timeout: 20_000 }).toBeGreaterThan(0);
+  });
+  await setVisibility(tab, "hidden");
+  await advance(tab, HIDDEN_MS);
+  await expect.poll(async () => (await streams()).open, { timeout: 10_000 }).toBe(0);
+  await setVisibility(tab, "visible");
   await expect.poll(async () => (await streams()).open, { timeout: 10_000 }).toBe(1);
   await ctx.close();
 });

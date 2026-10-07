@@ -1,3 +1,4 @@
+import { createRawSnippet } from "svelte";
 import { describe, expect, it, vi } from "vitest";
 import { dispatchTrusted } from "../../bridge/test/trusted";
 import Sidebar from "./ui/Sidebar.svelte";
@@ -9,6 +10,26 @@ const anchor = { kind: "element" as const, selector: "body > h2", quote: "Goals"
 const comment = (id: string, kind: "viewer" | "agent", name: string, body: string) => ({ id, thread_id: "t", author_kind: kind, author_name: name, via_harness: kind === "agent" ? name : null, body, created_at: base.created_at });
 
 describe("Sidebar", () => {
+  it("puts the questions about the page at the top, above the threads; without them it holds a slot and says where it is", () => {
+    const props = { versions: [], shown: 1, agent: "claude", threads: [] as Thread[], resolved: {}, selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() };
+    const questions = createRawSnippet(() => ({ render: () => `<section class="side-q">Questions for you</section>` }));
+    const a = mount(Sidebar, { ...props, questions });
+    const block = a.root.querySelector(".side-q")!;
+    expect(a.root.querySelector(".sidebar")!.firstElementChild).toBe(block);
+    expect(block.compareDocumentPosition(a.root.querySelector(".section-open")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(a.root.querySelector(".questions-slot")).toBeNull();
+    a.unmount();
+    const heard: EventTarget[] = [];
+    const on = (e: Event) => heard.push(e.target!);
+    document.addEventListener("clax-questions-slot", on);
+    const b = mount(Sidebar, props);
+    document.removeEventListener("clax-questions-slot", on);
+    const slot = b.root.querySelector(".sidebar > .questions-slot")!;
+    expect(b.root.querySelector(".sidebar")!.firstElementChild).toBe(slot);
+    expect(heard).toEqual([slot]);
+    b.unmount();
+  });
+
   it("groups open, detached, and resolved threads and labels agent comments", () => {
     const threads: Thread[] = [
       { ...base, id: "a", anchor, status: "open", sent_to_agent: true, comments: [comment("1", "viewer", "Alex", "two columns"), comment("2", "agent", "claude", "done")],

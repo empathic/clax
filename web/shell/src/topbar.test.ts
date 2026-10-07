@@ -4,8 +4,31 @@ import { flush, mount } from "./test/svelte";
 import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
 import MoreMenu from "./ui/MoreMenu.svelte";
 import PhoneTabs from "./ui/PhoneTabs.svelte";
+import { InboxFeed } from "./q/feed.svelte";
+import InboxLink from "./q/InboxLink.svelte";
 
 describe("Echo top bar parts", () => {
+  it("Inbox links to /inbox with the unread count, hidden at 0, and shows to the owner only", async () => {
+    let summary: [number, unknown] = [200, { unread: 3, questions: [], latest: [] }];
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(summary[1]), { status: summary[0] })));
+    const feed = new InboxFeed();
+    await feed.summary();
+    const m = mount(InboxLink, { feed });
+    const a = m.root.querySelector<HTMLAnchorElement>("a.inbox-link")!;
+    expect(a.getAttribute("href")).toBe("/inbox");
+    expect(a.querySelector(".count")!.textContent).toBe("3");
+    expect(a.getAttribute("aria-label")).toBe("Inbox, 3 unread");
+    flush(() => { feed.unread = 0; });
+    expect(a.querySelector(".count")).toBeNull();
+    expect(a.getAttribute("aria-label")).toBe("Inbox");
+    summary = [403, {}];
+    await feed.summary();
+    flush();
+    expect(m.root.querySelector("a.inbox-link")).toBeNull();
+    m.unmount();
+    vi.unstubAllGlobals();
+  });
+
   it("the more menu holds open raw and copy link, and closes on Escape with focus back", () => {
     const onCopy = vi.fn();
     const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy });

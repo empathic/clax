@@ -4,7 +4,10 @@
   // first and then the most recent. A search shows one list in that second
   // order. Each card carries its markers, who takes part and works on it, and
   // the last version this viewer saw; pin and delete once the token is known,
-  // and a haiku in the footer after first paint.
+  // and a haiku in the footer after first paint. The question module (`q`)
+  // loads after the list paints: for the owner, the inbox's unread summary
+  // above everything and Inbox in the header. At `/inbox` the page is the
+  // inbox instead, and `q` loads at once.
   import { onDestroy, onMount } from "svelte";
   import { ApiError, type Artifact, type AttentionSummary, deleteArtifact, getAttention, getToken, listArtifacts, patchArtifact } from "../api";
   import { REQUEST_STUCK, connTrouble } from "../conn-notice";
@@ -12,7 +15,6 @@
   import { afterPaint } from "../view/after-paint";
   import { filterArtifacts, orderArtifacts } from "../view/gallery-model";
   import GalleryCard from "./GalleryCard.svelte";
-  import HaikuLine from "./HaikuLine.svelte";
   import Mark from "./Mark.svelte";
   import ThemeSwitch from "./ThemeSwitch.svelte";
 
@@ -31,6 +33,11 @@
   let gw = $state<typeof import("./gallery-working") | null>(null);
   let feed = $state<import("./working-feed.svelte").WorkingFeed | null>(null);
   let sync: import("./card-sync").CardSync | null = null;
+  const inbox = location.pathname === "/inbox";
+  let Q = $state<typeof import("../q") | null>(null);
+  const lazy = () => import("./gallery-working");
+  // `q` comes through the lazy module, which also hands it the page's stream.
+  const loadQ = (m: typeof import("./gallery-working")) => m.q().then(q => { if (!destroyed) { Q = q; void q.start(m.pageStream()); } }, () => {});
   const describe = (e: unknown) => (e instanceof Error ? e.message : String(e));
   // Each list seeds the working feed; the first one, once rendered, starts its stream.
   let cancelStart: (() => void) | null = null;
@@ -44,13 +51,14 @@
   const refresh = (first = false) => { const since = feed?.events; void getAttention().then(t => { if (t && !sync) att = t; }); return load(first).then(a => {
     error = null; artifacts = a; feed?.seed(a, since);
     cancelStart ??= afterPaint(() => {
-      void import("./gallery-working").then(m => {
+      void lazy().then(m => {
         if (destroyed) return;
         const f = new m.WorkingFeed();
         f.seed(artifacts ?? []);
         sync = new m.CardSync({ list: () => artifacts, att: () => att, setList: l => { artifacts = l; }, setAtt: t => { att = t; } }, f);
         sync.start();
         feed = f; gw = m;
+        void loadQ(m);
       }, () => {});
     });
   }, e => { if (!life.disposed) error = describe(e); }); };
@@ -59,16 +67,19 @@
   // Grouped without a query once the grouping has loaded; until then, and
   // with a query, one list.
   const g = $derived(shown && gw && !query.trim() ? gw.groups(shown, att) : null);
-  onMount(() => { void refresh(true); void getToken().then(t => { token = t; return fetch("/api/viewers/me"); }).then(r => r.json()).then(b => { me = b?.viewer?.display_name ?? null; meId = b?.viewer?.public_id ?? null; }, () => {}); });
-  onDestroy(() => { destroyed = true; life.dispose(); cancelStart?.(); sync?.stop(); });
+  onMount(() => { if (inbox) void lazy().then(loadQ, () => {}); else void refresh(true); void getToken().then(t => { token = t; return fetch("/api/viewers/me"); }).then(r => r.json()).then(b => { me = b?.viewer?.display_name ?? null; meId = b?.viewer?.public_id ?? null; }, () => {}); });
+  onDestroy(() => { destroyed = true; life.dispose(); cancelStart?.(); sync?.stop(); Q?.stop(); });
 </script>
 
 <header class="gbar">
   <Mark playful /><h1>Clax</h1><span class="sub hide-sm">local artifacts{#if me}{` · seen as ${me}`}{/if}</span>
-  <input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" value={query} oninput={e => { query = e.currentTarget.value; }} />
+  {#if !inbox}<input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" value={query} oninput={e => { query = e.currentTarget.value; }} />{/if}
+  {#if Q}<Q.InboxLink current={inbox} />{/if}
   <ThemeSwitch />
 </header>
 <main class="gal">
+  {#if inbox}{#if Q}<Q.InboxPage />{/if}{:else}
+  {#if Q}<Q.GallerySummary />{/if}
   {#if error}<p class="empty">Could not load artifacts: {error}</p>{/if}
   {#if artifacts && artifacts.length === 0}
     <div class="empty-gallery"><Mark size="hero" apart /><p>When an agent publishes a page, it lands here.</p><p class="muted">Or publish one yourself with <code>clax publish index.html</code>.</p></div>
@@ -95,5 +106,6 @@
       <div class="cards">{#each g?.rest ?? shown as a (a.id)}{@render card(a)}{/each}</div>
     </section>
   {/if}
-  {#if artifacts}<HaikuLine footer />{/if}
+  {#if artifacts && gw}<gw.HaikuLine footer />{/if}
+  {/if}
 </main>

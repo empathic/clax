@@ -1,9 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { flush, mount } from "../test/svelte";
-import { keyboardTrail } from "../view/trail";
+import { guardedAction, keyboardTrail } from "../view/trail";
 import QuestionCard from "./QuestionCard.svelte";
 import { view } from "./fixtures";
+import { useTrail } from "./trail";
 
 const buttons = (root: Element, text: string) => [...root.querySelectorAll("button")].filter(b => b.textContent === text);
 /** A trusted pointer's click (`detail` 1), or Enter or Space on a button (`detail` 0). */
@@ -13,6 +14,8 @@ const key = (el: Element, k: string, init: KeyboardEventInit = {}) =>
 const type = (el: HTMLInputElement | HTMLTextAreaElement, text: string) => flush(() => { el.value = text; el.dispatchEvent(new Event("input")); });
 
 describe("QuestionCard", () => {
+  // As in the artifact view, whose trail the cards follow there.
+  beforeAll(() => useTrail({ keyboardTrail, guardedAction }));
   it("answers every kind and enables Answer only when complete", async () => {
     const onAnswer = vi.fn(async () => {});
     const m = mount(QuestionCard, { q: view(), onAnswer, onDecline: vi.fn(async () => {}) });
@@ -25,7 +28,7 @@ describe("QuestionCard", () => {
     const ta = m.root.querySelector("textarea")!; ta.value = "ok"; ta.dispatchEvent(new Event("input"));
     flush();
     expect(answer().disabled).toBe(false);
-    expect([...m.root.querySelectorAll(".chip.done")]).toHaveLength(3);
+    expect([...m.root.querySelectorAll(".chip[data-done]")]).toHaveLength(3);
     click(answer());
     await flush();
     expect(onAnswer).toHaveBeenCalledWith({ answers: [{ selected: ["Two"], text: null }, { selected: ["Right"], text: null }, { selected: [], text: "ok" }] });
@@ -252,7 +255,7 @@ describe("QuestionCard", () => {
     m.update({ ...props, q: view({ status: "declined" }) });
     expect(status(m)).toBe(region);
     expect(region.textContent).toBe("Skipped");
-    expect(region.classList.contains("sr")).toBe(true);
+    expect(region.hasAttribute("data-sr")).toBe(true);
     m.unmount();
     // Closed by something else first (a 409): the answer was not taken, and the card says so where it is seen.
     const q = view({ agent: { handle: "a_de2252", harness: "codex", project: "sales" }, questions: [view().questions[2]] });
@@ -263,7 +266,7 @@ describe("QuestionCard", () => {
     await flush();
     m2.update({ ...p2, q: { ...q, status: "withdrawn" } });
     expect(status(m2).textContent).toBe("Not answered: codex stopped waiting");
-    expect(status(m2).classList.contains("sr")).toBe(true);
+    expect(status(m2).hasAttribute("data-sr")).toBe(true);
     expect(m2.root.querySelector(".closed")!.textContent).toBe("codex stopped waiting");
     expect(m2.root.querySelector(".instead")!.textContent).toBe("Not answered");
     // Closed without any action of the person's: just what happened.

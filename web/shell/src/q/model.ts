@@ -89,6 +89,15 @@ export function cutHeader(h: string): string {
   return cs.length > HEADER ? `${cs.slice(0, HEADER - 1).join("").trimEnd()}…` : h;
 }
 
+/** The answer to question `i` of `q`, as the person reads it: the picked
+ * labels as shown, then "Other: …" or the free text; "—" for none. */
+export function answerText(q: QuestionView, i: number): string {
+  const a = q.answers?.[i];
+  const opts = q.questions[i].options;
+  const parts = [...(a?.selected ?? []).map(l => { const o = opts.find(x => x.label === l); return o ? shownLabel(o) : l; }), ...(a?.text ? [opts.length ? `Other: ${a.text}` : a.text] : [])];
+  return parts.join(", ") || "—";
+}
+
 /** An option's label as shown: a recommended option's label loses a
  * trailing "(Recommended)" (any case), which a mirrored label keeps, since
  * the card shows a Recommended chip. The stored label, which keys the

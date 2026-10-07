@@ -10,14 +10,21 @@
 // A watcher hears `ready` when its topics go live (refetch, then apply the
 // deltas that follow), `resync` when a topic's events were dropped (refetch
 // it), `stream_down` and `stream_up` around an outage, during which the
-// page shows a quiet notice. A page hidden for `HIDDEN_MS` leaves the hub
-// (a leader tab hands the connection to another, as a hidden tab may be
-// frozen) and joins again (with a `ready`) when it shows; so does a page
+// page shows a quiet notice. A page hidden for `HIDDEN_MS` releases its
+// topics other than background ones; holding none, it leaves the hub (a
+// leader tab hands the connection to another, as a hidden tab may be
+// frozen). It takes them again (with a `ready`) when it shows; so does a page
 // hidden for good or in the back/forward cache. A hub that is lost again
 // before saying anything is joined again after a backoff, and a shared
 // worker that fails before saying anything is not asked for again. The
 // token never goes in a URL: the hub's requests carry the events cookie
 // that `GET /api/token` sets for the shell.
+//
+// A background watcher (`questions` and `inbox`) keeps its topics while the
+// page is hidden: a hidden page releases only the other topics, and stays
+// with the hub. The page tells the hub whether it has focus (on `focus`,
+// `blur` and `visibilitychange`, and once it joins), so the hub can ask the
+// most recently focused tab to notify when no tab has focus (`onNotify`).
 import { getToken } from "./api";
 import { after } from "./clock";
 import { STREAM_DOWN, connTrouble } from "./conn-notice";
@@ -48,7 +55,7 @@ export type Link = { send(m: TabMsg): void; close(): void; pinged?: boolean };
 export type LinkMaker = (on: (m: HubMsg) => void, lost: () => void) => Promise<Link>;
 
 type Timer = ReturnType<typeof setTimeout>;
-type Watcher = { topics: Set<string>; on: (e: StreamEvent) => void };
+type Watcher = { topics: Set<string>; on: (e: StreamEvent) => void; background: boolean };
 
 /** Holds Web Lock `name` until the returned function runs; null without Web Locks. */
 export async function holdLock(name: string): Promise<(() => void) | null> {
@@ -115,11 +122,12 @@ export const leaderLink: LinkMaker = async on => {
   // What a new leader needs to hear again: the hello and the latest topics.
   const hello: TabMsg = { t: "hello", lock: releaseTab ? lock : undefined };
   let topics: TabMsg | null = null;
+  let focus: TabMsg | null = null;
   const post = (m: TabMsg) => {
     if (hub) hub.receive(id, m);
     else bc.postMessage({ k: "tab", from: id, msg: m });
   };
-  const resend = () => { post(hello); if (topics) post(topics); };
+  const resend = () => { post(hello); if (topics) post(topics); if (focus) post(focus); };
   bc.onmessage = (e: MessageEvent) => {
     const m = e.data;
     if (closed || !m || typeof m !== "object") return;
@@ -130,6 +138,7 @@ export const leaderLink: LinkMaker = async on => {
   void navigator.locks.request(LEADER, () => {
     if (closed) return;
     hub = new Hub({
+      notify: true,
       send(ids, msg) {
         const others = ids.filter(x => x !== id);
         if (others.length) bc.postMessage({ k: "hub", to: others, msg });
@@ -143,7 +152,7 @@ export const leaderLink: LinkMaker = async on => {
   }).catch(() => {});
   post(hello);
   return {
-    send: m => { if (closed) return; if (m.t === "topics") topics = m; post(m); },
+    send: m => { if (closed) return; if (m.t === "topics") topics = m; if (m.t === "focus") focus = m; post(m); },
     close: () => {
       if (closed) return;
       post({ t: "bye" });
@@ -160,7 +169,7 @@ export const leaderLink: LinkMaker = async on => {
 /** A hub of this tab's own: one connection per tab. */
 export const localLink: LinkMaker = async on => {
   const { Hub } = await import("./stream-hub");
-  const hub = new Hub({ send: (_ids, msg) => on(msg) });
+  const hub = new Hub({ notify: true, send: (_ids, msg) => on(msg) });
   return { send: m => hub.receive("self", m), close: () => hub.close() };
 };
 
@@ -189,7 +198,7 @@ export class EventStream {
   /** The topics last sent to the hub, as a key. */
   private sent = "";
   private queued = false;
-  /** The page has been hidden for `HIDDEN_MS`: its topics are released. */
+  /** The page has been hidden for `HIDDEN_MS`: its topics other than background ones are released. */
   private released = false;
   /** The page is leaving (or in the back/forward cache). */
   private gone = false;
@@ -205,6 +214,9 @@ export class EventStream {
   /** The viewer changed while this page had no link. */
   private wantReconnect = false;
   private hooked = false;
+  private notifyHandlers = new Set<(data: Record<string, unknown>) => void>();
+  /** What the hub was last told about focus, as a key. */
+  private focusSent = "";
 
   constructor(private readonly win: Window = window, private readonly makeLink: LinkMaker = bestLink) {}
 
@@ -220,9 +232,10 @@ export class EventStream {
   /** The topics this page holds now (tests). */
   get topics(): string[] { return this.sent ? this.sent.split("\n") : []; }
 
-  /** Hands `on` the events of `topics` until the returned function runs. */
-  watch(topics: readonly string[], on: (e: StreamEvent) => void): () => void {
-    const w: Watcher = { topics: new Set(topics), on };
+  /** Hands `on` the events of `topics` until the returned function runs.
+   * A `background` watcher keeps its topics while the page is hidden. */
+  watch(topics: readonly string[], on: (e: StreamEvent) => void, opts: { background?: boolean } = {}): () => void {
+    const w: Watcher = { topics: new Set(topics), on, background: opts.background === true };
     this.watchers.push(w);
     watched?.add(this);
     this.hook();
@@ -233,6 +246,13 @@ export class EventStream {
       this.watchers.splice(i, 1);
       this.schedule();
     };
+  }
+
+  /** Hands `f` what the hub asks this page to notify about (an unread
+   * inbox item's event data) until the returned function runs. */
+  onNotify(f: (data: Record<string, unknown>) => void): () => void {
+    this.notifyHandlers.add(f);
+    return () => { this.notifyHandlers.delete(f); };
   }
 
   /** Opens a new stream for every tab: the viewer changed, and the daemon
@@ -255,6 +275,8 @@ export class EventStream {
       this.win.removeEventListener("pagehide", this.onHide);
       this.win.removeEventListener("pageshow", this.onShow);
       this.win.document.removeEventListener("visibilitychange", this.onVisibility);
+      this.win.removeEventListener("focus", this.onFocus);
+      this.win.removeEventListener("blur", this.onFocus);
       this.hooked = false;
     }
   }
@@ -265,8 +287,21 @@ export class EventStream {
     this.win.addEventListener("pagehide", this.onHide);
     this.win.addEventListener("pageshow", this.onShow);
     this.win.document.addEventListener("visibilitychange", this.onVisibility);
+    this.win.addEventListener("focus", this.onFocus);
+    this.win.addEventListener("blur", this.onFocus);
     if (this.win.document.visibilityState === "hidden") this.onVisibility();
   }
+
+  /** Tells the hub whether this page has focus, when that changed. */
+  private onFocus = () => {
+    if (!this.link) return;
+    const d = this.win.document;
+    const focused = d.visibilityState !== "hidden" && d.hasFocus();
+    const key = String(focused);
+    if (key === this.focusSent) return;
+    this.focusSent = key;
+    this.link.send({ t: "focus", focused });
+  };
 
   private onHide = () => {
     this.gone = true;
@@ -280,10 +315,17 @@ export class EventStream {
   };
 
   private onVisibility = () => {
+    this.onFocus();
     this.hiddenTimer?.();
     this.hiddenTimer = undefined;
     if (this.win.document.visibilityState === "hidden") {
-      this.hiddenTimer = after(HIDDEN_MS, () => { this.hiddenTimer = undefined; this.released = true; this.leave(); });
+      this.hiddenTimer = after(HIDDEN_MS, () => {
+        this.hiddenTimer = undefined;
+        this.released = true;
+        // Background topics stay: the page keeps only them.
+        if (this.watchers.some(w => w.background)) this.schedule();
+        else this.leave();
+      });
     } else if (this.released) {
       this.released = false;
       this.schedule();
@@ -299,9 +341,9 @@ export class EventStream {
   }
 
   private union(): string[] {
-    if (this.released || this.gone) return [];
+    if (this.gone) return [];
     const out = new Set<string>();
-    for (const w of this.watchers) for (const t of w.topics) out.add(t);
+    for (const w of this.watchers) if (!this.released || w.background) for (const t of w.topics) out.add(t);
     return [...out].sort();
   }
 
@@ -340,8 +382,10 @@ export class EventStream {
       this.linking = null;
       this.link = link;
       this.sent = "";
+      this.focusSent = "";
       if (this.wantReconnect) { this.wantReconnect = false; link.send({ t: "reconnect" }); }
       this.sync();
+      this.onFocus();
     })();
   }
 
@@ -362,6 +406,7 @@ export class EventStream {
     this.link?.close();
     this.link = null;
     this.sent = "";
+    this.focusSent = "";
     clearInterval(this.watchdog);
     this.watchdog = undefined;
     clearTimeout(this.noticeTimer);
@@ -377,6 +422,7 @@ export class EventStream {
     this.link = null;
     link.close();
     this.sent = "";
+    this.focusSent = "";
     clearInterval(this.watchdog);
     this.watchdog = undefined;
     this.markDown();
@@ -439,6 +485,7 @@ export class EventStream {
       case "resync": this.tell(w => w.topics.has(m.topic), { type: "resync", topic: m.topic }); break;
       case "refused": this.tell(w => w.topics.has(m.topic), { type: "refused", topic: m.topic, code: m.code }); break;
       case "status": if (m.up) this.markUp(); else this.markDown(); break;
+      case "notify": for (const f of [...this.notifyHandlers]) f(m.data); break;
       // Answered, so a hub that cannot watch this tab's Web Lock keeps it.
       case "ping": this.link?.send({ t: "ping" }); break;
     }

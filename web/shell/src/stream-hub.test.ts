@@ -203,6 +203,48 @@ describe("the stream hub", () => {
     expect(of("t2", "live")).toEqual([{ t: "live", topics: [`artifact:${A}`] }]);
   });
 
+  it("asks the most recently focused tab to notify, once per item, only when no tab has focus", async () => {
+    const sent: { ids: string[]; msg: HubMsg }[] = [];
+    const h = new Hub({ notify: true, fetch: net.fetch, send: (ids, msg) => { sent.push({ ids, msg }); } });
+    h.receive("t1", { t: "topics", topics: ["inbox"] });
+    h.receive("t2", { t: "topics", topics: ["inbox"] });
+    h.receive("t3", { t: "topics", topics: ["gallery"] });
+    await tick();
+    net.ready(net.conns[0], S1);
+    await tick();
+    let n = 0;
+    const deliver = (data: Record<string, unknown>) => net.event(net.conns[0], S1, ++n, "inbox", "inbox_item", data);
+    h.receive("t1", { t: "focus", focused: true });
+    h.receive("t1", { t: "focus", focused: false });
+    h.receive("t2", { t: "focus", focused: true });
+    deliver({ item: { id: "I1", read: false }, unread: 1 });
+    await tick();
+    expect(sent.filter(m => m.msg.t === "notify")).toEqual([]);
+    h.receive("t2", { t: "focus", focused: false });
+    // The tab focused last, though not focused now, and only one holding `inbox`.
+    h.receive("t3", { t: "focus", focused: true });
+    h.receive("t3", { t: "focus", focused: false });
+    deliver({ item: { id: "I2", read: false }, unread: 2 });
+    deliver({ item: { id: "I2", read: false }, unread: 2 });
+    deliver({ item: { id: "I3", read: true }, unread: 2 });
+    // I1 was announced while a tab had focus: never again.
+    deliver({ item: { id: "I1", read: false }, unread: 2 });
+    await tick();
+    expect(sent.filter(m => m.msg.t === "notify")).toEqual([{ ids: ["t2"], msg: { t: "notify", data: { topic: "inbox", item: { id: "I2", read: false }, unread: 2 } } }]);
+    h.close();
+  });
+
+  it("never asks a tab to notify unless made to", async () => {
+    hub.receive("t1", { t: "topics", topics: ["inbox"] });
+    await tick();
+    net.ready(net.conns[0], S1);
+    await tick();
+    net.event(net.conns[0], S1, 1, "inbox", "inbox_item", { item: { id: "I1", read: false }, unread: 1 });
+    await tick();
+    expect(of("t1", "notify")).toEqual([]);
+    expect(of("t1", "event")).toHaveLength(1);
+  });
+
   it("keeps pinging a tab whose topics were all refused, so it does not count the hub dead", async () => {
     net.refuse.set(`docs:${A}`, [403, "not_declared"]);
     hub.receive("t1", { t: "topics", topics: [`docs:${A}`] });

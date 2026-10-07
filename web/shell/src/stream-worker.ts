@@ -12,6 +12,7 @@ const scope = self as unknown as { onconnect: ((e: MessageEvent) => void) | null
 const ports = new Map<string, MessagePort>();
 const locks = scope.navigator?.locks;
 const hub = new Hub({
+  notify: true,
   send(ids, msg) { for (const id of ids) ports.get(id)?.postMessage(msg); },
   watchLock: locks ? (name, gone) => { void locks.request(name, () => gone()).catch(() => {}); } : undefined,
 });

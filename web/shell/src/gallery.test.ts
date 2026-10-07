@@ -33,10 +33,16 @@ type Call = { url: string; method: string; body?: string };
 /** Fields a single-artifact list answer changes, by artifact ID. */
 let edits: Record<string, Record<string, unknown>> = {};
 const ATTENTION = { artifacts: { aaaaaaaaaaaa: { addressed: [], addressed_v: null, new_replies: ["t"], open_in: ["t"], seen: 1 } } };
-function stubApi(tokenStatus: number = 200, attention: "ok" | "fail" | "none" = "none") {
+/** The inbox's owner routes: the summary and open questions, or 403 (not the owner). */
+type Inbox = { summary: Record<string, unknown>; questions: unknown[] } | 403;
+function stubApi(tokenStatus: number = 200, attention: "ok" | "fail" | "none" = "none", inbox?: Inbox) {
   const calls: Call[] = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     calls.push({ url, method: init?.method ?? "GET", body: init?.body as string | undefined });
+    if (inbox && /^\/api\/(inbox|questions)/.test(url)) {
+      if (inbox === 403) return new Response(JSON.stringify({ error: { code: "forbidden" } }), { status: 403 });
+      return new Response(JSON.stringify(url.startsWith("/api/inbox/summary") ? inbox.summary : { questions: inbox.questions, open: inbox.questions.length }));
+    }
     if (url.endsWith("/api/viewers/me/attention")) {
       if (attention === "fail") throw new Error("network");
       if (attention === "ok") return new Response(JSON.stringify(ATTENTION));
@@ -173,6 +179,40 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(rest.textContent).not.toContain("Other");
   });
 
+  it("leads with the inbox's unread summary for the owner: questions as cards, then the newest rows, then how many more", async () => {
+    const { item, view } = await import("./q/fixtures");
+    const q = view();
+    stubApi(200, "ok", { summary: { unread: 3, questions: [q], latest: [item("reply")] }, questions: [q] });
+    const root = await mountGallery();
+    const sum = await waitFor(() => root.querySelector<HTMLElement>(".inbox-sum:not([hidden]) .qcard") && root.querySelector<HTMLElement>(".inbox-sum"), "the inbox summary");
+    const needs = await waitFor(() => root.querySelector(".grp.needs"), "the needs group");
+    expect(sum.compareDocumentPosition(needs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(sum.querySelector("h2")!.textContent).toBe("Inbox · 3 unread");
+    expect(sum.querySelectorAll(".qcard")).toHaveLength(1);
+    expect([...sum.querySelectorAll(".irow")].map(r => r.getAttribute("data-item"))).toEqual([item("reply").id]);
+    expect(sum.querySelector(".more")!.textContent).toBe("1 more in the inbox");
+    // And Inbox in the header, with the count.
+    expect(root.querySelector(".gbar .inbox-link .count")!.textContent).toBe("3");
+  });
+
+  it("shows no summary when nothing is unread, and neither summary nor Inbox for anyone but the owner", async () => {
+    stubApi(200, "ok", { summary: { unread: 0, questions: [], latest: [] }, questions: [] });
+    let root = await mountGallery();
+    await waitFor(() => root.querySelector(".gbar .inbox-link"), "the Inbox link");
+    expect(root.querySelector<HTMLElement>(".inbox-sum")!.hidden).toBe(true);
+    expect(root.querySelector(".gbar .inbox-link .count")).toBeNull();
+    unmountGallery?.();
+    vi.resetModules();
+    const calls = stubApi(200, "ok", 403);
+    root = await mountGallery();
+    await waitFor(() => calls.some(c => c.url === "/api/inbox/summary"), "the owner check");
+    await waitFor(() => root.querySelector(".inbox-sum"), "the summary's place");
+    expect(root.querySelector<HTMLElement>(".inbox-sum")!.hidden).toBe(true);
+    expect(root.querySelector(".inbox-link")).toBeNull();
+    // Not the owner: the question list is never asked for.
+    expect(calls.some(c => c.url.startsWith("/api/questions"))).toBe(false);
+  });
+
   it("without attention shows every card in one group and no needs group", async () => {
     stubApi(200, "fail");
     const root = await mountGallery();
@@ -255,6 +295,8 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const calls = stubApi(200, "ok");
     const root = await mountGallery();
     const w = await workerWith("gallery");
+    // Once the question module has asked whether this is the owner (it is not).
+    await waitFor(() => calls.some(c => c.url === "/api/questions?status=open&limit=200" || c.url === "/api/inbox/summary"), "the owner check");
     const before = calls.length;
     w.emit("gallery", "version", { artifact_id: "aaaaaaaaaaaa", n: 2, title: "Other", at: "2026-09-28T11:30:00Z" });
     const card = () => Array.from(root.querySelectorAll("a.card")).find(c => c.textContent!.includes("Other"));

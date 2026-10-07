@@ -3,14 +3,18 @@
 // manifest), of the eager bridge, of each of the bridge's lazy parts with
 // the files it imports (per the parts build's manifest), and of the Chrome
 // extension's release build (web/dist-extension: its worker and overlay
-// scripts, and each page with the scripts and stylesheets it names),
+// scripts, and each page with the scripts and stylesheets it names), of the
+// question module (`questions`: the `q` chunk, which the gallery loads
+// through its lazy module, with what it imports that the gallery has not
+// loaded by then),
 // against web/perf/bundle-budget.json. The shell sets its type in the
 // system's faces, so the build may carry no font file and no entry may load
 // one. The extension's release manifest may grant no host and declare no
 // content script, and its build may carry no key file and no test hook.
 // --record lowers the shell's and the bridge's budgets to the measured
 // sizes plus 10%, never raising one, and adds one that is missing; the
-// extension's budgets are the spec's ceilings and are never recorded.
+// extension's and the question module's budgets are the spec's ceilings and
+// are never recorded.
 //
 // Sizes are deflated by pako (a pinned JavaScript port of reference zlib), not
 // node:zlib: Node links whichever zlib its build chose (the official builds
@@ -86,6 +90,16 @@ function part(name) {
 }
 
 const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), bridge: gz("_clax/bridge.js") };
+// The question module: its chunk and what it imports beyond the gallery's
+// entry and the gallery's lazy module, through which it loads.
+{
+  const key = k => Object.keys(manifest).find(m => m.endsWith(k));
+  const q = key("src/q/index.ts");
+  const lazy = key("src/ui/gallery-working.ts");
+  if (!q || !lazy) throw new Error("dist has no question module or no gallery-working chunk");
+  const loaded = new Set([...closure("index.html"), ...closure(lazy)]);
+  sizes.questions = [...closure(q)].filter(k => !loaded.has(k)).reduce((n, k) => n + gz(manifest[k].file), 0);
+}
 for (const [name, key] of Object.entries(partKeys)) sizes[key] = part(name);
 
 // The extension's release build.
@@ -117,10 +131,10 @@ for (const [key, html] of [["extComposer", "composer.html"], ["extPanel", "sidep
   const files = [...text.matchAll(/(?:src|href)="\.\/(assets\/[^"]+)"/g)].map(m => m[1]);
   sizes[key] = extGz(html) + files.reduce((n, f) => n + extGz(f), 0);
 }
-console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, eager bridge ${sizes.bridge}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, room ${sizes.partRoom}, sample ${sizes.partSample}, extension: overlay ${sizes.extOverlay}, worker ${sizes.extWorker}, composer ${sizes.extComposer}, panel ${sizes.extPanel}`);
+console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, questions ${sizes.questions}, eager bridge ${sizes.bridge}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, room ${sizes.partRoom}, sample ${sizes.partSample}, extension: overlay ${sizes.extOverlay}, worker ${sizes.extWorker}, composer ${sizes.extComposer}, panel ${sizes.extPanel}`);
 
 const RECORDED = ["gallery", "artifact", "bridge", ...Object.values(partKeys)];
-const EXTENSION = ["extOverlay", "extWorker", "extComposer", "extPanel"];
+const EXTENSION = ["extOverlay", "extWorker", "extComposer", "extPanel", "questions"];
 const MEASURED = [...RECORDED, ...EXTENSION];
 const KEYS = [...MEASURED, "bridgeBaseline"];
 const budget = existsSync(budgetFile) ? JSON.parse(readFileSync(budgetFile, "utf8")) : null;
