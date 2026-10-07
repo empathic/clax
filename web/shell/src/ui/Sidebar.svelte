@@ -13,7 +13,7 @@
   import { type Selection, selectable, sendLabel, unsent, unsentLabel } from "../view/batch-model";
   import { guardedAction, keyboardTrail } from "../view/trail";
   import { agentName, historyOf, isOutdated } from "../view/history-model";
-  import { needsTicking, sidebarSections } from "../view/sidebar-model";
+  import { needsTicking, pageLabel, sidebarSections } from "../view/sidebar-model";
   import { type Working, agentNames, newestFirst, stripText, threadAgent, threadMarker } from "../view/working-model";
   import SendButton from "./SendButton.svelte";
   import ThreadCard from "./ThreadCard.svelte";
@@ -73,6 +73,8 @@
     onChoose?(handle: string): void;
     /** The pins' numbers, when `threads` is a filtered part of the threads they were counted over. */
     numbers?: Map<string, number>;
+    /** Fetches a thread's clip, for a host that cannot load `clip_url` itself (the side panel). */
+    clip?(t: Thread): Promise<string | null>;
   };
   let p: Props = $props();
   // Each second while a waiting label counts; otherwise often enough for "N min ago".
@@ -114,15 +116,28 @@
   const unsentCount = $derived(unsent(p.threads).length);
   let unsentHint: string | null = $state(null);
   $effect(() => keyboardTrail.onClear(() => { unsentHint = null; }));
-  const resolve = (t: Thread) => { justResolved = { id: t.id, until: Date.now() + RESOLVE_OPEN_MS }; p.onResolve(t); };
+  const resolve = (t: Thread) => { if (t.status === "open") justResolved = { id: t.id, until: Date.now() + RESOLVE_OPEN_MS }; p.onResolve(t); };
+  // A thread on another page the version holds folds to its summary and opens
+  // in place, so it is read and answered without leaving this page; "Go to
+  // page" opens its page (`onSelect`). Any number may be open at once, kept
+  // by thread ID through every change of the list.
+  let unfolded: string[] = $state([]);
+  const far = (t: Thread) => t.anchor.file !== s.file && (p.holds?.(t.anchor.file) ?? true);
+  const foldOf = (t: Thread) => far(t)
+    ? { open: unfolded.includes(t.id), onToggle: (o: boolean) => { unfolded = o ? [...unfolded, t.id] : unfolded.filter(x => x !== t.id); } }
+    : undefined;
 </script>
+
+{#snippet go(t: Thread)}
+  <button type="button" class="ghost go-page" aria-label={`Go to page ${pageLabel(t.anchor.file)}`} onclick={() => p.onSelect(t)}>Go to page ↗</button>
+{/snippet}
 
 {#snippet cards(list: Thread[])}
   {#each list as t (t.id)}
     <ThreadCard {t} n={(p.numbers ?? s.numbers).get(t.id)} now={clock.now} me={p.me} selected={p.selected} file={s.file}
       history={historyOf(t, p.versions, names(t), { working: t.status === "open" ? threadAgent(p.working ?? [], t.id, agentsByHandle) : null })}
       marker={t.status === "open" ? threadMarker(p.working ?? [], t.id, agentsByHandle) : null} outdated={isOutdated(t, p.resolved[t.id], p.shown)} agent={p.agent} when={relativeTime(t.created_at, clock.now)}
-      versions={p.versions} onSeen={p.onSeen}
+      versions={p.versions} onSeen={p.onSeen} fold={foldOf(t)} clip={p.clip} tools={far(t) ? go : undefined}
       checked={ticked.has(t.id)} onToggle={p.onToggle && selectable(t, false) ? toggleCard : undefined}
       onSelect={p.onSelect} onSend={p.onSend} onResolve={resolve} onReply={p.onReply} onHover={p.onHover}>
       {#snippet send(guard: (e: Event, act: () => void) => void)}
@@ -194,43 +209,9 @@
     .gh.oth .sw { border-radius: 0 8px 8px 0; box-shadow: inset 0 0 0 1.5px var(--you); }
     .gh.set .sw { border-radius: 50%; width: 10px; height: 10px; background: var(--border-strong); }
     .tail { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 8px; }
-    .thread-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 11px 12px 10px; margin-bottom: 10px; cursor: pointer; transition: border-color var(--t), box-shadow var(--t); }
-    .thread-card:hover { border-color: var(--border-hover); }
-    .thread-card.selected { border-color: var(--border-strong); box-shadow: var(--elev); }
-    .thread-card header { margin-bottom: 8px; min-width: 0; }
-    .thread-card .card-head { display: flex; gap: 8px; align-items: center; width: 100%; min-width: 0; min-height: 0; background: none; border: 0; padding: 0; color: var(--muted); text-align: left; font: 400 12.5px var(--font); }
-    .thread-card .card-head:not(:disabled):hover { background-color: transparent; }
-    .thread-card .anchor-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
-    .thread-card .thumb { display: block; max-width: 100%; max-height: 120px; min-height: 24px; margin-bottom: 6px; object-fit: cover; object-position: left top; border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--bg); }
-    .vt { font: 500 11px/16px var(--font); padding: 0 5px; border-radius: var(--radius-xs); color: var(--fg); background: var(--hover); white-space: nowrap; }
-    .vt.out { color: var(--muted); }
-    .msg { display: grid; gap: 3px; }
-    .msg + .msg { margin-top: 10px; }
-    .msg .author { font: 600 13px/20px var(--font); }
-    .msg .body { margin: 0; font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
-    .msg.you { border-left: 2px solid var(--you); padding: 1px 0 1px 10px; }
-    .msg.agent { border-right: 2px solid var(--agent); padding: 1px 10px 1px 0; margin-left: 26px; text-align: right; }
-    .msg.agent .author { color: var(--agent-ink); }
-    .msg.agent .body { text-align: left; }
-    .st { display: flex; align-items: center; gap: 8px; margin: 10px 0 0; padding-top: 8px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
-    .st.ag { color: var(--agent-ink); font: 600 13px/1.25 var(--font); } .st small { font: 400 11.5px var(--mono); font-variant-numeric: tabular-nums; color: var(--muted); margin-left: auto; }
-    .hist { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 9px 0 0; padding: 8px 0 0; list-style: none; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); line-height: 1.6; }
-    .hist .sep { margin-right: 2px; }
-    .hist .ev { white-space: nowrap; }
-    /* Each version's events start a line; the "·" stays in the text, read and copied. */
-    .hist .br { flex-basis: 100%; height: 0; }
-    .hist .nl .sep { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-    .hist .ev b { font-weight: 600; color: var(--fg); }
-    .hist .ev.agent .vt { background: var(--accent-tint); color: var(--agent-ink); }
-    .thread-card .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 8px; }
-    .reply { display: flex; gap: 6px; margin-top: 8px; }
-    .reply input { flex: 1; min-width: 0; }
-    /* Batch send (spec §8): the cards' boxes, the shared Send and its agent picker. */
-    .thread-card .actions button.primary, .send button.primary, button.primary.send-unsent { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
-    .thread-card .actions button.primary:not(:disabled):hover, .send button.primary:not(:disabled):hover, button.primary.send-unsent:not(:disabled):hover { background: var(--accent-hover); border-color: var(--accent-hover); }
-    .thread-card header { display: flex; align-items: center; gap: 8px; }
-    .thread-check { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); flex: none; cursor: pointer; }
-    .thread-card:has(.thread-check:checked) { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+    /* Batch send (spec §8): the shared Send and its agent picker. */
+    .send button.primary, button.primary.send-unsent { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+    .send button.primary:not(:disabled):hover, button.primary.send-unsent:not(:disabled):hover { background: var(--accent-hover); border-color: var(--accent-hover); }
     .send { display: inline-flex; position: relative; }
     .send .caret { min-width: 28px; padding: 0 6px; border-left: 1px solid color-mix(in srgb, var(--on-accent) 35%, transparent); font-family: var(--mono); }
     .send > button.primary:not(:last-child) { border-top-right-radius: 0; border-bottom-right-radius: 0; }

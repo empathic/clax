@@ -394,3 +394,116 @@ describe("Sidebar", () => {
   });
 });
 
+
+describe("Sidebar: threads on other pages", () => {
+  const onAbout = { ...anchor, file: "about.html" };
+  const here: Thread = { ...base, id: "a", anchor, status: "open", sent_to_agent: false, comments: [comment("1", "viewer", "Alex", "here")] };
+  const there: Thread = { ...base, id: "b", anchor: onAbout, status: "open", sent_to_agent: false, has_clip: true, clip_url: "/api/artifacts/7q3k9mzx2b4t/threads/b/clip",
+    comments: [comment("2", "viewer", "Alex", "Button looks off"), comment("3", "agent", "claude", "Fixed in v4"), comment("4", "viewer", "Alex", "Still misaligned")] };
+  const done: Thread = { ...base, id: "c", anchor: onAbout, status: "resolved", sent_to_agent: false, comments: [comment("5", "viewer", "Alex", "done there")] };
+  function setup(threads = [here, there, done]) {
+    const calls = { select: vi.fn(), send: vi.fn(), resolve: vi.fn(), reply: vi.fn() };
+    const props = { versions: [], shown: 1, agent: "claude", threads, resolved: {}, file: "index.html", now: new Date(base.created_at), selected: null,
+      onSelect: calls.select, onSend: calls.send, onResolve: calls.resolve, onReply: calls.reply };
+    const view = mount(Sidebar, props);
+    const card = (id: string) => view.root.querySelector<HTMLElement>(`[data-thread="${id}"]`)!;
+    const head = (id: string) => card(id).querySelector<HTMLButtonElement>("button.card-head")!;
+    return { view, props, calls, card, head };
+  }
+
+  it("folds another page's thread to its summary, and opens it in place without selecting it", () => {
+    const { view, calls, card, head } = setup();
+    // This page's thread is whole, as before.
+    expect(head("a").hasAttribute("aria-expanded")).toBe(false);
+    expect(card("b").classList.contains("folded")).toBe(true);
+    expect(head("b").getAttribute("aria-expanded")).toBe("false");
+    expect(head("b").getAttribute("aria-label")).toBe("Show the thread on «Goals»");
+    expect(card("b").querySelector(".fold-body")!.textContent).toBe("Button looks off");
+    expect(card("b").querySelector(".fold-meta")!.textContent).toBe("Alex2 replies");
+    expect(card("b").querySelector('input[aria-label="Reply"]')).toBeNull();
+    // A click anywhere on the folded card opens it; neither selects it.
+    card("b").querySelector<HTMLElement>(".fold-body")!.click();
+    flush();
+    expect(head("b").getAttribute("aria-expanded")).toBe("true");
+    expect(Array.from(card("b").querySelectorAll(".msg .body"), b => b.textContent)).toEqual(["Button looks off", "Fixed in v4", "Still misaligned"]);
+    head("b").click();
+    flush();
+    expect(head("b").getAttribute("aria-expanded")).toBe("false");
+    expect(calls.select).not.toHaveBeenCalled();
+    // "Go to page" opens its page (the select that navigates).
+    card("b").querySelector<HTMLButtonElement>("button.go-page")!.click();
+    expect(calls.select).toHaveBeenCalledWith(there);
+    expect(card("b").querySelector("button.go-page")!.getAttribute("aria-label")).toBe("Go to page about.html");
+    view.unmount();
+  });
+
+  it("replies to, resolves, sends and reopens another page's thread from its open card", () => {
+    const { view, calls, card, head } = setup();
+    head("b").click();
+    flush();
+    const input = card("b").querySelector<HTMLInputElement>('input[aria-label="Reply"]')!;
+    input.value = "@claude still off by 2px";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    flush();
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(calls.reply).toHaveBeenCalledWith(there, "@claude still off by 2px");
+    const button = (id: string, name: string) => Array.from(card(id).querySelectorAll<HTMLButtonElement>(".actions button")).find(b => b.textContent === name)!;
+    button("b", "Send to claude").click();
+    expect(calls.send).toHaveBeenCalledWith(there);
+    button("b", "Resolve").click();
+    expect(calls.resolve).toHaveBeenCalledWith(there);
+    // The tools follow the reply box, as the card's actions do.
+    expect(Array.from(card("b").querySelectorAll(".actions button"), b => b.textContent)).toEqual(["Resolve", "Send to claude", "Go to page ↗"]);
+    (view.root.querySelector<HTMLDetailsElement>(".section-resolved")!).open = true;
+    head("c").click();
+    flush();
+    button("c", "Reopen").click();
+    expect(calls.resolve).toHaveBeenCalledWith(done);
+    expect(calls.select).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it("keeps cards open by thread ID through the list's changes, shows new replies, and folds with Escape, focus on its head", () => {
+    const { view, props, card, head } = setup();
+    head("b").click();
+    flush();
+    (view.root.querySelector<HTMLDetailsElement>(".section-resolved")!).open = true;
+    head("c").click();
+    flush();
+    const more = { ...there, comments: [...there.comments, comment("6", "agent", "claude", "Aligned now")] };
+    view.update({ ...props, threads: [here, more, done] });
+    expect(head("b").getAttribute("aria-expanded")).toBe("true");
+    expect(head("c").getAttribute("aria-expanded")).toBe("true");
+    expect(card("b").textContent).toContain("Aligned now");
+    const input = card("b").querySelector<HTMLInputElement>('input[aria-label="Reply"]')!;
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    flush();
+    expect(head("b").getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(head("b"));
+    expect(head("c").getAttribute("aria-expanded")).toBe("true");
+    view.unmount();
+  });
+
+  it("shows the clip of an open card, which enlarges and closes with Escape or a click outside", () => {
+    const { view, card, head } = setup();
+    expect(card("b").querySelector(".clip-thumb")).toBeNull();
+    head("b").click();
+    flush();
+    const thumb = card("b").querySelector<HTMLButtonElement>(".clip-thumb")!;
+    expect(thumb.getAttribute("aria-label")).toBe("Enlarge the screenshot");
+    expect(thumb.querySelector("img")!.getAttribute("src")).toBe(there.clip_url);
+    expect(thumb.querySelector("img")!.getAttribute("loading")).toBe("lazy");
+    const dialog = card("b").querySelector("dialog")!;
+    thumb.click();
+    expect(dialog.open).toBe(true);
+    dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    flush();
+    expect(dialog.open).toBe(false);
+    expect(head("b").getAttribute("aria-expanded")).toBe("true");
+    thumb.click();
+    dialog.click();
+    expect(dialog.open).toBe(false);
+    view.unmount();
+  });
+});

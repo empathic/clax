@@ -684,7 +684,7 @@ file under `v/<digits>/` is reachable only through the versioned form):
   which pushes that page's URL and moves the frame with `location.replace`,
   both carrying the link's fragment (the shell takes a `#` fragment of at
   most 512 characters, and at most one link per greeting page);
-  the sidebar's jump to a thread on another page does the same, and
+  the sidebar's "Go to page ↗" on a thread of another page does the same, and
   `popstate` moves the frame to the URL's page. Any other navigation in the
   frame keeps the frame's own entry, and the shell replaces its URL when the
   new page greets with a different `file`. A hello naming a page the version
@@ -780,8 +780,18 @@ file under `v/<digits>/` is reachable only through the versioned form):
   and Reply, Resolve and `Send to <agent> ▾`. Any viewer may resolve a
   thread, and an agent may resolve a thread sent to it; the history records
   who. Clicking a thread scrolls the frame to its anchor and
-  flashes it (a static outline under reduced motion); a thread on another
-  page is labelled "on <file>" and clicking it navigates there first. Pins
+  flashes it (a static outline under reduced motion). A thread on another
+  page the version holds is labelled "on <file>" and folded to its summary
+  (anchor, first comment, author, reply count); a click on it, or Enter or
+  Space on its head, opens it in place, where it is read, answered,
+  resolved or reopened and sent exactly as on its own page, the frame and
+  the URL staying put and nothing selected; Escape inside it folds it again,
+  focus on its head (owner decision 2026-10-07). Any number may be open at
+  once, kept by thread ID while the list changes. Its "Go to page ↗"
+  navigates there first and selects it, as clicking it did before. A
+  resolved thread's card offers Reopen (the daemon's rule: a named viewer or
+  the owner). A thread's clip shows as a thumbnail that opens the whole clip
+  over the page, closed by Escape, a click outside it or Close. Pins
   show only for the page in the frame: red-orange; split red-orange and
   green while an agent works on the thread; white with a green ring and a
   `vN` flag when addressed and not looked at; a green ring when selected;

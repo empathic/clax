@@ -4,7 +4,8 @@
   // agents (the shell's roster), the Comment switch, the owner's name (asked
   // for only while the owner has none; spec L6, §3.1), whether the worker's
   // stream is up, and the way to turn Clax off in the tab. Below the page's
-  // threads, the threads of the site's other pages, a status filter and a
+  // threads, the threads of the site's other pages (each opened in place to
+  // read and answer it there, the tab staying put), a status filter and a
   // search over both (remembered per site), moving a thread to another page,
   // and merging pages (spec §7.1, owner decision 2026-10-06). Every action
   // goes to the worker, which alone talks to the daemon. Everything shown
@@ -31,6 +32,7 @@
     | { t: "join"; origin: string; with: string } | { t: "split"; origin: string };
   type Link = {
     state: PanelState | null; up?: boolean; site?: SiteView | null; failures?: number; post(m: PanelToWorker): void; request?(m: Ask): Promise<Step>;
+    clip?(threadId: string): Promise<string | null>;
     suggestion?: { origin: string; suggestion: Suggestion | null } | null; sites?: SiteChoice[] | null;
   };
   type Area = Parameters<typeof loadPrefs>[0];
@@ -110,6 +112,21 @@
     const asked = others.length ? permit(others) : Promise.resolve(true);
     void asked.then(() => link.post({ t: "open-thread", threadId: t.id }));
   }
+  /** Each thread's clip, asked of the worker once per clip (the panel cannot fetch it). */
+  const clips = new Map<string, Promise<string | null>>();
+  function clip(t: Thread): Promise<string | null> {
+    const key = `${t.id} ${t.clip_url}`;
+    let p = clips.get(key);
+    if (!p) {
+      p = link.clip?.(t.id) ?? Promise.resolve(null);
+      // A clip that did not come is asked for again next time.
+      void p.then(u => { if (u === null) clips.delete(key); });
+      clips.set(key, p);
+    }
+    return p;
+  }
+  const toggleResolved = (t: Thread) => link.post({ t: t.status === "open" ? "resolve" : "reopen", threadId: t.id });
+  const reply = (t: Thread, body: string) => link.post({ t: "reply", threadId: t.id, body });
   const suggestion = $derived(link.suggestion && link.suggestion.origin === tabOrigin ? link.suggestion.suggestion : null);
   const people = $derived(roster(s?.participants?.people ?? [], s?.presence ?? []));
   const viewUrl = $derived(s?.page && /^https?:\/\//.test(s.page.url) ? s.page.url : null);
@@ -230,8 +247,7 @@
           onSend={t => link.post({ t: "send", threadId: t.id, to: sendTo })}
           onSendUnsent={() => link.post({ t: "send-batch", threadIds: unsent(s.threads).slice(0, BATCH).map(t => t.id), note: null, to: sendTo })}
           onChoose={h => (chosen = h)}
-          onResolve={t => link.post({ t: t.status === "open" ? "resolve" : "reopen", threadId: t.id })}
-          onReply={(t, body) => link.post({ t: "reply", threadId: t.id, body })}
+          onResolve={toggleResolved} onReply={reply} {clip}
           onSeen={t => link.post({ t: "looked", threadIds: [t.id] })} />
       </div>
       {/if}
@@ -239,8 +255,11 @@
       <p class="hint">No comments on this page yet. Press Comment, then click what you want to comment on.</p>
     {/if}
     {#if s.enabled && anyFar}
+      <!-- Another page's thread goes to every live agent of its page: the agent picker names this page's. -->
       <Elsewhere groups={far} resolved={s.resolved} selected={s.selected} collapsed={prefs.collapsed} {now} {targets}
-        onToggle={toggleGroup} onOpen={openThread} onMove={move} />
+        me={s.viewer ? { ...s.viewer, created_at: "" } : null} {clip}
+        onToggle={toggleGroup} onOpen={openThread} onMove={move} onReply={reply} onResolve={toggleResolved}
+        onSend={t => link.post({ t: "send", threadId: t.id, to: null })} />
     {/if}
     {#if s.enabled && site}
       <!-- A run belongs to its site: another site's panel starts afresh, and the run stops. -->

@@ -133,6 +133,12 @@ class SidePanel {
     if (r.data) writeFileSync(join(dir, `${name}.png`), Buffer.from(r.data, "base64"));
   }
 
+  /** Clicks "Go to page ↗" on the card of another page's thread that says `text`. */
+  async goTo(text: string): Promise<void> {
+    const ok = await this.eval<boolean>(`(() => { const card = [...document.querySelectorAll(".far")].find(c => c.textContent.includes(${JSON.stringify(text)})); const b = card?.querySelector("button[aria-label^='Go to page']"); if (b) setTimeout(() => b.click()); return !!b; })()`);
+    if (!ok) throw new Error(`no card saying ${text}`);
+  }
+
   /** Clicks the panel's first button whose label or text matches `re`. The
    * click runs after the evaluation answers: one that closes the panel
    * ("Turn off in this tab") would otherwise take the answer with it. */
@@ -339,8 +345,9 @@ test("Clax is on only in the tab it was turned on in, stays on through a reload,
 
 /** A thread on the live page `url`, anchored at `selector` (with its text
  * `quote`), made through the daemon as the panel's comments are. */
-async function liveThread(live: Live, url: string, selector: string, quote: string, body: string): Promise<string> {
+async function liveThread(live: Live, url: string, selector: string, quote: string, body: string, clip?: Buffer): Promise<string> {
   const form = new FormData();
+  if (clip) form.set("clip", new Blob([new Uint8Array(clip)], { type: "image/png" }), "clip.png");
   form.set("url", url);
   form.set("title", "Live site");
   form.set("anchor", JSON.stringify({ kind: "element", selector, quote, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));
@@ -353,13 +360,17 @@ async function liveThread(live: Live, url: string, selector: string, quote: stri
   return r.thread.id;
 }
 
-test("the panel lists the site's other pages, opens and pins their threads, moves a thread, and merges and un-merges pages", async ({ live }) => {
+test("the panel lists the site's other pages, answers and resolves their threads in place, opens and pins them, moves a thread, and merges and un-merges pages", async ({ live }) => {
   const { siteUrl } = live;
   const origin = new URL(siteUrl).origin;
   const h = hook(live);
   const home = `${origin}/`, one = `${origin}/users/1.html`, two = `${origin}/users/2.html`;
   const a = await liveThread(live, home, "#save", "Save", "Home button note");
-  const b = await liveThread(live, one, "main > h1", "Settings", "User one heading note");
+  const scratch = await live.ctx.newPage();
+  await scratch.goto(one);
+  const png = await scratch.screenshot({ clip: { x: 0, y: 0, width: 480, height: 160 } });
+  await scratch.close();
+  const b = await liveThread(live, one, "main > h1", "Settings", "User one heading note", png);
   const c = await liveThread(live, two, "main > h1", "Settings", "User two heading note");
   const site = async () => (await api(live, `/api/live/site?origin=${encodeURIComponent(origin)}`)) as { rules: { pattern: string }[]; pages: { page: { path: string; merged: boolean }; threads: { id: string }[] }[] };
   const pageOf = async (tid: string) => (await site()).pages.find(p => p.threads.some(t => t.id === tid))?.page.path ?? null;
@@ -379,19 +390,49 @@ test("the panel lists the site's other pages, opens and pins their threads, move
   await expect.poll(async () => (await h.state(tabId))?.resolved[b]?.found ?? null).toBe(true);
   await expect.poll(() => panel.text()).toContain("Pinned here");
 
-  // Opening one from the panel takes this tab to its page, where it is highlighted once found.
-  await panel.click(/User one heading note/);
+  // A thread of another page opens in place: its clip comes through the
+  // worker, and it is answered, resolved and reopened there, live, while
+  // the tab stays on its page with nothing selected.
+  const inCard = (id: string, js: string) => panel.eval<unknown>(`(() => { const card = document.querySelector('[data-thread="${id}"]'); return card && (${js}); })()`);
+  await panel.eval(`document.querySelector('[data-thread="${b}"] .card-head').click()`);
+  await expect.poll(() => inCard(b, `card.querySelector(".card-head").getAttribute("aria-expanded")`)).toBe("true");
+  // The clip is fetched once its card is in view.
+  await inCard(b, `(card.scrollIntoView({ block: "start" }), true)`);
+  await expect.poll(() => inCard(b, `card.querySelector(".clip-thumb img")?.src.slice(0, 22) ?? null`)).toBe("data:image/png;base64,");
+  await panel.shot("elsewhere-open");
+  await inCard(b, `(() => { const i = card.querySelector('input[aria-label="Reply"]'); i.value = "Answered from home"; i.dispatchEvent(new Event("input", { bubbles: true })); i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); return true; })()`);
+  const threadB = async () => (await site()).pages.flatMap(p => p.threads as unknown as { id: string; status: string; comments: { body: string }[] }[]).find(t => t.id === b)!;
+  await expect.poll(async () => (await threadB()).comments.map(m => m.body)).toEqual(["User one heading note", "Answered from home"]);
+  const aidB = (await site()).pages.find(p => p.threads.some(t => t.id === b))!.page as unknown as { artifact_id: string };
+  await api(live, `/api/artifacts/${aidB.artifact_id}/threads/${b}/comments`, { method: "POST", body: JSON.stringify({ body: "Seen on the other tab" }) });
+  await expect.poll(() => inCard(b, `card.textContent.includes("Seen on the other tab")`)).toBe(true);
+  const press = (id: string, label: string) => inCard(id, `(() => { const x = [...card.querySelectorAll("button")].find(x => x.textContent.trim() === ${JSON.stringify(label)}); x?.click(); return !!x; })()`);
+  await expect.poll(() => press(b, "Resolve")).toBe(true);
+  await expect.poll(async () => (await threadB()).status).toBe("resolved");
+  // Reopening asks for a name, as on the thread's own page: the panel asks for it.
+  await expect.poll(() => press(b, "Reopen")).toBe(true);
+  await expect.poll(() => panel.text()).toMatch(/name/i);
+  await panel.eval(`(() => { const i = document.querySelector("input[aria-label='Your name']"); i.value = "Alex"; i.dispatchEvent(new Event("input", { bubbles: true })); i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); return true; })()`);
+  await expect.poll(() => panel.eval<boolean>(`!document.querySelector("input[aria-label='Your name']")`)).toBe(true);
+  await expect.poll(() => press(b, "Reopen")).toBe(true);
+  await expect.poll(async () => (await threadB()).status).toBe("open");
+  expect(page.url()).toBe(home);
+  expect((await h.state(tabId))?.selected ?? null).toBeNull();
+  await expect.poll(() => inCard(b, `card.querySelector(".card-head").getAttribute("aria-expanded")`)).toBe("true");
+
+  // "Go to page" takes this tab to its page, where it is highlighted once found.
+  await panel.goTo("User one heading note");
   await page.waitForURL(one);
   await expect.poll(async () => { const s = await h.state(tabId); return s?.selected === b && s.resolved[b]?.found; }).toBe(true);
   expect((await h.state(tabId))?.on).toBe(origin);
 
   // Move the home page's thread here: its card leaves "/" for this page.
-  const clickIn = (cardText: string, label: string) => panel.eval<boolean>(`(() => { const card = [...document.querySelectorAll("article.far")].find(a => a.textContent.includes(${JSON.stringify(cardText)})); const b = card && [...card.querySelectorAll("button")].find(b => b.textContent.trim() === ${JSON.stringify(label)}); b?.click(); return !!b; })()`);
+  const clickIn = (cardText: string, label: string) => panel.eval<boolean>(`(() => { const card = [...document.querySelectorAll(".far")].find(a => a.textContent.includes(${JSON.stringify(cardText)})); const b = card && [...card.querySelectorAll("button")].find(b => b.textContent.trim() === ${JSON.stringify(label)}); b?.click(); return !!b; })()`);
   await expect.poll(() => clickIn("Home button note", "Move…")).toBe(true);
   await expect.poll(() => panel.eval<string>(`document.querySelector("[aria-label='Move to page']")?.value ?? ""`)).toBe(one);
   await panel.click(/^ ?Move$/);
   await expect.poll(() => pageOf(a)).toBe("/users/1.html");
-  await expect.poll(() => panel.eval<number>(`[...document.querySelectorAll("article.far")].filter(a => a.textContent.includes("Home button note")).length`)).toBe(0);
+  await expect.poll(() => panel.eval<number>(`[...document.querySelectorAll(".far")].filter(a => a.textContent.includes("Home button note")).length`)).toBe(0);
   expect(await panel.text()).toContain("Home button note");
 
   // Merge the user pages: the preview names both, the rule applies, and both pages' threads are one page's.
@@ -490,7 +531,7 @@ test("two ports of one app join into one site: suggested, joined, listed and pin
 
     // A thread opens on the site's most recently used address: the old port, used last by this lookup.
     await fetch(`${live.daemon.base}/api/live/pages?url=${encodeURIComponent(`${O1}/`)}`, { headers: { authorization: `Bearer ${live.daemon.token}` } });
-    await panel.click(/User one on the old port/);
+    await panel.goTo("User one on the old port");
     await page.waitForURL(`${O1}/users/1.html`);
     // Clax stays on in the tab, now for the old port, and highlights the thread there.
     await expect.poll(async () => { const s = await h.state(tabId); return JSON.stringify({ on: s?.on, selected: s?.selected === one.tid, found: s?.resolved[one.tid]?.found ?? null, overlay: s?.overlay, error: s?.error }); })
@@ -501,7 +542,7 @@ test("two ports of one app join into one site: suggested, joined, listed and pin
     await live.site.close();
     // The tab's listing is now the old port's, loaded once its topic is followed.
     await expect.poll(() => panel.text()).toContain("Home button on the old port");
-    await panel.click(/Home button on the old port/);
+    await panel.goTo("Home button on the old port");
     await page.waitForURL(`${O2}/`);
     await expect.poll(async () => (await h.state(tabId))?.on ?? null).toBe(O2);
   } finally {

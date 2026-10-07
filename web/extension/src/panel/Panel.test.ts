@@ -96,13 +96,20 @@ describe("Panel", () => {
     expect(container.querySelector("h1 b, img[src=x]")).toBeNull();
   });
 
-  it("goes to a thread's route when its card is on another route, then selects it", async () => {
+  it("opens a card on another route in place, and goes to its route only from Go to page", async () => {
     const other = { ...thread, anchor: { ...thread.anchor, route: "?tab=billing" } };
     const l = link(state({ threads: [other as never], resolved: {} }));
     const { container } = render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });
     expect(container.textContent).toContain("?tab=billing");
-    await fireEvent.click(container.querySelector(".card-head")!);
-    expect(l.sent).toEqual([{ t: "navigate", route: "?tab=billing", artifactId: "7q3k9mzx2b4t" }, { t: "select", threadId: thread.id }]);
+    const head = container.querySelector<HTMLButtonElement>(".card-head")!;
+    expect(head.getAttribute("aria-expanded")).toBe("false");
+    await fireEvent.click(head);
+    expect(head.getAttribute("aria-expanded")).toBe("true");
+    await fireEvent.input(screen.getByLabelText("Reply"), { target: { value: "Here too" } });
+    await fireEvent.keyDown(screen.getByLabelText("Reply"), { key: "Enter" });
+    expect(l.sent).toEqual([{ t: "reply", threadId: thread.id, body: "Here too" }]);
+    await fireEvent.click(screen.getByRole("button", { name: "Go to page ?tab=billing" }));
+    expect(l.sent.slice(1)).toEqual([{ t: "navigate", route: "?tab=billing", artifactId: "7q3k9mzx2b4t" }, { t: "select", threadId: thread.id }]);
   });
 
   it("shows who is here on the page beside its agents", () => {
@@ -199,33 +206,110 @@ describe("Panel: the site's other pages", () => {
     expect(paths).toEqual(["/users/:id", "/billing/a-very-long-path-that-goes-on-and-on/and-on"]);
     expect(container.querySelector(".elsewhere summary .path")!.getAttribute("title")).toBe("/users/:id");
     expect([...container.querySelectorAll(".elsewhere details")[0].querySelectorAll(".counts .n")].map(e => e.textContent)).toEqual(["1 open", "1 addressed"]);
-    expect([...container.querySelectorAll(".far .body")].map(e => e.textContent)).toEqual(["Name wraps", "Avatar is blurry", "Old <img src=x onerror=alert(1)>"]);
+    expect([...container.querySelectorAll(".far .fold-body")].map(e => e.textContent)).toEqual(["Name wraps", "Avatar is blurry", "Old <img src=x onerror=alert(1)>"]);
     expect(container.querySelector(".far img")).toBeNull();
     expect(screen.getByText("at /users/2")).toBeTruthy();
     // A page with no threads is not listed.
     expect(container.textContent).not.toContain("/users/9");
   });
 
-  it("opens a thread of another page in the tab, and says when its pin is on this screen", async () => {
+  it("opens a thread of another page in place without moving the tab, opens its page from Go to page, and says when its pin is on this screen", async () => {
     const l = siteLink();
-    render(Panel, { props: { link: { ...l, state: { ...state(), resolved: { ...state().resolved, [T3]: { id: T3, found: true, method: "selector", rect: null } } } } as never, now: NOW, store: area() } });
+    const { container } = render(Panel, { props: { link: { ...l, state: { ...state(), resolved: { ...state().resolved, [T3]: { id: T3, found: true, method: "selector", rect: null } } } } as never, now: NOW, store: area() } });
     expect(screen.getAllByText("Pinned here")).toHaveLength(1);
     await fireEvent.click(screen.getByText("Avatar is blurry"));
-    expect(l.sent).toContainEqual({ t: "open-thread", threadId: T3 });
+    const card = container.querySelector<HTMLElement>(`[data-thread="${T3}"]`)!;
+    expect(card.querySelector(".card-head")!.getAttribute("aria-expanded")).toBe("true");
+    expect(within(card).getByLabelText("Reply")).toBeTruthy();
+    // Nothing goes to the worker: the tab stays, nothing is selected or pinned.
+    const acts = () => l.sent.filter(m => m.t !== "suggest");
+    expect(acts()).toEqual([]);
+    await fireEvent.click(within(card).getByRole("button", { name: "Go to page /users/2" }));
+    await settle();
+    expect(acts()).toEqual([{ t: "open-thread", threadId: T3 }]);
+  });
+
+  it("replies to, resolves, reopens and sends another page's thread from its card, @agent included", async () => {
+    const l = siteLink();
+    const { container } = render(Panel, { props: { link: l as never, now: NOW, store: area() } });
+    const head = () => container.querySelector<HTMLButtonElement>(`[data-thread="${T3}"] .card-head`)!;
+    await fireEvent.click(head());
+    const card = container.querySelector<HTMLElement>(`[data-thread="${T3}"]`)!;
+    await fireEvent.input(within(card).getByLabelText("Reply"), { target: { value: "@agent the avatar still blurs" } });
+    await fireEvent.click(within(card).getByRole("button", { name: "Reply" }), { detail: 1 });
+    await fireEvent.click(within(card).getByRole("button", { name: "Send to agent" }), { detail: 1 });
+    await fireEvent.click(within(card).getByRole("button", { name: "Resolve" }), { detail: 1 });
+    expect(l.sent.filter(m => m.t !== "suggest")).toEqual([
+      { t: "reply", threadId: T3, body: "@agent the avatar still blurs" },
+      { t: "send", threadId: T3, to: null },
+      { t: "resolve", threadId: T3 },
+    ]);
+    // A resolved thread of another page reopens from its card.
+    const old = container.querySelector<HTMLElement>(`[data-thread="${T2}"]`)!;
+    await fireEvent.click(old.querySelector(".card-head")!);
+    await fireEvent.click(within(old).getByRole("button", { name: "Reopen" }), { detail: 1 });
+    expect(l.sent.at(-1)).toEqual({ t: "reopen", threadId: T2 });
+  });
+
+  it("keeps several cards open through the listing's changes, shows replies as they come, and folds one with Escape", async () => {
+    const l = siteLink();
+    const view = render(Panel, { props: { link: l as never, now: NOW, store: area() } });
+    const card = (id: string) => view.container.querySelector<HTMLElement>(`[data-thread="${id}"]`)!;
+    await fireEvent.click(card(T3).querySelector(".card-head")!);
+    await fireEvent.click(card(T4).querySelector(".card-head")!);
+    const next = site();
+    const p = next.pages[2];
+    const t3 = p.threads[0] as unknown as { comments: object[] };
+    next.pages[2] = { ...p, threads: [{ ...t3, comments: [...t3.comments, { ...thread.comments[0], id: "c9", thread_id: T3, author_kind: "agent", author_name: "claude", via_harness: "claude", body: "Sharper now", created_at: "2026-10-05T10:00:30.000Z" }] } as never, p.threads[1]] };
+    await view.rerender({ link: { ...l, site: next } as never, now: NOW, store: area() });
+    expect(within(card(T3)).getByText("Sharper now")).toBeTruthy();
+    expect(card(T4).querySelector(".card-head")!.getAttribute("aria-expanded")).toBe("true");
+    const input = within(card(T3)).getByLabelText("Reply");
+    input.focus();
+    await fireEvent.keyDown(input, { key: "Escape" });
+    const head = card(T3).querySelector<HTMLButtonElement>(".card-head")!;
+    expect(head.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(head);
+    expect(card(T4).querySelector(".card-head")!.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("shows another page's clip through the worker once its card opens, and enlarges it until Escape", async () => {
+    const l = { ...siteLink(), clips: [] as string[], clip: async (id: string) => { l.clips.push(id); return "data:image/png;base64,iVBORw0KGgo="; } };
+    const s = site();
+    const p = s.pages[2];
+    s.pages[2] = { ...p, threads: [{ ...(p.threads[0] as object), has_clip: true, clip_url: `/api/artifacts/9s5n1pza4d6w/threads/${T3}/clip` } as never, p.threads[1]] };
+    const { container } = render(Panel, { props: { link: { ...l, site: s } as never, now: NOW, store: area() } });
+    expect(l.clips).toEqual([]);
+    const card = container.querySelector<HTMLElement>(`[data-thread="${T3}"]`)!;
+    await fireEvent.click(card.querySelector(".card-head")!);
+    await settle();
+    expect(l.clips).toEqual([T3]);
+    const thumb = within(card).getByRole("button", { name: "Enlarge the screenshot" });
+    expect(thumb.querySelector("img")!.getAttribute("src")).toBe("data:image/png;base64,iVBORw0KGgo=");
+    await fireEvent.click(thumb);
+    const dialog = card.querySelector("dialog")!;
+    expect(dialog.open).toBe(true);
+    await fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(dialog.open).toBe(false);
+    // Escape closed only the enlarged clip: the card stays open.
+    expect(card.querySelector(".card-head")!.getAttribute("aria-expanded")).toBe("true");
+    await fireEvent.click(thumb);
+    await fireEvent.click(dialog);
+    expect(dialog.open).toBe(false);
   });
 
   it("filters both lists by status and searches them, remembering the filter for the site", async () => {
     const store = area();
     const { container } = render(Panel, { props: { link: siteLink() as never, now: NOW, store } });
     await fireEvent.click(screen.getByRole("button", { name: "Resolved" }));
-    expect([...container.querySelectorAll(".far .body")].map(e => e.textContent)).toEqual(["Old <img src=x onerror=alert(1)>"]);
+    expect([...container.querySelectorAll(".far .fold-body")].map(e => e.textContent)).toEqual(["Old <img src=x onerror=alert(1)>"]);
     expect(screen.queryByText("Too wide")).toBeNull();
     expect(screen.getByText("Nothing on this page matches.")).toBeTruthy();
     await settle();
     expect(store.data[`site-prefs:${O}`]).toEqual({ filter: "resolved", collapsed: [] });
     await fireEvent.click(screen.getByRole("button", { name: "All" }));
     await fireEvent.input(screen.getByLabelText("Search comments"), { target: { value: "users/3" } });
-    expect([...container.querySelectorAll(".far .body")].map(e => e.textContent)).toEqual(["Name wraps"]);
+    expect([...container.querySelectorAll(".far .fold-body")].map(e => e.textContent)).toEqual(["Name wraps"]);
     expect(screen.queryByText("Too wide")).toBeNull();
     // A new panel for the site starts with what was remembered.
     cleanup();
@@ -454,7 +538,7 @@ describe("Panel: a join not finished", () => {
     const permitted: string[][] = [];
     const l = { ...link(state()), site };
     const { container } = render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z"), permit: async (o: string[]) => { permitted.push(o); return true; } } });
-    await fireEvent.click(container.querySelector("article.far button.go")!);
+    await fireEvent.click(within(container.querySelector(".far")!).getByRole("button", { name: "Go to page /b" }));
     await settle();
     expect(permitted).toEqual([[A]]);
     expect(l.sent).toContainEqual({ t: "open-thread", threadId: T });

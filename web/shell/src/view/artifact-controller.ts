@@ -13,7 +13,7 @@ import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, RESOLVE_FAILED, SEN
 import { nav } from "../nav";
 import { artifactOrigin, cachedOriginOk, pageSrc, probeOrigin } from "../origin";
 import { parseShellPath, shellPath } from "../route";
-import { type Thread, type Viewer, addComment, createThread, currentViewer, getViewer, listThreads, onViewer, resolveThread, seedViewer, sendBatch, sendToAgent, upsert } from "../threads";
+import { type Thread, type Viewer, addComment, createThread, currentViewer, getViewer, listThreads, onViewer, reopenThread, resolveThread, seedViewer, sendBatch, sendToAgent, upsert } from "../threads";
 import { after } from "../clock";
 import { afterPaint } from "./after-paint";
 import { EMPTY_SELECTION, type Selection, prune, toggle, unsent } from "./batch-model";
@@ -1411,7 +1411,8 @@ export class ArtifactController {
   sendUnsent(): Promise<void> { return this.sendIds(unsent(this.s.threads).map(t => t.id)); }
   /** The agent picker: every Send goes to `handle` from now on, remembered for this artifact. */
   chooseTarget(handle: string): void { rememberTarget(this.id, handle); this.set({ sendTo: handle }); }
-  resolveThread(t: Thread): void { this.saveThread(resolveThread(this.id, t.id), RESOLVE_FAILED); }
+  /** Resolves an open thread; reopens a resolved one (the owner shell with its token). */
+  resolveThread(t: Thread): void { this.saveThread(t.status === "open" ? resolveThread(this.id, t.id) : getToken().then(k => reopenThread(this.id, t.id, k)), RESOLVE_FAILED); }
   reply(t: Thread, body: string): void { this.saveThread(addComment(this.id, t.id, body), POST_FAILED); }
   composerInput(text: string): void { this.composerText = text; }
   /** The composer for `pickId` has focus: the bridge may render its clip now. */

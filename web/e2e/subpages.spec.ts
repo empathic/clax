@@ -62,7 +62,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
 
     // Opening the thread takes the frame to its page and pins it there, as one history entry.
     const depth = await page.evaluate(() => history.length);
-    await card.locator("button.card-head").click();
+    await card.getByRole("button", { name: "Go to page about.html" }).click();
     await expect(page).toHaveURL(`${d.base}/a/${id}/about.html`);
     expect(await page.evaluate(() => history.length)).toBe(depth + 1);
     await expect((await aboutFrame(page, id)).locator("h2")).toHaveText("Our team");
@@ -203,6 +203,45 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     }
   });
 }
+
+test("a thread on another page is read, answered, resolved and reopened in place, the frame staying on its page", async ({ page }) => {
+  const { artifact } = await publish(d.base, d.token, "In place", { "index.html": INDEX, "about.html": ABOUT });
+  const id = artifact.id;
+  const form = new FormData();
+  form.set("anchor", JSON.stringify({ kind: "element", selector: "body > main > h2", quote: "Our team", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "about.html" }));
+  form.set("body", "Name the team.");
+  form.set("version", "1");
+  const made = await fetch(`${d.base}/api/artifacts/${id}/threads`, { method: "POST", body: form });
+  expect(made.status).toBe(201);
+  const tid = (await made.json()).thread.id as string;
+  await openArtifact(page, d.base, id, 1, "subdomain");
+  const card = page.locator(`[data-thread="${tid}"]`);
+  const head = card.locator("button.card-head");
+  await expect(head).toHaveAttribute("aria-expanded", "false");
+  await expect(card.locator(".fold-body")).toHaveText("Name the team.");
+  await head.press("Enter");
+  await expect(head).toHaveAttribute("aria-expanded", "true");
+  await expect(head).toBeFocused();
+  await card.getByLabel("Reply").fill("Done: the Makers.");
+  await card.getByRole("button", { name: "Reply", exact: true }).click();
+  await expect(card.locator(".msg .body")).toHaveText(["Name the team.", "Done: the Makers."]);
+  // A reply from elsewhere shows in the open card.
+  await api(d.base, d.token, `/api/artifacts/${id}/threads/${tid}/comments`, { method: "POST", body: JSON.stringify({ body: "Seen it." }) });
+  await expect(card.locator(".msg .body")).toHaveText(["Name the team.", "Done: the Makers.", "Seen it."]);
+  await card.getByRole("button", { name: "Resolve" }).click();
+  await expect.poll(async () => (await api(d.base, d.token, `/api/artifacts/${id}/threads/${tid}`)).thread.status).toBe("resolved");
+  // It stays open where it went (Resolved), and reopens there.
+  await expect(head).toHaveAttribute("aria-expanded", "true");
+  await card.getByRole("button", { name: "Reopen" }).click();
+  await expect.poll(async () => (await api(d.base, d.token, `/api/artifacts/${id}/threads/${tid}`)).thread.status).toBe("open");
+  await expect(page).toHaveURL(`${d.base}/a/${id}`);
+  await expect(page.locator("iframe.frame")).toHaveAttribute("src", new RegExp(`/v/1/$`));
+  // Escape folds it, focus on its head.
+  await card.getByLabel("Reply").focus();
+  await page.keyboard.press("Escape");
+  await expect(head).toHaveAttribute("aria-expanded", "false");
+  await expect(head).toBeFocused();
+});
 
 test("a page the version does not hold gets a message instead of a frame", async ({ page }) => {
   const { artifact } = await publish(d.base, d.token, "Missing page", { "index.html": INDEX });

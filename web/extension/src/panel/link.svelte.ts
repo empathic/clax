@@ -47,6 +47,8 @@ export class PanelLink {
   failures = $state(0);
   private reqs = 0;
   private asked = new Map<number, { ok(s: Step): void; fail(e: Failure): void }>();
+  /** The clips asked for and not yet answered, by request number. */
+  private clips = new Map<number, (url: string | null) => void>();
   private port: Port;
   private tabId: number | null = null;
   /** The last action's failure, shown until the next action. */
@@ -83,6 +85,12 @@ export class PanelLink {
     this.fresh = true;
     port.onMessage.addListener((m: unknown) => {
       if (!isToPanel(m)) return;
+      const clip = "req" in m && m.req !== undefined ? this.clips.get(m.req) : undefined;
+      if (clip) {
+        this.clips.delete((m as { req: number }).req);
+        clip(m.t === "clip" ? m.url : null);
+        return;
+      }
       const ask = "req" in m && m.req !== undefined ? this.asked.get(m.req) : undefined;
       if (ask) {
         this.asked.delete((m as { req: number }).req);
@@ -104,6 +112,8 @@ export class PanelLink {
     port.onDisconnect.addListener(() => {
       for (const a of this.asked.values()) a.fail(failure("worker_restarted", "Clax restarted. Try again."));
       this.asked.clear();
+      for (const c of this.clips.values()) c(null);
+      this.clips.clear();
       if (this.closed) return;
       setTimeout(() => {
         if (this.closed) return;
@@ -130,7 +140,7 @@ export class PanelLink {
 
   post(m: PanelToWorker): void {
     if (this.closed) return;
-    if (m.t !== "ping" && m.t !== "visible" && m.t !== "watch-tab") this.failure = null;
+    if (m.t !== "ping" && m.t !== "visible" && m.t !== "watch-tab" && m.t !== "clip") this.failure = null;
     try { this.port.postMessage(m); } catch { /* the port closed; the link connects again */ }
   }
 
@@ -143,6 +153,18 @@ export class PanelLink {
       }, REQUEST_MS);
       this.asked.set(req, { ok: s => { clearTimeout(timer); ok(s); }, fail: e => { clearTimeout(timer); fail(e); } });
       this.post({ ...m, req });
+    });
+  }
+
+  /** Thread `threadId`'s clip as a `data:` URL, which the worker fetches
+   * (the panel holds no credential); null when it has none, or no answer
+   * came in `REQUEST_MS`. */
+  clip(threadId: string): Promise<string | null> {
+    const req = ++this.reqs;
+    return new Promise(ok => {
+      const timer = setTimeout(() => { if (this.clips.delete(req)) ok(null); }, REQUEST_MS);
+      this.clips.set(req, url => { clearTimeout(timer); ok(url); });
+      this.post({ t: "clip", req, threadId });
     });
   }
 

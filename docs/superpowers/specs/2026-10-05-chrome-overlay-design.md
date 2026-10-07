@@ -162,10 +162,11 @@ The side panel lists "This page" first and, below, "Elsewhere on this site":
 every thread of the origin's other live pages, grouped under each page's
 path (a merged page under its pattern, its threads marked with the path
 they were made at), each group with its open, addressed and resolved
-counts, newest activity first and collapsible. Clicking such a thread
-navigates this tab to its page (`page_url`; a same-origin navigation, so
-Clax stays on), and the overlay scrolls to and highlights it once its
-anchor resolves there. A thread of another page whose anchor resolves on
+counts, newest activity first and collapsible. Each thread there is the
+shell's thread card, folded to its summary; clicking it opens it in place
+(owner decision 2026-10-07; §7.1), and its "Go to page ↗" navigates this
+tab to its page (`page_url`; a same-origin navigation, so Clax stays on),
+where the overlay scrolls to and highlights it once its anchor resolves. A thread of another page whose anchor resolves on
 the current screen is pinned here too, outlined and marked "from
 /other/path"; one not found stays listed under its own page only.
 
@@ -633,7 +634,8 @@ origin `http://localhost:5173`, path `/settings`, route `?tab=billing`;
 
 The overlay shows a pin for a thread only when the thread's route equals the
 current route; the side panel lists other routes' threads as "on
-?tab=billing", and clicking one navigates the tab there. A route-less thread
+?tab=billing", folded: clicking one opens it in place (§7.1), and its "Go to
+page ↗" navigates the tab there and selects it. A route-less thread
 shows on the route-less view.
 
 Known consequence: a port reused by another project's dev server shares its
@@ -643,7 +645,8 @@ live pages. The person deletes the live page from the gallery to start over.
 
 Owner decision, 2026-10-06: the side panel shows, besides the current
 page's threads, "Elsewhere on this site": every thread of every live page of
-the same origin, grouped by page; clicking one navigates the tab there; pins
+the same origin, grouped by page; clicking one opens it in place (below)
+and its "Go to page ↗" navigates the tab there; pins
 show for any thread of the site whose anchor resolves on the current
 screen; the panel filters by status, searches, moves a thread to another
 page, and merges pages (declares that paths are one page, so their threads
@@ -734,7 +737,30 @@ the panel's search and filters run on the listing in the client.
    at, or moved onto, the pattern's own path stay. The rule stays
    `deleting` until none is left, and is then removed only if still
    deleting (a re-add meanwhile keeps it in force).
-6. **Who.** Reads need an owner credential; moves and rule changes need the
+6. **In place** (owner decision 2026-10-07). A thread of another page is
+   the shell's thread card, folded to its anchor, status, first comment,
+   author, reply count, last activity, where it was made (a merged page)
+   and "Pinned here"; with Move… and "Go to page ↗". A click on it, or
+   Enter or Space on its head, opens it in place: every comment with its
+   author, its history (versions only where the thread names them: the one
+   it was made on, those that addressed it), its clip, Reply (an `@` name
+   in it reaches that agent as on the thread's own page), Resolve or
+   Reopen, and "Send to agent", which goes to every live agent of its page
+   (no `to`: the agent picker names this page's agents). Escape inside it
+   folds it again, focus on its head. Any number may be open at once, kept
+   by thread ID while the listing changes; the site's topic updates an open
+   card live. Opening one moves nothing: the tab stays, nothing is selected
+   or pinned; "Go to page ↗" does what clicking a card did before. The
+   panel's `send`, `reply`, `resolve` and `reopen` name a thread of the
+   tab's page or of its site's listing: the worker acts at the thread's own
+   page (`/api/artifacts/<its aid>/threads/<tid>/…`, the same rules as
+   there) and applies the answer to the listing at once. A thread's clip
+   (this page's too) is fetched by the worker with the credential, as the
+   panel holds none: the panel asks `clip {req, threadId}` once the
+   thumbnail nears view and the worker answers `clip {req, url}`, a
+   `data:image/png` URL of at most 5 MiB, or null. The thumbnail opens the
+   whole clip over the panel, closed by Escape, a click outside it or Close.
+7. **Who.** Reads need an owner credential; moves and rule changes need the
    token or the extension's credential. All of it is under `/api/live/`, so
    hidden from the LAN (L10) and admitted by the extension gateway's
    allowlist (§9.2).
@@ -1139,7 +1165,11 @@ dropped and counted.
   `comment-mode`, `navigate {route, artifactId}`, `turn-off {tabId}`,
   `retry` → `failed {code, message}` on failure (a failure a new pairing can
   fix is also kept as the tab's `error`, so Retry pairs again for it), and success shows as the
-  next `tab` push (ruling 2026-10-05: no `ok`). `navigate` names the page
+  next `tab` push (ruling 2026-10-05: no `ok`); `send`, `reply`, `resolve`
+  and `reopen` may name a thread of another page of the tab's site, acted
+  on at its own page and shown by the next `site` push (§7.1). `clip {req,
+  threadId}` → `clip {req, url}` (a `data:image/png` URL or null, never a
+  failure shown as the tab's error) fetches a thread's clip for the panel. `navigate` names the page
   the panel showed; the worker refuses it (`page_changed`) when the tab
   shows another. `turn-off` turns Clax off in the panel's tab (shown as
   "Turn off in this tab" whenever Clax is on there); it names that tab,

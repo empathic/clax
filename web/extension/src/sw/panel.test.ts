@@ -9,9 +9,13 @@ const T2 = "01J9BBBBBBBBBBBBBBBBBBBBBB";
 const URL1 = "http://localhost:5173/app";
 const page = { artifact_id: AID, origin: "http://localhost:5173", path: "/app", page_url: URL1, title: "T", current_version: 1, url: `http://localhost:7480/a/${AID}` };
 const thread = (id: string, status = "open") => ({ id, artifact_id: AID, status });
+const FAR_AID = "9x8w7v6t5s4r";
+const T3 = "01J9CCCCCCCCCCCCCCCCCCCCCC";
 
 const SITE = { key: "http://localhost:5173", name: "http://localhost:5174", joined: true, origins: [{ origin: "http://localhost:5174", joined_at: "t", last_used_at: "t2" }, { origin: "http://localhost:5173", joined_at: "t", last_used_at: "t1" }] };
-function setup(over: { remaining?: number; page?: typeof page | null; admits?: boolean; allUrls?: boolean; fail?: string; failCode?: string; error?: string; site?: string[]; down?: string[]; denied?: string[]; loading?: boolean; restoring?: Promise<void> } = {}) {
+function setup(over: { remaining?: number; page?: typeof page | null; admits?: boolean; allUrls?: boolean; fail?: string; failCode?: string; error?: string; site?: string[]; down?: string[]; denied?: string[]; loading?: boolean; restoring?: Promise<void>;
+  /** The threads of another page of the tab's site, in its listing. */
+  far?: { id: string; artifact_id: string; clip_url: string | null }[] } = {}) {
   const calls: string[] = [];
   const out: WorkerToPanel[] = [];
   let waited = 0;
@@ -35,6 +39,7 @@ function setup(over: { remaining?: number; page?: typeof page | null; admits?: b
       answer: api("answer", {}),
       suggest: api("suggest", { origin: "http://localhost:5173", site: SITE, suggestions: [{ origin: "http://localhost:7702", site: { ...SITE, origins: [{ origin: "http://localhost:7702", joined_at: null, last_used_at: null }] }, reason: "path", path: "/app" }] }),
       sites: api("sites", { sites: [{ site: SITE }] }),
+      clip: api("clip", "data:image/png;base64,iVBORw0KGgo="),
     } as never,
     tabs: {
       ready: async () => { waited++; await over.restoring; },
@@ -42,7 +47,7 @@ function setup(over: { remaining?: number; page?: typeof page | null; admits?: b
         if (over.loading) throw Object.assign(new Error("The page was still loading. Try again."), { code: "page_loading" });
         calls.push(`comment-on ${tabId}`);
       },
-      state: () => (pg === null ? undefined : { url: URL1, page: pg, overlay: true, on: "http://localhost:5173", error: over.error ? { code: over.error, message: "m" } : null } as never),
+      state: () => (pg === null ? undefined : { url: URL1, page: pg, threads: [thread(T1)], overlay: true, on: "http://localhost:5173", error: over.error ? { code: over.error, message: "m" } : null } as never),
       admits: () => over.admits ?? false,
       route: async (tabId: number, url: string, fresh?: boolean) => { calls.push(`route ${tabId} ${url} ${!!fresh}`); return {} as never; },
       applied: (tabId: number, t: { id: string }) => calls.push(`applied ${tabId} ${t.id}`),
@@ -53,7 +58,11 @@ function setup(over: { remaining?: number; page?: typeof page | null; admits?: b
       openThread: (tabId: number, id: string) => { calls.push(`open ${tabId} ${id}`); return id === T1 ? { path: "/users/7?x#/y", origins: over.site ?? ["http://localhost:5173"] } : null; },
       opening: (tabId: number, id: string, url: string) => { calls.push(`opening ${tabId} ${id} ${url}`); },
     } as never,
-    sites: { load: async (o: string) => { calls.push(`load ${o}`); }, origins: (o: string) => over.site ?? [o] },
+    sites: {
+      load: async (o: string) => { calls.push(`load ${o}`); }, origins: (o: string) => over.site ?? [o],
+      view: (o: string | null) => (o === "http://localhost:5173" && over.far ? { origin: o, rules: [], pages: [{ page: { ...page, artifact_id: FAR_AID, path: "/users/7" }, threads: over.far }] } as never : null),
+      applied: (o: string, t: { id: string; status: string }) => calls.push(`site-applied ${o} ${t.id} ${t.status}`),
+    },
     probe: async (url: string) => { calls.push(`probe ${url}`); return !(over.down ?? []).some(x => url.startsWith(x)); },
     title: async () => "My App",
     allowed: async (o: string) => !(over.denied ?? []).includes(o),
@@ -67,6 +76,39 @@ function setup(over: { remaining?: number; page?: typeof page | null; admits?: b
 }
 
 describe("panelAction on the tab's site", () => {
+  it("acts on a thread of another page of the site at its own page, and applies the answer to the site's listing", async () => {
+    const s = setup({ far: [{ id: T3, artifact_id: FAR_AID, clip_url: null }] });
+    await s.run({ t: "reply", threadId: T3, body: "@agent look" });
+    await s.run({ t: "resolve", threadId: T3 });
+    await s.run({ t: "reopen", threadId: T3 });
+    await s.run({ t: "send", threadId: T3, to: null });
+    expect(s.calls).toEqual([
+      `comment "${FAR_AID}" "${T3}" "@agent look"`, `site-applied http://localhost:5173 ${T1} open`,
+      `resolve "${FAR_AID}" "${T3}"`, `site-applied http://localhost:5173 ${T1} resolved`,
+      `reopen "${FAR_AID}" "${T3}"`, `site-applied http://localhost:5173 ${T1} open`,
+      `sendThread "${FAR_AID}" "${T3}" null`, `site-applied http://localhost:5173 ${T1} open`,
+    ]);
+    expect(s.out).toEqual([]);
+    // A thread of the tab's page is still acted on there.
+    const here = setup({ far: [{ id: T3, artifact_id: FAR_AID, clip_url: null }] });
+    await here.run({ t: "resolve", threadId: T1 });
+    expect(here.calls).toEqual([`resolve "${AID}" "${T1}"`, `applied 4 ${T1}`]);
+  });
+
+  it("fetches a thread's clip for the panel, of the tab's page or another page of its site, and answers null for one without", async () => {
+    const s = setup({ far: [{ id: T3, artifact_id: FAR_AID, clip_url: `/api/artifacts/${FAR_AID}/threads/${T3}/clip` }, { id: T2, artifact_id: FAR_AID, clip_url: null }] });
+    await s.run({ t: "clip", req: 1, threadId: T3 });
+    await s.run({ t: "clip", req: 2, threadId: T2 });
+    await s.run({ t: "clip", req: 3, threadId: "01J9DDDDDDDDDDDDDDDDDDDDDD" });
+    expect(s.calls).toEqual([`clip "${FAR_AID}" "${T3}"`]);
+    expect(s.out).toEqual([
+      { t: "clip", req: 1, url: "data:image/png;base64,iVBORw0KGgo=" }, { t: "clip", req: 2, url: null }, { t: "clip", req: 3, url: null },
+    ]);
+    const failing = setup({ fail: "clip", far: [{ id: T3, artifact_id: FAR_AID, clip_url: "/x" }] });
+    await failing.run({ t: "clip", req: 4, threadId: T3 });
+    expect(failing.out).toEqual([{ t: "clip", req: 4, url: null }]);
+  });
+
   it("opens a thread of another page in the tab, and refuses one the site does not have", async () => {
     const s = setup();
     await s.run({ t: "open-thread", threadId: T1 });
