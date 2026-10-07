@@ -125,7 +125,7 @@ test("the sidebar holds its width from the first paint, so the frame is laid out
   const { artifact } = await publishAs(d.base, d.token, s.id, "Echo reserve", { "index.html": "<main><h2>Goals</h2></main>" });
   await page.setViewportSize({ width: 1440, height: 900 });
   // The thread list's chunk arrives 300 ms late.
-  await page.route("**/Sidebar-*.js", async r => { await new Promise(f => setTimeout(f, 300)); await r.continue(); });
+  await page.route("**/ShellSidebar-*.js", async r => { await new Promise(f => setTimeout(f, 300)); await r.continue(); });
   await page.addInitScript(() => {
     const widths: number[] = [];
     (window as unknown as { frameWidths: number[] }).frameWidths = widths;
@@ -146,7 +146,7 @@ test("at phone width the thread list's code is fetched after the first paint, be
   const s = await registerSession(d.base, d.token, "claude", "echo-prefetch");
   const { artifact } = await publishAs(d.base, d.token, s.id, "Echo prefetch", { "index.html": "<main><h2>Goals</h2></main>" });
   await page.setViewportSize({ width: 390, height: 844 });
-  const fetched = page.waitForRequest(/\/Sidebar-[^/]*\.js$/);
+  const fetched = page.waitForRequest(/\/ShellSidebar-[^/]*\.js$/);
   await openArtifact(page, d.base, artifact.id, 1, "subdomain");
   await fetched;
   await expect(page.locator("aside.sidebar")).toHaveCount(0);
