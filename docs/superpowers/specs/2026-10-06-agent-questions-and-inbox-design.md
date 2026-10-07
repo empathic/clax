@@ -974,6 +974,9 @@ Each skill gains "Asking the person":
 - Codex and Grok built-in question tools are not mirrored (§4.5).
 - An item's index entry keeps the artifact's title from when it was made; a
   later rename is found by the page filter, not by the old title's text.
+- An item is stamped with the later of the clock and the newest item's
+  time, so stamps never go backwards: after the clock steps back, items
+  show the newest earlier time until the clock passes it again.
 - The search tokenizer (`unicode61`) does not split Chinese or Japanese text
   into words: a run of such characters is one token, found by its start
   (`東京` in `東京タワー`) but not by a word inside it (`タワー`).
