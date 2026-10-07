@@ -268,8 +268,8 @@ describe("Panel: the site's other pages", () => {
     expect(m.sent).toContainEqual({ t: "move", threadId: thread.id, pageUrl: `${O}/users/9` });
   });
 
-  it("checks and previews a merge pattern, runs the merge in batches with its progress, and un-merges", async () => {
-    const l = siteLink([{ moved: 200, remaining: 3 }, { moved: 3, remaining: 0 }, { moved: 1, remaining: 0 }]);
+  it("checks and previews a merge pattern, and sends nothing before the person confirms", async () => {
+    const l = siteLink();
     const { container } = render(Panel, { props: { link: l as never, now: NOW, store: area() } });
     const input = screen.getByLabelText("Pattern");
     await fireEvent.input(input, { target: { value: "/:a/:b" } });
@@ -281,8 +281,17 @@ describe("Panel: the site's other pages", () => {
     // Nothing is sent before the person confirms, and Cancel sends nothing.
     expect(screen.getByText(/Merge 1 page \(0 threads\) into/)).toBeTruthy();
     await fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    // Enter in the pattern asks again.
     await fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByRole("button", { name: "Yes, merge" })).toBeTruthy();
     expect(l.asked).toEqual([]);
+  });
+
+  it("runs the merge in batches with its progress, and un-merges", async () => {
+    const l = siteLink([{ moved: 200, remaining: 3 }, { moved: 3, remaining: 0 }, { moved: 1, remaining: 0 }]);
+    render(Panel, { props: { link: l as never, now: NOW, store: area() } });
+    await fireEvent.input(screen.getByLabelText("Pattern"), { target: { value: "/users/:id" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Merge pages" }));
     await fireEvent.click(screen.getByRole("button", { name: "Yes, merge" }));
     await settle();
     expect(l.asked).toEqual([{ t: "rule", origin: O, pattern: "/users/:id" }, { t: "rule", origin: O, pattern: "/users/:id" }]);
@@ -293,26 +302,30 @@ describe("Panel: the site's other pages", () => {
     await settle();
     expect(l.asked.at(-1)).toEqual({ t: "unrule", origin: O, ruleId: RULE });
     expect(screen.getByText("Un-merged /users/:id: 1 thread moved back.")).toBeTruthy();
-    await fireEvent.input(input, { target: { value: "/docs/*" } });
+  });
+
+  it("says when the worker refuses a pattern to merge", async () => {
+    render(Panel, { props: { link: siteLink() as never, now: NOW, store: area() } });
+    await fireEvent.input(screen.getByLabelText("Pattern"), { target: { value: "/docs/*" } });
     await fireEvent.click(screen.getByRole("button", { name: "Merge pages" }));
     await fireEvent.click(screen.getByRole("button", { name: "Yes, merge" }));
     await settle();
     expect(screen.getByText("Not a pattern Clax can merge.")).toBeTruthy();
   });
 
-  it("stops a merge whose batches move nothing, or whose count does not fall, and says how many are left", async () => {
-    for (const steps of [[{ moved: 0, remaining: 5 }], [{ moved: 2, remaining: 5 }, { moved: 1, remaining: 5 }]]) {
-      const l = siteLink([...steps, { moved: 1, remaining: 4 }]);
-      render(Panel, { props: { link: l as never, now: NOW, store: area() } });
-      await fireEvent.input(screen.getByLabelText("Pattern"), { target: { value: "/users/:id" } });
-      await fireEvent.click(screen.getByRole("button", { name: "Merge pages" }));
-      await fireEvent.click(screen.getByRole("button", { name: "Yes, merge" }));
-      await settle();
-      expect(l.asked).toHaveLength(steps.length);
-      expect(screen.getByText(/Stopped with 5 threads left/)).toBeTruthy();
-      expect((screen.getByRole("button", { name: "Merge pages" }) as HTMLButtonElement).disabled).toBe(false);
-      cleanup();
-    }
+  it.each([
+    ["moves nothing", [{ moved: 0, remaining: 5 }]],
+    ["does not lower the count", [{ moved: 2, remaining: 5 }, { moved: 1, remaining: 5 }]],
+  ])("stops a merge whose batch %s, and says how many are left", async (_, steps) => {
+    const l = siteLink([...steps, { moved: 1, remaining: 4 }]);
+    render(Panel, { props: { link: l as never, now: NOW, store: area() } });
+    await fireEvent.input(screen.getByLabelText("Pattern"), { target: { value: "/users/:id" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Merge pages" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Yes, merge" }));
+    await settle();
+    expect(l.asked).toHaveLength(steps.length);
+    expect(screen.getByText(/Stopped with 5 threads left/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Merge pages" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("stops a merge when the panel turns to another site, sending it nothing", async () => {
