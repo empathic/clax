@@ -800,9 +800,12 @@ file under `v/<digits>/` is reachable only through the versioned form):
   within 5 s of the press and only while focus went nowhere else.
   A resolved thread's card offers Reopen (the daemon's rule: a named
   viewer or the owner shell's token); a viewer with neither is asked for
-  its name under People ("Add your name to reopen threads"), and the
-  thread reopens if it names itself within 2 minutes, the notice not
-  dismissed and the thread still resolved; a failure reads "Could not reopen: …".
+  its name: the people menu opens with a request, not a failure ("Add
+  your name to reopen the thread: people see it beside what you do"), and
+  focus in "Your name". Once named (within 2 minutes, the thread still
+  resolved) the thread reopens, the menu closes and focus goes to its card
+  in Open; closed with no name, the reopen is forgotten and focus returns
+  to the thread's card; a failure reads "Could not reopen: …".
   A thread's clip shows as a thumbnail that opens the whole clip
   over the page, closed by Escape, a click outside it or Close. Pins
   show only for the page in the frame: red-orange; split red-orange and
