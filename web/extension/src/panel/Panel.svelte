@@ -29,7 +29,7 @@
   type Ask = { t: "rule"; origin: string; pattern: string } | { t: "unrule"; origin: string; ruleId: string }
     | { t: "join"; origin: string; with: string } | { t: "split"; origin: string };
   type Link = {
-    state: PanelState | null; up?: boolean; site?: SiteView | null; post(m: PanelToWorker): void; request?(m: Ask): Promise<Step>;
+    state: PanelState | null; up?: boolean; site?: SiteView | null; failures?: number; post(m: PanelToWorker): void; request?(m: Ask): Promise<Step>;
     suggestion?: { origin: string; suggestion: Suggestion | null } | null; sites?: SiteChoice[] | null;
   };
   type Area = Parameters<typeof loadPrefs>[0];
@@ -116,11 +116,19 @@
   const help = new Map<string, Help>([
     ["host_missing", { before: "Clax is not set up for Chrome yet. Run", command: "clax init", after: "(or /clax:extension in Claude Code), then click Retry." }],
     ["daemon_unavailable", { before: "Clax could not start. See ~/.clax/logs/daemon.log, then click Retry." }],
-    ["no_capture_permission", { before: "Click the Clax button or press ⌥⇧C to comment with a screenshot." }],
+    // The tab is on: its button would turn Clax off there.
+    ["no_capture_permission", { before: "Press ⌥⇧C on the page to comment with a screenshot." }],
   ]);
   const shownHelp = $derived(s?.error ? (help.get(s.error.code) ?? { before: s.error.message }) : null);
-  /** The failure the person dismissed (by code and message), hidden until another comes. */
+  /** The failure the person dismissed (by code and message), hidden until
+   * another comes, or an action fails again. */
   let dismissed = $state<string | null>(null);
+  let seenFailures: number | undefined;
+  $effect(() => {
+    const n = link.failures ?? 0;
+    if (seenFailures !== undefined && n !== seenFailures) dismissed = null;
+    seenFailures = n;
+  });
   const errorKey = $derived(s?.error ? `${s.error.code}\n${s.error.message}` : null);
   let copied = $state(false);
   function copy(text: string): void {

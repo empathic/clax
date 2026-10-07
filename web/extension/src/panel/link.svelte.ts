@@ -42,6 +42,9 @@ export class PanelLink {
   suggestion = $state<{ origin: string; suggestion: Suggestion | null } | null>(null);
   /** Every site Clax has live pages of, once asked for (`list-sites`). */
   sites = $state<SiteChoice[] | null>(null);
+  /** How many of the panel's actions have failed: a failure the panel was
+   * told to hide shows again when an action fails again, even the same way. */
+  failures = $state(0);
   private reqs = 0;
   private asked = new Map<number, { ok(s: Step): void; fail(e: Failure): void }>();
   private port: Port;
@@ -94,6 +97,7 @@ export class PanelLink {
       else if (m.t === "failed" && m.req === undefined && this.state) {
         this.failure = { code: m.code, message: m.message };
         this.state = { ...this.state, error: this.failure };
+        this.failures++;
       }
       else if (m.t === "stream-status") this.up = m.up;
     });

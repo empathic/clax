@@ -1,7 +1,8 @@
 // What the composer says for a pick without a screenshot (spec 2026-10-05
 // §8.1, §11), after "No screenshot: ". The codes are `captureClip`'s.
 const MESSAGES: Record<string, string> = {
-  no_capture_permission: "click the Clax button or press ⌥⇧C to comment with a screenshot",
+  // The composer shows in a tab Clax is on, where its button would turn Clax off.
+  no_capture_permission: "press ⌥⇧C on the page to comment with a screenshot",
   restricted_page: "Chrome does not capture this page",
   clip_too_large: "it was over 5 MiB",
 };

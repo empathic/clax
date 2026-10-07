@@ -40,8 +40,13 @@ describe("PanelLink", () => {
     const p = f.ports[0];
     p.onMessage.fire({ t: "tab", state: { tabId: 5, error: null } });
     expect(link.state).toEqual({ tabId: 5, error: null });
+    expect(link.failures).toBe(0);
     p.onMessage.fire({ t: "failed", code: "no_page", message: "No live page." });
     expect(link.state?.error).toEqual({ code: "no_page", message: "No live page." });
+    // Each failure of an action counts, the same one again too: the panel shows it again after a dismissal.
+    expect(link.failures).toBe(1);
+    p.onMessage.fire({ t: "failed", code: "no_page", message: "No live page." });
+    expect(link.failures).toBe(2);
     p.onMessage.fire({ t: "stream-status", up: false });
     expect(link.up).toBe(false);
     p.onMessage.fire({ t: "tab", state: "<script>" });

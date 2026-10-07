@@ -50,6 +50,23 @@ describe("Panel", () => {
     expect(l.sent).toContainEqual({ t: "retry" });
   });
 
+  it("shows an action's failure again after a dismissal when the action fails again", async () => {
+    const error = { code: "no_capture_permission", message: "Clax needs a click on its button to take screenshots on this tab." };
+    const l = { ...link(state({ error })), failures: 1 };
+    const { rerender } = render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });
+    // In a tab Clax is on, its button turns Clax off: the panel names the command instead.
+    expect(screen.getByRole("alert").textContent).toContain("Press ⌥⇧C");
+    expect(screen.getByRole("alert").textContent).not.toContain("Clax button");
+    await fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    // The worker pushes the tab's state again: the dismissed failure stays hidden.
+    await rerender({ link: { ...l, state: state({ error }) } as never });
+    expect(screen.queryByRole("alert")).toBeNull();
+    // The person presses Comment again and it fails the same way: told again.
+    await rerender({ link: { ...l, state: state({ error }), failures: 2 } as never });
+    expect(screen.getByRole("alert").textContent).toContain("Press ⌥⇧C");
+  });
+
   it("offers to start when Clax is off on the tab", () => {
     render(Panel, { props: { link: link(state({ enabled: false, page: null, threads: [] })) as never } });
     expect(screen.getByText(/Click the Clax button or press/)).toBeTruthy();
