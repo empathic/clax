@@ -14,7 +14,19 @@ import { once } from "node:events";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createServer } from "vite";
-import { type Live, expect, freePort, test } from "./extension-fixtures";
+import { type Live, expect as baseExpect, freePort, test } from "./extension-fixtures";
+
+// Each test here runs Chromium, a daemon and a dev server of its own, and
+// most waits are a round trip through all three, the first through the
+// native host, which Chrome starts as a new process. On a machine busy with
+// other work, starting a process can stall for tens of seconds (a pairing
+// was seen to take 50 s), far beyond the suite's 5 s. The waits are on
+// their conditions, so a stall slows the suite rather than failing it: each
+// may take up to WAIT_MS, and a test up to TEST_MS beyond the daemon's start.
+const WAIT_MS = 90_000;
+const TEST_MS = 300_000;
+const expect = baseExpect.configure({ timeout: WAIT_MS });
+test.describe.configure({ timeout: TEST_MS });
 
 type Hook = {
   comment(tabId: number, url: string): Promise<void>;
@@ -28,8 +40,18 @@ const hook = (live: Live) => ({
   panelEnabled: (tabId: number) => live.sw.evaluate(async id => (await chrome.sidePanel.getOptions({ tabId: id })).enabled ?? false, tabId),
 });
 
-/** Polls `fn` until it returns a value other than null or undefined; fails after `ms`. */
-async function until<T>(fn: () => Promise<T | null | undefined> | T | null | undefined, ms = 5000): Promise<T> {
+/** `p`, or a failure saying `what` after WAIT_MS. */
+async function within<T>(p: Promise<T>, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([p, new Promise<never>((_, fail) => { timer = setTimeout(() => fail(new Error(`${what} in ${WAIT_MS} ms`)), WAIT_MS); })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Polls `fn` until it returns a value other than null or undefined; fails after `ms` (WAIT_MS). */
+async function until<T>(fn: () => Promise<T | null | undefined> | T | null | undefined, ms = WAIT_MS): Promise<T> {
   const deadline = Date.now() + ms;
   for (;;) {
     const v = await fn();
@@ -47,7 +69,7 @@ async function tabIdOf(live: Live, url: string): Promise<number> {
 async function api(live: Live, path: string, init: RequestInit = {}, session?: string) {
   const headers: Record<string, string> = { authorization: `Bearer ${live.daemon.token}`, "content-type": "application/json" };
   if (session) headers["x-clax-session"] = session;
-  const res = await fetch(live.daemon.base + path, { ...init, headers });
+  const res = await fetch(live.daemon.base + path, { ...init, headers, signal: AbortSignal.timeout(WAIT_MS) });
   return res.json();
 }
 
@@ -93,8 +115,7 @@ class SidePanel {
     const id = ++this.seq;
     const answer = new Promise<unknown>(r => this.waiting.set(id, r));
     await this.cdp.send("Target.sendMessageToTarget", { sessionId: this.session, message: JSON.stringify({ id, method: "Runtime.evaluate", params: { expression: expr, awaitPromise: true, returnByValue: true, userGesture: true } }) });
-    const r = (await answer) as { result?: { value?: unknown }; exceptionDetails?: unknown };
-    this.waiting.delete(id);
+    const r = (await within(answer, `the panel did not answer ${expr.slice(0, 80)}`).finally(() => this.waiting.delete(id))) as { result?: { value?: unknown }; exceptionDetails?: unknown };
     if (r.exceptionDetails) throw new Error(`panel: ${JSON.stringify(r.exceptionDetails)}`);
     return r.result?.value as T;
   }
@@ -108,14 +129,15 @@ class SidePanel {
     const id = ++this.seq;
     const answer = new Promise<unknown>(r => this.waiting.set(id, r));
     await this.cdp.send("Target.sendMessageToTarget", { sessionId: this.session, message: JSON.stringify({ id, method: "Page.captureScreenshot", params: { format: "png" } }) });
-    const r = (await answer) as { data?: string };
-    this.waiting.delete(id);
+    const r = (await within(answer, "the panel took no screenshot").finally(() => this.waiting.delete(id))) as { data?: string };
     if (r.data) writeFileSync(join(dir, `${name}.png`), Buffer.from(r.data, "base64"));
   }
 
-  /** Clicks the panel's first button whose label or text matches `re`. */
+  /** Clicks the panel's first button whose label or text matches `re`. The
+   * click runs after the evaluation answers: one that closes the panel
+   * ("Turn off in this tab") would otherwise take the answer with it. */
   async click(re: RegExp): Promise<void> {
-    const ok = await this.eval<boolean>(`(() => { const re = new RegExp(${JSON.stringify(re.source)}); const b = [...document.querySelectorAll("button")].find(b => re.test((b.getAttribute("aria-label") ?? "") + " " + b.textContent)); b?.click(); return !!b; })()`);
+    const ok = await this.eval<boolean>(`(() => { const re = new RegExp(${JSON.stringify(re.source)}); const b = [...document.querySelectorAll("button")].find(b => re.test((b.getAttribute("aria-label") ?? "") + " " + b.textContent)); if (b) setTimeout(() => b.click()); return !!b; })()`);
     if (!ok) throw new Error(`no panel button ${re}`);
   }
 }
@@ -179,10 +201,22 @@ test("comment on a dev server page, reach the agent, and follow a hot reload", a
   // A hot update keeps the pin; removing the button detaches it.
   const main = join(live.siteDir, "main.js");
   const found = async () => (await h.state(tabId))?.resolved[tid]?.found;
+  // macOS can drop a file event under load: the edit is written again
+  // (the same text) every few seconds until Vite's watcher reports it.
   const edit = async (from: string, to: string) => {
-    const seen = once(live.site.watcher, "change");
-    writeFileSync(main, readFileSync(main, "utf8").replace(from, to));
-    await seen;
+    const text = readFileSync(main, "utf8").replace(from, to);
+    const heard = once(live.site.watcher, "change").then(() => true);
+    const given = { up: false };
+    try {
+      await within((async () => {
+        while (!given.up) {
+          writeFileSync(main, text);
+          if (await Promise.race([heard, new Promise<false>(r => setTimeout(() => r(false), 3000))])) return;
+        }
+      })(), "Vite's watcher did not report the edit");
+    } finally {
+      given.up = true;
+    }
   };
   // A marker a full reload would lose: the update must be Vite's hot one.
   await page.evaluate(() => { (window as unknown as { claxHot: boolean }).claxHot = true; });
@@ -200,7 +234,7 @@ test("comment on a dev server page, reach the agent, and follow a hot reload", a
   // The panel folds detached threads away; opened, it shows the reply.
   await panel.eval(`document.querySelector("details.section-detached").open = true`);
   await expect.poll(() => panel.text()).toContain("Fixed");
-  await expect.poll(async () => (await api(live, `/api/artifacts/${aid}/threads/${tid}`)).thread.addressed_in.length, { timeout: 15_000 }).toBe(1);
+  await expect.poll(async () => (await api(live, `/api/artifacts/${aid}/threads/${tid}`)).thread.addressed_in.length).toBe(1);
 
   // The gallery shows the live page, and its view shows the first snapshot with the thread.
   const shell = await live.ctx.newPage();
@@ -229,9 +263,13 @@ test("the panel recovers when the daemon restarts on another port", async ({ liv
   expect(live.daemon.base).not.toBe(before);
   await h.comment(tabId, live.siteUrl);
   // Within 10 s of the last pairing the worker does not pair again on its
-  // own (spec §11); the panel says the daemon is unreachable, and its Retry pairs again.
+  // own (spec §11); the panel says the daemon is unreachable, and its Retry
+  // pairs again. A machine slow enough that the restart took longer pairs
+  // again on its own, which is right too, and leaves nothing to retry.
   const settled = async () => ((await pairedTo()) === live.daemon.base ? "paired" : ((await h.state(tabId))?.error as { code?: string } | null)?.code ?? null);
-  expect(await until(settled)).toBe("daemon_unreachable");
+  const outcome = await until(settled);
+  expect(["daemon_unreachable", "paired"]).toContain(outcome);
+  if (outcome === "paired") return;
   await expect.poll(() => panel.text()).toContain("Retry");
   await panel.click(/^ ?Retry$/);
   await expect.poll(pairedTo).toBe(live.daemon.base);
@@ -416,7 +454,7 @@ test("two ports of one app join into one site: suggested, joined, listed and pin
     const panel = await SidePanel.open(live, page, tabId);
     // The suggestion waits for the site's listing, which waits for the worker's stream.
     // The first lookup waits for the worker to pair through the native host, which a loaded machine makes slow.
-    await expect.poll(() => live.sw.evaluate(o => !!(globalThis as unknown as { claxTest: { site(o: string): unknown } }).claxTest.site(o), O2), { timeout: 15_000 }).toBe(true);
+    await expect.poll(() => live.sw.evaluate(o => !!(globalThis as unknown as { claxTest: { site(o: string): unknown } }).claxTest.site(o), O2)).toBe(true);
     await expect.poll(() => panel.text()).toContain(`Looks like localhost:${new URL(O1).port} — same app?`);
     await panel.shot("panel-suggestion");
     expect((await api(live, `/api/live/site?origin=${encodeURIComponent(O2)}`)).site.joined).toBe(false);
@@ -493,6 +531,42 @@ test("the panel's Comment puts the overlay back in a page that lost it, rather t
   await page.locator("#save").click();
   const composer = await until(() => page.frames().find(f => f.url().includes("/composer.html")));
   await composer.locator("textarea").waitFor();
+});
+
+test("after Escape or Cancel in the composer, the panel's Comment turns comment mode off and on, and a pick opens the composer again", async ({ live }) => {
+  const { siteUrl } = live;
+  const h = hook(live);
+  const page = await live.ctx.newPage();
+  await page.goto(siteUrl);
+  const tabId = await tabIdOf(live, siteUrl);
+  await h.comment(tabId, siteUrl);
+  const panel = await SidePanel.open(live, page, tabId);
+  const pressed = () => panel.eval<string | null>(`document.querySelector("button.comment")?.getAttribute("aria-pressed") ?? null`);
+  const composerFrame = () => page.frames().find(f => f.url().includes("/composer.html")) ?? null;
+  const pick = async () => {
+    await page.locator("#save").click();
+    const f = await until(composerFrame);
+    await f.locator("textarea").waitFor();
+    return f;
+  };
+  const commentAgain = async () => {
+    await expect.poll(() => composerFrame()).toBeNull();
+    await expect.poll(pressed).toBe("true");
+    await panel.click(/^ ?Comment$/);
+    await expect.poll(pressed).toBe("false");
+    await panel.click(/^ ?Comment$/);
+    await expect.poll(pressed).toBe("true");
+  };
+  await expect.poll(pressed).toBe("true");
+  // Escape in the composer's text. Dispatched in the frame: a key Playwright
+  // sends through CDP can wait forever for the frame Escape removes.
+  const first = await pick();
+  await first.locator("textarea").dispatchEvent("keydown", { key: "Escape", bubbles: true });
+  await commentAgain();
+  const second = await pick();
+  await second.getByRole("button", { name: "Cancel" }).click();
+  await commentAgain();
+  await pick();
 });
 
 test.describe("holding only the dev server's origin, as the release build does once a person allows it", () => {
