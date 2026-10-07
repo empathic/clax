@@ -974,6 +974,9 @@ Each skill gains "Asking the person":
 - Codex and Grok built-in question tools are not mirrored (§4.5).
 - An item's index entry keeps the artifact's title from when it was made; a
   later rename is found by the page filter, not by the old title's text.
+- The search tokenizer (`unicode61`) does not split Chinese or Japanese text
+  into words: a run of such characters is one token, found by its start
+  (`東京` in `東京タワー`) but not by a word inside it (`タワー`).
 - A poll whose response never reaches the agent (a cancelled
   `wait_for_feedback`, a timed-out hook, a result that fails to parse) loses
   the answers it took from the tiers, as with feedback; each answer stays

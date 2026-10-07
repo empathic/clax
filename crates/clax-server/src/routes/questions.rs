@@ -348,7 +348,7 @@ pub async fn release(
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Json<Value>, QuestionError> {
     let (sid, qid) = path(p)?;
-    session_close(s, sid, qid, Close::Release).await
+    session_close(s, sid, qid, Close::Expire).await
 }
 
 #[derive(Deserialize)]

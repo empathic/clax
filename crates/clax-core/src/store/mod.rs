@@ -63,7 +63,7 @@ pub mod watches;
 
 use crate::{CoreError, Home, Result};
 use exec::{Readers, Workers, Writer};
-use inbox::{InboxChange, InboxListener};
+use inbox::InboxChange;
 use rusqlite::Connection;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
@@ -72,6 +72,9 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 pub const ANALYSIS_LIMIT: u32 = 400;
 /// How often the daemon refreshes planner statistics ([`Store::optimize`]).
 pub const OPTIMIZE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// The installed inbox listener, cloned out of its lock to be called.
+type SharedListener = Arc<dyn Fn(Vec<InboxChange>) + Send + Sync>;
 
 pub struct Store {
     home: Home,
@@ -83,7 +86,7 @@ pub struct Store {
     /// Changes to `inbox_items` in the write transaction under way, recorded
     /// by the write connection's update hook and dropped by its rollback hook.
     inbox_changes: Arc<Mutex<Vec<InboxChange>>>,
-    inbox_listener: RwLock<Option<InboxListener>>,
+    inbox_listener: RwLock<Option<SharedListener>>,
 }
 
 impl Store {
@@ -198,10 +201,12 @@ impl Store {
                 std::mem::take(&mut *self.inbox_changes.lock().unwrap()),
             ))
         })?;
-        if !changes.is_empty()
-            && let Some(listen) = self.inbox_listener.read().unwrap().as_ref()
-        {
-            listen(changes);
+        if !changes.is_empty() {
+            // Cloned out, so the listener runs without the lock.
+            let listen = self.inbox_listener.read().unwrap().clone();
+            if let Some(listen) = listen {
+                listen(changes);
+            }
         }
         Ok(out)
     }

@@ -406,7 +406,8 @@ pub const MIGRATIONS: &[&str] = &[
     // FTS5 index of each item's search text, which also indexes every
     // word's first one to three characters so a short prefix reads one
     // entry rather than every word it begins. The history before this
-    // migration is filled in, read (§7.5). `inbox_by_session` serves the
+    // migration is filled in, read (§7.5), indexed as items made later are,
+    // leaving out deleted artifacts. `inbox_by_session` serves the
     // agent filter by handle.
     "CREATE TABLE inbox_items (
         seq INTEGER PRIMARY KEY,
@@ -444,6 +445,7 @@ pub const MIGRATIONS: &[&str] = &[
         SELECT 'reply' AS kind, 'reply:' || c.id AS key, t.artifact_id, t.id AS thread_id, c.id AS comment_id,
                NULL AS version_n, c.via_session_id AS session_id, s.harness, c.created_at
         FROM comments c JOIN threads t ON t.id = c.thread_id
+        JOIN artifacts a ON a.id = t.artifact_id AND a.deleted_at IS NULL
         LEFT JOIN sessions s ON s.id = c.via_session_id
         CROSS JOIN _owner o
         WHERE c.author_kind = 'agent'
@@ -454,18 +456,28 @@ pub const MIGRATIONS: &[&str] = &[
         UNION ALL
         SELECT 'version', 'version:' || v.artifact_id || ':' || v.n, v.artifact_id, NULL, NULL, v.n,
                v.session_id, s.harness, v.created_at
-        FROM versions v JOIN sessions s ON s.id = v.session_id CROSS JOIN _owner o
+        FROM versions v JOIN sessions s ON s.id = v.session_id
+        JOIN artifacts a ON a.id = v.artifact_id AND a.deleted_at IS NULL
+        CROSS JOIN _owner o
         WHERE v.n > 1 AND EXISTS (SELECT 1 FROM threads t JOIN comments m ON m.thread_id = t.id
                                   WHERE t.artifact_id = v.artifact_id AND m.author_public_id = o.pid)
         UNION ALL
         SELECT 'published', 'published:' || a.id, a.id, NULL, NULL, 1, a.owner_session_id, s.harness, a.created_at
         FROM artifacts a JOIN sessions s ON s.id = a.owner_session_id
-        WHERE a.kind = 'html'
+        WHERE a.kind = 'html' AND a.deleted_at IS NULL
     )
     ORDER BY created_at, key;
     INSERT INTO inbox_fts (rowid, text)
         SELECT i.seq, coalesce(a.title, '') || ' ' || coalesce(i.harness, '') || ' ' ||
-               coalesce(c.body, v.note, a.description, '')
+               CASE i.kind
+                 WHEN 'reply' THEN coalesce(c.body, '')
+                 WHEN 'version' THEN coalesce(v.note, '') || ' ' || coalesce(
+                     (SELECT group_concat(CASE WHEN json_valid(t.anchor_json)
+                                               THEN json_extract(t.anchor_json, '$.quote') END, ' ')
+                        FROM version_threads vt JOIN threads t ON t.id = vt.thread_id
+                       WHERE vt.artifact_id = i.artifact_id AND vt.version_n = i.version_n), '')
+                 ELSE coalesce(a.description, '')
+               END
         FROM inbox_items i
         LEFT JOIN artifacts a ON a.id = i.artifact_id
         LEFT JOIN comments c ON c.id = i.comment_id
@@ -666,22 +678,27 @@ mod tests {
              INSERT INTO artifacts (id, title, description, created_at, updated_at, current_version, owner_session_id, contract_version)
                 VALUES ('aaaaaaaaaaaa', 'Quarterly Review', 'Numbers', '2026-01-01T00:00:01.000Z', 'x', 3, '{SID}', '0'),
                        ('bbbbbbbbbbbb', 'Roadmap', NULL, '2026-01-01T00:00:09.000Z', 'x', 1, '{SID}', '0');
+             INSERT INTO artifacts (id, title, created_at, updated_at, current_version, owner_session_id, contract_version, deleted_at)
+                VALUES ('dddddddddddd', 'Deleted', '2026-01-01T00:00:08.000Z', 'x', 1, '{SID}', '0', 'x');
              INSERT INTO artifacts (id, title, created_at, updated_at, current_version, owner_session_id, contract_version, kind)
                 VALUES ('llllllllllll', 'Live', '2026-01-01T00:00:02.000Z', 'x', 1, '{SID}', '0', 'live');
              INSERT INTO versions (artifact_id, n, created_at, session_id, files_json, note) VALUES
-                ('aaaaaaaaaaaa', 1, '2026-01-01T00:00:01.000Z', '{SID}', '{{}}', NULL),
+                ('aaaaaaaaaaaa', 1, '2026-01-01T00:00:01.000Z', '{SID}', '{{}}', 'Firstnote'),
+                ('dddddddddddd', 1, '2026-01-01T00:00:08.000Z', '{SID}', '{{}}', NULL),
                 ('aaaaaaaaaaaa', 2, '2026-01-01T00:00:05.000Z', '{SID}', '{{}}', 'Two columns'),
                 ('aaaaaaaaaaaa', 3, '2026-01-01T00:00:07.000Z', '{SID}', '{{}}', NULL),
                 ('bbbbbbbbbbbb', 1, '2026-01-01T00:00:09.000Z', '{SID}', '{{}}', NULL),
                 ('llllllllllll', 1, '2026-01-01T00:00:02.000Z', NULL, '{{}}', NULL);
              INSERT INTO threads (id, artifact_id, version_n, anchor_json, created_at) VALUES
-                ('t1', 'aaaaaaaaaaaa', 1, '{{}}', '2026-01-01T00:00:03.000Z'),
+                ('t1', 'aaaaaaaaaaaa', 1, '{{\"quote\": \"Headline\"}}', '2026-01-01T00:00:03.000Z'),
                 ('t2', 'aaaaaaaaaaaa', 1, '{{}}', '2026-01-01T00:00:03.500Z');
              INSERT INTO comments (id, thread_id, author_kind, author_name, author_public_id, via_session_id, body, created_at) VALUES
                 ('c1', 't1', 'viewer', 'Alex', '{owner_pid}', NULL, 'make it blue', '2026-01-01T00:00:03.000Z'),
                 ('c2', 't1', 'agent', 'claude', NULL, '{SID}', 'Done: the header is teal', '2026-01-01T00:00:04.000Z'),
                 ('c3', 't2', 'viewer', 'Mia', 'u_stranger', NULL, 'and the footer?', '2026-01-01T00:00:03.500Z'),
-                ('c4', 't2', 'agent', 'claude', NULL, '{SID}', 'footer fixed', '2026-01-01T00:00:06.000Z');"
+                ('c4', 't2', 'agent', 'claude', NULL, '{SID}', 'footer fixed', '2026-01-01T00:00:06.000Z');
+             INSERT INTO version_threads (artifact_id, version_n, thread_id, source, created_at)
+                VALUES ('aaaaaaaaaaaa', 2, 't1', 'explicit', '2026-01-01T00:00:05.000Z');"
         ))
         .unwrap();
     }
@@ -745,6 +762,14 @@ mod tests {
         };
         assert_eq!(found("teal"), ["reply"]);
         assert_eq!(found("columns"), ["version"]);
+        assert_eq!(found("headline"), ["version"], "the quotes it addressed");
+        assert_eq!(found("numbers"), ["published"], "by the description");
+        assert_eq!(
+            found("firstnote"),
+            Vec::<String>::new(),
+            "not by version 1's note"
+        );
+        assert_eq!(found("deleted"), Vec::<String>::new(), "a deleted artifact");
         assert_eq!(found("roadmap"), ["published"]);
         assert_eq!(found("footer"), Vec::<String>::new(), "a stranger's thread");
         assert_eq!(st.inbox_unread().unwrap(), 0);

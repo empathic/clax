@@ -111,8 +111,12 @@ pub enum Close {
         via: &'static str,
     },
     Decline,
-    /// Handed to the terminal; only for `hook` questions.
+    /// Handed to the terminal by the owner ("Answer in the terminal"); only
+    /// for `hook` questions.
     Release,
+    /// Handed to the terminal by the hook's timer, the owner not having
+    /// acted; only for `hook` questions. Its inbox item stays unread.
+    Expire,
     Withdraw,
     /// A released question answered in the terminal, stored as Claude Code
     /// recorded it (it may leave a question unanswered).
@@ -405,10 +409,15 @@ impl Store {
     /// `invalid_answer` for answers that do not fit the questions or a `via`
     /// other than `shell`, `extension` or `cli`.
     pub fn close_question(&self, qid: &str, c: Close) -> Result<QuestionRow> {
+        // Whether the owner acted (or answered in the terminal): the
+        // question's inbox item is then read.
+        let seen = !matches!(c, Close::Withdraw | Close::Expire);
         self.with_tx(|tx| {
             let q = fetch(tx, qid)?.ok_or(CoreError::NotFound)?;
             let (status, answers, via) = match (c, q.status) {
-                (Close::Release, _) if q.source == Source::Ask => return Err(not_mirrored()),
+                (Close::Release | Close::Expire, _) if q.source == Source::Ask => {
+                    return Err(not_mirrored());
+                }
                 (Close::Answer { answers, via }, Status::Open) => {
                     if !matches!(via, "shell" | "extension" | "cli") {
                         return Err(CoreError::invalid(
@@ -420,7 +429,7 @@ impl Store {
                     (Status::Answered, Some(answers), Some(via))
                 }
                 (Close::Decline, Status::Open) => (Status::Declined, None, None),
-                (Close::Release, Status::Open) => (Status::Released, None, None),
+                (Close::Release | Close::Expire, Status::Open) => (Status::Released, None, None),
                 (Close::Withdraw, Status::Open) => (Status::Withdrawn, None, None),
                 (Close::Terminal { answers }, Status::Released) => {
                     (Status::Answered, Some(answers), Some("terminal"))
@@ -443,7 +452,7 @@ impl Store {
                 return Err(closed(&q));
             }
             let q = fetch(tx, qid)?.ok_or(CoreError::NotFound)?;
-            super::inbox::question_changed(tx, &q)?;
+            super::inbox::question_changed(tx, &q, seen)?;
             Ok(q)
         })
     }

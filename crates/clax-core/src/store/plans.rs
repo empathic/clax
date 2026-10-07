@@ -353,8 +353,8 @@ fn check_inbox(c: &Connection, stats: &str) {
         .map(|(n, s, a, ix)| (n.to_string(), s, a, ix))
         .collect();
     let mut drivers = std::collections::HashMap::new();
-    for (n, b, d) in ib::shapes() {
-        drivers.insert(n.clone(), d);
+    for (n, b) in ib::shapes() {
+        drivers.insert(n.clone(), b.driver);
         all.push((n, b.sql, b.args, &[][..]));
     }
     for (name, sql, args, indexes) in all {
@@ -370,6 +370,11 @@ fn check_inbox(c: &Connection, stats: &str) {
             );
         }
         if let Some(d) = drivers.get(&name) {
+            // A page, count or mark-all never sorts (items by seq sorts only the seqs given).
+            assert!(
+                !text.contains("TEMP B-TREE"),
+                "{name} ({stats}) sorts:\n{text}"
+            );
             // Driven by its one index, whatever the statistics say.
             assert!(
                 text.contains(d.plan_word()),
@@ -382,8 +387,9 @@ fn check_inbox(c: &Connection, stats: &str) {
                 );
             }
             assert!(
-                *d == ib::Driver::Dates || !text.contains("TEMP B-TREE"),
-                "{name} ({stats}) sorts:\n{text}"
+                *d != ib::Driver::Dates
+                    || text.contains("SEARCH i USING INTEGER PRIMARY KEY (rowid"),
+                "{name} ({stats}) does not walk the dates' seq range:\n{text}"
             );
         }
         for d in &plan {
