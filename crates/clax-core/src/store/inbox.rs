@@ -1098,6 +1098,247 @@ impl Store {
     }
 }
 
+/// Whether `s` is an item ID: a ULID, or `b` and 24 lowercase hex digits
+/// (an item migration 21 filled in from the history).
+pub fn is_item_id(s: &str) -> bool {
+    crate::is_ulid(s)
+        || (s.len() == 25
+            && s.starts_with('b')
+            && s[1..]
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+}
+
+/// `input` (an RFC 3339 time, or a `YYYY-MM-DD` date in UTC) as items store
+/// their times: RFC 3339 UTC with milliseconds and `Z`, so it compares with
+/// them as text. A date is its first instant, or with `end` the first
+/// instant of the next day (an `until` date takes in the whole day).
+/// `None` when it is neither.
+pub fn stored_time(input: &str, end: bool) -> Option<String> {
+    use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
+    let s = input.trim();
+    let t = if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        let d = if end { d.succ_opt()? } else { d };
+        d.and_hms_opt(0, 0, 0)?.and_utc()
+    } else {
+        DateTime::parse_from_rfc3339(s).ok()?.with_timezone(&Utc)
+    };
+    Some(t.to_rfc3339_opts(SecondsFormat::Millis, true))
+}
+
+/// The agent an item came from (its session).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentRef {
+    pub handle: String,
+    pub harness: String,
+    /// The session's working directory.
+    pub cwd: String,
+}
+
+/// A thread an item names, while it exists on a live artifact.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThreadRef {
+    pub id: String,
+    pub status: String,
+    /// The anchor's one-line summary ([`crate::Anchor::summary`]); `None`
+    /// when the anchor does not parse.
+    pub summary: Option<String>,
+}
+
+/// A `reply` item's comment, while it exists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplyRef {
+    pub body: String,
+    pub created_at: String,
+    /// The reply said a live page now shows the fix: an explicit address of
+    /// its thread was recorded with it (at or after it, before the thread's
+    /// next agent comment).
+    pub addressed: bool,
+}
+
+/// A `version` item's version, while it exists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VersionRef {
+    pub note: Option<String>,
+    /// The threads it addressed that the owner is in.
+    pub addressed: Vec<ThreadRef>,
+}
+
+/// What an item's view reads from its sources ([`Store::inbox_sources`]):
+/// each is `None` (or empty) when the item names none or it is gone.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Sources {
+    pub agent: Option<AgentRef>,
+    /// The artifact, while it is live (not deleted).
+    pub artifact: Option<crate::model::Artifact>,
+    /// A live page's URL.
+    pub page_url: Option<String>,
+    pub thread: Option<ThreadRef>,
+    pub reply: Option<ReplyRef>,
+    pub version: Option<VersionRef>,
+    /// `finished`: the threads of its record that still exist.
+    pub threads: Vec<ThreadRef>,
+}
+
+const SESSION_REF: &str = "SELECT agent_handle, harness, cwd FROM sessions WHERE id = ?1";
+const PAGE_URL: &str = "SELECT origin || path FROM live_pages WHERE artifact_id = ?1";
+const THREAD_REF: &str = "SELECT t.id, t.status, t.anchor_json FROM threads t
+    JOIN artifacts a ON a.id = t.artifact_id WHERE a.deleted_at IS NULL AND t.id = ?1";
+const COMMENT_REF: &str = "SELECT body, created_at FROM comments WHERE id = ?1 AND thread_id = ?2";
+/// Whether the agent reply `?3` (made at `?2`) on thread `?1` addressed
+/// it: an explicit address of the thread was recorded at or after the
+/// reply and before the thread's next agent comment (by insertion order).
+const ADDRESSED_BY: &str = "WITH span(next) AS (SELECT coalesce(
+        (SELECT n.created_at FROM comments n
+          WHERE n.thread_id = ?1 AND n.author_kind = 'agent'
+            AND n.rowid > (SELECT rowid FROM comments WHERE id = ?3)
+          ORDER BY n.rowid LIMIT 1), '~'))
+    SELECT EXISTS (SELECT 1 FROM live_pending, span
+        WHERE thread_id = ?1 AND source = 'explicit' AND created_at >= ?2 AND created_at < next)
+     OR EXISTS (SELECT 1 FROM version_threads, span
+        WHERE thread_id = ?1 AND source = 'explicit' AND created_at >= ?2 AND created_at < next)";
+const VERSION_NOTE: &str = "SELECT note FROM versions WHERE artifact_id = ?1 AND n = ?2";
+const VERSION_THREADS: &str = "SELECT thread_id FROM version_threads
+    WHERE artifact_id = ?1 AND version_n = ?2 ORDER BY rowid";
+
+fn thread_ref(c: &Connection, tid: &str) -> Result<Option<ThreadRef>> {
+    let row: Option<(String, String, String)> = c
+        .prepare_cached(THREAD_REF)?
+        .query_row(params![tid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .optional()?;
+    Ok(row.map(|(id, status, anchor)| ThreadRef {
+        id,
+        status,
+        summary: serde_json::from_str::<crate::Anchor>(&anchor)
+            .ok()
+            .map(|a| a.summary()),
+    }))
+}
+
+impl Store {
+    /// What each of `items` reads from its sources, in the same order, read
+    /// in one snapshot: point lookups by key, so the cost follows the items,
+    /// not the history or the threads' lengths.
+    pub fn inbox_sources(&self, items: &[ItemRow]) -> Result<Vec<Sources>> {
+        use std::collections::HashMap;
+        let owner = |c: &Connection| owner_pid(c);
+        self.with_read(|c| {
+            let pid = owner(c)?;
+            let mut agents: HashMap<String, Option<AgentRef>> = HashMap::new();
+            let mut artifacts: HashMap<String, (Option<crate::model::Artifact>, Option<String>)> =
+                HashMap::new();
+            let mut out = Vec::with_capacity(items.len());
+            for i in items {
+                let mut s = Sources::default();
+                if let Some(sid) = &i.session_id {
+                    if !agents.contains_key(sid) {
+                        let a = c
+                            .prepare_cached(SESSION_REF)?
+                            .query_row(params![sid], |r| {
+                                Ok(AgentRef {
+                                    handle: r.get(0)?,
+                                    harness: r.get(1)?,
+                                    cwd: r.get(2)?,
+                                })
+                            })
+                            .optional()?;
+                        agents.insert(sid.clone(), a);
+                    }
+                    s.agent = agents[sid].clone();
+                }
+                if let Some(aid) = &i.artifact_id {
+                    if !artifacts.contains_key(aid) {
+                        let a = super::artifacts::live_artifact_in(c, aid)?;
+                        let url = match &a {
+                            Some(a) if a.kind == crate::live::KIND_LIVE => c
+                                .prepare_cached(PAGE_URL)?
+                                .query_row(params![aid], |r| r.get(0))
+                                .optional()?,
+                            _ => None,
+                        };
+                        artifacts.insert(aid.clone(), (a, url));
+                    }
+                    let (a, url) = &artifacts[aid];
+                    s.artifact = a.clone();
+                    s.page_url = url.clone();
+                }
+                let live = s.artifact.is_some();
+                match i.kind {
+                    Kind::Reply => {
+                        if let (Some(tid), Some(cid), true) = (&i.thread_id, &i.comment_id, live) {
+                            s.thread = thread_ref(c, tid)?;
+                            if s.thread.is_some() {
+                                let reply: Option<(String, String)> = c
+                                    .prepare_cached(COMMENT_REF)?
+                                    .query_row(params![cid, tid], |r| Ok((r.get(0)?, r.get(1)?)))
+                                    .optional()?;
+                                if let Some((body, created_at)) = reply {
+                                    // Only a live page's thread is addressed by a reply.
+                                    let on_page = s
+                                        .artifact
+                                        .as_ref()
+                                        .is_some_and(|a| a.kind == crate::live::KIND_LIVE);
+                                    let addressed = on_page
+                                        && c.prepare_cached(ADDRESSED_BY)?
+                                            .query_row(params![tid, created_at, cid], |r| {
+                                                r.get(0)
+                                            })?;
+                                    s.reply = Some(ReplyRef {
+                                        body,
+                                        created_at,
+                                        addressed,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    Kind::Version => {
+                        if let (Some(aid), Some(n), true) = (&i.artifact_id, i.version_n, live) {
+                            let note: Option<Option<String>> = c
+                                .prepare_cached(VERSION_NOTE)?
+                                .query_row(params![aid, n], |r| r.get(0))
+                                .optional()?;
+                            if let Some(note) = note {
+                                let tids: Vec<String> = c
+                                    .prepare_cached(VERSION_THREADS)?
+                                    .query_map(params![aid, n], |r| r.get(0))?
+                                    .collect::<rusqlite::Result<_>>()?;
+                                let mut addressed = Vec::new();
+                                for t in tids {
+                                    let mine = match &pid {
+                                        Some(p) => owner_in(c, p, &t)?,
+                                        None => false,
+                                    };
+                                    if mine && let Some(r) = thread_ref(c, &t)? {
+                                        addressed.push(r);
+                                    }
+                                }
+                                s.version = Some(VersionRef { note, addressed });
+                            }
+                        }
+                    }
+                    Kind::Finished => {
+                        let tids = i
+                            .detail
+                            .as_ref()
+                            .and_then(|d| d["thread_ids"].as_array())
+                            .map(Vec::as_slice)
+                            .unwrap_or_default();
+                        for t in tids.iter().filter_map(Value::as_str) {
+                            if let Some(r) = thread_ref(c, t)? {
+                                s.threads.push(r);
+                            }
+                        }
+                    }
+                    Kind::Published | Kind::Question => {}
+                }
+                out.push(s);
+            }
+            Ok(out)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1232,6 +1473,133 @@ mod tests {
         .unwrap()
         .0
         .len()
+    }
+
+    #[test]
+    fn item_ids_and_stored_times() {
+        assert!(is_item_id(MIA));
+        assert!(is_item_id("b0123456789abcdef01234567"));
+        for bad in [
+            "",
+            "b0123",
+            "B0123456789abcdef01234567",
+            "b0123456789ABCDEF01234567",
+            "x",
+        ] {
+            assert!(!is_item_id(bad), "{bad}");
+        }
+        assert_eq!(
+            stored_time("2026-10-06", false).as_deref(),
+            Some("2026-10-06T00:00:00.000Z")
+        );
+        assert_eq!(
+            stored_time("2026-10-06", true).as_deref(),
+            Some("2026-10-07T00:00:00.000Z"),
+            "an until date takes in the day"
+        );
+        assert_eq!(
+            stored_time("2026-10-06T12:30:00+02:00", false).as_deref(),
+            Some("2026-10-06T10:30:00.000Z")
+        );
+        assert_eq!(
+            stored_time(" 2026-10-06T10:30:00.123456Z ", true).as_deref(),
+            Some("2026-10-06T10:30:00.123Z")
+        );
+        for bad in ["yesterday", "2026-13-01", "2026-10-06 10:30", ""] {
+            assert_eq!(stored_time(bad, false), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn sources_read_each_kind_and_say_what_is_gone() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        let (pid, aid, tid) = owner_thread(&st);
+        agent_reply(&st, &tid, &sid, "Done: blue.");
+        publish_addressing(&st, &aid, &sid, Some("Blue now"), &[&tid]);
+        let items = all(&st);
+        let s = st.inbox_sources(&items).unwrap();
+        let (reply, version) = (
+            items.iter().position(|i| i.kind == Kind::Reply).unwrap(),
+            items.iter().position(|i| i.kind == Kind::Version).unwrap(),
+        );
+        let r = s[reply].reply.as_ref().unwrap();
+        assert_eq!((r.body.as_str(), r.addressed), ("Done: blue.", false));
+        let t = s[reply].thread.as_ref().unwrap();
+        assert_eq!((t.id.as_str(), t.status.as_str()), (tid.as_str(), "open"));
+        assert!(t.summary.as_deref().unwrap().contains("Quarterly goals"));
+        assert_eq!(s[reply].agent.as_ref().unwrap().harness, "claude");
+        assert_eq!(s[reply].artifact.as_ref().unwrap().id, aid.as_str());
+        assert_eq!(s[reply].page_url, None);
+        let v = s[version].version.as_ref().unwrap();
+        assert_eq!(v.note.as_deref(), Some("Blue now"));
+        assert_eq!(v.addressed.len(), 1, "the owner's thread");
+
+        // A live page: the owner's thread, and an agent's addressed reply.
+        let key = crate::live::PageKey {
+            origin: "http://localhost:5173".into(),
+            path: "/p".into(),
+        };
+        let e = st.ensure_live_page(&key, "p", None).unwrap();
+        let lid = ArtifactId::parse(&e.artifact.id).unwrap();
+        let lt = st
+            .create_thread(
+                &lid,
+                NewThread {
+                    author_public_id: Some(pid),
+                    version_n: 1,
+                    anchor: anchor(),
+                    body: "fix".into(),
+                    author_name: "Alex".into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap();
+        agent_reply(&st, &lt.id, &sid, "Looking");
+        st.add_addressed_reply(
+            &lid,
+            &lt.id,
+            NewComment {
+                author_kind: AUTHOR_AGENT,
+                author_name: "claude".into(),
+                author_public_id: None,
+                via_session_id: Some(sid.clone()),
+                body: "Fixed".into(),
+                via_page: false,
+            },
+            "claude",
+        )
+        .unwrap();
+        let live: Vec<ItemRow> = all(&st)
+            .into_iter()
+            .filter(|i| i.artifact_id.as_deref() == Some(lid.as_str()))
+            .collect();
+        let s = st.inbox_sources(&live).unwrap();
+        let by_body = |b: &str| {
+            s.iter()
+                .find(|x| x.reply.as_ref().is_some_and(|r| r.body == b))
+                .unwrap()
+        };
+        assert!(by_body("Fixed").reply.as_ref().unwrap().addressed);
+        assert!(!by_body("Looking").reply.as_ref().unwrap().addressed);
+        assert_eq!(
+            by_body("Fixed").page_url.as_deref(),
+            Some("http://localhost:5173/p")
+        );
+
+        // Gone: a deleted thread takes its reply; a deleted artifact all.
+        st.delete_thread(&tid).unwrap();
+        let s = st.inbox_sources(&items).unwrap();
+        assert!(s[reply].thread.is_none() && s[reply].reply.is_none());
+        assert!(s[version].version.is_some());
+        st.delete_artifact(&aid).unwrap();
+        let s = st.inbox_sources(&items).unwrap();
+        assert!(
+            s.iter()
+                .all(|x| x.artifact.is_none() && x.version.is_none())
+        );
+        assert!(s[reply].agent.is_some(), "sessions are never deleted");
     }
 
     #[test]

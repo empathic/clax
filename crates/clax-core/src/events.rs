@@ -120,6 +120,22 @@ pub enum Event {
     Question {
         question: serde_json::Value,
     },
+    /// An inbox item was made, or its read state or its source changed
+    /// (spec 2026-10-06-agent-questions-and-inbox §8.2); `item` is its view
+    /// and `unread` the unread count after the change. Only the owner-only
+    /// `inbox` stream topic carries it; `/api/events` never does.
+    InboxItem {
+        item: serde_json::Value,
+        unread: u32,
+    },
+    /// Many items' read state changed at once: `ids` (null: refetch what
+    /// is shown) are now `read`; `unread` is the count after. Only the
+    /// `inbox` topic carries it.
+    InboxRead {
+        ids: Option<Vec<String>>,
+        read: bool,
+        unread: u32,
+    },
 }
 
 impl Event {
@@ -138,7 +154,7 @@ impl Event {
             | Event::Doc { artifact_id, .. } => artifact_id,
             Event::Site { .. } => "",
             // Owner-only; it belongs to no artifact's routing.
-            Event::Question { .. } => "",
+            Event::Question { .. } | Event::InboxItem { .. } | Event::InboxRead { .. } => "",
         }
     }
 
@@ -158,6 +174,8 @@ impl Event {
             Event::Doc { .. } => "doc",
             Event::Site { .. } => "site",
             Event::Question { .. } => "question",
+            Event::InboxItem { .. } => "inbox_item",
+            Event::InboxRead { .. } => "inbox_read",
         }
     }
 
@@ -412,6 +430,15 @@ mod tests {
             },
             Event::Question {
                 question: serde_json::json!({"id": "q"}),
+            },
+            Event::InboxItem {
+                item: serde_json::json!({"id": "i"}),
+                unread: 1,
+            },
+            Event::InboxRead {
+                ids: None,
+                read: true,
+                unread: 0,
             },
         ] {
             assert_eq!(serde_json::to_value(&ev).unwrap()["type"], ev.name());

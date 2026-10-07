@@ -6,6 +6,7 @@ pub mod events;
 pub mod extension;
 pub mod feedback;
 pub mod health;
+pub mod inbox;
 pub mod live;
 pub mod mcp;
 pub mod questions;
@@ -197,6 +198,12 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             "/api/questions/{qid}/release",
             post(questions::release_owner),
         )
+        .route("/api/inbox", get(inbox::list))
+        .route("/api/inbox/summary", get(inbox::summary))
+        .route("/api/inbox/read", post(inbox::read_many))
+        .route("/api/inbox/{id}", get(inbox::get_one))
+        .route("/api/inbox/{id}/read", post(inbox::read_one))
+        .route("/api/inbox/{id}/unread", post(inbox::unread_one))
         .route("/api/artifacts/{aid}/docs", get(docs::list))
         .route(
             "/api/artifacts/{aid}/docs/{*path}",
@@ -286,6 +293,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         with_timeout(api_slow, state.publish_timeout).layer(crate::http_cache::compression());
     let shell_routes = Router::new()
         .route("/", get(shell::gallery_page))
+        .route("/inbox", get(shell::gallery_page))
         .route("/a/{aid}", get(shell::artifact_page))
         .route("/a/{aid}/", get(shell::artifact_page))
         .route("/a/{aid}/v/{n}", get(shell::artifact_page))
@@ -496,6 +504,12 @@ mod l10 {
         ("questions::answer", Owner),
         ("questions::decline", Owner),
         ("questions::release_owner", Owner),
+        ("inbox::list", Owner),
+        ("inbox::summary", Owner),
+        ("inbox::read_many", Owner),
+        ("inbox::get_one", Owner),
+        ("inbox::read_one", Owner),
+        ("inbox::unread_one", Owner),
         ("shell::gallery_page", NoArtifact),
         ("shell::static_file", NoArtifact),
         ("health::healthz", NoArtifact),
@@ -525,6 +539,7 @@ mod l10 {
             "extension" => include_str!("extension.rs"),
             "feedback" => include_str!("feedback.rs"),
             "health" => include_str!("health.rs"),
+            "inbox" => include_str!("inbox.rs"),
             "live" => include_str!("live.rs"),
             "questions" => include_str!("questions.rs"),
             "room" => include_str!("room.rs"),

@@ -89,21 +89,23 @@ fn skip_corrupt<T>(rows: Vec<Result<T>>) -> Result<Vec<T>> {
 const SELECT: &str = "SELECT id, title, description, icon, created_at, updated_at, current_version,
     owner_session_id, pinned, capabilities_json, contract_version, kind FROM artifacts";
 
+/// The live artifact `id` (not deleted, at least one version) on `c`, or `None`.
+pub(crate) fn live_artifact_in(c: &rusqlite::Connection, id: &str) -> Result<Option<Artifact>> {
+    c.prepare_cached(&format!(
+        "{SELECT} WHERE id = ?1 AND deleted_at IS NULL AND current_version > 0"
+    ))?
+    .query_row(params![id], row_to_artifact)
+    .optional()?
+    .transpose()
+}
+
 impl Store {
     /// The live artifact `id` (not deleted, at least one version), or `None`.
     ///
     /// # Errors
     /// `Corrupt` when its `capabilities_json` is malformed.
     pub fn get_artifact(&self, id: &ArtifactId) -> Result<Option<Artifact>> {
-        self.with_read(|c| {
-            c.query_row(
-                &format!("{SELECT} WHERE id = ?1 AND deleted_at IS NULL AND current_version > 0"),
-                params![id.as_str()],
-                row_to_artifact,
-            )
-            .optional()?
-            .transpose()
-        })
+        self.with_read(|c| live_artifact_in(c, id.as_str()))
     }
 
     /// Live artifacts (not deleted, at least one version): pinned first, then
