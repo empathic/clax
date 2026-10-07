@@ -95,22 +95,34 @@ fn error_object(err: Value) -> CallToolResult {
 /// error passes the daemon's `error` object through unchanged (so a conflict
 /// keeps its `current`).
 pub fn client_error(e: ClientError, log: &Path) -> CallToolResult {
+    client_error_with(e, log, json!({}))
+}
+
+/// [`client_error`] with the fields of `extra` (a JSON object) added to
+/// `error`.
+pub fn client_error_with(e: ClientError, log: &Path, extra: Value) -> CallToolResult {
+    let add = |mut v: Value| {
+        if let (Some(o), Value::Object(x)) = (v.as_object_mut(), extra.clone()) {
+            o.extend(x);
+        }
+        v
+    };
     match e {
         ClientError::Unreachable(m) => error(
             "daemon_unreachable",
             format!("the clax daemon did not respond ({m}); see its log"),
-            json!({"log": log.to_string_lossy()}),
+            add(json!({"log": log.to_string_lossy()})),
         ),
         ClientError::Timeout(m) => error(
             "timeout",
             "the daemon did not respond in time; for a publish, read the artifact before retrying",
-            json!({"detail": m, "log": log.to_string_lossy()}),
+            add(json!({"detail": m, "log": log.to_string_lossy()})),
         ),
         ClientError::BadResponse(m) => error(
             "bad_response",
             format!("the daemon's response could not be read: {m}"),
-            json!({}),
+            add(json!({})),
         ),
-        ClientError::Api { error, .. } => error_object(error),
+        ClientError::Api { error, .. } => error_object(add(error)),
     }
 }

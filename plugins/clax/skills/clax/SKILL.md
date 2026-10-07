@@ -368,7 +368,12 @@ shows there.
 - When the result says `call_again`, call `ask` again with `question_id`.
   If it also says `surface_open: false`, the person may not have Clax open:
   you may ask in chat too, and call `ask` with `question_id` and
-  `cancel: true` once they answer there.
+  `cancel: true` once they answer there. If `cancel` returns
+  `status: "answered"`, they answered in Clax too: use those answers or
+  reconcile them with what they said in chat.
+- The answers to your question come back in the result's `reply`. An
+  `answers` array on any tool result (`ask`'s included) holds late answers
+  to other questions you asked.
 - `status: "declined"` means they chose not to answer: carry on with your
   best judgement and say what you assumed.
 - An answer can also arrive later, appended to a tool result or at the end

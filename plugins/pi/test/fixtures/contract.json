@@ -549,7 +549,7 @@
     },
     {
       "name": "ask",
-      "description": "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. Pass `url_or_id` when the question is about a page. If the result says `call_again`, call `ask` again with `question_id`. The answers are the person's own words.",
+      "description": "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. Pass `url_or_id` when the question is about a page. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words.",
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": false,

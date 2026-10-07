@@ -227,6 +227,20 @@ pub fn default_ask_wait(harness: &str) -> u64 {
 /// Largest `timeout_s` of `ask`; larger values are capped.
 pub const MAX_ASK_WAIT_S: u64 = 600;
 
+/// Largest `timeout_s` of `ask` under `harness`: [`MAX_ASK_WAIT_S`], or
+/// 50 under Codex, so the call ends within Codex's 60 s tool timeout.
+pub fn max_ask_wait(harness: &str) -> u64 {
+    if harness == "codex" {
+        50
+    } else {
+        MAX_ASK_WAIT_S
+    }
+}
+
+/// Most questions whose `surface_open` the tool set remembers; past it the
+/// oldest (smallest ULID) is forgotten, and reads as the default, true.
+const ASK_SURFACE_CAP: usize = 32;
+
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AskArgs {
@@ -241,7 +255,7 @@ pub struct AskArgs {
     pub question_id: Option<String>,
     /// The artifact, or a web page's URL (its live page), the question is about.
     pub url_or_id: Option<String>,
-    /// Seconds to wait, 1 to 600 (default 600; 50 under Codex).
+    /// Seconds to wait, 1 to 600 (default 600); under Codex 1 to 50 (default 50).
     pub timeout_s: Option<u64>,
     /// With `question_id`: withdraw the question.
     pub cancel: Option<bool>,
@@ -689,7 +703,9 @@ pub struct ClaxTools {
     open_wait: std::time::Duration,
     /// For each open question `ask` created, whether an owner surface was
     /// open when it was created (the create call's `surface_open`).
-    ask_surface: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, bool>>>,
+    /// At most [`ASK_SURFACE_CAP`] entries; an entry leaves when its
+    /// answer is handed over by any tool.
+    ask_surface: std::sync::Arc<std::sync::Mutex<BTreeMap<String, bool>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -1284,7 +1300,11 @@ impl ClaxTools {
             return render::Handover::default();
         }
         match self.client.feedback("piggyback", 0, None).await {
-            Ok(res) => render::Handover::of(&res),
+            Ok(res) => {
+                let h = render::Handover::of(&res);
+                self.forget_answered(&h);
+                h
+            }
             Err(e) => {
                 tracing::debug!(error = %e, "piggyback feedback unavailable");
                 render::Handover::default()
@@ -1543,15 +1563,16 @@ impl ClaxTools {
                 ));
             }
         }
+        let session = self.require_session().await?;
         let artifact = match &a.url_or_id {
             Some(r) => Some(self.resolve_id(r).await?),
             None => None,
         };
-        let session = self.require_session().await?;
         let wait = a
             .timeout_s
             .unwrap_or_else(|| default_ask_wait(&session.harness))
-            .clamp(MIN_WAIT_S, MAX_ASK_WAIT_S);
+            .clamp(MIN_WAIT_S, max_ask_wait(&session.harness));
+        let mut created = false;
         let qid = match (a.questions, a.question_id) {
             (Some(qs), _) => {
                 let res = self
@@ -1563,11 +1584,8 @@ impl ClaxTools {
                     .as_str()
                     .unwrap_or_default()
                     .to_string();
-                let surface = res["surface_open"].as_bool().unwrap_or(true);
-                self.ask_surface
-                    .lock()
-                    .expect("ask_surface lock")
-                    .insert(qid.clone(), surface);
+                self.remember_surface(&qid, res["surface_open"].as_bool().unwrap_or(true));
+                created = true;
                 qid
             }
             (None, Some(qid)) if cancel => {
@@ -1591,21 +1609,52 @@ impl ClaxTools {
             (None, Some(qid)) => qid,
             (None, None) => unreachable!("checked above"),
         };
-        let v = self
-            .client
-            .ask_wait(&qid, wait)
-            .await
-            .map_err(|e| self.fail(e))?;
+        let v = self.client.ask_wait(&qid, wait).await.map_err(|e| {
+            // A question this call created stays open: name it, so the
+            // agent can wait on it again or cancel it.
+            let extra = if created {
+                json!({"question_id": qid})
+            } else {
+                json!({})
+            };
+            render::client_error_with(e, &self.log_path, extra)
+        })?;
         Ok(self.ask_result(&v["question"], v["waited_s"].as_u64().unwrap_or(0)))
     }
 
-    /// The `ask` result (spec §6.5) for the question view `q`: each answer
-    /// beside its question and header, the question's inbox URL, and while
-    /// it is open `call_again` and `surface_open`.
+    /// Remembers whether an owner surface was open when question `qid` was
+    /// asked, forgetting the oldest beyond [`ASK_SURFACE_CAP`].
+    fn remember_surface(&self, qid: &str, open: bool) {
+        let mut surfaces = self.ask_surface.lock().expect("ask_surface lock");
+        surfaces.insert(qid.to_string(), open);
+        while surfaces.len() > ASK_SURFACE_CAP {
+            surfaces.pop_first();
+        }
+    }
+
+    /// Forgets the `surface_open` of the questions whose answers `h` hands
+    /// over.
+    fn forget_answered(&self, h: &render::Handover) {
+        if h.answers.is_empty() {
+            return;
+        }
+        let mut surfaces = self.ask_surface.lock().expect("ask_surface lock");
+        for a in &h.answers {
+            if let Some(id) = a["id"].as_str() {
+                surfaces.remove(id);
+            }
+        }
+    }
+
+    /// The `ask` result (spec §6.5) for the question view `q`: in `reply`,
+    /// each of its answers beside its question and header (null unless it
+    /// was answered); the question's inbox URL; and while it is open
+    /// `call_again` and `surface_open`. `answers` is left to the late
+    /// answers to other questions, as on every tool result.
     fn ask_result(&self, q: &Value, waited_s: u64) -> Value {
         let qid = q["id"].as_str().unwrap_or_default();
         let status = q["status"].as_str().unwrap_or("open");
-        let answers = (status == "answered").then(|| {
+        let reply = (status == "answered").then(|| {
             let asked = q["questions"]
                 .as_array()
                 .map(Vec::as_slice)
@@ -1626,7 +1675,7 @@ impl ClaxTools {
         let mut out = json!({
             "question_id": qid,
             "status": status,
-            "answers": answers,
+            "reply": reply,
             "url": format!("{}/inbox?q={qid}", self.browser_base()),
             "waited_s": waited_s,
             "call_again": status == "open",
@@ -1843,6 +1892,7 @@ impl ClaxTools {
             Err(e) => self.fail(e),
             Ok(res) => {
                 let h = render::Handover::of(&res);
+                self.forget_answered(&h);
                 let call_again = h.is_empty();
                 render::success_with(
                     json!({"waited_s": res["waited_s"], "call_again": call_again}),
@@ -2135,7 +2185,7 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. Pass `url_or_id` when the question is about a page. If the result says `call_again`, call `ask` again with `question_id`. The answers are the person's own words.",
+        description = "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. Pass `url_or_id` when the question is about a page. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -2383,6 +2433,35 @@ mod tests {
                 assert!(a.destructive_hint.is_some(), "{}", t.name);
             }
         }
+    }
+
+    #[test]
+    fn surfaces_are_capped_oldest_first_and_forgotten_on_handover() {
+        let t = ClaxTools::new(
+            DaemonClient::new("http://127.0.0.1:9".into(), "t".into(), None),
+            "http://localhost:9".into(),
+            None,
+            PathBuf::from("log"),
+        );
+        let id = |n: usize| format!("01K6AB3Q9X7N2M4P5R6S8T{n:04}");
+        for n in 0..=ASK_SURFACE_CAP {
+            t.remember_surface(&id(n), false);
+        }
+        let held = t.ask_surface.lock().unwrap().clone();
+        assert_eq!(held.len(), ASK_SURFACE_CAP);
+        assert!(!held.contains_key(&id(0)), "the oldest went");
+        t.forget_answered(&render::Handover {
+            answers: vec![json!({"id": id(1)})],
+            ..Default::default()
+        });
+        assert!(!t.ask_surface.lock().unwrap().contains_key(&id(1)));
+        let open = t.ask_result(&json!({"id": id(0), "status": "open"}), 0);
+        assert_eq!(
+            open["surface_open"], true,
+            "a forgotten question reads as open"
+        );
+        let open = t.ask_result(&json!({"id": id(2), "status": "open"}), 0);
+        assert_eq!(open["surface_open"], false);
     }
 
     #[test]
