@@ -5,7 +5,7 @@
 // labels, downloads, and the daemon's API.
 import { readdirSync, readFileSync } from "node:fs";
 import { type Frame, type Page } from "@playwright/test";
-import { test, expect, type Daemon, contentFrame, namedViewer, openArtifact, publishWith, reach, type FrameMode, nameField } from "./fixtures";
+import { test, expect, type Daemon, api, contentFrame, namedViewer, openArtifact, publishWith, reach, type FrameMode, nameField } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -111,12 +111,19 @@ const CASES: Record<string, Case> = {
   },
   "gallery.html": {
     caps: { assets: {}, db: {} },
-    async check(f, page) {
+    // Each step is a chain: the click, the canvas's PNG (an idle task in
+    // Chromium, put off up to 1 s on a busy renderer), the upload, then the
+    // image's load and a listing; the removal is two deletes. The daemon's
+    // own listing marks where a chain is, so each wait is on one part of it.
+    async check(f, page, id) {
+      const stored = async () => ((await api(d.base, d.token, `/api/artifacts/${id}/assets`)) as { assets: unknown[] }).assets.length;
       await expect(f.locator("#status")).toHaveText("ready");
       await f.locator("#upload").click();
+      await expect.poll(stored).toBe(1);
       await expect(f.locator("#status")).toHaveText(JSON.stringify({ loaded: 40, files: 1, type: "image/png" }));
       await reach(page, f.locator("#remove"));
       await f.locator("#remove").click();
+      await expect.poll(stored).toBe(0);
       await expect(f.locator("#status")).toHaveText(JSON.stringify({ first: true, second: false }));
     },
   },
