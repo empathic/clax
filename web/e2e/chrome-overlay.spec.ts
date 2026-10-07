@@ -18,7 +18,7 @@ import { type Live, expect, freePort, test } from "./extension-fixtures";
 
 type Hook = {
   comment(tabId: number, url: string): Promise<void>;
-  state(tabId: number): { on: string | null; commentMode: boolean; overlay: boolean; route: string | null; error: unknown; selected: string | null; resolved: Record<string, { found: boolean }>; threads: unknown[] } | undefined;
+  state(tabId: number): { on: string | null; commentMode: boolean; overlay: boolean; active: boolean; route: string | null; error: unknown; selected: string | null; resolved: Record<string, { found: boolean }>; threads: unknown[] } | undefined;
 };
 const hook = (live: Live) => ({
   /** What the command does once the origin's permission is held: turns Clax on in the tab (records the activeTab grant), or flips comment mode where it is on. */
@@ -470,6 +470,30 @@ test("two ports of one app join into one site: suggested, joined, listed and pin
   }
 });
 
+test("the panel's Comment puts the overlay back in a page that lost it, rather than turning comment mode on with nothing listening", async ({ live }) => {
+  const { siteUrl } = live;
+  const h = hook(live);
+  const page = await live.ctx.newPage();
+  await page.goto(siteUrl);
+  const tabId = await tabIdOf(live, siteUrl);
+  await h.comment(tabId, siteUrl);
+  const panel = await SidePanel.open(live, page, tabId);
+  const pressed = () => panel.eval<string | null>(`document.querySelector("button.comment")?.getAttribute("aria-pressed") ?? null`);
+  await expect.poll(pressed).toBe("true");
+  await panel.click(/^ ?Comment$/);
+  await expect.poll(pressed).toBe("false");
+  // The overlay stops without the worker hearing of it (as one left from an earlier load of the extension would be).
+  await live.sw.evaluate(id => chrome.tabs.sendMessage(id, { t: "off" }, { frameId: 0 }), tabId);
+  await expect.poll(() => overlays(page)).toBe(0);
+  expect((await h.state(tabId))?.overlay).toBe(true);
+  await panel.click(/^ ?Comment$/);
+  await expect.poll(pressed).toBe("true");
+  await expect.poll(() => overlays(page)).toBe(1);
+  await page.locator("#save").click();
+  const composer = await until(() => page.frames().find(f => f.url().includes("/composer.html")));
+  await composer.locator("textarea").waitFor();
+});
+
 test.describe("holding only the dev server's origin, as the release build does once a person allows it", () => {
   test.use({ variant: "origin" });
 
@@ -584,6 +608,35 @@ test.describe("holding only the dev server's origin, as the release build does o
     await composer.locator("textarea").waitFor();
   });
 
+  test("a screenshot Chrome refuses for want of a grant makes the panel's Comment name the command, which turns comment mode on again", async ({ live }) => {
+    const { siteUrl } = live;
+    const h = hook(live);
+    const page = await live.ctx.newPage();
+    await page.goto(siteUrl);
+    const tabId = await tabIdOf(live, siteUrl);
+    // The test hook records a grant Chrome never gave: the pick's capture is refused.
+    await h.comment(tabId, siteUrl);
+    const panel = await SidePanel.open(live, page, tabId);
+    const pressed = () => panel.eval<string | null>(`document.querySelector("button.comment")?.getAttribute("aria-pressed") ?? null`);
+    await expect.poll(pressed).toBe("true");
+    const keys = await panel.eval<string>(`chrome.commands.getAll().then(c => c.find(x => x.name === "comment")?.shortcut ?? "")`);
+    await page.locator("#save").click();
+    const composer = await until(() => page.frames().find(f => f.url().includes("/composer.html")));
+    const how = keys ? `press ${keys} on the page` : "right-click the page and choose Comment with Clax";
+    await expect(composer.locator("body")).toContainText(`No screenshot: ${how} before your next pick to include one`);
+    await expect.poll(async () => (await h.state(tabId))?.active).toBe(false);
+    await composer.getByRole("button", { name: "Cancel" }).click();
+    await expect.poll(() => page.frames().length).toBe(1);
+    await panel.click(/^ ?Comment$/);
+    await expect.poll(pressed).toBe("false");
+    await panel.click(/^ ?Comment$/);
+    await expect.poll(() => panel.text()).toContain(`${how[0].toUpperCase()}${how.slice(1)} to comment with a screenshot.`);
+    expect(await pressed()).toBe("false");
+    // The command (here the hook, as Playwright cannot press it) turns comment mode on, rather than flipping it.
+    await h.comment(tabId, siteUrl);
+    await expect.poll(pressed).toBe("true");
+  });
+
   test("two clicks at once inject one overlay", async ({ live }) => {
     const { siteUrl } = live;
     const h = hook(live);
@@ -643,5 +696,56 @@ test.describe("holding only the dev server's origin, as the release build does o
     const lookup = await until(async () => (await fetch(`${live.daemon.base}/api/live/pages?url=${encodeURIComponent(siteUrl)}`).then(r => r.json())).page);
     const thread = await until(async () => (await api(live, `/api/artifacts/${lookup.artifact_id}/threads`)).threads[0]);
     expect(thread.comments[0].body).toBe("Under a dialog");
+  });
+});
+
+test.describe("a real click on the toolbar icon, holding no site's permission (the person refused the prompt)", () => {
+  test.use({ variant: "none", gesture: true });
+  /** The window's active tab: holding no site, the worker cannot read tabs' URLs to find one. */
+  const activeTab = (live: Live) => live.sw.evaluate(async () => (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0].id!);
+
+  test("the click's activeTab grant lasts through a reload: the overlay comes back, the panel's Comment works, and the pick has its screenshot", async ({ live }) => {
+    const { siteUrl } = live;
+    const h = hook(live);
+    const page = await live.ctx.newPage();
+    await page.goto(siteUrl);
+    await expect(page.locator("#save")).toHaveText("Save");
+    const tabId = await activeTab(live);
+    await live.iconClick(siteUrl);
+    await expect.poll(async () => (await h.state(tabId))?.commentMode).toBe(true);
+    const panel = await SidePanel.open(live, page, tabId);
+    const pressed = () => panel.eval<string | null>(`document.querySelector("button.comment")?.getAttribute("aria-pressed") ?? null`);
+    await expect.poll(pressed).toBe("true");
+    // With no site permission, only the grant lets the worker read the reloaded tab and inject the overlay again.
+    await page.reload();
+    await expect.poll(pressed).toBe("false");
+    await expect.poll(() => overlays(page)).toBe(1);
+    expect((await h.state(tabId))?.on).toBe(new URL(siteUrl).origin);
+    await panel.click(/^ ?Comment$/);
+    await expect.poll(pressed).toBe("true");
+    await page.locator("#save").click();
+    const composer = await until(() => page.frames().find(f => f.url().includes("/composer.html")));
+    await composer.locator("textarea").fill("After a reload");
+    await expect(composer.locator("img.clip")).toHaveCount(1);
+    await composer.getByRole("button", { name: "Post" }).click();
+    const lookup = await until(async () => (await fetch(`${live.daemon.base}/api/live/pages?url=${encodeURIComponent(siteUrl)}`).then(r => r.json())).page);
+    const thread = await until(async () => (await api(live, `/api/artifacts/${lookup.artifact_id}/threads`)).threads[0]);
+    expect(thread.has_clip).toBe(true);
+  });
+
+  test("another origin ends the grant: Clax turns off in the tab and Chrome refuses its capture", async ({ live }) => {
+    const { siteUrl } = live;
+    const h = hook(live);
+    const page = await live.ctx.newPage();
+    await page.goto(siteUrl);
+    const tabId = await activeTab(live);
+    await live.iconClick(siteUrl);
+    await expect.poll(async () => (await h.state(tabId))?.overlay).toBe(true);
+    const capture = () => live.sw.evaluate(async () => { try { await chrome.tabs.captureVisibleTab({ format: "png" }); return "ok"; } catch (e) { return String((e as Error).message); } });
+    expect(await capture()).toBe("ok");
+    await page.goto(siteUrl.replace("localhost", "127.0.0.1"));
+    await expect.poll(async () => await h.state(tabId)).toBeNull();
+    expect(await h.panelEnabled(tabId)).toBe(false);
+    await expect.poll(capture).toMatch(/activeTab/);
   });
 });
