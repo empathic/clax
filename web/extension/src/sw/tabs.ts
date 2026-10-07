@@ -25,7 +25,9 @@ export type TabState = {
   tabId: number; url: string; page: PageView | null; route: string | null; threads: Thread[]; working: Working[];
   resolved: Record<string, AnchorResult>; commentMode: boolean; overlay: boolean; pending: boolean; selected: string | null;
   versions: Version[]; participants: Participants | null;
-  /** A gesture granted activeTab since the tab's last full load. */
+  /** A gesture granted the tab activeTab. Chrome keeps the grant through
+   * reloads and navigations within the origin, and withdraws it at a
+   * navigation to another origin, which turns Clax off in the tab. */
   active: boolean;
   /** The origin Clax is on for in the tab; null when it is off there. */
   on: string | null;
@@ -195,7 +197,7 @@ export class Tabs {
 
   state(tabId: number): TabState | undefined { return this.tabs.get(tabId); }
 
-  /** Whether a gesture granted the tab activeTab since its last full load. */
+  /** Whether a gesture granted the tab activeTab (kept within its origin). */
   admits(tabId: number): boolean { return !!this.tabs.get(tabId)?.active; }
 
   /** The open threads of the tab's page waiting for a snapshot: what a snapshot taken now covers. */
@@ -498,14 +500,15 @@ export class Tabs {
     }
   }
 
-  /** The tab's record for a new document: no overlay, comment mode off,
-   * and no activeTab grant, which Chrome revokes at a navigation (spec §11
-   * "Page navigates"): the panel then says how to start, and the next
-   * gesture grants it again. */
+  /** The tab's record for a new document of its origin: no overlay and
+   * comment mode off (spec §11 "Page navigates"). The activeTab grant
+   * stays: Chrome withdraws it only at a navigation to another origin,
+   * which turns Clax off in the tab, so the side panel's Comment keeps
+   * working after a reload or a hot reload. */
   private newDocument(tabId: number, url: string): void {
     const s = this.tabs.get(tabId) ?? emptyTab(tabId, url);
     this.retell(tabId);
-    this.set(tabId, { ...s, overlay: false, commentMode: false, active: false, resolved: {}, selected: null });
+    this.set(tabId, { ...s, overlay: false, commentMode: false, resolved: {}, selected: null });
   }
 
   /** Chrome reported a tab Clax is on loading, or done loading (`loaded`),

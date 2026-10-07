@@ -847,8 +847,8 @@ animation frames, and asks the worker to capture. The worker calls
 (`#ed5439`, the pin colour), scales to at most 1600 px on the long side, and
 encodes PNG; over 5 MiB it halves the scale, up to three times, then gives up
 with `clip_too_large`. Without `activeTab` the thread is posted with no clip
-and `clip_error: "no_capture_permission"`, which the composer shows ("Click
-the Clax button or press ⌥⇧C to comment with a screenshot").
+and `clip_error: "no_capture_permission"`, which the composer shows ("press ⌥⇧C on the page to comment with a
+screenshot"; in a tab Clax is on its button would turn Clax off).
 
 ### 8.2 The snapshot
 
@@ -1260,8 +1260,8 @@ What is protected, from whom:
 | The serializer fails on a page | The pick is sent with `snapshotError: "failed"` and no snapshot; the thread is posted with a placeholder snapshot that says the page could not be read. |
 | The composer page never connects | The worker cancels the pick 5 s after `open-composer`; the overlay closes the hidden frame and says "The comment box did not open. Pick again to comment." |
 | Page removes or restyles the overlay host | Re-added once; then the panel says the page removed Clax's overlay. Pins use `all: initial` and the top layer (`popover`). |
-| Tab Clax is on reloads, or navigates within its origin | Clax stays on: once the new document has loaded the worker injects the overlay into that tab again; comment mode is off; the worker treats `activeTab` as gone until the next icon click or command. It probes the tab for the overlay at `loading` and again at `complete` (an in-page navigation keeps its overlay), and a probe answered after a new document or an injection it saw meanwhile resets nothing. |
-| Tab Clax is on navigates to another origin | Clax turns off in the tab: its panel is disabled, its state dropped. The worker sees the new URL where it may read it; any navigation update whose URL it may not read (an origin it holds no permission for, or a reload once the person declined the permission, if Chrome then withdraws `activeTab`: whether Chrome keeps `activeTab` across a same-origin reload is to be checked by hand, docs/verification.md) turns it off too, at `loading`. Back on the first origin it stays off until the person turns it on again; a page restored from the back/forward cache asks the worker at once, is refused, and its overlay stops. |
+| Tab Clax is on reloads, or navigates within its origin | Clax stays on: once the new document has loaded the worker injects the overlay into that tab again; comment mode is off; the `activeTab` grant stays, as Chrome withdraws it only at a navigation to another origin (checked in Chromium: a same-origin reload or navigation keeps it, another origin ends it), so the side panel's Comment keeps working. It probes the tab for the overlay at `loading` and again at `complete` (an in-page navigation keeps its overlay), and a probe answered after a new document or an injection it saw meanwhile resets nothing. |
+| Tab Clax is on navigates to another origin | Clax turns off in the tab: its panel is disabled, its state dropped. The worker sees the new URL where it may read it; any navigation update whose URL it may not read (an origin it holds no permission for; Chrome keeps `activeTab` across a same-origin reload, so a person who declined the permission keeps Clax on through one) turns it off too, at `loading`. Back on the first origin it stays off until the person turns it on again; a page restored from the back/forward cache asks the worker at once, is refused, and its overlay stops. |
 | Another tab of the same site, or a new tab | Nothing: no overlay, no panel, no state, whatever permission Clax holds; a message from an overlay there is dropped. |
 | Tab closed, or replaced under a new ID (prerender, discard) | Its state, pick and stream topics go; a replacing tab starts off. A closed tab's ID is kept for 5 minutes, so an answer still in flight writes no record for it. |
 | On tab moved to another window | Its panel goes with it and still acts on it (`?tab=`); presence is reported for its new window. |

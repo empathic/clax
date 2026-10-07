@@ -559,6 +559,31 @@ test.describe("holding only the dev server's origin, as the release build does o
     expect(await h.panelEnabled(tabId)).toBe(false);
   });
 
+  test("after a reload the panel's Comment turns comment mode on again, and a pick opens the composer", async ({ live }) => {
+    const { siteUrl } = live;
+    const h = hook(live);
+    const page = await live.ctx.newPage();
+    await page.goto(siteUrl);
+    const tabId = await tabIdOf(live, siteUrl);
+    await h.comment(tabId, siteUrl);
+    await expect.poll(async () => (await h.state(tabId))?.commentMode).toBe(true);
+    const panel = await SidePanel.open(live, page, tabId);
+    const pressed = () => panel.eval<string | null>(`document.querySelector("button.comment")?.getAttribute("aria-pressed") ?? null`);
+    await expect.poll(pressed).toBe("true");
+    // A reload (a dev server's full reload, say) is a new document of the
+    // origin: comment mode is off, and Chrome keeps the activeTab grant.
+    await page.reload();
+    await expect.poll(pressed).toBe("false");
+    await expect.poll(() => overlays(page)).toBe(1);
+    await expect.poll(async () => (await h.state(tabId))?.overlay).toBe(true);
+    await panel.click(/^ ?Comment$/);
+    await expect.poll(pressed).toBe("true");
+    expect(await panel.text()).not.toContain("to comment with a screenshot");
+    await page.locator("#save").click();
+    const composer = await until(() => page.frames().find(f => f.url().includes("/composer.html")));
+    await composer.locator("textarea").waitFor();
+  });
+
   test("two clicks at once inject one overlay", async ({ live }) => {
     const { siteUrl } = live;
     const h = hook(live);

@@ -392,16 +392,18 @@ describe("Tabs", () => {
     expect(h.tabs.state(4)).toMatchObject({ overlay: true, commentMode: false, selected: null, resolved: {} });
   });
 
-  it("after a real load, forgets the overlay, comment mode and the click's grant", async () => {
+  it("after a real load, forgets the overlay and comment mode, and keeps the click's grant", async () => {
     const h = harness();
     h.pages.set(URL1, { page: page(), route: null });
     h.tabs.turnOn(4, URL1, "http://localhost:5173");
     await h.tabs.toggle(4, URL1);
     h.reload(4);
     await h.tabs.navigated(4, false);
-    expect(h.tabs.state(4)).toMatchObject({ overlay: false, commentMode: false, active: false });
-    expect(h.tabs.admits(4)).toBe(false);
-    h.tabs.activate(4, URL1);
+    // Chrome withdraws activeTab only at a navigation to another origin,
+    // which turns Clax off in the tab: within the origin the grant stays,
+    // and the panel's Comment still turns comment mode on.
+    expect(h.tabs.state(4)).toMatchObject({ overlay: false, commentMode: false, active: true });
+    expect(h.tabs.admits(4)).toBe(true);
     await h.tabs.toggle(4, URL1);
     expect(h.injected).toEqual([4, 4]);
     expect(h.tabs.state(4)?.commentMode).toBe(true);
