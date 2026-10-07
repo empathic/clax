@@ -22,6 +22,7 @@ pub mod publish;
 pub mod questions;
 pub mod room;
 pub mod store;
+pub mod toolpath;
 pub mod working;
 pub mod wrap;
 

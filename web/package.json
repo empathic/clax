@@ -17,6 +17,8 @@
     "@testing-library/svelte": "^5.4.2",
     "@types/chrome": "^0.0.300",
     "@types/node": "^22.20.4",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "jsdom": "^26.0.0",
     "oxlint": "^1.86.0",
     "pako": "2.1.0",

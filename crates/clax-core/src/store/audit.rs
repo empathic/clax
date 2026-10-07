@@ -132,12 +132,15 @@ fn working_stop(key: &str, reason: StopReason, duration_ms: i64) -> AuditRecord 
 }
 
 /// The stored body of `rec` under `ctx`: the record's fields plus the
-/// envelope (spec §6): `v`, `via`, and, when present, `git`, `git_capture`
-/// and `call`. The envelope wins over a record field of the same name.
+/// envelope (spec §6): `v`, `via`, the recording build's `clax_version`
+/// and `clax_commit`, and, when present, `git`, `git_capture` and `call`.
+/// The envelope wins over a record field of the same name.
 fn body_json(ctx: &AuditCtx, rec: AuditRecord) -> String {
     let mut body = rec.body;
     body.insert("v".into(), 1.into());
     body.insert("via".into(), ctx.via.as_str().into());
+    body.insert("clax_version".into(), env!("CARGO_PKG_VERSION").into());
+    body.insert("clax_commit".into(), crate::build_commit().into());
     if let Some(git) = ctx.git.context() {
         body.insert(
             "git".into(),
@@ -683,6 +686,8 @@ pub(crate) mod tests {
             serde_json::json!({
                 "v": 1,
                 "via": "shell",
+                "clax_version": env!("CARGO_PKG_VERSION"),
+                "clax_commit": crate::build_commit(),
                 "git_capture": "not-a-repo",
                 "title": "x",
                 "call": serde_json::to_value(&call).unwrap(),
@@ -690,7 +695,8 @@ pub(crate) mod tests {
         );
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&rows[1].body).unwrap(),
-            serde_json::json!({"v": 1, "via": "daemon", "title": "y"})
+            serde_json::json!({"v": 1, "via": "daemon", "title": "y",
+                "clax_version": env!("CARGO_PKG_VERSION"), "clax_commit": crate::build_commit()})
         );
         assert_eq!(rows[1].ids.call, None);
         let under_call = st.events_for_call(&call.call_id).unwrap();

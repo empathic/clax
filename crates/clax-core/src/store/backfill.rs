@@ -453,6 +453,31 @@ struct Batch {
     skipped: u64,
 }
 
+/// The `backfill.skip` reason for `e`: a fixed phrase naming the fault,
+/// and at most a column and a type, never a value from the row (the error's
+/// own message can quote one).
+fn skip_reason(e: &CoreError) -> String {
+    match e {
+        CoreError::Invalid {
+            code: "bad_time", ..
+        } => "its time is not text".into(),
+        CoreError::Invalid { code, .. } => format!("invalid ({code})"),
+        CoreError::Corrupt { column, .. } => format!("corrupt {column}"),
+        CoreError::NotFound => "a row it names is missing".into(),
+        CoreError::Db(rusqlite::Error::InvalidColumnType(_, name, ty)) => {
+            format!("column {name} is {ty}")
+        }
+        CoreError::Db(rusqlite::Error::FromSqlConversionFailure(i, ty, _)) => {
+            format!("column {i} of type {ty} does not convert")
+        }
+        CoreError::Db(rusqlite::Error::SqliteFailure(f, _)) => {
+            format!("database error ({:?})", f.code)
+        }
+        CoreError::Db(_) => "database error".into(),
+        _ => "conversion failed".into(),
+    }
+}
+
 /// Whether `e` is the row's fault (it is skipped) rather than the
 /// database's or the disk's (the open fails, and the next one resumes).
 fn row_fault(e: &CoreError) -> bool {
@@ -541,7 +566,7 @@ fn batch(tx: &Transaction<'_>, home: &Home, limits: Limits, r: &mut Reporter) ->
                 let rec = AuditRecord::new(AuditKind::BackfillSkip, at)
                     .with("table", table_of(&s.src))
                     .with("row_id", keys.join("/"))
-                    .with("reason", e.to_string());
+                    .with("reason", skip_reason(&e));
                 insert_backfilled(tx, rec)?;
                 b.skipped += 1;
             }
@@ -1573,7 +1598,7 @@ fn question_close(c: &Connection, at: &str, qid: &str) -> Result<Option<AuditRec
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::audit::sha256_hex;
     use crate::store::audit::AuditRow;
@@ -2753,18 +2778,17 @@ mod tests {
         out
     }
 
-    /// A history made through the store's own API, then forgotten by the
-    /// audit and backfilled: each kind's backfilled bodies have the keys its
-    /// live bodies have.
-    #[test]
-    fn backfilled_and_live_events_of_a_kind_have_the_same_shape() {
+    /// A history made through the store's own API: sessions (one ended),
+    /// an artifact with a watch, threads, an agent reply, a send, a
+    /// delivery, a resolve, an asset, two live pages joined into one site
+    /// and settled, a join answer, and a deleted artifact.
+    pub(crate) fn live_history(st: &Store) {
         use crate::live::PageKey;
         use crate::store::feedback::TakeFeedback;
-        use crate::store::test_util::{anchor, artifact as make, session as start, store};
+        use crate::store::test_util::{anchor, artifact as make, session as start};
         use crate::store::threads::{NewComment, NewThread};
-        let (_d, st) = store();
-        let sid = start(&st, "claude", "h1");
-        let aid = make(&st, Some(&sid));
+        let sid = start(st, "claude", "h1");
+        let aid = make(st, Some(&sid));
         st.watch(DAEMON, &sid, &aid, true).unwrap();
         let thread = |body: &str| {
             st.create_thread(
@@ -2838,10 +2862,20 @@ mod tests {
             "never",
         )
         .unwrap();
-        let other = make(&st, None);
+        let other = make(st, None);
         st.delete_artifact(DAEMON, &other).unwrap();
-        let ended = start(&st, "codex", "h2");
+        let ended = start(st, "codex", "h2");
         st.end_session(DAEMON, &ended).unwrap();
+    }
+
+    /// A history made through the store's own API, then forgotten by the
+    /// audit and backfilled: each kind's backfilled bodies have the keys its
+    /// live bodies have.
+    #[test]
+    fn backfilled_and_live_events_of_a_kind_have_the_same_shape() {
+        use crate::store::test_util::store;
+        let (_d, st) = store();
+        live_history(&st);
         let live = shapes(&events(&st));
         let home = st.home().clone();
         st.with_write(|c| {

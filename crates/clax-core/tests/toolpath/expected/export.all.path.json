@@ -1,0 +1,4135 @@
+{
+  "graph": {
+    "id": "clax-6a1f0c3e-golden"
+  },
+  "meta": {
+    "clax": {
+      "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+      "clax_version": "0.3.1",
+      "first_seq": 1,
+      "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+      "last_seq": 62,
+      "redaction": [
+        "no-text",
+        "no-names",
+        "no-paths"
+      ]
+    },
+    "refs": [
+      {
+        "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+        "rel": "source"
+      }
+    ],
+    "title": "Clax export"
+  },
+  "paths": [
+    {
+      "meta": {
+        "actors": {
+          "agent:claude-code/0aa1b2c3-0000-4000-8000-000000000001": {
+            "identities": [
+              {
+                "id": "0aa1b2c3-0000-4000-8000-000000000001",
+                "system": "claude-code-session"
+              },
+              {
+                "id": "a_old1aa",
+                "system": "clax-agent"
+              },
+              {
+                "id": "01JB9S000000000000000000B0",
+                "system": "clax-session"
+              }
+            ],
+            "name": "Claude Code",
+            "provider": "anthropic"
+          },
+          "human:clax-owner": {
+            "identities": [
+              {
+                "id": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697/u_4be1q8",
+                "system": "clax"
+              }
+            ],
+            "name": "Clax owner"
+          },
+          "tool:clax/0.3.0": {
+            "identities": [
+              {
+                "id": "0b5e1e7a9c3d2f1e0b5e1e7a9c3d2f1e0b5e1e7a",
+                "system": "clax-build"
+              }
+            ],
+            "name": "Clax"
+          }
+        },
+        "clax": {
+          "artifact_id": "b4ckf1llart0",
+          "projection": "artifact"
+        },
+        "kind": "https://toolpath.net/kinds/clax-audit/v1.0.0",
+        "source": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/b4ckf1llart0",
+        "title": "Artifact b4ckf1llart0"
+      },
+      "path": {
+        "base": {
+          "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/b4ckf1llart0"
+        },
+        "head": "e000000000005",
+        "id": "clax-artifact-b4ckf1llart0"
+      },
+      "steps": [
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/b4ckf1llart0": {
+              "structural": {
+                "capabilities": null,
+                "contract_version": "1",
+                "for_actor": {
+                  "agent_handle": "a_old1aa",
+                  "harness": "claude",
+                  "harness_session_id": "0aa1b2c3-0000-4000-8000-000000000001",
+                  "session_id": "01JB9S000000000000000000B0",
+                  "type": "agent"
+                },
+                "icon": null,
+                "inferred": [
+                  "title",
+                  "icon",
+                  "capabilities",
+                  "contract_version"
+                ],
+                "kind": "html",
+                "title": {
+                  "redacted": "text",
+                  "sha256": "sha256:a5a09e0d277d2990c177053f3f64a38fd7eb080db37cb65140fbbe89fc302c3e"
+                },
+                "type": "clax.artifact.create"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "b4ckf1llart0",
+              "backfilled": true,
+              "clax_commit": "0b5e1e7a9c3d2f1e0b5e1e7a9c3d2f1e0b5e1e7a",
+              "clax_version": "0.3.0",
+              "for_actor": "agent:claude-code/0aa1b2c3-0000-4000-8000-000000000001",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "artifact.create",
+              "seq": 2,
+              "system_reason": "backfill",
+              "url": "http://localhost:7480/a/b4ckf1llart0",
+              "v": 1,
+              "via": "daemon"
+            },
+            "description": "Created artifact b4ckf1llart0, recorded from earlier history",
+            "refs": [
+              {
+                "href": "agent://claude-code/0aa1b2c3-0000-4000-8000-000000000001",
+                "rel": "agent-session"
+              },
+              {
+                "href": "http://localhost:7480/a/b4ckf1llart0",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "tool:clax/0.3.0",
+            "id": "e000000000002",
+            "timestamp": "2026-10-06T14:00:14.002Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/b4ckf1llart0/v/1": {
+              "structural": {
+                "addresses": [],
+                "by_page": null,
+                "carried": [],
+                "content_sha256": null,
+                "files": {
+                  "index.html": {
+                    "content_type": "text/html",
+                    "missing": true,
+                    "sha256": null,
+                    "size": 512
+                  }
+                },
+                "for_actor": {
+                  "agent_handle": "a_old1aa",
+                  "harness": "claude",
+                  "harness_session_id": "0aa1b2c3-0000-4000-8000-000000000001",
+                  "session_id": "01JB9S000000000000000000B0",
+                  "type": "agent"
+                },
+                "inferred": [
+                  "title",
+                  "carried",
+                  "addresses"
+                ],
+                "label": null,
+                "n": 1,
+                "note": {
+                  "redacted": "text",
+                  "sha256": "sha256:4f1f6221487457b3444e2203782800263b723d9b9e32b47d7e3086ada5703e42"
+                },
+                "title": {
+                  "redacted": "text",
+                  "sha256": "sha256:a5a09e0d277d2990c177053f3f64a38fd7eb080db37cb65140fbbe89fc302c3e"
+                },
+                "type": "clax.version.publish"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "b4ckf1llart0",
+              "backfilled": true,
+              "clax_commit": "0b5e1e7a9c3d2f1e0b5e1e7a9c3d2f1e0b5e1e7a",
+              "clax_version": "0.3.0",
+              "for_actor": "agent:claude-code/0aa1b2c3-0000-4000-8000-000000000001",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "version.publish",
+              "seq": 3,
+              "system_reason": "backfill",
+              "url": "http://localhost:7480/a/b4ckf1llart0/v/1",
+              "v": 1,
+              "via": "daemon"
+            },
+            "description": "Published version 1 of artifact b4ckf1llart0, recorded from earlier history",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/b4ckf1llart0",
+                "rel": "artifact"
+              },
+              {
+                "href": "agent://claude-code/0aa1b2c3-0000-4000-8000-000000000001",
+                "rel": "agent-session"
+              },
+              {
+                "href": "http://localhost:7480/a/b4ckf1llart0/v/1",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "tool:clax/0.3.0",
+            "id": "e000000000003",
+            "parents": [
+              "e000000000002"
+            ],
+            "timestamp": "2026-10-06T14:00:21.003Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/b4ckf1llart0/t/01JB9T000000000000000000B0": {
+              "structural": {
+                "anchor": {
+                  "file": "index.html",
+                  "html_hash": null,
+                  "kind": "element",
+                  "prefix": null,
+                  "quote": null,
+                  "route": null,
+                  "selector": "h1",
+                  "suffix": null
+                },
+                "first_comment_id": "01JB9C000000000000000000B0",
+                "for_actor": {
+                  "public_id": "u_4be1q8",
+                  "type": "owner"
+                },
+                "has_clip": false,
+                "inferred": [
+                  "version_n",
+                  "live_path",
+                  "has_clip"
+                ],
+                "live_path": null,
+                "type": "clax.thread.open",
+                "version_n": 1
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "b4ckf1llart0",
+              "backfilled": true,
+              "clax_commit": "0b5e1e7a9c3d2f1e0b5e1e7a9c3d2f1e0b5e1e7a",
+              "clax_version": "0.3.0",
+              "for_actor": "human:clax-owner",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "thread.open",
+              "seq": 4,
+              "system_reason": "backfill",
+              "thread_id": "01JB9T000000000000000000B0",
+              "url": "http://localhost:7480/a/b4ckf1llart0",
+              "v": 1,
+              "via": "daemon"
+            },
+            "description": "Opened thread 01JB9T000000000000000000B0 on version 1 of artifact b4ckf1llart0, recorded from earlier history",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/b4ckf1llart0",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/b4ckf1llart0/v/1",
+                "rel": "version"
+              },
+              {
+                "href": "http://localhost:7480/a/b4ckf1llart0",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "tool:clax/0.3.0",
+            "id": "e000000000004",
+            "parents": [
+              "e000000000003"
+            ],
+            "timestamp": "2026-10-06T14:00:28.004Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/b4ckf1llart0/t/01JB9T000000000000000000B0": {
+              "structural": {
+                "feedback_ids": [
+                  "01JB9F000000000000000000B0"
+                ],
+                "for_actor": {
+                  "public_id": "u_4be1q8",
+                  "type": "owner"
+                },
+                "inferred": [
+                  "target"
+                ],
+                "target": "watchers",
+                "thread_ids": [
+                  "01JB9T000000000000000000B0"
+                ],
+                "type": "clax.thread.send"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "b4ckf1llart0",
+              "backfilled": true,
+              "clax_commit": "0b5e1e7a9c3d2f1e0b5e1e7a9c3d2f1e0b5e1e7a",
+              "clax_version": "0.3.0",
+              "for_actor": "human:clax-owner",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "thread.send",
+              "seq": 5,
+              "system_reason": "backfill",
+              "thread_id": "01JB9T000000000000000000B0",
+              "url": "http://localhost:7480/a/b4ckf1llart0",
+              "v": 1,
+              "via": "daemon"
+            },
+            "description": "Sent 1 thread of artifact b4ckf1llart0 to the watching agents, recorded from earlier history",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/b4ckf1llart0",
+                "rel": "artifact"
+              },
+              {
+                "href": "http://localhost:7480/a/b4ckf1llart0",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "tool:clax/0.3.0",
+            "id": "e000000000005",
+            "parents": [
+              "e000000000004"
+            ],
+            "timestamp": "2026-10-06T14:00:35.005Z"
+          }
+        }
+      ]
+    },
+    {
+      "meta": {
+        "actors": {
+          "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44": {
+            "identities": [
+              {
+                "id": "3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "system": "claude-code-session"
+              },
+              {
+                "id": "sha256:0d09054645c907a479ab154695f9308d69ecc77ce251e20d2b291655c20a850b",
+                "system": "claude-code-transcript-sha256"
+              },
+              {
+                "id": "a_9f3k2m",
+                "system": "clax-agent"
+              },
+              {
+                "id": "01JB9S00000000000000000001",
+                "system": "clax-session"
+              }
+            ],
+            "name": "Claude Code",
+            "provider": "anthropic"
+          },
+          "agent:pi/pi-sess-42": {
+            "identities": [
+              {
+                "id": "01JB9S00000000000000000003",
+                "system": "clax-session"
+              },
+              {
+                "id": "pi-sess-42",
+                "system": "pi-session"
+              },
+              {
+                "id": "a_pi01zz",
+                "system": "clax-agent"
+              }
+            ],
+            "name": "Pi"
+          },
+          "human:clax-anonymous": {
+            "name": "Anonymous viewer"
+          },
+          "human:clax-owner": {
+            "identities": [
+              {
+                "id": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697/u_4be1q8",
+                "system": "clax"
+              }
+            ],
+            "name": "Clax owner"
+          },
+          "human:clax-viewer/u_77c0zz": {
+            "identities": [
+              {
+                "id": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697/u_77c0zz",
+                "system": "clax"
+              }
+            ]
+          },
+          "tool:clax/0.3.1": {
+            "identities": [
+              {
+                "id": "abc1234def5678abc1234def5678abc1234def56",
+                "system": "clax-build"
+              }
+            ],
+            "name": "Clax"
+          }
+        },
+        "clax": {
+          "artifact_id": "k3m9q2w8x1ab",
+          "projection": "artifact"
+        },
+        "kind": "https://toolpath.net/kinds/clax-audit/v1.0.0",
+        "source": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+        "title": "Artifact k3m9q2w8x1ab"
+      },
+      "path": {
+        "base": {
+          "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab"
+        },
+        "head": "e000000000060",
+        "id": "clax-artifact-k3m9q2w8x1ab"
+      },
+      "steps": [
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab": {
+              "structural": {
+                "capabilities": null,
+                "contract_version": "1",
+                "icon": "gear",
+                "kind": "html",
+                "title": {
+                  "redacted": "text",
+                  "sha256": "sha256:58ad85a3691cccf7e3fa1f37765cc1f4c2a4f2aabf4955fd250c3346c8557f2a"
+                },
+                "type": "clax.artifact.create"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "call": {
+                "args_sha256": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+                "call_id": "01JBC0000000000000000000C1",
+                "harness_tool": "mcp__plugin_clax_clax__publish",
+                "started_at": "2026-10-06T14:03:11.402Z",
+                "tool": "publish"
+              },
+              "call_id": "01JBC0000000000000000000C1",
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "git": {
+                "branch": "feat/settings",
+                "captured_at": "2026-10-06T14:03:11.512Z",
+                "diff_bytes": 18234,
+                "diff_sha256": "sha256:df087996d45b03e7eb8c133c0298fd98d35113fca26aaba58612fef3cc212cad",
+                "dirty": true,
+                "head": "9c1e5d2b7a4f3e8d1c6b0a9f2e7d4c3b8a1f6e5d",
+                "remote": "origin",
+                "remote_url": "https://github.com/empathic/app.git",
+                "repo_root": {
+                  "redacted": "path",
+                  "sha256": "sha256:555764b6fccdacfad0526fc8ebf3a31cdffedd70562ba8354343d759851aece1"
+                },
+                "untracked": 2
+              },
+              "git_capture": "ok",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "artifact.create",
+              "seq": 11,
+              "session_id": "01JB9S00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Created artifact k3m9q2w8x1ab",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001/call/01JBC0000000000000000000C1",
+                "rel": "tool-call"
+              },
+              {
+                "href": "git:github:empathic/app@9c1e5d2b7a4f3e8d1c6b0a9f2e7d4c3b8a1f6e5d",
+                "rel": "at-revision"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000011",
+            "timestamp": "2026-10-06T14:01:17.011Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/v/1": {
+              "structural": {
+                "addresses": [],
+                "by_page": false,
+                "carried": [],
+                "content_sha256": "sha256:891809c735ff5e4e047caeba0599a3213ebf6cdb7f519b68237a5ca09a5b1812",
+                "files": {
+                  "index.html": {
+                    "content_type": "text/html",
+                    "sha256": "sha256:13aa1c183f5b70765d8dc23710f9319c73e52192023e5959cd187d5a53d655c8",
+                    "size": 18342
+                  }
+                },
+                "label": {
+                  "redacted": "text",
+                  "sha256": "sha256:e5063f71c3b3d960f929c36dae7502c7e616b7d66544ce47f2285908be271364"
+                },
+                "n": 1,
+                "note": {
+                  "redacted": "text",
+                  "sha256": "sha256:6af0d0e9a7434c86340a50a1e45695e30224a76aeffe48ffb29e4b6a0fc073fc"
+                },
+                "title": {
+                  "redacted": "text",
+                  "sha256": "sha256:58ad85a3691cccf7e3fa1f37765cc1f4c2a4f2aabf4955fd250c3346c8557f2a"
+                },
+                "type": "clax.version.publish"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "call": {
+                "args_sha256": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+                "call_id": "01JBC0000000000000000000C1",
+                "harness_tool": "mcp__plugin_clax_clax__publish",
+                "started_at": "2026-10-06T14:03:11.402Z",
+                "tool": "publish"
+              },
+              "call_id": "01JBC0000000000000000000C1",
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "git": {
+                "branch": "feat/settings",
+                "captured_at": "2026-10-06T14:03:11.512Z",
+                "diff_bytes": 18234,
+                "diff_sha256": "sha256:df087996d45b03e7eb8c133c0298fd98d35113fca26aaba58612fef3cc212cad",
+                "dirty": true,
+                "head": "9c1e5d2b7a4f3e8d1c6b0a9f2e7d4c3b8a1f6e5d",
+                "remote": "origin",
+                "remote_url": "https://github.com/empathic/app.git",
+                "repo_root": {
+                  "redacted": "path",
+                  "sha256": "sha256:555764b6fccdacfad0526fc8ebf3a31cdffedd70562ba8354343d759851aece1"
+                },
+                "untracked": 2
+              },
+              "git_capture": "ok",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "version.publish",
+              "seq": 12,
+              "session_id": "01JB9S00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab/v/1",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Published version 1 of artifact k3m9q2w8x1ab",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001/call/01JBC0000000000000000000C1",
+                "rel": "tool-call"
+              },
+              {
+                "href": "git:github:empathic/app@9c1e5d2b7a4f3e8d1c6b0a9f2e7d4c3b8a1f6e5d",
+                "rel": "at-revision"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab/v/1",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000012",
+            "parents": [
+              "e000000000011"
+            ],
+            "timestamp": "2026-10-06T14:01:24.012Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/asset/as01JB9A0000000000000001": {
+              "structural": {
+                "asset_id": "as01JB9A0000000000000001",
+                "content_type": "image/png",
+                "path": "/_blob/as01JB9A0000000000000001",
+                "sha256": "sha256:8f8cbb7dcf46e0bc7d53265749a6c17d116093a6ba95e442764060c76fd4a86c",
+                "size": 2048,
+                "type": "clax.asset.upload"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "call": {
+                "args_sha256": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+                "call_id": "01JBC0000000000000000000C2",
+                "harness_tool": "mcp__plugin_clax_clax__asset_upload",
+                "started_at": "2026-10-06T14:03:11.402Z",
+                "tool": "asset_upload"
+              },
+              "call_id": "01JBC0000000000000000000C2",
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "git": {
+                "branch": "feat/settings",
+                "captured_at": "2026-10-06T14:03:11.512Z",
+                "diff_bytes": 18234,
+                "diff_sha256": "sha256:df087996d45b03e7eb8c133c0298fd98d35113fca26aaba58612fef3cc212cad",
+                "dirty": true,
+                "head": "9c1e5d2b7a4f3e8d1c6b0a9f2e7d4c3b8a1f6e5d",
+                "remote": "origin",
+                "remote_url": "https://github.com/empathic/app.git",
+                "repo_root": {
+                  "redacted": "path",
+                  "sha256": "sha256:555764b6fccdacfad0526fc8ebf3a31cdffedd70562ba8354343d759851aece1"
+                },
+                "untracked": 2
+              },
+              "git_capture": "ok",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "asset.upload",
+              "seq": 13,
+              "session_id": "01JB9S00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Uploaded asset as01JB9A0000000000000001 to artifact k3m9q2w8x1ab",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001/call/01JBC0000000000000000000C2",
+                "rel": "tool-call"
+              },
+              {
+                "href": "git:github:empathic/app@9c1e5d2b7a4f3e8d1c6b0a9f2e7d4c3b8a1f6e5d",
+                "rel": "at-revision"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000013",
+            "parents": [
+              "e000000000012"
+            ],
+            "timestamp": "2026-10-06T14:01:31.013Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/asset/as01JB9A0000000000000001": {
+              "structural": {
+                "asset_id": "as01JB9A0000000000000001",
+                "content_type": "image/png",
+                "path": "/_blob/as01JB9A0000000000000001",
+                "size": 2048,
+                "type": "clax.asset.delete"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "asset.delete",
+              "seq": 14,
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Deleted asset as01JB9A0000000000000001 from artifact k3m9q2w8x1ab",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000014",
+            "parents": [
+              "e000000000013"
+            ],
+            "timestamp": "2026-10-06T14:01:38.014Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001": {
+              "structural": {
+                "anchor": {
+                  "file": "index.html",
+                  "html_hash": "sha256:e5e239560bc125a20ff2ac1fea50915bc198dd4f5b5256ec447a8a71e00132b3",
+                  "kind": "text",
+                  "prefix": {
+                    "redacted": "text",
+                    "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  "quote": {
+                    "redacted": "text",
+                    "sha256": "sha256:74a883a037bc227f91891ab654a753d3a99f31ab06ae5b5d2b6e594a692b41f8"
+                  },
+                  "route": null,
+                  "selector": "main > h1",
+                  "suffix": {
+                    "redacted": "text",
+                    "sha256": "sha256:65edbd4c5e07e2428f2b340b9488c437dbab5fbdd5f81c0b02046de3e4dcf9c3"
+                  }
+                },
+                "first_comment_id": "01JB9C00000000000000000001",
+                "has_clip": false,
+                "live_path": null,
+                "type": "clax.thread.open",
+                "version_n": 1
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "thread.open",
+              "seq": 15,
+              "thread_id": "01JB9T00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "lan"
+            },
+            "description": "Opened thread 01JB9T00000000000000000001 on version 1 of artifact k3m9q2w8x1ab",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/v/1",
+                "rel": "version"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-viewer/u_77c0zz",
+            "id": "e000000000015",
+            "parents": [
+              "e000000000014"
+            ],
+            "timestamp": "2026-10-06T14:01:45.015Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001/c/01JB9C00000000000000000001": {
+              "structural": {
+                "author_kind": "viewer",
+                "author_name": {
+                  "redacted": "name"
+                },
+                "body": {
+                  "redacted": "text",
+                  "sha256": "sha256:da9c3796047af2a0cd17aa3e7ea36cc5a27ac08d81831e54eec21742bb5178fd"
+                },
+                "comment_id": "01JB9C00000000000000000001",
+                "type": "clax.comment.add",
+                "via_harness": null,
+                "via_page": false
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "comment.add",
+              "seq": 16,
+              "thread_id": "01JB9T00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "lan"
+            },
+            "description": "Commented on thread 01JB9T00000000000000000001 of artifact k3m9q2w8x1ab",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001",
+                "rel": "thread"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001",
+                "rel": "replies-to"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-viewer/u_77c0zz",
+            "id": "e000000000016",
+            "parents": [
+              "e000000000015"
+            ],
+            "timestamp": "2026-10-06T14:01:52.016Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001": {
+              "structural": {
+                "feedback_ids": [
+                  "01JB9F00000000000000000001"
+                ],
+                "target": "watchers",
+                "thread_ids": [
+                  "01JB9T00000000000000000001"
+                ],
+                "type": "clax.thread.send"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "thread.send",
+              "seq": 17,
+              "thread_id": "01JB9T00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "lan"
+            },
+            "description": "Sent 1 thread of artifact k3m9q2w8x1ab to the watching agents",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-viewer/u_77c0zz",
+            "id": "e000000000017",
+            "parents": [
+              "e000000000016"
+            ],
+            "timestamp": "2026-10-06T14:01:59.017Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001": {
+              "structural": {
+                "feedback_id": "01JB9F00000000000000000001",
+                "tier": "piggyback",
+                "type": "clax.feedback.delivered"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "feedback.delivered",
+              "seq": 18,
+              "session_id": "01JB9S00000000000000000001",
+              "thread_id": "01JB9T00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Delivered feedback 01JB9F00000000000000000001 on thread 01JB9T00000000000000000001 by piggyback",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000018",
+            "parents": [
+              "e000000000017"
+            ],
+            "timestamp": "2026-10-06T14:02:06.018Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001": {
+              "structural": {
+                "feedback_id": "01JB9F00000000000000000002",
+                "reason": {
+                  "redacted": "text",
+                  "sha256": "sha256:7ccd15c42277de61399c07707867f9e6e794ff6dbb0ed07f43e41cf78f4a526e"
+                },
+                "tier": "queue",
+                "type": "clax.feedback.release"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "feedback.release",
+              "seq": 19,
+              "session_id": "01JB9S00000000000000000002",
+              "system_reason": "daemon",
+              "thread_id": "01JB9T00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "daemon"
+            },
+            "description": "Returned feedback 01JB9F00000000000000000002 on thread 01JB9T00000000000000000001 to undelivered (unknown)",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000002",
+                "rel": "session"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "tool:clax/0.3.1",
+            "id": "e000000000019",
+            "parents": [
+              "e000000000018"
+            ],
+            "timestamp": "2026-10-06T14:02:13.019Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001": {
+              "structural": {
+                "key": "k1",
+                "message": {
+                  "redacted": "text",
+                  "sha256": "sha256:77871b283dc514dbdf5e6a06957baa1165570082e9fb000a453df53fe81d45ac"
+                },
+                "thread_ids": [
+                  "01JB9T00000000000000000001"
+                ],
+                "type": "clax.working.start"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "call": {
+                "args_sha256": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+                "call_id": "01JBC0000000000000000000C2",
+                "harness_tool": "mcp__plugin_clax_clax__comments_reply",
+                "started_at": "2026-10-06T14:03:11.402Z",
+                "tool": "comments_reply"
+              },
+              "call_id": "01JBC0000000000000000000C2",
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "working.start",
+              "seq": 20,
+              "session_id": "01JB9S00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Started working on artifact k3m9q2w8x1ab",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001",
+                "rel": "thread"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001/call/01JBC0000000000000000000C2",
+                "rel": "tool-call"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000020",
+            "parents": [
+              "e000000000019"
+            ],
+            "timestamp": "2026-10-06T14:02:20.020Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001/c/01JB9C00000000000000000002": {
+              "structural": {
+                "author_kind": "agent",
+                "author_name": {
+                  "redacted": "name"
+                },
+                "body": {
+                  "redacted": "text",
+                  "sha256": "sha256:d596ed9157abb80d1d585f5aa4c9f6f1b4d433f3c2f6441f2be704d96423a1c1"
+                },
+                "comment_id": "01JB9C00000000000000000002",
+                "type": "clax.comment.add",
+                "via_harness": "claude",
+                "via_page": false
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "call": {
+                "args_sha256": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+                "call_id": "01JBC0000000000000000000C2",
+                "harness_tool": "mcp__plugin_clax_clax__comments_reply",
+                "started_at": "2026-10-06T14:03:11.402Z",
+                "tool": "comments_reply"
+              },
+              "call_id": "01JBC0000000000000000000C2",
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "git": {
+                "branch": "feat/settings",
+                "captured_at": "2026-10-06T14:03:11.512Z",
+                "diff_bytes": 18234,
+                "diff_sha256": "sha256:df087996d45b03e7eb8c133c0298fd98d35113fca26aaba58612fef3cc212cad",
+                "dirty": true,
+                "head": "9c1e5d2b7a4f3e8d1c6b0a9f2e7d4c3b8a1f6e5d",
+                "remote": "origin",
+                "remote_url": "https://github.com/empathic/app.git",
+                "repo_root": {
+                  "redacted": "path",
+                  "sha256": "sha256:555764b6fccdacfad0526fc8ebf3a31cdffedd70562ba8354343d759851aece1"
+                },
+                "untracked": 2
+              },
+              "git_capture": "ok",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "comment.add",
+              "seq": 21,
+              "session_id": "01JB9S00000000000000000001",
+              "thread_id": "01JB9T00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Commented on thread 01JB9T00000000000000000001 of artifact k3m9q2w8x1ab",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001",
+                "rel": "thread"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001",
+                "rel": "replies-to"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001/call/01JBC0000000000000000000C2",
+                "rel": "tool-call"
+              },
+              {
+                "href": "git:github:empathic/app@9c1e5d2b7a4f3e8d1c6b0a9f2e7d4c3b8a1f6e5d",
+                "rel": "at-revision"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000021",
+            "parents": [
+              "e000000000020"
+            ],
+            "timestamp": "2026-10-06T14:02:27.021Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/v/2": {
+              "structural": {
+                "addresses": [
+                  "01JB9T00000000000000000001"
+                ],
+                "by_page": false,
+                "carried": [
+                  "app.css"
+                ],
+                "content_sha256": "sha256:a4184fec4faab123670caa2318b763fb9825529074bde1b5fc86f6c32cf9cfa4",
+                "files": {
+                  "app.css": {
+                    "content_type": "text/css",
+                    "sha256": "sha256:36e64f19f57a05c8cd5b6bf7eff72703b4bbab19def7832eb4e686e7fa482eef",
+                    "size": 900
+                  },
+                  "index.html": {
+                    "content_type": "text/html",
+                    "sha256": "sha256:835803084e2efc90eaf0916b46cfb15db530d8e00d030d9688a139788dab7141",
+                    "size": 18301
+                  }
+                },
+                "label": {
+                  "redacted": "text",
+                  "sha256": "sha256:bc4880ffcfbf678f268a3fe1557e8fcfb458620c7e22babc5408e7b3f466228b"
+                },
+                "n": 2,
+                "note": {
+                  "redacted": "text",
+                  "sha256": "sha256:73a4eaaaa2f66f2fc8eef17ed43290f1a85cb442b62a59d25c66c2d9a47e9b67"
+                },
+                "title": {
+                  "redacted": "text",
+                  "sha256": "sha256:58ad85a3691cccf7e3fa1f37765cc1f4c2a4f2aabf4955fd250c3346c8557f2a"
+                },
+                "type": "clax.version.publish"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "call": {
+                "args_sha256": "sha256:8690a626d077a8f6c9b1d06917dcfcf9203b5ff0b5d954b1442b27f22f73a302",
+                "call_id": "01JBC0000000000000000000C3",
+                "harness_call_id": "toolu_01ABC",
+                "harness_tool": "mcp__plugin_clax_clax__publish",
+                "started_at": "2026-10-06T14:03:11.402Z",
+                "tool": "publish"
+              },
+              "call_id": "01JBC0000000000000000000C3",
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "git": {
+                "branch": "feat/settings",
+                "captured_at": "2026-10-06T14:03:11.512Z",
+                "diff_bytes": 18234,
+                "diff_sha256": "sha256:df087996d45b03e7eb8c133c0298fd98d35113fca26aaba58612fef3cc212cad",
+                "dirty": true,
+                "head": "9c1e5d2b7a4f3e8d1c6b0a9f2e7d4c3b8a1f6e5d",
+                "remote": "origin",
+                "remote_url": "https://github.com/empathic/app.git",
+                "repo_root": {
+                  "redacted": "path",
+                  "sha256": "sha256:555764b6fccdacfad0526fc8ebf3a31cdffedd70562ba8354343d759851aece1"
+                },
+                "untracked": 2
+              },
+              "git_capture": "ok",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "version.publish",
+              "seq": 22,
+              "session_id": "01JB9S00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab/v/2",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Published version 2 of artifact k3m9q2w8x1ab",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001",
+                "rel": "addresses"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001/call/01JBC0000000000000000000C3",
+                "rel": "tool-call"
+              },
+              {
+                "href": "git:github:empathic/app@9c1e5d2b7a4f3e8d1c6b0a9f2e7d4c3b8a1f6e5d",
+                "rel": "at-revision"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab/v/2",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000022",
+            "parents": [
+              "e000000000021"
+            ],
+            "timestamp": "2026-10-06T14:02:34.022Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001": {
+              "structural": {
+                "addressed_version": 2,
+                "resolved_by": "agent",
+                "type": "clax.thread.resolve"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "call": {
+                "args_sha256": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+                "call_id": "01JBC0000000000000000000C3",
+                "harness_tool": "mcp__plugin_clax_clax__publish",
+                "started_at": "2026-10-06T14:03:11.402Z",
+                "tool": "publish"
+              },
+              "call_id": "01JBC0000000000000000000C3",
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "git": {
+                "branch": "feat/settings",
+                "captured_at": "2026-10-06T14:03:11.512Z",
+                "diff_bytes": 18234,
+                "diff_sha256": "sha256:df087996d45b03e7eb8c133c0298fd98d35113fca26aaba58612fef3cc212cad",
+                "dirty": true,
+                "head": "9c1e5d2b7a4f3e8d1c6b0a9f2e7d4c3b8a1f6e5d",
+                "remote": "origin",
+                "remote_url": "https://github.com/empathic/app.git",
+                "repo_root": {
+                  "redacted": "path",
+                  "sha256": "sha256:555764b6fccdacfad0526fc8ebf3a31cdffedd70562ba8354343d759851aece1"
+                },
+                "untracked": 2
+              },
+              "git_capture": "ok",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "thread.resolve",
+              "seq": 23,
+              "session_id": "01JB9S00000000000000000001",
+              "thread_id": "01JB9T00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Resolved thread 01JB9T00000000000000000001 as addressed by version 2",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/v/2",
+                "rel": "version"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001",
+                "rel": "addresses"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001",
+                "rel": "resolves"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001/call/01JBC0000000000000000000C3",
+                "rel": "tool-call"
+              },
+              {
+                "href": "git:github:empathic/app@9c1e5d2b7a4f3e8d1c6b0a9f2e7d4c3b8a1f6e5d",
+                "rel": "at-revision"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000023",
+            "parents": [
+              "e000000000022"
+            ],
+            "timestamp": "2026-10-06T14:02:41.023Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001": {
+              "structural": {
+                "duration_ms": 61000,
+                "key": "k1",
+                "reason": "explicit",
+                "type": "clax.working.stop"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "working.stop",
+              "seq": 24,
+              "session_id": "01JB9S00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Stopped working on artifact k3m9q2w8x1ab (explicit)",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000024",
+            "parents": [
+              "e000000000023"
+            ],
+            "timestamp": "2026-10-06T14:02:48.024Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001": {
+              "structural": {
+                "key": "k2",
+                "message": null,
+                "thread_ids": [],
+                "type": "clax.working.start"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "working.start",
+              "seq": 25,
+              "session_id": "01JB9S00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Started working on artifact k3m9q2w8x1ab",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000025",
+            "parents": [
+              "e000000000024"
+            ],
+            "timestamp": "2026-10-06T14:02:55.025Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001": {
+              "structural": {
+                "duration_ms": 120000,
+                "for_actor": {
+                  "agent_handle": "a_9f3k2m",
+                  "harness": "claude",
+                  "harness_session_id": "3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                  "session_id": "01JB9S00000000000000000001",
+                  "transcript_path": {
+                    "redacted": "path",
+                    "sha256": "sha256:0d09054645c907a479ab154695f9308d69ecc77ce251e20d2b291655c20a850b"
+                  },
+                  "type": "agent"
+                },
+                "key": "k2",
+                "reason": "ttl",
+                "type": "clax.working.stop"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "for_actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "working.stop",
+              "seq": 26,
+              "session_id": "01JB9S00000000000000000001",
+              "system_reason": "ttl",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "daemon"
+            },
+            "description": "Stopped working on artifact k3m9q2w8x1ab (ttl)",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "tool:clax/0.3.1",
+            "id": "e000000000026",
+            "parents": [
+              "e000000000025"
+            ],
+            "timestamp": "2026-10-06T14:03:02.026Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001": {
+              "structural": {
+                "type": "clax.thread.reopen"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "thread.reopen",
+              "seq": 27,
+              "thread_id": "01JB9T00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "lan"
+            },
+            "description": "Reopened thread 01JB9T00000000000000000001",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-viewer/u_77c0zz",
+            "id": "e000000000027",
+            "parents": [
+              "e000000000026"
+            ],
+            "timestamp": "2026-10-06T14:03:09.027Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001": {
+              "structural": {
+                "source": "resolve",
+                "type": "clax.thread.addressed",
+                "version_n": 2
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "thread.addressed",
+              "seq": 28,
+              "session_id": "01JB9S00000000000000000001",
+              "thread_id": "01JB9T00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Linked thread 01JB9T00000000000000000001 to version 2",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/v/2",
+                "rel": "version"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001",
+                "rel": "addresses"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000028",
+            "parents": [
+              "e000000000027"
+            ],
+            "timestamp": "2026-10-06T14:03:16.028Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001/call/01JBC0000000000000000000C3": {
+              "structural": {
+                "args_sha256": "sha256:8690a626d077a8f6c9b1d06917dcfcf9203b5ff0b5d954b1442b27f22f73a302",
+                "call_id": "01JBC0000000000000000000C3",
+                "ended_at": "2026-10-06T14:03:11.913Z",
+                "harness_call_id": "toolu_01ABC",
+                "harness_tool": "mcp__plugin_clax_clax__publish",
+                "outcome": "ok",
+                "produced": [
+                  22,
+                  23
+                ],
+                "started_at": "2026-10-06T14:03:11.402Z",
+                "tool": "publish",
+                "type": "clax.tool.call"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "call_id": "01JBC0000000000000000000C3",
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "tool.call",
+              "seq": 29,
+              "session_id": "01JB9S00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Called the publish tool, with outcome ok",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/step/e000000000022",
+                "rel": "produced"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/step/e000000000023",
+                "rel": "produced"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44/tool/toolu_01ABC",
+                "rel": "tool-use"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000029",
+            "parents": [
+              "e000000000028"
+            ],
+            "timestamp": "2026-10-06T14:03:23.029Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab": {
+              "structural": {
+                "fields": {
+                  "pinned": true,
+                  "title": {
+                    "redacted": "text",
+                    "sha256": "sha256:74a883a037bc227f91891ab654a753d3a99f31ab06ae5b5d2b6e594a692b41f8"
+                  }
+                },
+                "type": "clax.artifact.update"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "artifact.update",
+              "seq": 33,
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Changed the pinned and title of artifact k3m9q2w8x1ab",
+            "refs": [
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000033",
+            "parents": [
+              "e000000000029"
+            ],
+            "timestamp": "2026-10-06T14:03:51.033Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/d/votes/d1": {
+              "structural": {
+                "collection": "votes",
+                "doc_id": "d1",
+                "op": "set",
+                "sha256": "sha256:926ed1c80d5d4c66ab894bda5fc7cb8d7075cf548b2399cdef3257990361472f",
+                "type": "clax.doc.write",
+                "version": 3
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "doc.write",
+              "seq": 34,
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "lan"
+            },
+            "description": "Set document votes/d1 of artifact k3m9q2w8x1ab",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-anonymous",
+            "id": "e000000000034",
+            "parents": [
+              "e000000000033"
+            ],
+            "timestamp": "2026-10-06T14:03:58.034Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/d/votes/d1": {
+              "structural": {
+                "collection": "votes",
+                "doc_id": "d1",
+                "op": "delete",
+                "sha256": null,
+                "type": "clax.doc.write",
+                "version": null
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "call": {
+                "args_sha256": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+                "call_id": "01JBC0000000000000000000C1",
+                "harness_tool": "mcp__plugin_clax_clax__db_delete",
+                "started_at": "2026-10-06T14:03:11.402Z",
+                "tool": "db_delete"
+              },
+              "call_id": "01JBC0000000000000000000C1",
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "git": {
+                "captured_at": "2026-10-06T14:20:00.100Z",
+                "dirty": false,
+                "head": "1111111111111111111111111111111111111111",
+                "repo_root": {
+                  "redacted": "path",
+                  "sha256": "sha256:7f5ef5ab291086591fabc1f899a179a1b5f111d157db9ec892d97d5fa9462c5c"
+                },
+                "untracked": 0
+              },
+              "git_capture": "ok",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "doc.write",
+              "seq": 35,
+              "session_id": "01JB9S00000000000000000003",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "pi"
+            },
+            "description": "Deleted document votes/d1 of artifact k3m9q2w8x1ab",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000003",
+                "rel": "session"
+              },
+              {
+                "href": "agent://pi/pi-sess-42",
+                "rel": "agent-session"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000003/call/01JBC0000000000000000000C1",
+                "rel": "tool-call"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:pi/pi-sess-42",
+            "id": "e000000000035",
+            "parents": [
+              "e000000000034"
+            ],
+            "timestamp": "2026-10-06T14:04:05.035Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/d/_private/u_4be1q8/notes/n1": {
+              "structural": {
+                "collection": "_private/u_4be1q8/notes",
+                "doc_id": "n1",
+                "from": "_private/u_77c0zz/notes/n1",
+                "sha256": "sha256:2bfd14f43d17fc7cea24e0917a8879b4b2f880b8baeec1b9d90fbaad655e71bd",
+                "to": "_private/u_4be1q8/notes/n1",
+                "type": "clax.doc.move",
+                "version": 4
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "doc.move",
+              "seq": 37,
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Moved private document _private/u_4be1q8/notes/n1 of artifact k3m9q2w8x1ab to the owner",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000037",
+            "parents": [
+              "e000000000035"
+            ],
+            "timestamp": "2026-10-06T14:04:19.037Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001": {
+              "structural": {
+                "fields": {
+                  "replies_armed": false
+                },
+                "target": "artifact",
+                "type": "clax.watch.update"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "watch.update",
+              "seq": 46,
+              "session_id": "01JB9S00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Changed the watch on artifact k3m9q2w8x1ab",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000046",
+            "parents": [
+              "e000000000037"
+            ],
+            "timestamp": "2026-10-06T14:05:22.046Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001": {
+              "structural": {
+                "replies_armed": false,
+                "source": "direct",
+                "target": "artifact",
+                "type": "clax.watch.stop"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "watch.stop",
+              "seq": 47,
+              "session_id": "01JB9S00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Stopped watching artifact k3m9q2w8x1ab",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000047",
+            "parents": [
+              "e000000000046"
+            ],
+            "timestamp": "2026-10-06T14:05:29.047Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/q/01JB9Q00000000000000000001": {
+              "structural": {
+                "questions": {
+                  "redacted": "text",
+                  "sha256": "sha256:87b9ae241875c020d1a1b23f9fb5a29f44f74403f3e2d5c168c190c4b16b1598"
+                },
+                "source": "ask",
+                "tool_use_id": "toolu_q1",
+                "type": "clax.question.ask"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "call": {
+                "args_sha256": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+                "call_id": "01JBC0000000000000000000C9",
+                "harness_tool": "mcp__plugin_clax_clax__ask",
+                "started_at": "2026-10-06T14:03:11.402Z",
+                "tool": "ask"
+              },
+              "call_id": "01JBC0000000000000000000C9",
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "question.ask",
+              "question_id": "01JB9Q00000000000000000001",
+              "seq": 54,
+              "session_id": "01JB9S00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Asked question 01JB9Q00000000000000000001",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001/call/01JBC0000000000000000000C9",
+                "rel": "tool-call"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000054",
+            "parents": [
+              "e000000000047"
+            ],
+            "timestamp": "2026-10-06T14:06:18.054Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/q/01JB9Q00000000000000000001": {
+              "structural": {
+                "answered_via": "shell",
+                "answers": {
+                  "redacted": "text",
+                  "sha256": "sha256:6bd2879d9a01fd9aa2ca461357df5f8d4406c53cd0819fcead3a14cbe57afba4"
+                },
+                "type": "clax.question.answer"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "question.answer",
+              "question_id": "01JB9Q00000000000000000001",
+              "seq": 55,
+              "session_id": "01JB9S00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Answered question 01JB9Q00000000000000000001",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/q/01JB9Q00000000000000000001",
+                "rel": "answers"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000055",
+            "parents": [
+              "e000000000054"
+            ],
+            "timestamp": "2026-10-06T14:06:25.055Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001": {
+              "structural": {
+                "moved": false,
+                "type": "clax.thread.delete"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "thread.delete",
+              "seq": 59,
+              "thread_id": "01JB9T00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Deleted thread 01JB9T00000000000000000001",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000059",
+            "parents": [
+              "e000000000055"
+            ],
+            "timestamp": "2026-10-06T14:06:53.059Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab": {
+              "structural": {
+                "current_version": 2,
+                "title": {
+                  "redacted": "text",
+                  "sha256": "sha256:74a883a037bc227f91891ab654a753d3a99f31ab06ae5b5d2b6e594a692b41f8"
+                },
+                "type": "clax.artifact.delete"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "artifact.delete",
+              "seq": 60,
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Deleted artifact k3m9q2w8x1ab",
+            "refs": [
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000060",
+            "parents": [
+              "e000000000059"
+            ],
+            "timestamp": "2026-10-06T14:07:00.060Z"
+          }
+        }
+      ]
+    },
+    {
+      "meta": {
+        "actors": {
+          "human:clax-owner": {
+            "identities": [
+              {
+                "id": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697/u_4be1q8",
+                "system": "clax"
+              }
+            ],
+            "name": "Clax owner"
+          }
+        },
+        "clax": {
+          "artifact_id": "p7v2n4c8d1ef",
+          "projection": "artifact"
+        },
+        "kind": "https://toolpath.net/kinds/clax-audit/v1.0.0",
+        "source": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef",
+        "title": "Artifact p7v2n4c8d1ef"
+      },
+      "path": {
+        "base": {
+          "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef"
+        },
+        "head": "e000000000051",
+        "id": "clax-artifact-p7v2n4c8d1ef"
+      },
+      "steps": [
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef": {
+              "structural": {
+                "origin": "http://localhost:5173",
+                "path": "/settings",
+                "type": "clax.live.page"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "p7v2n4c8d1ef",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "live.page",
+              "origin": "http://localhost:5173",
+              "seq": 38,
+              "url": "http://localhost:7480/a/p7v2n4c8d1ef",
+              "v": 1,
+              "via": "extension"
+            },
+            "description": "Created the live page for http://localhost:5173/settings",
+            "refs": [
+              {
+                "href": "http://localhost:7480/a/p7v2n4c8d1ef",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000038",
+            "timestamp": "2026-10-06T14:04:26.038Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef": {
+              "structural": {
+                "capabilities": null,
+                "contract_version": "1",
+                "icon": null,
+                "kind": "live",
+                "title": {
+                  "redacted": "text",
+                  "sha256": "sha256:cacf473a44f21c22f7dd596f349afe84d9da6d4b870cf11d43e0cc7681d600a4"
+                },
+                "type": "clax.artifact.create"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "p7v2n4c8d1ef",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "artifact.create",
+              "seq": 39,
+              "url": "http://localhost:7480/a/p7v2n4c8d1ef",
+              "v": 1,
+              "via": "extension"
+            },
+            "description": "Created live page artifact artifact p7v2n4c8d1ef",
+            "refs": [
+              {
+                "href": "http://localhost:7480/a/p7v2n4c8d1ef",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000039",
+            "parents": [
+              "e000000000038"
+            ],
+            "timestamp": "2026-10-06T14:04:33.039Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef/v/1": {
+              "structural": {
+                "addresses": [],
+                "by_page": true,
+                "carried": [],
+                "content_sha256": "sha256:153812ae5fea0b73a011bf28bd7cea93644437c3fe3260b7b2d7e1e2f9f46bde",
+                "files": {
+                  "index.html": {
+                    "content_type": "text/html",
+                    "sha256": "sha256:1c27324f013705cbf0c49f3d3bb103c7069ed5988889d426c10cfc25684f0a31",
+                    "size": 40000
+                  }
+                },
+                "label": null,
+                "n": 1,
+                "note": null,
+                "origin": "http://localhost:5173",
+                "path": "/settings",
+                "title": {
+                  "redacted": "text",
+                  "sha256": "sha256:cacf473a44f21c22f7dd596f349afe84d9da6d4b870cf11d43e0cc7681d600a4"
+                },
+                "type": "clax.live.snapshot"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "p7v2n4c8d1ef",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "live.snapshot",
+              "origin": "http://localhost:5173",
+              "seq": 40,
+              "url": "http://localhost:7480/a/p7v2n4c8d1ef/v/1",
+              "v": 1,
+              "via": "extension"
+            },
+            "description": "Captured version 1 of live page http://localhost:5173/settings",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef",
+                "rel": "artifact"
+              },
+              {
+                "href": "http://localhost:7480/a/p7v2n4c8d1ef/v/1",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000040",
+            "parents": [
+              "e000000000039"
+            ],
+            "timestamp": "2026-10-06T14:04:40.040Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/q2w4e6r8t0yu/v/1": {
+              "structural": {
+                "addresses": [],
+                "by_page": false,
+                "carried": [],
+                "content_sha256": "sha256:153812ae5fea0b73a011bf28bd7cea93644437c3fe3260b7b2d7e1e2f9f46bde",
+                "files": {
+                  "index.html": {
+                    "content_type": "text/html",
+                    "sha256": "sha256:1c27324f013705cbf0c49f3d3bb103c7069ed5988889d426c10cfc25684f0a31",
+                    "size": 40000
+                  }
+                },
+                "label": null,
+                "n": 1,
+                "note": null,
+                "origin": "http://localhost:5173",
+                "path": "/settings/a",
+                "source": {
+                  "artifact_id": "p7v2n4c8d1ef",
+                  "n": 1
+                },
+                "title": {
+                  "redacted": "text",
+                  "sha256": "sha256:9ea69799ff76739ff29f0fd5e141e9ccb487f7b2b150291bd12b895043038cc9"
+                },
+                "type": "clax.live.snapshot"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact2_id": "p7v2n4c8d1ef",
+              "artifact_id": "q2w4e6r8t0yu",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "live.snapshot",
+              "origin": "http://localhost:5173",
+              "seq": 41,
+              "url": "http://localhost:7480/a/q2w4e6r8t0yu/v/1",
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Captured version 1 of live page http://localhost:5173/settings/a, copied from artifact p7v2n4c8d1ef",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/q2w4e6r8t0yu",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef/v/1",
+                "rel": "copied-from"
+              },
+              {
+                "href": "http://localhost:7480/a/q2w4e6r8t0yu/v/1",
+                "rel": "view"
+              },
+              {
+                "href": "toolpath:clax-artifact-q2w4e6r8t0yu/e000000000041",
+                "rel": "same-change"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000041",
+            "parents": [
+              "e000000000040"
+            ],
+            "timestamp": "2026-10-06T14:04:47.041Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/q2w4e6r8t0yu/t/01JB9T00000000000000000002": {
+              "structural": {
+                "from_artifact_id": "p7v2n4c8d1ef",
+                "from_url": {
+                  "redacted": "path",
+                  "sha256": "sha256:1dba4d88e2d3bfcc9b3f9b6b5e8c7dac3f39c84f8208f1fdc08036a21b96fd30"
+                },
+                "move_id": "mv_01JB9M0001",
+                "move_kind": "merge",
+                "rule_id": "r_01JB9R0001",
+                "to_artifact_id": "q2w4e6r8t0yu",
+                "to_url": {
+                  "redacted": "path",
+                  "sha256": "sha256:1931adc048081b49cce5ceba32944e4084e1d6aef10b8cf042ca4399c76c1238"
+                },
+                "type": "clax.thread.move"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact2_id": "q2w4e6r8t0yu",
+              "artifact_id": "p7v2n4c8d1ef",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "thread.move",
+              "origin": "http://localhost:5173",
+              "seq": 43,
+              "thread_id": "01JB9T00000000000000000002",
+              "url": "http://localhost:7480/a/q2w4e6r8t0yu",
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Moved thread 01JB9T00000000000000000002 from artifact p7v2n4c8d1ef to artifact q2w4e6r8t0yu (merge)",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef",
+                "rel": "moved-from"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/q2w4e6r8t0yu",
+                "rel": "moved-to"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef/t/01JB9T00000000000000000002",
+                "rel": "thread"
+              },
+              {
+                "href": "http://localhost:7480/a/q2w4e6r8t0yu",
+                "rel": "view"
+              },
+              {
+                "href": "toolpath:clax-artifact-q2w4e6r8t0yu/e000000000043",
+                "rel": "same-change"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000043",
+            "parents": [
+              "e000000000041"
+            ],
+            "timestamp": "2026-10-06T14:05:01.043Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/z9x8c7v6b5nm": {
+              "structural": {
+                "merged_into": "p7v2n4c8d1ef",
+                "origin": "http://127.0.0.1:5173",
+                "path": "/settings",
+                "type": "clax.live.page_merge"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact2_id": "p7v2n4c8d1ef",
+              "artifact_id": "z9x8c7v6b5nm",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "live.page_merge",
+              "origin": "http://127.0.0.1:5173",
+              "seq": 51,
+              "url": "http://localhost:7480/a/z9x8c7v6b5nm",
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Merged live page http://127.0.0.1:5173/settings into artifact p7v2n4c8d1ef",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef",
+                "rel": "artifact"
+              },
+              {
+                "href": "http://localhost:7480/a/z9x8c7v6b5nm",
+                "rel": "view"
+              },
+              {
+                "href": "toolpath:clax-artifact-z9x8c7v6b5nm/e000000000051",
+                "rel": "same-change"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000051",
+            "parents": [
+              "e000000000043"
+            ],
+            "timestamp": "2026-10-06T14:05:57.051Z"
+          }
+        }
+      ]
+    },
+    {
+      "meta": {
+        "actors": {
+          "human:clax-owner": {
+            "identities": [
+              {
+                "id": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697/u_4be1q8",
+                "system": "clax"
+              }
+            ],
+            "name": "Clax owner"
+          }
+        },
+        "clax": {
+          "artifact_id": "q2w4e6r8t0yu",
+          "projection": "artifact"
+        },
+        "kind": "https://toolpath.net/kinds/clax-audit/v1.0.0",
+        "source": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/q2w4e6r8t0yu",
+        "title": "Artifact q2w4e6r8t0yu"
+      },
+      "path": {
+        "base": {
+          "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/q2w4e6r8t0yu"
+        },
+        "head": "e000000000050",
+        "id": "clax-artifact-q2w4e6r8t0yu"
+      },
+      "steps": [
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/q2w4e6r8t0yu/v/1": {
+              "structural": {
+                "addresses": [],
+                "by_page": false,
+                "carried": [],
+                "content_sha256": "sha256:153812ae5fea0b73a011bf28bd7cea93644437c3fe3260b7b2d7e1e2f9f46bde",
+                "files": {
+                  "index.html": {
+                    "content_type": "text/html",
+                    "sha256": "sha256:1c27324f013705cbf0c49f3d3bb103c7069ed5988889d426c10cfc25684f0a31",
+                    "size": 40000
+                  }
+                },
+                "label": null,
+                "n": 1,
+                "note": null,
+                "origin": "http://localhost:5173",
+                "path": "/settings/a",
+                "source": {
+                  "artifact_id": "p7v2n4c8d1ef",
+                  "n": 1
+                },
+                "title": {
+                  "redacted": "text",
+                  "sha256": "sha256:9ea69799ff76739ff29f0fd5e141e9ccb487f7b2b150291bd12b895043038cc9"
+                },
+                "type": "clax.live.snapshot"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact2_id": "p7v2n4c8d1ef",
+              "artifact_id": "q2w4e6r8t0yu",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "live.snapshot",
+              "origin": "http://localhost:5173",
+              "seq": 41,
+              "url": "http://localhost:7480/a/q2w4e6r8t0yu/v/1",
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Captured version 1 of live page http://localhost:5173/settings/a, copied from artifact p7v2n4c8d1ef",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/q2w4e6r8t0yu",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef/v/1",
+                "rel": "copied-from"
+              },
+              {
+                "href": "http://localhost:7480/a/q2w4e6r8t0yu/v/1",
+                "rel": "view"
+              },
+              {
+                "href": "toolpath:clax-artifact-p7v2n4c8d1ef/e000000000041",
+                "rel": "same-change"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000041",
+            "timestamp": "2026-10-06T14:04:47.041Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/q2w4e6r8t0yu/t/01JB9T00000000000000000002": {
+              "structural": {
+                "from_artifact_id": "p7v2n4c8d1ef",
+                "from_url": {
+                  "redacted": "path",
+                  "sha256": "sha256:1dba4d88e2d3bfcc9b3f9b6b5e8c7dac3f39c84f8208f1fdc08036a21b96fd30"
+                },
+                "move_id": "mv_01JB9M0001",
+                "move_kind": "merge",
+                "rule_id": "r_01JB9R0001",
+                "to_artifact_id": "q2w4e6r8t0yu",
+                "to_url": {
+                  "redacted": "path",
+                  "sha256": "sha256:1931adc048081b49cce5ceba32944e4084e1d6aef10b8cf042ca4399c76c1238"
+                },
+                "type": "clax.thread.move"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact2_id": "q2w4e6r8t0yu",
+              "artifact_id": "p7v2n4c8d1ef",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "thread.move",
+              "origin": "http://localhost:5173",
+              "seq": 43,
+              "thread_id": "01JB9T00000000000000000002",
+              "url": "http://localhost:7480/a/q2w4e6r8t0yu",
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Moved thread 01JB9T00000000000000000002 from artifact p7v2n4c8d1ef to artifact q2w4e6r8t0yu (merge)",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef",
+                "rel": "moved-from"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/q2w4e6r8t0yu",
+                "rel": "moved-to"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef/t/01JB9T00000000000000000002",
+                "rel": "thread"
+              },
+              {
+                "href": "http://localhost:7480/a/q2w4e6r8t0yu",
+                "rel": "view"
+              },
+              {
+                "href": "toolpath:clax-artifact-p7v2n4c8d1ef/e000000000043",
+                "rel": "same-change"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000043",
+            "parents": [
+              "e000000000041"
+            ],
+            "timestamp": "2026-10-06T14:05:01.043Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001": {
+              "structural": {
+                "cause": "move",
+                "move_id": "mv_01JB9M0001",
+                "origin": "http://localhost:5173",
+                "path": "/settings/a",
+                "replies_armed": true,
+                "source": "scope",
+                "target": "page",
+                "type": "clax.watch.start"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "q2w4e6r8t0yu",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "watch.start",
+              "origin": "http://localhost:5173",
+              "seq": 44,
+              "session_id": "01JB9S00000000000000000001",
+              "url": "http://localhost:7480/a/q2w4e6r8t0yu",
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Started watching live page http://localhost:5173/settings/a",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/q2w4e6r8t0yu",
+                "rel": "artifact"
+              },
+              {
+                "href": "http://localhost:7480/a/q2w4e6r8t0yu",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000044",
+            "parents": [
+              "e000000000043"
+            ],
+            "timestamp": "2026-10-06T14:05:08.044Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/q2w4e6r8t0yu": {
+              "structural": {
+                "from_origin": "http://127.0.0.1:5173",
+                "path": "/settings/a",
+                "to_origin": "http://localhost:5173",
+                "type": "clax.live.page_rekey"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "q2w4e6r8t0yu",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "live.page_rekey",
+              "origin": "http://localhost:5173",
+              "seq": 50,
+              "url": "http://localhost:7480/a/q2w4e6r8t0yu",
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Re-keyed live page /settings/a from http://127.0.0.1:5173 to http://localhost:5173",
+            "refs": [
+              {
+                "href": "http://localhost:7480/a/q2w4e6r8t0yu",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000050",
+            "parents": [
+              "e000000000044"
+            ],
+            "timestamp": "2026-10-06T14:05:50.050Z"
+          }
+        }
+      ]
+    },
+    {
+      "meta": {
+        "actors": {
+          "human:clax-owner": {
+            "identities": [
+              {
+                "id": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697/u_4be1q8",
+                "system": "clax"
+              }
+            ],
+            "name": "Clax owner"
+          }
+        },
+        "clax": {
+          "artifact_id": "z9x8c7v6b5nm",
+          "projection": "artifact"
+        },
+        "kind": "https://toolpath.net/kinds/clax-audit/v1.0.0",
+        "source": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/z9x8c7v6b5nm",
+        "title": "Artifact z9x8c7v6b5nm"
+      },
+      "path": {
+        "base": {
+          "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/z9x8c7v6b5nm"
+        },
+        "head": "e000000000051",
+        "id": "clax-artifact-z9x8c7v6b5nm"
+      },
+      "steps": [
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/z9x8c7v6b5nm": {
+              "structural": {
+                "merged_into": "p7v2n4c8d1ef",
+                "origin": "http://127.0.0.1:5173",
+                "path": "/settings",
+                "type": "clax.live.page_merge"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact2_id": "p7v2n4c8d1ef",
+              "artifact_id": "z9x8c7v6b5nm",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "live.page_merge",
+              "origin": "http://127.0.0.1:5173",
+              "seq": 51,
+              "url": "http://localhost:7480/a/z9x8c7v6b5nm",
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Merged live page http://127.0.0.1:5173/settings into artifact p7v2n4c8d1ef",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef",
+                "rel": "artifact"
+              },
+              {
+                "href": "http://localhost:7480/a/z9x8c7v6b5nm",
+                "rel": "view"
+              },
+              {
+                "href": "toolpath:clax-artifact-p7v2n4c8d1ef/e000000000051",
+                "rel": "same-change"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000051",
+            "timestamp": "2026-10-06T14:05:57.051Z"
+          }
+        }
+      ]
+    },
+    {
+      "meta": {
+        "actors": {
+          "agent:claude-code/0aa1b2c3-0000-4000-8000-000000000001": {
+            "identities": [
+              {
+                "id": "01JB9S000000000000000000B0",
+                "system": "clax-session"
+              },
+              {
+                "id": "0aa1b2c3-0000-4000-8000-000000000001",
+                "system": "claude-code-session"
+              },
+              {
+                "id": "a_old1aa",
+                "system": "clax-agent"
+              }
+            ],
+            "name": "Claude Code",
+            "provider": "anthropic"
+          },
+          "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44": {
+            "identities": [
+              {
+                "id": "3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "system": "claude-code-session"
+              },
+              {
+                "id": "sha256:0d09054645c907a479ab154695f9308d69ecc77ce251e20d2b291655c20a850b",
+                "system": "claude-code-transcript-sha256"
+              },
+              {
+                "id": "a_9f3k2m",
+                "system": "clax-agent"
+              },
+              {
+                "id": "01JB9S00000000000000000001",
+                "system": "clax-session"
+              }
+            ],
+            "name": "Claude Code",
+            "provider": "anthropic"
+          },
+          "agent:clax-mcp": {
+            "name": "MCP client (no session)"
+          },
+          "agent:codex/clax-01JB9S00000000000000000002": {
+            "identities": [
+              {
+                "id": "a_7c1x4q",
+                "system": "clax-agent"
+              },
+              {
+                "id": "01JB9S00000000000000000002",
+                "system": "clax-session"
+              }
+            ],
+            "name": "Codex",
+            "provider": "openai"
+          },
+          "agent:pi/pi-sess-42": {
+            "identities": [
+              {
+                "id": "01JB9S00000000000000000003",
+                "system": "clax-session"
+              },
+              {
+                "id": "pi-sess-42",
+                "system": "pi-session"
+              },
+              {
+                "id": "a_pi01zz",
+                "system": "clax-agent"
+              }
+            ],
+            "name": "Pi"
+          },
+          "human:clax-owner": {
+            "identities": [
+              {
+                "id": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697/u_4be1q8",
+                "system": "clax"
+              }
+            ],
+            "name": "Clax owner"
+          },
+          "tool:clax/0.3.0": {
+            "identities": [
+              {
+                "id": "0b5e1e7a9c3d2f1e0b5e1e7a9c3d2f1e0b5e1e7a",
+                "system": "clax-build"
+              }
+            ],
+            "name": "Clax"
+          },
+          "tool:clax/0.3.1": {
+            "identities": [
+              {
+                "id": "abc1234def5678abc1234def5678abc1234def56",
+                "system": "clax-build"
+              }
+            ],
+            "name": "Clax"
+          }
+        },
+        "clax": {
+          "projection": "install"
+        },
+        "kind": "https://toolpath.net/kinds/clax-audit/v1.0.0",
+        "source": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+        "title": "Clax install audit trail"
+      },
+      "path": {
+        "base": {
+          "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697"
+        },
+        "head": "e000000000062",
+        "id": "clax-install-6a1f0c3e"
+      },
+      "steps": [
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S000000000000000000B0": {
+              "structural": {
+                "cwd": {
+                  "redacted": "path",
+                  "sha256": "sha256:7f486661a82a7ed14c6a81efde1b25b39f9e77b7dc4886b4722f76425b28b471"
+                },
+                "for_actor": {
+                  "agent_handle": "a_old1aa",
+                  "harness": "claude",
+                  "harness_session_id": "0aa1b2c3-0000-4000-8000-000000000001",
+                  "session_id": "01JB9S000000000000000000B0",
+                  "type": "agent"
+                },
+                "harness": "claude",
+                "harness_session_id": "0aa1b2c3-0000-4000-8000-000000000001",
+                "inferred": [
+                  "harness_session_id",
+                  "cwd",
+                  "transcript_path",
+                  "pid"
+                ],
+                "pid": null,
+                "transcript_path": null,
+                "type": "clax.session.start"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": true,
+              "clax_commit": "0b5e1e7a9c3d2f1e0b5e1e7a9c3d2f1e0b5e1e7a",
+              "clax_version": "0.3.0",
+              "for_actor": "agent:claude-code/0aa1b2c3-0000-4000-8000-000000000001",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "session.start",
+              "seq": 1,
+              "session_id": "01JB9S000000000000000000B0",
+              "system_reason": "backfill",
+              "v": 1,
+              "via": "daemon"
+            },
+            "description": "Started Claude Code session 01JB9S000000000000000000B0, recorded from earlier history",
+            "refs": [
+              {
+                "href": "agent://claude-code/0aa1b2c3-0000-4000-8000-000000000001",
+                "rel": "agent-session"
+              }
+            ]
+          },
+          "step": {
+            "actor": "tool:clax/0.3.0",
+            "id": "e000000000001",
+            "timestamp": "2026-10-06T14:00:07.001Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/backfill/comments/01JB9C000000000000000000B9": {
+              "structural": {
+                "reason": {
+                  "redacted": "text",
+                  "sha256": "sha256:15f249c816769a04b8776364a207ce4dc9275f4d9b8f403b2c63ee423eda2519"
+                },
+                "row_id": "01JB9C000000000000000000B9",
+                "table": "comments",
+                "type": "clax.backfill.skip"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": true,
+              "clax_commit": "0b5e1e7a9c3d2f1e0b5e1e7a9c3d2f1e0b5e1e7a",
+              "clax_version": "0.3.0",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "backfill.skip",
+              "seq": 6,
+              "system_reason": "backfill",
+              "v": 1,
+              "via": "daemon"
+            },
+            "description": "Skipped comments row 01JB9C000000000000000000B9 while recording earlier history"
+          },
+          "step": {
+            "actor": "tool:clax/0.3.0",
+            "id": "e000000000006",
+            "parents": [
+              "e000000000001"
+            ],
+            "timestamp": "2026-10-06T14:00:42.006Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001": {
+              "structural": {
+                "cwd": {
+                  "redacted": "path",
+                  "sha256": "sha256:555764b6fccdacfad0526fc8ebf3a31cdffedd70562ba8354343d759851aece1"
+                },
+                "harness": "claude",
+                "harness_session_id": "3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "pid": 4242,
+                "transcript_path": {
+                  "redacted": "path",
+                  "sha256": "sha256:0d09054645c907a479ab154695f9308d69ecc77ce251e20d2b291655c20a850b"
+                },
+                "type": "clax.session.start"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "git": {
+                "branch": "feat/settings",
+                "captured_at": "2026-10-06T14:03:11.512Z",
+                "diff_bytes": 18234,
+                "diff_sha256": "sha256:df087996d45b03e7eb8c133c0298fd98d35113fca26aaba58612fef3cc212cad",
+                "dirty": true,
+                "head": "9c1e5d2b7a4f3e8d1c6b0a9f2e7d4c3b8a1f6e5d",
+                "remote": "origin",
+                "remote_url": "https://github.com/empathic/app.git",
+                "repo_root": {
+                  "redacted": "path",
+                  "sha256": "sha256:555764b6fccdacfad0526fc8ebf3a31cdffedd70562ba8354343d759851aece1"
+                },
+                "untracked": 2
+              },
+              "git_capture": "ok",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "session.start",
+              "seq": 7,
+              "session_id": "01JB9S00000000000000000001",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Started Claude Code session 01JB9S00000000000000000001",
+            "refs": [
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "git:github:empathic/app@9c1e5d2b7a4f3e8d1c6b0a9f2e7d4c3b8a1f6e5d",
+                "rel": "at-revision"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000007",
+            "parents": [
+              "e000000000006"
+            ],
+            "timestamp": "2026-10-06T14:00:49.007Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000002": {
+              "structural": {
+                "cwd": {
+                  "redacted": "path",
+                  "sha256": "sha256:e549f2e8c418f5c0dd9522d70434b4ddebc364b0b0fc7d44799d1fa9ce1e1d99"
+                },
+                "harness": "codex",
+                "harness_session_id": null,
+                "pid": 5151,
+                "transcript_path": null,
+                "type": "clax.session.start"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "git_capture": "not-a-repo",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "session.start",
+              "seq": 8,
+              "session_id": "01JB9S00000000000000000002",
+              "v": 1,
+              "via": "hook"
+            },
+            "description": "Started Codex session 01JB9S00000000000000000002",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000002",
+                "rel": "agent-session"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:codex/clax-01JB9S00000000000000000002",
+            "id": "e000000000008",
+            "parents": [
+              "e000000000007"
+            ],
+            "timestamp": "2026-10-06T14:00:56.008Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000003": {
+              "structural": {
+                "cwd": {
+                  "redacted": "path",
+                  "sha256": "sha256:7f5ef5ab291086591fabc1f899a179a1b5f111d157db9ec892d97d5fa9462c5c"
+                },
+                "harness": "pi",
+                "harness_session_id": "pi-sess-42",
+                "pid": 6161,
+                "transcript_path": null,
+                "type": "clax.session.start"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "git": {
+                "captured_at": "2026-10-06T14:20:00.100Z",
+                "dirty": false,
+                "head": "1111111111111111111111111111111111111111",
+                "repo_root": {
+                  "redacted": "path",
+                  "sha256": "sha256:7f5ef5ab291086591fabc1f899a179a1b5f111d157db9ec892d97d5fa9462c5c"
+                },
+                "untracked": 0
+              },
+              "git_capture": "ok",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "session.start",
+              "seq": 9,
+              "session_id": "01JB9S00000000000000000003",
+              "v": 1,
+              "via": "pi"
+            },
+            "description": "Started Pi session 01JB9S00000000000000000003",
+            "refs": [
+              {
+                "href": "agent://pi/pi-sess-42",
+                "rel": "agent-session"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:pi/pi-sess-42",
+            "id": "e000000000009",
+            "parents": [
+              "e000000000008"
+            ],
+            "timestamp": "2026-10-06T14:01:03.009Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001": {
+              "structural": {
+                "cwd": {
+                  "redacted": "path",
+                  "sha256": "sha256:555764b6fccdacfad0526fc8ebf3a31cdffedd70562ba8354343d759851aece1"
+                },
+                "harness": "claude",
+                "harness_session_id": "3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "pid": 4243,
+                "transcript_path": {
+                  "redacted": "path",
+                  "sha256": "sha256:0d09054645c907a479ab154695f9308d69ecc77ce251e20d2b291655c20a850b"
+                },
+                "type": "clax.session.join"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "git": {
+                "branch": "feat/settings",
+                "captured_at": "2026-10-06T14:03:11.512Z",
+                "diff_bytes": 18234,
+                "diff_sha256": "sha256:df087996d45b03e7eb8c133c0298fd98d35113fca26aaba58612fef3cc212cad",
+                "dirty": true,
+                "head": "9c1e5d2b7a4f3e8d1c6b0a9f2e7d4c3b8a1f6e5d",
+                "remote": "origin",
+                "remote_url": "https://github.com/empathic/app.git",
+                "repo_root": {
+                  "redacted": "path",
+                  "sha256": "sha256:555764b6fccdacfad0526fc8ebf3a31cdffedd70562ba8354343d759851aece1"
+                },
+                "untracked": 2
+              },
+              "git_capture": "ok",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "session.join",
+              "seq": 10,
+              "session_id": "01JB9S00000000000000000001",
+              "v": 1,
+              "via": "hook"
+            },
+            "description": "Updated Claude Code session 01JB9S00000000000000000001",
+            "refs": [
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "git:github:empathic/app@9c1e5d2b7a4f3e8d1c6b0a9f2e7d4c3b8a1f6e5d",
+                "rel": "at-revision"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000010",
+            "parents": [
+              "e000000000009"
+            ],
+            "timestamp": "2026-10-06T14:01:10.010Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001/call/01JBC0000000000000000000C3": {
+              "structural": {
+                "args_sha256": "sha256:8690a626d077a8f6c9b1d06917dcfcf9203b5ff0b5d954b1442b27f22f73a302",
+                "call_id": "01JBC0000000000000000000C3",
+                "harness_call_id": "toolu_01ABC",
+                "harness_tool": "mcp__plugin_clax_clax__publish",
+                "type": "clax.tool.call_id"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "call_id": "01JBC0000000000000000000C3",
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "tool.call_id",
+              "seq": 30,
+              "session_id": "01JB9S00000000000000000001",
+              "v": 1,
+              "via": "hook"
+            },
+            "description": "Matched harness call toolu_01ABC to tool call 01JBC0000000000000000000C3",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44/tool/toolu_01ABC",
+                "rel": "tool-use"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000030",
+            "parents": [
+              "e000000000010"
+            ],
+            "timestamp": "2026-10-06T14:03:30.030Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001": {
+              "structural": {
+                "args_sha256": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+                "call_id": null,
+                "harness_call_id": "toolu_01XYZ",
+                "harness_tool": "mcp__plugin_clax_clax__list",
+                "type": "clax.tool.call_id"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "tool.call_id",
+              "seq": 31,
+              "session_id": "01JB9S00000000000000000001",
+              "v": 1,
+              "via": "hook"
+            },
+            "description": "Found no tool call for harness call toolu_01XYZ",
+            "refs": [
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44/tool/toolu_01XYZ",
+                "rel": "tool-use"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000031",
+            "parents": [
+              "e000000000030"
+            ],
+            "timestamp": "2026-10-06T14:03:37.031Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/call/01JBC0000000000000000000C9": {
+              "structural": {
+                "args_sha256": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+                "call_id": "01JBC0000000000000000000C9",
+                "ended_at": "2026-10-06T14:04:00.020Z",
+                "outcome": "ok",
+                "produced": [],
+                "started_at": "2026-10-06T14:04:00.000Z",
+                "tool": "list",
+                "type": "clax.tool.call"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "call_id": "01JBC0000000000000000000C9",
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "tool.call",
+              "seq": 32,
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Called the list tool, with outcome ok"
+          },
+          "step": {
+            "actor": "agent:clax-mcp",
+            "id": "e000000000032",
+            "parents": [
+              "e000000000031"
+            ],
+            "timestamp": "2026-10-06T14:03:44.032Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/u/u_cli0aa": {
+              "structural": {
+                "from_public_id": "u_cli0aa",
+                "to_public_id": "u_4be1q8",
+                "type": "clax.viewer.claim"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "viewer.claim",
+              "seq": 36,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Merged person u_cli0aa into u_4be1q8"
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000036",
+            "parents": [
+              "e000000000032"
+            ],
+            "timestamp": "2026-10-06T14:04:12.036Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/rule/r_01JB9R0001": {
+              "structural": {
+                "created_at": "2026-10-06T14:05:00.000Z",
+                "deleting": false,
+                "op": "set",
+                "origin": "http://localhost:5173",
+                "pattern": "/settings/*",
+                "rule_id": "r_01JB9R0001",
+                "type": "clax.live.rule"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "live.rule",
+              "origin": "http://localhost:5173",
+              "seq": 42,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Set rule r_01JB9R0001 on http://localhost:5173 for /settings/*"
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000042",
+            "parents": [
+              "e000000000036"
+            ],
+            "timestamp": "2026-10-06T14:04:54.042Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001": {
+              "structural": {
+                "origin": "http://localhost:5173",
+                "path": "/settings",
+                "replies_armed": true,
+                "source": "direct",
+                "target": "scope",
+                "type": "clax.watch.start"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "call": {
+                "args_sha256": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+                "call_id": "01JBC0000000000000000000C2",
+                "harness_tool": "mcp__plugin_clax_clax__watch",
+                "started_at": "2026-10-06T14:03:11.402Z",
+                "tool": "watch"
+              },
+              "call_id": "01JBC0000000000000000000C2",
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "watch.start",
+              "origin": "http://localhost:5173",
+              "seq": 45,
+              "session_id": "01JB9S00000000000000000001",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Started watching the pages under http://localhost:5173/settings",
+            "refs": [
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001/call/01JBC0000000000000000000C2",
+                "rel": "tool-call"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000045",
+            "parents": [
+              "e000000000042"
+            ],
+            "timestamp": "2026-10-06T14:05:15.045Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/rule/r_01JB9R0001": {
+              "structural": {
+                "created_at": "2026-10-06T14:05:00.000Z",
+                "deleting": true,
+                "op": "drop",
+                "origin": "http://localhost:5173",
+                "pattern": "/settings/*",
+                "rule_id": "r_01JB9R0001",
+                "type": "clax.live.rule"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "live.rule",
+              "origin": "http://localhost:5173",
+              "seq": 48,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Dropped rule r_01JB9R0001"
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000048",
+            "parents": [
+              "e000000000045"
+            ],
+            "timestamp": "2026-10-06T14:05:36.048Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/site/http%3A%2F%2Flocalhost%3A5173": {
+              "structural": {
+                "joined": [
+                  "http://127.0.0.1:5173"
+                ],
+                "origin": "http://127.0.0.1:5173",
+                "rules_dropped": [],
+                "rules_moved": [],
+                "site": "http://localhost:5173",
+                "type": "clax.live.join",
+                "with": "http://localhost:5173"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "live.join",
+              "origin": "http://localhost:5173",
+              "seq": 49,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Joined http://127.0.0.1:5173 to the site of http://localhost:5173"
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000049",
+            "parents": [
+              "e000000000048"
+            ],
+            "timestamp": "2026-10-06T14:05:43.049Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/site/http%3A%2F%2Flocalhost%3A5173": {
+              "structural": {
+                "before_site": "http://localhost:5173",
+                "never_with": [
+                  "http://localhost:5173"
+                ],
+                "origin": "http://127.0.0.1:5173",
+                "site": "http://127.0.0.1:5173",
+                "type": "clax.live.split"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "live.split",
+              "origin": "http://localhost:5173",
+              "seq": 52,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Split http://127.0.0.1:5173 off site http://localhost:5173"
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000052",
+            "parents": [
+              "e000000000049"
+            ],
+            "timestamp": "2026-10-06T14:06:04.052Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/site/http%3A%2F%2Flocalhost%3A3000": {
+              "structural": {
+                "answer": "later",
+                "origin": "http://localhost:3000",
+                "type": "clax.live.join_answer",
+                "until": "2026-10-13T14:00:00.000Z",
+                "with": "http://localhost:5173"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "live.join_answer",
+              "origin": "http://localhost:3000",
+              "seq": 53,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Answered later to joining http://localhost:3000 with http://localhost:5173"
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000053",
+            "parents": [
+              "e000000000052"
+            ],
+            "timestamp": "2026-10-06T14:06:11.053Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/q/01JB9Q00000000000000000002": {
+              "structural": {
+                "reason": {
+                  "redacted": "text",
+                  "sha256": "sha256:a0e63d7c7125d29af84d6919af5550529be77c327324940c98c4b2cb13a99c8c"
+                },
+                "type": "clax.question.decline"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "question.decline",
+              "question_id": "01JB9Q00000000000000000002",
+              "seq": 56,
+              "session_id": "01JB9S00000000000000000001",
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Declined question 01JB9Q00000000000000000002",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000056",
+            "parents": [
+              "e000000000053"
+            ],
+            "timestamp": "2026-10-06T14:06:32.056Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/q/01JB9Q00000000000000000003": {
+              "structural": {
+                "reason": null,
+                "type": "clax.question.release"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "question.release",
+              "question_id": "01JB9Q00000000000000000003",
+              "seq": 57,
+              "session_id": "01JB9S00000000000000000001",
+              "system_reason": "daemon",
+              "v": 1,
+              "via": "daemon"
+            },
+            "description": "Released question 01JB9Q00000000000000000003",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              }
+            ]
+          },
+          "step": {
+            "actor": "tool:clax/0.3.1",
+            "id": "e000000000057",
+            "parents": [
+              "e000000000056"
+            ],
+            "timestamp": "2026-10-06T14:06:39.057Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/q/01JB9Q00000000000000000004": {
+              "structural": {
+                "reason": null,
+                "type": "clax.question.withdraw"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "question.withdraw",
+              "question_id": "01JB9Q00000000000000000004",
+              "seq": 58,
+              "session_id": "01JB9S00000000000000000001",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Withdrew question 01JB9Q00000000000000000004",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000058",
+            "parents": [
+              "e000000000057"
+            ],
+            "timestamp": "2026-10-06T14:06:46.058Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000002": {
+              "structural": {
+                "for_actor": {
+                  "agent_handle": "a_7c1x4q",
+                  "harness": "codex",
+                  "session_id": "01JB9S00000000000000000002",
+                  "type": "agent"
+                },
+                "reason": "ttl",
+                "type": "clax.session.end"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "for_actor": "agent:codex/clax-01JB9S00000000000000000002",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "session.end",
+              "seq": 61,
+              "session_id": "01JB9S00000000000000000002",
+              "system_reason": "ttl",
+              "v": 1,
+              "via": "daemon"
+            },
+            "description": "Ended session 01JB9S00000000000000000002 (ttl)",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000002",
+                "rel": "agent-session"
+              }
+            ]
+          },
+          "step": {
+            "actor": "tool:clax/0.3.1",
+            "id": "e000000000061",
+            "parents": [
+              "e000000000058"
+            ],
+            "timestamp": "2026-10-06T14:07:07.061Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001": {
+              "structural": {
+                "reason": "explicit",
+                "type": "clax.session.end"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "session.end",
+              "seq": 62,
+              "session_id": "01JB9S00000000000000000001",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Ended session 01JB9S00000000000000000001 (explicit)",
+            "refs": [
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000062",
+            "parents": [
+              "e000000000061"
+            ],
+            "timestamp": "2026-10-06T14:07:14.062Z"
+          }
+        }
+      ]
+    }
+  ]
+}
