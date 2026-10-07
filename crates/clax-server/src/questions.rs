@@ -50,6 +50,10 @@ struct Inner {
     /// holding the question, or a later timer, replaces or cancels it.
     armed: HashMap<String, u64>,
     next: u64,
+    /// Debug builds: how many of each question's polls are still to end at
+    /// once, as if their timers had fired ([`QuestionWaiters::expire`]).
+    #[cfg(debug_assertions)]
+    expired: HashMap<String, usize>,
 }
 
 /// One poll's hold on a question ([`QuestionWaiters::hold`]).
@@ -103,6 +107,37 @@ impl QuestionWaiters {
         }
     }
 
+    /// Debug builds: ends every poll holding `qid` now, as if its timer
+    /// had fired; how many polls that is.
+    #[cfg(debug_assertions)]
+    pub fn expire(&self, qid: &str) -> usize {
+        let mut g = self.lock();
+        let Some((n, held)) = g.held.get(qid).map(|(n, c)| (n.clone(), *c)) else {
+            return 0;
+        };
+        g.expired.insert(qid.to_string(), held);
+        drop(g);
+        n.notify_waiters();
+        held
+    }
+
+    /// Debug builds: whether a poll of `qid` is to end now
+    /// ([`QuestionWaiters::expire`]); each poll takes it once.
+    #[cfg(debug_assertions)]
+    pub fn take_expired(&self, qid: &str) -> bool {
+        let mut g = self.lock();
+        match g.expired.get_mut(qid) {
+            Some(n) if *n > 0 => {
+                *n -= 1;
+                if *n == 0 {
+                    g.expired.remove(qid);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// How many polls hold `qid`.
     pub fn count(&self, qid: &str) -> usize {
         self.lock().held.get(qid).map_or(0, |e| e.1)
@@ -146,6 +181,8 @@ impl Drop for HoldGuard {
             });
             if last {
                 g.held.remove(&self.qid);
+                #[cfg(debug_assertions)]
+                g.expired.remove(&self.qid);
             }
             last
         };

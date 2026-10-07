@@ -194,7 +194,11 @@ pub async fn poll(
                 Ok((items, late_answers(st, &t.session_id, &held, &*clock)?))
             })
             .await?;
-        if !items.is_empty() || !answers.is_empty() || Instant::now() >= deadline {
+        #[cfg(debug_assertions)]
+        let expired = _waiting.is_some() && s.feedback_waiters.take_expired(&take.session_id);
+        #[cfg(not(debug_assertions))]
+        let expired = false;
+        if !items.is_empty() || !answers.is_empty() || expired || Instant::now() >= deadline {
             let text = poll_text(&items, &late);
             return Ok(Json(json!({
                 "feedback": items,
@@ -323,6 +327,20 @@ pub async fn ack(
         })
         .await?;
     Ok(Json(json!({"acknowledged": n})))
+}
+
+/// `POST /api/_test/sessions/<sid>/feedback/expire` (debug builds): ends
+/// every `wait_for_feedback` poll of session `sid` now, as if its `wait`
+/// had run out → `{expired}`, how many polls that was. Tests use it
+/// instead of waiting.
+#[cfg(debug_assertions)]
+pub async fn expire(
+    State(s): State<AppState>,
+    _t: RequireToken,
+    sid: Result<Path<String>, PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let sid = path(sid)?;
+    Ok(Json(json!({"expired": s.feedback_waiters.expire(&sid)})))
 }
 
 /// `GET /api/_test/sessions/<sid>/feedback/waiters?until=<n>` (debug

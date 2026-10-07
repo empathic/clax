@@ -1277,3 +1277,85 @@ async fn the_extension_may_list_answer_and_follow_questions() {
         .await;
     assert_eq!(r.status(), 403);
 }
+
+#[tokio::test]
+async fn the_test_expire_routes_end_question_and_feedback_polls_at_once() {
+    let ts = TestServer::spawn().await;
+    let sid = session(&ts, "expire").await;
+    let qid = ts.ask(&sid, body()).await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let expire = |path: String| {
+        let ts = &ts;
+        async move {
+            let v: Value = post(ts, &path, json!({})).await.json().await.unwrap();
+            v["expired"].as_u64().unwrap()
+        }
+    };
+    assert_eq!(
+        expire(format!("/api/_test/questions/{qid}/expire")).await,
+        0
+    );
+    let poll = {
+        let (c, url) = (
+            ts.client.clone(),
+            format!("{}/api/sessions/{sid}/questions/{qid}?wait=600", ts.base),
+        );
+        let token = ts.token.clone();
+        tokio::spawn(async move {
+            c.get(url)
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        })
+    };
+    ts.wait_question_waiters(&qid, 1).await;
+    assert_eq!(
+        expire(format!("/api/_test/questions/{qid}/expire")).await,
+        1
+    );
+    let v = tokio::time::timeout(Duration::from_secs(5), poll)
+        .await
+        .expect("the poll ends at once")
+        .unwrap();
+    assert_eq!(v["question"]["status"], "open");
+    assert_eq!(v["waited_s"], 0);
+
+    assert_eq!(
+        expire(format!("/api/_test/sessions/{sid}/feedback/expire")).await,
+        0
+    );
+    let poll = {
+        let (c, url) = (
+            ts.client.clone(),
+            format!("{}/api/sessions/{sid}/feedback?tier=wait&wait=600", ts.base),
+        );
+        let token = ts.token.clone();
+        tokio::spawn(async move {
+            c.get(url)
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        })
+    };
+    ts.wait_feedback_waiters(&sid, 1).await;
+    assert_eq!(
+        expire(format!("/api/_test/sessions/{sid}/feedback/expire")).await,
+        1
+    );
+    let v = tokio::time::timeout(Duration::from_secs(5), poll)
+        .await
+        .expect("the poll ends at once")
+        .unwrap();
+    assert_eq!(v["feedback"], json!([]));
+    assert_eq!(v["waited_s"], 0);
+}

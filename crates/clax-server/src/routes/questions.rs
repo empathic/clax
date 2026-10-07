@@ -279,6 +279,10 @@ pub async fn poll(
         let notified = notify.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
+        #[cfg(debug_assertions)]
+        if s.questions.take_expired(&qid) {
+            done = true;
+        }
         let (sid1, qid1) = (sid.clone(), qid.clone());
         let out = s
             .store_call(move |db| {
@@ -391,6 +395,19 @@ pub async fn terminal(
 #[derive(Deserialize)]
 pub struct UntilQuery {
     pub(crate) until: Option<usize>,
+}
+
+/// `POST /api/_test/questions/<qid>/expire` (debug builds): ends every
+/// poll holding question `qid` now, as if its `wait` had run out →
+/// `{expired}`, how many polls that was. Tests use it instead of waiting.
+#[cfg(debug_assertions)]
+pub async fn expire(
+    State(s): State<AppState>,
+    _t: RequireToken,
+    p: Result<Path<String>, PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let qid = path(p)?;
+    Ok(Json(json!({"expired": s.questions.expire(&qid)})))
 }
 
 /// `GET /api/_test/questions/<qid>/waiters?until=<n>` (debug builds):
