@@ -999,112 +999,109 @@ fn doctor_reports_codex_push_from_the_daemons_path() {
     e.stop();
 }
 
-/// Waits up to `timeout` for `r` to reach EOF (every write end closed).
-fn read_end_hits_eof(mut r: std::io::PipeReader, timeout: std::time::Duration) -> bool {
+/// Whether every other end of `ours` is closed now: a read that does not
+/// wait finds EOF, where an end still open somewhere would leave nothing to
+/// read yet. Asked once the closing must already have happened, so the
+/// answer does not depend on how fast the machine is.
+fn other_ends_closed(ours: &std::os::unix::net::UnixStream) -> bool {
     use std::io::Read;
-    let (tx, rx) = std::sync::mpsc::channel();
-    // Reads until EOF or an error; a reader still blocked after the timeout
-    // ends once the writers are gone.
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 64];
-        let eof = loop {
-            match r.read(&mut buf) {
-                Ok(0) => break true,
-                Ok(_) => continue,
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => break false,
-            }
-        };
-        let _ = tx.send(eof);
-    });
-    rx.recv_timeout(timeout).unwrap_or(false)
-}
-
-/// How long a step that is immediate on an idle machine may take on a loaded one.
-const LOADED_BOUND: std::time::Duration = std::time::Duration::from_secs(20);
-
-/// Waits for a foreground daemon under `home` to write a daemon.json naming
-/// its pid; false if it exits first or `timeout` passes.
-fn wait_for_daemon_json(
-    home: &std::path::Path,
-    child: &mut std::process::Child,
-    timeout: std::time::Duration,
-) -> bool {
-    let deadline = std::time::Instant::now() + timeout;
-    while std::time::Instant::now() < deadline {
-        let pid = std::fs::read_to_string(home.join("daemon.json"))
-            .ok()
-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-            .and_then(|v| v["pid"].as_u64());
-        if pid == Some(u64::from(child.id())) {
-            return true;
+    ours.set_nonblocking(true).unwrap();
+    let mut buf = [0u8; 64];
+    loop {
+        match (&*ours).read(&mut buf) {
+            Ok(0) => return true,
+            Ok(_) => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return false,
         }
-        if child.try_wait().unwrap().is_some() {
-            return false;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    false
 }
 
-/// A command running `clax` with `w` as an extra inherited descriptor (9):
-/// the state a concurrent fork catches a std pipe in on platforms without
-/// `pipe2`. A shell takes `w` as its stderr and moves it to descriptor 9 as
-/// it execs `clax` (stderr goes to `/dev/null`), so only this child inherits
-/// it and other tests' children cannot hold it.
-fn clax_inheriting(w: std::io::PipeWriter) -> std::process::Command {
+/// A command running `clax` with `theirs` as an extra inherited descriptor
+/// (9): the state a concurrent fork catches a std pipe in on platforms
+/// without `pipe2`. A shell takes `theirs` as its stderr and moves it to
+/// descriptor 9 as it execs `clax` (stderr goes to `/dev/null`), so only this
+/// child inherits it and other tests' children cannot hold it. It is one end
+/// of a socket pair rather than a pipe so the test can read the other end
+/// without waiting ([`other_ends_closed`]); the daemon closes either alike.
+fn clax_inheriting(theirs: std::os::unix::net::UnixStream) -> std::process::Command {
     let mut cmd = std::process::Command::new("/bin/sh");
     cmd.args(["-c", r#"exec "$0" "$@" 9>&2 2>/dev/null"#])
         .arg(assert_cmd::cargo::cargo_bin("clax"))
-        .stderr(w);
+        .stderr(std::os::fd::OwnedFd::from(theirs));
     cmd
 }
 
 #[test]
 fn an_auto_started_daemon_does_not_hold_inherited_descriptors() {
     let e = Env::new();
-    let (r, w) = std::io::pipe().unwrap();
-    let mut cmd = clax_inheriting(w);
+    let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+    let mut cmd = clax_inheriting(theirs);
     cmd.env("CLAX_HOME", e.dir.path().join("ax"))
         .env("CLAX_CODEX_BIN", "")
         .env("HOME", e.dir.path())
         .args(["status", "--start", "--json", "--port", "0"])
         .stdin(std::process::Stdio::null());
     let out = cmd.output().unwrap();
-    // The command has been dropped with this process's copy of the write end.
+    // The command has been dropped with this process's copy of the other end.
     drop(cmd);
     assert!(out.status.success(), "{out:?}");
-    // `status --start` returns once the daemon answers, so only the read is bounded.
-    let eof = read_end_hits_eof(r, LOADED_BOUND);
+    // `status --start` returns once the daemon answers, and the daemon closes
+    // what it inherited before it serves: the client has exited, so no one
+    // holds the other end any more.
+    let closed = other_ends_closed(&ours);
     e.stop();
-    assert!(eof, "the daemon kept an inherited pipe write end open");
+    assert!(closed, "the daemon kept an inherited descriptor open");
 }
 
 #[test]
 fn a_foreground_daemon_closes_inherited_descriptors() {
+    use std::io::BufRead;
     let e = Env::new();
-    let (r, w) = std::io::pipe().unwrap();
-    let mut cmd = clax_inheriting(w);
+    let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+    let mut cmd = clax_inheriting(theirs);
     cmd.env("CLAX_HOME", e.dir.path().join("ax"))
         .env("CLAX_CODEX_BIN", "")
         .env("HOME", e.dir.path())
         .args(["serve", "--foreground", "--port", "0"])
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null());
+        .stdout(std::process::Stdio::piped());
     let mut child = cmd.spawn().unwrap();
-    // Drops this process's copy of the write end.
+    // Drops this process's copy of the other end.
     drop(cmd);
-    // The daemon closes inherited descriptors before it serves, so once it has
-    // written daemon.json the pipe is already at EOF; the EOF bound only
-    // covers the read itself on a loaded machine.
-    let ready = wait_for_daemon_json(&e.dir.path().join("ax"), &mut child, LOADED_BOUND);
-    let eof = ready && read_end_hits_eof(r, LOADED_BOUND);
+    // The daemon closes inherited descriptors before anything else, then logs
+    // to stdout; it logs "codex push" after it has written daemon.json. Its
+    // log is read until that line (or its end, if the daemon exits first), so
+    // the wait is on the daemon, not on a clock.
+    let mut log = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    let mut seen = String::new();
+    let ready = loop {
+        line.clear();
+        if log.read_line(&mut line).unwrap() == 0 {
+            break false;
+        }
+        seen.push_str(&line);
+        if line.contains("codex push") {
+            break true;
+        }
+    };
+    let closed = other_ends_closed(&ours);
+    let named = std::fs::read_to_string(e.dir.path().join("ax/daemon.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v["pid"].as_u64());
     let alive = child.try_wait().unwrap().is_none();
     let _ = child.kill();
     let _ = child.wait();
-    assert!(ready, "the daemon did not write daemon.json");
+    assert!(ready, "the daemon ended before it served; its log:\n{seen}");
+    assert_eq!(
+        named,
+        Some(u64::from(child.id())),
+        "daemon.json does not name the daemon"
+    );
     assert!(alive, "the daemon kept running after closing descriptors");
-    assert!(eof, "the daemon kept an inherited pipe write end open");
+    assert!(closed, "the daemon kept an inherited descriptor open");
 }
 
 #[test]
