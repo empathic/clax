@@ -30,11 +30,17 @@ function fakePort() {
 const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0)); flushSync(); };
 
 let port: ReturnType<typeof fakePort>;
+/** The callbacks of the ResizeObservers the composer made (jsdom has none of its own). */
+let resized: (() => void)[] = [];
+class FakeResizeObserver { constructor(cb: () => void) { resized.push(cb); } observe() {} disconnect() {} }
+const w = window as unknown as { ResizeObserver?: unknown };
 let view: Mounted<Record<string, unknown>>;
 let notes: unknown[];
 const urls = URL as unknown as { createObjectURL?: unknown; revokeObjectURL?: unknown };
 const had = { create: urls.createObjectURL, revoke: urls.revokeObjectURL };
 beforeEach(() => {
+  resized = [];
+  w.ResizeObserver = FakeResizeObserver;
   urls.createObjectURL = () => "blob:clip";
   urls.revokeObjectURL = () => {};
   port = fakePort();
@@ -42,6 +48,7 @@ beforeEach(() => {
   view = mount(ComposerFrame as never, { port, pickId: PICK, notify: (m: unknown) => { notes.push(m); }, shortcut: Promise.resolve("⌥⇧C") });
 });
 afterEach(() => {
+  delete w.ResizeObserver;
   view.unmount();
   view.root.remove();
   urls.createObjectURL = had.create;
@@ -189,5 +196,19 @@ describe("clipMessage", () => {
     expect(clipMessage("capture_failed")).toMatch(/could not capture/);
     expect(clipMessage("anything_else")).toMatch(/could not capture/);
     expect(clipMessage(null)).toBeUndefined();
+  });
+});
+
+describe("the composer frame's size", () => {
+  it("tells the worker its content's height whenever it changes, so the overlay fits the frame to it", () => {
+    const fit = view.root.querySelector(".fit") as HTMLElement;
+    let h = 180;
+    fit.getBoundingClientRect = () => ({ height: h }) as DOMRect;
+    expect(resized).toHaveLength(1);
+    resized[0]();
+    resized[0]();
+    h = 212.4;
+    resized[0]();
+    expect(port.sent.filter(m => (m as { t: string }).t === "size")).toEqual([{ t: "size", height: 180 }, { t: "size", height: 213 }]);
   });
 });

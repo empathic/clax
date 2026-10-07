@@ -207,6 +207,24 @@ describe("a pick", () => {
     expect(mode.on).toBe(false);
   });
 
+  it("fits the composer's frame to its content, inside the viewport, for its own pick only", async () => {
+    const f = await opened();
+    tell({ t: "composer-ready", pickId: PICK });
+    await run();
+    expect(f.style.height).toBe("300px");
+    tell({ t: "composer-size", pickId: PICK, height: 212 });
+    expect(f.style.height).toBe("212px");
+    expect(f.style.top).toBe(`${RECT.y}px`);
+    tell({ t: "composer-size", pickId: "f".repeat(32), height: 400 });
+    expect(f.style.height).toBe("212px");
+    // Taller than the viewport: clamped to it, and moved up to show all of it.
+    tell({ t: "composer-size", pickId: PICK, height: 2000 });
+    expect(f.style.height).toBe(`${innerHeight - 16}px`);
+    expect(f.style.top).toBe("8px");
+    tell({ t: "composer-size", pickId: PICK, height: 10 });
+    expect(f.style.height).toBe("120px");
+  });
+
   it("says why when the worker closes a composer that never connected, for a while", async () => {
     await opened();
     tell({ t: "close-composer", pickId: PICK, posted: false, reason: "timeout" });

@@ -174,6 +174,7 @@ export class Picks {
     port.onMessage.addListener((m: unknown) => {
       if (!isFromComposer(m) || this.byTab.get(tabId) !== p) return;
       if (m.t === "ready") void this.sendDraft(p);
+      else if (m.t === "size") this.d.toOverlay(tabId, { t: "composer-size", pickId, height: m.height });
       else if (m.t === "post") {
         if (p.posting) return;
         p.body = m.body;

@@ -98,6 +98,8 @@ export type WorkerToOverlay =
   | { t: "open-composer"; pickId: string; rect: Rect }
   /** The pick's composer page connected to the worker (after its own load): only now is its frame shown and focused. */
   | { t: "composer-ready"; pickId: string }
+  /** The composer's content is `height` CSS pixels tall: the overlay fits its frame to it. */
+  | { t: "composer-size"; pickId: string; height: number }
   /** `reason: "timeout"`: the composer page never connected, which the overlay tells the person. */
   | { t: "close-composer"; pickId: string; posted: boolean; reason?: "timeout" }
   | { t: "scroll-to"; threadId: string }
@@ -111,7 +113,11 @@ export type WorkerToOverlay =
   /** Clax turned off in the tab: the overlay stops, its pins and comment mode with it. */
   | { t: "off" };
 
-export type ComposerToWorker = { t: "ready" } | { t: "post"; body: string } | { t: "cancel" };
+/** `size`: the composer's content height in CSS pixels, which the worker relays to the overlay. */
+export type ComposerToWorker = { t: "ready" } | { t: "post"; body: string } | { t: "cancel" } | { t: "size"; height: number };
+/** The tallest composer content the overlay fits its frame to (it is clamped to the viewport besides). */
+export const MAX_COMPOSER_HEIGHT = 2000;
+const height = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= MAX_COMPOSER_HEIGHT;
 /** What a composer page sends as a one-off runtime message once its port
  * is gone: `lost`, when the worker let go of the port unasked; `dismiss`,
  * when the person closes such a composer. */
@@ -296,6 +302,7 @@ export function isFromWorker(m: unknown): m is WorkerToOverlay {
     case "captured": return shape(m, ["t", "pickId", "ok"], ["error"]) && pickId(m.pickId) && bool(m.ok) && (m.error === undefined || code(m.error));
     case "open-composer": return has("pickId", "rect") && pickId(m.pickId) && box(m.rect);
     case "composer-ready": return has("pickId") && pickId(m.pickId);
+    case "composer-size": return has("pickId", "height") && pickId(m.pickId) && height(m.height);
     case "close-composer": return shape(m, ["t", "pickId", "posted"], ["reason"]) && pickId(m.pickId) && bool(m.posted)
       && (m.reason === undefined || m.reason === "timeout");
     case "scroll-to": return has("threadId") && ulid(m.threadId);
@@ -343,6 +350,7 @@ export function isFromComposer(m: unknown): m is ComposerToWorker {
   switch (m.t) {
     case "ready": case "cancel": return has();
     case "post": return has("body") && text(m.body, MAX_BODY);
+    case "size": return has("height") && height(m.height);
     default: return false;
   }
 }
