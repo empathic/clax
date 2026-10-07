@@ -172,15 +172,55 @@ describe("QuestionCard", () => {
     const b = buttons(m.root, "Answer in the terminal")[0];
     b.focus();
     click(b);
-    // The pending action disables the button, and the browser drops its focus to nowhere.
-    b.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
-    (document.activeElement as HTMLElement).blur();
+    // The pending action disables the button, and the browser drops its focus
+    // to <body>; jsdom does not blur a disabled control, so the test does.
+    expect(b.disabled).toBe(true);
+    b.disabled = false;
+    b.blur();
+    b.disabled = true;
     await Promise.resolve();
+    expect(document.activeElement).toBe(document.body);
     release();
     await flush();
     m.update({ ...props, q: view({ source: "hook", status: "released" }) });
     expect(document.activeElement).toBe(article);
     m.unmount();
+  });
+
+  it("leaves focus where the person moved it while the action was pending, on close and on failure", async () => {
+    for (const where of ["page input", "other card"] as const) {
+      for (const outcome of ["close", "failure"] as const) {
+        let settle!: (ok: boolean) => void;
+        const onDecline = vi.fn(() => new Promise<void>((res, rej) => { settle = ok => (ok ? res() : rej(new Error("down"))); }));
+        const props = { q: view(), onAnswer: vi.fn(), onDecline };
+        const m = mount(QuestionCard, props);
+        const other = mount(QuestionCard, { q: view({ id: "other" }), onAnswer: vi.fn(), onDecline: vi.fn() });
+        const input = document.createElement("input");
+        document.body.appendChild(input);
+        const skip = buttons(m.root, "Skip")[0];
+        skip.focus();
+        click(skip);
+        // The pending action disables Skip, and the browser drops its focus to
+        // <body> (focusout, relatedTarget null). jsdom neither does that nor
+        // blurs a disabled control, so the test lets go of it by hand.
+        expect(skip.disabled).toBe(true);
+        skip.disabled = false;
+        skip.blur();
+        skip.disabled = true;
+        await Promise.resolve();
+        expect(document.activeElement).toBe(document.body);
+        const target = where === "page input" ? input : other.root.querySelector<HTMLInputElement>('input[value="Two"]')!;
+        target.focus();
+        settle(outcome === "close");
+        await flush();
+        await Promise.resolve();
+        if (outcome === "close") m.update({ ...props, q: view({ status: "declined" }) });
+        await Promise.resolve();
+        flush();
+        expect(document.activeElement, `${where}, ${outcome}`).toBe(target);
+        input.remove(); other.unmount(); m.unmount();
+      }
+    }
   });
 
   it("leaves focus alone when it had left the card for the page", async () => {
@@ -223,7 +263,9 @@ describe("QuestionCard", () => {
     await flush();
     m2.update({ ...p2, q: { ...q, status: "withdrawn" } });
     expect(status(m2).textContent).toBe("Not answered: codex stopped waiting");
-    expect(status(m2).classList.contains("sr")).toBe(false);
+    expect(status(m2).classList.contains("sr")).toBe(true);
+    expect(m2.root.querySelector(".closed")!.textContent).toBe("codex stopped waiting");
+    expect(m2.root.querySelector(".instead")!.textContent).toBe("Not answered");
     // Closed without any action of the person's: just what happened.
     const p3 = { q: view(), onAnswer: vi.fn(), onDecline: vi.fn() };
     const m3 = mount(QuestionCard, p3);
