@@ -19,10 +19,11 @@ import { type Daemon, NO_KEY_CONFIG, startDaemon } from "./fixtures";
 const web = fileURLToPath(new URL("..", import.meta.url));
 export const EXT_DIR = join(web, "dist-extension-test");
 
-/** Which build Chromium loads: the test build as made (`<all_urls>`), or
+/** Which build Chromium loads: the test build as made (`<all_urls>`),
  * that build holding only the dev server's origin, as a person's grant
- * leaves the release build ("origin"). */
-export type Variant = "all-urls" | "origin";
+ * leaves the release build ("origin"), or holding no site at all and
+ * unable to ask for one, as when the person refused the prompt ("none"). */
+export type Variant = "all-urls" | "origin" | "none";
 
 export type Live = {
   daemon: Daemon; ctx: BrowserContext; sw: Worker; extId: string; site: ViteDevServer; siteDir: string; siteUrl: string;
@@ -32,6 +33,9 @@ export type Live = {
   restartDaemon(): Promise<void>;
   /** Closes Chromium and starts it again on the same profile (a browser restart). */
   restartBrowser(): Promise<void>;
+  /** A real click on the extension's toolbar icon in the tab showing
+   * `url`, which grants activeTab (the `gesture` option only). */
+  iconClick(url: string): Promise<void>;
 };
 
 /** A loopback port free a moment ago. */
@@ -43,10 +47,14 @@ export async function freePort(): Promise<number> {
   return port;
 }
 
-async function launch(profile: string, extDir: string): Promise<{ ctx: BrowserContext; sw: Worker }> {
+/** Chromium's flags for `Extensions.triggerAction` (a real toolbar click
+ * over CDP): the extensions domain, on a browser-wide endpoint of its own. */
+const GESTURE_ARGS = ["--enable-unsafe-extension-debugging", "--remote-debugging-port=0"];
+
+async function launch(profile: string, extDir: string, gesture: boolean): Promise<{ ctx: BrowserContext; sw: Worker }> {
   const ctx = await chromium.launchPersistentContext(profile, {
     channel: "chromium",
-    args: [`--disable-extensions-except=${extDir}`, `--load-extension=${extDir}`],
+    args: [`--disable-extensions-except=${extDir}`, `--load-extension=${extDir}`, ...(gesture ? GESTURE_ARGS : [])],
   });
   const sw = ctx.serviceWorkers()[0] ?? (await ctx.waitForEvent("serviceworker"));
   return { ctx, sw };
@@ -57,7 +65,27 @@ async function launch(profile: string, extDir: string): Promise<{ ctx: BrowserCo
  * when its first runs are slow (macOS scans a new binary at its first exec). */
 const DAEMON_START_MS = 60_000;
 
-export const test = base.extend<{ live: Live; variant: Variant }, { warm: void }>({
+/** Sends one CDP command to the browser endpoint Chromium wrote to the profile's DevToolsActivePort. */
+async function browserCdp(profile: string, method: string, params: object): Promise<Record<string, unknown>> {
+  const [port, path] = readFileSync(join(profile, "DevToolsActivePort"), "utf8").trim().split("\n");
+  const ws = new WebSocket(`ws://127.0.0.1:${port}${path}`);
+  try {
+    await new Promise((ok, fail) => { ws.onopen = ok; ws.onerror = fail; });
+    return await new Promise((ok, fail) => {
+      ws.onmessage = e => {
+        const m = JSON.parse(String(e.data)) as { id?: number; result?: Record<string, unknown>; error?: unknown };
+        if (m.id !== 1) return;
+        if (m.error) fail(new Error(`${method}: ${JSON.stringify(m.error)}`));
+        else ok(m.result ?? {});
+      };
+      ws.send(JSON.stringify({ id: 1, method, params }));
+    });
+  } finally {
+    ws.close();
+  }
+}
+
+export const test = base.extend<{ live: Live; variant: Variant; gesture: boolean }, { warm: void }>({
   // Once per worker, before any daemon starts: the binary's first run, so
   // the first-exec scan is not paid inside a daemon's start.
   // oxlint-disable-next-line no-empty-pattern
@@ -67,7 +95,9 @@ export const test = base.extend<{ live: Live; variant: Variant }, { warm: void }
     await use();
   }, { scope: "worker", auto: true, timeout: DAEMON_START_MS + 5000 }],
   variant: ["all-urls", { option: true }],
-  live: async ({ variant }, use, testInfo) => {
+  /** Chromium takes real toolbar clicks over CDP (`iconClick`). */
+  gesture: [false, { option: true }],
+  live: async ({ variant, gesture }, use, testInfo) => {
     // The daemon's start has its own bound, beyond the test's.
     testInfo.setTimeout(testInfo.timeout + DAEMON_START_MS);
     if (!existsSync(join(EXT_DIR, "manifest.json"))) throw new Error("web/dist-extension-test is missing: run `npm run build` in web/");
@@ -95,14 +125,15 @@ export const test = base.extend<{ live: Live; variant: Variant }, { warm: void }
     if (install.status !== 0) throw new Error(`clax extension install: ${install.stderr}`);
     const extDir = join(daemon.home, "extension");
     cpSync(EXT_DIR, extDir, { recursive: true });
-    if (variant === "origin") {
+    if (variant !== "all-urls") {
       const mf = JSON.parse(readFileSync(join(extDir, "manifest.json"), "utf8"));
-      mf.host_permissions = [`${new URL(siteUrl).origin}/*`];
+      mf.host_permissions = variant === "origin" ? [`${new URL(siteUrl).origin}/*`] : [];
+      if (variant === "none") mf.optional_host_permissions = [];
       writeFileSync(join(extDir, "manifest.json"), JSON.stringify(mf));
     }
     const status = await fetch(`${daemon.base}/api/extension`, { headers: { authorization: `Bearer ${daemon.token}` } }).then(r => r.json());
     const daemonExtId: string = status.extension_id;
-    const first = await launch(profile, extDir);
+    const first = await launch(profile, extDir, gesture);
     const l: Live = {
       daemon, ctx: first.ctx, sw: first.sw, extId: new URL(first.sw.url()).host, site, siteDir, siteUrl, daemonExtId,
       async restartDaemon() {
@@ -111,9 +142,17 @@ export const test = base.extend<{ live: Live; variant: Variant }, { warm: void }
       },
       async restartBrowser() {
         await l.ctx.close();
-        const next = await launch(profile, extDir);
+        const next = await launch(profile, extDir, gesture);
         l.ctx = next.ctx;
         l.sw = next.sw;
+      },
+      async iconClick(url) {
+        if (!gesture) throw new Error("iconClick needs test.use({ gesture: true })");
+        // Chromium lists tab targets only when asked for every type.
+        const { targetInfos } = await browserCdp(profile, "Target.getTargets", { filter: [{}] }) as { targetInfos: { type: string; url: string; targetId: string }[] };
+        const tab = targetInfos.find(t => t.type === "tab" && t.url === url);
+        if (!tab) throw new Error(`no tab shows ${url}`);
+        await browserCdp(profile, "Extensions.triggerAction", { id: l.extId, targetId: tab.targetId });
       },
     };
     await use(l);
