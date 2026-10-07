@@ -715,10 +715,15 @@ describe("comments", () => {
     expect(pi.sent).toHaveLength(0);
   }, 20_000);
 
-  it("clax_ask returns the answers, and asks to call again while none came", async () => {
+  it("clax_ask asks to call again while no answer came, with late answers apart from its reply", async () => {
     const { pi, ctx } = load(daemon.home, "pi-ask");
+    parts(await pi.callToolAsPi("clax_list", {}, ctx));
+    const sid = await sessionOf("pi-ask");
+    // An earlier question, answered while nothing waits on it: a late answer.
+    const late = await askAndAnswer(sid, "Earlier", "A");
     const first = parts(await pi.callToolAsPi("clax_ask", { questions: askBody("Pick").questions, timeout_s: 1 }, ctx)).json;
-    expect(first).toMatchObject({ status: "open", answers: null, call_again: true, surface_open: false, feedback: [] });
+    expect(first).toMatchObject({ status: "open", reply: null, call_again: true, surface_open: false, feedback: [] });
+    expect(first.answers.map((a: any) => a.id)).toEqual([late]);
     const qid: string = first.question_id;
     expect(first.url).toMatch(new RegExp(`^http://localhost:\\d+/inbox\\?q=${qid}$`));
     const waiting = pi.callToolAsPi("clax_ask", { question_id: qid, timeout_s: 30 }, ctx);
@@ -726,9 +731,29 @@ describe("comments", () => {
     await answer(qid, "B");
     const got = parts(await waiting).json;
     expect(got).toMatchObject({ question_id: qid, status: "answered", call_again: false, note: expect.stringContaining("own words") });
-    expect(got.answers).toEqual([{ question: "Which?", header: "Pick", selected: ["B"], text: null }]);
+    expect(got.reply).toEqual([{ question: "Which?", header: "Pick", selected: ["B"], text: null }]);
+    expect(got.answers).toBeUndefined();
     expect(got.surface_open).toBeUndefined();
     // Handed over once: no feedback tier repeats it.
+    expect(parts(await pi.callToolAsPi("clax_list", {}, ctx)).json.answers).toBeUndefined();
+  }, 20_000);
+
+  it("clax_ask returns its own answer in reply and an earlier question's in answers", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-ask-two");
+    parts(await pi.callToolAsPi("clax_list", {}, ctx));
+    const sid = await sessionOf("pi-ask-two");
+    // Q1 is open and no call waits on it (as after call_again); Q2 is asked.
+    const q1 = (await api(daemon, `/api/sessions/${sid}/questions`, { method: "POST", body: JSON.stringify(askBody("One")) })).question.id;
+    const waiting = pi.callToolAsPi("clax_ask", { questions: askBody("Two").questions, timeout_s: 30 }, ctx);
+    let q2: string | undefined;
+    while (!q2) q2 = (await api(daemon, "/api/questions?status=open")).questions.find((q: any) => q.questions[0].header === "Two")?.id;
+    expect((await api(daemon, `/api/_test/questions/${q2}/waiters?until=1`)).count).toBe(1);
+    await answer(q1, "A");
+    await answer(q2, "B");
+    const got = parts(await waiting).json;
+    expect(got.question_id).toBe(q2);
+    expect(got.reply).toEqual([{ question: "Which?", header: "Two", selected: ["B"], text: null }]);
+    expect(got.answers.map((a: any) => a.id)).toEqual([q1]);
     expect(parts(await pi.callToolAsPi("clax_list", {}, ctx)).json.answers).toBeUndefined();
   }, 20_000);
 
@@ -741,11 +766,11 @@ describe("comments", () => {
     const foreign = await other.pi.callTool("clax_ask", { question_id: qid }, other.ctx);
     expect(json(foreign).error.code).toBe("not_found");
     const c = parts(await pi.callToolAsPi("clax_ask", { question_id: qid, cancel: true }, ctx)).json;
-    expect(c).toMatchObject({ status: "withdrawn", answers: null, call_again: false });
+    expect(c).toMatchObject({ status: "withdrawn", reply: null, call_again: false });
     // A second ask that was answered before it was cancelled hands the answer over.
     const q2 = await askAndAnswer(sid, "Later", "A");
     const c2 = parts(await pi.callToolAsPi("clax_ask", { question_id: q2, cancel: true }, ctx)).json;
-    expect(c2).toMatchObject({ status: "answered", answers: [{ header: "Later", selected: ["A"] }] });
+    expect(c2).toMatchObject({ status: "answered", reply: [{ header: "Later", selected: ["A"] }] });
     for (const args of [{}, { question_id: "../x" }, { questions: askBody("H").questions, cancel: true }, { questions: askBody("H").questions, question_id: qid }]) {
       const r = await pi.callTool("clax_ask", args, ctx);
       expect(json(r).error.code, JSON.stringify(args)).toBe("invalid_args");

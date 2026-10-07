@@ -50,6 +50,7 @@ struct Proxy {
     upstream: String,
     http: reqwest::Client,
     fail_feedback: AtomicBool,
+    fail_question_poll: AtomicBool,
     before_ack: Mutex<Option<(String, Value)>>,
     acks: Mutex<Vec<Value>>,
 }
@@ -60,6 +61,7 @@ impl Proxy {
             upstream: upstream.to_string(),
             http: reqwest::Client::builder().no_proxy().build().unwrap(),
             fail_feedback: AtomicBool::new(false),
+            fail_question_poll: AtomicBool::new(false),
             before_ack: Mutex::new(None),
             acks: Mutex::new(Vec::new()),
         });
@@ -83,6 +85,13 @@ async fn forward(
     if parts.method == Method::GET
         && route.ends_with("/feedback")
         && p.fail_feedback.load(Ordering::SeqCst)
+    {
+        let err = json!({"error": {"code": "internal", "message": "injected"}});
+        return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(err)).into_response();
+    }
+    if parts.method == Method::GET
+        && route.contains("/questions/")
+        && p.fail_question_poll.load(Ordering::SeqCst)
     {
         let err = json!({"error": {"code": "internal", "message": "injected"}});
         return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(err)).into_response();
@@ -866,10 +875,15 @@ async fn a_late_answer_ends_wait_for_feedback_and_rides_on_a_tool_result_once() 
 
 /// Tools attributed to a fresh session of `harness` on `ts`.
 async fn harness_tools(ts: &TestServer, harness: &str, hsid: &str) -> ClaxTools {
+    harness_tools_via(ts, harness, hsid, &ts.base).await
+}
+
+/// Like [`harness_tools`], sending API calls to `base` (such as a [`Proxy`]).
+async fn harness_tools_via(ts: &TestServer, harness: &str, hsid: &str, base: &str) -> ClaxTools {
     let s: Session = serde_json::from_value(ts.register_session(harness, hsid).await).unwrap();
     let sid = s.id.clone();
     ClaxTools::new(
-        DaemonClient::new(ts.base.clone(), ts.token.clone(), Some(sid)),
+        DaemonClient::new(base.to_string(), ts.token.clone(), Some(sid)),
         format!("http://localhost:{}", ts.addr.port()),
         Some(s),
         ts.home.log_path(),
@@ -913,7 +927,8 @@ async fn ask_returns_the_answer_and_resumes_after_call_again() {
     assert_eq!(first["status"], "open");
     assert_eq!(first["call_again"], true);
     assert_eq!(first["surface_open"], false, "no owner surface is open");
-    assert_eq!(first["answers"], Value::Null);
+    assert_eq!(first["reply"], Value::Null);
+    assert!(first.get("answers").is_none(), "{first}");
     let qid = first["question_id"].as_str().unwrap().to_string();
     assert_eq!(
         first["url"],
@@ -931,12 +946,12 @@ async fn ask_returns_the_answer_and_resumes_after_call_again() {
     assert_eq!(got["call_again"], false);
     assert!(got.get("surface_open").is_none(), "{got}");
     assert_eq!(
-        got["answers"],
+        got["reply"],
         json!([{"question": "Which?", "header": "Pick", "selected": ["B"], "text": null}])
     );
     assert!(got["note"].as_str().unwrap().contains("own words"));
     assert!(got.get("feedback").is_some());
-    assert!(got.get("answers").is_some());
+    assert!(got.get("answers").is_none(), "no late answers: {got}");
     // The answer was handed over by `ask`, so no feedback tier repeats it.
     let (v, trailing) = blocks(&tools.status(Parameters(StatusArgs {})).await.unwrap());
     assert!(v.get("answers").is_none(), "{v}");
@@ -978,7 +993,7 @@ async fn ask_reports_an_open_surface_and_its_page() {
     assert_eq!(res.status(), 200);
     let got = ask(&tools, json!({"question_id": qid})).await;
     assert_eq!(
-        (&got["status"], &got["answers"], &got["call_again"]),
+        (&got["status"], &got["reply"], &got["call_again"]),
         (&json!("declined"), &Value::Null, &json!(false))
     );
 }
@@ -1064,7 +1079,7 @@ async fn cancelling_an_answered_question_hands_the_answer_over_once() {
         .await;
     let c = ask(&tools, json!({"question_id": qid, "cancel": true})).await;
     assert_eq!(c["status"], "answered");
-    assert_eq!(c["answers"][0]["selected"], json!(["A"]));
+    assert_eq!(c["reply"][0]["selected"], json!(["A"]));
     let (v, _) = blocks(&tools.status(Parameters(StatusArgs {})).await.unwrap());
     assert!(v.get("answers").is_none(), "handed over once: {v}");
 }
@@ -1096,4 +1111,136 @@ async fn ask_needs_a_session() {
         ask_err(&tools, json!({"questions": which()})).await,
         "no_session"
     );
+}
+
+/// Question `label` asked by session `sid` through the session route; its ID.
+async fn asked(ts: &TestServer, sid: &str, header: &str) -> String {
+    ts.ask(
+        sid,
+        json!({"source": "ask", "questions": [{"question": "Which?", "header": header,
+            "options": [{"label": "A"}, {"label": "B"}]}]}),
+    )
+    .await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test]
+async fn ask_keeps_its_reply_apart_from_late_answers_to_other_questions() {
+    let (ts, clock) = TestServer::spawn_question_clock().await;
+    let tools = harness_tools(&ts, "claude", "ask-two").await;
+    let sid = tools_session(&tools).await;
+    // Q1 times out and asks to be called again; the agent moves on.
+    let t = tools.clone();
+    let first = tokio::spawn(async move {
+        ask(
+            &t,
+            json!({"questions": [{"question": "First?", "header": "One"}], "timeout_s": 1}),
+        )
+        .await
+    });
+    clock.wait_for(Duration::from_secs(1), 1).await;
+    clock.fire(Duration::from_secs(1));
+    let first = first.await.unwrap();
+    assert_eq!(
+        (&first["status"], &first["call_again"]),
+        (&json!("open"), &json!(true))
+    );
+    let q1 = first["question_id"].as_str().unwrap().to_string();
+    // Q2 is asked, and the person answers both while Q2 waits.
+    let t = tools.clone();
+    let second = tokio::spawn(async move {
+        ask(
+            &t,
+            json!({"questions": [{"question": "Second?", "header": "Two"}], "timeout_s": 60}),
+        )
+        .await
+    });
+    clock.wait_for(Duration::from_secs(60), 1).await;
+    let q2 = ts
+        .store
+        .list_questions(clax_core::store::questions::ListStatus::Open, 10)
+        .unwrap()
+        .0
+        .into_iter()
+        .map(|r| r.id)
+        .find(|id| *id != q1)
+        .expect("Q2 is open");
+    ts.answer_question(&q1, json!({"answers": [{"text": "one"}]}))
+        .await;
+    ts.answer_question(&q2, json!({"answers": [{"text": "two"}]}))
+        .await;
+    let got = second.await.unwrap();
+    assert_eq!(got["question_id"], q2.as_str());
+    assert_eq!(
+        got["reply"],
+        json!([{"question": "Second?", "header": "Two", "selected": [], "text": "two"}])
+    );
+    let late: Vec<&str> = got["answers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(late, [q1.as_str()], "{got}");
+    // Each is handed over once.
+    let (v, _) = blocks(&tools.status(Parameters(StatusArgs {})).await.unwrap());
+    assert!(v.get("answers").is_none(), "{v}");
+
+    // An open result keeps `reply: null` beside late answers.
+    let q3 = asked(&ts, &sid, "Three").await;
+    ts.answer_question(&q3, json!({"answers": [{"selected": ["A"]}]}))
+        .await;
+    let t = tools.clone();
+    let open = tokio::spawn(async move {
+        ask(
+            &t,
+            json!({"questions": [{"question": "Fourth?", "header": "Four"}], "timeout_s": 2}),
+        )
+        .await
+    });
+    clock.wait_for(Duration::from_secs(2), 1).await;
+    clock.fire(Duration::from_secs(2));
+    let open = open.await.unwrap();
+    assert_eq!(open["status"], "open");
+    assert_eq!(open["reply"], Value::Null);
+    assert_eq!(open["answers"][0]["id"], q3.as_str());
+}
+
+#[tokio::test]
+async fn a_failed_wait_after_asking_names_the_question() {
+    let ts = TestServer::spawn().await;
+    let (proxy, base) = Proxy::start(&ts.base).await;
+    let tools = harness_tools_via(&ts, "claude", "ask-fail", &base).await;
+    proxy.fail_question_poll.store(true, Ordering::SeqCst);
+    let r = tools
+        .ask(Parameters(
+            serde_json::from_value(json!({"questions": which()})).unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.is_error, Some(true));
+    let v: Value = serde_json::from_str(&r.content[0].as_text().unwrap().text).unwrap();
+    let qid = v["error"]["question_id"]
+        .as_str()
+        .expect("the question is named");
+    assert_eq!(ts.question_status(qid).await, "open");
+    proxy.fail_question_poll.store(false, Ordering::SeqCst);
+    let c = ask(&tools, json!({"question_id": qid, "cancel": true})).await;
+    assert_eq!(c["status"], "withdrawn");
+}
+
+#[tokio::test]
+async fn ask_waits_at_most_50_s_under_codex() {
+    assert_eq!(clax_mcp::tools::max_ask_wait("codex"), 50);
+    assert_eq!(clax_mcp::tools::max_ask_wait("claude"), 600);
+    let (ts, clock) = TestServer::spawn_question_clock().await;
+    let tools = harness_tools(&ts, "codex", "ask-codex-cap").await;
+    let t = tools.clone();
+    let call =
+        tokio::spawn(async move { ask(&t, json!({"questions": which(), "timeout_s": 300})).await });
+    clock.wait_for(Duration::from_secs(50), 1).await;
+    clock.fire(Duration::from_secs(50));
+    assert_eq!(call.await.unwrap()["status"], "open");
 }
