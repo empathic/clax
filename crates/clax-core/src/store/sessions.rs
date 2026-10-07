@@ -456,6 +456,7 @@ fn not_found(e: CoreError) -> CoreError {
 mod tests {
     use super::*;
     use crate::Home;
+    use crate::store::test_util::DAEMON;
 
     fn store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
@@ -817,6 +818,7 @@ mod tests {
         store.ensure_watch(&s.id, &aid).unwrap();
         let t = store
             .create_thread(
+                DAEMON,
                 &aid,
                 NewThread {
                     author_public_id: None,
@@ -829,7 +831,7 @@ mod tests {
                 },
             )
             .unwrap();
-        store.send_to_agent(&t.id).unwrap();
+        store.send_to_agent(DAEMON, &t.id).unwrap();
         std::thread::sleep(Duration::from_millis(20));
         let reaped = store
             .reap_sessions(Duration::from_millis(10), &|_| false)

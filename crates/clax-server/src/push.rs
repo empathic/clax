@@ -219,7 +219,11 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
             artifact_id: None,
             include_resends: false,
         };
-        let items = match st.take_feedback(&q, &ctx.browser_base) {
+        let items = match st.take_feedback(
+            &clax_core::audit::AuditCtx::DAEMON,
+            &q,
+            &ctx.browser_base,
+        ) {
             Ok((items, claimed)) if !items.is_empty() => {
                 // Announced now: a dispatch triggered without a `thread` event
                 // (a watch or publish retargeting rows) has nothing else to.
@@ -251,7 +255,7 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
                 let error = outcome.failure();
                 if let Some(reason) = &error {
                     tracing::warn!(session = %sid, reason = %reason, "codex queue failed; leaving the rows to the other tiers");
-                    match store.release_feedback(&ids) {
+                    match store.release_feedback(&clax_core::audit::AuditCtx::DAEMON, &ids, reason) {
                         Ok(t) => touched.merge(t),
                         Err(e) => tracing::warn!(error = %e, "releasing feedback failed"),
                     }

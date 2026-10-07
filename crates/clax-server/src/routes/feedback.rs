@@ -12,6 +12,8 @@ use crate::state::AppState;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
+use clax_core::audit::AuditCtx;
 use clax_core::feedback::{ago, quoted, render_items, render_notice};
 use clax_core::questions::render_late;
 use clax_core::store::questions::Status;
@@ -134,6 +136,7 @@ pub struct FeedbackQuery {
 pub async fn poll(
     State(s): State<AppState>,
     _t: RequireToken,
+    headers: HeaderMap,
     sid: Result<Path<String>, PathRejection>,
     q: Result<Query<FeedbackQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -151,7 +154,14 @@ pub async fn poll(
         .transpose()?
         .map(|a| a.as_str().to_string());
     let check = sid.clone();
-    s.store_call(move |st| live_session(st, &check)).await?;
+    // Built once: the poll's deliveries are recorded as this session's agent.
+    let audit = std::sync::Arc::new(
+        s.store_call(move |st| {
+            live_session(st, &check)?;
+            crate::audit::session_ctx(st, &headers, &check)
+        })
+        .await?,
+    );
     let started = Instant::now();
     let deadline = started + Duration::from_secs(q.wait.min(MAX_WAIT_SECS));
     let notify = s.feedback_waiters.get(&sid);
@@ -183,9 +193,10 @@ pub async fn poll(
         let ctx = s.feedback_ctx();
         let t = take.clone();
         let (held, clock) = (s.questions.clone(), s.question_clock.clone());
+        let audit = audit.clone();
         let (items, (answers, late)) = s
             .store_call(move |st| {
-                let (items, touched) = st.take_feedback(&t, &ctx.browser_base)?;
+                let (items, touched) = st.take_feedback(&audit, &t, &ctx.browser_base)?;
                 apply(&ctx, st, &touched);
                 crate::working::renew_for_tier(&ctx, &t.session_id, t.tier);
                 if t.tier == Tier::Queue {
@@ -306,6 +317,7 @@ pub struct AckBody {
 pub async fn ack(
     State(s): State<AppState>,
     _t: RequireToken,
+    audit: AuditCtx,
     sid: Result<Path<String>, PathRejection>,
     req: Result<Json<AckBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -321,10 +333,13 @@ pub async fn ack(
     let n = s
         .store_call(move |st| {
             live_session(st, &sid)?;
-            let mut touched = st.acknowledge(&sid, b.thread_ids.as_deref().unwrap_or_default())?;
-            touched.merge(
-                st.acknowledge_comments(&sid, b.comment_ids.as_deref().unwrap_or_default())?,
-            );
+            let mut touched =
+                st.acknowledge(&audit, &sid, b.thread_ids.as_deref().unwrap_or_default())?;
+            touched.merge(st.acknowledge_comments(
+                &audit,
+                &sid,
+                b.comment_ids.as_deref().unwrap_or_default(),
+            )?);
             apply(&ctx, st, &touched);
             Ok(touched.threads.len())
         })

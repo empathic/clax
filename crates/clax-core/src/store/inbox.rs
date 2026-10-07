@@ -1359,6 +1359,7 @@ mod tests {
         let aid = artifact(st, None);
         let t = st
             .create_thread(
+                &crate::audit::AuditCtx::DAEMON,
                 &aid,
                 NewThread {
                     author_public_id: Some(owner.public_id.clone()),
@@ -1378,6 +1379,7 @@ mod tests {
     fn agent_reply(st: &Store, tid: &str, sid: &str, body: &str) {
         let harness = st.get_session(sid).unwrap().unwrap().harness;
         st.add_comment(
+            &crate::audit::AuditCtx::DAEMON,
             tid,
             NewComment {
                 author_kind: AUTHOR_AGENT,
@@ -1552,6 +1554,7 @@ mod tests {
         let lid = ArtifactId::parse(&e.artifact.id).unwrap();
         let lt = st
             .create_thread(
+                &crate::audit::AuditCtx::DAEMON,
                 &lid,
                 NewThread {
                     author_public_id: Some(pid),
@@ -1566,6 +1569,7 @@ mod tests {
             .unwrap();
         agent_reply(&st, &lt.id, &sid, "Looking");
         st.add_addressed_reply(
+            &crate::audit::AuditCtx::DAEMON,
             &lid,
             &lt.id,
             NewComment {
@@ -1597,7 +1601,8 @@ mod tests {
         );
 
         // Gone: a deleted thread takes its reply; a deleted artifact all.
-        st.delete_thread(&tid).unwrap();
+        st.delete_thread(&crate::audit::AuditCtx::DAEMON, &tid)
+            .unwrap();
         let s = st.inbox_sources(&items).unwrap();
         assert!(s[reply].thread.is_none() && s[reply].reply.is_none());
         assert!(s[version].version.is_some());
@@ -1644,6 +1649,7 @@ mod tests {
         let aid = artifact(&st, None);
         let thread = |body: String| {
             st.create_thread(
+                &crate::audit::AuditCtx::DAEMON,
                 &aid,
                 NewThread {
                     author_public_id: Some("u_stranger".into()),
@@ -1660,8 +1666,12 @@ mod tests {
         };
         let mentioned = thread("@alex look".into());
         let resolved = thread("x".into());
-        st.resolve_thread(&resolved, &format!("viewer:{}", owner.public_id))
-            .unwrap();
+        st.resolve_thread(
+            &crate::audit::AuditCtx::DAEMON,
+            &resolved,
+            &format!("viewer:{}", owner.public_id),
+        )
+        .unwrap();
         agent_reply(&st, &mentioned, &sid, "ok");
         agent_reply(&st, &resolved, &sid, "ok");
         let threads: Vec<_> = all(&st).into_iter().filter_map(|i| i.thread_id).collect();
@@ -1676,6 +1686,7 @@ mod tests {
         let aid = artifact(&st, None);
         let t = st
             .create_thread(
+                &crate::audit::AuditCtx::DAEMON,
                 &aid,
                 NewThread {
                     author_public_id: Some("u_stranger".into()),
@@ -1699,6 +1710,7 @@ mod tests {
         let aid = artifact(&st, Some(&sid));
         let t = st
             .create_thread(
+                &crate::audit::AuditCtx::DAEMON,
                 &aid,
                 NewThread {
                     author_public_id: None,

@@ -1,7 +1,7 @@
 //! The audit context each request resolves (spec
 //! 2026-10-06-toolpath-audit-design §5.2, §6, §6.9), read back through the
 //! test-only route `GET /api/_test/audit/ctx`; the appender's nudge; and
-//! the events each request that changes history records (§6.1, §6.3).
+//! the events each request that changes history records (§6.1, §6.2, §6.3).
 use crate::common;
 use clax_core::audit::{CallHeader, encode_call_header};
 use clax_core::gitctx::{GitContext, GitField, encode_header};
@@ -544,7 +544,13 @@ async fn every_mutation_records_one_event() {
             "live page",
             viewer(ts.client.post(format!("{b}/api/live/threads")))
                 .multipart(live_form("http://localhost:5173/settings", "<main>Save</main>")),
-            vec!["artifact.create", "live.page", "live.snapshot"],
+            vec![
+                "artifact.create",
+                "live.page",
+                "live.snapshot",
+                "thread.open",
+                "comment.add",
+            ],
             "viewer",
             false,
         ),
@@ -623,6 +629,189 @@ async fn every_mutation_records_one_event() {
         true,
     ));
 
+    // Threads, comments, sends and deliveries on the artifact, whose owner
+    // is the agent's session: each request in turn, since later ones name
+    // the threads earlier ones make.
+    let threads = format!("{a}/threads");
+    let thread_form = |body: &str| {
+        reqwest::multipart::Form::new()
+            .text("anchor", clax_server::testing::element_anchor().to_string())
+            .text("body", body.to_string())
+            .text("version", "2")
+    };
+    let (t1, t1_recs) = made(
+        viewer(ts.client.post(&threads)).multipart(thread_form("Tighten")),
+        &ts,
+    )
+    .await;
+    table.push((
+        "thread",
+        t1_recs,
+        vec!["thread.open", "comment.add"],
+        "viewer",
+        false,
+    ));
+    let (t2, t2_recs) = made(
+        viewer(ts.client.post(&threads)).multipart(thread_form("@agent fix the header")),
+        &ts,
+    )
+    .await;
+    table.push((
+        "thread mentioning @agent",
+        t2_recs,
+        vec!["thread.open", "comment.add", "thread.send"],
+        "viewer",
+        false,
+    ));
+    let t = |tid: &str, rest: &str| format!("{threads}/{tid}{rest}");
+    let handle = session["agent_handle"].as_str().unwrap().to_string();
+    // Armed, so the Pi injection tier hands rows over too.
+    db(&ts)
+        .execute(
+            "UPDATE watches SET replies_armed = 1 WHERE session_id = ?1",
+            [&sid],
+        )
+        .unwrap();
+    let feedback = format!("{b}/api/sessions/{sid}/feedback");
+    let thread_steps: Vec<(&str, reqwest::RequestBuilder, Vec<&str>, &str, bool)> = vec![
+        (
+            "viewer comment on a sent thread",
+            viewer(ts.client.post(t(&t2, "/comments"))).json(&json!({"body": "and the footer"})),
+            vec!["comment.add", "thread.send"],
+            "viewer",
+            false,
+        ),
+        (
+            "send to one agent",
+            owner(ts.client.post(t(&t2, "/send"))).json(&json!({"to": handle})),
+            vec!["thread.send"],
+            "owner",
+            false,
+        ),
+        (
+            "send that changes nothing",
+            owner(ts.client.post(t(&t2, "/send"))).json(&json!({"to": handle})),
+            vec![],
+            "owner",
+            false,
+        ),
+        (
+            "batch send",
+            owner(ts.client.post(format!("{a}/threads:send")))
+                .json(&json!({"thread_ids": [t1], "note": "both"})),
+            vec!["thread.send"],
+            "owner",
+            false,
+        ),
+        (
+            "acknowledge",
+            agent(ts.client.post(format!("{feedback}/ack"))).json(&json!({"thread_ids": [t1]})),
+            vec!["feedback.delivered"],
+            "agent",
+            true,
+        ),
+        (
+            "agent reply",
+            agent(ts.client.post(t(&t2, "/comments")))
+                .json(&json!({"body": "Fixed both", "author_kind": "agent"})),
+            vec!["comment.add", "feedback.delivered", "feedback.delivered"],
+            "agent",
+            true,
+        ),
+        (
+            "agent resolve",
+            agent(ts.client.post(t(&t2, "/resolve"))).json(&json!({"as": "agent"})),
+            vec!["thread.resolve"],
+            "agent",
+            true,
+        ),
+        (
+            "resolve of a resolved thread",
+            viewer(ts.client.post(t(&t2, "/resolve"))),
+            vec![],
+            "viewer",
+            false,
+        ),
+        (
+            "reopen",
+            owner(ts.client.post(t(&t2, "/reopen"))),
+            vec!["thread.reopen"],
+            "owner",
+            false,
+        ),
+        (
+            "reopen of an open thread",
+            owner(ts.client.post(t(&t2, "/reopen"))),
+            vec![],
+            "owner",
+            false,
+        ),
+        (
+            "viewer resolve",
+            viewer(ts.client.post(t(&t1, "/resolve"))),
+            vec!["thread.resolve"],
+            "viewer",
+            false,
+        ),
+        (
+            "viewer comment reopening a sent thread",
+            viewer(ts.client.post(t(&t1, "/comments"))).json(&json!({"body": "not yet"})),
+            vec!["comment.add", "thread.reopen", "thread.send"],
+            "viewer",
+            false,
+        ),
+        (
+            "feedback poll",
+            agent(ts.client.get(format!("{feedback}?tier=wait&wait=0"))),
+            vec!["feedback.delivered"],
+            "agent",
+            true,
+        ),
+        (
+            "viewer comment for the prompt hook",
+            viewer(ts.client.post(t(&t1, "/comments"))).json(&json!({"body": "one more"})),
+            vec!["comment.add", "thread.send"],
+            "viewer",
+            false,
+        ),
+        (
+            "prompt hook poll",
+            agent(ts.client.get(format!("{feedback}?tier=prompt_hook&wait=0")))
+                .header("x-clax-via", "hook"),
+            vec!["feedback.delivered"],
+            "agent",
+            true,
+        ),
+        (
+            "viewer comment for Pi",
+            viewer(ts.client.post(t(&t1, "/comments"))).json(&json!({"body": "last one"})),
+            vec!["comment.add", "thread.send"],
+            "viewer",
+            false,
+        ),
+        (
+            "inject poll",
+            agent(ts.client.get(format!("{feedback}?tier=inject&wait=0")))
+                .header("x-clax-via", "pi"),
+            vec!["feedback.delivered"],
+            "agent",
+            true,
+        ),
+        (
+            "thread delete",
+            viewer(ts.client.delete(t(&t2, ""))),
+            vec!["thread.delete"],
+            "viewer",
+            false,
+        ),
+    ];
+    for (name, req, want, actor, with_call) in thread_steps {
+        let seq = last_seq(&ts);
+        let (code, v) = status(req).await;
+        assert!((200..300).contains(&code), "{name}: {code} {v}");
+        table.push((name, events_since(&ts, seq), want, actor, with_call));
+    }
+
     let seq = last_seq(&ts);
     let (code, v) = status(owner(ts.client.delete(&a))).await;
     assert_eq!(code, 204, "{v}");
@@ -677,6 +866,72 @@ async fn every_mutation_records_one_event() {
         (&deleted.body["title"], &deleted.body["current_version"]),
         (&json!("Tracker"), &json!(2))
     );
+    let row = |name: &str| &table.iter().find(|t| t.0 == name).unwrap().1;
+    let opened = &row("thread")[0];
+    assert_eq!(opened.body["version_n"], 2);
+    assert_eq!(opened.body["anchor"]["selector"], "body > main > h2");
+    assert_eq!(opened.body["anchor"]["quote"], "Quarterly goals");
+    assert!(
+        opened.body["anchor"].get("rect").is_none(),
+        "{:?}",
+        opened.body
+    );
+    assert_eq!(opened.body["has_clip"], false);
+    assert_eq!(
+        opened.body["first_comment_id"],
+        row("thread")[1].body["comment_id"]
+    );
+    assert_eq!(row("thread")[1].body["body"], "Tighten");
+    let resolved = &row("agent resolve");
+    assert_eq!(resolved[0].body["resolved_by"], "agent:claude");
+    assert_eq!(resolved[0].body["addressed_version"], 2);
+    assert_eq!(
+        row("send to one agent")[0].body["target"],
+        json!({"session_id": sid, "agent_handle": handle})
+    );
+    for (name, via) in [("prompt hook poll", "hook"), ("inject poll", "pi")] {
+        assert_eq!(row(name)[0].body["via"], via, "{name}");
+    }
+    let tiers: Vec<&str> = [
+        "acknowledge",
+        "agent reply",
+        "feedback poll",
+        "prompt hook poll",
+        "inject poll",
+    ]
+    .iter()
+    .flat_map(|n| row(n).iter())
+    .filter(|r| r.kind == "feedback.delivered")
+    .map(|r| r.body["tier"].as_str().unwrap())
+    .collect();
+    assert_eq!(
+        tiers,
+        [
+            "piggyback",
+            "piggyback",
+            "piggyback",
+            "wait",
+            "prompt_hook",
+            "inject"
+        ]
+    );
+    for r in table.iter().flat_map(|(_, recs, ..)| recs) {
+        if r.kind == "feedback.delivered" {
+            assert_eq!(r.session_id.as_deref(), Some(sid.as_str()), "{r:?}");
+        }
+    }
+    assert_eq!(row("thread delete")[0].body["moved"], false);
+}
+
+/// The thread a request made, and the events it recorded.
+async fn made(req: reqwest::RequestBuilder, ts: &TestServer) -> (String, Vec<Rec>) {
+    let seq = last_seq(ts);
+    let (code, v) = status(req).await;
+    assert_eq!(code, 201, "{v}");
+    (
+        v["thread"]["id"].as_str().unwrap().to_string(),
+        events_since(ts, seq),
+    )
 }
 
 #[tokio::test]
@@ -828,7 +1083,13 @@ async fn live_snapshot_records_origin_and_path() {
     let recs = events_since(&ts, seq);
     assert_eq!(
         kinds(&recs),
-        ["artifact.create", "live.page", "live.snapshot"]
+        [
+            "artifact.create",
+            "live.page",
+            "live.snapshot",
+            "thread.open",
+            "comment.add"
+        ]
     );
     let origin = "http://localhost:5173";
     assert_eq!(recs[0].body["kind"], "live");
@@ -836,7 +1097,8 @@ async fn live_snapshot_records_origin_and_path() {
         assert_eq!(r.artifact_id.as_deref(), Some(aid));
         assert_eq!(r.actor["public_id"], sam.public_id.as_str());
     }
-    for r in &recs[1..] {
+    assert_eq!(recs[3].body["anchor"]["route"], "?tab=x");
+    for r in &recs[1..3] {
         assert_eq!(r.origin.as_deref(), Some(origin), "{r:?}");
         assert_eq!(
             (&r.body["origin"], &r.body["path"]),
@@ -1033,4 +1295,535 @@ async fn a_refused_owner_write_writes_nothing() {
     }
     assert_eq!(viewers(), before, "no viewer row was made");
     assert_eq!(last_seq(&ts), seq);
+}
+
+/// An artifact the session `sid` owns, at version 2, with a thread sent to
+/// the agent: the artifact's and the thread's IDs.
+async fn sent_thread(ts: &TestServer, sid: &str) -> (String, String) {
+    let aid = ts
+        .publish_as(sid, "Report", "<h2>Quarterly goals</h2>")
+        .await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = ts
+        .authed(
+            ts.client
+                .post(format!("{}/api/artifacts/{aid}/versions", ts.base)),
+        )
+        .json(&json!({"if_version": 1, "files": {"index.html": utf8("<h2>Goals</h2>")}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let tid = ts.thread(&aid, 2, "@agent tighten this").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    (aid, tid)
+}
+
+#[tokio::test]
+async fn lan_reply_records_viewer_identity() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let session = ts.register_session("claude", "hs-lan").await;
+    let sid = session["id"].as_str().unwrap().to_string();
+    let (aid, tid) = sent_thread(&ts, &sid).await;
+    let sam = ts.viewer(Some("Sam")).await;
+    let (lan, base) = ts.lan();
+    let seq = last_seq(&ts);
+    let res = lan
+        .post(format!("{base}/api/artifacts/{aid}/threads/{tid}/comments"))
+        .header("cookie", format!("clax_viewer={}", sam.cookie))
+        .json(&json!({"body": "Still too long"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let v: Value = res.json().await.unwrap();
+    let recs = events_since(&ts, seq);
+    // The thread was sent, so the comment is forwarded too.
+    assert_eq!(kinds(&recs), ["comment.add", "thread.send"]);
+    let viewer = json!({"type": "viewer", "public_id": sam.public_id, "display_name": "Sam"});
+    for r in &recs {
+        assert_eq!(r.actor, viewer, "{r:?}");
+        assert_eq!(r.body["via"], "lan");
+        assert_eq!(r.session_id, None, "a viewer has no session");
+        assert!(r.body.get("git").is_none() && r.body.get("call").is_none());
+    }
+    let c = &recs[0].body;
+    assert_eq!(c["comment_id"], v["comment"]["id"]);
+    assert_eq!(c["body"], "Still too long");
+    assert_eq!(
+        (&c["author_kind"], &c["author_name"]),
+        (&json!("viewer"), &json!("Sam"))
+    );
+    assert_eq!(
+        (&c["via_harness"], &c["via_page"]),
+        (&Value::Null, &json!(false))
+    );
+    // The thread names no one agent, so it goes to every live owner and
+    // watcher.
+    let send = &recs[1].body;
+    assert_eq!(send["target"], "watchers");
+    assert_eq!(send["thread_ids"], json!([tid]));
+    assert_eq!(send["feedback_ids"].as_array().map(Vec::len), Some(1));
+    assert!(send.get("batch_id").is_none(), "{send}");
+}
+
+#[tokio::test]
+async fn agent_reply_records_session_git_and_call() {
+    let ts = TestServer::spawn().await;
+    let session = ts.register_session("claude", "hs-reply").await;
+    let sid = session["id"].as_str().unwrap().to_string();
+    let (aid, tid) = sent_thread(&ts, &sid).await;
+    let plain = ts.thread(&aid, 2, "plain").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let reply = |tid: &str, body: &str| {
+        ts.authed(ts.client.post(format!(
+            "{}/api/artifacts/{aid}/threads/{tid}/comments",
+            ts.base
+        )))
+        .header("x-clax-session", &sid)
+        .header("x-clax-call", encode_call_header(&call()).unwrap())
+        .header("x-clax-git", encode_header(&GitField::Ok(git())).unwrap())
+        .json(&json!({"body": body, "author_kind": "agent"}))
+    };
+    // A thread with a clip says so.
+    let seq = last_seq(&ts);
+    let res = ts
+        .create_thread(
+            &aid,
+            2,
+            "see the clip",
+            Some(clax_server::testing::FAKE_PNG),
+        )
+        .await;
+    assert_eq!(res.status(), 201);
+    let opened = events_since(&ts, seq);
+    assert_eq!(opened[0].kind, "thread.open");
+    assert_eq!(opened[0].body["has_clip"], true);
+    // Refused or guided replies record nothing.
+    let seq = last_seq(&ts);
+    let (code, v) = status(reply(&plain, "Done")).await;
+    assert_eq!(code, 200, "{v}");
+    assert!(v["guidance"].is_string(), "{v}");
+    assert_eq!(status(reply(&tid, "   ")).await.0, 400);
+    assert_eq!(last_seq(&ts), seq, "{:?}", events_since(&ts, seq));
+
+    let (code, v) = status(reply(&tid, "Tightened the copy")).await;
+    assert_eq!(code, 201, "{v}");
+    let recs = events_since(&ts, seq);
+    // The reply, then the first delivery of the comment it answers.
+    assert_eq!(kinds(&recs), ["comment.add", "feedback.delivered"]);
+    for r in &recs {
+        assert_eq!(r.actor["type"], "agent");
+        assert_eq!(r.actor["session_id"], sid.as_str());
+        assert_eq!(r.actor["harness_session_id"], "hs-reply");
+        assert_eq!(r.session_id.as_deref(), Some(sid.as_str()));
+        assert_eq!(r.call_id.as_deref(), Some(call().call_id.as_str()));
+        assert_eq!(r.body["call"]["tool"], "publish");
+        assert_eq!(r.body["via"], "mcp");
+        assert_eq!(r.body["git"]["head"], git().head.unwrap().as_str());
+        assert_eq!(r.body["git_capture"], "ok");
+        assert_eq!(r.artifact_id.as_deref(), Some(aid.as_str()));
+    }
+    let c = &recs[0].body;
+    assert_eq!(c["comment_id"], v["comment"]["id"]);
+    assert_eq!(c["body"], "Tightened the copy");
+    assert_eq!(
+        (&c["author_kind"], &c["author_name"], &c["via_harness"]),
+        (&json!("agent"), &json!("claude"), &json!("claude"))
+    );
+    assert_eq!(recs[1].body["tier"], "piggyback");
+    let fid: String = db(&ts)
+        .query_row(
+            "SELECT id FROM feedback WHERE thread_id = ?1",
+            [&tid],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(recs[1].body["feedback_id"], fid.as_str());
+}
+
+#[tokio::test]
+async fn batch_send_is_one_event_listing_threads() {
+    let ts = TestServer::spawn().await;
+    let session = ts.register_session("claude", "hs-batch").await;
+    let sid = session["id"].as_str().unwrap().to_string();
+    let (aid, sent) = sent_thread(&ts, &sid).await;
+    let id = |v: Value| v["id"].as_str().unwrap().to_string();
+    let a = id(ts.thread(&aid, 2, "first").await);
+    let b = id(ts.thread(&aid, 2, "second").await);
+    let seq = last_seq(&ts);
+    let (code, v) = status(
+        ts.client
+            .post(format!("{}/api/artifacts/{aid}/threads:send", ts.base))
+            .json(&json!({
+                "thread_ids": [a, sent, b],
+                "note": "both",
+                "to": session["agent_handle"]
+            })),
+    )
+    .await;
+    assert_eq!(code, 200, "{v}");
+    assert_eq!(v["unchanged"], json!([sent]));
+    let recs = events_since(&ts, seq);
+    assert_eq!(kinds(&recs), ["thread.send"], "one event for the batch");
+    let r = &recs[0];
+    assert_eq!(r.artifact_id.as_deref(), Some(aid.as_str()));
+    assert_eq!(r.body["batch_id"], v["batch"]["id"]);
+    assert_eq!(r.body["thread_ids"], json!([a, b]));
+    assert_eq!(
+        r.body["target"],
+        json!({"session_id": sid, "agent_handle": session["agent_handle"]})
+    );
+    let rows: Vec<String> = {
+        let c = db(&ts);
+        let mut q = c
+            .prepare("SELECT id FROM feedback WHERE batch_id = ?1 ORDER BY created_at, id")
+            .unwrap();
+        q.query_map([v["batch"]["id"].as_str().unwrap()], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert_eq!(rows.len(), 2);
+    let mut recorded: Vec<String> = serde_json::from_value(r.body["feedback_ids"].clone()).unwrap();
+    recorded.sort();
+    let mut rows = rows;
+    rows.sort();
+    assert_eq!(recorded, rows);
+    // A batch with nothing to send records nothing.
+    let seq = last_seq(&ts);
+    let (code, _) = status(
+        ts.client
+            .post(format!("{}/api/artifacts/{aid}/threads:send", ts.base))
+            .json(&json!({"thread_ids": [a, b]})),
+    )
+    .await;
+    assert_eq!(code, 409);
+    assert_eq!(last_seq(&ts), seq);
+    // Sent to every live owner and watcher, the target is `watchers`.
+    let c = id(ts.thread(&aid, 2, "third").await);
+    let seq = last_seq(&ts);
+    let (code, _) = status(
+        ts.client
+            .post(format!("{}/api/artifacts/{aid}/threads:send", ts.base))
+            .json(&json!({"thread_ids": [c]})),
+    )
+    .await;
+    assert_eq!(code, 200);
+    assert_eq!(events_since(&ts, seq)[0].body["target"], "watchers");
+}
+
+#[tokio::test]
+async fn delivery_retry_is_not_recorded() {
+    let ts = TestServer::spawn().await;
+    let session = ts.register_session("claude", "hs-retry").await;
+    let sid = session["id"].as_str().unwrap().to_string();
+    sent_thread(&ts, &sid).await;
+    let take = || async {
+        let res = ts
+            .authed(ts.client.get(format!(
+                "{}/api/sessions/{sid}/feedback?tier=stop_hook&wait=0",
+                ts.base
+            )))
+            .header("x-clax-via", "hook")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        res.json::<Value>().await.unwrap()["feedback"].clone()
+    };
+    // Armed, so the Stop hook tier hands the row over.
+    let watch = db(&ts)
+        .execute(
+            "UPDATE watches SET replies_armed = 1 WHERE session_id = ?1",
+            [&sid],
+        )
+        .unwrap();
+    assert_eq!(watch, 1);
+    let seq = last_seq(&ts);
+    let first = take().await;
+    assert_eq!(first.as_array().map(Vec::len), Some(1), "{first}");
+    let recs = events_since(&ts, seq);
+    assert_eq!(kinds(&recs), ["feedback.delivered"]);
+    assert_eq!(recs[0].body["tier"], "stop_hook");
+    assert_eq!(recs[0].body["via"], "hook");
+    assert_eq!(recs[0].actor["session_id"], sid.as_str());
+    assert_eq!(recs[0].body["feedback_id"], first[0]["feedback_id"]);
+    // Unacknowledged past the resend delay: handed over again, not recorded.
+    db(&ts)
+        .execute(
+            "UPDATE feedback SET last_sent_at = '2000-01-01T00:00:00.000Z'",
+            [],
+        )
+        .unwrap();
+    let seq = last_seq(&ts);
+    let again = take().await;
+    assert_eq!(again[0]["resent"], true, "{again}");
+    // Acknowledging a delivered row records nothing either.
+    let res = ts
+        .authed(
+            ts.client
+                .post(format!("{}/api/sessions/{sid}/feedback/ack", ts.base)),
+        )
+        .json(&json!({"comment_ids": [first[0]["comment_id"]]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(last_seq(&ts), seq, "{:?}", events_since(&ts, seq));
+}
+
+#[tokio::test]
+async fn resolve_addressed_links_version() {
+    let ts = TestServer::spawn().await;
+    let session = ts.register_session("claude", "hs-resolve").await;
+    let sid = session["id"].as_str().unwrap().to_string();
+    let (aid, tid) = sent_thread(&ts, &sid).await;
+    let resolve = |aid: &str, tid: &str| {
+        ts.authed(ts.client.post(format!(
+            "{}/api/artifacts/{aid}/threads/{tid}/resolve",
+            ts.base
+        )))
+        .header("x-clax-session", &sid)
+        .json(&json!({"as": "agent"}))
+    };
+    let seq = last_seq(&ts);
+    assert_eq!(status(resolve(&aid, &tid)).await.0, 200);
+    let recs = events_since(&ts, seq);
+    // The link rides in the resolve: no separate `thread.addressed`.
+    assert_eq!(kinds(&recs), ["feedback.delivered", "thread.resolve"]);
+    assert_eq!(
+        (
+            &recs[1].body["resolved_by"],
+            &recs[1].body["addressed_version"]
+        ),
+        (&json!("agent:claude"), &json!(2))
+    );
+    assert_eq!(recs[1].artifact_id.as_deref(), Some(aid.as_str()));
+    assert_eq!(recs[1].actor["session_id"], sid.as_str());
+    // A thread a viewer already resolved, then resolved by the agent: the
+    // link is the only change, recorded alone.
+    let second = ts.thread(&aid, 2, "@agent and this").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = ts
+        .client
+        .post(format!(
+            "{}/api/artifacts/{aid}/threads/{second}/resolve",
+            ts.base
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let seq = last_seq(&ts);
+    assert_eq!(status(resolve(&aid, &second)).await.0, 200);
+    let recs = events_since(&ts, seq);
+    assert_eq!(kinds(&recs), ["thread.addressed"]);
+    assert_eq!(
+        (&recs[0].body["version_n"], &recs[0].body["source"]),
+        (&json!(2), &json!("resolve"))
+    );
+    let thread_col: Option<String> = db(&ts)
+        .query_row(
+            "SELECT thread_id FROM audit_events WHERE kind = 'thread.addressed'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(thread_col.as_deref(), Some(second.as_str()));
+    // Reopened and resolved again: already linked, so no second link.
+    assert_eq!(
+        status(ts.authed(ts.client.post(format!(
+            "{}/api/artifacts/{aid}/threads/{tid}/reopen",
+            ts.base
+        ))))
+        .await
+        .0,
+        200
+    );
+    let seq = last_seq(&ts);
+    assert_eq!(status(resolve(&aid, &tid)).await.0, 200);
+    let recs = events_since(&ts, seq);
+    assert_eq!(kinds(&recs), ["thread.resolve"]);
+    assert_eq!(recs[0].body["addressed_version"], Value::Null);
+    // A viewer's resolve addresses nothing.
+    let other = ts.thread(&aid, 2, "plain").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let seq = last_seq(&ts);
+    let res = ts
+        .client
+        .post(format!(
+            "{}/api/artifacts/{aid}/threads/{other}/resolve",
+            ts.base
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let recs = events_since(&ts, seq);
+    assert_eq!(kinds(&recs), ["thread.resolve"]);
+    assert_eq!(
+        (
+            &recs[0].body["resolved_by"],
+            &recs[0].body["addressed_version"]
+        ),
+        (&json!("viewer:anonymous"), &Value::Null)
+    );
+    // On a live page the address waits for the next snapshot, which lists it.
+    let sam = ts.viewer(Some("Sam")).await;
+    let (code, v) = status(
+        ts.client
+            .post(format!("{}/api/live/threads", ts.base))
+            .header("cookie", format!("clax_viewer={}", sam.cookie))
+            .multipart(live_form(
+                "http://localhost:5173/settings",
+                "<main>Save</main>",
+            )),
+    )
+    .await;
+    assert_eq!(code, 201, "{v}");
+    let page = v["page"]["artifact_id"].as_str().unwrap().to_string();
+    let live = v["thread"]["id"].as_str().unwrap().to_string();
+    let watch = format!("{}/api/sessions/{sid}/watches/{page}", ts.base);
+    assert_eq!(status(ts.authed(ts.client.put(&watch))).await.0, 200);
+    ts.send_thread(&page, &live).await;
+    let seq = last_seq(&ts);
+    assert_eq!(status(resolve(&page, &live)).await.0, 200);
+    let recs = events_since(&ts, seq);
+    assert_eq!(kinds(&recs), ["feedback.delivered", "thread.resolve"]);
+    assert_eq!(recs[1].body["addressed_version"], Value::Null);
+    let form = reqwest::multipart::Form::new()
+        .text("url", "http://localhost:5173/settings")
+        .text("title", "Settings")
+        .text("pending", json!([live]).to_string())
+        .text("snapshot", "<main>Saved</main>");
+    let seq = last_seq(&ts);
+    let (code, v) = status(
+        ts.client
+            .post(format!("{}/api/live/snapshots", ts.base))
+            .header("cookie", format!("clax_viewer={}", sam.cookie))
+            .multipart(form),
+    )
+    .await;
+    assert_eq!(code, 200, "{v}");
+    let recs = events_since(&ts, seq);
+    assert_eq!(
+        kinds(&recs),
+        ["live.snapshot"],
+        "the link rides in the snapshot"
+    );
+    assert_eq!(recs[0].body["addresses"], json!([live]));
+}
+
+#[tokio::test]
+async fn a_refused_thread_request_writes_nothing() {
+    let ts = TestServer::spawn().await;
+    let v = ts
+        .publish("Report", &[("index.html", "<h2>Quarterly goals</h2>")])
+        .await;
+    let aid = v["artifact"]["id"].as_str().unwrap().to_string();
+    let tid = ts.thread(&aid, 1, "hi").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let viewers = || -> i64 {
+        db(&ts)
+            .query_row("SELECT COUNT(*) FROM viewers", [], |r| r.get(0))
+            .unwrap()
+    };
+    let before = viewers();
+    let seq = last_seq(&ts);
+    let url = format!("{}/api/artifacts/{aid}/threads/{tid}", ts.base);
+    // A first-time viewer has no name: refused before its row is made.
+    let fresh = "clax_viewer=01J9Z3K4M5N6P7Q8R9S0T1V2W3";
+    for req in [
+        ts.client.post(format!("{url}/reopen")),
+        ts.client.delete(&url),
+    ] {
+        let res = req.header("cookie", fresh).send().await.unwrap();
+        assert_eq!(res.status(), 403);
+    }
+    // An agent's delete without the token is unauthorised, as before.
+    let res = ts
+        .client
+        .delete(format!("{url}?as=agent"))
+        .header("cookie", fresh)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401);
+    // So is any thread request refused before it acts, the agent's
+    // without the token included.
+    let threads = format!("{}/api/artifacts/{aid}/threads", ts.base);
+    for (req, want) in [
+        (
+            ts.client
+                .post(format!("{url}/reopen"))
+                .json(&json!({"as": "agent"})),
+            401,
+        ),
+        (
+            ts.client
+                .post(format!("{url}/resolve"))
+                .json(&json!({"as": "agent"})),
+            401,
+        ),
+        (
+            ts.client
+                .post(format!("{url}/comments"))
+                .json(&json!({"body": "hi", "author_kind": "agent"})),
+            401,
+        ),
+        (
+            ts.client
+                .post(format!("{url}/comments"))
+                .json(&json!({"body": "hi", "author_kind": "robot"})),
+            400,
+        ),
+        (ts.client.post(format!("{url}/send")).body("{not json"), 400),
+        (
+            ts.client
+                .post(format!("{threads}:send"))
+                .json(&json!({"thread_ids": "nope"})),
+            400,
+        ),
+        (
+            ts.client
+                .post(&threads)
+                .multipart(reqwest::multipart::Form::new().text("body", "no anchor")),
+            400,
+        ),
+    ] {
+        let res = req.header("cookie", fresh).send().await.unwrap();
+        assert_eq!(res.status(), want, "{:?}", res.url());
+    }
+    assert_eq!(viewers(), before, "no viewer row was made");
+    assert_eq!(last_seq(&ts), seq);
+    // Accepted by the access checks and refused by the store (an empty
+    // comment): the requester's viewer row may be made, but no event.
+    let res = ts
+        .client
+        .post(format!("{url}/comments"))
+        .header("cookie", fresh)
+        .json(&json!({"body": "   "}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    assert_eq!(
+        viewers(),
+        before + 1,
+        "the requester's row, as ensure_viewer makes it"
+    );
+    assert_eq!(last_seq(&ts), seq, "{:?}", events_since(&ts, seq));
 }

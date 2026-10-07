@@ -3,6 +3,7 @@
 
 use super::artifacts::{body, parse_id, path, publishing_session, session_header};
 use super::assets::multipart_error;
+use crate::audit::DeferredAudit;
 use crate::auth::{RequireToken, has_token};
 use crate::error::ApiError;
 use crate::feedback::{apply, thread_view, thread_views};
@@ -16,6 +17,7 @@ use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use clax_core::audit::AuditCtx;
 use clax_core::feedback::Touched;
 use clax_core::model::{Session, Thread};
 use clax_core::store::batches::SendBatch;
@@ -224,30 +226,34 @@ pub async fn clip(
 
 /// Creates the thread `t` on `id`, sends it when its body mentions
 /// `@agent` (unless the page wrote it), publishes the `thread` event, and
-/// returns the thread view (with `clip_path` when `with_path`).
+/// returns the thread view (with `clip_path` when `with_path`). Both are
+/// recorded under `audit`.
 pub(crate) fn create_thread_now(
     st: &Store,
     ctx: &crate::feedback::FeedbackCtx,
+    audit: &AuditCtx,
     id: &ArtifactId,
     t: NewThread,
     with_path: bool,
 ) -> clax_core::Result<Value> {
     let mention = !t.via_page && mentions_agent(&t.body);
-    let thread = st.create_thread(id, t)?;
-    announce_new_thread(st, ctx, thread, mention, with_path)
+    let thread = st.create_thread(audit, id, t)?;
+    announce_new_thread(st, ctx, audit, thread, mention, with_path)
 }
 
 /// What follows writing a new thread: sends it to the agent when its first
-/// comment `mention`s one, announces it, and answers its view.
+/// comment `mention`s one (recorded under `audit`), announces it, and
+/// answers its view.
 pub(crate) fn announce_new_thread(
     st: &Store,
     ctx: &crate::feedback::FeedbackCtx,
+    audit: &AuditCtx,
     mut thread: Thread,
     mention: bool,
     with_path: bool,
 ) -> clax_core::Result<Value> {
     if mention {
-        let (sent, touched) = st.send_to_agent(&thread.id)?;
+        let (sent, touched) = st.send_to_agent(audit, &thread.id)?;
         thread = sent;
         apply(ctx, st, &touched);
     }
@@ -299,6 +305,7 @@ pub async fn create(
     headers: HeaderMap,
     _o: SameOrigin,
     who: Identity,
+    audit: DeferredAudit,
     aid: Result<Path<String>, PathRejection>,
     mp: Result<Multipart, MultipartRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
@@ -387,10 +394,12 @@ pub async fn create(
     let with_path = has_token(&headers, &s.token);
     let view = s
         .store_call(move |st| {
+            let audit = audit.resolve(st)?;
             let (author_name, author_public_id) = author(st, &who)?;
             create_thread_now(
                 st,
                 &ctx,
+                &audit,
                 &id,
                 NewThread {
                     author_public_id,
@@ -455,6 +464,7 @@ pub async fn comment(
     headers: HeaderMap,
     _o: SameOrigin,
     who: Identity,
+    audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
     req: Result<Json<CommentBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
@@ -505,6 +515,7 @@ pub async fn comment(
                 if !t.sent_to_agent {
                     return Ok(Outcome::Guidance(GUIDANCE_REPLY));
                 }
+                let audit = audit.resolve(st)?;
                 let reply = NewComment {
                     author_public_id: None,
                     author_kind: AUTHOR_AGENT,
@@ -514,17 +525,19 @@ pub async fn comment(
                     via_page: false,
                 };
                 let c = if addressed {
-                    st.add_addressed_reply(&id, &tid, reply, &sess.harness)?
+                    st.add_addressed_reply(&audit, &id, &tid, reply, &sess.harness)?
                 } else {
-                    st.add_comment(&tid, reply)?
+                    st.add_comment(&audit, &tid, reply)?
                 };
-                touched.merge(st.acknowledge(&sess.id, std::slice::from_ref(&tid))?);
+                touched.merge(st.acknowledge(&audit, &sess.id, std::slice::from_ref(&tid))?);
                 let changed = ctx.working.thread_done(&sess.id, id.as_str(), &tid);
                 crate::working::announce(&ctx.events, &ctx.working, &changed);
                 c
             } else {
+                let audit = audit.resolve(st)?;
                 let (name, author_public_id) = author(st, &who)?;
                 let c = st.add_comment(
+                    &audit,
                     &tid,
                     NewComment {
                         author_public_id,
@@ -536,7 +549,7 @@ pub async fn comment(
                     },
                 )?;
                 if t.sent_to_agent || (!c.via_page && mentions_agent(&c.body)) {
-                    touched.merge(st.send_to_agent(&tid)?.1);
+                    touched.merge(st.send_to_agent(&audit, &tid)?.1);
                 }
                 c
             };
@@ -593,6 +606,7 @@ pub async fn send(
     State(s): State<AppState>,
     headers: HeaderMap,
     _o: SameOrigin,
+    audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
     raw: Bytes,
 ) -> Result<Json<Value>, ApiError> {
@@ -610,7 +624,9 @@ pub async fn send(
         .store_call(move |st| {
             thread_of(st, &id, &tid)?;
             let to = send_target(st, &id, b.to.as_deref())?;
+            let audit = audit.resolve(st)?;
             let (t, touched) = st.send_to(
+                &audit,
                 &tid,
                 to.as_deref()
                     .map_or(SendTarget::Everyone, SendTarget::Agent),
@@ -645,6 +661,7 @@ pub async fn send_batch(
     headers: HeaderMap,
     _o: SameOrigin,
     who: Identity,
+    audit: DeferredAudit,
     aid: Result<Path<String>, PathRejection>,
     req: Result<Json<BatchBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -656,8 +673,9 @@ pub async fn send_batch(
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
             let to = send_target(st, &id, b.to.as_deref())?;
+            let audit = audit.resolve(st)?;
             let sent_by = author(st, &who)?.0;
-            let r = st.send_batch(&id, SendBatch { thread_ids: b.thread_ids, note: b.note, sent_by, to })?;
+            let r = st.send_batch(&audit, &id, SendBatch { thread_ids: b.thread_ids, note: b.note, sent_by, to })?;
             apply(&ctx, st, &r.touched);
             let sent = r
                 .sent
@@ -706,6 +724,7 @@ pub async fn resolve(
     headers: HeaderMap,
     _o: SameOrigin,
     who: Identity,
+    audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
     raw: Bytes,
 ) -> Result<Response, ApiError> {
@@ -729,7 +748,6 @@ pub async fn resolve(
                 if !t.sent_to_agent {
                     return Ok(Outcome::Guidance(GUIDANCE_RESOLVE));
                 }
-                touched.merge(st.acknowledge(&sess.id, std::slice::from_ref(&tid))?);
                 let by = format!("agent:{}", sess.harness);
                 resolver = Some(sess);
                 by
@@ -739,9 +757,15 @@ pub async fn resolve(
                     None => "viewer:anonymous".to_string(),
                 }
             };
+            let audit = audit.resolve(st)?;
+            if let Some(sess) = &resolver {
+                touched.merge(st.acknowledge(&audit, &sess.id, std::slice::from_ref(&tid))?);
+            }
             let (t, withdrawn) = match &resolver {
-                Some(sess) => st.resolve_thread_addressed(&id, &tid, &by, &sess.harness, live)?,
-                None => st.resolve_thread_touched(&tid, &by)?,
+                Some(sess) => {
+                    st.resolve_thread_addressed(&audit, &id, &tid, &by, &sess.harness, live)?
+                }
+                None => st.resolve_thread_touched(&audit, &tid, &by)?,
             };
             touched.merge(withdrawn);
             let changed = match &resolver {
@@ -791,8 +815,8 @@ fn acting_as(raw: &[u8]) -> Result<bool, ApiError> {
 /// Reopening and deleting need caller level `interact` or above: the token
 /// (the owner shell, the CLI, or an agent, whose session is checked
 /// separately), or a request whose viewer ([`Identity::viewer`]) has a
-/// display name. Anyone else gets 403
-/// `forbidden` asking them to set a name.
+/// display name. Anyone else gets 403 `forbidden` asking them to set a name.
+/// Reads the viewer row without making one.
 async fn require_interact(s: &AppState, authed: bool, who: Identity) -> Result<(), ApiError> {
     if authed {
         return Ok(());
@@ -818,6 +842,7 @@ pub async fn reopen(
     headers: HeaderMap,
     _o: SameOrigin,
     who: Identity,
+    audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
     raw: Bytes,
 ) -> Result<Response, ApiError> {
@@ -840,7 +865,8 @@ pub async fn reopen(
                     return Ok(Outcome::Guidance(GUIDANCE_REOPEN));
                 }
             }
-            let t = st.reopen_thread(&tid)?;
+            let audit = audit.resolve(st)?;
+            let t = st.reopen_thread(&audit, &tid)?;
             publish_thread(&ctx, st, &t)?;
             Ok(Outcome::Done(
                 json!({"thread": thread_view(st, &t, ctx.codex_push(), authed)?}),
@@ -866,6 +892,7 @@ pub async fn delete(
     headers: HeaderMap,
     _o: SameOrigin,
     who: Identity,
+    audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
     q: Result<Query<DeleteQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
@@ -889,7 +916,8 @@ pub async fn delete(
                     return Ok(Outcome::Guidance(GUIDANCE_DELETE));
                 }
             }
-            let (_, touched) = st.delete_thread_touched(&tid)?;
+            let audit = audit.resolve(st)?;
+            let (_, touched) = st.delete_thread_touched(&audit, &tid)?;
             let changed = ctx.working.thread_gone(id.as_str(), &tid);
             crate::working::announce(&ctx.events, &ctx.working, &changed);
             ctx.events.publish(Event::ThreadDeleted {

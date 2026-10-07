@@ -1654,6 +1654,7 @@ mod tests {
         store.watch(&session, &aid, true).unwrap();
         let t = store
             .create_thread(
+                DAEMON,
                 &aid,
                 crate::NewThread {
                     author_public_id: None,

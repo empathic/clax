@@ -1328,7 +1328,8 @@ mod tests {
     }
 
     fn thread(st: &Store, id: &ArtifactId, route: Option<&str>) -> Thread {
-        st.create_thread(id, new_thread(st, id, route)).unwrap()
+        st.create_thread(DAEMON, id, new_thread(st, id, route))
+            .unwrap()
     }
 
     fn index(st: &Store, id: &ArtifactId, n: u32) -> String {
@@ -1536,7 +1537,7 @@ mod tests {
             .unwrap();
         assert_eq!((x[0].moves.len(), x[0].addressed_in.clone()), (1, vec![3]));
         assert_eq!(index(&st, &b, 2), "<p>a1");
-        st.delete_thread(&t.id).unwrap();
+        st.delete_thread(DAEMON, &t.id).unwrap();
     }
 
     #[test]
@@ -1665,6 +1666,7 @@ mod tests {
         let html = crate::store::test_util::artifact(&st, None);
         let h = st
             .create_thread(
+                DAEMON,
                 &html,
                 NewThread {
                     version_n: 1,
@@ -1807,13 +1809,24 @@ mod tests {
             .unwrap();
         let canon = ArtifactId::parse(&canon.artifact.id).unwrap();
         assert!(watchers(&st, &canon).is_empty());
-        st.create_live_thread(
-            &canon,
-            new_thread(&st, &canon, None),
-            None,
-            Some("/users/1"),
-        )
-        .unwrap();
+        let made = st
+            .create_live_thread(
+                DAEMON,
+                &canon,
+                new_thread(&st, &canon, None),
+                None,
+                Some("/users/1"),
+            )
+            .unwrap()
+            .unwrap();
+        let open = st
+            .events_after(0, 1000)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.kind == "thread.open" && e.ids.thread.as_deref() == Some(made.id.as_str()))
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_str(&open.body).unwrap();
+        assert_eq!(body["live_path"], "/users/1", "the path the rule mapped");
         assert_eq!(watchers(&st, &canon), vec![one.clone()]);
         // A scope made later covers it by the same path; removing it too.
         let (_, covered) = st.live_watch(&two, &key("/users/1"), true).unwrap();
@@ -1891,6 +1904,7 @@ mod tests {
         let b = page(&st, "/b", "<p>b");
         let t = st
             .create_thread(
+                &crate::audit::AuditCtx::DAEMON,
                 &a,
                 NewThread {
                     author_public_id: Some(owner.public_id),
@@ -1899,6 +1913,7 @@ mod tests {
             )
             .unwrap();
         st.add_comment(
+            &crate::audit::AuditCtx::DAEMON,
             &t.id,
             crate::store::threads::NewComment {
                 author_kind: crate::store::threads::AUTHOR_AGENT,
@@ -1955,6 +1970,7 @@ mod tests {
             // The copies are staged and the move waits: a comment is
             // written meanwhile.
             st.add_comment(
+                DAEMON,
                 &other.id,
                 crate::store::threads::NewComment {
                     author_kind: crate::store::threads::AUTHOR_VIEWER,

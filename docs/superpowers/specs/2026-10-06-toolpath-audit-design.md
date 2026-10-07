@@ -254,7 +254,7 @@ CREATE TABLE audit_events (
   artifact_id  TEXT,              -- no FK: events outlive deletion
   artifact2_id TEXT,              -- second artifact of a thread.move
   thread_id    TEXT,
-  session_id   TEXT,              -- Clax session ULID of an agent actor
+  session_id   TEXT,              -- the event's Clax session: an agent actor's, or the receiving session of a delivery or release
   question_id  TEXT,
   call_id      TEXT,              -- tool call this event was made under (§6.7)
   origin       TEXT,              -- live-page origin, for --live selection
@@ -373,6 +373,20 @@ repeated in `body`.
 `git` appears on agent actions whose agent side captured it (O2, §9). `call`
 appears on every event made under a tool call (§6.7).
 
+**The recording rule.** An event is recorded exactly when the store writes,
+in the write's own transaction. A request that changes nothing (a resolve of
+a resolved thread, a reopen of an open one, a send with nothing new to send
+that keeps the target) records nothing. A request refused by the access
+checks, before its audit context is resolved, makes no row and records no
+event. A request the store refuses after that may make the requester's
+viewer row (the `ensure_viewer` rule for requests that act) but records no
+event.
+
+**No duplicate facts.** A thread's link to a version is carried by the event
+that made it: `version.publish.addresses`, `live.snapshot.addresses`, or
+`thread.resolve.addressed_version`. `thread.addressed` is recorded only for
+a link no other event carries.
+
 ### 6.1 Artifacts and versions
 
 | Kind | Body | Recorded at |
@@ -391,14 +405,15 @@ appears on every event made under a tool call (§6.7).
 
 | Kind | Body | Recorded at |
 |---|---|---|
-| `thread.open` | `version_n, anchor (selector, text quote, html_hash, route), live_path, has_clip, first_comment_id` | `create_thread` |
-| `comment.add` | `comment_id, body, author_kind, author_name, via_harness, via_page` | `add_comment`, `add_addressed_reply` |
-| `thread.resolve` | `resolved_by, addressed_version (n\|null)` | `resolve_thread`, `resolve_thread_addressed` |
-| `thread.reopen` | none | `reopen_thread` |
+| `thread.open` | `version_n, anchor {kind, selector, quote, prefix, suffix, html_hash, file, route} (the text quote is `quote`, `prefix`, `suffix`; no geometry), live_path, has_clip, first_comment_id` | `create_thread`, followed by the first comment's `comment.add` |
+| `comment.add` | `comment_id, body, author_kind, author_name, via_harness, via_page` | `add_comment`, `add_addressed_reply`; a viewer comment that reopens a resolved thread records `comment.add` then `thread.reopen` |
+| `thread.resolve` | `resolved_by, addressed_version (n\|null)` | `resolve_thread`, `resolve_thread_addressed`, when the thread was open; `addressed_version` is the version an agent's resolve linked it to |
+| `thread.reopen` | none | `reopen_thread`, when the thread was resolved |
 | `thread.delete` | `moved` | `delete_thread` |
-| `thread.send` | `target (session\|agent handle\|watchers), feedback_ids[], batch_id?, thread_ids[]` | `send_to`, `threads:send` (one event per send) |
-| `feedback.delivered` | `feedback_id, tier` | a feedback row's first delivery (retries are not recorded) |
-| `thread.addressed` | `version_n, source (working\|resolve)` | `version_threads` links made after the publish (an explicit `addresses` rides inside `version.publish`) |
+| `thread.send` | `target ("watchers" \| {session_id, agent_handle}), feedback_ids[], batch_id?, thread_ids[]` | `send_to`, `threads:send` (one event per send that changes something); a comment's automatic forward records its own send |
+| `feedback.delivered` | `feedback_id, tier` | a feedback row's hand-over while undelivered, or its acknowledgement while undelivered (tier `piggyback`); resends are not recorded. `session_id` is the receiving session |
+| `feedback.release` | `feedback_id, tier (queue), reason` | a failed `codex queue` claim returned to undelivered, in the release's transaction (actor `system:daemon`; `session_id` the target). A later delivery records its own `feedback.delivered` |
+| `thread.addressed` | `version_n, source (resolve)` | a link to the current version made by an agent's resolve of a thread already resolved, which records no `thread.resolve`. Every other link rides in the event that made it |
 
 ### 6.3 Live pages
 
@@ -954,7 +969,7 @@ The correlation RFC requires readers to keep unknown `rel` values.
 | `at-revision` | an agent step with `git.head` → `git:<normalized remote>@<head>` (`git:file://<repo root>@<head>` when there is no remote). The owner accepted adding it to the correlation RFC (O5). |
 | `artifact`, `thread`, `version`, `question` | a step → the `clax://` objects it concerns |
 | `replies-to` | `comment.add` → its thread |
-| `addresses` | `version.publish` and `thread.addressed` → the thread |
+| `addresses` | `version.publish`, `live.snapshot`, `thread.addressed`, and `thread.resolve` with a non-null `addressed_version` → the thread |
 | `resolves` | `thread.resolve` → the thread |
 | `moved-from`, `moved-to` | `thread.move` → the artifacts |
 | `answers` | `question.answer` → the question |

@@ -874,6 +874,7 @@ mod tests {
     fn thread(st: &Store, id: &ArtifactId) -> String {
         let n = st.get_artifact(id).unwrap().unwrap().current_version;
         st.create_live_thread(
+            &crate::audit::AuditCtx::DAEMON,
             id,
             NewThread {
                 author_public_id: None,

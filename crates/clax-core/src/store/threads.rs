@@ -6,6 +6,7 @@ use super::Store;
 use super::batches::ThreadSend;
 use super::feedback::{feedback_states_in, id_array};
 use crate::anchor::Anchor;
+use crate::audit::{AuditCtx, AuditKind, AuditRecord};
 use crate::feedback::FeedbackState;
 use crate::model::{Comment, Thread};
 use crate::{ArtifactId, CoreError, Result, new_ulid};
@@ -75,6 +76,46 @@ fn check_body(body: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// The anchor as `thread.open` records it (spec 2026-10-06-toolpath-audit
+/// §6.2): its kind, selector, text quote (`quote`, `prefix`, `suffix`),
+/// `html_hash`, file and route; not its geometry or custom name.
+fn anchor_record(a: &Anchor) -> serde_json::Value {
+    serde_json::json!({
+        "kind": a.kind,
+        "selector": a.selector,
+        "quote": a.quote,
+        "prefix": a.prefix,
+        "suffix": a.suffix,
+        "html_hash": a.html_hash,
+        "file": a.file,
+        "route": a.route,
+    })
+}
+
+/// The `comment.add` record of comment `c` on a thread of artifact `aid`
+/// (spec 2026-10-06-toolpath-audit §6.2). The body text is recorded as
+/// written; export redacts it on request (§11).
+fn comment_record(aid: &str, c: &Comment) -> AuditRecord {
+    let mut r = AuditRecord::new(AuditKind::CommentAdd, c.created_at.as_str())
+        .with("comment_id", c.id.as_str())
+        .with("body", c.body.as_str())
+        .with("author_kind", c.author_kind.as_str())
+        .with("author_name", c.author_name.as_str())
+        .with("via_harness", c.via_harness.clone())
+        .with("via_page", c.via_page);
+    r.ids.artifact = Some(aid.to_string());
+    r.ids.thread = Some(c.thread_id.clone());
+    r
+}
+
+/// A record of `kind` about thread `tid` of artifact `aid`, at `at`.
+pub(crate) fn thread_record(kind: AuditKind, at: &str, aid: &str, tid: &str) -> AuditRecord {
+    let mut r = AuditRecord::new(kind, at);
+    r.ids.artifact = Some(aid.to_string());
+    r.ids.thread = Some(tid.to_string());
+    r
 }
 
 /// Threads of live artifacts; callers append `AND ...` conditions.
@@ -391,24 +432,27 @@ impl Store {
     /// is written, not even the clips directory) or comes after and removes
     /// the clip with the artifact's files. When anything fails, no rows
     /// remain and no clip file is left behind. Callers check the clip with
-    /// [`clip_problem`] first.
+    /// [`clip_problem`] first. Records `thread.open` and the first comment's
+    /// `comment.add` under `ctx`, in the same transaction.
     ///
     /// # Errors
     /// `NotFound` for a missing or deleted artifact; `invalid_anchor` (also
     /// when the version holds no file at `anchor.file`), `invalid_comment`, or
     /// `unknown_version` for bad input.
-    pub fn create_thread(&self, id: &ArtifactId, t: NewThread) -> Result<Thread> {
-        self.create_thread_then(id, t, |_, _| Ok(()))
+    pub fn create_thread(&self, ctx: &AuditCtx, id: &ArtifactId, t: NewThread) -> Result<Thread> {
+        self.create_thread_then(ctx, id, t, |_, _| Ok(None))
     }
 
     /// [`Store::create_thread`], running `then` with the new thread's ID in
     /// the transaction that writes it: an error from `then` rolls the thread
-    /// back.
+    /// back. `then` answers the `live_path` it set, which `thread.open`
+    /// records.
     pub(crate) fn create_thread_then(
         &self,
+        ctx: &AuditCtx,
         id: &ArtifactId,
         t: NewThread,
-        then: impl FnOnce(&rusqlite::Transaction<'_>, &str) -> Result<()>,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, &str) -> Result<Option<String>>,
     ) -> Result<Thread> {
         t.anchor.validate()?;
         check_body(&t.body)?;
@@ -482,7 +526,26 @@ impl Store {
                 params![cid, tid, t.author_name, t.author_public_id, t.via_page, t.body, now],
             )?;
             insert_mentions(tx, &cid, &t.body)?;
-            then(tx, &tid)?;
+            let live_path = then(tx, &tid)?;
+            let open = thread_record(AuditKind::ThreadOpen, &now, id.as_str(), &tid)
+                .with("version_n", t.version_n)
+                .with("anchor", anchor_record(&t.anchor))
+                .with("live_path", live_path)
+                .with("has_clip", t.clip.is_some())
+                .with("first_comment_id", cid.as_str());
+            self.record_audit(tx, ctx, open)?;
+            let first = Comment {
+                id: cid.clone(),
+                thread_id: tid.clone(),
+                author_kind: AUTHOR_VIEWER.to_string(),
+                author_name: t.author_name.clone(),
+                author_public_id: t.author_public_id.clone(),
+                via_harness: None,
+                via_page: t.via_page,
+                body: t.body.clone(),
+                created_at: now.clone(),
+            };
+            self.record_audit(tx, ctx, comment_record(id.as_str(), &first))?;
             Ok(clip)
         })?;
         if let Some(mut clip) = clip {
@@ -492,13 +555,15 @@ impl Store {
     }
 
     /// Adds a comment. A viewer comment on a resolved thread reopens it; an
-    /// agent comment never changes the thread's status.
+    /// agent comment never changes the thread's status. Records `comment.add`
+    /// under `ctx`, and `thread.reopen` after it when the comment reopened
+    /// the thread, in the comment's transaction.
     ///
     /// # Errors
     /// `NotFound` when the thread or its artifact is gone; `invalid_author_kind`
     /// or `invalid_comment` for bad input.
-    pub fn add_comment(&self, thread_id: &str, c: NewComment) -> Result<Comment> {
-        self.add_comment_then(thread_id, c, |_, _| Ok(()))
+    pub fn add_comment(&self, ctx: &AuditCtx, thread_id: &str, c: NewComment) -> Result<Comment> {
+        self.add_comment_then(ctx, thread_id, c, |_, _| Ok(()))
     }
 
     /// An agent reply `c` on thread `tid` of the live page `id` that also
@@ -510,12 +575,13 @@ impl Store {
     /// As [`Store::add_comment`]; `NotFound` also when `tid` is not a thread of `id`.
     pub fn add_addressed_reply(
         &self,
+        ctx: &AuditCtx,
         id: &ArtifactId,
         tid: &str,
         c: NewComment,
         harness: &str,
     ) -> Result<Comment> {
-        self.add_comment_then(tid, c, |tx, t| {
+        self.add_comment_then(ctx, tid, c, |tx, t| {
             if t.artifact_id != id.as_str() {
                 return Err(CoreError::NotFound);
             }
@@ -528,6 +594,7 @@ impl Store {
     /// comment's transaction; an error from `then` writes nothing.
     fn add_comment_then(
         &self,
+        ctx: &AuditCtx,
         thread_id: &str,
         c: NewComment,
         then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread) -> Result<()>,
@@ -580,12 +647,22 @@ impl Store {
                     &comment.body,
                 )?;
             }
+            self.record_audit(tx, ctx, comment_record(&t.artifact_id, &comment))?;
             if comment.author_kind == AUTHOR_VIEWER {
                 insert_mentions(tx, &comment.id, &comment.body)?;
                 tx.execute(
                     "UPDATE threads SET status = 'open', resolved_at = NULL, resolved_by = NULL WHERE id = ?1",
                     params![thread_id],
                 )?;
+                if t.status == "resolved" {
+                    let reopen = thread_record(
+                        AuditKind::ThreadReopen,
+                        &comment.created_at,
+                        &t.artifact_id,
+                        thread_id,
+                    );
+                    self.record_audit(tx, ctx, reopen)?;
+                }
             }
             then(tx, &t)
         })?;
@@ -813,73 +890,101 @@ impl Store {
     ///
     /// # Errors
     /// `NotFound` when the thread or its artifact is gone.
-    pub fn resolve_thread(&self, thread_id: &str, by: &str) -> Result<Thread> {
-        self.resolve_thread_touched(thread_id, by).map(|(t, _)| t)
+    pub fn resolve_thread(&self, ctx: &AuditCtx, thread_id: &str, by: &str) -> Result<Thread> {
+        self.resolve_thread_touched(ctx, thread_id, by)
+            .map(|(t, _)| t)
     }
 
     /// [`Store::resolve_thread`], also returning what it changed: the thread is
     /// in `threads` when undelivered rows were deleted (its feedback state then
     /// reflects only delivered rows, or is `None` when none remain); `targets`
     /// is always empty, since no session gains rows.
+    ///
+    /// Resolving an open thread records `thread.resolve` under `ctx` in the
+    /// same transaction, with `resolved_by` the `by` given and
+    /// `addressed_version` the version an agent's resolve linked it to (else
+    /// `null`). Resolving a resolved thread changes nothing and records
+    /// nothing.
     pub fn resolve_thread_touched(
         &self,
+        ctx: &AuditCtx,
         thread_id: &str,
         by: &str,
     ) -> Result<(Thread, crate::feedback::Touched)> {
-        self.resolve_thread_then(thread_id, by, |_, _| Ok(()))
+        self.resolve_thread_then(ctx, thread_id, by, |_, _| Ok(None))
     }
 
     /// An agent's resolve of thread `tid` of artifact `id`, by `by`, that
     /// also records that the agent of `harness` addressed it, in one
     /// transaction: on a live page (`live`) as a pending `resolve` address
     /// ([`Store::mark_pending`]), otherwise linked to the current version
-    /// ([`Store::link_on_resolve`]). Both are written, or neither. Returns
-    /// what [`Store::resolve_thread_touched`] does.
+    /// (`link_on_resolve_in`). Both are written, or neither. Returns
+    /// what [`Store::resolve_thread_touched`] does. The link rides in the
+    /// resolve's `thread.resolve` (`addressed_version`); when the thread was
+    /// already resolved, so no `thread.resolve` is recorded, a new link is
+    /// recorded as `thread.addressed` (source `resolve`).
     ///
     /// # Errors
     /// As [`Store::resolve_thread`]; `NotFound` also when `tid` is not a
     /// thread of `id`.
     pub fn resolve_thread_addressed(
         &self,
+        ctx: &AuditCtx,
         id: &ArtifactId,
         tid: &str,
         by: &str,
         harness: &str,
         live: bool,
     ) -> Result<(Thread, crate::feedback::Touched)> {
-        self.resolve_thread_then(tid, by, |tx, t| {
+        self.resolve_thread_then(ctx, tid, by, |tx, t| {
             if t.artifact_id != id.as_str() {
                 return Err(CoreError::NotFound);
             }
             if live {
                 super::live::mark_pending_in(tx, id, tid, "resolve", harness)?;
+                Ok(None)
             } else {
-                super::changelog::link_on_resolve_in(tx, tid)?;
+                super::changelog::link_on_resolve_in(tx, tid)
             }
-            Ok(())
         })
     }
 
     /// [`Store::resolve_thread_touched`], running `then` with the thread in
-    /// the resolve's transaction; an error from `then` writes nothing.
+    /// the resolve's transaction; an error from `then` writes nothing. `then`
+    /// answers the version it linked the thread to, if any.
     fn resolve_thread_then(
         &self,
+        ctx: &AuditCtx,
         thread_id: &str,
         by: &str,
-        then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread) -> Result<()>,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread) -> Result<Option<u32>>,
     ) -> Result<(Thread, crate::feedback::Touched)> {
         let touched = self.with_tx(|tx| {
             let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
+            let now = Store::now();
             tx.execute(
                 "UPDATE threads SET status = 'resolved', resolved_at = COALESCE(resolved_at, ?2),
                     resolved_by = COALESCE(resolved_by, ?3) WHERE id = ?1",
-                params![thread_id, Store::now(), by],
+                params![thread_id, now, by],
             )?;
             let deleted = tx.execute(
                 "DELETE FROM feedback WHERE thread_id = ?1 AND delivered_at IS NULL",
                 params![thread_id],
             )?;
-            then(tx, &t)?;
+            let linked = then(tx, &t)?;
+            if t.status != "resolved" {
+                let rec = thread_record(AuditKind::ThreadResolve, &now, &t.artifact_id, thread_id)
+                    .with("resolved_by", by)
+                    .with("addressed_version", linked);
+                self.record_audit(tx, ctx, rec)?;
+            }
+            if let Some(n) = linked.filter(|_| t.status == "resolved") {
+                let rec =
+                    thread_record(AuditKind::ThreadAddressed, &now, &t.artifact_id, thread_id)
+                        .with("version_n", n)
+                        .with("source", crate::changelog::LinkSource::Resolve.as_str());
+                self.record_audit(tx, ctx, rec)?;
+            }
             let mut touched = crate::feedback::Touched::default();
             if deleted > 0 {
                 touched
@@ -895,17 +1000,23 @@ impl Store {
     }
 
     /// Reopens a thread: status `open`, `resolved_at` and `resolved_by`
-    /// cleared. Reopening an open thread changes nothing.
+    /// cleared, recorded as `thread.reopen` under `ctx` in the same
+    /// transaction. Reopening an open thread changes and records nothing.
     ///
     /// # Errors
     /// `NotFound` when the thread or its artifact is gone.
-    pub fn reopen_thread(&self, thread_id: &str) -> Result<Thread> {
+    pub fn reopen_thread(&self, ctx: &AuditCtx, thread_id: &str) -> Result<Thread> {
         self.with_tx(|tx| {
-            thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
+            let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
             tx.execute(
                 "UPDATE threads SET status = 'open', resolved_at = NULL, resolved_by = NULL WHERE id = ?1",
                 params![thread_id],
             )?;
+            if t.status == "resolved" {
+                let rec =
+                    thread_record(AuditKind::ThreadReopen, &Store::now(), &t.artifact_id, thread_id);
+                self.record_audit(tx, ctx, rec)?;
+            }
             Ok(())
         })?;
         self.get_thread(thread_id)?.ok_or(CoreError::NotFound)
@@ -918,16 +1029,18 @@ impl Store {
     ///
     /// # Errors
     /// `NotFound` when the thread or its artifact is gone.
-    pub fn delete_thread(&self, thread_id: &str) -> Result<Thread> {
-        self.delete_thread_touched(thread_id).map(|(t, _)| t)
+    pub fn delete_thread(&self, ctx: &AuditCtx, thread_id: &str) -> Result<Thread> {
+        self.delete_thread_touched(ctx, thread_id).map(|(t, _)| t)
     }
 
     /// [`Store::delete_thread`], also returning what it changed: `targets`
     /// are the sessions that held undelivered rows of the thread (their
     /// waits and pushes learn the rows are gone); `threads` is empty, since a
-    /// deleted thread has no feedback state.
+    /// deleted thread has no feedback state. Recorded as `thread.delete`
+    /// (`moved: false`) under `ctx`, in the same transaction.
     pub fn delete_thread_touched(
         &self,
+        ctx: &AuditCtx,
         thread_id: &str,
     ) -> Result<(Thread, crate::feedback::Touched)> {
         let (t, targets) = self.with_tx(|tx| {
@@ -952,6 +1065,9 @@ impl Store {
             tx.execute("DELETE FROM thread_moves WHERE thread_id = ?1", params![thread_id])?;
             tx.execute("DELETE FROM comments WHERE thread_id = ?1", params![thread_id])?;
             tx.execute("DELETE FROM threads WHERE id = ?1", params![thread_id])?;
+            let rec = thread_record(AuditKind::ThreadDelete, &Store::now(), &t.artifact_id, thread_id)
+                .with("moved", false);
+            self.record_audit(tx, ctx, rec)?;
             Ok((t, targets))
         })?;
         if t.has_clip {
@@ -997,12 +1113,107 @@ mod tests {
         }
     }
 
+    /// The kinds recorded after `seq`, and the newest `seq`.
+    fn kinds_after(st: &Store, seq: i64) -> (Vec<String>, i64) {
+        let rows = st.events_after(seq, 1000).unwrap();
+        let last = rows.last().map_or(seq, |r| r.seq);
+        (rows.into_iter().map(|r| r.kind).collect(), last)
+    }
+
+    #[test]
+    fn thread_changes_record_one_event_each_and_no_change_records_none() {
+        let (_d, st) = store();
+        let id = artifact(&st, None);
+        let (_, seq) = kinds_after(&st, 0);
+        let t = st
+            .create_thread(DAEMON, &id, new_thread("hi", None))
+            .unwrap();
+        let (k, seq) = kinds_after(&st, seq);
+        assert_eq!(k, ["thread.open", "comment.add"]);
+        let viewer = |body: &str| NewComment {
+            author_kind: AUTHOR_VIEWER,
+            author_name: "Sam".into(),
+            author_public_id: None,
+            via_session_id: None,
+            body: body.into(),
+            via_page: false,
+        };
+        assert!(st.add_comment(DAEMON, &t.id, viewer("  ")).is_err());
+        assert!(
+            st.add_comment(DAEMON, "01JB0000000000000000000000", viewer("x"))
+                .is_err()
+        );
+        let (k, seq) = kinds_after(&st, seq);
+        assert!(k.is_empty(), "{k:?}");
+        st.resolve_thread(DAEMON, &t.id, "viewer:anonymous")
+            .unwrap();
+        st.resolve_thread(DAEMON, &t.id, "viewer:anonymous")
+            .unwrap();
+        let (k, seq) = kinds_after(&st, seq);
+        assert_eq!(k, ["thread.resolve"]);
+        st.reopen_thread(DAEMON, &t.id).unwrap();
+        st.reopen_thread(DAEMON, &t.id).unwrap();
+        let (k, seq) = kinds_after(&st, seq);
+        assert_eq!(k, ["thread.reopen"]);
+        st.resolve_thread(DAEMON, &t.id, "viewer:anonymous")
+            .unwrap();
+        st.add_comment(DAEMON, &t.id, viewer("again")).unwrap();
+        let (k, seq) = kinds_after(&st, seq);
+        assert_eq!(k, ["thread.resolve", "comment.add", "thread.reopen"]);
+        // An agent's resolve carries its link in `thread.resolve`; on a
+        // thread already resolved it records the link alone.
+        st.resolve_thread_addressed(DAEMON, &id, &t.id, "agent:claude", "claude", false)
+            .unwrap();
+        let (k, seq) = kinds_after(&st, seq);
+        assert_eq!(k, ["thread.resolve"]);
+        let resolved = st.events_after(seq - 1, 1).unwrap();
+        let body: serde_json::Value = serde_json::from_str(&resolved[0].body).unwrap();
+        assert_eq!(body["addressed_version"], 1);
+        st.reopen_thread(DAEMON, &t.id).unwrap();
+        st.resolve_thread(DAEMON, &t.id, "viewer:anonymous")
+            .unwrap();
+        st.writer
+            .run(|c| {
+                c.execute("DELETE FROM version_threads", [])?;
+                Ok(())
+            })
+            .unwrap();
+        let (_, seq) = kinds_after(&st, seq);
+        st.resolve_thread_addressed(DAEMON, &id, &t.id, "agent:claude", "claude", false)
+            .unwrap();
+        let rows = st.events_after(seq, 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, "thread.addressed");
+        let body: serde_json::Value = serde_json::from_str(&rows[0].body).unwrap();
+        assert_eq!(
+            (&body["version_n"], &body["source"]),
+            (&1.into(), &"resolve".into())
+        );
+        let seq = rows[0].seq;
+        st.resolve_thread_addressed(DAEMON, &id, &t.id, "agent:claude", "claude", false)
+            .unwrap();
+        let (k, seq) = kinds_after(&st, seq);
+        assert!(k.is_empty(), "already linked: {k:?}");
+        st.delete_thread(DAEMON, &t.id).unwrap();
+        let rows = st.events_after(seq, 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, "thread.delete");
+        assert_eq!(rows[0].ids.thread.as_deref(), Some(t.id.as_str()));
+        assert_eq!(rows[0].ids.artifact.as_deref(), Some(id.as_str()));
+        let body: serde_json::Value = serde_json::from_str(&rows[0].body).unwrap();
+        assert_eq!(
+            (&body["moved"], &body["via"]),
+            (&false.into(), &"daemon".into())
+        );
+    }
+
     #[test]
     fn create_thread_stores_anchor_first_comment_and_clip() {
         let (_d, st) = store();
         let aid = artifact(&st, None);
         let t = st
             .create_thread(
+                DAEMON,
                 &aid,
                 new_thread("Make this two columns.", Some(PNG.to_vec())),
             )
@@ -1041,7 +1252,7 @@ mod tests {
             let mut nt = new_thread("x", None);
             nt.version_n = n;
             nt.anchor.file = file.into();
-            st.create_thread(&aid, nt)
+            st.create_thread(DAEMON, &aid, nt)
         };
         let t = on(2, "about.html").unwrap();
         assert_eq!(t.anchor.file, "about.html");
@@ -1071,7 +1282,7 @@ mod tests {
         let aid = artifact(&st, None);
         let mut nt = new_thread("x", Some(PNG.to_vec()));
         nt.version_n = 9;
-        let e = st.create_thread(&aid, nt).unwrap_err();
+        let e = st.create_thread(DAEMON, &aid, nt).unwrap_err();
         assert!(
             matches!(
                 e,
@@ -1096,7 +1307,9 @@ mod tests {
         let (_d, st) = store();
         let aid = artifact(&st, None);
         for body in ["", "   \n", &"x".repeat(MAX_BODY_CHARS + 1)] {
-            let e = st.create_thread(&aid, new_thread(body, None)).unwrap_err();
+            let e = st
+                .create_thread(DAEMON, &aid, new_thread(body, None))
+                .unwrap_err();
             assert!(matches!(
                 e,
                 CoreError::Invalid {
@@ -1122,12 +1335,12 @@ mod tests {
         let aid = artifact(&st, None);
         let ids: Vec<String> = (0..5)
             .map(|i| {
-                st.create_thread(&aid, new_thread(&format!("c{i}"), None))
+                st.create_thread(DAEMON, &aid, new_thread(&format!("c{i}"), None))
                     .unwrap()
                     .id
             })
             .collect();
-        st.resolve_thread(&ids[1], "viewer:x").unwrap();
+        st.resolve_thread(DAEMON, &ids[1], "viewer:x").unwrap();
         let (open, next) = st.list_threads(&aid, false, None, 50).unwrap();
         assert_eq!(
             open.iter().map(|t| t.id.clone()).collect::<Vec<_>>(),
@@ -1145,13 +1358,16 @@ mod tests {
     fn resolve_keeps_the_first_resolution_and_a_viewer_comment_reopens() {
         let (_d, st) = store();
         let aid = artifact(&st, None);
-        let t = st.create_thread(&aid, new_thread("x", None)).unwrap();
-        let r1 = st.resolve_thread(&t.id, "viewer:a").unwrap();
-        let r2 = st.resolve_thread(&t.id, "agent:s").unwrap();
+        let t = st
+            .create_thread(DAEMON, &aid, new_thread("x", None))
+            .unwrap();
+        let r1 = st.resolve_thread(DAEMON, &t.id, "viewer:a").unwrap();
+        let r2 = st.resolve_thread(DAEMON, &t.id, "agent:s").unwrap();
         assert_eq!(r1.status, "resolved");
         assert_eq!(r2.resolved_by.as_deref(), Some("viewer:a"));
         assert_eq!(r2.resolved_at, r1.resolved_at);
         st.add_comment(
+            DAEMON,
             &t.id,
             NewComment {
                 author_public_id: None,
@@ -1169,6 +1385,7 @@ mod tests {
             "agent replies do not reopen"
         );
         st.add_comment(
+            DAEMON,
             &t.id,
             NewComment {
                 author_public_id: None,
@@ -1191,9 +1408,12 @@ mod tests {
         let (_d, st) = store();
         let sid = crate::store::test_util::session(&st, "codex", "cx");
         let aid = artifact(&st, None);
-        let t = st.create_thread(&aid, new_thread("x", None)).unwrap();
+        let t = st
+            .create_thread(DAEMON, &aid, new_thread("x", None))
+            .unwrap();
         let c = st
             .add_comment(
+                DAEMON,
                 &t.id,
                 NewComment {
                     author_public_id: None,
@@ -1218,7 +1438,9 @@ mod tests {
     fn threads_of_deleted_artifacts_are_not_found() {
         let (_d, st) = store();
         let aid = artifact(&st, None);
-        let t = st.create_thread(&aid, new_thread("x", None)).unwrap();
+        let t = st
+            .create_thread(DAEMON, &aid, new_thread("x", None))
+            .unwrap();
         st.delete_artifact(DAEMON, &aid).unwrap();
         assert_eq!(st.get_thread(&t.id).unwrap(), None);
         assert!(matches!(
@@ -1226,11 +1448,11 @@ mod tests {
             Err(CoreError::NotFound)
         ));
         assert!(matches!(
-            st.resolve_thread(&t.id, "viewer:a"),
+            st.resolve_thread(DAEMON, &t.id, "viewer:a"),
             Err(CoreError::NotFound)
         ));
         assert!(matches!(
-            st.create_thread(&aid, new_thread("y", None)),
+            st.create_thread(DAEMON, &aid, new_thread("y", None)),
             Err(CoreError::NotFound)
         ));
     }
@@ -1250,7 +1472,7 @@ mod tests {
         let aid = artifact(&st, None);
         let ids: Vec<String> = (0..4)
             .map(|i| {
-                st.create_thread(&aid, new_thread(&format!("c{i}"), None))
+                st.create_thread(DAEMON, &aid, new_thread(&format!("c{i}"), None))
                     .unwrap()
                     .id
             })
@@ -1298,7 +1520,7 @@ mod tests {
         let aid = artifact(&st, None);
         st.delete_artifact(DAEMON, &aid).unwrap();
         let e = st
-            .create_thread(&aid, new_thread("x", Some(PNG.to_vec())))
+            .create_thread(DAEMON, &aid, new_thread("x", Some(PNG.to_vec())))
             .unwrap_err();
         assert!(matches!(e, CoreError::NotFound), "{e:?}");
         assert_eq!(clip_files(&st, &aid), 0);
@@ -1316,7 +1538,7 @@ mod tests {
             let aid = artifact(&st, None);
             std::thread::scope(|s| {
                 s.spawn(|| {
-                    let _ = st.create_thread(&aid, new_thread("x", Some(PNG.to_vec())));
+                    let _ = st.create_thread(DAEMON, &aid, new_thread("x", Some(PNG.to_vec())));
                 });
                 s.spawn(|| st.delete_artifact(DAEMON, &aid).unwrap());
             });
@@ -1339,7 +1561,7 @@ mod tests {
         })
         .unwrap();
         assert!(
-            st.create_thread(&aid, new_thread("x", Some(PNG.to_vec())))
+            st.create_thread(DAEMON, &aid, new_thread("x", Some(PNG.to_vec())))
                 .is_err()
         );
         assert_eq!(clip_files(&st, &aid), 0);
@@ -1361,7 +1583,7 @@ mod tests {
         })
         .unwrap();
         assert!(
-            st.create_thread(&aid, new_thread("x", Some(PNG.to_vec())))
+            st.create_thread(DAEMON, &aid, new_thread("x", Some(PNG.to_vec())))
                 .is_err()
         );
         assert_eq!(clip_files(&st, &aid), 0);
@@ -1374,7 +1596,7 @@ mod tests {
         let aid = artifact(&st, None);
         std::fs::write(st.home().clips_dir(&aid), b"not a directory").unwrap();
         assert!(matches!(
-            st.create_thread(&aid, new_thread("x", Some(PNG.to_vec()))),
+            st.create_thread(DAEMON, &aid, new_thread("x", Some(PNG.to_vec()))),
             Err(CoreError::Io(_))
         ));
         assert_eq!(thread_rows(&st), 0);
@@ -1384,7 +1606,8 @@ mod tests {
     fn unknown_cursor_is_refused() {
         let (_d, st) = store();
         let aid = artifact(&st, None);
-        st.create_thread(&aid, new_thread("x", None)).unwrap();
+        st.create_thread(DAEMON, &aid, new_thread("x", None))
+            .unwrap();
         let e = st
             .list_threads(&aid, true, Some(&new_ulid()), 10)
             .unwrap_err();
@@ -1404,9 +1627,12 @@ mod tests {
     fn unknown_author_kind_is_refused() {
         let (_d, st) = store();
         let aid = artifact(&st, None);
-        let t = st.create_thread(&aid, new_thread("x", None)).unwrap();
+        let t = st
+            .create_thread(DAEMON, &aid, new_thread("x", None))
+            .unwrap();
         let e = st
             .add_comment(
+                DAEMON,
                 &t.id,
                 NewComment {
                     author_public_id: None,
@@ -1437,6 +1663,7 @@ mod tests {
         let id = artifact(&st, None);
         let t = st
             .create_thread(
+                DAEMON,
                 &id,
                 NewThread {
                     author_public_id: None,
@@ -1449,9 +1676,9 @@ mod tests {
                 },
             )
             .unwrap();
-        st.resolve_thread(&t.id, "viewer:u_00000000000000000000aa")
+        st.resolve_thread(DAEMON, &t.id, "viewer:u_00000000000000000000aa")
             .unwrap();
-        let r = st.reopen_thread(&t.id).unwrap();
+        let r = st.reopen_thread(DAEMON, &t.id).unwrap();
         assert_eq!(
             (
                 r.status.as_str(),
@@ -1461,14 +1688,14 @@ mod tests {
             ("open", None, None)
         );
         assert_eq!(
-            st.reopen_thread(&t.id).unwrap().status,
+            st.reopen_thread(DAEMON, &t.id).unwrap().status,
             "open",
             "reopening an open thread changes nothing"
         );
-        st.send_to_agent(&t.id).unwrap();
+        st.send_to_agent(DAEMON, &t.id).unwrap();
         let clip = st.home().clip_path(&id, &t.id);
         assert!(clip.exists());
-        let gone = st.delete_thread(&t.id).unwrap();
+        let gone = st.delete_thread(DAEMON, &t.id).unwrap();
         assert_eq!(gone.id, t.id);
         assert_eq!(st.get_thread(&t.id).unwrap(), None);
         assert!(!clip.exists());
@@ -1482,8 +1709,14 @@ mod tests {
             })
             .unwrap();
         assert_eq!(left, 0);
-        assert!(matches!(st.delete_thread(&t.id), Err(CoreError::NotFound)));
-        assert!(matches!(st.reopen_thread(&t.id), Err(CoreError::NotFound)));
+        assert!(matches!(
+            st.delete_thread(DAEMON, &t.id),
+            Err(CoreError::NotFound)
+        ));
+        assert!(matches!(
+            st.reopen_thread(DAEMON, &t.id),
+            Err(CoreError::NotFound)
+        ));
     }
 
     #[test]
@@ -1493,10 +1726,11 @@ mod tests {
         let id = artifact(&st, Some(&sid));
         let mut nt = new_thread("from the page", None);
         nt.via_page = true;
-        let t = st.create_thread(&id, nt).unwrap();
+        let t = st.create_thread(DAEMON, &id, nt).unwrap();
         assert!(t.comments[0].via_page);
         let c = st
             .add_comment(
+                DAEMON,
                 &t.id,
                 NewComment {
                     author_public_id: None,
@@ -1511,6 +1745,7 @@ mod tests {
         assert!(!c.via_page);
         let agent = st
             .add_comment(
+                DAEMON,
                 &t.id,
                 NewComment {
                     author_public_id: None,
@@ -1532,8 +1767,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             [true, false, false]
         );
-        st.send_to_agent(&t.id).unwrap();
-        let (_, touched) = st.delete_thread_touched(&t.id).unwrap();
+        st.send_to_agent(DAEMON, &t.id).unwrap();
+        let (_, touched) = st.delete_thread_touched(DAEMON, &t.id).unwrap();
         assert_eq!(touched.targets.into_iter().collect::<Vec<_>>(), [sid]);
         assert!(touched.threads.is_empty());
     }

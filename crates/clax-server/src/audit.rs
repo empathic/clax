@@ -143,31 +143,95 @@ fn actor_and_channel(
     Ok((actor, channel(id, named, agent_session)))
 }
 
-/// The audit context of a request that acts. Resolving it reads the
-/// session and viewer rows, and makes the viewer row of a first-time
-/// viewer or the owner as [`Identity::ensure_viewer`] does, so it belongs
-/// only on routes that record events.
+/// The audit context of a token holder's `GET` poll that hands session
+/// `sid` its feedback: that session's agent, through the channel the
+/// request names (else `mcp`), with its git state and tool call. Unlike
+/// the [`AuditCtx`] extractor it writes no row, so a `GET` route may use
+/// it. Call it only behind the token.
+pub fn session_ctx(
+    st: &clax_core::Store,
+    headers: &HeaderMap,
+    sid: &str,
+) -> clax_core::Result<AuditCtx> {
+    let id = Identity {
+        token: true,
+        ..Identity::default()
+    };
+    let agent = st
+        .session_actor(sid)?
+        .unwrap_or_else(|| clax_core::audit::AgentActor {
+            session_id: Some(sid.to_string()),
+            ..Default::default()
+        });
+    Ok(AuditCtx {
+        actor: Actor::Agent(agent),
+        via: named_channel(headers).unwrap_or(Via::Mcp),
+        git: git_field(&id, headers),
+        call: call_field(&id, headers),
+    })
+}
+
+/// What a request's audit context is resolved from, read from its headers
+/// without touching the store. A handler that refuses some requests after
+/// reading its body takes this instead of [`AuditCtx`] and calls
+/// [`DeferredAudit::resolve`] once the request is accepted, so a refused
+/// request makes no row.
+pub struct DeferredAudit {
+    id: Identity,
+    named: Option<Via>,
+    session: Option<String>,
+    git: GitField,
+    call: Option<CallHeader>,
+}
+
+impl DeferredAudit {
+    fn from_parts(parts: &Parts, state: &AppState) -> DeferredAudit {
+        let headers = &parts.headers;
+        let id = Identity::from_parts(headers, &parts.extensions, &state.token);
+        DeferredAudit {
+            named: named_channel(headers),
+            session: header(headers, SESSION_HEADER).map(str::to_string),
+            git: git_field(&id, headers),
+            call: call_field(&id, headers),
+            id,
+        }
+    }
+
+    /// The audit context: reads the session and viewer rows, and makes the
+    /// viewer row of a first-time viewer or the owner as
+    /// [`Identity::ensure_viewer`] does.
+    pub fn resolve(self, st: &clax_core::Store) -> clax_core::Result<AuditCtx> {
+        let (actor, via) = actor_and_channel(st, &self.id, self.named, self.session.as_deref())?;
+        Ok(AuditCtx {
+            actor,
+            via,
+            git: self.git,
+            call: self.call,
+        })
+    }
+}
+
+impl FromRequestParts<AppState> for DeferredAudit {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(DeferredAudit::from_parts(parts, state))
+    }
+}
+
+/// The audit context of a request that acts, resolved during extraction
+/// ([`DeferredAudit::resolve`]), so it belongs only on routes that record
+/// events and refuse nothing after it.
 impl FromRequestParts<AppState> for AuditCtx {
     type Rejection = crate::error::ApiError;
     async fn from_request_parts(
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let headers = &parts.headers;
-        let id = Identity::from_parts(headers, &parts.extensions, &state.token);
-        let named = named_channel(headers);
-        let session = header(headers, SESSION_HEADER).map(str::to_string);
-        let git = git_field(&id, headers);
-        let call = call_field(&id, headers);
-        let (actor, via) = state
-            .store_call(move |st| actor_and_channel(st, &id, named, session.as_deref()))
-            .await?;
-        Ok(AuditCtx {
-            actor,
-            via,
-            git,
-            call,
-        })
+        let deferred = DeferredAudit::from_parts(parts, state);
+        state.store_call(move |st| deferred.resolve(st)).await
     }
 }
 

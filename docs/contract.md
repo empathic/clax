@@ -1064,7 +1064,8 @@ owner shell (the token); an unnamed viewer, or a request with neither, gets
 403 `forbidden` asking for a name. They refuse a foreign `Origin` like the
 other viewer routes. An agent reopens with the body `{"as": "agent"}` and
 deletes with `?as=agent`, holding the token and `X-Clax-Session` naming a
-live session (400 `unknown_session` otherwise); on a thread that was not sent
+live session (400 `unknown_session` otherwise; without the token, `as:
+agent` is 401, before the level check); on a thread that was not sent
 to the agent it gets 200 `{guidance}` and nothing changes. A thread of
 another or a deleted artifact is 404.
 

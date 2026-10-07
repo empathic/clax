@@ -651,7 +651,9 @@ mod l10 {
 
     /// Resolving an [`AuditCtx`](clax_core::audit::AuditCtx) makes the
     /// owner's or a first-time viewer's row when it is missing, so only
-    /// handlers that record events take it, and no `GET` handler does.
+    /// handlers that record events take it (or a
+    /// [`DeferredAudit`](crate::audit::DeferredAudit) to resolve it later),
+    /// and no `GET` handler does.
     #[test]
     fn no_get_route_resolves_the_audit_context() {
         let src = include_str!("mod.rs");
@@ -674,8 +676,8 @@ mod l10 {
                 let sig = function(module_source(m), f);
                 let sig = &sig[..sig.find('{').unwrap()];
                 assert!(
-                    !sig.contains("AuditCtx"),
-                    "GET {path} ({name}) takes AuditCtx"
+                    !sig.contains("AuditCtx") && !sig.contains("DeferredAudit"),
+                    "GET {path} ({name}) takes AuditCtx or DeferredAudit"
                 );
                 checked += 1;
             }
@@ -689,7 +691,6 @@ mod l10 {
     /// (plan 2026-10-06-toolpath-audit) that records them. Remove an entry
     /// with the change that records its kinds.
     const PARTLY_AUDITED: &[(&str, &str)] = &[
-        ("live::thread", "thread.open, comment.add (§6.2): Task 6"),
         ("live::move_thread", "thread.move (§6.3): Task 7"),
         ("live::add_rule", "live.rule, thread.move (§6.3): Task 7"),
         ("live::delete_rule", "live.rule, thread.move (§6.3): Task 7"),
@@ -702,29 +703,6 @@ mod l10 {
         ("sessions::register", "sessions (§6.8): not recorded yet"),
         ("sessions::join", "sessions (§6.8): not recorded yet"),
         ("sessions::patch", "sessions (§6.8): not recorded yet"),
-        (
-            "threads::create",
-            "threads and comments (§6.2): not recorded yet",
-        ),
-        (
-            "threads::comment",
-            "threads and comments (§6.2): not recorded yet",
-        ),
-        (
-            "threads::resolve",
-            "threads and comments (§6.2): not recorded yet",
-        ),
-        (
-            "threads::reopen",
-            "threads and comments (§6.2): not recorded yet",
-        ),
-        (
-            "threads::delete",
-            "threads and comments (§6.2): not recorded yet",
-        ),
-        ("threads::send", "sends (§6.2): not recorded yet"),
-        ("threads::send_batch", "sends (§6.2): not recorded yet"),
-        ("feedback::ack", "deliveries (§6.2): not recorded yet"),
         ("watches::put", "watches (§6.4): not recorded yet"),
         ("watches::delete", "watches (§6.4): not recorded yet"),
         ("watches::live_delete", "watches (§6.4): not recorded yet"),
@@ -817,7 +795,7 @@ mod l10 {
     ];
 
     /// Every handler of a route that is not `GET` either resolves the audit
-    /// context (and records what it changes, or is listed in
+    /// context, during extraction or deferred (and records what it changes, or is listed in
     /// [`PARTLY_AUDITED`] with the kinds it still owes) or is listed in
     /// [`UNAUDITED`] with the reason it records nothing, so a new route that
     /// changes history cannot leave it out of the record unnoticed.
@@ -849,7 +827,7 @@ mod l10 {
                     let sig = &sig[..sig.find('{').unwrap()];
                     let listed = UNAUDITED.iter().find(|(h, _)| *h == name);
                     let partly = PARTLY_AUDITED.iter().any(|(h, _)| *h == name);
-                    if sig.contains("AuditCtx") {
+                    if sig.contains("AuditCtx") || sig.contains("DeferredAudit") {
                         assert!(
                             listed.is_none(),
                             "{verb}{path}) ({name}) takes AuditCtx: drop it from UNAUDITED"
