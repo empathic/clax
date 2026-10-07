@@ -321,9 +321,7 @@ pub const MIGRATIONS: &[&str] = &[
         created_at TEXT NOT NULL
     );
     CREATE INDEX thread_moves_by_thread ON thread_moves(thread_id, created_at, id);",
-    // Joined sites (spec 2026-10-05-chrome-overlay-design §7.2). Renumbered
-    // when agent-questions (19, 20) and toolpath-audit (21) land — goes
-    // last. Each origin the owner joined to a site, with the site's key (the
+    // Joined sites (spec 2026-10-05-chrome-overlay-design §7.2). Each origin the owner joined to a site, with the site's key (the
     // origin whose live pages and rules hold the site's; it has a row of its
     // own), when it joined and when Clax last used it; a joined origin's page
     // merged into the site's page of its path once its threads moved there,

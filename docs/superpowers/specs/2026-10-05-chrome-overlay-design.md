@@ -775,8 +775,7 @@ Owner decisions, 2026-10-06 (binding):
    enablement is otherwise unchanged); joining asks Chrome for the site's
    other origins under the click, so the overlay can follow.
 
-1. **Model.** One migration, the last (its number is assigned at merge:
-   it is renumbered after agent-questions and toolpath-audit land), adds
+1. **Model.** One migration (19) adds
    `live_sites (origin PRIMARY KEY, site, joined_at, last_used_at)`: a row
    per origin of a joined site, the key's own included; an origin without
    a row is a site of its own, keyed by itself. `live_merged_pages
