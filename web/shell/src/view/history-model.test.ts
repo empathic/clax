@@ -81,6 +81,13 @@ describe("history-model", () => {
     expect(t.comments.map(c => commentVersion(t, c, vs))).toEqual([1, 2]);
   });
 
+  it("tags a person's event with no version while the versions are not known, never a guessed v1", () => {
+    const t = T({ comments: [C("1", "viewer", "alex", "2026-09-30T10:30:00.000Z")], status: "resolved", resolved_by: "viewer:u_1", resolved_at: "2026-09-30T12:10:00.000Z",
+      sends: [{ batch_id: "b", size: 1, note: null, sent_by: "alex", sent_at: "2026-09-30T11:10:00.000Z" }] });
+    expect(historyOf(t, [], names).map(e => e.v)).toEqual([null, null]);
+    expect(historyOf(t, vs, names).map(e => e.v)).toEqual([2, 3]);
+  });
+
   it("calls a thread outdated when a later version changed its element but still has it", () => {
     const found = (method: "exact" | "selector" | "quote" | "custom") => ({ id: "t", found: true, method, rect: null });
     expect(isOutdated(T({}), found("selector"), 2)).toBe(true);

@@ -7,7 +7,9 @@
   // thread is read, answered, resolved or reopened and sent to the agent
   // without the tab moving; "Go to page ↗" opens it on its own page in this
   // tab. An open card asks for its page's live agents (its Send picker, as on
-  // that page) and versions (its comments' tags). Any number of cards may be
+  // that page) and versions (its comments' tags), and again when hovered or
+  // focused once that read is 30 s old, so the picker follows agents that
+  // came or went; a read that failed says so beside Send, with Retry. Any number of cards may be
   // open at once. "Pinned here" says its anchor was found on this screen
   // too. Everything shown is text.
   import type { AnchorResult } from "../../../bridge/src/protocol";
@@ -34,6 +36,10 @@
     onFold(id: string, open: boolean): void;
     /** The pages of open cards, by artifact ID, as the worker answered. */
     pages: Record<string, FarPage>;
+    /** The pages whose agents could not be read: Send says so, with Retry. */
+    failed: Record<string, boolean>;
+    /** An open card is hovered or focused: its page's agents may be read again. */
+    onFreshen(t: Thread): void;
     /** The agent the person picked in a Send menu, which a Send names when it is live on the thread's page. */
     chosen: string | null;
     targets(t: Thread): Target[];
@@ -53,7 +59,7 @@
     onSeen(t: Thread): void;
     clip(t: Thread): Promise<string | null>;
   };
-  let { groups, resolved, selected, collapsed, now, me = null, unfolded, onFold, pages, chosen, targets, onToggle, onOpen, onUnfold, onMove, onReply, onResolve, onSend, onChoose, onSeen, clip }: Props = $props();
+  let { groups, resolved, selected, collapsed, now, me = null, unfolded, onFold, pages, failed, onFreshen, chosen, targets, onToggle, onOpen, onUnfold, onMove, onReply, onResolve, onSend, onChoose, onSeen, clip }: Props = $props();
   let moving = $state<string | null>(null);
   const clock = ticker(() => false, () => now, 30_000);
   const STATUS: Record<Status, string> = { open: "Open", addressed: "Addressed", resolved: "Resolved" };
@@ -103,7 +109,9 @@
       </summary>
       {#each g.threads as t (t.id)}
         {@const st = statusOf(t)}
-        <div class="far" use:reveal={t.id === selected}>
+        <!-- Hovered or focused while open: its page's agents are read again when stale. -->
+        <div class="far" use:reveal={t.id === selected} role="presentation"
+          onpointerenter={() => { if (unfolded.includes(t.id)) onFreshen(t); }} onfocusin={() => { if (unfolded.includes(t.id)) onFreshen(t); }}>
           <ThreadCard {t} now={clock.now} {me} {selected} file={t.anchor.file} history={historyOf(t, versionsOf(t), names(t))} outdated={false} agent="agent"
             versions={versionsOf(t)} when={relativeTime(lastActivity(t), clock.now)} fold={fold(t)} {clip} {onSeen}
             onSelect={noop} onSend={x => onSend(x, targetOf(x))} {onResolve} {onReply}>
@@ -118,6 +126,10 @@
               {@const to = targetOf(t)}
               <SendButton label={`Send to ${(to && by.get(to)) || "agent"}`} agents={agentsOf(t)} names={by} target={to} disabled={!known}
                 onSend={e => guard(e, () => onSend(t, to))} {onChoose} />
+              {#if !known && failed[t.artifact_id]}
+                <span class="far-err" role="status">Could not load this page's agents.
+                  <button type="button" class="ghost" onclick={() => onUnfold(t)}>Retry</button></span>
+              {/if}
             {/snippet}
             {#snippet tools()}
               <button type="button" class="ghost" onclick={() => (moving = moving === t.id ? null : t.id)}>Move…</button>
@@ -156,6 +168,7 @@
   .state.open { background: var(--comment-hl); color: var(--you-ink); }
   .state.addressed { background: var(--accent-tint); color: var(--agent-ink); }
   .here { color: var(--you-ink); font-weight: 500; }
+  .far-err { flex-basis: 100%; text-align: right; font-size: 12px; color: var(--muted); }
   .far :global(.actions button) { min-height: 26px; padding: 2px 8px; font-size: 12.5px; }
   .far :global(.actions button.ghost) { color: var(--muted); }
 </style>

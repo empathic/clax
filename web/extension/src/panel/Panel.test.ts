@@ -286,6 +286,50 @@ describe("Panel: the site's other pages", () => {
     }
   });
 
+  it("tags another page's events only once its versions are known, reads its agents again when stale, and says when they could not be read, with Retry", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const A1 = `a_${"1".repeat(22)}`;
+      const answers: (object | null)[] = [null, { artifactId: "9s5n1pza4d6w", agents: [{ handle: A1, harness: "claude", live: true }],
+        versions: [{ n: 1, created_at: "2026-10-05T08:00:00.000Z", agent_harness: null }, { n: 5, created_at: "2026-10-05T09:40:00.000Z", agent_harness: null }] }];
+      let asked = 0;
+      let release: () => void = () => {};
+      const l = { ...siteLink(), farPage: async () => { asked++; const a = answers[Math.min(asked - 1, answers.length - 1)]; await new Promise<void>(r => { release = r; }); return a; } };
+      const s = site();
+      const p = s.pages[2];
+      s.pages[2] = { ...p, threads: [{ ...(p.threads[0] as object), sends: [{ batch_id: "b", size: 1, note: null, sent_by: "Alex", sent_at: "2026-10-05T09:50:00.000Z" }] } as never, p.threads[1]] };
+      const { container } = render(Panel, { props: { link: { ...l, site: s } as never, now: NOW, store: area() } });
+      const card = () => container.querySelector<HTMLElement>(`[data-thread="${T3}"]`)!;
+      await fireEvent.click(card().querySelector(".card-head")!);
+      // Before the page's versions: the send has no tag (never a guessed v1).
+      expect(card().querySelector(".hist")!.textContent).toBe("Alex sent it");
+      expect(card().querySelectorAll(".msg .by .vt")).toHaveLength(1);
+      release();
+      await settle();
+      // The read failed: Send says why, and Retry reads again.
+      const send = within(card()).getByRole("button", { name: "Send to agent" }) as HTMLButtonElement;
+      expect(send.disabled).toBe(true);
+      expect(card().querySelector(".far-err")!.textContent).toContain("Could not load this page's agents.");
+      expect(card().querySelector(".hist")!.textContent).toBe("Alex sent it");
+      await fireEvent.click(within(card()).getByRole("button", { name: "Retry" }));
+      release();
+      await settle();
+      expect(asked).toBe(2);
+      expect(card().querySelector(".far-err")).toBeNull();
+      expect(card().querySelector(".hist")!.textContent).toBe("v5 Alex sent it");
+      expect((within(card()).getByRole("button", { name: "Send to claude" }) as HTMLButtonElement).disabled).toBe(false);
+      // Hovered soon after, the agents are not read again; 30 s later they are.
+      await fireEvent.pointerEnter(card().parentElement!);
+      expect(asked).toBe(2);
+      vi.setSystemTime(Date.now() + 31_000);
+      await fireEvent.pointerEnter(card().parentElement!);
+      expect(asked).toBe(3);
+      release();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps a card open while a search hides the list, and offers no Send before its page's agents are known", async () => {
     const l = siteLink();
     const { container } = render(Panel, { props: { link: l as never, now: NOW, store: area() } });

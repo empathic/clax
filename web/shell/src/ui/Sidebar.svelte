@@ -123,12 +123,13 @@
   let unsentHint: string | null = $state(null);
   $effect(() => keyboardTrail.onClear(() => { unsentHint = null; }));
   // A card resolved or reopened from inside it moves to another group, where
-  // it is a new card: focus follows it to its head once its status changed.
-  let refocus: { id: string; status: string } | null = $state(null);
+  // it is a new card: focus follows it to its head once its status changed,
+  // within RESOLVE_OPEN_MS of the press.
+  let refocus: { id: string; status: string; until: number } | null = $state(null);
   let aside: HTMLElement | undefined = $state();
   const resolve = (t: Thread) => {
     if (t.status === "open") justResolved = { id: t.id, until: Date.now() + RESOLVE_OPEN_MS };
-    if (document.activeElement?.closest(".thread-card")?.getAttribute("data-thread") === t.id) refocus = { id: t.id, status: t.status };
+    if (document.activeElement?.closest(".thread-card")?.getAttribute("data-thread") === t.id) refocus = { id: t.id, status: t.status, until: Date.now() + RESOLVE_OPEN_MS };
     p.onResolve(t);
   };
   $effect(() => {
@@ -136,7 +137,11 @@
     const t = r && p.threads.find(x => x.id === r.id);
     if (!r || (t && t.status === r.status)) return;
     refocus = null;
-    if (t) void tick().then(() => [...(aside?.querySelectorAll<HTMLElement>(".thread-card") ?? [])].find(c => c.dataset.thread === t.id)?.querySelector<HTMLElement>(".card-head")?.focus());
+    // Only soon after the press (a failed one changes nothing, and a change
+    // by someone else later must not take focus), and only while focus went
+    // nowhere else: the old card took it with it.
+    const lost = !document.activeElement || document.activeElement === document.body;
+    if (t && lost && Date.now() <= r.until) void tick().then(() => [...(aside?.querySelectorAll<HTMLElement>(".thread-card") ?? [])].find(c => c.dataset.thread === t.id)?.querySelector<HTMLElement>(".card-head")?.focus());
   });
   // A thread on another page the version holds folds to its summary and opens
   // in place, so it is read and answered without leaving this page; "Go to

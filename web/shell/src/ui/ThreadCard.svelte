@@ -4,9 +4,8 @@
   import type { Snippet } from "svelte";
   import { isSubmitKey } from "../view/composer-model";
   import { type Thread, type Viewer, anchorLabel } from "../threads";
-  import type { Version } from "../api";
   import { relativeTime } from "../format";
-  import { type HistoryEvent, addressedNote, commentVersion } from "../view/history-model";
+  import { type HistoryEvent, type VersionTag, addressedNote, commentVersion } from "../view/history-model";
   import Clip from "./Clip.svelte";
   import { SEEN_AFTER_MS, authorLabel, pageLabel } from "../view/sidebar-model";
   import { after } from "../clock";
@@ -27,7 +26,7 @@
     /** An agent working on the thread now: replaces the waiting line. */
     marker?: { text: string; since: string } | null;
     /** The artifact's versions: an agent's reply says which one addressed the thread. */
-    versions?: Version[];
+    versions?: VersionTag[];
     /** The card has been at least half visible for a second (decided: Q4). */
     onSeen?(t: Thread): void;
     /** The card's box is ticked for a batch send (spec §8). */

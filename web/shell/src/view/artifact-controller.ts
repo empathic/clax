@@ -38,6 +38,9 @@ import type { SetNotice } from "./viewer-name-model";
 import type { AgentView, Working } from "./working-model";
 
 /** `file` is the page the frame opens on, from the shell URL (`index.html` when it names none). */
+/** How long a reopen asked of an unnamed viewer waits for its name. */
+export const REOPEN_NAME_MS = 120_000;
+
 export type ArtifactProps = { id: string; pinnedVersion: number | null; file?: string };
 /** `attention` is the viewer's, when the request carried the viewer cookie. */
 export type Loaded = { artifact: Artifact; versions: Version[]; attention?: Attention };
@@ -187,8 +190,9 @@ export class ArtifactController {
   private resumeAfter: string | null = null;
   // What the open composer holds, so a page's open never replaces typed text.
   private composerText = "";
-  /** The thread a viewer asked to reopen before naming itself: reopened once it has a name. */
-  private reopenAfterName: Thread | null = null;
+  /** The thread a viewer asked to reopen before naming itself, reopened if it
+   * names itself within REOPEN_NAME_MS and the notice was not dismissed. */
+  private reopenAfterName: { id: string; until: number } | null = null;
   // A page anchors threads itself (comments.customAnchors): pins come from
   // its placements only, and the frame is not asked to resolve anchors.
   private customLive = false;
@@ -1371,11 +1375,16 @@ export class ArtifactController {
   chooseVersion(n: number): void { nav.assign(this.here(n === this.latest() ? null : n)); }
   copyLink(): void { navigator.clipboard.writeText(location.origin + this.here(this.pinnedVersion) + location.hash).catch(() => {}); }
   reloadLatest(): void { nav.assign(this.here(null)); }
-  dismissNotice(): void { this.set({ notice: null }); }
+  dismissNotice(): void { this.reopenAfterName = null; this.set({ notice: null }); }
   setMe(v: Viewer): void {
     this.set({ me: v });
-    const t = this.reopenAfterName;
-    if (t && v.display_name) { this.reopenAfterName = null; this.noticeFor(REOPEN_NAME)(null); this.resolveThread(t); }
+    const r = this.reopenAfterName;
+    if (!r || !v.display_name) return;
+    this.reopenAfterName = null;
+    this.noticeFor(REOPEN_NAME)(null);
+    // Only the thread as it is now, still resolved, and only soon after the ask.
+    const t = this.s.threads.find(x => x.id === r.id);
+    if (t?.status === "resolved" && Date.now() <= r.until) this.resolveThread(t);
   }
   hover(t: Thread | null): void { this.set({ hovered: t?.id ?? null }); }
   /** A pin's click: the sidebar opens on its thread. */
@@ -1425,7 +1434,7 @@ export class ArtifactController {
     if (t.status === "open") { this.saveThread(resolveThread(this.id, t.id), RESOLVE_FAILED); return; }
     void getToken().then(k => {
       if (k || this.s.me?.display_name) { this.saveThread(reopenThread(this.id, t.id, k), REOPEN_FAILED); return; }
-      this.reopenAfterName = t;
+      this.reopenAfterName = { id: t.id, until: Date.now() + REOPEN_NAME_MS };
       this.noticeFor(REOPEN_NAME)(`${REOPEN_NAME}: type it under People.`);
       this.set({ menu: "people" });
     });

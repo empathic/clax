@@ -11,6 +11,7 @@ import type { Participants, Version } from "../../shell/src/api";
 import type { Thread } from "../../shell/src/threads";
 import type { PresenceView } from "../../shell/src/view/presence-model";
 import type { Working } from "../../shell/src/view/working-model";
+import type { VersionTag } from "../../shell/src/view/history-model";
 
 export const MAX_URL = 4096;
 export const MAX_BODY = 10_000;
@@ -168,7 +169,7 @@ export type WorkerToPanel =
   /** The page `far-page` asked for: its live agents and versions; null when the thread is not in the site's listing or the page could not be read. */
   | { t: "far-page"; req: number; page: FarPage | null };
 /** Another page of the tab's site, as a thread of it opened in the panel needs it. */
-export type FarPage = { artifactId: string; agents: Participants["agents"]; versions: Version[] };
+export type FarPage = { artifactId: string; agents: Participants["agents"]; versions: VersionTag[] };
 
 export type PanelToWorker =
   | { t: "watch-tab"; tabId: number }
@@ -340,7 +341,7 @@ const siteChoice = (v: unknown) => shape(v, ["key", "name", "origins"]) && origi
 /** A page's agents and versions, as the worker read them from the daemon: shown as text. */
 const farPage = (v: unknown) => shape(v, ["artifactId", "agents", "versions"]) && typeof v.artifactId === "string" && ARTIFACT_ID.test(v.artifactId)
   && Array.isArray(v.agents) && v.agents.length <= 200 && v.agents.every(a => obj(a) && typeof a.handle === "string" && HANDLE.test(a.handle) && str(a.harness, 64) && bool(a.live))
-  && Array.isArray(v.versions) && v.versions.length <= 100_000 && v.versions.every(x => obj(x) && count(x.n) && str(x.created_at, 64));
+  && Array.isArray(v.versions) && v.versions.length <= 100_000 && v.versions.every(x => shape(x, ["n", "created_at", "agent_harness"]) && count(x.n) && str(x.created_at, 64) && strOrNull(x.agent_harness, 64));
 export function isToPanel(m: unknown): m is WorkerToPanel {
   if (!obj(m) || !Object.hasOwn(m, "t")) return false;
   const has = (...keys: string[]) => shape(m, ["t", ...keys]);

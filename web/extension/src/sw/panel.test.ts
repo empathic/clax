@@ -42,7 +42,7 @@ function setup(over: { remaining?: number; page?: typeof page | null; admits?: b
       suggest: api("suggest", { origin: "http://localhost:5173", site: SITE, suggestions: [{ origin: "http://localhost:7702", site: { ...SITE, origins: [{ origin: "http://localhost:7702", joined_at: null, last_used_at: null }] }, reason: "path", path: "/app" }] }),
       sites: api("sites", { sites: [{ site: SITE }] }),
       clip: api("clip", "data:image/png;base64,iVBORw0KGgo="),
-      artifact: api("artifact", { artifact: { participants: { people: [], agents: [{ handle: `a_${"1".repeat(22)}`, harness: "claude", live: true }] } }, versions: [{ n: 1, created_at: "t" }] }),
+      artifact: api("artifact", { artifact: { participants: { people: [], agents: [{ handle: `a_${"1".repeat(22)}`, harness: "claude", live: true }] } }, versions: [{ artifact_id: "x", n: 1, created_at: "t", label: "l", note: "n", files: { "index.html": {} }, agent_harness: "claude" }] }),
     } as never,
     tabs: {
       ready: async () => { waited++; await over.restoring; },
@@ -111,7 +111,7 @@ describe("panelAction on the tab's site", () => {
     await s.run({ t: "far-page", req: 8, threadId: T1 });
     expect(s.calls).toEqual([`artifact "${FAR_AID}"`]);
     expect(s.out).toEqual([
-      { t: "far-page", req: 7, page: { artifactId: FAR_AID, agents: [{ handle: `a_${"1".repeat(22)}`, harness: "claude", live: true }], versions: [{ n: 1, created_at: "t" }] } },
+      { t: "far-page", req: 7, page: { artifactId: FAR_AID, agents: [{ handle: `a_${"1".repeat(22)}`, harness: "claude", live: true }], versions: [{ n: 1, created_at: "t", agent_harness: "claude" }] } },
       { t: "far-page", req: 8, page: null },
     ]);
   });
