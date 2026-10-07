@@ -65,22 +65,32 @@ async function launch(profile: string, extDir: string, gesture: boolean): Promis
  * when its first runs are slow (macOS scans a new binary at its first exec). */
 const DAEMON_START_MS = 60_000;
 
-/** Sends one CDP command to the browser endpoint Chromium wrote to the profile's DevToolsActivePort. */
+/** How long one CDP command to the browser endpoint may take, connecting included. */
+const CDP_MS = 10_000;
+
+/** Sends one CDP command to the browser endpoint Chromium wrote to the
+ * profile's DevToolsActivePort; fails after CDP_MS, or when the socket
+ * errs or closes before the answer. */
 async function browserCdp(profile: string, method: string, params: object): Promise<Record<string, unknown>> {
   const [port, path] = readFileSync(join(profile, "DevToolsActivePort"), "utf8").trim().split("\n");
   const ws = new WebSocket(`ws://127.0.0.1:${port}${path}`);
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await new Promise((ok, fail) => { ws.onopen = ok; ws.onerror = fail; });
     return await new Promise((ok, fail) => {
+      timer = setTimeout(() => fail(new Error(`${method}: no answer in ${CDP_MS} ms`)), CDP_MS);
+      ws.onerror = () => fail(new Error(`${method}: the browser endpoint's socket failed`));
+      ws.onclose = () => fail(new Error(`${method}: the browser endpoint closed before answering`));
+      ws.onopen = () => ws.send(JSON.stringify({ id: 1, method, params }));
       ws.onmessage = e => {
         const m = JSON.parse(String(e.data)) as { id?: number; result?: Record<string, unknown>; error?: unknown };
         if (m.id !== 1) return;
         if (m.error) fail(new Error(`${method}: ${JSON.stringify(m.error)}`));
         else ok(m.result ?? {});
       };
-      ws.send(JSON.stringify({ id: 1, method, params }));
     });
   } finally {
+    clearTimeout(timer);
+    ws.onclose = null;
     ws.close();
   }
 }
