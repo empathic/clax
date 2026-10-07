@@ -38,7 +38,12 @@ const SHARED = {
   "lazy.js": `import { v } from "./shared.js"; console.log("lazy", v());`,
 };
 
-describe("inlineCss", () => {
+/** Each test runs a child Node (a whole Vite build): bounded work that takes about a
+ * second on an idle machine and many times that on a loaded one. The limit
+ * is there to end a run that hangs, not to judge its speed. */
+const CHILD_TIMEOUT_MS = 60_000;
+
+describe("inlineCss", { timeout: CHILD_TIMEOUT_MS }, () => {
   it("inlines each entry's CSS when every chunk with CSS is static in the entries that load it", () => {
     const r = run({ ...SHARED, "a.js": `import { v } from "./shared.js"; console.log("a", v());`, "b.js": `import { v } from "./shared.js"; console.log("b", v()); import("./lazy.js");` });
     expect(r.status, r.stderr).toBe(0);

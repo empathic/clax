@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { relativeTime } from "./format";
 import { FakeWorker, workerWith } from "./test/fake-worker";
+import { MOUNT_TIMEOUT_MS, WAIT_MS } from "./test/timeouts";
 
 describe("relativeTime", () => {
   const now = new Date("2026-09-28T12:00:00Z");
@@ -13,9 +14,9 @@ describe("relativeTime", () => {
   });
 });
 
-/** Polls until `check` returns a truthy value; fails after 2 s. */
+/** Polls until `check` returns a truthy value; fails after `WAIT_MS`. */
 async function waitFor<T>(check: () => T | null | undefined | false, what = "condition"): Promise<T> {
-  const deadline = Date.now() + 2000;
+  const deadline = Date.now() + WAIT_MS;
   for (;;) {
     const v = check();
     if (v) return v;
@@ -69,7 +70,7 @@ async function mountGallery() {
   return root;
 }
 
-describe("Gallery", () => {
+describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
   beforeEach(() => { vi.resetModules(); });
   afterEach(() => { unmountGallery?.(); unmountGallery = null; vi.unstubAllGlobals(); document.body.replaceChildren(); edits = {}; });
 

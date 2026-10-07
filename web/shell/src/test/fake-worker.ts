@@ -2,6 +2,7 @@
 // install it with `vi.stubGlobal("SharedWorker", FakeWorker)`, then read the
 // topics the page holds and hand it hub messages (`live`, `event`, ...).
 import type { HubMsg, TabMsg } from "../stream-hub";
+import { WAIT_MS } from "./timeouts";
 
 export class FakeWorker {
   static all: FakeWorker[] = [];
@@ -30,7 +31,7 @@ export class FakeWorker {
 
 /** Waits until the page holds a fake worker whose topics include every one of `topics`. */
 export async function workerWith(...topics: string[]): Promise<FakeWorker> {
-  const deadline = Date.now() + 3000;
+  const deadline = Date.now() + WAIT_MS;
   for (;;) {
     const w = [...FakeWorker.all].reverse().find((x: FakeWorker) => !x.closed && topics.every(t => x.topics.includes(t)));
     if (w) return w;

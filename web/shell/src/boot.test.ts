@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FRAME_SANDBOX } from "./view/frame-host";
 import { SKELETON_HTML } from "./view/skeleton";
+import { MOUNT_TIMEOUT_MS, WAIT_MS } from "./test/timeouts";
 
 const ID = "7q3k9mzx2b4t";
 const loaded = { artifact: { id: ID, title: "T", description: null, icon: null, updated_at: "x", current_version: 2, pinned: false }, versions: [{ artifact_id: ID, n: 2, label: null, created_at: "x", files: {} }] };
@@ -18,7 +19,7 @@ const HELLO = { type: "clax:hello", artifact: ID, version: 2, file: "index.html"
 
 
 async function waitFor<T>(check: () => T | null | undefined | false, what: string): Promise<T> {
-  const deadline = Date.now() + 2000;
+  const deadline = Date.now() + WAIT_MS;
   for (;;) {
     const v = check();
     if (v) return v;
@@ -75,7 +76,7 @@ async function mountServed(root: HTMLElement, b: ReturnType<typeof boot> | null)
 /** Whether the gate let anything through: a welcome, or a capability answer. */
 const answered = (posted: { type: string }[]) => posted.filter(m => m.type === "clax:welcome" || m.type === "clax:use-result" || m.type === "clax:call-result");
 
-describe("the first load from the daemon's HTML", () => {
+describe("the first load from the daemon's HTML", { timeout: MOUNT_TIMEOUT_MS }, () => {
   beforeEach(async () => { vi.resetModules(); (await import("./threads")).forgetViewer(); history.replaceState(null, "", `/a/${ID}`); });
   afterEach(() => {
     for (const v of mounted.splice(0)) v.unmount();
