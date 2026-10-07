@@ -174,7 +174,7 @@ describe("the composer page", () => {
 
 describe("clipMessage", () => {
   it("says why there is no screenshot, and how to get one", () => {
-    expect(clipMessage("no_capture_permission")).toBe("click the Clax button or press ⌥⇧C to comment with a screenshot");
+    expect(clipMessage("no_capture_permission")).toBe("press ⌥⇧C on the page to comment with a screenshot");
     expect(clipMessage("clip_too_large")).toMatch(/5 MiB/);
     expect(clipMessage("restricted_page")).toMatch(/does not capture/);
     expect(clipMessage("capture_failed")).toMatch(/could not capture/);
