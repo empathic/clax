@@ -243,8 +243,12 @@ mod tests {
         );
         assert!(std::fs::write(&a, "x").is_err(), "read-only");
         let before = meta(&a).ino();
+        // Held open, the old file keeps its inode, so the new file cannot
+        // reuse it (Linux hands a freed inode straight back out).
+        let held = std::fs::File::open(&a).unwrap();
         let a2 = install_own(&a, "#!/bin/sh\necho two\n");
         assert_ne!(meta(&a2).ino(), before, "replaced by a new file");
+        drop(held);
         let o = Command::new(&a2).output().unwrap();
         assert_eq!(String::from_utf8(o.stdout).unwrap(), "two\n");
         let names: Vec<_> = std::fs::read_dir(t.path().join("a"))
