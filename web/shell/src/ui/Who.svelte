@@ -7,7 +7,8 @@
   // split pins of the threads an agent works on. The block is the button that
   // opens the people panel; it lists everyone present, commenters or not,
   // with their here or away mark, and never where they look. On a live page,
-  // an Open page link to the page itself follows it (hidden at phone width,
+  // an Open page link to the page itself follows it (a page a join merged
+  // away links to the page it was merged into instead: its comments go there) (hidden at phone width,
   // where the more menu lists it).
   // Not needed for the first paint: the artifact entry loads it after (`more-menu.svelte.ts`).
   import type { ArtifactController, Loaded, ViewState } from "../view/artifact-controller";
@@ -39,7 +40,7 @@
   <Roster people={roster(parts.people, p.s.presence)} agents={parts.agents} working={p.s.working} me={p.s.me?.public_id ?? null} max={p.s.narrow ? 1 : 5} presence={presenceMap(p.s.presence)} />
   <WorkingSummary s={sum} />
 </button>
-{#if p.s.data.artifact.live && /^https?:\/\//.test(p.s.data.artifact.live.page_url)}<a class="open-page hide-sm" href={p.s.data.artifact.live.page_url} target="_blank" rel="noopener noreferrer">Open page</a>{/if}
+{#if p.s.data.artifact.live?.merged_into && /^[0-9a-z]{12}$/.test(p.s.data.artifact.live.merged_into)}<a class="open-page merged" href={`/a/${p.s.data.artifact.live.merged_into}`}>Merged into {p.s.data.artifact.live.merged_into_url?.replace(/^\w+:\/\//, "") ?? "another page"}</a>{:else if p.s.data.artifact.live && /^https?:\/\//.test(p.s.data.artifact.live.page_url)}<a class="open-page hide-sm" href={p.s.data.artifact.live.page_url} target="_blank" rel="noopener noreferrer">Open page</a>{/if}
 {#if p.s.menu === "people" && Panel}<Panel ctl={p.ctl} s={p.s} onClose={() => p.ctl.closeMenu()} />{/if}
 
 <style>

@@ -2,7 +2,7 @@
 // its live refreshes, are not needed for the first paint: the gallery loads
 // this module once its first list has painted, and until then shows one list
 // in the usual order.
-import { mount } from "svelte";
+import { mount, unmount } from "svelte";
 import type { Artifact, AttentionSummary } from "../api";
 import { type Cards, CardSync as Sync } from "./card-sync";
 import GallerySites from "./GallerySites.svelte";
@@ -21,7 +21,7 @@ export { WorkingFeed } from "./working-feed.svelte";
  * mounted at the end of the gallery when it lists a live page. Mounted from
  * here, the gallery's first paint carries none of it. */
 export class CardSync extends Sync {
-  #sites: HTMLElement | null = null;
+  #sites: { target: HTMLElement; view: Record<string, unknown> } | null = null;
   constructor(private readonly gallery: Cards, feed: WorkingFeed, every?: number) { super(gallery, feed, every); }
   override start(): void {
     super.start();
@@ -29,13 +29,15 @@ export class CardSync extends Sync {
     if (this.#sites || !main || !(this.gallery.list() ?? []).some(a => a.live)) return;
     const target = document.createElement("div");
     main.insertBefore(target, main.querySelector(".gfoot"));
-    mount(GallerySites, { target });
-    this.#sites = target;
+    this.#sites = { target, view: mount(GallerySites, { target }) };
   }
   override stop(): void {
     super.stop();
-    // Its fetches end with it; the gallery is going away.
-    this.#sites?.remove();
+    // Its subscription to the gallery topic ends with it.
+    if (this.#sites) {
+      void unmount(this.#sites.view);
+      this.#sites.target.remove();
+    }
     this.#sites = null;
   }
 }

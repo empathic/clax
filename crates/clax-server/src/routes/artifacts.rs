@@ -196,8 +196,9 @@ pub(crate) fn with_owner(
             "page_url": format!("{newest}{}", p.path),
             "origins": origins,
         });
-        if let Some(m) = merged_into {
+        if let Some((m, url)) = merged_into {
             v["live"]["merged_into"] = json!(m);
+            v["live"]["merged_into_url"] = json!(url);
         }
     }
     v
@@ -207,8 +208,9 @@ pub(crate) fn with_owner(
 pub(crate) struct LivePart {
     pub page: LivePage,
     pub origins: Vec<String>,
-    /// A page a join merged away (spec §7.2): the page it was merged into.
-    pub merged_into: Option<String>,
+    /// A page a join merged away (spec §7.2): the page it was merged into,
+    /// and that page's URL.
+    pub merged_into: Option<(String, Option<String>)>,
 }
 
 /// The live page `a` is, when it is one.
@@ -228,7 +230,15 @@ pub(crate) fn live_part(st: &Store, a: &Artifact) -> clax_core::Result<Option<Li
         return Ok(Some(LivePart {
             page,
             origins: vec![origin],
-            merged_into: Some(into),
+            merged_into: match into {
+                Some(i) => {
+                    let url = st
+                        .live_page_of(&ArtifactId::parse(&i)?)?
+                        .map(|p| format!("{}{}", p.origin, p.path));
+                    Some((i, url))
+                }
+                None => None,
+            },
         }));
     };
     let origins = st.joined_site(&page.origin)?.origin_names();
@@ -322,6 +332,18 @@ pub async fn list(
                     .map(|s| (s.id.clone(), s))
                     .collect();
                 let participants = st.participants_all()?;
+                // Pages a join merged away are kept, out of the listing
+                // while the page they were merged into exists; released
+                // ones are listed again (spec §7.2).
+                let mut merged = std::collections::HashSet::new();
+                let mut released = Vec::new();
+                for m in st.merged_live_pages()? {
+                    if m.merged_into.is_some() {
+                        merged.insert(m.artifact_id);
+                    } else {
+                        released.push(m);
+                    }
+                }
                 let mut sites: std::collections::HashMap<String, Vec<(String, String)>> =
                     std::collections::HashMap::new();
                 for (origin, key, used) in st.site_memberships()? {
@@ -346,11 +368,23 @@ pub async fn list(
                             },
                         )
                     })
+                    .chain(released.into_iter().map(|m| {
+                        let page = LivePage {
+                            artifact_id: m.artifact_id.clone(),
+                            origin: m.origin.clone(),
+                            path: m.path,
+                        };
+                        (
+                            m.artifact_id,
+                            LivePart {
+                                page,
+                                origins: vec![m.origin],
+                                merged_into: None,
+                            },
+                        )
+                    }))
                     .collect();
                 let none = Participants::default();
-                // Pages a join merged away are kept, out of the listing.
-                let merged: std::collections::HashSet<String> =
-                    st.merged_live_pages()?.into_iter().map(|x| x.0).collect();
                 Ok(artifacts
                     .iter()
                     .filter(|a| local || a.kind != KIND_LIVE)

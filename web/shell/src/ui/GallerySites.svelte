@@ -4,11 +4,13 @@
   // joined site's named after its most recently used address and listing
   // the others, with its pages and comments. Each entry's menu joins it to
   // another site ("Same app as…", repeated while the daemon says threads
-  // remain to merge) or splits an address off. Loaded after the gallery's
+  // remain to merge) or splits an address off. It reloads on the gallery
+  // topic's `site` events. Loaded after the gallery's
   // first paint (`gallery-working`), and only when it lists a live page;
   // the menu needs the token.
   import { onMount } from "svelte";
   import { getToken } from "../api";
+  import { subscribeGallery } from "../working-events";
 
   type Origin = { origin: string; last_used_at: string | null };
   type Site = { site: { key: string; name: string; joined: boolean; origins: Origin[] }; pages: number; threads: number; joining?: number };
@@ -65,7 +67,12 @@
     await post("/api/live/sites/split", { origin: o });
     return `${host(o)} is a site of its own again. What the site has kept stays with it.`;
   });
-  onMount(() => { void getToken().then(t => { token = t; }); void load(); });
+  onMount(() => {
+    void getToken().then(t => { token = t; });
+    void load();
+    // A join or a split elsewhere (the side panel) changes the sites.
+    return subscribeGallery(e => { if (e.type === "site") void load(); });
+  });
 </script>
 
 {#if sites?.length}

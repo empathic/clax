@@ -571,3 +571,80 @@ async fn a_join_waits_for_an_unmerge_under_way() {
     let (st, e) = join(&ts, B, A).await;
     assert_eq!((st, e["error"]["code"].clone()), (409, json!("unmerging")));
 }
+
+/// A comment posted on artifact `aid` the way the shell posts one.
+async fn shell_thread(ts: &TestServer, cookie: &str, aid: &str) -> (u16, Value) {
+    let form = reqwest::multipart::Form::new()
+        .text("anchor", clax_server::testing::element_anchor().to_string())
+        .text("body", "On the old page")
+        .text("version", "1");
+    json_of(
+        ts.client
+            .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+            .header("cookie", format!("clax_viewer={cookie}"))
+            .multipart(form)
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_merged_away_page_takes_no_thread_hides_from_the_lan_and_is_released_when_its_page_goes()
+{
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let (lc, lan) = ts.lan();
+    let v = ts.viewer(Some("Ana")).await;
+    let (a_home, _) = comment(&ts, &v.cookie, &format!("{A}/"), "App").await;
+    let (b_home, _) = comment(&ts, &v.cookie, &format!("{B}/"), "App").await;
+    let (st, j) = join(&ts, B, A).await;
+    assert_eq!((st, j["remaining"].clone()), (200, json!(0)));
+    // A new thread goes to the page it was merged into, not here.
+    let (st, e) = shell_thread(&ts, &v.cookie, &b_home).await;
+    assert_eq!(st, 409, "{e}");
+    assert_eq!(e["error"]["code"], "merged_away");
+    assert_eq!(e["error"]["merged_into"], a_home.as_str());
+    assert_eq!(e["error"]["page_url"], format!("{A}/"));
+    // Hidden from LAN viewers, as any live page.
+    for path in [format!("/api/artifacts/{b_home}"), format!("/a/{b_home}")] {
+        let res = lc.get(format!("{lan}{path}")).send().await.unwrap();
+        assert_eq!(res.status(), 404, "{path}");
+    }
+    // Deleting the page it was merged into releases it, in that delete:
+    // listed, viewable and deletable again, still hidden from the LAN.
+    let res = ts
+        .authed(
+            ts.client
+                .delete(format!("{}/api/artifacts/{a_home}", ts.base)),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success(), "{}", res.status());
+    let list = json_of(ts.get_authed("/api/artifacts").await).await.1;
+    let back = list["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == b_home.as_str())
+        .cloned()
+        .expect("listed again");
+    assert_eq!(back["live"]["page_url"], format!("{B}/"));
+    assert!(back["live"].get("merged_into").is_none());
+    let res = lc
+        .get(format!("{lan}/api/artifacts/{b_home}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+    let res = ts
+        .authed(
+            ts.client
+                .delete(format!("{}/api/artifacts/{b_home}", ts.base)),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success());
+}

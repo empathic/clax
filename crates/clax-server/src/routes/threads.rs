@@ -260,6 +260,39 @@ pub(crate) fn announce_new_thread(
 /// it sends nothing). A clip that fails `clip_problem` is dropped and reported
 /// as `clip_error`.
 /// A request with a foreign `Origin` is refused ([`SameOrigin`]).
+/// 409 `merged_away` for a live page a join merged into another (spec
+/// §7.2): its threads are the other page's now, so a new one goes there.
+/// The error names it: `merged_into` (its artifact ID) and `page_url`.
+async fn refuse_merged_away(s: &AppState, aid: &str) -> Result<(), ApiError> {
+    let a = aid.to_string();
+    let into: Option<(String, Option<String>)> = s
+        .store_call(move |st| {
+            let Some((_, _, Some(into))) = st.merged_live_page(&a)? else {
+                return Ok(None);
+            };
+            let page = st.live_page_of(&clax_core::ArtifactId::parse(&into)?)?;
+            Ok(Some((
+                into,
+                page.map(|p| format!("{}{}", p.origin, p.path)),
+            )))
+        })
+        .await?;
+    let Some((into, page_url)) = into else {
+        return Ok(());
+    };
+    let mut e = ApiError::new(
+        StatusCode::CONFLICT,
+        "merged_away",
+        format!(
+            "this page was merged into {}; comment there",
+            page_url.as_deref().unwrap_or(&into)
+        ),
+    );
+    e.extra.insert("merged_into".into(), json!(into));
+    e.extra.insert("page_url".into(), json!(page_url));
+    Err(e)
+}
+
 pub async fn create(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -269,6 +302,7 @@ pub async fn create(
     mp: Result<Multipart, MultipartRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let id = parse_id(&path(aid)?)?;
+    refuse_merged_away(&s, id.as_str()).await?;
     let mut mp = mp.map_err(|e| multipart_error(e.status(), e.body_text()))?;
     let (mut anchor, mut text, mut version, mut clip) = (None, None, None, None);
     let mut via_page = false;

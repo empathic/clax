@@ -93,6 +93,16 @@ pub struct Split {
     pub rekeyed: Vec<String>,
 }
 
+/// A live page a join merged away (spec §7.2), kept whole: `merged_into`
+/// is the page it was merged into, `None` once that page was deleted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MergedPage {
+    pub artifact_id: String,
+    pub origin: String,
+    pub path: String,
+    pub merged_into: Option<String>,
+}
+
 /// A site in the listing: its pages and threads, and its last activity.
 #[derive(Clone, Debug, Serialize)]
 pub struct SiteSummary {
@@ -237,16 +247,28 @@ impl Store {
         self.with_read(|c| site_in(c, origin))
     }
 
-    /// Every live page merged away by a join (spec §7.2): its artifact ID
-    /// and origin. They stay live pages for the LAN rule.
+    /// Every live page merged away by a join (spec §7.2): its artifact ID,
+    /// origin, path, and the page it was merged into (`None` once that page
+    /// was deleted: released, listed again). They stay live pages for the
+    /// LAN rule.
     ///
     /// # Errors
     /// Database errors only.
-    pub fn merged_live_pages(&self) -> Result<Vec<(String, String)>> {
+    pub fn merged_live_pages(&self) -> Result<Vec<MergedPage>> {
         self.with_read(|c| {
-            let mut st = c.prepare("SELECT artifact_id, origin FROM live_merged_pages")?;
+            let mut st = c.prepare(
+                "SELECT m.artifact_id, m.origin, m.path, m.merged_into FROM live_merged_pages m
+                 JOIN artifacts a ON a.id = m.artifact_id WHERE a.deleted_at IS NULL",
+            )?;
             let rows = st
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .query_map([], |r| {
+                    Ok(MergedPage {
+                        artifact_id: r.get(0)?,
+                        origin: r.get(1)?,
+                        path: r.get(2)?,
+                        merged_into: r.get(3)?,
+                    })
+                })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(rows)
         })
@@ -257,7 +279,7 @@ impl Store {
     ///
     /// # Errors
     /// Database errors only.
-    pub fn merged_live_page(&self, id: &str) -> Result<Option<(String, String, String)>> {
+    pub fn merged_live_page(&self, id: &str) -> Result<Option<(String, String, Option<String>)>> {
         self.with_read(|c| {
             Ok(c.query_row(
                 "SELECT origin, path, merged_into FROM live_merged_pages WHERE artifact_id = ?1",

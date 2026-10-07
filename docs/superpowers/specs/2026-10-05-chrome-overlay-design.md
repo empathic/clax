@@ -800,7 +800,11 @@ Owner decisions, 2026-10-06 (binding):
    its row moves to `live_merged_pages`, naming the site's page, so it is
    no longer a key (its origin may make a page of that path again after a
    split) and leaves the listings and the gallery, while its artifact, its
-   `/a/<id>` link and every snapshot stay. Once none is pending the site's
+   `/a/<id>` link and every snapshot stay; the shell links it to the page
+   it was merged into ("Merged into …"), and a new thread on it is refused
+   (409 `merged_away`). Deleting that page releases it in the same
+   transaction (owner ruling 2026-10-07): listed and deletable again,
+   never stranded hidden. Once none is pending the site's
    rules are applied across it. The client repeats the request while
    `remaining` is above 0; a repeat is idempotent. While a join of either
    site is not finished, another join of them, and any split, is refused

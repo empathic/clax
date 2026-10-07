@@ -86,10 +86,12 @@ pub enum Event {
         people: Vec<crate::presence::PresenceView>,
     },
     /// A joined site changed (spec 2026-10-05-chrome-overlay-design §7.2):
-    /// an origin joined it or was split off. `site` is its key now,
+    /// an origin joined it or was split off, or a join re-keyed or merged
+    /// away its pages. `site` is its key now,
     /// `origins` its origins (the most recently used first), and `left` the
-    /// origins that are no longer of it. Only the `site:` topics of those
-    /// origins carry it; it names no artifact.
+    /// origins that are no longer of it. The `site:` topics of those
+    /// origins and the gallery's (whose cards and Sites list reload on it)
+    /// carry it, to this machine's owners only; it names no artifact.
     Site {
         site: String,
         origins: Vec<String>,

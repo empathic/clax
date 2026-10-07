@@ -179,6 +179,18 @@ describe("the top bar on a live page", () => {
     expect(view.root.querySelector(".topbar.commenting")).toBeNull();
   });
 
+  it("on a page a join merged away, links the page it was merged into instead of the page, and comments nowhere", async () => {
+    const merged = () => { const a = liveArtifact(); return { ...a, artifact: { ...a.artifact, live: { ...live, merged_into: "8r4m0nzy3c5v", merged_into_url: "http://localhost:5174/settings" } } }; };
+    const view = await mountView(async () => new Response(JSON.stringify(merged())));
+    const comment = await waitFor(() => view.root.querySelector<HTMLButtonElement>("button.comment"), "the Comment button");
+    expect(comment.disabled).toBe(true);
+    (await import("./ui/more-menu.svelte")).loadMoreMenu();
+    const link = await waitFor(() => Array.from(view.root.querySelectorAll<HTMLAnchorElement>("a")).find(a => a.textContent?.startsWith("Merged into")), "the Merged into link");
+    expect(link.textContent).toBe("Merged into localhost:5174/settings");
+    expect(link.getAttribute("href")).toBe("/a/8r4m0nzy3c5v");
+    expect(Array.from(view.root.querySelectorAll("a")).some(a => a.textContent === "Open page" && a.classList.contains("hide-sm"))).toBe(false);
+  });
+
   it("calls the versions snapshots in the version menu", async () => {
     const view = await mountView(async () => new Response(JSON.stringify(liveArtifact())));
     const vbtn = await waitFor(() => view.root.querySelector<HTMLButtonElement>("button.vbtn"), "the version button");

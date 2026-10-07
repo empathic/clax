@@ -327,7 +327,8 @@ pub const MIGRATIONS: &[&str] = &[
     // origin whose live pages and rules hold the site's; it has a row of its
     // own), when it joined and when Clax last used it; a joined origin's page
     // merged into the site's page of its path once its threads moved there,
-    // kept whole (its artifact and snapshots) but no longer a live page's key;
+    // kept whole (its artifact and snapshots) but no longer a live page's key
+    // (`merged_into` NULL once that page is deleted: released, listed again);
     // the owner's answers to suggested joins (`never`, or `later` until a
     // time), per pair of origins in order; and `join` as a kind of thread
     // move (a thread re-filed onto the site's page of the same path).
@@ -342,7 +343,7 @@ pub const MIGRATIONS: &[&str] = &[
         artifact_id TEXT PRIMARY KEY REFERENCES artifacts(id),
         origin TEXT NOT NULL,
         path TEXT NOT NULL,
-        merged_into TEXT NOT NULL,
+        merged_into TEXT,
         merged_at TEXT NOT NULL
     );
     CREATE TABLE live_site_answers (

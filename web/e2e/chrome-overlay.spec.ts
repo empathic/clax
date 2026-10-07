@@ -378,9 +378,7 @@ test("the panel lists the site's other pages, opens and pins their threads, move
   await expect.poll(() => panel.eval<string[]>(`[...document.querySelectorAll(".elsewhere summary .path")].map(p => p.textContent)`)).toEqual(["/users/2.html"]);
 });
 
-test("two ports of one app join into one site: suggested, joined, listed and pinned together, watched as one, and opened on an address that answers", async ({ live }, testInfo) => {
-  // Two dev servers, a join, two navigations and a probe of a stopped server: more than one loop's work.
-  testInfo.setTimeout(testInfo.timeout + 30_000);
+test("two ports of one app join into one site: suggested, joined, listed and pinned together, watched as one, and opened on an address that answers", async ({ live }) => {
   const h = hook(live);
   // The same app on a second port, as a dev server that moved would serve it.
   const port = await freePort();
@@ -417,7 +415,7 @@ test("two ports of one app join into one site: suggested, joined, listed and pin
     const panel = await SidePanel.open(live, page, tabId);
     // The suggestion waits for the site's listing, which waits for the worker's stream.
     // The first lookup waits for the worker to pair through the native host, which a loaded machine makes slow.
-    await expect.poll(() => live.sw.evaluate(o => !!(globalThis as unknown as { claxTest: { site(o: string): unknown } }).claxTest.site(o), O2), { timeout: 30_000 }).toBe(true);
+    await expect.poll(() => live.sw.evaluate(o => !!(globalThis as unknown as { claxTest: { site(o: string): unknown } }).claxTest.site(o), O2), { timeout: 15_000 }).toBe(true);
     await expect.poll(() => panel.text()).toContain(`Looks like localhost:${new URL(O1).port} — same app?`);
     await panel.shot("panel-suggestion");
     expect((await api(live, `/api/live/site?origin=${encodeURIComponent(O2)}`)).site.joined).toBe(false);

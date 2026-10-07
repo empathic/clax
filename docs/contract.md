@@ -2185,7 +2185,12 @@ own origin is 400 `own_origin`.
   site's page and is merged away: never deleted, it is no longer the key
   of its path, leaves the site listing and `GET /api/artifacts`, and keeps
   its artifact, its `/a/<id>` link and every snapshot; its view's
-  `live.merged_into` names the site's page. Until then its page is listed
+  `live.merged_into` names the site's page (`live.merged_into_url` its
+  URL), and a new thread on it is refused with 409 `merged_away` (naming
+  `merged_into` and `page_url`): it goes on the site's page. Deleting the
+  page it was merged into releases it in the same transaction: it is
+  listed, viewable and deletable again, as an ordinary page of its origin
+  (still hidden from the LAN), and nothing stays hidden. Until then its page is listed
   with the site's, its view marked `pending: true`, and `GET
   /api/live/site` and `GET /api/live/sites` say `joining`: how many of its
   threads are left. The joining site's merge rules become the
