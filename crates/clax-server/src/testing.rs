@@ -754,6 +754,21 @@ impl TestServer {
         assert_eq!(v["count"], n, "{n} feedback polls of {sid} within 5 s");
     }
 
+    /// Returns once `n` feedback polls of session `sid` with tier `tier`
+    /// are parked waiting to be woken; panics when the daemon gives up
+    /// waiting (5 s).
+    pub async fn wait_parked_feedback_polls(&self, sid: &str, tier: &str, n: u64) {
+        let v: serde_json::Value = self
+            .get_authed(&format!(
+                "/api/_test/sessions/{sid}/feedback/waiters?parked={tier}&until={n}"
+            ))
+            .await
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(v["count"], n, "{n} parked {tier} polls of {sid} within 5 s");
+    }
+
     /// A paired extension: a fresh credential for this server's extension
     /// ID, whose requests come from the extension's origin.
     pub async fn extension(&self) -> TestExtension {
