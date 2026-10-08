@@ -484,7 +484,7 @@ No arguments.
   "push": {
     "tier": null,
     "available": false,
-    "reason": "nothing wakes this session while it is idle: launch Claude Code with `claude --dangerously-load-development-channels plugin:clax@clax`, or run follow_command in the background after publishing; meanwhile comments arrive at the end of a turn (Stop hook), with the next prompt, on the next clax tool call, or during wait_for_feedback",
+    "reason": "optional: comments sent to this session already arrive with the next clax tool result, at the end of each turn, with the next message, and during wait_for_feedback; push only wakes the session while it is idle. To have a comment wake it, run follow_command in the background after publishing, or launch Claude Code with `claude --dangerously-load-development-channels plugin:clax@clax` (Claude Code channels, a research preview)",
     "follow_command": "'/Users/alex/.cargo/bin/clax' feedback follow --once --agent claude --harness-session '6b1f0c2e-9d4a-4c1e-8f3b-2a7d5e9c0b14'",
     "channel": {
       "declared": true,
