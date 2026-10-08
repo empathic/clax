@@ -924,7 +924,10 @@ which shows a dot. The stage is never covered or moved.
 - **Notifications.** Permission is asked only from a **Notify me** button.
   The stream hub tracks which tab has focus (tabs report `focus`, `blur`,
   `visibilitychange`). For each new unread item (an `inbox_item` event
-  whose item it has not announced), when no tab has focus, the hub asks the
+  whose item it has not announced, or an unread item that arrived while the
+  stream did not carry `inbox`: after a tab first wanted it, fetched once
+  the subscription answers and compared by `seq` with the newest item when
+  the tab first wanted it), when no tab has focus, the hub asks the
   most recently focused tab to notify: title by kind ("claude asks:
   Layout", "claude replied on Quarterly Review", "claude published v4 of
   Quarterly Review", "claude published Sales dashboard", "claude finished on
