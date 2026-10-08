@@ -24,7 +24,8 @@
 // wanting it and the subscription) or again (after a new stream) send no
 // event: once the subscription answers, the hub fetches the unread items
 // and announces those newer than the newest item when a tab first wanted
-// `inbox` (fetched then) and not announced already, oldest first.
+// `inbox` (fetched then) and not announced already, oldest first, at most
+// the newest `CATCH_UP_SHOWN` of them.
 import { STUCK_MS, backoff } from "./lifecycle";
 import { parseBlock } from "./sse";
 
@@ -68,6 +69,9 @@ export const PING_MS = 10_000;
 export const CLIENT_TTL_MS = 180_000;
 /** Most unread items one catch-up fetches (newest first). */
 export const CATCH_UP = 20;
+/** Most of those one catch-up announces: the newest, so a long outage
+ * ends in a few notifications, not a burst (the count says the rest). */
+export const CATCH_UP_SHOWN = 3;
 
 type Timer = ReturnType<typeof setTimeout>;
 /** `focusedAt` orders the tabs by when they last gained focus (0: never). */
@@ -363,12 +367,14 @@ export class Hub {
     if (best) this.env.send([best], { t: "notify", data });
   }
 
-  /** A GET of the daemon's JSON, bounded by `STUCK_MS`; null when it failed. */
-  private async getJson(path: string): Promise<Record<string, unknown> | null> {
+  /** A GET of the daemon's JSON, bounded by `STUCK_MS`: "forbidden" on a
+   * 403, null when it failed otherwise. */
+  private async getJson(path: string): Promise<Record<string, unknown> | "forbidden" | null> {
     const req = new AbortController();
     const stuck = setTimeout(() => req.abort(), STUCK_MS);
     try {
       const res = await this.fetch(this.url(path), { signal: req.signal, cache: "no-store", credentials: "same-origin" });
+      if (res.status === 403) return "forbidden";
       if (!res.ok) return null;
       const body: unknown = await res.json();
       return body && typeof body === "object" ? body as Record<string, unknown> : null;
@@ -380,10 +386,16 @@ export class Hub {
   }
 
   /** A tab first wants `inbox`: items up to the newest now are not new to
-   * it. Whether `seenSeq` was set (not for a caller other than the owner). */
+   * it. Whether `seenSeq` was set: not for a caller other than the owner
+   * (403, kept while `inbox` is wanted); any other failure is forgotten, so
+   * the next subscription asks again. */
   private async baseline(): Promise<boolean> {
     const body = await this.getJson("/api/inbox?limit=1");
-    if (!body || !Array.isArray(body.items)) return false;
+    if (body === "forbidden") return false;
+    if (!body || !Array.isArray(body.items)) {
+      this.inboxBase = null;
+      return false;
+    }
     const seq = (body.items[0] as { seq?: unknown } | undefined)?.seq;
     this.seenSeq = Math.max(this.seenSeq, typeof seq === "number" ? seq : 0);
     return true;
@@ -395,12 +407,12 @@ export class Hub {
     const body = await this.getJson(`/api/inbox?read=unread&limit=${CATCH_UP}`);
     const seen = this.windowSeen ?? new Set<number>();
     this.windowSeen = null;
-    const items = (Array.isArray(body?.items) ? body.items : []) as { seq?: unknown; read?: unknown }[];
+    const items = (body && body !== "forbidden" && Array.isArray(body.items) ? body.items : []) as { seq?: unknown; read?: unknown }[];
     const fresh = items
       .filter((i): i is { seq: number; read?: unknown } => !!i && typeof i.seq === "number" && i.seq > this.seenSeq && !seen.has(i.seq))
       .sort((a, b) => a.seq - b.seq);
     this.seenSeq = Math.max(this.seenSeq, ...seen, ...fresh.map(i => i.seq));
-    for (const item of fresh) this.pick({ topic: "inbox", item }, item, this.wanting("inbox"));
+    for (const item of fresh.slice(-CATCH_UP_SHOWN)) this.pick({ topic: "inbox", item }, item, this.wanting("inbox"));
   }
 
   /** Ends a catch-up window whose subscription did not go through. */
@@ -478,13 +490,17 @@ export class Hub {
   private async update(add: string[], remove: string[]): Promise<boolean> {
     // Subscribing `inbox`: once its baseline is known, events are kept aside
     // from the request on, so the catch-up after it neither repeats nor skips one.
+    // Only the call that opens the window catches up: a request split
+    // because the daemon refused another topic subscribes `inbox` again inside it.
+    if (this.env.notify && add.includes("inbox") && this.inboxWanted) this.inboxBase ??= this.baseline();
     const catching = this.env.notify && add.includes("inbox") && this.inboxBase !== null && await this.inboxBase;
     const ac = this.conn;
     const id = this.streamId;
     if (!ac || !id) return false;
-    if (catching) this.windowSeen ??= new Set();
+    const opened = catching && !this.windowSeen;
+    if (opened) this.windowSeen = new Set();
     const caught = await this.subscribe(ac, id, add, remove);
-    if (catching) {
+    if (opened) {
       if (caught && this.server.has("inbox")) await this.catchUp();
       else this.endWindow();
     }

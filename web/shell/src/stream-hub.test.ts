@@ -290,6 +290,46 @@ describe("the stream hub", () => {
     h.close();
   });
 
+  it("catches up once when a request holding inbox is split, and announces only the newest few", async () => {
+    const sent: HubMsg[] = [];
+    const h = new Hub({ notify: true, fetch: net.fetch, send: (_ids, msg) => { sent.push(msg); } });
+    net.refuse.set(`docs:${A}`, [403, "not_declared"]);
+    h.receive("t1", { t: "topics", topics: ["inbox", `docs:${A}`] });
+    await tick();
+    net.auto = false;
+    net.ready(net.conns[0], S1);
+    await tick();
+    for (let s = 1; s <= 5; s++) net.inbox.push({ id: `I${s}`, seq: s, read: false });
+    net.auto = true;
+    net.posts[0].answer(403, { error: { code: "not_declared" } });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(net.inboxGets.filter(u => u.includes("read=unread"))).toHaveLength(1);
+    expect(sent.filter(m => m.t === "notify").map(m => m.t === "notify" && (m.data.item as { id: string }).id)).toEqual(["I3", "I4", "I5"]);
+    h.close();
+  });
+
+  it("asks for the baseline again after it failed, and then catches up", async () => {
+    const sent: HubMsg[] = [];
+    const h = new Hub({ notify: true, fetch: net.fetch, send: (_ids, msg) => { sent.push(msg); } });
+    net.inboxStatus = 500;
+    h.receive("t1", { t: "topics", topics: ["inbox"] });
+    await tick();
+    net.ready(net.conns[0], S1);
+    await tick();
+    // Failed when the tab first wanted the inbox, and again at the subscription.
+    expect(net.inboxGets).toEqual(["/api/inbox?limit=1", "/api/inbox?limit=1"]);
+    net.inboxStatus = 200;
+    h.receive("t1", { t: "reconnect" });
+    await tick();
+    net.inbox.push({ id: "I1", seq: 1, read: false });
+    net.ready(net.open.at(-1)!, S2);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(net.inboxGets.slice(2)).toEqual(["/api/inbox?limit=1", "/api/inbox?read=unread&limit=20"]);
+    // I1 came before the baseline that worked: not new.
+    expect(sent.filter(m => m.t === "notify")).toEqual([]);
+    h.close();
+  });
+
   it("does not catch up for a caller the inbox refuses", async () => {
     const sent: HubMsg[] = [];
     const h = new Hub({ notify: true, fetch: net.fetch, send: (_ids, msg) => { sent.push(msg); } });
