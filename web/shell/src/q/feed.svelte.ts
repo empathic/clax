@@ -160,6 +160,7 @@ export class InboxFeed {
     this.unwatch = null;
     this.listeners = new Set();
     this.later = null;
+    this.waiting = false;
     this.after = opts.after ?? after;
   }
 
@@ -182,9 +183,15 @@ export class InboxFeed {
     return () => { this.counted.delete(f); };
   }
 
+  /** Subscribed, and the topic has not gone live yet: what a view shows
+   * would be fetched again when it does (`{refetch}`). */
+  declare waiting: boolean;
+
   /** Follows the topic (once), fetching the summary when it goes live. */
   start(stream: Stream): void {
-    this.unwatch ??= stream.watch(["inbox"], e => this.on(e), { background: true });
+    if (this.unwatch) return;
+    this.waiting = true;
+    this.unwatch = stream.watch(["inbox"], e => this.on(e), { background: true });
   }
 
   /** Stops following the topic. */
@@ -256,6 +263,7 @@ export class InboxFeed {
       const item = e.item as InboxItem | undefined;
       if (item?.id) this.take(item);
     } else if (e.type === "inbox_read" || e.type === "ready" || e.type === "resync") {
+      this.waiting = false;
       void this.summary();
       this.tell({ refetch: true });
     } else if (e.type === "refused") this.stop();

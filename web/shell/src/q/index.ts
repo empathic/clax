@@ -81,9 +81,10 @@ export function artifact(aid: string, trail: Trail, stream: EventStream, doc: Do
   };
   const onSlot = (e: Event) => fill(e.target as Element);
   start(stream);
-  const bar = doc.querySelector<HTMLElement>(".topbar");
-  if (bar) {
-    const link = mount(InboxLink, { target: bar, anchor: bar.querySelector(":scope > .island") ?? undefined, props: {} });
+  // In the top bar before the controls; at phone width in the tab bar
+  // instead, so the top bar keeps its title.
+  for (const target of doc.querySelectorAll<HTMLElement>(".topbar, .phone-tabs")) {
+    const link = mount(InboxLink, { target, anchor: target.querySelector(":scope > .island") ?? undefined, props: {} });
     off.push(() => { void unmount(link); });
   }
   doc.addEventListener("clax-questions-slot", onSlot);

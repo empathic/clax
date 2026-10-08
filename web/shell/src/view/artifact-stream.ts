@@ -5,10 +5,10 @@
 // holds, and the view handles the full events they amount to. It also loads
 // the question module, whose surfaces (the top bar's Inbox, the sidebar's
 // questions) show for the owner.
-import { ApiError, getArtifact, getToken } from "../api";
+import { ApiError, getArtifact } from "../api";
 import type { ArtifactEvent } from "../events";
 import { nav } from "../nav";
-import { type StreamEvent, pageStream } from "../stream";
+import { type StreamEvent, ownerBrowser, pageStream } from "../stream";
 import { type Thread, getViewer, renamedViewer, upsert } from "../threads";
 import type { ArtifactController } from "./artifact-controller";
 import { holdKeysAcrossLoad } from "./keys";
@@ -57,7 +57,7 @@ export class ArtifactStream {
     const load = () => void import("../q").then(m => { if (!this.stopped) this.questions = m.artifact(id, { keyboardTrail, guardedAction }, pageStream()); }, () => {});
     // Only in the owner's browsers (those the token is served to); a stopped
     // stream asks nothing more.
-    const owner = () => void getToken().then(t => { if (t && !this.stopped) load(); });
+    const owner = () => void ownerBrowser().then(o => { if (o && !this.stopped) load(); });
     if (typeof requestIdleCallback === "function") {
       const h = requestIdleCallback(owner, { timeout: 2000 });
       this.cancelOwner = () => cancelIdleCallback(h);

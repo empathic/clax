@@ -153,7 +153,8 @@ export const leaderLink: LinkMaker = async on => {
   }).catch(() => {});
   post(hello);
   return {
-    leader: true,
+    // Whether this tab holds the connection for the others.
+    get leader() { return hub !== null; },
     send: m => { if (closed) return; if (m.t === "topics") topics = m; if (m.t === "focus") focus = m; post(m); },
     close: () => {
       if (closed) return;
@@ -174,6 +175,20 @@ export const localLink: LinkMaker = async on => {
   const hub = new Hub({ notify: true, send: (_ids, msg) => on(msg) });
   return { send: m => hub.receive("self", m), close: () => hub.close() };
 };
+
+/** Whether this is a browser of the owner's: the daemon serves it the token
+ * (`GET /api/token`, to loopback browsers only). A refusal (403) is the
+ * answer no; any other failure (the daemon restarting, say) is asked again
+ * after a backoff, so it resolves only once it knows. */
+export async function ownerBrowser(): Promise<boolean> {
+  if (await getToken()) return true;
+  for (let n = 0; ; n++) {
+    const r = await fetch("/api/token", { cache: "no-store" }).catch(() => null);
+    if (r?.ok) return true;
+    if (r?.status === 403) return false;
+    await new Promise(f => setTimeout(f, backoff(n)));
+  }
+}
 
 /** The best link this browser supports. */
 export const bestLink: LinkMaker = async (on, lost) => {
