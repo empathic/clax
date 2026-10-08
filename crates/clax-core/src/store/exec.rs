@@ -1,8 +1,8 @@
 //! The connections and threads behind [`Store`]: the only write connection,
 //! lent to one caller at a time in arrival order; a pool of `query_only`
-//! reader connections; worker threads that run [`Store::call`] jobs from a
-//! bounded queue; and a background checkpoint thread. See the `store` module doc for
-//! how they fit together.
+//! reader connections; worker threads that run [`Store::call`] and
+//! [`Store::call_bulk`] jobs from two bounded queues; and a background
+//! checkpoint thread. See the `store` module doc for how they fit together.
 
 use super::Store;
 use crate::{CoreError, Result};
@@ -28,9 +28,13 @@ pub const READ_LIMIT: Duration = Duration::from_secs(10);
 pub const AUTOCHECKPOINT_PAGES: u32 = 4000;
 /// How often the background thread runs a `PASSIVE` checkpoint.
 pub const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(2);
-/// Most [`Store::call`] jobs queued or running at once; further calls wait
-/// (asynchronously, cancellably) for a slot.
+/// Most jobs queued or running at once in each lane ([`Store::call`],
+/// [`Store::call_bulk`]); further calls wait (asynchronously, cancellably)
+/// for a slot.
 pub const QUEUE_CAPACITY: usize = 256;
+/// How many interactive jobs may start, while a bulk job is waiting and
+/// could start, before a free worker takes that bulk job instead.
+pub const BULK_PASS: usize = 4;
 /// Most reader connections, and the base count of worker threads.
 pub const MAX_READERS: usize = 8;
 /// Virtual-machine steps between two checks of a read's deadline.
@@ -360,9 +364,24 @@ type Task = Box<dyn FnOnce() + Send>;
 /// How long a worker beyond the base count waits idle before it exits.
 const SPARE_IDLE: Duration = Duration::from_secs(30);
 
+/// Which queue a job waits in (see [`Workers`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Lane {
+    Interactive,
+    Bulk,
+}
+
 #[derive(Default)]
 struct Queue {
+    /// Interactive jobs, in arrival order.
     tasks: VecDeque<Task>,
+    /// Bulk jobs, in arrival order.
+    bulk: VecDeque<Task>,
+    /// Bulk jobs running.
+    bulk_running: usize,
+    /// Interactive jobs started since a bulk job last started, while one
+    /// was waiting and could start.
+    passed: usize,
     closed: bool,
     /// Worker threads running.
     threads: usize,
@@ -373,11 +392,36 @@ struct Queue {
     spawned: usize,
 }
 
+impl Queue {
+    fn is_empty(&self) -> bool {
+        self.tasks.is_empty() && self.bulk.is_empty()
+    }
+
+    /// The job a free worker starts next, and its lane: an interactive job
+    /// first, unless none is waiting or [`BULK_PASS`] have started past a
+    /// bulk job that could; a bulk job only while fewer than `bulk_cap` run.
+    fn next(&mut self, bulk_cap: usize) -> Option<(Task, Lane)> {
+        let bulk_ready = !self.bulk.is_empty() && self.bulk_running < bulk_cap;
+        if bulk_ready && (self.tasks.is_empty() || self.passed >= BULK_PASS) {
+            self.passed = 0;
+            self.bulk_running += 1;
+            return self.bulk.pop_front().map(|t| (t, Lane::Bulk));
+        }
+        let t = self.tasks.pop_front()?;
+        if bulk_ready {
+            self.passed += 1;
+        }
+        Some((t, Lane::Interactive))
+    }
+}
+
 struct Shared {
     queue: Mutex<Queue>,
     ready: Condvar,
     /// Workers that are kept free of writes, so reads always have them.
     base: usize,
+    /// Most bulk jobs running at once: one fewer than `base`, at least one.
+    bulk_cap: usize,
     handles: Mutex<Vec<thread::JoinHandle<()>>>,
 }
 
@@ -436,14 +480,21 @@ impl Drop for WriteLane {
     }
 }
 
-/// Worker threads taking [`Store::call`] jobs in FIFO order, plus the
-/// background checkpoint thread. `base` workers start with the pool; a job
-/// that writes may add more (see [`WriteLane`]), and an extra worker idle
-/// for [`SPARE_IDLE`] exits. Started on the first call; stopped by
-/// [`Store::shutdown`], or when the store drops.
+/// Worker threads taking jobs from two queues, each in FIFO order, plus the
+/// background checkpoint thread. Interactive jobs ([`Store::call`]) start
+/// first; bulk jobs ([`Store::call_bulk`]) start when no interactive job
+/// waits, or after [`BULK_PASS`] interactive ones went first, and at most
+/// one fewer than `base` (at least one) run at once, so a worker is free
+/// for interactive jobs however many bulk jobs wait. `base` workers start
+/// with the pool; a job that writes may add more (see [`WriteLane`]), and an
+/// extra worker idle for [`SPARE_IDLE`] exits. Started on the first call;
+/// stopped by [`Store::shutdown`], or when the store drops.
 pub(crate) struct Workers {
     shared: Arc<Shared>,
+    /// Interactive slots.
     slots: Arc<tokio::sync::Semaphore>,
+    /// Bulk slots.
+    bulk_slots: Arc<tokio::sync::Semaphore>,
     stop_checkpoints: Mutex<Option<mpsc::Sender<()>>>,
     checkpointer: Mutex<Option<thread::JoinHandle<()>>>,
 }
@@ -454,6 +505,7 @@ impl Workers {
             queue: Mutex::new(Queue::default()),
             ready: Condvar::new(),
             base,
+            bulk_cap: base.saturating_sub(1).max(1),
             handles: Mutex::new(Vec::new()),
         });
         let (stop, stopped) = mpsc::channel();
@@ -464,6 +516,7 @@ impl Workers {
         let workers = Workers {
             shared,
             slots: Arc::new(tokio::sync::Semaphore::new(QUEUE_CAPACITY)),
+            bulk_slots: Arc::new(tokio::sync::Semaphore::new(QUEUE_CAPACITY)),
             stop_checkpoints: Mutex::new(Some(stop)),
             checkpointer: Mutex::new(Some(checkpointer)),
         };
@@ -477,13 +530,16 @@ impl Workers {
         Ok(workers)
     }
 
-    /// Queues `task`; false once the pool is closed.
-    fn push(&self, task: Task) -> bool {
+    /// Queues `task` in `lane`; false once the pool is closed.
+    fn push(&self, lane: Lane, task: Task) -> bool {
         let mut q = lock(&self.shared.queue);
         if q.closed {
             return false;
         }
-        q.tasks.push_back(task);
+        match lane {
+            Lane::Interactive => q.tasks.push_back(task),
+            Lane::Bulk => q.bulk.push_back(task),
+        }
         drop(q);
         self.shared.ready.notify_one();
         true
@@ -537,13 +593,15 @@ impl Drop for Workers {
 fn work(shared: Arc<Shared>) {
     WORKER.with(|w| *w.borrow_mut() = Some(shared.clone()));
     loop {
-        let task = {
+        let (task, lane) = {
             let mut q = lock(&shared.queue);
             loop {
-                if let Some(t) = q.tasks.pop_front() {
-                    break t;
+                if let Some(next) = q.next(shared.bulk_cap) {
+                    break next;
                 }
-                if q.closed {
+                // A bulk job waiting for a running one to end is started by
+                // the worker that ends it.
+                if q.closed && q.is_empty() {
                     q.threads -= 1;
                     return;
                 }
@@ -557,13 +615,18 @@ fn work(shared: Arc<Shared>) {
                     .wait_timeout(q, SPARE_IDLE)
                     .unwrap_or_else(PoisonError::into_inner);
                 q = next;
-                if waited.timed_out() && q.tasks.is_empty() && q.threads - q.writing > shared.base {
+                if waited.timed_out() && q.is_empty() && q.threads - q.writing > shared.base {
                     q.threads -= 1;
                     return;
                 }
             }
         };
         task();
+        if lane == Lane::Bulk {
+            // This worker looks at the queue next, so a bulk job this one
+            // held back needs no wake-up.
+            lock(&shared.queue).bulk_running -= 1;
+        }
     }
 }
 
@@ -586,16 +649,37 @@ fn checkpoints(db: &Path, stop: &mpsc::Receiver<()>) {
 }
 
 impl Store {
-    /// Runs `f` on one of the store's worker threads and returns its result.
+    /// Runs `f` on one of the store's worker threads and returns its result,
+    /// in the interactive lane: ahead of bulk jobs (see [`Workers`]).
     ///
-    /// At most [`QUEUE_CAPACITY`] calls are queued or running; a further
-    /// call waits for a slot without holding a thread. Jobs start in the
-    /// order they were queued. A job whose caller has gone (its future was
-    /// dropped, as a request timeout does) before a worker reaches it is
-    /// skipped; once started, it runs to completion. A panic in `f` is
+    /// At most [`QUEUE_CAPACITY`] calls are queued or running in each lane; a
+    /// further call waits for a slot without holding a thread. Jobs of a lane
+    /// start in the order they were queued. A job whose caller has gone (its
+    /// future was dropped, as a request timeout does) before a worker reaches
+    /// it is skipped; once started, it runs to completion. A panic in `f` is
     /// logged and returned as [`CoreError::TaskFailed`], as is a call after
     /// [`Store::shutdown`] or one whose worker thread could not start.
     pub async fn call<T, F>(self: &Arc<Self>, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Store) -> Result<T> + Send + 'static,
+    {
+        self.call_in(Lane::Interactive, f).await
+    }
+
+    /// [`Store::call`] in the bulk lane, for reads whose cost grows with the
+    /// whole home (the gallery's list and attention, the inbox list): they
+    /// start after waiting interactive jobs (at least one in [`BULK_PASS`] +
+    /// 1 starts while both wait), and never take every worker.
+    pub async fn call_bulk<T, F>(self: &Arc<Self>, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Store) -> Result<T> + Send + 'static,
+    {
+        self.call_in(Lane::Bulk, f).await
+    }
+
+    async fn call_in<T, F>(self: &Arc<Self>, lane: Lane, f: F) -> Result<T>
     where
         T: Send + 'static,
         F: FnOnce(&Store) -> Result<T> + Send + 'static,
@@ -612,22 +696,28 @@ impl Store {
                 self.workers.get().expect("set above")
             }
         };
-        let permit = workers
-            .slots
+        let slots = match lane {
+            Lane::Interactive => &workers.slots,
+            Lane::Bulk => &workers.bulk_slots,
+        };
+        let permit = slots
             .clone()
             .acquire_owned()
             .await
             .expect("the slots are never closed");
         let (tx, rx) = tokio::sync::oneshot::channel();
         let store = Arc::clone(self);
-        let queued = workers.push(Box::new(move || {
-            let _permit = permit;
-            if tx.is_closed() {
-                return;
-            }
-            let out = catch_unwind(AssertUnwindSafe(|| f(&store)));
-            let _ = tx.send(out);
-        }));
+        let queued = workers.push(
+            lane,
+            Box::new(move || {
+                let _permit = permit;
+                if tx.is_closed() {
+                    return;
+                }
+                let out = catch_unwind(AssertUnwindSafe(|| f(&store)));
+                let _ = tx.send(out);
+            }),
+        );
         if !queued {
             return Err(CoreError::TaskFailed);
         }
@@ -1047,5 +1137,106 @@ mod tests {
             .unwrap_err();
         assert!(matches!(e, CoreError::TaskFailed));
         assert_eq!(st.call(|s| s.integrity_check()).await.unwrap(), "ok");
+    }
+
+    /// The lanes `q` hands out, as each job ends at once, until none is left
+    /// or none may start.
+    fn lanes(q: &mut Queue, bulk_cap: usize) -> Vec<Lane> {
+        let mut out = Vec::new();
+        while let Some((t, lane)) = q.next(bulk_cap) {
+            t();
+            if lane == Lane::Bulk {
+                q.bulk_running -= 1;
+            }
+            out.push(lane);
+        }
+        out
+    }
+
+    fn queue(interactive: usize, bulk: usize) -> Queue {
+        let mut q = Queue::default();
+        for _ in 0..interactive {
+            q.tasks.push_back(Box::new(|| {}));
+        }
+        for _ in 0..bulk {
+            q.bulk.push_back(Box::new(|| {}));
+        }
+        q
+    }
+
+    #[test]
+    fn interactive_jobs_go_first_and_bulk_ones_still_start() {
+        use Lane::{Bulk as B, Interactive as I};
+        let mut q = queue(10, 2);
+        assert_eq!(lanes(&mut q, 1), [I, I, I, I, B, I, I, I, I, B, I, I]);
+        // Bulk jobs alone start in turn.
+        let mut q = queue(0, 3);
+        assert_eq!(lanes(&mut q, 1), [B, B, B]);
+    }
+
+    #[test]
+    fn bulk_jobs_never_exceed_their_cap() {
+        let mut q = queue(0, 3);
+        let (_a, first) = q.next(2).unwrap();
+        let (_b, second) = q.next(2).unwrap();
+        assert_eq!((first, second), (Lane::Bulk, Lane::Bulk));
+        assert!(q.next(2).is_none(), "a third bulk job waits for one to end");
+        // An interactive job still starts, and does not count as passing
+        // the bulk job, which could not start.
+        q.tasks.push_back(Box::new(|| {}));
+        assert_eq!(q.next(2).map(|x| x.1), Some(Lane::Interactive));
+        assert_eq!(q.passed, 0);
+        q.bulk_running -= 1;
+        assert_eq!(q.next(2).map(|x| x.1), Some(Lane::Bulk));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_interactive_call_runs_while_bulk_calls_fill_their_workers() {
+        let (_d, st) = store();
+        let st = Arc::new(st);
+        let base = st.readers.max();
+        let cap = base - 1;
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let (started_tx, mut started) = tokio::sync::mpsc::unbounded_channel();
+        // One more bulk call than may run: every worker but one is taken.
+        let bulk: Vec<_> = (0..=cap)
+            .map(|i| {
+                let (st, gate, started_tx) = (st.clone(), gate.clone(), started_tx.clone());
+                tokio::spawn(async move {
+                    st.call_bulk(move |s| {
+                        started_tx.send(i).unwrap();
+                        let (open, opened) = &*gate;
+                        let mut g = lock(open);
+                        while !*g {
+                            g = opened.wait(g).unwrap_or_else(PoisonError::into_inner);
+                        }
+                        drop(g);
+                        s.integrity_check()
+                    })
+                    .await
+                })
+            })
+            .collect();
+        for _ in 0..cap {
+            started.recv().await.unwrap();
+        }
+        let read = tokio::time::timeout(Duration::from_secs(5), st.call(|s| s.integrity_check()))
+            .await
+            .expect("the interactive call ran beside the bulk ones");
+        assert_eq!(read.unwrap(), "ok");
+        assert!(
+            started.try_recv().is_err(),
+            "a bulk call took the last worker"
+        );
+        let (open, opened) = &*gate;
+        *lock(open) = true;
+        opened.notify_all();
+        for b in bulk {
+            assert_eq!(b.await.unwrap().unwrap(), "ok");
+        }
+        assert_eq!(
+            lock(&st.workers.get().unwrap().shared.queue).bulk_running,
+            0
+        );
     }
 }

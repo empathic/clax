@@ -324,7 +324,8 @@ pub async fn list(
         }
         None => {
             let all = s.working.all();
-            s.store_call(move |st| {
+            // The whole listing costs what the home does: the bulk lane.
+            s.store_call_bulk(move |st| {
                 let artifacts = st.list_artifacts()?;
                 let owners: std::collections::HashMap<String, Session> = st
                     .list_sessions(false)?

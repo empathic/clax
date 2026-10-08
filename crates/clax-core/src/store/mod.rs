@@ -30,7 +30,10 @@
 //! daemon calls them through [`Store::call`], which runs a job on worker
 //! threads (one per reader) fed by a bounded FIFO queue, so a pile-up of
 //! requests waits in the queue instead of claiming more threads, and a job
-//! whose request has given up is skipped. A job waiting for the write turn
+//! whose request has given up is skipped. Reads whose cost grows with the
+//! whole home go through [`Store::call_bulk`] instead: a second queue that
+//! workers take from after the first (yet never starving it), and whose
+//! jobs never hold every worker, so cheap requests do not wait behind them. A job waiting for the write turn
 //! or holding it does not count against the workers that reads need: while
 //! fewer than one per reader would be free of writes, the pool starts
 //! another. [`Store::shutdown`] drains the queue and joins the threads.

@@ -268,18 +268,24 @@ pub async fn attention(
         sees.check(&s.live_ids, id.as_str())?;
     }
     let hidden = (!sees.may_see).then(|| s.live_ids.clone());
-    let mut out = s
-        .store_call(move |st| {
-            Ok(match (who.viewer(st)?, one) {
-                (None, _) => json!({}),
-                (Some(v), None) => json!(st.attention_all(&v.id)?),
-                (Some(v), Some(id)) => match st.attention_one(&v.id, &id)? {
-                    Some(a) => Value::Object([(id.to_string(), json!(a))].into_iter().collect()),
-                    None => json!({}),
-                },
-            })
+    // Every artifact's attention costs what the viewer's threads do, so it
+    // waits in the bulk lane; one artifact's is an interactive call.
+    let whole = one.is_none();
+    let job = move |st: &clax_core::Store| {
+        Ok(match (who.viewer(st)?, one) {
+            (None, _) => json!({}),
+            (Some(v), None) => json!(st.attention_all(&v.id)?),
+            (Some(v), Some(id)) => match st.attention_one(&v.id, &id)? {
+                Some(a) => Value::Object([(id.to_string(), json!(a))].into_iter().collect()),
+                None => json!({}),
+            },
         })
-        .await?;
+    };
+    let mut out = if whole {
+        s.store_call_bulk(job).await?
+    } else {
+        s.store_call(job).await?
+    };
     if let (Some(live), Some(map)) = (hidden, out.as_object_mut()) {
         map.retain(|aid, _| !live.contains(aid));
     }
