@@ -120,7 +120,7 @@ class SidePanel {
     return r.result?.value as T;
   }
 
-  text(): Promise<string> { return this.eval<string>("document.body.innerText"); }
+  text(): Promise<string> { return this.eval<string>("document.body?.innerText ?? \"\""); }
 
   /** A PNG of the panel, for a person to look at (CLAX_E2E_SHOTS names the directory). */
   async shot(name: string): Promise<void> {
