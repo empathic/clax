@@ -308,6 +308,9 @@ done
 # contract word for word (docs/contract.md carries the same section), and
 # "Comment loop" and "What is not yet available" are the same in all four.
 skill_copies=(plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL.md plugins/pi/skills/clax/SKILL.md plugins/clax-grok/skills/clax/SKILL.md)
+# Pipelines below end in `grep ... >/dev/null`, not `grep -q`: under
+# pipefail, `grep -q` exits at its first match and the writer before it can
+# die of SIGPIPE, failing a check whose text was found.
 # The lines from "## <heading>" up to, not including, the next "## " heading.
 section() {
     awk -v h="## $2" '
@@ -320,9 +323,9 @@ section() {
 # shell-quoted push.follow_command from clax_grok__status.
 grok_skill=plugins/clax-grok/skills/clax/SKILL.md
 live="$(section "$grok_skill" "Live feedback in Grok")"
-if [ -n "$live" ] && echo "$live" | grep -qF 'push.follow_command' \
-    && echo "$live" | grep -qF 'persistent: true' && echo "$live" | grep -qF 'push.available' \
-    && echo "$live" | grep -qF 'clax_grok__comments_read'; then
+if [ -n "$live" ] && echo "$live" | grep -F 'push.follow_command' >/dev/null \
+    && echo "$live" | grep -F 'persistent: true' >/dev/null && echo "$live" | grep -F 'push.available' >/dev/null \
+    && echo "$live" | grep -F 'clax_grok__comments_read' >/dev/null; then
     pass "$grok_skill has the Live feedback in Grok section"
 else fail "$grok_skill needs a '## Live feedback in Grok' section naming the monitor command, persistent: true, push.available and clax_grok__comments_read"; fi
 for f in "${skill_copies[@]}"; do
@@ -369,15 +372,15 @@ same_section "Runtime capabilities" "${skill_copies[@]}" docs/contract.md
 # The section documents room and sample (phase 5), and no copy still says
 # they are not available.
 rc="$(section "${skill_copies[0]}" "Runtime capabilities")"
-if echo "$rc" | tr '\n' ' ' | grep -qF '`comments`, `assets`, `room`, `sample`)'; then pass "the Runtime capabilities contract list names room and sample"
+if echo "$rc" | tr '\n' ' ' | grep -F '`comments`, `assets`, `room`, `sample`)' >/dev/null; then pass "the Runtime capabilities contract list names room and sample"
 else fail "the Runtime capabilities contract list does not name \`room\` and \`sample\`"; fi
-if echo "$rc" | grep -q '^- `room`'; then pass "the Runtime capabilities section has a room bullet"
+if echo "$rc" | grep '^- `room`' >/dev/null; then pass "the Runtime capabilities section has a room bullet"
 else fail "the Runtime capabilities section has no '- \`room\`' bullet"; fi
-if echo "$rc" | grep -q '^- `sample`'; then pass "the Runtime capabilities section has a sample bullet"
+if echo "$rc" | grep '^- `sample`' >/dev/null; then pass "the Runtime capabilities section has a sample bullet"
 else fail "the Runtime capabilities section has no '- \`sample\`' bullet"; fi
 if grep -qF 'Rooms and `sample()` (phase 5)' "${skill_copies[0]}"; then fail "${skill_copies[0]} still says rooms and sample() are not available"
 else pass "${skill_copies[0]} no longer says rooms and sample() are not available"; fi
-if section docs/contract.md "Runtime capabilities" | grep -q '/_clax/contract/0.2.61/<name>.d.ts'; then pass "the Runtime capabilities section points at /_clax/contract/0.2.61/"; else fail "the Runtime capabilities section does not point at the daemon's /_clax/contract/0.2.61/<name>.d.ts"; fi
+if section docs/contract.md "Runtime capabilities" | grep '/_clax/contract/0.2.61/<name>.d.ts' >/dev/null; then pass "the Runtime capabilities section points at /_clax/contract/0.2.61/"; else fail "the Runtime capabilities section does not point at the daemon's /_clax/contract/0.2.61/<name>.d.ts"; fi
 for name in claude permissions artifact self assets comments db downloads user files mcp room sample; do
     if [ -f "web/contract/0.2.61/$name.d.ts" ]; then pass "web/contract/0.2.61/$name.d.ts exists"; else fail "web/contract/0.2.61/$name.d.ts is missing"; fi
 done
