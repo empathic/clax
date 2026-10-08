@@ -38,6 +38,15 @@ Budgets live in scripts/perf-daemon-budget.json:
   clamp(idle p95 / quiet_idle_p95_ms, 1, max_scale), the idle p95 measured
   in the same run, so a machine busy with other work gets proportionally
   more room, up to `max_scale`;
+- `queue_ratio`: the 10 galleries keep more requests in flight than the
+  daemon has store workers (one per core, 2 to 8), so every request waits
+  in the store's queue behind them for a time the machine sets: on a 4-core
+  runner about twice as long as on 8 cores, longer again on slower cores,
+  and the idle p95 does not show it. Under that load the limits are the
+  budgets times the larger of the idle scale and
+  queue_ratio * (the gallery requests' mean latency in the same window) /
+  cheap_p95_ms, at most `max_scale`: a cheap request may wait as long as
+  the galleries' own requests, but not `queue_ratio` times as long;
 - `rounds`, `window_s`: how many rounds, and each phase's length;
 - `seed`: the seeded home's shape;
 - `quick`: what `--quick` (quality_gates.sh) overrides: shorter windows,
@@ -457,20 +466,25 @@ class Loads:
         return f"{n} refreshes"
 
     def galleries(self, deadline):
-        """Ten gallery loads at once, each list then attention, back to back."""
+        """Ten gallery loads at once, each list then attention, back to back.
+        Sets `request_ms`, the gallery requests' mean latency."""
         def worker(_):
-            c, n, worst = self.client(), 0, 0.0
+            c, n, worst, total = self.client(), 0, 0.0, 0.0
             while time.time() < deadline:
                 for path in ("/api/artifacts", "/api/viewers/me/attention"):
                     s, _, dt, _ = c.req("GET", path, headers=self.ck)
                     expect(s == 200, f"gallery load {path}: {s}")
                     worst = max(worst, dt)
+                    total += dt
                 n += 1
             c.close()
-            return n, worst
+            return n, worst, total
         with ThreadPoolExecutor(10) as ex:
             r = list(ex.map(worker, range(10)))
-        return f"{sum(x[0] for x in r)} loads, slowest request {max(x[1] for x in r) * 1000:.0f} ms"
+        loads = sum(x[0] for x in r)
+        self.request_ms = sum(x[2] for x in r) * 1000 / max(1, 2 * loads)
+        return (f"{loads} loads, requests {self.request_ms:.0f} ms on average, "
+                f"slowest {max(x[1] for x in r) * 1000:.0f} ms")
 
     def docs_batch(self, deadline):
         """A batch of 50 documents of 250 KB (about 12 MB) every quarter
@@ -567,6 +581,10 @@ class Loads:
 PHASES = [("idle", "idle"), ("gallery tab", "gallery_tab"), ("10 galleries", "galleries"),
           ("docs:batch", "docs_batch"), ("polls + SSE", "polls_sse"), ("big publish", "big_publish"),
           ("inbox tab", "inbox_tab")]
+# Loads that keep more requests in flight than the daemon has store
+# workers; their gallery requests' mean latency sets a floor under the
+# limits (see `queue_ratio`).
+QUEUED = {"10 galleries"}
 INBOX_REQUESTS = ["/api/inbox?read=unread", "/api/inbox?q=header", "/api/inbox/summary"]
 
 
@@ -666,6 +684,7 @@ def main(binary, budget_path, quick):
         per = {name: {label: [] for label in CHEAP} for name, _ in PHASES}
         infos = {name: [] for name, _ in PHASES}
         attention = []
+        queued = {name: [] for name in QUEUED}
         inbox = {path: [] for path in INBOX_REQUESTS}
         for r in range(rounds):
             t0 = time.perf_counter()
@@ -675,6 +694,8 @@ def main(binary, budget_path, quick):
                 inbox[path].append(v)
             for name, method in PHASES:
                 res, info = run_phase(d, loads, st, method, window)
+                if name in QUEUED:
+                    queued[name].append(loads.request_ms)
                 for label in CHEAP:
                     per[name][label].append(res[label])
                 infos[name].append(info)
@@ -701,10 +722,16 @@ def main(binary, budget_path, quick):
     lim_p95, lim_max = cfg["cheap_p95_ms"] * scale, cfg["cheap_max_ms"] * scale
     lim_att = cfg["attention_alone_ms"] * scale
     lim_inbox = cfg["inbox_alone_ms"] * scale
+    # Under a queued load: at least queue_ratio times the load's own requests.
+    phase_scale = {name: max(scale, min(cfg["max_scale"], cfg["queue_ratio"] * med(xs) / cfg["cheap_p95_ms"]))
+                   for name, xs in queued.items()}
 
     print()
     print(f"idle p95 {idle_p95:.1f} ms (quiet is {quiet} ms or less): limits scaled by {scale:.2f}: "
           f"p95 {lim_p95:.0f} ms, max {lim_max:.0f} ms, attention alone {lim_att:.0f} ms, inbox alone {lim_inbox:.0f} ms")
+    for name, sc in phase_scale.items():
+        print(f"{name}: its requests {med(queued[name]):.0f} ms on average: limits scaled by {sc:.2f}: "
+              f"p95 {cfg['cheap_p95_ms'] * sc:.0f} ms, max {cfg['cheap_max_ms'] * sc:.0f} ms")
     print(f"medians over {rounds} rounds of {window} s windows{' (quick)' if quick else ''}")
     print()
     print(f"{'load':<14} {'probe':<28} {'n':>5} {'p95 ms':>9} {'max ms':>9}  verdict")
@@ -717,7 +744,9 @@ def main(binary, budget_path, quick):
             if name == "idle":
                 verdict = "baseline"
             else:
-                over = [w for w, v, lim in (("p95", v95, lim_p95), ("max", vmax, lim_max)) if v > lim]
+                sc = phase_scale.get(name, scale)
+                l95, lmax = cfg["cheap_p95_ms"] * sc, cfg["cheap_max_ms"] * sc
+                over = [w for w, v, lim in (("p95", v95, l95), ("max", vmax, lmax)) if v > lim]
                 verdict = "FAIL " + ", ".join(over) if over else "ok"
                 if over:
                     failed.append(f"{label} under {name}")

@@ -5,6 +5,7 @@
   "inbox_alone_ms": 50,
   "quiet_idle_p95_ms": 5,
   "max_scale": 3,
+  "queue_ratio": 2,
   "rounds": 3,
   "window_s": 3,
   "seed": {
