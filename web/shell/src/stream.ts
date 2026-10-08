@@ -176,28 +176,6 @@ export const localLink: LinkMaker = async on => {
   return { send: m => hub.receive("self", m), close: () => hub.close() };
 };
 
-/** Whether this is a browser of the owner's: the daemon serves it the token
- * (`GET /api/token`, to loopback browsers only). A refusal (403) is the
- * answer no; any other failure (the daemon restarting, say) is asked again
- * after a backoff, so it resolves only once it knows, or with false once
- * `signal` aborts (the asker is gone: it asks no more). */
-export async function ownerBrowser(signal?: AbortSignal): Promise<boolean> {
-  if (await getToken()) return !signal?.aborted;
-  const gone = () => !!signal?.aborted;
-  for (let n = 0; !gone(); n++) {
-    const r = await fetch("/api/token", { cache: "no-store", signal }).catch(() => null);
-    if (gone()) break;
-    if (r?.ok) return true;
-    if (r?.status === 403) return false;
-    await new Promise<void>(f => {
-      const t = setTimeout(done, backoff(n));
-      function done() { clearTimeout(t); signal?.removeEventListener("abort", done); f(); }
-      signal?.addEventListener("abort", done);
-    });
-  }
-  return false;
-}
-
 /** The best link this browser supports. */
 export const bestLink: LinkMaker = async (on, lost) => {
   if (typeof SharedWorker === "function" && !workerBroken) {
@@ -240,8 +218,8 @@ export class EventStream {
   private wantReconnect = false;
   private hooked = false;
   private notifyHandlers = new Set<(data: Record<string, unknown>) => void>();
-  /** What the hub was last told about focus, as a key. */
-  private focusSent = "";
+  /** What this link's hub was last told about focus; null until it is told (each new link). */
+  private focusSent: boolean | null = null;
 
   constructor(private readonly win: Window = window, private readonly makeLink: LinkMaker = bestLink) {}
 
@@ -322,9 +300,8 @@ export class EventStream {
     if (!this.link) return;
     const d = this.win.document;
     const focused = d.visibilityState !== "hidden" && d.hasFocus();
-    const key = String(focused);
-    if (key === this.focusSent) return;
-    this.focusSent = key;
+    if (focused === this.focusSent) return;
+    this.focusSent = focused;
     this.link.send({ t: "focus", focused });
   };
 
@@ -410,7 +387,7 @@ export class EventStream {
       this.linking = null;
       this.link = link;
       this.sent = "";
-      this.focusSent = "";
+      this.focusSent = null;
       if (this.wantReconnect) { this.wantReconnect = false; link.send({ t: "reconnect" }); }
       this.sync();
       this.onFocus();
@@ -434,7 +411,6 @@ export class EventStream {
     this.link?.close();
     this.link = null;
     this.sent = "";
-    this.focusSent = "";
     clearInterval(this.watchdog);
     this.watchdog = undefined;
     clearTimeout(this.noticeTimer);
@@ -450,7 +426,6 @@ export class EventStream {
     this.link = null;
     link.close();
     this.sent = "";
-    this.focusSent = "";
     clearInterval(this.watchdog);
     this.watchdog = undefined;
     this.markDown();

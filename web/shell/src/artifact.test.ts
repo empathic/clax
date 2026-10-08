@@ -373,10 +373,10 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     let root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     expect(frame.getAttribute("src")).toBe(`/c/${ID}/v/1/docs/about.html`);
-    // The token is served, so the view loads the question module: let that
-    // load finish before the registry is reset, or the next view's imports
-    // race a half-loaded copy of the modules they share.
-    await import("./q");
+    // The view's stream loads the owner's question surfaces: let that load
+    // finish before the registry is reset, or the next view's imports race a
+    // half-loaded copy of the modules they share.
+    await import("./view/artifact-questions");
     view.unmount();
     document.body.replaceChildren();
     vi.resetModules();

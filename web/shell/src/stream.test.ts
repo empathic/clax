@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { STREAM_DOWN, connNoticeText } from "./conn-notice";
-import { DEAD_MS, EventStream, HIDDEN_MS, type Link, type LinkMaker, NOTICE_MS, type StreamEvent, TOKEN_WAIT_MS, leaderLink, ownerBrowser } from "./stream";
+import { DEAD_MS, EventStream, HIDDEN_MS, type Link, type LinkMaker, NOTICE_MS, type StreamEvent, TOKEN_WAIT_MS, leaderLink } from "./stream";
+import { ownerBrowser } from "./owner";
 import type { HubMsg, TabMsg } from "./stream-hub";
 import { Net } from "./test/fake-net";
 
@@ -165,7 +166,7 @@ describe("EventStream", () => {
     expect(await yes).toBe(true);
     answers = [403, 403];
     vi.resetModules();
-    const fresh = await import("./stream");
+    const fresh = await import("./owner");
     const no = fresh.ownerBrowser();
     await vi.advanceTimersByTimeAsync(0);
     expect(await no).toBe(false);

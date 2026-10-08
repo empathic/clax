@@ -94,7 +94,8 @@ const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), 
 // has loaded by then, for the larger of its two hosts: the gallery (its entry
 // and its lazy module, through which the module loads) and the artifact view
 // (its entry, the more menu and roster it loads after its first paint, and
-// its stream's lazy module, which loads the module once the browser is idle). The module is the host's dynamic
+// its stream's lazy module, whose question surfaces' module loads it once
+// the browser is idle; that module counts here). The module is the host's dynamic
 // import named `index` (Vite keys it by its chunk when another chunk also
 // imports from it). What the module itself loads on demand is not counted.
 {
