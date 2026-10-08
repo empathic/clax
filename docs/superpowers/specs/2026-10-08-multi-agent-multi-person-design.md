@@ -1,7 +1,7 @@
 # Multi-agent and multi-person Clax
 
 Date: 2026-10-08
-Status: revised after review (revision 4); the owner's answers to the first
+Status: revised after review (revision 5); the owner's answers to the first
 draft's open questions are recorded as decisions O6–O9 and R1–R4
 Depends on: `2026-09-28-clax-design.md` (the main spec: participants and
 attention §10, sessions and the owner identity §11, the MCP surface §12,
@@ -108,7 +108,7 @@ reason.
 | M5 | **Tokens are key-bound, never bearer, and live with their grant.** `clax connect` makes an Ed25519 key pair; the private key never leaves the machine. Every request carries the access token and a signature over the method, path, query, host, a timestamp, a nonce, the body digest and the token (§6.6). Access tokens do not expire and are not rotated; revoking the token (through the manage URI) revokes the whole grant, as revoking the grant does, and the person reconnects. Every signature is verified before the handler runs, on every request, with or without a body. The owner's daemon token (local, file mode 0600) is unchanged. | The LAN is plain HTTP: a sniffed bearer token would be reusable. A signature makes a sniffed token useless alone and a sniffed request useless twice. Expiry and rotation add little to a key-bound token, and can strand a sleeping machine. |
 | M6 | **Rights are GNAP access objects** with Clax types (`clax-artifacts`, `clax-comments`, `clax-db`, `clax-ask`), actions, and locations (`*`, `own`, or artifact IDs), plus reference presets (`clax:reader`, `clax:collaborator`, `clax:full`) (§7). An agent's effective rights are `(person ∩ grant narrowing ∩ agent narrowing) ∪ owner elevation`. | O2 in one formula. |
 | M7 | **Every route declares what an agent needs on the route itself.** A typed extractor (`Agent<N: Need>`) takes the artifact from the same `Path` the handler uses and checks the right; the route table of §7.5 is the contract, and the guard test reads it off handler signatures. | One router: no second path matcher beside axum's to drift from it. |
-| M8 | **One `Caller`, and every agent channel is an agent.** Every handler learns who it serves from one `Caller` (§6.1); no handler reads `Authorization` or checks the token itself. A token request is an owner agent when it names a session (path or `X-Clax-Session`) or carries the agent-channel marker `X-Clax-Channel: agent`, which every agent-side client sends (the shim, `/mcp`'s internal client, the hooks, `clax feedback follow`, Pi, and every `clax` command run through the plugins' wrapper, which exports `CLAX_CHANNEL=agent`: slash commands, hooks, and agents' shell calls made through the plugin); only the CLI used by hand, outside any harness, is the owner. | About twenty handlers decide agent-ness with an inline token check today; with a grant they would misfile an agent's reply as an anonymous comment. |
+| M8 | **One `Caller`, and every agent channel is an agent.** Every handler learns who it serves from one `Caller` (§6.1); no handler reads `Authorization` or checks the token itself. A token request is an owner agent when it names a session (path or `X-Clax-Session`) or carries the agent-channel marker `X-Clax-Channel: agent`, which every agent-side client sends (the shim, `/mcp`'s internal client, the hooks, `clax feedback follow`, Pi), and the CLI whenever it runs under a harness: through the plugins' wrapper (which exports `CLAX_CHANNEL=agent`: slash commands, hooks), or in a harness's shell (an agent's shell tool, Claude Code's `!` commands), detected from the variables each harness sets (§16); only the CLI run outside any harness, or with `CLAX_CHANNEL=owner`, is the owner. | About twenty handlers decide agent-ness with an inline token check today; with a grant they would misfile an agent's reply as an anonymous comment. |
 | M9 | **Visibility is separate from rights.** Rights say what an agent may do; visibility (approvals) says whose words may reach it. Approvals are given by the agent's person (R2). | O3: B's person decides what reaches B. |
 | M10 | **One filter, field by field.** `Visibility` (in `clax-core`) answers, for one field, "may an agent of reader R see this field, whose effective authors are A₁…Aₙ, at artifact Y (thread T)?" Every field of every item an agent channel returns that has authors of its own (a comment's body, a thread's anchor, a clip, an artifact's title, a version's note and files, a document, a working message…) is checked on its own and replaced by its placeholder when withheld, in reads, write responses and every delivery tier alike. | A visible comment on a page someone else wrote still carries that page's quote and title; filtering whole rows would leak them. |
 | M11 | **Effective authors** (§8.2): content carries the set of people whose words it holds. A comment or document a page wrote, and a page's self-published version, also count the page's publisher, fixed at write time. A version's file carried forward keeps the authors it had; a document's author set only grows until the document is deleted. | Page-written content is the confused-deputy path: a page running in the owner's browser writes "as the owner"; carrying a file forward or rewriting a document must not move its words to a new author. |
@@ -490,7 +490,7 @@ gives every handler one `Caller` (M8):
 | Caller | Credential | Reader for the filter |
 |---|---|---|
 | `Owner` | an owner browser credential (owner cookie, events cookie, extension), or the daemon token on a request that names no session and carries no agent-channel marker: the CLI used by hand outside any harness, and scripts | none: not an agent channel (§8.5) |
-| `OwnerAgent {session}` | the daemon token on a request that names a token session in its path (`/api/sessions/{id}/…`: the hooks, `clax feedback follow`) or in `X-Clax-Session` (the shim, Pi), or that carries `X-Clax-Channel: agent` (every agent-side client sends it, including `/mcp`'s internal client and the shim before its registration completes, and the CLI whenever `CLAX_CHANNEL=agent` is set, which the plugins' wrapper `ensure-clax.sh exec` exports for every mode but `serve`, `stop`, `doctor` and `init`; `session` none then). The marker counts only with the token | the owner |
+| `OwnerAgent {session}` | the daemon token on a request that names a token session in its path (`/api/sessions/{id}/…`: the hooks, `clax feedback follow`) or in `X-Clax-Session` (the shim, Pi), or that carries `X-Clax-Channel: agent` (every agent-side client sends it, including `/mcp`'s internal client and the shim before its registration completes, and the CLI whenever it runs under a harness (§16: `CLAX_CHANNEL=agent`, which the plugins' wrapper exports, or a harness's shell variables); `session` none then). The marker counts only with the token | the owner |
 | `PersonAgent {person, grant, session}` | `Authorization: Clax-Grant` with a valid signature (§6.6); `session` from `X-Clax-Session`, optional (§6.7) | the person (the owner when the grant's person is the owner row) |
 | `Person {viewer}` | a `clax_viewer` cookie naming a connected, unrevoked person row | none |
 | `Viewer {viewer}` | any other `clax_viewer` cookie | none |
@@ -626,31 +626,50 @@ hash in the in-memory map (401 `invalid_token`; `grant_revoked` for a
 revoked grant's token), the header's shape (401 `invalid_signature`), `t`
 within ±120 s of its clock (401 `stale_request`, with the daemon's `Date`),
 and the nonce not yet seen for that key within the last 240 s (401
-`replayed_request`). These header checks run in a layer outside the
-router. The signature is then verified **before the handler runs, on
+`replayed_request`). These header checks run in the outer layer that
+`lib.rs`'s `wrap` applies, after the host rewrite, so they see every
+request the daemon serves. The signature is then verified **before the handler runs, on
 every request whatever its method**, in a `route_layer` that reads the
 request's `MatchedPath` and takes the route's body limit from the same
 `need!` declaration that names its right and class (`LIMIT`, beside
-`RIGHT` and `CLASS`; M7), so there is no second path matcher:
+`RIGHT` and `CLASS`; M7), looked up by method and `MatchedPath` since one
+path may carry several handlers with different limits, so there is no
+second path matcher. The `route_layer` is applied in `routes::router`
+after every `merge` and the shutdown route, so it covers every route. It
+is a pass-through for every request without `Authorization: Clax-Grant`
+(the daemon token, cookies, the extension): their bodies are never
+pre-buffered. For a grant's request:
 
 - a request with no body (no `Content-Length` or a zero one, and no
   `Transfer-Encoding`) is verified at once with the empty body's digest;
 - any other request is read in full up to the route's `LIMIT` (413 beyond),
   hashed, verified, and only then handed to the handler with the buffered
   body;
-- **unverified bytes in flight are bounded**: per key, at most one
-  unverified body over 1 MiB at a time (another is 429 `limit_reached`);
-  overall, a 128 MiB budget of unverified bytes (a request that would
-  exceed it is 503 `busy`, before any of its body is read);
+- **unverified bytes in flight are bounded, with a bounded queue**: per
+  key, one unverified body over 1 MiB is read at a time; others wait for
+  the key's permit in a queue of at most 4 for at most 30 s (beyond either,
+  429 `limit_reached`). Overall, unverified bytes share a 128 MiB budget: a
+  body with a `Content-Length` reserves its length before any of it is
+  read, waiting up to 30 s for room (then 503 `busy`); a chunked body
+  reserves chunk by chunk and is refused with 503 `busy` when its running
+  total cannot be reserved within 30 s;
+- **unverified reads have a minimum rate**: after its first 10 s, an
+  unverified body slower than 64 KiB/s on average is dropped with 408
+  `timeout` and its permit and budget released, so a trickled body cannot
+  hold the key's permit or the budget;
 - **a nonce is recorded only after its signature verifies**: the header
   check only tests for presence; after verification the nonce is inserted
   under the cache's lock with a second presence test, so of two copies of a
   valid request one passes and the other is `replayed_request`, and bad
   signatures spend no nonces. The per-key set is bounded at 65,536
   verified nonces per 240 s (429 `limit_reached` beyond);
-- a failed verification is 401 `invalid_signature`. The first request of a grant (no token yet) is
-limited to 16 KiB. The client re-signs and retries once on `stale_request`
-with the offset from `Date`. A request with an agent credential and an
+- a failed verification is 401 `invalid_signature`. The first request of
+  a grant (no token yet) is limited to 16 KiB.
+
+The client re-signs and retries once on `stale_request` with the offset
+from `Date`, and retries `limit_reached` and `busy` with exponential
+backoff (1 s, 2 s, 4 s, with jitter; three retries), re-signing each
+attempt. A request with an agent credential and an
 `Origin` or a `Cookie` header is 403 `forbidden_origin`.
 
 Keys: Ed25519 with `ring` (already in the lockfile, now a direct
@@ -757,12 +776,20 @@ the path names. **Filtered** routes run every author field of their
 response, reads and writes alike, through `Visibility` (§8). **Own** routes
 return only fields written by the caller's own person or Clax's own fields
 (IDs, versions, counts, times, states). **Denied** routes refuse
-`PersonAgent` callers (403 `forbidden`). Owner agents (`OwnerAgent`)
-still reach Denied routes that return no other person's text, as today;
-Denied routes that do return it (`/api/inbox*`, `/api/events`,
-`/api/stream*`, `/api/people*`, `GET /api/grants`) answer `OwnerAgent`
-403 `not_for_agents`; they serve the owner's browsers and the CLI used by
-hand.
+`PersonAgent` callers (403 `forbidden`). **The `not_for_agents` rule:**
+every Denied handler that builds a thread, comment, artifact, version,
+document, question, inbox item, working or person view, or streams
+events carrying them, answers `OwnerAgent` 403 `not_for_agents`; that
+includes `/api/inbox*`, `/api/questions*` (the owner's list, answer and
+release routes), `/api/live/site` and the other `/api/live/*` reads that
+return thread views, `/api/events`, `/api/stream*`, `/api/people*` and
+`GET /api/grants`. They serve the owner's browsers and the CLI used by
+hand; agents reach the same content through Filtered routes (a live
+page's threads through `comments_read`). Denied handlers that build no
+such view (`/api/token` for the shell, `/api/push`, `/healthz`, the shell
+pages) serve owner agents as today. A guard enforces the rule (§8.6).
+`GET /api/questions*` is also person-scoped: the owner sees the questions
+of the owner's agents only, a person their agents' (§18).
 **Grant** routes are the grant flow.
 
 | Route | Class | Right |
@@ -912,13 +939,16 @@ Withheld fields are replaced, never dropped:
 The filter runs for `OwnerAgent` and `PersonAgent` callers (§6.1): the
 shim's and Pi's tools, the hooks (stop, prompt, session start), `clax
 feedback follow`, every feedback tier and notice, the sessionless `/mcp`,
-every `clax` command a harness runs through the plugins' wrapper (the
-plugin slash commands such as Claude Code's `/clax:list` and
-`/clax:comments` and Pi's `/clax`, and an agent's shell calls through the
-plugin), and the remote CLI. A CLI run by an agent's harness is an agent
-channel. It does not run for people: the owner's browsers and the CLI used
-by hand outside any harness, connected people's browsers, and LAN viewers
-see what they see today.
+every `clax` command run under a harness (the plugin slash commands
+through the wrapper, such as Claude Code's `/clax:list` and
+`/clax:comments`; an agent's own `clax` calls through its shell tool;
+Claude Code's `!clax …` lines, whose output goes into the model's
+context), Pi's `/clax` command (through its `DaemonClient`, which sends
+the marker), and the remote CLI. A CLI run under a harness is an agent
+channel, detected as §16 says. It does not run for people: the owner's
+browsers and the CLI run outside any harness (or with
+`CLAX_CHANNEL=owner`), connected people's browsers, and LAN viewers see
+what they see today.
 
 What this is: a guarantee about what Clax hands an agent through its agent
 channels. What this is not: an access-control boundary (§21). An agent can
@@ -943,9 +973,22 @@ are (people open them).
 - **Wrapper guard:** every command and hook a plugin runs (Claude Code's
   `commands/*.md` `!` lines and `hooks/hooks.json`, the Codex and Grok
   plugins' `hooks/hooks.json`, Pi's spawned commands) invokes `clax`
-  through `ensure-clax.sh exec`; a test reads them all and fails on any
-  other invocation, and checks that the wrapper exports `CLAX_CHANNEL=agent`
-  for every mode but `serve`, `stop`, `doctor` and `init`.
+  through `ensure-clax.sh exec`, directly or through `tool-hook.sh` (which
+  the guard follows: it must itself call `ensure-clax.sh exec hook`). Pi
+  resolves the binary once through the wrapper and then spawns it directly
+  for exactly two commands whose output never reaches the model, `serve
+  --json` and `status --json`; the guard allowlists those two by name, and
+  Pi sets `CLAX_CHANNEL=agent` in their environment anyway. Pi's `/clax`
+  command goes through its `DaemonClient`, which sends the marker. The
+  test also checks every copy of `ensure-clax.sh` is identical and exports
+  `CLAX_CHANNEL=agent` for every mode but `serve`, `stop`, `doctor` and
+  `init`.
+- **`not_for_agents` guard:** every handler whose signature carries
+  `DeniedToGrants` and whose source builds a thread, comment, artifact,
+  version, document, question, inbox, working or person view (the same
+  textual check as the Own guard), or streams events, must also call
+  `caller.refuse_agents()?`; the test fails otherwise. The route table's
+  Denied rows record the result.
 - **No inline credentials:** no handler outside `identity.rs` and `auth.rs`
   calls `has_token` or reads `Authorization`.
 - **Delivery guard** (`clax-core`): `FeedbackItem` and `Notice` are built
@@ -964,8 +1007,13 @@ are (people open them).
   `clax-cli`'s client, `clax feedback follow`, Pi's extension, and the
   context of every plugin slash command, run through the real wrapper:
   Claude Code's `/clax:*` commands' `!` lines and Pi's `/clax` command;
-  the Codex and Grok plugins have no slash commands), with Mia connected and not approved, no output byte contains
-  a canary. After an approval at each
+  the Codex and Grok plugins have no slash commands; and the plain `clax`
+  binary run with each harness's shell variables of §16 and no wrapper),
+  with Mia connected and not approved, no output byte contains a canary.
+  The HTTP part also calls every Denied route as the owner's agent (each
+  answers `not_for_agents` or carries no canary), including `GET
+  /api/threads` (Filtered), `/api/live/site` and `/api/questions`; the seed
+  includes a live-site thread and a question asked by Mia's agent. After an approval at each
   scope, each canary appears where the scope covers it.
 - **Behaviour matrix** (`api_visibility.rs`): approval scopes, revocation,
   generation changes during a long-poll.
@@ -1227,12 +1275,33 @@ The route table (§7.5) is the agents' contract. New routes:
   elevation, narrowing and approval changes print the People link (M20).
 - **The agent-channel marker.** The shim, `/mcp`'s internal client, every
   `clax hook` command, `clax feedback follow` and Pi send `X-Clax-Channel:
-  agent` on every request, local or remote. The CLI sends it whenever
-  `CLAX_CHANNEL=agent` is set, which the plugins' wrapper (`ensure-clax.sh
-  exec`, every mode but `serve`, `stop`, `doctor` and `init`) exports, so
-  every plugin slash command and hook, and every `clax` call an agent makes
-  through the plugin, is an agent channel. Only the CLI run by hand
-  outside a harness omits it.
+  agent` on every request, local or remote. The CLI sends it when it runs
+  under a harness, which it decides from its environment, first match
+  wins:
+
+  | Variable | Set by | Meaning for the CLI |
+  |---|---|---|
+  | `CLAX_CHANNEL=owner` | the owner, explicitly | not an agent channel (the owner's own scripts) |
+  | `CLAX_CHANNEL=agent` | the plugins' wrapper `ensure-clax.sh exec` (every mode but `serve`, `stop`, `doctor`, `init`); Pi for its direct spawns | agent channel |
+  | `CLAUDECODE=1` | Claude Code, in its Bash tool's and `!` commands' shells (observed in Claude Code 2.1.x; `scripts/smoke-claude-ask.sh` already unsets it to run Claude Code nested) | agent channel |
+  | `CODEX_THREAD_ID`, `CODEX_SANDBOX`, `CODEX_CI` | Codex, in its shell tool's environment (names present in the Codex 0.162.0 binary; which are set in the shell tool's environment is confirmed by the probe below) | agent channel |
+  | `GROK_SESSION_ID` | Grok Build, which passes it to the stdio MCP servers and hooks of a session (main spec §11); its shell tool's environment is confirmed by the probe | agent channel |
+  | none (Pi) | Pi sets no documented variable for its shell; the Clax Pi extension sets `CLAX_CHANNEL=agent` in the Pi process's environment when it loads, which Pi's bash tool inherits | agent channel |
+
+  `scripts/probe-harness-env.sh`, run once under each harness by the
+  implementer (and recorded in `docs/contract.md`), prints the
+  environment its shell tool gives a command; the CLI's list is exactly
+  the variables the probe saw (a variable no probe confirms is left out
+  and Pi-style `CLAX_CHANNEL` export is used for that harness instead).
+  So every plugin slash command and hook, every `!clax …` line and every
+  `clax` call an agent makes through its shell tool is an agent channel.
+  Only the CLI run outside any harness, or with `CLAX_CHANNEL=owner`, is
+  the owner.
+- **Readable refusals.** A CLI command that reaches a `not_for_agents`
+  route (`clax inbox`, anything reading `/api/events` or `/api/stream*`)
+  under a harness prints one line, for example "The inbox is for people:
+  open http://localhost:7480/inbox in a browser.", and exits 2, never a raw
+  403.
 - **Hooks** run over the remote client, finding their session through the
   grant-scoped `GET /api/sessions` and join (§6.7); `codex queue` is not
   attempted for remote sessions, and `status.push` says so.
@@ -1386,11 +1455,12 @@ agents not to.
 
 1. **What the filter is (§8.5).** A guarantee for every Clax agent channel,
    field by field, for the owner's and every person's agents alike,
-   including whatever a harness runs through the plugin (slash commands,
-   hooks, the agent's own `clax` calls through the wrapper); not an
+   including whatever a harness runs (slash commands and hooks through
+   the wrapper, `!clax …` lines, and the agent's own `clax` calls in its
+   shell, detected from the harness's variables, §16); not an
    access-control boundary on a public LAN. An agent that deliberately
-   runs the CLI without the wrapper's marker is going around the filter,
-   which the shell-access trust model below covers.
+   unsets those variables or sets `CLAX_CHANNEL=owner` is going around the
+   filter, which the shell-access trust model below covers.
 2. **Impersonation.**
    - *Of a person by an agent:* attribution is by session, never by text;
      agent names cannot equal a person's name (§11); the person is shown
@@ -1441,7 +1511,8 @@ agents not to.
    Known limitations.
 8. **Denial of service.** The token, timestamp and nonce are checked
    before the body is read; with a sniffed token, unverified bytes in
-   flight are bounded per key and overall, and bad signatures spend no
+   flight are bounded per key and overall through bounded queues,
+   unverified reads must keep a minimum rate, and bad signatures spend no
    nonces (§6.6);
    limits on pending requests, wrong codes, open approval requests,
    nonces, invites and grants (20 live per person).
@@ -1615,3 +1686,20 @@ agents not to.
   - Sessions record `ended_reason`, and idle ends save their watches for
     the restore.
   - Revoking the access token revokes the whole grant.
+- **Revision 5** (2026-10-08), after the revision 4 check:
+  - The CLI is an agent channel whenever it runs under a harness:
+    `CLAX_CHANNEL=agent` from the wrapper or Pi, or the harness's shell
+    variables (`CLAUDECODE`, Codex's and Grok's, confirmed by a probe per
+    harness); `CLAX_CHANNEL=owner` is the owner's explicit escape. M8,
+    §6.1, §8.5, §16 and §21.1 say what is detected.
+  - The `not_for_agents` rule covers every Denied handler that builds a
+    view of others' content (including `/api/live/site` and
+    `/api/questions*`, now person-scoped), enforced by a guard; the canary
+    sweep calls Denied routes and `GET /api/threads` as the owner's agent.
+  - Large unverified bodies wait for the key's permit and the budget in
+    bounded queues; unverified reads keep a minimum rate (408 below it);
+    the client retries `limit_reached` and `busy` with backoff.
+  - The wrapper guard follows `tool-hook.sh` and allowlists Pi's two
+    direct spawns; `verify_layer`'s pass-through, lookup by method and
+    `MatchedPath`, placement and chunked accounting are stated; CLI
+    commands refused as `not_for_agents` print a readable line.
