@@ -66,7 +66,7 @@ fake_uname() { # os arch [hw.optional.arm64, default 0]
 only_tools() {
     local dir="$SANDBOX/tools" c skip
     mkdir -p "$dir"
-    for c in bash curl tar gzip awk mktemp rm mkdir cp chmod mv head sha256sum shasum perl; do
+    for c in bash curl tar gzip awk mktemp rm mkdir cp chmod mv sha256sum shasum perl; do
         for skip in "$@"; do [ "$c" = "$skip" ] && continue 2; done
         if command -v "$c" >/dev/null 2>&1; then ln -sf "$(command -v "$c")" "$dir/$c"; fi
     done
@@ -81,7 +81,7 @@ new_env
 fake_uname Linux x86_64
 inst ok
 if [ "$RC" = 0 ] && [ "$("$HOME/.local/bin/clax" --version)" = "clax $V" ] && grep -qx "/ok/latest" "$REQLOG" \
-    && grep -qx "/ok/v$V/clax-$V-x86_64-unknown-linux-musl.tar.gz" "$REQLOG" && echo "$OUT" | grep -q "clax init"; then
+    && grep -qx "/ok/v$V/clax-$V-x86_64-unknown-linux-musl.tar.gz" "$REQLOG" && echo "$OUT" | grep "clax init" >/dev/null; then
     pass "the latest release is found, checked and installed into ~/.local/bin"
 else fail "the latest release is installed (rc=$RC out=$OUT)"; fi
 
@@ -97,21 +97,21 @@ done
 new_env
 fake_uname Linux x86_64
 inst none "$V"
-if [ "$RC" = 1 ] && echo "$OUT" | grep -q "answered HTTP 404 (the release may not exist, or the repository may not be public yet)" && [ ! -e "$HOME/.local/bin/clax" ]; then
+if [ "$RC" = 1 ] && echo "$OUT" | grep "answered HTTP 404 (the release may not exist, or the repository may not be public yet)" >/dev/null && [ ! -e "$HOME/.local/bin/clax" ]; then
     pass "a missing release (or a private repository) is named"
 else fail "a missing release (rc=$RC out=$OUT)"; fi
 
 new_env
 fake_uname Linux x86_64
 inst badsum "$V"
-if [ "$RC" = 1 ] && echo "$OUT" | grep -q "checksum mismatch" && [ ! -e "$HOME/.local/bin/clax" ]; then
+if [ "$RC" = 1 ] && echo "$OUT" | grep "checksum mismatch" >/dev/null && [ ! -e "$HOME/.local/bin/clax" ]; then
     pass "a checksum mismatch installs nothing"
 else fail "a checksum mismatch (rc=$RC out=$OUT)"; fi
 
 new_env
 fake_uname Linux x86_64
 inst partial "$V"
-if [ "$RC" = 1 ] && echo "$OUT" | grep -q "was cut short" && [ ! -e "$HOME/.local/bin/clax" ]; then
+if [ "$RC" = 1 ] && echo "$OUT" | grep "was cut short" >/dev/null && [ ! -e "$HOME/.local/bin/clax" ]; then
     pass "a partial download installs nothing"
 else fail "a partial download (rc=$RC out=$OUT)"; fi
 
@@ -120,21 +120,21 @@ fake_uname Linux x86_64
 start=$(date +%s)
 CLAX_DOWNLOAD_TIMEOUT=2 inst slow "$V"
 took=$(( $(date +%s) - start ))
-if [ "$RC" = 1 ] && echo "$OUT" | grep -q "timed out after 2s" && [ "$took" -lt 10 ] && [ ! -e "$HOME/.local/bin/clax" ]; then
+if [ "$RC" = 1 ] && echo "$OUT" | grep "timed out after 2s" >/dev/null && [ "$took" -lt 10 ] && [ ! -e "$HOME/.local/bin/clax" ]; then
     pass "a stalled download times out within its bound"
 else fail "a stalled download times out (took=${took}s rc=$RC out=$OUT)"; fi
 
 new_env
 fake_uname Linux x86_64
 inst wrong "$V"
-if [ "$RC" = 1 ] && echo "$OUT" | grep -q "does not hold clax $V" && [ ! -e "$HOME/.local/bin/clax" ]; then
+if [ "$RC" = 1 ] && echo "$OUT" | grep "does not hold clax $V" >/dev/null && [ ! -e "$HOME/.local/bin/clax" ]; then
     pass "an archive holding another version is refused"
 else fail "an archive holding another version (rc=$RC out=$OUT)"; fi
 
 new_env
 fake_uname FreeBSD x86_64
 inst ok "$V"
-if [ "$RC" = 1 ] && echo "$OUT" | grep -q "no prebuilt clax for FreeBSD/x86_64" && [ ! -s "$REQLOG" ]; then
+if [ "$RC" = 1 ] && echo "$OUT" | grep "no prebuilt clax for FreeBSD/x86_64" >/dev/null && [ ! -s "$REQLOG" ]; then
     pass "an unsupported platform says so without downloading"
 else fail "an unsupported platform (rc=$RC out=$OUT)"; fi
 
@@ -162,7 +162,7 @@ new_env
 fake_uname Linux x86_64
 fake_uid 0
 inst ok "$V"
-if [ "$RC" = 1 ] && echo "$OUT" | grep -q "will not run as root" && [ ! -s "$REQLOG" ] && [ ! -e "$HOME/.local" ]; then
+if [ "$RC" = 1 ] && echo "$OUT" | grep "will not run as root" >/dev/null && [ ! -s "$REQLOG" ] && [ ! -e "$HOME/.local" ]; then
     pass "root is refused before anything is downloaded or created"
 else fail "root is refused (rc=$RC out=$OUT)"; fi
 
@@ -187,21 +187,21 @@ else fail "root opt-in (rc=$RC out=$OUT)"; fi
 new_env
 fake_uname Linux x86_64
 inst none
-if [ "$RC" = 1 ] && echo "$OUT" | grep -q "could not find the latest release at .*(the repository may not be public yet)" && [ ! -e "$HOME/.local" ]; then
+if [ "$RC" = 1 ] && echo "$OUT" | grep "could not find the latest release at .*(the repository may not be public yet)" >/dev/null && [ ! -e "$HOME/.local" ]; then
     pass "no latest release (or a private repository) is named"
 else fail "no latest release (rc=$RC out=$OUT)"; fi
 
 new_env
 fake_uname Linux x86_64
 PATH="$SANDBOX/bin:$(only_tools curl)" inst ok "$V"
-if [ "$RC" = 1 ] && echo "$OUT" | grep -q "curl is required" && [ ! -s "$REQLOG" ]; then
+if [ "$RC" = 1 ] && echo "$OUT" | grep "curl is required" >/dev/null && [ ! -s "$REQLOG" ]; then
     pass "a missing curl is named"
 else fail "a missing curl (rc=$RC out=$OUT)"; fi
 
 new_env
 fake_uname Linux x86_64
 PATH="$SANDBOX/bin:$(only_tools sha256sum shasum)" inst ok "$V"
-if [ "$RC" = 1 ] && echo "$OUT" | grep -q "sha256sum or shasum is required" && [ ! -s "$REQLOG" ]; then
+if [ "$RC" = 1 ] && echo "$OUT" | grep "sha256sum or shasum is required" >/dev/null && [ ! -s "$REQLOG" ]; then
     pass "a missing checksum tool is named"
 else fail "a missing checksum tool (rc=$RC out=$OUT)"; fi
 
@@ -219,7 +219,7 @@ fake_uname Linux x86_64
 for f in .bashrc .zshrc .profile; do echo "# mine" > "$HOME/$f"; done
 inst ok "$V"
 files="$(cd "$HOME" && find . -type f | sort | tr '\n' ' ')"
-if [ "$RC" = 0 ] && echo "$OUT" | grep -q 'export PATH=' && [ "$files" = "./.bashrc ./.local/bin/clax ./.profile ./.zshrc " ] \
+if [ "$RC" = 0 ] && echo "$OUT" | grep 'export PATH=' >/dev/null && [ "$files" = "./.bashrc ./.local/bin/clax ./.profile ./.zshrc " ] \
     && [ "$(cat "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile")" = "$(printf '# mine\n# mine\n# mine')" ]; then
     pass "an install directory off PATH is only reported; no rc file is touched"
 else fail "rc files untouched (rc=$RC files=$files out=$OUT)"; fi

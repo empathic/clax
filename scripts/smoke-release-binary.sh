@@ -6,7 +6,7 @@
 set -euo pipefail
 [ $# = 2 ] || { echo "usage: smoke-release-binary.sh <binary> <version>" >&2; exit 2; }
 bin="$1" version="$2"
-got="$("$bin" --version | head -1)"
+got="$("$bin" --version | sed -n 1p)"
 [ "$got" = "clax $version" ] || { echo "$bin reports '$got', not 'clax $version'" >&2; exit 1; }
 # SQLite embeds its compile options as strings (`PRAGMA compile_options`).
 # A shared page cache (ENABLE_MEMORY_MANAGEMENT) would serialise the store's

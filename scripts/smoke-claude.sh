@@ -21,7 +21,7 @@ case "${1:-}" in
     --plugin-dir|--mcp-config) MODE="$1"; shift ;;
 esac
 if [ -z "$MODE" ]; then
-    if claude --help 2>&1 | grep -q -- '--plugin-dir'; then MODE=--plugin-dir; else MODE=--mcp-config; fi
+    if claude --help 2>&1 | grep -- '--plugin-dir' >/dev/null; then MODE=--plugin-dir; else MODE=--mcp-config; fi
 fi
 SCRATCH="${1:-${TMPDIR:-/tmp}/clax-smoke-claude}"
 SCRATCH="$(mkdir -p "$SCRATCH" && cd "$SCRATCH" && pwd)"
@@ -71,7 +71,7 @@ PY
 fi
 echo "smoke: claude replied: $OUT"
 
-URL="$(printf '%s' "$OUT" | grep -Eo 'https?://[^ )>"]*/a/[a-z0-9]+' | head -1 || true)"
+URL="$(printf '%s' "$OUT" | grep -Eo 'https?://[^ )>"]*/a/[a-z0-9]+' | sed -n 1p || true)"
 [ -n "$URL" ] || die "no /a/<id> URL in claude's reply"
 
 ID="${URL##*/a/}"

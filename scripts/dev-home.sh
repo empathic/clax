@@ -44,8 +44,8 @@ is_agents_home() {
 daemon_record() {
     DAEMON_EXE="" DAEMON_PID=""
     [ -f "$1/daemon.json" ] || return 0
-    DAEMON_EXE="$(sed -n 's/.*"exe"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1/daemon.json" | head -1 || true)"
-    DAEMON_PID="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$1/daemon.json" | head -1 || true)"
+    DAEMON_EXE="$(sed -n 's/.*"exe"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1/daemon.json" | sed -n 1p || true)"
+    DAEMON_PID="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$1/daemon.json" | sed -n 1p || true)"
 }
 
 # wait_gone <pid>: waits up to 5 s for <pid> to exit; false if it has not.
@@ -69,7 +69,7 @@ stop_orphan_daemon() {
     # The PID must still be that daemon: a reused PID belongs to some other
     # program, whose command line will not name the recorded binary.
     if [ -n "$DAEMON_EXE" ] && [ ! -e "$DAEMON_EXE" ] && [ -n "$DAEMON_PID" ] && kill -0 "$DAEMON_PID" 2>/dev/null \
-        && ps -o command= -p "$DAEMON_PID" 2>/dev/null | grep -qF -- "$DAEMON_EXE"; then
+        && ps -o command= -p "$DAEMON_PID" 2>/dev/null | grep -F -- "$DAEMON_EXE" >/dev/null; then
         echo "clax: stopping the daemon of $1 (pid $DAEMON_PID): its binary $DAEMON_EXE is gone (an earlier \`just dev\`)"
         kill "$DAEMON_PID" 2>/dev/null || true
         wait_gone "$DAEMON_PID" || echo "clax: pid $DAEMON_PID has not exited yet" >&2

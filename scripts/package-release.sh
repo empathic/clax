@@ -15,7 +15,7 @@ case "${1:-}" in
         [ $# = 5 ] || { echo "usage: package-release.sh archive <version> <target> <binary> <outdir>" >&2; exit 2; }
         version="$2" target="$3" bin="$4" out="$5"
         name="clax-$version-$target"
-        got="$("$bin" --version 2>/dev/null | head -1 || true)"
+        got="$("$bin" --version 2>/dev/null | sed -n 1p || true)"
         [ "$got" = "clax $version" ] || { echo "$bin reports '$got', not 'clax $version'" >&2; exit 1; }
         stage="$(mktemp -d)"
         trap 'rm -rf "$stage"' EXIT

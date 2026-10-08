@@ -57,7 +57,7 @@ cargo build -q -p clax-cli
 echo "smoke: preparing CODEX_HOME=$CODEX_HOME"
 {
     # The model is the only setting taken from the person's config.
-    grep -E '^model[[:space:]]*=' "$HOME/.codex/config.toml" 2>/dev/null | head -1 || true
+    grep -E '^model[[:space:]]*=' "$HOME/.codex/config.toml" 2>/dev/null | sed -n 1p || true
     if [ -n "$HOOKS" ]; then printf '\n[features]\nhooks = true\n'; fi
 } > "$CODEX_HOME/config.toml"
 cp "$HOME/.codex/auth.json" "$CODEX_HOME/auth.json"
@@ -66,7 +66,7 @@ echo "smoke: copied ~/.codex/auth.json into the scratch home (deleted on exit)"
 
 codex plugin marketplace add "$REPO" >/dev/null
 codex plugin add clax@clax >/dev/null
-codex mcp list | awk 'NR > 1 { print $1 }' | grep -qx clax || die "codex mcp list does not show clax"
+codex mcp list | awk 'NR > 1 { print $1 }' | grep -x clax >/dev/null || die "codex mcp list does not show clax"
 echo "smoke: plugin installed; codex mcp list shows clax"
 # `codex exec` runs with approval policy "never", which refuses MCP tool calls
 # that would prompt, so the scratch home pre-approves the plugin's tools.
@@ -81,7 +81,7 @@ OUT="$(cd "$CWD" && codex exec --skip-git-repo-check -s read-only ${EXTRA[@]+"${
 OUT="$(cat "$SCRATCH/last-message.txt" 2>/dev/null || printf '%s' "$OUT")"
 echo "smoke: codex replied: $OUT"
 
-URL="$(printf '%s' "$OUT" | grep -Eo 'https?://[^ )>"`]*/a/[a-z0-9]+' | head -1 || true)"
+URL="$(printf '%s' "$OUT" | grep -Eo 'https?://[^ )>"`]*/a/[a-z0-9]+' | sed -n 1p || true)"
 [ -n "$URL" ] || die "no /a/<id> URL in codex's reply"
 
 BASE="$("$CLAX_BIN" status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["url"].rstrip("/"))')" \

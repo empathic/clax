@@ -186,7 +186,7 @@ else fail "the bin setting in config.toml names the clax (rc=$RC out=$OUT err=$E
 new_env
 fake_clax "$FAKEBIN" "clax $V"
 run exec status
-if [ "$RC" = 1 ] && [ -z "$OUT" ] && echo "$ERR" | grep -q "pins no Clax release yet"; then pass "a clax on PATH is never run"
+if [ "$RC" = 1 ] && [ -z "$OUT" ] && echo "$ERR" | grep "pins no Clax release yet" >/dev/null; then pass "a clax on PATH is never run"
 else fail "a clax on PATH is never run (rc=$RC out=$OUT err=$ERR)"; fi
 
 new_env
@@ -194,7 +194,7 @@ fake_clax "$FAKEBIN" "clax $V"
 mkdir -p "$HOME/.clax"
 printf '[serve]\nbin = "%s"\n' "$FAKEBIN/clax" > "$HOME/.clax/config.toml"
 run
-if [ "$RC" = 1 ] && echo "$ERR" | grep -q "pins no Clax release yet"; then pass "a bin key inside a table is not the bin setting"
+if [ "$RC" = 1 ] && echo "$ERR" | grep "pins no Clax release yet" >/dev/null; then pass "a bin key inside a table is not the bin setting"
 else fail "a bin key inside a table is not the bin setting (rc=$RC out=$OUT err=$ERR)"; fi
 
 for line in "bin = '/abs/clax'" 'bin="/abs/clax"' 'bin = "relative/clax"' 'bin = "/a\\b/clax"' '"bin" = "/abs/clax"' 'bin = "/abs/clax" # note'; do
@@ -202,7 +202,7 @@ for line in "bin = '/abs/clax'" 'bin="/abs/clax"' 'bin = "relative/clax"' 'bin =
     mkdir -p "$HOME/.clax"
     printf '# settings\n%s\n\n[serve]\nport = 7481\n' "$line" > "$HOME/.clax/config.toml"
     run exec status
-    if [ "$RC" = 1 ] && echo "$ERR" | grep -qF "sets bin in a form the plugins do not read" && echo "$ERR" | grep -qF "clax bin set"; then
+    if [ "$RC" = 1 ] && echo "$ERR" | grep -F "sets bin in a form the plugins do not read" >/dev/null && echo "$ERR" | grep -F "clax bin set" >/dev/null; then
         pass "a bin line not in the form clax writes is an error: $line"
     else fail "a bin line not in the form clax writes is an error: $line (rc=$RC err=$ERR)"; fi
 done
@@ -212,13 +212,13 @@ fake_clax "$FAKEBIN" "clax $V"
 mkdir -p "$HOME/.clax"
 printf 'bin = "%s"\nbin = "%s"\n' "$FAKEBIN/clax" "$FAKEBIN/clax" > "$HOME/.clax/config.toml"
 run
-if [ "$RC" = 1 ] && echo "$ERR" | grep -qF "(and 1 more)"; then pass "two bin lines are an error"
+if [ "$RC" = 1 ] && echo "$ERR" | grep -F "(and 1 more)" >/dev/null; then pass "two bin lines are an error"
 else fail "two bin lines are an error (rc=$RC err=$ERR)"; fi
 
 new_env
 set_bin "$SANDBOX/gone/clax"
 run exec status
-if [ "$RC" = 1 ] && echo "$ERR" | grep -qF "sets bin = \"$SANDBOX/gone/clax\", which is not a usable clax binary (not an executable file)"; then
+if [ "$RC" = 1 ] && echo "$ERR" | grep -F "sets bin = \"$SANDBOX/gone/clax\", which is not a usable clax binary (not an executable file)" >/dev/null; then
     pass "a bin setting naming no usable clax is an error, not a fall-through"
 else fail "a bin setting naming no usable clax is an error (rc=$RC err=$ERR)"; fi
 
@@ -244,7 +244,7 @@ new_env
 fake_clax "$FAKEBIN" "clax $V"
 set_bin "$FAKEBIN/clax"
 CLAX_BIN="$SANDBOX/missing" run exec status
-if [ "$RC" = 1 ] && [ -z "$OUT" ] && echo "$ERR" | grep -q "CLAX_BIN is set to '$SANDBOX/missing', which is not a usable clax binary"; then
+if [ "$RC" = 1 ] && [ -z "$OUT" ] && echo "$ERR" | grep "CLAX_BIN is set to '$SANDBOX/missing', which is not a usable clax binary" >/dev/null; then
     pass "an unusable CLAX_BIN fails instead of falling back to the bin setting"
 else fail "an unusable CLAX_BIN fails (rc=$RC out=$OUT err=$ERR)"; fi
 
@@ -252,8 +252,8 @@ new_env
 fake_clax "$FAKEBIN" "clax 0.0.1"
 set_bin "$FAKEBIN/clax"
 mcp
-if [ "$OUT" = "args: mcp --agent codex" ] && echo "$ERR" | grep -q "warning: $FAKEBIN/clax is clax 0.0.1, but this plugin is clax $V" \
-    && hooks_log | grep -q "launch mode=mcp agent=codex bin=\"$FAKEBIN/clax\" version=\"clax 0.0.1\" warning=\"$FAKEBIN/clax is clax 0.0.1"; then
+if [ "$OUT" = "args: mcp --agent codex" ] && echo "$ERR" | grep "warning: $FAKEBIN/clax is clax 0.0.1, but this plugin is clax $V" >/dev/null \
+    && hooks_log | grep "launch mode=mcp agent=codex bin=\"$FAKEBIN/clax\" version=\"clax 0.0.1\" warning=\"$FAKEBIN/clax is clax 0.0.1" >/dev/null; then
     pass "a clax of another version runs in MCP mode with a logged warning"
 else fail "a clax of another version runs with a logged warning (out=$OUT err=$ERR log=$(hooks_log))"; fi
 
@@ -261,33 +261,33 @@ new_env
 fake_clax "$FAKEBIN" "clax $V"
 set_bin "$FAKEBIN/clax"
 mcp
-if [ "$OUT" = "args: mcp --agent codex" ] && [ -z "$ERR" ] && hooks_log | grep -q "launch mode=mcp agent=codex bin=\"$FAKEBIN/clax\" version=\"clax $V\" warning=\"\""; then
+if [ "$OUT" = "args: mcp --agent codex" ] && [ -z "$ERR" ] && hooks_log | grep "launch mode=mcp agent=codex bin=\"$FAKEBIN/clax\" version=\"clax $V\" warning=\"\"" >/dev/null; then
     pass "every MCP start is logged"
 else fail "every MCP start is logged (out=$OUT err=$ERR log=$(hooks_log))"; fi
 
 new_env
 mcp
-if text="$(fallback_text)" && echo "$text" | grep -q "pins no Clax release yet" && echo "$text" | grep -q "just install" \
-    && echo "$text" | grep -q "clax bin set" && echo "$text" | grep -q "CLAX_BIN" \
-    && hooks_log | grep -q "launcher mode=mcp agent=codex exit=fallback reason=\"this plugin pins no Clax release yet.*tried=\"no CLAX_BIN; no bin setting in $HOME/.clax/config.toml; no pinned release\""; then
+if text="$(fallback_text)" && echo "$text" | grep "pins no Clax release yet" >/dev/null && echo "$text" | grep "just install" >/dev/null \
+    && echo "$text" | grep "clax bin set" >/dev/null && echo "$text" | grep "CLAX_BIN" >/dev/null \
+    && hooks_log | grep "launcher mode=mcp agent=codex exit=fallback reason=\"this plugin pins no Clax release yet.*tried=\"no CLAX_BIN; no bin setting in $HOME/.clax/config.toml; no pinned release\"" >/dev/null; then
     pass "no pin and no binary named: the MCP client gets the reason from the fallback server"
 else fail "no clax: the MCP client gets the reason (out=$OUT err=$ERR log=$(hooks_log))"; fi
 
 new_env
 CLAX_BIN="$SANDBOX/a\"b\\c" mcp
-if text="$(fallback_text)" && echo "$text" | grep -qF "$SANDBOX/a\"b\\c"; then
+if text="$(fallback_text)" && echo "$text" | grep -F "$SANDBOX/a\"b\\c" >/dev/null; then
     pass "the fallback escapes quotes and backslashes in its JSON"
 else fail "the fallback escapes quotes and backslashes (out=$OUT)"; fi
 
 new_env
 OUT="$({
-    printf '%s\n' "$(echo "$REQS" | head -1)"
-    i=0; while ! hooks_log | grep -q "exit=fallback" && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done
+    printf '%s\n' "$(echo "$REQS" | sed -n 1p)"
+    i=0; while ! hooks_log | grep "exit=fallback" >/dev/null && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done
     fake_clax "$FAKEBIN" "clax $V"
     set_bin "$FAKEBIN/clax"
     printf '%s\n' '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"status","arguments":{}}}'
 } | "$TOOLS/bash" "$SCRIPT" exec mcp --agent claude 2>/dev/null)"
-if echo "$OUT" | tail -1 | grep -q "clax is now available at $FAKEBIN/clax. Reconnect"; then
+if echo "$OUT" | tail -1 | grep "clax is now available at $FAKEBIN/clax. Reconnect" >/dev/null; then
     pass "the fallback's status tool notices a clax installed since"
 else fail "the fallback's status tool notices a clax installed since (out=$OUT)"; fi
 
@@ -296,7 +296,7 @@ new_env
 printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\nwhile IFS= read -r l; do echo "got: $l"; done\n' "$V" | fake_exe "$FAKEBIN/clax"
 set_bin "$FAKEBIN/clax"
 OUT="$(printf 'one\ntwo\n' | "$TOOLS/bash" "$SCRIPT" exec mcp --agent claude 2>"$SANDBOX/stderr")"; RC=$?
-if [ "$RC" = 0 ] && [ "$OUT" = "$(printf 'got: one\ngot: two')" ] && ! hooks_log | grep -q launcher; then
+if [ "$RC" = 0 ] && [ "$OUT" = "$(printf 'got: one\ngot: two')" ] && ! hooks_log | grep launcher >/dev/null; then
     pass "the MCP server gets the client's stdin and stdout"
 else fail "the MCP server gets the client's stdin and stdout (rc=$RC out=$OUT log=$(hooks_log))"; fi
 
@@ -315,8 +315,8 @@ set_bin "$FAKEBIN/clax"
 mcp
 if text="$(fallback_text)" \
     && [ "$text" = "Clax is unavailable: clax cannot start its MCP server: /x/config.toml: bad port. Fix that, then reconnect the clax MCP server (/mcp in Claude Code) or start a new session. (Details: ~/.clax/logs/hooks.log.)" ] \
-    && ! echo "$OUT" | grep -q "args:" \
-    && hooks_log | grep -q "launcher mode=mcp agent=codex exit=fallback reason=\"clax cannot start its MCP server: /x/config.toml: bad port."; then
+    && ! echo "$OUT" | grep "args:" >/dev/null \
+    && hooks_log | grep "launcher mode=mcp agent=codex exit=fallback reason=\"clax cannot start its MCP server: /x/config.toml: bad port." >/dev/null; then
     pass "a failing preflight: the MCP client gets its reason from the fallback server"
 else fail "a failing preflight (out=$OUT err=$ERR log=$(hooks_log))"; fi
 
@@ -326,13 +326,13 @@ preflight_clax "$FAKEBIN" "error: broken"
 set_bin "$FAKEBIN/clax"
 : > "$SANDBOX/broken"
 OUT="$({
-    printf '%s\n' "$(echo "$REQS" | head -1)"
+    printf '%s\n' "$(echo "$REQS" | sed -n 1p)"
     # Fix the cause once the fallback is serving.
-    i=0; while ! hooks_log | grep -q "exit=fallback" && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done
+    i=0; while ! hooks_log | grep "exit=fallback" >/dev/null && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done
     rm -f "$SANDBOX/broken"
     printf '%s\n' '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"status","arguments":{}}}'
 } | "$TOOLS/bash" "$SCRIPT" exec mcp --agent claude 2>/dev/null)"
-if echo "$OUT" | tail -1 | grep -q "clax can start now. Reconnect"; then
+if echo "$OUT" | tail -1 | grep "clax can start now. Reconnect" >/dev/null; then
     pass "the fallback's status tool notices a preflight that passes since"
 else fail "the fallback's status tool notices a preflight that passes since (out=$OUT)"; fi
 
@@ -341,7 +341,7 @@ new_env
 printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\nfor a in "$@"; do if [ "$a" = --preflight ]; then echo "error: unexpected argument '"'"'--preflight'"'"' found" >&2; exit 2; fi; done\necho "args: $*"\n' "$V" | fake_exe "$FAKEBIN/clax"
 set_bin "$FAKEBIN/clax"
 mcp
-if [ "$OUT" = "args: mcp --agent codex" ] && ! hooks_log | grep -q launcher; then
+if [ "$OUT" = "args: mcp --agent codex" ] && ! hooks_log | grep launcher >/dev/null; then
     pass "a clax without --preflight still runs"
 else fail "a clax without --preflight still runs (out=$OUT log=$(hooks_log))"; fi
 
@@ -367,7 +367,7 @@ new_env
 printf '#!/bin/sh\necho "dyld: Library not loaded: libfoo.dylib" >&2\nexit 134\n' | fake_exe "$FAKEBIN/clax"
 set_bin "$FAKEBIN/clax"
 run exec hook --agent codex stop
-if [ "$RC" = 0 ] && echo "$ERR" | grep -qF "sets bin = \"$FAKEBIN/clax\", which is not a usable clax binary (\`--version\` exited 134: dyld: Library not loaded: libfoo.dylib)"; then
+if [ "$RC" = 0 ] && echo "$ERR" | grep -F "sets bin = \"$FAKEBIN/clax\", which is not a usable clax binary (\`--version\` exited 134: dyld: Library not loaded: libfoo.dylib)" >/dev/null; then
     pass "an unusable clax is named with its --version failure"
 else fail "an unusable clax is named (rc=$RC err=$ERR)"; fi
 
@@ -379,7 +379,7 @@ with_limits "$HERE/ensure-clax.sh" "$ROOT/wrapper/short/ensure-clax.sh" 1 1
 START="$(date +%s)"
 run_at "$ROOT/wrapper/short/ensure-clax.sh" exec hook --agent codex stop
 ELAPSED=$(( $(date +%s) - START ))
-if [ "$RC" = 0 ] && [ "$ELAPSED" -lt 20 ] && echo "$ERR" | grep -qF "\`--version\` did not finish within 1 s"; then
+if [ "$RC" = 0 ] && [ "$ELAPSED" -lt 20 ] && echo "$ERR" | grep -F "\`--version\` did not finish within 1 s" >/dev/null; then
     pass "a --version that hangs is cut off at the limit"
 else fail "a --version that hangs is cut off (rc=$RC elapsed=$ELAPSED err=$ERR)"; fi
 
@@ -424,8 +424,8 @@ if [ -n "$REAL_BIN" ]; then
     mkdir -p "$CLAX_HOME"
     printf '[serve\nport = 7481\n' > "$CLAX_HOME/config.toml"
     CLAX_BIN="$REAL_BIN" mcp
-    if text="$(fallback_text)" && echo "$text" | grep -qF "Clax is unavailable: clax cannot start its MCP server: $CLAX_HOME/config.toml: TOML parse error" \
-        && hooks_log | grep -qF "launcher mode=mcp agent=codex exit=fallback reason=\"clax cannot start its MCP server: $CLAX_HOME/config.toml" \
+    if text="$(fallback_text)" && echo "$text" | grep -F "Clax is unavailable: clax cannot start its MCP server: $CLAX_HOME/config.toml: TOML parse error" >/dev/null \
+        && hooks_log | grep -F "launcher mode=mcp agent=codex exit=fallback reason=\"clax cannot start its MCP server: $CLAX_HOME/config.toml" >/dev/null \
         && [ ! -e "$CLAX_HOME/daemon.json" ]; then
         pass "clax mcp on a malformed config.toml: the MCP client gets the reason from the fallback server"
     else fail "clax mcp on a malformed config.toml (out=$OUT err=$ERR log=$(hooks_log))"; fi
@@ -503,20 +503,20 @@ else fail "exec passes arguments through (rc=$RC out=$OUT)"; fi
 
 new_env
 run bogus
-if [ "$RC" = 2 ] && echo "$ERR" | grep -q usage; then pass "an unknown mode prints usage"; else fail "an unknown mode prints usage (rc=$RC)"; fi
+if [ "$RC" = 2 ] && echo "$ERR" | grep usage >/dev/null; then pass "an unknown mode prints usage"; else fail "an unknown mode prints usage (rc=$RC)"; fi
 
 # --- Hooks never fail --------------------------------------------------------
 
 new_env
 run exec hook --agent codex session-start
-if [ "$RC" = 0 ] && [ -z "$OUT" ] && [ "$(printf '%s\n' "$ERR" | grep -c .)" = 1 ] && echo "$ERR" | grep -q "pins no Clax release yet" \
-    && hooks_log | grep -q "launcher mode=hook agent=codex exit=0 reason=\"this plugin pins no Clax release yet.*argv=\"exec hook --agent codex session-start\""; then
+if [ "$RC" = 0 ] && [ -z "$OUT" ] && [ "$(printf '%s\n' "$ERR" | grep -c .)" = 1 ] && echo "$ERR" | grep "pins no Clax release yet" >/dev/null \
+    && hooks_log | grep "launcher mode=hook agent=codex exit=0 reason=\"this plugin pins no Clax release yet.*argv=\"exec hook --agent codex session-start\"" >/dev/null; then
     pass "hook mode with no clax prints one line, logs it and exits 0"
 else fail "hook mode with no clax (rc=$RC out=$OUT err=$ERR log=$(hooks_log))"; fi
 
 new_env
 CLAX_BIN="$SANDBOX/missing" run exec hook --agent claude stop
-if [ "$RC" = 0 ] && [ -z "$OUT" ] && [ "$(printf '%s\n' "$ERR" | grep -c .)" = 1 ] && echo "$ERR" | grep -q "CLAX_BIN is set to"; then
+if [ "$RC" = 0 ] && [ -z "$OUT" ] && [ "$(printf '%s\n' "$ERR" | grep -c .)" = 1 ] && echo "$ERR" | grep "CLAX_BIN is set to" >/dev/null; then
     pass "hook mode with an unusable CLAX_BIN prints one line and exits 0"
 else fail "hook mode with an unusable CLAX_BIN (rc=$RC err=$ERR)"; fi
 
@@ -524,8 +524,8 @@ new_env
 printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\necho "partial output"\necho "boom: daemon exploded" >&2\nexit 3\n' "$V" | fake_exe "$FAKEBIN/clax"
 set_bin "$FAKEBIN/clax"
 run exec hook --agent claude prompt
-if [ "$RC" = 0 ] && [ -z "$OUT" ] && echo "$ERR" | grep -q "boom: daemon exploded" \
-    && hooks_log | grep -q "launcher mode=hook agent=claude exit=3 reason=\"clax exited 3: boom: daemon exploded\""; then
+if [ "$RC" = 0 ] && [ -z "$OUT" ] && echo "$ERR" | grep "boom: daemon exploded" >/dev/null \
+    && hooks_log | grep "launcher mode=hook agent=claude exit=3 reason=\"clax exited 3: boom: daemon exploded\"" >/dev/null; then
     pass "a failing hook binary exits 0, drops its stdout and is logged with its stderr"
 else fail "a failing hook binary (rc=$RC out=$OUT err=$ERR log=$(hooks_log))"; fi
 
@@ -587,14 +587,14 @@ new_env
 recording_clax "$FAKEBIN"
 set_bin "$FAKEBIN/clax"
 mcp_as claude GROK_SESSION_ID=019a-g
-if [ "$RC" = 0 ] && text="$(standdown_text)" && echo "$text" | grep -qF 'clax_grok__publish' \
-    && [ ! -e "$SANDBOX/ran" ] && hooks_log | grep -q ' standdown mode=mcp agent=claude host=grok$'; then
+if [ "$RC" = 0 ] && text="$(standdown_text)" && echo "$text" | grep -F 'clax_grok__publish' >/dev/null \
+    && [ ! -e "$SANDBOX/ran" ] && hooks_log | grep ' standdown mode=mcp agent=claude host=grok$' >/dev/null; then
     pass "grok guard: the Claude copy's MCP server under Grok serves status only and runs no clax"
 else fail "grok guard: Claude copy MCP under Grok (rc=$RC out=$OUT err=$ERR ran=$(cat "$SANDBOX/ran" 2>/dev/null))"; fi
 
 new_env
 mcp_as claude GROK_SESSION_ID=019a-g
-if [ "$RC" = 0 ] && standdown_text >/dev/null && ! hooks_log | grep -q launcher; then
+if [ "$RC" = 0 ] && standdown_text >/dev/null && ! hooks_log | grep launcher >/dev/null; then
     pass "grok guard: standing down needs no clax binary"
 else fail "grok guard: standing down without clax (out=$OUT log=$(hooks_log))"; fi
 
@@ -619,7 +619,7 @@ for agent in grok codex; do
     recording_clax "$FAKEBIN"
     set_bin "$FAKEBIN/clax"
     mcp_as "$agent" GROK_SESSION_ID=019a-g
-    if grep -q -- "mcp --agent $agent" "$SANDBOX/ran" 2>/dev/null && ! hooks_log | grep -q standdown; then
+    if grep -q -- "mcp --agent $agent" "$SANDBOX/ran" 2>/dev/null && ! hooks_log | grep standdown >/dev/null; then
         pass "grok guard: --agent $agent is never stood down"
     else fail "grok guard: --agent $agent (out=$OUT log=$(hooks_log))"; fi
 done
@@ -629,7 +629,7 @@ recording_clax "$FAKEBIN"
 set_bin "$FAKEBIN/clax"
 OUT="$(printf '{"sessionId":"g","hookEventName":"Stop"}' | GROK_HOOK_EVENT=Stop "$TOOLS/bash" "$SCRIPT" exec hook --agent claude stop 2>"$SANDBOX/stderr")"; RC=$?; ERR="$(cat "$SANDBOX/stderr")"
 if [ "$RC" = 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ] && [ ! -e "$SANDBOX/ran" ] \
-    && hooks_log | grep -q ' standdown mode=hook agent=claude host=grok$'; then
+    && hooks_log | grep ' standdown mode=hook agent=claude host=grok$' >/dev/null; then
     pass "grok guard: a Claude copy hook that Grok runs reads its input, prints nothing and exits 0"
 else fail "grok guard: Claude copy hook under Grok (rc=$RC out=$OUT err=$ERR)"; fi
 
@@ -670,7 +670,7 @@ cp "$SANDBOX/elsewhere/clax" "$HOME/.$OLD/bin/clax"
 export "${OLD_UPPER}_BIN=$SANDBOX/elsewhere/clax" "${OLD_UPPER}_HOME=$HOME/.$OLD"
 run exec hook --agent codex stop
 unset "${OLD_UPPER}_BIN" "${OLD_UPPER}_HOME"
-if [ "$RC" = 0 ] && [ -z "$OUT" ] && echo "$ERR" | grep -q "pins no Clax release yet" \
+if [ "$RC" = 0 ] && [ -z "$OUT" ] && echo "$ERR" | grep "pins no Clax release yet" >/dev/null \
     && [ ! -e "$HOME/.$OLD/logs" ] && [ -s "$HOME/.clax/logs/hooks.log" ] \
     && [ "$(PATH="$ORIG_PATH" ls -A "$HOME/.$OLD")" = bin ]; then
     pass "the previous name's variables, binary and home are ignored and left untouched"
@@ -707,8 +707,8 @@ prun ok
 if [ "$RC" = 0 ] && [ "$OUT" = "$(MANAGED)/clax" ] && [ -f "$(MANAGED)/clax.sha256" ] \
     && [ "$(cat "$(MANAGED)/clax.sha256")" = "$(sha_of "$ROOT/payload/clax")" ] \
     && grep -q "^/ok/v$P/clax-$P-.*\.tar\.gz$" "$REQLOG" && [ -z "$(leftovers)" ] \
-    && echo "$ERR" | grep -q "installed clax $P at $(MANAGED)/clax" \
-    && hooks_log | grep -q "install mode=print agent=- version=$P exit=0"; then
+    && echo "$ERR" | grep "installed clax $P at $(MANAGED)/clax" >/dev/null \
+    && hooks_log | grep "install mode=print agent=- version=$P exit=0" >/dev/null; then
     pass "the pinned release is downloaded, checked and installed under \$CLAX_HOME/bin/<version>"
 else fail "the pinned release is installed (rc=$RC out=$OUT err=$ERR reqs=$(cat "$REQLOG"))"; fi
 : > "$REQLOG"
@@ -736,14 +736,14 @@ else fail "CLAX_BIN wins over the pinned release (rc=$RC out=$OUT)"; fi
 
 new_env; : > "$REQLOG"
 prun wrong exec status
-if [ "$RC" = 1 ] && [ -z "$OUT" ] && echo "$ERR" | grep -q "does not match the checksum this plugin pins" \
+if [ "$RC" = 1 ] && [ -z "$OUT" ] && echo "$ERR" | grep "does not match the checksum this plugin pins" >/dev/null \
     && [ ! -e "$(MANAGED)" ] && [ -z "$(leftovers)" ]; then
     pass "a download whose checksum differs from the pinned one installs nothing"
 else fail "a checksum mismatch installs nothing (rc=$RC out=$OUT err=$ERR bin=$(listing "$HOME/.clax/bin"))"; fi
 
 new_env
 prun none exec status
-if [ "$RC" = 1 ] && echo "$ERR" | grep -q "answered HTTP 404" && [ ! -e "$(MANAGED)" ] && [ -z "$(leftovers)" ]; then
+if [ "$RC" = 1 ] && echo "$ERR" | grep "answered HTTP 404" >/dev/null && [ ! -e "$(MANAGED)" ] && [ -z "$(leftovers)" ]; then
     pass "a release that is not there installs nothing and says so"
 else fail "a missing release (rc=$RC err=$ERR)"; fi
 
@@ -793,7 +793,7 @@ START="$(date +%s)"
 prun ok exec hook --agent claude session-start
 ELAPSED=$(( $(date +%s) - START ))
 if [ "$RC" = 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ] && [ "$(requests)" = 0 ] && [ ! -e "$(MANAGED)" ] && [ "$ELAPSED" -lt 3 ] \
-    && hooks_log | grep -q "install-pending mode=hook agent=claude version=$P reason=\"not installed\"" && ! hooks_log | grep -q launcher; then
+    && hooks_log | grep "install-pending mode=hook agent=claude version=$P reason=\"not installed\"" >/dev/null && ! hooks_log | grep launcher >/dev/null; then
     pass "a hook never downloads: with the release not installed yet it exits 0 at once, silently"
 else fail "a hook never downloads (rc=$RC out=$OUT err=$ERR reqs=$(requests) elapsed=$ELAPSED log=$(hooks_log))"; fi
 prun ok
@@ -804,14 +804,14 @@ else fail "once installed, hooks run the managed clax (rc=$RC out=$OUT)"; fi
 new_env; : > "$REQLOG"
 pmcp ok
 if [ "$OUT" = "managed: mcp --agent codex" ] && [ -x "$(MANAGED)/clax" ] && [ -z "$(leftovers)" ] \
-    && hooks_log | grep -q "install mode=mcp agent=codex version=$P exit=0" \
-    && hooks_log | grep -q "launch mode=mcp agent=codex bin=\"$(MANAGED)/clax\" version=\"clax $P\" warning=\"\""; then
+    && hooks_log | grep "install mode=mcp agent=codex version=$P exit=0" >/dev/null \
+    && hooks_log | grep "launch mode=mcp agent=codex bin=\"$(MANAGED)/clax\" version=\"clax $P\" warning=\"\"" >/dev/null; then
     pass "a first MCP start downloads the pinned release and runs it, without a version warning"
 else fail "a first MCP start downloads and runs (out=$OUT err=$ERR log=$(hooks_log))"; fi
 
 new_env; : > "$REQLOG"
 pmcp wrong
-if text="$(fallback_text)" && echo "$text" | grep -q "could not install clax $P: the download of .* does not match the checksum" && [ ! -e "$(MANAGED)" ]; then
+if text="$(fallback_text)" && echo "$text" | grep "could not install clax $P: the download of .* does not match the checksum" >/dev/null && [ ! -e "$(MANAGED)" ]; then
     pass "a failed first-run install: the MCP client gets the reason"
 else fail "a failed first-run install (out=$OUT err=$ERR)"; fi
 
@@ -820,16 +820,16 @@ else fail "a failed first-run install (out=$OUT err=$ERR)"; fi
 new_env
 rm -f "$REL/gate-open"
 OUT="$({
-    printf '%s\n' "$(echo "$REQS" | head -1)"
-    i=0; while ! hooks_log | grep -q "exit=fallback" && [ "$i" -lt 400 ]; do sleep 0.05; i=$((i + 1)); done
+    printf '%s\n' "$(echo "$REQS" | sed -n 1p)"
+    i=0; while ! hooks_log | grep "exit=fallback" >/dev/null && [ "$i" -lt 400 ]; do sleep 0.05; i=$((i + 1)); done
     printf '%s\n' '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"status","arguments":{}}}'
     sleep 0.3
     : > "$REL/gate-open"
-    i=0; while ! hooks_log | grep -q "install mode=mcp agent=claude version=$P exit=0" && [ "$i" -lt 400 ]; do sleep 0.05; i=$((i + 1)); done
+    i=0; while ! hooks_log | grep "install mode=mcp agent=claude version=$P exit=0" >/dev/null && [ "$i" -lt 400 ]; do sleep 0.05; i=$((i + 1)); done
     printf '%s\n' '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"status","arguments":{}}}'
 } | CLAX_RELEASE_BASE_URL="$BASE/gate" "$TOOLS/bash" "$PINNED_SHORT" exec mcp --agent claude 2>/dev/null)"
-if echo "$OUT" | head -1 | grep -q "is still downloading" && echo "$OUT" | sed -n 2p | grep -q "is still downloading" \
-    && echo "$OUT" | tail -1 | grep -q "clax is now available at $(MANAGED)/clax. Reconnect"; then
+if echo "$OUT" | sed -n 1p | grep "is still downloading" >/dev/null && echo "$OUT" | sed -n 2p | grep "is still downloading" >/dev/null \
+    && echo "$OUT" | tail -1 | grep "clax is now available at $(MANAGED)/clax. Reconnect" >/dev/null; then
     pass "a download slower than the MCP wait: the fallback says so, and status reports it done"
 else fail "a slow first-run download (out=$OUT log=$(hooks_log))"; fi
 rm -f "$REL/gate-open"
@@ -838,7 +838,7 @@ new_env
 fake_clax "$FAKEBIN" "clax 0.0.1"
 set_bin "$FAKEBIN/clax"
 prun ok exec status
-if [ "$RC" = 0 ] && echo "$ERR" | grep -q "warning: $FAKEBIN/clax is clax 0.0.1, but this plugin is clax $V"; then
+if [ "$RC" = 0 ] && echo "$ERR" | grep "warning: $FAKEBIN/clax is clax 0.0.1, but this plugin is clax $V" >/dev/null; then
     pass "a bin setting of another version warns"
 else fail "a bin setting of another version warns (err=$ERR)"; fi
 

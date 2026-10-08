@@ -292,7 +292,7 @@ interrupt() {
     HELD="$(find "$SCRIPT_TMP" -name key.pem | wc -l | tr -d ' ')"
     local z
     for z in "$SCRIPT_TMP"/clax-extension-upload.*/*.zip.tmp; do
-        if [ -f "$z" ] && unzip -Z1 "$z" 2> /dev/null | grep -qx key.pem; then HELD=$((HELD + 1)); fi
+        if [ -f "$z" ] && unzip -Z1 "$z" 2> /dev/null | grep -x key.pem >/dev/null; then HELD=$((HELD + 1)); fi
     done
     kill -INT -- "-$BGPID"
     wait "$BGPID"

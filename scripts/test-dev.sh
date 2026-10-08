@@ -145,8 +145,8 @@ fi
 devrun claude --resume
 line="$(cat "$T/calls")"
 tmpdir="$(printf '%s' "$line" | sed -n 's#.*clax=\(.*\)/clax (.*#\1#p')"
-if echo "$line" | grep -qF "claude --plugin-dir $ROOT/plugins/claude-code --settings {\"enabledPlugins\":{\"clax@clax\":false}} --resume | clax=$tmpdir/clax (clax 9.9.9-dev) home=$HOME/.clax-dev codex_home=$CODEX_HOME" \
-    && echo "$line" | grep -qF "clax_bin=$tmpdir/clax " \
+if echo "$line" | grep -F "claude --plugin-dir $ROOT/plugins/claude-code --settings {\"enabledPlugins\":{\"clax@clax\":false}} --resume | clax=$tmpdir/clax (clax 9.9.9-dev) home=$HOME/.clax-dev codex_home=$CODEX_HOME" >/dev/null \
+    && echo "$line" | grep -F "clax_bin=$tmpdir/clax " >/dev/null \
     && [ -n "$tmpdir" ] && [ ! -e "$tmpdir" ] && grep -qx 'port = 7481' "$HOME/.clax-dev/config.toml"; then
     pass "just dev claude runs the build from a removed-afterwards tmpdir, the checkout's plugin, and ~/.clax-dev on 7481"
 else fail "just dev claude ($line; tmpdir=$tmpdir; $(cat "$T/err"))"; fi
@@ -167,7 +167,7 @@ devrun codex --search
 line="$(cat "$T/calls")"
 tmpdir="$(printf '%s' "$line" | sed -n 's#.*clax=\(.*\)/clax (.*#\1#p')"
 if [ "$(wc -l < "$T/calls" | tr -d ' ')" = 1 ] \
-    && echo "$line" | grep -qF "codex --search | clax=$tmpdir/clax (clax 9.9.9-dev) home=$HOME/.clax-dev codex_home=$CODEX_HOME" \
+    && echo "$line" | grep -F "codex --search | clax=$tmpdir/clax (clax 9.9.9-dev) home=$HOME/.clax-dev codex_home=$CODEX_HOME" >/dev/null \
     && [ -n "$tmpdir" ] && [ ! -e "$tmpdir" ] && [ -z "$(ls -A "$CODEX_HOME")" ] && grep -q 'just install' "$T/out"; then
     pass "just dev codex runs Codex once, with the build on PATH and ~/.clax-dev, its own CODEX_HOME untouched and the installed plugin"
 else fail "just dev codex ($line; $(cat "$T/err"))"; fi
@@ -176,8 +176,8 @@ devrun grok --resume
 line="$(cat "$T/calls")"
 tmpdir="$(printf '%s' "$line" | sed -n 's#.*clax=\(.*\)/clax (.*#\1#p')"
 if [ "$(wc -l < "$T/calls" | tr -d ' ')" = 1 ] \
-    && echo "$line" | grep -qF "grok --resume | clax=$tmpdir/clax (clax 9.9.9-dev) home=$HOME/.clax-dev" \
-    && echo "$line" | grep -qF "grok_home=$GROK_HOME" \
+    && echo "$line" | grep -F "grok --resume | clax=$tmpdir/clax (clax 9.9.9-dev) home=$HOME/.clax-dev" >/dev/null \
+    && echo "$line" | grep -F "grok_home=$GROK_HOME" >/dev/null \
     && [ -n "$tmpdir" ] && [ ! -e "$tmpdir" ] && [ -z "$(ls -A "$GROK_HOME")" ] && grep -q 'just install' "$T/out"; then
     pass "just dev grok runs Grok once, with the build on PATH and ~/.clax-dev, its own GROK_HOME untouched and the installed plugin"
 else fail "just dev grok ($line; $(cat "$T/err"))"; fi
