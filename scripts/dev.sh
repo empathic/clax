@@ -56,6 +56,8 @@ cp "$bin" "$tmp/clax"
 export CLAX_BIN="$tmp/clax"
 export PATH="$tmp:$PATH"
 export CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}"
+# The dev home's config.toml names its port; CLAX_PORT would override it.
+unset CLAX_PORT
 ensure_dev_home "$CLAX_HOME" "${CLAX_DEV_PORT:-7481}"
 stop_orphan_daemon "$CLAX_HOME"
 echo "clax dev: $("$tmp/clax" --version) at $tmp/clax, CLAX_HOME=$CLAX_HOME"

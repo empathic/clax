@@ -635,7 +635,7 @@ payload lines, which must stay one line); anything else is `invalid_path`.
    re-checks, then spawns `clax serve --daemonize` detached (new session,
    stdio to `logs/daemon.log`), and polls `/healthz` for up to 5 seconds. The
    spawning client holds the lock until `/healthz` answers.
-3. `clax serve` binds `127.0.0.1` on `--port`, else the home's `[serve] port`, else 7480, tries the next 20
+3. `clax serve` binds `127.0.0.1` on `--port`, else `CLAX_PORT`, else the home's `[serve] port`, else 7480, tries the next 20
    ports if busy, and writes `daemon.json` atomically. `clax serve` itself
    does not take the lock.
 4. `clax stop` sends `POST /api/admin/shutdown` (W). The daemon also
@@ -1986,7 +1986,8 @@ command line") gives the shapes.
   reason. A binary named by `CLAX_BIN` or the `bin` setting whose version
   differs from the plugin's (`CLAX_VERSION` in the wrapper) runs; MCP and
   CLI modes warn about it, hooks stay silent. MCP mode runs `clax mcp --preflight` (the home, its
-  `config.toml` and the port; no daemon, no network), then execs `clax mcp`,
+  `config.toml` and the port, and that no other program accepts connections
+  on the port; no daemon started, no request sent), then execs `clax mcp`,
   so the harness is the shim's parent (§11). With no usable binary, or a
   failed preflight, MCP mode answers the MCP client with a minimal server
   whose one tool, `status`, states the reason. A `clax mcp` that exits later

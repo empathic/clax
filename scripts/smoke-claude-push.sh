@@ -26,6 +26,7 @@ case "$MODE" in --channel|--follow) shift ;; *) echo "usage: $0 --channel|--foll
 SCRATCH="${1:-${TMPDIR:-/tmp}/clax-smoke-claude-push}"
 SCRATCH="$(mkdir -p "$SCRATCH" && cd "$SCRATCH" && pwd -P)"
 export CLAX_HOME="$SCRATCH/home"
+unset CLAX_PORT
 export CLAX_NO_OPEN=1
 BIN="$REPO/target/debug/clax"
 export CLAX_BIN="$BIN"
