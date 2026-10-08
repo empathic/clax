@@ -4,11 +4,11 @@
 
 **Goal:** Several agents of one person, and the agents of a second person on another machine, share one Clax: the owner connects people by invite or approved request; each machine holds a key-bound credential tied to its person; agents have their person's rights (narrowable by the person, extendable per agent by the owner); content written by anyone else reaches an agent through Clax's agent channels only after its person approves it, field by field, enforced by one daemon-side filter on every agent-facing read, write response and delivery path; agents have names, `@name` reaches exactly one, a sent thread has one owner agent with explicit handoff; ended sessions clean up; the inbox and roster are grouped by agent and say who is blocked on the person.
 
-**Architecture:** A person is a `viewers` row (`person = 1`); an agent is a `sessions` row bound to a person and, from another machine, to a GNAP-shaped grant (migration 22), with registration, join and every session reference scoped to the caller's grant. Grants come from invites or from ad-hoc requests the owner approves (as new people) with the requester's user code; access tokens are opaque, hashed, key-bound (every request signed with the machine's Ed25519 key, `clax-ed25519`, verified before every handler), and live with their grant until revoked. Rights are GNAP access objects in `clax_core::rights`. Every handler learns its caller from one `Caller`; agent routes declare their right and filter class with a typed `Agent<N>` extractor that reads the handler's own `Path`. Visibility (migration 23: approvals, requests, document author sets) is one `clax_core::visibility::Visibility` per agent request, refreshed by a generation counter, applied per field to every response an agent channel gets and to every feedback tier. Migration 24 gives the inbox a recipient. The agent side gains a signed remote mode (`remote.json`) used by `clax connect`, the shim, hooks, the CLI and Pi. The shell gains a lazy People page, approval and connection cards, an agent strip and owner chips; the extension's panel gains approval cards.
+**Architecture:** A person is a `viewers` row (`person = 1`); an agent is a `sessions` row bound to a person and, from another machine, to a GNAP-shaped grant (migration 22), with registration, join and every session reference scoped to the caller's grant. Grants come from invites or from ad-hoc requests the owner approves (as new people) with the requester's user code; access tokens are opaque, hashed, key-bound (every request signed with the machine's Ed25519 key, `clax-ed25519`, verified before every handler), and live with their grant until revoked. Rights are GNAP access objects in `clax_core::rights`. Every handler learns its caller from one `Caller`; agent routes declare their right and filter class with a typed `Agent<N>` extractor that reads the handler's own `Path`. Visibility (migration 23: approvals, requests, document author sets) is one `clax_core::visibility::Visibility` per agent request, refreshed by a generation counter, applied per field to every response an agent channel gets and to every feedback tier. Migration 24 gives the inbox a recipient. The agent side gains a signed remote mode (`remote.json`) used by `clax connect`, the shim, hooks, the CLI and Pi. The shell gains a lazy People page, approval and connection cards, an agent strip and owner chips; the extension's panel names agents and links approval items to the shell.
 
 **Tech Stack:** Rust 2024 (axum, tokio, rusqlite, serde, rmcp, clap, ring for Ed25519), Svelte 5 (runes) + TypeScript, Vite 6, Vitest + jsdom + @testing-library/svelte, Playwright (Chromium), Chrome MV3 extension, Pi extension (TypeScript, `node:crypto`).
 
-**Spec:** `docs/superpowers/specs/2026-10-08-multi-agent-multi-person-design.md` revision 3 (with the main spec, the chrome-overlay spec and the questions-and-inbox spec). Read it in full before Task 1; each task names the sections it implements.
+**Spec:** `docs/superpowers/specs/2026-10-08-multi-agent-multi-person-design.md` revision 4 (with the main spec, the chrome-overlay spec and the questions-and-inbox spec). Read it in full before Task 1; each task names the sections it implements.
 
 ## Global Constraints
 
@@ -17,8 +17,8 @@
 - No `unsafe` Rust: every crate keeps `#![forbid(unsafe_code)]`. `ring` becomes a direct dependency of `clax-core` (already in `Cargo.lock`); no other new crypto crate.
 - No hard links anywhere (`scripts/check-no-hard-links.sh` stays green); the remote clip cache writes files by copy.
 - **Single-owner changes are exactly spec §19's eight.** Task 25's golden pins everything else; any other diff is a defect.
-- **The filter is for agent channels only** (`Caller::OwnerAgent`, `Caller::PersonAgent`): people (owner browsers, the CLI used by hand, connected people's browsers, LAN viewers) see what they see today. **Every agent channel is an agent:** a token request naming a session in its path or `X-Clax-Session`, or carrying `X-Clax-Channel: agent`, is `OwnerAgent`; every agent-side client (shim, `/mcp`'s internal client, every `clax hook` command, `clax feedback follow`, Pi) sends the marker; the CLI's own commands never do.
-- **Signatures are verified before every handler**, on every method, bodyless requests included.
+- **The filter is for agent channels only** (`Caller::OwnerAgent`, `Caller::PersonAgent`): people (owner browsers, the CLI used by hand, connected people's browsers, LAN viewers) see what they see today. **Every agent channel is an agent:** a token request naming a session in its path or `X-Clax-Session`, or carrying `X-Clax-Channel: agent`, is `OwnerAgent`; every agent-side client (shim, `/mcp`'s internal client, every `clax hook` command, `clax feedback follow`, Pi) sends the marker, and the CLI sends it whenever `CLAX_CHANNEL=agent` is set, which the plugins' wrapper exports (every plugin slash command and hook goes through the wrapper; a guard checks it); only the CLI used by hand outside a harness is `Owner`.
+- **Signatures are verified before every handler**, on every method, bodyless requests included, in a `route_layer` keyed by `MatchedPath` with each route's body limit declared in its `need!` beside its right; unverified bytes in flight are bounded per key (one body over 1 MiB) and overall (128 MiB); a nonce is recorded only after its signature verifies.
 - **One filter, per field.** Only `clax_core::visibility::Visibility` decides visibility, one field at a time. No route or store function re-implements the rule. `FeedbackItem` and `Notice` are built only in functions that take `&Visibility` (Task 12's guard).
 - **One `Caller`.** No handler outside `identity.rs` and `auth.rs` calls `has_token` or reads `Authorization` (Task 6's guard).
 - **Sessions are bound to their credential** (M4): every store function that matches or modifies a session takes the caller's `grant_id` (`None` for the token) and matches only rows with the same value.
@@ -43,11 +43,11 @@
 | `KeyPair`, `SignInput`, `SigHeader`, `parse_header`, `verify`, `NonceCache`, `SigError`, `fingerprint` | `clax_core::sig` | Task 3 | spec §6.6 |
 | `Reader { Owner, Person(String) }` | `clax_core::visibility` | Task 5 (type only), Task 8 (the filter) | the person whose agent reads |
 | `Caller` | `clax_server::auth` | Task 5 | (`OwnerAgent` for a token request naming a session or carrying `X-Clax-Channel: agent`) `Owner`, `OwnerAgent { session: Option<String> }`, `PersonAgent { person: Option<String>, grant: String, session: Option<String>, rights: Arc<Rights> }`, `Person { viewer: Viewer }`, `Viewer { viewer: Viewer }`, `Anonymous`; `reader() -> Option<Reader>`, `browser() -> bool`, `session() -> Option<&str>`, `is_agent() -> bool` |
-| `Need` trait, `Agent<N: Need>` extractor, `Class { Filtered, Own, DeniedToGrants, GrantFlow }`, `need!` macro | `clax_server::agent` | Task 5 (extractor), Task 6 (every route) | M7 |
+| `Need` trait (`RIGHT`, `CLASS`, `LIMIT`), `Agent<N: Need>` extractor, `Class { Filtered, Own, DeniedToGrants, GrantFlow }`, `need!` macro, `verify_layer` (a `route_layer` keyed by `MatchedPath`) | `clax_server::agent` | Task 5 (extractor, layer), Task 6 (every route) | M7, spec §6.6 |
 | `VisGen(Arc<AtomicU64>)` in `AppState` | `clax_server::state` | Task 8 | bumped by approval and rights changes |
 | `Author`, `Visibility { for_reader, all, sees, withheld_authors, refresh_if_stale }`, author functions per field, `placeholder::*` | `clax_core::visibility` | Task 8 | spec §8 |
 | `TakeResult { items, placeholders, touched }`, `Store::take_feedback(t, vis: &mut Visibility)` | `clax_core::store::feedback` | Task 12 | spec §8.4 |
-| `World` (two people, canaries), `RealClients` (shim, `/mcp`, `clax hook`, `clax feedback follow`, Pi driven as processes against the test daemon) | `clax-server/tests/common/people.rs`, `clax-server/tests/common/clients.rs` | Task 6 (harness), extended by 9–12, 19 | spec §8.6 |
+| `World` (two people, canaries), `RealClients` (shim, `/mcp`, `clax hook`, `clax feedback follow`, Pi, and `slash_command_context` running each plugin slash command's `!` lines through the real `ensure-clax.sh`, driven as processes against the test daemon) | `clax-server/tests/common/people.rs`, `clax-server/tests/common/clients.rs` | Task 6 (harness), extended by 9–12, 19 | spec §8.6 |
 
 ## Review Focus
 
@@ -56,7 +56,8 @@
 3. **Documents launder authorship** (I7): Sam's agent patching one field of Mia's document; `where` used as an oracle. Pinned in Task 8 (`touching_a_field_never_takes_a_document`) and Task 11 (`where_runs_over_visible_documents_only`).
 4. **A prompt-injected owner agent approves for itself** (I2): the token alone on decide, allow, revoke, rights, elevate, invite, grant approve. Pinned in Task 14 (`approval_changes_need_a_browser`) and Task 17 (`rights_changes_need_a_browser`).
 5. **A sniffed request or token is reused** (M5): replay, stale timestamp, token without signature, a bad signature on a GET or DELETE, a forged token forcing a large body read. Pinned in Task 3 (`replay_and_staleness_are_refused`) and Task 5 (`authentication_precedes_the_body`, `a_bad_signature_is_refused_on_get_delete_and_post`).
-8. **An owner agent channel classified as the owner** (N1): the hooks (path session), `clax feedback follow`, `/mcp`. Pinned in Task 5 (`every_agent_channel_is_an_agent`) and Task 12 (`hook_tiers_are_filtered_for_owner_agents`, `mcp_tools_are_filtered_for_the_owner`).
+8. **An owner agent channel classified as the owner** (N1, P1): the hooks (path session), `clax feedback follow`, `/mcp`, plugin slash commands and an agent's `clax` calls through the wrapper. Pinned in Task 5 (`every_agent_channel_is_an_agent`), Task 6 (`every_plugin_invocation_goes_through_the_wrapper`) and Task 12 (`hook_tiers_are_filtered_for_owner_agents`, `mcp_tools_are_filtered_for_the_owner`, `plugin_command_context_is_filtered_for_the_owner`).
+9. **A sniffed token exhausts the daemon or the nonces** (P2). Pinned in Task 5 (`unverified_bodies_are_bounded`, `bad_signatures_consume_no_nonces`, `the_route_limit_caps_the_pre_handler_read`).
 6. **A new machine becomes an existing person** (I4): approving a request into Sam or the owner. Pinned in Task 4 (`a_request_only_makes_a_new_person`).
 7. **Single-owner behaviour changes beyond spec §19.** Pinned by Task 25 (`single_owner_outputs_are_unchanged`).
 
@@ -117,11 +118,13 @@ Spec §19 (the golden test). This is the branch's first code commit and changes 
 - Modify: `crates/clax-core/src/store/mod.rs` (`Store` holds an `Arc<dyn Clock>`, the `working::Clock` trait, defaulting to `SystemClock`; `Store::now()` reads it; `Store::open_with_clock`), `crates/clax-core/src/store/sessions.rs` (`register_session` and the reaper take time from the store's clock instead of `chrono::Utc::now()`), every other `chrono::Utc::now()` in `clax-core/src/store/` likewise, `crates/clax-server/src/testing.rs` (`TestServer::from_fixture_with_clock(sql, at)`)
 - Create: `crates/clax-server/tests/golden_single_owner.rs` (`collect_agent_outputs(ts, tier)`, `normalise_minted(value)`, an ignored `write_golden` test), `crates/clax-server/tests/fixtures/single-owner-21.sql`, `crates/clax-server/tests/fixtures/single-owner-21.golden.json`
 
-**Interfaces (produces):** `Store::open_with_clock(home, clock)`, `TestServer::from_fixture_with_clock`, `collect_agent_outputs(&TestServer, Tier) -> Value` (comments_read of every thread, read, list, versions, docs, roster, the tier's payload, notices, each through the real client for its channel where one exists: the hook binary for stop and prompt, `clax feedback follow` for notices), `normalise_minted(Value) -> Value` (keys `*_at`, `since`, `waited_s`, and ULIDs newer than the fixture, by an explicit list).
+**Interfaces (produces):** `Store::open_with_clock(home, clock)`, `TestServer::from_fixture_with_clock`, `collect_agent_outputs(&TestServer, Tier) -> Value` (comments_read of every thread, read, list, versions, docs, roster, the tier's payload, notices, each through the real client for its channel where one exists: the hook binary for stop and prompt, `clax feedback follow` for notices), `normalise_minted(Value) -> Value` (by an explicit list: keys `*_at`, `since`, `waited_s`; ULIDs newer than the fixture; the test server's base URL and port; the temporary home's path, as in `clip_path`; client PIDs and working directories).
 
 - [ ] **Step 1: Write the failing test** — `store_time_comes_from_the_injected_clock` (a `ManualClock` fixes `created_at`, `started_at` and `last_seen_at` of a registered session and a thread).
 - [ ] **Step 2:** fails. **Step 3:** inject the clock; build the fixture (pre-migration-12 unattributed comments, anonymous and named LAN viewers, `via_page` comments and documents from the owner's browser, feedback in every state, questions, inbox, one live agent); write the collector; run `cargo test -p clax-server --test golden_single_owner -- --ignored --exact write_golden` to write the golden, one entry per tier, each on a fresh copy of the fixture under the fixed clock.
-- [ ] **Step 4:** `scripts/quality_gates.sh` unchanged and green; running `write_golden` twice gives identical files.
+- [ ] **Step 4:** `scripts/quality_gates.sh` unchanged and green; running `write_golden` twice (two servers, two ports, two homes) gives identical files.
+
+**Regeneration.** If main moves before this branch merges, rebase Task 0 onto the new main and run `write_golden` there, before any later task, and commit the new golden with that rebased commit. That is the only time the golden is ever regenerated; every later task compares against it.
 - [ ] **Step 5: Commit** — `"Inject the store's clock, and record the single-owner agent-facing outputs as a golden"`
 
 ---
@@ -220,7 +223,7 @@ Spec §5.1, §6.2–§6.4, §6.7, M1–M5.
 **Interfaces (produces):**
 - `Store::create_invite(who: InvitePerson, now) -> Result<(Invite, Secret)>`, `InvitePerson::{New(String), Viewer(String), Owner}`; `list_invites`, `revoke_invite`.
 - `Store::request_grant(g: NewGrant, now) -> Result<GrantStart>`; `NewGrant { key: [u8; 32], client_name, peer_ip, access: Rights, invite: Option<String> }`; `GrantStart::{Approved { grant, token: Secret, manage: Secret, continue_token: Secret, browser_code: Secret }, Pending { grant, continue_token: Secret, user_code: Secret }}`; errors `invalid_invite`, `limit_reached`.
-- `approve_grant(gid, user_code, name, rights: Option<Rights>, now)` (always a new person; `wrong_code`, third strike denies), `deny_grant`, `continue_grant(gid, continue_token, now) -> Result<ContinueOutcome>` (`too_fast`, `denied`), `revoke_token(gid, manage_token)`, `revoke_grant(gid, by) -> Result<RevokedGrant { sessions_ended }>`, `revoke_person(public_id) -> Result<RevokedPerson>`, `narrow_grant(gid, Rights)`.
+- `approve_grant(gid, user_code, name, rights: Option<Rights>, now)` (always a new person; `wrong_code`, third strike denies), `deny_grant`, `continue_grant(gid, continue_token, now) -> Result<ContinueOutcome>` (`too_fast`, `denied`), `revoke_token(gid, manage_token) -> Result<RevokedGrant>` (revokes the whole grant), `revoke_grant(gid, by) -> Result<RevokedGrant { sessions_ended }>`, `revoke_person(public_id) -> Result<RevokedPerson>`, `narrow_grant(gid, Rights)`.
 - `token_index() -> Result<Vec<([u8; 32], String)>>`; `person_rights(public_id) -> Result<Rights>`; `set_person_rights`; `expire_grants(now) -> Result<Vec<String>>` (pending past 10 min; unused 30 days).
 - Session binding (M4): `RegisterSession` gains `grant_id: Option<String>`, `repo`, `branch` (names in Task 7); every match in `register_session(r)` and `join_session(j, grant_id)` adds `AND grant_id IS ?` with the caller's value; `list_sessions_for(grant_id, live_only)`; `session_of(sid, grant_id)` returns `None` for another credential's session.
 
@@ -289,12 +292,17 @@ fn wrong_code_approves_nothing_and_the_third_denies() { /* two wrong_code leave 
 fn pending_limits_per_ip_and_overall() { /* 3 per peer IP, 20 in all: limit_reached */ }
 
 #[test]
-fn the_manage_token_revokes_and_the_access_token_cannot() {
+fn revoking_the_token_revokes_the_grant() {
     let st = store();
     let (gid, t1, manage) = approved_with_manage(&st);
+    let s = st.register_session(RegisterSession { grant_id: Some(gid.clone()), ..reg("claude") }).unwrap();
     assert_invalid(st.revoke_token(&gid, t1.expose()), "invalid_token");
-    st.revoke_token(&gid, manage.expose()).unwrap();
+    let r = st.revoke_token(&gid, manage.expose()).unwrap();
     assert!(!st.token_live(t1.expose()).unwrap());
+    assert_eq!(st.grant(&gid).unwrap().status, "revoked");
+    assert_eq!(r.sessions_ended, vec![s.id.clone()]);
+    assert_eq!(st.get_session(&s.id).unwrap().unwrap().ended_reason.as_deref(), Some("revoked"));
+    assert!(st.request_grant(grant(KEY_OF_GID, None), T0).is_ok(), "the key may connect again");
 }
 
 #[test]
@@ -308,7 +316,7 @@ fn secrets_never_print() { assert!(!format!("{:?}", Secret("cxg_abc".into())).co
 ```
 
 - [ ] **Step 2:** `cargo test -p clax-core people:: sessions::` fails.
-- [ ] **Step 3: Implement** migration 22 exactly as spec §5.1 (including `versions.file_authors_json`, written by Task 8), the store, and the binding. Codes from `getrandom`: invite 12 Crockford base32 characters, user code 4 letters (no I, O) and 4 digits, tokens `cxg_`/`cxm_`/`cxc_` + 32 bytes base64url, browser code 32 bytes; all stored as SHA-256 hex. Every existing caller of `register_session`/`join_session` passes `None` (the token) until Task 5.
+- [ ] **Step 3: Implement** migration 22 exactly as spec §5.1 (including `versions.file_authors_json`, written by Task 8, and `sessions.ended_reason` and `ended_watches_json`, written by every end from here on: `exit`, `idle`, `revoked`, `person`), the store, and the binding. Codes from `getrandom`: invite 12 Crockford base32 characters, user code 4 letters (no I, O) and 4 digits, tokens `cxg_`/`cxm_`/`cxc_` + 32 bytes base64url, browser code 32 bytes; all stored as SHA-256 hex. Every existing caller of `register_session`/`join_session` passes `None` (the token) until Task 5.
 - [ ] **Step 4:** `cargo test -p clax-core` (migration tests included) and `cargo test -p clax-server` (unchanged behaviour).
 - [ ] **Step 5: Commit** — `"Add people, invites, grants and key-bound tokens, and bind sessions to their credential (migration 22)"`
 
@@ -428,8 +436,8 @@ async fn polling_faster_than_wait_is_too_fast_and_expiry_denies() {}
 
 #[tokio::test]
 async fn revocation_through_manage_and_continue() {
-    /* DELETE token with the manage token: that access token is 401 invalid_token at once; DELETE continue → grant
-       revoked, every token 401 grant_revoked; there is no POST on the token route (405) */
+    /* DELETE token with the manage token: the grant is revoked, every token 401 grant_revoked, its sessions ended
+       (`revoked`) and their threads released; DELETE continue does the same; there is no POST on the token route (405) */
 }
 
 #[tokio::test]
@@ -455,7 +463,9 @@ Spec §6.1, §6.6 (order of checks, verification before the handler), §6.7, M4,
 **Interfaces (produces):**
 - `Caller` (Shared interfaces table).
 - `pub trait Need { const RIGHT: Option<(RightType, &'static str)>; const CLASS: Class; }`; `pub struct Agent<N: Need> { pub caller: Caller, pub artifact: Option<ArtifactId>, _n: PhantomData<N> }` implementing `FromRequestParts`: resolves `Caller`; for `PersonAgent` checks `N::RIGHT` at the artifact parsed from the route's own `Path` (`{aid}`), 403 `not_permitted` with `{"right": {"type", "action"}}`; checks every `{id}` session segment and `X-Clax-Session` against the caller (403 `foreign_session`); `Class::Filtered` answers `PersonAgent` 503 `not_yet` while the route's filter flag (`agent::FILTERED_LIVE`, a `&[&str]` of handler names Tasks 9–12 add to) does not list it.
-- `agent::authenticate` middleware: for `Authorization: Clax-Grant`, checks token (`GrantIndex`), header shape, timestamp and nonce before reading the body; then verifies the signature before the handler runs: a bodyless request (no or zero `Content-Length`, no `Transfer-Encoding`) at once with the empty digest, any other by reading the body in full (capped by the route's limit), hashing and verifying it, and handing the buffered body on (401 `invalid_signature`). Refuses `Origin`/`Cookie` with an agent credential.
+- `agent::authenticate` (outer middleware): for `Authorization: Clax-Grant`, checks the token (`GrantIndex`), header shape, timestamp and the nonce's absence (not recording it) before any body is read; refuses `Origin`/`Cookie` with an agent credential.
+- `agent::verify_layer` (a `route_layer`, so it sees `MatchedPath`): looks up the route's `LIMIT` from its `need!` declaration; a bodyless request (no or zero `Content-Length`, no `Transfer-Encoding`) is verified at once with the empty digest; any other takes a permit from the unverified-bytes budget (per key: one body over 1 MiB, else 429 `limit_reached`; overall 128 MiB by `Content-Length` or chunk by chunk, else 503 `busy`), is read up to `LIMIT` (413 beyond), hashed and verified, and handed on buffered; only then is the nonce inserted, under the cache's lock with a second presence test (`replayed_request` for the loser). 401 `invalid_signature` on failure; the permit is released either way.
+- `need!(Name, Type, "action", Class, LIMIT)`: every route's body limit lives here; the existing per-route `DefaultBodyLimit` layers read the same constant.
 - `Caller` resolution for the token: `OwnerAgent { session }` when the path names a session (`/api/sessions/{id}/…`) or `X-Clax-Session` is present; `OwnerAgent { session: None }` with `X-Clax-Channel: agent`; otherwise `Owner`. The marker is ignored without the token.
 
 - [ ] **Step 1: Write the failing tests**
@@ -506,6 +516,25 @@ async fn a_bad_signature_is_refused_on_get_delete_and_post() {
 }
 
 #[tokio::test]
+async fn unverified_bodies_are_bounded() {
+    /* with a sniffed (valid) token and bad signatures: a second concurrent 2 MiB body for the same key → 429
+       limit_reached while the first is unverified; concurrent bodies past 128 MiB in all → 503 busy before reading;
+       both permits are back once the requests end (a debug route reports the budget) */
+}
+
+#[tokio::test]
+async fn bad_signatures_consume_no_nonces() {
+    /* a request with a bad signature and nonce n → 401; the same request correctly signed with n → 200; sent again →
+       401 replayed_request; two copies of one valid request at once → exactly one 2xx */
+}
+
+#[tokio::test]
+async fn the_route_limit_caps_the_pre_handler_read() {
+    /* a 3 MiB body to a docs route (its LIMIT) → 413 before verification; a 90 MiB publish (PUBLISH_BODY_LIMIT) is
+       verified and accepted */
+}
+
+#[tokio::test]
 async fn every_agent_channel_is_an_agent() {
     /* with the daemon token: GET /api/sessions/{sid}/feedback (no header) resolves OwnerAgent{sid}; a request with
        X-Clax-Channel: agent and no session resolves OwnerAgent{None}; the same without the marker is Owner; the marker
@@ -538,7 +567,7 @@ async fn token_callers_are_unchanged() { /* the existing api_* suites run unchan
 Spec §7.5, §8.6, M7, M8; review C3, I8, I10, I13, M12.
 
 **Files:**
-- Modify: `crates/clax-server/src/routes/mcp.rs` and `crates/clax-mcp/src/client.rs` (`/mcp`'s internal client and every agent-side client send `X-Clax-Channel: agent`), `crates/clax-cli/src/client.rs` (hook commands and `feedback follow` send it; other commands never), every route module (`artifacts`, `assets`, `content`, `docs`, `threads`, `sessions`, `watches`, `working`, `feedback`, `questions`, `live`, `sites`, `inbox`, `viewers`, `events`, `stream`, `sample`, `room`, `extension`, `token`, `shell`, `health`, `grants`, `connect`) — each agent-reachable handler takes `Agent<N>` declared with `need!` per spec §7.5; every other handler takes `DeniedToGrants` (an extractor answering `PersonAgent` 403 `forbidden`) or `GrantFlow`; every inline `has_token(&headers, …)` becomes a `Caller` match (agent replies: `caller.is_agent() && caller.session().is_some()`; `with_path`: `matches!(caller, Caller::Owner | Caller::OwnerAgent { .. })`; `db_caller::caller_of` takes `&Caller` and for a `PersonAgent` returns `{level: rights.db_level(aid), viewer: Some(person)}`); `crates/clax-server/src/routes/mcp.rs` (`/mcp` refuses grants); `crates/clax-server/src/routes/mod.rs` (`mod agents`)
+- Modify: `crates/clax-server/src/routes/mcp.rs` and `crates/clax-mcp/src/client.rs` (`/mcp`'s internal client and every agent-side client send `X-Clax-Channel: agent`), `crates/clax-cli/src/client.rs` (hook commands and `feedback follow` always send it; every command sends it when `CLAX_CHANNEL=agent` is set), `plugins/*/scripts/ensure-clax.sh` and `scripts/ensure-clax.sh` (`exec` exports `CLAX_CHANNEL=agent` for every mode but `serve`, `stop`, `doctor`, `init`), `plugins/claude-code/commands/*.md` and every plugin's `hooks/hooks.json` and Pi's spawned commands (all through `ensure-clax.sh exec`), `crates/clax-server/src/routes/threads.rs` (`list_all` Filtered for `OwnerAgent`, Denied to `PersonAgent`), the Denied routes that return other people's text (`inbox`, `events`, `stream`, `people`, `GET /api/grants`: 403 `not_for_agents` to `OwnerAgent`), every route module (`artifacts`, `assets`, `content`, `docs`, `threads`, `sessions`, `watches`, `working`, `feedback`, `questions`, `live`, `sites`, `inbox`, `viewers`, `events`, `stream`, `sample`, `room`, `extension`, `token`, `shell`, `health`, `grants`, `connect`) — each agent-reachable handler takes `Agent<N>` declared with `need!` per spec §7.5; every other handler takes `DeniedToGrants` (an extractor answering `PersonAgent` 403 `forbidden`) or `GrantFlow`; every inline `has_token(&headers, …)` becomes a `Caller` match (agent replies: `caller.is_agent() && caller.session().is_some()`; `with_path`: `matches!(caller, Caller::Owner | Caller::OwnerAgent { .. })`; `db_caller::caller_of` takes `&Caller` and for a `PersonAgent` returns `{level: rights.db_level(aid), viewer: Some(person)}`); `crates/clax-server/src/routes/mcp.rs` (`/mcp` refuses grants); `crates/clax-server/src/routes/mod.rs` (`mod agents`)
 - Create: `crates/clax-server/tests/common/people.rs` (`World`), `crates/clax-server/tests/common/clients.rs` (`RealClients`), `crates/clax-server/tests/api_canary.rs`
 
 **Interfaces (produces):** `need!` declarations, one per route row of spec §7.5 (e.g. `need!(ThreadsRead, Comments, "read", Filtered)`), exported as `agent::ROUTE_NEEDS: &[(&str /* handler */, Option<(RightType, &str)>, Class)]` for the contract generator (Task 24) and the sweep; `World::two_people()` seeding Mia's canaries in every author field of spec §8.2, including `capabilities`, a document path and a file the owner's agent carried forward from Mia's version (`World::canaries() -> Vec<&'static str>`); `RealClients` runs the built `clax` binary as the MCP shim (stdio), as `clax hook --agent claude stop|prompt|session-start` with harness JSON on stdin, and as `clax feedback follow --once`, plus `/mcp` over HTTP and Pi's extension under `node --test`, each against the test daemon, returning everything they print.
@@ -558,6 +587,13 @@ fn every_route_is_classified_for_agents() {
     // 4. Own: the handler source builds none of thread_view(, comment_view(, artifact_view(, version_view(,
     //    doc_view(, working_view(;
     // 5. ROUTE_NEEDS has no entry no route uses.
+}
+
+#[test]
+fn every_plugin_invocation_goes_through_the_wrapper() {
+    // Reads plugins/claude-code/commands/*.md (`!` lines), every plugin's hooks/hooks.json and Pi's spawn/execFile
+    // calls; each that runs clax must run it as `ensure-clax.sh exec …`. Reads ensure-clax.sh (every copy, compared
+    // byte for byte) and checks `exec` exports CLAX_CHANNEL=agent for every mode but serve, stop, doctor and init.
 }
 
 #[test]
@@ -589,7 +625,8 @@ async fn no_canary_reaches_an_unapproved_agent() {
 #[tokio::test]
 async fn no_canary_reaches_an_agent_through_a_real_client() {
     let w = World::two_people().await;
-    for out in RealClients::new(&w).run_every_channel().await { // shim tools, /mcp tools, hooks, feedback follow, Pi
+    // shim tools, /mcp tools, hooks, feedback follow, Pi, and every plugin slash command's context through the wrapper
+    for out in RealClients::new(&w).run_every_channel().await {
         for c in w.canaries() { assert!(!out.text.contains(c), "{} leaked {c}", out.channel); }
     }
 }
@@ -869,7 +906,7 @@ fn a_visible_body_is_delivered_with_its_withheld_fields_placeholdered() {
 fn revocation_holds_undelivered_rows_again_and_tells_once() {}
 ```
 
-`api_visibility.rs`: `hook_tiers_are_filtered_for_owner_agents` (the real `clax hook` stop and prompt commands and `clax feedback follow`, run as processes with the daemon token as they are installed, carry no canary of Mia's), `mcp_tools_are_filtered_for_the_owner` (`/mcp`'s `comments_read`, `read`, `list`), `a_bump_between_take_and_wait_is_not_missed` (paused time: approve between the take and the wait; the poll wakes), `withheld_matrix_tiers` driven through `RealClients` (piggyback through the shim, stop and prompt hooks through the hook binary, `wait_for_feedback`, Pi inject, notices through `feedback follow`, `codex queue` through `clax-fake-exe` recording `--message`): no canary before approval, the placeholder exactly once per in-band tier, the content after; `revocation_during_wait_for_feedback_holds_rows` (a waiting poll; revoke; then a new send by Mia: the wake delivers only the placeholder); `approval_wakes_a_waiting_poll`.
+`api_visibility.rs`: `hook_tiers_are_filtered_for_owner_agents` (the real `clax hook` stop and prompt commands and `clax feedback follow`, run as processes with the daemon token as they are installed, carry no canary of Mia's), `mcp_tools_are_filtered_for_the_owner` (`/mcp`'s `comments_read`, `read`, `list`), `plugin_command_context_is_filtered_for_the_owner` (`RealClients::slash_command_context` for each `/clax:*` command and Pi's `/clax`, run through the real wrapper with the daemon token: no canary of Mia's, placeholders instead), `a_bump_between_take_and_wait_is_not_missed` (paused time: approve between the take and the wait; the poll wakes), `withheld_matrix_tiers` driven through `RealClients` (piggyback through the shim, stop and prompt hooks through the hook binary, `wait_for_feedback`, Pi inject, notices through `feedback follow`, `codex queue` through `clax-fake-exe` recording `--message`): no canary before approval, the placeholder exactly once per in-band tier, the content after; `revocation_during_wait_for_feedback_holds_rows` (a waiting poll; revoke; then a new send by Mia: the wake delivers only the placeholder); `approval_wakes_a_waiting_poll`.
 
 - [ ] **Steps 2–4**, **Step 5: Commit** — `"Filter every feedback tier and notice field by field, hold withheld bodies with one placeholder, and follow approval changes during long-polls"`
 
@@ -963,7 +1000,7 @@ Spec §14, §13, M25.
 
 **Files:** Modify `crates/clax-core/src/store/sessions.rs` (`end_session_touched` returns released threads, withdrawn requests, cleared rights, and writes the `ended` item; the reaper never PID-probes `grant_id` sessions and ends them after 30 minutes idle), `crates/clax-server/src/routes/people.rs` (`GET /api/agents`), `crates/clax-server/src/stream.rs` (`Topic::Agents`), `crates/clax-server/src/working.rs` (states), Send menus list live agents only. Test: `store/sessions.rs`, `tests/api_agents.rs`.
 
-- [ ] **Step 1: Write the failing tests:** `ending_a_session_cleans_up_and_leaves_one_note`, `an_idle_session_ends_without_a_note`, `remote_sessions_are_never_pid_probed_and_idle_thirty_minutes` (ManualClock: 29 min live, 31 min ended), `revoking_a_grant_ends_its_sessions_with_their_notes`, `roster_reports_blocked_since_and_is_person_scoped`, `reregistering_after_an_idle_end_restores_watches_and_says_what_ended` (same `harness_session_id` and grant within 24 h: watches back, the first tool result's note names the released threads; another grant's registration with that ID restores nothing).
+- [ ] **Step 1: Write the failing tests:** `ending_a_session_cleans_up_and_leaves_one_note`, `an_idle_session_ends_without_a_note`, `remote_sessions_are_never_pid_probed_and_idle_thirty_minutes` (ManualClock: 29 min live, 31 min ended), `revoking_a_grant_ends_its_sessions_with_their_notes`, `roster_reports_blocked_since_and_is_person_scoped`, `reregistering_after_an_idle_end_restores_watches_and_says_what_ended` (same `harness_session_id` and grant within 24 h of an `idle` end: the watches saved in `ended_watches_json` are back and the first tool result's note names the released threads; an `exit`, `revoked` or `person` end, or another grant's registration with that ID, restores nothing).
 - [ ] **Steps 2–4**, **Step 5: Commit** — `"Clean up after ended agents with one inbox note, keep remote sessions through short sleeps, and serve an agent roster"`
 
 ---
@@ -985,7 +1022,7 @@ Spec §16 (connect, remote mode), M26, §22.
 
 **Files:** Create `crates/clax-cli/src/remote.rs` (`Remote`, `load(home)`, `SignedClient`: signs, retries once on `stale_request` with the `Date` offset), `crates/clax-cli/src/commands/connect.rs` (`<invite URL>`, `<daemon URL>`, `--status`, `--off`, `--url`, `--name`, `--no-browser`, `--yes`), `crates/clax-cli/src/commands/comments.rs` (remote mode lists through `GET /api/artifacts` and each artifact's threads, takes the name from `remote.json`), every other command (refuses with "not available on a remote Clax", exit 2, unless spec §6.7 lists it); modify `crates/clax-cli/src/client.rs` and `crates/clax-mcp/src/client.rs` (remote when `remote.json` exists and `CLAX_REMOTE` is not `0`; never auto-start then), `crates/clax-cli/src/commands/doctor.rs` (remote checks: reachable, key readable, clock offset, IP literal), `crates/clax-core/src/home.rs` (`remote_json()`, `remote_key()`, `remote_cache()`). Test: `crates/clax-cli/tests/connect.rs`, `remote.rs` unit tests.
 
-- [ ] **Step 1: Write the failing tests:** `connect_with_an_invite_writes_remote_json_and_key_0600` (and `--yes` recorded the owner approval), `remote_mode_signs_every_request_and_never_starts_a_daemon`, `adhoc_connect_waits_and_completes_on_approval`, `connect_off_revokes_and_removes_the_files`, `url_rewrites_the_address_and_keeps_the_grant`, `remote_cli_commands_work_as_listed` (each command spec §6.7 lists, run remotely against a daemon with Mia's canaries: works, filtered for the person; `clax comments` without an artifact lists every readable artifact's threads), `other_commands_refuse_remotely` (exit 2 with the message).
+- [ ] **Step 1: Write the failing tests:** `connect_with_an_invite_writes_remote_json_and_key_0600` (and `--yes` recorded the owner approval), `remote_mode_signs_every_request_and_never_starts_a_daemon`, `adhoc_connect_waits_and_completes_on_approval`, `connect_off_revokes_and_removes_the_files`, `url_rewrites_the_address_and_keeps_the_grant`, `remote_cli_commands_work_as_listed` (each command spec §6.7 lists, run remotely against a daemon with Mia's canaries: works, filtered for the person; `clax comments` without an artifact lists every readable artifact's threads; `agents` and `approvals` list the person's own; `status` prints the connection and agents), `remote_comment_reply_without_a_session_is_no_session`, `other_commands_refuse_remotely` (exit 2 with the message).
 - [ ] **Steps 2–4**, **Step 5: Commit** — `"Add clax connect and a signed remote mode for the CLI, hooks and shim"`
 
 ---
@@ -1045,7 +1082,7 @@ Spec §9.5 (extension: no approval cards), §17.
 
 Spec §15, §16 (skills), §7.5.
 
-**Files:** Modify `plugins/*/skills/clax/SKILL.md` ("Working beside other agents and people", including: do not open other people's Clax pages with web or browser tools; never fetch `/api/token`, run commands that change approvals or rights, or act in People), `docs/contract.md` (People and grants; rights; the route table generated from `agent::ROUTE_NEEDS` by a test that fails when the committed table differs; visibility and placeholders; approvals; names; ownership; remote mode; every new error code), `docs/superpowers/specs/2026-09-28-clax-design.md` (§1 "Out of scope": point to this spec).
+**Files:** Modify `plugins/*/skills/clax/SKILL.md` ("Working beside other agents and people", including: do not open other people's Clax pages with web or browser tools; never fetch `/api/token`, run commands that change approvals or rights, or act in People; read and act through the Clax MCP tools rather than the `clax` CLI), `docs/contract.md` (People and grants; rights; the route table generated from `agent::ROUTE_NEEDS` by a test that fails when the committed table differs; visibility and placeholders; approvals; names; ownership; remote mode; every new error code), `docs/superpowers/specs/2026-09-28-clax-design.md` (§1 "Out of scope": point to this spec).
 
 - [ ] **Steps:** update; `scripts/sync-skill-tools.py --check`; the contract tests; commit — `"Document people, rights, the agent route table, visibility, names and ownership"`
 
