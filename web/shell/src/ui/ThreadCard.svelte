@@ -207,6 +207,10 @@
     .hist .ev { white-space: nowrap; }
     /* Each version's events start a line; the "·" stays in the text, read and copied. */
     .hist .br { flex-basis: 100%; height: 0; }
+    /* The hidden separator is absolutely positioned, so its containing block must stay inside the
+       sidebar's scroll box; otherwise it lands at its static position in the page, stretches the
+       document, and the viewer scrolls as a whole with the frame going blank. */
+    .hist .nl { position: relative; }
     .hist .nl .sep { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
     .hist .ev b { font-weight: 600; color: var(--fg); }
     .hist .ev.agent .vt { background: var(--accent-tint); color: var(--agent-ink); }
