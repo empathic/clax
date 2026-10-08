@@ -20,7 +20,8 @@ function servedAs(el: HTMLIFrameElement, src: string, sandboxed: boolean): boole
  * on a render: it is replaced only when `key` (version and frame mode)
  * changes, and one the daemon already put in the stage is adopted when its
  * `src` (without the fragment) and attributes are what the shell would have
- * made. Any other frame in the stage is removed. Adopting a frame opens nothing: the gate opens only on a hello.
+ * made. Any other frame in the stage is removed. Adopting a frame opens
+ * nothing: the gate opens only on a hello.
  * An adopted frame is not sent to `src`'s fragment (the daemon's `src` has
  * none): setting it on a frame whose document has loaded is a fragment
  * navigation that, in Chromium, fires a load event at the frame element

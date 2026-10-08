@@ -89,7 +89,7 @@ describe("followInPlace", () => {
   const at = (hash: string) => {
     const calls: string[] = [];
     const loc = {
-      pathname: "/v/2/", search: "", hash,
+      hash,
       get href() { return `http://h/v/2/${this.hash}`; },
       set href(v: string) { calls.push(`href ${v}`); },
       replace(v: string | URL) { calls.push(`replace ${v}`); },
@@ -104,11 +104,11 @@ describe("followInPlace", () => {
   it("scrolls to the current fragment again, which setting the same hash would not", () => {
     const { calls, loc } = at("#team");
     followInPlace("#team", loc);
-    expect(calls).toEqual(["href /v/2/#team"]);
+    expect(calls).toEqual(["href http://h/v/2/#team"]);
   });
   it("loads the page's URL without a fragment in place of this entry, not a reload", () => {
     const { calls, loc } = at("#team");
     followInPlace("", loc);
-    expect(calls).toEqual(["replace /v/2/"]);
+    expect(calls).toEqual(["replace http://h/v/2/"]);
   });
 });

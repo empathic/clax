@@ -64,7 +64,7 @@ export function linkToHandOver(e: MouseEvent, o: { welcomed: boolean; pageUrl: s
 }
 
 /** The parts of `Location` that following a link in place uses. */
-export type PlaceLocation = Pick<Location, "pathname" | "search" | "hash" | "href" | "replace">;
+export type PlaceLocation = Pick<Location, "hash" | "href" | "replace">;
 
 /** Follows a link to this page (under another spelling of its path) in place,
  * as a link to the page's own URL would be followed: to a new fragment, a
@@ -73,7 +73,9 @@ export type PlaceLocation = Pick<Location, "pathname" | "search" | "hash" | "hre
  * load of the page's URL without one in place of this entry (at the top of
  * the page). */
 export function followInPlace(hash: string, loc: PlaceLocation): void {
-  const here = loc.pathname + loc.search;
+  // Absolute: a URL relative to the page's would resolve against its
+  // <base href>, which may name another site.
+  const here = loc.href.split("#")[0];
   if (!hash) loc.replace(here);
   else if (hash === loc.hash) loc.href = here + hash;
   else loc.hash = hash;
