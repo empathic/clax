@@ -8,7 +8,11 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd -P)"
 T="$(cd "$(mktemp -d)" && pwd -P)"
-trap 'rm -rf "$T"' EXIT
+# The `sleep` stand-ins live until this script kills them, or exits: one that
+# ended by itself would read as a daemon stopped on a slow run.
+STANDINS=()
+trap 'kill "${STANDINS[@]}" 2>/dev/null; rm -rf "$T"' EXIT
+FOREVER=2147483647
 # shellcheck source=scripts/fake-exe.sh
 . "$HERE/fake-exe.sh"
 FAILED=0
@@ -51,10 +55,10 @@ rm -rf "$HOME/.clax"
 exec 3>&2 2>/dev/null # keep the shell's "Terminated" job notice out of the output
 # A stand-in daemon whose command line names its recorded binary, as a real
 # daemon's does (stop_orphan_daemon checks it, so a reused PID is never hit).
-fake_daemon() { (exec -a "$1 serve --foreground" sleep 60) & }
+fake_daemon() { (exec -a "$1 serve --foreground" sleep "$FOREVER") & STANDINS+=($!); }
 fake_daemon "$T/gone/clax"
 orphan=$!
-sleep 60 &
+sleep "$FOREVER" & STANDINS+=($!)
 kept=$!
 mkdir -p "$T/o1" "$T/o2"
 printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$orphan" "$T/gone/clax" > "$T/o1/daemon.json"
@@ -66,7 +70,7 @@ if ! kill -0 "$orphan" 2>/dev/null && kill -0 "$kept" 2>/dev/null; then
     pass "only a dev daemon whose binary is gone is stopped"
 else fail "only a dev daemon whose binary is gone is stopped"; fi
 # A recorded PID now held by an unrelated process (PID reuse) is left alone.
-sleep 60 &
+sleep "$FOREVER" & STANDINS+=($!)
 reused=$!
 mkdir -p "$T/o3"
 printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$reused" "$T/gone/clax" > "$T/o3/daemon.json"
@@ -75,7 +79,7 @@ sleep 0.3
 if kill -0 "$reused" 2>/dev/null; then pass "stop_orphan_daemon leaves a reused PID alone"
 else fail "stop_orphan_daemon signalled a process that is not the recorded daemon"; fi
 kill "$reused" 2>/dev/null
-sleep 60 &
+sleep "$FOREVER" & STANDINS+=($!)
 agents=$!
 mkdir -p "$HOME/.clax"
 printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$agents" "$T/gone/clax" > "$HOME/.clax/daemon.json"
@@ -94,7 +98,7 @@ if [ "$1" = stop ]; then
     kill "$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$CLAX_HOME/daemon.json")"
 fi
 SH
-sleep 60 &
+sleep "$FOREVER" & STANDINS+=($!)
 same=$!
 mkdir -p "$T/i1"
 printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$same" "$T/cargo/bin/clax" > "$T/i1/daemon.json"
@@ -225,7 +229,7 @@ else fail "a bare just dev ($(cat "$T/out" "$T/err"))"; fi
 exec 3>&2 2>/dev/null
 fake_daemon "$T/gone/clax"
 left=$!
-sleep 60 &
+sleep "$FOREVER" & STANDINS+=($!)
 agents=$!
 mkdir -p "$HOME/.clax"
 printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$left" "$T/gone/clax" > "$HOME/.clax-dev/daemon.json"
@@ -277,7 +281,7 @@ if command -v just >/dev/null 2>&1; then
     fi
     recipe() {
         exec 3>&2 2>/dev/null
-        sleep 60 &
+        sleep "$FOREVER" & STANDINS+=($!)
         agent_pid=$!
         mkdir -p "$HOME/.clax"
         printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$agent_pid" "$T/cargo/bin/clax" > "$HOME/.clax/daemon.json"
@@ -285,7 +289,7 @@ if command -v just >/dev/null 2>&1; then
         CARGO_HOME="$T/cargo" PATH="$T/fake-cargo:$PATH" "${J[@]}" "$@" >"$T/out" 2>&1
         sleep 0.3
         agent_alive=0; kill -0 "$agent_pid" 2>/dev/null && agent_alive=1
-        kill "$agent_pid" 2>/dev/null; wait 2>/dev/null
+        kill "$agent_pid" 2>/dev/null; wait "$agent_pid" 2>/dev/null
         exec 2>&3 3>&-
         rm -rf "$HOME/.clax"
     }
