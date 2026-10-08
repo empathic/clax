@@ -85,10 +85,10 @@ the inbox, O5–O7 settled after the first draft). The rest follow from them and
 | N1 | Inbox items reference their sources (comment, version, question, artifact) by key and render from them when read; only a finished-work item, whose source (a working record) lives in memory, keeps its own small payload (the message and thread IDs). | No second copy of text that can drift; the history follows edits and deletions honestly. |
 | N2 | Search uses an FTS5 index (contentless, with deletes) beside indexed columns for the filters. | §7.4: an indexed `LIKE` cannot serve a word inside text; FTS5 is compiled into the bundled SQLite. |
 | N3 | The inbox belongs to the install's owner identity and carries no viewer ID. | There is one owner per install (main spec §11); claiming and folding the owner row then never touches the inbox. |
-| N4 | Migration 19 adds `questions`; migration 20 adds the inbox and fills it from the existing history, marked read. | The next free numbers on main (18 is site-wide threads); "the history of the system" includes what came before. |
+| N4 | Migration 20 adds `questions`; migration 21 adds the inbox and fills it from the existing history, marked read. | The next free numbers on main (19 is joined sites); "the history of the system" includes what came before. |
 | O5 | Claude Code's built-in questions: Clax first, with the **Answer in the terminal** button, and `terminal_after_s` default 600 (§4.4). Both places cannot be live at once with Claude Code today (§4.3); the button and the timeout are the chosen behaviour. | Owner decision 2026-10-06. |
 | O6 | Notifications for every inbox kind; a burst on one page is merged into one notification that replaces itself (one tag per page). No OS notification, and none from the extension, when no Clax tab is open. | Owner decision 2026-10-06. |
-| O7 | Migration numbers are fixed: questions 19, inbox 20 (21 is taken by other work). | Owner decision 2026-10-06. |
+| O7 | Migration numbers: questions 20, inbox 21, after main's joined sites (19); work merged later takes 22 on. | Owner decisions 2026-10-06 and 2026-10-08 (merge order). |
 
 ## 3. User flows
 
@@ -314,7 +314,7 @@ skills still call it).
 
 ## 5. Questions: data model
 
-### 5.1 Migration 19: questions
+### 5.1 Migration 20: questions
 
 ```sql
 CREATE TABLE questions (
@@ -630,7 +630,7 @@ shows as its `reply` item (with `addressed`).
 Only owner credentials' writes mark items read; a LAN viewer's looks change
 nothing. Marking read is idempotent and never deletes anything.
 
-### 7.3 Migration 20: the inbox
+### 7.3 Migration 21: the inbox
 
 ```sql
 CREATE TABLE inbox_items (
@@ -697,7 +697,7 @@ most 200).
 
 ### 7.5 Backfill (N4)
 
-Migration 20 fills the inbox from the history, every item marked read (at
+Migration 21 fills the inbox from the history, every item marked read (at
 the migration's time), so the unread list starts empty and the search covers
 the past: a `reply` for every agent comment in a thread the owner is in, a
 `version` for every agent version (after the first) of an artifact the
@@ -1037,8 +1037,8 @@ Each skill gains "Asking the person":
   each non-case (a viewer's comment, a thread the owner is not in, the
   first version, a lapsed working record); read rules from looked-at and
   seen marks (owner only); bulk marks; search (prefixes, diacritics,
-  operators as text, filters combined); paging; `gone` views; migrations 19
-  and 20 from 18 with the backfill; the FTS5 and SQLite version check; the
+  operators as text, filters combined); paging; `gone` views; migrations 20
+  and 21 from 19 with the backfill; the FTS5 and SQLite version check; the
   query-plan test.
 - **clax-server**: the session, owner and inbox routes; LAN, artifact-origin
   and foreign-`Origin` refusals; topics and events; the 5 s hook withdrawal
