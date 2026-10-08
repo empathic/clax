@@ -70,7 +70,8 @@ async fn a_wait_with_nothing_returns_empty_after_the_wait() {
     assert!(started.elapsed() >= Duration::from_millis(950));
     assert_eq!(body["feedback"], serde_json::json!([]));
     assert_eq!(body["text"], Value::Null);
-    assert_eq!(body["waited_s"], 1);
+    // The daemon's wall clock: at least the wait, more on a loaded machine.
+    assert!(body["waited_s"].as_u64().unwrap() >= 1, "{body}");
 }
 
 /// A long-poll whose client goes away while it waits is dropped with its

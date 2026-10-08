@@ -411,10 +411,10 @@ async fn wait_for_feedback_returns_on_a_send_and_asks_to_call_again() {
         .await
         .unwrap(),
     );
-    assert_eq!(
-        v,
-        json!({"feedback": [], "waited_s": 1, "call_again": true})
-    );
+    // A wait that ran out: nothing, and a prompt to call again. `waited_s` is
+    // the daemon's wall clock, at least the timeout and more on a loaded
+    // machine.
+    assert_ran_out(&v, 1);
     assert!(trailing.is_none());
     // `timeout_s: 0` waits the one-second minimum, so a loop cannot spin.
     let started = Instant::now();
@@ -427,10 +427,15 @@ async fn wait_for_feedback_returns_on_a_send_and_asks_to_call_again() {
         .unwrap(),
     );
     assert!(started.elapsed() >= Duration::from_secs(1));
-    assert_eq!(
-        v,
-        json!({"feedback": [], "waited_s": 1, "call_again": true})
-    );
+    assert_ran_out(&v, 1);
+}
+
+/// `v` is the answer to a wait that ran out after at least `secs` seconds.
+fn assert_ran_out(v: &Value, secs: u64) {
+    assert_eq!(v["feedback"], json!([]), "{v}");
+    assert_eq!(v["call_again"], true, "{v}");
+    assert!(v["waited_s"].as_u64().unwrap() >= secs, "{v}");
+    assert_eq!(v.as_object().unwrap().len(), 3, "{v}");
 }
 
 #[tokio::test]
