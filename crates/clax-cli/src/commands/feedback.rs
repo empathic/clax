@@ -111,6 +111,10 @@ fn session_gone(e: &anyhow::Error) -> bool {
     m.starts_with("unknown_session:") || m.starts_with("not_found:")
 }
 
+/// The shortest time between the starts of two notices polls when the
+/// first answered empty.
+const EARLY_PACE: Duration = Duration::from_secs(1);
+
 /// Sleeps `backoff`, then doubles it up to 30 s.
 fn back_off(backoff: &mut Duration) {
     std::thread::sleep(*backoff);
@@ -158,9 +162,16 @@ pub fn run(_cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
             },
         };
         let path = format!("/api/sessions/{sid}/notices?wait={}", poll.as_secs());
+        let polled = Instant::now();
         match client.get_with_timeout(&path, poll + Duration::from_secs(10)) {
             Ok(v) => {
                 backoff = Duration::from_secs(1);
+                // An empty answer that did not wait (the session is inside
+                // wait_for_feedback, or the daemon is stopping): poll again
+                // no sooner than a second after this poll began.
+                if v["lines"].as_array().is_none_or(|l| l.is_empty()) {
+                    std::thread::sleep(EARLY_PACE.saturating_sub(polled.elapsed()));
+                }
                 for line in v["lines"]
                     .as_array()
                     .into_iter()

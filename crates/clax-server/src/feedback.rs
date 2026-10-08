@@ -17,8 +17,10 @@ use tokio::sync::Notify;
 /// `wait_for_feedback` long-polls (`tier=wait`, `wait > 0`) each session has
 /// in progress. Other tiers' long-polls (the Pi `inject` loop) are woken but
 /// never counted. Starting a `wait_for_feedback` long-poll wakes the
-/// session's other long-polls, so a parked `inject` or notices poll sees the
-/// wait and yields at once.
+/// session's other long-polls, so a parked `inject` or notices poll answers
+/// empty at once and leaves the wait its feedback. Those polls answer empty
+/// at once for as long as the wait lasts, so their clients pace polls that
+/// answer early (the Pi plugin, the MCP shim, `clax feedback follow`).
 #[derive(Default)]
 pub struct FeedbackWaiters {
     notifies: Mutex<HashMap<String, Arc<Notify>>>,

@@ -466,3 +466,80 @@ fn once_does_not_exit_on_an_empty_poll() {
     assert!(f.child.try_wait().unwrap().is_none(), "still running");
     f.quiet_for(Duration::from_millis(100));
 }
+
+/// A stand-in daemon whose notices route answers empty at once, as the real
+/// one does while the session is inside `wait_for_feedback`: `follow` paces
+/// such answers (one poll a second) rather than asking again at once.
+#[test]
+fn it_paces_notices_polls_that_answer_empty_at_once() {
+    use std::io::Write as _;
+    use std::net::TcpListener;
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("ax");
+    std::fs::create_dir_all(&home).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let info = json!({"port": port, "pid": std::process::id(), "token": "t",
+        "started_at": "2026-10-08T00:00:00Z", "bind": "127.0.0.1", "version": "test"});
+    std::fs::write(home.join("daemon.json"), info.to_string()).unwrap();
+    let (polls, polled) = channel::<Instant>();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut conn) = conn else { return };
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                if conn.read(&mut byte).unwrap_or(0) == 0 {
+                    break;
+                }
+                head.push(byte[0]);
+            }
+            let line = String::from_utf8_lossy(&head);
+            let body = if line.contains("/notices") {
+                if polls.send(Instant::now()).is_err() {
+                    return;
+                }
+                r#"{"notices":[],"lines":[],"waited_s":0}"#
+            } else {
+                "{}"
+            };
+            let _ = write!(
+                conn,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    // Run once first, unbounded, as the daemon-backed tests do through
+    // `serve`: a new executable's first run can wait on the system's check.
+    assert!(
+        clax(&home)
+            .arg("--version")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let mut child = clax(&home)
+        .args(["feedback", "follow", "--session", "S1", "--poll-secs", "50"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let first = polled
+        .recv_timeout(Duration::from_secs(20))
+        .expect("a first notices poll");
+    // Polls whose start falls within 2.5 s of the first one's.
+    let window = first + Duration::from_millis(2500);
+    let mut n = 1;
+    while let Ok(at) = polled.recv_timeout(window.saturating_duration_since(Instant::now())) {
+        if at > window {
+            break;
+        }
+        n += 1;
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(n <= 4, "{n} notices polls in about 2.5 s");
+    assert!(n >= 2, "it kept polling");
+}
