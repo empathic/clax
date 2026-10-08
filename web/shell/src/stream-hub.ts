@@ -19,7 +19,12 @@
 // For each new unread inbox item (an `inbox_item` event whose `seq` is above
 // every item the hub has seen, so an older item marked unread again or
 // changed is not announced), when no tab has focus, the hub asks the most
-// recently focused tab holding `inbox` to notify (`notify`).
+// recently focused tab holding `inbox` to notify (`notify`). Items that
+// arrive while the stream does not carry `inbox` yet (between a tab first
+// wanting it and the subscription) or again (after a new stream) send no
+// event: once the subscription answers, the hub fetches the unread items
+// and announces those newer than the newest item when a tab first wanted
+// `inbox` (fetched then) and not announced already, oldest first.
 import { STUCK_MS, backoff } from "./lifecycle";
 import { parseBlock } from "./sse";
 
@@ -61,6 +66,8 @@ export const LINGER_MS = 3000;
 export const PING_MS = 10_000;
 /** A tab without a Web Lock that has not been heard from in this long is gone. */
 export const CLIENT_TTL_MS = 180_000;
+/** Most unread items one catch-up fetches (newest first). */
+export const CATCH_UP = 20;
 
 type Timer = ReturnType<typeof setTimeout>;
 /** `focusedAt` orders the tabs by when they last gained focus (0: never). */
@@ -104,8 +111,16 @@ export class Hub {
   private syncing = false;
   private dirty = false;
   private readonly fetch: typeof fetch;
-  /** The highest inbox item `seq` seen. */
+  /** The highest inbox item `seq` seen, or older than when a tab first wanted `inbox`. */
   private seenSeq = -1;
+  /** Some tab wants `inbox` (hubs made with `notify`). */
+  private inboxWanted = false;
+  /** Since a tab first wanted `inbox`: the request that set `seenSeq` to the
+   * newest item's `seq`, resolving to whether it did. */
+  private inboxBase: Promise<boolean> | null = null;
+  /** While a catch-up runs: the `seq`s announced from events meanwhile,
+   * which it skips (`seenSeq` stays its baseline until it ends). */
+  private windowSeen: Set<number> | null = null;
   private focusSeq = 0;
 
   constructor(private readonly env: HubEnv) {
@@ -194,6 +209,10 @@ export class Hub {
 
   private changed(): void {
     const want = this.wanted();
+    if (this.env.notify && want.has("inbox") !== this.inboxWanted) {
+      this.inboxWanted = !this.inboxWanted;
+      this.inboxBase = this.inboxWanted ? this.baseline() : null;
+    }
     // Tabs are pinged (and tabs without a lock expire) only while some tab
     // holds topics, refused ones included: such a tab still watches the hub.
     if ([...this.clients.values()].some(c => c.topics.size)) this.pinger ??= setInterval(() => this.ping(), PING_MS);
@@ -318,12 +337,21 @@ export class Hub {
     if (this.env.notify && topic === "inbox" && name === "inbox_item") this.announce(data, to);
   }
 
-  /** Asks one tab of `to` to notify about a new unread item, once per item,
-   * when no tab has focus: the one that gained focus last (ties: the first). */
+  /** Announces an `inbox_item` event's item, once per item: one above
+   * every item seen (and, during a catch-up, not announced in it). */
   private announce(data: Record<string, unknown>, to: string[]): void {
     const item = data.item as { seq?: unknown; read?: unknown } | null;
     if (!item || typeof item !== "object" || typeof item.seq !== "number" || item.seq <= this.seenSeq) return;
-    this.seenSeq = item.seq;
+    if (this.windowSeen) {
+      if (this.windowSeen.has(item.seq)) return;
+      this.windowSeen.add(item.seq);
+    } else this.seenSeq = item.seq;
+    this.pick(data, item, to);
+  }
+
+  /** Asks one tab of `to` to notify about `item`, when it is unread and no
+   * tab has focus: the one that gained focus last (ties: the first). */
+  private pick(data: Record<string, unknown>, item: { read?: unknown }, to: string[]): void {
     if (item.read !== false) return;
     if ([...this.clients.values()].some(c => c.focused)) return;
     let best: string | null = null;
@@ -333,6 +361,53 @@ export class Hub {
       if (c && c.focusedAt > at) { best = id; at = c.focusedAt; }
     }
     if (best) this.env.send([best], { t: "notify", data });
+  }
+
+  /** A GET of the daemon's JSON, bounded by `STUCK_MS`; null when it failed. */
+  private async getJson(path: string): Promise<Record<string, unknown> | null> {
+    const req = new AbortController();
+    const stuck = setTimeout(() => req.abort(), STUCK_MS);
+    try {
+      const res = await this.fetch(this.url(path), { signal: req.signal, cache: "no-store", credentials: "same-origin" });
+      if (!res.ok) return null;
+      const body: unknown = await res.json();
+      return body && typeof body === "object" ? body as Record<string, unknown> : null;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(stuck);
+    }
+  }
+
+  /** A tab first wants `inbox`: items up to the newest now are not new to
+   * it. Whether `seenSeq` was set (not for a caller other than the owner). */
+  private async baseline(): Promise<boolean> {
+    const body = await this.getJson("/api/inbox?limit=1");
+    if (!body || !Array.isArray(body.items)) return false;
+    const seq = (body.items[0] as { seq?: unknown } | undefined)?.seq;
+    this.seenSeq = Math.max(this.seenSeq, typeof seq === "number" ? seq : 0);
+    return true;
+  }
+
+  /** The stream carries `inbox` again: announces the unread items that came
+   * while it did not, oldest first, and ends the window `update` opened. */
+  private async catchUp(): Promise<void> {
+    const body = await this.getJson(`/api/inbox?read=unread&limit=${CATCH_UP}`);
+    const seen = this.windowSeen ?? new Set<number>();
+    this.windowSeen = null;
+    const items = (Array.isArray(body?.items) ? body.items : []) as { seq?: unknown; read?: unknown }[];
+    const fresh = items
+      .filter((i): i is { seq: number; read?: unknown } => !!i && typeof i.seq === "number" && i.seq > this.seenSeq && !seen.has(i.seq))
+      .sort((a, b) => a.seq - b.seq);
+    this.seenSeq = Math.max(this.seenSeq, ...seen, ...fresh.map(i => i.seq));
+    for (const item of fresh) this.pick({ topic: "inbox", item }, item, this.wanting("inbox"));
+  }
+
+  /** Ends a catch-up window whose subscription did not go through. */
+  private endWindow(): void {
+    if (!this.windowSeen) return;
+    this.seenSeq = Math.max(this.seenSeq, ...this.windowSeen);
+    this.windowSeen = null;
   }
 
   /** Ends the open connection without telling the tabs. */
@@ -401,9 +476,23 @@ export class Hub {
    * replaced meanwhile. A request the daemon refuses for one topic is
    * split, so the other topics still go through. */
   private async update(add: string[], remove: string[]): Promise<boolean> {
+    // Subscribing `inbox`: once its baseline is known, events are kept aside
+    // from the request on, so the catch-up after it neither repeats nor skips one.
+    const catching = this.env.notify && add.includes("inbox") && this.inboxBase !== null && await this.inboxBase;
     const ac = this.conn;
     const id = this.streamId;
     if (!ac || !id) return false;
+    if (catching) this.windowSeen ??= new Set();
+    const caught = await this.subscribe(ac, id, add, remove);
+    if (catching) {
+      if (caught && this.server.has("inbox")) await this.catchUp();
+      else this.endWindow();
+    }
+    return caught;
+  }
+
+  /** [`update`]'s request on connection `ac`, stream `id`. */
+  private async subscribe(ac: AbortController, id: string, add: string[], remove: string[]): Promise<boolean> {
     const req = new AbortController();
     const stuck = setTimeout(() => req.abort(), STUCK_MS);
     const abort = () => req.abort();

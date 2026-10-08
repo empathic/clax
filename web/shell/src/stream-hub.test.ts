@@ -235,6 +235,75 @@ describe("the stream hub", () => {
     h.close();
   });
 
+  it("announces the unread items that came before the stream carried inbox, once each, oldest first", async () => {
+    const sent: { ids: string[]; msg: HubMsg }[] = [];
+    const h = new Hub({ notify: true, fetch: net.fetch, send: (ids, msg) => { sent.push({ ids, msg }); } });
+    const notified = () => sent.filter(m => m.msg.t === "notify").map(m => m.msg.t === "notify" && (m.msg.data.item as { id: string }).id);
+    // Unread before any tab wanted the inbox: not new.
+    net.inbox.push({ id: "I4", seq: 4, read: false });
+    h.receive("t1", { t: "topics", topics: ["inbox"] });
+    await tick();
+    expect(net.inboxGets).toEqual(["/api/inbox?limit=1"]);
+    net.auto = false;
+    net.ready(net.conns[0], S1);
+    await tick();
+    expect(net.posts).toHaveLength(1);
+    // Before the subscription holds: no event, only the store has them.
+    net.inbox.push({ id: "I5", seq: 5, read: false }, { id: "I6", seq: 6, read: true });
+    // Just after it holds, before its answer: an event, and in the store.
+    net.inbox.push({ id: "I7", seq: 7, read: false });
+    net.event(net.conns[0], S1, 1, "inbox", "inbox_item", { item: { id: "I7", seq: 7, read: false }, unread: 3 });
+    await tick();
+    expect(notified()).toEqual(["I7"]);
+    net.posts[0].answer(200, { seq: 0, topics: ["inbox"] });
+    await tick();
+    expect(net.inboxGets.at(-1)).toBe("/api/inbox?read=unread&limit=20");
+    expect(notified()).toEqual(["I7", "I5"]);
+    expect(sent.find(m => m.msg.t === "notify" && (m.msg.data.item as { id: string }).id === "I5")).toEqual({ ids: ["t1"], msg: { t: "notify", data: { topic: "inbox", item: { id: "I5", seq: 5, read: false } } } });
+    // Later events: one already announced is not again; a new one is.
+    net.event(net.conns[0], S1, 2, "inbox", "inbox_item", { item: { id: "I5", seq: 5, read: false }, unread: 3 });
+    net.event(net.conns[0], S1, 3, "inbox", "inbox_item", { item: { id: "I8", seq: 8, read: false }, unread: 4 });
+    await tick();
+    expect(notified()).toEqual(["I7", "I5", "I8"]);
+    h.close();
+  });
+
+  it("catches up on the items that came while a new stream was being subscribed", async () => {
+    const sent: HubMsg[] = [];
+    const h = new Hub({ notify: true, fetch: net.fetch, send: (_ids, msg) => { sent.push(msg); } });
+    h.receive("t1", { t: "topics", topics: ["inbox"] });
+    await tick();
+    net.ready(net.conns[0], S1);
+    await tick();
+    net.inbox.push({ id: "I1", seq: 1, read: false });
+    net.event(net.conns[0], S1, 1, "inbox", "inbox_item", { item: { id: "I1", seq: 1, read: false }, unread: 1 });
+    await tick();
+    // The daemon restarts: the new stream holds nothing until subscribed.
+    h.receive("t1", { t: "reconnect" });
+    await tick();
+    net.inbox.push({ id: "I2", seq: 2, read: false });
+    net.ready(net.open.at(-1)!, S2);
+    await tick();
+    expect(sent.filter(m => m.t === "notify").map(m => m.t === "notify" && (m.data.item as { id: string }).id)).toEqual(["I1", "I2"]);
+    // The baseline was fetched once, when the tab first wanted the inbox.
+    expect(net.inboxGets.filter(u => u.includes("limit=1&") || u.endsWith("limit=1"))).toHaveLength(1);
+    h.close();
+  });
+
+  it("does not catch up for a caller the inbox refuses", async () => {
+    const sent: HubMsg[] = [];
+    const h = new Hub({ notify: true, fetch: net.fetch, send: (_ids, msg) => { sent.push(msg); } });
+    net.inboxStatus = 403;
+    net.inbox.push({ id: "I1", seq: 1, read: false });
+    h.receive("t1", { t: "topics", topics: ["inbox"] });
+    await tick();
+    net.ready(net.conns[0], S1);
+    await tick();
+    expect(net.inboxGets).toEqual(["/api/inbox?limit=1"]);
+    expect(sent.filter(m => m.t === "notify")).toEqual([]);
+    h.close();
+  });
+
   it("never asks a tab to notify unless made to", async () => {
     hub.receive("t1", { t: "topics", topics: ["inbox"] });
     await tick();

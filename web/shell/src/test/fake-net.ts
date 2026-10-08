@@ -15,9 +15,26 @@ export class Net {
   held = new Map<string, Set<string>>();
   auto = true;
   refuse = new Map<string, [number, string]>();
+  /** The owner's inbox items, for `GET /api/inbox` (`read=unread` and
+   * `limit` honoured, newest first). */
+  inbox: { id: string; seq: number; read: boolean }[] = [];
+  /** The `GET /api/inbox` requests made, in order. */
+  inboxGets: string[] = [];
+  /** Answers `GET /api/inbox` with this status instead (403: not the owner). */
+  inboxStatus = 200;
   fetch = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = String(input);
     if (url === "/api/token") return new Response("{}");
+    if (url.startsWith("/api/inbox")) {
+      this.inboxGets.push(url);
+      if (this.inboxStatus !== 200) return new Response(JSON.stringify({ error: { code: "forbidden" } }), { status: this.inboxStatus });
+      const q = new URL(url, "http://x").searchParams;
+      const items = this.inbox
+        .filter(i => q.get("read") !== "unread" || !i.read)
+        .sort((a, b) => b.seq - a.seq)
+        .slice(0, Number(q.get("limit") ?? 50));
+      return new Response(JSON.stringify({ items, next_cursor: null, unread: this.inbox.filter(i => !i.read).length }));
+    }
     if (url === "/api/stream") {
       let ctrl!: ReadableStreamDefaultController<Uint8Array>;
       const body = new ReadableStream<Uint8Array>({ start(c) { ctrl = c; } });
