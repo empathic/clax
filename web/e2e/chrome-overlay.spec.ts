@@ -934,6 +934,8 @@ test("the panel shows the live page's questions above its threads, answers one, 
   const home = `${origin}/`;
   const h = hook(live);
   const tid = await liveThread(live, home, "#save", "Save", "Home button note");
+  // A thread of another page of the site, listed under Elsewhere and opened in place.
+  const far = await liveThread(live, `${origin}/users/1.html`, "main > h1", "Settings", "User one heading note");
   const aid: string = (await api(live, `/api/live/pages?url=${encodeURIComponent(home)}`)).page.artifact_id;
   const session = await api(live, "/api/sessions", { method: "POST", body: JSON.stringify({ harness: "claude", harness_session_id: "e2e-questions", cwd: "/tmp/clax", pid: null, parent_pid: null }) });
   const sid: string = session.session?.id ?? session.id;
@@ -970,6 +972,18 @@ test("the panel shows the live page's questions above its threads, answers one, 
   // First in the Page view: before the name field, the thread filters and search.
   expect(await panel.eval<boolean>(`(() => { const q = document.querySelector(".questions"); return [".name", ".tools"].every(s => !!(q.compareDocumentPosition(document.querySelector(s)) & Node.DOCUMENT_POSITION_FOLLOWING)); })()`)).toBe(true);
   expect(text).not.toContain("Which layout should the dashboard use?");
+  // The questions come first, then this page's threads, then the other pages', whose thread opens in place.
+  await expect.poll(() => panel.text()).toContain("Elsewhere on this site");
+  expect((await panel.text()).indexOf("Home button note")).toBeLessThan((await panel.text()).indexOf("Elsewhere on this site"));
+  await panel.eval(`document.querySelector('[data-thread="${far}"] .card-head').click()`);
+  await expect.poll(() => panel.eval<string | null>(`document.querySelector('[data-thread="${far}"] .card-head')?.getAttribute("aria-expanded") ?? null`)).toBe("true");
+  expect(await panel.text()).toContain("Which label should the save button use?");
+  expect(page.url()).toBe(home);
+  await panel.shot("panel-questions-first");
+  await panel.eval(`document.querySelector('[data-thread="${far}"]').scrollIntoView({ block: "center" })`);
+  await panel.shot("panel-elsewhere-in-place");
+  await panel.eval("window.scrollTo(0, 0)");
+  await panel.eval(`document.querySelector('[data-thread="${far}"] .card-head').click()`);
   const unread = async () => (await api(live, "/api/inbox/summary")).unread as number;
   const tabLabel = () => panel.eval<string>(`document.querySelector("#ptab-inbox")?.getAttribute("aria-label") ?? ""`);
   // The tab's count is the daemon's: two questions and the new artifact.
