@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 use clax_core::store::sessions::RegisterSession;
 use clax_server::feedback::FeedbackWaiters;
 use common::TestServer;

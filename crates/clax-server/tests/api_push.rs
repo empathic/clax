@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 use clax_server::push::{CodexPush, CodexSource};
 use common::TestServer;
 use serde_json::{Value, json};

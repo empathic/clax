@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 use clax_server::testing::TestViewer;
 use common::TestServer;
 use futures::{SinkExt, StreamExt};

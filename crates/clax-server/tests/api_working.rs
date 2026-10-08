@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 use clax_core::working::{ManualClock, Working};
 use common::TestServer;
 use serde_json::{Value, json};

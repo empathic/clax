@@ -1,7 +1,7 @@
 //! Joined sites over HTTP (spec 2026-10-05-chrome-overlay-design §7.2,
 //! owner decisions 2026-10-06): suggestions, joining, splitting and the
 //! owner's answers; a joined site's listing, topics and watches.
-mod common;
+use crate::common;
 use clax_core::extension::extension_origin;
 use clax_server::testing::{EventReader, FAKE_PNG};
 use common::TestServer;

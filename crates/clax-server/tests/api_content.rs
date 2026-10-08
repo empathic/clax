@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 use clax_core::wrap::bridge_tag_for;
 use clax_server::routes::shell::bridge_version;
 use common::TestServer;

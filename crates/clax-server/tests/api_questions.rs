@@ -1,7 +1,7 @@
 //! Agent questions: the session routes (spec 2026-10-06-agent-questions-and-inbox
 //! §6.1), their waiters and the `question` event.
 
-mod common;
+use crate::common;
 use common::TestServer;
 use serde_json::{Value, json};
 use std::time::Duration;
