@@ -11,7 +11,7 @@
 import type { CDPSession, Locator, Page } from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createServer } from "vite";
 import { type Live, expect as baseExpect, freePort, test } from "./extension-fixtures";
@@ -656,8 +656,11 @@ test("a native host slow to start: the panel says Clax is taking a while, with R
   const { siteUrl } = live;
   const h = hook(live);
   // The host Chrome starts takes longer than PAIR_SLOW_MS (15 s) to answer, as on a stalled machine.
+  // A file of its own: the installed launcher is a link to a kept copy (extension-fixtures.ts).
   const launcher = join(live.daemon.home, "extension", "host", "launch.sh");
-  writeFileSync(launcher, readFileSync(launcher, "utf8").replace("\nexec ", "\nsleep 18\nexec "));
+  const slow = readFileSync(launcher, "utf8").replace("\nexec ", "\nsleep 18\nexec ");
+  rmSync(launcher);
+  writeFileSync(launcher, slow, { mode: 0o755 });
   const page = await live.ctx.newPage();
   await page.goto(siteUrl);
   const tabId = await tabIdOf(live, siteUrl);
