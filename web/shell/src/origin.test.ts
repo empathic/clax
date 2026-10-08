@@ -56,12 +56,16 @@ describe("probeOrigin", () => {
 
   it("falls back a grace after the daemon answered when the artifact origin hangs, and caches that", async () => {
     vi.useFakeTimers();
-    const got = state(probeOrigin(O, net(later(400), never)));
+    const f = net(later(400), never);
+    const got = state(probeOrigin(O, f));
     await vi.advanceTimersByTimeAsync(1399);
     expect(got()).toBe("pending");
     await vi.advanceTimersByTimeAsync(1);
     expect(got()).toBe(false);
     expect(cache()).toBe("0");
+    // The artifact origin's request, still out, is aborted.
+    const name = f.mock.calls.find(([u]) => String(u) !== "/healthz")!;
+    expect(name[1]?.signal?.aborted).toBe(true);
   });
 
   it("is false but not cached when the daemon does not answer either", async () => {
