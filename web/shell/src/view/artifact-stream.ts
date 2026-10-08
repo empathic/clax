@@ -2,17 +2,15 @@
 // artifact entry once the view knows its viewer: the `artifact:<id>`,
 // `presence:<id>` and `working:<id>` topics, and `docs:<id>` for a page that
 // declares `db`. Thread and presence deltas are applied to what the view
-// holds, and the view handles the full events they amount to. It also loads
-// the question module, whose surfaces (the top bar's Inbox, the sidebar's
-// questions) show for the owner.
+// holds, and the view handles the full events they amount to. It also starts
+// the owner's question surfaces (artifact-questions.ts, a module of their own).
 import { ApiError, getArtifact } from "../api";
 import type { ArtifactEvent } from "../events";
 import { nav } from "../nav";
-import { type StreamEvent, ownerBrowser, pageStream } from "../stream";
+import { type StreamEvent, pageStream } from "../stream";
 import { type Thread, getViewer, renamedViewer, upsert } from "../threads";
 import type { ArtifactController } from "./artifact-controller";
 import { holdKeysAcrossLoad } from "./keys";
-import { guardedAction, keyboardTrail } from "./trail";
 import { type ThreadDelta, applyPresence, applyThread } from "./deltas";
 import type { PresenceView } from "./presence-model";
 
@@ -48,24 +46,10 @@ export class ArtifactStream {
   private docs: (() => void) | null = null;
   private questions: (() => void) | null = null;
   private stopped = false;
-  /** Ends the owner check: its wait for the browser to be idle, and its asking. */
-  private readonly life = new AbortController();
-  private cancelOwner: () => void = () => {};
 
   constructor(private readonly id: string, private readonly v: ArtifactStreamView) {
     this.main = pageStream().watch([`artifact:${id}`, `presence:${id}`, `working:${id}`], e => this.on(e));
-    // Once the browser is idle, so it stays off the view's way to being usable.
-    const load = () => void import("../q").then(m => { if (!this.stopped) this.questions = m.artifact(id, { keyboardTrail, guardedAction }, pageStream()); }, () => {});
-    // Only in the owner's browsers (those the token is served to); a stopped
-    // stream asks nothing more.
-    const owner = () => void ownerBrowser(this.life.signal).then(o => { if (o && !this.stopped) load(); });
-    if (typeof requestIdleCallback === "function") {
-      const h = requestIdleCallback(owner, { timeout: 2000 });
-      this.cancelOwner = () => cancelIdleCallback(h);
-    } else {
-      const h = setTimeout(owner, 200);
-      this.cancelOwner = () => clearTimeout(h);
-    }
+    void import("./artifact-questions").then(m => { if (!this.stopped) this.questions = m.artifactQuestions(id); }, () => {});
   }
 
   /** Also watches the `docs` topic (once). */
@@ -77,8 +61,6 @@ export class ArtifactStream {
 
   stop(): void {
     this.stopped = true;
-    this.cancelOwner();
-    this.life.abort();
     this.questions?.();
     this.questions = null;
     this.main();
