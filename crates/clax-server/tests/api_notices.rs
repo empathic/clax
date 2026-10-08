@@ -208,6 +208,14 @@ async fn claude_push_reports_a_notice_follower() {
             .contains("--dangerously-load-development-channels plugin:clax@clax"),
         "{idle}"
     );
+    // The reason says push is optional before it says how to turn it on.
+    let reason = idle["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("optional: ")
+            && reason.contains("push only wakes the session while it is idle")
+            && reason.contains("follow_command"),
+        "{reason}"
+    );
     // A notices poll in progress counts as a follower.
     let req = ts.authed(
         ts.client
