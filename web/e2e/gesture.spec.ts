@@ -155,8 +155,12 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // The page's timer is then stopped, and its latest call answered, before
     // the press: a call it made just before the press but that reaches the
     // shell after it is judged with the press's activation, and may open the
-    // composer itself (the residual after a click in the page, gesture.ts),
-    // which takes focus, so the viewer's own call is then refused.
+    // composer itself (the residual after a click in the page, gesture.ts).
+    // The viewer then sees the composer open on their click, at the element
+    // the page chose; the composer takes focus, so the button's own call is
+    // refused, and reads rate_limited once the page's refused calls have
+    // spent the refusal budget. This test pins down the click with no page
+    // call in flight.
     const b = (await f.locator("#b").boundingBox())!;
     await activationLapsed(page);
     await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 5 });
