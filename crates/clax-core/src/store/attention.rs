@@ -190,7 +190,7 @@ impl Store {
         aid: &ArtifactId,
         thread_ids: &[String],
     ) -> Result<BTreeMap<String, String>> {
-        let now = Store::now();
+        let now = self.now();
         self.with_tx(|tx| {
             for tid in thread_ids.iter().take(MAX_LOOKED) {
                 tx.execute(

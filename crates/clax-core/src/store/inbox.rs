@@ -697,11 +697,6 @@ fn entry(c: &Connection, aid: Option<&str>, harness: Option<&str>, text: &str) -
     ))
 }
 
-/// Inserts the item and its index entry unless its key exists; its `seq`.
-fn insert(c: &Connection, n: New<'_>) -> Result<Option<i64>> {
-    insert_at(c, n, &Store::now())
-}
-
 /// The time to stamp a new item with: `now`, or the newest item's time when
 /// the clock stepped back, so stamps never go backwards and follow `seq`
 /// (date pages walk the `seq` range their dates give).
@@ -713,7 +708,8 @@ fn stamp(c: &Connection, now: &str) -> Result<String> {
     })
 }
 
-/// [`insert`] with the clock reading `now`.
+/// Inserts the item and its index entry unless its key exists, stamped
+/// `now` (see [`stamp`]); its `seq`.
 fn insert_at(c: &Connection, n: New<'_>, now: &str) -> Result<Option<i64>> {
     let created_at = stamp(c, now)?;
     let harness = match n.harness {
@@ -760,6 +756,7 @@ pub(crate) fn note_reply(
     aid: &str,
     sid: Option<&str>,
     body: &str,
+    now: &str,
 ) -> Result<Option<i64>> {
     let Some(pid) = owner_pid(c)? else {
         return Ok(None);
@@ -767,7 +764,7 @@ pub(crate) fn note_reply(
     if !owner_in(c, &pid, tid)? {
         return Ok(None);
     }
-    insert(
+    insert_at(
         c,
         New {
             kind: Kind::Reply,
@@ -782,6 +779,7 @@ pub(crate) fn note_reply(
             detail: None,
             text: body.into(),
         },
+        now,
     )
 }
 
@@ -796,6 +794,7 @@ pub(crate) fn note_version(
     n: u32,
     sid: Option<&str>,
     note: Option<&str>,
+    now: &str,
 ) -> Result<Option<i64>> {
     let Some(sid) = sid else { return Ok(None) };
     if n == 1 {
@@ -807,7 +806,7 @@ pub(crate) fn note_version(
         if kind != "html" {
             return Ok(None);
         }
-        return insert(
+        return insert_at(
             c,
             New {
                 kind: Kind::Published,
@@ -822,6 +821,7 @@ pub(crate) fn note_version(
                 detail: None,
                 text: description.unwrap_or_default(),
             },
+            now,
         );
     }
     let Some(pid) = owner_pid(c)? else {
@@ -837,7 +837,7 @@ pub(crate) fn note_version(
         quotes.as_deref().unwrap_or_default(),
     ]
     .join(" ");
-    insert(
+    insert_at(
         c,
         New {
             kind: Kind::Version,
@@ -852,6 +852,7 @@ pub(crate) fn note_version(
             detail: None,
             text,
         },
+        now,
     )
 }
 
@@ -884,8 +885,8 @@ fn answered_text(q: &QuestionRow) -> String {
 
 /// A question was created: one `question` item, indexed by its questions,
 /// headers and labels.
-pub(crate) fn note_question(c: &Connection, q: &QuestionRow) -> Result<Option<i64>> {
-    insert(
+pub(crate) fn note_question(c: &Connection, q: &QuestionRow, now: &str) -> Result<Option<i64>> {
+    insert_at(
         c,
         New {
             kind: Kind::Question,
@@ -900,13 +901,19 @@ pub(crate) fn note_question(c: &Connection, q: &QuestionRow) -> Result<Option<i6
             detail: None,
             text: question_text(q),
         },
+        now,
     )
 }
 
 /// A question closed: its index entry gains the answers, and the item is
 /// updated (so the listener hears of it); when `seen` (the owner answered,
 /// skipped or moved it, or it was answered in the terminal) it is also read.
-pub(crate) fn question_changed(c: &Connection, q: &QuestionRow, seen: bool) -> Result<()> {
+pub(crate) fn question_changed(
+    c: &Connection,
+    q: &QuestionRow,
+    seen: bool,
+    now: &str,
+) -> Result<()> {
     let Some(seq) = c
         .query_row(OF_QUESTION, params![q.id], |r| r.get::<_, i64>(0))
         .optional()?
@@ -930,7 +937,7 @@ pub(crate) fn question_changed(c: &Connection, q: &QuestionRow, seen: bool) -> R
             Status::Answered | Status::Declined | Status::Released
         );
     // Always written, so the listener hears that the source changed.
-    c.execute(QUESTION_TOUCH, params![seq, Store::now(), read])?;
+    c.execute(QUESTION_TOUCH, params![seq, now, read])?;
     Ok(())
 }
 
@@ -1051,7 +1058,7 @@ impl Store {
             return Ok(0);
         }
         let json = super::feedback::id_array(ids);
-        let now = Store::now();
+        let now = self.now();
         self.with_tx(|tx| {
             Ok(if read {
                 tx.execute(MARK_READ, params![json, now])?
@@ -1067,7 +1074,7 @@ impl Store {
     /// # Errors
     /// `invalid_query` when the search text cannot be used.
     pub fn inbox_mark_all(&self, q: &InboxQuery) -> Result<usize> {
-        let b = build(q, Shape::MarkAll, &Store::now());
+        let b = build(q, Shape::MarkAll, &self.now());
         self.with_tx(|tx| Ok(tx.execute(&b.sql, params_from_iter(b.args.iter()))?))
             .map_err(|e| search_error(e, b.searched))
     }
@@ -1078,7 +1085,7 @@ impl Store {
     pub fn note_finished(&self, e: &Ended, harness: &str) -> Result<Option<i64>> {
         let detail = serde_json::json!({"message": e.message, "thread_ids": e.thread_ids});
         self.with_tx(|tx| {
-            insert(
+            insert_at(
                 tx,
                 New {
                     kind: Kind::Finished,
@@ -1093,6 +1100,7 @@ impl Store {
                     detail: Some(detail),
                     text: e.message.clone().unwrap_or_default(),
                 },
+                &self.now(),
             )
         })
     }

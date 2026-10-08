@@ -1,0 +1,1429 @@
+//! The single-owner golden (spec 2026-10-08-multi-agent-multi-person §19):
+//! every agent-facing output of a single-owner install whose database is at
+//! migration 21, per feedback tier, each tier on a fresh copy of one fixture
+//! under one fixed clock.
+//!
+//! - `fixtures/single-owner-21.sql` is the fixture: a whole migration-21
+//!   database (schema, rows, `user_version`) and the files its rows name,
+//!   loaded by `clax_server::testing::load_fixture`. `write_fixture` built
+//!   it through the daemon's routes; it runs only at a migration-21 schema.
+//! - `fixtures/single-owner-21.golden.json` holds, per tier,
+//!   [`collect_agent_outputs`] after [`normalise_minted`]. `write_golden`
+//!   writes it: `cargo test -p clax-server --test integration --
+//!   --ignored --exact golden_single_owner::write_golden`.
+//!
+//! Each output is taken through the real client of its channel where one
+//! exists: the `clax hook` binary for the Stop and prompt tiers, `clax
+//! feedback follow` for notices, `clax versions` for versions, and the MCP
+//! tools (`clax_mcp::ClaxTools`, the code the shim serves) for the rest.
+//! The queue and inject tiers are taken over HTTP as `codex queue` pushes
+//! and the Pi extension take them.
+//!
+//! A module of clax-server's `integration` test binary; it changes no
+//! process-wide state, and uses no shared test module.
+
+use clax_core::Tier;
+use clax_core::model::Session;
+use clax_core::working::ManualClock;
+use clax_mcp::{ClaxTools, DaemonClient};
+use clax_server::testing::TestServer;
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::CallToolResult;
+use serde_json::{Map, Value, json};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+
+/// The fixture's file name in `tests/fixtures/`.
+pub const FIXTURE: &str = "single-owner-21.sql";
+/// The golden's file name in `tests/fixtures/`.
+pub const GOLDEN: &str = "single-owner-21.golden.json";
+/// The time the clock stands at while the outputs are collected: a minute
+/// after the fixture's last write.
+pub const FIXED_T: &str = "2026-09-14T10:00:00Z";
+/// Every feedback tier, in the golden's order.
+pub const TIERS: [Tier; 6] = [
+    Tier::Piggyback,
+    Tier::StopHook,
+    Tier::PromptHook,
+    Tier::Wait,
+    Tier::Queue,
+    Tier::Inject,
+];
+/// Longest a client process may run before the collection fails.
+const CLIENT_LIMIT: Duration = Duration::from_secs(30);
+
+fn fixtures_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+}
+
+/// The `clax` binary: `CLAX_TEST_BIN`, else built once per test process.
+fn clax_bin() -> PathBuf {
+    static BIN: OnceLock<PathBuf> = OnceLock::new();
+    BIN.get_or_init(|| {
+        if let Some(bin) = std::env::var_os("CLAX_TEST_BIN") {
+            let bin = PathBuf::from(bin);
+            assert!(bin.exists(), "CLAX_TEST_BIN {} missing", bin.display());
+            return bin;
+        }
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut cmd = std::process::Command::new(env!("CARGO"));
+        cmd.current_dir(&workspace)
+            .args(["build", "--quiet", "-p", "clax-cli", "--bin", "clax"]);
+        if !cfg!(debug_assertions) {
+            cmd.arg("--release");
+        }
+        assert!(
+            cmd.status().expect("run cargo build").success(),
+            "cargo build -p clax-cli failed"
+        );
+        let exe = std::env::current_exe().unwrap();
+        let bin = exe.parent().unwrap().parent().unwrap().join("clax");
+        assert!(bin.exists(), "{} missing", bin.display());
+        bin
+    })
+    .clone()
+}
+
+// --- collection ------------------------------------------------------------
+
+/// What the test environment minted for one collection, which
+/// [`normalise_minted`] replaces: the daemon's port, the home's path, the
+/// PIDs, working directories and executables of the clients run (the MCP
+/// tools run in this test process, so `status` names its executable), and
+/// the newest timestamp of a ULID in the fixture.
+struct Minted {
+    port: u16,
+    home: String,
+    pids: Vec<u32>,
+    cwds: Vec<String>,
+    ulids_after_ms: u64,
+    /// Holds the clients' working directory and `HOME`.
+    scratch: tempfile::TempDir,
+}
+
+impl Minted {
+    fn new(ts: &TestServer) -> Minted {
+        let fixture = std::fs::read_to_string(fixtures_dir().join(FIXTURE)).unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(scratch.path().join("work")).unwrap();
+        let cwd = scratch.path().join("work");
+        let mut cwds = vec![cwd.display().to_string()];
+        if let Ok(c) = cwd.canonicalize() {
+            cwds.push(c.display().to_string());
+        }
+        Minted {
+            port: ts.addr.port(),
+            home: ts.home.root().display().to_string(),
+            pids: vec![std::process::id()],
+            cwds,
+            ulids_after_ms: newest_ulid_ms(&fixture),
+            scratch,
+        }
+    }
+
+    fn value(&self) -> Value {
+        let mut homes = vec![self.home.clone()];
+        if let Ok(c) = Path::new(&self.home).canonicalize() {
+            homes.push(c.display().to_string());
+        }
+        json!({
+            "port": self.port,
+            "homes": homes,
+            "pids": self.pids,
+            "cwds": self.cwds,
+            "exes": exes(),
+            "ulids_after_ms": self.ulids_after_ms,
+        })
+    }
+
+    /// `clax <args>` with a cleared environment pointing at the daemon's
+    /// home, run from the scratch working directory.
+    fn clax(&self, home: &Path, args: &[&str]) -> tokio::process::Command {
+        let mut c = tokio::process::Command::new(clax_bin());
+        c.args(args)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", self.scratch.path())
+            .env("TMPDIR", self.scratch.path())
+            .env("CLAX_HOME", home)
+            .env("CLAX_NO_OPEN", "1")
+            .env("CLAX_CODEX_BIN", "")
+            .env("RUST_LOG", "error")
+            .current_dir(self.scratch.path().join("work"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        c
+    }
+
+    /// Runs `cmd` with `stdin`, recording its PID; its stdout, after
+    /// asserting it exited 0 within [`CLIENT_LIMIT`].
+    async fn run(&mut self, mut cmd: tokio::process::Command, stdin: &str) -> String {
+        use tokio::io::AsyncWriteExt;
+        let mut child = cmd.spawn().expect("spawn clax");
+        if let Some(pid) = child.id() {
+            self.pids.push(pid);
+        }
+        let mut input = child.stdin.take().unwrap();
+        input.write_all(stdin.as_bytes()).await.unwrap();
+        drop(input);
+        let out = tokio::time::timeout(CLIENT_LIMIT, child.wait_with_output())
+            .await
+            .expect("the client finished in time")
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    }
+}
+
+/// This test process's executable, as given and canonical.
+fn exes() -> Vec<String> {
+    let exe = std::env::current_exe().unwrap();
+    let mut out = vec![exe.display().to_string()];
+    if let Ok(c) = exe.canonicalize() {
+        out.push(c.display().to_string());
+    }
+    out.dedup();
+    out
+}
+
+/// Writes the `daemon.json` the CLI and hooks discover the daemon by: this
+/// process's PID, the test daemon's port and token.
+fn write_daemon_json(ts: &TestServer) {
+    let info = clax_server::daemon::DaemonInfo {
+        port: ts.addr.port(),
+        pid: std::process::id(),
+        token: ts.token.clone(),
+        started_at: ts.store.now(),
+        bind: "127.0.0.1".into(),
+        version: "test".into(),
+        exe: None,
+        commit: None,
+    };
+    clax_server::daemon::write_daemon_info(&ts.home, &info).unwrap();
+}
+
+/// The MCP tools of session `s`, as its shim serves them.
+fn tools_for(ts: &TestServer, s: Session) -> ClaxTools {
+    ClaxTools::new(
+        DaemonClient::new(ts.base.clone(), ts.token.clone(), Some(s.id.clone())),
+        format!("http://localhost:{}", ts.addr.port()),
+        Some(s),
+        ts.home.log_path(),
+    )
+}
+
+/// A tool result as JSON: its content (text parsed as JSON where it is
+/// JSON) and whether it is an error.
+fn tool_value(r: Result<CallToolResult, rmcp::ErrorData>) -> Value {
+    let r = match r {
+        Ok(r) => r,
+        Err(e) => return json!({"protocol_error": e.message}),
+    };
+    let content: Vec<Value> = r
+        .content
+        .iter()
+        .map(|c| match c.as_text() {
+            Some(t) => {
+                serde_json::from_str(&t.text).unwrap_or_else(|_| Value::String(t.text.clone()))
+            }
+            None => serde_json::to_value(c).unwrap(),
+        })
+        .collect();
+    json!({"content": content, "is_error": r.is_error == Some(true)})
+}
+
+fn args<T: serde::de::DeserializeOwned>(v: Value) -> Parameters<T> {
+    Parameters(serde_json::from_value(v).unwrap())
+}
+
+async fn get_json(ts: &TestServer, path: &str) -> Value {
+    let res = ts.get_authed(path).await;
+    let status = res.status().as_u16();
+    let body: Value = res.json().await.unwrap_or(Value::Null);
+    json!({"status": status, "body": body})
+}
+
+/// The fixture's one live session: its ID and harness session ID.
+async fn live_session(ts: &TestServer) -> Session {
+    let v = get_json(ts, "/api/sessions?live=true").await;
+    let live = v["body"]["sessions"].as_array().unwrap();
+    assert_eq!(live.len(), 1, "one live agent: {v}");
+    serde_json::from_value(live[0].clone()).unwrap()
+}
+
+/// The tier's payload, taken through its channel's client.
+async fn tier_payload(
+    ts: &TestServer,
+    tier: Tier,
+    sid: &str,
+    hsid: &str,
+    tools: &ClaxTools,
+    m: &mut Minted,
+) -> Value {
+    let hook = |event: &str| {
+        json!({"session_id": hsid, "hook_event_name": event, "stop_hook_active": false,
+            "prompt": "Carry on."})
+        .to_string()
+    };
+    let lines = |out: String| -> Value {
+        out.lines()
+            .map(|l| serde_json::from_str(l).unwrap_or_else(|_| Value::String(l.into())))
+            .collect()
+    };
+    let home = ts.home.root().to_path_buf();
+    match tier {
+        Tier::Piggyback => tool_value(tools.list(args(json!({}))).await),
+        Tier::Wait => tool_value(tools.wait_for_feedback(args(json!({"timeout_s": 1}))).await),
+        Tier::StopHook => {
+            let cmd = m.clax(&home, &["hook", "--agent", "claude", "stop"]);
+            lines(m.run(cmd, &hook("Stop")).await)
+        }
+        Tier::PromptHook => {
+            let cmd = m.clax(&home, &["hook", "--agent", "claude", "prompt"]);
+            lines(m.run(cmd, &hook("UserPromptSubmit")).await)
+        }
+        Tier::Queue => get_json(ts, &format!("/api/sessions/{sid}/feedback?tier=queue")).await,
+        Tier::Inject => get_json(ts, &format!("/api/sessions/{sid}/feedback?tier=inject")).await,
+    }
+}
+
+/// Every agent-facing output of the daemon `ts` serves, with feedback
+/// handed over by `tier`, in this order: the notices `clax feedback follow
+/// --once` prints for the live session; the tier's payload; then, through
+/// the session's MCP tools, `status`, `list`, and for each artifact
+/// (ascending ID) `read` of each version's files, `comments_read` (all
+/// threads, then each thread), `db_list` of each collection, and `clax
+/// versions`; then the session listing and the working roster. Each tool
+/// result keeps the feedback it carried. The value's `minted` key lists
+/// what [`normalise_minted`] replaces.
+pub async fn collect_agent_outputs(ts: &TestServer, tier: Tier) -> Value {
+    write_daemon_json(ts);
+    let mut m = Minted::new(ts);
+    let session = live_session(ts).await;
+    let sid = session.id.clone();
+    let hsid = session.harness_session_id.clone().unwrap();
+    let home = ts.home.root().to_path_buf();
+    let follow = m.clax(
+        &home,
+        &[
+            "feedback",
+            "follow",
+            "--session",
+            &sid,
+            "--once",
+            "--poll-secs",
+            "1",
+        ],
+    );
+    let notices: Vec<String> = m
+        .run(follow, "")
+        .await
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let tools = tools_for(ts, session);
+    let payload = tier_payload(ts, tier, &sid, &hsid, &tools, &mut m).await;
+    let status = tool_value(tools.status(args(json!({}))).await);
+    let list = tool_value(tools.list(args(json!({}))).await);
+    let listed = get_json(ts, "/api/artifacts").await;
+    let mut aids: Vec<String> = listed["body"]["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["id"].as_str().unwrap().to_string())
+        .collect();
+    aids.sort();
+    let mut artifacts = Map::new();
+    for aid in &aids {
+        let detail = get_json(ts, &format!("/api/artifacts/{aid}")).await;
+        let mut reads = Vec::new();
+        for v in detail["body"]["versions"].as_array().unwrap() {
+            let n = v["n"].as_u64().unwrap();
+            let mut files: Vec<&String> = v["files"].as_object().unwrap().keys().collect();
+            files.sort();
+            for f in files {
+                let r = tools
+                    .read(args(json!({"url_or_id": aid, "version": n, "path": f})))
+                    .await;
+                reads.push(json!({"version": n, "path": f, "result": tool_value(r)}));
+            }
+        }
+        let threads = get_json(
+            ts,
+            &format!("/api/artifacts/{aid}/threads?include_resolved=true"),
+        )
+        .await;
+        let all = tool_value(
+            tools
+                .comments_read(args(json!({"url_or_id": aid, "include_resolved": true})))
+                .await,
+        );
+        let mut each = Vec::new();
+        let mut tids: Vec<String> = threads["body"]["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap().to_string())
+            .collect();
+        tids.sort();
+        for tid in &tids {
+            let r = tools
+                .comments_read(args(json!({"url_or_id": aid, "thread_id": tid})))
+                .await;
+            each.push(json!({"thread_id": tid, "result": tool_value(r)}));
+        }
+        let mut db = Map::new();
+        for c in &collections(ts, aid) {
+            let r = tools
+                .db_list(args(json!({"url_or_id": aid, "collection": c})))
+                .await;
+            db.insert(c.clone(), tool_value(r));
+        }
+        let versions = m.clax(&home, &["--json", "versions", aid]);
+        let versions: Value = serde_json::from_str(&m.run(versions, "").await).unwrap();
+        artifacts.insert(
+            aid.clone(),
+            json!({
+                "read": reads,
+                "comments_read": all,
+                "comments_read_each": each,
+                "db_list": db,
+                "versions": versions,
+            }),
+        );
+    }
+    let sessions = get_json(ts, "/api/sessions").await;
+    let working = get_json(ts, "/api/working").await;
+    json!({
+        "notices": notices,
+        "payload": payload,
+        "status": status,
+        "list": list,
+        "artifacts": artifacts,
+        "sessions": sessions,
+        "working": working,
+        "minted": m.value(),
+    })
+}
+
+/// The collections of `aid`'s page database, in order.
+fn collections(ts: &TestServer, aid: &str) -> Vec<String> {
+    let c = rusqlite::Connection::open_with_flags(
+        ts.home.db_path(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let mut st = c
+        .prepare("SELECT DISTINCT collection FROM docs WHERE artifact_id = ?1 ORDER BY collection")
+        .unwrap();
+    st.query_map([aid], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+// --- normalisation ---------------------------------------------------------
+
+const CROCKFORD: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/// The millisecond timestamp of `s` when it is a ULID (26 Crockford base32
+/// characters, the first at most `7`).
+fn ulid_ms(s: &str) -> Option<u64> {
+    let b = s.as_bytes();
+    if b.len() != 26 || b[0] > b'7' {
+        return None;
+    }
+    let mut ms = 0u64;
+    for (i, c) in b.iter().enumerate() {
+        let d = CROCKFORD.iter().position(|x| x == c)? as u64;
+        if i < 10 {
+            ms = ms * 32 + d;
+        }
+    }
+    Some(ms)
+}
+
+/// Each maximal run of Crockford base32 characters in `text` that is a
+/// ULID, with its byte offset.
+fn ulids_in(text: &str) -> Vec<(usize, &str)> {
+    let mut out = Vec::new();
+    let b = text.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if CROCKFORD.contains(&b[i]) {
+            let start = i;
+            while i < b.len() && CROCKFORD.contains(&b[i]) {
+                i += 1;
+            }
+            if ulid_ms(&text[start..i]).is_some() {
+                out.push((start, &text[start..i]));
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// The newest ULID timestamp in `text`, in milliseconds.
+fn newest_ulid_ms(text: &str) -> u64 {
+    ulids_in(text)
+        .into_iter()
+        .filter_map(|(_, u)| ulid_ms(u))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Replaces what was minted during the collection or by the test
+/// environment, as recorded under `value["minted"]` (which it removes), each
+/// by an explicit rule and nothing else:
+///
+/// - the value of every key ending in `_at`, and of `since` and `waited_s`,
+///   becomes `"<minted>"` (null stays null);
+/// - every ULID newer than the fixture's newest becomes `<ulid:N>`, numbered
+///   by first appearance, in values and in keys;
+/// - `127.0.0.1:<port>` and `localhost:<port>` lose the test daemon's port
+///   (`:<port>`), and the temporary home's path becomes `<home>`;
+/// - each client working directory becomes `<cwd>`, each client executable
+///   `<exe>`, and a `pid` or `parent_pid` holding a client's PID `"<pid>"`.
+pub fn normalise_minted(mut value: Value) -> Value {
+    let minted = value
+        .as_object_mut()
+        .and_then(|o| o.remove("minted"))
+        .expect("the collection's minted values");
+    let port = minted["port"].as_u64().unwrap();
+    let mut texts: Vec<(String, String)> = vec![
+        (format!("127.0.0.1:{port}"), "127.0.0.1:<port>".into()),
+        (format!("localhost:{port}"), "localhost:<port>".into()),
+    ];
+    // Longest first, so a path is replaced before any prefix of it.
+    let mut paths: Vec<(String, &str)> = Vec::new();
+    for h in minted["homes"].as_array().unwrap() {
+        paths.push((h.as_str().unwrap().to_string(), "<home>"));
+    }
+    for c in minted["cwds"].as_array().unwrap() {
+        paths.push((c.as_str().unwrap().to_string(), "<cwd>"));
+    }
+    for e in minted["exes"].as_array().unwrap() {
+        paths.push((e.as_str().unwrap().to_string(), "<exe>"));
+    }
+    paths.sort_by_key(|(p, _)| std::cmp::Reverse(p.len()));
+    texts.extend(paths.into_iter().map(|(p, r)| (p, r.to_string())));
+    let pids: Vec<u64> = minted["pids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_u64)
+        .collect();
+    let mut n = Normaliser {
+        texts,
+        pids,
+        after_ms: minted["ulids_after_ms"].as_u64().unwrap(),
+        ulids: Vec::new(),
+    };
+    n.value(None, value)
+}
+
+struct Normaliser {
+    texts: Vec<(String, String)>,
+    pids: Vec<u64>,
+    after_ms: u64,
+    /// Minted ULIDs in order of first appearance.
+    ulids: Vec<String>,
+}
+
+impl Normaliser {
+    fn value(&mut self, key: Option<&str>, v: Value) -> Value {
+        if let Some(k) = key
+            && (k.ends_with("_at") || k == "since" || k == "waited_s")
+            && !v.is_null()
+        {
+            return Value::String("<minted>".into());
+        }
+        match v {
+            Value::String(s) => Value::String(self.text(&s)),
+            Value::Number(x)
+                if matches!(key, Some("pid" | "parent_pid"))
+                    && x.as_u64().is_some_and(|p| self.pids.contains(&p)) =>
+            {
+                Value::String("<pid>".into())
+            }
+            Value::Array(a) => Value::Array(a.into_iter().map(|x| self.value(None, x)).collect()),
+            Value::Object(o) => Value::Object(
+                o.into_iter()
+                    .map(|(k, x)| {
+                        let x = self.value(Some(&k), x);
+                        (self.text(&k), x)
+                    })
+                    .collect(),
+            ),
+            other => other,
+        }
+    }
+
+    fn text(&mut self, s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut last = 0;
+        for (at, u) in ulids_in(s) {
+            if ulid_ms(u).is_some_and(|ms| ms > self.after_ms) {
+                let n = match self.ulids.iter().position(|x| x == u) {
+                    Some(i) => i + 1,
+                    None => {
+                        self.ulids.push(u.to_string());
+                        self.ulids.len()
+                    }
+                };
+                out.push_str(&s[last..at]);
+                out.push_str(&format!("<ulid:{n}>"));
+                last = at + u.len();
+            }
+        }
+        out.push_str(&s[last..]);
+        for (from, to) in &self.texts {
+            if out.contains(from.as_str()) {
+                out = out.replace(from.as_str(), to);
+            }
+        }
+        out
+    }
+}
+
+/// The golden as the collection gives it now: one entry per tier, each on a
+/// fresh copy of the fixture under the fixed clock.
+async fn golden_now() -> Value {
+    let mut out = Map::new();
+    for tier in TIERS {
+        let ts = TestServer::from_fixture_with_clock(FIXTURE, FIXED_T).await;
+        let got = normalise_minted(collect_agent_outputs(&ts, tier).await);
+        out.insert(tier.as_str().to_string(), got);
+    }
+    Value::Object(out)
+}
+
+/// Writes the golden. Run by hand, only where the plan allows it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "writes tests/fixtures/single-owner-21.golden.json"]
+async fn write_golden() {
+    let golden = golden_now().await;
+    let mut text = serde_json::to_string_pretty(&golden).unwrap();
+    text.push('\n');
+    std::fs::write(fixtures_dir().join(GOLDEN), text).unwrap();
+}
+
+#[test]
+fn normalise_minted_replaces_only_the_listed_values() {
+    // `old` is the fixture's newest ULID; `new_a` and `new_b` are later. Keys
+    // are visited in order, so the key `new_a` is numbered first.
+    let old = "01K5A3B4C5D6E7F8G9H0J1K2M3";
+    let new_a = "01K9ZZZZZZD6E7F8G9H0J1K2M3";
+    let new_b = "01K9ZZZZZZD6E7F8G9H0J1K2M4";
+    let v = json!({
+        "minted": {
+            "port": 51234,
+            "homes": ["/tmp/x/ax"],
+            "pids": [77],
+            "cwds": ["/tmp/s/work"],
+            "exes": ["/tmp/t/deps/golden-1"],
+            "ulids_after_ms": ulid_ms(old).unwrap(),
+        },
+        "created_at": "2026-09-14T10:00:00.000Z",
+        "ended_at": null,
+        "since": "x",
+        "waited_s": 3,
+        "url": "http://localhost:51234/a/abc",
+        "self": "http://127.0.0.1:51234/api",
+        "other_port": "http://localhost:5123/",
+        "clip_path": "/tmp/x/ax/artifacts/abc/clips/t.png",
+        "cwd": "/tmp/s/work",
+        "binary": {"path": "/tmp/t/deps/golden-1"},
+        "pid": 77,
+        "parent_pid": 4200,
+        "ids": [old, new_a, new_b, new_a],
+        "text": format!("thread {new_b} and {old}"),
+        new_a: 1,
+    });
+    assert_eq!(
+        normalise_minted(v),
+        json!({
+            "created_at": "<minted>",
+            "ended_at": null,
+            "since": "<minted>",
+            "waited_s": "<minted>",
+            "url": "http://localhost:<port>/a/abc",
+            "self": "http://127.0.0.1:<port>/api",
+            "other_port": "http://localhost:5123/",
+            "clip_path": "<home>/artifacts/abc/clips/t.png",
+            "cwd": "<cwd>",
+            "binary": {"path": "<exe>"},
+            "pid": "<pid>",
+            "parent_pid": 4200,
+            "ids": [old, "<ulid:1>", "<ulid:2>", "<ulid:1>"],
+            "text": format!("thread <ulid:2> and {old}"),
+            "<ulid:1>": 1,
+        })
+    );
+}
+
+#[tokio::test]
+async fn the_fixture_is_a_single_owner_install_at_migration_21() {
+    let ts = TestServer::from_fixture_with_clock(FIXTURE, FIXED_T).await;
+    let sid = live_session(&ts).await.id;
+    let v = get_json(&ts, &format!("/api/sessions/{sid}")).await;
+    assert_eq!(v["status"], 200, "{v}");
+    let sql = std::fs::read_to_string(fixtures_dir().join(FIXTURE)).unwrap();
+    assert!(sql.contains("PRAGMA user_version = 21;"));
+    assert!(
+        ts.store.integrity_check().unwrap() == "ok",
+        "the fixture loads into a sound database"
+    );
+    // The fixed clock is the store's time.
+    assert_eq!(ts.store.now(), "2026-09-14T10:00:00.000Z");
+}
+
+// --- the fixture -----------------------------------------------------------
+
+/// When the fixture's writes start.
+const FIXTURE_T0: &str = "2026-09-14T09:00:00Z";
+
+/// SQL literal of one value.
+fn literal(v: rusqlite::types::ValueRef<'_>) -> String {
+    use rusqlite::types::ValueRef;
+    match v {
+        ValueRef::Null => "NULL".into(),
+        ValueRef::Integer(i) => i.to_string(),
+        ValueRef::Real(r) => format!("{r:?}"),
+        ValueRef::Text(t) => {
+            let s = std::str::from_utf8(t).expect("UTF-8 text");
+            format!("'{}'", s.replace('\'', "''"))
+        }
+        ValueRef::Blob(b) => blob(b),
+    }
+}
+
+fn blob(b: &[u8]) -> String {
+    let hex: String = b.iter().map(|x| format!("{x:02X}")).collect();
+    format!("X'{hex}'")
+}
+
+/// The database at `home`'s path, and every file under its `artifacts/`,
+/// as one SQL script for `load_fixture`: the schema in creation order
+/// (FTS5 shadow tables made by their virtual table), every row, the
+/// `user_version`, and the `fixture_files` table.
+fn dump(home: &clax_core::Home) -> String {
+    let c = rusqlite::Connection::open_with_flags(
+        home.db_path(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let shadow: Vec<String> = {
+        let mut st = c
+            .prepare("SELECT name FROM pragma_table_list WHERE type = 'shadow'")
+            .unwrap();
+        st.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    let objects: Vec<(String, String, String)> = {
+        let mut st = c
+            .prepare(
+                "SELECT type, name, sql FROM sqlite_master
+                 WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY rowid",
+            )
+            .unwrap();
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    let version: u32 = c
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    let mut out = String::from(
+        "-- The single-owner golden's fixture: a migration-21 Clax database and\n\
+         -- the files its rows name. Written by golden_single_owner.rs's\n\
+         -- write_fixture; loaded by clax_server::testing::load_fixture.\n\
+         PRAGMA foreign_keys = OFF;\nBEGIN;\n",
+    );
+    for (_, name, sql) in &objects {
+        if !shadow.contains(name) {
+            out.push_str(sql);
+            out.push_str(";\n");
+        }
+    }
+    let mut tables: Vec<String> = objects
+        .iter()
+        .filter(|(t, _, sql)| t == "table" && !sql.starts_with("CREATE VIRTUAL"))
+        .map(|(_, n, _)| n.clone())
+        .collect();
+    let has_sequence: bool = c
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'sqlite_sequence')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    if has_sequence {
+        tables.push("sqlite_sequence".into());
+    }
+    for t in &tables {
+        let without_rowid = objects
+            .iter()
+            .any(|(_, n, sql)| n == t && sql.contains("WITHOUT ROWID"));
+        let st = c.prepare(&format!("SELECT * FROM \"{t}\"")).unwrap();
+        let cols: Vec<String> = st.column_names().into_iter().map(String::from).collect();
+        let order = if without_rowid || t == "sqlite_sequence" {
+            (1..=cols.len())
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        } else {
+            "rowid".into()
+        };
+        drop(st);
+        let mut st = c
+            .prepare(&format!("SELECT * FROM \"{t}\" ORDER BY {order}"))
+            .unwrap();
+        if shadow.contains(t) || t == "sqlite_sequence" {
+            out.push_str(&format!("DELETE FROM \"{t}\";\n"));
+        }
+        let names = cols
+            .iter()
+            .map(|c| format!("\"{c}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut rows = st.query([]).unwrap();
+        while let Some(r) = rows.next().unwrap() {
+            let vals: Vec<String> = (0..cols.len())
+                .map(|i| literal(r.get_ref(i).unwrap()))
+                .collect();
+            out.push_str(&format!(
+                "INSERT INTO \"{t}\" ({names}) VALUES ({});\n",
+                vals.join(", ")
+            ));
+        }
+    }
+    out.push_str(&format!("PRAGMA user_version = {version};\n"));
+    out.push_str("CREATE TABLE fixture_files (path TEXT PRIMARY KEY, content BLOB NOT NULL);\n");
+    let mut files = Vec::new();
+    collect_files(home.root(), &home.root().join("artifacts"), &mut files);
+    files.sort();
+    for (rel, bytes) in files {
+        out.push_str(&format!(
+            "INSERT INTO fixture_files (path, content) VALUES ('{}', {});\n",
+            rel.replace('\'', "''"),
+            blob(&bytes)
+        ));
+    }
+    out.push_str("COMMIT;\n");
+    out
+}
+
+fn collect_files(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            collect_files(root, &p, out);
+        } else {
+            let rel = p.strip_prefix(root).unwrap().display().to_string();
+            out.push((rel, std::fs::read(&p).unwrap()));
+        }
+    }
+}
+
+/// Requests of the fixture's actors against one test daemon.
+struct Actors<'a> {
+    ts: &'a TestServer,
+    clock: Arc<ManualClock>,
+    lan: reqwest::Client,
+}
+
+impl Actors<'_> {
+    fn url(&self, path: &str) -> String {
+        format!("{}{path}", self.ts.base)
+    }
+
+    /// Sends `r`, asserts status `want`, and returns the JSON body (null when empty).
+    async fn send(&self, r: reqwest::RequestBuilder, want: u16) -> Value {
+        let res = r.send().await.unwrap();
+        let status = res.status().as_u16();
+        let text = res.text().await.unwrap();
+        assert_eq!(status, want, "{text}");
+        serde_json::from_str(&text).unwrap_or(Value::Null)
+    }
+
+    fn owner(&self, r: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        r.header("cookie", self.ts.owner_cookie())
+    }
+
+    fn agent(&self, r: reqwest::RequestBuilder, sid: &str) -> reqwest::RequestBuilder {
+        r.bearer_auth(&self.ts.token).header("x-clax-session", sid)
+    }
+
+    fn tick(&self, secs: i64) {
+        self.clock.advance(secs);
+    }
+
+    async fn register(&self, harness: &str, hsid: &str, cwd: &str, pid: u32) -> String {
+        let v = self
+            .send(
+                self.ts
+                    .authed(self.ts.client.post(self.url("/api/sessions")))
+                    .json(&json!({
+                        "harness": harness, "harness_session_id": hsid, "cwd": cwd,
+                        "pid": pid, "parent_pid": pid - 1,
+                    })),
+                201,
+            )
+            .await;
+        v["session"]["id"].as_str().unwrap().to_string()
+    }
+
+    async fn publish(&self, sid: &str, body: Value) -> String {
+        let v = self
+            .send(
+                self.agent(self.ts.client.post(self.url("/api/artifacts")), sid)
+                    .json(&body),
+                201,
+            )
+            .await;
+        v["artifact"]["id"].as_str().unwrap().to_string()
+    }
+
+    /// A LAN viewer's cookie, named `name` when given.
+    async fn lan_viewer(&self, name: Option<&str>) -> String {
+        let res = self
+            .lan
+            .get(self.url("/api/viewers/me"))
+            .send()
+            .await
+            .unwrap();
+        let set = res.headers()["set-cookie"].to_str().unwrap().to_string();
+        let cookie = set
+            .split(';')
+            .next()
+            .and_then(|kv| kv.strip_prefix("clax_viewer="))
+            .unwrap()
+            .to_string();
+        if let Some(n) = name {
+            self.send(
+                self.lan
+                    .put(self.url("/api/viewers/me"))
+                    .header("cookie", format!("clax_viewer={cookie}"))
+                    .json(&json!({"display_name": n})),
+                200,
+            )
+            .await;
+        }
+        cookie
+    }
+
+    /// A thread on `aid` anchored to `quote` in `selector`.
+    #[allow(clippy::too_many_arguments)]
+    async fn thread(
+        &self,
+        r: reqwest::RequestBuilder,
+        version: u32,
+        selector: &str,
+        quote: &str,
+        body: &str,
+        clip: Option<&[u8]>,
+        via_page: bool,
+    ) -> String {
+        let anchor = json!({"kind": "element", "selector": selector, "quote": quote,
+            "prefix": "", "suffix": "", "html_hash": "sha256:00", "rect": null, "custom_name": null});
+        let mut form = reqwest::multipart::Form::new()
+            .text("anchor", anchor.to_string())
+            .text("body", body.to_string())
+            .text("version", version.to_string());
+        if via_page {
+            form = form.text("via_page", "true");
+        }
+        if let Some(bytes) = clip {
+            form = form.part(
+                "clip",
+                reqwest::multipart::Part::bytes(bytes.to_vec())
+                    .file_name("clip.png")
+                    .mime_str("image/png")
+                    .unwrap(),
+            );
+        }
+        let v = self.send(r.multipart(form), 201).await;
+        v["thread"]["id"].as_str().unwrap().to_string()
+    }
+
+    fn threads_url(&self, aid: &str) -> String {
+        self.url(&format!("/api/artifacts/{aid}/threads"))
+    }
+
+    async fn reply(&self, r: reqwest::RequestBuilder, body: Value) {
+        self.send(r.json(&body), 201).await;
+    }
+
+    async fn send_thread(&self, aid: &str, tid: &str) {
+        self.send(
+            self.owner(
+                self.ts
+                    .client
+                    .post(self.url(&format!("/api/artifacts/{aid}/threads/{tid}/send"))),
+            ),
+            200,
+        )
+        .await;
+    }
+
+    async fn take(&self, sid: &str, tier: &str) -> Value {
+        self.send(
+            self.ts.authed(
+                self.ts
+                    .client
+                    .get(self.url(&format!("/api/sessions/{sid}/feedback?tier={tier}"))),
+            ),
+            200,
+        )
+        .await
+    }
+}
+
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\nclip-of-the-header";
+
+const REVIEW_V1: &str = "<!doctype html><html><head><title>Quarterly Review</title>\
+<link rel=stylesheet href=style.css></head><body><main><h2>Quarterly goals</h2>\
+<p class=lede>Revenue grew 12% on Q2.</p><table><tr><td>Q3</td><td>4.1M</td></tr></table>\
+</main></body></html>";
+const REVIEW_V2: &str = "<!doctype html><html><head><title>Quarterly Review</title>\
+<link rel=stylesheet href=style.css></head><body><header class=sticky>Quarterly Review</header>\
+<main><h2>Quarterly goals</h2><p class=lede>Revenue grew 12% on Q2.</p>\
+<table><tr><td>Q3</td><td>4.1M</td></tr></table></main></body></html>";
+const TRACKER: &str = "<!doctype html><html><head><title>Team Tracker</title></head>\
+<body><main><h2>Tasks</h2><ul id=tasks></ul></main></body></html>";
+const LAUNCH: &str = "<!doctype html><html><head><title>Launch Plan</title></head>\
+<body><main><h2>Launch steps</h2><ol><li>Freeze</li><li>Ship</li></ol></main></body></html>";
+
+/// Builds the fixture through the daemon's routes under a clock that
+/// starts at [`FIXTURE_T0`] and ends before [`FIXED_T`], then writes it.
+/// Its rows: an ended Codex session whose artifact holds unattributed
+/// comments (as migration 12 left comments made before it) and feedback
+/// released when it ended; the one live Claude Code session with two
+/// artifacts it published (one with a page database) and a watch with
+/// replies off on the Codex artifact; owner threads with a clip, a reply,
+/// a second version and a resolve; a named and an anonymous LAN viewer;
+/// comments and documents the page wrote from the owner's browser;
+/// feedback acknowledged, delivered and due a resend, sent and notified,
+/// sent, sent in a batch, and on the unarmed watch; questions answered,
+/// declined and open; and inbox items, one read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "writes tests/fixtures/single-owner-21.sql; run only at a migration-21 schema"]
+async fn write_fixture() {
+    assert_eq!(
+        clax_core::store::migrations::MIGRATIONS.len(),
+        21,
+        "the fixture is a migration-21 database"
+    );
+    let clock = Arc::new(ManualClock::at(FIXTURE_T0));
+    let ts = TestServer::spawn_with_clock(clock.clone()).await;
+    let a = Actors {
+        ts: &ts,
+        clock: clock.clone(),
+        lan: ts.lan().0,
+    };
+    let c = &ts.client;
+    // The owner opens the shell (the owner identity).
+    a.send(a.owner(c.get(a.url("/api/viewers/me"))), 200).await;
+    a.send(
+        a.owner(c.put(a.url("/api/viewers/me")))
+            .json(&json!({"display_name": "Alex"})),
+        200,
+    )
+    .await;
+    a.tick(60);
+
+    // An earlier Codex session and its artifact, with comments from before
+    // participants were recorded.
+    let codex = a
+        .register("codex", "codex-thread-1", "/work/site", 51000)
+        .await;
+    let launch = a
+        .publish(
+            &codex,
+            json!({"title": "Launch Plan", "description": "Steps to ship v2",
+                "files": {"index.html": {"content": LAUNCH, "encoding": "utf8"}}}),
+        )
+        .await;
+    a.tick(60);
+    let old1 = a
+        .thread(
+            a.owner(c.post(a.threads_url(&launch))),
+            1,
+            "body > main > h2",
+            "Launch steps",
+            "Add a rollback step.",
+            None,
+            false,
+        )
+        .await;
+    a.send_thread(&launch, &old1).await;
+    a.take(&codex, "piggyback").await;
+    a.tick(30);
+    a.reply(
+        a.agent(
+            c.post(a.url(&format!("/api/artifacts/{launch}/threads/{old1}/comments"))),
+            &codex,
+        ),
+        json!({"body": "Added a rollback step after Ship.", "author_kind": "agent"}),
+    )
+    .await;
+    a.tick(30);
+    let old2 = a
+        .thread(
+            a.owner(c.post(a.threads_url(&launch))),
+            1,
+            "body > main > ol > li:nth-child(1)",
+            "Freeze",
+            "Freeze on Thursday, not Friday.",
+            None,
+            false,
+        )
+        .await;
+    a.tick(30);
+
+    // Sent while the Codex session is the artifact's only agent.
+    let unsent = a
+        .thread(
+            a.owner(c.post(a.threads_url(&launch))),
+            1,
+            "body > main > ol",
+            "Ship",
+            "Name the release owner.",
+            None,
+            false,
+        )
+        .await;
+    a.send_thread(&launch, &unsent).await;
+    a.tick(10);
+
+    // The live Claude Code session and its artifacts.
+    let live = a.register("claude", "golden-live", "/work/web", 4242).await;
+    let review = a
+        .publish(
+            &live,
+            json!({"title": "Quarterly Review", "description": "Q3 numbers for the board",
+                "files": {"index.html": {"content": REVIEW_V1, "encoding": "utf8"},
+                          "style.css": {"content": "main { max-width: 60rem; }", "encoding": "utf8"}}}),
+        )
+        .await;
+    a.tick(30);
+    let tracker = a
+        .publish(
+            &live,
+            json!({"title": "Team Tracker", "capabilities": {"db": {}, "comments": {}},
+                "files": {"index.html": {"content": TRACKER, "encoding": "utf8"}}}),
+        )
+        .await;
+    a.tick(30);
+    a.send(
+        a.ts.authed(c.put(a.url(&format!("/api/sessions/{live}/watches/{launch}"))))
+            .json(&json!({"replies_armed": false})),
+        200,
+    )
+    .await;
+    a.tick(30);
+
+    // An owner thread with a clip: sent, taken in band (acknowledged),
+    // replied to, addressed by version 2 and resolved by the agent.
+    let header = a
+        .thread(
+            a.owner(c.post(a.threads_url(&review))),
+            1,
+            "body > main > h2",
+            "Quarterly goals",
+            "Make the header sticky.",
+            Some(PNG),
+            false,
+        )
+        .await;
+    a.send_thread(&review, &header).await;
+    a.tick(20);
+    a.take(&live, "piggyback").await;
+    a.tick(40);
+    a.reply(
+        a.agent(
+            c.post(a.url(&format!(
+                "/api/artifacts/{review}/threads/{header}/comments"
+            ))),
+            &live,
+        ),
+        json!({"body": "Done: the header now sticks to the top.", "author_kind": "agent"}),
+    )
+    .await;
+    a.tick(20);
+    a.send(
+        a.agent(
+            c.post(a.url(&format!("/api/artifacts/{review}/versions"))),
+            &live,
+        )
+        .json(&json!({"if_version": 1, "note": "Sticky header", "addresses": [header],
+            "files": {"index.html": {"content": REVIEW_V2, "encoding": "utf8"},
+                      "style.css": {"content": "main { max-width: 60rem; } .sticky { position: sticky; top: 0; }", "encoding": "utf8"}}})),
+        201,
+    )
+    .await;
+    a.tick(20);
+    a.send(
+        a.agent(
+            c.post(a.url(&format!("/api/artifacts/{review}/threads/{header}/resolve"))),
+            &live,
+        )
+        .json(&json!({"as": "agent"})),
+        200,
+    )
+    .await;
+    a.tick(60);
+
+    // LAN viewers: Mia (named) opens a thread, an anonymous viewer replies;
+    // the owner sends it and the prompt hook delivers it, unacknowledged,
+    // long enough ago to be resent.
+    let mia = a.lan_viewer(Some("Mia")).await;
+    let anon = a.lan_viewer(None).await;
+    let numbers = a
+        .thread(
+            a.lan
+                .post(a.threads_url(&review))
+                .header("cookie", format!("clax_viewer={mia}")),
+            2,
+            "body > main > table",
+            "Q3",
+            "The Q3 number looks off; finance has 3.9M.",
+            None,
+            false,
+        )
+        .await;
+    a.tick(30);
+    a.reply(
+        a.lan
+            .post(a.url(&format!(
+                "/api/artifacts/{review}/threads/{numbers}/comments"
+            )))
+            .header("cookie", format!("clax_viewer={anon}")),
+        json!({"body": "Agreed, and Q2 too."}),
+    )
+    .await;
+    a.tick(30);
+    a.send_thread(&review, &numbers).await;
+    a.tick(10);
+    a.take(&live, "prompt_hook").await;
+    a.tick(300);
+
+    // Sent and announced by a notice; then sent without one.
+    let blue = a
+        .thread(
+            a.owner(c.post(a.threads_url(&review))),
+            2,
+            "body > header",
+            "Quarterly Review",
+            "Use the brand blue for the header.",
+            None,
+            false,
+        )
+        .await;
+    a.send_thread(&review, &blue).await;
+    a.send(
+        a.ts.authed(c.get(a.url(&format!("/api/sessions/{live}/notices?wait=0")))),
+        200,
+    )
+    .await;
+    a.tick(30);
+    let lede = a
+        .thread(
+            a.owner(c.post(a.threads_url(&review))),
+            2,
+            "body > main > p.lede",
+            "Revenue grew 12% on Q2.",
+            "Say \"year on year\" here.",
+            None,
+            false,
+        )
+        .await;
+    a.send_thread(&review, &lede).await;
+    a.tick(30);
+
+    // The page writes comments and documents from the owner's browser, and
+    // two owner threads go in one batch with a note.
+    let page_thread = a
+        .thread(
+            a.owner(c.post(a.threads_url(&tracker))),
+            1,
+            "body > main > h2",
+            "Tasks",
+            "Task \"Ship v2\" is blocked on review.",
+            None,
+            true,
+        )
+        .await;
+    a.reply(
+        a.owner(c.post(a.url(&format!(
+            "/api/artifacts/{tracker}/threads/{page_thread}/comments"
+        )))),
+        json!({"body": "Unblocked: review done.", "via_page": true}),
+    )
+    .await;
+    a.send_thread(&tracker, &page_thread).await;
+    for (doc, data) in [
+        (
+            "tasks/t1",
+            json!({"title": "Ship v2", "done": false, "owner": "Alex"}),
+        ),
+        (
+            "tasks/t2",
+            json!({"title": "Write the changelog", "done": true}),
+        ),
+        ("notes/n1", json!({"text": "Demo on Friday at 10."})),
+    ] {
+        a.send(
+            a.owner(c.put(a.url(&format!("/api/artifacts/{tracker}/docs/{doc}"))))
+                .json(&json!({"data": data})),
+            200,
+        )
+        .await;
+        a.tick(5);
+    }
+    a.send(
+        a.agent(
+            c.put(a.url(&format!("/api/artifacts/{tracker}/docs/tasks/t3"))),
+            &live,
+        )
+        .json(&json!({"data": {"title": "Add filters", "done": false}})),
+        200,
+    )
+    .await;
+    a.tick(20);
+    let b1 = a
+        .thread(
+            a.owner(c.post(a.threads_url(&tracker))),
+            1,
+            "body > main > h2",
+            "Tasks",
+            "Group tasks by owner.",
+            None,
+            false,
+        )
+        .await;
+    let b2 = a
+        .thread(
+            a.owner(c.post(a.threads_url(&tracker))),
+            1,
+            "#tasks",
+            "",
+            "Show done tasks struck through.",
+            None,
+            false,
+        )
+        .await;
+    a.send(
+        a.owner(c.post(a.url(&format!("/api/artifacts/{tracker}/threads:send"))))
+            .json(&json!({"thread_ids": [b1, b2], "note": "Before the demo"})),
+        200,
+    )
+    .await;
+    a.tick(20);
+
+    // A thread on the Codex artifact reaches the live session through its
+    // watch with replies off.
+    a.send_thread(&launch, &old2).await;
+    a.tick(20);
+
+    // Questions: answered (its answer not yet received), declined, open.
+    for (header_text, outcome) in [("Chart", "answer"), ("Colour", "decline"), ("Date", "open")] {
+        let q = a
+            .send(
+                a.ts.authed(c.post(a.url(&format!("/api/sessions/{live}/questions"))))
+                    .json(
+                        &json!({"source": "ask", "artifact_id": review, "questions": [{
+                        "question": format!("Which {header_text} should the review use?"),
+                        "header": header_text,
+                        "options": [{"label": "First", "description": "the first one"},
+                                    {"label": "Second"}]}]}),
+                    ),
+                201,
+            )
+            .await;
+        let qid = q["question"]["id"].as_str().unwrap().to_string();
+        a.tick(15);
+        match outcome {
+            "answer" => {
+                a.send(
+                    a.owner(c.post(a.url(&format!("/api/questions/{qid}/answer"))))
+                        .json(&json!({"answers": [{"selected": ["Second"]}]})),
+                    200,
+                )
+                .await;
+            }
+            "decline" => {
+                a.send(
+                    a.owner(c.post(a.url(&format!("/api/questions/{qid}/decline"))))
+                        .json(&json!({})),
+                    200,
+                )
+                .await;
+            }
+            _ => {}
+        }
+        a.tick(15);
+    }
+
+    // The Codex session ends: what it had not taken has no other target
+    // and is released.
+    a.send(
+        a.ts.authed(c.patch(a.url(&format!("/api/sessions/{codex}"))))
+            .json(&json!({"ended": true})),
+        200,
+    )
+    .await;
+    a.tick(10);
+
+    // The owner reads the oldest inbox item.
+    let inbox = a.send(a.owner(c.get(a.url("/api/inbox"))), 200).await;
+    let items = inbox["items"].as_array().unwrap();
+    let oldest = items.last().unwrap()["id"].as_str().unwrap().to_string();
+    a.send(
+        a.owner(c.post(a.url(&format!("/api/inbox/{oldest}/read"))))
+            .json(&json!({})),
+        200,
+    )
+    .await;
+
+    // Pre-participant comments on the Codex artifact: no author, no mentions.
+    {
+        let db = rusqlite::Connection::open(ts.home.db_path()).unwrap();
+        db.execute(
+            "UPDATE comments SET author_public_id = NULL
+             WHERE thread_id IN (?1, ?2) AND author_kind = 'viewer'",
+            rusqlite::params![old1, old2],
+        )
+        .unwrap();
+        db.execute(
+            "DELETE FROM mentions WHERE comment_id IN
+             (SELECT id FROM comments WHERE thread_id IN (?1, ?2))",
+            rusqlite::params![old1, old2],
+        )
+        .unwrap();
+        db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .unwrap();
+    }
+    let end = clax_core::store::stamp(clax_core::working::Clock::now(clock.as_ref()));
+    assert!(
+        end.as_str() < FIXED_T,
+        "the fixture ends at {end}, before {FIXED_T}"
+    );
+    std::fs::write(fixtures_dir().join(FIXTURE), dump(&ts.home)).unwrap();
+}

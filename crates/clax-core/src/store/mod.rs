@@ -69,7 +69,9 @@ pub mod threads;
 pub mod viewers;
 pub mod watches;
 
+use crate::working::{Clock, SystemClock};
 use crate::{CoreError, Home, Result};
+use chrono::{DateTime, Utc};
 use exec::{Readers, Workers, Writer};
 use inbox::InboxChange;
 use rusqlite::Connection;
@@ -97,6 +99,21 @@ pub struct Store {
     inbox_listener: RwLock<Option<SharedListener>>,
     /// Audit recording state: the nudge and the install ID.
     audit: audit::AuditState,
+    /// Where every time the store writes or compares is read
+    /// ([`Store::now`]). IDs are minted from the system clock.
+    clock: Arc<dyn Clock>,
+}
+
+/// `t` as the store writes times: RFC 3339 in UTC, to the millisecond.
+pub fn stamp(t: DateTime<Utc>) -> String {
+    t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+/// The system clock's time as the store writes times ([`stamp`]), for times
+/// taken outside any store (an agent side's, or the daemon's before its
+/// store opens).
+pub fn stamp_now() -> String {
+    stamp(Utc::now())
 }
 
 impl Store {
@@ -104,7 +121,7 @@ impl Store {
     /// the current schema on the write connection, and records the history
     /// from before the audit there once per home (the audit backfill, see
     /// [`backfill`]), so the store records no change before the history it
-    /// follows.
+    /// follows. The store reads the time from the system clock.
     pub fn open(home: &Home) -> Result<Store> {
         Store::open_reporting(home, &mut |_| {})
     }
@@ -114,6 +131,22 @@ impl Store {
     /// schema arrives, when there is history to record).
     pub fn open_reporting(
         home: &Home,
+        report: &mut dyn FnMut(&backfill::Progress),
+    ) -> Result<Store> {
+        Store::open_with(home, Arc::new(SystemClock), report)
+    }
+
+    /// As [`Store::open`], with every time the store reads or writes taken
+    /// from `clock`.
+    pub fn open_with_clock(home: &Home, clock: Arc<dyn Clock>) -> Result<Store> {
+        Store::open_with(home, clock, &mut |_| {})
+    }
+
+    /// [`Store::open_with_clock`], reporting the audit backfill's progress
+    /// to `report` as [`Store::open_reporting`] does.
+    pub fn open_with(
+        home: &Home,
+        clock: Arc<dyn Clock>,
         report: &mut dyn FnMut(&backfill::Progress),
     ) -> Result<Store> {
         home.ensure_dirs()?;
@@ -148,6 +181,7 @@ impl Store {
             inbox_changes,
             inbox_listener: RwLock::new(None),
             audit: audit::AuditState::default(),
+            clock,
         })
     }
 
@@ -189,8 +223,15 @@ impl Store {
         self.readers.set_limit(None);
     }
 
-    pub fn now() -> String {
-        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    /// The current time by the store's clock, as the store writes times
+    /// ([`stamp`]).
+    pub fn now(&self) -> String {
+        stamp(self.clock.now())
+    }
+
+    /// The current time by the store's clock.
+    pub fn now_utc(&self) -> DateTime<Utc> {
+        self.clock.now()
     }
 
     /// Runs `f` on a reader connection, which refuses writes.
@@ -375,5 +416,85 @@ pub(crate) mod test_util {
             file: "index.html".into(),
             route: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_util::{anchor, artifact};
+    use super::threads::NewThread;
+    use crate::audit::AuditCtx;
+    use crate::working::ManualClock;
+    use crate::{Home, RegisterSession, Store};
+    use std::sync::Arc;
+
+    #[test]
+    fn store_time_comes_from_the_injected_clock() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualClock::at("2026-09-01T10:00:00Z"));
+        let st = Store::open_with_clock(&Home::at(dir.path().join("ax")), clock.clone()).unwrap();
+        assert_eq!(st.now(), "2026-09-01T10:00:00.000Z");
+        let s = st
+            .register_session(
+                &AuditCtx::DAEMON,
+                RegisterSession {
+                    harness: "claude".into(),
+                    harness_session_id: Some("h1".into()),
+                    cwd: "/w".into(),
+                    transcript_path: None,
+                    pid: None,
+                    parent_pid: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(s.started_at, "2026-09-01T10:00:00.000Z");
+        assert_eq!(s.last_seen_at, "2026-09-01T10:00:00.000Z");
+        clock.advance(90);
+        let again = st
+            .register_session(
+                &AuditCtx::DAEMON,
+                RegisterSession {
+                    harness: "claude".into(),
+                    harness_session_id: Some("h1".into()),
+                    cwd: "/w".into(),
+                    transcript_path: None,
+                    pid: None,
+                    parent_pid: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(again.id, s.id);
+        assert_eq!(again.started_at, "2026-09-01T10:00:00.000Z");
+        assert_eq!(again.last_seen_at, "2026-09-01T10:01:30.000Z");
+        let aid = artifact(&st, Some(&s.id));
+        let t = st
+            .create_thread(
+                &AuditCtx::DAEMON,
+                &aid,
+                NewThread {
+                    author_public_id: None,
+                    version_n: 1,
+                    anchor: anchor(),
+                    author_name: "Alex".into(),
+                    body: "Tighten this.".into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(t.created_at, "2026-09-01T10:01:30.000Z");
+        assert_eq!(t.comments[0].created_at, "2026-09-01T10:01:30.000Z");
+    }
+
+    #[test]
+    fn the_reaper_reads_the_store_clock() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualClock::at("2026-09-01T10:00:00Z"));
+        let st = Store::open_with_clock(&Home::at(dir.path().join("ax")), clock.clone()).unwrap();
+        let s = super::test_util::session(&st, "claude", "h1");
+        let idle = std::time::Duration::from_secs(Store::SESSION_IDLE_SECS);
+        assert!(st.reap_sessions(idle, &|_| false).unwrap().ended.is_empty());
+        clock.advance(Store::SESSION_IDLE_SECS as i64 + 1);
+        assert_eq!(st.reap_sessions(idle, &|_| false).unwrap().ended, vec![s]);
     }
 }

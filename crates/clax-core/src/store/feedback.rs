@@ -24,9 +24,9 @@ pub struct TakeFeedback {
     pub include_resends: bool,
 }
 
-fn ts(secs_ago: i64) -> String {
-    (chrono::Utc::now() - chrono::Duration::seconds(secs_ago))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+/// `secs_ago` seconds before `now`, as the store writes times.
+fn ts(now: chrono::DateTime<chrono::Utc>, secs_ago: i64) -> String {
+    super::stamp(now - chrono::Duration::seconds(secs_ago))
 }
 
 /// Live sessions a sent thread on artifact `aid` goes to: the owner (first)
@@ -45,8 +45,7 @@ fn live_targets(c: &Connection, aid: &str, owner: Option<&str>) -> Result<Vec<St
 /// Releases session `sid` after it ended: drops its watches and scope watches; each of its
 /// undelivered rows is deleted when another live session is a target of the
 /// same comment, else untargeted for the next session that publishes or watches.
-pub(crate) fn release_session(tx: &Transaction<'_>, sid: &str) -> Result<Touched> {
-    let now = Store::now();
+pub(crate) fn release_session(tx: &Transaction<'_>, sid: &str, now: &str) -> Result<Touched> {
     let mut touched = Touched::default();
     tx.execute("DELETE FROM watches WHERE session_id = ?1", params![sid])?;
     tx.execute(
@@ -198,6 +197,7 @@ pub(crate) fn send_in(
     batch_id: Option<&str>,
     target: SendTarget<'_>,
     touched: &mut Touched,
+    now: &str,
 ) -> Result<Sent> {
     let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
     if t.status == "resolved" {
@@ -218,7 +218,6 @@ pub(crate) fn send_in(
     let target_before = stored_target(tx, thread_id)?;
     let (targets, to) = targets_for(tx, thread_id, &t.artifact_id, owner.as_deref(), target)?;
     let retargeted = stored_target(tx, thread_id)? != target_before;
-    let now = Store::now();
     let mut inserted = Vec::new();
     for c in t.comments.iter().filter(|c| c.author_kind == AUTHOR_VIEWER) {
         let has_row: bool = tx.query_row(
@@ -373,7 +372,8 @@ impl Store {
     ) -> Result<(Thread, Touched)> {
         let mut touched = Touched::default();
         self.with_tx(|tx| {
-            let sent = send_in(tx, thread_id, None, target, &mut touched)?;
+            let now = self.now();
+            let sent = send_in(tx, thread_id, None, target, &mut touched, &now)?;
             if !sent.changed {
                 return Ok(());
             }
@@ -383,7 +383,7 @@ impl Store {
                 |r| r.get(0),
             )?;
             let rec = send_record(
-                &Store::now(),
+                &now,
                 &aid,
                 Some(thread_id),
                 send_target_value(tx, sent.to.as_deref())?,
@@ -415,9 +415,9 @@ impl Store {
         q: &TakeFeedback,
         browser_base: &str,
     ) -> Result<(Vec<FeedbackItem>, Touched)> {
-        let cutoff = ts(Self::RESEND_AFTER_SECS);
+        let cutoff = ts(self.now_utc(), Self::RESEND_AFTER_SECS);
         let resends = q.include_resends && q.tier.resends();
-        let now = Store::now();
+        let now = self.now();
         let base = browser_base.trim_end_matches('/').to_string();
         let pending = self.with_tx(|tx| {
             let mut stmt = tx.prepare_cached(TAKE_FEEDBACK)?;
@@ -578,7 +578,7 @@ impl Store {
         reason: &str,
     ) -> Result<Touched> {
         let mut touched = Touched::default();
-        let now = Store::now();
+        let now = self.now();
         self.with_tx(|tx| {
             for id in ids {
                 let n = tx.execute(
@@ -643,7 +643,7 @@ impl Store {
         ids: &[String],
     ) -> Result<Touched> {
         debug_assert!(matches!(column, "thread_id" | "comment_id"));
-        let now = Store::now();
+        let now = self.now();
         let mut touched = Touched::default();
         let undelivered = format!(
             "SELECT f.id, f.thread_id, t.artifact_id FROM feedback f JOIN threads t ON t.id = f.thread_id
@@ -736,7 +736,7 @@ impl Store {
     /// the rows still wait for tiers 1, 2 and 4.
     pub fn take_notices(&self, session_id: &str, browser_base: &str) -> Result<Vec<Notice>> {
         let base = browser_base.trim_end_matches('/').to_string();
-        let now = Store::now();
+        let now = self.now();
         self.with_tx(|tx| {
             let rows = {
                 let mut stmt = tx.prepare(

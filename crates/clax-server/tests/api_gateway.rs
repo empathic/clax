@@ -625,7 +625,9 @@ async fn revoking_the_credential_ends_the_extensions_open_stream() {
 #[tokio::test]
 async fn an_expired_credential_ends_the_extensions_open_stream() {
     use clax_core::working::ManualClock;
-    let clock = std::sync::Arc::new(ManualClock::at(&clax_core::Store::now()));
+    let clock = std::sync::Arc::new(ManualClock::at(
+        &clax_core::store::stamp(chrono::Utc::now()),
+    ));
     let c = clock.clone();
     let ts = TestServer::spawn_with(move |st| {
         st.ext_creds = std::sync::Arc::new(

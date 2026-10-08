@@ -652,7 +652,7 @@ mod tests {
         let (_dir, st) = store();
         let idle = st.mint_extension_credential("abc").unwrap();
         let used = st.mint_extension_credential("abc").unwrap();
-        let clock = Arc::new(ManualClock::at(&Store::now()));
+        let clock = Arc::new(ManualClock::at(&st.now()));
         let c = Credentials::load_with(&st, clock.clone()).unwrap();
         assert!(!c.due_for_touch(&used.hash), "used just now");
         clock.advance(29 * DAY);

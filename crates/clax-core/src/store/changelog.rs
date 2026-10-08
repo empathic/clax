@@ -13,11 +13,12 @@ fn insert_link(
     n: u32,
     tid: &str,
     source: LinkSource,
+    now: &str,
 ) -> Result<()> {
     tx.execute(
         "INSERT OR IGNORE INTO version_threads (artifact_id, version_n, thread_id, source, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![aid, n, tid, source.as_str(), Store::now()],
+        params![aid, n, tid, source.as_str(), now],
     )?;
     Ok(())
 }
@@ -35,7 +36,11 @@ fn thread_on(tx: &Transaction<'_>, aid: &str, tid: &str) -> Result<bool> {
 
 /// Links an agent-resolved thread to its artifact's current version when it
 /// has no link yet, inside the resolve's transaction; the version linked.
-pub(crate) fn link_on_resolve_in(tx: &Transaction<'_>, thread_id: &str) -> Result<Option<u32>> {
+pub(crate) fn link_on_resolve_in(
+    tx: &Transaction<'_>,
+    thread_id: &str,
+    now: &str,
+) -> Result<Option<u32>> {
     let linked: bool = tx
         .query_row(
             "SELECT 1 FROM version_threads WHERE thread_id = ?1 LIMIT 1",
@@ -55,7 +60,7 @@ pub(crate) fn link_on_resolve_in(tx: &Transaction<'_>, thread_id: &str) -> Resul
         )
         .optional()?
         .ok_or(CoreError::NotFound)?;
-    insert_link(tx, &aid, n, thread_id, LinkSource::Resolve)?;
+    insert_link(tx, &aid, n, thread_id, LinkSource::Resolve, now)?;
     Ok(Some(n))
 }
 
@@ -67,6 +72,7 @@ pub(crate) fn link_version(
     aid: &str,
     n: u32,
     p: &ValidatedPublish,
+    now: &str,
 ) -> Result<()> {
     for tid in &p.addresses {
         if !thread_on(tx, aid, tid)? {
@@ -75,11 +81,11 @@ pub(crate) fn link_version(
                 format!("{tid} is not a thread of {aid}"),
             ));
         }
-        insert_link(tx, aid, n, tid, LinkSource::Explicit)?;
+        insert_link(tx, aid, n, tid, LinkSource::Explicit, now)?;
     }
     for tid in &p.working_threads {
         if thread_on(tx, aid, tid)? {
-            insert_link(tx, aid, n, tid, LinkSource::Working)?;
+            insert_link(tx, aid, n, tid, LinkSource::Working, now)?;
         }
     }
     Ok(())
@@ -124,7 +130,7 @@ impl Store {
     /// Records nothing: production links inside the resolve's transaction.
     #[cfg(test)]
     pub(crate) fn link_on_resolve(&self, thread_id: &str) -> Result<Option<u32>> {
-        self.with_tx(|tx| link_on_resolve_in(tx, thread_id))
+        self.with_tx(|tx| link_on_resolve_in(tx, thread_id, &self.now()))
     }
 
     /// The viewer's seen mark on `aid`.
@@ -144,7 +150,7 @@ impl Store {
     /// [`MAX_SEEN_PER_VIEWER`], least recently updated first. The mark after
     /// the write.
     pub fn mark_seen(&self, viewer_id: &str, aid: &ArtifactId, n: u32) -> Result<u32> {
-        let now = Store::now();
+        let now = self.now();
         self.with_tx(|tx| {
             let latest: Option<u32> = tx.query_row(
                 "SELECT MAX(n) FROM versions WHERE artifact_id = ?1",

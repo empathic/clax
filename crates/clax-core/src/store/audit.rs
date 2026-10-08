@@ -213,16 +213,21 @@ fn row_to_event(r: &Row<'_>) -> rusqlite::Result<AuditRow> {
 }
 
 /// A `working.start` event, without IDs (spec §6.5).
-fn working_start(key: &str, message: &Option<String>, thread_ids: &[String]) -> AuditRecord {
-    AuditRecord::new(AuditKind::WorkingStart, Store::now())
+fn working_start(
+    at: &str,
+    key: &str,
+    message: &Option<String>,
+    thread_ids: &[String],
+) -> AuditRecord {
+    AuditRecord::new(AuditKind::WorkingStart, at)
         .with("key", key)
         .with("message", message.clone())
         .with("thread_ids", thread_ids.to_vec())
 }
 
 /// A `working.stop` event, without IDs (spec §6.5).
-fn working_stop(key: &str, reason: StopReason, duration_ms: i64) -> AuditRecord {
-    AuditRecord::new(AuditKind::WorkingStop, Store::now())
+fn working_stop(at: &str, key: &str, reason: StopReason, duration_ms: i64) -> AuditRecord {
+    AuditRecord::new(AuditKind::WorkingStop, at)
         .with("key", key)
         .with("reason", reason.as_str())
         .with("duration_ms", duration_ms)
@@ -455,7 +460,7 @@ impl Store {
                     None => None,
                 },
             };
-            let rec = tool_call_record(&Store::now(), report, artifact, &produced);
+            let rec = tool_call_record(&self.now(), report, artifact, &produced);
             let ctx = AuditCtx {
                 call: None,
                 ..ctx.clone()
@@ -497,7 +502,7 @@ impl Store {
                 CallIdScan::One(call, artifact) if !contested => (Some(call), artifact),
                 CallIdScan::One(..) | CallIdScan::None | CallIdScan::Many => (None, None),
             };
-            let mut rec = AuditRecord::new(AuditKind::ToolCallId, Store::now())
+            let mut rec = AuditRecord::new(AuditKind::ToolCallId, self.now())
                 .with("call_id", call_id.clone())
                 .with("harness_call_id", report.tool_use_id.as_str())
                 .with("harness_tool", report.tool_name.as_str())
@@ -529,6 +534,7 @@ impl Store {
             return Ok(());
         }
         let ttl = AuditCtx::system(SystemReason::Ttl);
+        let now = self.now();
         self.with_tx(|tx| {
             for t in changes {
                 let (ctx, rec, sid, aid, fallback) = match t {
@@ -540,7 +546,7 @@ impl Store {
                         thread_ids,
                     } => (
                         ctx,
-                        working_start(key, message, thread_ids),
+                        working_start(&now, key, message, thread_ids),
                         session_id,
                         artifact_id,
                         AgentActor::default(),
@@ -559,7 +565,7 @@ impl Store {
                         } else {
                             ctx
                         },
-                        working_stop(key, *reason, *duration_ms),
+                        working_stop(&now, key, *reason, *duration_ms),
                         session_id,
                         artifact_id,
                         AgentActor {
@@ -819,7 +825,8 @@ pub(crate) mod tests {
     }
 
     fn rec(title: &str) -> AuditRecord {
-        let mut r = AuditRecord::new(AuditKind::ArtifactUpdate, Store::now()).with("title", title);
+        let mut r = AuditRecord::new(AuditKind::ArtifactUpdate, super::super::stamp_now())
+            .with("title", title);
         r.ids.artifact = Some("01ARZ3NDEKTSV4RRFFQ69G5FAV".into());
         r
     }
