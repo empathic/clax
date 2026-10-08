@@ -31,12 +31,15 @@
 //! threads (one per reader) fed by a bounded FIFO queue, so a pile-up of
 //! requests waits in the queue instead of claiming more threads, and a job
 //! whose request has given up is skipped. Reads whose cost grows with the
-//! whole home go through [`Store::call_bulk`] instead: a second queue that
-//! workers take from after the first (yet never starving it), and whose
-//! jobs never hold every worker, so cheap requests do not wait behind them. A job waiting for the write turn
+//! whole home go through [`Store::call_bulk`] instead: a second bounded
+//! FIFO queue, which workers take from after the first while still starting
+//! one of its jobs at least every few interactive ones, and whose jobs never
+//! hold every worker, so cheap requests do not wait behind them. Each queue
+//! holds at most [`QUEUE_CAPACITY`](exec::QUEUE_CAPACITY) jobs, so twice
+//! that may be queued or running in all. A job waiting for the write turn
 //! or holding it does not count against the workers that reads need: while
 //! fewer than one per reader would be free of writes, the pool starts
-//! another. [`Store::shutdown`] drains the queue and joins the threads.
+//! another. [`Store::shutdown`] drains both queues and joins the threads.
 //!
 //! Version writes, deletes, and asset writes combine a transaction with
 //! file-system work, ordered so that a failure on either side leaves no

@@ -599,10 +599,12 @@ fn work(shared: Arc<Shared>) {
                 if let Some(next) = q.next(shared.bulk_cap) {
                     break next;
                 }
-                // A bulk job waiting for a running one to end is started by
-                // the worker that ends it.
                 if q.closed && q.is_empty() {
                     q.threads -= 1;
+                    drop(q);
+                    // A worker that waited while bulk jobs were held back
+                    // at the cap sees the queue empty now, and exits too.
+                    shared.ready.notify_all();
                     return;
                 }
                 let spare = q.threads - q.writing > shared.base;
@@ -623,9 +625,15 @@ fn work(shared: Arc<Shared>) {
         };
         task();
         if lane == Lane::Bulk {
-            // This worker looks at the queue next, so a bulk job this one
-            // held back needs no wake-up.
-            lock(&shared.queue).bulk_running -= 1;
+            let mut q = lock(&shared.queue);
+            q.bulk_running -= 1;
+            let held_back = !q.bulk.is_empty();
+            drop(q);
+            // A bulk job held back at the cap may start now, on any idle
+            // worker.
+            if held_back {
+                shared.ready.notify_one();
+            }
         }
     }
 }
@@ -1238,5 +1246,67 @@ mod tests {
             lock(&st.workers.get().unwrap().shared.queue).bulk_running,
             0
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_returns_with_bulk_calls_queued_past_their_cap() {
+        let (_d, st) = store();
+        let st = Arc::new(st);
+        let cap = st.readers.max() - 1;
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let (started_tx, mut started) = tokio::sync::mpsc::unbounded_channel();
+        let bulk: Vec<_> = (0..cap + 2)
+            .map(|i| {
+                let (st, gate, started_tx) = (st.clone(), gate.clone(), started_tx.clone());
+                tokio::spawn(async move {
+                    st.call_bulk(move |s| {
+                        started_tx.send(i).unwrap();
+                        let (open, opened) = &*gate;
+                        let mut g = lock(open);
+                        while !*g {
+                            g = opened.wait(g).unwrap_or_else(PoisonError::into_inner);
+                        }
+                        drop(g);
+                        s.integrity_check()
+                    })
+                    .await
+                })
+            })
+            .collect();
+        // `cap` calls run and two wait behind them, each holding a slot.
+        for _ in 0..cap {
+            started.recv().await.unwrap();
+        }
+        let queued = || {
+            st.workers
+                .get()
+                .map_or(0, |w| QUEUE_CAPACITY - w.bulk_slots.available_permits())
+        };
+        while queued() < cap + 2 {
+            tokio::task::yield_now().await;
+        }
+        // A thread of its own, not tokio's blocking pool: a shutdown that
+        // hangs fails this test instead of hanging the runtime's exit.
+        let (drained_tx, drained) = tokio::sync::oneshot::channel();
+        let s = st.clone();
+        thread::spawn(move || {
+            s.shutdown();
+            let _ = drained_tx.send(());
+        });
+        // The pool closes while bulk calls still wait past the cap.
+        while !lock(&st.workers.get().unwrap().shared.queue).closed {
+            tokio::task::yield_now().await;
+        }
+        let (open, opened) = &*gate;
+        *lock(open) = true;
+        opened.notify_all();
+        tokio::time::timeout(Duration::from_secs(10), drained)
+            .await
+            .expect("shutdown returned")
+            .unwrap();
+        for b in bulk {
+            assert_eq!(b.await.unwrap().unwrap(), "ok");
+        }
+        assert_eq!(lock(&st.workers.get().unwrap().shared.queue).threads, 0);
     }
 }
