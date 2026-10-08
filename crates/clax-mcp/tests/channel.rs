@@ -3,44 +3,15 @@
 //! command line carries the launch flags under test, and the test drives the
 //! shim over raw JSON-RPC lines.
 
+use crate::common::clax_bin;
 use clax_core::Home;
 use clax_server::daemon::read_daemon_info;
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::OnceLock;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
-
-/// The `clax` binary: `CLAX_TEST_BIN`, else built once per test process
-/// (see `tests/shim.rs`).
-fn clax_bin() -> PathBuf {
-    static BIN: OnceLock<PathBuf> = OnceLock::new();
-    BIN.get_or_init(|| {
-        // A prebuilt binary (quality_gates.sh builds one for the whole run):
-        // each test process would otherwise run its own `cargo build`.
-        if let Some(bin) = std::env::var_os("CLAX_TEST_BIN") {
-            let bin = PathBuf::from(bin);
-            assert!(bin.exists(), "CLAX_TEST_BIN {} missing", bin.display());
-            return bin;
-        }
-        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let mut cmd = Command::new(env!("CARGO"));
-        cmd.current_dir(&workspace)
-            .args(["build", "--quiet", "-p", "clax-cli", "--bin", "clax"]);
-        if !cfg!(debug_assertions) {
-            cmd.arg("--release");
-        }
-        let status = cmd.status().expect("run cargo build");
-        assert!(status.success(), "cargo build -p clax-cli failed");
-        let exe = std::env::current_exe().unwrap();
-        let bin = exe.parent().unwrap().parent().unwrap().join("clax");
-        assert!(bin.exists(), "{} missing", bin.display());
-        bin
-    })
-    .clone()
-}
 
 /// The harness variables a test run may inherit; every process here clears them.
 const HARNESS_VARS: &[&str] = &[
