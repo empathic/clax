@@ -176,6 +176,19 @@ impl Identity {
         self.token || self.events_cookie || self.owner_cookie || self.extension
     }
 
+    /// 403 `forbidden` ("only the owner `what`") unless the request speaks
+    /// for the owner ([`Identity::is_owner`]).
+    pub fn require_owner(&self, what: &str) -> Result<(), crate::error::ApiError> {
+        if self.is_owner() {
+            Ok(())
+        } else {
+            Err(crate::error::ApiError::forbidden(
+                "forbidden",
+                format!("only the owner {what}"),
+            ))
+        }
+    }
+
     /// Whether the request comes from a browser of the owner's: only the
     /// shell's token request hands out the owner and events cookies, and the
     /// extension is a browser of the owner's.

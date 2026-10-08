@@ -18,7 +18,7 @@
   import { type InboxFilter, type InboxItem, type InboxKind, listArtifacts } from "../api";
   import { after } from "../clock";
   import type { InboxFeed, QuestionFeed } from "./feed.svelte";
-  import { INBOX_KINDS, filterFromUrl, filterToUrl } from "./inbox-model";
+  import { INBOX_KINDS, filterFromUrl, filterToUrl, newestSeq } from "./inbox-model";
   import InboxRow from "./InboxRow.svelte";
   import { openItem } from "./open";
   import QuestionList from "./QuestionList.svelte";
@@ -166,7 +166,7 @@
     busy = true;
     try {
       // Up to the newest item shown, so one made since stays unread.
-      await inbox.markAll(filtered ? { ...filter } : undefined, Math.max(...unread!.items.map(i => i.seq)));
+      await inbox.markAll(filtered ? { ...filter } : undefined, newestSeq(unread!.items));
       await load();
     } catch (e) {
       oops("mark them read")(e);

@@ -439,7 +439,7 @@ mod l10 {
         Filtered,
         /// It names no artifact.
         NoArtifact,
-        /// It refuses every caller but the owner (`owner(&who)`); every
+        /// It refuses every caller but the owner (`who.require_owner(…)`); every
         /// owner credential sees live pages (the extension's is
         /// loopback-only).
         Owner,
@@ -670,7 +670,7 @@ mod l10 {
                         "{name} does not filter by sees_live_pages"
                     ),
                     Owner => assert!(
-                        sig.contains("who: Identity") && src.contains("owner(&who)?;"),
+                        sig.contains("who: Identity") && src.contains("who.require_owner("),
                         "{name} does not refuse callers other than the owner"
                     ),
                     NoArtifact => assert!(

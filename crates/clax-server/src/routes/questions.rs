@@ -427,18 +427,6 @@ pub async fn waiters(
     Ok(Json(json!({"count": n})))
 }
 
-/// 403 `forbidden` unless `who` speaks for the owner (spec §6.2, §11).
-fn owner(who: &Identity) -> Result<(), ApiError> {
-    if who.is_owner() {
-        Ok(())
-    } else {
-        Err(ApiError::forbidden(
-            "forbidden",
-            "only the owner sees and answers questions",
-        ))
-    }
-}
-
 #[derive(Deserialize)]
 pub struct ListQuery {
     #[serde(default)]
@@ -458,7 +446,7 @@ pub async fn list(
     who: Identity,
     q: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    owner(&who)?;
+    who.require_owner("sees and answers questions")?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let which = match q.status.as_deref() {
         None | Some("open") => ListStatus::Open,
@@ -493,7 +481,7 @@ pub async fn get_one(
     who: Identity,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    owner(&who)?;
+    who.require_owner("sees and answers questions")?;
     let qid = path(p)?;
     let v = s
         .store_call(move |db| {
@@ -530,7 +518,7 @@ pub async fn answer(
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<AnswerBody>, JsonRejection>,
 ) -> Result<Json<Value>, QuestionError> {
-    owner(&who)?;
+    who.require_owner("sees and answers questions")?;
     let qid = path(p)?;
     let b = body(req)?;
     let via = if who.extension {
@@ -559,7 +547,7 @@ pub async fn decline(
     who: Identity,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, QuestionError> {
-    owner(&who)?;
+    who.require_owner("sees and answers questions")?;
     owner_close(s, path(p)?, Close::Decline).await
 }
 
@@ -572,6 +560,6 @@ pub async fn release_owner(
     who: Identity,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, QuestionError> {
-    owner(&who)?;
+    who.require_owner("sees and answers questions")?;
     owner_close(s, path(p)?, Close::Release).await
 }
