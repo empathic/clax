@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { item, view } from "./fixtures";
-import { filterFromUrl, filterToUrl, itemText, itemTitle, notificationText } from "./inbox-model";
+import { filterFromUrl, filterToUrl, itemText, itemTitle, newestSeq, notificationText } from "./inbox-model";
 
 describe("inbox model", () => {
   it("titles each kind", () => {
@@ -49,5 +49,12 @@ describe("inbox model", () => {
     const t = notificationText(item("published", { artifact: { id: "x", title: "Sales\u202e\u0000 board", kind: "html", page_url: null } }));
     expect(t.title).toBe("claude published Sales board");
     expect(notificationText(item("published", { published: { description: "y".repeat(180) } })).body).toBe("y".repeat(180));
+  });
+});
+
+describe("newestSeq", () => {
+  it("is the newest seq shown, and 0 (marking nothing) when none was", () => {
+    expect(newestSeq([item("reply", { seq: 3 }), item("version", { seq: 9 }), item("published", { seq: 5 })])).toBe(9);
+    expect(newestSeq([])).toBe(0);
   });
 });

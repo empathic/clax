@@ -31,18 +31,6 @@ pub const SUMMARY_LATEST: u32 = 5;
 /// Open questions the summary shows at most.
 pub const SUMMARY_QUESTIONS: u32 = 200;
 
-/// 403 `forbidden` unless `who` speaks for the owner (spec §8.1, §11).
-fn owner(who: &Identity) -> Result<(), ApiError> {
-    if who.is_owner() {
-        Ok(())
-    } else {
-        Err(ApiError::forbidden(
-            "forbidden",
-            "only the owner reads the inbox",
-        ))
-    }
-}
-
 fn invalid(msg: impl Into<String>) -> ApiError {
     ApiError::bad_request("invalid_query", msg)
 }
@@ -172,7 +160,7 @@ pub async fn list(
     who: Identity,
     q: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    owner(&who)?;
+    who.require_owner("reads the inbox")?;
     let q = query_of(q)?;
     let mut iq = Filter {
         q: q.q,
@@ -245,7 +233,7 @@ pub async fn summary(
     _o: SameOrigin,
     who: Identity,
 ) -> Result<Json<Value>, ApiError> {
-    owner(&who)?;
+    who.require_owner("reads the inbox")?;
     let out = s
         .store_call(move |db| {
             let (open, _) = db.list_questions(ListStatus::Open, SUMMARY_QUESTIONS)?;
@@ -286,7 +274,7 @@ pub async fn get_one(
     who: Identity,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    owner(&who)?;
+    who.require_owner("reads the inbox")?;
     let id = item_id(p)?;
     let item = s
         .store_call(move |db| {
@@ -318,7 +306,7 @@ pub async fn read_one(
     who: Identity,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    owner(&who)?;
+    who.require_owner("reads the inbox")?;
     mark_one(s, item_id(p)?, true).await
 }
 
@@ -330,7 +318,7 @@ pub async fn unread_one(
     who: Identity,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    owner(&who)?;
+    who.require_owner("reads the inbox")?;
     mark_one(s, item_id(p)?, false).await
 }
 
@@ -359,7 +347,7 @@ pub async fn read_many(
     who: Identity,
     req: Result<Json<ReadBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    owner(&who)?;
+    who.require_owner("reads the inbox")?;
     let b = body(req)?;
     enum Mark {
         Ids(Vec<String>),

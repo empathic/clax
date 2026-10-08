@@ -9,6 +9,10 @@ export const INBOX_KINDS: readonly InboxKind[] = ["reply", "version", "published
 /** The longest notification body, in characters, "…" included. */
 export const NOTIFY_BODY = 180;
 
+/** The newest `seq` of `items`, the `upto` of a mark-all over what was
+ * shown; 0 when none was shown, which marks nothing. */
+export const newestSeq = (items: readonly InboxItem[]): number => items.reduce((n, i) => Math.max(n, i.seq), 0);
+
 const pageOf = (i: InboxItem): string => i.artifact?.title ?? "a deleted page";
 
 /** An item's title: who did what, on which page ("claude replied on

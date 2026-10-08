@@ -16,6 +16,7 @@
   import type { InboxFilter, InboxItem, InboxPage } from "../../../shell/src/api";
   import InboxRow from "../../../shell/src/q/InboxRow.svelte";
   import QuestionList from "../../../shell/src/q/QuestionList.svelte";
+  import { newestSeq } from "../../../shell/src/q/inbox-model";
   import type { PanelToWorker, WorkerToPanel } from "../messages";
   import type { InboxReq } from "./link.svelte";
   import type { PanelQuestions } from "./questions";
@@ -122,7 +123,7 @@
     busy = true;
     try {
       // Up to the newest item shown, so one made since stays unread.
-      await p.link.ask({ t: "inbox-mark-all", filter: filtered ? { ...filter } : null, upto: Math.max(...unread!.items.map(i => i.seq)) });
+      await p.link.ask({ t: "inbox-mark-all", filter: filtered ? { ...filter } : null, upto: newestSeq(unread!.items) });
       await load();
     } catch (e) {
       oops("mark them read")(e);
