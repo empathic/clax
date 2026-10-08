@@ -102,6 +102,19 @@ describe("the shell's fragment", () => {
     send({ type: "clax:hash", hash: "#goals" });
     expect(location.hash).toBe("#goals");
     expect(location.pathname).toBe(path);
+    // Only ever the fragment changes, whatever the value.
+    for (const [hash, to] of [["?x", "#x"], ["/x", "#x"], ["//evil", "#/evil"]]) {
+      send({ type: "clax:hash", hash });
+      expect(location.pathname + location.search + location.hash).toBe(path + to);
+    }
+    // Against the page's own URL, not a <base href> naming another site.
+    const base = document.createElement("base");
+    base.href = "http://other.test/cdn/";
+    document.head.append(base);
+    const origin = location.origin;
+    send({ type: "clax:hash", hash: "#based" });
+    base.remove();
+    expect(location.origin + location.pathname + location.hash).toBe(origin + path + "#based");
     send({ type: "clax:hash", hash: "" });
     expect(location.hash).toBe("");
     expect(history.length).toBe(entries);
