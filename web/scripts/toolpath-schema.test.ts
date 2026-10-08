@@ -3,7 +3,8 @@
 //
 // The Rust tests (`cargo test -p clax-core toolpath`) write the golden
 // documents byte for byte: one export per redaction option set, covering
-// every recorded kind; the sealed journal segment; and unrenderable steps.
+// every recorded kind; the journal-shaped export; the sealed journal
+// segment; and unrenderable steps.
 // This test validates each with Ajv (draft 2020-12, formats asserted)
 // against the schema vendored from Toolpath at the commit named in its
 // SOURCE file.
@@ -34,6 +35,7 @@ describe("Clax's Toolpath documents", () => {
   it("include every golden the renderer writes", () => {
     expect(goldens).toEqual([
       "export.all.path.json",
+      "export.journal.path.json",
       "export.no-names.path.json",
       "export.no-paths.path.json",
       "export.no-text.path.json",

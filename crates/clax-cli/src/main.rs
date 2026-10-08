@@ -136,6 +136,10 @@ pub enum Cmd {
     /// `uninstall` removes what install wrote; `clax uninit` runs it.
     #[command(subcommand)]
     Extension(commands::extension::Cmd),
+    /// Export Clax's recorded history as Toolpath provenance, and show the
+    /// audit journal's state.
+    #[command(subcommand)]
+    Toolpath(commands::toolpath::Cmd),
     /// Print a haiku about Clax, one of ten, chosen at random.
     Haiku,
     /// Print the version; with --verbose, also the commit it was built from.
@@ -294,6 +298,7 @@ fn main() {
         Cmd::Uninit(a) => commands::init::uninit(&cli, &home, a),
         Cmd::Bin { cmd } => commands::bin::run(&cli, &home, cmd.as_ref()),
         Cmd::Extension(c) => commands::extension::run(&cli, &home, c),
+        Cmd::Toolpath(c) => commands::toolpath::run(&cli, &home, c),
         Cmd::Haiku => commands::haiku::run(&cli),
         Cmd::Version(a) => commands::version::run(&cli, a),
         Cmd::NativeHost(a) => commands::native_host::run(&cli, &home, a),

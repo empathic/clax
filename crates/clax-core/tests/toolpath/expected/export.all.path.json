@@ -1,84 +1,9 @@
 {
   "graph": {
-    "id": "clax-6a1f0c3e-golden"
-  },
-  "meta": {
-    "clax": {
-      "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
-      "clax_version": "0.3.1",
-      "first_seq": 1,
-      "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-      "last_seq": 62,
-      "redaction": [
-        "no-text",
-        "no-names",
-        "no-paths"
-      ]
-    },
-    "refs": [
-      {
-        "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-        "rel": "source"
-      }
-    ],
-    "title": "Clax export"
+    "id": "clax-6a1f0c3e-a375109d6c47"
   },
   "paths": [
     {
-      "meta": {
-        "actors": {
-          "agent:claude-code/0aa1b2c3-0000-4000-8000-000000000001": {
-            "identities": [
-              {
-                "id": "0aa1b2c3-0000-4000-8000-000000000001",
-                "system": "claude-code-session"
-              },
-              {
-                "id": "a_old1aa",
-                "system": "clax-agent"
-              },
-              {
-                "id": "01JB9S000000000000000000B0",
-                "system": "clax-session"
-              }
-            ],
-            "name": "Claude Code",
-            "provider": "anthropic"
-          },
-          "human:clax-owner": {
-            "identities": [
-              {
-                "id": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697/u_4be1q8",
-                "system": "clax"
-              }
-            ],
-            "name": "Clax owner"
-          },
-          "tool:clax/0.3.0": {
-            "identities": [
-              {
-                "id": "0b5e1e7a9c3d2f1e0b5e1e7a9c3d2f1e0b5e1e7a",
-                "system": "clax-build"
-              }
-            ],
-            "name": "Clax"
-          }
-        },
-        "clax": {
-          "artifact_id": "b4ckf1llart0",
-          "projection": "artifact"
-        },
-        "kind": "https://toolpath.net/kinds/clax-audit/v1.0.0",
-        "source": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/b4ckf1llart0",
-        "title": "Artifact b4ckf1llart0"
-      },
-      "path": {
-        "base": {
-          "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/b4ckf1llart0"
-        },
-        "head": "e000000000005",
-        "id": "clax-artifact-b4ckf1llart0"
-      },
       "steps": [
         {
           "change": {
@@ -355,52 +280,33 @@
             "timestamp": "2026-10-06T14:00:35.005Z"
           }
         }
-      ]
-    },
-    {
+      ],
+      "path": {
+        "base": {
+          "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/b4ckf1llart0"
+        },
+        "head": "e000000000005",
+        "id": "clax-artifact-b4ckf1llart0"
+      },
       "meta": {
         "actors": {
-          "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44": {
+          "agent:claude-code/0aa1b2c3-0000-4000-8000-000000000001": {
             "identities": [
               {
-                "id": "3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "id": "0aa1b2c3-0000-4000-8000-000000000001",
                 "system": "claude-code-session"
               },
               {
-                "id": "sha256:0d09054645c907a479ab154695f9308d69ecc77ce251e20d2b291655c20a850b",
-                "system": "claude-code-transcript-sha256"
-              },
-              {
-                "id": "a_9f3k2m",
+                "id": "a_old1aa",
                 "system": "clax-agent"
               },
               {
-                "id": "01JB9S00000000000000000001",
+                "id": "01JB9S000000000000000000B0",
                 "system": "clax-session"
               }
             ],
             "name": "Claude Code",
             "provider": "anthropic"
-          },
-          "agent:pi/pi-sess-42": {
-            "identities": [
-              {
-                "id": "01JB9S00000000000000000003",
-                "system": "clax-session"
-              },
-              {
-                "id": "pi-sess-42",
-                "system": "pi-session"
-              },
-              {
-                "id": "a_pi01zz",
-                "system": "clax-agent"
-              }
-            ],
-            "name": "Pi"
-          },
-          "human:clax-anonymous": {
-            "name": "Anonymous viewer"
           },
           "human:clax-owner": {
             "identities": [
@@ -411,18 +317,10 @@
             ],
             "name": "Clax owner"
           },
-          "human:clax-viewer/u_77c0zz": {
+          "tool:clax/0.3.0": {
             "identities": [
               {
-                "id": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697/u_77c0zz",
-                "system": "clax"
-              }
-            ]
-          },
-          "tool:clax/0.3.1": {
-            "identities": [
-              {
-                "id": "abc1234def5678abc1234def5678abc1234def56",
+                "id": "0b5e1e7a9c3d2f1e0b5e1e7a9c3d2f1e0b5e1e7a",
                 "system": "clax-build"
               }
             ],
@@ -430,20 +328,21 @@
           }
         },
         "clax": {
-          "artifact_id": "k3m9q2w8x1ab",
+          "artifact_id": "b4ckf1llart0",
           "projection": "artifact"
         },
         "kind": "https://toolpath.net/kinds/clax-audit/v1.0.0",
-        "source": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
-        "title": "Artifact k3m9q2w8x1ab"
-      },
-      "path": {
-        "base": {
-          "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab"
-        },
-        "head": "e000000000060",
-        "id": "clax-artifact-k3m9q2w8x1ab"
-      },
+        "refs": [
+          {
+            "href": "http://localhost:7480/a/b4ckf1llart0",
+            "rel": "view"
+          }
+        ],
+        "source": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/b4ckf1llart0",
+        "title": "Artifact b4ckf1llart0"
+      }
+    },
+    {
       "steps": [
         {
           "change": {
@@ -1768,11 +1667,11 @@
                 "rel": "session"
               },
               {
-                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/step/e000000000022",
+                "href": "toolpath:clax-artifact-k3m9q2w8x1ab/e000000000022",
                 "rel": "produced"
               },
               {
-                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/step/e000000000023",
+                "href": "toolpath:clax-artifact-k3m9q2w8x1ab/e000000000023",
                 "rel": "produced"
               },
               {
@@ -2332,11 +2231,58 @@
             "timestamp": "2026-10-06T14:07:00.060Z"
           }
         }
-      ]
-    },
-    {
+      ],
+      "path": {
+        "base": {
+          "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab"
+        },
+        "head": "e000000000060",
+        "id": "clax-artifact-k3m9q2w8x1ab"
+      },
       "meta": {
         "actors": {
+          "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44": {
+            "identities": [
+              {
+                "id": "3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "system": "claude-code-session"
+              },
+              {
+                "id": "sha256:0d09054645c907a479ab154695f9308d69ecc77ce251e20d2b291655c20a850b",
+                "system": "claude-code-transcript-sha256"
+              },
+              {
+                "id": "a_9f3k2m",
+                "system": "clax-agent"
+              },
+              {
+                "id": "01JB9S00000000000000000001",
+                "system": "clax-session"
+              }
+            ],
+            "name": "Claude Code",
+            "provider": "anthropic"
+          },
+          "agent:pi/pi-sess-42": {
+            "identities": [
+              {
+                "id": "01JB9S00000000000000000003",
+                "system": "clax-session"
+              },
+              {
+                "id": "pi-sess-42",
+                "system": "pi-session"
+              },
+              {
+                "id": "a_pi01zz",
+                "system": "clax-agent"
+              }
+            ],
+            "name": "Pi"
+          },
+          "human:clax-anonymous": {
+            "name": "Anonymous viewer"
+          },
           "human:clax-owner": {
             "identities": [
               {
@@ -2345,23 +2291,41 @@
               }
             ],
             "name": "Clax owner"
+          },
+          "human:clax-viewer/u_77c0zz": {
+            "identities": [
+              {
+                "id": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697/u_77c0zz",
+                "system": "clax"
+              }
+            ]
+          },
+          "tool:clax/0.3.1": {
+            "identities": [
+              {
+                "id": "abc1234def5678abc1234def5678abc1234def56",
+                "system": "clax-build"
+              }
+            ],
+            "name": "Clax"
           }
         },
         "clax": {
-          "artifact_id": "p7v2n4c8d1ef",
+          "artifact_id": "k3m9q2w8x1ab",
           "projection": "artifact"
         },
         "kind": "https://toolpath.net/kinds/clax-audit/v1.0.0",
-        "source": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef",
-        "title": "Artifact p7v2n4c8d1ef"
-      },
-      "path": {
-        "base": {
-          "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef"
-        },
-        "head": "e000000000051",
-        "id": "clax-artifact-p7v2n4c8d1ef"
-      },
+        "refs": [
+          {
+            "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+            "rel": "view"
+          }
+        ],
+        "source": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+        "title": "Artifact k3m9q2w8x1ab"
+      }
+    },
+    {
       "steps": [
         {
           "change": {
@@ -2564,6 +2528,10 @@
                 "rel": "artifact"
               },
               {
+                "href": "toolpath:clax-artifact-q2w4e6r8t0yu",
+                "rel": "artifact"
+              },
+              {
                 "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef",
                 "rel": "artifact"
               },
@@ -2635,6 +2603,10 @@
               },
               {
                 "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/q2w4e6r8t0yu",
+                "rel": "moved-to"
+              },
+              {
+                "href": "toolpath:clax-artifact-q2w4e6r8t0yu",
                 "rel": "moved-to"
               },
               {
@@ -2711,9 +2683,14 @@
             "timestamp": "2026-10-06T14:05:57.051Z"
           }
         }
-      ]
-    },
-    {
+      ],
+      "path": {
+        "base": {
+          "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef"
+        },
+        "head": "e000000000051",
+        "id": "clax-artifact-p7v2n4c8d1ef"
+      },
       "meta": {
         "actors": {
           "human:clax-owner": {
@@ -2727,20 +2704,21 @@
           }
         },
         "clax": {
-          "artifact_id": "q2w4e6r8t0yu",
+          "artifact_id": "p7v2n4c8d1ef",
           "projection": "artifact"
         },
         "kind": "https://toolpath.net/kinds/clax-audit/v1.0.0",
-        "source": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/q2w4e6r8t0yu",
-        "title": "Artifact q2w4e6r8t0yu"
-      },
-      "path": {
-        "base": {
-          "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/q2w4e6r8t0yu"
-        },
-        "head": "e000000000050",
-        "id": "clax-artifact-q2w4e6r8t0yu"
-      },
+        "refs": [
+          {
+            "href": "http://localhost:7480/a/p7v2n4c8d1ef",
+            "rel": "view"
+          }
+        ],
+        "source": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef",
+        "title": "Artifact p7v2n4c8d1ef"
+      }
+    },
+    {
       "steps": [
         {
           "change": {
@@ -2797,6 +2775,10 @@
               },
               {
                 "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef",
+                "rel": "artifact"
+              },
+              {
+                "href": "toolpath:clax-artifact-p7v2n4c8d1ef",
                 "rel": "artifact"
               },
               {
@@ -2860,6 +2842,10 @@
             "refs": [
               {
                 "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/p7v2n4c8d1ef",
+                "rel": "moved-from"
+              },
+              {
+                "href": "toolpath:clax-artifact-p7v2n4c8d1ef",
                 "rel": "moved-from"
               },
               {
@@ -2982,9 +2968,14 @@
             "timestamp": "2026-10-06T14:05:50.050Z"
           }
         }
-      ]
-    },
-    {
+      ],
+      "path": {
+        "base": {
+          "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/q2w4e6r8t0yu"
+        },
+        "head": "e000000000050",
+        "id": "clax-artifact-q2w4e6r8t0yu"
+      },
       "meta": {
         "actors": {
           "human:clax-owner": {
@@ -2998,20 +2989,21 @@
           }
         },
         "clax": {
-          "artifact_id": "z9x8c7v6b5nm",
+          "artifact_id": "q2w4e6r8t0yu",
           "projection": "artifact"
         },
         "kind": "https://toolpath.net/kinds/clax-audit/v1.0.0",
-        "source": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/z9x8c7v6b5nm",
-        "title": "Artifact z9x8c7v6b5nm"
-      },
-      "path": {
-        "base": {
-          "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/z9x8c7v6b5nm"
-        },
-        "head": "e000000000051",
-        "id": "clax-artifact-z9x8c7v6b5nm"
-      },
+        "refs": [
+          {
+            "href": "http://localhost:7480/a/q2w4e6r8t0yu",
+            "rel": "view"
+          }
+        ],
+        "source": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/q2w4e6r8t0yu",
+        "title": "Artifact q2w4e6r8t0yu"
+      }
+    },
+    {
       "steps": [
         {
           "change": {
@@ -3046,6 +3038,10 @@
                 "rel": "artifact"
               },
               {
+                "href": "toolpath:clax-artifact-p7v2n4c8d1ef",
+                "rel": "artifact"
+              },
+              {
                 "href": "http://localhost:7480/a/z9x8c7v6b5nm",
                 "rel": "view"
               },
@@ -3061,85 +3057,16 @@
             "timestamp": "2026-10-06T14:05:57.051Z"
           }
         }
-      ]
-    },
-    {
+      ],
+      "path": {
+        "base": {
+          "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/z9x8c7v6b5nm"
+        },
+        "head": "e000000000051",
+        "id": "clax-artifact-z9x8c7v6b5nm"
+      },
       "meta": {
         "actors": {
-          "agent:claude-code/0aa1b2c3-0000-4000-8000-000000000001": {
-            "identities": [
-              {
-                "id": "01JB9S000000000000000000B0",
-                "system": "clax-session"
-              },
-              {
-                "id": "0aa1b2c3-0000-4000-8000-000000000001",
-                "system": "claude-code-session"
-              },
-              {
-                "id": "a_old1aa",
-                "system": "clax-agent"
-              }
-            ],
-            "name": "Claude Code",
-            "provider": "anthropic"
-          },
-          "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44": {
-            "identities": [
-              {
-                "id": "3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
-                "system": "claude-code-session"
-              },
-              {
-                "id": "sha256:0d09054645c907a479ab154695f9308d69ecc77ce251e20d2b291655c20a850b",
-                "system": "claude-code-transcript-sha256"
-              },
-              {
-                "id": "a_9f3k2m",
-                "system": "clax-agent"
-              },
-              {
-                "id": "01JB9S00000000000000000001",
-                "system": "clax-session"
-              }
-            ],
-            "name": "Claude Code",
-            "provider": "anthropic"
-          },
-          "agent:clax-mcp": {
-            "name": "MCP client (no session)"
-          },
-          "agent:codex/clax-01JB9S00000000000000000002": {
-            "identities": [
-              {
-                "id": "a_7c1x4q",
-                "system": "clax-agent"
-              },
-              {
-                "id": "01JB9S00000000000000000002",
-                "system": "clax-session"
-              }
-            ],
-            "name": "Codex",
-            "provider": "openai"
-          },
-          "agent:pi/pi-sess-42": {
-            "identities": [
-              {
-                "id": "01JB9S00000000000000000003",
-                "system": "clax-session"
-              },
-              {
-                "id": "pi-sess-42",
-                "system": "pi-session"
-              },
-              {
-                "id": "a_pi01zz",
-                "system": "clax-agent"
-              }
-            ],
-            "name": "Pi"
-          },
           "human:clax-owner": {
             "identities": [
               {
@@ -3148,40 +3075,24 @@
               }
             ],
             "name": "Clax owner"
-          },
-          "tool:clax/0.3.0": {
-            "identities": [
-              {
-                "id": "0b5e1e7a9c3d2f1e0b5e1e7a9c3d2f1e0b5e1e7a",
-                "system": "clax-build"
-              }
-            ],
-            "name": "Clax"
-          },
-          "tool:clax/0.3.1": {
-            "identities": [
-              {
-                "id": "abc1234def5678abc1234def5678abc1234def56",
-                "system": "clax-build"
-              }
-            ],
-            "name": "Clax"
           }
         },
         "clax": {
-          "projection": "install"
+          "artifact_id": "z9x8c7v6b5nm",
+          "projection": "artifact"
         },
         "kind": "https://toolpath.net/kinds/clax-audit/v1.0.0",
-        "source": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-        "title": "Clax install audit trail"
-      },
-      "path": {
-        "base": {
-          "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697"
-        },
-        "head": "e000000000062",
-        "id": "clax-install-6a1f0c3e"
-      },
+        "refs": [
+          {
+            "href": "http://localhost:7480/a/z9x8c7v6b5nm",
+            "rel": "view"
+          }
+        ],
+        "source": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/z9x8c7v6b5nm",
+        "title": "Artifact z9x8c7v6b5nm"
+      }
+    },
+    {
       "steps": [
         {
           "change": {
@@ -4129,7 +4040,154 @@
             "timestamp": "2026-10-06T14:07:14.062Z"
           }
         }
-      ]
+      ],
+      "path": {
+        "base": {
+          "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697"
+        },
+        "head": "e000000000062",
+        "id": "clax-install-6a1f0c3e"
+      },
+      "meta": {
+        "actors": {
+          "agent:claude-code/0aa1b2c3-0000-4000-8000-000000000001": {
+            "identities": [
+              {
+                "id": "01JB9S000000000000000000B0",
+                "system": "clax-session"
+              },
+              {
+                "id": "0aa1b2c3-0000-4000-8000-000000000001",
+                "system": "claude-code-session"
+              },
+              {
+                "id": "a_old1aa",
+                "system": "clax-agent"
+              }
+            ],
+            "name": "Claude Code",
+            "provider": "anthropic"
+          },
+          "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44": {
+            "identities": [
+              {
+                "id": "3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "system": "claude-code-session"
+              },
+              {
+                "id": "sha256:0d09054645c907a479ab154695f9308d69ecc77ce251e20d2b291655c20a850b",
+                "system": "claude-code-transcript-sha256"
+              },
+              {
+                "id": "a_9f3k2m",
+                "system": "clax-agent"
+              },
+              {
+                "id": "01JB9S00000000000000000001",
+                "system": "clax-session"
+              }
+            ],
+            "name": "Claude Code",
+            "provider": "anthropic"
+          },
+          "agent:clax-mcp": {
+            "name": "MCP client (no session)"
+          },
+          "agent:codex/clax-01JB9S00000000000000000002": {
+            "identities": [
+              {
+                "id": "a_7c1x4q",
+                "system": "clax-agent"
+              },
+              {
+                "id": "01JB9S00000000000000000002",
+                "system": "clax-session"
+              }
+            ],
+            "name": "Codex",
+            "provider": "openai"
+          },
+          "agent:pi/pi-sess-42": {
+            "identities": [
+              {
+                "id": "01JB9S00000000000000000003",
+                "system": "clax-session"
+              },
+              {
+                "id": "pi-sess-42",
+                "system": "pi-session"
+              },
+              {
+                "id": "a_pi01zz",
+                "system": "clax-agent"
+              }
+            ],
+            "name": "Pi"
+          },
+          "human:clax-owner": {
+            "identities": [
+              {
+                "id": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697/u_4be1q8",
+                "system": "clax"
+              }
+            ],
+            "name": "Clax owner"
+          },
+          "tool:clax/0.3.0": {
+            "identities": [
+              {
+                "id": "0b5e1e7a9c3d2f1e0b5e1e7a9c3d2f1e0b5e1e7a",
+                "system": "clax-build"
+              }
+            ],
+            "name": "Clax"
+          },
+          "tool:clax/0.3.1": {
+            "identities": [
+              {
+                "id": "abc1234def5678abc1234def5678abc1234def56",
+                "system": "clax-build"
+              }
+            ],
+            "name": "Clax"
+          }
+        },
+        "clax": {
+          "projection": "install"
+        },
+        "kind": "https://toolpath.net/kinds/clax-audit/v1.0.0",
+        "source": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+        "title": "Clax install audit trail"
+      }
     }
-  ]
+  ],
+  "meta": {
+    "clax": {
+      "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+      "clax_version": "0.3.1",
+      "first_seq": 1,
+      "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+      "last_seq": 62,
+      "redaction": [
+        "no-text",
+        "no-names",
+        "no-paths"
+      ],
+      "selection": {
+        "artifacts": [],
+        "by_sessions": [],
+        "live": [],
+        "since": null,
+        "until": null
+      },
+      "shape": "artifacts"
+    },
+    "refs": [
+      {
+        "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+        "rel": "source"
+      }
+    ],
+    "title": "Clax export"
+  }
 }

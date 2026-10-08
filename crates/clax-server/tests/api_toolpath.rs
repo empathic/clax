@@ -2773,3 +2773,219 @@ async fn working_ends_name_their_cause() {
         (&json!("ttl"), &json!("session_end"))
     );
 }
+
+// --- export and status (spec §8.3) ---
+
+fn viewer_count(ts: &TestServer) -> i64 {
+    db(ts)
+        .query_row("SELECT COUNT(*) FROM viewers", [], |r| r.get(0))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn lan_viewer_cannot_export() {
+    let ts = TestServer::spawn().await;
+    ts.publish("Notes", &[("index.html", "<h1>n</h1>")]).await;
+    let viewer = ts.viewer(Some("Ana")).await;
+    let (viewers, seq) = (viewer_count(&ts), last_seq(&ts));
+    let (lan, base) = ts.lan();
+    for path in ["/api/toolpath/export", "/api/toolpath/status"] {
+        let url = format!("{base}{path}");
+        let refused = [
+            lan.get(&url)
+                .header("cookie", format!("clax_viewer={}", viewer.cookie)),
+            lan.get(&url),
+            // A viewer on this machine, a first-time viewer, and no
+            // credentials at all are not the owner either.
+            ts.client
+                .get(&url)
+                .header("cookie", format!("clax_viewer={}", viewer.cookie)),
+            ts.client
+                .get(&url)
+                .header("cookie", "clax_viewer=01J9Z3K4M5N6P7Q8R9S0T1V2W3"),
+            ts.client.get(&url),
+        ];
+        for (i, req) in refused.into_iter().enumerate() {
+            let res = req.send().await.unwrap();
+            assert_eq!(res.status(), 403, "{path} request {i}");
+            let body: Value = res.json().await.unwrap();
+            assert_eq!(body["error"]["code"], "forbidden");
+        }
+    }
+    assert_eq!((viewer_count(&ts), last_seq(&ts)), (viewers, seq));
+    // The owner's cookies count only for what they were made for: the
+    // owner cookie not from another machine, the events cookie not here;
+    // and the extension gateway does not reach the history.
+    let cred: Value = ts
+        .authed(
+            ts.client
+                .post(format!("{}/api/extension/credentials", ts.base)),
+        )
+        .json(&json!({"extension_id": ts.extension_id()}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let cred = cred["credential"].as_str().unwrap().to_string();
+    let (viewers, seq) = (viewer_count(&ts), last_seq(&ts));
+    let host = ts.base.trim_start_matches("http://");
+    let events = format!(
+        "{}={}",
+        clax_server::auth::events_cookie_name(host),
+        clax_server::auth::events_cookie_value(&ts.token)
+    );
+    for path in ["/api/toolpath/export", "/api/toolpath/status"] {
+        let refused = [
+            lan.get(format!("{base}{path}"))
+                .header("cookie", ts.owner_cookie()),
+            ts.client
+                .get(format!("{}{path}", ts.base))
+                .header("cookie", events.clone()),
+            ts.client
+                .get(format!("{}{path}", ts.base))
+                .header(
+                    "origin",
+                    clax_core::extension::extension_origin(&ts.extension_id()),
+                )
+                .header("sec-fetch-site", "cross-site")
+                .header("authorization", format!("Clax-Extension {cred}")),
+        ];
+        for (i, req) in refused.into_iter().enumerate() {
+            let res = req.send().await.unwrap();
+            assert!(
+                matches!(res.status().as_u16(), 403 | 404),
+                "{path} owner-like request {i}: {}",
+                res.status()
+            );
+        }
+    }
+    // Refused before anything is made.
+    assert_eq!((viewer_count(&ts), last_seq(&ts)), (viewers, seq));
+    // The token and the owner cookie may.
+    let url = format!("{}/api/toolpath/export", ts.base);
+    for req in [
+        ts.authed(ts.client.get(&url)),
+        ts.client.get(&url).header("cookie", ts.owner_cookie()),
+    ] {
+        let res = req.send().await.unwrap();
+        assert_eq!(res.status(), 200);
+        assert_eq!(res.headers()["content-type"], "application/json");
+        assert_eq!(res.headers()["cache-control"], "no-store");
+        let doc: Value = res.json().await.unwrap();
+        assert_eq!(doc["paths"][0]["meta"]["title"], "Notes");
+    }
+}
+
+#[tokio::test]
+async fn export_route_selects_streams_and_refuses_before_writing() {
+    let ts = TestServer::spawn().await;
+    // Enough history for several chunks of the stream.
+    let mut ids = Vec::new();
+    for i in 0..40 {
+        let a = ts
+            .publish(
+                &format!("Page {i} {}", "x".repeat(200)),
+                &[("index.html", "<h1>p</h1>")],
+            )
+            .await;
+        ids.push(a["artifact"]["id"].as_str().unwrap().to_string());
+    }
+    let get = |q: String| {
+        let req = ts.authed(
+            ts.client
+                .get(format!("{}/api/toolpath/export?{q}", ts.base)),
+        );
+        async move { req.send().await.unwrap() }
+    };
+    let all = get("pretty=true".into()).await;
+    assert_eq!(all.status(), 200);
+    let text = all.text().await.unwrap();
+    assert!(text.len() > 3 * 64 * 1024, "{} bytes", text.len());
+    let doc: Value = serde_json::from_str(&text).unwrap();
+    let artifact_paths = doc["paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["meta"]["clax"]["projection"] == "artifact")
+        .count();
+    assert_eq!(artifact_paths, ids.len());
+    // The same database and arguments give the same bytes.
+    assert_eq!(get("pretty=true".into()).await.text().await.unwrap(), text);
+    // One artifact, with view refs under the browser base.
+    let one: Value = get(format!("artifact={}&no_text=true", ids[3]))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let paths = one["paths"].as_array().unwrap();
+    assert_eq!(paths.len(), 1);
+    assert_eq!(paths[0]["path"]["id"], format!("clax-artifact-{}", ids[3]));
+    assert_eq!(
+        paths[0]["meta"]["refs"][0]["href"],
+        format!("{}/a/{}", ts.base.replace("127.0.0.1", "localhost"), ids[3])
+    );
+    assert_eq!(one["meta"]["clax"]["redaction"], json!(["no-text"]));
+    assert!(!one.to_string().contains("Page 3"));
+    // One artifact as JSONL.
+    let res = get(format!("artifact={}&format=jsonl", ids[0])).await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers()["content-type"], "application/x-ndjson");
+    let lines = res.text().await.unwrap();
+    assert!(lines.starts_with("{\"PathOpen\""));
+    assert!(lines.ends_with("{\"PathClose\":{}}\n"));
+    // Refusals are statuses, before any byte.
+    for (q, code) in [
+        ("format=jsonl".to_string(), "jsonl_needs_one_path"),
+        ("shape=tree".into(), "invalid_parameter"),
+        (
+            "since=2026-10-01&since=2026-10-02".into(),
+            "invalid_parameter",
+        ),
+        ("no_text=yes".into(), "invalid_parameter"),
+        ("pretty=1".into(), "invalid_parameter"),
+        ("artefact=x".into(), "unknown_parameter"),
+        ("artifact=zzzzzzzzzzzz".into(), "unknown_artifact"),
+        ("by_session=nobody".into(), "unknown_session"),
+        ("live=http://localhost:5173/x".into(), "unknown_live_page"),
+        ("since=tuesday".into(), "invalid_time"),
+    ] {
+        let res = get(q.clone()).await;
+        assert_eq!(res.status(), 400, "{q}");
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["error"]["code"], code, "{q}");
+    }
+}
+
+#[tokio::test]
+async fn toolpath_status_reports_the_table() {
+    let ts = TestServer::spawn().await;
+    ts.publish("Notes", &[("index.html", "<h1>n</h1>")]).await;
+    let res = ts.get_authed("/api/toolpath/status").await;
+    assert_eq!(res.status(), 200);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["newest_seq"], last_seq(&ts));
+    assert_eq!(v["journal"], false);
+    assert!(v["dir"].as_str().unwrap().ends_with("toolpath/journal"));
+    for k in ["segment", "cursor", "lag_ms", "last_error"] {
+        assert_eq!(v[k], Value::Null, "{k}");
+    }
+}
+
+#[tokio::test]
+async fn one_export_runs_at_a_time() {
+    let mut permits = None;
+    let ts = TestServer::spawn_with(|st| permits = Some(st.exports.permits())).await;
+    ts.publish("Notes", &[("index.html", "<h1>n</h1>")]).await;
+    let (viewers, seq) = (viewer_count(&ts), last_seq(&ts));
+    // An export holds the one permit while it runs.
+    let held = permits.unwrap().try_acquire_owned().unwrap();
+    let res = ts.get_authed("/api/toolpath/export").await;
+    assert_eq!(res.status(), 503);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "export_busy");
+    assert_eq!((viewer_count(&ts), last_seq(&ts)), (viewers, seq));
+    drop(held);
+    assert_eq!(ts.get_authed("/api/toolpath/export").await.status(), 200);
+}

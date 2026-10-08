@@ -124,6 +124,7 @@ impl TestServer {
             terminal_after_s: clax_core::config::TERMINAL_AFTER_S,
             calibration: Arc::default(),
             audit_wake: crate::audit::AuditWake::new(),
+            exports: crate::routes::toolpath::Exports::new(),
         };
         f(&mut state);
         state.audit_wake.install(&state.store);

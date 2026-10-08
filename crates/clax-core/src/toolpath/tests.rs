@@ -263,110 +263,39 @@ const OPTION_SETS: [Redaction; 5] = [
     Redaction::ALL,
 ];
 
-/// A Graph of one path per artifact (by `artifact_id` or `artifact2_id`,
-/// in artifact ID order) plus the install path, shaped as spec §8.2 says,
-/// so the renderer's steps can be checked in the document they go into.
-fn export_graph(h: &History, opts: &Redaction) -> Value {
-    let env = &h.env;
-    let mut by_artifact: BTreeMap<&str, Vec<&AuditRow>> = BTreeMap::new();
-    let mut install: Vec<&AuditRow> = Vec::new();
-    for r in &h.rows {
-        let arts: BTreeSet<&str> = [&r.ids.artifact, &r.ids.artifact2]
-            .into_iter()
-            .flatten()
-            .map(String::as_str)
-            .collect();
-        if arts.is_empty() {
-            install.push(r);
-        }
-        for a in arts {
-            by_artifact.entry(a).or_default().push(r);
-        }
+/// The golden history as an export source.
+fn history_source(h: &History) -> project::MemSource {
+    project::MemSource {
+        rows: h.rows.clone(),
+        info: BTreeMap::new(),
     }
-    let path = |id: String, base: String, rows: &[&AuditRow], meta: Value| {
-        let mut actors: BTreeMap<String, Value> = BTreeMap::new();
-        let mut steps = Vec::new();
-        let mut prev = None;
-        for r in rows {
-            let rendered = render(r, prev, env, opts).unwrap();
-            steps.push(rendered.step);
-            for (k, d) in rendered.actors {
-                let merged = match actors.get(&k) {
-                    Some(old) => merge_actor_def(old, &d),
-                    None => d,
-                };
-                actors.insert(k, merged);
-            }
-            prev = Some(r.seq);
-        }
-        let mut meta = meta;
-        meta["kind"] = KIND_URI.into();
-        meta["source"] = base.clone().into();
-        meta["actors"] = json!(actors);
-        json!({
-            "path": {"id": id, "base": {"uri": base}, "head": step_id(prev.unwrap())},
-            "steps": steps,
-            "meta": meta,
-        })
+}
+
+/// The environment the golden exports are written under.
+fn export_env(h: &History) -> project::ExportEnv {
+    project::ExportEnv {
+        render: h.env.clone(),
+        clax_version: "0.3.1".into(),
+        clax_commit: "abc1234def5678abc1234def5678abc1234def56".into(),
+    }
+}
+
+/// The whole golden history exported under `opts` in the artifacts shape
+/// (spec §8.2), as the projection writes it, indented.
+fn export_text(h: &History, opts: &Redaction) -> String {
+    let req = project::Export {
+        redaction: *opts,
+        pretty: true,
+        ..Default::default()
     };
-    let mut paths: Vec<Value> = by_artifact
-        .iter()
-        .map(|(a, rows)| {
-            path(
-                format!("clax-artifact-{a}"),
-                clax_uri(&env.install, Obj::Artifact(a)),
-                rows,
-                json!({"title": format!("Artifact {a}"),
-                       "clax": {"projection": "artifact", "artifact_id": a}}),
-            )
-        })
-        .collect();
-    // A step on two artifacts appears in both paths, joined by same-change.
-    let ids: Vec<String> = paths
-        .iter()
-        .map(|p| p["path"]["id"].as_str().unwrap().to_string())
-        .collect();
-    let mut seen: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for (i, p) in paths.iter().enumerate() {
-        for s in p["steps"].as_array().unwrap() {
-            seen.entry(s["step"]["id"].as_str().unwrap().into())
-                .or_default()
-                .push(i);
-        }
-    }
-    for (step, at) in seen.iter().filter(|(_, at)| at.len() > 1) {
-        for &i in at {
-            for &j in at.iter().filter(|&&j| j != i) {
-                let s = paths[i]["steps"]
-                    .as_array_mut()
-                    .unwrap()
-                    .iter_mut()
-                    .find(|s| s["step"]["id"] == step.as_str())
-                    .unwrap();
-                s["meta"]["refs"].as_array_mut().unwrap().push(json!({
-                    "rel": "same-change",
-                    "href": format!("toolpath:{}/{step}", ids[j]),
-                }));
-            }
-        }
-    }
-    paths.push(path(
-        format!("clax-install-{}", &env.install[..8]),
-        clax_uri(&env.install, Obj::Install),
-        &install,
-        json!({"title": "Clax install audit trail", "clax": {"projection": "install"}}),
-    ));
-    json!({
-        "graph": {"id": format!("clax-{}-golden", &env.install[..8])},
-        "paths": paths,
-        "meta": {
-            "title": "Clax export",
-            "refs": [{"rel": "source", "href": clax_uri(&env.install, Obj::Install)}],
-            "clax": {"install": env.install, "clax_version": "0.3.1",
-                     "clax_commit": "abc1234def5678abc1234def5678abc1234def56", "redaction": opts.names(),
-                     "first_seq": h.rows.first().unwrap().seq, "last_seq": h.rows.last().unwrap().seq},
-        },
-    })
+    let mut out = Vec::new();
+    project::export(&history_source(h), &req, &export_env(h), &mut out).unwrap();
+    String::from_utf8(out).unwrap()
+}
+
+/// [`export_text`], parsed.
+fn export_graph(h: &History, opts: &Redaction) -> Value {
+    serde_json::from_str(&export_text(h, opts)).unwrap()
 }
 
 /// The history as one journal segment (spec §7.2), rendered as the journal
@@ -1162,9 +1091,10 @@ fn golden_exports_match_and_conform() {
         .collect();
     assert_eq!(kinds.len(), AuditKind::ALL.len());
     for opts in OPTION_SETS {
-        let doc = export_graph(&h, &opts);
+        let text = export_text(&h, &opts);
+        let doc: Value = serde_json::from_str(&text).unwrap();
         assert_valid(&doc, &format!("the export under {opts:?}"));
-        golden(&export_golden_name(&opts), &pretty(&doc));
+        golden(&export_golden_name(&opts), &text);
     }
     // A thread moved between artifacts is in both paths, under one ID.
     let moved: Vec<&Value> = export["paths"]
@@ -1631,4 +1561,693 @@ fn local_remotes_are_paths() {
     ] {
         assert_eq!(redact::is_local_remote(url), local, "{url}");
     }
+}
+
+// --- export projections (spec §8), over the store's one read transaction ---
+
+/// A store whose history is the golden history, row for row.
+fn history_store(h: &History) -> (tempfile::TempDir, crate::Store) {
+    let (dir, st) = crate::store::test_util::store();
+    st.with_write(|c| {
+        c.execute("DELETE FROM audit_events", [])?;
+        for r in &h.rows {
+            c.execute(
+                "INSERT INTO audit_events (seq, at, kind, actor, artifact_id, artifact2_id,
+                     thread_id, session_id, question_id, call_id, origin, body, backfilled)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                rusqlite::params![
+                    r.seq,
+                    r.at,
+                    r.kind,
+                    r.actor,
+                    r.ids.artifact,
+                    r.ids.artifact2,
+                    r.ids.thread,
+                    r.ids.session,
+                    r.ids.question,
+                    r.ids.call,
+                    r.ids.origin,
+                    r.body,
+                    r.backfilled
+                ],
+            )?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    (dir, st)
+}
+
+/// `req` exported from `st` under the golden environment: its text, or the
+/// error's code.
+fn store_export(
+    st: &crate::Store,
+    h: &History,
+    req: &project::Export,
+) -> std::result::Result<String, String> {
+    let mut out = Vec::new();
+    match st.export(req, &export_env(h), &mut out) {
+        Ok(()) => Ok(String::from_utf8(out).unwrap()),
+        Err(crate::CoreError::Invalid { code, .. }) => {
+            assert!(out.is_empty(), "a refused export wrote {} bytes", out.len());
+            Err(code.to_string())
+        }
+        Err(e) => panic!("{e}"),
+    }
+}
+
+fn select(sel: project::Selection) -> project::Export {
+    project::Export {
+        selection: sel,
+        ..Default::default()
+    }
+}
+
+/// The path IDs of a graph, in order.
+fn path_ids(doc: &Value) -> Vec<String> {
+    doc["paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["path"]["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// The `seq`s of a path's steps.
+fn seqs_of(path: &Value) -> Vec<i64> {
+    path["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["meta"]["clax"]["seq"].as_i64().unwrap())
+        .collect()
+}
+
+fn path<'a>(doc: &'a Value, id: &str) -> &'a Value {
+    doc["paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["path"]["id"] == id)
+        .unwrap_or_else(|| panic!("no path {id}"))
+}
+
+fn step(path: &Value, seq: i64) -> &Value {
+    path["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["meta"]["clax"]["seq"] == seq)
+        .unwrap_or_else(|| panic!("no step {seq}"))
+}
+
+fn refs(step: &Value) -> Vec<(String, String)> {
+    step["meta"]["refs"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .map(|r| {
+            (
+                r["rel"].as_str().unwrap().to_string(),
+                r["href"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+fn parse(text: &str) -> Value {
+    let doc: Value = serde_json::from_str(text).unwrap();
+    assert_valid(&doc, "an export");
+    doc
+}
+
+const S1: &str = "01JB9S00000000000000000001";
+const S1_HARNESS: &str = "3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44";
+const S3: &str = "01JB9S00000000000000000003";
+
+#[test]
+fn export_twice_is_identical() {
+    let h = history();
+    let (_dir, st) = history_store(&h);
+    for req in [
+        project::Export::default(),
+        project::Export {
+            pretty: true,
+            redaction: Redaction::ALL,
+            ..Default::default()
+        },
+        project::Export {
+            shape: project::Shape::Journal,
+            format: project::Format::Jsonl,
+            ..Default::default()
+        },
+        project::Export {
+            shape: project::Shape::Journal,
+            ..select(project::Selection {
+                by_sessions: vec![S1.into()],
+                since: Some("2026-10-06T14:02:00Z".into()),
+                ..Default::default()
+            })
+        },
+    ] {
+        let first = store_export(&st, &h, &req).unwrap();
+        assert_eq!(first, store_export(&st, &h, &req).unwrap(), "{req:?}");
+        // The store's rows read through SQL project as the same rows held
+        // in memory do.
+        let mut mem = Vec::new();
+        project::export(&history_source(&h), &req, &export_env(&h), &mut mem).unwrap();
+        assert_eq!(first, String::from_utf8(mem).unwrap(), "{req:?}");
+    }
+    // Indenting changes the layout only.
+    let compact = store_export(&st, &h, &project::Export::default()).unwrap();
+    let pretty = store_export(
+        &st,
+        &h,
+        &project::Export {
+            pretty: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(!compact.contains('\n') && pretty.ends_with("}\n"));
+    assert_eq!(parse(&compact), parse(&pretty));
+    // The golden export is this projection's.
+    assert_eq!(pretty, export_text(&h, &Redaction::NONE));
+}
+
+#[test]
+fn export_has_no_session_paths() {
+    let h = history();
+    let (_dir, st) = history_store(&h);
+    let doc = parse(&store_export(&st, &h, &project::Export::default()).unwrap());
+    let ids = path_ids(&doc);
+    assert_eq!(
+        ids,
+        [
+            "clax-artifact-b4ckf1llart0",
+            "clax-artifact-k3m9q2w8x1ab",
+            "clax-artifact-p7v2n4c8d1ef",
+            "clax-artifact-q2w4e6r8t0yu",
+            "clax-artifact-z9x8c7v6b5nm",
+            "clax-install-6a1f0c3e",
+        ]
+    );
+    // Every row is a step of the path of each artifact it names, or of the
+    // install path; agent sessions are actors and refs, never paths.
+    for r in &h.rows {
+        let mut want: Vec<String> = [&r.ids.artifact, &r.ids.artifact2]
+            .into_iter()
+            .flatten()
+            .map(|a| format!("clax-artifact-{a}"))
+            .collect();
+        if want.is_empty() {
+            want.push("clax-install-6a1f0c3e".into());
+        }
+        let got: Vec<&String> = ids
+            .iter()
+            .filter(|id| seqs_of(path(&doc, id)).contains(&r.seq))
+            .collect();
+        want.sort();
+        assert_eq!(got, want.iter().collect::<Vec<_>>(), "seq {}", r.seq);
+    }
+    for p in doc["paths"].as_array().unwrap() {
+        assert_eq!(p["meta"]["kind"], KIND_URI);
+        let seqs = seqs_of(p);
+        assert!(seqs.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(p["path"]["head"], step_id(*seqs.last().unwrap()));
+        // Linear: each step's only parent is the path's previous step.
+        let steps = p["steps"].as_array().unwrap();
+        assert!(steps[0]["step"].get("parents").is_none());
+        for w in steps.windows(2) {
+            assert_eq!(w[1]["step"]["parents"], json!([w[0]["step"]["id"]]));
+        }
+    }
+    assert_eq!(doc["meta"]["clax"]["first_seq"], 1);
+    assert_eq!(doc["meta"]["clax"]["last_seq"], 62);
+}
+
+#[test]
+fn by_session_filters_steps_not_shape() {
+    let h = history();
+    let (_dir, st) = history_store(&h);
+    let by = |s: &str| {
+        store_export(
+            &st,
+            &h,
+            &select(project::Selection {
+                by_sessions: vec![s.into()],
+                ..Default::default()
+            }),
+        )
+    };
+    let text = by(S1).unwrap();
+    let doc = parse(&text);
+    // Still artifact paths and the install path: the session is no path.
+    let ids = path_ids(&doc);
+    assert!(
+        ids.iter()
+            .all(|id| id.starts_with("clax-artifact-") || id.starts_with("clax-install-"))
+    );
+    assert!(ids.contains(&"clax-install-6a1f0c3e".to_string()));
+    assert!(ids.contains(&"clax-artifact-k3m9q2w8x1ab".to_string()));
+    // The session's own steps, and the owner's and viewers' on its
+    // artifacts; never another agent's.
+    let k3 = seqs_of(path(&doc, "clax-artifact-k3m9q2w8x1ab"));
+    for seq in [11, 12, 14, 15, 16, 22, 33, 34] {
+        assert!(k3.contains(&seq), "seq {seq} in {k3:?}");
+    }
+    assert!(
+        !k3.contains(&35),
+        "session 3's doc write is not session 1's"
+    );
+    let install = seqs_of(path(&doc, "clax-install-6a1f0c3e"));
+    assert!(install.contains(&7) && install.contains(&62));
+    assert!(!install.contains(&8) && !install.contains(&61) && !install.contains(&36));
+    // A harness session ID names the same session.
+    assert_eq!(parse(&by(S1_HARNESS).unwrap())["paths"], doc["paths"]);
+    // History the backfill recorded for a session counts as its own.
+    let old = parse(&by("0aa1b2c3-0000-4000-8000-000000000001").unwrap());
+    assert_eq!(
+        seqs_of(path(&old, "clax-artifact-b4ckf1llart0"))[..2],
+        [2, 3]
+    );
+    assert_eq!(
+        by("01JB9SNOSUCHSESSION0000000").unwrap_err(),
+        "unknown_session"
+    );
+}
+
+#[test]
+fn move_appears_in_both_artifacts_with_same_change() {
+    let h = history();
+    let (_dir, st) = history_store(&h);
+    let doc = parse(&store_export(&st, &h, &project::Export::default()).unwrap());
+    let (from, to) = ("clax-artifact-p7v2n4c8d1ef", "clax-artifact-q2w4e6r8t0yu");
+    let a = step(path(&doc, from), 43);
+    let b = step(path(&doc, to), 43);
+    assert_eq!(a["step"]["id"], b["step"]["id"]);
+    assert_eq!(a["change"], b["change"]);
+    let same = |s: &Value| -> Vec<String> {
+        refs(s)
+            .into_iter()
+            .filter(|(rel, _)| rel == "same-change")
+            .map(|(_, href)| href)
+            .collect()
+    };
+    assert_eq!(same(a), [format!("toolpath:{to}/e000000000043")]);
+    assert_eq!(same(b), [format!("toolpath:{from}/e000000000043")]);
+    // Refs to another path of the graph gain their toolpath: form.
+    assert!(refs(a).contains(&("moved-to".into(), format!("toolpath:{to}"))));
+    assert!(refs(b).contains(&("moved-from".into(), format!("toolpath:{from}"))));
+    assert!(!refs(b).contains(&("moved-to".into(), format!("toolpath:{to}"))));
+    // A tool call's produced steps are named in the graph.
+    let call = step(path(&doc, "clax-artifact-k3m9q2w8x1ab"), 29);
+    let produced: Vec<String> = refs(call)
+        .into_iter()
+        .filter(|(rel, _)| rel == "produced")
+        .map(|(_, h)| h)
+        .collect();
+    assert!(!produced.is_empty());
+    assert!(
+        produced
+            .iter()
+            .all(|h| h.starts_with("toolpath:clax-artifact-k3m9q2w8x1ab/e"))
+    );
+    // With only one side selected, the step stays, with no same-change and
+    // its refs in their clax:// form.
+    let one = parse(
+        &store_export(
+            &st,
+            &h,
+            &select(project::Selection {
+                artifacts: vec!["p7v2n4c8d1ef".into()],
+                ..Default::default()
+            }),
+        )
+        .unwrap(),
+    );
+    assert_eq!(path_ids(&one), [from]);
+    let alone = step(path(&one, from), 43);
+    assert!(same(alone).is_empty());
+    assert!(refs(alone).iter().all(|(_, h)| !h.starts_with("toolpath:")));
+}
+
+#[test]
+fn selectors_union_within_and_intersect_across() {
+    let h = history();
+    let (_dir, st) = history_store(&h);
+    let run = |sel: project::Selection| parse(&store_export(&st, &h, &select(sel)).unwrap());
+    // Artifacts union; an artifact selector leaves out the install path.
+    let two = run(project::Selection {
+        artifacts: vec!["p7v2n4c8d1ef".into(), "b4ckf1llart0".into()],
+        ..Default::default()
+    });
+    assert_eq!(
+        path_ids(&two),
+        ["clax-artifact-b4ckf1llart0", "clax-artifact-p7v2n4c8d1ef"]
+    );
+    // An artifact and a live page are one kind of selector: they union.
+    let mixed = run(project::Selection {
+        artifacts: vec!["b4ckf1llart0".into()],
+        live_pages: vec!["http://localhost:5173/settings".into()],
+        ..Default::default()
+    });
+    assert_eq!(path_ids(&mixed), path_ids(&two));
+    assert_eq!(
+        mixed["meta"]["clax"]["selection"]["live"],
+        json!(["http://localhost:5173/settings"])
+    );
+    // Time intersects with artifacts: since inclusive, until exclusive.
+    let timed = run(project::Selection {
+        artifacts: vec!["k3m9q2w8x1ab".into()],
+        since: Some("2026-10-06T14:02:06.018Z".into()),
+        until: Some("2026-10-06T14:02:41.023Z".into()),
+        ..Default::default()
+    });
+    assert_eq!(
+        seqs_of(path(&timed, "clax-artifact-k3m9q2w8x1ab")),
+        [18, 19, 20, 21, 22]
+    );
+    // Sessions intersect with artifacts and time.
+    let s3 = run(project::Selection {
+        artifacts: vec!["k3m9q2w8x1ab".into(), "p7v2n4c8d1ef".into()],
+        by_sessions: vec![S3.into()],
+        until: Some("2026-10-06T14:04:06Z".into()),
+        ..Default::default()
+    });
+    assert_eq!(path_ids(&s3), ["clax-artifact-k3m9q2w8x1ab"]);
+    let k3 = seqs_of(path(&s3, "clax-artifact-k3m9q2w8x1ab"));
+    assert!(k3.contains(&35) && k3.contains(&14) && !k3.contains(&12) && !k3.contains(&37));
+    // A bare date is 00:00 UTC; an empty range selects nothing.
+    let none = run(project::Selection {
+        since: Some("2026-10-07".into()),
+        ..Default::default()
+    });
+    assert_eq!(path_ids(&none), Vec::<String>::new());
+    assert_eq!(none["meta"]["clax"]["first_seq"], Value::Null);
+    let all = run(project::Selection {
+        since: Some("2026-10-06".into()),
+        until: Some("2026-10-07".into()),
+        ..Default::default()
+    });
+    assert_eq!(all["meta"]["clax"]["last_seq"], 62);
+    // The graph ID follows the selection.
+    assert_ne!(two["graph"]["id"], all["graph"]["id"]);
+    assert_eq!(
+        two["graph"]["id"],
+        run(project::Selection {
+            artifacts: vec![
+                "b4ckf1llart0".into(),
+                "p7v2n4c8d1ef".into(),
+                "b4ckf1llart0".into()
+            ],
+            ..Default::default()
+        })["graph"]["id"]
+    );
+    // Refusals name what is wrong, before any byte.
+    for (sel, code) in [
+        (
+            project::Selection {
+                artifacts: vec!["zzzzzzzzzzzz".into()],
+                ..Default::default()
+            },
+            "unknown_artifact",
+        ),
+        (
+            project::Selection {
+                artifacts: vec!["not an id".into()],
+                ..Default::default()
+            },
+            "invalid_id",
+        ),
+        (
+            project::Selection {
+                since: Some("last week".into()),
+                ..Default::default()
+            },
+            "invalid_time",
+        ),
+        (
+            project::Selection {
+                since: Some("2026-10-07".into()),
+                until: Some("2026-10-06".into()),
+                ..Default::default()
+            },
+            "invalid_range",
+        ),
+    ] {
+        assert_eq!(store_export(&st, &h, &select(sel)).unwrap_err(), code);
+    }
+}
+
+#[test]
+fn jsonl_requires_single_path() {
+    let h = history();
+    let (_dir, st) = history_store(&h);
+    let jsonl = |sel: project::Selection, shape: project::Shape| {
+        store_export(
+            &st,
+            &h,
+            &project::Export {
+                selection: sel,
+                shape,
+                format: project::Format::Jsonl,
+                ..Default::default()
+            },
+        )
+    };
+    use project::Shape::{Artifacts, Journal};
+    assert_eq!(
+        jsonl(Default::default(), Artifacts).unwrap_err(),
+        "jsonl_needs_one_path"
+    );
+    let two = project::Selection {
+        artifacts: vec!["p7v2n4c8d1ef".into(), "b4ckf1llart0".into()],
+        ..Default::default()
+    };
+    assert_eq!(
+        jsonl(two.clone(), Artifacts).unwrap_err(),
+        "jsonl_needs_one_path"
+    );
+    // One artifact, or the journal shape, is one path, which seals into a
+    // valid graph.
+    let one = project::Selection {
+        artifacts: vec!["k3m9q2w8x1ab".into()],
+        ..Default::default()
+    };
+    for (sel, shape, id) in [
+        (one, Artifacts, "clax-artifact-k3m9q2w8x1ab"),
+        (two, Journal, ""),
+        (Default::default(), Journal, ""),
+    ] {
+        let text = jsonl(sel, shape).unwrap();
+        let sealed = seal(&text).unwrap();
+        assert!(sealed.warnings.is_empty(), "{:?}", sealed.warnings);
+        assert_valid(&sealed.graph, "a sealed JSONL export");
+        let p = &sealed.graph["paths"][0];
+        if !id.is_empty() {
+            assert_eq!(p["path"]["id"], id);
+        }
+        // Each actor is defined before its first step.
+        let mut defined = BTreeSet::new();
+        for line in text.lines() {
+            let v: Value = serde_json::from_str(line).unwrap();
+            if let Some(d) = v.get("ActorDef") {
+                defined.insert(d["actor"].as_str().unwrap().to_string());
+            }
+            if let Some(s) = v.get("Step") {
+                assert!(defined.contains(s["step"]["actor"].as_str().unwrap()));
+            }
+        }
+        assert!(text.ends_with("{\"PathClose\":{}}\n"));
+    }
+    let journal = seal(&jsonl(Default::default(), Journal).unwrap()).unwrap();
+    let p = &journal.graph["paths"][0];
+    assert!(
+        p["path"]["id"]
+            .as_str()
+            .unwrap()
+            .starts_with("clax-export-")
+    );
+    assert_eq!(seqs_of(p), (1..=62).collect::<Vec<_>>());
+    assert_eq!(p["meta"]["clax"]["redaction"], json!([]));
+    // A JSONL path needs a step; indenting applies to JSON only.
+    let later = project::Selection {
+        since: Some("2027-01-01".into()),
+        ..Default::default()
+    };
+    assert_eq!(jsonl(later, Journal).unwrap_err(), "empty_selection");
+    let pretty = project::Export {
+        shape: Journal,
+        format: project::Format::Jsonl,
+        pretty: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        store_export(&st, &h, &pretty).unwrap_err(),
+        "invalid_option"
+    );
+}
+
+#[test]
+fn live_selector_matches_origin_and_path() {
+    let h = history();
+    let (_dir, st) = history_store(&h);
+    let live = |url: &str| {
+        store_export(
+            &st,
+            &h,
+            &select(project::Selection {
+                live_pages: vec![url.into()],
+                ..Default::default()
+            }),
+        )
+        .map(|t| path_ids(&parse(&t)))
+    };
+    // From the history's live.page event; a route or query is not the page.
+    for url in [
+        "http://localhost:5173/settings",
+        "http://localhost:5173/settings?tab=2#top",
+    ] {
+        assert_eq!(live(url).unwrap(), ["clax-artifact-p7v2n4c8d1ef"], "{url}");
+    }
+    // The same path on another origin, or another path, is another page.
+    for url in [
+        "http://localhost:5174/settings",
+        "https://localhost:5173/settings",
+        "http://localhost:5173/settings/a",
+    ] {
+        assert_eq!(live(url).unwrap_err(), "unknown_live_page", "{url}");
+    }
+    // A page there now is found by its table row too, under its joined
+    // site's key origin.
+    st.with_write(|c| {
+        c.execute_batch(
+            "INSERT INTO artifacts (id, title, created_at, updated_at, contract_version, kind)
+                 VALUES ('q2w4e6r8t0yu', 'Settings A', '2026-10-06T14:04:47Z', '2026-10-06T14:04:47Z', '1', 'live');
+             INSERT INTO live_pages (artifact_id, origin, path, created_at)
+                 VALUES ('q2w4e6r8t0yu', 'http://localhost:5173', '/settings/a', '2026-10-06T14:04:47Z');
+             INSERT INTO live_sites (origin, site, joined_at, last_used_at)
+                 VALUES ('http://127.0.0.1:5173', 'http://localhost:5173', '2026-10-06T14:05:43Z', '2026-10-06T14:05:43Z');",
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    for url in [
+        "http://localhost:5173/settings/a",
+        "http://127.0.0.1:5173/settings/a",
+    ] {
+        assert_eq!(live(url).unwrap(), ["clax-artifact-q2w4e6r8t0yu"], "{url}");
+    }
+    let doc = parse(
+        &store_export(
+            &st,
+            &h,
+            &select(project::Selection {
+                live_pages: vec!["http://localhost:5173/settings/a".into()],
+                ..Default::default()
+            }),
+        )
+        .unwrap(),
+    );
+    let meta = &doc["paths"][0]["meta"];
+    assert_eq!(meta["title"], "Settings A");
+    assert_eq!(
+        meta["clax"],
+        json!({"projection": "artifact", "artifact_id": "q2w4e6r8t0yu", "artifact_kind": "live",
+               "origin": "http://localhost:5173", "path": "/settings/a"})
+    );
+    assert_eq!(
+        meta["refs"],
+        json!([{"rel": "view", "href": "http://localhost:7480/a/q2w4e6r8t0yu"}])
+    );
+    // A page merged away keeps its origin and path, and a page a live.page
+    // event records under a joined origin is found under the site's key.
+    st.with_write(|c| {
+        c.execute_batch(
+            "INSERT INTO artifacts (id, title, created_at, updated_at, contract_version, kind)
+                 VALUES ('z9x8c7v6b5nm', 'Old settings', '2026-10-06T14:05:57Z', '2026-10-06T14:05:57Z', '1', 'live');
+             INSERT INTO live_merged_pages (artifact_id, origin, path, merged_into, merged_at)
+                 VALUES ('z9x8c7v6b5nm', 'http://127.0.0.1:5173', '/old', 'p7v2n4c8d1ef', '2026-10-06T14:05:57Z');",
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        live("http://127.0.0.1:5173/old").unwrap(),
+        ["clax-artifact-z9x8c7v6b5nm"]
+    );
+    let merged = parse(
+        &store_export(
+            &st,
+            &h,
+            &select(project::Selection {
+                artifacts: vec!["z9x8c7v6b5nm".into()],
+                ..Default::default()
+            }),
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        merged["paths"][0]["meta"]["clax"]["origin"],
+        "http://127.0.0.1:5173"
+    );
+    assert_eq!(merged["paths"][0]["meta"]["clax"]["path"], "/old");
+    st.with_write(|c| {
+        c.execute(
+            "INSERT INTO live_sites (origin, site, joined_at, last_used_at)
+                 VALUES ('http://localhost:5199', 'http://localhost:5173', '2026-10-06T14:05:43Z', '2026-10-06T14:05:43Z')",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        live("http://localhost:5199/settings").unwrap(),
+        ["clax-artifact-p7v2n4c8d1ef"]
+    );
+    // A title is text: --no-text leaves it out.
+    let redacted = parse(
+        &store_export(
+            &st,
+            &h,
+            &project::Export {
+                redaction: Redaction {
+                    no_text: true,
+                    ..Redaction::NONE
+                },
+                ..select(project::Selection {
+                    artifacts: vec!["q2w4e6r8t0yu".into()],
+                    ..Default::default()
+                })
+            },
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        redacted["paths"][0]["meta"]["title"],
+        "Artifact q2w4e6r8t0yu"
+    );
+}
+
+/// The journal shape of the whole history, as a golden the web unit gate
+/// validates.
+#[test]
+fn golden_journal_export_matches_and_conforms() {
+    let h = history();
+    let req = project::Export {
+        shape: project::Shape::Journal,
+        pretty: true,
+        ..Default::default()
+    };
+    let mut out = Vec::new();
+    project::export(&history_source(&h), &req, &export_env(&h), &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let doc = parse(&text);
+    let p = &doc["paths"][0];
+    assert_eq!(path_ids(&doc).len(), 1);
+    assert_eq!(seqs_of(p), (1..=62).collect::<Vec<_>>());
+    assert_eq!(p["meta"]["clax"]["projection"], "journal");
+    golden("export.journal.path.json", &text);
 }
