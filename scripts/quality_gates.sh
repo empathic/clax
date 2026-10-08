@@ -44,12 +44,14 @@ export PLAYWRIGHT_INSTALL
 # the Rust tests that cannot name it (CLAX_TEST_BIN), the plugin wrapper
 # test, the comment loop, the Pi tests and the browser tests' daemons. A
 # copy, so a later `cargo build` that replaces target/debug/clax cannot pull
-# it from under a running gate. Each copy is run once (`--version`) when it
-# is made: macOS assesses a new executable on its first run, which can take
-# seconds on a loaded machine, and that must not land inside a gate's time
-# limit (scripts/fake-exe.sh does the same for the gates' fakes).
+# it from under a running gate, kept under target/clax-bin by its content
+# (scripts/stable-bin.sh) and named here by a symbolic link. macOS assesses
+# a new executable on its first run, which can take minutes on a loaded
+# machine: a kept copy pays that once per build, not once per run, and pays
+# it when it is made, never inside a gate's time limit (scripts/fake-exe.sh
+# does the same for the gates' fakes).
 export CLAX_TEST_BIN="$GATES_TMP/debug/clax"
-# The one release `clax` the perf gates share.
+# The one release `clax` the perf gates share, kept the same way.
 export CLAX_PERF_BIN="$GATES_TMP/release/clax"
 
 # --- lanes ------------------------------------------------------------------
@@ -99,7 +101,7 @@ lane_e2e() {
 # (the one the Rust tests name) is run once when it is built, as
 # CLAX_TEST_BIN is.
 lane_rust() {
-    run "build clax"            bash -c 'cargo build -q -p clax-cli && mkdir -p "$(dirname "$CLAX_TEST_BIN")" && cp target/debug/clax "$CLAX_TEST_BIN" && "$CLAX_TEST_BIN" --version >/dev/null' &&
+    run "build clax"            bash -c 'cargo build -q -p clax-cli && mkdir -p "$(dirname "$CLAX_TEST_BIN")" && kept="$(scripts/stable-bin.sh target/debug/clax target/clax-bin/debug)" && ln -sfn "$PWD/$kept" "$CLAX_TEST_BIN"' &&
     mark clax-built &&
     if cargo nextest --version >/dev/null 2>&1; then
         run "build tests"       bash -c 'cargo nextest run --cargo-quiet --workspace --no-run && target/debug/clax --version >/dev/null' &&
@@ -131,7 +133,7 @@ lane_lint() {
     mark linted
 }
 lane_release() {
-    run "release build"         bash -c 'cargo build -q --release -p clax-cli && mkdir -p "$(dirname "$CLAX_PERF_BIN")" && cp target/release/clax "$CLAX_PERF_BIN" && "$CLAX_PERF_BIN" --version >/dev/null' &&
+    run "release build"         bash -c 'cargo build -q --release -p clax-cli && mkdir -p "$(dirname "$CLAX_PERF_BIN")" && kept="$(scripts/stable-bin.sh target/release/clax target/clax-bin/release)" && ln -sfn "$PWD/$kept" "$CLAX_PERF_BIN"' &&
     mark release-built
 }
 
