@@ -23,21 +23,33 @@ few artifacts, and then:
    that every subscribed client got every event;
 6. opens one client that never reads (a small receive buffer), floods the
    `db` artifact it follows with document writes, and checks that it gets
-   `resync` for that topic when it reads again, that the daemon's RSS did
+   `resync` for that topic when it reads again, that the daemon's memory did
    not grow with its backlog, and that the fast client on the same topic
-   got every event and no `resync`.
+   got every event and no `resync`. The first flood fills the client's
+   socket buffers and queue and puts it behind, a bounded cost paid once;
+   `slow_rounds` more floods follow, each rewriting the same documents (so
+   the store does not grow either), and the growth is the median of the
+   daemon's memory footprint growth across each of them. A backlog that is
+   kept grows the footprint by every flood's events; growth the system or
+   the allocator makes once (a page faulted back in, a thread started)
+   lands in one round at most and leaves the median.
 
 Budgets live in scripts/perf-clients-budget.json:
 - `delivery_p95_ms`, `delivery_max_ms`: write-to-client latency;
 - `cheap_p95_ms`: the cheap requests' p95 under that load;
 - `rss_per_client_kb`: daemon RSS growth per connected client;
 - `idle_cpu_pct`: daemon CPU, percent of one core, with every client idle;
-- `slow_rss_growth_kb`: daemon RSS growth across the slow client's flood;
+- `slow_growth_kb`: daemon memory footprint growth across one flood of
+  `flood_batches` document batches while the slow client stays behind, the
+  median of `slow_rounds` floods. The footprint (macOS `phys_footprint`;
+  Linux `RssAnon` plus `VmSwap`) counts the daemon's dirty memory whether it
+  is resident, compressed or swapped, so the system compressing or paging
+  its memory does not move it, as it moves RSS;
 - `quiet_idle_p95_ms`, `max_scale`: the time limits are the budgets times
   clamp(idle p95 / quiet_idle_p95_ms, 1, max_scale), the idle p95 measured
   in the same run, as perf-daemon.py does;
-- `clients`, `workers`, `idle_s`, `load_s`, `write_rate_hz`, `flood_batches`:
-  the run's shape. CLAX_PERF_CLIENTS overrides `clients` (to explore how far
+- `clients`, `workers`, `idle_s`, `load_s`, `write_rate_hz`, `flood_batches`,
+  `slow_rounds`: the run's shape. CLAX_PERF_CLIENTS overrides `clients` (to explore how far
   one daemon scales; the budgets are judged at any count);
 - `quick`: what `--quick` (quality_gates.sh) overrides: shorter baseline,
   idle and load windows, with the same clients and flood, judged by the same
@@ -175,6 +187,16 @@ class Daemon:
             expect(time.time() < deadline, "the daemon did not become healthy within 30 s")
             time.sleep(0.05)
         c.close()
+
+    def footprint_kb(self):
+        """The daemon's dirty memory, resident or not (see `slow_growth_kb`)."""
+        if sys.platform == "darwin":
+            return darwin_footprint_kb(self.p.pid)
+        fields = {}
+        for line in open(f"/proc/{self.p.pid}/status"):
+            k, _, v = line.partition(":")
+            fields[k] = v.split()[0] if v.split() else "0"
+        return int(fields.get("RssAnon", 0)) + int(fields.get("VmSwap", 0))
 
     def rss_kb(self):
         out = subprocess.run(["ps", "-o", "rss=", "-p", str(self.p.pid)], capture_output=True, text=True).stdout
@@ -615,12 +637,14 @@ def expected_deliveries(written, plan, st):
     return total
 
 
-def flood(d, db, batches, tag):
-    """`batches` docs:batch writes of 50 documents with long paths on `db`."""
+def flood(d, db, batches, tag, round_=0):
+    """`batches` docs:batch writes of 50 documents with long paths on `db`:
+    200 documents, named by `tag`, each written `batches / 4` times; `round_`
+    is in every value, so a flood that rewrites them changes each one."""
     c = Client(d.port, d.token)
     long = "segment-" * 20
     for b in range(batches):
-        writes = [{"op": "set", "path": f"rows/{long}{tag}{b % 4}_{i}", "data": {"n": b}} for i in range(50)]
+        writes = [{"op": "set", "path": f"rows/{long}{tag}{b % 4}_{i}", "data": {"n": b, "round": round_}} for i in range(50)]
         s, body, _, _ = c.req("POST", f"/api/artifacts/{db}/docs:batch", {"writes": writes, "lww": True})
         expect(s == 200, f"docs:batch: {s} {body[:200]!r}")
     c.close()
@@ -670,6 +694,20 @@ def drain_slow(s, dec, seconds):
         out.append(dec.feed(data))
     s.close()
     return b"".join(out).decode(errors="replace")
+
+
+def darwin_footprint_kb(pid):
+    """`phys_footprint` from `proc_pid_rusage` (`RUSAGE_INFO_V0`), in KB."""
+    import ctypes
+
+    class RusageInfoV0(ctypes.Structure):
+        _fields_ = [("uuid", ctypes.c_uint8 * 16)] + [(n, ctypes.c_uint64) for n in (
+            "user_time", "system_time", "pkg_idle_wkups", "interrupt_wkups", "pageins",
+            "wired_size", "resident_size", "phys_footprint", "proc_start_abstime", "proc_exit_abstime")]
+    ri = RusageInfoV0()
+    libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+    expect(libc.proc_pid_rusage(pid, 0, ctypes.byref(ri)) == 0, f"proc_pid_rusage: errno {ctypes.get_errno()}")
+    return ri.phys_footprint // 1024
 
 
 # --- main -------------------------------------------------------------------
@@ -743,16 +781,21 @@ def main(binary, budget_path, quick):
         # 6. One client that never reads, on the db artifact's documents.
         s, dec = slow_client(d.port, st["db"])
         time.sleep(0.3)
-        rss2 = d.rss_kb()
         n_flood = flood(d, st["db"], cfg["flood_batches"], "s")
         time.sleep(0.5)
-        rss3 = d.rss_kb()
+        marks = [d.footprint_kb()]
+        for k in range(cfg["slow_rounds"]):
+            n_flood += flood(d, st["db"], cfg["flood_batches"], "s", k + 1)
+            time.sleep(0.5)
+            marks.append(d.footprint_kb())
+        growths = [b - a for a, b in zip(marks, marks[1:])]
         text = drain_slow(s, dec, 10)
         witness = workers.mark()
         slow_resync = f'"topic":"docs:{st["db"]}"' in text and "event: resync" in text
-        results["slow_rss_growth_kb"] = rss3 - rss2
+        results["slow_growth_kb"] = statistics.median(growths)
         witness_docs = sum(1 for _, topic, key, _ in witness["recv"] if topic == f"docs:{st['db']}")
-        slow_info = (f"slow client read {len(text)} bytes, {text.count('event: doc')} doc events of {n_flood}, "
+        slow_info = (f"footprint growth by flood {', '.join(f'{g} KB' for g in growths)}; "
+                     f"slow client read {len(text)} bytes, {text.count('event: doc')} doc events of {n_flood}, "
                      f"resync {'yes' if slow_resync else 'NO'}; the fast client on the topic got {witness_docs} of {n_flood}, "
                      f"{len(witness['resyncs'])} resyncs")
         errors = got["errors"] + witness["errors"]
@@ -780,7 +823,7 @@ def main(binary, budget_path, quick):
         "cheap_p95_ms": cfg["cheap_p95_ms"] * scale,
         "rss_per_client_kb": cfg["rss_per_client_kb"],
         "idle_cpu_pct": cfg["idle_cpu_pct"],
-        "slow_rss_growth_kb": cfg["slow_rss_growth_kb"],
+        "slow_growth_kb": cfg["slow_growth_kb"],
     }
     print()
     print(f"idle p95 {idle_p95:.1f} ms (quiet is {quiet} ms or less): time limits scaled by {scale:.2f}")
