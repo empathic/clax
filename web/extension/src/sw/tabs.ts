@@ -798,11 +798,11 @@ export class Tabs {
   /** A side panel's port: `watch-tab` picks the tab it shows, which it then
    * hears of on every change, with the stream's status. Every message it
    * sends passes `isFromPanel` before anything acts on it, and then goes to
-   * `onMessage`. */
-  attachPanel(port: chrome.runtime.Port, onMessage: (tabId: number | null, m: PanelToWorker, windowId: number) => void): void {
+   * `onMessage`. False when the port's name is not a panel's (the port is let go). */
+  attachPanel(port: chrome.runtime.Port, onMessage: (tabId: number | null, m: PanelToWorker, windowId: number) => void): boolean {
     const name = port.name.slice("panel:".length);
     const windowId = Number(name);
-    if (!/^\d{1,15}$/.test(name) || !Number.isSafeInteger(windowId)) { port.disconnect(); return; }
+    if (!/^\d{1,15}$/.test(name) || !Number.isSafeInteger(windowId)) { port.disconnect(); return false; }
     const entry: PanelEntry = {
       port, tabId: null, windowId, visible: false,
       hubId: `panel:${++this.panelSeq}`, aid: null, presence: [], beat: null,
@@ -827,5 +827,6 @@ export class Tabs {
       if (entry.beat !== null) clearInterval(entry.beat);
       this.d.hub.detach(entry.hubId);
     });
+    return true;
   }
 }

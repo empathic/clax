@@ -138,15 +138,18 @@
     el?.focus({ preventScroll: true });
     return !!el;
   };
-  /** Where an item leads: its card when it is a question shown here, else through the worker. */
-  const go = (url: string) => {
+  const decoded = (v: string): string | null => { try { return decodeURIComponent(v); } catch { return null; } };
+  /** Where an item leads: its card when it is a question shown here, else
+   * through the worker (with its live page's address, whose open tab it brings to the front). */
+  const go = (url: string, pageUrl: string | null = null) => {
     const q = /^\/inbox\?q=([^&]+)$/.exec(url);
-    if (!q || !toCard(decodeURIComponent(q[1]))) p.link.post({ t: "open-url", url });
+    const qid = q && decoded(q[1]);
+    if (!qid || !toCard(qid)) p.link.post({ t: "open-url", url, pageUrl });
   };
   const open = (i: InboxItem) => {
     // A failed mark does not keep the person from the item.
     const marked = i.read ? Promise.resolve() : mark(i, true).catch(() => {});
-    void marked.then(() => go(i.url));
+    void marked.then(() => go(i.url, i.artifact?.page_url ?? null));
   };
   // A card's links to Clax pages are daemon paths: the worker opens them.
   function onClick(e: MouseEvent): void {

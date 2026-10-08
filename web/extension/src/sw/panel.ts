@@ -24,7 +24,11 @@ export type PanelDeps = {
   /** The owner's questions and inbox. */
   inbox: Pick<WorkerInbox, "page" | "count">;
   /** Opens tabs for inbox items: the paired daemon's origin, a new tab at a URL, and bringing a tab to the front. */
-  open: { daemon(): Promise<string>; create(url: string): Promise<void>; focus(tabId: number): Promise<void> };
+  open: {
+    daemon(): Promise<string>; create(url: string): Promise<void>; focus(tabId: number): Promise<void>;
+    /** A tab at `url` (any of them), among the tabs whose address the extension may read; null for none. */
+    find(url: string): Promise<number | null>;
+  };
   /** Whether `url`'s server answers a short request (decision 3, 2026-10-06: a
    * thread opens on the first origin of its site that answers). */
   probe(url: string): Promise<boolean>;
@@ -62,18 +66,21 @@ export async function panelAction(d: PanelDeps, tabId: number | null, m: PanelTo
     await act(d, tabId, m, reply);
   } catch (e) {
     const f = failed(e);
-    if (tabId !== null && RETRYABLE.has(f.code)) d.tabs.fail(tabId, e);
+    // Only a tab's own action leaves its error on the tab (the Page view's notice).
+    if (tabId !== null && RETRYABLE.has(f.code) && !INBOX_ACTIONS.has(m.t)) d.tabs.fail(tabId, e);
     reply("req" in m ? { ...f, req: m.req } : f);
   }
 }
 
+/** The question and inbox requests, which act on no tab. */
+const INBOX_ACTIONS = new Set<PanelToWorker["t"]>(["q-answer", "q-decline", "q-release", "inbox-page", "inbox-mark", "inbox-mark-all", "open-url"]);
 const LIVE_ITEM = /^\/a\/([0-9a-hjkmnp-tv-z]{12})(?:[/?#]|$)/;
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
 /** Opens daemon path `path` (an inbox item's `url`, which `isFromPanel`
  * checked is a path): a tab showing that live page comes to the front, its
  * thread (`?thread=`) selected; otherwise a new tab opens it on the paired daemon. */
-export async function openPath(d: PanelDeps, path: string): Promise<void> {
+export async function openPath(d: PanelDeps, path: string, pageUrl: string | null = null): Promise<void> {
   const aid = LIVE_ITEM.exec(path)?.[1];
   const tabId = aid ? d.tabs.onTabs().find(id => d.tabs.state(id)?.page?.artifact_id === aid) : undefined;
   if (tabId !== undefined) {
@@ -82,6 +89,9 @@ export async function openPath(d: PanelDeps, path: string): Promise<void> {
     if (thread && ULID.test(thread)) d.tabs.select(tabId, thread);
     return;
   }
+  // A tab showing the live page with Clax off in it comes to the front as it is.
+  const other = aid && pageUrl ? await d.open.find(pageUrl) : null;
+  if (other !== null) { await d.open.focus(other); return; }
   await d.open.create((await d.open.daemon()) + path);
 }
 
@@ -109,7 +119,7 @@ async function inboxAction(d: PanelDeps, m: PanelToWorker, reply: (r: WorkerToPa
       reply({ t: "marked", req: m.req, item: null, marked: r.marked, unread: r.unread });
       return true;
     }
-    case "open-url": await openPath(d, m.url); return true;
+    case "open-url": await openPath(d, m.url, m.pageUrl); return true;
     default: return false;
   }
 }

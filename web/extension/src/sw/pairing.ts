@@ -69,6 +69,13 @@ export class Pairer {
     return isPairing(stored) ? stored : this.pair();
   }
 
+  /** The stored pairing, else the pairing under way; null when there is
+   * neither (no native host is started for it). */
+  async joined(): Promise<Pairing | null> {
+    const stored = (await this.env.session.get("pairing")).pairing;
+    return isPairing(stored) ? stored : this.inflight;
+  }
+
   /** A new pairing; concurrent callers share it, a Retry included (never
    * two native hosts at once), and another within `REPAIR_MS` of the last
    * is refused (`paired_recently`) unless `retry` (the person asked to try

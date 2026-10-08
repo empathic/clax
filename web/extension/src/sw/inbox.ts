@@ -9,10 +9,14 @@
 // topics with it. Then, as the contract asks, each time the topics go live
 // or resync the summary is fetched again, so no change falls between a
 // fetch and the subscription. A refused topic (the daemon no longer takes
-// the extension as the owner) drops the client.
+// the extension as the owner) drops the client. The check never starts a
+// native host itself: it joins the pairing stored or under way. Without one,
+// or when the daemon or host cannot be reached, it waits for a pairing
+// (`kick`: a panel watching a tab or asking to retry, or a new pairing);
+// other failures are retried a few times with a backoff.
 import type { InboxFilter, InboxItem, InboxPage, QuestionView } from "../../../shell/src/api";
 import type { HubMsg, TabMsg } from "../../../shell/src/stream-hub";
-import type { WorkerToPanel } from "../messages";
+import { RETRYABLE, type WorkerToPanel } from "../messages";
 import type { Api } from "./api";
 
 /** The worker's hub client for the questions and the inbox. */
@@ -20,9 +24,12 @@ export const HUB_ID = "inbox";
 export const TOPICS = ["questions", "inbox"];
 /** The longest wait before a failed owner check is made again. */
 export const RETRY_MAX_MS = 30_000;
+/** How many times a failed owner check is made again before it waits for a `kick`. */
+export const RETRY_LIMIT = 6;
 
 type Port = Pick<chrome.runtime.Port, "postMessage" | "onDisconnect">;
 export type InboxDeps = {
+  /** `inboxSummary(true)`: only on a pairing stored or under way. */
   api: Pick<Api, "inboxSummary" | "inboxPage">;
   hub: { receive(id: string, msg: TabMsg): void; detach(id: string): void };
   /** Runs `fn` in `ms` (a failed check's retry); returns what `cancel` takes. */
@@ -32,6 +39,8 @@ export type InboxDeps = {
 
 const byCreated = (a: QuestionView, b: QuestionView) => a.created_at.localeCompare(b.created_at);
 const forbidden = (e: unknown) => (e as { status?: unknown })?.status === 403;
+/** A failure only a pairing (or a reachable daemon) mends: no timer retries it. */
+const unpaired = (e: unknown) => { const c = (e as { code?: unknown })?.code; return typeof c === "string" && (c === "not_paired" || RETRYABLE.has(c)); };
 
 export class WorkerInbox {
   /** The open questions, oldest first. */
@@ -44,6 +53,7 @@ export class WorkerInbox {
   private subscribed = false;
   private checking: Promise<void> | null = null;
   private wait = 0;
+  private tries = 0;
   private timer: unknown = null;
 
   constructor(private readonly d: InboxDeps) {}
@@ -64,6 +74,14 @@ export class WorkerInbox {
       if (!this.ports.size) this.stop();
     });
     if (this.ports.size === 1 || this.owner === null) void this.start();
+  }
+
+  /** A pairing may have landed (a panel watched a tab or asked to retry, or
+   * the worker paired again): an owner check that is not done runs again. */
+  kick(): void {
+    if (!this.ports.size || this.subscribed || this.owner === false || this.checking || this.timer !== null) return;
+    this.tries = 0;
+    void this.start();
   }
 
   private state(): WorkerToPanel {
@@ -87,18 +105,23 @@ export class WorkerInbox {
   private async check(): Promise<void> {
     if (this.timer !== null) { (this.d.cancel ?? clearTimeout)(this.timer as never); this.timer = null; }
     try {
-      this.take(await this.d.api.inboxSummary());
+      const r = await this.d.api.inboxSummary(true);
       this.owner = true;
       this.wait = 0;
+      this.tries = 0;
+      // The last panel closed meanwhile: what it answered would go stale.
+      if (!this.ports.size) return;
+      this.take(r);
     } catch (e) {
       if (forbidden(e)) {
         this.owner = false;
-      } else if (this.ports.size) {
+      } else if (this.ports.size && !unpaired(e) && this.tries < RETRY_LIMIT) {
         // Tried again after a backoff (1 s, doubling, at most RETRY_MAX_MS) while a panel is open.
+        this.tries++;
         this.wait = Math.min(RETRY_MAX_MS, this.wait ? this.wait * 2 : 1000);
         this.timer = (this.d.after ?? setTimeout)(() => { this.timer = null; if (this.ports.size) void this.start(); }, this.wait);
       }
-      this.tell();
+      if (this.ports.size) this.tell();
       return;
     }
     this.tell();
@@ -112,6 +135,8 @@ export class WorkerInbox {
     if (this.timer !== null) { (this.d.cancel ?? clearTimeout)(this.timer as never); this.timer = null; }
     if (this.subscribed) this.d.hub.detach(HUB_ID);
     this.subscribed = false;
+    this.tries = 0;
+    this.wait = 0;
     // Nothing is announced while no stream holds the topics: what is kept would go stale.
     this.questions = [];
   }
@@ -124,7 +149,7 @@ export class WorkerInbox {
   /** Fetches the summary again (the topics went live or resynced). */
   async load(): Promise<void> {
     try {
-      this.take(await this.d.api.inboxSummary());
+      this.take(await this.d.api.inboxSummary(true));
     } catch (e) {
       if (forbidden(e)) this.refused();
       // Otherwise the next `live` or `resync` fetches it again.

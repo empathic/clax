@@ -945,16 +945,12 @@ test("the panel shows the live page's questions above its threads, answers one, 
   // Another page's: the Inbox tab shows it, the page's view does not.
   const { artifact } = await publishAs(live.daemon.base, live.daemon.token, sid, "Quarterly Review", { "index.html": "<main><h2>Quarterly goals</h2></main>" });
   await ask(artifact.id, "Which layout should the dashboard use?", "Layout", [{ label: "Two columns", preview: "+--------+-------+\n| charts | table |\n+--------+-------+" }, { label: "One column" }]);
-  // The owner sends the thread to the agent, which replies.
-  await api(live, `/api/artifacts/${aid}/threads/${tid}/send`, { method: "POST", body: "{}" });
-  expect((await api(live, `/api/artifacts/${aid}/threads/${tid}/comments`, { method: "POST", body: JSON.stringify({ body: "Renamed it to Save changes.", author_kind: "agent" }) }, sid)).comment?.author_kind).toBe("agent");
 
   const page = await live.ctx.newPage();
   await page.goto(home);
   const tabId = await tabIdOf(live, home);
   await h.comment(tabId, home);
-  // The tab's page is looked up (the worker paired) before the panel opens.
-  await expect.poll(async () => (await h.state(tabId))?.page?.artifact_id ?? null).toBe(aid);
+  // Opened while the worker may still be pairing: the panel and the inbox join that pairing.
   const panel = await SidePanel.open(live, page, tabId);
   // The side panel's width (spec §9.6: 360 px).
   await panel.send("Emulation.setDeviceMetricsOverride", { width: 360, height: 900, deviceScaleFactor: 2, mobile: false });
@@ -971,12 +967,15 @@ test("the panel shows the live page's questions above its threads, answers one, 
   await expect.poll(() => panel.text()).toContain("Which label should the save button use?");
   const text = await panel.text();
   expect(text.indexOf("Questions for you")).toBeLessThan(text.indexOf("Home button note"));
+  // First in the Page view: before the name field, the thread filters and search.
+  expect(await panel.eval<boolean>(`(() => { const q = document.querySelector(".questions"); return [".name", ".tools"].every(s => !!(q.compareDocumentPosition(document.querySelector(s)) & Node.DOCUMENT_POSITION_FOLLOWING)); })()`)).toBe(true);
   expect(text).not.toContain("Which layout should the dashboard use?");
   const unread = async () => (await api(live, "/api/inbox/summary")).unread as number;
   const tabLabel = () => panel.eval<string>(`document.querySelector("#ptab-inbox")?.getAttribute("aria-label") ?? ""`);
-  // Two questions, the reply and the new artifact.
-  expect(await unread()).toBe(4);
-  await expect.poll(tabLabel).toBe("Inbox, 4 unread");
+  // The tab's count is the daemon's: two questions and the new artifact.
+  const counted = async () => `Inbox, ${await unread()} unread`;
+  expect(await unread()).toBe(3);
+  await expect.poll(tabLabel).toBe(await counted());
   await shot("page-light");
   await scheme("dark");
   await shot("page-dark");
@@ -993,7 +992,12 @@ test("the panel shows the live page's questions above its threads, answers one, 
   // The Inbox tab: unread first, the other page's question as a card, the read ones folded.
   await panel.click(/^Inbox/);
   await expect.poll(() => panel.text()).toContain("Which layout should the dashboard use?");
+  // The owner sends the thread to the agent, which replies: the tab shows the new item as it comes
+  // (the Page view, which would mark the thread looked at, is not shown).
+  await api(live, `/api/artifacts/${aid}/threads/${tid}/send`, { method: "POST", body: "{}" });
+  expect((await api(live, `/api/artifacts/${aid}/threads/${tid}/comments`, { method: "POST", body: JSON.stringify({ body: "Renamed it to Save changes.", author_kind: "agent" }) }, sid)).comment?.author_kind).toBe("agent");
   await expect.poll(() => panel.text()).toContain("replied on");
+  await expect.poll(tabLabel).toBe(await counted());
   await shot("inbox-unread-light");
   await scheme("dark");
   await shot("inbox-unread-dark");
@@ -1007,8 +1011,9 @@ test("the panel shows the live page's questions above its threads, answers one, 
   expect(await panel.text()).toContain("Renamed it to Save changes.");
   await shot("inbox-search-light");
   // Mark all read marks what the search matches: the reply. The answered question was read when answered.
+  const before = await unread();
   await panel.click(/^ ?Mark all read/);
-  await expect.poll(unread).toBe(2);
-  await expect.poll(tabLabel).toBe("Inbox, 2 unread");
+  await expect.poll(unread).toBe(before - 1);
+  await expect.poll(tabLabel).toBe(await counted());
   await shot("inbox-marked-light");
 });

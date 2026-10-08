@@ -37,18 +37,21 @@ export class Api {
   private active = 0;
   private idlers: (() => void)[] = [];
 
-  constructor(private readonly pairer: Pick<Pairer, "current" | "pair">, private readonly fetchFn: typeof fetch = (...a) => fetch(...a)) {}
+  constructor(private readonly pairer: Pick<Pairer, "current" | "pair"> & Partial<Pick<Pairer, "joined">>, private readonly fetchFn: typeof fetch = (...a) => fetch(...a)) {}
 
   /** `path` on the daemon, with the credential. After a 401 or a network
    * error the request is retried once: with a pairing another request
    * renewed meanwhile, else with a new one. When pairing again is refused
    * (`paired_recently`), the 401 is the answer, or `daemon_unreachable`.
    * With `once`, a network error pairs again but is the answer
-   * (`daemon_unreachable`): the request is not sent twice. */
-  async request(path: string, init: RequestInit = {}, once = false): Promise<Response> {
+   * (`daemon_unreachable`): the request is not sent twice. With `join`, the
+   * request starts no native host on its own: it takes the stored pairing or
+   * the one under way, else fails with `not_paired`; a network error is the
+   * answer, and only a 401 (a credential the daemon no longer knows) pairs again. */
+  async request(path: string, init: RequestInit = {}, once = false, join = false): Promise<Response> {
     this.active++;
     try {
-      return await this.attempt(path, init, once);
+      return await this.attempt(path, init, once, join);
     } finally {
       this.active--;
       queueMicrotask(() => this.drain());
@@ -66,8 +69,10 @@ export class Api {
     for (const fn of this.idlers.splice(0)) fn();
   }
 
-  private async attempt(path: string, init: RequestInit, once: boolean): Promise<Response> {
-    let p = await this.pairer.current();
+  private async attempt(path: string, init: RequestInit, once: boolean, join: boolean): Promise<Response> {
+    const first = join && this.pairer.joined ? await this.pairer.joined() : await this.pairer.current();
+    if (!first) throw new ApiFailure("not_paired", "Clax is not paired yet.");
+    let p = first;
     for (let attempt = 0; ; attempt++) {
       const headers = new Headers(init.headers);
       headers.set("authorization", `Clax-Extension ${p.credential}`);
@@ -77,7 +82,7 @@ export class Api {
         res = await this.fetchFn(p.daemon + path, { ...init, headers, credentials: "omit" });
         if (res.status !== 401 || attempt > 0) return res;
       } catch (e) {
-        if (attempt > 0 || init.signal?.aborted) throw new ApiFailure("daemon_unreachable", String(e));
+        if (attempt > 0 || join || init.signal?.aborted) throw new ApiFailure("daemon_unreachable", String(e));
         failed = e;
       }
       const used = p;
@@ -100,8 +105,8 @@ export class Api {
     }
   }
 
-  async json<T>(path: string, init?: RequestInit, once = false): Promise<T> {
-    const res = await this.request(path, init, once);
+  async json<T>(path: string, init?: RequestInit, once = false, join = false): Promise<T> {
+    const res = await this.request(path, init, once, join);
     const body = await res.json().catch(() => null) as { error?: { code?: string; message?: string } } | null;
     if (!res.ok) throw new ApiFailure(body?.error?.code ?? `http_${res.status}`, body?.error?.message ?? res.statusText, res.status);
     return body as T;
@@ -185,8 +190,9 @@ export class Api {
   // The owner's questions and inbox (spec 2026-10-06-agent-questions-and-inbox
   // §6.2, §8.1): the daemon answers 403 `forbidden` to a caller it does not take as the owner.
 
-  /** The unread count, the open questions oldest first, and the newest unread items. */
-  inboxSummary() { return this.json<InboxSummary>("/api/inbox/summary"); }
+  /** The unread count, the open questions oldest first, and the newest
+   * unread items. `join`: only on a pairing stored or under way (see `request`). */
+  inboxSummary(join = false) { return this.json<InboxSummary>("/api/inbox/summary", undefined, false, join); }
   /** One page of items matching `f`, newest first, after cursor `before`. */
   inboxPage(f: InboxFilter, before: string | null) { return this.json<InboxPage>(`/api/inbox${inboxQuery(f, before)}`); }
   /** Marks one item read or unread. */
