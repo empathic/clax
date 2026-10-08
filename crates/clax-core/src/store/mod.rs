@@ -53,6 +53,7 @@ pub mod live;
 pub mod migrations;
 #[cfg(test)]
 mod plans;
+pub mod questions;
 pub mod sessions;
 pub mod site;
 pub mod threads;

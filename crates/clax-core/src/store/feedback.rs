@@ -1400,7 +1400,7 @@ mod tests {
         st.ensure_watch(&owner, &aid).unwrap();
         let tid = thread(&st, &aid, "hi");
         st.send_to_agent(&tid).unwrap();
-        let (_, touched) = st.end_session_touched(&owner).unwrap();
+        let touched = st.end_session_touched(&owner).unwrap().touched;
         assert!(
             touched
                 .threads

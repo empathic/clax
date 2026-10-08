@@ -370,6 +370,33 @@ pub const MIGRATIONS: &[&str] = &[
     DROP TABLE thread_moves;
     ALTER TABLE thread_moves_22 RENAME TO thread_moves;
     CREATE INDEX thread_moves_by_thread ON thread_moves(thread_id, created_at, id);",
+    // 20: agent questions (spec 2026-10-06-agent-questions-and-inbox-design
+    // §5.1): a question an agent asked (`ask`) or Claude Code's
+    // AskUserQuestion that the hook mirrored (`hook`, keyed by the call's
+    // tool_use_id), what it asks, how it closed, and when its session
+    // received the answer. No foreign key to `artifacts`, as for
+    // `version_threads` (11).
+    "CREATE TABLE questions (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id),
+        artifact_id TEXT,
+        source TEXT NOT NULL CHECK (source IN ('ask', 'hook')),
+        tool_use_id TEXT,
+        questions_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open'
+            CHECK (status IN ('open', 'answered', 'declined', 'released', 'withdrawn')),
+        answers_json TEXT,
+        answered_via TEXT CHECK (answered_via IN ('shell', 'extension', 'cli', 'terminal')),
+        created_at TEXT NOT NULL,
+        closed_at TEXT,
+        taken_at TEXT
+    );
+    CREATE INDEX questions_by_status ON questions(status, created_at, id);
+    CREATE INDEX questions_by_session ON questions(session_id, status);
+    CREATE INDEX questions_by_artifact ON questions(artifact_id, status)
+        WHERE artifact_id IS NOT NULL;
+    CREATE UNIQUE INDEX questions_by_tool_use ON questions(session_id, tool_use_id)
+        WHERE tool_use_id IS NOT NULL;",
 ];
 
 #[cfg(test)]
@@ -492,6 +519,25 @@ mod tests {
     }
 
     #[test]
+    fn migration_20_adds_questions_to_a_19_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            for sql in &MIGRATIONS[..19] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.pragma_update(None, "user_version", 19).unwrap();
+        }
+        let st = Store::open(&home).unwrap();
+        let n: i64 = st
+            .with_read(|c| Ok(c.query_row("SELECT COUNT(*) FROM questions", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
     fn migration_16_marks_existing_artifacts_html() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
@@ -526,8 +572,9 @@ mod tests {
         {
             let mut c = Connection::open(home.db_path()).unwrap();
             let tx = c.transaction().unwrap();
-            // Every migration before joined sites, the last.
-            let before = MIGRATIONS.len() - 1;
+            // Every migration before joined sites (19).
+            let before = 18;
+            assert!(MIGRATIONS[before].contains("live_sites"));
             for sql in &MIGRATIONS[..before] {
                 tx.execute_batch(sql).unwrap();
             }
