@@ -282,8 +282,9 @@ pub fn announce_ids(s: &AppState, st: &Store, ids: &[String]) {
 
 /// Starts the grace for hook question `qid`: after `s.question_grace`, if
 /// no poll has held it and no later grace has started meanwhile, an open
-/// `qid` is withdrawn and announced. The grace thus runs from the last
-/// time a poll let go (or from creation, when none has held it).
+/// `qid` is withdrawn and announced, recording `question.withdraw` (reason
+/// `unwaited`) as `system:daemon`. The grace thus runs from the last time a
+/// poll let go (or from creation, when none has held it).
 pub fn start_grace(s: AppState, qid: String) {
     let generation = s.questions.arm(&qid);
     tokio::spawn(async move {
@@ -295,7 +296,8 @@ pub fn start_grace(s: AppState, qid: String) {
         let r = s
             .store
             .call(move |db| {
-                let q = db.close_question(&qid, Close::Withdraw)?;
+                let q =
+                    db.close_question(&clax_core::audit::AuditCtx::DAEMON, &qid, Close::Unwaited)?;
                 let v = view(db, &q)?;
                 announce(&st, &q, v);
                 Ok(())

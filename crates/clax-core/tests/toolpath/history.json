@@ -2035,7 +2035,9 @@
        {
         "label": "Cool"
        }
-      ]
+      ],
+      "multi_select": false,
+      "other": true
      }
     ],
     "call": {
@@ -2072,7 +2074,10 @@
     "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
     "answers": [
      {
-      "answer": "Warm, please"
+      "selected": [
+       "Warm"
+      ],
+      "text": "Warm, please"
      }
     ],
     "answered_via": "shell"
@@ -2100,8 +2105,7 @@
     "v": 1,
     "via": "shell",
     "clax_version": "0.3.1",
-    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
-    "reason": "Not now"
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56"
    },
    "backfilled": false
   },
@@ -2110,8 +2114,8 @@
    "at": "2026-10-06T14:06:39.057Z",
    "kind": "question.release",
    "actor": {
-    "type": "system",
-    "reason": "daemon"
+    "type": "owner",
+    "public_id": "u_4be1q8"
    },
    "ids": {
     "artifact": null,
@@ -2124,10 +2128,10 @@
    },
    "body": {
     "v": 1,
-    "via": "daemon",
+    "via": "shell",
     "clax_version": "0.3.1",
     "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
-    "reason": null
+    "reason": "owner"
    },
    "backfilled": false
   },
@@ -2157,7 +2161,7 @@
     "via": "mcp",
     "clax_version": "0.3.1",
     "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
-    "reason": null
+    "reason": "explicit"
    },
    "backfilled": false
   },

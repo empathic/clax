@@ -591,11 +591,6 @@ fn key(k: &Option<String>) -> &str {
     k.as_deref().unwrap_or_default()
 }
 
-fn json_or_null(text: Option<String>) -> Value {
-    text.and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or(Value::Null)
-}
-
 /// `rec` naming `who` in `for_actor`, when known.
 fn for_actor(rec: AuditRecord, who: Option<Actor>) -> AuditRecord {
     match who {
@@ -1564,36 +1559,52 @@ fn question_ask(c: &Connection, at: &str, qid: &str) -> Result<Option<AuditRecor
     let Some((sid, aid, source, tool_use_id, questions, ..)) = question(c, qid)? else {
         return Ok(None);
     };
-    let mut rec = AuditRecord::new(AuditKind::QuestionAsk, at)
-        .with("source", source)
-        .with("tool_use_id", tool_use_id)
-        .with("questions", json_or_null(Some(questions)));
-    rec.ids.question = Some(qid.to_string());
-    rec.ids.session = Some(sid.clone());
-    rec.ids.artifact = aid;
+    let rec = super::questions::ask_record(
+        at,
+        qid,
+        &sid,
+        aid.as_deref(),
+        &source,
+        tool_use_id.as_deref(),
+        super::questions::json_or_null(Some(&questions)),
+    );
     Ok(Some(for_actor(rec, agent(c, Some(&sid))?)))
 }
 
+/// The transition that closed a question. The history keeps only its
+/// final status, so a release's or withdrawal's `reason` is `null`.
 fn question_close(c: &Connection, at: &str, qid: &str) -> Result<Option<AuditRecord>> {
+    use super::questions::{answer_record, close_record};
     let Some((sid, aid, _, _, _, status, answers, via)) = question(c, qid)? else {
         return Ok(None);
     };
-    let (kind, who) = match status.as_str() {
-        "answered" => (AuditKind::QuestionAnswer, owner(c)?),
-        "declined" => (AuditKind::QuestionDecline, None),
-        "released" => (AuditKind::QuestionRelease, None),
-        "withdrawn" => (AuditKind::QuestionWithdraw, agent(c, Some(&sid))?),
+    let aid = aid.as_deref();
+    let (rec, who) = match status.as_str() {
+        "answered" => (
+            answer_record(
+                at,
+                qid,
+                &sid,
+                aid,
+                super::questions::json_or_null(answers.as_deref()),
+                via.as_deref(),
+            ),
+            owner(c)?,
+        ),
+        "declined" => (
+            close_record(AuditKind::QuestionDecline, at, qid, &sid, aid, None)?,
+            None,
+        ),
+        "released" => (
+            close_record(AuditKind::QuestionRelease, at, qid, &sid, aid, None)?,
+            None,
+        ),
+        "withdrawn" => (
+            close_record(AuditKind::QuestionWithdraw, at, qid, &sid, aid, None)?,
+            agent(c, Some(&sid))?,
+        ),
         _ => return Ok(None),
     };
-    let mut rec = AuditRecord::new(kind, at);
-    if kind == AuditKind::QuestionAnswer {
-        rec = rec
-            .with("answers", json_or_null(answers))
-            .with("answered_via", via);
-    }
-    rec.ids.question = Some(qid.to_string());
-    rec.ids.session = Some(sid);
-    rec.ids.artifact = aid;
     Ok(Some(for_actor(rec, who)))
 }
 
@@ -2934,7 +2945,54 @@ pub(crate) mod tests {
         .unwrap();
         let other = make(st, None);
         st.delete_artifact(DAEMON, &other).unwrap();
+        // Questions: answered, declined, released by the owner, created
+        // released and answered in the terminal, and withdrawn by their
+        // session's end.
+        use crate::questions::Answer;
+        use crate::store::questions::{Close, NewQuestion, Source};
+        let ask = |sid: &str, source: Source, tool_use_id: Option<&str>, released: bool| {
+            st.create_question(
+                DAEMON,
+                NewQuestion {
+                    session_id: sid.to_string(),
+                    artifact_id: Some(aid.as_str().to_string()),
+                    source,
+                    tool_use_id: tool_use_id.map(str::to_string),
+                    questions: serde_json::from_value(json!([{"question": "Which?",
+                        "header": "Pick", "options": [{"label": "A"}, {"label": "B"}]}]))
+                    .unwrap(),
+                    released,
+                },
+            )
+            .unwrap()
+            .0
+            .id
+        };
+        let pick = || {
+            vec![Answer {
+                selected: vec!["A".into()],
+                text: None,
+            }]
+        };
+        let q = ask(&sid, Source::Ask, None, false);
+        st.close_question(
+            DAEMON,
+            &q,
+            Close::Answer {
+                answers: pick(),
+                via: "shell",
+            },
+        )
+        .unwrap();
+        let q = ask(&sid, Source::Ask, None, false);
+        st.close_question(DAEMON, &q, Close::Decline).unwrap();
+        let q = ask(&sid, Source::Hook, Some("toolu_r"), false);
+        st.close_question(DAEMON, &q, Close::Release).unwrap();
+        let q = ask(&sid, Source::Hook, Some("toolu_t"), true);
+        st.close_question(DAEMON, &q, Close::Terminal { answers: pick() })
+            .unwrap();
         let ended = start(st, "codex", "h2");
+        ask(&ended, Source::Ask, None, false);
         st.end_session(DAEMON, &ended).unwrap();
     }
 
@@ -3001,6 +3059,11 @@ pub(crate) mod tests {
             "live.join",
             "live.page_merge",
             "live.join_answer",
+            "question.ask",
+            "question.answer",
+            "question.decline",
+            "question.release",
+            "question.withdraw",
         ] {
             assert!(
                 compared.iter().any(|c| c == k),

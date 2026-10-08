@@ -494,13 +494,45 @@ record's artifact and session in its columns.
 ### 6.6 Questions
 
 The questions spec owns the `questions` table and its transitions. This
-design records one event per transition, keyed by `question_id`:
+design records one event per transition, in the transition's transaction,
+keyed by `question_id`, with the asking session in `session_id` and the
+question's artifact in `artifact_id`:
 
 | Kind | Body |
 |---|---|
 | `question.ask` | `source (ask\|hook), tool_use_id, questions (the stored questions_json)` |
 | `question.answer` | `answers (answers_json), answered_via` (actor: the owner) |
-| `question.decline`, `question.release`, `question.withdraw` | `reason?` |
+| `question.decline` | none (actor: the owner) |
+| `question.release`, `question.withdraw` | `reason` |
+
+- `question.ask`: the asking session's agent, through the channel its
+  request names. A hook question created already handed to the terminal
+  (no owner surface open, or the terminal chosen up front) records
+  `question.ask` then `question.release` with reason `created`. A repeated
+  request for the same `tool_use_id` makes no question and records nothing.
+- `question.answer`: the owner, through the shell, the extension or the CLI
+  (`answered_via` the same); an answer given in the terminal is the owner's
+  too, reported by the hook (`via: hook`, `answered_via: terminal`).
+- `question.release` `reason`: `owner` (the owner chose "Answer in the
+  terminal"), `timer` (the hook's timer ran out; actor the asking agent), or
+  `created`.
+- `question.withdraw` `reason`: `explicit` (the asking session withdrew it),
+  `unwaited` (a hook question no poll held for the grace; `system:daemon`),
+  `session_end` (its session ended: under the end's actor, `system:ttl` for
+  the reaper, recorded after the `session.end`), `daemon_start` (a hook
+  question its hook was waiting on the previous daemon for;
+  `system:daemon`), or `daemon_stop` (a hook question a poll held as the
+  daemon shut down; `system:daemon`). A system actor names the asking agent in `for_actor`.
+- A reason is one of these fixed phrases, never free text: the builder
+  refuses any other value, and a reason of the other kind. It is classed
+  safe (§11); a decline has no reason.
+- A transition the store refuses (the question already closed, an `ask`
+  question's release, answers that do not fit) records nothing. Marking an
+  outcome received by its session (`taken_at`) is delivery bookkeeping and
+  is not recorded.
+- The backfill records `question.ask` and the closing transition with the
+  same builders; it has only the final status, so a backfilled release's or
+  withdrawal's `reason` is `null`.
 
 The owner's inbox (migration 21) lists what agents sent the owner: replies,
 versions, publishes, questions and finished work, each recorded by its own
@@ -645,7 +677,8 @@ the history keeps it. It also carries:
     `live.page_merge`: `merged_into`; `live.join`: `origin`, `joined` (the
     origins that joined the site at one time).
 - `null` for what the history cannot give: `version.publish.by_page`, a
-  `live.join`'s `with` and rules.
+  `live.join`'s `with` and rules, a `question.release`'s or
+  `question.withdraw`'s `reason`.
 - On a version's file: `missing: true` (`sha256: null`) when the stored
   file cannot be read, `size_mismatch: true` when its length differs from
   the size recorded (its hash is not kept); the version then has no
@@ -1432,7 +1465,7 @@ This is the owner's archive (O3). It lives under `~/.clax` (0700, files
 
 | Option | Replaces | With |
 |---|---|---|
-| `--no-text` | comment `body`, version `note` and `label`, artifact `title` and `description`, question and answer text, working `message`, an anchor's quoted page text (`quote`, `prefix`, `suffix`), an artifact's declared `capabilities` (open-ended configuration), and free-form reasons (`backfill.skip`, `feedback.release`, `question.*`) | `{"redacted":"text","sha256":"sha256:<hex of the UTF-8 original>"}`; a structured value (questions, answers) hashes its JCS form (§12.2) |
+| `--no-text` | comment `body`, version `note` and `label`, artifact `title` and `description`, question and answer text, working `message`, an anchor's quoted page text (`quote`, `prefix`, `suffix`), an artifact's declared `capabilities` (open-ended configuration), and free-form reasons (`backfill.skip`, `feedback.release`; a question's release or withdrawal `reason` is one of §6.6's fixed phrases, classed safe) | `{"redacted":"text","sha256":"sha256:<hex of the UTF-8 original>"}`; a structured value (questions, answers) hashes its JCS form (§12.2) |
 | `--no-names` | viewer `display_name`, `author_name` | `{"redacted":"name"}` (public IDs stay) |
 | `--no-paths` | `cwd`, `repo_root`, `transcript_path`, URLs that can carry a query or fragment (an anchor's `route`, a `thread.move`'s `from_url` and `to_url`; a query can hold a token or a search), a git `remote_url` that is a local path (anything without a non-`file` scheme or the scp form `[user@]host:path`), `file://` refs, the transcript identity | `{"redacted":"path","sha256":…}`; `file://` refs, and an `at-revision` naming a local path, are dropped; the transcript identity becomes `{system:"<provider>-transcript-sha256", id:"sha256:…"}`, the only form the schema's identity (`{system, id}` strings) allows |
 | any option | a field with no class: one this build does not know, or any field of a kind it does not know | `{"redacted":"unclassified","sha256":…}` |

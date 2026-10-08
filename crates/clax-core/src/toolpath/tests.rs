@@ -641,28 +641,22 @@ fn text_rows() -> Vec<AuditRow> {
             "question.answer",
             owner.clone(),
             q.clone(),
-            json!({"answers": [{"answer": "SENTINEL-TEXT-answer"}], "answered_via": "shell"}),
+            json!({"answers": [{"selected": [], "text": "SENTINEL-TEXT-answer"}], "answered_via": "shell"}),
         ),
-        row(
-            9,
-            "question.decline",
-            owner.clone(),
-            q.clone(),
-            json!({"reason": "SENTINEL-TEXT-decline"}),
-        ),
+        row(9, "question.decline", owner.clone(), q.clone(), json!({})),
         row(
             10,
             "question.release",
             owner.clone(),
             q.clone(),
-            json!({"reason": "SENTINEL-TEXT-release"}),
+            json!({"reason": "owner"}),
         ),
         row(
             11,
             "question.withdraw",
             owner.clone(),
             q,
-            json!({"reason": "SENTINEL-TEXT-withdraw"}),
+            json!({"reason": "explicit"}),
         ),
         row(
             12,
@@ -734,6 +728,108 @@ fn text_hash(s: &str) -> String {
     format!("sha256:{}", crate::audit::sha256_hex(s.as_bytes()))
 }
 
+/// Questions and answers, as the store records them, are text: plain
+/// without options, hashed (their JCS form, §12.2) under `--no-text`, and
+/// kept under the other options alone; a reason is a fixed phrase, kept.
+#[test]
+fn question_text_redacted_under_no_text() {
+    use crate::questions::{Answer, Question};
+    use crate::store::questions::{Close, NewQuestion, Source};
+    use crate::store::test_util::{DAEMON, session, store};
+    let (_d, st) = store();
+    let s = session(&st, "claude", "h1");
+    let questions: Vec<Question> = serde_json::from_value(json!([{
+        "question": "SENTINEL-Q which palette?", "header": "Palette",
+        "options": [{"label": "SENTINEL-Q warm", "description": "SENTINEL-Q red"},
+                    {"label": "Cool"}]}]))
+    .unwrap();
+    let ask = |tool_use_id: Option<&str>| {
+        st.create_question(
+            DAEMON,
+            NewQuestion {
+                session_id: s.clone(),
+                artifact_id: None,
+                source: Source::Ask,
+                tool_use_id: tool_use_id.map(str::to_string),
+                questions: questions.clone(),
+                released: false,
+            },
+        )
+        .unwrap()
+        .0
+    };
+    let q1 = ask(Some("toolu_1"));
+    let answers = vec![Answer {
+        selected: vec![],
+        text: Some("SENTINEL-Q something brighter".into()),
+    }];
+    st.close_question(
+        DAEMON,
+        &q1.id,
+        Close::Answer {
+            answers: answers.clone(),
+            via: "shell",
+        },
+    )
+    .unwrap();
+    let q2 = ask(None);
+    st.close_question(DAEMON, &q2.id, Close::Withdraw).unwrap();
+    let rows: Vec<AuditRow> = st
+        .events_after(0, 1000)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.kind.starts_with("question."))
+        .collect();
+    let kinds: Vec<&str> = rows.iter().map(|r| r.kind.as_str()).collect();
+    assert_eq!(
+        kinds,
+        [
+            "question.ask",
+            "question.answer",
+            "question.ask",
+            "question.withdraw"
+        ]
+    );
+    let plain = rendered(&rows, &Redaction::NONE);
+    assert_eq!(hits(&plain, "SENTINEL-Q").len(), 7, "the positive control");
+    let structural = |out: &Value, i: usize| -> Value {
+        out["steps"][i]["change"]
+            .as_object()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()["structural"]
+            .clone()
+    };
+    let jcs = |v: Value| json!({"redacted": "text", "sha256": args::args_sha256(&v)});
+    for opts in &OPTION_SETS[1..] {
+        let out = rendered(&rows, opts);
+        let leaks = hits(&out, "SENTINEL-Q");
+        if !opts.no_text {
+            assert_eq!(leaks.len(), 7, "{opts:?} keeps question text");
+            continue;
+        }
+        assert!(leaks.is_empty(), "{opts:?} leaks:\n{}", leaks.join("\n"));
+        let ask = structural(&out, 0);
+        assert_eq!(
+            ask["questions"],
+            jcs(serde_json::to_value(&questions).unwrap())
+        );
+        assert_eq!(
+            (&ask["source"], &ask["tool_use_id"]),
+            (&json!("ask"), &json!("toolu_1"))
+        );
+        let answer = structural(&out, 1);
+        assert_eq!(
+            answer["answers"],
+            jcs(serde_json::to_value(&answers).unwrap())
+        );
+        assert_eq!(answer["answered_via"], "shell");
+        // A reason is a fixed phrase, kept.
+        assert_eq!(structural(&out, 3)["reason"], "explicit");
+    }
+}
+
 #[test]
 fn no_text_hashes_bodies() {
     let rows = text_rows();
@@ -769,7 +865,9 @@ fn no_text_hashes_bodies() {
         assert_eq!(st(1)["title"], redacted("SENTINEL-TEXT-title"));
         assert_eq!(st(4)["fields"]["title"], redacted("SENTINEL-TEXT-newtitle"));
         assert_eq!(st(4)["fields"]["pinned"], true);
-        assert_eq!(st(8)["reason"], redacted("SENTINEL-TEXT-decline"));
+        // A question's reason is a fixed phrase, never hashed.
+        assert_eq!(st(9)["reason"], "owner");
+        assert_eq!(st(10)["reason"], "explicit");
         assert_eq!(st(12)["anchor"]["quote"], redacted("SENTINEL-TEXT-quote"));
         assert_eq!(st(12)["anchor"]["selector"], "h1");
         // Structured text is hashed as its compact JSON.
@@ -2343,6 +2441,99 @@ fn golden_journal_export_matches_and_conforms() {
     assert_eq!(seqs_of(p), (1..=62).collect::<Vec<_>>());
     assert_eq!(p["meta"]["clax"]["projection"], "journal");
     golden("export.journal.path.json", &text);
+}
+
+/// The golden history's `question.*` bodies are what the live builders make
+/// (and the backfill shares): questions and answers in their stored shape,
+/// and reasons from the recorders' vocabulary.
+#[test]
+fn golden_questions_match_the_live_builders() {
+    use crate::questions::{Answer, Question};
+    use crate::store::questions::{Reason, answer_record, ask_record, close_record};
+    let h = read_json("history.json");
+    let mut seen = BTreeSet::new();
+    for row in h["rows"].as_array().unwrap() {
+        let Some(kind) = row["kind"].as_str().and_then(AuditKind::parse) else {
+            continue;
+        };
+        if !row["kind"].as_str().unwrap().starts_with("question.") {
+            continue;
+        }
+        let body = row["body"].as_object().unwrap();
+        let str_of = |k: &str| body.get(k).and_then(Value::as_str);
+        let (at, qid) = (
+            row["at"].as_str().unwrap(),
+            row["ids"]["question"].as_str().unwrap(),
+        );
+        let sid = row["ids"]["session"].as_str().unwrap();
+        let aid = row["ids"]["artifact"].as_str();
+        let rec = match kind {
+            AuditKind::QuestionAsk => {
+                let qs: Vec<Question> = serde_json::from_value(body["questions"].clone()).unwrap();
+                assert_eq!(
+                    serde_json::to_value(&qs).unwrap(),
+                    body["questions"],
+                    "stored shape"
+                );
+                ask_record(
+                    at,
+                    qid,
+                    sid,
+                    aid,
+                    str_of("source").unwrap(),
+                    str_of("tool_use_id"),
+                    body["questions"].clone(),
+                )
+            }
+            AuditKind::QuestionAnswer => {
+                let a: Vec<Answer> = serde_json::from_value(body["answers"].clone()).unwrap();
+                assert_eq!(
+                    serde_json::to_value(&a).unwrap(),
+                    body["answers"],
+                    "stored shape"
+                );
+                answer_record(
+                    at,
+                    qid,
+                    sid,
+                    aid,
+                    body["answers"].clone(),
+                    str_of("answered_via"),
+                )
+            }
+            _ => {
+                let why = str_of("reason").map(|w| Reason::parse(w).expect("a recorded reason"));
+                close_record(kind, at, qid, sid, aid, why).expect("a reason of its kind")
+            }
+        };
+        // The actor each transition has (spec §6.6).
+        let actor = row["actor"]["type"].as_str().unwrap();
+        let actors: &[&str] = match (kind, str_of("reason").and_then(Reason::parse)) {
+            (AuditKind::QuestionAsk, _) => &["agent"],
+            (AuditKind::QuestionAnswer | AuditKind::QuestionDecline, _) => &["owner"],
+            (_, Some(Reason::Owner)) => &["owner"],
+            (_, Some(Reason::Timer | Reason::Created | Reason::Explicit)) => &["agent"],
+            (_, Some(Reason::Unwaited | Reason::DaemonStart | Reason::DaemonStop)) => &["system"],
+            (_, Some(Reason::SessionEnd)) => &["agent", "system"],
+            (_, None) => &["system"],
+        };
+        assert!(
+            actors.contains(&actor),
+            "seq {}: {actor} {kind}",
+            row["seq"]
+        );
+        let mut want: Map<String, Value> = body.clone();
+        for k in redact::ENVELOPE_FIELDS {
+            want.remove(k);
+        }
+        let got: Map<String, Value> = rec.body.into_iter().collect();
+        assert_eq!(got, want, "seq {}", row["seq"]);
+        assert_eq!(rec.ids.question.as_deref(), Some(qid));
+        assert_eq!(rec.ids.session.as_deref(), Some(sid));
+        assert_eq!(rec.ids.artifact.as_deref(), aid);
+        seen.insert(kind);
+    }
+    assert_eq!(seen.len(), 5, "every question kind: {seen:?}");
 }
 
 /// The golden history's `tool.call` bodies are what the live builder makes

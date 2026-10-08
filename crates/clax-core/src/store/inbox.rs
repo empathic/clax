@@ -1346,7 +1346,7 @@ mod tests {
     use crate::publish::{PublishRequest, validate};
     use crate::questions::{Answer, Question};
     use crate::store::questions::{Close, NewQuestion, Source};
-    use crate::store::test_util::{anchor, artifact, session, store};
+    use crate::store::test_util::{DAEMON, anchor, artifact, session, store};
     use crate::store::threads::{AUTHOR_AGENT, NewComment};
     use crate::{ArtifactId, NewThread};
 
@@ -1433,18 +1433,21 @@ mod tests {
              "options": [{"label": "Teal"}, {"label": "Amber"}]}
         ]))
         .unwrap();
-        st.create_question(NewQuestion {
-            session_id: sid.into(),
-            artifact_id: aid.map(Into::into),
-            source: if tool_use_id.is_some() {
-                Source::Hook
-            } else {
-                Source::Ask
+        st.create_question(
+            DAEMON,
+            NewQuestion {
+                session_id: sid.into(),
+                artifact_id: aid.map(Into::into),
+                source: if tool_use_id.is_some() {
+                    Source::Hook
+                } else {
+                    Source::Ask
+                },
+                tool_use_id: tool_use_id.map(Into::into),
+                questions,
+                released: false,
             },
-            tool_use_id: tool_use_id.map(Into::into),
-            questions,
-            released: false,
-        })
+        )
         .unwrap()
         .0
         .id
@@ -1791,6 +1794,7 @@ mod tests {
         let withdrawn = ask(&st, &sid, None);
         assert_eq!(st.inbox_unread().unwrap(), 2);
         st.close_question(
+            DAEMON,
             &answered,
             Close::Answer {
                 answers: vec![Answer {
@@ -1801,7 +1805,8 @@ mod tests {
             },
         )
         .unwrap();
-        st.close_question(&withdrawn, Close::Withdraw).unwrap();
+        st.close_question(DAEMON, &withdrawn, Close::Withdraw)
+            .unwrap();
         assert_eq!(st.inbox_unread().unwrap(), 1);
         assert_eq!(find(&st, "darker"), 1, "the answer's text");
         assert_eq!(find(&st, "palette"), 2, "the question's text is kept");
@@ -2068,8 +2073,8 @@ mod tests {
         let sid = session(&st, "claude", "h1");
         let timed = ask_as(&st, &sid, None, Some("toolu_1"));
         let moved = ask_as(&st, &sid, None, Some("toolu_2"));
-        st.close_question(&timed, Close::Expire).unwrap();
-        st.close_question(&moved, Close::Release).unwrap();
+        st.close_question(DAEMON, &timed, Close::Expire).unwrap();
+        st.close_question(DAEMON, &moved, Close::Release).unwrap();
         assert_eq!(unread_question_ids(&st), vec![timed.clone()]);
         assert_eq!(
             st.question(&timed).unwrap().unwrap().status,
@@ -2077,6 +2082,7 @@ mod tests {
         );
         // Answered in the terminal afterwards: read.
         st.close_question(
+            DAEMON,
             &timed,
             Close::Terminal {
                 answers: vec![Answer {
@@ -2089,7 +2095,7 @@ mod tests {
         assert!(unread_question_ids(&st).is_empty());
         let a = ask(&st, &sid, None);
         assert!(
-            st.close_question(&a, Close::Expire).is_err(),
+            st.close_question(DAEMON, &a, Close::Expire).is_err(),
             "only a mirrored question moves to the terminal"
         );
     }
@@ -2103,7 +2109,8 @@ mod tests {
         let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let h = heard.clone();
         st.set_inbox_listener(Box::new(move |c| h.lock().unwrap().extend(c)));
-        st.close_question(&withdrawn, Close::Withdraw).unwrap();
+        st.close_question(DAEMON, &withdrawn, Close::Withdraw)
+            .unwrap();
         assert_eq!(heard.lock().unwrap().len(), 1, "a withdrawn question");
         let item = all(&st)
             .into_iter()
@@ -2111,7 +2118,8 @@ mod tests {
             .unwrap();
         st.inbox_mark(std::slice::from_ref(&item.id), true).unwrap();
         let read_at = st.inbox_item(&item.id).unwrap().unwrap().read_at;
-        st.close_question(&answered, Close::Decline).unwrap();
+        st.close_question(DAEMON, &answered, Close::Decline)
+            .unwrap();
         let h = heard.lock().unwrap().clone();
         assert_eq!(h.len(), 3, "an already read question that closed: {h:?}");
         assert_eq!(

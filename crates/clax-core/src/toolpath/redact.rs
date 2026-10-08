@@ -6,13 +6,14 @@
 //! the objects nested in it (an anchor, an `artifact.update`'s `fields`, an
 //! actor in `for_actor`, the envelope's `git` and `call`), has a class:
 //!
-//! - **safe**: IDs, enums, counts, hashes, times, origins and URL paths
-//!   (never a query or fragment); never replaced;
+//! - **safe**: IDs, enums (a question's release or withdrawal reason among
+//!   them), counts, hashes, times, origins and URL paths (never a query or
+//!   fragment); never replaced;
 //! - **text**: comment bodies, version notes, labels and titles, artifact
 //!   descriptions, question and answer text, working messages, an anchor's
 //!   quoted page text, an artifact's declared `capabilities` (their
 //!   configuration is open-ended), and free-form reasons (a backfill skip's,
-//!   a failed queue claim's, a question's). `--no-text` replaces them with
+//!   a failed queue claim's). `--no-text` replaces them with
 //!   `{"redacted":"text","sha256":"sha256:<hex>"}`;
 //! - **name**: display and author names. `--no-names` replaces them with
 //!   `{"redacted":"name"}`; public IDs stay;
@@ -271,7 +272,8 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("question.ask", "source" | "tool_use_id") => Safe,
         ("question.answer", "answers") => Text,
         ("question.answer", "answered_via") => Safe,
-        ("question.decline" | "question.release" | "question.withdraw", "reason") => Text,
+        // A fixed phrase (`store::questions::Reason`), not free text.
+        ("question.release" | "question.withdraw", "reason") => Safe,
         (
             "tool.call",
             "call_id" | "tool" | "harness_tool" | "args_sha256" | "started_at" | "ended_at"
