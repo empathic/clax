@@ -54,7 +54,9 @@ async function publishLive(title: string, html: string, capabilities: Record<str
  * `verb`'s call ("open": openComposer; "send": sendToClaude), writing the
  * count and the latest result into #status; its button, and the key O, make
  * the same call from the viewer's input (disarming the timer first) into
- * #clicked. Once it listens, `#t` gets data-ready="yes". */
+ * #clicked. Once it listens, `#t` gets data-ready="yes". A "disarm" message
+ * stops the timer, and once the timer's latest call is answered the page
+ * posts "puller-idle" to its parent. */
 const PULLER = (verb: "open" | "send", armed = true) => `<!doctype html><html><head><title>Puller</title>
 <style>body{margin:0;font:16px sans-serif}main{padding:16px}#b{padding:8px 16px}</style></head>
 <body><main><h2 id="t">Title</h2><button id="b">Do it</button><p id="status">0</p><p id="clicked">-</p><p id="focused">no</p></main>
@@ -66,14 +68,22 @@ const PULLER = (verb: "open" | "send", armed = true) => `<!doctype html><html><h
   const call = () => ${verb === "open" ? `c.openComposer({ element: el })` : `c.sendToClaude({ anchor, text: "From the page." })`};
   const show = r => r && typeof r === "object" && "threadId" in r ? "sent" : JSON.stringify(r);
   let n = 0;
+  let pending = null;
   const s = document.getElementById("status");
   setInterval(async () => {
     if (!window.armed) return;
     window.focus();
-    const r = await call().then(show, e => e.code);
+    pending = call().then(show, e => e.code);
+    const r = await pending;
     n++;
     s.textContent = n + " " + r;
   }, 150);
+  addEventListener("message", async e => {
+    if (e.data !== "disarm") return;
+    window.armed = false;
+    await pending;
+    parent.postMessage("puller-idle", "*");
+  });
   const b = document.getElementById("b");
   b.addEventListener("pointerdown", () => { window.armed = false; });
   b.addEventListener("keydown", () => { window.armed = false; });
@@ -120,6 +130,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: a page that pulls focus cannot open the composer after the viewer clicks the shell's name field; the viewer's click in the page can`, async ({ page }) => {
     const id = await publishLive(`Pull open ${mode}`, PULLER("open"), { comments: { composer_only: true } });
     await record(page);
+    await page.addInitScript(() => addEventListener("message", e => { if (e.data === "puller-idle") (window as unknown as { pullerIdle: boolean }).pullerIdle = true; }));
     const f = await openArtifact(page, d.base, id, 1, mode);
     // The page pulls focus and calls before the click, and goes on after it.
     await callsMore(page, 6);
@@ -141,10 +152,18 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // where the pointer rests: a Playwright read grants activation, and a
     // locator's click reads the frame before it presses, so the page's own
     // calls in between would open the composer and use up its opens budget.)
+    // The page's timer is then stopped, and its latest call answered, before
+    // the press: a call it made just before the press but that reaches the
+    // shell after it is judged with the press's activation, and may open the
+    // composer itself (the residual after a click in the page, gesture.ts),
+    // which takes focus, so the viewer's own call is then refused.
     const b = (await f.locator("#b").boundingBox())!;
     await activationLapsed(page);
     await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 5 });
     await callsMore(page, 3);
+    expect(await quietEval<number>(page, `document.querySelectorAll(".composer").length`)).toBe(0);
+    await quietEval(page, `document.querySelector("iframe.frame").contentWindow.postMessage("disarm", "*")`);
+    await expect.poll(() => quietEval<boolean>(page, "window.pullerIdle === true")).toBe(true);
     expect(await quietEval<number>(page, `document.querySelectorAll(".composer").length`)).toBe(0);
     await page.mouse.down();
     await page.mouse.up();
