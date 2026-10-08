@@ -670,6 +670,15 @@ export interface ClaxOptions {
   /** The injection loop's pause before it polls again;
    * [`INJECT_RETRY_MS`] when absent. */
   injectRetryMs?: number;
+  /** How long session_start may spend finding the daemon and registering;
+   * [`START_BUDGET_MS`] when absent. */
+  startBudgetMs?: number;
+  /** How long session_shutdown may spend ending the session;
+   * [`END_TIMEOUT_MS`] when absent. */
+  endTimeoutMs?: number;
+  /** The clock, in milliseconds, by which the injection loop judges whether
+   * a long-poll came back within [`INJECT_EARLY_MS`]; `Date.now` when absent. */
+  now?: () => number;
 }
 
 /** The Clax tools for one Pi session. */
@@ -1294,7 +1303,7 @@ class Tools {
 }
 
 /** How long session_start may spend finding the daemon and registering. */
-const START_BUDGET_MS = 3_000;
+export const START_BUDGET_MS = 3_000;
 
 /** The `/clax` command's usage line. */
 const USAGE = "usage: /clax open [ID] | list | status";
@@ -1313,6 +1322,8 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
     let live = false;
     let stopInject: (() => void) | undefined;
     const retryMs = opts.injectRetryMs ?? INJECT_RETRY_MS;
+    const startBudgetMs = opts.startBudgetMs ?? START_BUDGET_MS;
+    const now = opts.now ?? (() => Date.now());
     const startInject = (c: DaemonClient) => {
       if (!live || stopInject) return;
       const abort = new AbortController();
@@ -1326,7 +1337,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       });
       void (async () => {
         while (!abort.signal.aborted) {
-          const started = Date.now();
+          const started = now();
           let res: any;
           try {
             res = await c.pollFeedback("inject", INJECT_WAIT_S, abort.signal);
@@ -1338,7 +1349,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
           if (abort.signal.aborted) return;
           if (typeof res.text === "string" && res.text) {
             pi.sendUserMessage(res.text, { deliverAs: "followUp" });
-          } else if (Date.now() - started < INJECT_EARLY_MS) {
+          } else if (now() - started < INJECT_EARLY_MS) {
             await pause(retryMs);
           }
         }
@@ -1346,14 +1357,14 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
     };
 
     // Pi awaits this handler before it continues, so registration gets at most
-    // START_BUDGET_MS; the first tool call registers when this did not.
+    // `startBudgetMs`; the first tool call registers when this did not.
     pi.on("session_start", async (_event, ctx) => {
       live = true;
       let timer: NodeJS.Timeout | undefined;
-      const budget = new Promise<"timeout">(r => { timer = setTimeout(() => r("timeout"), START_BUDGET_MS); });
+      const budget = new Promise<"timeout">(r => { timer = setTimeout(() => r("timeout"), startBudgetMs); });
       try {
         const client = tools.clientFor(ctx);
-        const registered = client.ensureSession(START_BUDGET_MS);
+        const registered = client.ensureSession(startBudgetMs);
         // A registration still running when the budget ends may fail later,
         // unobserved; the injection loop starts once it succeeds.
         registered.then(() => startInject(client), () => undefined);
@@ -1369,7 +1380,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       live = false;
       stopInject?.();
       stopInject = undefined;
-      await tools.existingClient()?.endSession().catch(() => undefined);
+      await tools.existingClient()?.endSession(opts.endTimeoutMs).catch(() => undefined);
     });
 
     // Working records (spec §10 "Working"): any tool call renews them, at most
