@@ -94,9 +94,11 @@ push state).
 
 When another program already listens on Clax's port (7480 unless
 `[serve] port` in `~/.clax/config.toml` or `CLAX_PORT` says otherwise), the
-MCP server starts with only `status`, which names the port and a free one
-to set instead. Clax never stops what holds the port. After changing it,
-reconnect the server with `/mcp`.
+daemon takes the next free port of the following 20, and the URLs it
+returns carry that port. Only when all 21 are held, or the port you set
+with `CLAX_PORT` is, does the MCP server start with just `status`, which
+names the port and a free one to set instead. Clax never stops what holds a
+port. After changing the setting, reconnect the server with `/mcp`.
 
 `~/.clax/logs/hooks.log` (under `$CLAX_HOME` when set) has one line per
 hook run (agent, event, binary, duration, exit code, and the start of any

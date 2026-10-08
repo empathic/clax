@@ -636,7 +636,8 @@ payload lines, which must stay one line); anything else is `invalid_path`.
    stdio to `logs/daemon.log`), and polls `/healthz` for up to 5 seconds. The
    spawning client holds the lock until `/healthz` answers.
 3. `clax serve` binds `127.0.0.1` on `--port`, else `CLAX_PORT`, else the home's `[serve] port`, else 7480, tries the next 20
-   ports if busy, and writes `daemon.json` atomically. `clax serve` itself
+   ports if busy or held by another program (a connection to it at
+   `127.0.0.1` or `[::1]` is accepted), and writes `daemon.json` atomically. `clax serve` itself
    does not take the lock.
 4. `clax stop` sends `POST /api/admin/shutdown` (W). The daemon also
    exits if `daemon.json` is replaced by a newer daemon (checked every 30 s)
