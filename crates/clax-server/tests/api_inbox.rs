@@ -1,7 +1,7 @@
 //! The owner's inbox over HTTP (spec 2026-10-06-agent-questions-and-inbox
 //! §8): the routes, the `inbox` stream topic, finished work and read marks.
 
-mod common;
+use crate::common;
 use common::TestServer;
 use serde_json::{Value, json};
 

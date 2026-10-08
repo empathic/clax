@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 use common::TestServer;
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 

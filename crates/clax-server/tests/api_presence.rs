@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 use clax_core::presence::Presence;
 use clax_core::working::ManualClock;
 use common::TestServer;

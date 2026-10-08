@@ -1,7 +1,7 @@
 //! Scope watches over HTTP (spec 2026-10-05-chrome-overlay-design L2, §9.3):
 //! a watch on a page URL covers that page and every live page below it, now
 //! and as new ones are created, and its comments carry the live payload.
-mod common;
+use crate::common;
 use clax_server::testing::FAKE_PNG;
 use common::TestServer;
 use serde_json::{Value, json};

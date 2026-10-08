@@ -1,6 +1,6 @@
 //! Every `/api` route answers only to a `Host` that names this machine
 //! literally, or to the address the daemon is bound to (DNS rebinding).
-mod common;
+use crate::common;
 use common::TestServer;
 use serde_json::Value;
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};

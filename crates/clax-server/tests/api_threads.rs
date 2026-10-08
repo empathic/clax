@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 use clax_server::testing::{FAKE_PNG, element_anchor};
 use common::TestServer;
 use serde_json::{Value, json};

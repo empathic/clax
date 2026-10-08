@@ -1,7 +1,7 @@
 //! Site-wide threads of live pages (spec 2026-10-05-chrome-overlay-design
 //! §7.1, §9.2, §9.5): the site listing, the `site:<origin>` stream topic,
 //! moving a thread to another page, and merge rules.
-mod common;
+use crate::common;
 use clax_core::extension::extension_origin;
 use clax_server::testing::{EventReader, FAKE_PNG};
 use common::TestServer;

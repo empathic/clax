@@ -3,6 +3,9 @@ name = "clax-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Every file in tests/ is a module of one of the two integration test
+# binaries below.
+autotests = false
 
 [lints]
 workspace = true
@@ -52,3 +55,12 @@ chrono.workspace = true
 rusqlite.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tokio-tungstenite.workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+# The tests that override the web UI directory, which is process-wide.
+[[test]]
+name = "web_dist"
+path = "tests/web_dist.rs"

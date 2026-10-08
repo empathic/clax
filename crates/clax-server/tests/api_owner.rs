@@ -1,7 +1,7 @@
 //! The owner identity: every browser of the owner's, the token (the CLI) and
 //! any other owner credential act as one viewer; LAN viewers stay apart.
 
-mod common;
+use crate::common;
 use common::TestServer;
 use serde_json::{Value, json};
 

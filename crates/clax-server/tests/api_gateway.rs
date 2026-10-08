@@ -3,7 +3,7 @@
 //! live credential, only to the allowlisted routes, only for live pages, and
 //! acts there as the owner identity.
 
-mod common;
+use crate::common;
 use clax_core::extension::extension_origin;
 use clax_server::testing::FAKE_PNG;
 use common::TestServer;

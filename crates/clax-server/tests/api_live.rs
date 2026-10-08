@@ -2,7 +2,7 @@
 //! L10): lookup, a comment with its snapshot, the views, the publish
 //! refusal, the snapshot policy, and hiding live pages from the LAN (whose
 //! requests arrive through [`TestServer::lan`], so they run on any machine).
-mod common;
+use crate::common;
 use clax_server::testing::FAKE_PNG;
 use common::TestServer;
 use serde_json::{Value, json};

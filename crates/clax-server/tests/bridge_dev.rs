@@ -2,11 +2,10 @@
 //! rebuilds it under a running daemon): a rebuilt bridge gets a new URL in the
 //! next page served, and the bridge is never immutable. The test serves the web
 //! UI from a temporary copy ([`set_web_dist`]) and rewrites that, never the
-//! real `web/dist`; it is its own test binary because the override is
-//! process-wide.
+//! real `web/dist` (see `tests/web_dist.rs`).
 #![cfg(debug_assertions)]
 
-mod common;
+use crate::common;
 use clax_server::routes::shell::{bridge_version, set_web_dist};
 use common::TestServer;
 
@@ -20,6 +19,7 @@ async fn a_rebuilt_bridge_gets_a_new_url_and_is_never_immutable() {
         std::fs::read(real.join("_clax/bridge.js")).unwrap_or_else(|_| b"/* built */".to_vec());
     let path = dist.path().join("_clax/bridge.js");
     std::fs::write(&path, &built).unwrap();
+    let _dist = crate::web_dist_lock().await;
     set_web_dist(dist.path().to_path_buf());
     std::fs::write(&path, "/* bridge A */").unwrap();
 

@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 use clax_server::sample::provider::{Block, Role};
 use clax_server::sample::sse::SseParser;
 use clax_server::sample::stub::StubProvider;
