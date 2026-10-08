@@ -206,9 +206,16 @@ Read on 2026-10-06, against Claude Code 2.1.291 (installed here):
   mapping each question's text to the chosen answer." Added in 2.1.85:
   "PreToolUse hooks can now satisfy `AskUserQuestion` by returning
   `updatedInput` alongside `permissionDecision: "allow"`, enabling headless
-  integrations that collect answers via their own UI".
+  integrations that collect answers via their own UI". Observed on
+  2026-10-08 with Claude Code 2.1.293 (`scripts/smoke-claude-ask.sh`): the
+  call ran without drawing the dialog, the transcript showed "User answered
+  Claude's questions: · Which layout? → One column", and the tool result
+  sent to the model was `Your questions have been answered: "Which
+  layout?"="One column". You can now continue with these answers in mind.`
 - **Deny.** `permissionDecision: "deny"` prevents the call;
-  `permissionDecisionReason` "For `"deny"`, shown to Claude".
+  `permissionDecisionReason` "For `"deny"`, shown to Claude". Observed with
+  2.1.293: the model receives an error tool result reading
+  `PreToolUse:AskUserQuestion hook error: <reason>`.
 - **Defer** works only with `-p`: "In interactive sessions it logs a warning
   and ignores the hook result."
 - **Timeouts.** A command hook's `timeout` defaults to 600 s and is set per
@@ -229,10 +236,16 @@ Read on 2026-10-06, against Claude Code 2.1.291 (installed here):
   are for MCP servers' elicitation only.
 - **Channels.** 2.1.81: "Disabled `AskUserQuestion` and plan-mode tools when
   `--channels` is active"; a later entry restores plan-mode tools for
-  interactive sessions launched with `--channels`. Whether a session
-  launched with Clax's development channel (main spec D18) is offered
-  `AskUserQuestion` is checked in the plan's last task; there, agents ask
-  with `ask` either way.
+  interactive sessions launched with `--channels`. Checked on 2026-10-08
+  against Claude Code 2.1.293 (`scripts/smoke-claude-ask.sh`, API-key
+  authentication against a scripted Messages API): launched with
+  `--dangerously-load-development-channels plugin:clax@clax`, Claude Code
+  printed "--dangerously-load-development-channels ignored
+  (plugin:clax@clax)" and "Channels are not currently available"; the
+  session was offered `AskUserQuestion`, and its call reached the hook and
+  was mirrored. A session whose channel is active (a claude.ai login) was
+  not checked; there, if `AskUserQuestion` is not offered, nothing is
+  mirrored (§12) and agents ask with `ask` either way.
 - `askUserQuestionTimeout` (off by default) closes an unanswered terminal
   dialog on its own; it is the person's setting and Clax leaves it alone.
 
