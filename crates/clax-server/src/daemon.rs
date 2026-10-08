@@ -164,7 +164,7 @@ impl Starting {
             done: 0,
             total: 0,
             bytes: 0,
-            heartbeat_at: Store::now(),
+            heartbeat_at: clax_core::store::stamp_now(),
         }));
         let write = |home: &Home, info: &StartingInfo| {
             if let Err(e) = write_starting_info(home, info) {
@@ -179,7 +179,7 @@ impl Starting {
                 stopped.recv_timeout(Duration::from_secs(1))
             {
                 let mut now = i.lock().unwrap_or_else(|e| e.into_inner());
-                now.heartbeat_at = Store::now();
+                now.heartbeat_at = clax_core::store::stamp_now();
                 write(&h, &now);
             }
         });
@@ -507,7 +507,7 @@ pub async fn serve(
     let sweep_store = store.clone();
     let drain_store = store.clone();
     let token = generate_token();
-    let started_at = Store::now();
+    let started_at = store.now();
     let info = DaemonInfo {
         port,
         pid: std::process::id(),

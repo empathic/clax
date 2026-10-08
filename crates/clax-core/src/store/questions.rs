@@ -583,7 +583,7 @@ impl Store {
                 }
             }
             let id = new_ulid();
-            let now = Store::now();
+            let now = self.now();
             let (status, closed_at) = if n.released {
                 (Status::Released, Some(now.clone()))
             } else {
@@ -633,11 +633,11 @@ impl Store {
             // A mirrored question about no artifact is asked in the
             // terminal (its session has no page): it is never offered in
             // Clax, so its inbox item is read from the start.
-            if super::inbox::note_question(tx, &q)?.is_some()
+            if super::inbox::note_question(tx, &q, &now)?.is_some()
                 && n.released
                 && q.artifact_id.is_none()
             {
-                super::inbox::question_changed(tx, &q, true)?;
+                super::inbox::question_changed(tx, &q, true, &now)?;
             }
             Ok((q, true))
         })
@@ -726,7 +726,7 @@ impl Store {
                 _ => return Err(closed(&q)),
             };
             let answers = answers.as_deref().map(to_json).transpose()?;
-            let now = Store::now();
+            let now = self.now();
             let n = tx.execute(
                 CLOSE,
                 params![qid, q.status.as_str(), status.as_str(), answers, via, now],
@@ -749,7 +749,7 @@ impl Store {
             };
             self.record_question(tx, ctx, rec, sid)?;
             let q = fetch(tx, qid)?.ok_or(CoreError::NotFound)?;
-            super::inbox::question_changed(tx, &q, seen)?;
+            super::inbox::question_changed(tx, &q, seen, &self.now())?;
             Ok(q)
         })
     }
@@ -758,7 +758,7 @@ impl Store {
     /// call keeps the first time.
     pub fn take_question(&self, qid: &str) -> Result<()> {
         self.with_tx(|tx| {
-            tx.execute(TAKE, params![qid, Store::now()])?;
+            tx.execute(TAKE, params![qid, self.now()])?;
             Ok(())
         })
     }
@@ -776,7 +776,7 @@ impl Store {
         self.with_tx(|tx| {
             let mut out = rows(tx, LATE_ANSWERS, params![sid])?;
             out.retain(|q| !skip(&q.id));
-            let now = Store::now();
+            let now = self.now();
             for q in &out {
                 tx.execute(TAKE, params![q.id, now])?;
             }
@@ -828,7 +828,7 @@ impl Store {
         self.with_tx(|tx| {
             let open = open_keys(tx, OPEN_HOOKS, [])?;
             if !open.is_empty() {
-                let now = Store::now();
+                let now = self.now();
                 tx.execute(WITHDRAW_HOOKS, params![now])?;
                 let ctx = AuditCtx::system(SystemReason::Daemon);
                 self.record_withdrawals(tx, &ctx, &open, &now, Reason::DaemonStart)?;

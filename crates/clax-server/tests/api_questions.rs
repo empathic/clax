@@ -1239,7 +1239,9 @@ async fn a_held_answer_left_untaken_wakes_the_feedback_poll_when_the_hold_ends()
 
 #[tokio::test]
 async fn a_late_answers_age_is_read_from_the_question_clock() {
-    let clock = std::sync::Arc::new(clax_core::working::ManualClock::at(&clax_core::Store::now()));
+    let clock = std::sync::Arc::new(clax_core::working::ManualClock::at(
+        &clax_core::store::stamp(chrono::Utc::now()),
+    ));
     let c = clock.clone();
     let ts = TestServer::spawn_with(move |s| s.question_clock = c).await;
     let sid = session(&ts, "h1").await;

@@ -43,10 +43,10 @@ pub struct EnsuredPage {
 /// ([`Store::picked_thread`]): far longer than any retry of the request.
 pub const PICK_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
 
-/// The oldest `created_at` of a pick still kept.
-fn pick_cutoff() -> String {
+/// The oldest `created_at` of a pick still kept at `now`.
+fn pick_cutoff(now: chrono::DateTime<chrono::Utc>) -> String {
     let ttl = chrono::Duration::from_std(PICK_TTL).expect("the TTL fits");
-    (chrono::Utc::now() - ttl).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    super::stamp(now - ttl)
 }
 
 /// How many times [`Store::store_snapshot`] tries to write a version while
@@ -110,6 +110,7 @@ pub(crate) fn mark_pending_in(
     tid: &str,
     source: &str,
     harness: &str,
+    now: &str,
 ) -> Result<bool> {
     if source == "resolve" {
         let linked: bool = tx.query_row(
@@ -127,7 +128,7 @@ pub(crate) fn mark_pending_in(
          VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(artifact_id, thread_id) DO UPDATE SET source = excluded.source,
             harness = excluded.harness, created_at = excluded.created_at",
-        params![id.as_str(), tid, source, harness, Store::now()],
+        params![id.as_str(), tid, source, harness, now],
     )?;
     Ok(true)
 }
@@ -152,6 +153,7 @@ fn link_pending_in(
     id: &ArtifactId,
     n: u32,
     only: Option<&[String]>,
+    now: &str,
 ) -> Result<Vec<String>> {
     let only = only.map(|t| serde_json::to_string(t).expect("strings serialise"));
     let ids: Vec<String> = {
@@ -163,7 +165,6 @@ fn link_pending_in(
         st.query_map(params![id.as_str(), only], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?
     };
-    let now = Store::now();
     for tid in &ids {
         tx.execute(
             "INSERT OR IGNORE INTO version_threads (artifact_id, version_n, thread_id, source, created_at)
@@ -193,7 +194,7 @@ pub struct LiveWatch {
 /// Makes `sid` a watcher of `aid` through a scope watch with `armed`
 /// arming; a direct watch keeps its own row and arming. What it wrote: a
 /// new watch, a scope watch's new arming, or nothing.
-fn scope_row(tx: &Connection, sid: &str, aid: &str, armed: bool) -> Result<Wrote> {
+fn scope_row(tx: &Connection, sid: &str, aid: &str, armed: bool, now: &str) -> Result<Wrote> {
     let before: Option<(bool, String)> = tx
         .prepare_cached(
             "SELECT replies_armed, source FROM watches WHERE session_id = ?1 AND artifact_id = ?2",
@@ -212,7 +213,7 @@ fn scope_row(tx: &Connection, sid: &str, aid: &str, armed: bool) -> Result<Wrote
          VALUES (?1, ?2, ?3, ?4, 'scope') ON CONFLICT(session_id, artifact_id)
          DO UPDATE SET replies_armed = excluded.replies_armed WHERE watches.source = 'scope'",
     )?
-    .execute(params![sid, aid, armed, Store::now()])?;
+    .execute(params![sid, aid, armed, now])?;
     Ok(wrote)
 }
 
@@ -264,6 +265,7 @@ pub(super) fn materialize(
     tx: &Connection,
     aid: &str,
     key: &PageKey,
+    now: &str,
 ) -> Result<Vec<(String, bool, Wrote)>> {
     let rows: Vec<(String, String, bool)> = {
         let mut st = tx.prepare(SCOPES_OF_ORIGIN)?;
@@ -290,7 +292,7 @@ pub(super) fn materialize(
     }
     let mut written = Vec::new();
     for (sid, armed) in out {
-        let wrote = scope_row(tx, &sid, aid, armed)?;
+        let wrote = scope_row(tx, &sid, aid, armed, now)?;
         written.push((sid, armed, wrote));
     }
     Ok(written)
@@ -324,7 +326,7 @@ fn page_keys(tx: &Connection, p: &LivePage) -> Result<Vec<PageKey>> {
 /// (by its own path or a path of a thread on it) a watcher of it: what a
 /// join does for each page of the site (spec §7.2), as the scopes of every
 /// origin of the site now cover it.
-pub(super) fn rematerialize(tx: &Connection, p: &LivePage) -> Result<()> {
+pub(super) fn rematerialize(tx: &Connection, p: &LivePage, now: &str) -> Result<()> {
     let keys = page_keys(tx, p)?;
     let rows: Vec<(String, String, bool)> = {
         let mut st = tx.prepare_cached(SCOPES_OF_ORIGIN)?;
@@ -348,7 +350,7 @@ pub(super) fn rematerialize(tx: &Connection, p: &LivePage) -> Result<()> {
         }
     }
     for (sid, armed) in &out {
-        scope_row(tx, sid, &p.artifact_id, *armed)?;
+        scope_row(tx, sid, &p.artifact_id, *armed, now)?;
     }
     Ok(())
 }
@@ -475,7 +477,7 @@ impl Store {
                 path: key.path.clone(),
             };
             let id = ArtifactId::generate();
-            let now = Store::now();
+            let now = self.now();
             tx.execute(
                 "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, pinned,
                     capabilities_json, contract_version, kind)
@@ -486,7 +488,7 @@ impl Store {
                 "INSERT INTO live_pages (artifact_id, origin, path, created_at) VALUES (?1, ?2, ?3, ?4)",
                 params![id.as_str(), key.origin, key.path, now],
             )?;
-            let watching = materialize(tx, id.as_str(), key)?;
+            let watching = materialize(tx, id.as_str(), key, &now)?;
             let a = tx.query_row(
                 &format!("{} WHERE id = ?1", super::artifacts::SELECT),
                 params![id.as_str()],
@@ -630,7 +632,7 @@ impl Store {
         source: &str,
         harness: &str,
     ) -> Result<bool> {
-        self.with_tx(|tx| mark_pending_in(tx, id, tid, source, harness))
+        self.with_tx(|tx| mark_pending_in(tx, id, tid, source, harness, &self.now()))
     }
 
     /// Links every pending address of the live page `id` to its version `n`
@@ -639,7 +641,7 @@ impl Store {
     /// a snapshot's transaction, and the snapshot lists them.
     #[cfg(test)]
     pub(crate) fn link_pending(&self, id: &ArtifactId, n: u32) -> Result<Vec<String>> {
-        self.with_tx(|tx| link_pending_in(tx, id, n, None))
+        self.with_tx(|tx| link_pending_in(tx, id, n, None, &self.now()))
     }
 
     /// Stores `html` as a new version of the live page `id` (even when
@@ -684,7 +686,7 @@ impl Store {
                 &BTreeMap::new(),
                 None,
                 |tx, n| {
-                    let linked = link_pending_in(tx, id, n, Some(pending))?;
+                    let linked = link_pending_in(tx, id, n, Some(pending), &self.now())?;
                     if linked.is_empty() {
                         // Rolls the version back: nothing named is pending now.
                         return Err(CoreError::invalid(NONE_PENDING, "nothing pending"));
@@ -731,7 +733,7 @@ impl Store {
                  WHERE p.origin = COALESCE((SELECT site FROM live_sites WHERE origin = ?1), ?1)
                     AND p.path = ?2 AND a.deleted_at IS NULL
                     AND k.pick_id = ?3 AND k.created_at >= ?4",
-                params![key.origin, key.path, pick, pick_cutoff()],
+                params![key.origin, key.path, pick, pick_cutoff(self.now_utc())],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?)
@@ -788,9 +790,10 @@ impl Store {
                         path: path.to_string(),
                     };
                     // Recorded after the thread that caused them.
-                    let watching = materialize(tx, id.as_str(), &key)?;
+                    let watching = materialize(tx, id.as_str(), &key, &self.now())?;
                     after = page_watch_records(
                         tx,
+                        &self.now(),
                         id.as_str(),
                         &watching,
                         "scope",
@@ -806,12 +809,12 @@ impl Store {
                 "DELETE FROM live_picks WHERE created_at < ?1
                     OR (artifact_id = ?2 AND pick_id = ?3
                         AND NOT EXISTS(SELECT 1 FROM threads WHERE id = live_picks.thread_id))",
-                params![pick_cutoff(), id.as_str(), pick],
+                params![pick_cutoff(self.now_utc()), id.as_str(), pick],
             )?;
             let n = tx.execute(
                 "INSERT OR IGNORE INTO live_picks (artifact_id, pick_id, thread_id, created_at)
                  VALUES (?1, ?2, ?3, ?4)",
-                params![id.as_str(), pick, tid, Store::now()],
+                params![id.as_str(), pick, tid, self.now()],
             )?;
             if n == 0 {
                 taken.set(true);
@@ -883,17 +886,19 @@ impl Store {
                  VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(session_id, origin, path) DO UPDATE SET replies_armed = excluded.replies_armed
                  WHERE live_watches.replies_armed <> excluded.replies_armed",
-                params![sid, scope.origin, scope.path, replies_armed, Store::now()],
+                params![sid, scope.origin, scope.path, replies_armed, self.now()],
             )?;
             let rec = match before {
                 None => Some(super::watches::scope_watch_record(
                     AuditKind::WatchStart,
+                    &self.now(),
                     sid,
                     &scope.origin,
                     &scope.path,
                     replies_armed,
                 )),
                 Some(armed) if armed != replies_armed => Some(super::watches::scope_update_record(
+                    &self.now(),
                     sid,
                     &scope.origin,
                     &scope.path,
@@ -914,7 +919,7 @@ impl Store {
                 let keys = page_keys(tx, &p)?;
                 if keys.iter().any(|k| k.covered_by(&site_scope)) {
                     let armed = scope_arming(tx, sid, &keys)?.unwrap_or(replies_armed);
-                    let wrote = scope_row(tx, sid, &p.artifact_id, armed)?;
+                    let wrote = scope_row(tx, sid, &p.artifact_id, armed, &self.now())?;
                     self.record_page_watches(
                         tx,
                         ctx,
@@ -967,6 +972,7 @@ impl Store {
             if let Some(armed) = gone {
                 let rec = super::watches::scope_watch_record(
                     AuditKind::WatchStop,
+                    &self.now(),
                     sid,
                     &scope.origin,
                     &scope.path,
@@ -996,7 +1002,7 @@ impl Store {
                     // Another scope of the session still covers it: its
                     // arming now follows the scopes left.
                     Some(armed) => {
-                        let wrote = scope_row(tx, sid, &p.artifact_id, armed)?;
+                        let wrote = scope_row(tx, sid, &p.artifact_id, armed, &self.now())?;
                         self.record_page_watches(
                             tx,
                             ctx,
@@ -1019,6 +1025,7 @@ impl Store {
                             let rec = super::watches::artifact_watch_record(
                                 tx,
                                 AuditKind::WatchStop,
+                                &self.now(),
                                 sid,
                                 &p.artifact_id,
                                 armed,
@@ -1072,7 +1079,7 @@ impl Store {
         let p = snapshot_publish(expected, title, html)?;
         let (_, v, linked) =
             self.write_version_then(ctx, id, expected, &p, &BTreeMap::new(), None, |tx, n| {
-                link_pending_in(tx, id, n, Some(pending))
+                link_pending_in(tx, id, n, Some(pending), &self.now())
             })?;
         Ok((v, linked))
     }

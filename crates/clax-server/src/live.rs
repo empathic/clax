@@ -209,7 +209,7 @@ impl LiveIds {
             }
         }
         st.touch_site_origin(origin)?;
-        let now = clax_core::Store::now();
+        let now = st.now();
         let mut g = self
             .1
             .write()

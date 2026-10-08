@@ -42,6 +42,7 @@ mod api_working;
 mod api_working_auto;
 mod common;
 mod daemon;
+mod golden_single_owner;
 mod harness_ids;
 mod sample_anthropic;
 

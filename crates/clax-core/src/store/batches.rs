@@ -133,7 +133,7 @@ impl Store {
             let (mut sent, mut unchanged) = (Vec::new(), Vec::new());
             let mut feedback_ids = Vec::new();
             for t in &ids {
-                let rows = send_in(tx, t, Some(&batch_id), target, &mut touched)?.feedback_ids;
+                let rows = send_in(tx, t, Some(&batch_id), target, &mut touched, &self.now())?.feedback_ids;
                 if rows.is_empty() {
                     unchanged.push(t.clone());
                 } else {
@@ -146,13 +146,13 @@ impl Store {
             }
             tx.execute(
                 "INSERT INTO send_batches (id, artifact_id, note, sent_by, size, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![batch_id, aid.as_str(), note, b.sent_by, sent.len() as u32, Store::now()],
+                params![batch_id, aid.as_str(), note, b.sent_by, sent.len() as u32, self.now()],
             )?;
             for t in &sent {
                 tx.execute("INSERT INTO batch_threads (batch_id, thread_id) VALUES (?1, ?2)", params![batch_id, t])?;
             }
             let rec = super::feedback::send_record(
-                &Store::now(),
+                &self.now(),
                 aid.as_str(),
                 None,
                 send_target_value(tx, to.as_deref())?,

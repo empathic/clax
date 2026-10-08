@@ -507,7 +507,7 @@ impl Store {
         t.anchor.validate()?;
         check_body(&t.body)?;
         let tid = new_ulid();
-        let now = Store::now();
+        let now = self.now();
         let clip_path = self.home.clip_path(id, &tid);
         let anchor_json = serde_json::to_string(&t.anchor).expect("anchors serialise");
         let clips_dir = self.home.clips_dir(id);
@@ -643,7 +643,7 @@ impl Store {
             if t.artifact_id != id.as_str() {
                 return Err(CoreError::NotFound);
             }
-            super::live::mark_pending_in(tx, id, tid, "explicit", harness)?;
+            super::live::mark_pending_in(tx, id, tid, "explicit", harness, &self.now())?;
             Ok(())
         })
     }
@@ -680,7 +680,7 @@ impl Store {
             via_harness: None,
             via_page: c.via_page && c.author_kind == AUTHOR_VIEWER,
             body: c.body,
-            created_at: Store::now(),
+            created_at: self.now(),
         };
         self.with_tx(|tx| {
             let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
@@ -703,6 +703,7 @@ impl Store {
                     &t.artifact_id,
                     c.via_session_id.as_deref(),
                     &comment.body,
+                    &self.now(),
                 )?;
             }
             self.record_audit(tx, ctx, comment_record(&t.artifact_id, &comment))?;
@@ -999,10 +1000,10 @@ impl Store {
                 return Err(CoreError::NotFound);
             }
             if live {
-                super::live::mark_pending_in(tx, id, tid, "resolve", harness)?;
+                super::live::mark_pending_in(tx, id, tid, "resolve", harness, &self.now())?;
                 Ok(None)
             } else {
-                super::changelog::link_on_resolve_in(tx, tid)
+                super::changelog::link_on_resolve_in(tx, tid, &self.now())
             }
         })
     }
@@ -1019,7 +1020,7 @@ impl Store {
     ) -> Result<(Thread, crate::feedback::Touched)> {
         let touched = self.with_tx(|tx| {
             let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
-            let now = Store::now();
+            let now = self.now();
             tx.execute(
                 "UPDATE threads SET status = 'resolved', resolved_at = COALESCE(resolved_at, ?2),
                     resolved_by = COALESCE(resolved_by, ?3) WHERE id = ?1",
@@ -1067,7 +1068,7 @@ impl Store {
             )?;
             if t.status == "resolved" {
                 let rec =
-                    thread_record(AuditKind::ThreadReopen, &Store::now(), &t.artifact_id, thread_id);
+                    thread_record(AuditKind::ThreadReopen, &self.now(), &t.artifact_id, thread_id);
                 self.record_audit(tx, ctx, rec)?;
             }
             Ok(())
@@ -1118,7 +1119,7 @@ impl Store {
             tx.execute("DELETE FROM thread_moves WHERE thread_id = ?1", params![thread_id])?;
             tx.execute("DELETE FROM comments WHERE thread_id = ?1", params![thread_id])?;
             tx.execute("DELETE FROM threads WHERE id = ?1", params![thread_id])?;
-            let rec = thread_record(AuditKind::ThreadDelete, &Store::now(), &t.artifact_id, thread_id)
+            let rec = thread_record(AuditKind::ThreadDelete, &self.now(), &t.artifact_id, thread_id)
                 .with("moved", false);
             self.record_audit(tx, ctx, rec)?;
             Ok((t, targets))

@@ -33,10 +33,9 @@ pub struct LiveCredential {
     pub last_used_at: String,
 }
 
-/// The oldest `last_used_at` still live.
-fn cutoff() -> String {
-    (chrono::Utc::now() - chrono::Duration::days(CREDENTIAL_TTL_DAYS))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+/// The oldest `last_used_at` still live at `now`.
+fn cutoff(now: chrono::DateTime<chrono::Utc>) -> String {
+    super::stamp(now - chrono::Duration::days(CREDENTIAL_TTL_DAYS))
 }
 
 impl Store {
@@ -46,7 +45,7 @@ impl Store {
         let credential = new_credential();
         let hash = credential_hash(&credential);
         self.with_tx(|tx| {
-            let now = Store::now();
+            let now = self.now();
             tx.execute(
                 "INSERT INTO extension_credentials (id, extension_id, secret_sha256, created_at, last_used_at)
                  VALUES (?1, ?2, ?3, ?4, ?4)",
@@ -73,7 +72,7 @@ impl Store {
                  WHERE revoked_at IS NULL AND last_used_at >= ?1 ORDER BY created_at, id",
             )?;
             let rows = st
-                .query_map(params![cutoff()], |r| {
+                .query_map(params![cutoff(self.now_utc())], |r| {
                     Ok(LiveCredential {
                         hash: r.get(0)?,
                         extension_id: r.get(1)?,
@@ -90,7 +89,7 @@ impl Store {
         self.with_write(|c| {
             c.execute(
                 "UPDATE extension_credentials SET last_used_at = ?2 WHERE secret_sha256 = ?1",
-                params![hash, Store::now()],
+                params![hash, self.now()],
             )?;
             Ok(())
         })
@@ -103,12 +102,12 @@ impl Store {
             let live: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM extension_credentials
                  WHERE revoked_at IS NULL AND last_used_at >= ?1",
-                params![cutoff()],
+                params![cutoff(self.now_utc())],
                 |r| r.get(0),
             )?;
             tx.execute(
                 "UPDATE extension_credentials SET revoked_at = ?1 WHERE revoked_at IS NULL",
-                params![Store::now()],
+                params![self.now()],
             )?;
             Ok(usize::try_from(live).unwrap_or(0))
         })

@@ -222,7 +222,11 @@ fn log_line(home: &Home, msg: &str) {
         .append(true)
         .open(home.log_path())
     {
-        let _ = writeln!(f, "{} clax client: {msg}", clax_core::Store::now());
+        let _ = writeln!(
+            f,
+            "{} clax client: {msg}",
+            clax_core::store::stamp(chrono::Utc::now())
+        );
     }
 }
 

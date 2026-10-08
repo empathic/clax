@@ -82,7 +82,7 @@ impl Store {
                 "INSERT INTO viewers (id, public_id, display_name, created_at, minted_local) VALUES (?1, ?2, ?3, ?4, ?6)
                  ON CONFLICT(id) DO UPDATE SET display_name = CASE WHEN ?5 THEN excluded.display_name ELSE display_name END
                  WHERE owner = 0",
-                params![id, new_public_id(), name.flatten(), Store::now(), name.is_some(), local],
+                params![id, new_public_id(), name.flatten(), self.now(), name.is_some(), local],
             )?;
             tx.query_row(&format!("{VIEWER_SELECT} WHERE id = ?1 AND owner = 0"), params![id], row_to_viewer)
                 .optional()?
@@ -209,7 +209,7 @@ fn record_claim(
     from: &Viewer,
     to: &Viewer,
 ) -> Result<()> {
-    let rec = AuditRecord::new(AuditKind::ViewerClaim, Store::now())
+    let rec = AuditRecord::new(AuditKind::ViewerClaim, st.now())
         .with("from_public_id", from.public_id.as_str())
         .with("to_public_id", to.public_id.as_str());
     st.record_audit(tx, ctx, rec)?;
@@ -254,7 +254,7 @@ fn move_private_docs(
             params![aid],
             |r| r.get(0),
         )?;
-        let now = Store::now();
+        let now = st.now();
         let version: i64 = tx.query_row(
             "UPDATE docs SET path = ?3, collection = ?4, version = MAX(version + 1, ?5), updated_at = ?6
              WHERE artifact_id = ?1 AND path = ?2 RETURNING version",
@@ -324,7 +324,7 @@ impl Store {
             tx.execute(
                 "INSERT INTO viewers (id, public_id, display_name, created_at, owner, claimed)
                  SELECT ?1, ?2, NULL, ?3, 1, ?4 WHERE NOT EXISTS (SELECT 1 FROM viewers WHERE owner = 1)",
-                params![crate::new_ulid(), new_public_id(), Store::now(), browser],
+                params![crate::new_ulid(), new_public_id(), self.now(), browser],
             )?;
             if browser {
                 tx.execute("UPDATE viewers SET claimed = 1 WHERE owner = 1", [])?;
