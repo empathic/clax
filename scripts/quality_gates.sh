@@ -117,6 +117,9 @@ lane_lint() {
     run "no unsafe code"        bash -c 'find crates -name "*.rs" -not -path "*/target/*" -print0 | xargs -0 perl -ne '"'"'(my $c = $_) =~ s{//.*}{}; if ($c =~ /\bunsafe\b/) { print "$ARGV:$.: $_"; $bad = 1 } close ARGV if eof; END { exit($bad ? 1 : 0) }'"'"'' &&
     # No hard links in any source or script; a symbolic link does instead.
     run "no hard links"         bash -c "scripts/test-check-no-hard-links.sh >/dev/null && scripts/check-no-hard-links.sh" &&
+    # No pipefail pipeline ends in a reader that stops early (grep -q,
+    # head): its writer can die of SIGPIPE and fail a pipeline that matched.
+    run "pipefail pipes"        bash -c "scripts/test-check-pipefail-pipes.sh >/dev/null && scripts/check-pipefail-pipes.sh" &&
     run "cargo fmt --check"     cargo fmt --all -- --check &&
     await tests-built rust &&
     run "cargo clippy"          cargo clippy --workspace --all-targets -- -D warnings &&

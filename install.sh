@@ -115,7 +115,7 @@ main() {
     STAGED="$INSTALL_DIR/.clax.$$"
     cp "$TMP/x/$name/clax" "$STAGED"
     chmod 755 "$STAGED"
-    [ "$("$STAGED" --version 2>/dev/null | head -1)" = "clax $version" ] \
+    [ "$("$STAGED" --version 2>/dev/null | awk 'NR == 1')" = "clax $version" ] \
         || die "$name.tar.gz does not hold clax $version"
     mv -f "$STAGED" "$INSTALL_DIR/clax"
     STAGED=""

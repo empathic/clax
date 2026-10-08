@@ -343,7 +343,7 @@ same_section() {
             pass "'## $heading' in $f matches $first"
         else
             fail "'## $heading' in $f differs from $first"
-            diff <(section "$first" "$heading") <(section "$f" "$heading") | head -20
+            diff <(section "$first" "$heading") <(section "$f" "$heading") | sed -n 1,20p
         fi
     done
 }
@@ -417,7 +417,7 @@ excludes=()
 for f in "${name_exceptions[@]}"; do excludes+=(":(exclude)$f"); done
 stray="$(git grep -il "$OLD" -- . "${excludes[@]}"; git ls-files | grep -i "$OLD")"
 if [ -z "$stray" ]; then pass "the previous name appears only in the approved exceptions"
-else fail "the previous name remains in: $(echo $stray | head -c 2000)"; fi
+else fail "the previous name remains in: $(echo $stray | cut -c 1-2000)"; fi
 spec=docs/superpowers/specs/2026-09-28-clax-design.md
 stray="$(awk -v old="$OLD" '
     /<!-- name-history:begin -->/ { on = 1; next }

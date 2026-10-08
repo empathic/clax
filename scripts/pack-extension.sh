@@ -80,9 +80,9 @@ fi
 
 "$ROOT/scripts/build-web.sh"
 
-version="$(sed -n 's/^ *"version": *"\([^"]*\)",\{0,1\}$/\1/p' "$BUILD/manifest.json" | head -n 1)"
+version="$(sed -n 's/^ *"version": *"\([^"]*\)",\{0,1\}$/\1/p' "$BUILD/manifest.json" | sed -n 1p)"
 [ -n "$version" ] || { echo "pack-extension.sh: no version in $BUILD/manifest.json" >&2; exit 1; }
-manifest_key="$(sed -n 's/^ *"key": *"\([^"]*\)",\{0,1\}$/\1/p' "$BUILD/manifest.json" | head -n 1)"
+manifest_key="$(sed -n 's/^ *"key": *"\([^"]*\)",\{0,1\}$/\1/p' "$BUILD/manifest.json" | sed -n 1p)"
 
 umask 077
 SECRET="$(mktemp -d "${TMPDIR:-/tmp}/clax-extension-key.XXXXXX")"

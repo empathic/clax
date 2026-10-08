@@ -139,7 +139,7 @@ except Exception:
     print("none")')"
 LIST="$( (cd "$HOME" && grok plugin list --json) 2>/dev/null || true)"
 A_INSTALL=FAIL
-if [ "$GROK_STATUS" = registered ] && printf '%s' "$LIST" | grep -q "$MARKET/plugins/clax-grok"; then
+if [ "$GROK_STATUS" = registered ] && printf '%s' "$LIST" | grep "$MARKET/plugins/clax-grok" >/dev/null; then
     A_INSTALL=PASS
 fi
 echo "smoke: a: init said $GROK_STATUS; grok plugin list --json: $LIST"
@@ -148,7 +148,7 @@ echo "smoke: a: init said $GROK_STATUS; grok plugin list --json: $LIST"
 echo "smoke: c: one headless turn"
 grok_p "$SCRATCH/turn1.log" -p "Publish a one-line page titled Smoke with clax, then stop." || true
 SESSIONS="$(grok_sessions 2>/dev/null || true)"
-HSID="$(printf '%s\n' "$SESSIONS" | awk 'NF == 2 { print $2; exit }')"
+HSID="$(printf '%s\n' "$SESSIONS" | awk 'NF == 2 && !seen { print $2; seen = 1 }')"
 if [ -n "$HSID" ] && grep -q ' hook agent=grok event=session-start ' "$CLAX_HOME/logs/hooks.log" 2>/dev/null; then
     record c PASS "grok session $HSID; hooks.log has agent=grok session-start"
 else
@@ -222,14 +222,14 @@ fi
 "$CLAX_BIN" stop >/dev/null 2>&1 || true
 "$CLAX_BIN" uninit --agent grok --json >"$SCRATCH/uninit.json" 2>&1 || true
 LIST2="$( (cd "$HOME" && grok plugin list --json) 2>/dev/null || true)"
-if [ "$A_INSTALL" = PASS ] && ! printf '%s' "$LIST2" | grep -q clax-grok; then
+if [ "$A_INSTALL" = PASS ] && ! printf '%s' "$LIST2" | grep clax-grok >/dev/null; then
     record a PASS "init installed clax-grok from $MARKET and uninit removed it"
 else
     record a FAIL "init: $GROK_STATUS (install $A_INSTALL); after uninit grok lists: $LIST2 (adjust grok_additions, grok_removals or grok_uses)"
 fi
 
 # v: the version.
-VERSION="$(grok --version 2>/dev/null | head -1 || true)"
+VERSION="$(grok --version 2>/dev/null | sed -n 1p || true)"
 if [ -n "$VERSION" ]; then record v PASS "$VERSION"; else record v FAIL "grok --version printed nothing"; fi
 
 echo

@@ -193,7 +193,7 @@ READY=1
 cd "$S_HOME"
 MK="$S_CLAX/marketplace"
 
-VERSION="$(sx 30 "$CLAX_BIN" --version </dev/null 2>/dev/null | head -n 1 || true)"
+VERSION="$(sx 30 "$CLAX_BIN" --version </dev/null 2>/dev/null | sed -n 1p || true)"
 HEADER="build under test: $CLAX_BIN (${VERSION:-no version}; $BUILT)"
 echo "$HEADER"
 echo "scratch root: $ROOT (scratch port $PORT)"
@@ -214,7 +214,7 @@ HARNESSES=()
 for h in claude codex pi; do
     if have "$h"; then
         HARNESSES+=("$h")
-        v="$(sx 30 "$h" --version </dev/null 2>/dev/null | head -n 1 || true)"
+        v="$(sx 30 "$h" --version </dev/null 2>/dev/null | sed -n 1p || true)"
         echo "$h: $(command -v "$h") (${v:-no version})"
     else
         record SKIPPED "$h" "not on PATH"
@@ -243,7 +243,7 @@ reg_names() {
     esac
 }
 # Whether a registration names the previous name, as a marketplace or plugin.
-names_old() { reg_names "$1" | grep -qxE -- "\\?unparseable .*|$OLD|$OLD@.*|.*@$OLD"; }
+names_old() { reg_names "$1" | grep -xE -- "\\?unparseable .*|$OLD|$OLD@.*|.*@$OLD" >/dev/null; }
 lacks_old() { ! names_old "$1"; }
 # Pi's package sources, one per line, as settings.json stores them.
 pi_packages() {
@@ -268,12 +268,12 @@ reg() {
 # Codex, and for Pi by a package entry for its package directory (which Pi
 # may store relative to its own directory).
 reg_has_mk() {
-    if [ "$1" = pi ]; then pi_packages | grep -qE '(^|/)marketplace/plugins/pi/?$'; else reg "$1" | grep -qF -- "$MK"; fi
+    if [ "$1" = pi ]; then pi_packages | grep -E '(^|/)marketplace/plugins/pi/?$' >/dev/null; else reg "$1" | grep -F -- "$MK" >/dev/null; fi
 }
 reg_lacks_mk() { ! reg_has_mk "$1"; }
 mk_mark() { if [ "$1" = pi ]; then echo "marketplace/plugins/pi"; else echo "$MK"; fi; }
 pi_count() { pi_packages | grep -cE '(^|/)marketplace/plugins/pi/?$' || true; }
-pi_has_old() { pi_packages | grep -qE '(^|/)oldcheckout/plugins/pi/?$'; }
+pi_has_old() { pi_packages | grep -E '(^|/)oldcheckout/plugins/pi/?$' >/dev/null; }
 pi_lacks_old() { ! pi_has_old; }
 # Runs clax with its output in $ROOT/out/$1; its exit status.
 run_clax() {
@@ -364,7 +364,7 @@ if uses pi; then
 fi
 CACHED=""
 if uses claude; then
-    p="$(find "$S_CLAUDE/plugins/cache" -type f -name plugin.json -path '*clax*' 2>/dev/null | head -n 1 || true)"
+    p="$(find "$S_CLAUDE/plugins/cache" -type f -name plugin.json -path '*clax*' 2>/dev/null | sed -n 1p || true)"
     if [ -n "$p" ]; then
         CACHED="$(dirname "$(dirname "$p")")"
         touch "$CACHED/verify-marker"
@@ -397,7 +397,7 @@ for h in ${HARNESSES[@]+"${HARNESSES[@]}"}; do
         if [ "$rc" = 124 ]; then
             record FAIL "$h: doctor $c passes" "$(timed_out "$T")"
         else
-            check "$h: doctor $c passes" "$(tr ',' '\n' <"$ROOT/out/doctor-$h" | grep -A2 "\"name\":\"$c\"" | head -n 1)" \
+            check "$h: doctor $c passes" "$(tr ',' '\n' <"$ROOT/out/doctor-$h" | grep -A2 "\"name\":\"$c\"" | sed -n 1p)" \
                 out_has "doctor-$h" "\"name\":\"$c\",\"ok\":true"
         fi
     done

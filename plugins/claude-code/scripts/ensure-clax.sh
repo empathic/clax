@@ -194,7 +194,7 @@ bounded() {
 
 # The first non-blank line of $1, trimmed, with double quotes as single ones.
 first_line() {
-    printf '%s\n' "$1" | awk 'NF { sub(/^[ \t]+/, ""); sub(/[ \t\r]+$/, ""); print; exit }' | tr '"' "'"
+    printf '%s\n' "$1" | awk 'NF && !seen { sub(/^[ \t]+/, ""); sub(/[ \t\r]+$/, ""); print; seen = 1 }' | tr '"' "'"
 }
 
 # True when $1 is an executable file whose --version names clax; sets
@@ -229,7 +229,7 @@ read_config_bin() {
     ' "$CONFIG" 2>/dev/null)"
     [ -n "$lines" ] || return 1
     n="$(printf '%s\n' "$lines" | wc -l | tr -d ' ')"
-    line="$(printf '%s\n' "$lines" | head -1)"
+    line="$(printf '%s\n' "$lines" | sed -n 1p)"
     re='^bin = "(/[^"\\]*)"$'
     if [ "$n" = 1 ] && [[ $line =~ $re ]]; then CFG_BIN="${BASH_REMATCH[1]:-}"; fi
     if [ -z "$CFG_BIN" ] || [[ $CFG_BIN =~ [[:cntrl:]] ]]; then

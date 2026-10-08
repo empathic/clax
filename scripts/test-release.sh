@@ -38,7 +38,7 @@ V="$("$HERE/scripts/check-version.sh" --print)"
 if (cd "$T" && scripts/check-version.sh); then pass "the versions agree"; else fail "the versions agree"; fi
 if (cd "$T" && scripts/check-version.sh "v$V"); then pass "the matching tag is accepted"; else fail "the matching tag is accepted"; fi
 out="$(cd "$T" && scripts/check-version.sh v9.9.9 2>&1)"; rc=$?
-if [ "$rc" = 1 ] && echo "$out" | grep -q "does not match the version $V"; then pass "another tag is refused"; else fail "another tag is refused ($out)"; fi
+if [ "$rc" = 1 ] && echo "$out" | grep "does not match the version $V" >/dev/null; then pass "another tag is refused"; else fail "another tag is refused ($out)"; fi
 
 if (cd "$T" && scripts/bump-version.sh 9.8.7 >/dev/null) && [ "$(cd "$T" && scripts/check-version.sh --print)" = 9.8.7 ] \
     && grep -q '^CLAX_VERSION="9.8.7"$' "$T/plugins/clax/scripts/ensure-clax.sh" \
@@ -53,7 +53,7 @@ else fail "bump-version writes every version"; fi
 
 sed -i.bak 's/"version": "9.8.7"/"version": "9.8.6"/' "$T/plugins/clax/.codex-plugin/plugin.json"
 out="$(cd "$T" && scripts/check-version.sh 2>&1)"; rc=$?
-if [ "$rc" = 1 ] && echo "$out" | grep -q "plugins/clax/.codex-plugin/plugin.json: 9.8.6"; then pass "a stray version is named"
+if [ "$rc" = 1 ] && echo "$out" | grep "plugins/clax/.codex-plugin/plugin.json: 9.8.6" >/dev/null; then pass "a stray version is named"
 else fail "a stray version is named ($out)"; fi
 
 # A fresh copy of the version files, for the cases below that need one.
@@ -65,14 +65,14 @@ for f in plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-
     fresh "$T/stray"
     sed -i.bak "s/^CLAX_VERSION=\".*\"$/CLAX_VERSION=\"9.9.9\"/" "$T/stray/$f"
     out="$(cd "$T/stray" && scripts/check-version.sh 2>&1)"; rc=$?
-    if [ "$rc" = 1 ] && echo "$out" | grep -q "$f CLAX_VERSION: 9.9.9"; then pass "a stray launcher copy is named ($f)"
+    if [ "$rc" = 1 ] && echo "$out" | grep "$f CLAX_VERSION: 9.9.9" >/dev/null; then pass "a stray launcher copy is named ($f)"
     else fail "a stray launcher copy is named ($f: $out)"; fi
 done
 for f in plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL.md plugins/pi/skills/clax/SKILL.md plugins/clax-grok/skills/clax/SKILL.md; do
     fresh "$T/stray"
     sed -i.bak "s/^This is Clax plugin [^ ]*\. /This is Clax plugin 9.9.9. /" "$T/stray/$f"
     out="$(cd "$T/stray" && scripts/check-version.sh 2>&1)"; rc=$?
-    if [ "$rc" = 1 ] && echo "$out" | grep -q "$f tool block: 9.9.9"; then pass "a stray skill block is named ($f)"
+    if [ "$rc" = 1 ] && echo "$out" | grep "$f tool block: 9.9.9" >/dev/null; then pass "a stray skill block is named ($f)"
     else fail "a stray skill block is named ($f: $out)"; fi
 done
 
@@ -83,12 +83,12 @@ rm "$T/half/plugins/clax/scripts/ensure-clax.sh.bak"
 before="$(cd "$T/half" && find . -type f | sort | xargs shasum)"
 out="$(cd "$T/half" && scripts/bump-version.sh 9.8.7 2>&1)"; rc=$?
 after="$(cd "$T/half" && find . -type f | sort | xargs shasum)"
-if [ "$rc" != 0 ] && [ "$before" = "$after" ] && echo "$out" | grep -q "no file was changed"; then
+if [ "$rc" != 0 ] && [ "$before" = "$after" ] && echo "$out" | grep "no file was changed" >/dev/null; then
     pass "a bump that cannot match every version changes no file"
 else fail "a bump that cannot match every version changes no file (rc=$rc: $out)"; fi
 
 if out="$(cd "$T" && scripts/bump-version.sh not-a-version 2>&1)"; then fail "a bad version is refused"
-elif echo "$out" | grep -q "is not a release version"; then pass "a bad version is refused"
+elif echo "$out" | grep "is not a release version" >/dev/null; then pass "a bad version is refused"
 else fail "a bad version is refused ($out)"; fi
 
 mkdir -p "$T/bin"
@@ -100,7 +100,7 @@ if [ "$list" = "$(printf 'clax-1.2.3-x86_64-unknown-linux-musl\nclax-1.2.3-x86_6
 else fail "an archive holds exactly clax-<version>-<target>/clax ($list)"; fi
 if out="$("$T/scripts/package-release.sh" archive 1.2.4 x86_64-unknown-linux-musl "$T/bin/clax" "$T/dist" 2>&1)"; then
     fail "a binary of another version is refused"
-elif echo "$out" | grep -q "not 'clax 1.2.4'"; then pass "a binary of another version is refused"
+elif echo "$out" | grep "not 'clax 1.2.4'" >/dev/null; then pass "a binary of another version is refused"
 else fail "a binary of another version is refused ($out)"; fi
 
 echo "#!/bin/sh" > "$T/dist/install.sh"
@@ -150,19 +150,19 @@ else fail "pin-release writes the pin into every wrapper copy (rc=$rc: $out)"; f
 fresh "$T/pin"
 before="$(sums_of "$T/pin")"
 out="$(cd "$T/pin" && CLAX_RELEASE_BASE_URL="$BASE/ok" scripts/pin-release.sh v0.0.1 2>&1)"; rc=$?
-if [ "$rc" = 1 ] && echo "$out" | grep -q "does not list clax-0.0.1-aarch64-unknown-linux-musl.tar.gz" && [ "$before" = "$(sums_of "$T/pin")" ]; then
+if [ "$rc" = 1 ] && echo "$out" | grep "does not list clax-0.0.1-aarch64-unknown-linux-musl.tar.gz" >/dev/null && [ "$before" = "$(sums_of "$T/pin")" ]; then
     pass "a SHA256SUMS missing a target changes no file"
 else fail "a SHA256SUMS missing a target changes no file (rc=$rc: $out)"; fi
 out="$(cd "$T/pin" && CLAX_RELEASE_BASE_URL="$BASE/none" scripts/pin-release.sh "v$V" 2>&1)"; rc=$?
-if [ "$rc" = 1 ] && echo "$out" | grep -q "answered HTTP 404" && [ "$before" = "$(sums_of "$T/pin")" ]; then
+if [ "$rc" = 1 ] && echo "$out" | grep "answered HTTP 404" >/dev/null && [ "$before" = "$(sums_of "$T/pin")" ]; then
     pass "an unpublished release changes no file"
 else fail "an unpublished release changes no file (rc=$rc: $out)"; fi
 out="$(cd "$T/pin" && CLAX_RELEASE_BASE_URL="$BASE/ok" scripts/pin-release.sh v99.0.0 2>&1)"; rc=$?
-if [ "$rc" = 1 ] && echo "$out" | grep -q "newer than this checkout" && [ "$before" = "$(sums_of "$T/pin")" ]; then
+if [ "$rc" = 1 ] && echo "$out" | grep "newer than this checkout" >/dev/null && [ "$before" = "$(sums_of "$T/pin")" ]; then
     pass "a release newer than the checkout is refused"
 else fail "a release newer than the checkout is refused (rc=$rc: $out)"; fi
 out="$(cd "$T/pin" && scripts/pin-release.sh 0.3.0 2>&1)"; rc=$?
-if [ "$rc" = 2 ] && echo "$out" | grep -q "not a release tag"; then pass "pin-release wants a vX.Y.Z tag"
+if [ "$rc" = 2 ] && echo "$out" | grep "not a release tag" >/dev/null; then pass "pin-release wants a vX.Y.Z tag"
 else fail "pin-release wants a vX.Y.Z tag (rc=$rc: $out)"; fi
 
 [ "$FAILED" = 0 ] && echo "release script tests passed" || echo "release script tests FAILED"
