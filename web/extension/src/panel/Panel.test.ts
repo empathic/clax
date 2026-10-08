@@ -670,9 +670,12 @@ describe("Panel for the owner's questions and inbox", () => {
     const cards = container.querySelectorAll(".qcard");
     expect(cards).toHaveLength(1);
     expect(screen.getByRole("heading", { name: /Questions for you/ })).toBeTruthy();
-    // Above the threads.
-    const card = screen.getByText("Too wide");
-    expect(cards[0].compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // First in the Page view: above the name field, the thread filters and search, and the threads.
+    const follows = (el: Element) => !!(cards[0].compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(follows(screen.getByText("Too wide"))).toBe(true);
+    expect(follows(container.querySelector(".tools")!)).toBe(true);
+    expect(container.querySelector("#ptab-page-panel")?.firstElementChild?.classList.contains("questions")).toBe(true);
+    expect(container.querySelector("#ptab-page-panel")?.getAttribute("role")).toBe("tabpanel");
     // The card's own page is not linked from it.
     expect(cards[0].querySelector("a.about")).toBeNull();
     // Answered through the worker.
@@ -704,9 +707,11 @@ describe("Panel for the owner's questions and inbox", () => {
     const page = screen.getByRole("tab", { name: "Page" });
     const inbox = screen.getByRole("tab", { name: "Inbox, 4 unread" });
     expect(page.getAttribute("aria-selected")).toBe("true");
+    expect([page.getAttribute("aria-controls"), inbox.getAttribute("aria-controls")]).toEqual(["ptab-page-panel", "ptab-inbox-panel"]);
+    expect(screen.getByRole("tabpanel").id).toBe("ptab-page-panel");
     await fireEvent.click(inbox);
     expect(inbox.getAttribute("aria-selected")).toBe("true");
-    expect(screen.getByRole("tabpanel")).toBeTruthy();
+    expect(screen.getByRole("tabpanel").id).toBe("ptab-inbox-panel");
     expect(screen.queryByText("Too wide")).toBeNull();
     await fireEvent.keyDown(inbox, { key: "ArrowLeft" });
     expect(page.getAttribute("aria-selected")).toBe("true");
@@ -730,12 +735,22 @@ describe("Panel for the owner's questions and inbox", () => {
     expect(container.querySelectorAll(".irow")).toHaveLength(2);
     // Opening a reply marks it read, then opens it through the worker.
     await fireEvent.click(screen.getByRole("button", { name: /replied on Quarterly Review/ }));
-    await vi.waitFor(() => expect(l.sent.at(-1)).toEqual({ t: "open-url", url: r.url }));
+    await vi.waitFor(() => expect(l.sent.at(-1)).toEqual({ t: "open-url", url: r.url, pageUrl: null }));
     expect(asked).toContainEqual({ t: "inbox-mark", ids: [r.id], read: true });
     // A question card's link to its page opens through the worker too, not in the panel.
     const about = container.querySelector<HTMLAnchorElement>(".qcard a.about")!;
     await fireEvent.click(about);
-    expect(l.sent.at(-1)).toEqual({ t: "open-url", url: `/a/${AID}` });
+    expect(l.sent.at(-1)).toEqual({ t: "open-url", url: `/a/${AID}`, pageUrl: null });
+    // A question's item whose ID does not decode opens through the worker, without throwing.
+  });
+
+  it("opens a question item whose link does not decode through the worker", async () => {
+    const bad = fixtures.item("finished", { url: "/inbox?q=%E0" });
+    const { l } = owner({ pages: m => ((m as { filter: { read: string } }).filter.read === "unread" ? { items: [bad], next_cursor: null, unread: 1, total: 1 } : { items: [], next_cursor: null, unread: 1, total: 0 }) });
+    render(Panel, { props: { link: l as never, now: NOW } });
+    await fireEvent.click(screen.getByRole("tab", { name: /Inbox/ }));
+    await fireEvent.click(await screen.findByRole("button", { name: /finished on/ }));
+    await vi.waitFor(() => expect(l.sent.at(-1)).toEqual({ t: "open-url", url: "/inbox?q=%E0", pageUrl: null }));
   });
 
   it("searches after a pause in typing, and marks all read up to the newest item shown", async () => {

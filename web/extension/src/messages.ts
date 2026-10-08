@@ -251,9 +251,10 @@ export type PanelToWorker =
   /** Marks every unread item matching `filter` read, up to `upto` (the newest `seq` shown). */
   | { t: "inbox-mark-all"; req: number; filter: InboxFilter | null; upto: number | null }
   /** Opens a daemon path (an item's `url`): a live page's item focuses a
-   * tab showing that page when there is one, else a new tab opens it on
-   * the paired daemon. */
-  | { t: "open-url"; url: string }
+   * tab showing that page when there is one (one Clax is on for it, else
+   * one at `pageUrl`, the item's live page), else a new tab opens it on the
+   * paired daemon. */
+  | { t: "open-url"; url: string; pageUrl: string | null }
   /** Whether the panel's document is visible: the worker reports the owner here only while it is. */
   | { t: "visible"; on: boolean }
   | { t: "ping" };
@@ -493,7 +494,7 @@ export function isFromPanel(m: unknown): m is PanelToWorker {
     case "inbox-mark": return has("req", "ids", "read") && count(m.req) && bool(m.read) && Array.isArray(m.ids) && m.ids.length >= 1
       && m.ids.length <= (m.read ? MAX_MARK : 1) && m.ids.every(itemId);
     case "inbox-mark-all": return has("req", "filter", "upto") && count(m.req) && (m.filter === null || filter(m.filter)) && (m.upto === null || count(m.upto));
-    case "open-url": return has("url") && daemonPath(m.url);
+    case "open-url": return has("url", "pageUrl") && daemonPath(m.url) && (m.pageUrl === null || url(m.pageUrl));
     case "retry": case "ping": return has();
     default: return false;
   }

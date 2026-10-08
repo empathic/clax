@@ -31,6 +31,9 @@ class Daemon {
   pages = new Map<string, PageView>([[URL1, page(AID, "/")], [URL2, page(AID2, "/settings")]]);
   /** Whether the daemon takes the extension as the owner. */
   owner = true;
+  /** The native host answers once this settles; `hostMissing`: with an error. */
+  hostGate: Promise<void> = Promise.resolve();
+  hostMissing = false;
 
   pair() {
     const credential = `cxe_${String.fromCharCode(65 + this.minted++).repeat(43)}`;
@@ -136,7 +139,7 @@ const docs = new Set<number>();
 const booted: Worker[] = [];
 function boot(): Worker {
   const worker = createWorker({
-    pair: { sendNative: async () => { pairings++; return d.pair(); }, session: area(session), local: area(local), manifestVersion: "0.9.0", reload: () => {}, now: () => Date.now() },
+    pair: { sendNative: async () => { pairings++; await d.hostGate; return d.hostMissing ? { type: "error", v: 1, code: "host_missing", message: "not found" } : d.pair(); }, session: area(session), local: area(local), manifestVersion: "0.9.0", reload: () => {}, now: () => Date.now() },
     fetch: d.fetch,
     toOverlay: (tabId, m) => toOverlay.push({ tabId, m }),
     capture: async (...a) => { captures.push(a); return { error: "no_capture_permission" }; },
@@ -206,6 +209,37 @@ describe("the worker", () => {
     const subscribe = d.log.filter(l => l.method === "POST" && l.path.startsWith("/api/stream/")).at(-1)!;
     expect(at(summary[0])).toBeLessThan(at(subscribe));
     expect(at(subscribe)).toBeLessThan(at(summary[1]));
+  });
+
+  it("joins a pairing under way when a panel opens mid-pairing: one native host, then the page, the summary and the topics", async () => {
+    let open!: () => void;
+    d.hostGate = new Promise(r => { open = r; });
+    const before = pairings;
+    void w.tabs.route(4, URL1);
+    await settle();
+    const port = { postMessage: () => {}, onDisconnect: { addListener: () => {} } };
+    w.inbox.attach(port as never);
+    await settle();
+    expect(pairings - before).toBe(1);
+    open();
+    await settle();
+    expect(pairings - before).toBe(1);
+    expect(w.tabs.state(4)?.page?.artifact_id).toBe(AID);
+    expect(d.log.some(l => l.path === "/api/inbox/summary")).toBe(true);
+    expect(d.held.get(d.open()[0].id)).toEqual(new Set([`artifact:${AID}`, `working:${AID}`, "questions", "inbox"]));
+  });
+
+  it("starts no native host for the inbox while the host is missing, however long a panel stays open", async () => {
+    d.hostMissing = true;
+    const before = pairings;
+    await w.tabs.route(4, URL1).catch(() => {});
+    await settle();
+    expect(pairings - before).toBe(1);
+    const port = { postMessage: () => {}, onDisconnect: { addListener: () => {} } };
+    w.inbox.attach(port as never);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(pairings - before).toBe(1);
+    expect(w.inbox.owner).toBeNull();
   });
 
   it("subscribes no inbox topic when the daemon does not take the extension as the owner, so the tabs' stream is untouched", async () => {

@@ -222,6 +222,8 @@ export function startBackground(c: typeof chrome) {
     open: {
       daemon: async () => (await pairer.current()).daemon,
       create: async url => { await c.tabs.create({ url }); },
+      // Matches only tabs whose address the extension may read (an origin it holds).
+      find: async url => (await c.tabs.query({ url: url.split("#")[0] }).catch(() => []))[0]?.id ?? null,
       focus: async tabId => {
         const t = await c.tabs.update(tabId, { active: true });
         if (t?.windowId !== undefined) await c.windows.update(t.windowId, { focused: true });
@@ -241,9 +243,14 @@ export function startBackground(c: typeof chrome) {
     let page = "";
     try { page = s.url ? new URL(s.url).pathname : ""; } catch { /* no page */ }
     if (port.name.startsWith("panel:") && page === `/${PANEL_PATH}` && s.tab === undefined) {
-      tabs.attachPanel(port, (tabId, m) => { if (isFromPanel(m)) void panelAction(panelDeps, tabId, m, r => { try { port.postMessage(r); } catch { /* the panel closed */ } }); });
+      const kept = tabs.attachPanel(port, (tabId, m) => {
+        if (!isFromPanel(m)) return;
+        void panelAction(panelDeps, tabId, m, r => { try { port.postMessage(r); } catch { /* the panel closed */ } })
+          // A panel watching a tab, or asking to retry: an owner check that waited for a pairing runs again.
+          .then(() => { if (m.t === "watch-tab" || m.t === "retry") inbox.kick(); });
+      });
       // The owner's questions and inbox, for a panel `attachPanel` kept.
-      if (/^panel:\d{1,15}$/.test(port.name)) inbox.attach(port);
+      if (kept) inbox.attach(port);
       return;
     }
     // A composer frame: the worker then takes it only for its tab's current pick.

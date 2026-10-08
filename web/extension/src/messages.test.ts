@@ -235,11 +235,14 @@ describe("messages", () => {
     expect(isFromPanel({ t: "inbox-mark-all", req: 6, filter: { read: "x" }, upto: null })).toBe(false);
 
     // A path on the paired daemon, never another origin.
-    for (const url of ["/a/7q3k9mzx2b4t?thread=01J9ZQ3V7K8M2N4P6R8T0V2X4Y", "/a/7q3k9mzx2b4t/v/3", "/inbox?q=01J9ZQ3V7K8M2N4P6R8T0V2X4Y"]) expect(isFromPanel({ t: "open-url", url }), url).toBe(true);
+    for (const url of ["/a/7q3k9mzx2b4t?thread=01J9ZQ3V7K8M2N4P6R8T0V2X4Y", "/a/7q3k9mzx2b4t/v/3", "/inbox?q=01J9ZQ3V7K8M2N4P6R8T0V2X4Y"]) expect(isFromPanel({ t: "open-url", url, pageUrl: null }), url).toBe(true);
     for (const url of ["https://evil.example/", "http://localhost:7480/a/x", "//evil.example/x", "/\\evil.example", "/\\/evil", "javascript:alert(1)", "a/x", "/a b", `/${"x".repeat(MAX_URL)}`, null]) {
-      expect(isFromPanel({ t: "open-url", url }), String(url)).toBe(false);
+      expect(isFromPanel({ t: "open-url", url, pageUrl: null }), String(url)).toBe(false);
     }
-    expect(isFromPanel({ t: "open-url", url: "/a/x", tabId: 3 })).toBe(false);
+    expect(isFromPanel({ t: "open-url", url: "/a/x", pageUrl: "http://localhost:5173/settings" })).toBe(true);
+    for (const pageUrl of ["javascript:alert(1)", "/settings", 3]) expect(isFromPanel({ t: "open-url", url: "/a/x", pageUrl }), String(pageUrl)).toBe(false);
+    expect(isFromPanel({ t: "open-url", url: "/a/x" })).toBe(false);
+    expect(isFromPanel({ t: "open-url", url: "/a/x", pageUrl: null, tabId: 3 })).toBe(false);
   });
 
   it("checks the worker's question and inbox messages to the panels", () => {

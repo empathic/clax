@@ -56,6 +56,7 @@ function setup(over: { closed?: boolean; remaining?: number; page?: typeof page 
       daemon: async () => "http://127.0.0.1:7480",
       create: async (url: string) => { calls.push(`create ${url}`); },
       focus: async (tabId: number) => { calls.push(`focus ${tabId}`); },
+      find: async (url: string) => { calls.push(`find ${url}`); return url === "http://localhost:5173/other" ? 12 : null; },
     },
     tabs: {
       ready: async () => { waited++; await over.restoring; },
@@ -438,12 +439,31 @@ describe("panelAction for the owner's questions and inbox", () => {
   it("opens a live page's item in the tab showing that page, its thread selected, and anything else on the daemon in a new tab", async () => {
     const s = setup();
     // Tab 4 shows the live page AID (tab 9 is unknown).
-    await s.run({ t: "open-url", url: `/a/${AID}?thread=${T2}` }, null);
+    await s.run({ t: "open-url", url: `/a/${AID}?thread=${T2}`, pageUrl: URL1 }, null);
     expect(s.calls).toEqual(["focus 4", `select 4 ${T2}`]);
-    await s.run({ t: "open-url", url: `/a/${AID}/v/3` }, null);
+    await s.run({ t: "open-url", url: `/a/${AID}/v/3`, pageUrl: null }, null);
     expect(s.calls.slice(2)).toEqual(["focus 4"]);
-    await s.run({ t: "open-url", url: "/a/8r4m0nzy3c5v?thread=x" }, null);
-    await s.run({ t: "open-url", url: "/inbox?q=01J9QQQQQQQQQQQQQQQQQQQQQQ" }, null);
+    await s.run({ t: "open-url", url: "/a/8r4m0nzy3c5v?thread=x", pageUrl: null }, null);
+    await s.run({ t: "open-url", url: "/inbox?q=01J9QQQQQQQQQQQQQQQQQQQQQQ", pageUrl: null }, null);
     expect(s.calls.slice(3)).toEqual(["create http://127.0.0.1:7480/a/8r4m0nzy3c5v?thread=x", "create http://127.0.0.1:7480/inbox?q=01J9QQQQQQQQQQQQQQQQQQQQQQ"]);
+  });
+
+  it("brings a tab showing the live page with Clax off in it to the front, else opens the item on the daemon", async () => {
+    const s = setup();
+    await s.run({ t: "open-url", url: "/a/8r4m0nzy3c5v?thread=x", pageUrl: "http://localhost:5173/other" }, null);
+    expect(s.calls).toEqual(["find http://localhost:5173/other", "focus 12"]);
+    await s.run({ t: "open-url", url: "/a/8r4m0nzy3c5v", pageUrl: "http://localhost:5173/gone" }, null);
+    expect(s.calls.slice(2)).toEqual(["find http://localhost:5173/gone", "create http://127.0.0.1:7480/a/8r4m0nzy3c5v"]);
+  });
+
+  it("leaves no error on the tab for a failed question or inbox request", async () => {
+    const s = setup({ fail: "markItem", failCode: "daemon_unreachable" });
+    await s.run({ t: "inbox-mark", req: 3, ids: [T1], read: true }, 4);
+    expect(s.calls.filter(c => c.startsWith("fail"))).toEqual([]);
+    expect(s.out).toEqual([{ t: "failed", code: "daemon_unreachable", message: "No such thread.", req: 3 }]);
+    // A tab action's failure still does.
+    const t = setup({ fail: "resolve", failCode: "daemon_unreachable" });
+    await t.run({ t: "resolve", threadId: T1 }, 4);
+    expect(t.calls).toContain("fail 4 daemon_unreachable");
   });
 });

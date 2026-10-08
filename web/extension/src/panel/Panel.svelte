@@ -224,9 +224,9 @@
     {/if}
     {#if owner}
       <div class="tabs" role="tablist" aria-label="Side panel">
-        <button type="button" role="tab" id="ptab-page" aria-selected={!inboxTab} tabindex={inboxTab ? -1 : 0}
+        <button type="button" role="tab" id="ptab-page" aria-selected={!inboxTab} aria-controls="ptab-page-panel" tabindex={inboxTab ? -1 : 0}
           onclick={() => (tab = "page")} onkeydown={tabKey}>Page</button>
-        <button type="button" role="tab" id="ptab-inbox" aria-selected={inboxTab} aria-controls={inboxTab ? "ptab-panel" : undefined} tabindex={inboxTab ? 0 : -1}
+        <button type="button" role="tab" id="ptab-inbox" aria-selected={inboxTab} aria-controls="ptab-inbox-panel" tabindex={inboxTab ? 0 : -1}
           aria-label={unreadCount ? `Inbox, ${unreadCount} unread` : "Inbox"} onclick={() => (tab = "inbox")} onkeydown={tabKey}>Inbox{#if unreadCount}<span class="count" aria-hidden="true">{unreadCount}</span>{/if}</button>
       </div>
     {/if}
@@ -248,13 +248,18 @@
       </div>
     {/if}
     {#if inboxTab && link.questions && link.ask && link.onItem && link.inbox}
-      <div class="tabpanel" role="tabpanel" id="ptab-panel" aria-labelledby="ptab-inbox">
+      <div class="tabpanel" role="tabpanel" id="ptab-inbox-panel" aria-labelledby="ptab-inbox">
         <!-- Loaded when first opened: the panel's first paint carries none of it. -->
         {#await import("./InboxTab.svelte") then { default: InboxTab }}
           <InboxTab link={{ inbox: link.inbox, questions: link.questions, ask: m => link.ask!(m), post: m => link.post(m), onItem: f => link.onItem!(f) }} {now} />
         {/await}
       </div>
     {:else}
+    <!-- The Page view: for the owner, the open questions about the live page come first. -->
+    <div class="tabpanel" role={owner ? "tabpanel" : undefined} id="ptab-page-panel" aria-labelledby={owner ? "ptab-page" : undefined}>
+    {#if s.enabled && s.page && owner && link.questions}
+      <div class="questions"><SidebarQuestions aid={s.page.artifact_id} feed={link.questions} {now} /></div>
+    {/if}
     {#if s.viewer && !s.viewer.display_name}
       <label class="name"><span>Your name</span>
         <input aria-label="Your name" maxlength="60" autocomplete="name" placeholder="How others see you" value={name}
@@ -285,9 +290,6 @@
     {#if !s.enabled}
       <!-- told above -->
     {:else if s.page}
-      {#if owner && link.questions}
-        <div class="questions"><SidebarQuestions aid={s.page.artifact_id} feed={link.questions} {now} /></div>
-      {/if}
       {#if picked}
         <div class="picked">
           {#if movingPicked}
@@ -341,6 +343,7 @@
         {/if}
       </footer>
     {/if}
+    </div>
     {/if}
   {/if}
 </main>
@@ -383,6 +386,7 @@
   .tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--fg); }
   .tabs button:not(:disabled):hover { background: var(--hover); }
   .tabs .count { min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--you); color: var(--on-you); font: 600 11px/18px var(--font); text-align: center; font-variant-numeric: tabular-nums; }
+  .tabpanel { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   .questions { padding: 12px var(--gutter) 0; }
   .questions :global(.side-q) { margin-bottom: 0; }
   .questions:has(> :global(.side-q[hidden])) { display: none; }

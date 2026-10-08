@@ -3,7 +3,7 @@ import type { InboxItem, QuestionView } from "../../../shell/src/api";
 import type { TabMsg } from "../../../shell/src/stream-hub";
 import type { WorkerToPanel } from "../messages";
 import { ApiFailure } from "./api";
-import { HUB_ID, RETRY_MAX_MS, WorkerInbox } from "./inbox";
+import { HUB_ID, RETRY_LIMIT, RETRY_MAX_MS, WorkerInbox } from "./inbox";
 
 const A = "7q3k9mzx2b4t";
 const B = "8r4m0nzy3c5v";
@@ -34,7 +34,7 @@ function harness(answer: () => unknown = () => ({ unread: 2, questions: [questio
   const inbox = new WorkerInbox({
     api: {
       // The worker's credentialed API: each call is the request it would make.
-      inboxSummary: async () => { calls.push("GET /api/inbox/summary"); const r = reply(); if (r instanceof Error) throw r; return r as never; },
+      inboxSummary: async join => { calls.push(`GET /api/inbox/summary${join ? "" : " (may pair)"}`); const r = reply(); if (r instanceof Error) throw r; return r as never; },
       inboxPage: async (f, before) => { calls.push(`GET /api/inbox ${JSON.stringify(f)} ${before}`); return { items: [item(Q3, 9)], next_cursor: "9", unread: 5 }; },
     },
     hub: { receive: (id, msg) => hub.push({ id, msg }), detach: id => hub.push({ id, msg: "detach" }) },
@@ -81,8 +81,8 @@ describe("WorkerInbox", () => {
     expect(h.timers).toEqual([]);
   });
 
-  it("checks again after a backoff when the daemon did not answer, while a panel is open", async () => {
-    const h = harness(() => new ApiFailure("daemon_unreachable", "down"));
+  it("checks again a few times after a backoff when the daemon fails, then waits for a kick", async () => {
+    const h = harness(() => new ApiFailure("http_500", "boom", 500));
     const port = new FakePort();
     h.inbox.attach(port as never);
     await h.settle();
@@ -90,15 +90,53 @@ describe("WorkerInbox", () => {
     h.timers[0].fn();
     await h.settle();
     expect(h.timers.map(t => t.ms)).toEqual([1000, 2000]);
-    for (let i = 0; i < 8; i++) { h.timers.at(-1)!.fn(); await h.settle(); }
-    expect(h.timers.at(-1)!.ms).toBe(RETRY_MAX_MS);
+    for (let i = 0; i < 8; i++) { const t = h.timers.at(-1)!; if (t.live) { t.live = false; t.fn(); } await h.settle(); }
+    // RETRY_LIMIT retries, then none until a kick.
+    expect(h.timers.map(t => t.ms)).toEqual([1000, 2000, 4000, 8000, 16000, RETRY_MAX_MS].slice(0, RETRY_LIMIT));
+    expect(h.calls).toHaveLength(RETRY_LIMIT + 1);
     h.answer(() => ({ unread: 1, questions: [], latest: [] }));
-    h.timers.at(-1)!.fn();
+    h.inbox.kick();
     await h.settle();
     expect(h.hub.map(x => x.msg)).toEqual([{ t: "topics", topics: ["questions", "inbox"] }]);
     // The last panel closing stops the retries and the subscription.
     port.close();
     expect(h.hub.at(-1)).toEqual({ id: HUB_ID, msg: "detach" });
+  });
+
+  it("never starts a pairing itself: with none stored or under way, it waits for one", async () => {
+    for (const code of ["not_paired", "host_missing", "daemon_unreachable", "daemon_unavailable"]) {
+      const h = harness(() => new ApiFailure(code, "no"));
+      const port = new FakePort();
+      h.inbox.attach(port as never);
+      await h.settle();
+      // Joined only (it asks with `join`), and no timer: nothing runs again by itself.
+      expect(h.calls).toEqual(["GET /api/inbox/summary"]);
+      expect(h.timers).toEqual([]);
+      expect(h.hub).toEqual([]);
+      // A pairing landed (the panel watched its tab): the check runs again.
+      h.answer(() => ({ unread: 0, questions: [], latest: [] }));
+      h.inbox.kick();
+      await h.settle();
+      expect(h.calls).toHaveLength(2);
+      expect(h.hub).toEqual([{ id: HUB_ID, msg: { t: "topics", topics: ["questions", "inbox"] } }]);
+      // Subscribed: a kick does nothing more.
+      h.inbox.kick();
+      await h.settle();
+      expect(h.calls).toHaveLength(2);
+    }
+  });
+
+  it("keeps nothing a check answered after the last panel closed", async () => {
+    let answer!: (v: unknown) => void;
+    const h = harness(() => new Promise(r => { answer = r; }));
+    const port = new FakePort();
+    h.inbox.attach(port as never);
+    await h.settle();
+    port.close();
+    answer({ unread: 2, questions: [question(Q1, A, "2026-10-07T10:01:00Z")], latest: [] });
+    await h.settle();
+    expect(h.inbox.questions).toEqual([]);
+    expect(h.hub).toEqual([]);
   });
 
   it("upserts questions from their events and takes the count from item events; every panel hears each", async () => {
