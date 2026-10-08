@@ -2051,7 +2051,10 @@ to the session's other questions (present only when there are some), so an
 `ask` result can carry both. `cancel` withdraws
 an open question; on a question already closed it returns what closed it
 (handing an answer over, once). `url` opens the question in the shell's
-inbox. An answer `ask` returns is taken: no feedback tier repeats it. Tier
+inbox. An answer `ask` returns is taken: no feedback tier repeats it.
+The question keeps its answer, though: `ask` with its `question_id` reads
+it again even after a feedback poll handed it over as a late answer, so an
+agent that lost a result can recover it, and may see the answer twice. Tier
 1 feedback and late answers to other questions are appended as on every
 tool.
 

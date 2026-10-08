@@ -292,7 +292,12 @@ until they press **Answer in the terminal** in Clax, wait out
 `terminal_after_s`, or press Esc (which ends Claude's turn; they then type
 the answer as a message). That is the price of answering in Clax at all,
 paid only while a Clax surface is open; a person not using Clax gets the
-terminal dialog at once. `terminal_after_s = 0` makes Clax a read-only
+terminal dialog at once. A surface counts as open while an owner's tab
+holds the `questions` topic, which it keeps while hidden (§9.7): a Clax tab
+left open in the background makes every `AskUserQuestion` wait in Clax
+until it is answered there, released, timed out or Esc is pressed. Whether
+"open" should instead mean a tab seen or focused recently, or the extension
+panel being open, is an open owner question. `terminal_after_s = 0` makes Clax a read-only
 mirror that announces every question and leaves answering to the terminal.
 
 Rejected: an async mirror that only announces (solves "find out", not "stay
@@ -511,7 +516,12 @@ inject poll. Codex `queue` and Claude Code notices are not sent for answers
 (§13). While a question poll (§6.1) holds a question, feedback polls leave
 its answer to that poll, so the answer is handed over once; when the last
 hold drops with the answer untaken, the session's feedback polls are woken
-to take it.
+to take it. "Once" is about the feedback tiers: a late answer is never
+repeated by another feedback poll. The question itself keeps its answer, so
+`ask` with its `question_id` (§6.5) reads it again even after it came as a
+late answer; that re-read is how an agent recovers an answer whose result
+it lost, and an answer may so reach the agent twice, once in `answers` and
+once in `reply`.
 
 ### 6.5 MCP: `ask`
 
@@ -756,7 +766,9 @@ All answer 403 `forbidden` to non-owners and keep the viewer routes'
 - `POST /api/inbox/<id>/read`, `POST /api/inbox/<id>/unread` → `{item,
   unread}`.
 - `POST /api/inbox/read`, body `{ids: [..]}` (at most 500) or `{all: true,
-  filter?: {q, kind, artifact, agent, since, until}}` → `{marked, unread}`.
+  filter?: {q, kind, artifact, agent, since, until}, upto?}` → `{marked,
+  unread}`. `upto` is the newest `seq` the client showed: only items up to
+  it are marked, so items made since stay unread.
 
 Errors: `invalid_query` (a bad filter, date or cursor), `not_found`.
 
@@ -887,6 +899,20 @@ which shows a dot. The stage is never covered or moved.
   a new tab; items about live pages focus the page's tab when one is open.
 - The worker subscribes `questions` and `inbox` once, while a panel is
   open, and requests inbox pages through its credentialed API.
+- What this lets the extension see, acting as the owner (an open owner
+  question, since it widens chrome-overlay §9.5's live-only posture): it may
+  list, search and read every inbox item, gallery artifacts' included (their
+  ID, title, kind and description, agent reply bodies, version notes and the
+  summaries of the threads they addressed, finished-work messages, and the
+  agent's handle, harness and project); read every question and its answers,
+  and answer, skip or release any; mark any item read or unread; hold both
+  topics on its live-only stream; and open any item's daemon URL, a gallery
+  `/a/<id>…` included, in a new tab. It still cannot fetch a gallery
+  artifact's files, versions, threads or docs, nor subscribe `gallery` or
+  `docs:`. Restoring the live-only posture would filter `/api/inbox` and
+  `/api/questions` to live-page items for the extension, leave out the
+  `artifact` of other items in what it is sent, and refuse it the item and
+  question routes of items that are not live.
 
 ### 9.7 Streams, notifications, title and icon
 
