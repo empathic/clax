@@ -80,11 +80,11 @@ CLAX_VERSION="0.4.0"
 # scripts/pin-release.sh writes them, from the release's SHA256SUMS, into
 # every copy of this script. They are embedded rather than fetched so that a
 # tampered release is caught at download time. Empty: no release is pinned.
-PINNED_VERSION="0.3.1"
-SHA256_AARCH64_APPLE_DARWIN="8276760af413ba2163fca7fb0b2e698616a420c3df1c59f52090ec4d662b63ab"
-SHA256_X86_64_APPLE_DARWIN="70fdd8490924af344557416082b3d39160ce56bb86d27a956901d6ac502199f7"
-SHA256_X86_64_UNKNOWN_LINUX_MUSL="709ba8ba8339972dca51cb86c295ae280fa1ab1d60f440578189e408a7618927"
-SHA256_AARCH64_UNKNOWN_LINUX_MUSL="c8ea1256f4870d6fbe006c1732290f990feea7debcbbe5ee0c82af2aa07d72b3"
+PINNED_VERSION="0.4.0"
+SHA256_AARCH64_APPLE_DARWIN="c605702e77d8a01c75f6751f0f54f4439ae28d0965f479056bc6f0220c230f76"
+SHA256_X86_64_APPLE_DARWIN="cb12c9415b3646423284f44a88ce456baaede75961ba6fc7243e6ff866a36917"
+SHA256_X86_64_UNKNOWN_LINUX_MUSL="14b922569b60cf98e2a54417ffd6d14683f604218e9f24ebb69961ccdc232bfd"
+SHA256_AARCH64_UNKNOWN_LINUX_MUSL="e0a6bdb5a6df8339f2ed1f3a23feb7963b763556acce63287fab5c121478ea03"
 REPO="empathic/clax"
 # What the Claude Code copy's MCP server says when Grok Build runs it; the
 # same text as GROK_STANDDOWN in crates/clax-mcp/src/standdown.rs.
