@@ -2176,7 +2176,7 @@ are null. `url` is where opening the item leads: the thread, `/a/<aid>/v/<n>`,
 the artifact, or `/inbox?q=<question>`. `seq` orders items, with higher
 being newer. It is also the cursor and the `upto` of a bulk mark.
 
-An item ID is a ULID. An item that migration 20 filled in from the history
+An item ID is a ULID. An item that migration 21 filled in from the history
 has `b` and 24 hex digits instead.
 
 ### Routes
