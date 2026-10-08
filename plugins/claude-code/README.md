@@ -5,8 +5,9 @@ browser, and get the comments people leave on them back into the session.
 
 ## Install
 
-`/plugin marketplace add empathic/clax`, then `/plugin install clax@clax`,
-and start a new session. From a clone of the Clax repository, `just install`
+`/plugin marketplace add empathic/clax`, then `/plugin install clax@clax`.
+Once Claude Code reports the plugin active, its tools work in that
+session; the `SessionStart` hook runs from the next session on. From a clone of the Clax repository, `just install`
 instead builds and installs `clax` into `~/.cargo/bin` and runs `clax init`,
 which registers this plugin (the copy built into that binary, written to
 `~/.clax/marketplace/`) and points it at that binary.
@@ -23,6 +24,43 @@ the plugin's runs with a warning in `~/.clax/logs/hooks.log`. When no
 `clax` can run, the MCP server still starts, with a single tool, `status`,
 that says why and how to fix it, and the hooks exit 0, so a missing binary
 never fails a turn.
+
+## Allowing the tools
+
+In Claude Code's Manual mode (`default`) every MCP tool asks before it
+runs, and a plugin cannot pre-approve its own tools, so each Clax call,
+even `status`, prompts until you allow it (in auto mode the classifier
+decides instead). Add allow rules to `permissions.allow` in your user
+settings (`~/.claude/settings.json`, every project), a project's
+`.claude/settings.json` (shared with the repository) or its
+`.claude/settings.local.json` (yours alone). At least the tools that only
+read:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__plugin_clax_clax__status",
+      "mcp__plugin_clax_clax__list",
+      "mcp__plugin_clax_clax__read",
+      "mcp__plugin_clax_clax__comments_read",
+      "mcp__plugin_clax_clax__db_get",
+      "mcp__plugin_clax_clax__db_list",
+      "mcp__plugin_clax_clax__db_query"
+    ]
+  }
+}
+```
+
+`"mcp__plugin_clax_clax__*"` allows every Clax tool, publishing and
+deleting included (Claude Code names a plugin's tools
+`mcp__plugin_<plugin>_<server>__<tool>`; here both are `clax`).
+`/permissions` adds the same rules from inside a session.
+
+Behind an LLM gateway or proxy (`ANTHROPIC_BASE_URL`), auto mode's
+classifier may get no verdict and deny tool calls. Allow rules settle
+Clax's tools before the classifier is asked; Manual mode (Shift+Tab) also
+works.
 
 ## Working from a source checkout
 
@@ -53,6 +91,12 @@ states the binary's tool count and is the skill the binary was built with),
 registers), `hooks` (the latest Claude Code lines in
 `~/.clax/logs/hooks.log`), and `feedback` (each live session's watches and
 push state).
+
+When another program already listens on Clax's port (7480 unless
+`[serve] port` in `~/.clax/config.toml` or `CLAX_PORT` says otherwise), the
+MCP server starts with only `status`, which names the port and a free one
+to set instead. Clax never stops what holds the port. After changing it,
+reconnect the server with `/mcp`.
 
 `~/.clax/logs/hooks.log` (under `$CLAX_HOME` when set) has one line per
 hook run (agent, event, binary, duration, exit code, and the start of any
@@ -139,6 +183,8 @@ next message (the `UserPromptSubmit` hook), or at once while the agent is in
 `wait_for_feedback` (`/clax:wait`). The thread in the browser shows which of
 these it is waiting on.
 
+Neither of the following is needed for comments to arrive; they only wake
+a session that is idle, so a comment does not wait for your next message.
 An idle session wakes on a new comment in one of two ways:
 
 - **The Clax channel.** Launch Claude Code with
