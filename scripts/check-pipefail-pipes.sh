@@ -14,6 +14,15 @@
 # script that sets it sources it (`. scripts/x.sh`). With file arguments,
 # checks those files, each counted as running under pipefail (for trying
 # the check out); without, every tracked shell script and justfile.
+#
+# A line ending in a pipe is read with the next. A reader behind `(`, `{`,
+# variable assignments, `command`, `exec`, `env` or `timeout N` is found;
+# `|&` counts as a pipe. Known gaps, none of them in the scripts today: a
+# quoted `|` (as in `grep -E 'a|b'`) splits the command there; only a sed's
+# or awk's first program is read (`sed -e p -e q` passes); `read`, perl and
+# python readers are not checked; and a script is counted as sourced only
+# through a literal path (`. scripts/x.sh`, `. "$HERE/x.sh"`), not a computed
+# one or through another sourced script.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -49,9 +58,18 @@ ALL="$all" SOURCED="${sourced_by_pipefail[*]:-}" perl -ne '
         for my $i (0 .. $#lines) {
             my $l = $lines[$i];
             next if $l =~ /^\s*#/;
-            # Each command after a single pipe (not ||), up to the next one.
-            while ($l =~ /(?<!\|)\|(?![|&])\s*([^|]*)/g) {
+            # A pipe at the end of the line (or before a continuation)
+            # leads into the next line.
+            for (my $j = $i + 1; $j <= $#lines && $l =~ /(?<!\|)\|&?\s*\\?\s*$/; $j++) {
+                $l =~ s/\\?\s*$/ /;
+                $l .= $lines[$j];
+            }
+            # Each command after a single pipe (not ||, but |&), up to the next one.
+            while ($l =~ /(?<!\|)\|(?!\|)&?\s*([^|]*)/g) {
                 my $c = $1;
+                # The command behind a subshell, a group, assignments or a
+                # wrapper that runs it.
+                1 while $c =~ s/^(?:[({]\s*|\w+=\S*\s+|(?:command|exec|env)\s+|timeout\s+\S+\s+)//;
                 # grep options, up to a list operator or closing parenthesis.
                 my ($g) = $c =~ /^[ef]?grep\b([^;&)]*)/;
                 # The first quoted program of an awk or sed, or a bare sed
