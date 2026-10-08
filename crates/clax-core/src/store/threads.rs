@@ -570,6 +570,16 @@ impl Store {
                     .optional()?,
                 None => None,
             };
+            if comment.author_kind == AUTHOR_AGENT {
+                super::inbox::note_reply(
+                    tx,
+                    &comment.id,
+                    thread_id,
+                    &t.artifact_id,
+                    c.via_session_id.as_deref(),
+                    &comment.body,
+                )?;
+            }
             if comment.author_kind == AUTHOR_VIEWER {
                 insert_mentions(tx, &comment.id, &comment.body)?;
                 tx.execute(

@@ -364,6 +364,7 @@ impl Store {
                 ],
             )?;
             let q = fetch(tx, &id)?.ok_or(CoreError::NotFound)?;
+            super::inbox::note_question(tx, &q)?;
             Ok((q, true))
         })
     }
@@ -441,7 +442,9 @@ impl Store {
             if n != 1 {
                 return Err(closed(&q));
             }
-            fetch(tx, qid)?.ok_or(CoreError::NotFound)
+            let q = fetch(tx, qid)?.ok_or(CoreError::NotFound)?;
+            super::inbox::question_changed(tx, &q)?;
+            Ok(q)
         })
     }
 

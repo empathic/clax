@@ -1,0 +1,1573 @@
+//! The owner's inbox (spec 2026-10-06-agent-questions-and-inbox-design §7):
+//! items that reference what agents sent back, made inside their sources'
+//! transactions; read marks; and search through a contentless FTS5 index.
+//! Items are never deleted.
+//!
+//! Every list is newest first by `seq` and always bounded by a `seq` cursor
+//! (`i64::MAX` on the first page), so each page is an index range: the
+//! unread list walks `inbox_unread`, a filter its `inbox_by_*` index, a
+//! search the FTS index in rowid order, and the rest the rowid itself.
+
+use super::Store;
+use super::questions::{QuestionRow, Status};
+use crate::working::Ended;
+use crate::{CoreError, Result, new_ulid};
+use rusqlite::types::Value as Sql;
+use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
+use serde::Serialize;
+use serde_json::Value;
+
+/// Items per page when a query gives no limit.
+pub const DEFAULT_PAGE: u32 = 50;
+/// Most items one page returns.
+pub const MAX_PAGE: u32 = 200;
+/// Most search terms a query uses; later ones are ignored.
+pub const MAX_TERMS: usize = 16;
+
+/// What an item is about (spec §7.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    Reply,
+    Version,
+    Published,
+    Question,
+    Finished,
+}
+
+impl Kind {
+    pub const ALL: [Kind; 5] = [
+        Kind::Reply,
+        Kind::Version,
+        Kind::Published,
+        Kind::Question,
+        Kind::Finished,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Kind::Reply => "reply",
+            Kind::Version => "version",
+            Kind::Published => "published",
+            Kind::Question => "question",
+            Kind::Finished => "finished",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Kind> {
+        Kind::ALL.into_iter().find(|k| k.as_str() == s)
+    }
+}
+
+/// One stored item: its kind, the keys of its source, the agent that sent
+/// it, and when it was made and read.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ItemRow {
+    /// Order and cursor: higher is newer.
+    pub seq: i64,
+    /// The public ID: a ULID, or `b` and 24 hex digits for an item filled
+    /// in from the history by migration 21.
+    pub id: String,
+    pub kind: Kind,
+    pub artifact_id: Option<String>,
+    pub thread_id: Option<String>,
+    pub comment_id: Option<String>,
+    pub version_n: Option<u32>,
+    pub question_id: Option<String>,
+    pub session_id: Option<String>,
+    pub harness: Option<String>,
+    /// `finished` only: `{message, thread_ids}`.
+    pub detail: Option<Value>,
+    pub created_at: String,
+    pub read_at: Option<String>,
+}
+
+/// Which agent's items a query keeps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Agent {
+    /// Every session of a harness (`claude`).
+    Harness(String),
+    /// The one session with this agent handle (`a_…`).
+    Handle(String),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReadFilter {
+    Unread,
+    Read,
+    #[default]
+    All,
+}
+
+/// A list, count or mark-all query. Every filter given must hold.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InboxQuery {
+    /// Search text: each whitespace-separated term must prefix a word of the
+    /// item's index entry ([`fts_query`]). No terms: no text filter.
+    pub text: Option<String>,
+    /// Any of these kinds; empty for all.
+    pub kinds: Vec<Kind>,
+    pub artifact: Option<String>,
+    pub agent: Option<Agent>,
+    /// Made at or after this time (RFC 3339, as stored).
+    pub since: Option<String>,
+    /// Made before this time.
+    pub until: Option<String>,
+    pub read: ReadFilter,
+    /// Items older than this `seq` (the previous page's cursor).
+    pub before: Option<i64>,
+    /// Items per page: 0 for [`DEFAULT_PAGE`], at most [`MAX_PAGE`].
+    pub limit: u32,
+}
+
+/// One change to `inbox_items` in a committed transaction: the item `seq`
+/// was made (`made`) or updated (its read mark, or its page after a thread
+/// moved).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InboxChange {
+    pub seq: i64,
+    pub made: bool,
+}
+
+/// The listener [`Store::set_inbox_listener`] installs.
+pub type InboxListener = Box<dyn Fn(Vec<InboxChange>) + Send + Sync>;
+
+/// The FTS5 query for search text `text`: `"term"*` for each
+/// whitespace-separated term holding a letter or digit (at most
+/// [`MAX_TERMS`]), quotes doubled, so every term is required, a prefix, and
+/// taken as text (no input is FTS5 syntax). `None` without such terms.
+pub fn fts_query(text: &str) -> Option<String> {
+    let terms: Vec<String> = text
+        .split_whitespace()
+        .filter(|t| t.chars().any(char::is_alphanumeric))
+        .take(MAX_TERMS)
+        .map(|t| format!("\"{}\"*", t.replace('"', "\"\"")))
+        .collect();
+    (!terms.is_empty()).then(|| terms.join(" "))
+}
+
+const COLUMNS: &str = "i.seq, i.id, i.kind, i.artifact_id, i.thread_id, i.comment_id, i.version_n,
+    i.question_id, i.session_id, i.harness, i.detail_json, i.created_at, i.read_at";
+
+fn corrupt(column: &str) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        0,
+        rusqlite::types::Type::Text,
+        format!("inbox_items.{column} is not a value this store writes").into(),
+    )
+}
+
+fn row(r: &Row<'_>) -> rusqlite::Result<ItemRow> {
+    let detail: Option<String> = r.get(10)?;
+    Ok(ItemRow {
+        seq: r.get(0)?,
+        id: r.get(1)?,
+        kind: Kind::parse(r.get_ref(2)?.as_str()?).ok_or_else(|| corrupt("kind"))?,
+        artifact_id: r.get(3)?,
+        thread_id: r.get(4)?,
+        comment_id: r.get(5)?,
+        version_n: r.get(6)?,
+        question_id: r.get(7)?,
+        session_id: r.get(8)?,
+        harness: r.get(9)?,
+        detail: detail
+            .map(|d| serde_json::from_str(&d))
+            .transpose()
+            .map_err(|_| corrupt("detail_json"))?,
+        created_at: r.get(11)?,
+        read_at: r.get(12)?,
+    })
+}
+
+/// A query's SQL and its positional parameters.
+pub(super) struct Built {
+    pub sql: String,
+    pub args: Vec<Sql>,
+}
+
+/// What the built statement does with the matching items.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// A page, newest first, one row past the limit.
+    Page,
+    /// At most `cap` matches, counted.
+    Count(u32),
+    /// Marks the unread matches read at the time given.
+    MarkAll,
+}
+
+/// The index that drives a statement: the one filter it walks, in `seq`
+/// order; every other filter is a residual term (`+`), so the plan never
+/// depends on the planner's statistics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Driver {
+    /// The FTS index, in rowid order.
+    Text,
+    /// `inbox_unread`: the unread items only, a small set.
+    Unread,
+    Artifact,
+    Handle,
+    Kind,
+    Harness,
+    /// `inbox_by_created`, sorted by `seq` afterwards: the range alone.
+    Dates,
+    /// The rowid, newest first.
+    Seq,
+}
+
+impl Driver {
+    /// The index name (or plan words) a plan driven by it names.
+    #[cfg(test)]
+    pub(super) fn plan_word(self) -> &'static str {
+        match self {
+            Driver::Text => "VIRTUAL TABLE INDEX",
+            Driver::Unread => "inbox_unread",
+            Driver::Artifact => "inbox_by_artifact",
+            Driver::Handle => "inbox_by_session",
+            Driver::Kind => "inbox_by_kind",
+            Driver::Harness => "inbox_by_harness",
+            Driver::Dates => "inbox_by_created",
+            Driver::Seq => "INTEGER PRIMARY KEY (rowid<?)",
+        }
+    }
+}
+
+/// Which filter drives `q` in `shape`: the search text; else the unread
+/// filter (a mark-all always marks unread items); else the most selective
+/// equality filter; else the date range; else the rowid.
+fn driver(q: &InboxQuery, text: bool, shape: Shape) -> Driver {
+    let kinds = {
+        let mut k = q.kinds.clone();
+        k.sort_by_key(|k| k.as_str());
+        k.dedup();
+        k.len()
+    };
+    if text {
+        Driver::Text
+    } else if shape == Shape::MarkAll || q.read == ReadFilter::Unread {
+        Driver::Unread
+    } else if q.artifact.is_some() {
+        Driver::Artifact
+    } else if matches!(q.agent, Some(Agent::Handle(_))) {
+        Driver::Handle
+    } else if kinds == 1 {
+        Driver::Kind
+    } else if matches!(q.agent, Some(Agent::Harness(_))) {
+        Driver::Harness
+    } else if q.since.is_some() || q.until.is_some() {
+        Driver::Dates
+    } else {
+        Driver::Seq
+    }
+}
+
+/// The statement for `q` in `shape` and the index that drives it
+/// ([`driver`]). A search drives from the FTS index in rowid order
+/// (`CROSS JOIN` keeps it outermost), so its cost follows the matches.
+/// Several kinds are always residual: one index cannot give them in `seq`
+/// order.
+fn build(q: &InboxQuery, shape: Shape, now: &str) -> (Built, Driver) {
+    let mut args: Vec<Sql> = Vec::new();
+    let arg = |v: Sql, args: &mut Vec<Sql>| -> String {
+        args.push(v);
+        format!("?{}", args.len())
+    };
+    let text = q.text.as_deref().and_then(fts_query);
+    let drive = driver(q, text.is_some(), shape);
+    let on = |d: Driver| if drive == d { "" } else { "+" };
+    let mut sql = String::new();
+    let mut wh: Vec<String> = Vec::new();
+    match shape {
+        Shape::MarkAll => {
+            let p = arg(Sql::Text(now.into()), &mut args);
+            sql.push_str(&format!(
+                "UPDATE inbox_items AS i SET read_at = {p} WHERE {}i.read_at IS NULL",
+                on(Driver::Unread)
+            ));
+            if let Some(t) = &text {
+                let p = arg(Sql::Text(t.clone()), &mut args);
+                wh.push(format!(
+                    "i.seq IN (SELECT rowid FROM inbox_fts WHERE inbox_fts MATCH {p})"
+                ));
+            }
+        }
+        Shape::Page | Shape::Count(_) => {
+            let what = if shape == Shape::Page { COLUMNS } else { "1" };
+            let before = match shape {
+                Shape::Page => q.before.unwrap_or(i64::MAX),
+                _ => i64::MAX,
+            };
+            if let Some(t) = &text {
+                let m = arg(Sql::Text(t.clone()), &mut args);
+                let b = arg(Sql::Integer(before), &mut args);
+                sql.push_str(&format!(
+                    "SELECT {what} FROM inbox_fts f CROSS JOIN inbox_items i ON i.seq = f.rowid
+                     WHERE inbox_fts MATCH {m} AND f.rowid < {b}"
+                ));
+            } else {
+                let b = arg(Sql::Integer(before), &mut args);
+                sql.push_str(&format!(
+                    "SELECT {what} FROM inbox_items i WHERE i.seq < {b}"
+                ));
+            }
+            match q.read {
+                ReadFilter::Unread => wh.push(format!("{}i.read_at IS NULL", on(Driver::Unread))),
+                ReadFilter::Read => wh.push("+i.read_at IS NOT NULL".into()),
+                ReadFilter::All => {}
+            }
+        }
+    }
+    let mut kinds = q.kinds.clone();
+    kinds.sort_by_key(|k| k.as_str());
+    kinds.dedup();
+    match kinds.as_slice() {
+        [] => {}
+        [k] => {
+            let p = arg(Sql::Text(k.as_str().into()), &mut args);
+            wh.push(format!("{}i.kind = {p}", on(Driver::Kind)));
+        }
+        ks => {
+            let ps: Vec<String> = ks
+                .iter()
+                .map(|k| arg(Sql::Text(k.as_str().into()), &mut args))
+                .collect();
+            wh.push(format!("+i.kind IN ({})", ps.join(", ")));
+        }
+    }
+    if let Some(a) = &q.artifact {
+        let p = arg(Sql::Text(a.clone()), &mut args);
+        wh.push(format!("{}i.artifact_id = {p}", on(Driver::Artifact)));
+    }
+    match &q.agent {
+        Some(Agent::Harness(h)) => {
+            let p = arg(Sql::Text(h.clone()), &mut args);
+            wh.push(format!("{}i.harness = {p}", on(Driver::Harness)));
+        }
+        Some(Agent::Handle(h)) => {
+            let p = arg(Sql::Text(h.clone()), &mut args);
+            wh.push(format!(
+                "{}i.session_id = (SELECT id FROM sessions WHERE agent_handle = {p})",
+                on(Driver::Handle)
+            ));
+        }
+        None => {}
+    }
+    if let Some(s) = &q.since {
+        let p = arg(Sql::Text(s.clone()), &mut args);
+        wh.push(format!("{}i.created_at >= {p}", on(Driver::Dates)));
+    }
+    if let Some(u) = &q.until {
+        let p = arg(Sql::Text(u.clone()), &mut args);
+        wh.push(format!("{}i.created_at < {p}", on(Driver::Dates)));
+    }
+    for w in &wh {
+        sql.push_str(" AND ");
+        sql.push_str(w);
+    }
+    match shape {
+        Shape::Page => {
+            let order = if text.is_some() { "f.rowid" } else { "i.seq" };
+            let p = arg(Sql::Integer(i64::from(page_size(q.limit)) + 1), &mut args);
+            sql.push_str(&format!(" ORDER BY {order} DESC LIMIT {p}"));
+        }
+        Shape::Count(cap) => {
+            let p = arg(Sql::Integer(i64::from(cap)), &mut args);
+            sql = format!("SELECT count(*) FROM ({sql} LIMIT {p})");
+        }
+        Shape::MarkAll => {}
+    }
+    (Built { sql, args }, drive)
+}
+
+fn page_size(limit: u32) -> u32 {
+    match limit {
+        0 => DEFAULT_PAGE,
+        n => n.min(MAX_PAGE),
+    }
+}
+
+/// An FTS5 error is the search text's fault (there should be none once
+/// [`fts_query`] quoted it): `invalid_query`, never an internal error.
+fn search_error(e: CoreError, searched: bool) -> CoreError {
+    match e {
+        CoreError::Db(rusqlite::Error::SqliteFailure(_, Some(m)))
+            if searched && m.starts_with("fts5") =>
+        {
+            CoreError::invalid("invalid_query", "the search text could not be used")
+        }
+        e => e,
+    }
+}
+
+fn searched(q: &InboxQuery) -> bool {
+    q.text.as_deref().and_then(fts_query).is_some()
+}
+
+/// The unread count.
+pub(super) const UNREAD_COUNT: &str = "SELECT count(*) FROM inbox_items WHERE read_at IS NULL";
+pub(super) const BY_ID: &str =
+    "SELECT i.seq, i.id, i.kind, i.artifact_id, i.thread_id, i.comment_id,
+    i.version_n, i.question_id, i.session_id, i.harness, i.detail_json, i.created_at, i.read_at
+    FROM inbox_items i WHERE i.id = ?1";
+pub(super) const BY_SEQS: &str =
+    "SELECT i.seq, i.id, i.kind, i.artifact_id, i.thread_id, i.comment_id,
+    i.version_n, i.question_id, i.session_id, i.harness, i.detail_json, i.created_at, i.read_at
+    FROM json_each(?1) j CROSS JOIN inbox_items i ON i.seq = j.value ORDER BY i.seq DESC";
+pub(super) const MARK_READ: &str = "UPDATE inbox_items SET read_at = ?2
+    WHERE id IN (SELECT value FROM json_each(?1)) AND read_at IS NULL";
+pub(super) const MARK_UNREAD: &str = "UPDATE inbox_items SET read_at = NULL
+    WHERE id IN (SELECT value FROM json_each(?1)) AND read_at IS NOT NULL";
+pub(super) const READ_BY_LOOK: &str = "UPDATE inbox_items SET read_at = ?3
+    WHERE thread_id = ?1 AND artifact_id = ?2 AND kind = 'reply' AND read_at IS NULL AND created_at <= ?3";
+pub(super) const READ_BY_SEEN: &str = "UPDATE inbox_items SET read_at = ?3
+    WHERE artifact_id = ?1 AND read_at IS NULL AND
+      ((kind = 'version' AND version_n <= ?2) OR (kind IN ('published', 'finished') AND created_at <= ?3))";
+pub(super) const OF_QUESTION: &str = "SELECT seq FROM inbox_items WHERE question_id = ?1";
+/// Whether the owner (`?1`, a public ID) is in thread `?2`.
+pub(super) const OWNER_IN: &str =
+    "SELECT EXISTS (SELECT 1 FROM comments c WHERE c.thread_id = ?2 AND +c.author_public_id = ?1)
+         OR EXISTS (SELECT 1 FROM comments c CROSS JOIN mentions m ON m.comment_id = c.id
+                     WHERE c.thread_id = ?2 AND +m.public_id = ?1)
+         OR EXISTS (SELECT 1 FROM threads t WHERE t.id = ?2 AND t.resolved_by = 'viewer:' || ?1)";
+/// Whether the owner (`?2`) wrote a comment on artifact `?1`.
+pub(super) const OWNER_COMMENTED: &str =
+    "SELECT EXISTS (SELECT 1 FROM threads t CROSS JOIN comments m ON m.thread_id = t.id
+                     WHERE t.artifact_id = ?1 AND +m.author_public_id = ?2)";
+/// The anchor quotes of the threads version `?2` of `?1` addressed.
+pub(super) const ADDRESSED_QUOTES: &str = "SELECT group_concat(CASE WHEN json_valid(t.anchor_json)
+                              THEN json_extract(t.anchor_json, '$.quote') END, ' ')
+       FROM version_threads vt CROSS JOIN threads t ON t.id = vt.thread_id
+      WHERE vt.artifact_id = ?1 AND vt.version_n = ?2";
+pub(super) const THREAD_MOVED: &str =
+    "UPDATE inbox_items SET artifact_id = ?2 WHERE thread_id = ?1";
+
+/// Each list, count and mark-all shape with representative parameters,
+/// built as [`Store::inbox_list`], [`Store::inbox_count`] and
+/// [`Store::inbox_mark_all`] build them, for the query-plan checks.
+#[cfg(test)]
+pub(super) fn shapes() -> Vec<(String, Built, Driver)> {
+    let now = "2026-01-01T00:00:00.000Z";
+    let base = InboxQuery::default();
+    let named: Vec<(&str, InboxQuery)> = vec![
+        (
+            "UNREAD_PAGE",
+            InboxQuery {
+                read: ReadFilter::Unread,
+                ..base.clone()
+            },
+        ),
+        ("ALL_PAGE", base.clone()),
+        (
+            "READ_PAGE",
+            InboxQuery {
+                read: ReadFilter::Read,
+                before: Some(4000),
+                ..base.clone()
+            },
+        ),
+        (
+            "BY_ARTIFACT_PAGE",
+            InboxQuery {
+                artifact: Some("art0007".into()),
+                ..base.clone()
+            },
+        ),
+        (
+            "BY_KIND_PAGE",
+            InboxQuery {
+                kinds: vec![Kind::Version],
+                ..base.clone()
+            },
+        ),
+        (
+            "BY_KINDS_PAGE",
+            InboxQuery {
+                kinds: vec![Kind::Version, Kind::Reply],
+                ..base.clone()
+            },
+        ),
+        (
+            "BY_HARNESS_PAGE",
+            InboxQuery {
+                agent: Some(Agent::Harness("pi".into())),
+                ..base.clone()
+            },
+        ),
+        (
+            "BY_HANDLE_PAGE",
+            InboxQuery {
+                agent: Some(Agent::Handle("a_3".into())),
+                ..base.clone()
+            },
+        ),
+        (
+            "BY_DATES_PAGE",
+            InboxQuery {
+                since: Some("2026-01-01T00:00:10.000Z".into()),
+                until: Some("2026-01-01T00:00:20.000Z".into()),
+                ..base.clone()
+            },
+        ),
+        (
+            "TEXT_PAGE",
+            InboxQuery {
+                text: Some("blue head".into()),
+                ..base.clone()
+            },
+        ),
+        (
+            "TEXT_UNREAD_ARTIFACT_PAGE",
+            InboxQuery {
+                text: Some("blue".into()),
+                read: ReadFilter::Unread,
+                artifact: Some("art0007".into()),
+                ..base.clone()
+            },
+        ),
+        (
+            "UNREAD_ARTIFACT_KIND_PAGE",
+            InboxQuery {
+                read: ReadFilter::Unread,
+                artifact: Some("art0007".into()),
+                kinds: vec![Kind::Reply],
+                before: Some(3000),
+                ..base.clone()
+            },
+        ),
+    ];
+    let mut out = Vec::new();
+    for (name, q) in named {
+        for (suffix, shape) in [
+            ("", Shape::Page),
+            (" count", Shape::Count(10_001)),
+            (" mark all", Shape::MarkAll),
+        ] {
+            let (b, d) = build(&q, shape, now);
+            out.push((format!("{name}{suffix}"), b, d));
+        }
+    }
+    out
+}
+
+/// The owner's public ID, if there is an owner.
+fn owner_pid(c: &Connection) -> Result<Option<String>> {
+    Ok(
+        c.query_row("SELECT public_id FROM viewers WHERE owner = 1", [], |r| {
+            r.get(0)
+        })
+        .optional()?,
+    )
+}
+
+/// Whether viewer `viewer_id` (its cookie ID) is the owner.
+fn is_owner_row(c: &Connection, viewer_id: &str) -> Result<bool> {
+    Ok(c.query_row(
+        "SELECT owner FROM viewers WHERE id = ?1",
+        params![viewer_id],
+        |r| r.get::<_, bool>(0),
+    )
+    .optional()?
+    .unwrap_or(false))
+}
+
+/// Whether the owner (`pid`) is in thread `tid` (main spec §10
+/// "Participants"): wrote a comment in it, is mentioned in it, or resolved
+/// it. The unary `+` keeps the per-thread lookups on `comments_by_thread`,
+/// as the attention query does.
+fn owner_in(c: &Connection, pid: &str, tid: &str) -> Result<bool> {
+    Ok(c.query_row(OWNER_IN, params![pid, tid], |r| r.get(0))?)
+}
+
+struct New<'a> {
+    kind: Kind,
+    key: String,
+    artifact_id: Option<&'a str>,
+    thread_id: Option<&'a str>,
+    comment_id: Option<&'a str>,
+    version_n: Option<u32>,
+    question_id: Option<&'a str>,
+    session_id: Option<&'a str>,
+    /// The harness, when the caller knows it; else read from the session.
+    harness: Option<&'a str>,
+    detail: Option<Value>,
+    /// The kind's own search text (§7.4).
+    text: String,
+}
+
+fn harness_of(c: &Connection, sid: Option<&str>) -> Result<Option<String>> {
+    match sid {
+        Some(s) => Ok(c
+            .query_row(
+                "SELECT harness FROM sessions WHERE id = ?1",
+                params![s],
+                |r| r.get(0),
+            )
+            .optional()?),
+        None => Ok(None),
+    }
+}
+
+fn title_of(c: &Connection, aid: Option<&str>) -> Result<String> {
+    match aid {
+        Some(a) => Ok(c
+            .query_row(
+                "SELECT title FROM artifacts WHERE id = ?1",
+                params![a],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or_default()),
+        None => Ok(String::new()),
+    }
+}
+
+/// An item's index entry: the artifact's title now, the harness, and the
+/// kind's text.
+fn entry(c: &Connection, aid: Option<&str>, harness: Option<&str>, text: &str) -> Result<String> {
+    Ok(format!(
+        "{} {} {text}",
+        title_of(c, aid)?,
+        harness.unwrap_or_default()
+    ))
+}
+
+/// Inserts the item and its index entry unless its key exists; its `seq`.
+fn insert(c: &Connection, n: New<'_>) -> Result<Option<i64>> {
+    let harness = match n.harness {
+        Some(h) => Some(h.to_string()),
+        None => harness_of(c, n.session_id)?,
+    };
+    let changed = c.execute(
+        "INSERT OR IGNORE INTO inbox_items (id, kind, key, artifact_id, thread_id, comment_id, version_n,
+            question_id, session_id, harness, detail_json, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            new_ulid(),
+            n.kind.as_str(),
+            n.key,
+            n.artifact_id,
+            n.thread_id,
+            n.comment_id,
+            n.version_n,
+            n.question_id,
+            n.session_id,
+            harness,
+            n.detail.map(|d| d.to_string()),
+            Store::now()
+        ],
+    )?;
+    if changed == 0 {
+        return Ok(None);
+    }
+    let seq = c.last_insert_rowid();
+    let text = entry(c, n.artifact_id, harness.as_deref(), &n.text)?;
+    c.execute(
+        "INSERT INTO inbox_fts (rowid, text) VALUES (?1, ?2)",
+        params![seq, text],
+    )?;
+    Ok(Some(seq))
+}
+
+/// An agent comment `cid` on thread `tid` of artifact `aid`: a `reply`
+/// item when the owner is in the thread.
+pub(crate) fn note_reply(
+    c: &Connection,
+    cid: &str,
+    tid: &str,
+    aid: &str,
+    sid: Option<&str>,
+    body: &str,
+) -> Result<Option<i64>> {
+    let Some(pid) = owner_pid(c)? else {
+        return Ok(None);
+    };
+    if !owner_in(c, &pid, tid)? {
+        return Ok(None);
+    }
+    insert(
+        c,
+        New {
+            kind: Kind::Reply,
+            key: format!("reply:{cid}"),
+            artifact_id: Some(aid),
+            thread_id: Some(tid),
+            comment_id: Some(cid),
+            version_n: None,
+            question_id: None,
+            session_id: sid,
+            harness: None,
+            detail: None,
+            text: body.into(),
+        },
+    )
+}
+
+/// Version `n` of `aid` by session `sid`: `published` for the first version
+/// of an artifact (not a live page) a session created; for a later one,
+/// `version` when the owner has written a comment on `aid`, indexed by its
+/// note and the quotes of the threads it addressed. Call after the version,
+/// its links and the artifact's new title are written.
+pub(crate) fn note_version(
+    c: &Connection,
+    aid: &str,
+    n: u32,
+    sid: Option<&str>,
+    note: Option<&str>,
+) -> Result<Option<i64>> {
+    let Some(sid) = sid else { return Ok(None) };
+    if n == 1 {
+        let (kind, description): (String, Option<String>) = c.query_row(
+            "SELECT kind, description FROM artifacts WHERE id = ?1",
+            params![aid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if kind != "html" {
+            return Ok(None);
+        }
+        return insert(
+            c,
+            New {
+                kind: Kind::Published,
+                key: format!("published:{aid}"),
+                artifact_id: Some(aid),
+                thread_id: None,
+                comment_id: None,
+                version_n: Some(1),
+                question_id: None,
+                session_id: Some(sid),
+                harness: None,
+                detail: None,
+                text: description.unwrap_or_default(),
+            },
+        );
+    }
+    let Some(pid) = owner_pid(c)? else {
+        return Ok(None);
+    };
+    let commented: bool = c.query_row(OWNER_COMMENTED, params![aid, pid], |r| r.get(0))?;
+    if !commented {
+        return Ok(None);
+    }
+    let quotes: Option<String> = c.query_row(ADDRESSED_QUOTES, params![aid, n], |r| r.get(0))?;
+    let text = [
+        note.unwrap_or_default(),
+        quotes.as_deref().unwrap_or_default(),
+    ]
+    .join(" ");
+    insert(
+        c,
+        New {
+            kind: Kind::Version,
+            key: format!("version:{aid}:{n}"),
+            artifact_id: Some(aid),
+            thread_id: None,
+            comment_id: None,
+            version_n: Some(n),
+            question_id: None,
+            session_id: Some(sid),
+            harness: None,
+            detail: None,
+            text,
+        },
+    )
+}
+
+/// The questions' text, headers and option labels, for the index.
+fn question_text(q: &QuestionRow) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for x in &q.questions {
+        parts.push(&x.question);
+        parts.push(&x.header);
+        parts.extend(x.options.iter().map(|o| o.label.as_str()));
+    }
+    parts.join(" ")
+}
+
+/// [`question_text`] and, once answered, the answers' labels and text.
+fn answered_text(q: &QuestionRow) -> String {
+    let mut text = question_text(q);
+    for a in q.answers.iter().flatten() {
+        for s in &a.selected {
+            text.push(' ');
+            text.push_str(s);
+        }
+        if let Some(t) = &a.text {
+            text.push(' ');
+            text.push_str(t);
+        }
+    }
+    text
+}
+
+/// A question was created: one `question` item, indexed by its questions,
+/// headers and labels.
+pub(crate) fn note_question(c: &Connection, q: &QuestionRow) -> Result<Option<i64>> {
+    insert(
+        c,
+        New {
+            kind: Kind::Question,
+            key: format!("question:{}", q.id),
+            artifact_id: q.artifact_id.as_deref(),
+            thread_id: None,
+            comment_id: None,
+            version_n: None,
+            question_id: Some(&q.id),
+            session_id: Some(&q.session_id),
+            harness: None,
+            detail: None,
+            text: question_text(q),
+        },
+    )
+}
+
+/// A question closed: its index entry gains the answers; an answer (in
+/// Clax or the terminal), a skip or a move to the terminal marks its item
+/// read.
+pub(crate) fn question_changed(c: &Connection, q: &QuestionRow) -> Result<()> {
+    let Some(seq) = c
+        .query_row(OF_QUESTION, params![q.id], |r| r.get::<_, i64>(0))
+        .optional()?
+    else {
+        return Ok(());
+    };
+    let (aid, harness): (Option<String>, Option<String>) = c.query_row(
+        "SELECT artifact_id, harness FROM inbox_items WHERE seq = ?1",
+        params![seq],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let text = entry(c, aid.as_deref(), harness.as_deref(), &answered_text(q))?;
+    c.execute("DELETE FROM inbox_fts WHERE rowid = ?1", params![seq])?;
+    c.execute(
+        "INSERT INTO inbox_fts (rowid, text) VALUES (?1, ?2)",
+        params![seq, text],
+    )?;
+    if matches!(
+        q.status,
+        Status::Answered | Status::Declined | Status::Released
+    ) {
+        c.execute(
+            "UPDATE inbox_items SET read_at = ?2 WHERE seq = ?1 AND read_at IS NULL",
+            params![seq, Store::now()],
+        )?;
+    }
+    Ok(())
+}
+
+/// Viewer `viewer_id` looked at `tids` of `aid` at `at`: when it is the
+/// owner, their `reply` items made by then are read.
+pub(crate) fn read_by_look(
+    c: &Connection,
+    viewer_id: &str,
+    aid: &str,
+    tids: &[String],
+    at: &str,
+) -> Result<()> {
+    if !is_owner_row(c, viewer_id)? {
+        return Ok(());
+    }
+    for t in tids {
+        c.execute(READ_BY_LOOK, params![t, aid, at])?;
+    }
+    Ok(())
+}
+
+/// Viewer `viewer_id` viewed version `n` of `aid` at `at`: when it is the
+/// owner, the artifact's `version` items up to `n`, and its `published` and
+/// `finished` items made by then, are read.
+pub(crate) fn read_by_seen(
+    c: &Connection,
+    viewer_id: &str,
+    aid: &str,
+    n: u32,
+    at: &str,
+) -> Result<()> {
+    if !is_owner_row(c, viewer_id)? {
+        return Ok(());
+    }
+    c.execute(READ_BY_SEEN, params![aid, n, at])?;
+    Ok(())
+}
+
+/// Thread `tid` moved to page `to_aid`: its items follow it.
+pub(crate) fn thread_moved(c: &Connection, tid: &str, to_aid: &str) -> Result<()> {
+    c.execute(THREAD_MOVED, params![tid, to_aid])?;
+    Ok(())
+}
+
+impl Store {
+    /// Installs `f`, called with the changes to inbox items after each
+    /// committed write transaction that made or updated any, outside the
+    /// write turn. Replaces any earlier listener.
+    pub fn set_inbox_listener(&self, f: InboxListener) {
+        *self.inbox_listener.write().unwrap() = Some(f);
+    }
+
+    /// A page of items matching `q`, newest first, and the cursor of the
+    /// next page (`before`) when there is one.
+    ///
+    /// # Errors
+    /// `invalid_query` when the search text cannot be used.
+    pub fn inbox_list(&self, q: &InboxQuery) -> Result<(Vec<ItemRow>, Option<i64>)> {
+        let (b, _) = build(q, Shape::Page, "");
+        let size = page_size(q.limit) as usize;
+        let mut items = self
+            .with_read(|c| {
+                let mut st = c.prepare_cached(&b.sql)?;
+                Ok(st
+                    .query_map(params_from_iter(b.args.iter()), row)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .map_err(|e| search_error(e, searched(q)))?;
+        let next = if items.len() > size {
+            items.truncate(size);
+            items.last().map(|i| i.seq)
+        } else {
+            None
+        };
+        Ok((items, next))
+    }
+
+    /// How many items match `q` (its `before` and `limit` ignored), counting
+    /// at most `cap`.
+    ///
+    /// # Errors
+    /// `invalid_query` when the search text cannot be used.
+    pub fn inbox_count(&self, q: &InboxQuery, cap: u32) -> Result<u32> {
+        let (b, _) = build(q, Shape::Count(cap), "");
+        self.with_read(|c| Ok(c.query_row(&b.sql, params_from_iter(b.args.iter()), |r| r.get(0))?))
+            .map_err(|e| search_error(e, searched(q)))
+    }
+
+    /// The number of unread items.
+    pub fn inbox_unread(&self) -> Result<u32> {
+        self.with_read(|c| Ok(c.query_row(UNREAD_COUNT, [], |r| r.get(0))?))
+    }
+
+    /// Item `id`, if it exists.
+    pub fn inbox_item(&self, id: &str) -> Result<Option<ItemRow>> {
+        self.with_read(|c| Ok(c.query_row(BY_ID, params![id], row).optional()?))
+    }
+
+    /// The items with these `seq`s that exist, newest first.
+    pub fn inbox_items_by_seq(&self, seqs: &[i64]) -> Result<Vec<ItemRow>> {
+        if seqs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let json = serde_json::to_string(&seqs.iter().collect::<std::collections::BTreeSet<_>>())
+            .expect("integers serialise");
+        self.with_read(|c| {
+            let mut st = c.prepare_cached(BY_SEQS)?;
+            Ok(st
+                .query_map(params![json], row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    /// Marks the items `ids` read (keeping an earlier read time) or unread;
+    /// how many changed.
+    pub fn inbox_mark(&self, ids: &[String], read: bool) -> Result<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let json = super::feedback::id_array(ids);
+        let now = Store::now();
+        self.with_tx(|tx| {
+            Ok(if read {
+                tx.execute(MARK_READ, params![json, now])?
+            } else {
+                tx.execute(MARK_UNREAD, params![json])?
+            })
+        })
+    }
+
+    /// Marks every unread item matching `q`'s filters read (its `read`,
+    /// `before` and `limit` ignored); how many changed.
+    ///
+    /// # Errors
+    /// `invalid_query` when the search text cannot be used.
+    pub fn inbox_mark_all(&self, q: &InboxQuery) -> Result<usize> {
+        let (b, _) = build(q, Shape::MarkAll, &Store::now());
+        self.with_tx(|tx| Ok(tx.execute(&b.sql, params_from_iter(b.args.iter()))?))
+            .map_err(|e| search_error(e, searched(q)))
+    }
+
+    /// A working record that ended as finished work (the agent said it was
+    /// done, or its turn ended): a `finished` item keeping its message and
+    /// threads, keyed by the record's key. `None` when it already has one.
+    pub fn note_finished(&self, e: &Ended, harness: &str) -> Result<Option<i64>> {
+        let detail = serde_json::json!({"message": e.message, "thread_ids": e.thread_ids});
+        self.with_tx(|tx| {
+            insert(
+                tx,
+                New {
+                    kind: Kind::Finished,
+                    key: format!("finished:{}", e.key),
+                    artifact_id: Some(&e.artifact_id),
+                    thread_id: None,
+                    comment_id: None,
+                    version_n: None,
+                    question_id: None,
+                    session_id: Some(&e.session_id),
+                    harness: Some(harness),
+                    detail: Some(detail),
+                    text: e.message.clone().unwrap_or_default(),
+                },
+            )
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::publish::{PublishRequest, validate};
+    use crate::questions::{Answer, Question};
+    use crate::store::questions::{Close, NewQuestion, Source};
+    use crate::store::test_util::{anchor, artifact, session, store};
+    use crate::store::threads::{AUTHOR_AGENT, NewComment};
+    use crate::{ArtifactId, NewThread};
+
+    const MIA: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+
+    /// An owner (claimed browser viewer) with a thread on a fresh artifact;
+    /// returns (owner public ID, artifact, thread).
+    fn owner_thread(st: &Store) -> (String, ArtifactId, String) {
+        let owner = st.owner_viewer(true).unwrap();
+        let aid = artifact(st, None);
+        let t = st
+            .create_thread(
+                &aid,
+                NewThread {
+                    author_public_id: Some(owner.public_id.clone()),
+                    version_n: 1,
+                    anchor: anchor(),
+                    body: "make it blue".into(),
+                    author_name: "Alex".into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap();
+        (owner.public_id, aid, t.id)
+    }
+
+    /// An agent reply as the comments_reply route writes it.
+    fn agent_reply(st: &Store, tid: &str, sid: &str, body: &str) {
+        let harness = st.get_session(sid).unwrap().unwrap().harness;
+        st.add_comment(
+            tid,
+            NewComment {
+                author_kind: AUTHOR_AGENT,
+                author_name: harness,
+                author_public_id: None,
+                via_session_id: Some(sid.into()),
+                body: body.into(),
+                via_page: false,
+            },
+        )
+        .unwrap();
+    }
+
+    /// The artifact's next version, published by session `sid`.
+    fn publish_next_as(st: &Store, aid: &ArtifactId, sid: &str, note: Option<&str>) {
+        publish_addressing(st, aid, sid, note, &[]);
+    }
+
+    fn publish_addressing(
+        st: &Store,
+        aid: &ArtifactId,
+        sid: &str,
+        note: Option<&str>,
+        tids: &[&str],
+    ) {
+        let current = st.get_artifact(aid).unwrap().unwrap().current_version;
+        let req: PublishRequest = serde_json::from_value(serde_json::json!({
+            "if_version": current,
+            "note": note,
+            "addresses": tids,
+            "files": {"index.html": {"content": "<main><h2>Quarterly goals</h2></main>", "encoding": "utf8"}}
+        }))
+        .unwrap();
+        st.publish_version(aid, validate(req).unwrap(), Some(sid))
+            .unwrap();
+    }
+
+    fn ask(st: &Store, sid: &str, aid: Option<&str>) -> String {
+        let questions: Vec<Question> = serde_json::from_value(serde_json::json!([
+            {"question": "Which palette?", "header": "Colours",
+             "options": [{"label": "Teal"}, {"label": "Amber"}]}
+        ]))
+        .unwrap();
+        st.create_question(NewQuestion {
+            session_id: sid.into(),
+            artifact_id: aid.map(Into::into),
+            source: Source::Ask,
+            tool_use_id: None,
+            questions,
+            released: false,
+        })
+        .unwrap()
+        .0
+        .id
+    }
+
+    fn all(st: &Store) -> Vec<ItemRow> {
+        st.inbox_list(&InboxQuery {
+            read: ReadFilter::All,
+            limit: 200,
+            ..Default::default()
+        })
+        .unwrap()
+        .0
+    }
+
+    fn find(st: &Store, text: &str) -> usize {
+        st.inbox_list(&InboxQuery {
+            text: Some(text.into()),
+            limit: 50,
+            ..Default::default()
+        })
+        .unwrap()
+        .0
+        .len()
+    }
+
+    #[test]
+    fn a_reply_in_the_owners_thread_makes_one_unread_item() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        let (_p, aid, tid) = owner_thread(&st);
+        agent_reply(&st, &tid, &sid, "Done: it is blue now.");
+        let items = all(&st);
+        assert_eq!(items.len(), 1);
+        let i = &items[0];
+        assert_eq!(
+            (i.kind, i.read_at.is_none(), i.harness.as_deref()),
+            (Kind::Reply, true, Some("claude"))
+        );
+        assert_eq!(i.artifact_id.as_deref(), Some(aid.as_str()));
+        assert_eq!(i.thread_id.as_deref(), Some(tid.as_str()));
+        assert_eq!(i.session_id.as_deref(), Some(sid.as_str()));
+        assert!(crate::is_ulid(&i.id));
+        assert_eq!(st.inbox_unread().unwrap(), 1);
+        assert_eq!(st.inbox_item(&i.id).unwrap().as_ref(), Some(i));
+        assert_eq!(
+            st.inbox_items_by_seq(&[i.seq, 999]).unwrap(),
+            vec![i.clone()]
+        );
+    }
+
+    #[test]
+    fn a_mention_or_a_resolve_puts_the_owner_in_the_thread() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        let owner = st.set_owner_name("Alex", true).unwrap();
+        let aid = artifact(&st, None);
+        let thread = |body: String| {
+            st.create_thread(
+                &aid,
+                NewThread {
+                    author_public_id: Some("u_stranger".into()),
+                    version_n: 1,
+                    anchor: anchor(),
+                    body,
+                    author_name: "Mia".into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap()
+            .id
+        };
+        let mentioned = thread("@alex look".into());
+        let resolved = thread("x".into());
+        st.resolve_thread(&resolved, &format!("viewer:{}", owner.public_id))
+            .unwrap();
+        agent_reply(&st, &mentioned, &sid, "ok");
+        agent_reply(&st, &resolved, &sid, "ok");
+        let threads: Vec<_> = all(&st).into_iter().filter_map(|i| i.thread_id).collect();
+        assert_eq!(threads.len(), 2, "{threads:?}");
+    }
+
+    #[test]
+    fn no_item_for_a_stranger_thread_or_a_viewer_comment() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        st.owner_viewer(true).unwrap();
+        let aid = artifact(&st, None);
+        let t = st
+            .create_thread(
+                &aid,
+                NewThread {
+                    author_public_id: Some("u_stranger".into()),
+                    version_n: 1,
+                    anchor: anchor(),
+                    body: "x".into(),
+                    author_name: "Mia".into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap();
+        agent_reply(&st, &t.id, &sid, "ok");
+        assert!(all(&st).is_empty());
+    }
+
+    #[test]
+    fn without_an_owner_only_questions_published_and_finished_are_made() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        let aid = artifact(&st, Some(&sid));
+        let t = st
+            .create_thread(
+                &aid,
+                NewThread {
+                    author_public_id: None,
+                    version_n: 1,
+                    anchor: anchor(),
+                    body: "x".into(),
+                    author_name: "Mia".into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap();
+        agent_reply(&st, &t.id, &sid, "ok");
+        publish_next_as(&st, &aid, &sid, None);
+        ask(&st, &sid, None);
+        let kinds: Vec<Kind> = all(&st).iter().map(|i| i.kind).collect();
+        assert_eq!(kinds, vec![Kind::Question, Kind::Published]);
+    }
+
+    #[test]
+    fn versions_published_questions_and_finished_work() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        let mine = artifact(&st, Some(&sid));
+        let (_p, aid, tid) = owner_thread(&st);
+        publish_addressing(&st, &aid, &sid, Some("Two columns"), &[&tid]);
+        publish_next_as(&st, &mine, &sid, None);
+        ask(&st, &sid, Some(aid.as_str()));
+        let e = Ended {
+            session_id: sid.clone(),
+            artifact_id: aid.as_str().into(),
+            key: "01J0WORK".into(),
+            message: Some("Recoloured the header".into()),
+            thread_ids: vec!["t1".into()],
+        };
+        assert!(st.note_finished(&e, "claude").unwrap().is_some());
+        assert_eq!(
+            st.note_finished(&e, "claude").unwrap(),
+            None,
+            "one per record"
+        );
+        let items = all(&st);
+        let kinds: Vec<Kind> = items.iter().map(|i| i.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                Kind::Finished,
+                Kind::Question,
+                Kind::Version,
+                Kind::Published
+            ]
+        );
+        assert_eq!(
+            items[0].detail,
+            Some(serde_json::json!({"message": "Recoloured the header", "thread_ids": ["t1"]}))
+        );
+        assert_eq!(items[2].version_n, Some(2));
+        assert_eq!(items[3].artifact_id.as_deref(), Some(mine.as_str()));
+        assert_eq!(find(&st, "columns"), 1, "a version by its note");
+        assert_eq!(
+            find(&st, "quarterly goals columns"),
+            1,
+            "and its addressed quotes"
+        );
+        assert_eq!(find(&st, "recoloured"), 1);
+        assert_eq!(
+            find(&st, "palette amber"),
+            1,
+            "a question by its text and labels"
+        );
+    }
+
+    #[test]
+    fn a_question_closed_is_reindexed_and_read_unless_withdrawn() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        let answered = ask(&st, &sid, None);
+        let withdrawn = ask(&st, &sid, None);
+        assert_eq!(st.inbox_unread().unwrap(), 2);
+        st.close_question(
+            &answered,
+            Close::Answer {
+                answers: vec![Answer {
+                    selected: vec![],
+                    text: Some("teal with a darker header".into()),
+                }],
+                via: "shell",
+            },
+        )
+        .unwrap();
+        st.close_question(&withdrawn, Close::Withdraw).unwrap();
+        assert_eq!(st.inbox_unread().unwrap(), 1);
+        assert_eq!(find(&st, "darker"), 1, "the answer's text");
+        assert_eq!(find(&st, "palette"), 2, "the question's text is kept");
+        let unread = st
+            .inbox_list(&InboxQuery {
+                read: ReadFilter::Unread,
+                ..Default::default()
+            })
+            .unwrap()
+            .0;
+        assert_eq!(unread[0].question_id.as_deref(), Some(withdrawn.as_str()));
+    }
+
+    #[test]
+    fn looking_and_seeing_mark_read_only_for_the_owner() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        let (_p, aid, tid) = owner_thread(&st);
+        agent_reply(&st, &tid, &sid, "done");
+        let mia = st.mint_viewer(MIA, false).unwrap();
+        st.mark_looked(&mia.id, &aid, std::slice::from_ref(&tid))
+            .unwrap();
+        assert_eq!(
+            st.inbox_unread().unwrap(),
+            1,
+            "a LAN viewer's look marks nothing"
+        );
+        let other = artifact(&st, None);
+        let owner = st.owner_viewer(true).unwrap();
+        st.mark_looked(&owner.id, &other, std::slice::from_ref(&tid))
+            .unwrap();
+        assert_eq!(
+            st.inbox_unread().unwrap(),
+            1,
+            "a look at another page marks nothing"
+        );
+        st.mark_looked(&owner.id, &aid, std::slice::from_ref(&tid))
+            .unwrap();
+        assert_eq!(st.inbox_unread().unwrap(), 0);
+        publish_next_as(&st, &aid, &sid, None);
+        publish_next_as(&st, &aid, &sid, None);
+        assert_eq!(st.inbox_unread().unwrap(), 2);
+        st.mark_seen(&mia.id, &aid, 3).unwrap();
+        assert_eq!(st.inbox_unread().unwrap(), 2);
+        st.mark_seen(&owner.id, &aid, 2).unwrap();
+        assert_eq!(st.inbox_unread().unwrap(), 1, "version 3 is not seen yet");
+        st.mark_seen(&owner.id, &aid, 3).unwrap();
+        assert_eq!(st.inbox_unread().unwrap(), 0);
+    }
+
+    #[test]
+    fn marks_one_all_and_filtered() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        let (_p, _aid, tid) = owner_thread(&st);
+        agent_reply(&st, &tid, &sid, "blue header");
+        agent_reply(&st, &tid, &sid, "green footer");
+        let items = all(&st);
+        assert_eq!(st.inbox_mark(&[items[0].id.clone()], true).unwrap(), 1);
+        assert_eq!(
+            st.inbox_mark(&[items[0].id.clone()], true).unwrap(),
+            0,
+            "idempotent"
+        );
+        assert_eq!(st.inbox_mark(&[items[0].id.clone()], false).unwrap(), 1);
+        let q = InboxQuery {
+            text: Some("green".into()),
+            ..Default::default()
+        };
+        assert_eq!(st.inbox_count(&q, 100).unwrap(), 1);
+        assert_eq!(st.inbox_mark_all(&q).unwrap(), 1);
+        assert_eq!(st.inbox_unread().unwrap(), 1);
+        assert_eq!(st.inbox_mark_all(&InboxQuery::default()).unwrap(), 1);
+        assert_eq!(st.inbox_unread().unwrap(), 0);
+        assert_eq!(all(&st).len(), 2, "marking never removes");
+        assert_eq!(
+            st.inbox_count(&InboxQuery::default(), 1).unwrap(),
+            1,
+            "capped"
+        );
+    }
+
+    #[test]
+    fn search_takes_any_text() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        let (_p, _aid, tid) = owner_thread(&st);
+        agent_reply(&st, &tid, &sid, "Résumé dashboard uses c++ \"quoted\" text");
+        assert_eq!(find(&st, "resume"), 1, "diacritics folded");
+        assert_eq!(find(&st, "dash"), 1, "prefix");
+        assert_eq!(find(&st, "DASHBOARD quoted"), 1, "all terms, any case");
+        assert_eq!(find(&st, "quarterly"), 1, "the artifact's title");
+        assert_eq!(find(&st, "claude"), 1, "the harness");
+        assert_eq!(find(&st, "dashboard missing"), 0);
+        let long = "z".repeat(2000);
+        for junk in [
+            "c++",
+            "\"unclosed",
+            "NEAR(a b)",
+            "-x",
+            "a AND",
+            "*",
+            "   ",
+            "\"",
+            "a OR b",
+            "x:y",
+            "^start",
+            "(",
+            "{col}",
+            &long,
+        ] {
+            st.inbox_list(&InboxQuery {
+                text: Some(junk.into()),
+                ..Default::default()
+            })
+            .unwrap_or_else(|e| panic!("{junk:?}: {e}"));
+            st.inbox_count(
+                &InboxQuery {
+                    text: Some(junk.into()),
+                    ..Default::default()
+                },
+                10,
+            )
+            .unwrap_or_else(|e| panic!("{junk:?}: {e}"));
+        }
+        assert_eq!(find(&st, "*"), 1, "no terms: no text filter");
+        assert_eq!(fts_query("  "), None);
+        assert_eq!(fts_query("* - ()"), None);
+        assert_eq!(fts_query("a \"b"), Some("\"a\"* \"\"\"b\"*".into()));
+        let many = (0..40)
+            .map(|i| format!("t{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(fts_query(&many).unwrap().matches('*').count(), MAX_TERMS);
+    }
+
+    #[test]
+    fn filters_and_cursor() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        let pi = session(&st, "pi", "h2");
+        let (_p, aid, tid) = owner_thread(&st);
+        for i in 0..5 {
+            agent_reply(&st, &tid, &sid, &format!("c{i}"));
+        }
+        agent_reply(&st, &tid, &pi, "from pi");
+        let page = |q: InboxQuery| st.inbox_list(&q).unwrap();
+        let q = InboxQuery {
+            agent: Some(Agent::Harness("pi".into())),
+            ..Default::default()
+        };
+        assert_eq!(page(q).0.len(), 1);
+        let handle = st.get_session(&sid).unwrap().unwrap().agent_handle;
+        let q = InboxQuery {
+            agent: Some(Agent::Handle(handle)),
+            ..Default::default()
+        };
+        assert_eq!(page(q).0.len(), 5);
+        let q = InboxQuery {
+            artifact: Some(aid.as_str().into()),
+            kinds: vec![Kind::Reply],
+            limit: 4,
+            ..Default::default()
+        };
+        let (first, next) = page(q.clone());
+        assert_eq!(first.len(), 4);
+        assert!(
+            first.windows(2).all(|w| w[0].seq > w[1].seq),
+            "newest first"
+        );
+        let (rest, none) = page(InboxQuery {
+            before: next,
+            ..q.clone()
+        });
+        assert_eq!((rest.len(), none), (2, None));
+        assert!(rest[0].seq < first[3].seq);
+        let q = InboxQuery {
+            kinds: vec![Kind::Version, Kind::Question],
+            ..Default::default()
+        };
+        assert!(page(q).0.is_empty());
+        let q = InboxQuery {
+            kinds: vec![Kind::Version, Kind::Reply],
+            ..Default::default()
+        };
+        assert_eq!(page(q).0.len(), 6);
+        let at = first[0].created_at.clone();
+        let q = InboxQuery {
+            since: Some(at.clone()),
+            ..Default::default()
+        };
+        assert!(!page(q).0.is_empty());
+        let q = InboxQuery {
+            until: Some(first[3].created_at.clone()),
+            ..Default::default()
+        };
+        assert!(page(q).0.iter().all(|i| i.created_at < first[3].created_at));
+        let q = InboxQuery {
+            artifact: Some("nope".into()),
+            ..Default::default()
+        };
+        assert!(page(q).0.is_empty());
+        st.inbox_mark(&[first[0].id.clone()], true).unwrap();
+        let q = InboxQuery {
+            read: ReadFilter::Read,
+            ..Default::default()
+        };
+        assert_eq!(page(q).0.len(), 1);
+        let q = InboxQuery {
+            read: ReadFilter::Unread,
+            ..Default::default()
+        };
+        assert_eq!(page(q).0.len(), 5);
+        let q = InboxQuery {
+            text: Some("c".into()),
+            limit: 2,
+            ..Default::default()
+        };
+        let (one, next) = page(q.clone());
+        assert_eq!(one.len(), 2);
+        let (two, _) = page(InboxQuery { before: next, ..q });
+        assert!(
+            two.iter().all(|i| i.seq < one[1].seq),
+            "a search pages by seq too"
+        );
+    }
+
+    #[test]
+    fn listener_hears_committed_changes_only() {
+        let (_d, st) = store();
+        let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let h = heard.clone();
+        st.set_inbox_listener(Box::new(move |c| h.lock().unwrap().extend(c)));
+        let sid = session(&st, "claude", "h1");
+        let (_p, _aid, tid) = owner_thread(&st);
+        agent_reply(&st, &tid, &sid, "x");
+        assert_eq!(heard.lock().unwrap().len(), 1);
+        assert!(heard.lock().unwrap()[0].made);
+        let _ = st.with_tx(|tx| -> crate::Result<()> {
+            tx.execute("UPDATE inbox_items SET read_at = 'x'", [])?;
+            Err(CoreError::NotFound)
+        });
+        assert_eq!(
+            heard.lock().unwrap().len(),
+            1,
+            "a rolled-back change is not heard"
+        );
+        let id = all(&st)[0].id.clone();
+        st.inbox_mark(&[id], true).unwrap();
+        let h = heard.lock().unwrap();
+        assert_eq!(h.len(), 2);
+        assert_eq!(
+            h[1],
+            InboxChange {
+                seq: h[0].seq,
+                made: false
+            }
+        );
+    }
+}

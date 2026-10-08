@@ -383,7 +383,9 @@ pub async fn serve(
                         crate::working::announce(
                             &ctx.events,
                             &ctx.working,
-                            &ctx.working.end_session(id),
+                            &ctx.working
+                                .end_session(id, clax_core::working::End::SessionEnd)
+                                .0,
                         );
                         ctx.followers.forget(id);
                     }

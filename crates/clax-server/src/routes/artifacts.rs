@@ -646,7 +646,12 @@ pub async fn publish(
             if let Some(sid) = &session {
                 let aid = ArtifactId::parse(&artifact.id)?;
                 st.ensure_watch(sid, &aid)?;
-                let changed = ctx.working.clear(sid, artifact.id.as_str(), None);
+                let (changed, _) = ctx.working.clear(
+                    sid,
+                    artifact.id.as_str(),
+                    None,
+                    clax_core::working::End::Publish,
+                );
                 crate::working::announce(&ctx.events, &ctx.working, &changed);
                 let touched = st.retarget_untargeted(&aid, sid)?;
                 crate::feedback::apply(&ctx, st, &touched);

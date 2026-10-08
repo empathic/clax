@@ -9,7 +9,7 @@ use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use clax_core::model::Session;
-use clax_core::working::{Actor, MAX_WORKING_THREADS, SetWorking, clean_message};
+use clax_core::working::{Actor, End, MAX_WORKING_THREADS, SetWorking, clean_message};
 use clax_core::{ArtifactId, CoreError, Store};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -142,7 +142,7 @@ pub async fn delete(
     let (cleared, left) = s
         .store_call(move |st| {
             live(st, &sid)?;
-            let changed = w.clear(&sid, id.as_str(), threads.as_deref());
+            let (changed, _ended) = w.clear(&sid, id.as_str(), threads.as_deref(), End::Done);
             announce(&events, &w, &changed);
             let left = w
                 .for_session(&sid)
@@ -221,7 +221,7 @@ pub async fn end(
     let n = s
         .store_call(move |st| {
             live(st, &sid)?;
-            let changed = w.end_session(&sid);
+            let (changed, _ended) = w.end_session(&sid, End::TurnEnd);
             announce(&events, &w, &changed);
             Ok(changed.0.len())
         })

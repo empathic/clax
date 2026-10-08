@@ -48,6 +48,7 @@ pub mod docs;
 pub mod exec;
 pub mod extension;
 pub mod feedback;
+pub mod inbox;
 pub mod joined;
 pub mod live;
 pub mod migrations;
@@ -62,9 +63,10 @@ pub mod watches;
 
 use crate::{CoreError, Home, Result};
 use exec::{Readers, Workers, Writer};
+use inbox::{InboxChange, InboxListener};
 use rusqlite::Connection;
-use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 /// Rows `ANALYZE` samples per index when `PRAGMA optimize` refreshes statistics.
 pub const ANALYSIS_LIMIT: u32 = 400;
@@ -78,6 +80,10 @@ pub struct Store {
     workers: OnceLock<Workers>,
     /// Set by [`Store::shutdown`].
     shut_down: AtomicBool,
+    /// Changes to `inbox_items` in the write transaction under way, recorded
+    /// by the write connection's update hook and dropped by its rollback hook.
+    inbox_changes: Arc<Mutex<Vec<InboxChange>>>,
+    inbox_listener: RwLock<Option<InboxListener>>,
 }
 
 impl Store {
@@ -91,12 +97,29 @@ impl Store {
         conn.execute_batch(&format!(
             "PRAGMA analysis_limit={ANALYSIS_LIMIT}; PRAGMA optimize=0x10002;"
         ))?;
+        // Installed after the migrations, so migration 21's history is not announced.
+        let inbox_changes = Arc::new(Mutex::new(Vec::new()));
+        let made = inbox_changes.clone();
+        conn.update_hook(Some(
+            move |action: rusqlite::hooks::Action, _db: &str, table: &str, rowid: i64| {
+                if table == "inbox_items" {
+                    made.lock().unwrap().push(InboxChange {
+                        seq: rowid,
+                        made: action == rusqlite::hooks::Action::SQLITE_INSERT,
+                    });
+                }
+            },
+        ));
+        let dropped = inbox_changes.clone();
+        conn.rollback_hook(Some(move || dropped.lock().unwrap().clear()));
         Ok(Store {
             home: home.clone(),
             writer: Writer::new(conn),
             readers: Readers::new(path, exec::reader_count()),
             workers: OnceLock::new(),
             shut_down: AtomicBool::new(false),
+            inbox_changes,
+            inbox_listener: RwLock::new(None),
         })
     }
 
@@ -157,16 +180,30 @@ impl Store {
     /// briefly holding it to repair a WAL index it saw mid-update) is waited
     /// for under the busy timeout. A deferred transaction that read first
     /// would instead fail at once with `SQLITE_BUSY` on its first write.
+    ///
+    /// When the committed transaction made or updated inbox items, the inbox
+    /// listener hears of them once the write turn is released.
     pub(crate) fn with_tx<T>(
         &self,
         f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        self.writer.run(|conn| {
+        let (out, changes) = self.writer.run(|conn| {
+            self.inbox_changes.lock().unwrap().clear();
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let out = f(&tx)?;
             tx.commit()?;
-            Ok(out)
-        })
+            // Taken inside the turn: the next writer's changes are its own.
+            Ok((
+                out,
+                std::mem::take(&mut *self.inbox_changes.lock().unwrap()),
+            ))
+        })?;
+        if !changes.is_empty()
+            && let Some(listen) = self.inbox_listener.read().unwrap().as_ref()
+        {
+            listen(changes);
+        }
+        Ok(out)
     }
 
     /// Runs `f` on the write connection outside a transaction, for
