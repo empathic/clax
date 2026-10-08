@@ -200,8 +200,9 @@ pub async fn list(
         || iq.since.is_some()
         || iq.until.is_some()
         || iq.read != ReadFilter::All;
+    // A search or a count reads up to the whole inbox: the bulk lane.
     let out = s
-        .store_call(move |db| {
+        .store_call_bulk(move |db| {
             let (rows, next) = db.inbox_list(&iq)?;
             let items = views(db, &rows)?;
             let unread = db.inbox_unread()?;
