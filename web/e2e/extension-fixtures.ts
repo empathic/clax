@@ -9,7 +9,8 @@ import { type BrowserContext, chromium, type Worker, test as base } from "@playw
 import { spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { type AddressInfo, createServer as createNetServer } from "node:net";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -65,6 +66,42 @@ async function launch(profile: string, extDir: string, gesture: boolean): Promis
  * when its first runs are slow (macOS scans a new binary at its first exec). */
 const DAEMON_START_MS = 60_000;
 
+/** This worker's Clax home, the same path for each of its tests (emptied
+ * before each), so the launcher `clax extension install` writes there, which
+ * names the home, has the same text in every test. */
+const WORKER_HOME = join(tmpdir(), `clax-e2e-ext-${process.pid}`);
+
+/** Where `keep` stores the host scripts, by content. */
+const KEPT = join(tmpdir(), "clax-e2e-host");
+
+/**
+ * Replaces the executable `file` with a symbolic link to a kept copy of the
+ * same bytes, made on first use, and says whether that copy is new. macOS
+ * assesses each new executable file on its first run, which on a loaded
+ * machine can take a minute or more, and Chrome would run the freshly
+ * installed host scripts (`launch.sh`, then `ensure-clax.sh`) for the first
+ * time in each test's pairing; a run through a link to an assessed file is
+ * not a first run (scripts/fake-exe.sh). The bytes run are the installed
+ * ones: the copy is kept under their hash.
+ */
+function keep(file: string): boolean {
+  const bytes = readFileSync(file);
+  const dir = join(KEPT, createHash("sha256").update(bytes).digest("hex"));
+  const kept = join(dir, "script");
+  const fresh = !existsSync(kept);
+  if (fresh) {
+    mkdirSync(KEPT, { recursive: true });
+    const staging = mkdtempSync(join(KEPT, ".new-"));
+    writeFileSync(join(staging, "script"), bytes);
+    chmodSync(join(staging, "script"), 0o555);
+    // Another worker may have kept the same bytes meanwhile; either copy will do.
+    try { renameSync(staging, dir); } catch { rmSync(staging, { recursive: true, force: true }); }
+  }
+  rmSync(file);
+  symlinkSync(kept, file);
+  return fresh;
+}
+
 /** How long one CDP command to the browser endpoint may take, connecting included. */
 const CDP_MS = 10_000;
 
@@ -113,7 +150,26 @@ export const test = base.extend<{ live: Live; variant: Variant; gesture: boolean
     if (!existsSync(join(EXT_DIR, "manifest.json"))) throw new Error("web/dist-extension-test is missing: run `npm run build` in web/");
     // The native host's wrapper runs the `bin` setting's clax: this run's.
     const config = `bin = ${JSON.stringify(process.env.CLAX_E2E_BIN)}\n${NO_KEY_CONFIG}`;
-    const daemon = await startDaemon({ config, startMs: DAEMON_START_MS });
+    rmSync(WORKER_HOME, { recursive: true, force: true });
+    mkdirSync(WORKER_HOME, { mode: 0o700 });
+    writeFileSync(join(WORKER_HOME, "config.toml"), config);
+    // `clax extension install`, as `clax init` runs it, registers this
+    // profile's host (its launcher and manifest under <home>/extension/host);
+    // the test build then replaces the release build's files beside them.
+    const profile = mkdtempSync(join(tmpdir(), "clax-chrome-"));
+    const hostDir = join(profile, "NativeMessagingHosts");
+    mkdirSync(hostDir, { recursive: true });
+    const install = spawnSync(process.env.CLAX_E2E_BIN!, ["extension", "install", "--json"], { env: { ...process.env, CLAX_HOME: WORKER_HOME, CLAX_NATIVE_HOST_DIRS: `chromium=${hostDir}` }, encoding: "utf8" });
+    if (install.status !== 0) throw new Error(`clax extension install: ${install.stderr}`);
+    const host = join(WORKER_HOME, "extension", "host");
+    if ([keep(join(host, "launch.sh")), keep(join(host, "ensure-clax.sh"))].some(Boolean)) {
+      // New copies run once here, before the daemon and outside the test's
+      // waits. With no origin the host only answers wrong_origin; the logs
+      // directory it may make goes, so the test starts on a home as before.
+      spawnSync(join(host, "launch.sh"), [], { stdio: "ignore", timeout: DAEMON_START_MS });
+      rmSync(join(WORKER_HOME, "logs"), { recursive: true, force: true });
+    }
+    const daemon = await startDaemon({ home: WORKER_HOME, config, startMs: DAEMON_START_MS });
     // The real path: macOS reports file changes under /private/var, not /var.
     const siteDir = realpathSync(mkdtempSync(join(tmpdir(), "clax-live-site-")));
     cpSync(join(web, "e2e/live-site"), siteDir, { recursive: true });
@@ -125,14 +181,6 @@ export const test = base.extend<{ live: Live; variant: Variant; gesture: boolean
     // oxlint-disable-next-line no-underscore-dangle
     if (!(site.watcher as unknown as { _readyEmitted?: boolean })._readyEmitted) await once(site.watcher, "ready");
     const siteUrl = site.resolvedUrls!.local[0].replace("127.0.0.1", "localhost");
-    // `clax extension install`, as `clax init` runs it, registers this
-    // profile's host (its launcher and manifest under <home>/extension/host);
-    // the test build then replaces the release build's files beside them.
-    const profile = mkdtempSync(join(tmpdir(), "clax-chrome-"));
-    const hostDir = join(profile, "NativeMessagingHosts");
-    mkdirSync(hostDir, { recursive: true });
-    const install = spawnSync(process.env.CLAX_E2E_BIN!, ["extension", "install", "--json"], { env: { ...process.env, CLAX_HOME: daemon.home, CLAX_NATIVE_HOST_DIRS: `chromium=${hostDir}` }, encoding: "utf8" });
-    if (install.status !== 0) throw new Error(`clax extension install: ${install.stderr}`);
     const extDir = join(daemon.home, "extension");
     cpSync(EXT_DIR, extDir, { recursive: true });
     if (variant !== "all-urls") {
