@@ -166,17 +166,8 @@ impl Cli {
         if let Some(p) = self.port {
             return Ok(p);
         }
-        if let Some(v) = env.filter(|v| !v.is_empty()) {
-            return v
-                .to_str()
-                .and_then(|t| t.trim().parse::<u16>().ok())
-                .filter(|p| *p != 0)
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "{PORT_ENV} is {:?}, which is not a port (1-65535)",
-                        v.to_string_lossy()
-                    )
-                });
+        if let Some(p) = env_port(env) {
+            return p;
         }
         let port = clax_core::config::HomeConfig::load(home.root())
             .and_then(|c| c.serve_port())
@@ -188,6 +179,23 @@ impl Cli {
 /// The environment variable that sets the daemon's port, ahead of the
 /// home's `config.toml` and behind `--port`.
 pub const PORT_ENV: &str = "CLAX_PORT";
+
+/// The port `CLAX_PORT`'s value `env` sets: `None` when it is unset or empty;
+/// an error naming the variable when it is not a port (1-65535).
+pub fn env_port(env: Option<std::ffi::OsString>) -> Option<anyhow::Result<u16>> {
+    let v = env.filter(|v| !v.is_empty())?;
+    Some(
+        v.to_str()
+            .and_then(|t| t.trim().parse::<u16>().ok())
+            .filter(|p| *p != 0)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{PORT_ENV} is {:?}, which is not a port (1-65535)",
+                    v.to_string_lossy()
+                )
+            }),
+    )
+}
 
 /// The subcommand the command line names: its first argument that is
 /// neither a flag nor `--port`'s value.

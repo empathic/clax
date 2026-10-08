@@ -29,6 +29,7 @@ HOME_DIR="$SCRATCH/home"
 CWD="$SCRATCH/cwd"
 BIN="$REPO/target/debug/clax"
 export CLAX_HOME="$HOME_DIR"
+unset CLAX_PORT
 export CLAX_NO_OPEN=1
 
 cleanup() { "$BIN" stop >/dev/null 2>&1 || true; }

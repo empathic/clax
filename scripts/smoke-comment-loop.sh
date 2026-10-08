@@ -13,6 +13,7 @@ REPO="$PWD"
 TMPROOT="${TMPDIR:-/tmp}"
 SCRATCH="$(mktemp -d "${TMPROOT%/}/clax-loop.XXXXXX")"
 export CLAX_HOME="$SCRATCH/home"
+unset CLAX_PORT
 export CLAX_NO_OPEN=1
 BIN="${CLAX_TEST_BIN:-$REPO/target/debug/clax}"
 FAKE="$SCRATCH/fakebin"

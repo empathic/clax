@@ -224,16 +224,16 @@ async fn serve_skips_a_port_held_on_ipv6_loopback_only() {
 #[tokio::test]
 async fn serve_fails_when_every_port_it_would_try_is_held() {
     let mut seed = std::process::id();
-    let (_held, base) = loop {
-        seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-        let base = 20_000 + (seed % 40_000) as u16;
-        let held: Vec<_> = (base..base + 21)
-            .map_while(|p| std::net::TcpListener::bind(("127.0.0.1", p)).ok())
-            .collect();
-        if held.len() == 21 {
-            break (held, base);
-        }
-    };
+    let (_held, base) = (0..50)
+        .find_map(|_| {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            let base = 20_000 + (seed % 40_000) as u16;
+            let held: Vec<_> = (base..base + 21)
+                .map_while(|p| std::net::TcpListener::bind(("127.0.0.1", p)).ok())
+                .collect();
+            (held.len() == 21).then_some((held, base))
+        })
+        .expect("found no 21 consecutive free loopback ports in 50 tries");
     let dir = tempfile::tempdir().unwrap();
     let home = Home::at(dir.path().join("ax"));
     let e = serve(config_on(&home, base), None).await.unwrap_err();

@@ -5,3 +5,7 @@
 # readers. MEMSTATUS=0 drops the global mutex around every allocation.
 # `force` makes these win over a LIBSQLITE3_FLAGS already in the environment.
 LIBSQLITE3_FLAGS = { value = "-USQLITE_ENABLE_MEMORY_MANAGEMENT -DSQLITE_DEFAULT_MEMSTATUS=0", force = true }
+# Tests run with CLAX_PORT empty (which counts as unset), so a CLAX_PORT
+# exported in the developer's shell does not move their daemons off the
+# ports their homes' config.toml names. This applies to `cargo run` too.
+CLAX_PORT = { value = "", force = true }

@@ -23,6 +23,7 @@ SCRATCH="${1:-${TMPDIR:-/tmp}/clax-smoke-pi}"
 SCRATCH="$(mkdir -p "$SCRATCH" && cd "$SCRATCH" && pwd -P)"
 export PI_CODING_AGENT_DIR="$SCRATCH/pi-home"
 export CLAX_HOME="$SCRATCH/clax-home"
+unset CLAX_PORT
 export CLAX_BIN="$REPO/target/debug/clax"
 export CLAX_NO_OPEN=1
 export PI_OFFLINE=1

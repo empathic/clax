@@ -29,6 +29,7 @@ SCRATCH="${1:-${TMPDIR:-/tmp}/clax-smoke-codex}"
 SCRATCH="$(mkdir -p "$SCRATCH" && cd "$SCRATCH" && pwd -P)"
 export CODEX_HOME="$SCRATCH/codex-home"
 export CLAX_HOME="$SCRATCH/clax-home"
+unset CLAX_PORT
 export CLAX_BIN="$REPO/target/debug/clax"
 export CLAX_NO_OPEN=1
 CWD="$SCRATCH/cwd"

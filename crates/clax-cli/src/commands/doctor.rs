@@ -498,18 +498,27 @@ fn apply_fixes(home: &Home, store: &Store) -> anyhow::Result<Vec<String>> {
     Ok(fixed)
 }
 
-/// `config`: the home's `config.toml` reads and parses, and its `[serve]
-/// port`, when present, is a port. The detail names the port daemons for
-/// this home start on, or the error.
-fn config_check(home: &Home) -> serde_json::Value {
-    match clax_core::config::HomeConfig::load(home.root()).and_then(|c| c.serve_port()) {
-        Ok(Some(p)) => check("config", true, format!("[serve] port = {p}")),
-        Ok(None) => check(
+/// `config`: the home's `config.toml` reads and parses, its `[serve] port`,
+/// when present, is a port, and so is `CLAX_PORT` (`env`), when set. The
+/// detail names the port daemons for this home start on and where it comes
+/// from, or the error.
+fn config_check(home: &Home, env: Option<std::ffi::OsString>) -> serde_json::Value {
+    let file = clax_core::config::HomeConfig::load(home.root()).and_then(|c| c.serve_port());
+    match (crate::env_port(env), file) {
+        (Some(Err(e)), _) => check("config", false, e.to_string()),
+        (_, Err(e)) => check("config", false, e.to_string()),
+        (Some(Ok(p)), Ok(Some(f))) => check(
+            "config",
+            true,
+            format!("{}={p} (overrides [serve] port = {f})", crate::PORT_ENV),
+        ),
+        (Some(Ok(p)), Ok(None)) => check("config", true, format!("{}={p}", crate::PORT_ENV)),
+        (None, Ok(Some(p))) => check("config", true, format!("[serve] port = {p}")),
+        (None, Ok(None)) => check(
             "config",
             true,
             format!("default port {}", clax_server::daemon::DEFAULT_PORT),
         ),
-        Err(e) => check("config", false, e.to_string()),
     }
 }
 
@@ -521,7 +530,7 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
             .map(|_| std::fs::remove_file(home.root().join(".doctor")).is_ok())
             .unwrap_or(false);
     checks.push(check("home", writable, home.root().display().to_string()));
-    checks.push(config_check(home));
+    checks.push(config_check(home, std::env::var_os(crate::PORT_ENV)));
     // Held until the process exits, so an auto-start cannot race the repairs.
     // Taken before discovery: a daemon that is still starting holds it.
     let _lock = if args.fix && writable {
@@ -644,8 +653,34 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{codex_approvals_check, codex_push_check, extension_check};
+    use super::{codex_approvals_check, codex_push_check, config_check, extension_check};
     use serde_json::{Value, json};
+
+    #[test]
+    fn the_config_check_names_a_clax_port_that_overrides_or_is_not_a_port() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = clax_core::Home::at(dir.path().to_path_buf());
+        let env = |v: &str| Some(std::ffi::OsString::from(v));
+        assert_eq!(config_check(&home, None)["detail"], "default port 7480");
+        std::fs::write(dir.path().join("config.toml"), "[serve]\nport = 7481\n").unwrap();
+        assert_eq!(config_check(&home, None)["detail"], "[serve] port = 7481");
+        assert_eq!(
+            config_check(&home, env(""))["detail"],
+            "[serve] port = 7481"
+        );
+        let over = config_check(&home, env("7490"));
+        assert_eq!(over["ok"], true, "{over}");
+        assert_eq!(
+            over["detail"],
+            "CLAX_PORT=7490 (overrides [serve] port = 7481)"
+        );
+        let bad = config_check(&home, env("x"));
+        assert_eq!(bad["ok"], false, "{bad}");
+        assert!(
+            bad["detail"].as_str().unwrap().contains("CLAX_PORT"),
+            "{bad}"
+        );
+    }
 
     #[test]
     fn the_codex_approvals_check_names_the_setup_command() {

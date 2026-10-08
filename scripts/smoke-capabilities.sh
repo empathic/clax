@@ -31,6 +31,7 @@ else
     KEEP=0
 fi
 export CLAX_HOME="$SCRATCH/home"
+unset CLAX_PORT
 export CLAX_CODEX_BIN=
 export CLAX_NO_OPEN=1
 BIN="$REPO/target/debug/clax"
