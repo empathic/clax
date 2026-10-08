@@ -905,6 +905,168 @@ and a `.crx` signed with the key when a Chromium is found (skipped under
   starts an older daemon on the migrated database (spec §16, known
   limitations).
 
+## 9. Agent questions and the inbox
+
+Spec `docs/superpowers/specs/2026-10-06-agent-questions-and-inbox-design.md`,
+branch `agent-questions`. Commit under test: `0924bca` (the tests and smoke
+script; this record is the commit after it). Run on 2026-10-08, machine as
+above (macOS 26.6.2, arm64, Node v26.8.2), Playwright 1.63.0, Claude Code
+2.1.293 (`claude --version`), `clax 0.3.0` (`target/debug/clax --version`,
+this branch's build), tmux 3.7c. The machine was shared with other runs
+(load average 20 to 52 during these runs); the failures this caused are
+listed with their reruns.
+
+### 9.1 Chromium end to end
+
+Command: `cd web && npx playwright test e2e/questions.spec.ts e2e/inbox.spec.ts e2e/chrome-overlay.spec.ts`.
+Each question and inbox test has a daemon of its own (scratch `CLAX_HOME`,
+port 0). Result: 18 passed (16.3 s), first attempt. The question and inbox
+specs also ran 4 times each (`--repeat-each 4`): 32 passed.
+
+- `questions.spec.ts`
+  - an `ask` with two questions (options with previews, then free text),
+    answered on the gallery's card: the title carries the count, the
+    focused option's preview shows, and the session's long poll returns
+    `answered` via `shell` with `[{selected: ["One"], text: null},
+    {selected: [], text: "keep it light"}]`;
+  - a question about an artifact shows in its sidebar above its threads;
+  - a LAN viewer (`/api/token` answered 403, as the other LAN tests do) sees
+    no question card and no Inbox link, on the artifact view and the
+    gallery, and makes no request to `/api/questions*` or `/api/inbox*`;
+  - with a fake `Notification` and no Clax tab focused, a new question
+    shows exactly one notification, "claude asks: Pick" (the test asks
+    once the feeds have subscribed: an item that arrives before then is
+    fetched and shown, not announced);
+  - the three Task 10 tests (focus while Skip is pending, focus on close,
+    `/inbox` search in the URL).
+- `inbox.spec.ts`: an owner thread (owner cookie) and an agent reply
+  arrive unread (count 2: the publication and the reply); opening the row
+  goes to the artifact and the look marks the reply read; `/inbox?search=blue`
+  then shows no unread match and the reply under **Show N read items**; a
+  second reply arrives live and **Mark all read** hides the count.
+- `chrome-overlay.spec.ts`: the Task 11 case ("the panel shows the live
+  page's questions above its threads, answers one, and reads the inbox")
+  already covers the panel's question block (answered there, recorded as
+  `extension`) and the Inbox tab's count and items; it is unchanged.
+
+### 9.2 The real Claude Code hook
+
+Command: `scripts/smoke-claude-ask.sh <scratch>` (manual, not a gate; about
+25 s). It runs an interactive `claude` (no `-p`) in a detached tmux session
+with `--plugin-dir plugins/claude-code`, `CLAUDE_CONFIG_DIR=<scratch>/claude`
+(first-run settings pre-written there; `~/.claude` is neither read nor
+written), `ANTHROPIC_BASE_URL` pointing at `scripts/fake-anthropic.py` and
+`ANTHROPIC_API_KEY=sk-ant-fake`: no login, no model call. The fake's first
+answer calls `AskUserQuestion` ("Which layout?": "Two columns" / "One
+column"); its second echoes the tool result it was sent, which it logs in
+`requests.jsonl`. The daemon ran in a scratch `CLAX_HOME` on a free port.
+
+Output (scratch path abbreviated; full run, panes and the hook log lines in
+`.superpowers/sdd/2026-10-06-agent-questions-and-inbox/evidence/smoke-claude-ask/`
+in the worktree, which git ignores):
+
+```
+smoke: 2.1.293 (Claude Code), clax 0.3.0
+smoke: PASS: 4 no surface: dialog 0.5 s after the tool call; question 01M4CXSS0ZHXBP4BT1QGR81MRZ answered via terminal; tool result: Your questions have been answered: "Which layout?"="One column". You can now continue with these answers in mind.
+smoke: owner stream 3df7a4503a6ed6ebcd3c01bac715bb55 holds inbox (curl PID 71740)
+smoke: PASS: 1 answered in Clax: question 01M4CXSVG9FNM36FGNTM8QF9HT answered via cli, no dialog, inbox item read; tool result: Your questions have been answered: "Which layout?"="One column". You can now continue with these answers in mind.
+smoke: PASS: 2 skipped: question 01M4CXSX6BT975CNNG9NJRCPSG declined, no dialog; tool result (is_error): PreToolUse:AskUserQuestion hook error: The person chose not to answer this question in Clax. Continue without the answer, or ask again differently.
+smoke: PASS: 3 moved to the terminal: dialog after release, question 01M4CXT3NJSW0PHVYCXBM74MR0 answered via terminal; tool result: Your questions have been answered: "Which layout?"="One column". You can now continue with these answers in mind.
+smoke: channel: AskUserQuestion offered: yes; the call reached the hook (mirrored into Clax); Claude Code said: --dangerously-load-development-channels ignored (plugin:clax@clax), Channels are not currently available
+smoke: PASS (panes in $SCRATCH/smoke-ask2/panes, requests in $SCRATCH/smoke-ask2/requests.jsonl)
+```
+
+`hooks.log` for the same run (`bin=` removed):
+
+```
+event=ask ... ask mode=terminal outcome=terminal waited_s=0     (4)
+event=asked ...
+event=ask duration_ms=399 ... ask mode=wait outcome=answered waited_s=0   (1)
+event=asked ...
+event=ask duration_ms=411 ... ask mode=wait outcome=declined waited_s=0   (2)
+event=ask duration_ms=2119 ... ask mode=wait outcome=released waited_s=2  (3)
+event=asked ...
+event=ask duration_ms=1810 ... ask mode=wait outcome=error waited_s=1     (channel run, its session killed while the hook waited)
+```
+
+What Claude Code did, scenario by scenario:
+
+1. **Answered in Clax.** Claude Code applied the hook's `updatedInput`: no
+   dialog was drawn, the transcript reads "User answered Claude's
+   questions: · Which layout? → One column", and the model's tool result
+   is the answer. The question's inbox item is read. Through the token from
+   curl, `answered_via` is `cli` even with the shell's `Origin` (§6.2: the
+   token from no browser).
+2. **Skipped.** The deny reached the model as an error tool result,
+   prefixed by Claude Code with "PreToolUse:AskUserQuestion hook error: ";
+   the transcript shows "Tool result: ERROR PreToolUse:AskUserQuestion hook
+   error: …".
+3. **Moved to the terminal.** The hook exited silently and Claude Code drew
+   its own dialog; `2` chose "One column"; `PostToolUse` recorded the
+   answer, `answered` via `terminal`.
+4. **No surface.** The daemon chose `terminal`; the dialog appeared 0.5 s
+   (first run: 0.3 s) after the fake answered with the call.
+
+**The channel.** With API-key authentication Claude Code 2.1.293 does not
+load development channels at all ("Channels are not currently available"),
+so the session was an ordinary one: `AskUserQuestion` was offered and
+mirrored. Whether a session whose Clax channel is active (a claude.ai login)
+is offered `AskUserQuestion` was not checked: the owner's login was not
+used. Spec §4.2 records this.
+
+The fake differs from the plan's description in one point, recorded in its
+docstring: Claude Code 2.1.293 can end the request's `messages` with a
+`system` message (the SessionStart hook's context) after the person's
+prompt, so the fake judges a turn by the messages after the last assistant
+message, not by the last message.
+
+### 9.3 Gates and performance
+
+`scripts/quality_gates.sh` on `0924bca`, run three times under the shared
+load; every lane but **plugins** passed in at least one run, and each
+other failure passed when run alone:
+
+- **plugins** failed in every run: "the plugins pin 'nothing', but the
+  newest release tag is v0.3.1". `v0.3.1` (`1f2c5d1`, 2026-10-07) is a tag
+  on main that this branch does not contain; it clears when the branch is
+  rebased onto main and the pin is moved, which is not this task's.
+- **web unit** (`snapshot.test.ts` "linear time", 5 s timeout) once:
+  40/40 alone. **pi extension** (two 20 s timeouts) once: passed alone.
+  **web e2e** once: `streams.spec.ts:89` ("open Stream one (0) took 1209 ms")
+  and `chrome-overlay.spec.ts:120`: both passed alone. **plugin wrapper**
+  (a slow first-run download case) once: `scripts/test-ensure-clax.sh`
+  passed alone.
+- The perf gates do not run after a lane fails, so they ran alone:
+  `scripts/perf-daemon.sh --quick` and `scripts/perf-clients.sh --quick`
+  within budget; `CLAX_PERF_QUICK=1 npm run perf` passed, its subdomain
+  sample within budget on the retry (comment ready 101 ms against a
+  94 ms limit on the first, under load average 21).
+
+The inbox rows of `scripts/perf-daemon.sh --quick` (seed: 6,000 items over
+64 threads, 1,280 versions, 20 questions; limit 53 ms after the idle
+scale):
+
+```
+inbox tab      GET /healthz                   147       5.3       6.7  ok
+inbox tab      GET /a/<id>                    136       6.5      17.9  ok
+inbox tab      GET /c/<id>/v/1/               146       5.7      13.8  ok
+inbox tab      GET /api/artifacts/<id>        136       5.8      17.2  ok
+inbox alone    GET /api/inbox?read=unread      21       2.3            ok
+inbox alone    GET /api/inbox?q=header         21       3.8            ok
+inbox alone    GET /api/inbox/summary          21       1.7            ok
+```
+
+### 9.4 Not covered
+
+- Codex's `request_user_input` and Grok Build's `ask_user_question`: not
+  mirrored by design (§4.5); nothing was run.
+- A real model choosing `ask` or `AskUserQuestion`: every model turn here is
+  scripted.
+- A Claude Code session with an active development channel (above).
+- The Answer in the terminal timer (`terminal_after_s`) and Esc while the
+  hook waits were not driven in the real `claude`; they are covered by the
+  hook's tests against a fake and a real daemon (Task 6).
+
 ## Appendix A: the browser-and-shim loop script
 
 The script behind section 2.2, kept here so the run can be repeated. Save it
