@@ -205,7 +205,8 @@ pub struct ServeConfig {
     /// Address to listen on.
     pub bind: IpAddr,
     /// First port tried; up to [`PORT_ATTEMPTS`] consecutive ports are tried
-    /// when it is busy. 0 lets the OS choose.
+    /// when it is busy or another program holds it ([`port_held`]). 0 lets
+    /// the OS choose.
     pub port: u16,
     /// Version reported by `/healthz` and recorded in `daemon.json`.
     pub version: &'static str,
@@ -221,9 +222,57 @@ pub struct ServeConfig {
     pub sample: Arc<crate::sample::Sampler>,
 }
 
+/// How long [`port_held`] waits for a connection to be accepted.
+const HELD_PROBE: Duration = Duration::from_millis(250);
+
+/// True when another program holds `port`: a connection to it on
+/// `127.0.0.1` or `[::1]` is accepted. A listener on the wildcard address or
+/// on `[::1]` alone does not stop a `127.0.0.1` bind, yet browsers that
+/// resolve `localhost` to `[::1]` would reach it, so a port is judged by who
+/// answers there, not by whether a bind fails. The probe opens and closes one
+/// connection and sends nothing. The daemon skips a held port, and `clax mcp
+/// --preflight` asks the same question, so both agree.
+pub fn port_held(port: u16) -> bool {
+    use std::net::TcpStream;
+    [
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(Ipv6Addr::LOCALHOST),
+    ]
+    .into_iter()
+    .any(|ip| TcpStream::connect_timeout(&SocketAddr::new(ip, port), HELD_PROBE).is_ok())
+}
+
+/// The ports a daemon asked for `start` tries, in order: `start` and the
+/// next [`PORT_ATTEMPTS`]` - 1`.
+pub fn port_range(start: u16) -> std::ops::Range<u16> {
+    start..start.saturating_add(PORT_ATTEMPTS)
+}
+
+/// The first port of [`port_range`]`(start)` that [`port_held`] does not
+/// report, or `None` when every one is held.
+pub fn first_unheld_port(start: u16) -> Option<u16> {
+    port_range(start).find(|p| !port_held(*p))
+}
+
+/// Binds the first port of [`port_range`]`(start)` that no other program
+/// holds ([`port_held`]) and that binds; `start` 0 lets the OS choose.
 async fn bind_first_free(bind: IpAddr, start: u16) -> io::Result<tokio::net::TcpListener> {
+    if start == 0 {
+        return tokio::net::TcpListener::bind(SocketAddr::new(bind, 0)).await;
+    }
     let mut last = None;
-    for port in start..start.saturating_add(PORT_ATTEMPTS) {
+    for port in port_range(start) {
+        let held = tokio::task::spawn_blocking(move || port_held(port))
+            .await
+            .unwrap_or(false);
+        if held {
+            tracing::warn!(port, "another program holds the port; trying the next");
+            last = Some(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!("port {port} is held by another program"),
+            ));
+            continue;
+        }
         match tokio::net::TcpListener::bind(SocketAddr::new(bind, port)).await {
             Ok(l) => return Ok(l),
             Err(e) if e.kind() == io::ErrorKind::AddrInUse => last = Some(e),

@@ -1,6 +1,9 @@
 use crate::client::Client;
 use clax_core::Home;
 use clax_mcp::shim::{self, Endpoint, Harness};
+use clax_server::daemon::{
+    DaemonLock, first_unheld_port, pid_alive, port_held, port_range, read_daemon_info,
+};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,8 +25,8 @@ pub struct Args {
     #[arg(long, hide = true, default_value_t = shim::DEFAULT_HEARTBEAT.as_millis() as u64)]
     pub heartbeat_interval_ms: u64,
     /// Check that the server could start, then exit: resolve the home, its
-    /// `config.toml` and the port, and check that the port is free or this
-    /// home's daemon's ([`port_clash`]); print nothing and exit 0; on failure
+    /// `config.toml` and the port, and check that a daemon could serve there
+    /// ([`port_clash`]); print nothing and exit 0; on failure
     /// print a one-line `error: <reason>` and exit 1. Starts no daemon and
     /// sends no request to one. The plugins' wrapper runs it before it execs
     /// `clax mcp`.
@@ -35,8 +38,8 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     if a.preflight {
         return cli
             .port_for(home)
-            .and_then(|port| match port_clash(home, port) {
-                Some(why) => Err(anyhow::anyhow!("{why}{}", port_fix(cli, home, port))),
+            .and_then(|port| match port_clash(cli, home, port) {
+                Some(why) => Err(anyhow::anyhow!("{why}")),
                 None => Ok(()),
             })
             .map_err(|e| anyhow::anyhow!("{}", one_line(&format!("{e:#}"))));
@@ -128,20 +131,16 @@ fn one_line(text: &str) -> String {
         .join(" ")
 }
 
-/// How long a connection to a loopback port may take to be accepted.
-const CONNECT_PROBE: Duration = Duration::from_millis(250);
-
-/// Why a daemon started for `home` could not serve on `port`: something that
-/// is not this home's Clax daemon accepts connections there, on `127.0.0.1`
-/// or `[::1]`. `None` when nothing does, when `port` is 0 (any free port),
-/// when `daemon.json` names a live daemon of this home (the shim uses that
-/// one, on whatever port), or when this home's start lock is held (a daemon
-/// of this home is being started or replaced).
-///
-/// The check only opens and closes a TCP connection: it sends nothing, and
-/// leaves whatever holds the port running.
-pub fn port_clash(home: &Home, port: u16) -> Option<String> {
-    use clax_server::daemon::{DaemonLock, pid_alive, read_daemon_info};
+/// Why a daemon started for `home` could not serve on `port`, which another
+/// program holds ([`port_held`]): when `port` was set explicitly (`--port`
+/// or `CLAX_PORT`), whenever it is held; otherwise only when every port the
+/// daemon would try ([`port_range`]) is held, since the daemon moves to the
+/// first free one. `None` when `port` is 0 (any free port), when
+/// `daemon.json` names a live daemon of this home (the shim uses that one,
+/// on whatever port), or when this home's start lock is held (a daemon of
+/// this home is being started or replaced). Whatever holds a port is left
+/// running.
+pub fn port_clash(cli: &crate::Cli, home: &Home, port: u16) -> Option<String> {
     let ours = || read_daemon_info(home).is_some_and(|i| pid_alive(i.pid));
     if port == 0 || ours() {
         return None;
@@ -157,47 +156,33 @@ pub fn port_clash(home: &Home, port: u16) -> Option<String> {
     } else {
         None
     };
-    if ours() || !accepts(port) {
+    if ours() || !port_held(port) {
         return None;
     }
-    Some(format!(
-        "port {port} is already in use by another program (not a Clax daemon for {}), and Clax leaves it alone",
-        home.root().display()
-    ))
-}
-
-/// True when a connection to `port` on `127.0.0.1` or `[::1]` is accepted.
-fn accepts(port: u16) -> bool {
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
-    [
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        IpAddr::V6(Ipv6Addr::LOCALHOST),
-    ]
-    .into_iter()
-    .any(|ip| TcpStream::connect_timeout(&SocketAddr::new(ip, port), CONNECT_PROBE).is_ok())
-}
-
-/// The fix for a [`port_clash`] on `port`, as a clause that follows it:
-/// where the port came from, and a free port to set there instead (the
-/// first of the next 20 that accepts no connection).
-fn port_fix(cli: &crate::Cli, home: &Home, port: u16) -> String {
-    let free = (1..=20u16)
-        .filter_map(|i| port.checked_add(i))
-        .find(|p| !accepts(*p));
+    let free = first_unheld_port(port);
     let to = free.map_or_else(|| "<a free port>".to_string(), |p| p.to_string());
-    let config = home.root().join(clax_core::config::FILE);
+    let who = format!("not a Clax daemon for {}", home.root().display());
     if cli.port.is_some() {
-        format!("; pass another port to --port, such as {to}")
-    } else if std::env::var_os(crate::PORT_ENV).is_some_and(|v| !v.is_empty()) {
-        format!(
-            "; set {} (it is {port} now) to another port, such as {to}",
-            crate::PORT_ENV
-        )
-    } else {
-        format!(
-            "; give Clax another port: set `port = {to}` under `[serve]` in {}, or set {}={to} in the agent's environment",
-            config.display(),
-            crate::PORT_ENV
-        )
+        return Some(format!(
+            "port {port} is already in use by another program ({who}), and Clax leaves it alone; pass another port to --port, such as {to}"
+        ));
     }
+    if std::env::var_os(crate::PORT_ENV).is_some_and(|v| !v.is_empty()) {
+        return Some(format!(
+            "port {port} is already in use by another program ({who}), and Clax leaves it alone; set {} (it is {port} now) to another port, such as {to}",
+            crate::PORT_ENV
+        ));
+    }
+    if free.is_some() {
+        // The daemon moves to that port.
+        return None;
+    }
+    let range = port_range(port);
+    Some(format!(
+        "ports {}-{} are all in use by other programs ({who}), and Clax leaves them alone; give Clax another port: set `port = <a free port>` under `[serve]` in {}, or set {}=<a free port> in the agent's environment",
+        range.start,
+        range.end - 1,
+        home.root().join(clax_core::config::FILE).display(),
+        crate::PORT_ENV
+    ))
 }

@@ -26,9 +26,9 @@ Twenty-four tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
   starts once per session and which attributes publishes to that session
   (Pi does not use it; `--agent pi` is a usage error). The plugins start it
   through `scripts/ensure-clax.sh`, which first runs `clax mcp --preflight`
-  (it reads the home, its `config.toml` and the port, checks that no other
-  program holds the port, starts no daemon, and exits 1 with a one-line
-  `error:` when the shim could not start), then
+  (it reads the home, its `config.toml` and the port, checks that a daemon
+  could serve on that port or one it would move to, starts no daemon, and
+  exits 1 with a one-line `error:` when the shim could not start), then
   execs the shim, so the harness is the shim's parent process. When no
   usable `clax` is found or the preflight fails, the wrapper serves a
   minimal MCP server whose one tool, `status`, returns the reason with
@@ -3549,16 +3549,19 @@ copy. `scripts/test-plugins.sh` fails while the pin is older than the newest
 For the MCP server, the wrapper first runs `clax mcp --agent <harness>
 --preflight`, which resolves the home, its `config.toml` and the port,
 starts no daemon and sends no request to one, and exits 0, or prints
-`error: <reason>` and exits 1. It fails when something other than this
-home's daemon accepts a connection on the port, at `127.0.0.1` or `[::1]`
-(another program; a daemon started there would be shadowed or pushed to
-another port): the reason names the port and the fix, a free port to set as
-`[serve] port` in `config.toml` or as `CLAX_PORT` (only `CLAX_PORT` when
-that set the port, only `--port` when that did). The check opens and closes
-one connection and sends nothing, so whatever holds the port is left
-alone. It passes when `daemon.json` names a live daemon of this home, or
-when the home's start lock is held (a daemon of this home is starting or
-being replaced). It then execs `clax mcp`, so the harness is the shim's parent. A
+`error: <reason>` and exits 1. A port is held when something accepts a
+connection on it at `127.0.0.1` or `[::1]`; the daemon skips a held port
+the same way, so the two agree (see "`config.toml`"). When the port from
+`config.toml` or the default is held, the preflight passes as long as one
+of the next 20 is not, since the daemon moves there; when all 21 are held,
+it fails, naming the range and the fix (a free port as `[serve] port` in
+`config.toml`, or `CLAX_PORT`). When `--port` or `CLAX_PORT` set the port,
+the person chose it, so a held port fails at once, naming the port, that
+setting, and a free port to use instead. The check opens and closes
+connections and sends nothing, so whatever holds a port is left alone. It
+passes when `daemon.json` names a live daemon of this home, or when the
+home's start lock is held (a daemon of this home is starting or being
+replaced). It then execs `clax mcp`, so the harness is the shim's parent. A
 `clax mcp` that exits later in the session is not relayed: the client sees
 the connection close. When there is no usable `clax`, or the preflight
 fails:
@@ -3625,7 +3628,17 @@ server's reason. `CLAX_PORT` reaches only the processes whose environment
 has it: export it in the shell that starts the agent and in the one that
 runs `clax`, or use
 `config.toml`, which every process for the home reads. `just dev` unsets
-it, so the dev home keeps its own port. Other keys
+it, so the dev home keeps its own port.
+
+A daemon tries the port it is given and, after it, the next 20. It skips a
+port that is held, meaning a connection to it at `127.0.0.1` or `[::1]` is
+accepted (another program: a listener on the wildcard address or on
+`[::1]` alone does not stop a `127.0.0.1` bind on every system, yet a
+browser that resolves `localhost` to `[::1]` would reach it), and a port
+whose bind fails as in use; it binds the first other one. `daemon.json`,
+and so `status`'s `daemon_url` and every URL Clax returns, carry the port
+it took. The probe opens and closes one connection per address and sends
+nothing. Port 0 lets the system choose and is not probed. Other keys
 in `[serve]` are logged and ignored. `just watch` and `just dev` write
 `port = 7481` (or `CLAX_DEV_PORT`'s value) into `~/.clax-dev/config.toml`
 when it has no `[serve]` table, so every daemon for that home, whoever

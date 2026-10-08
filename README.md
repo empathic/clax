@@ -146,7 +146,7 @@ clax bin                             # show which clax the plugins run (clax bin
 clax haiku                           # print one of ten haiku about Clax
 ```
 
-The daemon starts automatically on first use. Data lives in `~/.clax`; set `CLAX_HOME` to use a different directory. The daemon listens on port 7480, or on the `[serve] port` that the home's `config.toml` sets; `CLAX_PORT` overrides the file, and `--port` overrides both. When another program already holds that port, the plugins' MCP server says so and names a free port to set instead; Clax never stops what holds it.
+The daemon starts automatically on first use. Data lives in `~/.clax`; set `CLAX_HOME` to use a different directory. The daemon listens on port 7480, or on the `[serve] port` that the home's `config.toml` sets; `CLAX_PORT` overrides the file, and `--port` overrides both. When another program already holds that port, the daemon takes the next free one of the following 20 and its URLs say so; only when all are held, or when you chose the port with `CLAX_PORT` or `--port`, does the plugins' MCP server stop and name a free port to set instead. Clax never stops what holds a port.
 
 Pages that declare `sample` ask Claude with an Anthropic API key on your machine. The daemon reads the key from `ANTHROPIC_API_KEY` when it starts; the `[sample]` table in `config.toml` changes that:
 

@@ -1,7 +1,7 @@
 use clax_core::Home;
 use clax_server::daemon::{
-    DaemonInfo, DaemonLock, ServeConfig, pid_alive, read_daemon_info, retry_interrupted, serve,
-    write_daemon_info,
+    DaemonInfo, DaemonLock, ServeConfig, pid_alive, port_held, read_daemon_info, retry_interrupted,
+    serve, write_daemon_info,
 };
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -153,6 +153,90 @@ async fn serve_picks_a_free_port_writes_info_and_shuts_down_on_request() {
         read_daemon_info(&home).is_none(),
         "daemon.json removed on clean exit"
     );
+}
+
+fn config_on(home: &Home, port: u16) -> ServeConfig {
+    ServeConfig {
+        home: home.clone(),
+        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        port,
+        version: "test",
+        stale_check_interval: std::time::Duration::from_secs(30),
+        reap_interval: std::time::Duration::from_secs(60),
+        codex: Default::default(),
+        sample: std::sync::Arc::new(clax_server::sample::Sampler::disabled()),
+    }
+}
+
+/// Starts a daemon asked for `port`, returns the port it took, and stops it.
+async fn port_taken_for(port: u16) -> u16 {
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("ax"));
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(serve(config_on(&home, port), Some(tx)));
+    let info = rx.await.unwrap();
+    assert_eq!(read_daemon_info(&home).unwrap().port, info.port);
+    let res = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{}/api/admin/shutdown", info.port))
+        .bearer_auth(&info.token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 202);
+    tokio::time::timeout(std::time::Duration::from_secs(20), handle)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    info.port
+}
+
+#[tokio::test]
+async fn serve_skips_a_port_a_wildcard_listener_holds() {
+    // A 127.0.0.1 bind can succeed beside a wildcard listener (macOS), yet a
+    // browser could reach that listener at localhost: the port is held.
+    let holder = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let port = holder.local_addr().unwrap().port();
+    assert!(port_held(port));
+    let took = port_taken_for(port).await;
+    assert_ne!(took, port);
+    assert!(took > port && took <= port + 20, "{took}");
+    // The holder is left alone.
+    let _c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    assert!(holder.accept().is_ok());
+}
+
+#[tokio::test]
+async fn serve_skips_a_port_held_on_ipv6_loopback_only() {
+    let Ok(holder) = std::net::TcpListener::bind("[::1]:0") else {
+        return; // No IPv6 loopback here.
+    };
+    let port = holder.local_addr().unwrap().port();
+    let took = port_taken_for(port).await;
+    assert_ne!(took, port);
+}
+
+#[tokio::test]
+async fn serve_fails_when_every_port_it_would_try_is_held() {
+    let mut seed = std::process::id();
+    let (_held, base) = loop {
+        seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        let base = 20_000 + (seed % 40_000) as u16;
+        let held: Vec<_> = (base..base + 21)
+            .map_while(|p| std::net::TcpListener::bind(("127.0.0.1", p)).ok())
+            .collect();
+        if held.len() == 21 {
+            break (held, base);
+        }
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("ax"));
+    let e = serve(config_on(&home, base), None).await.unwrap_err();
+    assert!(
+        format!("{e:#}").contains("in use") || format!("{e:#}").contains("held"),
+        "{e:#}"
+    );
+    assert!(read_daemon_info(&home).is_none());
 }
 
 #[tokio::test]

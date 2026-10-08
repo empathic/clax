@@ -24,6 +24,22 @@ fn holder() -> (std::net::TcpListener, u16) {
     (l, port)
 }
 
+/// Listeners holding 21 consecutive loopback ports, every port a daemon
+/// asked for the first would try; returns them and the first port.
+fn hold_range() -> (Vec<std::net::TcpListener>, u16) {
+    let mut seed = std::process::id();
+    loop {
+        seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        let base = 20_000 + (seed % 40_000) as u16;
+        let held: Vec<_> = (base..base + 21)
+            .map_while(|p| std::net::TcpListener::bind(("127.0.0.1", p)).ok())
+            .collect();
+        if held.len() == 21 {
+            return (held, base);
+        }
+    }
+}
+
 fn home_with_port(dir: &std::path::Path, port: u16) {
     std::fs::create_dir_all(dir.join("ax")).unwrap();
     std::fs::write(
@@ -86,14 +102,26 @@ fn preflight_names_a_malformed_config_on_one_line() {
 }
 
 #[test]
-fn preflight_names_a_port_another_program_holds_and_leaves_it_alone() {
+fn preflight_passes_when_the_daemon_can_move_past_a_held_port() {
     let dir = tempfile::tempdir().unwrap();
     let (held, port) = holder();
+    home_with_port(dir.path(), port);
+    let out = preflight(&mut cmd(dir.path()));
+    assert!(out.status.success(), "{out:?}");
+    // The holder still has its port and accepts connections.
+    let _c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    assert!(held.accept().is_ok());
+}
+
+#[test]
+fn preflight_names_a_range_other_programs_hold_and_leaves_them_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (held, port) = hold_range();
     home_with_port(dir.path(), port);
     let err = failure(&preflight(&mut cmd(dir.path())));
     let config = dir.path().join("ax/config.toml");
     assert!(
-        err.starts_with(&format!("error: port {port} is already in use")),
+        err.starts_with(&format!("error: ports {port}-{} are all in use", port + 20)),
         "{err}"
     );
     assert!(err.contains("not a Clax daemon for"), "{err}");
@@ -103,10 +131,23 @@ fn preflight_names_a_port_another_program_holds_and_leaves_it_alone() {
     );
     assert!(err.contains("CLAX_PORT="), "{err}");
     assert!(!dir.path().join("ax/daemon.json").exists());
-    // The holder still has its port and accepts connections.
-    held.set_nonblocking(false).unwrap();
     let _c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    assert!(held.accept().is_ok());
+    assert!(held[0].accept().is_ok());
+}
+
+#[test]
+fn preflight_fails_on_a_held_port_given_with_the_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_held, port) = holder();
+    std::fs::create_dir_all(dir.path().join("ax")).unwrap();
+    let mut c = cmd(dir.path());
+    c.args(["--port", &port.to_string()]);
+    let err = failure(&preflight(&mut c));
+    assert!(
+        err.contains(&format!("port {port} is already in use")),
+        "{err}"
+    );
+    assert!(err.contains("pass another port to --port"), "{err}");
 }
 
 #[test]
@@ -155,7 +196,7 @@ fn clax_port_overrides_the_config_and_the_fix_names_it() {
 #[test]
 fn preflight_passes_when_the_holder_is_this_homes_daemon() {
     let dir = tempfile::tempdir().unwrap();
-    let (_held, port) = holder();
+    let (_held, port) = hold_range();
     home_with_port(dir.path(), port);
     // daemon.json naming a live process: this home's daemon.
     let info = serde_json::json!({
@@ -170,7 +211,7 @@ fn preflight_passes_when_the_holder_is_this_homes_daemon() {
 #[test]
 fn preflight_passes_while_a_daemon_of_this_home_is_starting() {
     let dir = tempfile::tempdir().unwrap();
-    let (_held, port) = holder();
+    let (_held, port) = hold_range();
     home_with_port(dir.path(), port);
     // The start lock is held while a daemon starts, before daemon.json exists.
     let lock = std::fs::File::create(dir.path().join("ax/daemon.lock")).unwrap();
