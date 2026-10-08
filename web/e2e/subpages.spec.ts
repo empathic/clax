@@ -148,6 +148,26 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await commentModeIn(frame);
   });
 
+  test(`${mode}: back across an in-page link, the page is asked to greet again and goes on hearing the shell`, async ({ page }) => {
+    const LONG = `<!doctype html><html><head><title>Long</title></head><body><a id="jump" href="#end">To the end</a><div style="height:3000px"></div><h2 id="end">End</h2></body></html>`;
+    const { artifact } = await publish(d.base, d.token, `Back ${mode}`, { "index.html": LONG });
+    const id = artifact.id;
+    // Counts the shell's requests to greet again, in every frame.
+    await page.addInitScript(() => addEventListener("message", e => { if (e.data && e.data.type === "clax:greet") (window as unknown as { greets: number }).greets = ((window as unknown as { greets?: number }).greets ?? 0) + 1; }));
+    const frame = await openArtifact(page, d.base, id, 1, mode);
+    // The link stays with the browser: a fragment entry of the frame's own.
+    await frame.locator("#jump").click();
+    await expect(page).toHaveURL(`${d.base}/a/${id}#end`);
+    // Back across that entry: Chromium fires a load at the frame element with
+    // no new document, which closes the gate; the shell asks the page to
+    // greet, and its hello reopens it.
+    await page.evaluate(() => history.back());
+    await expect.poll(() => frame.evaluate(() => location.hash)).toBe("");
+    await expect.poll(() => frame.evaluate(() => (window as unknown as { greets?: number }).greets ?? 0)).toBe(1);
+    await page.getByRole("button", { name: "Comment" }).click();
+    await commentModeIn(frame);
+  });
+
   test(`${mode}: one link inside the frame is one history entry`, async ({ page }) => {
     const { artifact } = await publish(d.base, d.token, `History ${mode}`, { "index.html": INDEX, "about.html": ABOUT });
     const id = artifact.id;

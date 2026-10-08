@@ -58,6 +58,10 @@ export type ShellToBridge =
    * the frame element with no new document, which the shell could not tell
    * from a document that never greeted. */
   | { type: "clax:hash"; hash: string }
+  /** Greet again: the page answers with its `clax:hello`. The shell asks
+   * after a load that brought no hello, which in Chromium can come with no
+   * new document (Back or Forward across the page's own fragments). */
+  | { type: "clax:greet" }
   /** `sameVersion`: the thread was made on the version the frame shows (an
    * area's element fingerprint is then not checked: its content may be live). */
   | { type: "clax:resolve-anchors"; requestId: string; anchors: { id: string; anchor: Anchor; sameVersion?: boolean }[] }
@@ -116,5 +120,5 @@ export type BridgeToShell =
   | UseRequest
   | CallRequest;
 
-export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:use-result", "clax:call-result", "clax:event"]);
+export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:greet", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:use-result", "clax:call-result", "clax:event"]);
 export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:use", "clax:call"]);
