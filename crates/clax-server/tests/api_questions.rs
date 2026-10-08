@@ -1373,3 +1373,42 @@ async fn the_test_expire_routes_end_question_and_feedback_polls_at_once() {
     assert_eq!(v["feedback"], json!([]));
     assert_eq!(v["waited_s"], 0);
 }
+
+/// A daemon shutting down while a hook waits on its question withdraws the
+/// question and answers the poll with it, so the hook logs it released
+/// instead of failing to release it on a daemon that is going away. An
+/// `ask` question is left open.
+#[tokio::test]
+async fn shutting_down_withdraws_the_hook_questions_polls_hold() {
+    let (stop, stopping) = tokio::sync::watch::channel(false);
+    let ts = TestServer::spawn_with(move |s| s.shutdown = stopping).await;
+    let _surface = ts.stream_as_owner(&["questions"]).await;
+    let sid = session(&ts, "h1").await;
+    let made = ts.ask(&sid, hook("t")).await;
+    assert_eq!(made["mode"], "wait");
+    let hq = made["question"]["id"].as_str().unwrap().to_string();
+    let aq = ts.ask(&sid, body()).await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let poll = |qid: &str| {
+        let req = ts.authed(ts.client.get(format!(
+            "{}/api/sessions/{sid}/questions/{qid}?wait=600",
+            ts.base
+        )));
+        tokio::spawn(async move { req.send().await.unwrap().json::<Value>().await.unwrap() })
+    };
+    let (hook_poll, ask_poll) = (poll(&hq), poll(&aq));
+    ts.wait_question_waiters(&hq, 1).await;
+    ts.wait_question_waiters(&aq, 1).await;
+    stop.send(true).unwrap();
+    let (h, a) = tokio::time::timeout(Duration::from_secs(5), async {
+        (hook_poll.await.unwrap(), ask_poll.await.unwrap())
+    })
+    .await
+    .expect("shutting down ends the polls at once");
+    assert_eq!(h["question"]["status"], "withdrawn");
+    assert_eq!(a["question"]["status"], "open");
+    assert_eq!(ts.question_status(&hq).await, "withdrawn");
+    assert_eq!(ts.question_status(&aq).await, "open");
+}
