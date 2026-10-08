@@ -862,3 +862,29 @@ fn inbox_lists_shows_and_marks_as_the_owner() {
     let e = d.fails(&["inbox", "show", "9"]);
     assert!(e.contains("no item 9"), "{e}");
 }
+
+/// The tool commands (`clax db set`, …) are the owner through the CLI
+/// (audit spec §5.2, §6.9), never an MCP agent.
+#[test]
+fn tool_commands_are_recorded_as_the_owner_on_cli() {
+    let d = Daemon::start();
+    let aid = d.publish(
+        None,
+        "Tracker",
+        json!({"index.html": {"content": "<main></main>", "encoding": "utf8"}}),
+        json!({"db": {}}),
+    );
+    d.json(&["db", "set", &aid, "tasks", "t1", r#"{"title": "Ship"}"#]);
+    let c = rusqlite::Connection::open(d.home().join("clax.db")).unwrap();
+    let (actor, body): (String, String) = c
+        .query_row(
+            "SELECT actor, body FROM audit_events WHERE kind = 'doc.write' ORDER BY seq DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let actor: Value = serde_json::from_str(&actor).unwrap();
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(actor["type"], "owner", "{actor}");
+    assert_eq!(body["via"], "cli", "{body}");
+}

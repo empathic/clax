@@ -1,0 +1,44 @@
+[
+  {
+    "n": 1,
+    "arguments": "{}",
+    "canonical": "{}",
+    "args_sha256": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+  },
+  {
+    "n": 2,
+    "arguments": "{\"id\":\"k3m9q2w8x1ab\",\"if_version\":3}",
+    "canonical": "{\"id\":\"k3m9q2w8x1ab\",\"if_version\":3}",
+    "args_sha256": "sha256:c6e6f48ad9e94345a81d22b0fa628e053e81e5785a38f0f61965c9196a4bfe93"
+  },
+  {
+    "n": 3,
+    "arguments": "{\"b\":[1,2,{\"z\":null,\"a\":true}],\"a\":\"x\"}",
+    "canonical": "{\"a\":\"x\",\"b\":[1,2,{\"a\":true,\"z\":null}]}",
+    "args_sha256": "sha256:dcfe2a3d2102de1d1e5f2a65d1feaf2f69b60bea4c08409297eb9df544f8bb5b"
+  },
+  {
+    "n": 4,
+    "arguments": "{\"body\":\"Line 1\\nLine \\\"2\\\"\\ttab\\u001f\",\"thread_id\":\"01JB9ZK3\"}",
+    "canonical": "{\"body\":\"Line 1\\nLine \\\"2\\\"\\ttab\\u001f\",\"thread_id\":\"01JB9ZK3\"}",
+    "args_sha256": "sha256:f94816d9ea574279d2a70f9e7f981d99437f7cd24dcd9f0f73bb8e501af9ed94"
+  },
+  {
+    "n": 5,
+    "arguments": "{\"é\":1,\"e\":2,\"z\":3}",
+    "canonical": "{\"e\":2,\"z\":3,\"é\":1}",
+    "args_sha256": "sha256:9fd95198b233351043c9e13cbc336297f31bc76a19d0ca2ff093cd1172fa47a1"
+  },
+  {
+    "n": 6,
+    "arguments": "{\"n\":1.0,\"m\":-0.5,\"big\":100000000000000000000}",
+    "canonical": "{\"big\":100000000000000000000,\"m\":-0.5,\"n\":1}",
+    "args_sha256": "sha256:ed4f6fe44f96cbbe62384feebf79cb9dbc03ff889ae627811e31bd2ea5b2b557"
+  },
+  {
+    "n": 7,
+    "arguments": "{\"\":2,\"😀\":1}",
+    "canonical": "{\"😀\":1,\"\":2}",
+    "args_sha256": "sha256:04208f6cdb854e2ab1b07dd3633a39dec854344fe72824cf7f2fdb4e2e33129e"
+  }
+]

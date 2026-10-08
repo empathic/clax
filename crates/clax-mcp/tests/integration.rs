@@ -2,6 +2,7 @@
 //! `tests/`: every test binary costs a link and, on macOS, an assessment of
 //! the new executable on its first run.
 
+mod calls;
 mod channel;
 mod comments;
 mod common;

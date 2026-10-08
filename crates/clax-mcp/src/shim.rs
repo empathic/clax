@@ -154,7 +154,9 @@ fn parse_lsof_cwd(out: &str) -> Option<PathBuf> {
 /// session use `discover`; either runs again whenever the daemon stops
 /// answering, and the session is then registered again. When no daemon can be reached the shim serves anyway, and tool calls
 /// retry and report `daemon_unreachable` until one can. The session is marked
-/// seen every `heartbeat`. `status` reports what `upgrade_hold` says about
+/// seen every `heartbeat`. The registration and each tool call that changes
+/// history carry the working directory's git state, and each tool call is
+/// reported once its result has gone back. `status` reports what `upgrade_hold` says about
 /// the daemon's version, when given. With `channel`, the tools declare the
 /// Claude Code channel, and when its launch flag is present the shim
 /// forwards the session's comment notices as channel events.
@@ -183,7 +185,9 @@ pub async fn run(
         std::process::id(),
         parent_pid,
     );
-    let client = DaemonClient::managed(refresh, discover, reg);
+    // Found once; each capture runs git afresh (spec §9.3).
+    let git = crate::git::GitCapture::from_env();
+    let client = DaemonClient::managed(refresh, discover, reg).with_git(git.clone());
     match client.ensure_session().await {
         Ok(()) => tracing::info!(
             session = client.session().map(|s| s.id),
@@ -209,7 +213,8 @@ pub async fn run(
         None => tracing::info!("plugin root unknown; plugin version not checked"),
     }
     let mut tools = ClaxTools::new(client.clone(), String::new(), None, home.log_path())
-        .with_plugin_version(plugin_version);
+        .with_plugin_version(plugin_version)
+        .with_git(git);
     if let Some(probe) = upgrade_hold {
         tools = tools.with_upgrade_hold(probe);
     }
@@ -244,8 +249,15 @@ pub async fn run(
         })
     };
 
-    let served = serve(tools, client.clone(), forward).await;
+    let served = serve(tools.clone(), client.clone(), forward).await;
     beat.abort();
+    // The last calls' reports, sent before the session ends.
+    if tokio::time::timeout(END_TIMEOUT, tools.settle_reports())
+        .await
+        .is_err()
+    {
+        tracing::warn!("tool-call reports still unsent at exit");
+    }
     match tokio::time::timeout(END_TIMEOUT, client.end_session()).await {
         Ok(Ok(_)) => {}
         Ok(Err(e)) => tracing::warn!("ending the session failed: {e}"),

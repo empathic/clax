@@ -70,7 +70,7 @@ crates/clax-core/src/toolpath/redact.rs  --no-text / --no-names / --no-paths
 crates/clax-core/src/toolpath/project.rs artifact / install / journal projections
 crates/clax-core/src/toolpath/segment.rs segment writer, rotation, recovery (std::fs only)
 crates/clax-core/src/store/audit.rs      queries, backfill
-crates/clax-core/src/store/migrations.rs migration 22
+crates/clax-core/src/store/migrations.rs migration 23
 crates/clax-cli/build.rs                 CLAX_BUILD_COMMIT (handed to clax-core at startup)
 crates/clax-core/tests/toolpath/         golden histories, segments, exports, args-hash-vectors.json,
                                          schema/toolpath.schema.json + SOURCE (vendored, read-only)
@@ -120,10 +120,10 @@ docs/contract.md                         journal and export contract
 
 ---
 
-### Task 2: Migration 22, `Store::record_audit`, install ID, version content hash
+### Task 2: Migration 23, `Store::record_audit`, install ID, version content hash
 
 **Files:**
-- Modify: `crates/clax-core/src/store/migrations.rs`. Append migration 22 as in spec §5.1, with its test.
+- Modify: `crates/clax-core/src/store/migrations.rs`. Append migration 23 as in spec §5.1, with its test.
 - Create: `crates/clax-core/src/store/audit.rs`
 - Modify: `crates/clax-core/src/store/artifacts.rs` (`write_version_then` hashes the files and sets `content_sha256`), `crates/clax-core/src/model.rs`
 
@@ -256,7 +256,7 @@ docs/contract.md                         journal and export contract
 ### Task 8: Backfill existing history
 
 **Files:**
-- Modify: `crates/clax-core/src/store/audit.rs` (`backfill`), `migrations.rs` (migration 22's Rust step)
+- Modify: `crates/clax-core/src/store/audit.rs` (`backfill`), `migrations.rs` (migration 23's Rust step)
 
 The backfill sorts all events by `(at, kind rank, natural ID)`, then inserts them, so `seq` follows history. The sources are:
 

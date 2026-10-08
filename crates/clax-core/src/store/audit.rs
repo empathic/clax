@@ -11,7 +11,9 @@ use super::Store;
 use super::sessions::with_for_actor;
 use crate::CoreError;
 use crate::Result;
-use crate::audit::{AgentActor, AuditCtx, AuditIds, AuditKind, AuditRecord, SystemReason};
+use crate::audit::{
+    AgentActor, AuditCtx, AuditIds, AuditKind, AuditRecord, SystemReason, ToolCallReport,
+};
 use crate::live::PageKey;
 use crate::toolpath::project::{self, ArtifactInfo, Export, ExportEnv, Scope, Source};
 use crate::working::{StopReason, Transition};
@@ -132,6 +134,35 @@ fn working_stop(key: &str, reason: StopReason, duration_ms: i64) -> AuditRecord 
         .with("key", key)
         .with("reason", reason.as_str())
         .with("duration_ms", duration_ms)
+}
+
+/// The `tool.call` record of `report` (spec §6.7), on `artifact` when the
+/// call concerned one: the call's identity, its end and outcome, and the
+/// `seq` of each event recorded under it. A harness name or call ID the
+/// agent side did not have is left out.
+pub(crate) fn tool_call_record(
+    at: &str,
+    report: &ToolCallReport,
+    artifact: Option<String>,
+    produced: &[i64],
+) -> AuditRecord {
+    let mut rec = AuditRecord::new(AuditKind::ToolCall, at)
+        .with("call_id", report.call_id.as_str())
+        .with("tool", report.tool.as_str())
+        .with("args_sha256", report.args_sha256.as_str())
+        .with("started_at", report.started_at.as_str())
+        .with("ended_at", report.ended_at.as_str())
+        .with("outcome", report.outcome.as_str())
+        .with("produced", produced.to_vec());
+    if let Some(t) = &report.harness_tool {
+        rec = rec.with("harness_tool", t.as_str());
+    }
+    if let Some(h) = &report.harness_call_id {
+        rec = rec.with("harness_call_id", h.as_str());
+    }
+    rec.ids.call = Some(report.call_id.clone());
+    rec.ids.artifact = artifact;
+    rec
 }
 
 /// The stored body of `rec` under `ctx`: the record's fields plus the
@@ -294,6 +325,50 @@ impl Store {
                 .query_map(params![call_id], row_to_event)?
                 .collect::<rusqlite::Result<_>>()?;
             Ok(rows)
+        })
+    }
+
+    /// Records `tool.call` for `report` under `ctx` (spec §6.7), once per
+    /// call: a call already recorded records nothing, and `None` is
+    /// returned. `produced` lists the events recorded under the call, in
+    /// `seq` order. The event belongs to the first artifact those events
+    /// touched, else to the artifact the report names when it exists, else
+    /// to the install.
+    pub fn record_tool_call(&self, ctx: &AuditCtx, report: &ToolCallReport) -> Result<Option<i64>> {
+        self.with_tx(|tx| {
+            let mut q = tx.prepare_cached(
+                "SELECT seq, kind, artifact_id FROM audit_events WHERE call_id = ?1 ORDER BY seq",
+            )?;
+            let rows: Vec<(i64, String, Option<String>)> = q
+                .query_map(params![report.call_id], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            if rows
+                .iter()
+                .any(|(_, k, _)| k == AuditKind::ToolCall.as_str())
+            {
+                return Ok(None);
+            }
+            let made = rows
+                .iter()
+                .filter(|(_, k, _)| k != AuditKind::ToolCallId.as_str());
+            let produced: Vec<i64> = made.clone().map(|(s, _, _)| *s).collect();
+            let artifact = match made.clone().find_map(|(_, _, a)| a.clone()) {
+                Some(a) => Some(a),
+                None => match &report.artifact_id {
+                    Some(a) => tx
+                        .query_row("SELECT id FROM artifacts WHERE id = ?1", [a], |r| r.get(0))
+                        .optional()?,
+                    None => None,
+                },
+            };
+            let rec = tool_call_record(&Store::now(), report, artifact, &produced);
+            let ctx = AuditCtx {
+                call: None,
+                ..ctx.clone()
+            };
+            self.record_audit(tx, &ctx, rec).map(Some)
         })
     }
 
@@ -605,6 +680,82 @@ pub(crate) mod tests {
         let mut r = AuditRecord::new(AuditKind::ArtifactUpdate, Store::now()).with("title", title);
         r.ids.artifact = Some("01ARZ3NDEKTSV4RRFFQ69G5FAV".into());
         r
+    }
+
+    fn report(call_id: &str) -> ToolCallReport {
+        ToolCallReport::new(
+            CallHeader {
+                call_id: call_id.into(),
+                tool: "publish".into(),
+                harness_tool: None,
+                args_sha256: format!("sha256:{}", "ab".repeat(32)),
+                started_at: "2026-10-06T14:03:11.402Z".into(),
+                harness_call_id: None,
+            },
+            "2026-10-06T14:03:11.913Z".into(),
+            crate::audit::ToolOutcome::Ok,
+        )
+    }
+
+    #[test]
+    fn tool_call_lists_what_it_produced_once() {
+        let (_d, st) = store();
+        let call_id = "01JBC0000000000000000000C1";
+        let under = AuditCtx {
+            call: Some(report(call_id).call()),
+            ..ctx()
+        };
+        let seqs: Vec<i64> = (0..2)
+            .map(|i| {
+                st.with_tx(|tx| st.record_audit(tx, &under, rec(&format!("t{i}"))))
+                    .unwrap()
+            })
+            .collect();
+        // Another call's event is not listed.
+        let other = AuditCtx {
+            call: Some(report("01JBC0000000000000000000C2").call()),
+            ..ctx()
+        };
+        st.with_tx(|tx| st.record_audit(tx, &other, rec("x")))
+            .unwrap();
+        let seq = st
+            .record_tool_call(&ctx(), &report(call_id))
+            .unwrap()
+            .unwrap();
+        let row = st.events_after(seq - 1, 1).unwrap().remove(0);
+        assert_eq!(row.kind, "tool.call");
+        assert_eq!(row.ids.call.as_deref(), Some(call_id));
+        assert_eq!(
+            row.ids.artifact.as_deref(),
+            Some("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+        );
+        let body: serde_json::Value = serde_json::from_str(&row.body).unwrap();
+        assert_eq!(body["produced"], serde_json::json!(seqs));
+        assert_eq!(body["outcome"], "ok");
+        assert_eq!(body["tool"], "publish");
+        assert!(body.get("call").is_none(), "{body}");
+        assert!(body.get("harness_tool").is_none(), "{body}");
+        // A repeated report records nothing.
+        assert_eq!(st.record_tool_call(&ctx(), &report(call_id)).unwrap(), None);
+        assert_eq!(st.events_for_call(call_id).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn tool_call_without_events_takes_the_named_artifact_if_it_exists() {
+        let (_d, st) = store();
+        let a = crate::store::test_util::artifact(&st, None).to_string();
+        let mut r = report("01JBC0000000000000000000C3");
+        r.artifact_id = Some(a.clone());
+        let seq = st.record_tool_call(&ctx(), &r).unwrap().unwrap();
+        let row = st.events_after(seq - 1, 1).unwrap().remove(0);
+        assert_eq!(row.ids.artifact.as_deref(), Some(a.as_str()));
+        let body: serde_json::Value = serde_json::from_str(&row.body).unwrap();
+        assert_eq!(body["produced"], serde_json::json!([]));
+        let mut gone = report("01JBC0000000000000000000C4");
+        gone.artifact_id = Some("nosuchartifact".into());
+        let seq = st.record_tool_call(&ctx(), &gone).unwrap().unwrap();
+        let row = st.events_after(seq - 1, 1).unwrap().remove(0);
+        assert_eq!(row.ids.artifact, None);
     }
 
     #[test]

@@ -78,6 +78,8 @@ impl Shim {
                 .env("HOME", dir.path())
                 .env(session_var.0, session_var.1)
                 .env("CLAX_NO_OPEN", "1")
+                // Captures never race the real deadline on a loaded machine.
+                .env(clax_mcp::git::DEADLINE_VAR, "20000")
                 .env("RUST_LOG", "error")
                 .current_dir(&work);
             if let Some(ms) = heartbeat_ms {
@@ -165,6 +167,15 @@ impl Shim {
             client.cancel().await.unwrap();
         }
         self.stop_daemon();
+    }
+
+    /// [`Shim::finish`], keeping the shim's directory for the test to read.
+    async fn finish_keeping_dir(mut self) -> tempfile::TempDir {
+        if let Some(client) = self.client.take() {
+            client.cancel().await.unwrap();
+        }
+        self.stop_daemon();
+        std::mem::replace(&mut self.dir, tempfile::tempdir().unwrap())
     }
 }
 
@@ -535,4 +546,52 @@ async fn a_grok_status_gives_the_monitor_command_shell_quoted() {
         "{v}"
     );
     shim.finish().await;
+}
+
+/// The shim captures git state at registration, sends the call's identity
+/// with each call, and reports its calls before it exits.
+#[tokio::test]
+async fn shim_records_registration_git_and_reports_calls_before_exit() {
+    let shim = Shim::start(None).await;
+    ok(&shim
+        .call("publish", json!({"html": "<title>Shim</title><p>x"}))
+        .await);
+    let dir = shim.finish_keeping_dir().await;
+    let home = Home::at(dir.path().join("ax"));
+    let c = rusqlite::Connection::open(home.db_path()).unwrap();
+    let rows: Vec<(String, String)> = c
+        .prepare("SELECT kind, body FROM audit_events ORDER BY seq")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let body = |kind: &str| -> Value {
+        let (_, b) = rows
+            .iter()
+            .find(|(k, _)| k == kind)
+            .unwrap_or_else(|| panic!("no {kind} in {rows:?}"));
+        serde_json::from_str(b).unwrap()
+    };
+    // The working directory is no repository.
+    // A debug shim honours the test's long deadline; a release one keeps
+    // the real 300 ms, which a loaded machine can pass.
+    let start = body("session.start")["git_capture"].clone();
+    if cfg!(debug_assertions) {
+        assert_eq!(start, "not-a-repo");
+    } else {
+        assert!(start == "not-a-repo" || start == "timeout", "{start}");
+    }
+    assert_eq!(body("session.start")["via"], "mcp");
+    let created = body("artifact.create");
+    assert!(
+        created["git_capture"] == "not-a-repo"
+            || (!cfg!(debug_assertions) && created["git_capture"] == "timeout"),
+        "{created}"
+    );
+    assert_eq!(created["call"]["tool"], "publish");
+    let call = body("tool.call");
+    assert_eq!(call["tool"], "publish");
+    assert_eq!(call["call_id"], created["call"]["call_id"]);
+    assert_eq!(call["outcome"], "ok");
 }

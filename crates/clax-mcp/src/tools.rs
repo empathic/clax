@@ -706,7 +706,32 @@ pub struct ClaxTools {
     /// At most [`ASK_SURFACE_CAP`] entries; an entry leaves when its
     /// answer is handed over by any tool.
     ask_surface: std::sync::Arc<std::sync::Mutex<BTreeMap<String, bool>>>,
-    tool_router: ToolRouter<Self>,
+    /// Captures the agent's git state for calls that change history; `None`
+    /// (the daemon's `/mcp`, which has no working directory) sends
+    /// `no-cwd`.
+    git: Option<crate::git::GitCapture>,
+    /// The tool-call reports still being sent.
+    reports: crate::calls::Reports,
+    tool_router: std::sync::Arc<ToolRouter<Self>>,
+}
+
+/// A tool call in progress: reported with `outcome` when dropped, so a call
+/// whose handler is dropped before it returns (the client cancelled it) is
+/// still recorded, as an error. The report is pushed before the call stops
+/// counting as running.
+struct CallGuard<'a> {
+    tools: &'a ClaxTools,
+    call: std::sync::Arc<crate::calls::CallScope>,
+    outcome: clax_core::audit::ToolOutcome,
+    _running: crate::calls::Running,
+}
+
+impl Drop for CallGuard<'_> {
+    fn drop(&mut self) {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            self.tools.report_call(&self.call, self.outcome);
+        }
+    }
 }
 
 /// How the `open` tool shows a URL in the browser.
@@ -749,8 +774,56 @@ impl ClaxTools {
             opener: Opener::default(),
             open_wait: open_wait(),
             ask_surface: Default::default(),
-            tool_router: Self::tool_router(),
+            git: None,
+            reports: Default::default(),
+            tool_router: std::sync::Arc::new(Self::tool_router()),
         }
+    }
+
+    /// These tools capturing the agent's git state with `git` on each call
+    /// that changes history (spec §9.3).
+    pub fn with_git(mut self, git: crate::git::GitCapture) -> ClaxTools {
+        self.git = Some(git);
+        self
+    }
+
+    /// Waits for every tool call still running to end and every report to
+    /// be sent.
+    pub async fn settle_reports(&self) {
+        self.reports.settle().await;
+    }
+
+    /// Starts tool call `name` with `arguments`: a call ID, the argument
+    /// hash, and for a call that changes history its git capture, begun now
+    /// so it overlaps the tool's own work.
+    fn begin_call(
+        &self,
+        name: &str,
+        arguments: Option<&Map<String, Value>>,
+    ) -> std::sync::Arc<crate::calls::CallScope> {
+        let git = crate::calls::captures_git(name).then(|| match &self.git {
+            Some(g) => {
+                let cwd = self
+                    .session()
+                    .map(|s| s.cwd)
+                    .filter(|c| !c.is_empty())
+                    .or_else(|| self.client.agent_cwd());
+                g.start(cwd.as_deref())
+            }
+            None => crate::calls::GitStart::Ready(clax_core::gitctx::GitField::Capture("no-cwd")),
+        });
+        std::sync::Arc::new(crate::calls::CallScope::begin(name, arguments, git))
+    }
+
+    /// Reports `call`, which ended with `outcome`, in the background.
+    fn report_call(&self, call: &crate::calls::CallScope, outcome: clax_core::audit::ToolOutcome) {
+        let report = call.report(outcome);
+        let client = self.client.clone();
+        self.reports.push(tokio::spawn(async move {
+            if let Err(e) = client.report_tool_call(&report).await {
+                tracing::debug!(error = %e, tool = %report.tool, "tool-call report not recorded");
+            }
+        }));
     }
 
     /// These tools with the version of the plugin that started them, which
@@ -836,7 +909,10 @@ impl ClaxTools {
     /// no live page yet.
     async fn resolve_ref(&self, url_or_id: &str) -> Result<(String, Option<u32>), CallToolResult> {
         match self.target(url_or_id).await? {
-            crate::target::Target::Artifact { id, version } => Ok((id, version)),
+            crate::target::Target::Artifact { id, version } => {
+                self.client.note_artifact(&id);
+                Ok((id, version))
+            }
             crate::target::Target::Page(url) => {
                 let res = self
                     .client
@@ -844,7 +920,10 @@ impl ClaxTools {
                     .await
                     .map_err(|e| self.fail(e))?;
                 match res["page"]["artifact_id"].as_str() {
-                    Some(id) => Ok((id.to_string(), None)),
+                    Some(id) => {
+                        self.client.note_artifact(id);
+                        Ok((id.to_string(), None))
+                    }
                     None => Err(render::error(
                         "invalid_id",
                         format!(
@@ -2316,6 +2395,49 @@ impl ClaxTools {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for ClaxTools {
+    /// Runs a tool call under its own call ID and argument hash (spec §6.7):
+    /// every request the tool makes carries them, and once the result is
+    /// ready the call is reported in the background, so the report never
+    /// delays the result. A name that is no tool is passed on unrecorded.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, McpError> {
+        use rmcp::handler::server::tool::ToolCallContext;
+        if !self.tool_router.has_route(&request.name) {
+            return self
+                .tool_router
+                .call(ToolCallContext::new(self, request, context))
+                .await;
+        }
+        let call = self.begin_call(&request.name, request.arguments.as_ref());
+        // Reports the call however it ends, a cancelled call as an error.
+        let mut guard = CallGuard {
+            tools: self,
+            call: call.clone(),
+            outcome: clax_core::audit::ToolOutcome::Error,
+            _running: self.reports.running(),
+        };
+        let tools = ClaxTools {
+            client: self.client.under(call),
+            ..self.clone()
+        };
+        let res = self
+            .tool_router
+            .call(ToolCallContext::new(&tools, request, context))
+            .await;
+        guard.outcome = match &res {
+            Ok(rmcp::model::CallToolResponse::Complete(r)) if r.is_error == Some(true) => {
+                clax_core::audit::ToolOutcome::Error
+            }
+            Ok(_) => clax_core::audit::ToolOutcome::Ok,
+            Err(_) => clax_core::audit::ToolOutcome::Error,
+        };
+        drop(guard);
+        res
+    }
+
     fn get_info(&self) -> ServerConfig {
         let mut caps = ServerCapabilities::builder().enable_tools().build();
         let mut instructions = INSTRUCTIONS.to_string();

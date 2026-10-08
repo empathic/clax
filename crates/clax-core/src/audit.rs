@@ -276,6 +276,98 @@ pub fn decode_call_header(value: &str) -> Result<CallHeader, String> {
     Ok(call)
 }
 
+/// How a tool call ended, as the agent side reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolOutcome {
+    /// The tool returned a result.
+    Ok,
+    /// The tool returned an error result, or the call failed.
+    Error,
+}
+
+impl ToolOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ToolOutcome::Ok => "ok",
+            ToolOutcome::Error => "error",
+        }
+    }
+}
+
+/// What the agent side posts once a tool call's result has gone back to
+/// the harness (spec §6.7, `POST /api/sessions/<sid>/tool-calls`): the
+/// call's identity as its `x-clax-call` header carried it, when it ended,
+/// how, and the artifact its arguments named, when the agent side resolved
+/// one. Fields this build does not know are ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCallReport {
+    pub call_id: String,
+    pub tool: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_tool: Option<String>,
+    pub args_sha256: String,
+    pub started_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_call_id: Option<String>,
+    /// RFC 3339 time the result went back, from the agent side's clock.
+    pub ended_at: String,
+    pub outcome: ToolOutcome,
+    /// The artifact the call's arguments named, as the agent side resolved
+    /// it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_id: Option<String>,
+}
+
+impl ToolCallReport {
+    /// The report of `call`, ended at `ended_at` with `outcome`.
+    pub fn new(call: CallHeader, ended_at: String, outcome: ToolOutcome) -> ToolCallReport {
+        ToolCallReport {
+            call_id: call.call_id,
+            tool: call.tool,
+            harness_tool: call.harness_tool,
+            args_sha256: call.args_sha256,
+            started_at: call.started_at,
+            harness_call_id: call.harness_call_id,
+            ended_at,
+            outcome,
+            artifact_id: None,
+        }
+    }
+
+    /// The call's identity, as its header carried it.
+    pub fn call(&self) -> CallHeader {
+        CallHeader {
+            call_id: self.call_id.clone(),
+            tool: self.tool.clone(),
+            harness_tool: self.harness_tool.clone(),
+            args_sha256: self.args_sha256.clone(),
+            started_at: self.started_at.clone(),
+            harness_call_id: self.harness_call_id.clone(),
+        }
+    }
+
+    /// Checks what [`CallHeader::validate`] checks, plus an RFC 3339
+    /// `ended_at` no earlier than `started_at`, and an `artifact_id` of at most 64 visible ASCII
+    /// characters.
+    pub fn validate(&self) -> Result<(), String> {
+        self.call().validate()?;
+        let started = chrono::DateTime::parse_from_rfc3339(&self.started_at)
+            .map_err(|_| "started_at is not RFC 3339".to_string())?;
+        let ended = chrono::DateTime::parse_from_rfc3339(&self.ended_at)
+            .map_err(|_| "ended_at is not RFC 3339".to_string())?;
+        if ended < started {
+            return Err("ended_at is before started_at".into());
+        }
+        if let Some(a) = &self.artifact_id
+            && (a.is_empty() || a.len() > 64 || !a.bytes().all(|b| b.is_ascii_graphic()))
+        {
+            return Err("artifact_id is not an artifact ID".into());
+        }
+        Ok(())
+    }
+}
+
 /// Everything a request contributes to the records it makes: the actor, the
 /// channel, the agent's git state and the tool call.
 #[derive(Debug, Clone, PartialEq, Eq)]

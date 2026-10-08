@@ -1467,6 +1467,24 @@ fn every_recorded_kind_is_classified_and_renders_conformant() {
         ],
     )
     .unwrap();
+    // A tool call, with every optional field, from the live builder.
+    let call = crate::audit::CallHeader {
+        call_id: "01JBC0000000000000000000C7".into(),
+        tool: "list".into(),
+        harness_tool: Some("mcp__plugin_clax_clax__list".into()),
+        args_sha256: crate::toolpath::args::args_sha256(&json!({})),
+        started_at: "2026-10-06T14:03:11.402Z".into(),
+        harness_call_id: Some("toolu_01C7".into()),
+    };
+    let mut report = crate::audit::ToolCallReport::new(
+        call,
+        "2026-10-06T14:03:11.913Z".into(),
+        crate::audit::ToolOutcome::Ok,
+    );
+    report.artifact_id = Some("a1".into());
+    st.record_tool_call(&crate::audit::AuditCtx::DAEMON, &report)
+        .unwrap()
+        .expect("recorded");
     let live = st.events_after(0, 100_000).unwrap();
     let home = st.home().clone();
     st.with_write(|c| {
@@ -2325,4 +2343,38 @@ fn golden_journal_export_matches_and_conforms() {
     assert_eq!(seqs_of(p), (1..=62).collect::<Vec<_>>());
     assert_eq!(p["meta"]["clax"]["projection"], "journal");
     golden("export.journal.path.json", &text);
+}
+
+/// The golden history's `tool.call` bodies are what the live builder makes
+/// from the same report, so the goldens follow the real recorder.
+#[test]
+fn golden_tool_calls_match_the_live_builder() {
+    let h = read_json("history.json");
+    let mut seen = 0;
+    for row in h["rows"].as_array().unwrap() {
+        if row["kind"] != "tool.call" {
+            continue;
+        }
+        seen += 1;
+        let body = row["body"].as_object().unwrap();
+        let report: crate::audit::ToolCallReport =
+            serde_json::from_value(Value::Object(body.clone())).unwrap();
+        let produced: Vec<i64> = serde_json::from_value(body["produced"].clone()).unwrap();
+        let artifact = row["ids"]["artifact"].as_str().map(str::to_string);
+        let rec = crate::store::audit::tool_call_record(
+            row["at"].as_str().unwrap(),
+            &report,
+            artifact.clone(),
+            &produced,
+        );
+        let mut want: Map<String, Value> = body.clone();
+        for k in redact::ENVELOPE_FIELDS {
+            want.remove(k);
+        }
+        let got: Map<String, Value> = rec.body.into_iter().collect();
+        assert_eq!(got, want, "seq {}", row["seq"]);
+        assert_eq!(rec.ids.call.as_deref(), body["call_id"].as_str());
+        assert_eq!(rec.ids.artifact, artifact);
+    }
+    assert!(seen >= 2);
 }

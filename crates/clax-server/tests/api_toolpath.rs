@@ -21,6 +21,7 @@ fn git() -> GitContext {
         diff_sha256: None,
         diff_bytes: None,
         diff_truncated: false,
+        diff_unavailable: false,
         untracked: 0,
         captured_at: "2026-10-06T14:03:11.512Z".into(),
     }
@@ -3467,4 +3468,159 @@ async fn a_responsive_appender_stops_within_its_limit() {
     assert!(h.stop_within(std::time::Duration::from_secs(10)).await);
     let text = String::from_utf8(fs.state().files.values().next().unwrap().clone()).unwrap();
     assert!(text.ends_with("{\"PathClose\":{}}\n"));
+}
+
+/// The report of [`call`] once it ended.
+fn call_report() -> Value {
+    let c = call();
+    json!({
+        "call_id": c.call_id,
+        "tool": c.tool,
+        "harness_tool": c.harness_tool,
+        "args_sha256": c.args_sha256,
+        "started_at": c.started_at,
+        "ended_at": "2026-10-06T14:03:11.913Z",
+        "outcome": "ok",
+    })
+}
+
+#[tokio::test]
+async fn tool_calls_route_records_the_call_with_what_it_produced() {
+    let ts = TestServer::spawn().await;
+    let session = ts.register_session("claude", "hs-calls").await;
+    let sid = session["id"].as_str().unwrap().to_string();
+    let b = ts.base.clone();
+    let seq = last_seq(&ts);
+    let (code, v) = status(
+        ts.authed(ts.client.post(format!("{b}/api/artifacts")))
+            .header("x-clax-via", "mcp")
+            .header("x-clax-session", &sid)
+            .header("x-clax-call", encode_call_header(&call()).unwrap())
+            .json(&json!({"title": "Called", "files": {"index.html": utf8("<p>x")}})),
+    )
+    .await;
+    assert_eq!(code, 201, "{v}");
+    let aid = v["artifact"]["id"].as_str().unwrap().to_string();
+    let made: Vec<i64> = {
+        let c = db(&ts);
+        let mut q = c
+            .prepare("SELECT seq FROM audit_events WHERE seq > ?1 ORDER BY seq")
+            .unwrap();
+        q.query_map([seq], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert!(!made.is_empty());
+    let url = format!("{b}/api/sessions/{sid}/tool-calls");
+    let seq = last_seq(&ts);
+    let (code, v) = status(
+        ts.authed(ts.client.post(&url))
+            .header("x-clax-via", "mcp")
+            .json(&call_report()),
+    )
+    .await;
+    assert_eq!(code, 201, "{v}");
+    assert_eq!(v["recorded"], true);
+    let recs = events_since(&ts, seq);
+    assert_eq!(kinds(&recs), ["tool.call"]);
+    let r = &recs[0];
+    assert_eq!(r.actor["type"], "agent");
+    assert_eq!(r.actor["session_id"], sid.as_str());
+    assert_eq!(r.session_id.as_deref(), Some(sid.as_str()));
+    assert_eq!(r.call_id.as_deref(), Some(call().call_id.as_str()));
+    assert_eq!(r.artifact_id.as_deref(), Some(aid.as_str()));
+    assert_eq!(r.body["via"], "mcp");
+    assert_eq!(r.body["produced"], json!(made));
+    assert_eq!(r.body["outcome"], "ok");
+    assert_eq!(r.body["harness_tool"], "mcp__clax__publish");
+    assert!(r.body.get("call").is_none(), "{}", r.body);
+
+    // Reported again (a retried POST): recorded once.
+    let seq = last_seq(&ts);
+    let (code, v) = status(ts.authed(ts.client.post(&url)).json(&call_report())).await;
+    assert_eq!((code, &v["recorded"]), (200, &json!(false)), "{v}");
+    assert!(events_since(&ts, seq).is_empty());
+}
+
+#[tokio::test]
+async fn tool_calls_route_refuses_bad_reports_and_strangers() {
+    let ts = TestServer::spawn().await;
+    let session = ts.register_session("claude", "hs-bad").await;
+    let sid = session["id"].as_str().unwrap().to_string();
+    let url = format!("{}/api/sessions/{sid}/tool-calls", ts.base);
+    let seq = last_seq(&ts);
+    for (field, bad) in [
+        ("call_id", json!("nope")),
+        ("tool", json!("mcp__clax__publish")),
+        ("args_sha256", json!("sha256:xyz")),
+        ("ended_at", json!("later")),
+        ("ended_at", json!("2026-10-06T14:03:11.401Z")),
+        ("outcome", json!("maybe")),
+        ("artifact_id", json!("a b")),
+    ] {
+        let mut body = call_report();
+        body[field] = bad;
+        let (code, v) = status(ts.authed(ts.client.post(&url)).json(&body)).await;
+        assert_eq!(code, 400, "{field}: {v}");
+    }
+    let (code, _) = status(
+        ts.authed(
+            ts.client
+                .post(format!("{}/api/sessions/nope/tool-calls", ts.base)),
+        )
+        .json(&call_report()),
+    )
+    .await;
+    assert_eq!(code, 400);
+    // A session that never existed records nothing.
+    let (code, v) = status(
+        ts.authed(ts.client.post(format!(
+            "{}/api/sessions/01JBC0000000000000000000ZZ/tool-calls",
+            ts.base
+        )))
+        .json(&call_report()),
+    )
+    .await;
+    assert_eq!(
+        (code, &v["error"]["code"]),
+        (404, &json!("unknown_session")),
+        "{v}"
+    );
+    // Without the token: refused, whatever the cookie.
+    let (code, _) = status(
+        ts.client
+            .post(&url)
+            .header("cookie", ts.owner_cookie())
+            .json(&call_report()),
+    )
+    .await;
+    assert_eq!(code, 401);
+    let (code, _) = status(
+        ts.client
+            .post(format!("{}/api/tool-calls", ts.base))
+            .json(&call_report()),
+    )
+    .await;
+    assert_eq!(code, 401);
+    assert!(events_since(&ts, seq).is_empty());
+}
+
+#[tokio::test]
+async fn sessionless_tool_call_is_the_mcp_client() {
+    let ts = TestServer::spawn().await;
+    let seq = last_seq(&ts);
+    let (code, v) = status(
+        ts.authed(ts.client.post(format!("{}/api/tool-calls", ts.base)))
+            .header("x-clax-via", "mcp")
+            .json(&call_report()),
+    )
+    .await;
+    assert_eq!(code, 201, "{v}");
+    let recs = events_since(&ts, seq);
+    assert_eq!(kinds(&recs), ["tool.call"]);
+    assert_eq!(recs[0].actor, json!({"type": "agent", "session_id": null}));
+    assert_eq!(recs[0].session_id, None);
+    assert_eq!(recs[0].artifact_id, None);
+    assert_eq!(recs[0].body["produced"], json!([]));
 }
