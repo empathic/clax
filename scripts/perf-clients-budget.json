@@ -13,7 +13,8 @@
   "cheap_p95_ms": 10,
   "rss_per_client_kb": 48,
   "idle_cpu_pct": 2,
-  "slow_rss_growth_kb": 2048,
+  "slow_growth_kb": 1024,
+  "slow_rounds": 3,
   "quiet_idle_p95_ms": 5,
   "max_scale": 3,
   "quick": {
