@@ -427,9 +427,9 @@ pub fn merged(base: &Value, patch: Value) -> Value {
     Value::Object(out)
 }
 
-fn now_plus(ms: u64) -> String {
-    (chrono::Utc::now() + chrono::Duration::milliseconds(ms as i64))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+/// `ms` milliseconds after `now`, as the store writes times.
+fn now_plus(now: chrono::DateTime<chrono::Utc>, ms: u64) -> String {
+    super::stamp(now + chrono::Duration::milliseconds(ms as i64))
 }
 
 /// The live artifact's declared capabilities; `NotFound` when it is missing
@@ -587,6 +587,7 @@ fn write_in(
     caller: &Caller,
     path: &str,
     pin: Pin,
+    now: &str,
     next: impl FnOnce(Option<&Doc>) -> Result<Option<Body>>,
 ) -> Result<Written> {
     let c: &Connection = rc.tx;
@@ -620,20 +621,19 @@ fn write_in(
                 }
             }
             let version = next_version(c, id, current.as_ref().map_or(0, |d| d.version))?;
-            let now = Store::now();
             c.execute(
                 "INSERT INTO docs (artifact_id, path, collection, json, version, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(artifact_id, path) DO UPDATE SET json = excluded.json, version = excluded.version, updated_at = excluded.updated_at",
                 params![id.as_str(), dp.path, dp.collection, body.json, version as i64, now],
             )?;
-            rc.record(id, &dp, Some(version), Some(&body.json), &now)?;
+            rc.record(id, &dp, Some(version), Some(&body.json), now)?;
             let doc = Doc {
                 id: dp.path.rsplit('/').next().unwrap_or_default().to_string(),
                 path: dp.path.clone(),
                 collection: dp.collection.clone(),
                 data: body.data,
                 version,
-                updated_at: now,
+                updated_at: now.to_string(),
             };
             Ok(Written {
                 path: dp.path.clone(),
@@ -656,7 +656,7 @@ fn write_in(
             )?;
             if n > 0 {
                 let version = next_version(c, id, current.as_ref().map_or(0, |d| d.version))?;
-                rc.record(id, &dp, Some(version), None, &Store::now())?;
+                rc.record(id, &dp, Some(version), None, now)?;
             }
             Ok(Written {
                 path: dp.path.clone(),
@@ -721,7 +721,9 @@ impl Store {
                 ctx,
                 op: "set",
             };
-            write_in(&rc, id, &rules, caller, path, pin, |_| body.map(Some))
+            write_in(&rc, id, &rules, caller, path, pin, &self.now(), |_| {
+                body.map(Some)
+            })
         })
     }
 
@@ -749,7 +751,7 @@ impl Store {
                 ctx,
                 op: "update",
             };
-            write_in(&rc, id, &rules, caller, path, pin, |cur| {
+            write_in(&rc, id, &rules, caller, path, pin, &self.now(), |cur| {
                 Body::of(update_body(path, cur, patch))
             })
         })
@@ -772,7 +774,9 @@ impl Store {
                 ctx,
                 op: "delete",
             };
-            write_in(&rc, id, &rules, caller, path, pin, |_| Ok(None))
+            write_in(&rc, id, &rules, caller, path, pin, &self.now(), |_| {
+                Ok(None)
+            })
         })
     }
 
@@ -799,7 +803,7 @@ impl Store {
         self.with_tx(|tx| {
             let rules = rules_in(tx, id)?;
             let rc = Recorder { st: self, tx, ctx, op: "str_replace" };
-            write_in(&rc, id, &rules, caller, path, pin, |cur| Body::of((|| {
+            write_in(&rc, id, &rules, caller, path, pin, &self.now(), |cur| Body::of((|| {
                 let cur = cur.ok_or_else(|| CoreError::DocNotFound { path: path.to_string() })?;
                 let mut data = cur.data.clone();
                 let Some(Value::String(text)) = data.get_mut(&r.field) else {
@@ -974,19 +978,36 @@ impl Store {
                         op,
                     };
                     match op {
-                        Prepared::Set(body) => {
-                            write_in(&rc("set"), id, &rules, caller, path, pin, |_| {
-                                body.map(Some)
-                            })
-                        }
-                        Prepared::Update(patch) => {
-                            write_in(&rc("update"), id, &rules, caller, path, pin, |cur| {
-                                Body::of(update_body(path, cur, patch))
-                            })
-                        }
-                        Prepared::Delete => {
-                            write_in(&rc("delete"), id, &rules, caller, path, pin, |_| Ok(None))
-                        }
+                        Prepared::Set(body) => write_in(
+                            &rc("set"),
+                            id,
+                            &rules,
+                            caller,
+                            path,
+                            pin,
+                            &self.now(),
+                            |_| body.map(Some),
+                        ),
+                        Prepared::Update(patch) => write_in(
+                            &rc("update"),
+                            id,
+                            &rules,
+                            caller,
+                            path,
+                            pin,
+                            &self.now(),
+                            |cur| Body::of(update_body(path, cur, patch)),
+                        ),
+                        Prepared::Delete => write_in(
+                            &rc("delete"),
+                            id,
+                            &rules,
+                            caller,
+                            path,
+                            pin,
+                            &self.now(),
+                            |_| Ok(None),
+                        ),
                     }
                     .map_err(|e| in_batch(i, path, e))
                 })
@@ -1023,7 +1044,7 @@ impl Store {
             if !rules.allows(&dp.path, Op::Write, caller) {
                 return Err(CoreError::DocNotFound { path: dp.path.clone() });
             }
-            let now = Store::now();
+            let now = self.now();
             tx.execute(
                 "DELETE FROM leases WHERE artifact_id = ?1 AND expires_at <= ?2",
                 params![id.as_str(), now],
@@ -1056,7 +1077,7 @@ impl Store {
                     ));
                 }
             }
-            let expires = now_plus(ttl);
+            let expires = now_plus(self.now_utc(), ttl);
             tx.execute(
                 "INSERT INTO leases (artifact_id, path, holder, expires_at) VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(artifact_id, path) DO UPDATE SET holder = excluded.holder, expires_at = excluded.expires_at",
@@ -1066,7 +1087,7 @@ impl Store {
             let (version, change) = match a.data {
                 Some(patch) => {
                     let rc = Recorder { st: self, tx, ctx, op: "acquire" };
-                    let w = write_in(&rc, id, &rules, caller, &dp.path, Pin { if_version: None, lww: true }, |cur| {
+                    let w = write_in(&rc, id, &rules, caller, &dp.path, Pin { if_version: None, lww: true }, &self.now(), |cur| {
                         Body::new(merged(cur.map_or(&empty, |d| &d.data), patch)).map(Some)
                     })?;
                     (w.doc.map(|d| d.version), w.change)

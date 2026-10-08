@@ -159,7 +159,7 @@ impl Store {
             actor: Actor::Agent(agent),
             ..ctx.clone()
         };
-        let rec = session_record(kind, &Store::now(), id, harness, f);
+        let rec = session_record(kind, &self.now(), id, harness, f);
         self.record_audit(tx, &ctx, rec)?;
         Ok(())
     }
@@ -173,7 +173,7 @@ impl Store {
         id: &str,
         reason: &str,
     ) -> Result<()> {
-        let rec = session_end_record(&Store::now(), id, reason);
+        let rec = session_end_record(&self.now(), id, reason);
         let rec = with_for_actor(tx, ctx, rec, id, AgentActor::default)?;
         self.record_audit(tx, ctx, rec)?;
         Ok(())
@@ -247,9 +247,10 @@ impl Store {
             r.harness_session_id = None;
         }
         self.with_tx(|tx| {
-            let now = Store::now();
-            let recent = (chrono::Utc::now() - Duration::from_secs(Self::SESSION_IDLE_SECS))
-                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            let now = self.now();
+            let recent = super::stamp(
+                self.now_utc() - Duration::from_secs(Self::SESSION_IDLE_SECS),
+            );
             let existing = match (&r.harness_session_id, r.parent_pid) {
                 (Some(hid), parent) => {
                     match find_live(
@@ -339,7 +340,7 @@ impl Store {
         ancestor_pids: &[u32],
     ) -> Result<Session> {
         self.with_tx(|tx| {
-            let now = Store::now();
+            let now = self.now();
             let existing = match find_live(
                 tx,
                 "harness = ?1 AND harness_session_id = ?2",
@@ -405,7 +406,7 @@ impl Store {
         self.with_tx(|tx| {
             tx.execute(
                 "UPDATE sessions SET last_seen_at = ?2 WHERE id = ?1 AND ended_at IS NULL",
-                params![id, Store::now()],
+                params![id, self.now()],
             )?;
             fetch(tx, id).map_err(not_found)
         })
@@ -431,7 +432,7 @@ impl Store {
     /// withdrawn; ending an ended one records nothing.
     pub fn end_session_touched(&self, ctx: &AuditCtx, id: &str) -> Result<EndedSession> {
         self.with_tx(|tx| {
-            let now = Store::now();
+            let now = self.now();
             let n = tx.execute(
                 "UPDATE sessions SET ended_at = ?2 WHERE id = ?1 AND ended_at IS NULL",
                 params![id, now],
@@ -439,7 +440,7 @@ impl Store {
             let (touched, withdrawn_questions) = if n > 0 {
                 self.record_session_end(tx, ctx, id, "explicit")?;
                 (
-                    super::feedback::release_session(tx, id)?,
+                    super::feedback::release_session(tx, id, &now)?,
                     self.withdraw_session_questions(tx, ctx, id, &now)?,
                 )
             } else {
@@ -482,7 +483,7 @@ impl Store {
     /// `Some(reason)` stores the failure with the current time, `None` (a
     /// success) clears it.
     pub fn set_push_error(&self, session_id: &str, error: Option<&str>) -> Result<()> {
-        let at = error.map(|_| Store::now());
+        let at = error.map(|_| self.now());
         self.with_tx(|c| {
             c.execute(
                 "INSERT INTO session_env (session_id, push_error, push_error_at) VALUES (?1, ?2, ?3)
@@ -553,8 +554,7 @@ impl Store {
     /// then `question.withdraw` (reason `session_end`) for each of its
     /// questions withdrawn, likewise.
     pub fn reap_sessions(&self, idle: Duration, pid_alive: &dyn Fn(u32) -> bool) -> Result<Reaped> {
-        let cutoff =
-            (chrono::Utc::now() - idle).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let cutoff = super::stamp(self.now_utc() - idle);
         let stale = self.with_read(|c| {
             let mut stmt = c.prepare(
                 "SELECT id, pid FROM sessions WHERE ended_at IS NULL AND last_seen_at < ?1",
@@ -576,7 +576,7 @@ impl Store {
             return Ok(Reaped::default());
         }
         self.with_tx(|tx| {
-            let now = Store::now();
+            let now = self.now();
             let mut reaped = Reaped::default();
             for id in dead {
                 let n = tx.execute(
@@ -591,7 +591,7 @@ impl Store {
                 self.record_session_end(tx, &ttl, &id, "ttl")?;
                 reaped
                     .touched
-                    .merge(super::feedback::release_session(tx, &id)?);
+                    .merge(super::feedback::release_session(tx, &id, &now)?);
                 reaped
                     .withdrawn_questions
                     .extend(self.withdraw_session_questions(tx, &ttl, &id, &now)?);

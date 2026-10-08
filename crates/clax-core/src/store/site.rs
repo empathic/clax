@@ -170,8 +170,8 @@ fn rule_by_id(c: &Connection, id: &str) -> Result<Option<LiveRule>> {
 
 /// The `live.rule` event of rule `r` for `op` (`set` or `delete`): the
 /// rule's ID and op, then its fields (spec §6.3).
-fn rule_record(r: &LiveRule, op: &str) -> AuditRecord {
-    let mut rec = AuditRecord::new(AuditKind::LiveRule, Store::now())
+fn rule_record(r: &LiveRule, op: &str, at: &str) -> AuditRecord {
+    let mut rec = AuditRecord::new(AuditKind::LiveRule, at)
         .with("rule_id", r.id.as_str())
         .with("op", op)
         .with("origin", r.origin.as_str())
@@ -649,7 +649,7 @@ fn commit_refile(
     how: &MoveBy,
     renamed: &mut Vec<PathBuf>,
 ) -> Result<Vec<(String, u32)>> {
-    let now = Store::now();
+    let now = st.now();
     let conflict = || CoreError::Conflict { current: 0 };
     let mut written = Vec::new();
     for g in stages.iter_mut() {
@@ -759,7 +759,7 @@ fn commit_refile(
                 origin: to.origin.clone(),
                 path: p.live_path.clone().unwrap_or_else(|| to.path.clone()),
             };
-            let watching = materialize(tx, &to.artifact_id, &key)?;
+            let watching = materialize(tx, &to.artifact_id, &key, &now)?;
             let mut anchor = p.anchor.clone();
             anchor.route = p.route.clone();
             tx.execute(
@@ -936,7 +936,7 @@ impl Store {
                         params![r.id],
                     )?;
                     r.deleting = false;
-                    self.record_audit(tx, ctx, rule_record(&r, "set"))?;
+                    self.record_audit(tx, ctx, rule_record(&r, "set", &self.now()))?;
                 }
                 return Ok((r, false));
             }
@@ -950,14 +950,14 @@ impl Store {
                 id: new_ulid(),
                 origin: origin.to_string(),
                 pattern: pattern.as_str().to_string(),
-                created_at: Store::now(),
+                created_at: self.now(),
                 deleting: false,
             };
             tx.execute(
                 "INSERT INTO live_rules (id, origin, pattern, created_at) VALUES (?1, ?2, ?3, ?4)",
                 params![r.id, r.origin, r.pattern, r.created_at],
             )?;
-            self.record_audit(tx, ctx, rule_record(&r, "set"))?;
+            self.record_audit(tx, ctx, rule_record(&r, "set", &self.now()))?;
             Ok((r, true))
         })
     }
@@ -974,13 +974,13 @@ impl Store {
         self.with_tx(|tx| {
             let n = tx.execute(
                 "UPDATE live_rules SET deleted_at = ?2 WHERE id = ?1 AND deleted_at IS NULL",
-                params![id, Store::now()],
+                params![id, self.now()],
             )?;
             let rule = rule_by_id(tx, id)?;
             if n > 0
                 && let Some(r) = &rule
             {
-                self.record_audit(tx, ctx, rule_record(r, "delete"))?;
+                self.record_audit(tx, ctx, rule_record(r, "delete", &self.now()))?;
             }
             Ok(rule)
         })
@@ -1006,7 +1006,7 @@ impl Store {
                 .optional()?;
             match gone {
                 Some(r) => {
-                    self.record_audit(tx, ctx, rule_record(&r, "drop"))?;
+                    self.record_audit(tx, ctx, rule_record(&r, "drop", &self.now()))?;
                     Ok(true)
                 }
                 None => Ok(false),

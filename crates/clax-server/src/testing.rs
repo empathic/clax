@@ -4,6 +4,7 @@
 use crate::daemon::{browser_host, probe_host};
 use crate::wrap_cache::WrapCache;
 use crate::{AppState, build_router};
+use clax_core::working::{Clock, ManualClock, SystemClock};
 use clax_core::{EventBus, Home, Store};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -17,6 +18,48 @@ pub const LAN_PEER: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 7);
 /// The daemon's LAN interface address a request with [`LAN_HEADER`]
 /// arrives on.
 pub const LAN_LOCAL: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
+
+/// Writes fixture `sql` into `home`: runs it on a new database at the home's
+/// database path, then writes each row of its `fixture_files (path,
+/// content)` table to that path under the home root and drops the table.
+/// A fixture is a whole database (schema, rows and `user_version`) with the
+/// files its rows name (version files, clips, assets).
+///
+/// # Panics
+/// When the home already has a database, the SQL fails, or a file path is
+/// not a plain relative path.
+pub fn load_fixture(home: &Home, sql: &str) {
+    home.ensure_dirs().unwrap();
+    assert!(
+        !home.db_path().exists(),
+        "{} exists",
+        home.db_path().display()
+    );
+    let conn = rusqlite::Connection::open(home.db_path()).unwrap();
+    conn.execute_batch(sql).unwrap();
+    let files: Vec<(String, Vec<u8>)> = {
+        let mut st = conn
+            .prepare("SELECT path, content FROM fixture_files ORDER BY path")
+            .unwrap();
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    for (rel, bytes) in files {
+        let rel = std::path::Path::new(&rel);
+        assert!(
+            rel.components()
+                .all(|c| matches!(c, std::path::Component::Normal(_))),
+            "fixture file {} is not a plain relative path",
+            rel.display()
+        );
+        let path = home.root().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+    }
+    conn.execute_batch("DROP TABLE fixture_files").unwrap();
+}
 
 /// Rewrites the connection of a request carrying [`LAN_HEADER`] to one from
 /// [`LAN_PEER`] to [`LAN_LOCAL`] (ports kept), so tests of the LAN rules run
@@ -79,8 +122,44 @@ impl TestServer {
     /// same-family loopback when `bind` is unspecified.
     pub async fn spawn_on(bind: IpAddr, f: impl FnOnce(&mut AppState)) -> TestServer {
         let dir = tempfile::tempdir().unwrap();
+        Self::start(dir, bind, Arc::new(SystemClock), f).await
+    }
+
+    /// A test daemon whose store, working and presence registries and
+    /// question clock all read `clock`.
+    pub async fn spawn_with_clock(clock: Arc<ManualClock>) -> TestServer {
+        let dir = tempfile::tempdir().unwrap();
+        Self::start(dir, IpAddr::V4(Ipv4Addr::LOCALHOST), clock, |_| {}).await
+    }
+
+    /// A test daemon on a fresh copy of fixture `name` (a file of this
+    /// crate's `tests/fixtures/`, loaded by [`load_fixture`]), its clock
+    /// ([`TestServer::spawn_with_clock`]) stopped at `at` (RFC 3339). The
+    /// store migrates the fixture's database on open, as a daemon does.
+    ///
+    /// # Panics
+    /// When the fixture cannot be read or loaded, or `at` does not parse.
+    pub async fn from_fixture_with_clock(name: &str, at: &str) -> TestServer {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name);
+        let sql = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        let dir = tempfile::tempdir().unwrap();
+        load_fixture(&Home::at(dir.path().join("ax")), &sql);
+        let clock = Arc::new(ManualClock::at(at));
+        Self::start(dir, IpAddr::V4(Ipv4Addr::LOCALHOST), clock, |_| {}).await
+    }
+
+    /// Serves the home `ax` under `dir` on `bind`, every time read from `clock`.
+    async fn start(
+        dir: tempfile::TempDir,
+        bind: IpAddr,
+        clock: Arc<dyn Clock>,
+        f: impl FnOnce(&mut AppState),
+    ) -> TestServer {
         let home = Home::at(dir.path().join("ax"));
-        let store = Arc::new(Store::open(&home).unwrap());
+        let store = Arc::new(Store::open_with_clock(&home, clock.clone()).unwrap());
         let token = "test-token".to_string();
         let listener = tokio::net::TcpListener::bind(SocketAddr::new(bind, 0))
             .await
@@ -88,13 +167,15 @@ impl TestServer {
         let addr = listener.local_addr().unwrap();
         let port = addr.port();
         let live_ids = Arc::new(crate::live::LiveIds::load(&store).unwrap());
-        let ext_creds = Arc::new(crate::extension::Credentials::load(&store).unwrap());
+        let ext_creds =
+            Arc::new(crate::extension::Credentials::load_with(&store, clock.clone()).unwrap());
+        let started_at = store.now();
         let mut state = AppState {
             store,
             home: home.clone(),
             token: token.clone(),
             events: EventBus::new(),
-            started_at: Store::now(),
+            started_at,
             version: "test",
             shutdown: tokio::sync::watch::channel(false).1,
             wrap_cache: Arc::new(WrapCache::new(crate::wrap_cache::DEFAULT_MAX_BYTES)),
@@ -107,12 +188,8 @@ impl TestServer {
             followers: Arc::new(Default::default()),
             // Push off; tests about push set it with `spawn_with`.
             codex: Arc::new(Default::default()),
-            working: Arc::new(clax_core::working::Working::new(Arc::new(
-                clax_core::working::SystemClock,
-            ))),
-            presence: Arc::new(clax_core::presence::Presence::new(Arc::new(
-                clax_core::working::SystemClock,
-            ))),
+            working: Arc::new(clax_core::working::Working::new(clock.clone())),
+            presence: Arc::new(clax_core::presence::Presence::new(clock.clone())),
             rooms: Arc::new(crate::room::Rooms::default()),
             // Sampling off; tests that sample set their own with `spawn_with`.
             sample: Arc::new(crate::sample::Sampler::disabled()),
@@ -123,7 +200,7 @@ impl TestServer {
             questions: Arc::new(Default::default()),
             question_grace: Duration::from_secs(5),
             question_sleeper: Arc::new(crate::questions::TokioSleeper),
-            question_clock: Arc::new(clax_core::working::SystemClock),
+            question_clock: clock,
             terminal_after_s: clax_core::config::TERMINAL_AFTER_S,
             calibration: Arc::default(),
             audit_wake: crate::audit::AuditWake::new(),

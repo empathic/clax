@@ -277,8 +277,8 @@ impl Store {
             set("pinned", patch.pinned.map(Into::into));
             set("capabilities", patch.capabilities.clone());
             if !fields.is_empty() {
-                let mut rec = AuditRecord::new(AuditKind::ArtifactUpdate, Store::now())
-                    .with("fields", fields);
+                let mut rec =
+                    AuditRecord::new(AuditKind::ArtifactUpdate, self.now()).with("fields", fields);
                 rec.ids.artifact = Some(id.as_str().to_string());
                 self.record_audit(tx, ctx, rec)?;
             }
@@ -300,7 +300,7 @@ impl Store {
     /// `NotFound` when the artifact does not exist or is already deleted.
     pub fn delete_artifact(&self, ctx: &AuditCtx, id: &ArtifactId) -> Result<()> {
         self.with_tx(|tx| {
-            let now = Store::now();
+            let now = self.now();
             let Some((title, current)) = tx
                 .query_row(
                     "UPDATE artifacts SET deleted_at = ?2 WHERE id = ?1 AND deleted_at IS NULL
@@ -698,7 +698,7 @@ impl Store {
         session_id: Option<&str>,
     ) -> Result<(Artifact, Version)> {
         let id = ArtifactId::generate();
-        let now = Store::now();
+        let now = self.now();
         let title = p
             .title
             .clone()
@@ -856,7 +856,7 @@ impl Store {
                 );
             }
         }
-        let now = Store::now();
+        let now = self.now();
         let files_json = serde_json::to_string(&files).expect("serialisable map");
         let content_sha256 = content_manifest_sha256(&files);
         let vdir = self.home.version_dir(id, n);
@@ -876,7 +876,7 @@ impl Store {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![id.as_str(), n, p.label, now, session_id, files_json, p.note, content_sha256],
             )?;
-            link_version(tx, id.as_str(), n, p)?;
+            link_version(tx, id.as_str(), n, p, &self.now())?;
             let extra = then(tx, n)?;
             tx.execute(
                 "UPDATE artifacts SET current_version = ?2, updated_at = ?3,
@@ -893,7 +893,14 @@ impl Store {
                     p.capabilities.as_ref().map(|c| c.to_string())
                 ],
             )?;
-            super::inbox::note_version(tx, id.as_str(), n, session_id, p.note.as_deref())?;
+            super::inbox::note_version(
+                tx,
+                id.as_str(),
+                n,
+                session_id,
+                p.note.as_deref(),
+                &self.now(),
+            )?;
             let a = tx.query_row(
                 &format!("{SELECT} WHERE id = ?1"),
                 params![id.as_str()],
@@ -1693,7 +1700,7 @@ mod tests {
                 c.execute(
                     "INSERT INTO feedback (id, thread_id, comment_id, target_session_id, created_at)
                      VALUES (?1, ?2, ?3, ?4, ?5)",
-                    rusqlite::params![crate::new_ulid(), t.id, t.comments[0].id, session, Store::now()],
+                    rusqlite::params![crate::new_ulid(), t.id, t.comments[0].id, session, store.now()],
                 )?;
                 Ok(())
             })

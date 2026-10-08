@@ -316,16 +316,18 @@ pub(super) fn answer_record(
     r
 }
 
-/// Writes the owner's `answer` for the pair, returning its record.
+/// Writes the owner's `answer` for the pair `a`, `b`, returning its
+/// record: `later` lasts until [`LATER`] after `now`; the row's
+/// `created_at` is `recorded_at`.
 fn answer_in(
     c: &Connection,
     a: &str,
     b: &str,
     answer: &str,
     now: chrono::DateTime<chrono::Utc>,
+    recorded_at: &str,
 ) -> Result<AuditRecord> {
     let (a, b) = pair(a, b);
-    let now_s = Store::now();
     let until = (answer == ANSWER_LATER).then(|| {
         let d = chrono::Duration::from_std(LATER).expect("the delay fits");
         (now + d).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
@@ -334,9 +336,9 @@ fn answer_in(
         "INSERT INTO live_site_answers (a, b, answer, until, created_at) VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(a, b) DO UPDATE SET answer = excluded.answer, until = excluded.until,
             created_at = excluded.created_at",
-        params![a, b, answer, until, now_s],
+        params![a, b, answer, until, recorded_at],
     )?;
-    Ok(answer_record(&now_s, a, b, answer, until.as_deref()))
+    Ok(answer_record(recorded_at, a, b, answer, until.as_deref()))
 }
 
 impl Store {
@@ -415,7 +417,7 @@ impl Store {
         self.with_write(|c| {
             Ok(c.execute(
                 "UPDATE live_sites SET last_used_at = ?2 WHERE origin = ?1",
-                params![origin, Store::now()],
+                params![origin, self.now()],
             )? > 0)
         })
     }
@@ -536,7 +538,7 @@ impl Store {
                     format!("a site holds at most {MAX_RULES} rules"),
                 ));
             }
-            let at = chrono::Utc::now();
+            let at = self.now_utc();
             let stamp = |t: chrono::DateTime<chrono::Utc>| {
                 t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
             };
@@ -601,7 +603,7 @@ impl Store {
             )?;
             if scoped {
                 for p in super::live::pages_of(tx, &ky)? {
-                    rematerialize(tx, &p)?;
+                    rematerialize(tx, &p, &self.now())?;
                 }
             }
             Ok(Joined {
@@ -712,9 +714,10 @@ impl Store {
                                 origin: key.to_string(),
                                 ..page.clone()
                             },
+                            &self.now(),
                         )?;
                         let rec = rekey_record(
-                            &Store::now(),
+                            &self.now(),
                             &page.artifact_id,
                             &page.origin,
                             key,
@@ -730,7 +733,7 @@ impl Store {
                             |r| r.get(0),
                         )?;
                         if !threads {
-                            let now = Store::now();
+                            let now = self.now();
                             tx.execute(WATCHES_TO, params![page.artifact_id, to, now])?;
                             tx.execute(
                                 "INSERT INTO live_merged_pages (artifact_id, origin, path, merged_into, merged_at)
@@ -823,13 +826,20 @@ impl Store {
             let mut never_with = Vec::new();
             for o in &before.origins {
                 if o.origin != origin {
-                    answer_in(tx, origin, &o.origin, ANSWER_NEVER, chrono::Utc::now())?;
+                    answer_in(
+                        tx,
+                        origin,
+                        &o.origin,
+                        ANSWER_NEVER,
+                        self.now_utc(),
+                        &self.now(),
+                    )?;
                     never_with.push(o.origin.clone());
                 }
             }
             // The split, then the pages it re-keyed; its answers are
             // implied by `never_with`.
-            let now = Store::now();
+            let now = self.now();
             self.record_audit(
                 tx,
                 ctx,
@@ -859,7 +869,7 @@ impl Store {
         with: &str,
         answer: &str,
     ) -> Result<()> {
-        self.answer_join_at(ctx, origin, with, answer, chrono::Utc::now())
+        self.answer_join_at(ctx, origin, with, answer, self.now_utc())
     }
 
     /// [`Store::answer_join`] as at `now`.
@@ -884,7 +894,7 @@ impl Store {
             return Err(CoreError::invalid("same_origin", "one origin is no pair"));
         }
         self.with_tx(|tx| {
-            let rec = answer_in(tx, origin, with, answer, now)?;
+            let rec = answer_in(tx, origin, with, answer, now, &self.now())?;
             self.record_audit(tx, ctx, rec)?;
             Ok(())
         })
@@ -907,7 +917,7 @@ impl Store {
         path: &str,
         title: &str,
     ) -> Result<Vec<Suggestion>> {
-        self.join_suggestions_at(origin, path, title, chrono::Utc::now())
+        self.join_suggestions_at(origin, path, title, self.now_utc())
     }
 
     /// [`Store::join_suggestions`] as at `now`.

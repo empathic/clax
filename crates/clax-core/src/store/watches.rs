@@ -115,12 +115,13 @@ pub(super) fn with_cause(rec: AuditRecord, cause: Option<Cause<'_>>) -> AuditRec
 pub(super) fn artifact_watch_record(
     c: &Connection,
     kind: AuditKind,
+    at: &str,
     sid: &str,
     aid: &str,
     armed: bool,
     source: &str,
 ) -> Result<AuditRecord> {
-    artifact_watch_record_at(c, kind, &Store::now(), sid, aid, armed, source)
+    artifact_watch_record_at(c, kind, at, sid, aid, armed, source)
 }
 
 /// [`artifact_watch_record`] at `at`.
@@ -143,11 +144,12 @@ pub(super) fn artifact_watch_record_at(
 /// changed (spec §6.4).
 fn artifact_update_record(
     c: &Connection,
+    at: &str,
     sid: &str,
     aid: &str,
     fields: serde_json::Value,
 ) -> Result<AuditRecord> {
-    let rec = AuditRecord::new(AuditKind::WatchUpdate, Store::now()).with("fields", fields);
+    let rec = AuditRecord::new(AuditKind::WatchUpdate, at).with("fields", fields);
     on_artifact(c, rec, sid, aid)
 }
 
@@ -155,12 +157,13 @@ fn artifact_update_record(
 /// `path` (spec §6.4): `target` `scope`, made by the session itself.
 pub(super) fn scope_watch_record(
     kind: AuditKind,
+    at: &str,
     sid: &str,
     origin: &str,
     path: &str,
     armed: bool,
 ) -> AuditRecord {
-    scope_watch_record_at(kind, &Store::now(), sid, origin, path, armed)
+    scope_watch_record_at(kind, at, sid, origin, path, armed)
 }
 
 /// [`scope_watch_record`] at `at`.
@@ -180,8 +183,14 @@ pub(super) fn scope_watch_record_at(
 
 /// A `watch.update` of `sid`'s scope watch on `origin` + `path`: its new
 /// arming.
-pub(super) fn scope_update_record(sid: &str, origin: &str, path: &str, armed: bool) -> AuditRecord {
-    let rec = AuditRecord::new(AuditKind::WatchUpdate, Store::now())
+pub(super) fn scope_update_record(
+    at: &str,
+    sid: &str,
+    origin: &str,
+    path: &str,
+    armed: bool,
+) -> AuditRecord {
+    let rec = AuditRecord::new(AuditKind::WatchUpdate, at)
         .with("fields", serde_json::json!({"replies_armed": armed}));
     on_scope(rec, sid, origin, path)
 }
@@ -201,6 +210,7 @@ fn on_scope(rec: AuditRecord, sid: &str, origin: &str, path: &str) -> AuditRecor
 /// [`Store::record_page_watches`] records them.
 pub(super) fn page_watch_records(
     c: &Connection,
+    at: &str,
     aid: &str,
     rows: &[(String, bool, Wrote)],
     source: &str,
@@ -211,11 +221,15 @@ pub(super) fn page_watch_records(
         let rec = match wrote {
             Wrote::Unchanged => continue,
             Wrote::Inserted => {
-                artifact_watch_record(c, AuditKind::WatchStart, sid, aid, *armed, source)?
+                artifact_watch_record(c, AuditKind::WatchStart, at, sid, aid, *armed, source)?
             }
-            Wrote::Rearmed => {
-                artifact_update_record(c, sid, aid, serde_json::json!({"replies_armed": armed}))?
-            }
+            Wrote::Rearmed => artifact_update_record(
+                c,
+                at,
+                sid,
+                aid,
+                serde_json::json!({"replies_armed": armed}),
+            )?,
         };
         out.push(with_cause(rec, cause));
     }
@@ -236,7 +250,7 @@ impl Store {
         source: &str,
         cause: Option<Cause<'_>>,
     ) -> Result<()> {
-        for rec in page_watch_records(tx, aid, rows, source, cause)? {
+        for rec in page_watch_records(tx, &self.now(), aid, rows, source, cause)? {
             self.record_audit(tx, ctx, rec)?;
         }
         Ok(())
@@ -265,12 +279,13 @@ impl Store {
             tx.execute(
                 "INSERT INTO watches (session_id, artifact_id, replies_armed, created_at) VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(session_id, artifact_id) DO UPDATE SET replies_armed = excluded.replies_armed, source = 'direct'",
-                params![session_id, id.as_str(), replies_armed, Store::now()],
+                params![session_id, id.as_str(), replies_armed, self.now()],
             )?;
             let rec = match before {
                 None => Some(artifact_watch_record(
                     tx,
                     AuditKind::WatchStart,
+                    &self.now(),
                     session_id,
                     id.as_str(),
                     replies_armed,
@@ -289,6 +304,7 @@ impl Store {
                     } else {
                         Some(artifact_update_record(
                             tx,
+                            &self.now(),
                             session_id,
                             id.as_str(),
                             fields.into(),
@@ -314,12 +330,13 @@ impl Store {
             check(tx, session_id, id)?;
             let n = tx.execute(
                 "INSERT OR IGNORE INTO watches (session_id, artifact_id, replies_armed, created_at) VALUES (?1, ?2, 1, ?3)",
-                params![session_id, id.as_str(), Store::now()],
+                params![session_id, id.as_str(), self.now()],
             )?;
             if n > 0 {
                 let rec = artifact_watch_record(
                     tx,
                     AuditKind::WatchStart,
+                    &self.now(),
                     session_id,
                     id.as_str(),
                     true,
@@ -345,6 +362,7 @@ impl Store {
             let rec = artifact_watch_record(
                 tx,
                 AuditKind::WatchStop,
+                &self.now(),
                 session_id,
                 id.as_str(),
                 armed,

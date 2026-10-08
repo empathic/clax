@@ -287,7 +287,7 @@ fn marked(c: &Connection) -> Result<bool> {
 fn mark(c: &Connection) -> Result<()> {
     c.execute(
         "INSERT OR IGNORE INTO install (k, v) VALUES (?1, ?2)",
-        params![MARKER, Store::now()],
+        params![MARKER, super::stamp_now()],
     )?;
     Ok(())
 }
@@ -562,7 +562,7 @@ fn batch(tx: &Transaction<'_>, home: &Home, limits: Limits, r: &mut Reporter) ->
                     error = %e,
                     "audit backfill: a row could not be converted; skipped"
                 );
-                let at = s.at.clone().unwrap_or_else(Store::now);
+                let at = s.at.clone().unwrap_or_else(super::stamp_now);
                 let rec = AuditRecord::new(AuditKind::BackfillSkip, at)
                     .with("table", table_of(&s.src))
                     .with("row_id", keys.join("/"))

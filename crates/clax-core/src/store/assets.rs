@@ -144,7 +144,7 @@ impl Store {
             content_type: content_type.to_string(),
             size: bytes.len() as u64,
             ext: ext_for(content_type),
-            created_at: Store::now(),
+            created_at: self.now(),
         };
         let dir = self.home.assets_dir(id);
         std::fs::create_dir_all(&dir)?;
@@ -227,7 +227,7 @@ impl Store {
         self.with_tx(|c| {
             let n = c.execute("DELETE FROM assets WHERE id = ?1", params![asset_id])?;
             if n > 0 {
-                let mut rec = AuditRecord::new(AuditKind::AssetDelete, Store::now())
+                let mut rec = AuditRecord::new(AuditKind::AssetDelete, self.now())
                     .with("asset_id", asset.id.as_str())
                     .with("path", format!("/_blob/{}", asset.id))
                     .with("size", asset.size)
