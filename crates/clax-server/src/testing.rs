@@ -59,6 +59,9 @@ pub struct TestServer {
     pub presence: Arc<clax_core::presence::Presence>,
     /// The address the listener is bound to (may be unspecified, e.g. `0.0.0.0`).
     pub addr: SocketAddr,
+    /// The journal state the status route reports; no appender runs unless
+    /// a test starts one with it.
+    pub journal: Arc<crate::audit::JournalStatus>,
     extension_id: String,
     _dir: tempfile::TempDir,
 }
@@ -124,6 +127,8 @@ impl TestServer {
             terminal_after_s: clax_core::config::TERMINAL_AFTER_S,
             calibration: Arc::default(),
             audit_wake: crate::audit::AuditWake::new(),
+            // No appender; tests of the journal start their own.
+            journal: crate::audit::JournalStatus::off(None),
             exports: crate::routes::toolpath::Exports::new(),
         };
         f(&mut state);
@@ -136,6 +141,7 @@ impl TestServer {
         let feedback = state.feedback_ctx();
         let presence = state.presence.clone();
         let extension_id = state.extension_id.clone();
+        let journal = state.journal.clone();
         let app = build_router(state).layer(axum::middleware::from_fn(as_lan));
         tokio::spawn(async move {
             axum::serve(
@@ -156,6 +162,7 @@ impl TestServer {
             feedback,
             presence,
             addr,
+            journal,
             extension_id,
             _dir: dir,
         }

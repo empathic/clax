@@ -159,7 +159,7 @@ fn conformance_errors(doc: &Value) -> Vec<String> {
 }
 
 /// Fails with every way `doc` breaks [`conformance_errors`]' checks.
-fn assert_valid(doc: &Value, what: &str) {
+pub(super) fn assert_valid(doc: &Value, what: &str) {
     let errors = conformance_errors(doc);
     assert!(
         errors.is_empty(),
@@ -170,7 +170,7 @@ fn assert_valid(doc: &Value, what: &str) {
 
 /// Compares `actual` with the expected file `name`, or rewrites it under
 /// `CLAX_UPDATE_GOLDEN=1`.
-fn golden(name: &str, actual: &str) {
+pub(super) fn golden(name: &str, actual: &str) {
     let path = data(&format!("expected/{name}"));
     if std::env::var_os("CLAX_UPDATE_GOLDEN").is_some() {
         std::fs::write(&path, actual).unwrap();
@@ -194,9 +194,9 @@ fn golden(name: &str, actual: &str) {
 }
 
 /// The golden history: the environment it renders under, and its rows.
-struct History {
-    env: RenderEnv,
-    rows: Vec<AuditRow>,
+pub(super) struct History {
+    pub(super) env: RenderEnv,
+    pub(super) rows: Vec<AuditRow>,
 }
 
 fn row_from(v: &Value) -> AuditRow {
@@ -220,7 +220,7 @@ fn row_from(v: &Value) -> AuditRow {
     }
 }
 
-fn history() -> History {
+pub(super) fn history() -> History {
     let h = read_json("history.json");
     History {
         env: RenderEnv {
@@ -232,7 +232,7 @@ fn history() -> History {
 }
 
 /// Every row rendered as one linear chain, in `seq` order.
-fn render_chain(rows: &[AuditRow], env: &RenderEnv, opts: &Redaction) -> Vec<Value> {
+pub(super) fn render_chain(rows: &[AuditRow], env: &RenderEnv, opts: &Redaction) -> Vec<Value> {
     let mut prev = None;
     rows.iter()
         .map(|r| {
@@ -298,11 +298,12 @@ fn export_graph(h: &History, opts: &Redaction) -> Value {
     serde_json::from_str(&export_text(h, opts)).unwrap()
 }
 
-/// The history as one journal segment (spec §7.2), rendered as the journal
-/// renders (no browser URLs): `PathOpen`, each actor's `ActorDef` before
+/// The history as the first segment of a journal (spec §7.2), rendered as
+/// the journal renders (no browser URLs): `PathOpen` (with no `continues`
+/// ref, there being no segment before it), each actor's `ActorDef` before
 /// its first step and again, merged, whenever its definition grows, the
 /// steps, and, when `closed`, `Head` and `PathClose`.
-fn segment(h: &History, closed: bool) -> String {
+pub(super) fn segment(h: &History, closed: bool) -> String {
     let env = &RenderEnv::journal(h.env.install.clone());
     let opts = Redaction::NONE;
     let install = clax_uri(&env.install, Obj::Install);
@@ -320,10 +321,10 @@ fn segment(h: &History, closed: bool) -> String {
             "title": "Clax audit trail 2026-10-06 #1",
             "kind": KIND_URI,
             "source": install,
-            "refs": [{"rel": "continues", "href": format!("clax-{}-20261005-001.path.jsonl", &env.install[..8])}],
             "clax": {"projection": "journal", "install": env.install, "segment": "20261006-001",
                      "first_seq": h.rows[0].seq, "clax_version": "0.3.1",
-                     "clax_commit": "abc1234def5678abc1234def5678abc1234def56"},
+                     "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+                     "redaction": [], "segment_max_bytes": 64u64 << 20},
         },
     }}));
     let mut defined: BTreeMap<String, Value> = BTreeMap::new();
@@ -331,10 +332,8 @@ fn segment(h: &History, closed: bool) -> String {
     for r in &h.rows {
         let rendered = render(r, prev, env, &opts).unwrap();
         for (actor, definition) in rendered.actors {
-            let merged = match defined.get(&actor) {
-                Some(old) => merge_actor_def(old, &definition),
-                None => definition,
-            };
+            let old = defined.get(&actor).unwrap_or(&Value::Null);
+            let merged = merge_actor_def(old, &definition);
             if defined.get(&actor) != Some(&merged) {
                 line(json!({"ActorDef": {"actor": actor, "definition": merged}}));
                 defined.insert(actor, merged);
@@ -1048,7 +1047,7 @@ fn export_golden_name(opts: &Redaction) -> String {
     format!("export.{slug}.path.json")
 }
 
-fn pretty(v: &Value) -> String {
+pub(super) fn pretty(v: &Value) -> String {
     let mut text = serde_json::to_string_pretty(v).unwrap();
     text.push('\n');
     text
@@ -1108,12 +1107,35 @@ fn golden_exports_match_and_conform() {
     assert_eq!(moved[0]["step"]["id"], moved[1]["step"]["id"]);
 }
 
+/// The journal's segments, as the segment writer writes them: the golden
+/// history as a first segment, closed, is the golden
+/// `segment.path.jsonl`, the same as the shape §7.2 describes
+/// ([`segment`]); sealed by the JSONL RFC's reading rules, it and the
+/// still-open segment conform, and so does every segment of a journal that
+/// rotates by day and by size.
 #[test]
-fn golden_segments_seal_and_validate() {
+fn segments_seal_and_validate_against_schema() {
+    use super::segment::{MemFs, SegmentConfig, SegmentWriter};
+    use std::path::Path;
     let h = history();
-    let closed = segment(&h, true);
+    let cfg = SegmentConfig::new(
+        h.env.install.clone(),
+        "0.3.1",
+        "abc1234def5678abc1234def5678abc1234def56",
+    );
+    let clock = std::sync::Arc::new(crate::working::ManualClock::at("2026-10-06T12:00:00Z"));
+    let fs = MemFs::new();
+    let mut w =
+        SegmentWriter::open_or_recover("/j", cfg.clone(), clock.clone(), Box::new(fs.clone()))
+            .unwrap();
+    w.append_batch(&h.rows).unwrap();
+    let file = Path::new("/j/2026/10/clax-6a1f0c3e-20261006-001.path.jsonl");
+    let open = fs.text(file).unwrap();
+    assert_eq!(open, segment(&h, false));
+    w.close().unwrap();
+    let closed = fs.text(file).unwrap();
+    assert_eq!(closed, segment(&h, true));
     golden("segment.path.jsonl", &closed);
-    let open = segment(&h, false);
     let rendered = render_chain(
         &h.rows,
         &RenderEnv::journal(h.env.install.clone()),
@@ -1138,6 +1160,59 @@ fn golden_segments_seal_and_validate() {
             assert!(actors.contains_key(s["step"]["actor"].as_str().unwrap()));
         }
     }
+
+    // A journal that rotates by day and by size: every segment seals and
+    // conforms, each names the one before it, and together they hold every
+    // step once.
+    let rows: Vec<AuditRow> = h
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let mut r = r.clone();
+            if i >= 40 {
+                r.at = r.at.replace("2026-10-06", "2026-10-07");
+            }
+            r
+        })
+        .collect();
+    let fs = MemFs::new();
+    let mut w = SegmentWriter::open_or_recover(
+        "/j",
+        SegmentConfig {
+            max_bytes: 16 << 10,
+            ..cfg
+        },
+        clock,
+        Box::new(fs.clone()),
+    )
+    .unwrap();
+    w.append_batch(&rows).unwrap();
+    w.close().unwrap();
+    let paths = fs.paths();
+    assert!(paths.len() > 2, "{paths:?}");
+    let mut steps = Vec::new();
+    let mut prev: Option<String> = None;
+    for p in &paths {
+        let sealed = seal(&fs.text(p).unwrap()).unwrap();
+        assert!(sealed.warnings.is_empty(), "{:?}", sealed.warnings);
+        assert_valid(&sealed.graph, &p.display().to_string());
+        let path = &sealed.graph["paths"][0];
+        let refs = &path["meta"]["refs"];
+        match &prev {
+            None => assert!(refs.is_null()),
+            Some(name) => assert_eq!(refs, &json!([{"rel": "continues", "href": name}])),
+        }
+        prev = Some(p.file_name().unwrap().to_string_lossy().into_owned());
+        let ps = path["steps"].as_array().unwrap();
+        assert!(
+            ps[0]["step"].get("parents").is_none(),
+            "no parents across paths"
+        );
+        steps.extend(ps.iter().map(|s| s["step"]["id"].clone()));
+    }
+    let want: Vec<Value> = rows.iter().map(|r| step_id(r.seq).into()).collect();
+    assert_eq!(steps, want);
 }
 
 #[test]

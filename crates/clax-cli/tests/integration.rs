@@ -13,6 +13,7 @@ mod first_start;
 mod follow;
 mod grok_dedupe;
 mod init;
+mod journal;
 mod mcp_preflight;
 mod native_host;
 mod standdown;

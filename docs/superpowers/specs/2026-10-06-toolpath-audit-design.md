@@ -240,13 +240,10 @@ The components are:
 
 ### 5.1 The audit migration
 
-It is migration 20 on this branch, after main's joined sites (19). The
-owner's ruling on numbers: whichever branch lands on main first keeps the
-next free number, and a later branch renumbers before merging (if this one
-lands first, agent-questions' questions and inbox become 21 and 22). No
-unmerged branch's build runs on the owner's real home, since a migration
-that reaches a real home fixes its number. No branch edits a migration that
-has shipped.
+It is migration 22, after joined sites (19), agent questions (20) and the
+owner's inbox (21). No unmerged branch's build runs on the owner's real
+home, since a migration that reaches a real home fixes its number. No
+branch edits a migration that has shipped.
 
 ```sql
 CREATE TABLE audit_events (
@@ -505,8 +502,9 @@ design records one event per transition, keyed by `question_id`:
 | `question.answer` | `answers (answers_json), answered_via` (actor: the owner) |
 | `question.decline`, `question.release`, `question.withdraw` | `reason?` |
 
-The inbox ("Waiting on you") is a view of open questions, and has no events
-of its own. Question and answer text follows the comment text rules (§11).
+The owner's inbox (migration 21) lists what agents sent the owner: replies,
+versions, publishes, questions and finished work, each recorded by its own
+event. Its items and their read marks have no events of their own (§6.11). Question and answer text follows the comment text rules (§11).
 Export is owner-only (§8.3).
 
 ### 6.7 Tool calls
@@ -597,8 +595,8 @@ transaction under the single writer. Consumers sort by `seq`, not by `at`.
 
 Clax does not record presence, heartbeats, feedback-tier escalations after
 the first delivery, stream subscriptions, reads other than tool calls,
-extension credential grants, a joined site's last-used marks, or daemon
-start and stop (`daemon.log` has these).
+extension credential grants, a joined site's last-used marks, the owner's
+inbox items and read marks, or daemon start and stop (`daemon.log` has these).
 
 ### 6.12 Backfilled events
 
@@ -666,10 +664,26 @@ clax-<install8>-<YYYYMMDD>-<nnn>.path.jsonl          (files 0600)
 - `install8` is the first eight characters of the install ID.
 - `nnn` counts the segments within one UTC day.
 
-A segment rolls at the first event whose `at` falls on a new UTC day, or
-when the file would exceed `[toolpath] segment_max_mb` (default 64).
-`[toolpath] journal_retain_days` (default 0, meaning forever) removes whole
-segments older than that at rotation time. It never touches the table.
+A segment is named by the UTC day of its first event. It rolls at the
+first event whose `at` falls on a later UTC day than the segment's, or when
+that event's lines and the closing `Head` and `PathClose` would take the
+file past `[toolpath] segment_max_mb` (default 64, 1 to 4096); a segment
+always takes at least one step. Both depend on the rows alone, so a segment
+rewritten from the table splits where the first writing did.
+`[toolpath] journal_retain_days` (default 0, meaning forever) keeps the
+journal to events whose UTC day is no more than that many days before the
+clock's. An event older than that is never written (its `seq` still moves
+the cursor), so a first start over old history does not write segments it
+would then remove. Each time a segment opens, the closed segments whose day
+is before that cutoff are removed whole: every event in a segment falls on
+its day or earlier, since a later day begins a new segment. Removal is best
+effort: a segment that cannot be removed is kept, reported as the status's
+`warning` and by `clax doctor`, and tried again at the next open, and the
+journal goes on. Retention never touches a `.damaged` file or the table.
+
+`[toolpath] journal` (default true) and `journal_text` (§7.7) are the other
+keys; an invalid `[toolpath]` leaves the journal off, recording goes on,
+and `clax toolpath status` and `clax doctor` say why.
 
 ### 7.2 Segment shape
 
@@ -703,6 +717,16 @@ segments older than that at rotation time. It never touches the table.
   rotation or graceful shutdown. While a segment is open, its single-tip
   linear chain makes the head unambiguous.
 - **`PathMeta`:** never written.
+- **`PathOpen`:** names the writing build in `meta.clax` (`clax_version`,
+  `clax_commit`) and the options the segment is rendered under: its
+  redaction (`meta.clax.redaction`, the option names, empty by default) and
+  its size cap (`meta.clax.segment_max_bytes`). A journal's first segment
+  has no `continues` ref.
+- **Identities:** a definition is written with its identities sorted by
+  `(system, id)` from its first appearance (a first definition is merged
+  with nothing), so a definition read back from a file merges with the
+  same one to itself, and a resumed segment writes exactly the lines the
+  first writing did. Export writes definitions the same way.
 - **Parents:** each `Step`'s only parent is the segment's previous step.
   Segments link by the `continues` ref, because the base RFC allows no
   parents across paths.
@@ -713,8 +737,16 @@ The appender holds the only handle on the open segment. For each batch it:
 
 1. reads the rows with `seq > cursor` (at most 512) through `with_read`;
 2. renders each row as one complete line ending in `\n`;
-3. calls `write_all` once for the whole batch;
+3. calls `write_all` once for the whole batch per segment it touches (and
+   again past 4 MiB, which bounds a batch's memory);
 4. advances the cursor.
+
+The table is the appender's queue: the store's nudge is a `try_send` on a
+channel of capacity one, so recording never waits on the journal, and the
+appender's memory is one batch plus the open segment's actor definitions.
+It drains on each nudge and on a 1 s timer, a second of work at a time. A
+write that fails leaves the writer to read its segment back (§7.5) before
+it writes again, so a failure mid-batch leaves what a crash would.
 
 A row that cannot be rendered (a bug) is logged and becomes a `Step` of type
 `clax.unrenderable` that carries its `seq` and `kind`. The chain never
@@ -722,16 +754,30 @@ breaks.
 
 ### 7.4 Durability
 
-`sync_data` runs:
+The table is the source of truth and recovery rebuilds the journal from it,
+so the journal is never synced more strictly than the store's own commits.
+A sync is a plain `fsync(2)` (never `F_FULLFSYNC`), and it runs:
 
-- after a batch, when more than 1 s has passed since the last sync;
-- on a 1 s timer while unsynced bytes exist;
-- before rotation closes a segment;
+- on the 1 s timer, when no nudge came in that second and bytes are
+  unsynced;
+- after a drain, only once bytes have been unsynced for 5 s (so a steady
+  stream of events is synced every 5 s, never per drain);
+- before rotation closes a segment (recovery reads only the newest
+  segment, so an older one must be on the disk);
 - at shutdown.
 
-The directory is fsynced after a segment is created. The JSONL RFC leaves
-fsync to the writer, and this is Clax's policy. The worst case on power loss
-is the last second of lines, which are re-appended on the next start.
+A directory is fsynced after a segment or a directory in it is created,
+renamed or removed. The JSONL RFC leaves fsync to the writer, and this is
+Clax's policy. The worst case on power loss is the last 5 s of lines, which
+are re-appended from the table on the next start. A failed sync makes the
+writer read its segment back (§7.5) before it writes again.
+
+**Shutdown.** The appender stops as shutdown begins, beside the connection
+drain (at most 5 s): it catches up for at most 0.5 s, syncs, and writes
+`Head` and `PathClose`, and the daemon waits for it at most 1.5 s more once
+connections have drained. The whole shutdown stays within 6.5 s, inside
+the 7 s a replacing client waits before it sends SIGTERM; what the journal
+did not write, the next start writes from the table.
 
 ### 7.5 Recovery on start
 
@@ -747,15 +793,33 @@ Before the appender handles its first nudge, it recovers:
      `Step`;
    - `PathOpen` alone: the cursor is `first_seq − 1`;
    - empty file: delete it and use the previous segment.
-4. If the last complete line does not parse, which means something other than
-   Clax wrote it, rename the file to `<name>.damaged`. It is never deleted or
-   linked. Open a new segment after the highest `seq` that parses in the
-   damaged file.
+4. If a complete line does not parse, or is not one Clax writes in that
+   place, which means something other than Clax wrote it, rename the file
+   to `<name>.damaged` (`<name>.damaged.<n>` when that exists). It is never
+   deleted or linked. Open a new segment after the highest `seq` that
+   parses in the damaged file, with a `continues` ref to the damaged
+   file's name; a damaged file with no step falls back to the segment
+   before it. A last line of `Head` alone (a close cut short) gets its
+   `PathClose`.
 5. Append every row with `seq > cursor`. Rendering is a pure function of the
    row, so lost lines come back byte-identical.
 
+The open segment is resumed under the options its `PathOpen` records,
+not the configured ones, so a line a crash lost comes back as it was
+written even when `journal_text` or `segment_max_mb` changed meanwhile. A
+new segment under the configured options begins at the first event
+recorded since the restart, that is, since the appender first read the
+journal back (an earlier one may be a lost line; the time is taken once,
+before the scan, so a later read-back after a failed write does not move
+it), or at the segment's next rotation. A line longer than 16 MiB is not
+one Clax wrote: recovery measures it without holding it, and treats it as
+damage, or, unterminated at the end, as a partial line.
+
 There is no cursor file, so the cursor can never disagree with the file, and
-no step is ever duplicated.
+no step is ever duplicated. Recovery runs on the appender's thread, so the
+daemon serves before it finishes. The open segment's actor definitions are
+read back from its `ActorDef` lines, so a resumed segment re-declares
+nothing it already declared.
 
 ### 7.6 Determinism
 
@@ -774,8 +838,10 @@ for an export only, the browser base URL:
 ### 7.7 The journal and text
 
 The journal records text (O3). `[toolpath] journal_text = false` makes the
-appender render with `--no-text` rules (§11). Export always reads the table
-and is unaffected.
+appender render with `--no-text` rules (§11) from the next segment it
+opens for an event recorded since the restart (§7.5); each segment
+records the redaction it was written under.
+Export always reads the table and is unaffected.
 
 ## 8. Export
 
@@ -955,12 +1021,19 @@ The rules:
 `GET /api/toolpath/status` returns:
 
 ```json
-{"journal": true, "dir": "…", "segment": "…", "cursor": 5930, "newest_seq": 5931, "lag_ms": 12, "last_error": null}
+{"journal": true, "dir": "…", "segment": "…", "cursor": 5930, "newest_seq": 5931, "lag_ms": 12, "last_error": null, "warning": null}
 ```
 
-It is owner only, as export is. Until the appender runs (plan Task 11),
-`journal` is false and `segment`, `cursor`, `lag_ms` and `last_error` are
-null.
+It is owner only, as export is. `segment` is the open segment's file name,
+else the newest one's; `cursor` is the last journalled `seq`; `lag_ms` is
+how long the journal has trailed the table without catching up (0 when
+caught up); `last_error` is why it is behind (a failed write, until a
+write succeeds) or off (an invalid `[toolpath]`, or an appender that
+stopped unexpectedly); `warning` is a problem that does not hold it back
+(retention could not remove a segment). While the journal is off,
+`journal` is false and `cursor` and `lag_ms` are null. `clax doctor`'s
+`journal` line warns on a `last_error`, a `warning`, a lag over 10 s, or a
+status it could not read from a running daemon.
 
 ## 9. Git capture
 
@@ -1386,6 +1459,17 @@ This rule is the same for Claude Code, Codex, Pi, Gemini and Grok (O4).
 - **Appender.** It runs on its own thread and uses one reader connection for
   one batch at a time. Under the perf-clients flood it trails the writers and
   then catches up. It never takes the writer.
+- **Journal.** The appender never takes the writer, and recording only
+  nudges it (a `try_send`); its syncs are plain `fsync` on a quiet second,
+  after 5 s of unsynced bytes, at rotation and at shutdown (§7.4).
+  Measured with `perf-daemon --quick` (release, the same binary with
+  `[toolpath] journal = false`, 3 runs each): every probe within budget
+  either way; the slowest big publish per round had a median of 74 ms
+  with the journal on against 83 ms off, and cheap-probe p95 under load
+  2.19 ms against 2.31 ms. A first start that journals the whole history
+  (10× the perf seed, 110,514 events, journal directory removed) serves
+  at once and catches up 2.3–3.5 s after it is healthy, with request p95
+  of 0.9–2.5 ms meanwhile against 1.3–1.4 ms with the journal off.
 - **Tool-call records.** One background POST per tool call, sent after the
   result has returned, plus one `INSERT`. The argument hash is SHA-256 over
   the arguments. A large `publish` HTML string costs well under 1 ms per MiB.
@@ -1422,7 +1506,7 @@ This rule is the same for Claude Code, Codex, Pi, Gemini and Grok (O4).
 |---|---|
 | Daemon crash mid-append | The partial last line is truncated on start, and appending resumes from the file's last `seq` (§7.5). |
 | Power loss | Unsynced lines are re-appended on start. A table row is durable from commit (WAL). |
-| Disk full or `EIO` on append | Log, back off (1 s up to 60 s), and retry the same batch. Writes continue. `status` and `doctor` show the error. |
+| Disk full, `EIO` or a permission error on append, create or sync | Truncate back to the last whole line (or read the segment back), log, back off (1 s, doubling to 60 s), and retry the same events. Recording continues. `status` and `doctor` show the error until a write succeeds. |
 | Journal directory removed | Re-create it, then open a new segment at `cursor + 1` with a `continues` ref. |
 | Segment edited by hand | Rename it `.damaged` and open a new segment (§7.5). |
 | Clock steps backwards | Ordering uses `seq`, so it is unaffected. A segment may hold two days. |
@@ -1430,6 +1514,9 @@ This rule is the same for Claude Code, Codex, Pi, Gemini and Grok (O4).
 | git missing, slow, or not a repo | `git_capture` says which, and the action proceeds (L10). |
 | Tool-call POST lost (shim exits) | The events made under the call still carry `call`. `tool.call` is missing, so its end time and outcome are unknown. A reader still has the name, hash and start time. |
 | PostToolUse hook finds no match | `tool.call_id` is recorded with `call_id: null`, and the harness ID is still kept. |
+| The appender panics | The status says the journal stopped (`journal: false`, `last_error`), `clax doctor` warns, and recording goes on; the next start recovers the journal. |
+| Retention cannot remove a segment | The segment is kept and reported as the status's `warning` (and by `clax doctor`), removal is tried again at the next open, and the journal goes on. |
+| A disk that never answers (a wedged appender) | Recording goes on; at shutdown the daemon waits at most 1.5 s for the appender and exits without it, and the next start recovers the journal. |
 | Unrenderable row (a bug) | A `clax.unrenderable` step is written, and the failure is logged. |
 | `journal = false` | The table is still written, and the journal catches up when turned back on. |
 | Questions spec not landed | Its kinds simply never occur. |

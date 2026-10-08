@@ -2216,16 +2216,16 @@
           "agent:pi/pi-sess-42": {
             "identities": [
               {
+                "id": "a_pi01zz",
+                "system": "clax-agent"
+              },
+              {
                 "id": "01JB9S00000000000000000003",
                 "system": "clax-session"
               },
               {
                 "id": "pi-sess-42",
                 "system": "pi-session"
-              },
-              {
-                "id": "a_pi01zz",
-                "system": "clax-agent"
               }
             ],
             "name": "Pi"
@@ -3986,16 +3986,16 @@
           "agent:claude-code/0aa1b2c3-0000-4000-8000-000000000001": {
             "identities": [
               {
-                "id": "01JB9S000000000000000000B0",
-                "system": "clax-session"
-              },
-              {
                 "id": "0aa1b2c3-0000-4000-8000-000000000001",
                 "system": "claude-code-session"
               },
               {
                 "id": "a_old1aa",
                 "system": "clax-agent"
+              },
+              {
+                "id": "01JB9S000000000000000000B0",
+                "system": "clax-session"
               }
             ],
             "name": "Claude Code",
@@ -4043,16 +4043,16 @@
           "agent:pi/pi-sess-42": {
             "identities": [
               {
+                "id": "a_pi01zz",
+                "system": "clax-agent"
+              },
+              {
                 "id": "01JB9S00000000000000000003",
                 "system": "clax-session"
               },
               {
                 "id": "pi-sess-42",
                 "system": "pi-session"
-              },
-              {
-                "id": "a_pi01zz",
-                "system": "clax-agent"
               }
             ],
             "name": "Pi"

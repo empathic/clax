@@ -4,7 +4,10 @@
 //! listens on (7480 when absent); `just dev` and `just watch` write
 //! `port = 7481` into `~/.clax-dev/config.toml`. `[sample]` configures the
 //! `sample` capability ([`HomeConfig::sample`]); a daemon whose `[sample]` is
-//! invalid starts with sample off. The top-level `bin` key names the clax the
+//! invalid starts with sample off. `[toolpath]` configures the audit
+//! journal ([`HomeConfig::toolpath`]); a daemon whose `[toolpath]` is
+//! invalid keeps recording audit events but writes no journal, and says
+//! why in `clax toolpath status`. The top-level `bin` key names the clax the
 //! plugins run ([`HomeConfig::bin`]); `clax bin set` writes it as one line,
 //! [`bin_line`], which the plugins' wrapper reads without a TOML parser, and
 //! nothing else here reads it. `[questions] terminal_after_s` is how long a
@@ -82,6 +85,36 @@ impl Default for SampleModels {
             quick: "claude-haiku-4-5".into(),
             default: "claude-sonnet-5-5".into(),
             complex: "claude-opus-5-5".into(),
+        }
+    }
+}
+
+/// `[toolpath]`: the audit journal (spec 2026-10-06-toolpath-audit-design
+/// §7).
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ToolpathConfig {
+    /// `journal`: write the journal (default true). Audit events are
+    /// recorded either way, and the journal catches up when turned back on.
+    pub journal: bool,
+    /// `journal_text`: render free text into the journal (default true);
+    /// false renders it as `--no-text` does (§7.7).
+    pub journal_text: bool,
+    /// `segment_max_mb`: the size a segment stays within, in MiB (default
+    /// 64, at least 1).
+    pub segment_max_mb: u64,
+    /// `journal_retain_days`: days a closed segment is kept; 0 keeps every
+    /// segment (the default). Never touches the audit table.
+    pub journal_retain_days: u32,
+}
+
+impl Default for ToolpathConfig {
+    fn default() -> Self {
+        ToolpathConfig {
+            journal: true,
+            journal_text: true,
+            segment_max_mb: 64,
+            journal_retain_days: 0,
         }
     }
 }
@@ -257,6 +290,40 @@ pub const TERMINAL_AFTER_S: u64 = 600;
 /// The largest [`HomeConfig::questions_terminal_after_s`]: under the hook's
 /// 3,600 s timeout with room for the terminal dialog.
 pub const MAX_TERMINAL_AFTER_S: u64 = 3300;
+
+impl HomeConfig {
+    /// `[toolpath]`: the default when absent.
+    ///
+    /// # Errors
+    /// `Invalid { code: "bad_config" }` naming the file and `[toolpath]`
+    /// when it is not a table, has an unknown key or a mistyped value, or
+    /// sets `segment_max_mb` below 1 or above 4096.
+    pub fn toolpath(&self) -> Result<ToolpathConfig> {
+        let bad = |what: String| {
+            CoreError::invalid(
+                "bad_config",
+                format!("{}: [toolpath] {what}", self.path.display()),
+            )
+        };
+        let Some(v) = self.table.get("toolpath") else {
+            return Ok(ToolpathConfig::default());
+        };
+        if !v.is_table() {
+            return Err(bad(format!("must be a table, not {}", v.type_str())));
+        }
+        let t: ToolpathConfig = v
+            .clone()
+            .try_into()
+            .map_err(|e: toml::de::Error| bad(e.message().to_string()))?;
+        if !(1..=4096).contains(&t.segment_max_mb) {
+            return Err(bad(format!(
+                "segment_max_mb must be from 1 to 4096, not {}",
+                t.segment_max_mb
+            )));
+        }
+        Ok(t)
+    }
+}
 
 /// Whether `path` can be the `bin` setting: absolute, and free of `"`, `\`
 /// and control characters, so that `bin = "<path>"` is valid TOML whose
@@ -548,5 +615,38 @@ mod tests {
                 .sample()
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn toolpath_keys_default_and_validate() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            HomeConfig::load(dir.path()).unwrap().toolpath().unwrap(),
+            ToolpathConfig::default()
+        );
+        let d = ToolpathConfig::default();
+        assert!(d.journal && d.journal_text);
+        assert_eq!((d.segment_max_mb, d.journal_retain_days), (64, 0));
+        assert_eq!(
+            with("[toolpath]\njournal = false\njournal_text = false\nsegment_max_mb = 8\njournal_retain_days = 30\n")
+                .toolpath()
+                .unwrap(),
+            ToolpathConfig {
+                journal: false,
+                journal_text: false,
+                segment_max_mb: 8,
+                journal_retain_days: 30,
+            }
+        );
+        for bad in [
+            "toolpath = 1\n",
+            "[toolpath]\njournal = \"no\"\n",
+            "[toolpath]\nother = 1\n",
+            "[toolpath]\nsegment_max_mb = 0\n",
+            "[toolpath]\njournal_retain_days = -1\n",
+        ] {
+            let e = with(bad).toolpath().unwrap_err().to_string();
+            assert!(e.contains("[toolpath]"), "{bad}: {e}");
+        }
     }
 }
