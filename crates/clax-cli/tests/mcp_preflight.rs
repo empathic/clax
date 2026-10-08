@@ -28,7 +28,7 @@ fn holder() -> (std::net::TcpListener, u16) {
 /// asked for the first would try; returns them and the first port.
 fn hold_range() -> (Vec<std::net::TcpListener>, u16) {
     let mut seed = std::process::id();
-    loop {
+    for _ in 0..50 {
         seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
         let base = 20_000 + (seed % 40_000) as u16;
         let held: Vec<_> = (base..base + 21)
@@ -38,6 +38,7 @@ fn hold_range() -> (Vec<std::net::TcpListener>, u16) {
             return (held, base);
         }
     }
+    panic!("found no 21 consecutive free loopback ports in 50 tries");
 }
 
 fn home_with_port(dir: &std::path::Path, port: u16) {

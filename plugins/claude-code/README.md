@@ -28,9 +28,10 @@ never fails a turn.
 ## Allowing the tools
 
 In Claude Code's Manual mode (`default`) every MCP tool asks before it
-runs, and a plugin cannot pre-approve its own tools, so each Clax call,
-even `status`, prompts until you allow it (in auto mode the classifier
-decides instead). Add allow rules to `permissions.allow` in your user
+runs. The plugin does not approve its tools for you (only its `/clax:`
+commands allow the tools they use, while they run), so any other Clax call,
+even `status`, prompts until you allow it; in auto mode the classifier
+decides instead. Add allow rules to `permissions.allow` in your user
 settings (`~/.claude/settings.json`, every project), a project's
 `.claude/settings.json` (shared with the repository) or its
 `.claude/settings.local.json` (yours alone). At least the tools that only

@@ -24,7 +24,8 @@ URL and any waiting comments to the session's context, runs from the next
 session on. In the other harnesses, start a new session afterwards.
 
 In Claude Code's Manual mode, each Clax tool call asks first, `status`
-included, until you allow the tools: a plugin cannot pre-approve them. Add
+included, until you allow the tools: the plugin does not approve them for
+you, outside its own `/clax:` commands. Add
 `"mcp__plugin_clax_clax__*"` (every Clax tool), or at least the read-only
 ones, to `permissions.allow` in `~/.claude/settings.json` or a project's
 `.claude/settings.json`; the Claude Code plugin's README ("Allowing the
