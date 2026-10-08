@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 /// The `clax` binary: `CLAX_TEST_BIN`, else built once per test process
-/// (see the MCP shim tests).
+/// (see `clax_bin` in `crates/clax-mcp/tests/common.rs`).
 fn clax_bin() -> PathBuf {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {

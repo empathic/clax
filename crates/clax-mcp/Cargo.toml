@@ -3,6 +3,9 @@ name = "clax-mcp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Every file in tests/ is a module of tests/integration.rs, the one
+# integration test binary.
+autotests = false
 
 [lints]
 workspace = true
@@ -27,3 +30,7 @@ clax-server = { path = "../clax-server", features = ["test-support"] }
 rmcp = { workspace = true, features = ["client", "transport-child-process"] }
 tempfile.workspace = true
 clax-fake-exe = { path = "../clax-fake-exe" }
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
