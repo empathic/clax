@@ -128,6 +128,26 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(page).toHaveURL(`${d.base}/a/${id}/hash.html#docs%2Fcontract.md`);
   });
 
+  test(`${mode}: the address bar's fragment moves the page's, which goes on hearing the shell`, async ({ page }) => {
+    const HASH = `<!doctype html><html><head><title>Hash</title></head><body><p id="h"></p><script>const show = () => { document.getElementById("h").textContent = location.hash; }; show(); addEventListener("hashchange", show);</script></body></html>`;
+    const { artifact } = await publish(d.base, d.token, `Address ${mode}`, { "index.html": INDEX, "hash.html": HASH });
+    const id = artifact.id;
+    if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
+    await page.goto(`${d.base}/a/${id}/hash.html#first`);
+    const url = new RegExp(`/v/1/hash\\.html#`);
+    await expect.poll(() => page.frames().some(f => f !== page.mainFrame() && url.test(f.url()))).toBe(true);
+    const frame = page.frames().find(f => f !== page.mainFrame() && url.test(f.url()))!;
+    await expect(frame.locator("#h")).toHaveText("#first");
+    // The page moves itself to the fragment (clax:hash): a fragment
+    // navigation the shell started would fire a load event at the frame
+    // element, which the shell takes for a document that never greeted.
+    await page.evaluate(() => { location.hash = "#viewer"; });
+    await expect(frame.locator("#h")).toHaveText("#viewer");
+    await expect(page).toHaveURL(`${d.base}/a/${id}/hash.html#viewer`);
+    await page.getByRole("button", { name: "Comment" }).click();
+    await commentModeIn(frame);
+  });
+
   test(`${mode}: one link inside the frame is one history entry`, async ({ page }) => {
     const { artifact } = await publish(d.base, d.token, `History ${mode}`, { "index.html": INDEX, "about.html": ABOUT });
     const id = artifact.id;

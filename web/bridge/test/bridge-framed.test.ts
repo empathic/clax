@@ -94,3 +94,16 @@ describe("leaving the page", () => {
     expect(byes()).toBe(1);
   });
 });
+
+describe("the shell's fragment", () => {
+  it("moves the page itself, in place", async () => {
+    const entries = history.length;
+    const path = location.pathname;
+    send({ type: "clax:hash", hash: "#goals" });
+    expect(location.hash).toBe("#goals");
+    expect(location.pathname).toBe(path);
+    send({ type: "clax:hash", hash: "" });
+    expect(location.hash).toBe("");
+    expect(history.length).toBe(entries);
+  });
+});

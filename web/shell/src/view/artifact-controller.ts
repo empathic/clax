@@ -215,6 +215,10 @@ export class ArtifactController {
   private pendingScroll: { thread: Thread; cancel: () => void } | null = null;
   // The frame's latest known fragment.
   private frameHash: string;
+  /** A fragment for the frame's page to move to once it greets: an adopted
+   * frame's (`FrameHost.takeFragment`), or one the address bar moved to
+   * while no page had greeted. */
+  private pendingFragment: string | null = null;
   // The pending animation frame that copies `frameHash` into the address bar.
   private hashFrame = 0;
   private hintTimer: (() => void) | undefined;
@@ -613,6 +617,8 @@ export class ArtifactController {
     if (!this.frame || !s.data || s.origin === undefined) return;
     if (s.deleted || this.missing()) { this.frame.remove(); return; }
     this.frame.show(pageSrc(this.id, this.shown(), s.origin, this.startFile) + this.startHash, s.origin === null, `${this.shown()}-${s.origin ? "o" : "s"}`);
+    const fragment = this.frame.takeFragment();
+    if (fragment !== null) this.pendingFragment = fragment;
   }
 
   /** The frame loaded a document; one that never greeted since the previous
@@ -651,6 +657,7 @@ export class ArtifactController {
     const frame = this.frame?.el;
     if (!frame) return;
     this.frameHash = hash;
+    this.pendingFragment = null;
     this.gate.close();
     this.leaveDocument();
     this.failedParts.clear();
@@ -662,13 +669,16 @@ export class ArtifactController {
     frame.src = url;
   }
 
-  /** Moves the frame, showing `page`, to the fragment `hash` in place (a
-   * fragment navigation keeps the document, so the gate stays open). No
-   * fragment is `#`, since dropping it would reload the page. */
-  private moveFragment(page: string, hash: string): void {
-    const win = this.frameWin();
+  /** Moves the frame's page to the fragment `hash` in place. The page moves
+   * itself (`clax:hash`): in Chromium a fragment navigation of a
+   * cross-origin or sandboxed frame that the shell starts fires a load
+   * event at the frame element with no new document, which would close the
+   * gate on a page that greeted. A page that has not greeted gets the
+   * fragment when it does. */
+  private moveFragment(hash: string): void {
     this.frameHash = hash;
-    try { win?.location.replace(pageSrc(this.id, this.shown(), this.s.origin ?? null, page) + (hash || "#")); } catch { /* the frame is gone */ }
+    if (this.gate.open && !this.held) this.send({ type: "clax:hash", hash });
+    else this.pendingFragment = hash;
   }
 
   /** Shows `target`, an HTML page of this version, as one history entry: the
@@ -1013,7 +1023,7 @@ export class ArtifactController {
       const r = parseShellPath(location.pathname);
       if (r.kind !== "artifact" || r.id !== this.id) return;
       if (r.file !== this.s.file) this.navigateFrame(r.file, true, location.hash);
-      else if (location.hash !== this.frameHash) this.moveFragment(r.file, location.hash);
+      else if (location.hash !== this.frameHash) this.moveFragment(location.hash);
     };
     addEventListener("popstate", onPop);
     const mq = typeof matchMedia === "function" ? matchMedia("(max-width: 480px)") : null;
@@ -1076,6 +1086,13 @@ export class ArtifactController {
         // a form) made the frame's own history entry, so the URL is replaced.
         const r = parseShellPath(location.pathname);
         if (r.kind !== "artifact" || r.file !== greeted) setUrl(this.here(this.pinnedVersion) + location.hash);
+        // A fragment the page was not sent to (an adopted frame's, or one
+        // the address bar moved to before it greeted) goes first, so the
+        // page reports it after the welcome rather than its own.
+        if (this.pendingFragment !== null) {
+          this.send({ type: "clax:hash", hash: this.pendingFragment });
+          this.pendingFragment = null;
+        }
         this.send({ type: "clax:welcome", mode: this.s.commenting ? "comment" : "view" });
         this.resolveAll();
         this.sendFocus();
