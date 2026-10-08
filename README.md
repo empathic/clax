@@ -18,7 +18,19 @@ Clax release it pins on first use (see "Which clax the plugins run" below).
 - Grok Build, from a clone: `grok plugin install <clone>/plugins/clax-grok --trust`.
 - Pi, from a clone: `pi install <clone>/plugins/pi`.
 
-Start a new session afterwards. The first start of the plugin's MCP server
+In Claude Code the tools work in the same session once `/plugin install`
+reports the plugin active; its `SessionStart` hook, which adds the daemon
+URL and any waiting comments to the session's context, runs from the next
+session on. In the other harnesses, start a new session afterwards.
+
+In Claude Code's Manual mode, each Clax tool call asks first, `status`
+included, until you allow the tools: a plugin cannot pre-approve them. Add
+`"mcp__plugin_clax_clax__*"` (every Clax tool), or at least the read-only
+ones, to `permissions.allow` in `~/.claude/settings.json` or a project's
+`.claude/settings.json`; the Claude Code plugin's README ("Allowing the
+tools") has the lines.
+
+The first start of the plugin's MCP server
 downloads the pinned release (about 10 MB) into `~/.clax/bin/<version>/`,
 checks it against the checksum the plugin carries, and runs it; one download
 serves every harness. Hooks never download, so a session's first hooks may
@@ -134,7 +146,7 @@ clax bin                             # show which clax the plugins run (clax bin
 clax haiku                           # print one of ten haiku about Clax
 ```
 
-The daemon starts automatically on first use. Data lives in `~/.clax`; set `CLAX_HOME` to use a different directory. The daemon listens on port 7480, or on the `[serve] port` that the home's `config.toml` sets (`--port` overrides both).
+The daemon starts automatically on first use. Data lives in `~/.clax`; set `CLAX_HOME` to use a different directory. The daemon listens on port 7480, or on the `[serve] port` that the home's `config.toml` sets; `CLAX_PORT` overrides the file, and `--port` overrides both. When another program already holds that port, the plugins' MCP server says so and names a free port to set instead; Clax never stops what holds it.
 
 Pages that declare `sample` ask Claude with an Anthropic API key on your machine. The daemon reads the key from `ANTHROPIC_API_KEY` when it starts; the `[sample]` table in `config.toml` changes that:
 
