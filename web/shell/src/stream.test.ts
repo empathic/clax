@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { STREAM_DOWN, connNoticeText } from "./conn-notice";
-import { DEAD_MS, EventStream, HIDDEN_MS, type Link, type LinkMaker, NOTICE_MS, type StreamEvent, TOKEN_WAIT_MS, leaderLink } from "./stream";
+import { DEAD_MS, EventStream, HIDDEN_MS, type Link, type LinkMaker, NOTICE_MS, type StreamEvent, TOKEN_WAIT_MS, leaderLink, ownerBrowser } from "./stream";
 import type { HubMsg, TabMsg } from "./stream-hub";
 import { Net } from "./test/fake-net";
 
@@ -155,6 +155,20 @@ describe("EventStream", () => {
     off();
     links[0].on({ t: "notify", data: { topic: "inbox", item: { id: "I2" }, unread: 2 } });
     expect(got).toEqual([{ topic: "inbox", item: { id: "I1" }, unread: 1 }]);
+  });
+
+  it("knows a browser of the owner's by the token being served: a refusal is no, a failure is asked again", async () => {
+    let answers: (number | "down")[] = ["down", 500, 200];
+    vi.stubGlobal("fetch", vi.fn(async () => { const a = answers.shift(); if (a === "down") throw new TypeError("network"); return new Response(JSON.stringify({ token: "t" }), { status: a }); }));
+    const yes = ownerBrowser();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await yes).toBe(true);
+    answers = [403, 403];
+    vi.resetModules();
+    const fresh = await import("./stream");
+    const no = fresh.ownerBrowser();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await no).toBe(false);
   });
 
   it("keeps its topics through a short hide", async () => {

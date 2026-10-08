@@ -37,7 +37,7 @@
 
 <li class="irow" data-unread={p.item.read ? undefined : ""} data-item={p.item.id}>
   <button type="button" class="open" onclick={() => p.onOpen(p.item)}>
-    <span class="ico" title={KIND_NAMES[p.item.kind]}>
+    <span class="ico">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d={ICONS[p.item.kind]} /></svg>
       <span class="sr">{KIND_NAMES[p.item.kind]}:</span>
     </span>

@@ -201,8 +201,9 @@
   onMount(() => {
     document.title = "Inbox · Clax";
     void listArtifacts().then(a => { artifacts = a.map(x => [x.id, x.title]); }, () => {});
-    const off = inbox.listen(c => { if ("item" in c) take(c.item); else soon(); });
-    void load();
+    // Fetched once on open: now, or when the inbox topic first goes live.
+    const off = inbox.listen(c => { if ("item" in c) take(c.item); else if (unread) soon(); else void load(); });
+    if (!inbox.waiting) void load();
     return () => { off(); typing?.(); refetchSoon?.(); };
   });
 </script>
@@ -255,7 +256,7 @@
         <ul class="rows">{#each rows as i (i.id)}<InboxRow item={i} others={unread.items} now={p.now} onOpen={open} onToggle={toggle} />{/each}</ul>
       {/if}
       {#if !unread.items.length}
-        <p class="note">{filtered ? "No unread items match." : "Nothing unread. Replies, versions, questions and finished work from agents land here."}</p>
+        <p class="note">{filtered ? "No unread items match." : "Nothing unread."}</p>
       {/if}
       {#if unread.next}<button type="button" class="more" onclick={() => more("unread")}>Show more</button>{/if}
     {/if}

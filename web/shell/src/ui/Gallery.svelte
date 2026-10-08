@@ -41,7 +41,7 @@
   let owner = $state<boolean | null>(null);
   const lazy = () => import("./gallery-working");
   // `q` comes through the lazy module, which also hands it the page's stream.
-  const loadQ = (m: typeof import("./gallery-working")) => getToken().then(t => t ? m.q() : null).then(async q => {
+  const loadQ = (m: typeof import("./gallery-working")) => m.ownerBrowser().then(o => o ? m.q() : null).then(async q => {
     if (destroyed) return;
     if (!q) { owner = false; return; }
     Q = q;
@@ -88,7 +88,7 @@
   <ThemeSwitch />
 </header>
 <main class="gal">
-  {#if inbox}{#if owner && Q}<Q.InboxPage />{:else if owner === false}<p class="empty">The inbox is its owner's: open it in a browser on the computer Clax runs on.</p>{/if}{:else}
+  {#if inbox}{#if owner && Q}<Q.InboxPage />{:else if owner === false}<p class="empty">The inbox is its owner's: open it at http://localhost:{location.port}/inbox on the computer Clax runs on.</p>{/if}{:else}
   {#if Q}<Q.GallerySummary />{/if}
   {#if error}<p class="empty">Could not load artifacts: {error}</p>{/if}
   {#if artifacts && artifacts.length === 0}

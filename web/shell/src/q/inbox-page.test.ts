@@ -148,6 +148,22 @@ describe("InboxPage", () => {
     expect(m.root.querySelector(".qcard")).toBeNull();
   });
 
+  it("fetches its first page once: when the inbox topic first goes live", async () => {
+    const calls = stubRoutes();
+    const inbox = new InboxFeed();
+    const handlers: ((e: { type: string }) => void)[] = [];
+    inbox.start({ watch: (_t: readonly string[], on: (e: { type: string }) => void) => { handlers.push(on); return () => {}; } } as never);
+    const m = mount(InboxPage, { inbox, questions: new QuestionFeed(), go: vi.fn(), now });
+    await settle();
+    const pages = () => calls.filter(c => c.url.startsWith("/api/inbox?")).map(c => c.url);
+    expect(pages()).toEqual([]);
+    handlers[0]({ type: "ready" });
+    await new Promise(r => setTimeout(r, 300));
+    await settle();
+    expect(pages()).toEqual(["/api/inbox?read=unread", "/api/inbox?read=read&limit=1"]);
+    expect(m.root.querySelectorAll(".irow").length).toBeGreaterThan(0);
+  });
+
   it("goes to the question's card for `?q=`, focused", async () => {
     history.replaceState(null, "", `/inbox?q=${view().id}`);
     stubRoutes();

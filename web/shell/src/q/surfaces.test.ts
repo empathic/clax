@@ -88,7 +88,7 @@ describe("the questions in the artifact view", () => {
     const q = view();
     vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(url.startsWith("/api/inbox/summary") ? { unread: 4, questions: [q], latest: [] } : { questions: [q], open: 1 }))));
     document.head.innerHTML = `<title>Quarterly Review</title><link rel="icon" href="/_clax/mark.svg">`;
-    document.body.innerHTML = `<div class="page"><header class="topbar"><a class="home"></a><div class="ttl"></div><div class="island"></div></header><aside class="sidebar"><div class="questions-slot"></div></aside></div>`;
+    document.body.innerHTML = `<div class="page"><header class="topbar"><a class="home"></a><div class="ttl"></div><div class="island"></div></header><aside class="sidebar"><div class="questions-slot"></div></aside><div class="phone-tabs"><button>Page</button><button>Threads</button></div></div>`;
     const qmod = await import("./index");
     const stream = fakeStream();
     const stop = qmod.artifact(AID, { keyboardTrail: { onClear: () => () => {} }, guardedAction: (_e, _v, act) => { act(); return null; } }, stream as never);
@@ -100,6 +100,8 @@ describe("the questions in the artifact view", () => {
     const link = bar.querySelector(".inbox-link")!;
     expect(link.nextElementSibling).toBe(bar.querySelector(".island"));
     expect(link.querySelector(".count")!.textContent).toBe("4");
+    // And at the end of the phone's tab bar, which shows it at phone width in place of the top bar's.
+    expect(document.querySelector(".phone-tabs")!.lastElementChild!.matches("a.inbox-link")).toBe(true);
     expect(document.title).toBe("(4) Quarterly Review");
     expect(document.querySelectorAll(".sidebar .questions-slot .qcard")).toHaveLength(1);
     expect(document.documentElement.hasAttribute("data-questions")).toBe(true);
@@ -113,10 +115,31 @@ describe("the questions in the artifact view", () => {
     expect(document.documentElement.hasAttribute("data-questions")).toBe(false);
     stop();
     flush();
-    expect(bar.querySelector(".inbox-link")).toBeNull();
+    expect(document.querySelector(".inbox-link")).toBeNull();
     expect(slot.querySelector(".qcard")).toBeNull();
     expect(document.title).toBe("Quarterly Review");
     expect(stream.on.size).toBe(0);
+  });
+
+  it("closes the notifications shown once nothing is left unread, as after a bulk mark", async () => {
+    vi.resetModules();
+    const made: { closed: boolean }[] = [];
+    vi.stubGlobal("Notification", class { static permission = "granted"; closed = false; tag: string; onclick = null; constructor(_t: string, o: NotificationOptions) { this.tag = o.tag ?? ""; made.push(this); } close() { this.closed = true; } });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ unread: 2, questions: [], latest: [] }))));
+    document.body.innerHTML = `<header class="topbar"><div class="island"></div></header>`;
+    const qmod = await import("./index");
+    const notify: ((d: Record<string, unknown>) => void)[] = [];
+    const stream = { ...fakeStream(), onNotify: (f: (d: Record<string, unknown>) => void) => { notify.push(f); return () => {}; } };
+    const stop = qmod.artifact(AID, { keyboardTrail: { onClear: () => () => {} }, guardedAction: (_e, _v, act) => { act(); return null; } }, stream as never);
+    for (const f of stream.on.values()) f({ type: "ready" });
+    await settle();
+    const { item } = await import("./fixtures");
+    notify[0]({ item: item("reply", { id: "N1" }), unread: 2 });
+    notify[0]({ item: item("published", { id: "N2" }), unread: 2 });
+    await vi.waitFor(() => expect(made).toHaveLength(2));
+    stream.on.get("inbox")!({ type: "inbox_read", ids: null, read: true, unread: 0 });
+    expect(made.map(n => n.closed)).toEqual([true, true]);
+    stop();
   });
 
   it("shows nothing when the owner routes refuse the caller", async () => {
