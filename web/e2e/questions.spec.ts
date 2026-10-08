@@ -87,9 +87,16 @@ test("an ask answered in the gallery reaches the agent", async ({ page, freshDae
   expect(q.answers).toEqual([{ selected: ["One"], text: null }, { selected: [], text: "keep it light" }]);
 });
 
-test("a question about an artifact shows above its threads", async ({ page, freshDaemon: d }) => {
+test("a question about an artifact shows above its threads, and another page's thread opens in place below it", async ({ page, freshDaemon: d }) => {
   const s = await registerSession(d.base, d.token);
-  const { artifact } = await publishAs(d.base, d.token, s.id, "Board", PAGE);
+  const { artifact } = await publishAs(d.base, d.token, s.id, "Board", { ...PAGE, "about.html": "<main><h2>Our team</h2></main>" });
+  const form = new FormData();
+  form.set("anchor", JSON.stringify({ kind: "element", selector: "body > main > h2", quote: "Our team", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "about.html" }));
+  form.set("body", "Name the team.");
+  form.set("version", "1");
+  const made = await fetch(`${d.base}/api/artifacts/${artifact.id}/threads`, { method: "POST", body: form });
+  expect(made.status).toBe(201);
+  const tid = (await made.json()).thread.id as string;
   await page.goto(`${d.base}/a/${artifact.id}`);
   await expect(page.locator(".sidebar .section-open, .sidebar .empty-threads").first()).toBeAttached();
   const { question } = await askAs(d.base, d.token, s.id, { source: "ask", artifact_id: artifact.id, questions: [{ question: "Ship?", header: "Ship", options: [{ label: "Yes" }, { label: "No" }] }] });
@@ -101,6 +108,17 @@ test("a question about an artifact shows above its threads", async ({ page, fres
     return !t || !!(q.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING);
   });
   expect(above).toBe(true);
+  // The thread on about.html opens in place, the question still above it and the frame on its page.
+  const head = page.locator(`.sidebar [data-thread="${tid}"] button.card-head`);
+  await expect(head).toHaveAttribute("aria-expanded", "false");
+  await head.click();
+  await expect(head).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator(`.sidebar [data-thread="${tid}"] .msg .body`)).toHaveText(["Name the team."]);
+  await expect(card).toBeVisible();
+  expect(await card.evaluate((q, id) => !!(q.compareDocumentPosition(document.querySelector(`.sidebar [data-thread="${id}"]`)!) & Node.DOCUMENT_POSITION_FOLLOWING), tid)).toBe(true);
+  await expect(page).toHaveURL(`${d.base}/a/${artifact.id}`);
+  const shots = process.env.CLAX_E2E_SHOTS;
+  if (shots) await page.screenshot({ path: `${shots}/shell-sidebar-question-and-in-place.png` });
 });
 
 test("a LAN viewer sees no questions and no inbox, and asks for neither", async ({ page, freshDaemon: d }) => {
