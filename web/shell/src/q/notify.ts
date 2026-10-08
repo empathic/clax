@@ -46,6 +46,11 @@ export class Notifier {
     };
   }
 
+  /** Closes every notification shown. */
+  closeAll(): void {
+    for (const id of [...this.shown.keys()]) this.close(id);
+  }
+
   /** Closes item `id`'s notification (it was read). */
   close(id: string): void {
     const n = this.shown.get(id);

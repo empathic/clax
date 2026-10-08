@@ -90,15 +90,24 @@ function part(name) {
 }
 
 const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), bridge: gz("_clax/bridge.js") };
-// The question module: its chunk and what it imports beyond the gallery's
-// entry and the gallery's lazy module, through which it loads.
+// The question module: its chunk and what it imports beyond what its host
+// has loaded by then, for the larger of its two hosts: the gallery (its entry
+// and its lazy module, through which the module loads) and the artifact view
+// (its entry, the more menu and roster it loads after its first paint, and
+// its stream's lazy module, which loads the module once the browser is idle). The module is the host's dynamic
+// import named `index` (Vite keys it by its chunk when another chunk also
+// imports from it). What the module itself loads on demand is not counted.
 {
   const key = k => Object.keys(manifest).find(m => m.endsWith(k));
-  const q = key("src/q/index.ts");
   const lazy = key("src/ui/gallery-working.ts");
-  if (!q || !lazy) throw new Error("dist has no question module or no gallery-working chunk");
-  const loaded = new Set([...closure("index.html"), ...closure(lazy)]);
-  sizes.questions = [...closure(q)].filter(k => !loaded.has(k)).reduce((n, k) => n + gz(manifest[k].file), 0);
+  const stream = key("src/view/artifact-stream.ts");
+  // The artifact entry loads these after its first paint, before its stream opens.
+  const painted = ["src/ui/MoreMenu.svelte", "src/ui/Who.svelte"].map(key);
+  const q = lazy && (manifest[lazy].dynamicImports ?? []).find(k => manifest[k].name === "index");
+  if (!q || !stream || painted.some(k => !k)) throw new Error("dist has no question module, gallery-working or artifact-stream chunk");
+  const files = keys => new Set(keys.flatMap(h => [...closure(h)].map(k => manifest[k].file)));
+  const beyond = hosts => { const loaded = files(hosts); return [...files([q])].filter(f => !loaded.has(f)).reduce((n, f) => n + gz(f), 0); };
+  sizes.questions = Math.max(beyond(["index.html", lazy]), beyond(["artifact.html", stream, ...painted]));
 }
 for (const [name, key] of Object.entries(partKeys)) sizes[key] = part(name);
 

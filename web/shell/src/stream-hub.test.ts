@@ -203,7 +203,7 @@ describe("the stream hub", () => {
     expect(of("t2", "live")).toEqual([{ t: "live", topics: [`artifact:${A}`] }]);
   });
 
-  it("asks the most recently focused tab to notify, once per item, only when no tab has focus", async () => {
+  it("asks the most recently focused tab to notify, once per new item, only when no tab has focus", async () => {
     const sent: { ids: string[]; msg: HubMsg }[] = [];
     const h = new Hub({ notify: true, fetch: net.fetch, send: (ids, msg) => { sent.push({ ids, msg }); } });
     h.receive("t1", { t: "topics", topics: ["inbox"] });
@@ -217,20 +217,21 @@ describe("the stream hub", () => {
     h.receive("t1", { t: "focus", focused: true });
     h.receive("t1", { t: "focus", focused: false });
     h.receive("t2", { t: "focus", focused: true });
-    deliver({ item: { id: "I1", read: false }, unread: 1 });
+    deliver({ item: { id: "I1", seq: 1, read: false }, unread: 1 });
     await tick();
     expect(sent.filter(m => m.msg.t === "notify")).toEqual([]);
     h.receive("t2", { t: "focus", focused: false });
     // The tab focused last, though not focused now, and only one holding `inbox`.
     h.receive("t3", { t: "focus", focused: true });
     h.receive("t3", { t: "focus", focused: false });
-    deliver({ item: { id: "I2", read: false }, unread: 2 });
-    deliver({ item: { id: "I2", read: false }, unread: 2 });
-    deliver({ item: { id: "I3", read: true }, unread: 2 });
-    // I1 was announced while a tab had focus: never again.
-    deliver({ item: { id: "I1", read: false }, unread: 2 });
+    deliver({ item: { id: "I2", seq: 2, read: false }, unread: 2 });
+    deliver({ item: { id: "I2", seq: 2, read: false }, unread: 2 });
+    deliver({ item: { id: "I3", seq: 3, read: true }, unread: 2 });
+    // I1 came while a tab had focus: never announced. An older item marked
+    // unread again or changed (a withdrawn question) is not new either.
+    deliver({ item: { id: "I1", seq: 1, read: false }, unread: 2 });
     await tick();
-    expect(sent.filter(m => m.msg.t === "notify")).toEqual([{ ids: ["t2"], msg: { t: "notify", data: { topic: "inbox", item: { id: "I2", read: false }, unread: 2 } } }]);
+    expect(sent.filter(m => m.msg.t === "notify")).toEqual([{ ids: ["t2"], msg: { t: "notify", data: { topic: "inbox", item: { id: "I2", seq: 2, read: false }, unread: 2 } } }]);
     h.close();
   });
 
@@ -239,7 +240,7 @@ describe("the stream hub", () => {
     await tick();
     net.ready(net.conns[0], S1);
     await tick();
-    net.event(net.conns[0], S1, 1, "inbox", "inbox_item", { item: { id: "I1", read: false }, unread: 1 });
+    net.event(net.conns[0], S1, 1, "inbox", "inbox_item", { item: { id: "I1", seq: 1, read: false }, unread: 1 });
     await tick();
     expect(of("t1", "notify")).toEqual([]);
     expect(of("t1", "event")).toHaveLength(1);

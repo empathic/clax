@@ -43,38 +43,46 @@ function fakeClock() {
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
+/** Starts `feed` on a fake stream and lets it fetch as its topic goes live. */
+async function live<F extends { start(s: ReturnType<typeof fakeStream>): void }>(feed: F) {
+  const stream = fakeStream();
+  feed.start(stream);
+  stream.emit("ready");
+  await settle();
+  return stream;
+}
+
 describe("QuestionFeed", () => {
   const A = view({ id: "Q1", created_at: "2026-10-07T09:00:00.000Z" });
   const B = view({ id: "Q2", created_at: "2026-10-07T09:05:00.000Z", artifact: { id: "other", title: "Other", kind: "html" } });
 
-  it("fetches, then follows `questions` in the background, fetching again when it goes live or resyncs", async () => {
+  it("subscribes `questions` in the background first, then fetches each time it goes live or resyncs", async () => {
     let list = [B];
     const calls = stubFetch(() => [200, { questions: list, open: list.length }]);
     const stream = fakeStream();
     const feed = new QuestionFeed();
-    expect(await feed.start(stream)).toBe(true);
-    expect(feed.owner).toBe(true);
+    feed.start(stream);
+    feed.start(stream);
     expect(stream.watched).toEqual([{ topics: ["questions"], background: true, off: false }]);
+    expect(calls).toEqual([]);
+    stream.emit("ready");
+    await settle();
     expect(calls.map(c => c.url)).toEqual(["/api/questions?status=open&limit=200"]);
     list = [B, A];
-    stream.emit("ready");
+    stream.emit("resync", { topic: "questions" });
     await settle();
     // Oldest first.
     expect(feed.open.map(q => q.id)).toEqual(["Q1", "Q2"]);
     expect(feed.byArtifact("7q3k9mzx2b4t").map(q => q.id)).toEqual(["Q1"]);
-    list = [B];
-    stream.emit("resync", { topic: "questions" });
-    await settle();
-    expect(feed.open.map(q => q.id)).toEqual(["Q2"]);
-    expect(calls).toHaveLength(3);
+    feed.stop();
+    expect(stream.watched[0].off).toBe(true);
   });
 
   it("upserts each question event, and keeps a closed one for 4 s before it leaves", async () => {
     stubFetch(() => [200, { questions: [A], open: 1 }]);
-    const stream = fakeStream();
     const clock = fakeClock();
     const feed = new QuestionFeed({ after: clock.after });
-    await feed.start(stream);
+    const stream = await live(feed);
     stream.emit("question", { question: B });
     expect(feed.cards.map(q => q.id)).toEqual(["Q1", "Q2"]);
     const answered = { ...A, status: "answered" as const, answers: [] };
@@ -100,39 +108,31 @@ describe("QuestionFeed", () => {
       return [409, { error: { code: "question_closed", message: "closed" }, question: { ...B, status: "withdrawn" } }];
     });
     const feed = new QuestionFeed({ after: fakeClock().after });
-    await feed.start(fakeStream());
+    await live(feed);
     await feed.answer("Q1", { answers: [] });
     await feed.decline("Q2");
     expect(calls.filter(c => c.method === "POST").map(c => c.url)).toEqual(["/api/questions/Q1/answer", "/api/questions/Q2/decline"]);
     expect(feed.recent.map(q => q.status)).toEqual(["answered", "withdrawn"]);
   });
 
-  it("stays empty and quiet for anyone but the owner", async () => {
-    const calls = stubFetch(() => [403, { error: { code: "forbidden" } }]);
-    const stream = fakeStream();
+  it("keeps what it had when a fetch fails, and fetches again when the stream is back; a refused topic stops it", async () => {
+    let fail = true;
+    stubFetch(() => { if (fail) throw new TypeError("network"); return [200, { questions: [A], open: 1 }]; });
     const feed = new QuestionFeed();
-    expect(await feed.start(stream)).toBe(false);
-    expect(feed.owner).toBe(false);
+    const stream = await live(feed);
     expect(feed.open).toEqual([]);
-    expect(stream.watched).toEqual([]);
-    expect(calls).toHaveLength(1);
-  });
-
-  it("does not subscribe when stopped while its first fetch was out", async () => {
-    stubFetch(() => [200, { questions: [], open: 0 }]);
-    const stream = fakeStream();
-    const feed = new QuestionFeed();
-    const started = feed.start(stream);
-    feed.stop();
-    expect(await started).toBe(false);
-    expect(stream.watched).toEqual([]);
+    fail = false;
+    stream.emit("ready");
+    await settle();
+    expect(feed.open.map(q => q.id)).toEqual(["Q1"]);
+    stream.emit("refused", { topic: "questions", code: "forbidden" });
+    expect(stream.watched[0].off).toBe(true);
   });
 
   it("tells its listeners each change", async () => {
     stubFetch(() => [200, { questions: [], open: 0 }]);
-    const stream = fakeStream();
     const feed = new QuestionFeed();
-    await feed.start(stream);
+    const stream = await live(feed);
     const heard = vi.fn();
     feed.listen(heard);
     stream.emit("question", { question: A });
@@ -143,11 +143,10 @@ describe("QuestionFeed", () => {
 describe("InboxFeed", () => {
   const SUMMARY = { unread: 2, questions: [], latest: [item("reply")] };
 
-  it("takes the unread count from every event, and fetches the summary again after a bulk change", async () => {
+  it("subscribes `inbox` first, takes the unread count from every event, and fetches the summary again after a bulk change", async () => {
     const calls = stubFetch(() => [200, SUMMARY]);
-    const stream = fakeStream();
     const feed = new InboxFeed({ after: fakeClock().after });
-    expect(await feed.start(stream)).toBe(true);
+    const stream = await live(feed);
     expect(stream.watched).toEqual([{ topics: ["inbox"], background: true, off: false }]);
     expect([feed.unread, feed.latest.length, feed.owner]).toEqual([2, 1, true]);
     const heard: unknown[] = [];
@@ -168,10 +167,9 @@ describe("InboxFeed", () => {
 
   it("fetches `latest` once after a burst of item changes", async () => {
     const calls = stubFetch(() => [200, SUMMARY]);
-    const stream = fakeStream();
     const clock = fakeClock();
     const feed = new InboxFeed({ after: clock.after });
-    await feed.start(stream);
+    const stream = await live(feed);
     for (let n = 0; n < 5; n++) stream.emit("inbox_item", { item: item("reply", { id: `R${n}`, seq: 20 + n }), unread: 3 + n });
     // A read item `latest` does not show, and questions, change nothing there.
     stream.emit("inbox_item", { item: item("version", { id: "V", read: true }), unread: 7 });
@@ -183,7 +181,7 @@ describe("InboxFeed", () => {
   it("marks one item, and every item a search matches up to the newest shown", async () => {
     const calls = stubFetch(url => [200, url.endsWith("/read") && !url.endsWith("inbox/read") ? { item: item("reply", { read: true }), unread: 1 } : url.endsWith("inbox/read") ? { marked: 4, unread: 0 } : SUMMARY]);
     const feed = new InboxFeed({ after: fakeClock().after });
-    await feed.start(fakeStream());
+    await live(feed);
     expect((await feed.mark("01JA00000000000000000000AA", true)).read).toBe(true);
     expect(feed.unread).toBe(1);
     expect(await feed.markAll({ q: "dash", kind: ["reply"] }, 41)).toBe(4);
@@ -194,12 +192,11 @@ describe("InboxFeed", () => {
     ]);
   });
 
-  it("stays quiet for anyone but the owner, and its pages refuse", async () => {
+  it("is not the owner's when the summary is refused, and its pages refuse", async () => {
     stubFetch(() => [403, { error: { code: "forbidden" } }]);
-    const stream = fakeStream();
     const feed = new InboxFeed();
-    expect(await feed.start(stream)).toBe(false);
-    expect([feed.owner, feed.unread, stream.watched.length]).toEqual([false, 0, 0]);
+    await live(feed);
+    expect([feed.owner, feed.unread]).toEqual([false, 0]);
     await expect(feed.page({})).rejects.toMatchObject({ status: 403 });
   });
 });

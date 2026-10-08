@@ -1,11 +1,12 @@
 // The page's open questions and inbox count (spec
 // 2026-10-06-agent-questions-and-inbox §9.2–§9.5, §9.7), following the
-// `questions` and `inbox` topics. Each feed first asks an owner route: a
-// viewer who is not the owner gets 403, and the feed stays empty and never
-// subscribes, since the hub sends every tab's topics in one request (ruling
-// R8). An owner's feed then subscribes, as a background watcher (kept while
-// the page is hidden), and fetches again each time its topic goes live or
-// resyncs, so no change falls between a fetch and the subscription.
+// `questions` and `inbox` topics. The question module loads only in the
+// owner's browsers (those the token is served to), so a viewer who is not
+// the owner never subscribes them (ruling R8). A feed subscribes its topic
+// as a background watcher (kept while the page is hidden) and fetches each
+// time the topic goes live or resyncs, so no change falls between a fetch
+// and the subscription, and a fetch that failed is made again when the
+// stream is back. A refused topic stops it.
 import { ApiError, type AnswerBody, type InboxFilter, type InboxItem, type QuestionView } from "../api";
 import { after } from "../clock";
 import type { EventStream, StreamEvent } from "../stream";
@@ -31,16 +32,14 @@ function reactive<T extends object>(v: T): T {
 }
 
 export class QuestionFeed {
-  declare private s: { open: QuestionView[]; recent: QuestionView[]; owner: boolean };
+  declare private s: { open: QuestionView[]; recent: QuestionView[] };
   declare private changed: Set<() => void>;
   declare private leave: Map<string, () => void>;
   declare private unwatch: (() => void) | null;
   declare private readonly after: After;
-  declare private runs: number;
 
   constructor(opts: { after?: After } = {}) {
-    this.runs = 0;
-    this.s = reactive({ open: [], recent: [], owner: false });
+    this.s = reactive({ open: [], recent: [] });
     this.changed = new Set();
     this.leave = new Map();
     this.unwatch = null;
@@ -53,8 +52,6 @@ export class QuestionFeed {
   /** Questions that closed while shown, for `LEAVE_MS`, so their cards say what closed them. */
   get recent(): QuestionView[] { return this.s.recent; }
   set recent(v: QuestionView[]) { this.s.recent = v; this.tell(); }
-  /** The caller is the owner (the first fetch answered). */
-  get owner(): boolean { return this.s.owner; }
 
   /** Calls `f` after each change of `open` or `recent`, until the returned function runs. */
   listen(f: () => void): () => void {
@@ -81,18 +78,13 @@ export class QuestionFeed {
     return this.open.find(q => q.id === id) ?? this.recent.find(q => q.id === id);
   }
 
-  /** Fetches the open questions and, for the owner, follows the topic. Resolves false for anyone else. */
-  async start(stream: Stream): Promise<boolean> {
-    if (this.unwatch) return true;
-    const run = this.runs;
-    if (!(await this.refetch()) || run !== this.runs) return false;
+  /** Follows the topic (once), fetching when it goes live. */
+  start(stream: Stream): void {
     this.unwatch ??= stream.watch(["questions"], e => this.on(e), { background: true });
-    return true;
   }
 
-  /** Stops following the topic (a start still asking stops too). */
+  /** Stops following the topic. */
   stop(): void {
-    this.runs++;
     this.unwatch?.();
     this.unwatch = null;
     for (const c of this.leave.values()) c();
@@ -134,15 +126,12 @@ export class QuestionFeed {
     this.upsert("question" in r ? r.question : r.closed);
   }
 
-  /** Fetches the open list; false when the caller is not the owner. */
-  private async refetch(): Promise<boolean> {
-    let r: Awaited<ReturnType<typeof listQuestions>>;
-    try { r = await listQuestions("open", 200); } catch { return this.s.owner; }
-    if (r === "forbidden") { this.s.owner = false; this.open = []; return false; }
-    this.s.owner = true;
+  /** Fetches the open list (none for anyone but the owner). */
+  private async refetch(): Promise<void> {
+    const r = await listQuestions().catch(() => null);
+    if (!r) return;
     // Those that closed unheard leave at once; a card closing now keeps its time.
-    this.open = (r.questions ?? []).filter(q => !this.recent.some(x => x.id === q.id)).sort(byCreated);
-    return true;
+    this.open = r === "forbidden" ? [] : (r.questions ?? []).filter(q => !this.recent.some(x => x.id === q.id)).sort(byCreated);
   }
 
   private on(e: StreamEvent): void {
@@ -164,10 +153,8 @@ export class InboxFeed {
   declare private later: (() => void) | null;
   declare private readonly after: After;
 
-  declare private runs: number;
 
   constructor(opts: { after?: After } = {}) {
-    this.runs = 0;
     this.s = reactive({ unread: 0, latest: [], owner: false });
     this.counted = new Set();
     this.unwatch = null;
@@ -195,18 +182,13 @@ export class InboxFeed {
     return () => { this.counted.delete(f); };
   }
 
-  /** Fetches the summary and, for the owner, follows the topic. Resolves false for anyone else. */
-  async start(stream: Stream): Promise<boolean> {
-    if (this.unwatch) return true;
-    const run = this.runs;
-    if (!(await this.summary()) || run !== this.runs) return false;
+  /** Follows the topic (once), fetching the summary when it goes live. */
+  start(stream: Stream): void {
     this.unwatch ??= stream.watch(["inbox"], e => this.on(e), { background: true });
-    return true;
   }
 
-  /** Stops following the topic (a start still asking stops too). */
+  /** Stops following the topic. */
   stop(): void {
-    this.runs++;
     this.unwatch?.();
     this.unwatch = null;
     this.later?.();
@@ -219,15 +201,14 @@ export class InboxFeed {
     return () => { this.listeners.delete(f); };
   }
 
-  /** Fetches the summary (the count and `latest`); false when the caller is not the owner. */
-  async summary(): Promise<boolean> {
-    let r: Awaited<ReturnType<typeof inboxSummary>>;
-    try { r = await inboxSummary(); } catch { return this.s.owner; }
-    if (r === "forbidden") { this.s.owner = false; return false; }
-    this.s.owner = true;
+  /** Fetches the summary: the count and `latest`, and whether the caller is the owner. */
+  async summary(): Promise<void> {
+    const r = await inboxSummary().catch(() => null);
+    if (!r) return;
+    this.s.owner = r !== "forbidden";
+    if (r === "forbidden") return;
     this.unread = r.unread ?? 0;
     this.latest = r.latest ?? [];
-    return true;
   }
 
   /** One page of items matching `filter`, newest first, after cursor `before`. */

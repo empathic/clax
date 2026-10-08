@@ -48,8 +48,9 @@ export const DEAD_MS = 35_000;
  * cookie) before connecting without it. */
 export const TOKEN_WAIT_MS = 3000;
 
-/** The page's line to the hub; `pinged` when the hub's pings show it alive. */
-export type Link = { send(m: TabMsg): void; close(): void; pinged?: boolean };
+/** The page's line to the hub; `pinged` when the hub's pings show it alive;
+ * `leader` when it is a leader tab's (which may be this tab's own hub). */
+export type Link = { send(m: TabMsg): void; close(): void; pinged?: boolean; leader?: boolean };
 /** Makes a link that hands the hub's messages to `on`, and calls `lost`
  * when it can tell the hub is gone. */
 export type LinkMaker = (on: (m: HubMsg) => void, lost: () => void) => Promise<Link>;
@@ -152,6 +153,7 @@ export const leaderLink: LinkMaker = async on => {
   }).catch(() => {});
   post(hello);
   return {
+    leader: true,
     send: m => { if (closed) return; if (m.t === "topics") topics = m; if (m.t === "focus") focus = m; post(m); },
     close: () => {
       if (closed) return;
@@ -322,9 +324,12 @@ export class EventStream {
       this.hiddenTimer = after(HIDDEN_MS, () => {
         this.hiddenTimer = undefined;
         this.released = true;
-        // Background topics stay: the page keeps only them.
-        if (this.watchers.some(w => w.background)) this.schedule();
-        else this.leave();
+        // Background topics stay: the page keeps only them. A leader link is
+        // left and joined again, so a shown tab takes over the connection
+        // (a hidden tab may be frozen) and this one follows it.
+        if (!this.watchers.some(w => w.background)) return this.leave();
+        if (this.link?.leader) this.leave();
+        this.schedule();
       });
     } else if (this.released) {
       this.released = false;

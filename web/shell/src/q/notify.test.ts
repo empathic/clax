@@ -38,7 +38,7 @@ describe("Notifier", () => {
     expect(made[0].closed).toBe(true);
   });
 
-  it("tags a question by the question, and closes a notification once its item is read", () => {
+  it("tags a question by the question, closes a notification once its item is read, and closes them all", () => {
     const { N, made } = fakeNotification("granted");
     const n = new Notifier(N, vi.fn(), vi.fn());
     n.show(item("question", { id: "I2" }));
@@ -48,6 +48,10 @@ describe("Notifier", () => {
     expect(made[0].closed).toBe(false);
     n.close("I2");
     expect(made[0].closed).toBe(true);
+    n.show(item("reply", { id: "I3" }));
+    n.show(item("published", { id: "I4" }));
+    n.closeAll();
+    expect(made.slice(1).map(m => m.closed)).toEqual([true, true]);
   });
 
   it("strips control and bidirectional characters from what it shows", () => {

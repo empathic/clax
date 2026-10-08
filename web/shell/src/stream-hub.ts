@@ -16,9 +16,10 @@
 // does not answer within `STUCK_MS` fails the connection, which reconnects.
 //
 // Notifications (a hub made with `notify`): tabs say whether they have focus.
-// For each unread inbox item the hub has not announced yet (an `inbox_item`
-// event), when no tab has focus, the hub asks the most recently focused tab
-// holding `inbox` to notify (`notify`).
+// For each new unread inbox item (an `inbox_item` event whose `seq` is above
+// every item the hub has seen, so an older item marked unread again or
+// changed is not announced), when no tab has focus, the hub asks the most
+// recently focused tab holding `inbox` to notify (`notify`).
 import { STUCK_MS, backoff } from "./lifecycle";
 import { parseBlock } from "./sse";
 
@@ -60,8 +61,6 @@ export const LINGER_MS = 3000;
 export const PING_MS = 10_000;
 /** A tab without a Web Lock that has not been heard from in this long is gone. */
 export const CLIENT_TTL_MS = 180_000;
-/** How many announced inbox item IDs the hub remembers (oldest dropped). */
-export const ANNOUNCED_MAX = 512;
 
 type Timer = ReturnType<typeof setTimeout>;
 /** `focusedAt` orders the tabs by when they last gained focus (0: never). */
@@ -105,8 +104,8 @@ export class Hub {
   private syncing = false;
   private dirty = false;
   private readonly fetch: typeof fetch;
-  /** Inbox item IDs already announced, oldest first. */
-  private announced = new Set<string>();
+  /** The highest inbox item `seq` seen. */
+  private seenSeq = -1;
   private focusSeq = 0;
 
   constructor(private readonly env: HubEnv) {
@@ -322,10 +321,10 @@ export class Hub {
   /** Asks one tab of `to` to notify about a new unread item, once per item,
    * when no tab has focus: the one that gained focus last (ties: the first). */
   private announce(data: Record<string, unknown>, to: string[]): void {
-    const item = data.item as { id?: unknown; read?: unknown } | null;
-    if (!item || typeof item !== "object" || typeof item.id !== "string" || item.read !== false || this.announced.has(item.id)) return;
-    this.announced.add(item.id);
-    if (this.announced.size > ANNOUNCED_MAX) this.announced.delete(this.announced.values().next().value!);
+    const item = data.item as { seq?: unknown; read?: unknown } | null;
+    if (!item || typeof item !== "object" || typeof item.seq !== "number" || item.seq <= this.seenSeq) return;
+    this.seenSeq = item.seq;
+    if (item.read !== false) return;
     if ([...this.clients.values()].some(c => c.focused)) return;
     let best: string | null = null;
     let at = -1;

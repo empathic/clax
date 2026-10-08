@@ -15,7 +15,7 @@
   // that question's card and focuses it. At phone width the filters sit
   // behind **Filters**.
   import { onMount } from "svelte";
-  import type { InboxFilter, InboxItem, InboxKind } from "../api";
+  import { type InboxFilter, type InboxItem, type InboxKind, listArtifacts } from "../api";
   import { after } from "../clock";
   import type { InboxFeed, QuestionFeed } from "./feed.svelte";
   import { INBOX_KINDS, filterFromUrl, filterToUrl } from "./inbox-model";
@@ -70,7 +70,9 @@
   // The pickers' options, [value, label]: the pages and the harnesses and
   // agents of the items listed, and the one chosen.
   const listed = $derived([...(unread?.items ?? []), ...(read?.items ?? [])]);
-  const pages = $derived([...new Map([...(filter.artifact ? [[filter.artifact, filter.artifact]] : []), ...listed.flatMap(i => (i.artifact ? [[i.artifact.id, i.artifact.title ?? i.artifact.id]] : []))] as [string, string][])]);
+  // Every artifact, and the pages of the items listed (live pages among them).
+  let artifacts = $state<string[][]>([]);
+  const pages = $derived([...new Map([...(filter.artifact ? [[filter.artifact, filter.artifact]] : []), ...artifacts, ...listed.flatMap(i => (i.artifact ? [[i.artifact.id, i.artifact.title ?? i.artifact.id]] : []))] as [string, string][])]);
   const agents = $derived.by(() => {
     const seen = new Map<string, string>(filter.agent ? [[filter.agent, filter.agent]] : []);
     for (const { agent: a } of listed) if (a) seen.set(a.harness, a.harness).set(a.handle, `${a.harness} ${a.handle.slice(2, 6)} · ${a.project}`);
@@ -197,6 +199,8 @@
   }
 
   onMount(() => {
+    document.title = "Inbox · Clax";
+    void listArtifacts().then(a => { artifacts = a.map(x => [x.id, x.title]); }, () => {});
     const off = inbox.listen(c => { if ("item" in c) take(c.item); else soon(); });
     void load();
     return () => { off(); typing?.(); refetchSoon?.(); };

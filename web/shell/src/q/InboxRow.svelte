@@ -23,6 +23,7 @@
   const p: Props = $props();
   const title = $derived(itemTitle(p.item, p.others ?? []));
   const text = $derived(p.item.gone ? "(deleted)" : itemText(p.item));
+  const mark = $derived(p.item.read ? "Mark unread" : "Mark read");
   const KIND_NAMES = { reply: "Reply", version: "Version", published: "Published", question: "Question", finished: "Finished" } as const;
   // One path per kind (an SVG fragment would need the runtime's SVG templates).
   const ICONS = {
@@ -41,12 +42,12 @@
       <span class="sr">{KIND_NAMES[p.item.kind]}:</span>
     </span>
     <span class="main">
-      <span class="title">{title}</span>
+      <span class="title" id={`irow-${p.item.id}`}>{title}</span>
       {#if text}<span class="text" data-gone={p.item.gone ? "" : undefined}>{text}</span>{/if}
     </span>
     <time datetime={p.item.created_at}>{relativeTime(p.item.created_at, p.now ?? new Date())}</time>
   </button>
-  <button type="button" class="dot" aria-label={p.item.read ? "Mark unread" : "Mark read"} title={p.item.read ? "Mark unread" : "Mark read"}
+  <button type="button" class="dot" aria-describedby={`irow-${p.item.id}`} aria-label={mark} title={mark}
     onclick={() => p.onToggle(p.item)}><span aria-hidden="true"></span></button>
 </li>
 
@@ -58,7 +59,6 @@
     .irow .ico { display: inline-grid; place-items: center; width: 22px; height: 22px; color: var(--muted); }
     .irow .ico svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
     .irow[data-unread] .ico { color: var(--agent-ink); }
-    .irow .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .irow .main { display: grid; gap: 1px; min-width: 0; }
     .irow .title { overflow-wrap: anywhere; color: var(--muted); }
     .irow[data-unread] .title { color: var(--fg); font-weight: 600; }
