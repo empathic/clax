@@ -141,8 +141,9 @@ pub async fn list_all(
 ) -> Result<Json<Value>, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let codex = s.feedback_ctx().codex_push();
+    // Every thread of the home: the bulk lane.
     let artifacts = s
-        .store_call(move |st| {
+        .store_call_bulk(move |st| {
             let mut out = Vec::new();
             for a in st.list_artifacts()? {
                 let id = ArtifactId::parse(&a.id)?;
