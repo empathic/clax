@@ -628,8 +628,12 @@ test("after Escape or Cancel in the composer, the panel's Comment turns comment 
     setTimeout(() => t.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
   });
   await commentAgain();
+  // Cancel, clicked the same way: a click Playwright awaits can wait forever
+  // on the frame the click removes.
   const second = await pick();
-  await second.getByRole("button", { name: "Cancel" }).click();
+  await second.getByRole("button", { name: "Cancel" }).evaluate((b: HTMLButtonElement) => {
+    setTimeout(() => b.click());
+  });
   await commentAgain();
   await pick();
 });
