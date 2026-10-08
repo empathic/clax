@@ -17,7 +17,7 @@
           pname = "clax-web";
           version = (pkgs.lib.importTOML ./Cargo.toml).workspace.package.version;
           src = ./web;
-          npmDepsHash = "sha256-qHeNXo5naX/7ax6LUqGQVdZiM2le4SugrdDLfFEikl0=";
+          npmDepsHash = "sha256-3vh0utMhfW5K3BfPaDswfs+KA026w1nven/dPVWAgOY=";
           # `npm run build` is clean-dist + parts + bridge + shell; the shell
           # config writes to ../dist relative to web/shell, i.e. web/dist.
           installPhase = ''
