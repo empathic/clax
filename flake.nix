@@ -18,6 +18,8 @@
           version = (pkgs.lib.importTOML ./Cargo.toml).workspace.package.version;
           src = ./web;
           npmDepsHash = "sha256-3vh0utMhfW5K3BfPaDswfs+KA026w1nven/dPVWAgOY=";
+          # scripts/build-extension.mjs reads ../Cargo.toml for the version; src is web/ alone.
+          postPatch = "cp ${./Cargo.toml} ../Cargo.toml";
           # `npm run build` is clean-dist + parts + bridge + shell; the shell
           # config writes to ../dist relative to web/shell, i.e. web/dist.
           installPhase = ''
