@@ -119,12 +119,12 @@ pub async fn patch(
     let session = s
         .store_call(move |st| {
             if b.ended {
-                let (session, touched) = st.end_session_touched(&id)?;
-                crate::feedback::apply(&ctx, st, &touched);
+                let ended = st.end_session_touched(&id)?;
+                crate::feedback::apply(&ctx, st, &ended.touched);
                 ctx.waiters.forget(&id);
                 crate::working::announce(&ctx.events, &ctx.working, &ctx.working.end_session(&id));
                 ctx.followers.forget(&id);
-                Ok(session)
+                Ok(ended.session)
             } else {
                 st.heartbeat(&id)
             }

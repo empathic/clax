@@ -20,11 +20,24 @@ pub struct RegisterSession {
     pub parent_pid: Option<u32>,
 }
 
-/// What a reaper pass ended and which feedback it released.
+/// What a reaper pass ended, which feedback it released, and which open
+/// questions of the ended sessions it withdrew.
 #[derive(Debug, Default)]
 pub struct Reaped {
     pub ended: Vec<String>,
     pub touched: crate::feedback::Touched,
+    pub withdrawn_questions: Vec<String>,
+}
+
+/// What [`Store::end_session_touched`] ended and released.
+#[derive(Debug)]
+pub struct EndedSession {
+    pub session: Session,
+    /// Feedback released (see [`Store::end_session_touched`]).
+    pub touched: crate::feedback::Touched,
+    /// IDs of the session's open questions, now withdrawn. Empty when the
+    /// session had already ended.
+    pub withdrawn_questions: Vec<String>,
 }
 
 const SELECT: &str = "SELECT id, harness, harness_session_id, cwd, pid, parent_pid, started_at,
@@ -235,31 +248,41 @@ impl Store {
         })
     }
 
-    /// Ends the session, drops its watches, and releases its undelivered
-    /// feedback (see [`Store::end_session_touched`]). Ending an ended session
-    /// keeps its first `ended_at`.
+    /// Ends the session, drops its watches, releases its undelivered
+    /// feedback, and withdraws its open questions (see
+    /// [`Store::end_session_touched`]). Ending an ended session keeps its
+    /// first `ended_at`.
     ///
     /// # Errors
     /// `NotFound` when no such session exists.
     pub fn end_session(&self, id: &str) -> Result<Session> {
-        self.end_session_touched(id).map(|(s, _)| s)
+        self.end_session_touched(id).map(|e| e.session)
     }
 
-    /// [`Store::end_session`], also returning the feedback it released: rows
+    /// [`Store::end_session`], also returning the feedback it released (rows
     /// deleted because another live session is a target of the same comment,
-    /// or untargeted for the next session that publishes or watches.
-    pub fn end_session_touched(&self, id: &str) -> Result<(Session, crate::feedback::Touched)> {
+    /// or untargeted for the next session that publishes or watches) and the
+    /// IDs of the open questions it withdrew.
+    pub fn end_session_touched(&self, id: &str) -> Result<EndedSession> {
         self.with_tx(|tx| {
+            let now = Store::now();
             let n = tx.execute(
                 "UPDATE sessions SET ended_at = ?2 WHERE id = ?1 AND ended_at IS NULL",
-                params![id, Store::now()],
+                params![id, now],
             )?;
-            let touched = if n > 0 {
-                super::feedback::release_session(tx, id)?
+            let (touched, withdrawn_questions) = if n > 0 {
+                (
+                    super::feedback::release_session(tx, id)?,
+                    super::questions::withdraw_session(tx, id, &now)?,
+                )
             } else {
                 Default::default()
             };
-            Ok((fetch(tx, id).map_err(not_found)?, touched))
+            Ok(EndedSession {
+                session: fetch(tx, id).map_err(not_found)?,
+                touched,
+                withdrawn_questions,
+            })
         })
     }
 
@@ -348,8 +371,9 @@ impl Store {
 
     /// Ends live sessions not seen for `idle` whose `pid` is unknown or no
     /// longer alive, releasing their watches and undelivered feedback as
-    /// [`Store::end_session_touched`] does. Returns the sessions ended and the
-    /// feedback released.
+    /// [`Store::end_session_touched`] does, and withdrawing their open
+    /// questions. Returns the sessions ended, the feedback released, and the
+    /// questions withdrawn.
     pub fn reap_sessions(&self, idle: Duration, pid_alive: &dyn Fn(u32) -> bool) -> Result<Reaped> {
         let cutoff =
             (chrono::Utc::now() - idle).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
@@ -388,6 +412,9 @@ impl Store {
                 reaped
                     .touched
                     .merge(super::feedback::release_session(tx, &id)?);
+                reaped
+                    .withdrawn_questions
+                    .extend(super::questions::withdraw_session(tx, &id, &now)?);
                 reaped.ended.push(id);
             }
             Ok(reaped)
