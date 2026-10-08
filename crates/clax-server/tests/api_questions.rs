@@ -1061,7 +1061,11 @@ async fn an_answer_a_question_poll_holds_reaches_only_that_poll() {
     let ask = tokio::spawn(async move { req.send().await });
     ts.wait_question_waiters(&qid, 1).await;
     ts.store
-        .close_question(&qid, clax_core::store::questions::Close::Decline)
+        .close_question(
+            &clax_core::audit::AuditCtx::DAEMON,
+            &qid,
+            clax_core::store::questions::Close::Decline,
+        )
         .unwrap();
     assert_eq!(
         late(&ts, &sid).await,
@@ -1139,7 +1143,11 @@ async fn a_held_answer_left_untaken_wakes_the_feedback_poll_when_the_hold_ends()
     ts.wait_feedback_waiters(&sid, 1).await;
     // Answered with no wake-up (closed in the store), then the poll lets go.
     ts.store
-        .close_question(&qid, clax_core::store::questions::Close::Decline)
+        .close_question(
+            &clax_core::audit::AuditCtx::DAEMON,
+            &qid,
+            clax_core::store::questions::Close::Decline,
+        )
         .unwrap();
     ask.abort();
     let got = tokio::time::timeout(Duration::from_secs(5), waiter)
@@ -1401,6 +1409,7 @@ async fn shutting_down_withdraws_the_hook_questions_polls_hold() {
     let (hook_poll, ask_poll) = (poll(&hq), poll(&aq));
     ts.wait_question_waiters(&hq, 1).await;
     ts.wait_question_waiters(&aq, 1).await;
+    let seq = ts.store.newest_seq().unwrap();
     stop.send(true).unwrap();
     let (h, a) = tokio::time::timeout(Duration::from_secs(5), async {
         (hook_poll.await.unwrap(), ask_poll.await.unwrap())
@@ -1411,4 +1420,265 @@ async fn shutting_down_withdraws_the_hook_questions_polls_hold() {
     assert_eq!(a["question"]["status"], "open");
     assert_eq!(ts.question_status(&hq).await, "withdrawn");
     assert_eq!(ts.question_status(&aq).await, "open");
+    assert_eq!(
+        question_events(&ts, seq),
+        [event(
+            "question.withdraw",
+            &hq,
+            "system",
+            "daemon",
+            json!("daemon_stop")
+        )],
+    );
+}
+
+/// The `question.*` events recorded after `seq`: kind, question ID, actor
+/// type, `via` and `reason`.
+fn question_events(ts: &TestServer, seq: i64) -> Vec<(String, String, String, String, Value)> {
+    ts.store
+        .events_after(seq, 10_000)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind.starts_with("question."))
+        .map(|e| {
+            let body: Value = serde_json::from_str(&e.body).unwrap();
+            let actor: Value = serde_json::from_str(&e.actor).unwrap();
+            (
+                e.kind,
+                e.ids.question.unwrap(),
+                actor["type"].as_str().unwrap().to_string(),
+                body["via"].as_str().unwrap().to_string(),
+                body.get("reason").cloned().unwrap_or(Value::Null),
+            )
+        })
+        .collect()
+}
+
+fn event(
+    kind: &str,
+    qid: &str,
+    actor: &str,
+    via: &str,
+    reason: Value,
+) -> (String, String, String, String, Value) {
+    (kind.into(), qid.into(), actor.into(), via.into(), reason)
+}
+
+#[tokio::test]
+async fn each_question_route_records_its_transition_once() {
+    let ts = TestServer::spawn().await;
+    let sid = session(&ts, "h1").await;
+    let id = |v: Value| v["question"]["id"].as_str().unwrap().to_string();
+    let newest = || ts.store.newest_seq().unwrap();
+    let as_hook = |b: reqwest::RequestBuilder| {
+        ts.authed(b)
+            .header("x-clax-via", "hook")
+            .header("x-clax-session", &sid)
+    };
+    let owner_post = |path: String| {
+        ts.client
+            .post(format!("{}{path}", ts.base))
+            .header("cookie", ts.owner_cookie())
+            .send()
+    };
+
+    // Created released (no owner surface): asked, then released; the
+    // terminal's answer is the owner's, through the hook.
+    let seq = newest();
+    let r: Value = as_hook(
+        ts.client
+            .post(format!("{}/api/sessions/{sid}/questions", ts.base)),
+    )
+    .json(&hook("t1"))
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let t1 = id(r);
+    assert_eq!(
+        question_events(&ts, seq),
+        [
+            event("question.ask", &t1, "agent", "hook", Value::Null),
+            event("question.release", &t1, "agent", "hook", json!("created")),
+        ]
+    );
+    let seq = newest();
+    // The same tool call again makes no question and records nothing.
+    as_hook(
+        ts.client
+            .post(format!("{}/api/sessions/{sid}/questions", ts.base)),
+    )
+    .json(&hook("t1"))
+    .send()
+    .await
+    .unwrap();
+    assert!(question_events(&ts, seq).is_empty());
+    let res = as_hook(
+        ts.client
+            .post(format!("{}/api/sessions/{sid}/questions:terminal", ts.base)),
+    )
+    .json(&json!({"tool_use_id": "t1", "answers": {"Which?": "B"}}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(
+        question_events(&ts, seq),
+        [event("question.answer", &t1, "owner", "hook", Value::Null)]
+    );
+    let e = ts.store.events_after(seq, 10).unwrap().pop().unwrap();
+    let b: Value = serde_json::from_str(&e.body).unwrap();
+    assert_eq!(b["answered_via"], "terminal");
+    assert_eq!(b["answers"], json!([{"selected": ["B"], "text": null}]));
+    assert_eq!(e.ids.session.as_deref(), Some(sid.as_str()), "the asker");
+
+    // With a surface open, a hook question waits; each route's change.
+    let _surface = owner_tap(&ts).await;
+    let asked = id(ts.ask(&sid, body()).await);
+    let timed = id(ts.ask(&sid, hook("t2")).await);
+    let moved = id(ts.ask(&sid, hook("t3")).await);
+    let skipped = id(ts.ask(&sid, body()).await);
+    let gone = id(ts.ask(&sid, body()).await);
+    let by_cli = id(ts.ask(&sid, body()).await);
+    let seq = newest();
+    ts.answer_question(&asked, json!({"answers": [{"selected": ["A"]}]}))
+        .await;
+    let r = post(
+        &ts,
+        &format!("/api/sessions/{sid}/questions/{timed}/release"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(r.status(), 200);
+    assert_eq!(
+        owner_post(format!("/api/questions/{moved}/release"))
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(
+        owner_post(format!("/api/questions/{skipped}/decline"))
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let r = post(
+        &ts,
+        &format!("/api/sessions/{sid}/questions/{gone}/withdraw"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(r.status(), 200);
+    let r = post(
+        &ts,
+        &format!("/api/questions/{by_cli}/answer"),
+        json!({"answers": [{"selected": ["B"]}]}),
+    )
+    .await;
+    assert_eq!(r.status(), 200);
+    assert_eq!(
+        question_events(&ts, seq),
+        [
+            event("question.answer", &asked, "owner", "shell", Value::Null),
+            event("question.release", &timed, "agent", "mcp", json!("timer")),
+            event("question.release", &moved, "owner", "shell", json!("owner")),
+            event("question.decline", &skipped, "owner", "shell", Value::Null),
+            event(
+                "question.withdraw",
+                &gone,
+                "agent",
+                "mcp",
+                json!("explicit")
+            ),
+            event("question.answer", &by_cli, "owner", "cli", Value::Null),
+        ]
+    );
+
+    // Refusals record nothing: a closed question, an ask question's
+    // release, invalid answers, and a question that does not exist.
+    let seq = newest();
+    assert_eq!(
+        owner_post(format!("/api/questions/{skipped}/decline"))
+            .await
+            .unwrap()
+            .status(),
+        409
+    );
+    let r = post(
+        &ts,
+        &format!("/api/sessions/{sid}/questions/{gone}/withdraw"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(r.status(), 409);
+    let open = id(ts.ask(&sid, body()).await);
+    let seq2 = newest();
+    assert_eq!(
+        owner_post(format!("/api/questions/{open}/release"))
+            .await
+            .unwrap()
+            .status(),
+        400
+    );
+    let r = ts
+        .answer_question_raw(&open, json!({"answers": [{"selected": ["Z"]}]}))
+        .await;
+    assert_eq!(r.status(), 400);
+    let r = owner_post("/api/questions/01J00000000000000000000000/decline".into())
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+    assert_eq!(question_events(&ts, seq).len(), 1, "only the new ask");
+    assert!(question_events(&ts, seq2).is_empty());
+
+    // Ending the session withdraws what is open, after its session.end.
+    let seq = newest();
+    ts.end_session(&sid).await;
+    assert_eq!(
+        question_events(&ts, seq),
+        [event(
+            "question.withdraw",
+            &open,
+            "agent",
+            "mcp",
+            json!("session_end")
+        )]
+    );
+}
+
+#[tokio::test]
+async fn the_grace_records_its_withdrawal_as_the_daemon() {
+    let (ts, clock) = TestServer::spawn_question_clock().await;
+    let sid = session(&ts, "h1").await;
+    let mut tap = owner_tap(&ts).await;
+    let qid = ts.ask(&sid, hook("toolu_1")).await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(tap.next().await["status"], "open");
+    let seq = ts.store.newest_seq().unwrap();
+    clock.wait_for(GRACE, 1).await;
+    assert_eq!(clock.fire(GRACE), 1);
+    assert_eq!(tap.next().await["status"], "withdrawn");
+    assert_eq!(
+        question_events(&ts, seq),
+        [event(
+            "question.withdraw",
+            &qid,
+            "system",
+            "daemon",
+            json!("unwaited")
+        )]
+    );
+    let e = ts.store.events_after(seq, 10).unwrap().pop().unwrap();
+    let body: Value = serde_json::from_str(&e.body).unwrap();
+    assert_eq!(
+        body["for_actor"]["session_id"],
+        sid.as_str(),
+        "names the agent"
+    );
 }

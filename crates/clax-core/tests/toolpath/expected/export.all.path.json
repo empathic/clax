@@ -2023,7 +2023,7 @@
               "structural": {
                 "questions": {
                   "redacted": "text",
-                  "sha256": "sha256:87b9ae241875c020d1a1b23f9fb5a29f44f74403f3e2d5c168c190c4b16b1598"
+                  "sha256": "sha256:d39e8fe341640201aed8b2b129401d163afdf77912cd7fbbc616e9b1b247d382"
                 },
                 "source": "ask",
                 "tool_use_id": "toolu_q1",
@@ -2094,7 +2094,7 @@
                 "answered_via": "shell",
                 "answers": {
                   "redacted": "text",
-                  "sha256": "sha256:6bd2879d9a01fd9aa2ca461357df5f8d4406c53cd0819fcead3a14cbe57afba4"
+                  "sha256": "sha256:c9b45f39cc962bbcbb9780c7cc9a2f8fb0abc3eaca487ab7a723777127f19cfb"
                 },
                 "type": "clax.question.answer"
               }
@@ -3835,10 +3835,6 @@
           "change": {
             "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/q/01JB9Q00000000000000000002": {
               "structural": {
-                "reason": {
-                  "redacted": "text",
-                  "sha256": "sha256:a0e63d7c7125d29af84d6919af5550529be77c327324940c98c4b2cb13a99c8c"
-                },
                 "type": "clax.question.decline"
               }
             }
@@ -3877,7 +3873,7 @@
           "change": {
             "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/q/01JB9Q00000000000000000003": {
               "structural": {
-                "reason": null,
+                "reason": "owner",
                 "type": "clax.question.release"
               }
             }
@@ -3892,9 +3888,8 @@
               "question_id": "01JB9Q00000000000000000003",
               "seq": 57,
               "session_id": "01JB9S00000000000000000001",
-              "system_reason": "daemon",
               "v": 1,
-              "via": "daemon"
+              "via": "shell"
             },
             "description": "Released question 01JB9Q00000000000000000003",
             "refs": [
@@ -3905,7 +3900,7 @@
             ]
           },
           "step": {
-            "actor": "tool:clax/0.3.1",
+            "actor": "human:clax-owner",
             "id": "e000000000057",
             "parents": [
               "e000000000056"
@@ -3917,7 +3912,7 @@
           "change": {
             "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/q/01JB9Q00000000000000000004": {
               "structural": {
-                "reason": null,
+                "reason": "explicit",
                 "type": "clax.question.withdraw"
               }
             }

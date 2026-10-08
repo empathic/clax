@@ -6,6 +6,7 @@
 //! 403, and they keep the viewer routes' origin rules.
 
 use super::artifacts::{body, body_within, path};
+use crate::audit::DeferredAudit;
 use crate::auth::RequireToken;
 use crate::error::ApiError;
 use crate::identity::Identity;
@@ -17,6 +18,7 @@ use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use clax_core::audit::AuditCtx;
 use clax_core::questions::{Answer, Question, from_claude, from_claude_answers, validate_ask};
 use clax_core::store::questions::{Close, ListStatus, NewQuestion, Source, Status};
 use clax_core::{ArtifactId, CoreError, Store};
@@ -91,9 +93,16 @@ impl Closed {
     }
 }
 
-/// Applies `c` to question `qid` and announces it. Runs on a store thread.
-pub(crate) fn close(s: &AppState, db: &Store, qid: &str, c: Close) -> clax_core::Result<Closed> {
-    match db.close_question(qid, c) {
+/// Applies `c` to question `qid` under `ctx` and announces it. Runs on a
+/// store thread.
+pub(crate) fn close(
+    s: &AppState,
+    db: &Store,
+    ctx: &AuditCtx,
+    qid: &str,
+    c: Close,
+) -> clax_core::Result<Closed> {
+    match db.close_question(ctx, qid, c) {
         Ok(q) => {
             let v = view(db, &q)?;
             announce(s, &q, v.clone());
@@ -128,10 +137,13 @@ pub struct CreateBody {
 /// artifact of the session's newest working record when it names none; it
 /// is created moved to the terminal (`mode: "terminal"`) when no owner
 /// surface is open or `terminal_after_s` is 0, and otherwise is withdrawn
-/// when no poll holds it for the grace.
+/// when no poll holds it for the grace. A new question records
+/// `question.ask` as the session's agent (and `question.release` when made
+/// released).
 pub async fn create(
     State(s): State<AppState>,
     _t: RequireToken,
+    audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<CreateBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
@@ -179,14 +191,18 @@ pub async fn create(
             if named && live.is_none() {
                 return Err(CoreError::NotFound);
             }
-            let (row, made) = db.create_question(NewQuestion {
-                session_id: sid,
-                artifact_id: live,
-                source,
-                tool_use_id,
-                questions,
-                released,
-            })?;
+            let ctx = audit.for_session(db, &sid)?;
+            let (row, made) = db.create_question(
+                &ctx,
+                NewQuestion {
+                    session_id: sid,
+                    artifact_id: live,
+                    source,
+                    tool_use_id,
+                    questions,
+                    released,
+                },
+            )?;
             let v = view(db, &row)?;
             if made {
                 announce(&st, &row, v.clone());
@@ -221,7 +237,8 @@ pub struct WaitQuery {
 /// waited_s}` as soon as the question is not open, or after `wait` seconds
 /// (at most [`MAX_WAIT_SECS`]), or when the daemon shuts down. A daemon
 /// that shuts down while a poll holds an open hook question withdraws it
-/// (and announces it) before answering, as its next start would: the hook
+/// (and announces it) before answering, as its next start would, recording
+/// `question.withdraw` (reason `daemon_stop`) as `system:daemon`: the hook
 /// then hands the question to the terminal as withdrawn, rather than
 /// trying to release it on a daemon that is going away. An answered
 /// or declined result marks it taken. While the poll runs it holds the
@@ -296,7 +313,7 @@ pub async fn poll(
                     return Ok(None);
                 }
                 if stopped && row.status == Status::Open && row.source == Source::Hook {
-                    close(&st, db, &row.id, Close::Withdraw)?;
+                    close(&st, db, &AuditCtx::DAEMON, &row.id, Close::Shutdown)?;
                     row = db.session_question(&sid1, &qid1)?;
                 }
                 if matches!(row.status, Status::Answered | Status::Declined) {
@@ -318,9 +335,10 @@ pub async fn poll(
     }
 }
 
-/// Applies `c` to session `sid`'s question `qid`.
+/// Applies `c` to session `sid`'s question `qid`, as the session's agent.
 async fn session_close(
     s: AppState,
+    audit: DeferredAudit,
     sid: String,
     qid: String,
     c: Close,
@@ -330,34 +348,38 @@ async fn session_close(
         .store_call(move |db| {
             live(db, &sid)?;
             db.session_question(&sid, &qid)?;
-            close(&st, db, &qid, c)
+            let ctx = audit.for_session(db, &sid)?;
+            close(&st, db, &ctx, &qid, c)
         })
         .await?;
     closed.respond()
 }
 
 /// `POST /api/sessions/<sid>/questions/<qid>/withdraw` → `{question}`; 409
-/// `question_closed` when it is not open.
+/// `question_closed` when it is not open. Records `question.withdraw`
+/// (reason `explicit`).
 pub async fn withdraw(
     State(s): State<AppState>,
     _t: RequireToken,
+    audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Json<Value>, QuestionError> {
     let (sid, qid) = path(p)?;
-    session_close(s, sid, qid, Close::Withdraw).await
+    session_close(s, audit, sid, qid, Close::Withdraw).await
 }
 
 /// `POST /api/sessions/<sid>/questions/<qid>/release` → `{question}`: the
 /// hook's timer moves a mirrored question to the terminal. 400
 /// `not_mirrored` for an `ask` question; 409 `question_closed` when it is
-/// not open.
+/// not open. Records `question.release` (reason `timer`).
 pub async fn release(
     State(s): State<AppState>,
     _t: RequireToken,
+    audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Json<Value>, QuestionError> {
     let (sid, qid) = path(p)?;
-    session_close(s, sid, qid, Close::Expire).await
+    session_close(s, audit, sid, qid, Close::Expire).await
 }
 
 #[derive(Deserialize)]
@@ -370,10 +392,12 @@ pub struct TerminalBody {
 /// `POST /api/sessions/<sid>/questions:terminal`: records the terminal
 /// dialog's answers (AskUserQuestion's `answers`, by question text) on the
 /// released question of `tool_use_id` → `{question}`; 204 when the session
-/// has no released question for that call.
+/// has no released question for that call. Records `question.answer` as
+/// the owner, who answered (`answered_via: terminal`).
 pub async fn terminal(
     State(s): State<AppState>,
     _t: RequireToken,
+    audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<TerminalBody>, JsonRejection>,
 ) -> Result<Response, QuestionError> {
@@ -390,7 +414,8 @@ pub async fn terminal(
                 return Ok(None);
             }
             let answers = from_claude_answers(&q.questions, &b.answers);
-            close(&st, db, &q.id, Close::Terminal { answers }).map(Some)
+            let ctx = audit.owner_in_terminal(db)?;
+            close(&st, db, &ctx, &q.id, Close::Terminal { answers }).map(Some)
         })
         .await?;
     Ok(match closed {
@@ -501,12 +526,23 @@ pub async fn get_one(
     Ok(Json(json!({"question": v})))
 }
 
-/// Applies the owner's `c` to question `qid`: 404 when there is none.
-async fn owner_close(s: AppState, qid: String, c: Close) -> Result<Json<Value>, QuestionError> {
+/// Applies the owner's `c` to question `qid`: 404 when there is none. The
+/// audit context is resolved once the question is found, so a request for
+/// none makes no row.
+async fn owner_close(
+    s: AppState,
+    audit: DeferredAudit,
+    qid: String,
+    c: Close,
+) -> Result<Json<Value>, QuestionError> {
     let st = s.clone();
-    s.store_call(move |db| close(&st, db, &qid, c))
-        .await?
-        .respond()
+    s.store_call(move |db| {
+        db.question(&qid)?.ok_or(CoreError::NotFound)?;
+        let ctx = audit.resolve(db)?;
+        close(&st, db, &ctx, &qid, c)
+    })
+    .await?
+    .respond()
 }
 
 #[derive(Deserialize)]
@@ -520,10 +556,12 @@ pub struct AnswerBody {
 /// gateway, `cli` for the token from no browser of the owner's, else
 /// `shell`. 400 `invalid_answer` for answers that do not fit the questions;
 /// 409 `question_closed`, with the question's view, when it is not open.
+/// Records `question.answer`.
 pub async fn answer(
     State(s): State<AppState>,
     _o: SameOrigin,
     who: Identity,
+    audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<AnswerBody>, JsonRejection>,
 ) -> Result<Json<Value>, QuestionError> {
@@ -539,6 +577,7 @@ pub async fn answer(
     };
     owner_close(
         s,
+        audit,
         qid,
         Close::Answer {
             answers: b.answers,
@@ -550,25 +589,29 @@ pub async fn answer(
 
 /// `POST /api/questions/<qid>/decline` (owner): the person skips the
 /// question → `{question}`; 409 `question_closed` when it is not open.
+/// Records `question.decline`.
 pub async fn decline(
     State(s): State<AppState>,
     _o: SameOrigin,
     who: Identity,
+    audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, QuestionError> {
     who.require_owner("sees and answers questions")?;
-    owner_close(s, path(p)?, Close::Decline).await
+    owner_close(s, audit, path(p)?, Close::Decline).await
 }
 
 /// `POST /api/questions/<qid>/release` (owner): "Answer in the terminal"
 /// for a mirrored question → `{question}`; 400 `not_mirrored` for an `ask`
-/// question; 409 `question_closed` when it is not open.
+/// question; 409 `question_closed` when it is not open. Records
+/// `question.release` (reason `owner`).
 pub async fn release_owner(
     State(s): State<AppState>,
     _o: SameOrigin,
     who: Identity,
+    audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, QuestionError> {
     who.require_owner("sees and answers questions")?;
-    owner_close(s, path(p)?, Close::Release).await
+    owner_close(s, audit, path(p)?, Close::Release).await
 }

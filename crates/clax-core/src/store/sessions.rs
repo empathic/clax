@@ -426,8 +426,9 @@ impl Store {
     /// deleted because another live session is a target of the same comment,
     /// or untargeted for the next session that publishes or watches) and the
     /// IDs of the open questions it withdrew. Ending a live session records
-    /// `session.end` (reason `explicit`) under `ctx`; ending an ended one
-    /// records nothing.
+    /// `session.end` (reason `explicit`) under `ctx`, then a
+    /// `question.withdraw` (reason `session_end`) for each question
+    /// withdrawn; ending an ended one records nothing.
     pub fn end_session_touched(&self, ctx: &AuditCtx, id: &str) -> Result<EndedSession> {
         self.with_tx(|tx| {
             let now = Store::now();
@@ -439,7 +440,7 @@ impl Store {
                 self.record_session_end(tx, ctx, id, "explicit")?;
                 (
                     super::feedback::release_session(tx, id)?,
-                    super::questions::withdraw_session(tx, id, &now)?,
+                    self.withdraw_session_questions(tx, ctx, id, &now)?,
                 )
             } else {
                 Default::default()
@@ -548,7 +549,9 @@ impl Store {
     /// [`Store::end_session_touched`] does, and withdrawing their open
     /// questions. Returns the sessions ended, the feedback released, and the
     /// questions withdrawn. Each session ended records `session.end` (reason
-    /// `ttl`) as `system:ttl`, naming the session's agent in `for_actor`.
+    /// `ttl`) as `system:ttl`, naming the session's agent in `for_actor`,
+    /// then `question.withdraw` (reason `session_end`) for each of its
+    /// questions withdrawn, likewise.
     pub fn reap_sessions(&self, idle: Duration, pid_alive: &dyn Fn(u32) -> bool) -> Result<Reaped> {
         let cutoff =
             (chrono::Utc::now() - idle).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
@@ -584,13 +587,14 @@ impl Store {
                 if n == 0 {
                     continue;
                 }
-                self.record_session_end(tx, &AuditCtx::system(SystemReason::Ttl), &id, "ttl")?;
+                let ttl = AuditCtx::system(SystemReason::Ttl);
+                self.record_session_end(tx, &ttl, &id, "ttl")?;
                 reaped
                     .touched
                     .merge(super::feedback::release_session(tx, &id)?);
                 reaped
                     .withdrawn_questions
-                    .extend(super::questions::withdraw_session(tx, &id, &now)?);
+                    .extend(self.withdraw_session_questions(tx, &ttl, &id, &now)?);
                 reaped.ended.push(id);
             }
             Ok(reaped)

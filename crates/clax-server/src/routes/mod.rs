@@ -737,34 +737,6 @@ mod l10 {
             "the latency gate's calibration read; changes no history",
         ),
         (
-            "questions::create",
-            "question.* events (spec §6.6) are plan Task 15's",
-        ),
-        (
-            "questions::terminal",
-            "question.* events (spec §6.6) are plan Task 15's",
-        ),
-        (
-            "questions::withdraw",
-            "question.* events (spec §6.6) are plan Task 15's",
-        ),
-        (
-            "questions::release",
-            "question.* events (spec §6.6) are plan Task 15's",
-        ),
-        (
-            "questions::answer",
-            "question.* events (spec §6.6) are plan Task 15's",
-        ),
-        (
-            "questions::decline",
-            "question.* events (spec §6.6) are plan Task 15's",
-        ),
-        (
-            "questions::release_owner",
-            "question.* events (spec §6.6) are plan Task 15's",
-        ),
-        (
             "questions::expire",
             "debug builds only; ends a question's polls, changing no history",
         ),

@@ -221,6 +221,23 @@ impl DeferredAudit {
         })
     }
 
+    /// The audit context of an answer the owner gave in the terminal, which
+    /// a token holder (the hook) reports: the owner, by the owner's viewer
+    /// row (made when missing, as for the token alone), through the channel
+    /// the request names, else `hook`, with the request's git state and
+    /// tool call.
+    pub fn owner_in_terminal(self, st: &clax_core::Store) -> clax_core::Result<AuditCtx> {
+        let owner = st.owner_viewer(false)?;
+        Ok(AuditCtx {
+            actor: Actor::Owner {
+                public_id: owner.public_id,
+            },
+            via: self.named.unwrap_or(Via::Hook),
+            git: self.git,
+            call: self.call,
+        })
+    }
+
     /// The context of a token holder registering or joining a session: the
     /// channel it names (else `mcp`), its git state and its tool call. The
     /// store records those events as the session's own agent, which it
