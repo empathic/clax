@@ -10,8 +10,13 @@
   // and merging pages (spec §7.1, owner decision 2026-10-06). Every action
   // goes to the worker, which alone talks to the daemon. Everything shown
   // from the page or the daemon (titles, URLs, comments) is text, never markup.
+  // For the owner (the daemon takes the extension as the owner), two tabs
+  // (spec 2026-10-06-agent-questions-and-inbox §9.6): **Page**, with the open
+  // questions about the live page above its threads, and **Inbox** with the
+  // unread count.
   import Roster from "../../../shell/src/ui/Roster.svelte";
   import Sidebar from "../../../shell/src/ui/Sidebar.svelte";
+  import SidebarQuestions from "../../../shell/src/q/SidebarQuestions.svelte";
   import type { Thread } from "../../../shell/src/threads";
   import { agentName } from "../../../shell/src/view/history-model";
   import { presenceMap, roster } from "../../../shell/src/view/presence-model";
@@ -20,6 +25,7 @@
   import { type FarPage, type PanelState, type PanelToWorker, RETRYABLE, type SiteChoice, type SiteView, type Suggestion } from "../messages";
   import { asPages, pageOfRoute } from "./adapt";
   import Elsewhere from "./Elsewhere.svelte";
+  import type { PanelLink } from "./link.svelte";
   import Merge from "./Merge.svelte";
   import SiteTools from "./SiteTools.svelte";
   import MoveTo from "./MoveTo.svelte";
@@ -35,7 +41,7 @@
     clip?(threadId: string): Promise<string | null>;
     farPage?(threadId: string): Promise<FarPage | null>;
     suggestion?: { origin: string; suggestion: Suggestion | null } | null; sites?: SiteChoice[] | null;
-  };
+  } & Partial<Pick<PanelLink, "inbox" | "questions" | "ask" | "onItem">>;
   type Area = Parameters<typeof loadPrefs>[0];
   const local = (): Area => { try { return chrome.storage.local; } catch { return undefined; } };
   /** Asks Chrome for the origins' permission, as the panel's click allows (none to ask for in tests). */
@@ -185,6 +191,18 @@
   }
   // A failure after a save lets the same name be sent again.
   $effect(() => { if (s?.error) saved = ""; });
+  /** The owner's tabs: shown once the daemon took the extension as the owner. */
+  const owner = $derived(!!link.inbox?.owner && !!link.questions);
+  let tab = $state<"page" | "inbox">("page");
+  const inboxTab = $derived(owner && tab === "inbox");
+  const unreadCount = $derived(link.inbox?.unread ?? 0);
+  // Arrows move between the tabs, as a tab list's do.
+  function tabKey(e: KeyboardEvent): void {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight" && e.key !== "Home" && e.key !== "End") return;
+    e.preventDefault();
+    tab = e.key === "Home" ? "page" : e.key === "End" ? "inbox" : tab === "page" ? "inbox" : "page";
+    queueMicrotask(() => document.getElementById(`ptab-${tab}`)?.focus());
+  }
 </script>
 
 <main class="panel">
@@ -204,6 +222,14 @@
     {#if s.page && (people.length || agents.length)}
       <div class="who"><Roster {people} {agents} working={s.working} me={s.viewer?.public_id ?? null} max={5} presence={presenceMap(s.presence ?? [])} /></div>
     {/if}
+    {#if owner}
+      <div class="tabs" role="tablist" aria-label="Side panel">
+        <button type="button" role="tab" id="ptab-page" aria-selected={!inboxTab} tabindex={inboxTab ? -1 : 0}
+          onclick={() => (tab = "page")} onkeydown={tabKey}>Page</button>
+        <button type="button" role="tab" id="ptab-inbox" aria-selected={inboxTab} aria-controls={inboxTab ? "ptab-panel" : undefined} tabindex={inboxTab ? 0 : -1}
+          aria-label={unreadCount ? `Inbox, ${unreadCount} unread` : "Inbox"} onclick={() => (tab = "inbox")} onkeydown={tabKey}>Inbox{#if unreadCount}<span class="count" aria-hidden="true">{unreadCount}</span>{/if}</button>
+      </div>
+    {/if}
     {#if link.up === false}
       <p class="notice quiet" role="status">Reconnecting to Clax. What this shows may be out of date.</p>
     {/if}
@@ -221,6 +247,14 @@
         {/if}
       </div>
     {/if}
+    {#if inboxTab && link.questions && link.ask && link.onItem && link.inbox}
+      <div class="tabpanel" role="tabpanel" id="ptab-panel" aria-labelledby="ptab-inbox">
+        <!-- Loaded when first opened: the panel's first paint carries none of it. -->
+        {#await import("./InboxTab.svelte") then { default: InboxTab }}
+          <InboxTab link={{ inbox: link.inbox, questions: link.questions, ask: m => link.ask!(m), post: m => link.post(m), onItem: f => link.onItem!(f) }} {now} />
+        {/await}
+      </div>
+    {:else}
     {#if s.viewer && !s.viewer.display_name}
       <label class="name"><span>Your name</span>
         <input aria-label="Your name" maxlength="60" autocomplete="name" placeholder="How others see you" value={name}
@@ -251,6 +285,9 @@
     {#if !s.enabled}
       <!-- told above -->
     {:else if s.page}
+      {#if owner && link.questions}
+        <div class="questions"><SidebarQuestions aid={s.page.artifact_id} feed={link.questions} {now} /></div>
+      {/if}
       {#if picked}
         <div class="picked">
           {#if movingPicked}
@@ -304,6 +341,7 @@
         {/if}
       </footer>
     {/if}
+    {/if}
   {/if}
 </main>
 
@@ -340,4 +378,12 @@
   .foot { margin-top: auto; display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px var(--gutter); border-top: 1px solid var(--border); font-size: 13px; }
   .foot a { color: var(--agent-ink); }
   .foot button { margin-left: auto; }
+  .tabs { display: flex; gap: 2px; padding: 0 var(--gutter); border-bottom: 1px solid var(--border); background: var(--card); }
+  .tabs button { flex: none; min-height: 34px; padding: 0 10px; gap: 6px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); font-weight: 500; }
+  .tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--fg); }
+  .tabs button:not(:disabled):hover { background: var(--hover); }
+  .tabs .count { min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--you); color: var(--on-you); font: 600 11px/18px var(--font); text-align: center; font-variant-numeric: tabular-nums; }
+  .questions { padding: 12px var(--gutter) 0; }
+  .questions :global(.side-q) { margin-bottom: 0; }
+  .questions:has(> :global(.side-q[hidden])) { display: none; }
 </style>

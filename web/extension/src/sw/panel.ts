@@ -6,18 +6,25 @@
 // page of the site, are fetched here, with the credential, for the panel,
 // which holds none. A failure is told to the panel as
 // `failed {code, message}`; one a new pairing can fix is also kept as the
-// tab's error, so the panel's Retry pairs again for it.
+// tab's error, so the panel's Retry pairs again for it. The owner's
+// questions and inbox act on no tab (spec 2026-10-06-agent-questions-and-inbox
+// §9.6): each is a request, answered by its result.
 import { MAX_SITES, type PanelToWorker, RETRYABLE, type WorkerToPanel } from "../messages";
 import type { Api } from "./api";
+import type { WorkerInbox } from "./inbox";
 import { originOf } from "./origins";
 import type { Pairer } from "./pairing";
 import type { Sites } from "./site";
 import type { Tabs } from "./tabs";
 
 export type PanelDeps = {
-  api: Pick<Api, "sendThread" | "sendBatch" | "comment" | "resolve" | "reopen" | "looked" | "setName" | "move" | "addRule" | "deleteRule" | "suggest" | "sites" | "join" | "split" | "answer" | "clip" | "artifact">;
-  tabs: Pick<Tabs, "ready" | "state" | "admits" | "route" | "applied" | "fail" | "setViewer" | "select" | "setCommentMode" | "commentOn" | "openThread" | "opening">;
+  api: Pick<Api, "sendThread" | "sendBatch" | "comment" | "resolve" | "reopen" | "looked" | "setName" | "move" | "addRule" | "deleteRule" | "suggest" | "sites" | "join" | "split" | "answer" | "clip" | "artifact" | "closeQuestion" | "markItem" | "markItems">;
+  tabs: Pick<Tabs, "ready" | "state" | "admits" | "route" | "applied" | "fail" | "setViewer" | "select" | "setCommentMode" | "commentOn" | "openThread" | "opening" | "onTabs">;
   sites: Pick<Sites, "load" | "origins" | "view" | "applied">;
+  /** The owner's questions and inbox. */
+  inbox: Pick<WorkerInbox, "page" | "count">;
+  /** Opens tabs for inbox items: the paired daemon's origin, a new tab at a URL, and bringing a tab to the front. */
+  open: { daemon(): Promise<string>; create(url: string): Promise<void>; focus(tabId: number): Promise<void> };
   /** Whether `url`'s server answers a short request (decision 3, 2026-10-06: a
    * thread opens on the first origin of its site that answers). */
   probe(url: string): Promise<boolean>;
@@ -60,9 +67,57 @@ export async function panelAction(d: PanelDeps, tabId: number | null, m: PanelTo
   }
 }
 
+const LIVE_ITEM = /^\/a\/([0-9a-hjkmnp-tv-z]{12})(?:[/?#]|$)/;
+const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+/** Opens daemon path `path` (an inbox item's `url`, which `isFromPanel`
+ * checked is a path): a tab showing that live page comes to the front, its
+ * thread (`?thread=`) selected; otherwise a new tab opens it on the paired daemon. */
+export async function openPath(d: PanelDeps, path: string): Promise<void> {
+  const aid = LIVE_ITEM.exec(path)?.[1];
+  const tabId = aid ? d.tabs.onTabs().find(id => d.tabs.state(id)?.page?.artifact_id === aid) : undefined;
+  if (tabId !== undefined) {
+    await d.open.focus(tabId);
+    const thread = new URLSearchParams(path.split("?")[1]?.split("#")[0] ?? "").get("thread");
+    if (thread && ULID.test(thread)) d.tabs.select(tabId, thread);
+    return;
+  }
+  await d.open.create((await d.open.daemon()) + path);
+}
+
+/** A question or inbox message: acted on, and its result told; false for any other message. */
+async function inboxAction(d: PanelDeps, m: PanelToWorker, reply: (r: WorkerToPanel) => void): Promise<boolean> {
+  const api = d.api;
+  switch (m.t) {
+    case "q-answer": case "q-decline": case "q-release": {
+      const verb = m.t === "q-answer" ? "answer" : m.t === "q-decline" ? "decline" : "release";
+      const r = await api.closeQuestion(m.questionId, verb, m.t === "q-answer" ? m.body : undefined);
+      reply({ t: "q-done", req: m.req, question: r.question, closed: r.closed });
+      return true;
+    }
+    case "inbox-page": reply({ t: "inbox-page", req: m.req, page: await d.inbox.page(m.filter, m.before) }); return true;
+    case "inbox-mark": {
+      // One item read or unread through its own route (its view comes back); several read at once.
+      const r = m.ids.length === 1 ? await api.markItem(m.ids[0], m.read) : { item: null, ...(await api.markItems({ ids: m.ids })) };
+      d.inbox.count(r.unread);
+      reply({ t: "marked", req: m.req, item: r.item, marked: "marked" in r ? (r.marked as number) : 1, unread: r.unread });
+      return true;
+    }
+    case "inbox-mark-all": {
+      const r = await api.markItems({ all: true, filter: m.filter, upto: m.upto });
+      d.inbox.count(r.unread);
+      reply({ t: "marked", req: m.req, item: null, marked: r.marked, unread: r.unread });
+      return true;
+    }
+    case "open-url": await openPath(d, m.url); return true;
+    default: return false;
+  }
+}
+
 async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: (r: WorkerToPanel) => void): Promise<void> {
   // A restarted worker reads its tabs back first: an action before then would find no tab.
   await d.tabs.ready();
+  if (await inboxAction(d, m, reply)) return;
   // Neither needs a tab: the name is the owner's, the ping keeps the worker up.
   if (m.t === "set-name") { d.tabs.setViewer((await d.api.setName(m.name)).viewer); return; }
   // A request (`req`) is always answered: a step or a failure.

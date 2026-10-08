@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_BODY, MAX_SNAPSHOT_CHARS, MAX_URL, isAnchor, isComposerNote, isFromComposer, isFromOverlay, isFromPanel, isFromWorker, isToComposer, isToPanel } from "./messages";
+import { MAX_ANSWER, MAX_BODY, MAX_MARK, MAX_SNAPSHOT_CHARS, MAX_URL, isAnchor, isComposerNote, isFromComposer, isFromOverlay, isFromPanel, isFromWorker, isToComposer, isToPanel } from "./messages";
 
 const anchor = { kind: "element", selector: "main > button", quote: "Save", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
 const ULID = "01J9ZQ3V7K8M2N4P6R8T0V2X4Y";
@@ -196,6 +196,68 @@ describe("messages", () => {
     expect(isToPanel({ t: "sites", sites: [{ key: A, name: O, origins: [O, A], pages: 2 }] })).toBe(false);
     expect(isToPanel({ t: "sites", sites: [{ key: "x", name: O, origins: [O] }] })).toBe(false);
     expect(isToPanel({ t: "sites", sites: {} })).toBe(false);
+  });
+
+  it("checks the panel's question and inbox requests", () => {
+    const body = { answers: [{ selected: ["Two columns"], text: null }] };
+    expect(isFromPanel({ t: "q-answer", req: 1, questionId: ULID, body })).toBe(true);
+    expect(isFromPanel({ t: "q-answer", req: 1, questionId: ULID, body: { answers: [{ selected: [], text: "x".repeat(MAX_ANSWER) }] } })).toBe(true);
+    for (const questionId of ["not a ulid", "../x", ULID.toLowerCase(), null]) expect(isFromPanel({ t: "q-answer", req: 1, questionId, body }), String(questionId)).toBe(false);
+    for (const b of [{ answers: [] }, { answers: Array(5).fill(body.answers[0]) }, { answers: [{ selected: ["a", "b", "c", "d", "e"], text: null }] },
+      { answers: [{ selected: [""], text: null }] }, { answers: [{ selected: ["x".repeat(101)], text: null }] }, { answers: [{ selected: [], text: "x".repeat(MAX_ANSWER + 1) }] },
+      { answers: [{ selected: [] }] }, { answers: [{ selected: [], text: null, extra: 1 }] }, { answers: body.answers, more: 1 }, null]) {
+      expect(isFromPanel({ t: "q-answer", req: 1, questionId: ULID, body: b }), JSON.stringify(b)).toBe(false);
+    }
+    expect(isFromPanel({ t: "q-decline", req: 2, questionId: ULID })).toBe(true);
+    expect(isFromPanel({ t: "q-release", req: 3, questionId: ULID })).toBe(true);
+    expect(isFromPanel({ t: "q-release", questionId: ULID })).toBe(false);
+    expect(isFromPanel({ t: "q-decline", req: 2, questionId: ULID, body })).toBe(false);
+
+    expect(isFromPanel({ t: "inbox-page", req: 4, filter: {}, before: null })).toBe(true);
+    expect(isFromPanel({ t: "inbox-page", req: 4, filter: { q: "layout", read: "unread", kind: ["reply", "question"], artifact: "7q3k9mzx2b4t", agent: "claude", since: "2026-10-01", until: "2026-10-07T10:00:00Z" }, before: "4211" })).toBe(true);
+    for (const filter of [{ read: "some" }, { kind: ["nope"] }, { artifact: "../x" }, { agent: "Claude Code" }, { since: "yesterday" }, { q: "x".repeat(1001) }, { other: 1 }, null, []]) {
+      expect(isFromPanel({ t: "inbox-page", req: 4, filter, before: null }), JSON.stringify(filter)).toBe(false);
+    }
+    for (const before of ["-1", "1e9", "x", 5]) expect(isFromPanel({ t: "inbox-page", req: 4, filter: {}, before }), String(before)).toBe(false);
+
+    // A ULID, or an item filled in from the history (`b` and 24 hex digits).
+    const hist = `b${"0a".repeat(12)}`;
+    expect(isFromPanel({ t: "inbox-mark", req: 5, ids: [ULID, hist], read: true })).toBe(true);
+    expect(isFromPanel({ t: "inbox-mark", req: 5, ids: [hist], read: false })).toBe(true);
+    expect(isFromPanel({ t: "inbox-mark", req: 5, ids: Array(MAX_MARK).fill(ULID), read: true })).toBe(true);
+    expect(isFromPanel({ t: "inbox-mark", req: 5, ids: Array(MAX_MARK + 1).fill(ULID), read: true })).toBe(false);
+    // Unread one at a time (its own route).
+    expect(isFromPanel({ t: "inbox-mark", req: 5, ids: [ULID, hist], read: false })).toBe(false);
+    for (const ids of [[], ["b123"], [`B${"0a".repeat(12)}`], ["../x"], ULID]) expect(isFromPanel({ t: "inbox-mark", req: 5, ids, read: true }), JSON.stringify(ids)).toBe(false);
+    expect(isFromPanel({ t: "inbox-mark-all", req: 6, filter: null, upto: null })).toBe(true);
+    expect(isFromPanel({ t: "inbox-mark-all", req: 6, filter: { q: "x" }, upto: 4211 })).toBe(true);
+    expect(isFromPanel({ t: "inbox-mark-all", req: 6, filter: null, upto: -1 })).toBe(false);
+    expect(isFromPanel({ t: "inbox-mark-all", req: 6, filter: { read: "x" }, upto: null })).toBe(false);
+
+    // A path on the paired daemon, never another origin.
+    for (const url of ["/a/7q3k9mzx2b4t?thread=01J9ZQ3V7K8M2N4P6R8T0V2X4Y", "/a/7q3k9mzx2b4t/v/3", "/inbox?q=01J9ZQ3V7K8M2N4P6R8T0V2X4Y"]) expect(isFromPanel({ t: "open-url", url }), url).toBe(true);
+    for (const url of ["https://evil.example/", "http://localhost:7480/a/x", "//evil.example/x", "/\\evil.example", "/\\/evil", "javascript:alert(1)", "a/x", "/a b", `/${"x".repeat(MAX_URL)}`, null]) {
+      expect(isFromPanel({ t: "open-url", url }), String(url)).toBe(false);
+    }
+    expect(isFromPanel({ t: "open-url", url: "/a/x", tabId: 3 })).toBe(false);
+  });
+
+  it("checks the worker's question and inbox messages to the panels", () => {
+    const q = { id: ULID, status: "open" };
+    expect(isToPanel({ t: "inbox", owner: true, unread: 3, questions: [q] })).toBe(true);
+    expect(isToPanel({ t: "inbox", owner: null, unread: 0, questions: [] })).toBe(true);
+    expect(isToPanel({ t: "inbox", owner: true, unread: -1, questions: [] })).toBe(false);
+    expect(isToPanel({ t: "inbox", owner: true, unread: 1, questions: [null] })).toBe(false);
+    expect(isToPanel({ t: "q-event", question: q })).toBe(true);
+    expect(isToPanel({ t: "inbox-event", item: null, unread: 2 })).toBe(true);
+    expect(isToPanel({ t: "inbox-event", item: { id: ULID }, unread: 2 })).toBe(true);
+    expect(isToPanel({ t: "inbox-event", item: "x", unread: 2 })).toBe(false);
+    expect(isToPanel({ t: "q-done", req: 1, question: q, closed: true })).toBe(true);
+    expect(isToPanel({ t: "q-done", req: 1, question: q })).toBe(false);
+    expect(isToPanel({ t: "inbox-page", req: 2, page: { items: [], next_cursor: null, unread: 0 } })).toBe(true);
+    expect(isToPanel({ t: "inbox-page", req: 2, page: {} })).toBe(false);
+    expect(isToPanel({ t: "marked", req: 3, item: null, marked: 4, unread: 1 })).toBe(true);
+    expect(isToPanel({ t: "marked", req: 3, item: null, marked: 4 })).toBe(false);
   });
 
   it("checks what the worker sends the overlay", () => {

@@ -51,7 +51,7 @@ export function startBackground(c: typeof chrome) {
     const documentId = docs.get(tabId);
     quietly(() => c.tabs.sendMessage(tabId, m, documentId ? { documentId } : { frameId: 0 }));
   };
-  const { pairer, api, tabs, picks, sites, fromOverlay } = createWorker({
+  const { pairer, api, tabs, picks, sites, inbox, fromOverlay } = createWorker({
     pair: {
       sendNative: async (host, msg) => {
         try { return await c.runtime.sendNativeMessage(host, msg); }
@@ -218,7 +218,15 @@ export function startBackground(c: typeof chrome) {
 
   /** What a side panel's actions reach (spec §9.4). */
   const panelDeps: PanelDeps = {
-    api, tabs, pairer, sites,
+    api, tabs, pairer, sites, inbox,
+    open: {
+      daemon: async () => (await pairer.current()).daemon,
+      create: async url => { await c.tabs.create({ url }); },
+      focus: async tabId => {
+        const t = await c.tabs.update(tabId, { active: true });
+        if (t?.windowId !== undefined) await c.windows.update(t.windowId, { focused: true });
+      },
+    },
     allUrls: () => c.permissions.contains({ origins: ["<all_urls>"] }),
     navigate: async (tabId, url) => { await c.tabs.update(tabId, { url }); },
     probe: url => origins.probeServer(url),
@@ -234,6 +242,8 @@ export function startBackground(c: typeof chrome) {
     try { page = s.url ? new URL(s.url).pathname : ""; } catch { /* no page */ }
     if (port.name.startsWith("panel:") && page === `/${PANEL_PATH}` && s.tab === undefined) {
       tabs.attachPanel(port, (tabId, m) => { if (isFromPanel(m)) void panelAction(panelDeps, tabId, m, r => { try { port.postMessage(r); } catch { /* the panel closed */ } }); });
+      // The owner's questions and inbox, for a panel `attachPanel` kept.
+      if (/^panel:\d{1,15}$/.test(port.name)) inbox.attach(port);
       return;
     }
     // A composer frame: the worker then takes it only for its tab's current pick.

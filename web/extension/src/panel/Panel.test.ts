@@ -1,7 +1,11 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PanelState, PanelToWorker, SiteView } from "../messages";
+import type { InboxItem } from "../../../shell/src/api";
+import * as fixtures from "../../../shell/src/q/fixtures";
+import type { InboxReq as InboxReqLike } from "./link.svelte";
 import Panel from "./Panel.svelte";
+import { PanelQuestions } from "./questions";
 
 const thread = {
   id: "01J9AAAAAAAAAAAAAAAAAAAAAA", artifact_id: "7q3k9mzx2b4t", version_n: 1, status: "open", sent_to_agent: false, has_clip: false,
@@ -632,5 +636,149 @@ describe("Panel: a join not finished", () => {
     await settle();
     expect(permitted).toEqual([[A]]);
     expect(l.sent).toContainEqual({ t: "open-thread", threadId: T });
+  });
+});
+
+describe("Panel for the owner's questions and inbox", () => {
+  const NOW = new Date("2026-10-07T10:00:00.000Z");
+  const AID = "7q3k9mzx2b4t";
+  function owner(over: { owner?: boolean | null; unread?: number; pages?: (m: InboxReqLike) => unknown } = {}) {
+    const base = link(state());
+    const asked: InboxReqLike[] = [];
+    const items = new Set<(i: InboxItem | null) => void>();
+    const l = {
+      ...base,
+      inbox: { owner: over.owner === undefined ? true : over.owner, unread: over.unread ?? 2 },
+      questions: null as unknown as PanelQuestions,
+      async ask(m: InboxReqLike) {
+        asked.push(m);
+        if (m.t === "inbox-page") return { t: "inbox-page", req: 1, page: (over.pages?.(m) ?? { items: [], next_cursor: null, unread: 0, total: 0 }) };
+        if (m.t === "inbox-mark") return { t: "marked", req: 1, item: { ...(fixtures.item("reply")), read: m.read }, marked: 1, unread: 1 };
+        if (m.t === "q-answer") return { t: "q-done", req: 1, question: { ...fixtures.view({ artifact: { id: AID, title: "Home", kind: "live" } }), status: "answered" }, closed: false };
+        return { t: "marked", req: 1, item: null, marked: 3, unread: 0 };
+      },
+      onItem(f: (i: InboxItem | null) => void) { items.add(f); return () => items.delete(f); },
+    };
+    l.questions = new PanelQuestions(l as never);
+    return { l, asked, items };
+  }
+
+  it("shows the open questions about the live page above its threads, and none about other pages", async () => {
+    const { l, asked } = owner();
+    l.questions.list([fixtures.view({ artifact: { id: AID, title: "Home", kind: "live" } }), fixtures.view({ id: "01J9Q0000000000000000000BB", artifact: { id: "8r4m0nzy3c5v", title: "Other", kind: "html" } })]);
+    const { container } = render(Panel, { props: { link: l as never, now: NOW } });
+    const cards = container.querySelectorAll(".qcard");
+    expect(cards).toHaveLength(1);
+    expect(screen.getByRole("heading", { name: /Questions for you/ })).toBeTruthy();
+    // Above the threads.
+    const card = screen.getByText("Too wide");
+    expect(cards[0].compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The card's own page is not linked from it.
+    expect(cards[0].querySelector("a.about")).toBeNull();
+    // Answered through the worker.
+    await fireEvent.click(screen.getByLabelText(/Two/));
+    await fireEvent.click(screen.getByRole("tab", { name: "Sidebars" }));
+    await fireEvent.click(screen.getByLabelText(/Left/));
+    await fireEvent.click(screen.getByRole("tab", { name: "Notes" }));
+    await fireEvent.input(screen.getByPlaceholderText("Your answer"), { target: { value: "ok" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Answer claude" }));
+    expect(asked[0]).toMatchObject({ t: "q-answer", questionId: fixtures.view().id, body: { answers: [{ selected: ["Two"], text: null }, { selected: ["Left"], text: null }, { selected: [], text: "ok" }] } });
+    await vi.waitFor(() => expect(container.querySelector(".qcard[data-closed]")).toBeTruthy());
+  });
+
+  it("shows no tabs and no questions until the daemon took the extension as the owner", () => {
+    const { l } = owner({ owner: false });
+    l.questions.list([fixtures.view({ artifact: { id: AID, title: "Home", kind: "live" } })]);
+    const { container } = render(Panel, { props: { link: l as never, now: NOW } });
+    expect(screen.queryByRole("tablist")).toBeNull();
+    expect(container.querySelector(".qcard")).toBeNull();
+    // An older worker's link has no inbox at all.
+    cleanup();
+    render(Panel, { props: { link: link(state()) as never, now: NOW } });
+    expect(screen.queryByRole("tablist")).toBeNull();
+  });
+
+  it("switches between Page and Inbox (with its unread count) by click and by arrow keys", async () => {
+    const { l } = owner({ unread: 4 });
+    render(Panel, { props: { link: l as never, now: NOW } });
+    const page = screen.getByRole("tab", { name: "Page" });
+    const inbox = screen.getByRole("tab", { name: "Inbox, 4 unread" });
+    expect(page.getAttribute("aria-selected")).toBe("true");
+    await fireEvent.click(inbox);
+    expect(inbox.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tabpanel")).toBeTruthy();
+    expect(screen.queryByText("Too wide")).toBeNull();
+    await fireEvent.keyDown(inbox, { key: "ArrowLeft" });
+    expect(page.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText("Too wide")).toBeTruthy();
+  });
+
+  it("lists unread items first, questions as cards, the read ones folded; a row is marked read and opened through the worker", async () => {
+    const q = fixtures.item("question", { id: "01JA00000000000000000000QQ", seq: 9 });
+    const r = fixtures.item("reply", { seq: 8 });
+    const old = fixtures.item("published", { id: "01JA00000000000000000000RR", seq: 2, read: true });
+    const { l, asked } = owner({ pages: m => ((m as { filter: { read: string } }).filter.read === "unread"
+      ? { items: [q, r], next_cursor: null, unread: 2, total: 2 } : { items: [old], next_cursor: null, unread: 2, total: 1 }) });
+    const { container } = render(Panel, { props: { link: l as never, now: NOW } });
+    await fireEvent.click(screen.getByRole("tab", { name: /Inbox/ }));
+    await vi.waitFor(() => expect(container.querySelector(".qcard")).toBeTruthy());
+    expect(asked.slice(0, 2)).toEqual([{ t: "inbox-page", filter: { read: "unread" }, before: null }, { t: "inbox-page", filter: { read: "read" }, before: null }]);
+    expect(container.querySelectorAll(".irow")).toHaveLength(1);
+    // Read items folded behind their count.
+    const fold = screen.getByRole("button", { name: "Show 1 read item" });
+    await fireEvent.click(fold);
+    expect(container.querySelectorAll(".irow")).toHaveLength(2);
+    // Opening a reply marks it read, then opens it through the worker.
+    await fireEvent.click(screen.getByRole("button", { name: /replied on Quarterly Review/ }));
+    await vi.waitFor(() => expect(l.sent.at(-1)).toEqual({ t: "open-url", url: r.url }));
+    expect(asked).toContainEqual({ t: "inbox-mark", ids: [r.id], read: true });
+    // A question card's link to its page opens through the worker too, not in the panel.
+    const about = container.querySelector<HTMLAnchorElement>(".qcard a.about")!;
+    await fireEvent.click(about);
+    expect(l.sent.at(-1)).toEqual({ t: "open-url", url: `/a/${AID}` });
+  });
+
+  it("searches after a pause in typing, and marks all read up to the newest item shown", async () => {
+    vi.useFakeTimers();
+    try {
+      const r = fixtures.item("reply", { seq: 8 });
+      const { l, asked } = owner({ pages: () => ({ items: [r], next_cursor: null, unread: 1, total: 1 }) });
+      render(Panel, { props: { link: l as never, now: NOW } });
+      await fireEvent.click(screen.getByRole("tab", { name: /Inbox/ }));
+      await vi.advanceTimersByTimeAsync(0);
+      await fireEvent.input(screen.getByRole("searchbox", { name: "Search the inbox" }), { target: { value: "two col" } });
+      await vi.advanceTimersByTimeAsync(200);
+      expect(asked.filter(m => m.t === "inbox-page")).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(asked.filter(m => m.t === "inbox-page").slice(2)).toEqual([{ t: "inbox-page", filter: { q: "two col", read: "unread" }, before: null }, { t: "inbox-page", filter: { q: "two col", read: "read" }, before: null }]);
+      await fireEvent.click(screen.getByRole("button", { name: "Mark all read" }));
+      expect(asked).toContainEqual({ t: "inbox-mark-all", filter: { q: "two col" }, upto: 8 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("replaces an item where it shows as it changes, and fetches again for a new unread item or a bulk mark", async () => {
+    vi.useFakeTimers();
+    try {
+      const r = fixtures.item("reply", { seq: 8 });
+      const { l, asked, items } = owner({ pages: () => ({ items: [r], next_cursor: null, unread: 1, total: 1 }) });
+      const { container } = render(Panel, { props: { link: l as never, now: NOW } });
+      await fireEvent.click(screen.getByRole("tab", { name: /Inbox/ }));
+      await vi.advanceTimersByTimeAsync(0);
+      const pages = () => asked.filter(m => m.t === "inbox-page").length;
+      expect(pages()).toBe(2);
+      for (const f of items) f({ ...r, read: true });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(container.querySelector(".irow[data-unread]")).toBeNull();
+      expect(pages()).toBe(2);
+      for (const f of items) f(fixtures.item("finished", { id: "01JA00000000000000000000FF", seq: 9 }));
+      for (const f of items) f(null);
+      await vi.advanceTimersByTimeAsync(300);
+      // A burst is one fetch of both sections.
+      expect(pages()).toBe(4);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

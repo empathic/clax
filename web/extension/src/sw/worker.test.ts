@@ -29,6 +29,8 @@ class Daemon {
   log: { method: string; path: string; cred: string | null; port: number }[] = [];
   threads: unknown[] = [];
   pages = new Map<string, PageView>([[URL1, page(AID, "/")], [URL2, page(AID2, "/settings")]]);
+  /** Whether the daemon takes the extension as the owner. */
+  owner = true;
 
   pair() {
     const credential = `cxe_${String.fromCharCode(65 + this.minted++).repeat(43)}`;
@@ -69,6 +71,7 @@ class Daemon {
     }
     if (u.pathname.endsWith("/threads")) return json(200, { threads: this.threads });
     if (u.pathname.endsWith("/working")) return json(200, { working: [] });
+    if (u.pathname === "/api/inbox/summary") return this.owner ? json(200, { unread: 1, questions: [], latest: [] }) : json(403, { error: { code: "forbidden", message: "Only the owner may do this" } });
     if (u.pathname === "/api/stream") {
       let ctrl!: ReadableStreamDefaultController<Uint8Array>;
       const body = new ReadableStream<Uint8Array>({ start(c) { ctrl = c; } });
@@ -187,6 +190,32 @@ describe("the worker", () => {
     } finally {
       d.pair = pair;
     }
+  });
+
+  it("checks the owner with the credential before the panels' inbox topics join the tabs' stream", async () => {
+    const cred = await up();
+    const port = { postMessage: () => {}, onDisconnect: { addListener: () => {} } };
+    w.inbox.attach(port as never);
+    await settle();
+    const summary = d.log.filter(l => l.path === "/api/inbox/summary");
+    expect(summary).toHaveLength(2);
+    expect(summary.every(l => l.cred === cred)).toBe(true);
+    expect(d.held.get(d.open()[0].id)).toEqual(new Set([`artifact:${AID}`, `working:${AID}`, "questions", "inbox"]));
+    // Checked, then subscribed, then fetched again once the topics went live.
+    const at = (l: (typeof d.log)[number]) => d.log.indexOf(l);
+    const subscribe = d.log.filter(l => l.method === "POST" && l.path.startsWith("/api/stream/")).at(-1)!;
+    expect(at(summary[0])).toBeLessThan(at(subscribe));
+    expect(at(subscribe)).toBeLessThan(at(summary[1]));
+  });
+
+  it("subscribes no inbox topic when the daemon does not take the extension as the owner, so the tabs' stream is untouched", async () => {
+    d.owner = false;
+    await up();
+    const port = { postMessage: () => {}, onDisconnect: { addListener: () => {} } };
+    w.inbox.attach(port as never);
+    await settle();
+    expect(w.inbox.owner).toBe(false);
+    expect(d.held.get(d.open()[0].id)).toEqual(new Set([`artifact:${AID}`, `working:${AID}`]));
   });
 
   it("opens a new stream and refetches after a request pairs again, leaving the old stream", async () => {

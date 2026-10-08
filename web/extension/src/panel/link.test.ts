@@ -18,7 +18,56 @@ const settle = async () => { for (let i = 0; i < 5; i++) await Promise.resolve()
 let link: PanelLink | null = null;
 afterEach(() => { link?.close(); link = null; vi.useRealTimers(); });
 
+const ENV = (f: ReturnType<typeof fakes>) => ({ runtime: f.runtime as never, tabs: f.tabs as never, search: "", doc: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } as never });
+
 describe("PanelLink", () => {
+  it("keeps the inbox as the worker tells it, and the open questions in its question feed", () => {
+    const f = fakes();
+    link = new PanelLink(2, ENV(f));
+    const p = f.ports[0];
+    const q = { id: "01J9Q0000000000000000000AA", status: "open", artifact: { id: "7q3k9mzx2b4t" }, created_at: "2026-10-07T09:00:00Z" };
+    p.onMessage.fire({ t: "inbox", owner: true, unread: 3, questions: [q] });
+    expect(link.inbox).toEqual({ owner: true, unread: 3 });
+    expect(link.questions.byArtifact("7q3k9mzx2b4t").map(x => x.id)).toEqual([q.id]);
+    const heard: unknown[] = [];
+    const off = link.onItem(i => heard.push(i));
+    p.onMessage.fire({ t: "inbox-event", item: { id: "x" }, unread: 4 });
+    p.onMessage.fire({ t: "inbox-event", item: null, unread: 0 });
+    off();
+    p.onMessage.fire({ t: "inbox-event", item: null, unread: 1 });
+    expect(heard).toEqual([{ id: "x" }, null]);
+    expect(link.inbox.unread).toBe(1);
+    // A closed question leaves the open list (its card says what closed it for a moment).
+    p.onMessage.fire({ t: "q-event", question: { ...q, status: "answered" } });
+    expect(link.questions.open).toEqual([]);
+    expect(link.questions.recent.map(x => x.status)).toEqual(["answered"]);
+    p.onMessage.fire({ t: "inbox", owner: "yes", unread: 3, questions: [] });
+    expect(link.inbox.owner).toBe(true);
+  });
+
+  it("answers a question through the worker and takes the question it answers with", async () => {
+    const f = fakes();
+    link = new PanelLink(2, ENV(f));
+    await settle();
+    const p = f.ports[0];
+    const q = { id: "01J9Q0000000000000000000AA", status: "open", artifact: null, created_at: "2026-10-07T09:00:00Z" };
+    p.onMessage.fire({ t: "inbox", owner: true, unread: 1, questions: [q] });
+    const done = link.questions.answer(q.id, { answers: [{ selected: [], text: "Yes" }] });
+    const sent = p.sent.at(-1) as { t: string; req: number };
+    expect(sent).toEqual({ t: "q-answer", req: sent.req, questionId: q.id, body: { answers: [{ selected: [], text: "Yes" }] } });
+    p.onMessage.fire({ t: "q-done", req: sent.req, question: { ...q, status: "answered" }, closed: false });
+    await done;
+    expect(link.questions.get(q.id)?.status).toBe("answered");
+    // A refusal is the daemon's words; a lost worker is that Clax did not answer.
+    const skip = link.questions.decline(q.id);
+    const s2 = p.sent.at(-1) as { req: number };
+    p.onMessage.fire({ t: "failed", code: "question_closed", message: "That question is closed.", req: s2.req });
+    await expect(skip).rejects.toMatchObject({ status: 400, code: "question_closed" });
+    const move = link.questions.release(q.id);
+    p.onDisconnect.fire();
+    await expect(move).rejects.toMatchObject({ status: 0, code: "worker_restarted" });
+  });
+
   it("watches the window's active tab and follows it, saying whether the panel is visible", async () => {
     const f = fakes();
     link = new PanelLink(2, { runtime: f.runtime as never, tabs: f.tabs as never, search: "", doc: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } as never });
