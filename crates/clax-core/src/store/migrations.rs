@@ -399,6 +399,78 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE UNIQUE INDEX questions_by_tool_use ON questions(session_id, tool_use_id)
         WHERE tool_use_id IS NOT NULL;
     CREATE INDEX questions_closed ON questions(closed_at, id) WHERE status <> 'open';",
+    // 21: the inbox (spec 2026-10-06-agent-questions-and-inbox-design §7.3):
+    // one item per thing an agent sent the owner, referencing its source by
+    // key (a finished working record keeps its message in `detail_json`, as
+    // its source lives in memory), with its read time; and a contentless
+    // FTS5 index of each item's search text, which also indexes every
+    // word's first one to three characters so a short prefix reads one
+    // entry rather than every word it begins. The history before this
+    // migration is filled in, read (§7.5). `inbox_by_session` serves the
+    // agent filter by handle.
+    "CREATE TABLE inbox_items (
+        seq INTEGER PRIMARY KEY,
+        id TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL CHECK (kind IN ('reply', 'version', 'published', 'question', 'finished')),
+        key TEXT NOT NULL UNIQUE,
+        artifact_id TEXT,
+        thread_id TEXT,
+        comment_id TEXT,
+        version_n INTEGER,
+        question_id TEXT,
+        session_id TEXT,
+        harness TEXT,
+        detail_json TEXT,
+        created_at TEXT NOT NULL,
+        read_at TEXT
+    );
+    CREATE INDEX inbox_unread ON inbox_items(seq) WHERE read_at IS NULL;
+    CREATE INDEX inbox_by_artifact ON inbox_items(artifact_id, seq);
+    CREATE INDEX inbox_by_kind ON inbox_items(kind, seq);
+    CREATE INDEX inbox_by_harness ON inbox_items(harness, seq);
+    CREATE INDEX inbox_by_session ON inbox_items(session_id, seq);
+    CREATE INDEX inbox_by_created ON inbox_items(created_at, seq);
+    CREATE INDEX inbox_by_thread ON inbox_items(thread_id) WHERE thread_id IS NOT NULL;
+    CREATE INDEX inbox_by_question ON inbox_items(question_id) WHERE question_id IS NOT NULL;
+    CREATE VIRTUAL TABLE inbox_fts USING fts5(
+        text, content='', contentless_delete=1, prefix='1 2 3',
+        tokenize='unicode61 remove_diacritics 2');
+    CREATE TEMP TABLE IF NOT EXISTS _owner AS
+        SELECT public_id AS pid FROM viewers WHERE owner = 1;
+    INSERT INTO inbox_items (id, kind, key, artifact_id, thread_id, comment_id, version_n, session_id, harness, created_at, read_at)
+    SELECT 'b' || lower(hex(randomblob(12))), kind, key, artifact_id, thread_id, comment_id, version_n,
+           session_id, harness, created_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    FROM (
+        SELECT 'reply' AS kind, 'reply:' || c.id AS key, t.artifact_id, t.id AS thread_id, c.id AS comment_id,
+               NULL AS version_n, c.via_session_id AS session_id, s.harness, c.created_at
+        FROM comments c JOIN threads t ON t.id = c.thread_id
+        LEFT JOIN sessions s ON s.id = c.via_session_id
+        CROSS JOIN _owner o
+        WHERE c.author_kind = 'agent'
+          AND (EXISTS (SELECT 1 FROM comments m WHERE m.thread_id = t.id AND m.author_public_id = o.pid)
+               OR EXISTS (SELECT 1 FROM comments m JOIN mentions x ON x.comment_id = m.id
+                          WHERE m.thread_id = t.id AND x.public_id = o.pid)
+               OR t.resolved_by = 'viewer:' || o.pid)
+        UNION ALL
+        SELECT 'version', 'version:' || v.artifact_id || ':' || v.n, v.artifact_id, NULL, NULL, v.n,
+               v.session_id, s.harness, v.created_at
+        FROM versions v JOIN sessions s ON s.id = v.session_id CROSS JOIN _owner o
+        WHERE v.n > 1 AND EXISTS (SELECT 1 FROM threads t JOIN comments m ON m.thread_id = t.id
+                                  WHERE t.artifact_id = v.artifact_id AND m.author_public_id = o.pid)
+        UNION ALL
+        SELECT 'published', 'published:' || a.id, a.id, NULL, NULL, 1, a.owner_session_id, s.harness, a.created_at
+        FROM artifacts a JOIN sessions s ON s.id = a.owner_session_id
+        WHERE a.kind = 'html'
+    )
+    ORDER BY created_at, key;
+    INSERT INTO inbox_fts (rowid, text)
+        SELECT i.seq, coalesce(a.title, '') || ' ' || coalesce(i.harness, '') || ' ' ||
+               coalesce(c.body, v.note, a.description, '')
+        FROM inbox_items i
+        LEFT JOIN artifacts a ON a.id = i.artifact_id
+        LEFT JOIN comments c ON c.id = i.comment_id
+        LEFT JOIN versions v ON v.artifact_id = i.artifact_id AND v.n = i.version_n;
+    DROP TABLE _owner;",
 ];
 
 #[cfg(test)]
@@ -557,6 +629,162 @@ mod tests {
                 "questions_closed",
             ]
         );
+    }
+
+    /// The index of the inbox migration in [`MIGRATIONS`] (its version is one more).
+    fn inbox_migration() -> usize {
+        MIGRATIONS
+            .iter()
+            .position(|m| m.contains("CREATE TABLE inbox_items"))
+            .expect("the inbox migration")
+    }
+
+    /// A database at the version before the inbox: artifact A (published by
+    /// an agent, then two more agent versions) and B (made by the same
+    /// agent); live page L; a thread on A where the owner (when `owner`)
+    /// commented and the agent replied; a stranger's thread on A with an
+    /// agent reply.
+    fn before_inbox(home: &Home, owner: bool) {
+        home.ensure_dirs().unwrap();
+        let v = inbox_migration();
+        let c = Connection::open(home.db_path()).unwrap();
+        for sql in &MIGRATIONS[..v] {
+            c.execute_batch(sql).unwrap();
+        }
+        c.pragma_update(None, "user_version", v as u32).unwrap();
+        let owner_pid = if owner { "u_owner" } else { "u_nobody" };
+        if owner {
+            c.execute_batch(&format!(
+                "INSERT INTO viewers (id, display_name, created_at, public_id, owner, claimed)
+                    VALUES ('{COOKIE}', 'Alex', 'x', 'u_owner', 1, 1);"
+            ))
+            .unwrap();
+        }
+        c.execute_batch(&format!(
+            "INSERT INTO sessions (id, harness, cwd, started_at, last_seen_at, agent_handle)
+                VALUES ('{SID}', 'claude', '/w', 'x', 'x', 'a_1');
+             INSERT INTO artifacts (id, title, description, created_at, updated_at, current_version, owner_session_id, contract_version)
+                VALUES ('aaaaaaaaaaaa', 'Quarterly Review', 'Numbers', '2026-01-01T00:00:01.000Z', 'x', 3, '{SID}', '0'),
+                       ('bbbbbbbbbbbb', 'Roadmap', NULL, '2026-01-01T00:00:09.000Z', 'x', 1, '{SID}', '0');
+             INSERT INTO artifacts (id, title, created_at, updated_at, current_version, owner_session_id, contract_version, kind)
+                VALUES ('llllllllllll', 'Live', '2026-01-01T00:00:02.000Z', 'x', 1, '{SID}', '0', 'live');
+             INSERT INTO versions (artifact_id, n, created_at, session_id, files_json, note) VALUES
+                ('aaaaaaaaaaaa', 1, '2026-01-01T00:00:01.000Z', '{SID}', '{{}}', NULL),
+                ('aaaaaaaaaaaa', 2, '2026-01-01T00:00:05.000Z', '{SID}', '{{}}', 'Two columns'),
+                ('aaaaaaaaaaaa', 3, '2026-01-01T00:00:07.000Z', '{SID}', '{{}}', NULL),
+                ('bbbbbbbbbbbb', 1, '2026-01-01T00:00:09.000Z', '{SID}', '{{}}', NULL),
+                ('llllllllllll', 1, '2026-01-01T00:00:02.000Z', NULL, '{{}}', NULL);
+             INSERT INTO threads (id, artifact_id, version_n, anchor_json, created_at) VALUES
+                ('t1', 'aaaaaaaaaaaa', 1, '{{}}', '2026-01-01T00:00:03.000Z'),
+                ('t2', 'aaaaaaaaaaaa', 1, '{{}}', '2026-01-01T00:00:03.500Z');
+             INSERT INTO comments (id, thread_id, author_kind, author_name, author_public_id, via_session_id, body, created_at) VALUES
+                ('c1', 't1', 'viewer', 'Alex', '{owner_pid}', NULL, 'make it blue', '2026-01-01T00:00:03.000Z'),
+                ('c2', 't1', 'agent', 'claude', NULL, '{SID}', 'Done: the header is teal', '2026-01-01T00:00:04.000Z'),
+                ('c3', 't2', 'viewer', 'Mia', 'u_stranger', NULL, 'and the footer?', '2026-01-01T00:00:03.500Z'),
+                ('c4', 't2', 'agent', 'claude', NULL, '{SID}', 'footer fixed', '2026-01-01T00:00:06.000Z');"
+        ))
+        .unwrap();
+    }
+
+    fn inbox_rows(st: &Store) -> Vec<(String, String, Option<String>, bool)> {
+        st.with_read(|c| {
+            let mut s = c.prepare(
+                "SELECT id, kind, artifact_id, read_at IS NOT NULL FROM inbox_items ORDER BY seq",
+            )?;
+            Ok(
+                s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?,
+            )
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn the_inbox_migration_fills_the_history_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        before_inbox(&home, true);
+        let st = Store::open(&home).unwrap();
+        let rows = inbox_rows(&st);
+        let kinds: Vec<(&str, Option<&str>)> = rows
+            .iter()
+            .map(|r| (r.1.as_str(), r.2.as_deref()))
+            .collect();
+        // In time order: A published, the reply, v2, v3, B published.
+        assert_eq!(
+            kinds,
+            [
+                ("published", Some("aaaaaaaaaaaa")),
+                ("reply", Some("aaaaaaaaaaaa")),
+                ("version", Some("aaaaaaaaaaaa")),
+                ("version", Some("aaaaaaaaaaaa")),
+                ("published", Some("bbbbbbbbbbbb")),
+            ]
+        );
+        assert!(rows.iter().all(|r| r.3), "the history is read");
+        for (id, ..) in &rows {
+            assert!(
+                id.len() == 25
+                    && id.starts_with('b')
+                    && id[1..]
+                        .chars()
+                        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                "{id}"
+            );
+        }
+        let found = |q: &str| -> Vec<String> {
+            st.with_read(|c| {
+                let mut s = c.prepare(
+                    "SELECT i.kind FROM inbox_fts f JOIN inbox_items i ON i.seq = f.rowid
+                     WHERE inbox_fts MATCH ?1 ORDER BY f.rowid",
+                )?;
+                Ok(s.query_map([q], |r| r.get(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .unwrap()
+        };
+        assert_eq!(found("teal"), ["reply"]);
+        assert_eq!(found("columns"), ["version"]);
+        assert_eq!(found("roadmap"), ["published"]);
+        assert_eq!(found("footer"), Vec::<String>::new(), "a stranger's thread");
+        assert_eq!(st.inbox_unread().unwrap(), 0);
+        assert_eq!(st.inbox_list(&Default::default()).unwrap().0.len(), 5);
+    }
+
+    #[test]
+    fn the_inbox_migration_without_an_owner_fills_only_published() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        before_inbox(&home, false);
+        let st = Store::open(&home).unwrap();
+        let kinds: Vec<String> = inbox_rows(&st).into_iter().map(|r| r.1).collect();
+        assert_eq!(kinds, ["published", "published"]);
+        let temp: i64 = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT COUNT(*) FROM temp.sqlite_schema WHERE name = '_owner'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(temp, 0);
+    }
+
+    #[test]
+    fn sqlite_version_has_contentless_delete() {
+        let c = Connection::open_in_memory().unwrap();
+        let v: String = c
+            .query_row("SELECT sqlite_version()", [], |r| r.get(0))
+            .unwrap();
+        let parts: Vec<u32> = v.split('.').map(|p| p.parse().unwrap()).collect();
+        assert!(parts[..2] >= [3, 43][..], "SQLite {v}");
+        c.execute_batch(
+            "CREATE VIRTUAL TABLE t USING fts5(x, content='', contentless_delete=1);
+             INSERT INTO t (rowid, x) VALUES (1, 'a b');
+             DELETE FROM t WHERE rowid = 1;",
+        )
+        .unwrap();
     }
 
     #[test]

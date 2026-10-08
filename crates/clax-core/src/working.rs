@@ -111,6 +111,37 @@ impl Changed {
     }
 }
 
+/// Why a record ends. Only [`End::Done`] (the agent said so) and
+/// [`End::TurnEnd`] (its turn ended) report the record as finished work
+/// (spec 2026-10-06-agent-questions-and-inbox-design §7.1); a publish, a
+/// reply or resolve, a lapse and the session's end make none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum End {
+    Done,
+    TurnEnd,
+    Publish,
+    Thread,
+    Lapse,
+    SessionEnd,
+}
+
+impl End {
+    fn finishes(self) -> bool {
+        matches!(self, End::Done | End::TurnEnd)
+    }
+}
+
+/// A record that ended as finished work: what the inbox keeps of it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ended {
+    pub session_id: String,
+    pub artifact_id: String,
+    /// The record's key ([`WorkingView::key`]).
+    pub key: String,
+    pub message: Option<String>,
+    pub thread_ids: Vec<String>,
+}
+
 struct Record {
     key: String,
     agent: String,
@@ -137,6 +168,15 @@ impl Record {
             thread_ids: self.threads.clone(),
             started_at: stamp(self.started_at),
             last_heartbeat: stamp(self.heartbeat),
+        }
+    }
+    fn ended(&self, sid: &str, aid: &str) -> Ended {
+        Ended {
+            session_id: sid.to_string(),
+            artifact_id: aid.to_string(),
+            key: self.key.clone(),
+            message: self.message.clone(),
+            thread_ids: self.threads.clone(),
         }
     }
     fn add(&mut self, threads: &[String]) {
@@ -300,37 +340,52 @@ impl Working {
         n
     }
 
-    /// Removes `threads` from the record, or the record when `None`. A record
-    /// that named threads and has none left is removed.
-    pub fn clear(&self, sid: &str, aid: &str, threads: Option<&[String]>) -> Changed {
+    /// Removes `threads` from the record, or the record when `None`, for
+    /// reason `why`. A record that named threads and has none left is
+    /// removed. A removed live record is also returned as [`Ended`] when
+    /// `why` finishes work ([`End::Done`], [`End::TurnEnd`]); its message
+    /// and threads are those it held before this call.
+    pub fn clear(
+        &self,
+        sid: &str,
+        aid: &str,
+        threads: Option<&[String]>,
+        why: End,
+    ) -> (Changed, Vec<Ended>) {
+        let now = self.now();
         let mut map = self.records.lock().unwrap();
         let key = (sid.to_string(), aid.to_string());
         let Some(r) = map.get_mut(&key) else {
-            return Changed::default();
+            return (Changed::default(), Vec::new());
         };
-        match threads {
-            None => {
-                map.remove(&key);
-            }
+        let before = self.live(r, now).then(|| r.ended(sid, aid));
+        let removed = match threads {
+            None => true,
             Some(ts) => {
                 let n = r.threads.len();
                 r.threads.retain(|t| !ts.contains(t));
                 if r.threads.len() == n {
-                    return Changed::default();
+                    return (Changed::default(), Vec::new());
                 }
-                if r.had_threads && r.threads.is_empty() {
-                    map.remove(&key);
-                }
+                r.had_threads && r.threads.is_empty()
+            }
+        };
+        let mut ended = Vec::new();
+        if removed {
+            map.remove(&key);
+            if why.finishes() {
+                ended.extend(before);
             }
         }
-        Changed::one(aid)
+        (Changed::one(aid), ended)
     }
 
     /// The session replied to or resolved `tid`: renews the session, then
     /// takes `tid` out of its record on `aid`.
     pub fn thread_done(&self, sid: &str, aid: &str, tid: &str) -> Changed {
         self.renew(sid);
-        self.clear(sid, aid, Some(&[tid.to_string()]))
+        self.clear(sid, aid, Some(&[tid.to_string()]), End::Thread)
+            .0
     }
 
     /// `tid` was resolved by a viewer or deleted: out of every record on `aid`.
@@ -344,22 +399,30 @@ impl Working {
         };
         let mut changed = Changed::default();
         for s in sessions {
-            changed.merge(self.clear(&s, aid, Some(&[tid.to_string()])));
+            changed.merge(self.clear(&s, aid, Some(&[tid.to_string()]), End::Thread).0);
         }
         changed
     }
 
-    /// Every record of `sid` (turn end or session end).
-    pub fn end_session(&self, sid: &str) -> Changed {
+    /// Every record of `sid`, for reason `why` ([`End::TurnEnd`] or
+    /// [`End::SessionEnd`]); the removed live records are also returned as
+    /// [`Ended`] when `why` finishes work. A lapsed record is removed but
+    /// never reported: it ended by lapsing.
+    pub fn end_session(&self, sid: &str, why: End) -> (Changed, Vec<Ended>) {
+        let now = self.now();
         let mut changed = Changed::default();
-        self.records.lock().unwrap().retain(|(s, aid), _| {
+        let mut ended = Vec::new();
+        self.records.lock().unwrap().retain(|(s, aid), r| {
             let keep = s != sid;
             if !keep {
                 changed.0.insert(aid.clone());
+                if why.finishes() && self.live(r, now) {
+                    ended.push(r.ended(s, aid));
+                }
             }
             keep
         });
-        changed
+        (changed, ended)
     }
 
     /// Every record on `aid`.
@@ -644,11 +707,11 @@ mod tests {
         w.mark(&claude("s1"), "a2", &[]);
         w.mark(&claude("s2"), "a2", &[]);
         assert_eq!(
-            w.end_session("s1").0,
+            w.end_session("s1", End::SessionEnd).0.0,
             ["a1".to_string(), "a2".to_string()].into()
         );
         assert_eq!(w.for_artifact("a2").len(), 1);
-        assert!(!w.clear("s2", "a2", None).is_empty());
+        assert!(!w.clear("s2", "a2", None, End::Publish).0.is_empty());
         w.mark(&claude("s3"), "a3", &[]);
         assert!(!w.artifact_gone("a3").is_empty());
         assert!(w.all().is_empty());
@@ -658,8 +721,49 @@ mod tests {
     fn clear_with_threads_removes_only_those() {
         let (_c, w) = fixture();
         w.mark(&claude("s1"), "a1", &ids(&["t1", "t2"]));
-        w.clear("s1", "a1", Some(&ids(&["t1"])));
+        w.clear("s1", "a1", Some(&ids(&["t1"])), End::Done);
         assert_eq!(w.threads_of("s1", "a1"), ids(&["t2"]));
+    }
+
+    #[test]
+    fn only_done_and_turn_end_report_finished_work() {
+        let (c, w) = fixture();
+        let msg = SetWorking {
+            thread_ids: Some(ids(&["t1"])),
+            message: Some("Recoloured".into()),
+        };
+        w.set(&claude("s1"), "a1", msg.clone());
+        let (changed, ended) = w.clear("s1", "a1", None, End::Done);
+        assert!(!changed.is_empty());
+        assert_eq!(ended.len(), 1);
+        assert_eq!(
+            (ended[0].session_id.as_str(), ended[0].artifact_id.as_str()),
+            ("s1", "a1")
+        );
+        assert_eq!(ended[0].message.as_deref(), Some("Recoloured"));
+        assert_eq!(ended[0].thread_ids, ids(&["t1"]));
+        assert!(!ended[0].key.is_empty());
+        // Done that takes the last named thread ends the record with it.
+        w.set(&claude("s1"), "a1", msg.clone());
+        let (_, ended) = w.clear("s1", "a1", Some(&ids(&["t1"])), End::Done);
+        assert_eq!(ended[0].thread_ids, ids(&["t1"]));
+        for why in [End::Publish, End::Thread, End::Lapse, End::SessionEnd] {
+            w.set(&claude("s1"), "a1", msg.clone());
+            assert!(w.clear("s1", "a1", None, why).1.is_empty(), "{why:?}");
+        }
+        w.set(&claude("s1"), "a1", msg.clone());
+        w.set(&claude("s1"), "a2", msg.clone());
+        assert!(w.end_session("s1", End::SessionEnd).1.is_empty());
+        w.set(&claude("s1"), "a1", msg.clone());
+        w.set(&claude("s1"), "a2", msg.clone());
+        let (_, ended) = w.end_session("s1", End::TurnEnd);
+        assert_eq!(ended.len(), 2);
+        w.set(&claude("s1"), "a1", msg);
+        c.advance(WORKING_TTL_SECS);
+        assert!(
+            w.end_session("s1", End::TurnEnd).1.is_empty(),
+            "a lapsed record ended by lapsing"
+        );
     }
 
     #[test]

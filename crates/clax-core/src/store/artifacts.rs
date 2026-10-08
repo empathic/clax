@@ -732,6 +732,7 @@ impl Store {
                     p.capabilities.as_ref().map(|c| c.to_string())
                 ],
             )?;
+            super::inbox::note_version(tx, id.as_str(), n, session_id, p.note.as_deref())?;
             let a = tx.query_row(
                 &format!("{SELECT} WHERE id = ?1"),
                 params![id.as_str()],

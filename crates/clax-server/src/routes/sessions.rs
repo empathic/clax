@@ -124,7 +124,13 @@ pub async fn patch(
                 crate::feedback::apply(&ctx, st, &ended.touched);
                 crate::questions::announce_ids(&state, st, &ended.withdrawn_questions);
                 ctx.waiters.forget(&id);
-                crate::working::announce(&ctx.events, &ctx.working, &ctx.working.end_session(&id));
+                crate::working::announce(
+                    &ctx.events,
+                    &ctx.working,
+                    &ctx.working
+                        .end_session(&id, clax_core::working::End::SessionEnd)
+                        .0,
+                );
                 ctx.followers.forget(&id);
                 Ok(ended.session)
             } else {

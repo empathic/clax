@@ -639,6 +639,7 @@ fn commit_refile(
                 // Its agents keep hearing of it on its new page.
                 tx.execute(WATCHES_TO, params![p.from, to.artifact_id, now])?;
                 tx.execute(TARGETS_TO, params![p.tid, to.artifact_id, now])?;
+                super::inbox::thread_moved(tx, &p.tid, &to.artifact_id)?;
             }
             let key = PageKey {
                 origin: to.origin.clone(),
@@ -1080,11 +1081,7 @@ impl Store {
                 }
             }
             #[cfg(test)]
-            if let Some(hook) = STAGED_HOOK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
-            {
+            if let Some(hook) = staged_hook(&self.home.db_path()) {
                 hook();
             }
             let mut renamed = Vec::new();
@@ -1131,10 +1128,37 @@ impl Store {
     }
 }
 
-/// Run once staging is done and before the writer is taken, in tests.
+/// A hook run once staging is done and before the writer is taken, in
+/// tests, by the store whose database is at its path (tests run in
+/// parallel, each on its own store).
 #[cfg(test)]
-pub(crate) static STAGED_HOOK: std::sync::Mutex<Option<Box<dyn Fn() + Send>>> =
-    std::sync::Mutex::new(None);
+pub(crate) type StagedHook = std::sync::Arc<dyn Fn() + Send + Sync>;
+#[cfg(test)]
+static STAGED_HOOKS: std::sync::Mutex<Vec<(std::path::PathBuf, StagedHook)>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn staged_hook(db: &std::path::Path) -> Option<StagedHook> {
+    STAGED_HOOKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(p, _)| p == db)
+        .map(|(_, h)| h.clone())
+}
+
+/// Sets (or with `None` removes) the staging hook of `st`'s store.
+#[cfg(test)]
+pub(crate) fn set_staged_hook(st: &Store, hook: Option<StagedHook>) {
+    let db = st.home().db_path();
+    let mut hooks = STAGED_HOOKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    hooks.retain(|(p, _)| *p != db);
+    if let Some(h) = hook {
+        hooks.push((db, h));
+    }
+}
 
 /// How many of `plans`, in order, fit [`MAX_STAGE_BYTES`] by the sizes of
 /// the source versions they name (at least one).
@@ -1658,6 +1682,44 @@ mod tests {
     }
 
     #[test]
+    fn a_moved_threads_inbox_items_follow_it() {
+        let (_d, st) = store();
+        let sid = session(&st, "claude", "h1");
+        let owner = st.owner_viewer(true).unwrap();
+        let a = page(&st, "/a", "<p>a");
+        let b = page(&st, "/b", "<p>b");
+        let t = st
+            .create_thread(
+                &a,
+                NewThread {
+                    author_public_id: Some(owner.public_id),
+                    ..new_thread(&st, &a, None)
+                },
+            )
+            .unwrap();
+        st.add_comment(
+            &t.id,
+            crate::store::threads::NewComment {
+                author_kind: crate::store::threads::AUTHOR_AGENT,
+                author_name: "claude".into(),
+                author_public_id: None,
+                via_session_id: Some(sid),
+                body: "done".into(),
+                via_page: false,
+            },
+        )
+        .unwrap();
+        st.refile_threads(&[to(&b, &t.id)], &by(KIND_MOVE), &[])
+            .unwrap();
+        let q = |aid: &ArtifactId| crate::store::inbox::InboxQuery {
+            artifact: Some(aid.to_string()),
+            ..Default::default()
+        };
+        assert_eq!(st.inbox_list(&q(&b)).unwrap().0.len(), 1);
+        assert!(st.inbox_list(&q(&a)).unwrap().0.is_empty());
+    }
+
+    #[test]
     fn staging_holds_no_writer() {
         let (_d, st) = store();
         let a = page(&st, "/a", "<p>a");
@@ -1667,14 +1729,17 @@ mod tests {
         let (staged_tx, staged_rx) = std::sync::mpsc::channel::<()>();
         let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
         let go_rx = std::sync::Mutex::new(go_rx);
-        *STAGED_HOOK.lock().unwrap() = Some(Box::new(move || {
-            staged_tx.send(()).unwrap();
-            go_rx
-                .lock()
-                .unwrap()
-                .recv_timeout(std::time::Duration::from_secs(10))
-                .unwrap();
-        }));
+        set_staged_hook(
+            &st,
+            Some(std::sync::Arc::new(move || {
+                staged_tx.send(()).unwrap();
+                go_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap();
+            })),
+        );
         std::thread::scope(|s| {
             let mover = s.spawn(|| st.refile_threads(&[to(&b, &t.id)], &by(KIND_MOVE), &[]));
             staged_rx
@@ -1697,7 +1762,7 @@ mod tests {
             go_tx.send(()).unwrap();
             mover.join().unwrap().unwrap();
         });
-        *STAGED_HOOK.lock().unwrap() = None;
+        set_staged_hook(&st, None);
         assert_eq!(
             st.get_thread(&t.id).unwrap().unwrap().artifact_id,
             b.as_str()
@@ -1715,10 +1780,13 @@ mod tests {
         let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
         let go_rx = std::sync::Mutex::new(go_rx);
         let wait = std::time::Duration::from_secs(10);
-        *STAGED_HOOK.lock().unwrap() = Some(Box::new(move || {
-            staged_tx.send(()).unwrap();
-            go_rx.lock().unwrap().recv_timeout(wait).unwrap();
-        }));
+        set_staged_hook(
+            &st,
+            Some(std::sync::Arc::new(move || {
+                staged_tx.send(()).unwrap();
+                go_rx.lock().unwrap().recv_timeout(wait).unwrap();
+            })),
+        );
         std::thread::scope(|s| {
             let mover = s.spawn(|| st.refile_threads(&[to(&b, &t.id)], &by(KIND_MOVE), &[]));
             staged_rx.recv_timeout(wait).unwrap();
@@ -1730,7 +1798,7 @@ mod tests {
             go_tx.send(()).unwrap();
             mover.join().unwrap().unwrap();
         });
-        *STAGED_HOOK.lock().unwrap() = None;
+        set_staged_hook(&st, None);
         // Staged again: /b's newest snapshot is what stays current.
         let cur = st.get_artifact(&b).unwrap().unwrap().current_version;
         assert_eq!(cur, 4);

@@ -200,6 +200,8 @@ impl Store {
                     params![viewer_id, tid, now, aid.as_str()],
                 )?;
             }
+            let tids = &thread_ids[..thread_ids.len().min(MAX_LOOKED)];
+            super::inbox::read_by_look(tx, viewer_id, aid.as_str(), tids, &now)?;
             looked_in(tx, viewer_id, aid.as_str())
         })
     }

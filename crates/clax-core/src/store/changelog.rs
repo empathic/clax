@@ -141,6 +141,7 @@ impl Store {
     /// [`MAX_SEEN_PER_VIEWER`], least recently updated first. The mark after
     /// the write.
     pub fn mark_seen(&self, viewer_id: &str, aid: &ArtifactId, n: u32) -> Result<u32> {
+        let now = Store::now();
         self.with_tx(|tx| {
             let latest: Option<u32> = tx.query_row(
                 "SELECT MAX(n) FROM versions WHERE artifact_id = ?1",
@@ -151,8 +152,9 @@ impl Store {
             tx.execute(
                 "INSERT INTO viewer_seen (viewer_id, artifact_id, seen_n, updated_at) VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT (viewer_id, artifact_id) DO UPDATE SET seen_n = MAX(seen_n, excluded.seen_n), updated_at = excluded.updated_at",
-                params![viewer_id, aid.as_str(), n, Store::now()],
+                params![viewer_id, aid.as_str(), n, now],
             )?;
+            super::inbox::read_by_seen(tx, viewer_id, aid.as_str(), n, &now)?;
             tx.execute(
                 "DELETE FROM viewer_seen WHERE viewer_id = ?1 AND artifact_id NOT IN
                    (SELECT artifact_id FROM viewer_seen WHERE viewer_id = ?1 ORDER BY updated_at DESC, rowid DESC LIMIT ?2)",
