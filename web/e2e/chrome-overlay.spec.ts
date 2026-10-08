@@ -8,7 +8,7 @@
 // click in an extension page, and driven over CDP, as
 // Playwright does not list it among the pages. docs/verification.md lists
 // what only a person can check.
-import type { CDPSession, Page } from "@playwright/test";
+import type { CDPSession, Locator, Page } from "@playwright/test";
 import { spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -63,6 +63,13 @@ async function until<T>(fn: () => Promise<T | null | undefined> | T | null | und
 }
 
 /** The tab showing `url` exactly (the first, if several). */
+/** Clicks a button in the composer's frame from a task of the frame's own:
+ * Post and Cancel remove the frame, and a click Playwright awaits can wait
+ * forever on the frame it removed. Callers wait on the outcome. */
+async function clickClosingFrame(button: Locator): Promise<void> {
+  await button.evaluate((b: HTMLButtonElement) => { setTimeout(() => b.click()); });
+}
+
 async function tabIdOf(live: Live, url: string): Promise<number> {
   return live.sw.evaluate(async u => (await chrome.tabs.query({})).find(t => t.url === u)!.id!, url);
 }
@@ -190,7 +197,7 @@ test("comment on a dev server page, reach the agent, and follow a hot reload", a
   console.log(`pick → composer: ${Date.now() - t1} ms (reported, not judged)`);
   await composer.locator("textarea").fill("The save button needs more room");
   // A POST: Chrome sends it with Origin (the gateway refuses an Origin-less write).
-  await composer.getByRole("button", { name: "Post" }).click();
+  await clickClosingFrame(composer.getByRole("button", { name: "Post" }));
 
   // The thread, its clip and its snapshot are stored.
   const lookup = await until(async () => (await fetch(`${live.daemon.base}/api/live/pages?url=${encodeURIComponent(siteUrl)}`).then(r => r.json())).page);
@@ -640,9 +647,7 @@ test("after Escape or Cancel in the composer, the panel's Comment turns comment 
   // Cancel, clicked the same way: a click Playwright awaits can wait forever
   // on the frame the click removes.
   const second = await pick();
-  await second.getByRole("button", { name: "Cancel" }).evaluate((b: HTMLButtonElement) => {
-    setTimeout(() => b.click());
-  });
+  await clickClosingFrame(second.getByRole("button", { name: "Cancel" }));
   await commentAgain();
   await pick();
 });
@@ -720,7 +725,7 @@ test.describe("holding only the dev server's origin, as the release build does o
     // The composer has focus: keys typed go to it, not to the page.
     await page.keyboard.type("Bigger");
     await expect(composer.locator("textarea")).toHaveValue("Bigger");
-    await composer.getByRole("button", { name: "Post" }).click();
+    await clickClosingFrame(composer.getByRole("button", { name: "Post" }));
     const lookup = await until(async () => (await fetch(`${live.daemon.base}/api/live/pages?url=${encodeURIComponent(siteUrl)}`).then(r => r.json())).page);
     const thread = await until(async () => (await api(live, `/api/artifacts/${lookup.artifact_id}/threads`)).threads[0]);
     // captureVisibleTab needs activeTab or <all_urls>; the origin's permission is not enough (spec L8).
@@ -803,7 +808,7 @@ test.describe("holding only the dev server's origin, as the release build does o
     const how = keys ? `press ${keys} on the page` : "right-click the page and choose Comment with Clax";
     await expect(composer.locator("body")).toContainText(`No screenshot: ${how} before your next pick to include one`);
     await expect.poll(async () => (await h.state(tabId))?.active).toBe(false);
-    await composer.getByRole("button", { name: "Cancel" }).click();
+    await clickClosingFrame(composer.getByRole("button", { name: "Cancel" }));
     await expect.poll(() => page.frames().length).toBe(1);
     await panel.click(/^ ?Comment$/);
     await expect.poll(pressed).toBe("false");
@@ -905,7 +910,7 @@ test.describe("a real click on the toolbar icon, holding no site's permission (t
     const composer = await until(() => page.frames().find(f => f.url().includes("/composer.html")));
     await composer.locator("textarea").fill("After a reload");
     await expect(composer.locator("img.clip")).toHaveCount(1);
-    await composer.getByRole("button", { name: "Post" }).click();
+    await clickClosingFrame(composer.getByRole("button", { name: "Post" }));
     const lookup = await until(async () => (await fetch(`${live.daemon.base}/api/live/pages?url=${encodeURIComponent(siteUrl)}`).then(r => r.json())).page);
     const thread = await until(async () => (await api(live, `/api/artifacts/${lookup.artifact_id}/threads`)).threads[0]);
     expect(thread.has_clip).toBe(true);
