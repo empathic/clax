@@ -1,6 +1,9 @@
 mod common;
+use clax_core::store::sessions::RegisterSession;
+use clax_server::feedback::FeedbackWaiters;
 use common::TestServer;
 use serde_json::Value;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 async fn sent_thread(ts: &TestServer) -> (String, String, String) {
@@ -239,12 +242,65 @@ async fn feedback_route_errors() {
     assert_eq!(missing.status(), 404);
 }
 
+/// The feedback long-poll is outside the request timeout: it stays in
+/// progress while a timed request made after it started is cut off by that
+/// timeout (408), and answers 200 when it ends. The session is made in the
+/// store, the poll is watched in-process and ended by the daemon's
+/// shutdown, so the only timed request is the one meant to time out, and
+/// the outcome does not depend on how loaded the machine is.
 #[tokio::test]
 async fn long_poll_is_exempt_from_the_request_timeout() {
-    let ts = TestServer::spawn_with(|s| s.request_timeout = Duration::from_millis(200)).await;
-    let (sid, _aid, _tid) = sent_thread(&ts).await;
-    let body = poll(&ts, &sid, "?wait=1").await;
-    assert_eq!(body["waited_s"], 1);
+    let (stop, stopping) = tokio::sync::watch::channel(false);
+    let held = Arc::new(OnceLock::new());
+    let keep = held.clone();
+    let ts = TestServer::spawn_with(move |s| {
+        s.request_timeout = Duration::from_millis(50);
+        s.shutdown = stopping;
+        let _ = keep.set(s.feedback_waiters.clone());
+    })
+    .await;
+    let waiters: Arc<FeedbackWaiters> = held.get().unwrap().clone();
+    let sid = ts
+        .store
+        .register_session(RegisterSession {
+            harness: "claude".into(),
+            harness_session_id: Some("h1".into()),
+            cwd: "/tmp/p".into(),
+            pid: None,
+            parent_pid: None,
+        })
+        .unwrap()
+        .id;
+    let req = ts.authed(
+        ts.client
+            .get(format!("{}/api/sessions/{sid}/feedback?wait=600", ts.base)),
+    );
+    let poll = tokio::spawn(async move { req.send().await.unwrap() });
+    let started = async {
+        loop {
+            let changed = waiters.changed().notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if waiters.count(&sid) == 1 {
+                return;
+            }
+            changed.await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), started)
+        .await
+        .expect("the poll is in progress");
+    let cut = ts.get_authed("/api/_test/sleep/600000").await;
+    assert_eq!(cut.status(), 408, "a timed request outliving the timeout");
+    assert_eq!(waiters.count(&sid), 1, "the poll outlived it");
+    stop.send(true).unwrap();
+    let res = tokio::time::timeout(Duration::from_secs(5), poll)
+        .await
+        .expect("shutting down ends the poll")
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["feedback"], serde_json::json!([]));
 }
 
 #[tokio::test]
