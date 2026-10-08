@@ -369,3 +369,33 @@ async fn mcp_serves_a_legacy_session_after_a_discover_probe() {
     let v = mcp_call(&ts, &session, 3, "status", json!({})).await;
     assert!(v["result"]["isError"] != true, "{v}");
 }
+
+/// The daemon's `/mcp` acts as the sessionless agent on `mcp` (spec §5.2),
+/// under the call's identity, with no working directory to capture.
+#[tokio::test]
+async fn mcp_tool_calls_are_the_sessionless_agent_under_a_call() {
+    let ts = TestServer::spawn().await;
+    let session = mcp_session(&ts).await;
+    let args = json!({"html": "<p>via mcp</p>", "title": "Via MCP"});
+    let call = mcp_call(&ts, &session, 2, "publish", args.clone()).await;
+    assert_eq!(call["result"]["isError"], false, "{call}");
+    let c = rusqlite::Connection::open(ts.home.db_path()).unwrap();
+    let (actor, call_id, body): (String, Option<String>, String) = c
+        .query_row(
+            "SELECT actor, call_id, body FROM audit_events WHERE kind = 'artifact.create'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    let actor: Value = serde_json::from_str(&actor).unwrap();
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(actor, json!({"type": "agent", "session_id": null}));
+    assert_eq!(body["via"], "mcp");
+    assert_eq!(body["git_capture"], "no-cwd");
+    assert_eq!(body["call"]["tool"], "publish");
+    assert_eq!(
+        body["call"]["args_sha256"],
+        clax_core::toolpath::args::args_sha256(&args)
+    );
+    assert_eq!(call_id.as_deref(), body["call"]["call_id"].as_str());
+}

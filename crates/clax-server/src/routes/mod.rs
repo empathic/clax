@@ -178,6 +178,11 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         )
         .route("/api/sessions/{id}/feedback/ack", post(feedback::ack))
         .route(
+            "/api/sessions/{id}/tool-calls",
+            post(toolpath::session_tool_call),
+        )
+        .route("/api/tool-calls", post(toolpath::tool_call))
+        .route(
             "/api/sessions/{id}/questions",
             post(questions::create.layer(ask_limit)),
         )
@@ -511,6 +516,8 @@ mod l10 {
         ("watches::live_put", Token),
         ("watches::live_delete", Token),
         ("feedback::ack", Token),
+        ("toolpath::session_tool_call", Token),
+        ("toolpath::tool_call", Token),
         ("feedback::poll", Token),
         ("feedback::notices", Token),
         ("questions::create", Token),

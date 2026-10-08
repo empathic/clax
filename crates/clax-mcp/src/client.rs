@@ -1,6 +1,9 @@
 //! Async HTTP client for the daemon's REST API.
 
+use crate::calls::CallScope;
+use crate::git::GitCapture;
 use clax_core::RegisterSession;
+use clax_core::audit::ToolCallReport;
 use clax_core::model::Session;
 use serde_json::{Value, json};
 use std::sync::{Arc, RwLock};
@@ -12,6 +15,13 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const PUBLISH_TIMEOUT: Duration = Duration::from_secs(120);
 /// Deadline for establishing a connection; a live daemon on loopback accepts at once.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+/// Deadline for a tool-call report, sent in the background.
+const REPORT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The channel the MCP agent sides name (`x-clax-via`): the stdio shim and
+/// the daemon's own `/mcp`. A managed client names it; any other client
+/// names what [`DaemonClient::with_via`] gives it, else nothing.
+pub const VIA: &str = "mcp";
 
 /// Why a daemon call failed.
 #[derive(Debug)]
@@ -69,9 +79,19 @@ pub type Refresh = Arc<dyn Fn() -> anyhow::Result<Endpoint> + Send + Sync>;
 /// under it), after which the request is retried once. A heartbeat that finds
 /// its session ended or gone registers again. Tool requests may start a daemon;
 /// heartbeats and ending the session only find one.
+///
+/// Every request names the client's channel in `x-clax-via` (spec §6.9):
+/// `mcp` for a managed client, else what [`DaemonClient::with_via`] set,
+/// else none (so a bare token request is the owner's CLI). A client made with
+/// [`DaemonClient::under`] acts for one tool call: each of its requests
+/// carries the call's `x-clax-call`, and, for a call that captures git
+/// state, `x-clax-git` (every request but a `GET` waits for the capture; a
+/// `GET` carries it once it is there).
 #[derive(Clone)]
 pub struct DaemonClient {
     inner: Arc<Inner>,
+    call: Option<Arc<CallScope>>,
+    via: Option<&'static str>,
 }
 
 struct Inner {
@@ -93,6 +113,8 @@ struct Managed {
     /// Finds a running daemon; errors when there is none.
     discover: Refresh,
     registration: RegisterSession,
+    /// Captures the registration's git state, when set.
+    git: Option<GitCapture>,
     /// Held while refreshing, so concurrent failures refresh once.
     lock: tokio::sync::Mutex<()>,
 }
@@ -122,6 +144,8 @@ struct Conn<'a> {
     http: &'a reqwest::Client,
     endpoint: Endpoint,
     session_id: Option<String>,
+    call: Option<Arc<CallScope>>,
+    via: Option<&'static str>,
 }
 
 impl Conn<'_> {
@@ -130,8 +154,14 @@ impl Conn<'_> {
             .http
             .request(method, format!("{}{path}", self.endpoint.base))
             .bearer_auth(&self.endpoint.token);
+        if let Some(v) = self.via {
+            req = req.header("x-clax-via", v);
+        }
         if let Some(s) = &self.session_id {
             req = req.header("x-clax-session", s);
+        }
+        if let Some(h) = self.call.as_ref().and_then(|c| c.call_header()) {
+            req = req.header("x-clax-call", h);
         }
         req
     }
@@ -199,7 +229,15 @@ impl DaemonClient {
                 }),
                 managed: None,
             }),
+            call: None,
+            via: None,
         }
+    }
+
+    /// This client naming channel `via` (`mcp`, `cli`, …) on every request.
+    pub fn with_via(mut self, via: &'static str) -> DaemonClient {
+        self.via = Some(via);
+        self
     }
 
     /// A client that finds its daemon with `refresh` (which may start one) or
@@ -218,10 +256,78 @@ impl DaemonClient {
                     refresh,
                     discover,
                     registration,
+                    git: None,
                     lock: tokio::sync::Mutex::new(()),
                 }),
             }),
+            call: None,
+            via: Some(VIA),
         }
+    }
+
+    /// This managed client, capturing the registration's git state with
+    /// `git` (spec §9.3). Call it on a client just made.
+    ///
+    /// # Panics
+    /// When the client has been cloned already.
+    pub fn with_git(mut self, git: GitCapture) -> DaemonClient {
+        let inner = Arc::get_mut(&mut self.inner).expect("with_git on a client just made");
+        if let Some(m) = inner.managed.as_mut() {
+            m.git = Some(git);
+        }
+        self
+    }
+
+    /// This client, acting for tool call `call`: the endpoint, session and
+    /// refreshes are shared; the call's headers go on every request.
+    pub fn under(&self, call: Arc<CallScope>) -> DaemonClient {
+        DaemonClient {
+            inner: self.inner.clone(),
+            call: Some(call),
+            via: self.via,
+        }
+    }
+
+    /// The tool call this client acts for.
+    pub fn call(&self) -> Option<&Arc<CallScope>> {
+        self.call.as_ref()
+    }
+
+    /// Notes the artifact the current tool call's arguments named.
+    pub fn note_artifact(&self, id: &str) {
+        if let Some(c) = &self.call {
+            c.note_artifact(id);
+        }
+    }
+
+    /// The agent's working directory: the session's, once registered and
+    /// known, else a managed client's registration's; `None` for neither.
+    pub fn agent_cwd(&self) -> Option<String> {
+        self.state()
+            .session
+            .map(|s| s.cwd)
+            .filter(|c| !c.is_empty())
+            .or_else(|| {
+                let m = self.inner.managed.as_ref()?;
+                Some(m.registration.cwd.clone()).filter(|c| !c.is_empty())
+            })
+    }
+
+    /// `POST /api/sessions/<sid>/tool-calls` (`/api/tool-calls` without a
+    /// session): reports a finished tool call. Never starts a daemon.
+    pub async fn report_tool_call(&self, report: &ToolCallReport) -> Result<Value> {
+        let res = self
+            .send_with(Mode::DiscoverOnly, |c| {
+                let path = match &c.session_id {
+                    Some(_) => format!("{}/tool-calls", c.session_path()),
+                    None => "/api/tool-calls".to_string(),
+                };
+                c.request(reqwest::Method::POST, &path)
+                    .timeout(REPORT_TIMEOUT)
+                    .json(report)
+            })
+            .await?;
+        body_json(res).await
     }
 
     fn state(&self) -> State {
@@ -286,6 +392,11 @@ impl DaemonClient {
             Mode::AutoStart => m.refresh.clone(),
             Mode::DiscoverOnly => m.discover.clone(),
         };
+        // The registration's git state, captured while the daemon is found.
+        let git = m.git.as_ref().map(|g| {
+            let cwd = Some(m.registration.cwd.as_str()).filter(|c| !c.is_empty());
+            g.start(cwd)
+        });
         let endpoint = tokio::task::spawn_blocking(move || refresh())
             .await
             .map_err(|e| ClientError::Unreachable(format!("daemon discovery failed: {e}")))?
@@ -298,13 +409,24 @@ impl DaemonClient {
             http: &self.inner.http,
             endpoint,
             session_id: None,
+            call: self.call.clone(),
+            via: self.via,
         };
-        let res = attempt(
-            conn.request(reqwest::Method::POST, "/api/sessions")
-                .json(&m.registration),
-        )
-        .await
-        .map_err(|f| f.error)?;
+        let mut req = conn
+            .request(reqwest::Method::POST, "/api/sessions")
+            .json(&m.registration);
+        let git = match git {
+            Some(crate::calls::GitStart::Ready(f)) => Some(f),
+            Some(crate::calls::GitStart::Running(t)) => Some(
+                t.await
+                    .unwrap_or(clax_core::gitctx::GitField::Capture("unavailable")),
+            ),
+            None => None,
+        };
+        if let Some(h) = git.as_ref().and_then(clax_core::gitctx::encode_header) {
+            req = req.header("x-clax-git", h);
+        }
+        let res = self.send_once(req).await.map_err(|f| f.error)?;
         let session = session_of(body_json(res).await?)?;
         self.update(|st| {
             st.session_id = Some(session.id.clone());
@@ -323,7 +445,34 @@ impl DaemonClient {
             http: &self.inner.http,
             endpoint,
             session_id: st.session_id,
+            call: self.call.clone(),
+            via: self.via,
         })
+    }
+
+    /// Sends `req` with the current call's `x-clax-git`, unless it has one:
+    /// every request but a `GET` waits for the capture, and a `GET` carries
+    /// it once it is there, so reads made while it runs are not held up.
+    async fn send_once(
+        &self,
+        req: reqwest::RequestBuilder,
+    ) -> std::result::Result<reqwest::Response, Failure> {
+        let Some(call) = self.call.as_ref().filter(|c| c.has_git()) else {
+            return attempt(req).await;
+        };
+        let (client, built) = req.build_split();
+        let mut built = built.map_err(transport_error)?;
+        if !built.headers().contains_key("x-clax-git") {
+            let value = if built.method() == reqwest::Method::GET {
+                call.git_header_now()
+            } else {
+                call.git_header().await
+            };
+            if let Some(v) = value.and_then(|v| reqwest::header::HeaderValue::from_str(&v).ok()) {
+                built.headers_mut().insert("x-clax-git", v);
+            }
+        }
+        attempt(reqwest::RequestBuilder::from_parts(client, built)).await
     }
 
     /// Registers the session again (a new row when the old one ended) unless
@@ -352,7 +501,7 @@ impl DaemonClient {
     {
         self.ensure(mode).await?;
         let conn = self.conn()?;
-        match attempt(build(&conn)).await {
+        match self.send_once(build(&conn)).await {
             Err(f) if f.refreshable && self.inner.managed.is_some() => {
                 let stale = Stale {
                     endpoint: Some(conn.endpoint.clone()),
@@ -361,7 +510,9 @@ impl DaemonClient {
                 if let Err(r) = self.refresh(stale, mode).await {
                     return Err(refresh_failed(f.error, r));
                 }
-                attempt(build(&self.conn()?)).await.map_err(|f| f.error)
+                self.send_once(build(&self.conn()?))
+                    .await
+                    .map_err(|f| f.error)
             }
             r => r.map_err(|f| f.error),
         }

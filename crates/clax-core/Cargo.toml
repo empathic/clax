@@ -15,6 +15,7 @@ nix = { workspace = true, features = ["fs"] }
 rand.workspace = true
 sha2 = "0.11"
 rusqlite.workspace = true
+ryu-js = "1"
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -27,5 +28,6 @@ url.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+clax-fake-exe = { path = "../clax-fake-exe" }
 nix = { workspace = true, features = ["time", "user"] }
 tokio = { workspace = true, features = ["sync", "macros", "rt"] }

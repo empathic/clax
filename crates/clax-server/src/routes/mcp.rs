@@ -1,7 +1,8 @@
 //! `/mcp`: the Clax tool set over MCP streamable HTTP, behind the bearer token.
 //!
 //! The tools call this daemon's own REST API at `AppState::self_base` with its
-//! token, and attribute publishes to no session. rmcp refuses a `Host` other
+//! token and `x-clax-via: mcp`, so their changes are the sessionless agent's
+//! (spec §5.2). rmcp refuses a `Host` other
 //! than `localhost`, `127.0.0.1`, `::1`, or the daemon's own address and port
 //! (DNS rebinding). The endpoint is not under the request timeout layers: a
 //! session's event stream stays open.
@@ -24,7 +25,8 @@ async fn require_token(_t: RequireToken, req: Request, next: Next) -> Response {
 
 pub fn router(state: &AppState) -> Router<AppState> {
     let tools = ClaxTools::new(
-        DaemonClient::new(state.self_base.clone(), state.token.clone(), None),
+        DaemonClient::new(state.self_base.clone(), state.token.clone(), None)
+            .with_via(clax_mcp::client::VIA),
         state.browser_base.clone(),
         None,
         state.home.log_path(),

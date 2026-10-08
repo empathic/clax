@@ -1,10 +1,18 @@
 //! The audit history's routes (spec 2026-10-06-toolpath-audit-design
 //! §8.3): `GET /api/toolpath/export`, which streams the selected history as
 //! a Toolpath document, and `GET /api/toolpath/status`, the journal's
-//! state. Both are the owner's alone.
+//! state, both the owner's alone; and the agent side's tool-call records
+//! (§6.7), `POST /api/sessions/<sid>/tool-calls` and `POST /api/tool-calls`.
 
+use crate::audit::DeferredAudit;
+use crate::auth::RequireToken;
+use crate::error::ApiError;
 use crate::identity::Identity;
 use crate::state::AppState;
+use axum::extract::rejection::{JsonRejection, PathRejection};
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use clax_core::audit::ToolCallReport;
 use clax_core::toolpath::RenderEnv;
 use clax_core::toolpath::project;
 use std::sync::Arc;
@@ -326,6 +334,94 @@ pub async fn status(
         "last_error": j.last_error,
         "warning": j.warning,
     })))
+}
+
+/// The report of a tool-calls request, checked: 400 `invalid_json` when
+/// it does not decode, `invalid_tool_call` when it fails
+/// [`ToolCallReport::validate`].
+fn tool_call_report(
+    req: Result<axum::Json<ToolCallReport>, JsonRejection>,
+) -> Result<ToolCallReport, ApiError> {
+    let report = crate::routes::artifacts::body(req)?;
+    report
+        .validate()
+        .map_err(|why| ApiError::bad_request("invalid_tool_call", why))?;
+    Ok(report)
+}
+
+/// The response of a tool-calls request: 201 `{recorded, seq}` when it
+/// recorded the call, 200 `{recorded: false}` when the call was already
+/// recorded.
+fn tool_call_response(seq: Option<i64>) -> (StatusCode, axum::Json<serde_json::Value>) {
+    match seq {
+        Some(seq) => (
+            StatusCode::CREATED,
+            axum::Json(serde_json::json!({"recorded": true, "seq": seq})),
+        ),
+        None => (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({"recorded": false})),
+        ),
+    }
+}
+
+/// `POST /api/sessions/<sid>/tool-calls` (token): records `tool.call` for
+/// a call session `sid`'s agent side made, once the result has gone back
+/// (spec §6.7), as that session's agent, listing in `produced` the events
+/// recorded under the call. A call already recorded records nothing; a
+/// session that never existed is 404 `unknown_session`, and nothing is
+/// recorded (an ended session's late reports are kept).
+pub async fn session_tool_call(
+    State(s): State<AppState>,
+    _t: RequireToken,
+    audit: DeferredAudit,
+    p: Result<Path<String>, PathRejection>,
+    req: Result<axum::Json<ToolCallReport>, JsonRejection>,
+) -> Result<(StatusCode, axum::Json<serde_json::Value>), ApiError> {
+    let sid = crate::routes::artifacts::path(p)?;
+    if !clax_core::ids::is_ulid(&sid) {
+        return Err(ApiError::bad_request(
+            "invalid_session",
+            "the session ID is not a ULID",
+        ));
+    }
+    let report = tool_call_report(req)?;
+    let recorded = s
+        .store_call(move |st| {
+            if st.session_actor(&sid)?.is_none() {
+                return Ok(None);
+            }
+            let ctx = audit.for_session(st, &sid)?;
+            st.record_tool_call(&ctx, &report).map(Some)
+        })
+        .await?;
+    let Some(seq) = recorded else {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "unknown_session",
+            "no such session",
+        ));
+    };
+    Ok(tool_call_response(seq))
+}
+
+/// `POST /api/tool-calls` (token): the same for an agent side with no
+/// session, the daemon's own `/mcp` (`x-clax-via: mcp`), recorded as the
+/// sessionless agent.
+pub async fn tool_call(
+    State(s): State<AppState>,
+    _t: RequireToken,
+    audit: DeferredAudit,
+    req: Result<axum::Json<ToolCallReport>, JsonRejection>,
+) -> Result<(StatusCode, axum::Json<serde_json::Value>), ApiError> {
+    let report = tool_call_report(req)?;
+    let seq = s
+        .store_call(move |st| {
+            let ctx = audit.resolve(st)?;
+            st.record_tool_call(&ctx, &report)
+        })
+        .await?;
+    Ok(tool_call_response(seq))
 }
 
 #[cfg(test)]

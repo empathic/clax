@@ -27,8 +27,9 @@
 //! a kind it does not know) is replaced under any of the options with
 //! `{"redacted":"unclassified","sha256":…}`, so a new field can never pass
 //! a redaction unseen. A hash is unsalted, over a string's UTF-8 or else a
-//! value's compact JSON. Argument hashes are never redacted: they are
-//! already hashes, and they are the join key (§12). A `null` stays `null`.
+//! value's JCS canonical form (§12.2). Argument hashes are never redacted:
+//! they are already hashes, and they are the join key (§12). A `null` stays
+//! `null`.
 
 use crate::audit::sha256_hex;
 use serde_json::{Map, Value, json};
@@ -318,7 +319,7 @@ fn git_class(field: &str) -> Class {
         "repo_root" => Class::Path,
         "remote_url" => Class::Remote,
         "remote" | "branch" | "head" | "dirty" | "diff_sha256" | "diff_bytes"
-        | "diff_truncated" | "untracked" | "captured_at" => Class::Safe,
+        | "diff_truncated" | "diff_unavailable" | "untracked" | "captured_at" => Class::Safe,
         _ => Class::Unclassified,
     }
 }
@@ -332,13 +333,13 @@ fn call_class(field: &str) -> Class {
     }
 }
 
-/// `sha256:<hex>` of `v`: of a string's UTF-8, else of its compact JSON.
+/// `sha256:<hex>` of `v`: of a string's UTF-8, else of its JCS canonical
+/// form (§12.2), so a structured value hashes as an argument hash does.
 pub fn redaction_hash(v: &Value) -> String {
-    let hex = match v {
-        Value::String(s) => sha256_hex(s.as_bytes()),
-        other => sha256_hex(other.to_string().as_bytes()),
-    };
-    format!("sha256:{hex}")
+    match v {
+        Value::String(s) => format!("sha256:{}", sha256_hex(s.as_bytes())),
+        other => super::args::args_sha256(other),
+    }
 }
 
 /// `{"redacted": what, "sha256": …}` for `v`.
@@ -365,5 +366,23 @@ pub(crate) fn is_local_remote(url: &str) -> bool {
                 || before.eq_ignore_ascii_case("file")
         }
         None => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_structured_value_hashes_as_its_argument_hash() {
+        for v in crate::toolpath::args::tests::vectors() {
+            let args: Value = serde_json::from_str(v["arguments"].as_str().unwrap()).unwrap();
+            assert_eq!(redaction_hash(&args), v["args_sha256"], "vector {}", v["n"]);
+        }
+        // A string hashes its UTF-8, not its JSON form.
+        assert_eq!(
+            redaction_hash(&json!("a")),
+            format!("sha256:{}", sha256_hex(b"a"))
+        );
     }
 }

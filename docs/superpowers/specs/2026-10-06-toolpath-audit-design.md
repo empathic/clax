@@ -240,8 +240,8 @@ The components are:
 
 ### 5.1 The audit migration
 
-It is migration 22, after joined sites (19), agent questions (20) and the
-owner's inbox (21). No unmerged branch's build runs on the owner's real
+It is migration 23, after joined sites (19), agent questions (20), the
+owner's inbox (21) and the gallery's covering indexes (22). No unmerged branch's build runs on the owner's real
 home, since a migration that reaches a real home fixes its number. No
 branch edits a migration that has shipped.
 
@@ -526,10 +526,29 @@ column.
 
 **After the call.** Once the tool result has gone back to the harness, the
 agent side POSTs `/api/sessions/<sid>/tool-calls` in the background with the
-end time and the outcome. The daemon records `tool.call`, filling `produced`
-from the `call_id` index. A `tool.call` belongs to the artifact its produced
-events touched, or that its arguments named (the shim resolves the
-artifact). Otherwise it belongs to the install path.
+end time and the outcome. The daemon's own `/mcp`, which has no session,
+POSTs `/api/tool-calls` with `x-clax-via: mcp`, and its calls are recorded
+as the sessionless agent. Both routes take the token and the body
+`{call_id, tool, harness_tool?, args_sha256, started_at, harness_call_id?,
+ended_at, outcome, artifact_id?}`, checked as the `x-clax-call` header is
+(400 `invalid_tool_call` otherwise). The daemon records `tool.call` once
+per call (201 `{recorded: true, seq}`; a repeated report records nothing
+and answers 200 `{recorded: false}`), filling `produced` from the `call_id`
+index. A `tool.call` belongs to the first artifact its produced events
+touched, else to the artifact its arguments named when it exists (the
+shim resolves it and sends `artifact_id`). Otherwise it belongs to the
+install path. A report for a session that never existed is 404
+`unknown_session` and records nothing; an ended session's late reports
+are kept. A token request to `/api/tool-calls` without `x-clax-via: mcp`
+records the owner on `cli`. A call whose handler is dropped before it
+returns (the client cancelled it) is reported with `outcome: error`. A
+shim that is closing waits, after rmcp's own drain, up to 3 s for calls
+still running and for their reports; a call still running after that is
+not recorded (rmcp cancels a running handler's context when the transport
+closes but does not drop it).
+
+The shim does not know the name its harness gave the tool, so its calls
+carry no `harness_tool`; the exact IDs below come from the harness side.
 
 **Exact call IDs, where free:**
 
@@ -1075,10 +1094,31 @@ status it could not read from a running daemon.
 - **`branch`:** `git symbolic-ref -q --short HEAD`. Absent when HEAD is
   detached.
 - **`head`:** `git rev-parse HEAD`. Absent on an unborn branch.
-- **`dirty`:** `git status --porcelain=v1 -z --untracked-files=normal`
-  prints anything.
+- **`dirty`:** `git status --porcelain=v1 -z --untracked-files=normal
+  --ignore-submodules=dirty --no-renames` prints anything. Changes inside a
+  submodule's work tree are ignored, because checking them would run git
+  inside it; a submodule checked out at another commit than the one
+  recorded is dirty, and its gitlink change is in the diff.
+- **Filtered files.** No filter runs (§9.2), so git compares files as they
+  are on disk. In a repository with clean filters (git-lfs, nbstripout,
+  git-crypt), `dirty` and `diff_sha256` describe the unfiltered working
+  tree, and may differ from what `git status` shows; a stat-changed
+  filtered file is dirty, and an LFS file's diff carries its real content
+  (the cap and the deadline still bound it). A reader that recomputes
+  `diff_sha256` must neutralize filters the same way.
+- **`diff_unavailable`:** `true` when the tree is dirty and the diff was
+  not hashed because it needed objects a partial clone does not have (the
+  diff failed under `GIT_NO_LAZY_FETCH`). `diff_sha256` is then absent;
+  like the other diff fields it appears only when `dirty`.
 - **`diff_sha256`:** the SHA-256 of the stdout of
-  `git diff HEAD --binary --no-color --no-ext-diff --no-textconv --full-index`.
+  `git diff HEAD --binary --no-color --no-ext-diff --no-textconv
+  --full-index --no-relative --src-prefix=a/ --dst-prefix=b/ --no-renames
+  --diff-algorithm=myers --indent-heuristic --unified=3
+  --inter-hunk-context=0 -O/dev/null --ignore-submodules=dirty
+  --no-color-moved`, run with the environment and configuration of §9.2. Each flag pins
+  what a user's diff configuration could otherwise change, so the same
+  tree hashes the same on every machine and in every agent side (the Pi
+  extension runs the same command).
   That covers staged and unstaged changes to tracked files. The output is
   hashed as it streams and capped at 64 MiB (`diff_truncated: true` beyond
   that). Absent when the tree is clean. On an unborn branch, the diff is
@@ -1101,13 +1141,72 @@ file names never do.
 
 ### 9.2 How
 
-Each git command runs with `-C <cwd>` and the environment
-`GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 LC_ALL=C GIT_PAGER=cat`:
+**Capture never runs a program the repository or the user configured.**
+Each git command runs with `-C <cwd>`, no standard input, and an
+environment cleared down to `PATH`, `HOME`, `XDG_CONFIG_HOME` and `TMPDIR`
+plus `GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 LC_ALL=C GIT_PAGER=cat
+GIT_NO_LAZY_FETCH=1`.
+So no inherited `GIT_DIR`, `GIT_CONFIG_*`, `GIT_EXEC_PATH` or `GIT_TRACE*`
+points git elsewhere or injects configuration. Configuration is pinned
+through `GIT_CONFIG_COUNT`:
+
+- `core.fsmonitor=false` and `core.hooksPath=/dev/null`;
+- `diff.autoRefreshIndex=false`: otherwise a diff over a stat-changed,
+  content-clean file refreshes the index, which takes `index.lock`,
+  writes the index and runs `post-index-change`, and a kill at the
+  deadline could leave the lock behind;
+- `core.quotePath=true` and `diff.suppressBlankEmpty=false`, the diff
+  settings no flag pins;
+- for every filter driver the configuration names, an empty `clean`,
+  `smudge` and `process` and `required=false`, so git compares files as
+  they are on disk. A configuration naming more than 64 drivers is
+  `unavailable`.
+
+**The configuration scan.** Before anything that reads the tree, and
+concurrently with `rev-parse --show-toplevel`, capture runs (in the same
+environment) `git config -z --get-regexp
+'^(filter\..*|extensions\.partialclone|remote\..*\.promisor)$'`, which
+runs nothing. Each NUL-terminated entry is a key, a newline and a value.
+The key must be UTF-8 (else `unavailable`); the value is compared as bytes,
+so a filter command in any encoding is fine. A key `filter.<driver>.<var>`
+names a driver (the driver is everything between `filter.` and the last
+`.`). The repository is a partial clone when `extensions.partialclone` has
+a non-empty value, or any `remote.<name>.promisor` has a value other than
+`false`, `no`, `off` or `0` (compared without case). The Pi extension runs
+the same scan.
+
+Diffs pass `--no-ext-diff --no-textconv`, and submodules are compared
+only by their recorded commit. No command runs a hook, touches the
+network, takes a lock, writes the repository or prompts.
+
+**Git version: 2.44 or later.** Older gits ignore, without any error, the
+two features capture's safety rests on: `GIT_CONFIG_COUNT` (from 2.31),
+which carries every pin above, so an older git would run the repository's
+fsmonitor, hooks and filters; and `GIT_NO_LAZY_FETCH` (from 2.44), without
+which `git status` or the diff fetches a partial clone's missing objects
+and runs the remote's `uploadpack` or ssh. So the agent side reads
+`git version` once per git executable (in the capture environment,
+outside any repository, within 2 s, kept for the life of the process),
+and under a git older than 2.44, one that does not answer, or one whose
+version does not parse, every capture is `unavailable` and runs no other
+git command. Users of an older git (Debian 11 and 12, Ubuntu 20.04 and
+22.04) get no git context until they upgrade. In a partial clone under a
+supported git, a diff that would need a missing object fails instead of
+fetching, and is recorded as `diff_unavailable`.
+`safe.directory` is never passed, so a repository another user owns is
+`not-a-repo` (git's ownership check). A test configures every such program
+(clean, smudge and process filters, textconv, external diff, fsmonitor,
+index hooks) to leave a marker file and checks that none appears.
 
 1. `rev-parse` runs first. If it fails, the outcome is `not-a-repo`.
 2. The rest run as concurrent children under a 300 ms deadline (L10). If the
    deadline passes, every child is killed and the outcome is `timeout`.
-3. If git is missing, the outcome is `unavailable`.
+3. If git is missing, or a command after `rev-parse` fails, the outcome is
+   `unavailable`; an empty or missing working directory is `no-cwd`; a
+   repository root or name that is not UTF-8 is `invalid`.
+4. The upstream remote is `branch.<branch>.remote` (`.` counts as none),
+   then `origin`, then the first name `git remote` prints. The diff runs
+   once `rev-parse HEAD` has said whether the branch is born.
 
 **The `x-clax-git` header.** Its value is base64url JSON of at most 2 KiB,
 in one of two forms:
@@ -1133,9 +1232,16 @@ request over it. With no header, `git` and `git_capture` are both absent.
 | shell, extension, CLI (owner) | none | nothing |
 
 Read-only tools are recorded as `tool.call` events, but they capture no git.
-Captures are never cached: an unstaged edit changes nothing git can see
-cheaply, so a cached result could describe a state the tree has already
-left.
+`open` only shows a page, so it captures none either. Captures are never
+cached: an unstaged edit changes nothing git can see cheaply, so a cached
+result could describe a state the tree has already left. Only the git
+executable is found once, when the shim starts.
+
+So that a capture adds as little as it can to a call, the shim starts it
+when the call arrives, on a blocking thread, and it runs while the tool
+does its own work (reading files, resolving the artifact). Every request
+of the call except a `GET` waits for it; a `GET` carries it once it is
+there. The registration's capture runs while the daemon is being found.
 
 ### 9.4 Harness session IDs
 
@@ -1473,9 +1579,18 @@ This rule is the same for Claude Code, Codex, Pi, Gemini and Grok (O4).
 - **Tool-call records.** One background POST per tool call, sent after the
   result has returned, plus one `INSERT`. The argument hash is SHA-256 over
   the arguments. A large `publish` HTML string costs well under 1 ms per MiB.
-- **Agent side.** Git capture costs at most 300 ms per mutating tool call.
-  The expected cost is 10–40 ms on a warm repository, because the commands
-  run concurrently; plan Task 12 measures it. The Claude Code PostToolUse
+- **Agent side.** Git capture costs at most 300 ms per mutating tool call,
+  overlapped with the tool's own work (§9.3). A call that also registers
+  the session (the first call while the daemon was down, or a
+  re-registration after a 401) waits for the registration's capture and
+  then its own: up to about 600 ms. Measured by plan Task 12 on
+  the Clax repository (50 captures, release build): p50 59 ms, p95 66 ms,
+  max 73 ms. The call ID and argument hash cost 2–3 µs for a small call
+  and about 1.5 ms for a 1 MB `publish` HTML string dense with characters
+  to escape (SHA-256 alone is 0.4 ms of that); the hash streams the
+  canonical form without copying the arguments. Parsing the arguments
+  with correctly rounded numbers (`serde_json`'s `float_roundtrip`) is
+  what makes the hash match a reader's (§12.2). The Claude Code PostToolUse
   hook costs about 20 ms per call (accepted, O4). Time to usable is measured
   from the link, after the publish has returned.
 - **Backfill.** It runs once per home in `Store::open`, after the
