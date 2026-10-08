@@ -10,19 +10,30 @@ export function artifactOrigin(id: string, loc: Location = location): string | n
 export function cachedOriginOk(): boolean | null {
   try { const v = sessionStorage.getItem(CACHE_KEY); return v === null ? null : v === "1"; } catch { return null; }
 }
-function writeCache(ok: boolean) { try { sessionStorage.setItem(CACHE_KEY, ok ? "1" : "0"); } catch { /* storage unavailable */ } }
 
-/** Whether the browser resolves `<id>.localhost`; probed once per session. */
-export async function probeOrigin(origin: string, fetchImpl: typeof fetch = fetch, timeoutMs = 1000): Promise<boolean> {
-  const cached = cachedOriginOk();
-  if (cached !== null) return cached;
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), timeoutMs);
-  let ok = false;
-  try { ok = (await fetchImpl(`${origin}/healthz`, { signal: ctl.signal, mode: "cors" })).ok; } catch { ok = false; }
-  clearTimeout(timer);
-  writeCache(ok);
-  return ok;
+/** Whether the browser resolves `<id>.localhost`. A sure answer is cached
+ * for the session ([`cachedOriginOk`]), which callers consult first.
+ *
+ * The artifact origin's `/healthz` and this page's own `/healthz` are asked
+ * together. The artifact origin is judged against the daemon, not the
+ * clock: it gets 1 s from the moment the daemon answers on its own
+ * origin, so a slow daemon is waited for instead of being taken for a name
+ * that does not resolve, while a name that hangs still falls back about
+ * 1 s after the daemon proved itself up. A verdict is cached only
+ * when it is sure: the artifact origin answered, or it failed or hung while
+ * the daemon answered here. When neither answers within 10 s (or the
+ * artifact origin failed and the daemon is unreachable), the answer is
+ * false for now and the next view probes again. */
+export async function probeOrigin(origin: string, f: typeof fetch = fetch): Promise<boolean> {
+  // 1 or 0 when sure (the cached form), undefined when not; the first to settle it wins.
+  const v = await new Promise<number | undefined>(done => {
+    const up = f("/healthz").then(r => r.ok, () => false);
+    setTimeout(done, 10_000);
+    f(`${origin}/healthz`).then(r => done(+r.ok), () => up.then(u => done(u ? 0 : undefined)));
+    void up.then(u => u && setTimeout(done, 1000, 0));
+  });
+  if (v !== undefined) try { sessionStorage.setItem(CACHE_KEY, `${v}`); } catch { /* storage unavailable */ }
+  return v === 1;
 }
 
 export function contentSrc(id: string, n: number, origin: string | null): string {
