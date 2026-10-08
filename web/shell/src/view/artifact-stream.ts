@@ -5,7 +5,7 @@
 // holds, and the view handles the full events they amount to. It also loads
 // the question module, whose surfaces (the top bar's Inbox, the sidebar's
 // questions) show for the owner.
-import { ApiError, getArtifact } from "../api";
+import { ApiError, getArtifact, getToken } from "../api";
 import type { ArtifactEvent } from "../events";
 import { nav } from "../nav";
 import { type StreamEvent, pageStream } from "../stream";
@@ -48,13 +48,23 @@ export class ArtifactStream {
   private docs: (() => void) | null = null;
   private questions: (() => void) | null = null;
   private stopped = false;
+  /** Ends the owner check's wait for the browser to be idle. */
+  private cancelOwner: () => void = () => {};
 
   constructor(private readonly id: string, private readonly v: ArtifactStreamView) {
     this.main = pageStream().watch([`artifact:${id}`, `presence:${id}`, `working:${id}`], e => this.on(e));
     // Once the browser is idle, so it stays off the view's way to being usable.
     const load = () => void import("../q").then(m => { if (!this.stopped) this.questions = m.artifact(id, { keyboardTrail, guardedAction }, pageStream()); }, () => {});
-    if (typeof requestIdleCallback === "function") requestIdleCallback(load, { timeout: 2000 });
-    else setTimeout(load, 200);
+    // Only in the owner's browsers (those the token is served to); a stopped
+    // stream asks nothing more.
+    const owner = () => void getToken().then(t => { if (t && !this.stopped) load(); });
+    if (typeof requestIdleCallback === "function") {
+      const h = requestIdleCallback(owner, { timeout: 2000 });
+      this.cancelOwner = () => cancelIdleCallback(h);
+    } else {
+      const h = setTimeout(owner, 200);
+      this.cancelOwner = () => clearTimeout(h);
+    }
   }
 
   /** Also watches the `docs` topic (once). */
@@ -66,6 +76,7 @@ export class ArtifactStream {
 
   stop(): void {
     this.stopped = true;
+    this.cancelOwner();
     this.questions?.();
     this.questions = null;
     this.main();

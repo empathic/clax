@@ -7,7 +7,9 @@
   // and a haiku in the footer after first paint. The question module (`q`)
   // loads after the list paints: for the owner, the inbox's unread summary
   // above everything and Inbox in the header. At `/inbox` the page is the
-  // inbox instead, and `q` loads at once.
+  // inbox instead, and `q` loads at once. `q` loads only in the owner's
+  // browsers (those the token is served to); anyone else at `/inbox` is told
+  // the inbox is the owner's, and nothing of it is fetched.
   import { onDestroy, onMount } from "svelte";
   import { ApiError, type Artifact, type AttentionSummary, deleteArtifact, getAttention, getToken, listArtifacts, patchArtifact } from "../api";
   import { REQUEST_STUCK, connTrouble } from "../conn-notice";
@@ -35,9 +37,17 @@
   let sync: import("./card-sync").CardSync | null = null;
   const inbox = location.pathname === "/inbox";
   let Q = $state<typeof import("../q") | null>(null);
+  // Whether this is the owner's inbox: null until known.
+  let owner = $state<boolean | null>(null);
   const lazy = () => import("./gallery-working");
   // `q` comes through the lazy module, which also hands it the page's stream.
-  const loadQ = (m: typeof import("./gallery-working")) => m.q().then(q => { if (!destroyed) { Q = q; void q.start(m.pageStream()); } }, () => {});
+  const loadQ = (m: typeof import("./gallery-working")) => getToken().then(t => t ? m.q() : null).then(async q => {
+    if (destroyed) return;
+    if (!q) { owner = false; return; }
+    Q = q;
+    q.start(m.pageStream());
+    owner = true;
+  }, () => {});
   const describe = (e: unknown) => (e instanceof Error ? e.message : String(e));
   // Each list seeds the working feed; the first one, once rendered, starts its stream.
   let cancelStart: (() => void) | null = null;
@@ -78,7 +88,7 @@
   <ThemeSwitch />
 </header>
 <main class="gal">
-  {#if inbox}{#if Q}<Q.InboxPage />{/if}{:else}
+  {#if inbox}{#if owner && Q}<Q.InboxPage />{:else if owner === false}<p class="empty">The inbox is its owner's: open it in a browser on the computer Clax runs on.</p>{/if}{:else}
   {#if Q}<Q.GallerySummary />{/if}
   {#if error}<p class="empty">Could not load artifacts: {error}</p>{/if}
   {#if artifacts && artifacts.length === 0}

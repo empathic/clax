@@ -111,6 +111,23 @@ describe("EventStream", () => {
     expect(links[0].closed).toBe(true);
   });
 
+  it("hands a leader link on when hidden, rejoining with its background topics", async () => {
+    const made: FakeLink[] = [];
+    const leaders: LinkMaker = async (on, lost) => { const l = Object.assign(new FakeLink(on, lost), { leader: true }); made.push(l); return l; };
+    const t = new EventStream(window, leaders);
+    t.watch(["gallery"], () => {});
+    t.watch(["questions", "inbox"], () => {}, { background: true });
+    await flush();
+    setVisibility("hidden");
+    await vi.advanceTimersByTimeAsync(HIDDEN_MS);
+    // It left the leader's hub, so a shown tab takes the connection over,
+    // and joined again holding only the background topics.
+    expect(made[0].closed).toBe(true);
+    expect(made).toHaveLength(2);
+    expect(made[1].topics).toEqual(["inbox", "questions"]);
+    t.close();
+  });
+
   it("reports focus to the hub when it joins and as it changes", async () => {
     let focused = true;
     vi.spyOn(document, "hasFocus").mockImplementation(() => focused);

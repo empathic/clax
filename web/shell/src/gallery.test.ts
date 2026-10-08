@@ -179,38 +179,62 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(rest.textContent).not.toContain("Other");
   });
 
-  it("leads with the inbox's unread summary for the owner: questions as cards, then the newest rows, then how many more", async () => {
+  it("leads with the inbox's unread summary for the owner: the two oldest questions as cards, then the newest rows, then how many more", async () => {
     const { item, view } = await import("./q/fixtures");
-    const q = view();
-    stubApi(200, "ok", { summary: { unread: 3, questions: [q], latest: [item("reply")] }, questions: [q] });
+    const qs = [1, 2, 3].map(n => view({ id: `Q${n}`, created_at: `2026-10-07T09:0${n}:00.000Z` }));
+    FakeWorker.all = [];
+    vi.stubGlobal("SharedWorker", FakeWorker);
+    stubApi(200, "ok", { summary: { unread: 5, questions: qs, latest: [item("reply")] }, questions: qs });
     const root = await mountGallery();
+    (await workerWith("inbox", "questions")).live(["inbox", "questions"]);
     const sum = await waitFor(() => root.querySelector<HTMLElement>(".inbox-sum:not([hidden]) .qcard") && root.querySelector<HTMLElement>(".inbox-sum"), "the inbox summary");
     const needs = await waitFor(() => root.querySelector(".grp.needs"), "the needs group");
     expect(sum.compareDocumentPosition(needs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(sum.querySelector("h2")!.textContent).toBe("Inbox · 3 unread");
-    expect(sum.querySelectorAll(".qcard")).toHaveLength(1);
+    expect(sum.querySelector("h2")!.textContent).toBe("Inbox · 5 unread");
+    expect([...sum.querySelectorAll<HTMLElement>(".qcard")].map(c => c.dataset.question)).toEqual(["Q1", "Q2"]);
+    const more = [...sum.querySelectorAll<HTMLAnchorElement>("a.more")];
+    expect(more.map(a => [a.textContent, a.getAttribute("href")])).toEqual([["1 more question in the inbox", "/inbox?kind=question"], ["1 more in the inbox", "/inbox"]]);
     expect([...sum.querySelectorAll(".irow")].map(r => r.getAttribute("data-item"))).toEqual([item("reply").id]);
-    expect(sum.querySelector(".more")!.textContent).toBe("1 more in the inbox");
     // And Inbox in the header, with the count.
-    expect(root.querySelector(".gbar .inbox-link .count")!.textContent).toBe("3");
+    expect(root.querySelector(".gbar .inbox-link .count")!.textContent).toBe("5");
   });
 
-  it("shows no summary when nothing is unread, and neither summary nor Inbox for anyone but the owner", async () => {
+  it("shows no summary when nothing is unread", async () => {
+    FakeWorker.all = [];
+    vi.stubGlobal("SharedWorker", FakeWorker);
     stubApi(200, "ok", { summary: { unread: 0, questions: [], latest: [] }, questions: [] });
-    let root = await mountGallery();
+    const root = await mountGallery();
+    (await workerWith("inbox", "questions")).live(["inbox", "questions"]);
     await waitFor(() => root.querySelector(".gbar .inbox-link"), "the Inbox link");
     expect(root.querySelector<HTMLElement>(".inbox-sum")!.hidden).toBe(true);
     expect(root.querySelector(".gbar .inbox-link .count")).toBeNull();
-    unmountGallery?.();
-    vi.resetModules();
-    const calls = stubApi(200, "ok", 403);
-    root = await mountGallery();
-    await waitFor(() => calls.some(c => c.url === "/api/inbox/summary"), "the owner check");
-    await waitFor(() => root.querySelector(".inbox-sum"), "the summary's place");
-    expect(root.querySelector<HTMLElement>(".inbox-sum")!.hidden).toBe(true);
-    expect(root.querySelector(".inbox-link")).toBeNull();
-    // Not the owner: the question list is never asked for.
-    expect(calls.some(c => c.url.startsWith("/api/questions"))).toBe(false);
+  });
+
+  it("loads nothing of the inbox for a browser that is not the owner's", async () => {
+    FakeWorker.all = [];
+    vi.stubGlobal("SharedWorker", FakeWorker);
+    // No token: not the owner's browser (a LAN viewer).
+    const calls = stubApi(403, "ok", 403);
+    const root = await mountGallery();
+    await workerWith("gallery");
+    await waitFor(() => calls.some(c => c.url === "/api/token"), "the token request");
+    await new Promise(r => setTimeout(r, 50));
+    expect(root.querySelector(".inbox-sum, .inbox-link")).toBeNull();
+    expect(FakeWorker.all.some(w => w.topics.includes("inbox"))).toBe(false);
+    expect(calls.some(c => /^\/api\/(inbox|questions)/.test(c.url))).toBe(false);
+  });
+
+  it("shows no inbox at /inbox to a browser that is not the owner's, and fetches nothing of it", async () => {
+    history.replaceState(null, "", "/inbox");
+    try {
+      const calls = stubApi(403, "ok", 403);
+      const root = await mountGallery();
+      expect(root.querySelector("main .empty")!.textContent).toContain("The inbox is its owner's");
+      expect(root.querySelector(".inbox, .inbox-link")).toBeNull();
+      expect(calls.some(c => /^\/api\/(inbox|questions|artifacts)/.test(c.url))).toBe(false);
+    } finally {
+      history.replaceState(null, "", "/");
+    }
   });
 
   it("without attention shows every card in one group and no needs group", async () => {
@@ -294,9 +318,8 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
     vi.stubGlobal("SharedWorker", FakeWorker);
     const calls = stubApi(200, "ok");
     const root = await mountGallery();
-    const w = await workerWith("gallery");
-    // Once the question module has asked whether this is the owner (it is not).
-    await waitFor(() => calls.some(c => c.url === "/api/questions?status=open&limit=200" || c.url === "/api/inbox/summary"), "the owner check");
+    // The question module holds its topics too, which have not gone live.
+    const w = await workerWith("gallery", "inbox", "questions");
     const before = calls.length;
     w.emit("gallery", "version", { artifact_id: "aaaaaaaaaaaa", n: 2, title: "Other", at: "2026-09-28T11:30:00Z" });
     const card = () => Array.from(root.querySelectorAll("a.card")).find(c => c.textContent!.includes("Other"));

@@ -282,8 +282,8 @@ test("a hidden tab that is not the owner's holds no background topics: with ever
   const id = (await publish(d.base, d.token, "Hidden", { "index.html": "<h1>H</h1>" })).artifact.id;
   const ctx = await browser.newContext();
   await controllableVisibility(ctx);
-  // The owner routes answer 403 to a viewer who is not the owner.
-  await ctx.route(/\/api\/(inbox|questions)/, r => r.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: { code: "forbidden" } }) }));
+  // A browser that is not the owner's gets no token, and loads nothing of the inbox.
+  await ctx.route("**/api/token", r => r.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: { code: "forbidden" } }) }));
   const [tab] = await openTabs(ctx, [`${d.base}/`], async p => {
     await expect(card(p, id)).toBeVisible({ timeout: 20_000 });
     await expect.poll(() => live(p), { timeout: 20_000 }).toBeGreaterThan(0);

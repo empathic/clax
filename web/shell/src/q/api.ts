@@ -27,7 +27,7 @@ const post = <T>(path: string, body?: unknown) =>
   call<T>(path, { method: "POST", headers: JSON_BODY, body: JSON.stringify(body ?? {}) }) as Promise<T | Forbidden>;
 
 /** Questions by status: open ones oldest first, closed ones most recently closed first. */
-export const listQuestions = (status: "open" | "closed" | "all" = "open", limit = 50) =>
+export const listQuestions = (status: "open" | "closed" | "all" = "open", limit = 200) =>
   get<{ questions: QuestionView[]; open: number }>(`/api/questions?status=${status}&limit=${limit}`);
 
 const closing = (qid: string, verb: string, body?: unknown) =>

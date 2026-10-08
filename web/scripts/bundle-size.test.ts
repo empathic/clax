@@ -37,13 +37,17 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
   dist("_clax/bridge.js", "bridge");
   dist("_clax/shell/a.js", "a");
   // The question module imports the gallery's entry chunk, the gallery's
-  // lazy module's own import, and one file of its own.
-  for (const f of ["w.js", "s.js", "q.js", "qd.js"]) dist(`_clax/shell/${f}`, f.repeat(100));
+  // lazy module's own import (which the artifact view has not loaded), and
+  // one file of its own.
+  for (const f of ["w.js", "as.js", "s.js", "q.js", "qd.js"]) dist(`_clax/shell/${f}`, f.repeat(100));
   dist(".vite/manifest.json", JSON.stringify({
     "index.html": { file: "_clax/shell/a.js" }, "artifact.html": { file: "_clax/shell/a.js" },
-    "src/ui/gallery-working.ts": { file: "_clax/shell/w.js", isDynamicEntry: true, imports: ["index.html", "_s.js"] },
+    "src/ui/gallery-working.ts": { file: "_clax/shell/w.js", isDynamicEntry: true, imports: ["index.html", "_s.js"], dynamicImports: ["_index-q.js"] },
+    "src/view/artifact-stream.ts": { file: "_clax/shell/as.js", isDynamicEntry: true, imports: ["artifact.html"], dynamicImports: ["_index-q.js"] },
+    "src/ui/MoreMenu.svelte": { file: "_clax/shell/as.js", isDynamicEntry: true },
+    "src/ui/Who.svelte": { file: "_clax/shell/as.js", isDynamicEntry: true },
     "_s.js": { file: "_clax/shell/s.js" },
-    "src/q/index.ts": { file: "_clax/shell/q.js", isDynamicEntry: true, imports: ["index.html", "_s.js", "_qd.js"] },
+    "_index-q.js": { file: "_clax/shell/q.js", name: "index", isDynamicEntry: true, imports: ["index.html", "_s.js", "_qd.js"] },
     "_qd.js": { file: "_clax/shell/qd.js" },
   }));
   // The parts: clip and caps import the comment part's file.
@@ -201,11 +205,12 @@ describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
     }
   });
 
-  it("counts the question module with what it imports beyond the gallery's entry and lazy module", () => {
+  it("counts the question module with what it imports beyond its larger host's loaded chunks", () => {
     const size = (r: ReturnType<typeof run>) => Number(/questions (\d+)/.exec(r.stdout)?.[1]);
     const q = size(run(full));
     const one = (f: string) => pako.gzip(f.repeat(100), { level: 9 }).length;
-    expect(q).toBe(one("q.js") + one("qd.js"));
+    // The artifact view has not loaded s.js; the gallery has.
+    expect(q).toBe(one("q.js") + one("qd.js") + one("s.js"));
     rmSync(root, { recursive: true, force: true });
     const r = run({ ...full, questions: q - 1 });
     expect(r.status).toBe(1);

@@ -25,7 +25,10 @@ async function feedOf(qs: QuestionView[]) {
   const due: { at: number; fn: () => void }[] = [];
   let t = 0;
   const feed = new QuestionFeed({ after: (ms, fn) => { due.push({ at: t + ms, fn }); return () => {}; } });
-  await feed.start(fakeStream());
+  const stream = fakeStream();
+  feed.start(stream);
+  stream.on.get("questions")!({ type: "ready" });
+  await settle();
   const advance = (ms: number) => flush(() => { t += ms; for (const d of due.filter(x => x.at <= t)) { due.splice(due.indexOf(d), 1); d.fn(); } });
   return { feed, advance };
 }
@@ -89,6 +92,9 @@ describe("the questions in the artifact view", () => {
     const qmod = await import("./index");
     const stream = fakeStream();
     const stop = qmod.artifact(AID, { keyboardTrail: { onClear: () => () => {} }, guardedAction: (_e, _v, act) => { act(); return null; } }, stream as never);
+    // Subscribed first; the topics go live, and the feeds fetch.
+    expect([...stream.on.keys()].sort()).toEqual(["inbox", "questions"]);
+    for (const f of stream.on.values()) f({ type: "ready" });
     await settle();
     const bar = document.querySelector(".topbar")!;
     const link = bar.querySelector(".inbox-link")!;
@@ -113,17 +119,20 @@ describe("the questions in the artifact view", () => {
     expect(stream.on.size).toBe(0);
   });
 
-  it("shows nothing and subscribes nothing for anyone but the owner", async () => {
+  it("shows nothing when the owner routes refuse the caller", async () => {
     vi.resetModules();
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 403 })));
     document.body.innerHTML = `<header class="topbar"><div class="island"></div></header><aside class="sidebar"><div class="questions-slot"></div></aside>`;
     const qmod = await import("./index");
     const stream = fakeStream();
     const stop = qmod.artifact(AID, { keyboardTrail: { onClear: () => () => {} }, guardedAction: (_e, _v, act) => { act(); return null; } }, stream as never);
+    for (const f of stream.on.values()) f({ type: "ready" });
     await settle();
     expect(document.querySelector(".inbox-link")).toBeNull();
-    expect(document.querySelector(".questions-slot")!.children).toHaveLength(0);
-    expect(stream.on.size).toBe(0);
+    expect(document.querySelector(".questions-slot .qcard")).toBeNull();
+    expect(document.querySelector<HTMLElement>(".questions-slot .side-q")!.hidden).toBe(true);
+    expect(document.title).not.toMatch(/^\(/);
     stop();
+    expect(stream.on.size).toBe(0);
   });
 });

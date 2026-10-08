@@ -160,9 +160,9 @@ again, the answer reaches the agent later (Q5). **Skip** sends `status:
   marks every unread item (or every unread item the current search matches).
   A search box and filters (kind, page, agent, from–to dates) apply to both
   sections. Nothing is ever removed.
-- **Elsewhere.** The gallery opens with an unread summary: open questions
-  (answerable), then the five newest other unread items and "N more in the
-  inbox". Every Clax page's top bar has **Inbox** with the unread count. The
+- **Elsewhere.** The gallery opens with an unread summary: the two oldest
+  open questions (answerable) and "N more questions in the inbox", then the
+  five newest other unread items and "N more in the inbox". Every Clax page's top bar has **Inbox** with the unread count. The
   extension's panel has an Inbox tab. `clax inbox` lists, searches, shows
   and marks.
 
@@ -819,7 +819,9 @@ Keys while focus is in the card: arrows between options, Space toggles,
 ### 9.2 `/inbox`
 
 Served by the gallery entry (`index.html`) at `/inbox`; the view loads the
-`q` module at once.
+`q` module at once. The module loads only in the owner's browsers (those the
+token is served to): anyone else at `/inbox` is told the inbox is its
+owner's, and nothing of it is fetched.
 
 - Header: **Inbox**, the unread count, **Mark all read**, **Notify me**
   while notification permission is `default` (a quiet line when `denied`).
@@ -844,7 +846,9 @@ Served by the gallery entry (`index.html`) at `/inbox`; the view loads the
 ### 9.3 The gallery's unread summary
 
 At the top of the gallery, before "Needs your eyes": "Inbox · N unread"
-with open questions as cards (full width, previews side by side), then the
+with the two oldest open questions as cards (full width, previews side by
+side) and "N more questions in the inbox" (linking to
+`/inbox?kind=question`, which shows every question as a card), then the
 five newest other unread items as rows, then "N more in the inbox". Nothing
 renders while nothing is unread. It loads with the gallery's lazy module
 after the first list paints.

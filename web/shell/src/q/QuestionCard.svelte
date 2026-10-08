@@ -273,9 +273,6 @@
     .qcard .answers dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
     .qcard .answers .q { font-size: 12.5px; color: var(--muted); }
     .qcard .answers .a { font-size: 13.5px; }
-    .qcard .act-hint { margin: 6px 0 0; font-size: 12px; color: var(--muted); text-align: right; }
-    .qcard .act-hint:empty { margin: 0; }
-    .qcard .act-hint[data-sr] { position: absolute; width: 1px; height: 1px; margin: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .qcard .instead { margin: -2px 0 6px; font-size: 12.5px; color: var(--danger); }
     @media (pointer: coarse) { .qcard .opt input[data-opt] { width: 20px; height: 20px; } }
   }

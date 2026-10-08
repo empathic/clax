@@ -7,7 +7,10 @@
   // place, else the one before, else the nearest region around the list
   // that still shows: focus never drops to the page. Its styles include
   // those of the blocks that always hold a list: the sidebar's
-  // (SidebarQuestions) and the gallery's summary (GallerySummary).
+  // (SidebarQuestions) and the gallery's summary (GallerySummary), and the
+  // visually hidden text of the cards and rows (the act-hint rules are the
+  // theme's): a surface that shows a card or a row without a list carries
+  // that rule itself.
   import type { QuestionView } from "../api";
   import type { QuestionFeed } from "./feed.svelte";
   import QuestionCard from "./QuestionCard.svelte";
@@ -57,6 +60,7 @@
   :global {
     .qlist { display: grid; gap: 10px; min-width: 0; }
     .qlist:empty { display: none; }
+    .irow .sr, .qcard .act-hint[data-sr] { position: absolute; width: 1px; height: 1px; margin: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .side-q { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
     .side-q:focus { outline: none; }
     .inbox-sum h2 .sw { border-radius: 0 8px 8px 0; background: var(--you); }

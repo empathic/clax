@@ -237,6 +237,7 @@
 <style>
   :global {
     .gh { display: flex; align-items: center; gap: 8px; margin: 6px 2px 8px; font: 600 14px/1.2 var(--font); list-style: none; cursor: default; }
+    .sidebar > .questions-slot { display: contents; }
     .tail summary { list-style: none; cursor: pointer; }
     .tail summary::-webkit-details-marker { display: none; }
     summary .gh { font-size: 13px; color: var(--muted); cursor: pointer; }
