@@ -22,6 +22,16 @@ expect flagged sed-1q.sh 'cmd | sed 1q'
 expect flagged awk-exit.sh "cmd | awk 'NF { print; exit }'"
 expect flagged continued.sh 'cmd \
     | grep -q x'
+expect flagged trailing.sh 'cmd |
+    grep -q x'
+expect flagged trailing-cont.sh 'cmd | \
+    head -1'
+expect flagged subshell.sh 'cmd | ( grep -q x )'
+expect flagged group.sh 'cmd | { grep -q x; }'
+expect flagged assign.sh 'cmd | LC_ALL=C grep -q x'
+expect flagged command.sh 'cmd | command grep -q x'
+expect flagged timeout.sh 'cmd | timeout 5 head -1'
+expect flagged pipe-amp.sh 'cmd |& grep -q x'
 expect pass grep-null.sh 'if echo "$out" | grep -F "done" >/dev/null; then :; fi'
 expect pass grep-file.sh 'grep -q x "$file" && cmd | grep -c y'
 expect pass grep-then-lt.sh 'while ! cmd | grep x >/dev/null && [ "$i" -lt 9 ]; do :; done'
