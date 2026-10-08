@@ -1164,7 +1164,10 @@ above, and if it was open the shell also sends `clax:greet` (shell → bridge,
 no fields; to `*` in sandbox mode). Any bridge document answers with its
 `clax:hello` again, which reopens the gate through the same checks as a
 first hello, and the welcome, anchors and focus follow; the capability host
-starts over, as on any closing. A document without the bridge does not
+starts over, as on any closing. So a Back or Forward across a page's own
+fragments drops what the page had going through the host: its room joins,
+db subscriptions, sample streams and custom anchors end, and the page must
+set them up again (an open limitation). A document without the bridge does not
 answer, and the request carries nothing. The hello stays the gate's whole
 test: any document could already post one unasked.
 
