@@ -7,8 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { artifactRef, claxExtension, htmlTitle, INJECT_RETRY_MS, isText, RENEW_EVERY_MS, target, textPrefix, ToolError } from "../src/clax.ts";
-import { DaemonClient } from "../src/client.ts";
+import { artifactRef, claxExtension, htmlTitle, INJECT_RETRY_MS, isText, RENEW_EVERY_MS, START_BUDGET_MS, target, textPrefix, ToolError } from "../src/clax.ts";
+import { DaemonClient, END_TIMEOUT_MS } from "../src/client.ts";
 import { discover, endpointOf, ensure } from "../src/daemon.ts";
 import { api, claxBin, startDaemon, type TestDaemon } from "./daemon-fixture.ts";
 import { FakePi, fakeContext, json } from "./fake-api.ts";
@@ -46,6 +46,7 @@ function load(home: string, sessionId: string, cwd = scratch) {
 const loaded: { pi: FakePi; ctx: ExtensionContext }[] = [];
 afterEach(async () => {
   for (const l of loaded.splice(0)) await l.pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, l.ctx);
+  vi.restoreAllMocks();
 });
 
 /** This process's environment with `CLAX_BIN` set to `bin` and Codex push
@@ -55,11 +56,14 @@ function withBin(bin: string): NodeJS.ProcessEnv {
 }
 
 /** An Clax home whose daemon answers `/healthz` and then never answers
- * `POST /api/sessions` (`hang: "register"`) or any `PATCH` (`hang: "patch"`). */
+ * `POST /api/sessions` (`hang: "register"`) or any `PATCH` (`hang: "patch"`);
+ * `seen` lists the requests it received, as `METHOD path`. */
 async function hungHome(hang: "register" | "patch") {
   const home = join(scratch, `hung-${Math.random().toString(36).slice(2)}`);
   mkdirSync(home, { recursive: true });
+  const seen: string[] = [];
   const server = createHttpServer((req, res) => {
+    seen.push(`${req.method} ${req.url}`);
     const reply = (body: unknown) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(body)); };
     if (req.url === "/healthz") return reply({ version: "0.1.0" });
     if (req.method === "POST" && req.url === "/api/sessions" && hang !== "register") {
@@ -72,7 +76,7 @@ async function hungHome(hang: "register" | "patch") {
   writeFileSync(join(home, "daemon.json"), JSON.stringify({
     port, pid: process.pid, token: "t", started_at: "2026-01-01T00:00:00Z", bind: "127.0.0.1", version: "0.1.0",
   }));
-  return { home, close: () => { server.closeAllConnections(); server.close(); } };
+  return { home, seen, close: () => { server.closeAllConnections(); server.close(); } };
 }
 
 async function sessions(): Promise<any[]> {
@@ -274,26 +278,28 @@ describe("clax Pi extension", () => {
     const { pi, ctx } = load(daemon.home, "pi-open");
     const p = json(await pi.callTool("clax_publish", { html: "<title>open me</title>" }, ctx));
     // An opener that exits is waited for however slowly it starts on a
-    // loaded machine; the one that lingers is given up on after a short wait.
-    const openWith = async (script: string, openWaitMs = 30_000) => {
+    // loaded machine; one that lingers is given up on after `openWaitMs`.
+    const openWith = async (script: string, openWaitMs = 30_000, extra: NodeJS.ProcessEnv = {}) => {
       const bin = mkdtempSync(join(scratch, "opener-"));
       for (const name of ["open", "xdg-open"]) {
         fakeExe(join(bin, name), `#!/bin/sh\n${script}\n`);
       }
-      const env: NodeJS.ProcessEnv = { ...process.env, CLAX_BIN: claxBin, PATH: `${bin}:${process.env.PATH}` };
+      const env: NodeJS.ProcessEnv = { ...process.env, ...extra, CLAX_BIN: claxBin, PATH: `${bin}:${process.env.PATH}` };
       delete env.CLAX_NO_OPEN;
       const fresh = new FakePi();
       claxExtension({ home: daemon.home, env, openWaitMs })(fresh.api);
-      const t0 = Date.now();
-      const r = json(await fresh.callTool("clax_open", { url_or_id: p.artifact_id }, ctx));
-      return { ...r, ms: Date.now() - t0 };
+      return json(await fresh.callTool("clax_open", { url_or_id: p.artifact_id }, ctx));
     };
     expect(await openWith("exit 1")).toMatchObject({ url: p.url, opened: false });
     expect(await openWith("exit 0")).toMatchObject({ url: p.url, opened: true });
-    const lingering = await openWith("sleep 5", 300);
-    expect(lingering).toMatchObject({ opened: true });
-    expect(lingering.ms).toBeGreaterThanOrEqual(300);
-    expect(lingering.ms).toBeLessThan(4_000);
+    // This opener never exits on its own, so `opened: true` comes from giving
+    // up on it. It names its PID file in the environment, so its text, and
+    // the executable fakeExe makes of it, is the same on every run.
+    const pidFile = join(scratch, `opener-${Math.random().toString(36).slice(2)}.pid`);
+    expect(await openWith('echo $$ > "$OPENER_PID_FILE"\nexec sleep 600', 1, { OPENER_PID_FILE: pidFile })).toMatchObject({ url: p.url, opened: true });
+    let pid = 0;
+    await expect.poll(() => (pid = Number(/^(\d+)\n$/.exec(existsSync(pidFile) ? readFileSync(pidFile, "utf8") : "")?.[1] ?? 0)), { timeout: 10_000 }).toBeGreaterThan(0);
+    process.kill(pid, "SIGKILL");
   });
 
   it("status reports daemon_version only when the daemon's version differs", async () => {
@@ -346,30 +352,32 @@ describe("clax Pi extension", () => {
     expect(body.error.message).toEqual(expect.any(String));
   });
 
-  it("gives up registering at session_start after about 3 s when the daemon hangs", async () => {
+  it("gives up registering at session_start when its budget runs out while the daemon hangs", async () => {
+    expect(START_BUDGET_MS).toBe(3_000);
     const hung = await hungHome("register");
     try {
       const pi = new FakePi();
-      claxExtension({ home: hung.home, env: withBin(join(scratch, "no-such-clax")) })(pi.api);
+      // The daemon never answers, so session_start returns only by giving up.
+      claxExtension({ home: hung.home, env: withBin(join(scratch, "no-such-clax")), startBudgetMs: 50 })(pi.api);
       const { ctx } = fakeContext(scratch, "pi-hung-start");
-      const t0 = Date.now();
       await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
-      expect(Date.now() - t0).toBeLessThan(4_500);
+      expect(hung.seen).toContain("POST /api/sessions");
     } finally {
       hung.close();
     }
   });
 
-  it("gives up ending the session after about 3 s when the daemon hangs", async () => {
+  it("gives up ending the session when its time runs out while the daemon hangs", async () => {
+    expect(END_TIMEOUT_MS).toBe(3_000);
     const hung = await hungHome("patch");
     try {
       const pi = new FakePi();
-      claxExtension({ home: hung.home, env: withBin(join(scratch, "no-such-clax")) })(pi.api);
+      // The daemon never answers the PATCH, so session_shutdown returns only by giving up.
+      claxExtension({ home: hung.home, env: withBin(join(scratch, "no-such-clax")), endTimeoutMs: 50 })(pi.api);
       const { ctx } = fakeContext(scratch, "pi-hung-end");
       await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
-      const t0 = Date.now();
       await pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
-      expect(Date.now() - t0).toBeLessThan(4_500);
+      expect(hung.seen).toContain("PATCH /api/sessions/s1");
     } finally {
       hung.close();
     }
@@ -611,22 +619,15 @@ describe("comments", () => {
     expect(offRoute).toMatchObject({ page_url: "http://localhost:5173/settings", watching: false });
   });
 
-  it("wait_for_feedback returns within a second of a send and asks to call again", async () => {
+  it("wait_for_feedback returns on a send, not at its timeout, and asks to call again", async () => {
     const { pi, ctx } = load(daemon.home, "pi-wait");
     const aid = parts(await pi.callToolAsPi("clax_publish", { html: "<h2>Goals</h2>", title: "Pi wait" }, ctx)).json.artifact_id;
     const sid = await sessionOf("pi-wait");
-    const waiting = pi.callToolAsPi("clax_wait_for_feedback", { url_or_id: aid, timeout_s: 5 }, ctx);
-    // The timestamp is taken before the send starts, so it exists whichever finishes first.
-    const sending = (async () => {
-      expect((await api(daemon, `/api/_test/sessions/${sid}/feedback/waiters?until=1`)).count).toBe(1);
-      const at = Date.now();
-      await browserThread(aid, "@agent live");
-      return at;
-    })();
+    // The longest wait: only the send can end it within the test's time.
+    const waiting = pi.callToolAsPi("clax_wait_for_feedback", { url_or_id: aid, timeout_s: 600 }, ctx);
+    expect((await api(daemon, `/api/_test/sessions/${sid}/feedback/waiters?until=1`)).count).toBe(1);
+    await browserThread(aid, "@agent live");
     const r = parts(await waiting);
-    const answered = Date.now();
-    const sentAt = await sending;
-    expect(answered - sentAt).toBeLessThan(1000);
     expect(r.json).toMatchObject({ call_again: false });
     expect(r.json.feedback).toHaveLength(1);
     const empty = pi.callToolAsPi("clax_wait_for_feedback", { timeout_s: 30 }, ctx);
@@ -635,45 +636,65 @@ describe("comments", () => {
   }, 20_000);
 
   it("tier 5: the extension long-polls and hands comments to Pi as a follow-up", async () => {
+    const polls = trackPolls();
     const { pi, ctx } = load(daemon.home, "pi-inject");
     await pi.emit("session_start", {}, ctx);
     const aid = parts(await pi.callTool("clax_publish", { html: "<h2>Goals</h2>", title: "Pi inject" }, ctx)).json.artifact_id;
     await browserThread(aid, "@agent please shorten it");
-    await expect.poll(() => pi.sent.length, { timeout: 20_000 }).toBe(1);
+    await expect.poll(() => pi.sent.length, { timeout: 15_000 }).toBe(1);
     expect(pi.sent[0].options).toEqual({ deliverAs: "followUp" });
     expect(String(pi.sent[0].content)).toMatch(/^\[clax\] 1 comment sent to you:\n\[clax\] Comment sent to you on "Pi inject"/);
-    const started = Date.now();
+    // Shutdown aborts the loop's poll; the loop never polls or sends once it is aborted.
     await pi.emit("session_shutdown", {}, ctx);
-    expect(Date.now() - started).toBeLessThan(3500);
-    await browserThread(aid, "@agent one more");
-    await new Promise(r => setTimeout(r, 500));
+    expect(polls.length).toBeGreaterThan(0);
+    for (const poll of polls) expect(poll.signal.aborted).toBe(true);
+    await Promise.all(polls.map(poll => poll.settled));
     expect(pi.sent).toHaveLength(1);
   }, 20_000);
 
-  it("tier 5 yields to wait_for_feedback: the comment goes to the wait and the loop pauses", async () => {
+  it("tier 5 yields to wait_for_feedback: a comment sent during the wait goes to the wait", async () => {
+    const polls = trackPolls();
     const { pi, ctx } = load(daemon.home, "pi-inject-wait");
     await pi.emit("session_start", {}, ctx);
+    await expect.poll(() => polls.length, { timeout: 10_000 }).toBe(1);
     const aid = parts(await pi.callTool("clax_publish", { html: "<h2>Goals</h2>", title: "Pi inject wait" }, ctx)).json.artifact_id;
-    await new Promise(r => setTimeout(r, 300));
-    let pauses = 0;
-    const set = vi.spyOn(globalThis, "setTimeout");
-    set.mockImplementation(((fn: () => void, ms?: number, ...rest: unknown[]) => {
-      if (ms === INJECT_RETRY_MS) pauses++;
-      return realSetTimeout(fn, ms, ...rest);
-    }) as typeof setTimeout);
-    try {
-      const waiting = pi.callToolAsPi("clax_wait_for_feedback", { url_or_id: aid, timeout_s: 5 }, ctx);
-      await new Promise(r => realSetTimeout(r, 300));
-      await browserThread(aid, "@agent during the wait");
-      const got = parts(await waiting).json;
-      expect(got.feedback).toHaveLength(1);
-      expect(pi.sent).toHaveLength(0);
-      // The daemon answered the loop's inject poll `{feedback: [], text: null, waited_s: 0}` during the wait.
-      expect(pauses).toBeGreaterThanOrEqual(1);
-    } finally {
-      set.mockRestore();
-      await pi.emit("session_shutdown", {}, ctx);
-    }
+    const sid = await sessionOf("pi-inject-wait");
+    const waiting = pi.callToolAsPi("clax_wait_for_feedback", { url_or_id: aid, timeout_s: 600 }, ctx);
+    expect((await api(daemon, `/api/_test/sessions/${sid}/feedback/waiters?until=1`)).count).toBe(1);
+    await browserThread(aid, "@agent during the wait");
+    const got = parts(await waiting).json;
+    expect(got.feedback).toHaveLength(1);
+    expect(pi.sent).toHaveLength(0);
+  }, 20_000);
+
+  it("tier 5 yields to wait_for_feedback: a poll made during the wait comes back empty and the loop pauses", async () => {
+    // session_start finds no daemon, so the loop starts at the first tool
+    // result after the daemon appears, which comes while the wait is in progress.
+    const home = join(scratch, "inject-yield");
+    mkdirSync(home, { recursive: true });
+    const pi = new FakePi();
+    // A clock that never moves: every empty answer came back at once.
+    claxExtension({ home, env: withBin(join(scratch, "no-such-clax")), now: () => 0 })(pi.api);
+    const { ctx } = fakeContext(scratch, "pi-inject-yield");
+    loaded.push({ pi, ctx });
+    await pi.emit("session_start", {}, ctx);
+    copyFileSync(join(daemon.home, "daemon.json"), join(home, "daemon.json"));
+    const aid = parts(await pi.callTool("clax_publish", { html: "<h2>Goals</h2>", title: "Pi inject yield" }, ctx)).json.artifact_id;
+    const sid = await sessionOf("pi-inject-yield");
+    const polls = trackPolls();
+    const pauses = trackTimers(INJECT_RETRY_MS);
+    // wait_for_feedback's result carries no tier 1 feedback and so does not start the loop.
+    const waiting = pi.callToolAsPi("clax_wait_for_feedback", { url_or_id: aid, timeout_s: 600 }, ctx);
+    expect((await api(daemon, `/api/_test/sessions/${sid}/feedback/waiters?until=1`)).count).toBe(1);
+    expect(polls).toHaveLength(0);
+    parts(await pi.callToolAsPi("clax_status", {}, ctx));
+    // The daemon answers the loop's poll `{feedback: [], text: null, waited_s: 0}`, and the loop pauses.
+    await expect.poll(() => pauses.created.size, { timeout: 10_000 }).toBe(1);
+    expect(polls).toHaveLength(1);
+    expect(await polls[0].settled).toBe("answered");
+    await browserThread(aid, "@agent during the wait");
+    expect(parts(await waiting).json.feedback).toHaveLength(1);
+    expect(pi.sent).toHaveLength(0);
   }, 20_000);
 
   it("tier 1 leaves error results alone and the feedback pending", async () => {
@@ -735,7 +756,8 @@ describe("comments", () => {
     await pi.emit("session_start", {}, ctx);
     const sid = await sessionOf("pi-late-inject");
     const qid = (await api(daemon, `/api/sessions/${sid}/questions`, { method: "POST", body: JSON.stringify(askBody("Scope")) })).question.id;
-    const waiting = pi.callToolAsPi("clax_wait_for_feedback", { timeout_s: 5 }, ctx);
+    // The longest wait: only the answer can end it within the test's time.
+    const waiting = pi.callToolAsPi("clax_wait_for_feedback", { timeout_s: 600 }, ctx);
     expect((await api(daemon, `/api/_test/sessions/${sid}/feedback/waiters?until=1`)).count).toBe(1);
     await answer(qid, "A");
     const got = parts(await waiting);
@@ -828,53 +850,44 @@ describe("comments", () => {
     expect(json(res).error).toEqual({ code: "invalid_args", message: "'81K6AB3Q9X7N2M4P5R6S8T0V1W' is not a thread ID" });
   });
 
-  it("session_shutdown stops the injection loop without leaving a retry timer", async () => {
+  it("session_shutdown stops the injection loop during its poll without leaving a retry timer", async () => {
+    const polls = trackPolls();
     const { pi, ctx } = load(daemon.home, "pi-inject-stop");
     await pi.emit("session_start", {}, ctx);
-    await new Promise(r => setTimeout(r, 300));
-    // Timers of the retry length created from here on, and those cleared.
-    const created = new Set<unknown>();
-    const cleared = new Set<unknown>();
-    const set = vi.spyOn(globalThis, "setTimeout");
-    const clear = vi.spyOn(globalThis, "clearTimeout");
-    set.mockImplementation(((fn: () => void, ms?: number, ...rest: unknown[]) => {
-      const t = realSetTimeout(fn, ms, ...rest);
-      if (ms === INJECT_RETRY_MS) created.add(t);
-      return t;
-    }) as typeof setTimeout);
-    clear.mockImplementation(((t: unknown) => { cleared.add(t); realClearTimeout(t as NodeJS.Timeout); }) as typeof clearTimeout);
-    try {
-      await pi.emit("session_shutdown", {}, ctx);
-      await new Promise(r => realSetTimeout(r, 100));
-    } finally {
-      set.mockRestore();
-      clear.mockRestore();
-    }
-    const alive = [...created].filter(t => !cleared.has(t));
-    for (const t of alive) realClearTimeout(t as NodeJS.Timeout);
-    expect(alive).toHaveLength(0);
+    await expect.poll(() => polls.length, { timeout: 10_000 }).toBe(1);
+    const pauses = trackTimers(INJECT_RETRY_MS);
+    await pi.emit("session_shutdown", {}, ctx);
+    // The aborted poll settles, and the loop, which awaited it first, has returned.
+    expect(await polls[0].settled).toBe("failed");
+    expect(polls).toHaveLength(1);
+    expect(pauses.alive()).toHaveLength(0);
   });
 
-  it("pauses the injection loop after an answer that came back empty at once", async () => {
+  it("pauses the injection loop after an answer that came back empty at once, until session_shutdown clears the pause", async () => {
     let polls = 0;
     const fake = await fakeDaemonHome((req, reply) => {
       if (req.url?.startsWith("/api/sessions/s1/feedback")) { polls++; return reply({ feedback: [], text: null, waited_s: 0 }); }
       return false;
     });
+    // A pause that outlasts the test, so only shutdown ends it.
+    const injectRetryMs = 3_600_000;
+    const pauses = trackTimers(injectRetryMs);
     try {
       const pi = new FakePi();
-      claxExtension({ home: fake.home, env: withBin(join(scratch, "no-such-clax")) })(pi.api);
+      // A clock that never moves: every empty answer came back at once.
+      claxExtension({ home: fake.home, env: withBin(join(scratch, "no-such-clax")), injectRetryMs, now: () => 0 })(pi.api);
       const { ctx } = fakeContext(scratch, "pi-inject-empty");
       loaded.push({ pi, ctx });
       await pi.emit("session_start", {}, ctx);
-      await expect.poll(() => polls, { timeout: 20_000 }).toBeGreaterThanOrEqual(1);
-      // Paused: no more than one further poll in the next 1.5 s (INJECT_RETRY_MS is 5 s).
-      await new Promise(r => setTimeout(r, 1500));
-      expect(polls).toBeLessThanOrEqual(2);
+      await expect.poll(() => pauses.created.size, { timeout: 10_000 }).toBe(1);
+      expect(polls).toBe(1);
+      await pi.emit("session_shutdown", {}, ctx);
+      expect(pauses.alive()).toHaveLength(0);
+      expect(polls).toBe(1);
     } finally {
       fake.close();
     }
-  }, 30_000);
+  });
 
   it("status passes the push object through, including a codex queue failure", async () => {
     const push = { tier: "queue", available: true, last_error: "codex queue exited with code 1", last_error_at: "2026-09-29T10:00:00Z" };
@@ -901,9 +914,10 @@ describe("comments", () => {
     const env = withBin(claxBin);
     const stop = () => execFileSync(claxBin, ["stop"], { env: { ...env, CLAX_HOME: home }, stdio: "ignore" });
     // A short pause between polls, so the loop polls the stopped daemon
-    // several times in the wait below (the default pause is pinned by the
-    // tests that count INJECT_RETRY_MS timers).
+    // several times soon (the default pause is pinned by the tests that
+    // count INJECT_RETRY_MS timers).
     const injectRetryMs = 250;
+    const polls = trackPolls();
     try {
       await ensure(home, { env, port: 0 });
       const pi = new FakePi();
@@ -911,8 +925,10 @@ describe("comments", () => {
       const { ctx } = fakeContext(scratch, "pi-inject-restart");
       loaded.push({ pi, ctx });
       await pi.emit("session_start", {}, ctx);
+      await expect.poll(() => polls.length, { timeout: 10_000 }).toBe(1);
       stop();
-      await new Promise(r => setTimeout(r, 6 * injectRetryMs));
+      // The poll in progress fails with the daemon, and the loop polls the stopped daemon again, twice.
+      await expect.poll(() => polls.filter(p => p.state === "failed").length, { timeout: 10_000 }).toBeGreaterThanOrEqual(3);
       expect(existsSync(join(home, "daemon.json"))).toBe(false);
       expect(await discover(home)).toBeNull();
 
@@ -923,7 +939,7 @@ describe("comments", () => {
       const aid = (await api(d, "/api/artifacts", { method: "POST", body: JSON.stringify({ title: "Back", files: { "index.html": { content: "<h2>Goals</h2>", encoding: "utf8" } } }) })).artifact.id;
       await api(d, `/api/sessions/${sid}/watches/${aid}`, { method: "PUT", body: JSON.stringify({ replies_armed: true }) });
       await browserThread(aid, "@agent welcome back", d.base);
-      await expect.poll(() => pi.sent.length, { timeout: 20_000 }).toBe(1);
+      await expect.poll(() => pi.sent.length, { timeout: 15_000 }).toBe(1);
     } finally {
       stop();
     }
@@ -1087,18 +1103,55 @@ describe("comments", () => {
     const ids = [await browserThread(aid, "one"), await browserThread(aid, "two")];
     const res = await fetch(`${daemon.base}/api/artifacts/${aid}/threads:send`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ thread_ids: ids, note: "Together" }) });
     expect(res.status).toBe(200);
-    await expect.poll(() => pi.sent.length, { timeout: 20_000 }).toBe(1);
+    await expect.poll(() => pi.sent.length, { timeout: 15_000 }).toBe(1);
     expect(String(pi.sent[0].content)).toMatch(/^\[clax\] 2 comments sent to you:\n\[clax\] 2 comments on "Pi batch", sent together by Viewer\. Note: "Together"\n/);
     await pi.emit("session_shutdown", {}, ctx);
   });
 });
 
-/** The timer functions as they were before any test replaced them. */
-const realSetTimeout = globalThis.setTimeout;
-const realClearTimeout = globalThis.clearTimeout;
+/** One long-poll of an injection loop (`DaemonClient.pollFeedback`): the
+ * signal that aborts it, its outcome so far, and a promise of that outcome
+ * which settles after the loop awaiting the poll has run on. */
+interface Poll {
+  signal: AbortSignal;
+  state: "pending" | "answered" | "failed";
+  settled: Promise<"answered" | "failed">;
+}
+
+/** Records every injection loop long-poll from here on, until the test ends. */
+function trackPolls(): Poll[] {
+  const polls: Poll[] = [];
+  const real = DaemonClient.prototype.pollFeedback;
+  vi.spyOn(DaemonClient.prototype, "pollFeedback").mockImplementation(function (this: DaemonClient, tier: string, waitS: number, signal: AbortSignal) {
+    const res = real.call(this, tier, waitS, signal);
+    const poll: Poll = { signal, state: "pending", settled: undefined as never };
+    // The loop awaits `res` itself, so its reaction runs before any test
+    // reaction to `settled`, which is chained after this one.
+    poll.settled = res.then(() => (poll.state = "answered"), () => (poll.state = "failed"));
+    polls.push(poll);
+    return res;
+  });
+  return polls;
+}
+
+/** Records the timers of `ms` milliseconds created from here on, and which of
+ * them were cleared, until the test ends. */
+function trackTimers(ms: number) {
+  const created = new Set<unknown>();
+  const cleared = new Set<unknown>();
+  const realSet = globalThis.setTimeout;
+  const realClear = globalThis.clearTimeout;
+  vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: () => void, wait?: number, ...rest: unknown[]) => {
+    const t = realSet(fn, wait, ...rest);
+    if (wait === ms) created.add(t);
+    return t;
+  }) as typeof setTimeout);
+  vi.spyOn(globalThis, "clearTimeout").mockImplementation(((t: unknown) => { cleared.add(t); realClear(t as NodeJS.Timeout); }) as typeof clearTimeout);
+  return { created, alive: () => [...created].filter(t => !cleared.has(t)) };
+}
 
 /** An Clax home whose daemon answers `/healthz`, registers every session as
- * `s1`, and passes other requests to `handle`, which answers through `reply` or
+ * `s1` and ends it, and passes other requests to `handle`, which answers through `reply` or
  * returns false to leave the request unanswered. */
 async function fakeDaemonHome(handle: (req: import("node:http").IncomingMessage, reply: (body: unknown) => void) => unknown) {
   const home = join(scratch, `fake-${Math.random().toString(36).slice(2)}`);
@@ -1108,6 +1161,9 @@ async function fakeDaemonHome(handle: (req: import("node:http").IncomingMessage,
     if (req.url === "/healthz") return reply({ version: "0.1.0" });
     if (req.method === "POST" && req.url === "/api/sessions") {
       return reply({ session: { id: "s1", harness: "pi", harness_session_id: "h", cwd: "/", pid: 1, parent_pid: 1, started_at: "", last_seen_at: "", ended_at: null } });
+    }
+    if (req.method === "PATCH" && req.url === "/api/sessions/s1") {
+      return reply({ session: { id: "s1", harness: "pi", harness_session_id: "h", cwd: "/", pid: 1, parent_pid: 1, started_at: "", last_seen_at: "", ended_at: "2026-01-01T00:00:00Z" } });
     }
     handle(req, reply);
   });

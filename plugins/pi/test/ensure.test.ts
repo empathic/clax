@@ -1,7 +1,7 @@
 // The `ensure` tests, in a file of their own so that Vitest runs them
-// alongside the extension's tests: one holds the start lock for 12 s.
+// alongside the extension's tests.
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -53,22 +53,29 @@ describe("ensure", () => {
   }, 30_000);
 
   it("waits for `clax serve` while another client's daemon replacement holds the start lock", async () => {
-    // A replacement holds daemon.lock for up to about 32 s; this one holds it
-    // 12 s, longer than the 10 s ensure used to allow.
+    // A replacement holds daemon.lock for up to about 32 s, and `clax serve`
+    // is let run past two of them.
     expect(SERVE_TIMEOUT_MS).toBeGreaterThanOrEqual(2 * 32_000);
     const home = join(scratch, "locked");
     mkdirSync(home, { recursive: true });
+    const lock = join(home, "daemon.lock");
+    // Holds the lock, with the lock file non-empty, until its stdin closes.
     const holder = spawn("python3", ["-c",
-      "import fcntl, sys, time; f = open(sys.argv[1], 'w'); fcntl.flock(f, fcntl.LOCK_EX); print('held', flush=True); time.sleep(12)",
-      join(home, "daemon.lock")], { stdio: ["ignore", "pipe", "inherit"] });
+      "import fcntl, sys; f = open(sys.argv[1], 'w'); fcntl.flock(f, fcntl.LOCK_EX); f.write('held'); f.flush(); print('held', flush=True); sys.stdin.read()",
+      lock], { stdio: ["pipe", "pipe", "inherit"] });
     try {
       await new Promise<void>((resolve, reject) => {
         holder.stdout!.once("data", () => resolve());
         holder.once("exit", code => reject(new Error(`the lock holder exited with ${code}`)));
       });
-      const t0 = Date.now();
-      const info = await ensure(home, { env: withBin(claxBin), port: 0, wrapper });
-      expect(Date.now() - t0).toBeGreaterThan(10_000);
+      let settled = false;
+      const ensuring = ensure(home, { env: withBin(claxBin), port: 0, wrapper }).finally(() => { settled = true; });
+      // `clax serve` creates (truncates) the lock file just before it waits on the lock.
+      await expect.poll(() => statSync(lock).size, { timeout: 15_000 }).toBe(0);
+      expect(settled).toBe(false);
+      expect(existsSync(join(home, "daemon.json"))).toBe(false);
+      holder.stdin!.end();
+      const info = await ensuring;
       expect((await fetch(`http://127.0.0.1:${info.port}/healthz`)).ok).toBe(true);
     } finally {
       holder.kill();
