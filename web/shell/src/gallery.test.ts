@@ -210,6 +210,48 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(root.querySelector(".gbar .inbox-link .count")).toBeNull();
   });
 
+  it("asks no more whether it is the owner's browser, and loads no question module, once it is gone", async () => {
+    for (const late of [200, 500]) {
+      FakeWorker.all = [];
+      vi.stubGlobal("SharedWorker", FakeWorker);
+      // The question module, if anything imports it.
+      let loaded = false;
+      vi.doMock("./q/index.ts", () => { loaded = true; return { start() {}, stop() {} }; });
+      const calls = stubApi(500, "ok");
+      const real = globalThis.fetch as (url: string, init?: RequestInit) => Promise<Response>;
+      // The owner check's own token request (uncached) is answered only once the gallery is gone.
+      let answer!: () => void;
+      const held = new Promise<void>(r => { answer = r; });
+      const asked = () => calls.filter(c => c.url === "/api/token" && c.method === "owner").length;
+      vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === "/api/token" && init?.cache === "no-store") {
+          calls.push({ url, method: "owner" });
+          await held;
+          return new Response(late === 200 ? JSON.stringify({ token: "t" }) : "{}", { status: late });
+        }
+        return real(url, init);
+      }));
+      await mountGallery();
+      await waitFor(() => asked() > 0, "the owner check");
+      unmountGallery?.();
+      unmountGallery = null;
+      vi.useFakeTimers();
+      try {
+        answer();
+        // Past the first retry's backoff (at most 600 ms).
+        await vi.advanceTimersByTimeAsync(2000);
+      } finally {
+        vi.useRealTimers();
+      }
+      await vi.dynamicImportSettled();
+      expect(asked(), String(late)).toBe(1);
+      expect(loaded, String(late)).toBe(false);
+      expect(calls.some(c => /^\/api\/(inbox|questions)/.test(c.url)), String(late)).toBe(false);
+      vi.doUnmock("./q/index.ts");
+      vi.resetModules();
+    }
+  });
+
   it("loads nothing of the inbox for a browser that is not the owner's", async () => {
     FakeWorker.all = [];
     vi.stubGlobal("SharedWorker", FakeWorker);

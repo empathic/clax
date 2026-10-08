@@ -126,6 +126,23 @@ describe("WorkerInbox", () => {
     }
   });
 
+  it("runs a check again once when a kick came while it ran and it found no pairing", async () => {
+    let fail!: (e: unknown) => void;
+    let first = true;
+    const h = harness(() => (first ? (first = false, new Promise((_, r) => { fail = r; })) : { unread: 1, questions: [], latest: [] }));
+    const port = new FakePort();
+    h.inbox.attach(port as never);
+    await h.settle();
+    // A pairing landed while the check waited.
+    h.inbox.kick();
+    h.inbox.kick();
+    fail(new ApiFailure("not_paired", "Clax is not paired yet."));
+    await h.settle();
+    expect(h.calls).toHaveLength(2);
+    expect(h.hub).toEqual([{ id: HUB_ID, msg: { t: "topics", topics: ["questions", "inbox"] } }]);
+    expect(h.inbox.owner).toBe(true);
+  });
+
   it("keeps nothing a check answered after the last panel closed", async () => {
     let answer!: (v: unknown) => void;
     const h = harness(() => new Promise(r => { answer = r; }));

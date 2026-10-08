@@ -61,6 +61,8 @@ export class Pairer {
   /** Told `true` when the pairing in flight has taken PAIR_SLOW_MS, and
    * `false` once that pairing ends, however it ends. */
   onSlow: ((slow: boolean) => void) | null = null;
+  /** Called after each pairing that succeeds and is stored (the first one too). */
+  onPaired: ((p: Pairing) => void) | null = null;
   constructor(private readonly env: PairEnv) {}
 
   /** The stored pairing, else a new one. */
@@ -91,6 +93,7 @@ export class Pairer {
       try {
         const p = parse(await this.env.sendNative(HOST, { type: "pair", v: 1, extension_version: this.env.manifestVersion }));
         await this.env.session.set({ pairing: p });
+        this.onPaired?.(p);
         await this.reloadFor(p.claxVersion);
         return p;
       } finally {

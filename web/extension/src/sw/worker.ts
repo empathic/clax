@@ -77,7 +77,9 @@ export function createWorker(d: WorkerDeps): Worker {
   inbox = ib;
   tabs = new Tabs({ api, hub, toOverlay: d.toOverlay, inject: d.inject, present: d.present, store: d.store, windowOf: d.windowOf, sites });
   const t = tabs;
-  api.onRepair = () => { t.repaired(); ib.kick(); };
+  api.onRepair = () => t.repaired();
+  // Any pairing that lands, the first one too: an owner check that found none runs again.
+  pairer.onPaired = () => ib.kick();
   pairer.onSlow = slow => t.hostSlow(slow);
   const picks = new Picks({
     api, capture: d.capture, toOverlay: d.toOverlay,

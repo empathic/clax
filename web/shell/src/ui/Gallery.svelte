@@ -41,7 +41,9 @@
   let owner = $state<boolean | null>(null);
   const lazy = () => import("./gallery-working");
   // `q` comes through the lazy module, which also hands it the page's stream.
-  const loadQ = (m: typeof import("./gallery-working")) => m.ownerBrowser().then(o => o ? m.q() : null).then(async q => {
+  // A gallery destroyed meanwhile asks no more and imports nothing: a late
+  // import would load the question module after the page (or a test) moved on.
+  const loadQ = (m: typeof import("./gallery-working")) => m.ownerBrowser(life.signal).then(o => (o && !destroyed ? m.q() : null)).then(async q => {
     if (destroyed) return;
     if (!q) { owner = false; return; }
     Q = q;
