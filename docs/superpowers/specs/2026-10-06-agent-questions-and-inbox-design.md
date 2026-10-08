@@ -990,7 +990,7 @@ Each skill gains "Asking the person":
 | Situation | Behaviour |
 |---|---|
 | Daemon down when the hook runs | No daemon within 1 s; exit 0; the terminal dialog. |
-| Daemon restarts while the hook waits | The poll fails; exit 0; the terminal dialog. The daemon's start withdraws open hook questions. |
+| Daemon restarts while the hook waits | A daemon shutting down withdraws the open hook questions its polls hold and answers them withdrawn; the hook exits 0 with no output, logging `released`, and the terminal dialog appears. A poll that fails instead (the daemon died) exits 0 the same way, logging `error`. The daemon's start withdraws any open hook questions left. |
 | Esc while the hook waits | Claude Code stops the hook; the question is withdrawn after 5 s ("claude stopped waiting"). |
 | Clax answer and release (or the timer) at once | One transaction wins; the loser sees 409 `question_closed` with the question's state. |
 | The same `tool_use_id` again | The first question is returned. |

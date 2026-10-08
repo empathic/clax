@@ -27,7 +27,8 @@ pub enum Outcome {
     Answered,
     /// Skipped in Clax: the call was denied.
     Declined,
-    /// Moved to the terminal in Clax (or withdrawn) while the hook waited.
+    /// Moved to the terminal in Clax, or withdrawn (its session ended, or
+    /// the daemon shut down), while the hook waited.
     Released,
     /// The daemon chose `terminal` mode: no Clax surface was open.
     Terminal,
@@ -393,6 +394,17 @@ mod tests {
             sessions(),
             created("wait"),
             polled("600", "released", Value::Null),
+        ]);
+        assert_eq!(
+            ask(&input(), &d, Budget::default()),
+            (HookOutput::none(), Outcome::Released)
+        );
+        // Withdrawn while the hook waited: its session ended, or the daemon
+        // shut down. Nothing is released.
+        let d = Fake::new(vec![
+            sessions(),
+            created("wait"),
+            polled("600", "withdrawn", Value::Null),
         ]);
         assert_eq!(
             ask(&input(), &d, Budget::default()),

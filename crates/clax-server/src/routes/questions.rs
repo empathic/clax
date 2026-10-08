@@ -219,7 +219,11 @@ pub struct WaitQuery {
 
 /// `GET /api/sessions/<sid>/questions/<qid>?wait=<s>` → `{question,
 /// waited_s}` as soon as the question is not open, or after `wait` seconds
-/// (at most [`MAX_WAIT_SECS`]), or when the daemon shuts down. An answered
+/// (at most [`MAX_WAIT_SECS`]), or when the daemon shuts down. A daemon
+/// that shuts down while a poll holds an open hook question withdraws it
+/// (and announces it) before answering, as its next start would: the hook
+/// then hands the question to the terminal as withdrawn, rather than
+/// trying to release it on a daemon that is going away. An answered
 /// or declined result marks it taken. While the poll runs it holds the
 /// question, and feedback polls leave the question's answer to it. When
 /// the last poll of an open hook question lets go, its grace starts; when
@@ -275,6 +279,7 @@ pub async fn poll(
     let expiry = s.question_sleeper.sleep(wait);
     tokio::pin!(expiry);
     let mut done = wait.is_zero();
+    let mut stopped = false;
     loop {
         let notified = notify.notified();
         tokio::pin!(notified);
@@ -283,12 +288,16 @@ pub async fn poll(
         if s.questions.take_expired(&qid) {
             done = true;
         }
-        let (sid1, qid1) = (sid.clone(), qid.clone());
+        let (sid1, qid1, st) = (sid.clone(), qid.clone(), s.clone());
         let out = s
             .store_call(move |db| {
-                let row = db.session_question(&sid1, &qid1)?;
+                let mut row = db.session_question(&sid1, &qid1)?;
                 if row.status == Status::Open && !done {
                     return Ok(None);
+                }
+                if stopped && row.status == Status::Open && row.source == Source::Hook {
+                    close(&st, db, &row.id, Close::Withdraw)?;
+                    row = db.session_question(&sid1, &qid1)?;
                 }
                 if matches!(row.status, Status::Answered | Status::Declined) {
                     db.take_question(&row.id)?;
@@ -304,7 +313,7 @@ pub async fn poll(
         tokio::select! {
             () = &mut notified => {}
             () = &mut expiry, if !done => done = true,
-            () = &mut stopping, if !done => done = true,
+            () = &mut stopping, if !done => (done, stopped) = (true, true),
         }
     }
 }
