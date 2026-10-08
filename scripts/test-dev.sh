@@ -24,7 +24,7 @@ fail() { echo "FAIL: $1"; FAILED=1; }
 export HOME="$T/home"
 export CODEX_HOME="$T/codex-home" CLAUDE_CONFIG_DIR="$T/claude-config" PI_CODING_AGENT_DIR="$T/pi-agent" GROK_HOME="$T/grok-home"
 mkdir -p "$HOME" "$CODEX_HOME" "$CLAUDE_CONFIG_DIR" "$PI_CODING_AGENT_DIR" "$GROK_HOME"
-unset CLAX_HOME CLAX_DEV_PORT CLAX_DEV_BIN CLAX_BIN
+unset CLAX_HOME CLAX_DEV_PORT CLAX_DEV_BIN CLAX_BIN CLAX_PORT
 
 # shellcheck source=scripts/dev-home.sh
 . "$HERE/dev-home.sh"

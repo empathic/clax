@@ -36,6 +36,7 @@ command -v python3 >/dev/null || die "python3 is needed"
 export HOME="$SCRATCH/home"
 export GROK_HOME="$SCRATCH/grok-home"
 export CLAX_HOME="$SCRATCH/clax-home"
+unset CLAX_PORT
 export CLAX_BIN="$REPO/target/debug/clax"
 export CLAX_NO_OPEN=1
 # clax init registers the Chrome extension's native host; keep it in scratch.

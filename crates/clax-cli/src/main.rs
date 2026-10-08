@@ -23,8 +23,8 @@ pub struct Cli {
     /// Emit one JSON object on stdout instead of text.
     #[arg(long, global = true)]
     pub json: bool,
-    /// Port to use when starting a daemon (0 = any free port). Default: the
-    /// home's `[serve] port` in config.toml, else 7480.
+    /// Port to use when starting a daemon (0 = any free port). Default:
+    /// `CLAX_PORT`, else the home's `[serve] port` in config.toml, else 7480.
     #[arg(long, global = true)]
     pub port: Option<u16>,
     #[command(subcommand)]
@@ -144,15 +144,39 @@ pub enum Cmd {
 }
 
 impl Cli {
-    /// `--port` when given, else the home's `[serve] port`, else 7480.
+    /// `--port` when given, else `CLAX_PORT`, else the home's `[serve]
+    /// port`, else 7480.
     ///
     /// # Errors
-    /// When `--port` is absent and the home's `config.toml` exists but cannot
-    /// be read or parsed, or holds a `[serve] port` that is not a port; the
-    /// message names the file. A missing file or key means the default.
+    /// When `--port` is absent and `CLAX_PORT` is set to something that is
+    /// not a port (1-65535), naming the variable; or when neither is given
+    /// and the home's `config.toml` exists but cannot be read or parsed, or
+    /// holds a `[serve] port` that is not a port, naming the file. An empty
+    /// `CLAX_PORT`, a missing file or a missing key means the next source.
     pub fn port_for(&self, home: &clax_core::Home) -> anyhow::Result<u16> {
+        self.port_for_with(home, std::env::var_os(PORT_ENV))
+    }
+
+    /// As [`Cli::port_for`], with `env` as the value of `CLAX_PORT`.
+    pub fn port_for_with(
+        &self,
+        home: &clax_core::Home,
+        env: Option<std::ffi::OsString>,
+    ) -> anyhow::Result<u16> {
         if let Some(p) = self.port {
             return Ok(p);
+        }
+        if let Some(v) = env.filter(|v| !v.is_empty()) {
+            return v
+                .to_str()
+                .and_then(|t| t.trim().parse::<u16>().ok())
+                .filter(|p| *p != 0)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "{PORT_ENV} is {:?}, which is not a port (1-65535)",
+                        v.to_string_lossy()
+                    )
+                });
         }
         let port = clax_core::config::HomeConfig::load(home.root())
             .and_then(|c| c.serve_port())
@@ -160,6 +184,10 @@ impl Cli {
         Ok(port.unwrap_or(clax_server::daemon::DEFAULT_PORT))
     }
 }
+
+/// The environment variable that sets the daemon's port, ahead of the
+/// home's `config.toml` and behind `--port`.
+pub const PORT_ENV: &str = "CLAX_PORT";
 
 /// The subcommand the command line names: its first argument that is
 /// neither a flag nor `--port`'s value.
@@ -319,17 +347,49 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = clax_core::Home::at(dir.path().to_path_buf());
         assert_eq!(
-            cli(&["clax", "list"]).port_for(&home).unwrap(),
+            cli(&["clax", "list"]).port_for_with(&home, None).unwrap(),
             clax_server::daemon::DEFAULT_PORT
         );
         std::fs::write(dir.path().join("config.toml"), "[serve]\nport = 7481\n").unwrap();
-        assert_eq!(cli(&["clax", "list"]).port_for(&home).unwrap(), 7481);
+        assert_eq!(
+            cli(&["clax", "list"]).port_for_with(&home, None).unwrap(),
+            7481
+        );
         assert_eq!(
             cli(&["clax", "--port", "0", "list"])
-                .port_for(&home)
+                .port_for_with(&home, None)
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn clax_port_comes_between_the_flag_and_the_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = clax_core::Home::at(dir.path().to_path_buf());
+        std::fs::write(dir.path().join("config.toml"), "[serve]\nport = 7481\n").unwrap();
+        let env = |v: &str| Some(std::ffi::OsString::from(v));
+        let list = cli(&["clax", "list"]);
+        assert_eq!(list.port_for_with(&home, env("7490")).unwrap(), 7490);
+        assert_eq!(list.port_for_with(&home, env("")).unwrap(), 7481);
+        assert_eq!(list.port_for_with(&home, None).unwrap(), 7481);
+        assert_eq!(
+            cli(&["clax", "--port", "7491", "list"])
+                .port_for_with(&home, env("7490"))
+                .unwrap(),
+            7491
+        );
+        // CLAX_PORT is read ahead of the config, so a broken config does not
+        // matter while it is set.
+        std::fs::write(dir.path().join("config.toml"), "[serve\n").unwrap();
+        assert_eq!(list.port_for_with(&home, env("7490")).unwrap(), 7490);
+        for bad in ["0", "74810", "x", "-1"] {
+            let e = list.port_for_with(&home, env(bad)).unwrap_err().to_string();
+            assert!(
+                e.contains("CLAX_PORT") && e.contains("not a port"),
+                "{bad}: {e}"
+            );
+        }
     }
 
     #[test]
@@ -338,7 +398,7 @@ mod tests {
         let home = clax_core::Home::at(dir.path().to_path_buf());
         std::fs::write(dir.path().join("config.toml"), "[serve\nport = 7481\n").unwrap();
         let e = cli(&["clax", "list"])
-            .port_for(&home)
+            .port_for_with(&home, None)
             .unwrap_err()
             .to_string();
         assert!(e.contains("config.toml"), "{e}");
@@ -351,7 +411,7 @@ mod tests {
         // A directory where the file should be: present, but unreadable as text.
         std::fs::create_dir(dir.path().join("config.toml")).unwrap();
         let e = cli(&["clax", "list"])
-            .port_for(&home)
+            .port_for_with(&home, None)
             .unwrap_err()
             .to_string();
         assert!(e.contains("config.toml"), "{e}");
@@ -363,7 +423,7 @@ mod tests {
         let home = clax_core::Home::at(dir.path().to_path_buf());
         std::fs::write(dir.path().join("config.toml"), "[serve]\nport = 74810\n").unwrap();
         let e = cli(&["clax", "list"])
-            .port_for(&home)
+            .port_for_with(&home, None)
             .unwrap_err()
             .to_string();
         assert!(

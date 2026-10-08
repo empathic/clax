@@ -41,6 +41,7 @@ REPO="$PWD"
 SCRATCH="${1:-${TMPDIR:-/tmp}/clax-smoke-claude-ask}"
 SCRATCH="$(mkdir -p "$SCRATCH" && cd "$SCRATCH" && pwd -P)"
 export CLAX_HOME="$SCRATCH/home"
+unset CLAX_PORT
 export CLAX_NO_OPEN=1
 BIN="$REPO/target/debug/clax"
 CWD="$SCRATCH/cwd"
