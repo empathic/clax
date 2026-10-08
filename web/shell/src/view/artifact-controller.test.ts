@@ -121,6 +121,31 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     ctl.dispose();
   });
 
+  it("asks a greeted page to greet again after a load with no hello, and reopens the gate on its hello", async () => {
+    const { ctl, frame } = await started();
+    const posted: { type: string }[] = [];
+    frame.contentWindow!.postMessage = ((m: { type: string }) => { posted.push(m); }) as Window["postMessage"];
+    // A load before any hello asks nothing: the page greets by itself.
+    frame.dispatchEvent(new Event("load"));
+    expect(posted.map(m => m.type)).not.toContain("clax:greet");
+    hello(frame.contentWindow!);
+    frame.dispatchEvent(new Event("load"));
+    posted.length = 0;
+    // A load with no hello since (a fragment traversal in Chromium): the gate
+    // closes, the frame is asked to greet, with nothing else in the message.
+    frame.dispatchEvent(new Event("load"));
+    expect(posted).toEqual([{ type: "clax:greet" }]);
+    // Asked once: a further load while closed does not ask again.
+    frame.dispatchEvent(new Event("load"));
+    expect(posted).toHaveLength(1);
+    // The page's hello goes through the usual checks and is welcomed again.
+    hello(frame.contentWindow!, 1);
+    expect(posted.map(m => m.type)).not.toContain("clax:welcome");
+    hello(frame.contentWindow!);
+    expect(posted.map(m => m.type)).toEqual(expect.arrayContaining(["clax:welcome", "clax:resolve-anchors", "clax:focus"]));
+    ctl.dispose();
+  });
+
   it("says when a lazy part of the bridge could not load, only for the greeted page and a known part", async () => {
     const { ctl, frame } = await started();
     frame.contentWindow!.postMessage = (() => {}) as Window["postMessage"];

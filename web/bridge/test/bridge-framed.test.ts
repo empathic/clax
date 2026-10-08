@@ -95,6 +95,14 @@ describe("leaving the page", () => {
   });
 });
 
+describe("the shell's request to greet again", () => {
+  it("is answered with the page's hello", () => {
+    posted.length = 0;
+    send({ type: "clax:greet" });
+    expect(posted).toEqual([{ type: "clax:hello", artifact: "7q3k9mzx2b4t", version: 1, file: "index.html" }]);
+  });
+});
+
 describe("the shell's fragment", () => {
   it("moves the page itself, in place", async () => {
     const entries = history.length;

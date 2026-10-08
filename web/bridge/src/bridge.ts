@@ -270,6 +270,7 @@ type PartName = keyof Parts;
       // In place, with no entry of its own, and only ever its fragment: the
       // URL up to `#` is the page's own (absolute, so no <base> moves it).
       case "clax:hash": location.replace(location.href.split("#")[0] + "#" + m.hash.slice(1)); break;
+      case "clax:greet": post(helloFor(meta)); break;
       case "clax:resolve-anchors": {
         if (commentsContext.live) break;
         // The anchors take effect (for reflows too) once the page has parsed,

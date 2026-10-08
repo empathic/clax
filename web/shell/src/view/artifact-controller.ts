@@ -622,12 +622,23 @@ export class ArtifactController {
   }
 
   /** The frame loaded a document; one that never greeted since the previous
-   * load closes the gate and loses its page and pins. */
+   * load closes the gate and loses its page and pins. When the gate was open,
+   * the frame is asked to greet again (`clax:greet`, with nothing in it): in
+   * Chromium, Back or Forward across a page's own fragment entries fires a
+   * load at a cross-origin or sandboxed frame with no new document, and that
+   * page answers with its hello, which reopens the gate through the usual
+   * checks. A document without the bridge does not answer. */
   frameLoaded(): void {
     if (this.disposed) return;
     this.openStream();
     if (this.held) { this.held.push(LOADED); return; }
-    if (this.gate.load()) { this.leaveDocument(); this.failedParts.clear(); this.set({ file: null, resolved: {} }); }
+    const wasOpen = this.gate.open;
+    if (this.gate.load()) {
+      this.leaveDocument();
+      this.failedParts.clear();
+      this.set({ file: null, resolved: {} });
+      if (wasOpen) sendToFrame(this.frameWin(), this.s.origin ?? null, { type: "clax:greet" });
+    }
   }
 
   private resolveAll(): void {

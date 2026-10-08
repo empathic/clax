@@ -1151,6 +1151,23 @@ a bye with no source could also come from another opaque-origin document
 holding the shell's window (a frame of a page that opened the shell), which
 can do no more than that.
 
+A load is not always a new document. In Chromium, a fragment navigation of a
+cross-origin or sandboxed frame that the parent starts (its `src`, its
+`location`), and Back or Forward across the page's own fragment entries,
+fire a load at the frame element while the page stays. So the shell never
+moves a greeted page's fragment itself: it sends `clax:hash` (shell →
+bridge, `{ hash }`), and the page moves in place within its own URL, only
+its fragment changing (an adopted served frame gets its link's fragment this
+way, ahead of its welcome). A traversal the browser starts cannot be
+avoided: on a load with no hello since the previous one, the gate closes as
+above, and if it was open the shell also sends `clax:greet` (shell → bridge,
+no fields; to `*` in sandbox mode). Any bridge document answers with its
+`clax:hello` again, which reopens the gate through the same checks as a
+first hello, and the welcome, anchors and focus follow; the capability host
+starts over, as on any closing. A document without the bridge does not
+answer, and the request carries nothing. The hello stays the gate's whole
+test: any document could already post one unasked.
+
 Capability ownership by phase. Every name below is placed; nothing else
 exists in the surface.
 
@@ -2240,6 +2257,8 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   without greeting, and a hello that must name the shown artifact and
   version are what keep live data (room messages, sample streams) from a
   document the frame navigated to; there is no per-document welcome nonce.
+  The shell's `clax:greet` after such a load carries nothing, and the hello
+  it asks for is judged as any hello is.
   What remains is the time from the next document's commit to the shell's
   handling of the outgoing page's bye, in which a push already in flight
   can reach the new document. Every such push carries data the outgoing
