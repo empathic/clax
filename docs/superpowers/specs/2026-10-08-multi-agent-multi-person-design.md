@@ -1,7 +1,8 @@
 # Multi-agent and multi-person Clax
 
 Date: 2026-10-08
-Status: draft for review
+Status: revised after review (revision 2); the owner's answers to the first
+draft's open questions are recorded as decisions O6–O9 and R1–R4
 Depends on: `2026-09-28-clax-design.md` (the main spec: participants and
 attention §10, sessions and the owner identity §11, the MCP surface §12,
 security §14), `2026-10-05-chrome-overlay-design.md` (the extension
@@ -25,8 +26,8 @@ token is theirs. Two things change that:
 - **A second person's agents** attach to the same Clax from another machine
   on the LAN. Comments, replies, pages and documents written by one person
   then become input to another person's agents, which is a prompt-injection
-  path, and a person's agents must not act on content their person has not
-  agreed to.
+  path, and a person's agents must not be handed content their person has
+  not agreed to.
 
 Owner's statements (2026-10-08, verbatim, in order):
 
@@ -41,32 +42,37 @@ Owner's statements (2026-10-08, verbatim, in order):
 ### Goals
 
 - The owner connects a second person's agents by invite or by approving an
-  ad-hoc request; each agent then holds a key-bound credential tied to that
-  person, revocable per machine and per person.
+  ad-hoc request; each machine then holds a key-bound credential tied to
+  that person, revocable per machine and per person.
 - An agent has its person's rights. The person narrows them; the owner may
   give one agent more.
-- Content written by someone other than an agent's own person never reaches
-  that agent, on any read or delivery path, until the agent's person
-  approves it (per author per thread, or "always allow" an author on an
-  artifact or everywhere). The agent sees a content-free placeholder and can
-  ask its person for approval.
+- Content written by someone other than an agent's own person is never
+  handed to that agent by any Clax agent channel (tools, hooks, feedback
+  tiers, notices, the signed client), field by field, until the agent's
+  person approves it (per author per thread, or "always allow" an author on
+  an artifact or everywhere). The agent sees a content-free placeholder and
+  can ask its person for approval.
 - Agents have meaningful names; `@name` reaches exactly one agent.
 - A sent thread has one owner agent; others see it taken; handoff is
   explicit; ownership is released when the session ends.
 - Ended sessions clean up after themselves, with one inbox note.
 - The inbox and the roster are grouped by agent and say which agent has been
   blocked on the person, and for how long.
-- A single-owner install upgrades with no change in behaviour.
+- A single-owner install upgrades with the changes listed in §19 and no
+  others.
 
 ### Non-goals
 
 - Accounts, passwords, single sign-on, or anything that leaves the LAN.
   Clax stays local; a "person" is a viewer identity of this install.
-- TLS. The daemon stays HTTP; §21 says what that costs and what the
-  signatures still protect.
+- TLS this round (O7). The daemon stays HTTP; §21 says what that costs and
+  what the signatures still protect.
+- An access-control boundary on a public LAN. The gallery, threads and
+  pages stay public to every LAN viewer, as today; the filter governs what
+  Clax's agent channels hand an agent, not what an agent can fetch as an
+  anonymous LAN viewer with a web or browser tool (§21).
 - Agent-to-agent messaging, and agents approving content for other agents.
-- Hiding content from people. The filter is agent-facing only: a person's
-  browser shows what it shows today (the gallery is public on the LAN).
+- Hiding content from people. The filter is agent-facing only.
 - Live pages for other people. Live pages stay visible only on the owner's
   machine (chrome-overlay L10); other people's agents never see them.
 - Removing content an agent has already received. Revocation stops future
@@ -74,73 +80,90 @@ Owner's statements (2026-10-08, verbatim, in order):
 
 ## 2. Decisions
 
-O1–O5 are the owner's decisions of 2026-10-08 and are binding. M1–M24 are
-this design's decisions, each with its reason.
+O1–O5 are the owner's decisions of 2026-10-08; O6–O9 are the owner's
+answers to the first draft's open questions, and R1–R4 the coordinator's
+rulings where the owner deferred to the draft's recommendations, the same
+day. All are binding. M1–M27 are this design's decisions, each with its
+reason.
 
 | # | Decision | Reason |
 |---|---|---|
 | O1 | Connecting a second person's agents: both a one-time invite from People (`clax connect <invite>` on the other machine) and an ad-hoc request (`clax connect http://host:port`, which the owner approves in the inbox). Credentials are tied to the person's identity and revocable per person. | Owner decision. |
 | O2 | An agent has its person's rights by default. Its person can narrow the rights of their own agents. The owner can grant one of another person's agents more than that person has. | Owner decision ("not propose only"). |
 | O3 | Content from other people reaching an agent is withheld until its person approves: per author per thread, or "always allow <person>" scoped to an artifact or everywhere. The daemon enforces it on every agent-facing read and delivery path: comments, replies, anchor quotes from pages others authored, clips, db documents written by others, artifact files and versions authored by others' agents, all feedback tiers including push and `wait_for_feedback`. Agents see a content-free placeholder and can use `ask` to request approval. Approvals batch per author per thread; revocation stops future delivery. Solo setups are unchanged; today's owner-token agents count as the owner's. | Owner decision. |
-| O4 | Also in scope: meaningful agent names (derived from repo, branch and task, agent-settable, person-renameable; `@name` routes to exactly one agent); thread ownership and handoff; agent lifecycle cleanup; agent-aware attention. | Owner decision. |
+| O4 | Also in scope: meaningful agent names (derived from repo, branch and task, agent-settable, person-renameable; `@name` routes to exactly one agent); thread ownership and handoff; agent lifecycle cleanup (ended sessions leave pickers, their questions withdrawn, threads released, one inbox note); agent-aware attention. | Owner decision. |
 | O5 | Model permissions and capabilities on GNAP (RFC 9635): grants, access rights, interaction, continuation and token management, and key binding where it fits a local daemon; adapt pragmatically and say where and why the design departs. | Owner decision. |
+| O6 | LAN viewers who are not connected as people: their comments reach the owner's agents without approval (today's behaviour on every install), with a plain switch in People, shown again beside the first invite. | Owner answer (first draft's Q1). |
+| O7 | No TLS this round; document "use a trusted LAN"; a later design may add a self-signed certificate whose fingerprint the invite carries. | Owner answer (Q3). |
+| O8 | An untargeted send with several of the owner's agents watching: the first to take it owns it. | Owner answer (Q5). |
+| O9 | Other people's artifact titles in an agent's `list` are withheld until approved. | Owner answer (Q8). |
+| R1 | A thread approval covers the author's later replies in that thread; the approval card says so. | Ruling (Q2). |
+| R2 | Only the agent's own person approves content for it; the owner cannot approve on another person's behalf. | Ruling (Q4). |
+| R3 | Cross-person agent name collisions get a suffix; the person is shown beside the name. | Ruling (Q6). |
+| R4 | Other people's extensions pair with their own daemon: out of scope. | Ruling (Q7). |
 | M1 | **A person is a viewer.** A connected person is a `viewers` row with `person = 1`; the owner is the owner row. No parallel "principal" table. | Viewers already carry the public ID, the name, authorship, mentions, attention and claiming. A person's browser and their agents share one identity, as the owner's do. |
-| M2 | **An agent is a session.** Each agent is a `sessions` row bound to its person (`sessions.person`, NULL for the owner) and, for another machine, to the grant it registered under (`sessions.grant_id`). Rights narrowings and elevations for one agent live on its session and end with it. | Sessions already identify agents (handle, harness, cwd, watches, working records, questions). Agents are short-lived; per-agent state that outlives them would need its own lifecycle. |
-| M3 | **One grant per person per machine.** `clax connect` makes one GNAP grant for the person's Clax install on that machine (GNAP's client instance). Every agent session on that machine registers under it and is named in each request by `X-Clax-Session`, checked to belong to the grant. | Agents are many and ephemeral; one key per machine is what a person can manage and revoke. GNAP's model of one client instance per key fits a machine, not a session. |
-| M4 | **Tokens are key-bound, never bearer.** `clax connect` makes an Ed25519 key pair; the private key never leaves the machine. Every request carries the access token and a signature over the method, path, query, a timestamp, a nonce and a body digest (§6.6). The owner's daemon token (local, file mode 0600) is unchanged. | The LAN is plain HTTP: a bearer token would be stolen by anyone who can sniff it. A signature with a nonce and a short time window makes a sniffed request useless to replay and a sniffed token useless alone. |
-| M5 | **Rights are GNAP access objects** with Clax types (`clax-artifacts`, `clax-comments`, `clax-db`, `clax-ask`), actions, and locations (`*`, `own`, or artifact IDs), plus reference presets (`clax:collaborator`, `clax:reader`, `clax:full`) (§7). An agent's effective rights are `(person ∩ grant narrowing ∩ agent narrowing) ∪ owner elevation`. | O2 in one formula. GNAP's access array is the modelling basis; presets are its reference strings. |
-| M6 | **Visibility is separate from rights.** Rights say what an agent may do; visibility (approvals) says whose words may reach it. Approvals are given by the agent's person, never by the owner on another person's behalf. | O3: B's "owner" (B's person) decides what reaches B. The owner of the install decides rights, not another person's consent. |
-| M7 | **One filter.** `Visibility` (in `clax-core`) answers "may an agent of person P see content whose effective authors are A₁…Aₙ, located at artifact Y, thread T?" Every agent-facing read and delivery path calls it; a route-guard test pins every route and a store test pins every delivery path (§8.6). | One rule, enforced in one place, checked mechanically, like L10's live-page guard and the audit guard. |
-| M8 | **Effective authors.** Content has the set of people whose words it carries: a comment's writer (and, for a comment a page wrote, also the page's publisher); an anchor quote's page publisher; a clip's commenter and page publisher; a version's publisher (and for a page-made version, the previous version's publisher too); a document's writer (and the page's publisher when the page wrote it); a working message's and a batch note's sender; an artifact's title and description, its creator and its current version's publisher. Content is visible only when every effective author is the agent's person or approved by them. | Page-written content is the confused-deputy path: a page running in the owner's browser writes "as the owner". Counting the page's publisher closes it. |
-| M9 | **An agent's own person's content is always visible.** The owner's agents see the owner's words; Sam's agents see Sam's. | The filter guards against other people's words, not one's own. |
-| M10 | **Approvals are per author, at three scopes**: one thread, one artifact, or everywhere. An author is a person (their agents' words count as theirs). A thread approval covers the author's present and future content in that thread. | O3's wording; one approval covers a conversation, not one message. |
-| M11 | **LAN viewers who are not connected people keep today's reach.** Migration 23 gives the owner one approval for the author class `*unconnected` (every viewer who is not the owner and not a connected person) everywhere. The owner can revoke it in People. Connected people are never covered by it. | Zero behaviour change for existing installs (O3: "solo setups unchanged"), while every connected person starts withheld, as O3 asks. Open question Q1 asks whether new installs should start without it. |
-| M12 | **Connecting asks the connecting person about the owner.** `clax connect` asks "Let <owner>'s comments and pages reach your agents everywhere? [Y/n]" and records the answer as that person's approval. | A person who connects to someone's Clax is there to work on that person's pages; the default saves an approval on every thread, and declining is one keystroke. |
-| M13 | **Withheld feedback stays undelivered.** A feedback row whose content is withheld is not handed over by any tier; instead its session gets one placeholder per (author, thread) (`placeholder_at`), and the row is delivered normally once approved. | Delivery semantics (once, acknowledged, resent) stay exactly as they are for the visible case. |
-| M14 | **Routing is an approval request.** A send (button, `to`, `@name`, handoff) that reaches an agent whose person has not approved the thread's authors makes an approval request to that person at once; the agent gets the placeholder and need not ask. | O3's "routing approval": a person sending to someone else's agent is asking that agent's person. |
-| M15 | **Approval requests batch per (approver, author, thread).** Later withheld content of the same author in the same thread joins the open request and raises its count. | O3's batching. |
-| M16 | **The inbox gains a recipient.** `inbox_items.recipient` is the person it is for (NULL for the owner). Connected people have an inbox; questions from an agent go to its person; approval requests to the approver; connection requests to the owner. | Questions, approvals and attention are per person; the owner's inbox stays exactly as it is. |
-| M17 | **Agent names are live-unique tokens.** `[a-z0-9][a-z0-9._-]{0,31}`, unique (ignoring case) among live sessions, never `agent`, `owner`, `clax`, or a person's display name lowercased. Derived as `<repo>` or `<repo>-<branch>` from the session's git directory, with `-<harness>` then `-2`, `-3` on collision; the agent sets it with `status {name}`; its person (or the owner) renames it. A name the agent or person chose that collides is 409 `name_taken`. | `@name` must reach exactly one agent; a token form cannot be confused with a person's mention (whole display name), and reserved words keep `@agent` meaning what it means today. |
-| M18 | **The thread's owner agent is its target session.** `threads.target_session_id` (migration 14) becomes the owner: set by a send with `to`, by `@name`, by handoff, and, for a send to everyone, by the first session that takes a delivery of it, which withdraws the other sessions' undelivered rows. Released (cleared) when the owning session ends, its grant is revoked, or the agent releases it. | The existing column already means "where this thread goes"; adding first-take makes "one owner" true for untargeted sends too. |
-| M19 | **Handoff is a tool.** `comments_handoff {url_or_id, thread_id, to?}` moves the thread to the named agent (re-sending the thread's viewer comments to it), or releases it without `to`. People hand off by sending again with `to`. | Explicit; one new tool rather than overloading `working` or `comments_resolve`. |
-| M20 | **Taken threads refuse other agents' writes.** An agent reply or resolve on a thread owned by another live agent is 409 `thread_taken` naming the owner. Reads stay allowed (filtered). | "Others see it taken": the refusal says who has it, so two agents never answer one thread. |
-| M21 | **Session end cleans up.** It withdraws the session's open questions and approval requests it asked, releases its threads, drops its elevations and narrowings, leaves the agent pickers, and makes one `ended` inbox item for its person when it owned threads or had open questions. | O4. One note, only when there was something to clean up. |
-| M22 | **Another machine is a remote, not a second daemon.** `clax connect` writes `<home>/remote.json` and the key; while it exists, the shim, hooks, CLI and Pi extension talk to that daemon (signed) instead of starting one. `clax connect --off` removes it. | The agent side already proxies everything over HTTP; one switch in the client keeps every harness working unchanged. |
-| M23 | **Remote sessions live by heartbeat only.** The reaper never probes their PIDs (another machine's); a remote session ends after `SESSION_IDLE_SECS` without a heartbeat, or at once when its grant is revoked. Tier 5 by `codex queue` is not available to remote sessions. | The daemon can neither see nor run processes on another machine. |
-| M24 | **Migrations 22–24** (people and grants; visibility; per-person inbox), numbered after main's 21. The `toolpath-audit` branch also claims 22: whichever lands on main first keeps 22 and the other renumbers its migrations up before merging; neither edits a shipped migration. | Contiguous migrations; no build of an unmerged branch has run on a real home. |
+| M2 | **An agent is a session.** Each agent is a `sessions` row bound to its person (`sessions.person`, NULL for the owner) and, for another machine, to the grant it registered under (`sessions.grant_id`). Rights narrowings and elevations for one agent live on its session and end with it. | Sessions already identify agents. Agents are short-lived; per-agent state that outlives them would need its own lifecycle. |
+| M3 | **One grant per person per machine.** `clax connect` makes one GNAP grant for the person's Clax install on that machine (GNAP's client instance). Every agent session on that machine registers under it. | Agents are many and ephemeral; one key per machine is what a person can manage and revoke. |
+| M4 | **Sessions are bound to their credential.** Registration, refresh and join match only rows with the caller's `grant_id` (`grant_id IS NULL` for the daemon token); a grant never matches, lists, reads or modifies another grant's or the token's session; every session named in a path or in `X-Clax-Session` must be the caller's (403 `foreign_session`). | PIDs collide across machines; the existing match by `(harness, parent_pid)` would otherwise hand one person's agent another's session, its feedback and its threads. |
+| M5 | **Tokens are key-bound, never bearer, and live with their grant.** `clax connect` makes an Ed25519 key pair; the private key never leaves the machine. Every request carries the access token and a signature over the method, path, query, host, a timestamp, a nonce, the body digest and the token (§6.6). Access tokens do not expire on their own; revoking the grant revokes them; rotation is on demand through the manage URI with the manage token and invalidates the old value at once. The owner's daemon token (local, file mode 0600) is unchanged. | The LAN is plain HTTP: a sniffed bearer token would be reusable. A signature makes a sniffed token useless alone and a sniffed request useless twice. Expiry and automatic rotation add little to a key-bound token, and can strand a sleeping machine. |
+| M6 | **Rights are GNAP access objects** with Clax types (`clax-artifacts`, `clax-comments`, `clax-db`, `clax-ask`), actions, and locations (`*`, `own`, or artifact IDs), plus reference presets (`clax:reader`, `clax:collaborator`, `clax:full`) (§7). An agent's effective rights are `(person ∩ grant narrowing ∩ agent narrowing) ∪ owner elevation`. | O2 in one formula. |
+| M7 | **Every route declares what an agent needs on the route itself.** A typed extractor (`Agent<N: Need>`) takes the artifact from the same `Path` the handler uses and checks the right; the route table of §7.5 is the contract, and the guard test reads it off handler signatures. | One router: no second path matcher beside axum's to drift from it. |
+| M8 | **One `Caller`.** Every handler learns who it serves from one `Caller` (§6.1); no handler reads `Authorization` or checks the token itself. | About twenty handlers decide agent-ness with an inline token check today; with a grant they would misfile an agent's reply as an anonymous comment. |
+| M9 | **Visibility is separate from rights.** Rights say what an agent may do; visibility (approvals) says whose words may reach it. Approvals are given by the agent's person (R2). | O3: B's person decides what reaches B. |
+| M10 | **One filter, field by field.** `Visibility` (in `clax-core`) answers, for one field, "may an agent of reader R see this field, whose effective authors are A₁…Aₙ, at artifact Y (thread T)?" Every field of every item an agent channel returns that has authors of its own (a comment's body, a thread's anchor, a clip, an artifact's title, a version's note and files, a document, a working message…) is checked on its own and replaced by its placeholder when withheld, in reads, write responses and every delivery tier alike. | A visible comment on a page someone else wrote still carries that page's quote and title; filtering whole rows would leak them. |
+| M11 | **Effective authors** (§8.2): content carries the set of people whose words it holds. A comment or document a page wrote, and a page's self-published version, also count the page's publisher, fixed at write time. | Page-written content is the confused-deputy path: a page running in the owner's browser writes "as the owner". |
+| M12 | **An agent's own person's content is always visible.** | The filter guards against other people's words, not one's own. |
+| M13 | **Approvals are per author, at three scopes**: one thread (including later replies, R1), one artifact, or everywhere. An author is a person; their agents' words count as theirs. | O3's wording. |
+| M14 | **`*unconnected`.** Migration 23 gives the owner one approval for the author class `*unconnected` (every viewer who is not the owner and not a connected person, and anonymous callers) everywhere (O6). Connected people are never covered by it as themselves; their unsigned browsers and scripts are, which People states beside the switch (§9.6). | Today's reach for LAN viewers on every install, with its consequence shown. |
+| M15 | **Connecting asks the connecting person about the owner.** `clax connect` asks "Let <owner>'s comments and pages reach your agents everywhere? [Y/n]" and records the answer as that person's approval. | A person who connects to someone's Clax is there to work on that person's pages. |
+| M16 | **Withheld bodies stay undelivered.** A feedback row whose comment body is withheld is not handed over; its session gets one placeholder per (author, thread) (`placeholder_at`), and the row is delivered once approved. A row whose body is visible is delivered with every other withheld field placeholdered. | Delivery semantics (once, acknowledged, resent) stay as they are for visible bodies. |
+| M17 | **Visibility and rights are current at every take.** Each take (and each wake of a long-poll) reads an approvals-and-rights generation counter and rebuilds `Visibility` and the rights when it changed; every approval, revocation and rights change bumps it and wakes the affected sessions' waiters. | A long-poll may wait ten minutes; a revocation must apply to its next take. |
+| M18 | **Routing is an approval request.** A send (button, `to`, `@name`, handoff, or a page's `sendToClaude`) that reaches an agent whose person has not approved the thread's authors makes an approval request to that person at once. | O3's "routing approval". |
+| M19 | **Approval requests batch per (approver, author, artifact, thread).** | O3's batching. |
+| M20 | **Approving, rights, elevation, narrowing and connecting need a browser.** Deciding a request, approving directly, revoking an approval, setting rights, elevating, narrowing, making or revoking invites, and approving, denying or revoking grants take a browser credential (the owner cookie, the extension, or a connected person's cookie); the daemon token alone is refused (403 `browser_required`). The CLI prints the People link for these. | An owner agent holds the token; a prompt-injected agent must not be able to approve content for itself or raise its own rights. |
+| M21 | **The inbox gains a recipient.** `inbox_items.recipient` is the person it is for (NULL for the owner). | Questions, approvals and attention are per person; the owner's inbox stays as it is. |
+| M22 | **Agent names are live-unique tokens.** `[a-z0-9][a-z0-9._-]{0,31}`, unique (ignoring case) among live sessions, never a reserved word or a person's name in token form; derived from repo and branch, set by the agent (`status {name}`), renamed by its person or the owner (§11). | `@name` must reach exactly one agent and never be confused with a person's mention. |
+| M23 | **The thread's owner agent is its target session.** `threads.target_session_id` is the owner: set by a send with `to`, `@name`, handoff, or by the first session to take a delivery of an untargeted send (O8), which deletes the other sessions' undelivered rows for it. Released on the owning session's end, its grant's revocation, or by the agent. | The existing column already means "where this thread goes". |
+| M24 | **Handoff is a tool** (`comments_handoff`); taken threads refuse other agents' replies and resolves (409 `thread_taken`). | Explicit, and two agents never answer one thread. |
+| M25 | **Session end cleans up** and makes one `ended` inbox note when the session owned threads or had open questions or approval requests. This reads O4's "one inbox note" as one note per ended session that had something to clean up; a session that ends with nothing open makes none. | O4, interpreted so idle sessions make no noise. |
+| M26 | **Another machine is a remote, not a second daemon.** `clax connect` writes `<home>/remote.json` and the key; while it exists, the shim, hooks, CLI and Pi extension talk to that daemon (signed) instead of starting one. | One switch in the client keeps every harness working unchanged. |
+| M27 | **Migrations 22–24** (people and grants; visibility; per-person inbox), numbered after main's 21. The `toolpath-audit` branch also claims 22: whichever lands on main first keeps 22 and the other renumbers its migrations up before merging. | Contiguous migrations; no build of an unmerged branch has run on a real home. |
 
 ## 3. User flows
 
 ### 3.1 Inviting Sam
 
-1. The owner opens **People** (`/people`), chooses **Invite a person**,
-   types "Sam", leaves the rights preset at **Collaborator** (§7.3), and
-   presses **Create invite**. People shows
-   `clax connect http://192.168.1.5:7480/i/K7QF-M2XD-9PLA` with a copy
-   button and "expires in 24 h, one use". (With the daemon bound to
-   loopback only, People says to restart it with `clax serve --bind
-   0.0.0.0` first; no invite is made.)
+1. The owner opens **People** (`/people`) in a browser, chooses **Invite a
+   person**, types "Sam", leaves the preset at **Collaborator** (§7.3),
+   and presses **Create invite**. People shows
+   `clax connect http://192.168.1.5:7480/i/K7QF-M2XD-9PLA`, "expires in
+   24 h, one use", "Use a trusted LAN: Clax traffic is not encrypted", and,
+   beside the first invite, the `*unconnected` switch with its text
+   (§9.6). With the daemon bound to loopback only, People says to restart
+   it with `clax serve --bind 0.0.0.0` first; no invite is made.
 2. On Sam's machine, Sam runs that command. It makes a key pair, redeems
-   the invite (a grant request carrying the invite), prints the key's
-   fingerprint and "Connected to Alex's Clax as Sam", asks "Let Alex's
-   comments and pages reach your agents everywhere? [Y/n]", writes
-   `~/.clax/remote.json`, and opens Sam's browser at a one-time link that
-   makes that browser Sam (§6.5).
+   the invite, prints the key's fingerprint and "Connected to Alex's Clax
+   as Sam", asks "Let Alex's comments and pages reach your agents
+   everywhere? [Y/n]", writes `~/.clax/remote.json`, and opens Sam's
+   browser at a one-time link that makes that browser Sam (§6.5).
 3. The owner's inbox gets "Sam connected from sam-mbp (key SHA256:9f…)".
-4. From now on Sam's agents (any harness with the Clax plugin) reach the
-   owner's daemon. Each registers as Sam's agent with a derived name
-   (`clax-multi-person`).
+4. Sam's agents (any harness with the Clax plugin) now reach the owner's
+   daemon, each registering as Sam's agent with a derived name.
+
+The owner connects a second machine of their own the same way, with an
+invite for themselves (**Invite → Me**).
 
 ### 3.2 An ad-hoc request
 
 1. Sam runs `clax connect http://192.168.1.5:7480`. The command prints
    "Ask the owner to approve request **WXYZ-4821**" and waits (polling the
    grant's continuation with GNAP's `wait`), up to ten minutes.
-2. The owner's inbox shows "Connection request from sam-mbp (192.168.1.40)"
-   with **Approve…** and **Deny**. Approve asks for the code Sam sees (the
-   owner types `WXYZ-4821`; a mismatch approves nothing), for the person
-   (an existing person, an existing LAN viewer, or a new name) and for the
-   preset.
+2. The owner's inbox shows "Connection request from sam-mbp
+   (192.168.1.40), key SHA256:…". **Approve…** asks for the code shown on
+   the requesting machine (a mismatch approves nothing), a name for the
+   **new** person, and the preset. Adding a machine to an existing person,
+   or to the owner, takes an invite (§6.3); the card says so and links to
+   **Invite**.
 3. Sam's command receives its token and continues as in 3.1 step 2.
 
 ### 3.3 Withheld content and approval
@@ -152,26 +175,30 @@ this design's decisions, each with its reason.
    rows for Sam's agent, holds them, and makes an approval request in Sam's
    inbox: "Mia wants to reach your agent clax-multi-person · 1 comment on
    Quarterly Review «Quarterly goals»", showing Mia's comment, with **Allow
-   this thread**, **Always allow Mia on this page**, **Always allow Mia
-   everywhere** and **Decline**.
+   this thread (and later replies)**, **Always allow Mia on this page**,
+   **Always allow Mia everywhere** and **Decline**.
 3. The agent's next tool result carries, instead of the comment:
    `[clax] 1 comment from Mia on "Quarterly Review" (thread 01J9…) is
    withheld until your person approves it. Your person has been asked.`
 4. Sam presses **Allow this thread**. The held rows become deliverable and
-   reach the agent by the usual tiers, as any sent comment does.
+   reach the agent by the usual tiers.
 5. Without routing (Mia comments on a thread the agent already owns), the
    placeholder says `To ask your person, call ask with {"approval":
    {"thread_id": "01J9…"}}`; the agent's `ask` makes the same request and
    waits for the decision.
+6. The owner (approved by Sam at connect) comments on a page Mia's agent
+   published and sends it to Sam's agent. The comment is delivered; the
+   anchor quote, the clip and the page's title in the same payload are
+   placeholders, because they are Mia's (M10).
 
 ### 3.4 Narrowing and elevating
 
 - Sam opens People in his browser (his own view: his machines, his agents,
-  his approvals) and turns off **Delete artifacts** for all his agents, or
-  for one agent. Effective at once.
+  his approvals) and turns off **Delete artifacts** for all agents of one
+  machine, or for one agent. Effective at the agent's next request or take.
 - The owner, in People → Sam → agents, gives `clax-multi-person` **Publish
-  versions of "Quarterly Review"** for this session. That agent may now
-  publish there; Sam's other agents may not.
+  versions of "Quarterly Review"**. That agent may publish there until its
+  session ends; Sam's other agents may not.
 
 ### 3.5 Several agents of one person
 
@@ -195,84 +222,97 @@ this design's decisions, each with its reason.
 | GNAP role (RFC 9635 §1.1) | In Clax |
 |---|---|
 | Authorization server (AS) | The daemon. |
-| Resource server (RS) | The daemon (same process; §4.3 departure 1). |
+| Resource server (RS) | The daemon (same process; departure 1). |
 | Resource owner (RO) | The install's owner: approves grants, sets people's rights, elevates agents. |
 | End user | The connecting person (Sam), who runs `clax connect`. |
 | Client instance | One person's Clax install on one machine: its key pair and `remote.json` (M3). |
 | Subject | The person the grant is bound to (a viewer row). |
 | Grant | A `grants` row. |
 | Access token | A `grant_tokens` row (hash only), key-bound. |
-| Continuation | The grant's continuation token and URI: polling, modification (narrowing), deletion. |
+| Continuation | The grant's continuation token and URI: polling and deletion. |
 
 ### 4.2 Lifecycle mapped
 
 | GNAP | RFC 9635 | Clax |
 |---|---|---|
-| Grant request | §2 | `POST /api/grants` with `access_token.access` (rights or a preset reference), `client.key` (`{proof: "clax-ed25519", jwk: {kty: "OKP", crv: "Ed25519", x}}`), `client.display.name`, `interact.start: ["user_code"]`, and for an invite `interact_ref`-like `invite` (departure 3). Signed with the new key. |
-| Interaction, user code | §2.5.1.3, §3.3.3 | Ad-hoc: the response's `interact.user_code`; the RO types it when approving (§6.3). |
+| Grant request | §2 | `POST /api/grants` with `access_token.access` (rights or a preset reference), `client.key` (`{proof: "clax-ed25519", jwk: {kty: "OKP", crv: "Ed25519", x}}`), `client.display.name`, `interact.start: ["user_code"]`, and for an invite a `clax.invite` code (departure 3). Signed with the new key. |
+| Interaction | §2.5.1.3, §3.3.3 | Ad-hoc: the response's `interact.user_code`, which the RO types when approving (departure 9). |
 | Asynchronous authorization | §4.4 | The owner approves later, in the inbox; the client polls continuation. |
-| Grant response | §3 | `continue {access_token, uri, wait}`, then `access_token {value, manage: {uri, access_token}, expires_in, access}`, `subject {sub_ids: [{format: "opaque", id: <public ID>}]}`, plus `clax {person: {public_id, display_name}, browser_link}`. |
-| Continuation: poll | §5.2 | `POST <continue uri>` with the continuation token, signed; `wait` 5 s; 400 `too_fast` faster. |
-| Continuation: modify | §5.3 | `PATCH <continue uri>` with a narrower `access` (the person narrowing every agent of the grant). Only narrowing is accepted from the client; widening is the RO's (§7.4). |
+| Grant response | §3 | `continue {access_token, uri, wait}`, then `access_token {value, manage: {uri, access_token}, access}` (no `expires_in`), `subject {sub_ids: [{format: "opaque", id: <public ID>}]}`, plus `clax {person: {public_id, display_name}, browser_link}`. |
+| Continuation: poll | §5.2 | `POST <continue uri>` with `Authorization: GNAP <continuation token>`, signed; `wait` 5 s; 400 `too_fast` sooner. |
+| Continuation: modify | §5.3 | Not offered (departure 10). |
 | Continuation: revoke | §5.4 | `DELETE <continue uri>`: the person disconnects the machine (`clax connect --off`). |
-| Token rotation | §6.1 | `POST <manage uri>`: a new value, the old one valid for 60 s more. The client rotates when less than a day is left. |
-| Token revocation | §6.2 | `DELETE <manage uri>`. |
+| Token rotation | §6.1 | `POST <manage uri>` with `Authorization: GNAP <manage token>`, signed: a new value; the old value is invalid at once. On demand (`clax connect --rotate`), never automatic. |
+| Token revocation | §6.2 | `DELETE <manage uri>` with the manage token. |
 | Key proofing | §7.3 | `clax-ed25519` (§6.6; departure 4). |
 | RO policy, subject | §3.4, §4 | The person's rights (§7) and `subject`. |
 
 ### 4.3 Departures, and why
 
-1. **AS and RS are one process.** The daemon both issues and checks tokens,
-   so there is no token introspection (RFC 9767) and no RS-first method;
-   access objects are read straight from the store.
-2. **One grant per machine, agents as sub-identities (M3).** GNAP would
-   make each agent session a client instance with its own grant. Agents
-   start and end many times a day; a grant per session would put an
-   approval in the owner's inbox for every new terminal. Agents are named
-   by `X-Clax-Session` inside a grant, and their per-agent narrowing and
-   elevation live on the session.
-3. **Invites are pre-approved grants.** GNAP has no invite; the RO approving
-   ahead of the request is modelled as a single-use reference (`invite`)
-   that a grant request carries in place of interaction. Redeeming binds
-   the key presented first; a second redemption is 409 `invite_used`.
+1. **AS and RS are one process.** No token introspection (RFC 9767); access
+   objects are read straight from the store.
+2. **One grant per machine, agents as sub-identities (M3).** A grant per
+   agent session would put an approval in the owner's inbox for every new
+   terminal. Agents are named by `X-Clax-Session` inside a grant, bound to
+   it (M4).
+3. **Invites are pre-approved grants**, carried as a top-level `clax.invite`
+   field of the grant request in place of interaction. GNAP has no invite.
+   Redeeming binds the key presented first; a second redemption is 400
+   `invalid_invite`.
 4. **A narrow key proof instead of HTTP Message Signatures.** `clax-ed25519`
    (§6.6) signs a fixed canonical string with one algorithm, instead of
-   RFC 9421's component selection and parameter parsing, which adds a
-   parser to every request for flexibility Clax does not need. It keeps
-   what §7.3 asks of a proof method: possession of the key, coverage of the
-   method, target and body, and freshness.
-5. **No finish method, no redirect.** The client is a command line on
-   another machine with no callback URI; it polls (`wait`). The browser
-   link (§6.5) is not a GNAP interaction but the person's browser joining
-   their identity after the grant is approved.
-6. **No bearer tokens at all for agents.** GNAP allows `flags: ["bearer"]`;
-   Clax refuses it (M4). The daemon token stays a bearer, local only, as
-   today.
-7. **The RO is not the end user, and visibility is not GNAP.** Approvals of
-   content (§10) are the end user's consent to what reaches their agents, an
-   information-flow policy the daemon applies as RS; GNAP has no notion of
-   it. They live beside grants, not in them (M6).
-8. **Access objects carry one non-GNAP field**, `level` on `clax-db`
-   (view, interact or admin), because db levels are claude.ai's model and
-   predate this design. RFC 9635 §8 allows type-specific fields.
+   RFC 9421's component selection, keeping what §7.3 asks: possession,
+   coverage of method, target and body, and freshness.
+5. **No finish method, no redirect.** The client is a command line with no
+   callback URI; it polls (`wait`). The browser link (§6.5) is not a GNAP
+   interaction but the person's browser joining their identity after the
+   grant is approved.
+6. **No bearer tokens for agents.** `flags: ["bearer"]` is refused. The
+   daemon token stays a bearer, local only, as today.
+7. **Visibility is not GNAP.** Approvals of content (§9) are the end user's
+   consent to what reaches their agents, applied by the RS; they live
+   beside grants (M9).
+8. **One non-GNAP field**, `level` on `clax-db`, which RFC 9635 §8 allows
+   as a type-specific field.
+9. **The user code is the RO's check, not the end user's.** RFC 9635
+   §3.3.3 has the end user type the code at the AS; here the RO types the
+   code the end user reads out, binding the approval to the request on the
+   end user's screen. As the RFC says, it is not an authentication factor:
+   it proves the owner looked at that request, not who made it, so a
+   request can only make a new person (§6.3).
+10. **No grant modification.** Narrowing is done by the person from their
+    browser (§7.4), not by the client through continuation: one path, not
+    two.
+11. **Access tokens have no `expires_in`; rotation is on demand.** Tokens
+    are key-bound and live while the grant lives; a grant expires after 30
+    days unused. Rotation follows §6.1 (the manage token; the old value
+    invalid at once).
+12. **`subject` is returned unasked.** The client needs the person's public
+    ID and name to show them; RFC 9635 §3.4 returns subject information only
+    when requested.
+13. **The `Clax-Grant` authorization scheme** carries the access token on
+    resource requests, where RFC 9635 §7.2 uses `GNAP`, so the gateway can
+    tell an access token from the continuation and manage tokens, which
+    use `GNAP`.
 
 ## 5. Data model
 
-All three migrations follow main's 21. Numbers are provisional per M24.
+All three migrations follow main's 21. Numbers are provisional per M27.
 
-### 5.1 Migration 22: people, grants, sessions
+### 5.1 Migration 22: people, grants, sessions, authors
 
 ```sql
 -- A connected person: a viewer with (or that had) a grant. The owner row
 -- is never a person row; the owner's own machines connect as the owner.
 ALTER TABLE viewers ADD COLUMN person INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE viewers ADD COLUMN person_revoked_at TEXT;   -- a revoked person (§6.4)
 -- The person's rights (an access array, §7); NULL: the clax:collaborator preset.
 ALTER TABLE viewers ADD COLUMN rights_json TEXT;
 
 CREATE TABLE invites (
     id TEXT PRIMARY KEY,                         -- ULID
     code_sha256 TEXT NOT NULL UNIQUE,
-    viewer_id TEXT NOT NULL REFERENCES viewers(id),
+    viewer_id TEXT NOT NULL REFERENCES viewers(id),  -- a person row, or the owner row
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
     used_at TEXT,
@@ -289,7 +329,9 @@ CREATE TABLE grants (
     client_name TEXT NOT NULL,                   -- what the client called itself (untrusted, ≤ 64 chars)
     peer_ip TEXT NOT NULL,                       -- of the grant request
     user_code_sha256 TEXT,                       -- request only, while pending
-    continue_sha256 TEXT NOT NULL,               -- the continuation token's hash
+    wrong_codes INTEGER NOT NULL DEFAULT 0,
+    continue_sha256 TEXT NOT NULL,
+    manage_sha256 TEXT,                          -- once approved
     narrow_json TEXT,                            -- the person's narrowing of every agent of this grant
     created_at TEXT NOT NULL,
     decided_at TEXT,
@@ -305,8 +347,7 @@ CREATE TABLE grant_tokens (
     sha256 TEXT PRIMARY KEY,
     grant_id TEXT NOT NULL REFERENCES grants(id),
     created_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    retired_at TEXT                              -- rotated: valid 60 s past this
+    revoked_at TEXT
 );
 CREATE INDEX grant_tokens_by_grant ON grant_tokens(grant_id);
 
@@ -318,17 +359,19 @@ ALTER TABLE sessions ADD COLUMN narrow_json TEXT;      -- the person's narrowing
 ALTER TABLE sessions ADD COLUMN elevate_json TEXT;     -- the owner's elevation of this agent
 CREATE UNIQUE INDEX sessions_live_name ON sessions(name COLLATE NOCASE)
     WHERE ended_at IS NULL AND name IS NOT NULL;
-CREATE INDEX sessions_by_grant ON sessions(grant_id) WHERE grant_id IS NOT NULL;
+CREATE INDEX sessions_by_grant ON sessions(grant_id, harness, parent_pid) WHERE grant_id IS NOT NULL;
 
 ALTER TABLE artifacts ADD COLUMN person TEXT;          -- the creator's person; NULL: the owner
 ALTER TABLE versions ADD COLUMN person TEXT;           -- the publisher's person; NULL: the owner
 ALTER TABLE versions ADD COLUMN by_page INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE versions ADD COLUMN page_person TEXT;      -- by_page: the previous version's publisher, fixed at write
+ALTER TABLE assets ADD COLUMN person TEXT;             -- the uploader's person; NULL: the owner
 ```
 
-Existing rows get NULLs: every existing session, artifact and version is
-the owner's (§19). Existing sessions get no name; names are given at
-registration. `person` columns hold public IDs; the viewer claim and fold
-(main spec §11) rewrites them with the other author columns.
+Existing rows get NULLs: every existing session, artifact, version and
+asset is the owner's (§19). Existing sessions get no name; names are given
+at registration. `person` columns hold public IDs; the viewer claim and
+fold (main spec §11) rewrites them with the other author columns.
 
 ### 5.2 Migration 23: visibility
 
@@ -338,11 +381,11 @@ CREATE TABLE approvals (
     approver TEXT,                               -- the person whose agents see; NULL: the owner
     author TEXT NOT NULL,                        -- a public ID, or '*unconnected'
     scope TEXT NOT NULL CHECK (scope IN ('thread', 'artifact', 'everywhere')),
-    artifact_id TEXT,                            -- thread and artifact scopes
-    thread_id TEXT,                              -- thread scope
+    artifact_id TEXT,
+    thread_id TEXT,
     created_at TEXT NOT NULL,
-    created_via TEXT NOT NULL CHECK (created_via IN ('shell', 'extension', 'cli', 'connect', 'migration')),
-    request_id TEXT,                             -- the request it decided, if any
+    created_via TEXT NOT NULL CHECK (created_via IN ('shell', 'extension', 'connect', 'migration')),
+    request_id TEXT,
     revoked_at TEXT
 );
 CREATE UNIQUE INDEX approvals_live ON approvals(
@@ -356,9 +399,9 @@ CREATE TABLE approval_requests (
     author TEXT NOT NULL,                        -- a public ID
     artifact_id TEXT NOT NULL,
     thread_id TEXT,                              -- NULL: content outside threads (a version, a document)
-    session_id TEXT,                             -- the agent it is about (the asker, or the routing target)
+    session_id TEXT,                             -- the agent it is about
     cause TEXT NOT NULL CHECK (cause IN ('ask', 'routing')),
-    count INTEGER NOT NULL DEFAULT 1,            -- withheld items batched in
+    count INTEGER NOT NULL DEFAULT 1,
     status TEXT NOT NULL DEFAULT 'open'
         CHECK (status IN ('open', 'approved', 'declined', 'withdrawn')),
     decided_scope TEXT CHECK (decided_scope IN ('thread', 'artifact', 'everywhere')),
@@ -371,14 +414,25 @@ CREATE UNIQUE INDEX approval_requests_open ON approval_requests(
     WHERE status = 'open';
 CREATE INDEX approval_requests_by_session ON approval_requests(session_id, status);
 
-ALTER TABLE docs ADD COLUMN author TEXT;                 -- the writer's public ID; NULL: the owner (or before this)
-ALTER TABLE docs ADD COLUMN via_page INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE feedback ADD COLUMN placeholder_at TEXT;     -- a placeholder for this row was handed over
+-- A document's authors: every person whose fields it holds (§8.2).
+CREATE TABLE doc_authors (
+    artifact_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    author TEXT NOT NULL,                        -- a public ID, '*owner', or '*unconnected'
+    PRIMARY KEY (artifact_id, path, author)
+);
+ALTER TABLE feedback ADD COLUMN placeholder_at TEXT;
+ALTER TABLE comments ADD COLUMN page_person TEXT;   -- via_page: the page's publisher at write ('*owner' for the owner)
 
 INSERT INTO approvals (id, approver, author, scope, created_at, created_via)
 VALUES ('a' || lower(hex(randomblob(12))), NULL, '*unconnected', 'everywhere',
         strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'migration');
 ```
+
+Existing documents get no `doc_authors` rows: a document without rows is
+the owner's (zero change). Existing `via_page` comments get `page_person`
+NULL, read as the owner (every version before this migration is the
+owner's).
 
 ### 5.3 Migration 24: the per-person inbox
 
@@ -416,43 +470,52 @@ CREATE INDEX inbox_by_request ON inbox_items(request_id) WHERE request_id IS NOT
 ```
 
 Keys of items for the owner are unchanged (`reply:<comment_id>`); an item
-for another person appends `@<public ID>` (`reply:<comment_id>@u_…`), so one
-source makes one item per recipient.
+for another person appends `@<public ID>`, so one source makes one item per
+recipient.
 
 ## 6. People, grants and tokens
 
-### 6.1 Who a request speaks for
+### 6.1 Who a request speaks for: `Caller`
 
-`Identity` (main spec §11) remains the one place that maps credentials. It
-gains one credential kind and one answer:
+`Identity` (main spec §11) remains the one place that maps credentials, and
+gives every handler one `Caller` (M8):
 
-- **The agent credential** (`Authorization: Clax-Grant <token>` with the
-  signature headers, §6.6). The agent gateway (§8.5) verifies it and marks
-  the request with `ViaGrant {grant_id, person, session}`. Such a request
-  is never the owner (`is_owner()` false) even when the grant's person is
-  the owner row: an owner's second machine acts as the owner's agents (its
-  sessions have `person` NULL), not as the owner's browser.
-- **`Identity::person()`**: `Person::Owner` for any owner credential;
-  `Person::Viewer(public_id)` for a viewer cookie naming a person row;
-  `Person::Agent {person, session}` for an agent credential; else `None`.
-  Every person-scoped route (questions, inbox, approvals, People) reads
-  this, so the owner's routes keep `require_owner` semantics for the owner
-  and serve a connected person their own items.
+| Caller | Credential | Reader for the filter |
+|---|---|---|
+| `Owner` | an owner browser credential (owner cookie, events cookie, extension), or the daemon token with no `X-Clax-Session` (the CLI by hand, scripts) | none: not an agent channel (§8.5) |
+| `OwnerAgent {session}` | the daemon token with `X-Clax-Session` naming a live token session, or the sessionless `/mcp` (`session` none) | the owner |
+| `PersonAgent {person, grant, session}` | `Authorization: Clax-Grant` with a valid signature (§6.6); `session` from `X-Clax-Session`, optional (§6.7) | the person (the owner when the grant's person is the owner row) |
+| `Person {viewer}` | a `clax_viewer` cookie naming a connected, unrevoked person row | none |
+| `Viewer {viewer}` | any other `clax_viewer` cookie | none |
+| `Anonymous` | nothing | none |
 
-The daemon token stays the owner's and needs nothing new. Agents that hold
-it count as the owner's (O3).
+- `PersonAgent` is never the owner (`is_owner()` false), even for a grant
+  of the owner row: an owner's second machine acts as the owner's agents
+  (its sessions have `person` NULL), never as the owner's browser.
+- `Caller::browser()` is true for an owner browser credential and for
+  `Person`; M20's routes require it.
+- `Identity::person()` gives `Person::Owner` for `Owner`,
+  `Person::Viewer(public_id)` for `Person`, and `Person::Agent` for the two
+  agent callers. Person-scoped routes (questions, inbox, approvals, People)
+  read it.
+- No handler reads `Authorization` or checks the token itself (a guard
+  test, §8.6). The db routes' level comes from `Caller`: for a
+  `PersonAgent`, `rights.db_level(Y)` with the person as the viewer; agent
+  replies are recognised from `Caller` (an agent caller with a session),
+  never from the token's presence.
 
 ### 6.2 Invites
 
-- `POST /api/people/invites` (owner) `{name | viewer, rights?}` → `{invite:
-  {id, command, expires_at}}`. `name` makes a new person row (`person = 1`,
-  no cookie: the browser link binds one later); `viewer` names an existing
-  LAN viewer by public ID and marks it a person. The code is 12 characters
-  of Crockford base32 in three groups (60 bits), shown once; only its hash
-  is stored. Expires in 24 h. 409 `not_on_lan` when the daemon listens on
-  loopback only.
+- `POST /api/people/invites` (owner, browser) `{name | viewer | me,
+  rights?}` → `{invite: {id, command, expires_at}}`. `name` makes a new
+  person row (no cookie: the browser link sets one later); `viewer` names
+  an existing LAN viewer by public ID and marks it a person; `me` makes an
+  invite for the owner row. The code is 12 Crockford base32 characters in
+  three groups (60 bits), shown once; only its hash is stored. Expires in
+  24 h. 409 `not_on_lan` when the daemon listens on loopback only. At most
+  20 live invites.
 - `GET /api/people/invites` (owner), `DELETE /api/people/invites/<id>`
-  (owner; revoked).
+  (owner, browser).
 - The `command` is `clax connect http://<LAN address>:<port>/i/<code>`.
 
 ### 6.3 Grant requests
@@ -465,52 +528,57 @@ it count as the owner's (O3).
   "client": {"key": {"proof": "clax-ed25519", "jwk": {"kty": "OKP", "crv": "Ed25519", "x": "<base64url>"}},
              "display": {"name": "sam-mbp"}},
   "interact": {"start": ["user_code"]},
-  "invite": "K7QFM2XD9PLA"
+  "clax": {"invite": "K7QFM2XD9PLA"}
 }
 ```
 
-The request is signed with the presented key (§6.6) and carries no token;
-the gateway admits exactly this route without one.
+The request is signed with the presented key (§6.6) and carries no token.
 
-- **With `invite`:** a live, unused invite binds the grant at once to its
-  person, with the person's rights (`access` may only narrow them): 200
-  with `access_token`, `subject` and `clax.browser_link`. An expired,
-  used, revoked or unknown code is 400 `invalid_invite` (one message for
-  all four).
+- **With `clax.invite`:** a live, unused invite binds the grant at once to
+  its person, with the person's rights (`access` may only narrow them): 200
+  with `access_token`, `continue` (for deletion), `subject` and
+  `clax.browser_link`. An expired, used, revoked or unknown code is 400
+  `invalid_invite` (one message for all four).
 - **Without:** a pending grant, 201 with `continue {access_token, uri:
   "/api/grants/<gid>/continue", wait: 5}` and `interact.user_code`
-  (`WXYZ-4821`: four letters and four digits, shown to the end user). The
-  owner's inbox gets a `connection` item. At most 3 pending requests per
-  peer IP and 20 in all (429 `limit_reached`); a pending request expires
-  after 10 minutes (`expired`).
-- The owner decides with `POST /api/grants/<gid>/approve {user_code,
-  person: {viewer} | {name}, rights?}` or `POST …/deny`. A wrong
-  `user_code` is 400 `wrong_code` and changes nothing; three wrong codes
-  deny the request.
-- The client polls `POST /api/grants/<gid>/continue` with
-  `Authorization: GNAP <continuation token>` (signed). Pending: 200 with
-  `continue` again (a poll sooner than `wait` is 400 `too_fast`). Approved:
-  200 with the access token as above, and a new continuation token for
-  later modification and deletion. Denied or expired: 403 `denied`.
+  (`WXYZ-4821`: four letters without I and O, four digits). The owner's
+  inbox gets a `connection` item. At most 3 pending requests per peer IP
+  and 20 in all (429 `limit_reached`); a pending request expires after 10
+  minutes.
+- The owner decides with `POST /api/grants/<gid>/approve {user_code, name,
+  rights?}` (browser, M20), which always makes a new person row named
+  `name` (§11's rules for person names), or `POST …/deny`. A wrong
+  `user_code` is 400 `wrong_code` and changes nothing; the third wrong code
+  denies the request. A request cannot be approved into an existing person
+  or the owner row (departure 9): those take an invite.
+- The client polls `POST /api/grants/<gid>/continue` (signed, `GNAP`
+  continuation token). Pending: 200 with `continue` (sooner than `wait`:
+  400 `too_fast`). Approved: 200 with the access token, `subject`,
+  `clax.browser_link` and a new continuation token. Denied or expired: 403
+  `denied`.
 
-### 6.4 Tokens
+### 6.4 Tokens, grants and people ending
 
 - An access token is `cxg_` and 43 base64url characters (32 random bytes);
-  only its SHA-256 is stored. It expires 7 days after issue. A grant
-  unused for 30 days expires with its tokens.
-- `POST /api/grants/<gid>/token` (the manage URI, signed, with the current
-  token) rotates: a new token, and the old one is `retired` and valid for
-  60 s more. `DELETE` on it revokes the token (the client's
-  `clax connect --off` revokes the whole grant through continuation
-  instead).
-- The daemon keeps an in-memory map of live token hashes to grant (as for
-  extension credentials), loaded on start and updated on every change.
-- Revoking a grant (the owner in People, the person's `clax connect
-  --off`, expiry) ends it and all its tokens at once and ends every live
-  session registered under it (§14).
-- Revoking a person (owner) revokes their grants and invites; their viewer
-  row, authorship and approvals stay as history. Their browser remains an
-  ordinary LAN viewer.
+  a manage token `cxm_…`, a continuation token `cxc_…`; only SHA-256
+  hashes are stored. Access tokens have no expiry (M5); a grant unused for
+  30 days expires with its tokens (`last_used_at` written at most once an
+  hour).
+- `POST /api/grants/<gid>/token` with `Authorization: GNAP <manage token>`
+  (signed) rotates: a new access token, the old one revoked in the same
+  transaction. `clax connect --rotate` does it and rewrites `remote.json`;
+  the machine's other agents reload `remote.json` on `invalid_token` and
+  retry once. `DELETE` on it revokes the access token.
+- The daemon keeps an in-memory map of live token hashes to grant, loaded
+  on start and updated on every change.
+- Revoking a grant (the owner in People, the person's `clax connect --off`
+  through `DELETE <continue uri>`, expiry) ends it and its tokens at once
+  and ends every live session registered under it (§14).
+- Revoking a person (owner, browser) revokes their grants and invites and
+  sets `person_revoked_at`. Their viewer row, authorship and approvals stay
+  as history. Their browser becomes `Caller::Viewer`: no inbox, People or
+  approvals. Their content stays theirs (it is not `*unconnected`) and stays
+  withheld from agents whose person never approved them.
 
 ### 6.5 The browser link
 
@@ -518,12 +586,11 @@ An approved grant response carries `clax.browser_link`:
 `http://<host>:<port>/connect/b/<code>` (32 random bytes, one use, 10
 minutes). `clax connect` opens it in the person's default browser. The
 daemon answers with a page that sets the `clax_viewer` cookie to the
-person's viewer and redirects to `/people`. When the browser already
-carried a `clax_viewer` cookie naming a viewer that is neither the owner nor
-a person, that viewer is folded into the person (the claim and fold of main
-spec §11, unchanged). The link is refused for the owner row (an owner's
-second machine keeps its own browser identity) and from a loopback peer
-naming a local host (the owner's machine).
+person's viewer and redirects to `/people`. A `clax_viewer` cookie the
+browser already carried is replaced, never folded: the viewer it named
+stays a separate LAN viewer with its own history, so a raced or sniffed
+link cannot move anyone's history into the person. The link is refused for
+the owner row and from a loopback peer naming a local host.
 
 ### 6.6 Key-bound requests (`clax-ed25519`)
 
@@ -537,24 +604,49 @@ Clax-Signature: t=<unix seconds>, n=<nonce: 22 base64url chars>, s=<base64url Ed
 The signed message is the UTF-8 of
 
 ```
-clax-ed25519 v1\n<METHOD>\n<path and query as sent>\n<Host>\n<t>\n<n>\n<SHA-256 hex of the body>\n<SHA-256 hex of the access token>
+clax-ed25519 v1\n<METHOD>\n<path and query as sent>\n<Host>\n<t>\n<n>\n<SHA-256 hex of the body>\n<SHA-256 hex of the token>
 ```
 
-The grant request and continuation calls sign the same way with the
-continuation token (or nothing, for the first request) in the last line.
-The daemon verifies with the grant's `client_key`, accepts `t` within ±120 s
-of its clock, and refuses a nonce seen for that key within the last 300 s
-(a per-key set bounded at 4,096 entries, evicting oldest; beyond, the
-request is 429 `limit_reached`). Errors: 401 `invalid_signature`,
-`stale_request`, `replayed_request`, `invalid_token`, `token_expired`;
-the client re-signs and retries once on `stale_request` after reading the
-daemon's `Date`. A request with an agent credential and an `Origin` or a
-`Cookie` header is 403 `forbidden_origin` (a browser cannot hold the key,
-and nothing is mixed).
+The grant request signs with an empty token line; continuation and manage
+calls sign with their `GNAP` token.
+
+The daemon checks, in this order, before reading the body: the token's
+hash in the in-memory map (401 `invalid_token`; `grant_revoked` for a
+revoked grant's token), the header's shape (401 `invalid_signature`), `t`
+within ±120 s of its clock (401 `stale_request`, with the daemon's `Date`),
+and the nonce unseen for that key within the last 240 s (401
+`replayed_request`; a per-key set bounded at 65,536 entries, beyond which
+429 `limit_reached`). It then streams the body through SHA-256, capped by
+the route's body limit, and verifies the signature (401
+`invalid_signature`). The first request of a grant (no token yet) is
+limited to 16 KiB. The client re-signs and retries once on `stale_request`
+with the offset from `Date`. A request with an agent credential and an
+`Origin` or a `Cookie` header is 403 `forbidden_origin`.
 
 Keys: Ed25519 with `ring` (already in the lockfile, now a direct
 dependency of `clax-core`), PKCS#8 in `<home>/remote.key` (0600). Signing
 costs about 20 µs and verifying about 50 µs.
+
+### 6.7 Session binding (M4)
+
+- **Registration and refresh** (`POST /api/sessions`): the existing matches
+  by `(harness, harness_session_id)` and by `(harness, parent_pid)` are
+  restricted to rows with the caller's `grant_id` (`IS NULL` for the
+  token). A grant's registration makes its row with `grant_id`, and
+  `person` from the grant's viewer (NULL for the owner row).
+- **Join** (`POST /api/sessions/join`, every hook): the same restriction,
+  for every candidate it tries (harness session ID, parent PID,
+  ancestors).
+- **Listing** (`GET /api/sessions`, which hooks use to find their session
+  by harness session ID): a grant sees only its own grant's sessions.
+- **Paths and headers:** every session ID in a path (`/api/sessions/{id}/…`)
+  or in `X-Clax-Session` must name a session of the caller's grant (or, for
+  the token, a token session): otherwise 403 `foreign_session`. The check
+  is in the `Agent<N>` extractor (M7), which reads the same `Path` as the
+  handler.
+- **Session-less grant requests** (the remote CLI: `clax list`, `clax
+  comments`): rights are `person ∩ grant.narrow`, the reader is the person,
+  and session routes are refused (400 `no_session`).
 
 ## 7. Rights
 
@@ -562,758 +654,773 @@ costs about 20 µs and verifying about 50 µs.
 
 ```json
 {"type": "clax-artifacts", "actions": ["read", "create", "update", "delete"], "locations": ["*"]}
-{"type": "clax-comments",  "actions": ["read", "reply", "resolve", "watch"], "locations": ["*"]}
+{"type": "clax-comments",  "actions": ["read", "write", "reply", "resolve", "send", "watch"], "locations": ["*"]}
 {"type": "clax-db",        "actions": ["read", "write"], "level": "interact", "locations": ["*"]}
 {"type": "clax-ask",       "actions": ["ask"]}
 ```
 
-| Type | Action | Routes it opens |
-|---|---|---|
-| `clax-artifacts` | `read` | list, get, versions, files, assets list (filtered, §8) |
-| | `create` | `POST /api/artifacts` (location ignored) |
-| | `update` | publish a version, patch metadata, pin, upload assets |
-| | `delete` | delete an artifact, delete an asset |
-| `clax-comments` | `read` | threads list and get, clips (filtered) |
-| | `reply`, `resolve` | agent replies and resolves |
-| | `watch` | watch, `wait_for_feedback`, the feedback poll, notices, working records |
-| `clax-db` | `read`, `write` | the doc routes; `level` caps the caller level (`view` < `interact` < `admin`) |
-| `clax-ask` | `ask` | the session's question routes and approval requests |
-
-Locations: `*` (every artifact), `own` (artifacts the agent's person
-created: `artifacts.person`), or artifact IDs. Everything not in this
-vocabulary (live pages, `sample`, the extension, sessions of others,
-shutdown, the token, other people's inboxes, People, grants) is never
-grantable: only owner credentials reach it, and the agent gateway refuses
-it (§8.5).
+Locations: `*`, `own` (artifacts the agent's person created:
+`artifacts.person`), or artifact IDs. Everything outside this vocabulary is
+never grantable (the route table, §7.5, marks it `Denied`).
 
 ### 7.2 Effective rights
 
 ```
-effective(agent) = (person_rights ∩ grant.narrow ∩ session.narrow) ∪ session.elevate
+effective(agent)                         = (person_rights ∩ grant.narrow ∩ session.narrow) ∪ session.elevate
+effective(session-less grant request)    = person_rights ∩ grant.narrow
 ```
 
-- `person_rights` is the owner row's `clax:full` for the owner's agents
-  (unchanged: they hold the token anyway) and `viewers.rights_json` (or
-  `clax:collaborator`) for a person.
+- `person_rights` is `clax:full` for the owner row and `viewers.rights_json`
+  (or `clax:collaborator`) for a person.
 - `∩` keeps an action at a location only when both sides allow it; `level`
   takes the lower. A missing narrowing is no narrowing.
-- `∪` adds the owner's elevation, which may exceed `person_rights`.
-- `own` is resolved at check time (an artifact created by the person's
-  agents is `own`, whichever agent created it).
-
-A pure `Rights` type in `clax-core::rights` implements parse, presets,
-`intersect`, `union`, `allows(type, action, artifact, person_of)` and a
-`level_for(artifact)`.
+- `∪` adds the owner's elevation, which may exceed `person_rights` and ends
+  with the session (M2).
+- `own` is resolved at check time.
+- Rights are cached per session and follow the generation counter (M17).
 
 ### 7.3 Presets
 
 | Preset | Rights |
 |---|---|
 | `clax:reader` | artifacts `read` `*`; comments `read`, `reply`, `watch` `*`; db `read` `*`; ask |
-| `clax:collaborator` (default for a person) | reader, plus artifacts `create`, `update` `own`, `delete` `own`; comments `resolve` `*`; db `write` `*` at `interact`, and at `admin` on `own` |
+| `clax:collaborator` (default for a person) | reader, plus artifacts `create`, `update` `own`, `delete` `own`; comments `write`, `resolve`, `send` `*`; db `write` `*` at `interact`, and at `admin` on `own` |
 | `clax:full` | every action at `*`, db `admin` |
 
-### 7.4 Who changes what
+### 7.4 Who changes what (all browser-only, M20)
 
-- The owner sets a person's rights (People → person → Rights, or
-  `PUT /api/people/<public_id>/rights`), and elevates one agent
-  (`PUT /api/agents/<handle>/elevate {access, until?}`; `until` defaults
-  to the session's end, at most 30 days). Removing an elevation is
-  `DELETE`.
-- A person narrows all their agents of one machine
-  (`PATCH /api/grants/<gid>/continue` from that machine, or
-  `PUT /api/people/me/grants/<gid>/narrow` from their browser) and one agent
-  (`PUT /api/agents/<handle>/narrow`). A narrowing that would widen is 400
+- The owner sets a person's rights (`PUT /api/people/<public_id>/rights`)
+  and elevates one agent (`PUT /api/agents/<handle>/elevate {access}`;
+  `DELETE` removes it).
+- A person narrows all agents of one of their machines (`PUT
+  /api/people/me/grants/<gid>/narrow`) or one agent (`PUT
+  /api/agents/<handle>/narrow`). A narrowing that would widen is 400
   `not_narrower`.
-- An agent cannot change its own rights.
-- A change applies to the next request; nothing in flight is cut.
+- No agent can change any rights: these routes are `Denied` to agents and
+  refuse the bare token.
+
+### 7.5 The route table
+
+Every route, with its class for agents. `Right` is checked at the artifact
+the path names. **Filtered** routes run every author field of their
+response, reads and writes alike, through `Visibility` (§8). **Own** routes
+return only fields written by the caller's own person or Clax's own fields
+(IDs, versions, counts, times, states). **Denied** routes refuse
+`PersonAgent` callers (403 `forbidden`); owner agents holding the token
+still reach them as today, and they are not agent channels (§8.5).
+**Grant** routes are the grant flow.
+
+| Route | Class | Right |
+|---|---|---|
+| `GET /api/artifacts` | Filtered; artifacts the agent may not `read` are left out | artifacts read |
+| `POST /api/artifacts` | Filtered (returns the new artifact) | artifacts create |
+| `GET /api/artifacts/{aid}` (embedded `working`, `participants`) | Filtered | artifacts read |
+| `PATCH /api/artifacts/{aid}` (pin, metadata) | Filtered (returns the artifact) | artifacts update |
+| `DELETE /api/artifacts/{aid}` | Own | artifacts delete |
+| `GET …/versions`, `GET …/versions/{n}` | Filtered (labels, notes, file names) | artifacts read |
+| `POST …/versions` (publish) | Filtered (returns the artifact; on conflict the current version's summary) | artifacts update |
+| `GET …/files`, `GET …/versions/{n}/files/{*path}` | Filtered (names; content 403 `withheld`) | artifacts read |
+| `GET /c/{aid}/v/{n}/…`, `GET /_blob/{asset}` | Denied to grants (browser content routes; agents read through the routes above) | — |
+| `GET …/assets` / `POST …/assets` / `DELETE …/assets/{id}` | Filtered (names) / Filtered (returns the asset) / Own | read / update / delete |
+| `GET …/presence` | Own (display names and states only) | artifacts read |
+| `GET /api/artifacts/{aid}/working`, `GET /api/working` | Filtered (messages, titles) | comments watch |
+| `GET /api/threads` (all threads) | Denied (the owner's CLI) | — |
+| `GET …/threads`, `GET …/threads/{tid}`, `GET …/threads/{tid}/clip` | Filtered | comments read |
+| `POST …/threads` (create) | Filtered (returns the thread with its anchor) | comments write |
+| `POST …/threads/{tid}/comments` (incl. agent replies) | Filtered (returns the whole thread) | comments reply (an agent reply) / write |
+| `POST …/threads/{tid}/resolve`, `…/reopen` | Filtered (returns the thread) | comments resolve |
+| `DELETE …/threads/{tid}` | Own | comments resolve |
+| `POST …/threads/{tid}/send`, `…/threads:send` | Filtered (returns the threads) | comments send |
+| `GET/PUT/PATCH/DELETE …/docs/{*path}`, `GET …/docs`, `POST …/docs:batch`, `…/docs:str_replace`, `…/docs:acquire` | Filtered (every returned document; list `where`/`order_by` over visible documents only, §8.3) | db read (GET) / db write |
+| `POST /api/sessions`, `POST /api/sessions/join` | Own (binding, §6.7) | none |
+| `GET /api/sessions`, `GET/PATCH /api/sessions/{id}` | Own (the grant's own sessions) | none |
+| `GET/PUT/DELETE /api/sessions/{id}/watches…` | Own | comments watch |
+| `PUT/DELETE /api/sessions/{id}/live-watches` | Denied to grants (live pages) | — |
+| `GET /api/sessions/{id}/feedback`, `…/notices` | Filtered (§8.4) | comments watch |
+| `POST /api/sessions/{id}/feedback/ack` | Own | comments watch |
+| `GET /api/sessions/{id}/working`, `POST …/working/renew`, `…/working/end`, `PUT/DELETE …/working/{aid}` | Own | comments watch |
+| `POST /api/sessions/{id}/questions`, `GET …/questions/{qid}`, `…/withdraw`, `…/release`, `…/questions:terminal` | Own (questions and answers are the agent's person's) | ask |
+| `POST /api/sessions/{id}/approvals`, `GET …/approvals/{rid}` | Own | ask |
+| `POST /api/sessions/{id}/threads/{tid}/handoff` | Filtered (returns the thread) | comments reply |
+| `POST /api/grants`, `POST/DELETE /api/grants/{gid}/continue`, `POST/DELETE /api/grants/{gid}/token` | Grant | — |
+| `/mcp` (sessionless HTTP MCP, a `route_service`) | Denied to grants; for the owner's token it is `OwnerAgent` without a session and its tools go through the handlers above, filtered for the owner | — |
+| Everything else: `/api/token`, `/api/events`, `/api/stream*`, `/api/live/*`, `/api/sample*`, `/api/artifacts/{aid}/sample*`, `/api/artifacts/{aid}/room`, `/api/push`, `/api/extension*`, `/api/viewers*`, `/api/questions*`, `/api/inbox*`, `/api/people*`, `/api/agents*`, `/api/approvals*`, `GET /api/grants`, `/api/grants/{gid}/approve|deny`, `DELETE /api/grants/{gid}`, `/api/admin/shutdown`, `/connect/b/*`, the shell pages, `/healthz` | Denied | — |
+
+Listing under location-limited rights leaves out what the agent may not
+`read`. Feedback on an artifact the agent may no longer read is held as
+withheld, with the placeholder "you no longer have access to this page".
 
 ## 8. The visibility filter
 
 ### 8.1 The question it answers
 
-"May an agent of person P see content C, whose effective authors are
-A₁…Aₙ, at artifact Y (thread T)?" Yes when, for every Aᵢ:
+"May an agent of reader R see a field whose effective authors are A₁…Aₙ, at
+artifact Y (thread T)?" Yes when, for every Aᵢ:
 
-1. Aᵢ is P (M9); or
-2. Aᵢ is a system author (Clax itself: placeholders, notes the daemon
-   writes); or
-3. P has a live approval for author Aᵢ (or, when Aᵢ is not the owner and
+1. Aᵢ is R (M12); or
+2. Aᵢ is Clax itself (placeholders, notes the daemon writes); or
+3. R has a live approval for author Aᵢ (or, when Aᵢ is not the owner and
    not a connected person, for `*unconnected`) at scope `everywhere`, or
-   `artifact` with Y, or `thread` with T (when C is in a thread).
+   `artifact` with Y, or `thread` with T (when the field is in a thread).
 
-Otherwise C is withheld from that agent.
+### 8.2 Effective authors, per field
 
-### 8.2 Effective authors
-
-| Content | Effective authors |
+| Field | Effective authors |
 |---|---|
-| A viewer comment | its writer (`author_public_id`; anonymous counts as `*unconnected`) |
-| A comment the page wrote (`via_page`) | its writer and the publisher of the version the thread is on |
-| An agent comment (reply) | the person of its session |
-| A thread's anchor (quote, prefix, suffix) | the publisher of the thread's version |
+| A viewer comment's body | its writer (`author_public_id`; anonymous and pre-migration-12 unattributed comments count as `*unconnected`) |
+| A page-written comment's body (`via_page`) | its writer and `comments.page_person` (the page's publisher at write time) |
+| An agent comment's body | the person of its session |
+| A thread's anchor (quote, prefix, suffix, selector) | the publisher of the thread's version |
+| A thread's `resolved_by` text; its batch note | the resolver; the batch's sender |
 | A clip | the thread's first commenter and the publisher of the thread's version |
-| A version's files and note | its publisher (`versions.person`); for a `by_page` version, also the previous version's publisher |
-| An artifact's title and description | its creator (`artifacts.person`) and its current version's publisher |
-| A document | its writer (`docs.author`); with `via_page`, also the current version's publisher |
+| A version's files (names and bytes), label and note | its publisher (`versions.person`); for a `by_page` version also `versions.page_person` |
+| An artifact's title, description and icon | its creator (`artifacts.person`) and its current version's publisher |
+| An asset's name and bytes | its uploader (`assets.person`) |
+| A document's fields | every `doc_authors` row for it (none: the owner) |
 | A working record's message | its session's person |
-| A batch note | its sender |
-| A question's text and answers | the asking agent's person (always P: questions reach only their own session) |
+| A question's text and answers | the asking agent's person (always R) |
+| Names (people, agents, clients) | not filtered: names (§21.9) |
 
-"The owner" is NULL in every `person` column and the owner's public ID in
-`author_public_id`; the filter normalises both to `Owner`. A live page's
-snapshots and anchors (owner-only, L10) count as the owner's.
+`person` NULL, `*owner` and the owner's public ID all normalise to `Owner`.
+A live page's snapshots and anchors (owner-only, L10) count as the owner's.
 
-### 8.3 Placeholders
+**Document authors.** A `PUT` or `set` replaces the document's author set
+with the writer; `PATCH`/`update`, `str_replace`, `acquire` with data, and
+batch updates add the writer to it; a delete removes the rows. A page's
+write adds both the browser's viewer and the page's publisher (the current
+version's `person` at write time). Touching one field of someone else's
+document never makes it yours.
 
-Withheld content is replaced, never dropped, so the agent knows something
-is there and whom to ask:
+### 8.3 Placeholders, per field
 
-- **A comment**: `{"id", "author": {"kind", "name", "person"}, "withheld":
-  true, "body": null, "created_at"}`.
-- **A thread**: its view gains `"withheld": {"count", "authors": [{"public_id",
-  "name"}], "approval": "none" | "requested" | "declined"}`; a withheld
-  anchor has `quote`, `prefix`, `suffix` null and `"withheld": true`; a
-  withheld clip has no `clip` and `"clip_withheld": true`.
-- **An artifact** (list, read): `title` and `description` null,
-  `"withheld": {"authors": […]}`; its files and versions answer 403
-  `withheld` with the same object.
-- **A document**: `{"doc_id", "version", "withheld": {"authors": […]}}`, no
-  `data`.
-- **A working message, a version note, a batch note**: null with
-  `"withheld": true`.
-- **Feedback text** (every tier): one line per (author, thread):
-  `[clax] N comments from <name> on "<title or "an artifact">" (thread
-  <ID>) are withheld until your person approves them.` followed by `Your
-  person has been asked.` when a request is open, or `To ask your person,
-  call ask with {"approval": {"thread_id": "<ID>"}}.` otherwise. Names are
-  quoted with `feedback::quoted`. No comment text, quote, clip or title of
-  withheld content appears.
+Withheld fields are replaced, never dropped:
+
+- **Comment body:** `"body": null, "withheld": true` (the comment's ID,
+  author name and person, and time stay).
+- **Thread:** a withheld anchor has `quote`, `prefix`, `suffix`, `selector`
+  null and `"anchor_withheld": true`; a withheld clip has no `clip` and
+  `"clip_withheld": true`; a withheld `resolved_by` or batch note is null.
+  The thread gains `"withheld": {"count", "authors": [{"public_id",
+  "name"}], "approval": "none" | "requested" | "declined"}` whenever any
+  field of it is withheld.
+- **Artifact:** `title`, `description`, `icon` null and `"withheld":
+  {"authors": […]}`; embedded working messages null with `"withheld":
+  true`.
+- **Version:** `label` and `note` null; `"files": null, "files_withheld":
+  true`; file content routes answer 403 `withheld` with the same object.
+- **Document:** `{"doc_id", "version", "withheld": {"authors": […]}}`, no
+  `data`. In `GET …/docs` with `where` or `order_by`, only visible
+  documents are evaluated, matched and ordered; withheld ones are not
+  returned and the response carries `"withheld_count": n` (the
+  collection's documents left out, whatever the filter), so the result
+  reveals nothing about withheld field values.
+- **Asset:** name null, `"withheld": true`.
+- **Feedback text** (§8.4): for a withheld comment body, one line per
+  (author, thread): `[clax] N comments from <name> on "<title>" (thread
+  <ID>) are withheld until your person approves them.` then `Your person
+  has been asked.` or `To ask your person, call ask with {"approval":
+  {"thread_id": "<ID>"}}.`; `<title>` is `an artifact by <name>` when the
+  title is withheld. In a delivered comment's block: `Anchored on:
+  (withheld: page by <name>)`, `Clip: withheld`, the title as `an artifact
+  by <name>`, a withheld batch note as `(note withheld)`.
 
 ### 8.4 Delivery
 
 - `take_feedback` (every tier: piggyback, stop hook, prompt hook, wait,
-  inject, queue) partitions the session's eligible rows into visible and
-  withheld. Visible rows are delivered as today. Withheld rows are left
-  undelivered; those without `placeholder_at` produce the placeholder lines
-  and get `placeholder_at` set, so each placeholder is handed over once.
-- When an approval makes rows visible, they are deliverable at once and
-  the session's waiters are woken (as a send wakes them).
-- Notices (Grok's monitor, Claude Code's channel) announce only visible
-  rows; placeholders ride the in-band tiers.
-- `codex queue` sends only visible content.
-- Resends (main spec §10) apply to visible rows only.
+  inject, queue) partitions the session's eligible rows by the comment
+  body's visibility. Rows with a visible body are delivered as today, each
+  `FeedbackItem` field filtered on its own (title, anchor, clip path,
+  batch note). Rows with a withheld body are left undelivered; those
+  without `placeholder_at` produce placeholder lines and get it set.
+- Each take reads the generation counter (M17) and rebuilds `Visibility`
+  when it changed since the request began; a decision, a direct approval,
+  a revocation and a rights change bump it and wake the affected sessions'
+  feedback and notices waiters.
+- Notices (Grok's monitor, Claude Code's channel) announce only rows with a
+  visible body; their `title` is filtered like the payload's.
+- `codex queue` sends only the filtered payload of visible rows.
+- Resends apply to rows with visible bodies only, re-filtered at resend.
 - A thread's `feedback_state` shown to people says `withheld` (with the
-  approver) for rows held back, so the sender sees why the agent has not
-  answered.
+  approver) for held rows.
 
-### 8.5 Where it is applied: the agent gateway
+### 8.5 Agent channels
 
-Agent credentials enter through one middleware, the **agent gateway**,
-which sits beside the extension gateway:
+The filter runs for `OwnerAgent` and `PersonAgent` callers (§6.1): the
+shim's and Pi's tools, the hooks, every feedback tier and notice, the
+sessionless `/mcp`, and the remote CLI. It does not run for people: the
+owner's browsers and the CLI by hand (the token without a session),
+connected people's browsers, and LAN viewers see what they see today.
 
-1. Verifies the credential and signature (§6.6), resolves the session from
-   `X-Clax-Session` (which must be live and belong to the grant, except on
-   `POST /api/sessions`), and loads the effective rights.
-2. Admits the request only when its method and path are in the gateway's
-   allowlist, with the right that entry names (§7.1) at the artifact the
-   path names; else 403 `forbidden` (outside the vocabulary) or 403
-   `not_permitted` (a right missing), naming the right.
-3. Strips `Authorization` and `Clax-Signature`, and inserts `ViaGrant`.
-
-Handlers that today take `RequireToken` for agent work take `RequireAgent`
-instead: the token, or a `ViaGrant`. Each derives the reader:
-`Reader::Owner` for the token (and any owner credential) or
-`Reader::Person(public_id)` for a grant, and builds `Visibility` for it.
-LAN viewers' and owner browsers' reads build no `Visibility`: the filter is
-agent-facing (owner agents with the token are agents too: a token request
-from no browser builds `Visibility` for the owner).
+What this is: a guarantee about what Clax hands an agent through its agent
+channels. What this is not: an access-control boundary (§21). An agent can
+still fetch a public page as an anonymous LAN viewer with a web tool, and
+an owner's local agent can run `clax inbox` or read `~/.clax`. The skills
+tell agents not to open other people's Clax pages with web or browser
+tools, and to use the Clax tools instead. Agent payload URLs stay as they
+are (people open them).
 
 ### 8.6 Guard tests
 
-- **Route guard** (`routes/mod.rs`, `mod agents`, beside `mod l10`): every
-  route is listed with one class: `Denied` (not in the agent gateway's
-  allowlist), `Right(type, action, Filtered)` (the handler builds and uses
-  `Visibility`: its source contains `Visibility::for_reader` and a
-  `vis.` call), `Right(type, action, NoContent)` (it returns no content
-  another person wrote: a write's result echoes the caller's own input),
-  or `GrantFlow` (the grant routes). The test reads the routes from
-  source, fails on an unlisted route, and checks the gateway's allowlist
-  equals the non-`Denied` entries exactly.
+- **Route guard** (`routes/mod.rs`, `mod agents`, beside `mod l10`): reads
+  every route (and the `/mcp` service) from source, and requires each
+  handler's signature to carry exactly one of `Agent<N>` (whose `N` names
+  the route table's right and class), `DeniedToGrants`, or `GrantFlow`; a
+  `Filtered` handler's source must pass its response through `vis.filter_`;
+  an `Own` handler must not build a thread, comment, artifact, version,
+  document or working view. The route table in §7.5 is generated into
+  `docs/contract.md` from the same declarations, so they cannot drift.
+- **No inline credentials:** no handler outside `identity.rs` and `auth.rs`
+  calls `has_token` or reads `Authorization`.
 - **Delivery guard** (`clax-core`): `FeedbackItem` and `Notice` are built
-  only inside `store/feedback.rs` functions that take `&Visibility`; a test
-  scans the crate's source for their constructors and fails elsewhere. A
-  table test drives every tier with a withheld row and asserts no body,
-  quote, clip path or title reaches the result.
-- **Behaviour matrix** (`clax-server/tests/api_visibility.rs`): for each
-  content kind of §8.2 and each agent-facing route, an agent of a person
-  who has not approved the author gets the placeholder, and after a
-  `thread`, `artifact` or `everywhere` approval gets the content; after
-  revocation, gets the placeholder again.
+  only inside functions that take `&Visibility`; a test scans the source.
+- **Canary sweep** (`clax-server/tests/api_canary.rs`): a seed puts a
+  distinct canary string, authored by Mia, in every author field of §8.2
+  (title, description, icon, label, note, file names and bytes, asset name
+  and bytes, document fields, comment body, anchor quote, prefix, suffix,
+  selector, clip, batch note, working message, `resolved_by`). For every
+  route of the route table (generated from the declarations; reads, writes
+  and error paths) and every tier and notice path, called as Sam's agent
+  (no approval of Mia) and as the owner's agent (Mia connected, not
+  approved), no response byte contains a canary. After an approval at each
+  scope, each canary appears where the scope covers it.
+- **Behaviour matrix** (`api_visibility.rs`): approval scopes, revocation,
+  generation changes during a long-poll.
 
 ### 8.7 Cost
 
-`Visibility::for_reader` reads the reader's live approvals once per request
-(one indexed query, typically under ten rows) into hash sets; each check is
-a few hash lookups. The session-to-person map is cached in `AppState` and
-updated on registration and end. **Fast path:** while the install has no
-person rows and the `*unconnected` approval is live, `Visibility` for the
-owner is `AllVisible` and costs one atomic load, so a single-owner install
-pays nothing (§23).
+`Visibility::for_reader` reads the reader's live approvals once (one
+indexed query, typically under ten rows) into hash sets; each field check
+is a few hash lookups; the session-to-person map is cached in `AppState`.
+**Fast path:** while the install has no person rows and the `*unconnected`
+approval is live, `Visibility` for the owner is `AllVisible` (one atomic
+load), so a single-owner install pays nothing (§23).
 
 ## 9. Approvals
 
 ### 9.1 Objects
 
-An approval (`approvals`, §5.2) says "agents of `approver` may see
-`author`'s content at `scope`". A request (`approval_requests`) asks the
-approver for one.
+An approval says "agents of `approver` may see `author`'s content at
+`scope`". A request asks the approver for one.
 
 ### 9.2 Requests
 
-- **Routing (M14):** a send, `@name`, or handoff that targets an agent
-  whose person has not approved some author of the thread's current
-  content makes (or joins) a request per such author: `cause: routing`,
-  `session_id` the target.
+- **Routing (M18):** a send, `@name`, handoff, or a page's `sendToClaude`
+  that targets an agent whose person has not approved some author of the
+  thread's current content makes (or joins) a request per such author,
+  `cause: routing`. A page's send shows on the card as "<publisher>'s
+  page, via <viewer>'s browser", and its authors include the publisher.
 - **Asking:** `ask` with `approval: {url_or_id?, thread_id?, author?}`
-  makes (or joins) a request for each author withheld from the session at
-  that thread or artifact, `cause: ask`, and waits for the decision as
-  `ask` waits for answers (same timeout and `call_again`). It returns
-  `{"approval_id", "status": "approved" | "declined" | "open", "scope"}`.
-  Nothing withheld there: 400 `nothing_withheld`.
-- **Batching (M15):** at most one open request per (approver, author,
-  artifact, thread); new withheld content of that author there raises
-  `count` and `updated_at` and re-announces the item (one inbox item per
-  request, not per content).
-- **Limits:** 100 open requests per approver; beyond, new withheld content
-  is held without a request, and the approver's inbox shows one overflow
-  note per author ("Mia has more waiting: review in People").
-- An open request is withdrawn when its thread is resolved or deleted,
-  its artifact deleted, or (for `cause: ask`) the asking session ends
-  without other withheld rows there.
+  makes (or joins) a request for each author withheld from the session
+  there, `cause: ask`, and waits for the decision (same timeout and
+  `call_again` as questions). Returns `{"approval_id", "status":
+  "approved" | "declined" | "open", "scope"}`. Nothing withheld: 400
+  `nothing_withheld`.
+- **Batching (M19):** one open request per (approver, author, artifact,
+  thread); new withheld content there raises `count` and re-announces the
+  one inbox item.
+- **Limit:** 100 open requests per approver; beyond, `ask` is 429
+  `limit_reached`, routing holds the content without a request, and People
+  shows one banner: "More is waiting for your approval than the inbox
+  lists: review People".
+- An open request is withdrawn when its thread is resolved or deleted, its
+  artifact deleted, or (for `cause: ask`) the asking session ends.
 
 ### 9.3 Deciding
 
 `POST /api/approvals/requests/<id>/decide {scope: "thread" | "artifact" |
-"everywhere" | "decline"}` from the approver (`Identity::person()`; 404 for
-anyone else). Approving makes the approval (or finds the live one), marks
-the request `approved`, closes every other open request of that approver
-and author that the new scope covers, releases the held rows they cover,
-and wakes the affected sessions. Declining marks it `declined`; the rows
-stay held; the agent's placeholder says `declined`; a later `ask` makes a
-new request only after 10 minutes (400 `recently_declined` before).
+"everywhere" | "decline"}` from the approver's browser (M20; 404 for anyone
+else, 403 `browser_required` for the token). Approving makes the approval
+(or finds the live one), marks the request `approved`, closes the
+approver's other open requests for that author the scope covers, bumps the
+generation (M17), and wakes the affected sessions. Declining keeps the rows
+held; a later `ask` there makes a new request only after 10 minutes (400
+`recently_declined` before).
 
-Approvals made directly (People → person → "Always allow", `clax approvals
-allow`) need no request.
+Approvals made directly (People → person → "Always allow") need no request.
 
 ### 9.4 Revoking
 
-`DELETE /api/approvals/<id>` (the approver). From the next read or
-delivery on, content the approval covered is withheld again unless another
-live approval covers it: undelivered rows are held again (their
-`placeholder_at` is cleared so the agent is told once), reads show
-placeholders. What was delivered stays delivered; the agent may still hold
-it in its context. Revocation never ends a session or releases a thread.
+`DELETE /api/approvals/<id>` (the approver's browser). From the next take
+or read on (M17), content the approval covered is withheld again unless
+another live approval covers it: undelivered rows are held again (their
+`placeholder_at` cleared so the agent is told once), reads show
+placeholders. What was delivered stays delivered. Revocation never ends a
+session or releases a thread.
 
 ### 9.5 Where people decide
 
 - **Inbox** (`approval` items, unread until decided): the card shows the
-  author, the agent, the page and thread, the withheld content itself (the
-  approver may read it: people are not filtered), the count, and the four
-  buttons. Opening the thread shows the same card above it.
+  author, the agent, the page and thread, the withheld content itself
+  (people are not filtered), the count, and the four buttons; the thread
+  button says "this thread, including later replies" (R1).
 - **People** (`/people`): per person, "Their content reaching your agents"
-  (live approvals, with Revoke) and "Waiting" (open requests).
-- **The extension's panel** (owner only): approval items in the Inbox tab,
-  and the card above a live page's thread when one is open.
-- **CLI:** `clax approvals [--open]`, `clax approvals allow <person>
-  [--artifact A | --thread T | --everywhere]`, `clax approvals revoke <id>`,
-  `clax approvals decide <id> <scope|decline>`.
+  (live approvals, with Revoke) and "Waiting".
+- **The extension's panel** (owner only): approval items in its Inbox tab
+  and above a live page's thread.
+- **CLI:** `clax approvals [--open]` lists; deciding, allowing and revoking
+  print the People link (M20).
+
+### 9.6 The `*unconnected` switch (O6)
+
+People shows the owner: "Comments from people on your LAN who are not
+connected reach your agents without asking. This includes connected people
+commenting from a browser or script that is not signed in as them." with a
+switch, on by default. Off revokes the approval; on makes a new one. It is
+shown again beside the first invite. In every payload and view an agent
+gets, author lines for unconnected viewers read `<name> (not connected)`.
+A LAN viewer cannot take a display name equal (ignoring case and
+diacritics) to a connected person's or the owner's (409 `name_taken`), and a
+new person cannot be named after an existing viewer's or agent's name.
 
 ## 10. Routing to another person's agent
 
 - The Send menu lists every live agent that may receive the thread: "Your
-  agents", then each person's ("Sam's agents"). An agent of another
-  person whose person has not approved this thread's authors is listed
-  with "Sam approves first".
-- Sending to it (button, `to`, `@name`) stores the send as today and makes
-  the routing request (§9.2). The thread's delivery state reads "waiting
-  for Sam's approval".
-- An agent may only receive a thread on an artifact it may read
-  (`clax-comments read` at Y): otherwise the send is 400
+  agents", then each person's ("Sam's agents"). An agent of another person
+  who has not approved this thread's authors is listed with "Sam approves
+  first".
+- Sending to it (button, `to`, `@name`) stores the send and makes the
+  routing request (§9.2). The thread's delivery state reads "waiting for
+  Sam's approval".
+- A send to an agent that may not `read` the artifact is 400
   `agent_cannot_read`.
-- A page (`comments` capability) cannot route: its `@name` sends nothing,
-  as its `@agent` sends nothing today.
+- A page's `@name` sends nothing (as its `@agent` sends nothing today); a
+  page's `sendToClaude` routes as above.
 
 ## 11. Agent names
 
 - **Derivation.** On registration the agent side sends `repo` (the
-  basename of the nearest directory above `cwd` holding `.git`, a
-  directory or a worktree's file) and `branch` (read from that
-  repository's `HEAD`; detached is none), with no `git` process. The
-  daemon names the session `<repo>` when the branch is none, `main`,
-  `master` or the repository's only branch it can see, else
-  `<repo>-<last path segment of the branch>`; lowercased, every other
-  character than `[a-z0-9._-]` made `-`, runs of `-` collapsed, cut to 32.
-  Taken: `<base>-<harness>`, then `<base>-2`, `-3`, …. No repository: the
-  harness (`claude`, then `claude-2`…).
-- **Task.** The agent sets a name for its task with `status {"name":
-  "fix-chart-axis"}` (M17 rules; 409 `name_taken`; 400 `invalid_name`), and
-  may do so again unless its person renamed it (`name_source = 'person'`:
-  409 `name_locked`).
-- **Rename.** The person of the agent (and the owner, for any agent)
-  renames it in the roster or People, or `clax agents rename <name|handle>
-  <new>`; `PUT /api/agents/<handle> {name}`.
-- **Collisions.** Names are unique among live sessions (the index of
-  §5.1); an ended session's name is free. Reserved: `agent`, `owner`,
-  `clax`, `me`, `everyone`, and any person's display name lowercased with
-  spaces as `-`.
-- **`@name`.** In a comment, `@` followed by a live agent's name as a whole
-  token (preceded by start or a non-alphanumeric, followed by the end,
-  whitespace or punctuation other than `.`, `_`, `-`) sends the thread to
-  that agent: a send with `to`. When the agent is not the artifact's owner
-  or a watcher, the send also gives it a direct watch on the artifact. A
-  name that names no live agent sends nothing; the comment's response
-  carries `unresolved_mentions: ["name"]` and the shell says so. `@agent`
+  basename of the nearest directory above `cwd` holding `.git`, a directory
+  or a worktree's file) and `branch` (read from that repository's `HEAD`;
+  detached is none), with no `git` process. The daemon names the session
+  `<repo>` when the branch is none, `main` or `master`, else
+  `<repo>-<last path segment of the branch>`; lowercased, every character
+  other than `[a-z0-9._-]` made `-`, runs of `-` collapsed, cut to 32.
+  Taken: `<base>-<harness>`, then `<base>-2`, `-3`, … (R3). No repository:
+  the harness.
+- **Task.** The agent sets a name with `status {"name": "fix-chart-axis"}`
+  (409 `name_taken`; 400 `invalid_name`), again later unless its person
+  renamed it (409 `name_locked`).
+- **Rename.** The agent's person (and the owner, for any agent) renames it
+  in the roster or People, or `clax agents rename`; `PUT
+  /api/agents/<handle> {name}` (a browser, or the token from the CLI;
+  renaming is not a right and changes nothing an agent can see beyond the
+  name).
+- **Collisions and reserved names.** Unique among live sessions. Reserved:
+  `agent`, `owner`, `clax`, `me`, `everyone`, and every connected person's
+  and the owner's display name in token form (lowercased, diacritics
+  removed, spaces as `-`). Naming or renaming a person to a name whose
+  token form is a live agent's name is 409 `name_taken`.
+- **`@name`.** `@` followed by a live agent's name as a whole token (start
+  or a non-alphanumeric before; end, whitespace or punctuation other than
+  `.`, `_`, `-` after) sends the thread to that agent (a send with `to`),
+  giving it a direct watch when it has none. A name that names no live
+  agent sends nothing; the response carries `unresolved_mentions`. `@agent`
   keeps its meaning.
-- **Display.** Agents show as their name, with their person ("clax-main ·
-  Sam") wherever more than one person's agents appear, and with their
-  harness icon. The payload's author line for a reply is
-  `<name> (<person>'s agent, via <harness>)`.
+- **Display.** Agents show as their name, with their person wherever more
+  than one person's agents appear. A reply's author line in payloads is
+  `<name> (<person>'s agent, via <harness>)`, or `<name> (agent, via
+  <harness>)` for the reader's own person's agents.
 
 ## 12. Thread ownership and handoff
 
-- **Owner.** `threads.target_session_id` is the owner agent (M18). It is
-  set by a send with `to`, `@name`, a handoff, or, for an untargeted send,
-  by the first `take_feedback` that delivers one of the thread's rows to a
-  session: in that transaction the session becomes the owner and every
-  other session's undelivered rows for the thread are deleted (they were
-  copies of the same comments). A placeholder take does not make an owner.
-- **Views.** Thread views (shell and agent) carry `owner: {handle, name,
-  person, live}`. An agent reading a thread owned by another live agent
-  sees `"taken_by": "<name>"`.
-- **Refusals (M20).** `comments_reply` and `comments_resolve` on a thread
-  whose owner is another live session: 409 `thread_taken` with the owner's
-  name; the result's `note` says to ask the person or wait for a handoff.
-  Threads with no owner, or an ended owner, accept any agent with the
-  rights (and the first such reply makes it the owner).
+- **Owner.** `threads.target_session_id` (M23). Set by a send with `to`,
+  `@name`, a handoff, or, for an untargeted send, by the first
+  `take_feedback` that delivers one of the thread's rows to a session: in
+  that transaction the session becomes the owner and every other session's
+  undelivered rows for the thread are deleted. A placeholder take does not
+  make an owner.
+- **Views.** Thread views carry `owner: {handle, name, person, live}`; an
+  agent reading a thread owned by another live agent sees `"taken_by":
+  "<name>"`.
+- **Refusals (M24).** An agent reply or resolve on a thread whose owner is
+  another live session: 409 `thread_taken` with the owner's name. Threads
+  with no owner, or an ended owner, accept any agent with the rights (and
+  the first such reply makes it the owner).
 - **Handoff.** `comments_handoff {url_or_id, thread_id, to}` by the owner
-  agent (or any agent of the owner's person when the owner has ended):
-  `to` must name a live agent that may read the artifact; the thread is
-  sent to it with `to` (§10 rules, including the routing request for
-  another person's agent); the result is `{thread_id, owner}`. Without
-  `to`, the thread is released: owner cleared, its undelivered rows
-  untargeted (main spec §10's untargeted rules). A non-owner calling it is
-  409 `thread_taken`.
-- **People** take over by sending again (the Send menu), as today.
-- **Release on end.** §14.
+  agent (or any agent of its person when the owner has ended): `to` names a
+  live agent that may read the artifact; the thread is sent to it (§10,
+  including the routing request); the result is the filtered thread with
+  its new owner. Without `to`, the thread is released (owner cleared,
+  undelivered rows untargeted). A non-owner: 409 `thread_taken`.
+- **People** take over by sending again.
 
 ## 13. Agent-aware attention
 
-- **`GET /api/agents`** (person-scoped: the owner sees every agent, a
-  person their own) → `{agents: [{handle, name, person: {public_id, name}
-  | null, harness, project, live, state, since, blocked: {since, questions,
-  approvals} | null, threads_owned, working: [{artifact_id, title,
-  message}], unread}]}`. `state` is `waiting` (an open question or an open
-  `cause: ask` request of the agent's), `working` (a working record),
-  `idle` (live, neither) or `ended` (only within the last hour). `blocked.since`
-  is the oldest open question's or request's `created_at`. `project` is
-  shown only to the agent's person and the owner.
+- **`GET /api/agents`** (the owner sees every agent, a person their own;
+  browser or the CLI's token) → `{agents: [{handle, name, person, harness,
+  project, live, state, since, blocked: {since, questions, approvals} |
+  null, threads_owned, working: [{artifact_id, title, message}],
+  unread}]}`. `state`: `waiting` (an open question or `cause: ask`
+  request), `working`, `idle`, or `ended` (within the last hour). `project`
+  only to the agent's person and the owner.
 - **The `agents` stream topic** (person-scoped) announces changes.
-- **Inbox grouping.** `/inbox` opens with an agent strip: one chip per
-  agent with unread items or a block, ordered blocked-longest first:
-  "clax-main · waiting on you 12 min". A chip filters the inbox to that
-  agent (`agent=<handle>`, existing). `GET /api/inbox?group=agent` returns
-  the strip's data with the page.
-- **Roster.** The gallery's working roster and the artifact view's agent
-  list show the same states and the block time; `clax status` prints them.
-- **Notifications** (questions spec §9.7) title an approval request "Mia
-  wants to reach clax-main" and a block over 10 minutes is not notified
-  again (no new events, no new notification).
+- **Inbox grouping.** `/inbox` opens with an agent strip, one chip per
+  agent with unread items or a block, blocked-longest first: "clax-main ·
+  waiting on you 12 min". A chip filters the inbox (`agent=<handle>`).
+  `GET /api/inbox?group=agent` returns the strip's data.
+- **Roster.** The gallery's roster, the artifact view's agent list and
+  `clax status` show the same states and block times.
+- **Notifications** title an approval request "Mia wants to reach
+  clax-main".
 
 ## 14. Lifecycle cleanup
 
-When a session ends (its end hook, the shim's exit, the reaper, or its
-grant's revocation), in the end's transaction:
+When a session ends (end hook, shim exit, reaper, grant revocation), in the
+end's transaction:
 
 1. Open questions are withdrawn (as today).
-2. Open approval requests with `cause: ask` and this `session_id` are
-   withdrawn; `cause: routing` requests stay (the content waits for the
-   person, whoever gets the thread next).
-3. Threads it owns are released: `target_session_id` cleared, undelivered
-   rows untargeted (main spec §10).
-4. `narrow_json` and `elevate_json` are cleared; the name is freed (the
-   unique index covers live sessions only).
-5. Watches end (as today); working records end (as today).
+2. Open `cause: ask` requests of this session are withdrawn; `cause:
+   routing` requests stay.
+3. Threads it owns are released.
+4. `narrow_json` and `elevate_json` are cleared; the name is freed.
+5. Watches and working records end (as today).
 6. When it owned threads or had open questions or `ask` requests, one
-   `ended` inbox item for its person: `detail_json {name, threads:
-   [{id, artifact_id}], questions: n, approvals: n}`, rendered "clax-main
-   ended · released 2 threads · withdrew 1 question".
-7. Pickers and `GET /api/agents` drop it (after an hour in `ended` state,
-   for the strip only); the main spec's "agents on an artifact" list keeps
-   ended agents only as authors of what they wrote, never in Send menus.
+   `ended` inbox item for its person (M25): "clax-main ended · released 2
+   threads · withdrew 1 question".
+7. Send menus and pickers drop it; the agent strip keeps it as `ended` for
+   an hour.
 
-## 15. Contract summary (new and changed routes)
+Remote sessions (with a `grant_id`) are never PID-probed; they end after 30
+minutes without a heartbeat (local sessions keep 5 minutes), so a laptop
+that sleeps briefly keeps its sessions; a longer sleep releases its threads
+and makes the note, and the agent's next request registers anew (§22).
 
-Token or grant (`RequireAgent`), checked by the agent gateway's rights:
+## 15. Contract summary
 
-| Route | Change |
-|---|---|
-| `POST /api/sessions` | with a grant: registers under it (`person` and `grant_id` from the grant); body gains `repo`, `branch`; response gains `name`, `person` |
-| `PATCH /api/sessions/<sid>` | body gains `name` (the agent's own) |
-| existing agent routes | accept a grant; the rights of §7.1; filtered per §8 |
-| `POST /api/sessions/<sid>/threads/<tid>/handoff` | `{to?}` → `{thread}` |
-| `POST /api/sessions/<sid>/approvals` | `{artifact_id, thread_id?, author?}` → `{requests}`; `GET …/approvals/<rid>?wait=` long-poll |
+The route table (§7.5) is the agents' contract. New routes:
 
-Grant flow (signed, no token): `POST /api/grants`, `POST|PATCH|DELETE
-/api/grants/<gid>/continue`, `POST|DELETE /api/grants/<gid>/token`.
-
-Owner: `POST|GET /api/people/invites`, `DELETE /api/people/invites/<id>`,
-`GET /api/grants?status=`, `POST /api/grants/<gid>/approve|deny`,
-`DELETE /api/grants/<gid>` (revoke), `GET /api/people`, `PUT
-/api/people/<pid>/rights`, `DELETE /api/people/<pid>` (revoke the person),
-`PUT|DELETE /api/agents/<handle>/elevate`.
-
-Person (owner or connected person, own items only): `GET /api/people/me`,
-`PUT /api/people/me/grants/<gid>/narrow`, `PUT
-/api/agents/<handle>/narrow`, `PUT /api/agents/<handle>` (rename), `GET
-/api/agents`, `GET /api/approvals`, `DELETE /api/approvals/<id>`, `POST
-/api/approvals` (direct), `GET /api/approvals/requests`, `POST
-/api/approvals/requests/<id>/decide`; the question and inbox routes,
-scoped to the caller's person; the `agents`, `questions`, `inbox` and
-`people` stream topics, scoped likewise.
-
-Browser: `GET /connect/b/<code>`; shell page `/people`.
-
-The extension gateway admits the person routes for the owner (the
-approval cards).
+- Grant flow: `POST /api/grants`, `POST|DELETE /api/grants/<gid>/continue`,
+  `POST|DELETE /api/grants/<gid>/token`.
+- Owner (browser for changes, M20): `POST|GET /api/people/invites`, `DELETE
+  /api/people/invites/<id>`, `GET /api/grants?status=`, `POST
+  /api/grants/<gid>/approve|deny`, `DELETE /api/grants/<gid>`, `GET
+  /api/people`, `PUT /api/people/<pid>/rights`, `DELETE /api/people/<pid>`,
+  `PUT|DELETE /api/agents/<handle>/elevate`.
+- Person (owner or connected person, own items; browser for changes): `GET
+  /api/people/me`, `PUT /api/people/me/grants/<gid>/narrow`, `PUT
+  /api/agents/<handle>/narrow`, `PUT /api/agents/<handle>` (rename), `GET
+  /api/agents`, `GET /api/approvals`, `POST /api/approvals`, `DELETE
+  /api/approvals/<id>`, `GET /api/approvals/requests`, `POST
+  /api/approvals/requests/<id>/decide`; the question and inbox routes,
+  scoped to the caller's person; the `agents`, `questions`, `inbox` and
+  `people` topics, scoped likewise.
+- Agent session routes: `POST /api/sessions/<sid>/threads/<tid>/handoff`,
+  `POST /api/sessions/<sid>/approvals`, `GET …/approvals/<rid>?wait=`.
+- Browser: `GET /connect/b/<code>`; shell page `/people`.
+- The extension gateway admits the person approval routes for the owner.
 
 ## 16. MCP, CLI and plugins
 
-- **Tools.** `status` gains `name` (set this agent's name) and reports
-  `name`, `person`, `rights` (effective, as access objects) and `remote`
-  (the daemon URL, when remote). `ask` gains `approval` and `approval_id`
-  (§9.2). New `comments_handoff` (§12). Every tool's errors gain
-  `not_permitted` (with the missing right), `withheld`, `thread_taken`.
-  Twenty-five tools.
+- **Tools.** `status` gains `name` and reports `name`, `person`, `rights`
+  and `remote`. `ask` gains `approval` and `approval_id`. New
+  `comments_handoff`. New error codes: `not_permitted` (with the right),
+  `withheld`, `thread_taken`, `foreign_session`, `name_taken`,
+  `name_locked`, `invalid_name`, `nothing_withheld`, `recently_declined`,
+  `agent_cannot_read`. Twenty-five tools.
 - **Clips** for a remote session: the payload's `Clip:` line names
-  `clax-clip:<artifact>/<thread>`; the agent side (shim, hook, Pi) fetches
-  it (signed) into `<home>/remote-cache/clips/` and rewrites the line to
-  that path before handing the text over; a failed fetch rewrites it to
-  `Clip: unavailable (<reason>)`.
-- **`clax connect`**: `clax connect <invite URL>`, `clax connect <daemon
-  URL>`, `clax connect --status`, `clax connect --off`, `--name <client
-  name>` (default the host name), `--no-browser`, `--yes` (accept the
-  owner approval default). Writes `remote.json` (0600: `{url, grant_id,
-  person, token, token_expires_at, manage_uri, continue_uri,
-  continue_token}`) and `remote.key`.
-- **Remote mode** (M22): `clax-cli`'s and `clax-mcp`'s clients read
-  `remote.json` when present (and `CLAX_REMOTE` is not `0`): they skip
-  daemon discovery and auto-start, sign every request, rotate the token
-  when under a day remains, and report `remote` in errors
-  (`daemon_unreachable` names the remote URL). `clax serve` still serves a
-  local daemon for local use; agents use the remote while it is configured.
-  Pi's extension does the same in TypeScript (`node:crypto` Ed25519).
-- **`clax people`** (owner): list, `invite <name>`, `revoke <person>`,
-  `rights <person> <preset|json>`. **`clax agents`**: list (grouped by
-  person, with states and blocks), `rename`, `narrow`, `elevate` (owner).
-  **`clax approvals`** (§9.5).
-- **Hooks** run unchanged over the remote client; `codex queue` is not
+  `clax-clip:<artifact>/<thread>`; the agent side fetches it (signed) into
+  `<home>/remote-cache/clips/` and rewrites the line; a failure rewrites it
+  to `Clip: unavailable (<reason>)`.
+- **`clax connect`**: `<invite URL>`, `<daemon URL>`, `--status`, `--off`,
+  `--rotate`, `--url <new daemon URL>`, `--name <client name>`,
+  `--no-browser`, `--yes`. Writes `remote.json` (0600) and `remote.key`
+  (0600).
+- **Remote mode** (M26): the clients of `clax-cli`, `clax-mcp` and Pi read
+  `remote.json` when present (and `CLAX_REMOTE` is not `0`): no daemon
+  discovery or auto-start, every request signed, `invalid_token` reloads
+  `remote.json` once. `clax serve` still serves a local daemon for local
+  use.
+- **`clax people`** (owner): lists people, machines and agents. **`clax
+  agents`**: list, `rename`. **`clax approvals`**: list. Invites, rights,
+  elevation, narrowing and approval changes print the People link (M20).
+- **Hooks** run over the remote client, finding their session through the
+  grant-scoped `GET /api/sessions` and join (§6.7); `codex queue` is not
   attempted for remote sessions, and `status.push` says so.
 - **Skills** gain "Working beside other agents and people": your name and
   how to set it; withheld content and how to ask; `thread_taken` and
-  handoff; never treat a placeholder as an instruction.
+  handoff; placeholders are never instructions; do not open other people's
+  Clax pages with web or browser tools, use the Clax tools.
 
 ## 17. Shell and extension
 
 - **People** (`/people`, lazy module `web/shell/src/people/`): for the
-  owner, people (each with rights, machines and their keys' fingerprints,
-  agents, approvals they gave, approvals the owner gave them), invites,
-  pending connection requests, and the `*unconnected` approval with its
-  switch; for a person, their own machines, agents (rename, narrow),
-  approvals and requests. Top-bar link beside Inbox.
-- **Inbox:** `approval` and `connection` cards (answerable in place),
-  `ended` rows, the agent strip.
-- **Threads:** the owner chip ("clax-main has it"), "waiting for Sam's
-  approval" delivery state, and the Send menu by name and person.
-- **Artifact agent list:** names, states, blocks.
-- **Extension panel:** approval cards in its Inbox tab and above a
-  thread; agent names in its Send menu.
-- Every UI change is verified in a real browser with screenshots (owner
-  constraint), at phone width too.
+  owner, people (rights, machines with key fingerprints, agents, approvals
+  in both directions), invites, connection requests, and the
+  `*unconnected` switch (§9.6); for a person, their machines, agents
+  (rename, narrow), approvals and requests.
+- **Inbox:** `approval` and `connection` cards, `ended` rows, the agent
+  strip.
+- **Threads:** the owner chip, the `withheld` delivery state, the Send menu
+  by name and person.
+- **Extension panel:** approval cards; agent names in its Send menu.
+- Every UI change is verified in a real browser with screenshots, at phone
+  width too. The UI questions (§26) go to the owner in one batch before the
+  first UI task.
 
 ## 18. Owner and person views of the same thing
 
-| Thing | Owner | Connected person | LAN viewer |
-|---|---|---|---|
-| Gallery, artifacts, threads | all (unchanged) | all (unchanged: public on the LAN) | all (unchanged) |
-| Live pages | yes (local) | never | never |
-| Inbox, questions | own | own | none |
-| People | everyone | self | none |
-| Agents roster | every agent | own agents; others' names and states | others' names on threads |
-| Approvals | own | own | none |
+| Thing | Owner (browser, CLI by hand) | Owner's agents | Connected person (browser) | Person's agents | LAN viewer |
+|---|---|---|---|---|---|
+| Gallery, artifacts, threads | all | filtered for the owner | all | filtered for the person | all |
+| Live pages | yes (local) | yes (local) | never | never | never |
+| Inbox, questions | own | own questions | own | own questions | none |
+| People, approvals | everyone; changes in the browser | none | self; changes in the browser | none | none |
+| Agents roster | every agent | own (`status`) | own agents; others' names and states | own (`status`) | names on threads |
+
+The owner using the CLI by hand (the token, no session) is not filtered:
+it is the owner, not an agent channel.
 
 ## 19. Migration of single-owner installs
 
-What an existing install sees after migrations 22–24, and why nothing
-changes:
+After migrations 22–24, with no person ever connected, these change and
+nothing else:
 
-- Every existing session, artifact, version and document has `person`
-  NULL: the owner's. Agents with the daemon token are the owner's (O3).
-- No person rows exist, so the filter's fast path applies (§8.7): every
-  read and delivery is byte-for-byte what it was. A golden test (Task 20)
-  renders `comments_read`, `read`, the feedback payload of every tier, the
-  notices and the roster from a migrated fixture before and after.
-- LAN viewers keep reaching the owner's agents through the `*unconnected`
-  approval (M11).
-- The inbox's rows keep their `seq`, `id`, key and read state; the
-  owner's routes answer as before.
-- New sessions get derived names, which appear in the shell where it
-  showed the harness ("Send to clax-main" instead of "Send to claude").
-  This is the one visible change, and it is O4's.
-- With several of the owner's agents watching one artifact, an untargeted
-  send (no live target chosen, `@agent` on a never-sent thread, a page's
-  `sendToClaude`) now goes to the first agent that takes it instead of all
-  of them (M18, O4). With one agent nothing differs.
+1. **Agent names.** New sessions get derived names, shown where the shell
+   showed the harness ("Send to clax-main"), in reply author lines
+   (`clax-main (agent, via claude)`), and in `taken_by`.
+2. **`@<name>`.** A comment with `@` followed by a live agent's name (for
+   example `@web`, when an agent works in a repository named `web`) now
+   sends the thread to that agent and gives it a watch.
+3. **First take (O8).** With several of the owner's agents watching one
+   artifact, an untargeted send goes to the first agent that takes it.
+4. **`thread_taken` (M24).** The owner's second agent cannot reply to a
+   thread the first owns.
+5. **`ended` notes (M25)** in the owner's inbox.
+6. **Additive JSON fields:** `owner`, `taken_by`, `name`, `person`,
+   `withheld` (absent or null), `rights` in `status`.
+
+Everything else is byte-for-byte as before: every existing session,
+artifact, version, asset and document is the owner's; no person rows
+exist, so the filter's fast path applies; LAN viewers keep reaching the
+owner's agents through `*unconnected` (O6); the inbox keeps its rows,
+`seq`, IDs, keys and read state.
+
+The golden test (plan Task 25) runs on a fixture of main's migration-21
+database holding pre-migration-12 unattributed comments, anonymous and
+named LAN viewers, `via_page` comments and documents from the owner's
+browser, feedback in every state, and one live agent. It collects every
+agent-facing output per tier on a fresh copy of the fixture under a fixed
+`ManualClock`, normalises only an explicit allowlist (the additive fields
+of item 6 and the names of item 1), and compares text payloads exactly.
+The collector is written in this branch and copied into a main worktree to
+produce the golden file. Items 3 and 4 are tested on their own.
 
 ## 20. The Toolpath audit branch
 
 The audit branch records every change with `actor` and, for system actors,
-`for_actor`, in `audit_events`, written in the change's transaction. This
-design's changes are recorded the same way once the branch merges; until
-then, each store function that makes one of these changes returns what the
-event needs, so the merge adds the record call and nothing else.
+`for_actor`, in `audit_events`, in the change's transaction. Until it
+merges, each store function that makes one of these changes returns what
+the event needs, so the merge adds the record call and nothing else.
 
 ### 20.1 Actors
 
 | Actor | JSON (audit §5.2 shape) | Toolpath string |
 |---|---|---|
-| A person's agent | `{"type":"agent", …, "person":"u_…", "grant_id":"g_…"}` (the owner's agents: `person` absent) | unchanged `agent:<harness>/<session>`; `ActorDef.identities` adds `{system:"clax-person", id:"<install>/<public ID>"}` and `{system:"clax-grant", id:<grant ID>}` |
+| A person's agent | `{"type":"agent", …, "person":"u_…", "grant_id":"g_…"}` (owner agents: `person` absent) | `agent:<harness>/<session>`; `ActorDef.identities` adds `{system:"clax-person", id:"<install>/<public ID>"}` and `{system:"clax-grant", id:<grant ID>}` |
 | A connected person in a browser | `{"type":"viewer","public_id":"u_…","display_name":"Sam","person":true}` | `human:clax-person/<public ID>` |
 | A grant request before approval | `{"type":"client","grant_id":"g_…","client_name":"sam-mbp"}` | `tool:clax-client/<grant ID>` |
-| Expiry | `{"type":"system","reason":"expiry"}` | `tool:clax/<version>` with `system_reason` `expiry` |
+| Expiry | `{"type":"system","reason":"expiry"}` | `tool:clax/<version>`, `system_reason` `expiry` |
 
 `via` gains `remote` (a request with an agent credential).
 
 ### 20.2 Events
 
-| Kind | Body | Recorded at |
+| Kind | Body | Actor |
 |---|---|---|
-| `invite.create` | `invite_id, person, expires_at` | owner |
-| `invite.revoke` | `invite_id` | owner |
-| `grant.request` | `grant_id, via (invite\|request), client_name, peer_ip, key_sha256, access` | the client |
-| `grant.approve` | `grant_id, person, access, code_checked` | owner (invite: the redeeming client, `for_actor` the person) |
+| `invite.create`, `invite.revoke` | `invite_id, person, expires_at` | owner |
+| `grant.request` | `grant_id, via, client_name, peer_ip, key_sha256, access` | client |
+| `grant.approve` | `grant_id, person, access, code_checked` | owner (invite: the client, `for_actor` the person) |
 | `grant.deny` | `grant_id, reason (owner\|wrong_code\|expired)` | owner or system |
-| `grant.modify` | `grant_id, narrow` | the person |
-| `grant.revoke` | `grant_id, by (owner\|person\|expiry), sessions_ended[]` | |
-| `grant.token` | `grant_id, op (issue\|rotate\|revoke), expires_at` (no token) | the client |
-| `person.rights` | `person, rights` | owner |
-| `agent.name` | `name, source (derived\|agent\|person), previous` | the namer |
-| `agent.narrow`, `agent.elevate` | `session, access, until?` | person, owner |
-| `approval.request` | `request_id, approver, author, artifact_id, thread_id, cause, count` (on create and on batching) | the asking agent, or the router |
-| `approval.decide` | `request_id, scope (thread\|artifact\|everywhere\|decline)` | the approver |
-| `approval.grant` | `approval_id, approver, author, scope, artifact_id, thread_id, via` | the approver |
-| `approval.revoke` | `approval_id` | the approver |
+| `grant.revoke` | `grant_id, by (owner\|person\|expiry), sessions_ended[]` | owner, person or system |
+| `grant.token` | `grant_id, op (issue\|rotate\|revoke)` | client |
+| `grant.narrow` | `grant_id, narrow` | person |
+| `person.rights`, `person.revoke` | `person, rights` / `person` | owner |
+| `agent.name` | `name, source, previous` | the namer |
+| `agent.narrow`, `agent.elevate` | `session, access` | person, owner |
+| `approval.request` | `request_id, approver, author, artifact_id, thread_id, cause, count` | asking agent or router |
+| `approval.decide` | `request_id, scope` | approver |
+| `approval.grant`, `approval.revoke` | `approval_id, approver, author, scope, artifact_id, thread_id, via` | approver |
 | `content.withheld` | `feedback_ids[], author, thread_id, session` | system `daemon`, `for_actor` the agent (once per placeholder) |
-| `thread.take` | `thread_id, session, cause (send\|mention\|first_delivery\|handoff)` | the sender, or system for first delivery |
-| `thread.release` | `thread_id, session, reason (explicit\|session_end\|grant_revoked)` | |
+| `thread.take` | `thread_id, session, cause (send\|mention\|first_delivery\|handoff)` | sender, or system |
+| `thread.release` | `thread_id, session, reason (explicit\|session_end\|grant_revoked)` | agent or system |
 
-`thread.send` (audit §6.2) gains `approval_request_ids[]` when routing made
-requests. Reads remain unrecorded (audit §6.11), withheld or not; the
-placeholder hand-over is recorded because it is a delivery.
+`thread.send` gains `approval_request_ids[]`. Reads remain unrecorded.
 
 ## 21. Security
 
-What is protected, from whom:
+**Threat model.** Other people on the LAN, and the pages and comments they
+write, are untrusted input to a person's agents. Clax's job is that its
+agent channels hand an agent nothing written by someone its person has not
+approved; that agents cannot widen their own rights or approvals; and that
+credentials sniffed on the LAN cannot be reused. Clax does not make the LAN
+private: pages and threads stay readable by any LAN viewer, responses
+cross the LAN in clear (O7), and agents that browse as LAN viewers, or the
+owner's local agents reading `~/.clax` or running the CLI by hand, go
+around the filter; the skills tell agents not to.
 
-1. **Impersonation.**
-   - *Of a person by an agent:* an agent's words are attributed by the
-     daemon to its session's person, never by text; author lines are
-     built by the daemon; names cannot equal a person's name (M17); every
-     view shows the person beside an agent's name.
-   - *Of an agent by a grant:* `X-Clax-Session` must name a live session
-     of the signing grant; a grant cannot act for another grant's session
-     (403 `foreign_session`).
-   - *Of the owner by a person's machine:* a grant is never the owner, even
-     an owner's own grant (§6.1); owner routes take owner credentials
-     only, which never leave the owner's machine.
-   - *Of a person in the browser:* the person's browser is a `clax_viewer`
-     cookie over HTTP (§21.2).
-2. **Token theft on the LAN.** Agent requests are signed (M4): a sniffed
-   request replays only within 120 s and never twice (nonces), a sniffed
-   token signs nothing. What is not protected: confidentiality (responses
-   cross the LAN in clear), and a person's browser cookie, which a sniffer
-   can reuse to act as that person in the browser: read their inbox,
-   answer their agents' questions, approve content for their agents. The
-   owner's browser credentials are loopback-only, so this never reaches the
-   owner. People says so on the invite screen; Q3 asks about TLS.
-3. **Invite and request races.** An invite code typed by Sam crosses the
-   LAN in clear inside a signed request; a sniffer racing it redeems first
-   with its own key. Sam then gets `invalid_invite`, and the owner sees a
-   connection from an unexpected machine (key fingerprint, peer IP) in the
-   inbox and People, and revokes it. An ad-hoc request is approved only
-   with the code shown on the requesting machine (§6.3), so the owner
-   cannot be tricked into approving a lookalike request.
-4. **Confused deputy via page-written content.** A page's comments,
-   documents and self-published versions carry its publisher as an author
-   (M8), so a page published by Sam's agent cannot speak to the owner's
-   agents through the owner's browser. A page cannot route (§10). A page
-   cannot approve (approvals are person routes with the viewer `Origin`
-   rules; the `comments` capability cannot reach them).
-5. **Laundering.** An approved author who quotes an unapproved one carries
-   the quote; content an agent writes after reading becomes its person's.
-   The filter is about who wrote what reaches an agent, not about text
-   flow inside agents. Known limitation.
-6. **Replay.** Nonces per key for 300 s against a ±120 s window; grant
-   requests and continuation calls are signed the same way; one-time
-   codes (invite, browser link) are deleted on use.
-7. **Local agents.** The owner's local agents run as the owner's OS user
-   and can read `~/.clax` directly; the filter guards what Clax hands to a
-   well-behaved agent (injection), not a local agent that goes around it.
-   Another person's agents have no such access: for them the filter is a
-   boundary.
-8. **Denial of service.** Limits: pending requests (3 per IP, 20 in all),
-   wrong codes (3), open approval requests (100 per approver), nonces
-   (4,096 per key), invites (20 live), grants (20 live per person).
-9. **Untrusted text.** Client names, agent names, person names, the
-   content of approval cards: rendered as text; the CLI escapes control and
-   bidirectional characters; payloads quote names.
-10. **Logs** never hold tokens, codes, signatures, keys or content.
-11. No `unsafe`; no hard links.
+1. **What the filter is (§8.5).** A guarantee for every Clax agent channel,
+   field by field, for the owner's and every person's agents alike; not an
+   access-control boundary on a public LAN.
+2. **Impersonation.**
+   - *Of a person by an agent:* attribution is by session, never by text;
+     agent names cannot equal a person's name (§11); the person is shown
+     beside an agent's name.
+   - *Of a session by another grant:* sessions are bound to their grant in
+     registration, join, listing, paths and headers (M4).
+   - *Of the owner or an existing person by a new machine:* a request can
+     only make a new person (§6.3), so "approve WXYZ-4821, I'm Sam" yields
+     a new person named as the owner chose, never Sam's identity or the
+     owner's.
+   - *Of a person by an unconnected viewer:* unconnected names are marked
+     `(not connected)` and cannot equal a connected person's (§9.6).
+3. **Confused deputy.**
+   - *Page-written content* carries its publisher, fixed at write time
+     (M11).
+   - *A prompt-injected owner agent* cannot approve, change rights,
+     elevate, narrow, invite or approve grants: those need a browser
+     (M20).
+   - *Document laundering* is closed by author sets (§8.2).
+   - *Agent replies* are recognised from `Caller`, so a grant's reply can
+     never be stored as an anonymous (`*unconnected`) comment (M8).
+4. **Token theft on the LAN.** Signed requests (M5): a sniffed request
+   replays only within its window and never twice; a sniffed token signs
+   nothing. Not protected (O7): confidentiality, and a connected person's
+   browser cookie, which a sniffer can reuse to act as that person in the
+   browser (their inbox, their agents' questions, their approvals). The
+   owner's browser credentials are loopback-only. People shows "Use a
+   trusted LAN".
+5. **Invite races.** An invite code crosses the LAN in clear inside a
+   signed request; a sniffer racing it redeems first. Sam then gets
+   `invalid_invite`, and the owner sees a connection from an unexpected
+   key and peer in the inbox and People, and revokes it.
+6. **Replay.** Nonces per key for 240 s against a ±120 s window; one-time
+   codes are deleted on use; rotation revokes the old token at once.
+7. **Laundering through agents.** An approved author who quotes an
+   unapproved one carries the quote; content an agent writes after reading
+   becomes its person's. Known limitation.
+8. **Denial of service.** Authentication before the body is read (§6.6);
+   limits on pending requests, wrong codes, open approval requests,
+   nonces, invites and grants (20 live per person).
+9. **Names reach other agents unfiltered.** Person names (≤ 60
+   characters), agent names (≤ 32) and client names (≤ 64) appear in
+   placeholders, `taken_by` and author lines: a small injection surface.
+   They are quoted in payloads and shown as text.
+10. **Untrusted text** everywhere is rendered as text; the CLI escapes
+    control and bidirectional characters.
+11. **Logs** never hold tokens, codes, signatures, keys or withheld
+    content.
+12. No `unsafe`; no hard links.
 
 ## 22. Failure modes
 
 | Situation | Behaviour |
 |---|---|
-| The remote daemon is down | Tools return `daemon_unreachable` naming the remote; hooks exit 0 silently; nothing starts a local daemon while `remote.json` exists. |
-| Clock skew beyond 120 s | `stale_request` with the daemon's time; the client retries once with its offset; persistent skew is reported by `clax connect --status` and `clax doctor`. |
-| Token expired while the machine slept | The client rotates through the manage URI if the grant lives (a retired-but-unexpired token suffices to sign the rotation); otherwise `clax connect` again. |
-| Grant revoked mid-session | The next request is 401 `grant_revoked`; the shim's tools say "this machine was disconnected from <url>"; sessions already ended (§14). |
-| Approval decided while the agent waits in `wait_for_feedback` | The held rows become deliverable and wake the wait. |
-| Approval revoked while rows are being taken | One transaction decides: rows taken before see the approval, after do not. |
-| Two agents take an untargeted thread at once | One transaction wins (M18); the other's rows are gone and its next read shows `taken_by`. |
-| Owner deletes an artifact with open requests | Requests withdrawn; their items read "gone". |
-| The person row is folded (claim) | `person`, `author`, `approver` columns follow the fold. |
-| `remote.json` exists but the key is unreadable | Every command fails with `remote_key_unreadable` and how to reconnect; nothing falls back to a local daemon silently. |
+| The remote daemon is down | Tools return `daemon_unreachable` naming the remote; hooks exit 0; nothing starts a local daemon while `remote.json` exists. |
+| The owner's LAN address changes (DHCP) | `remote.json` names an IP literal (the host rule requires one); requests fail as unreachable; `clax connect --status` and `clax doctor` say so; `clax connect --url <new>` rewrites it, keeping the key and grant. |
+| Clock skew beyond 120 s | `stale_request` with the daemon's time; the client retries once with its offset; `--status` and `doctor` report persistent skew. |
+| The machine slept | Tokens do not expire (M5); sessions idle over 30 minutes were ended (§14) and the agent's next call registers anew. A grant unused for 30 days expired: connect again with a new invite. |
+| Grant revoked mid-session | 401 `grant_revoked`; tools say "this machine was disconnected from <url>"; its sessions already ended. |
+| Token rotated by another agent of the machine | `invalid_token`; the client reloads `remote.json` and retries once. |
+| Approval decided or revoked during `wait_for_feedback` | The generation bump wakes the wait; its next take uses the current approvals (M17). |
+| Two agents take an untargeted thread at once | One transaction wins (M23). |
+| Owner deletes an artifact with open requests | Requests withdrawn; items read "gone". |
+| A person row is folded (claim) | `person`, `author`, `approver`, `recipient` columns follow the fold. |
+| `remote.json` exists but the key is unreadable | Every command fails with `remote_key_unreadable` and how to reconnect; no silent fallback. |
 
 ## 23. Time to usable and performance
 
-- **Solo installs:** the fast path (§8.7) costs one atomic load per agent
-  request; no new query runs. The `/a/…` bootstrap and gallery are
-  unchanged; first paint and comment-ready gates unaffected.
-- **Budgets** (added to `scripts/perf-daemon-budget.json`, seeded with two
-  connected people, 50 approvals each, 6,000 comments across 200 threads
-  with mixed authors):
-  - `vis_threads_ms` 15: median of `GET …/threads` for a 200-comment
-    artifact as a person's agent (today's owner value plus at most 2 ms).
-  - `vis_feedback_poll_ms` 5: median of the feedback poll with 20 rows,
-    half withheld.
-  - `sig_verify_us` 150: median signature verification inside the gateway
-    (measured by a criterion-free micro test in the perf script).
-  - The probe loads under `cheap_p95_ms` and `cheap_max_ms` run with a
-    second, signed client polling.
-- **Hot paths:** `Visibility::for_reader` one indexed query; the
-  session-person map cached; `take_feedback` adds one hash lookup per row;
-  the first-take owner write is in the take's existing transaction.
-- **Bundles:** the `people` module is lazy (16 KiB budget); `gallery` and
-  `artifact` grow by at most 512 bytes (the People link, owner chips);
-  `extPanel` stays within 65,536.
-- **Connecting** (time to usable for the second person): `clax connect`
-  with an invite to "Connected" in under 2 s on the LAN (one key
-  generation, one request); the person's first agent is usable on its
-  first tool call (registration as today plus one signature).
+- **Solo installs:** the fast path costs one atomic load per agent request.
+  The `/a/…` bootstrap and gallery are unchanged.
+- **Baseline first.** `scripts/perf-daemon.py` gains a phase measuring
+  `GET /api/artifacts/<aid>/threads` (200 comments) and the feedback poll
+  (20 rows) as the owner's agent, recorded on main before the filter
+  lands; the budgets below are that baseline plus the stated margin.
+- **Budgets** (two connected people, 50 approvals each, 6,000 comments
+  across 200 threads with mixed authors):
+  - `vis_threads_ms`: baseline + 2 ms, median, as a person's agent.
+  - `vis_feedback_poll_ms`: baseline + 1 ms, median, half the rows
+    withheld.
+  - `sig_verify_us` 150: median signature verification in the gateway.
+  - The probe loads under `cheap_p95_ms` and `cheap_max_ms` with a signed
+    client polling beside them.
+- **Bundles:** the `people` module is lazy (16 KiB); `gallery` and
+  `artifact` grow by at most 512 bytes; `extPanel` stays within 65,536.
+- **Connecting:** `clax connect` with an invite to "Connected" in under 2 s
+  on the LAN; the person's first agent is usable on its first tool call.
 
 ## 24. Testing
 
-- **clax-core:** rights parse, presets, intersect, union, `own`, levels
-  (table tests); signature canonical string, verify, skew, nonce cache
-  with a fake clock; grant, invite and token state machines; visibility
-  for every row of §8.2 and every approval scope, revocation, the
-  `*unconnected` class, the fast path; take with withheld rows and
-  placeholders once; first-take ownership races; names (derivation,
-  sanitising, collisions, reserved, release on end); migrations 22–24 from
-  21 with a populated fixture; the inbox rebuild keeps `seq` and FTS
-  matches; the delivery guard.
-- **clax-server:** grant flow end to end (invite, request with code, wrong
-  codes, expiry with a fake clock, continuation, rotation, revocation); the
-  agent gateway (allowlist, rights, foreign session, Origin refused); the
-  route guard; the visibility matrix; approvals and routing; handoff and
-  `thread_taken`; lifecycle cleanup; person-scoped inbox, questions,
-  agents; the extension gateway's new admissions.
-- **clax-mcp / clax-cli / Pi:** remote mode signing and rotation against a
-  real daemon; `clax connect` (invite, request, `--off`, `--status`);
-  clip fetch and rewrite; `status {name}`; `ask {approval}`;
-  `comments_handoff`.
-- **web:** People page, approval and connection cards, agent strip,
-  owner chips, Send menu; hostile names and content as text; Playwright end
-  to end with two people (the second person's agent driven by a test client
-  holding a grant, on loopback, which the daemon treats like any other
-  machine), screenshots at desktop and phone width.
-- **Golden:** the single-owner fixture's agent-facing outputs before and
-  after the migrations are identical (§19).
-- Fake clocks and injected durations everywhere; no fixed sleeps; the
-  whole gate stays within about 2 minutes.
+- **clax-core:** rights; signatures and the nonce cache with a fake clock;
+  grant, invite and token state machines; session binding (PID collisions
+  across grants); visibility for every field of §8.2 and every scope;
+  document author sets; the generation counter; take with field filtering
+  and placeholders once; first-take races; names; migrations 22–24 from
+  21; the delivery guard.
+- **clax-server:** grant flow; `Caller` resolution; session binding on
+  register, join, list, paths and headers; the route guard and the
+  no-inline-credentials guard; the canary sweep; the visibility matrix;
+  approvals and routing; browser-only changes; handoff; cleanup;
+  person-scoped inbox, questions, agents.
+- **clax-mcp / clax-cli / Pi:** remote mode against a real daemon; `clax
+  connect`; clip fetch; new tool arguments; Pi's signing matches Rust's
+  test vector.
+- **web:** components with hostile text; Playwright end to end with two
+  people; screenshots at desktop and phone width.
+- **Golden:** §19.
+- Fake clocks and injected durations; no fixed sleeps; the gate stays
+  within about 2 minutes.
 
 ## 25. Known limitations
 
-- No TLS: responses and person browser cookies are readable on the LAN
-  (§21.2).
-- Revocation cannot unread; laundering through an approved author is not
-  tracked (§21.5).
+- No TLS (O7).
+- Not an access-control boundary on the LAN (§21).
+- Revocation cannot unread; laundering through agents is not tracked.
 - Remote Codex sessions have no tier 5; remote agents have no live pages.
-- The filter does not stop a local agent of the owner's from reading
-  `~/.clax` directly (§21.7).
-- An agent's name is unique only among live sessions: an ended agent's
-  name may be reused, so history shows names with their time.
-- Approvals are per person: Sam cannot approve Mia's content for one of his
-  agents and not another.
+- Agent names are unique only among live sessions.
+- Approvals are per person, not per agent.
+- Names are a small unfiltered injection surface (§21.9).
 
 ## 26. Open questions
 
-Each has a recommendation; none blocks Tasks 1–8.
+- **UI questions for the owner, in one batch before the first UI task**
+  (recommendations in brackets): (a) People as its own page [own page] or a
+  tab of the inbox; (b) the approval card: four buttons [four] or "Allow ▾"
+  with scopes in a menu; (c) the agent strip: chips above the inbox
+  [chips] or a left rail on wide screens; (d) withheld content on the
+  approver's card: first 3 lines then "Show all" [yes] or collapsed; (e)
+  the owner chip on thread cards: name only [name only] or name and person
+  always.
 
-- **Q1. `*unconnected` on new installs.** Migration 23 gives every install
-  the approval, so new installs also let LAN viewers' comments reach the
-  owner's agents. Recommendation: keep it on (one rule for old and new
-  installs), and show it on People with a plain switch ("Comments from LAN
-  viewers who are not connected reach your agents without asking"); when
-  the owner makes the first invite, People shows the switch once more
-  beside the invite.
-- **Q2. Thread approval and future content.** M10 makes a thread approval
-  cover the author's later comments in that thread. The stricter reading
-  ("this batch only") would ask again on every reply. Recommendation:
-  keep M10; the card says "this thread, including later replies".
-- **Q3. TLS on the LAN.** Signatures protect agent requests, not
-  confidentiality or person browser cookies. Recommendation: not in this
-  round; document "use a trusted LAN"; a later design can add a
-  self-signed certificate pinned by `clax connect` (the invite carries the
-  fingerprint), which would also protect the browser.
-- **Q4. Owner approving on a person's behalf.** O3 says the agent's person
-  approves; the owner cannot. Recommendation: keep it so (M6); the owner
-  can still give rights and see every request's state in People.
-- **Q5. Untargeted fan-out among the owner's own agents (M18, §19).**
-  Recommendation: accept first-take (O4's one owner); the Send menu already
-  targets one agent whenever one is live, so the change only shows in the
-  rare untargeted sends.
-- **Q6. Agent names across machines.** Two people's agents in the same repo
-  and branch both derive `clax-main`; the second becomes
-  `clax-main-claude` or `clax-main-2`. Recommendation: accept; showing
-  the person beside the name disambiguates for people, and `@name` stays
-  unique. An alternative, `<person>/<repo>`, makes every name longer for
-  the rare case.
-- **Q7. The extension for other people.** The extension pairs with the
-  local daemon by native messaging; another person's extension would pair
-  with their own daemon, not the owner's. Recommendation: out of scope;
-  other people use the shell over the LAN.
-- **Q8. Approvals for titles in `list`.** Withholding titles makes a
-  person's agent's `list` show "an artifact by Mia" for most pages until
-  approved. Recommendation: keep (titles are author text and a short
-  injection surface); `clax:collaborator`'s connect-time owner approval
-  (M12) covers the common case.
-- **Q9. UI design questions, to settle in one batch before Task 17 of the plan:**
-  (a) People as its own page (recommended) or a tab of the inbox; (b) the
-  approval card's buttons: four buttons (recommended) or "Allow ▾" with
-  scopes in a menu; (c) the agent strip: chips above the inbox list
-  (recommended) or a left rail on wide screens; (d) whether withheld
-  content shows to the approver expanded (recommended: first 3 lines, then
-  "Show all") or collapsed; (e) the owner chip on thread cards: name only
-  (recommended) or name and person always.
+## Revision history
+
+- **Revision 1** (2026-10-08): first draft.
+- **Revision 2** (2026-10-08), after review and the owner's answers:
+  - Recorded the owner's answers (O6–O9) and the rulings (R1–R4); only the
+    UI batch stays open.
+  - Sessions are bound to their grant on registration, join, listing, paths
+    and headers (M4, §6.7).
+  - Filtering is per field, in reads, write responses and every tier (M10,
+    §8.2–§8.4); write routes that return content are `Filtered`; a
+    complete route table (§7.5); assets, labels, file names, icons and
+    `resolved_by` have authors.
+  - One `Caller` replaces inline token checks (M8); rights are declared on
+    routes by a typed extractor instead of a second path matcher (M7);
+    authentication happens before the body is read.
+  - Approvals, rights, elevation, narrowing, invites and grant decisions
+    need a browser (M20); the CLI prints the People link.
+  - `*unconnected`'s consequence is stated beside its switch; unconnected
+    authors are marked and cannot take a connected person's name.
+  - Ad-hoc requests make only new people; machines join existing people and
+    the owner by invite.
+  - Visibility and rights follow a generation counter at every take (M17).
+  - Documents keep author sets; `where`/`order_by` run over visible
+    documents only.
+  - Tokens do not expire; rotation is on demand with the manage token and
+    no grace; grant modification is dropped; departures 9–13 added.
+  - The browser link never folds; revoked people lose person routes; remote
+    sessions idle 30 minutes; nonce window 240 s and 65,536 per key;
+    elevation `until` dropped; approval overflow is a 429 with a People
+    banner; a page's `sendToClaude` routes; `/mcp` classified.
+  - §19 lists every single-owner change and specifies the golden test; §21
+    states the threat model and that the filter is not a LAN boundary;
+    budgets start from a measured baseline.
