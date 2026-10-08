@@ -24,14 +24,19 @@ viewer) and sends them; agents reply on them round-robin, publish versions
 of those artifacts addressing them, and ask questions. With the seed
 artifacts' `published` items that is replies + versions + questions + 300.
 
-Each round also times GET /api/viewers/me/attention alone, and the three
-inbox requests alone, nothing else running. A probe's p95 and max are taken per round; the gate judges the
+Each round also times the gallery's two requests (GET /api/artifacts and
+GET /api/viewers/me/attention) alone, and the three inbox requests alone,
+nothing else running. A probe's p95 and max are taken per round; the gate judges the
 median over rounds, so one burst of machine load in one round does not fail
 it. Requests still in flight when a window closes are waited for and count.
 
 Budgets live in scripts/perf-daemon-budget.json:
 - `cheap_p95_ms`, `cheap_max_ms`: every probe under every load;
-- `attention_alone_ms`: the median of the attention request alone;
+- `list_alone_ms`, `attention_alone_ms`: the gallery list and the
+  attention request alone, each judged on the median over rounds of its
+  fastest sample. They sit a little under twice the measured values, so a
+  query that gets twice as slow fails here even when the queued limits
+  below, which follow the galleries' own latency, would let it pass;
 - `inbox_alone_ms`: each of the inbox tab's three requests alone: the
   median over rounds of each request's own median, each judged;
 - `quiet_idle_p95_ms`, `max_scale`: the limits are the budgets times
@@ -222,6 +227,16 @@ class Daemon:
         self.p = subprocess.Popen(
             [binary, "serve", "--foreground", "--bind", "127.0.0.1", "--port", "0"],
             env=env, stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT)
+        try:
+            self.wait_ready()
+        except BaseException:
+            # The caller never gets a Daemon to stop: stop this one here.
+            self.p.kill()
+            self.p.wait(5)
+            self.log.close()
+            raise
+
+    def wait_ready(self):
         info = os.path.join(self.home, "daemon.json")
         deadline = time.time() + 30
         while True:
@@ -624,20 +639,30 @@ def run_phase(d, loads, st, method, window):
     return out, info
 
 
-ATTENTION_SAMPLES = 7
+GALLERY_SAMPLES = 7
+# The gallery's two requests, each timed alone, with its budget's key.
+GALLERY_REQUESTS = [("/api/artifacts", "list_alone_ms"), ("/api/viewers/me/attention", "attention_alone_ms")]
 
 
-def attention_alone(d, st, n=ATTENTION_SAMPLES):
+def gallery_alone(d, st, n=GALLERY_SAMPLES):
+    """Each of a gallery load's two requests alone (the seed viewer, with
+    the token, as the galleries send them): {path: its fastest ms}. The
+    fastest of the samples is the request's own cost with the least of the
+    machine's other work in it, so a budget can sit close to it."""
     c = Client(d.port, d.token)
     ck = {"Cookie": "clax_viewer=" + st["viewer"]}
-    c.req("GET", "/api/viewers/me/attention", headers=ck)  # warm-up
-    ts = []
-    for _ in range(n):
-        s, _, dt, _ = c.req("GET", "/api/viewers/me/attention", headers=ck)
-        expect(s == 200, f"attention: {s}")
-        ts.append(dt * 1000)
+    for path, _ in GALLERY_REQUESTS:
+        c.req("GET", path, headers=ck)  # warm-up
+    each = {}
+    for path, _ in GALLERY_REQUESTS:
+        ts = []
+        for _ in range(n):
+            s, _, dt, _ = c.req("GET", path, headers=ck)
+            expect(s == 200, f"{path}: {s}")
+            ts.append(dt * 1000)
+        each[path] = min(ts)
     c.close()
-    return statistics.median(ts)
+    return each
 
 
 INBOX_SAMPLES = 7
@@ -683,12 +708,14 @@ def main(binary, budget_path, quick):
         rounds, window = cfg["rounds"], cfg["window_s"]
         per = {name: {label: [] for label in CHEAP} for name, _ in PHASES}
         infos = {name: [] for name, _ in PHASES}
-        attention = []
+        gallery = {path: [] for path, _ in GALLERY_REQUESTS}
         queued = {name: [] for name in QUEUED}
         inbox = {path: [] for path in INBOX_REQUESTS}
         for r in range(rounds):
             t0 = time.perf_counter()
-            attention.append(attention_alone(d, st))
+            gallery_each = gallery_alone(d, st)
+            for path, v in gallery_each.items():
+                gallery[path].append(v)
             inbox_each = inbox_alone(d)
             for path, v in inbox_each.items():
                 inbox[path].append(v)
@@ -699,8 +726,8 @@ def main(binary, budget_path, quick):
                 for label in CHEAP:
                     per[name][label].append(res[label])
                 infos[name].append(info)
-            print(f"round {r + 1}/{rounds}: {time.perf_counter() - t0:.1f} s, attention alone {attention[-1]:.0f} ms, "
-                  "inbox alone " + ", ".join(f"{p} {v:.1f} ms" for p, v in inbox_each.items()),
+            print(f"round {r + 1}/{rounds}: {time.perf_counter() - t0:.1f} s, gallery alone "
+                  + ", ".join(f"{p} {v:.1f} ms" for p, v in gallery_each.items()) + "; inbox alone " + ", ".join(f"{p} {v:.1f} ms" for p, v in inbox_each.items()),
                   flush=True)
     except SetupError as e:
         print(f"perf-daemon: setup failed: {e}", file=sys.stderr)
@@ -720,7 +747,7 @@ def main(binary, budget_path, quick):
     quiet = cfg["quiet_idle_p95_ms"]
     scale = min(cfg["max_scale"], max(1.0, idle_p95 / quiet))
     lim_p95, lim_max = cfg["cheap_p95_ms"] * scale, cfg["cheap_max_ms"] * scale
-    lim_att = cfg["attention_alone_ms"] * scale
+    lim_gallery = {path: cfg[key] * scale for path, key in GALLERY_REQUESTS}
     lim_inbox = cfg["inbox_alone_ms"] * scale
     # Under a queued load: at least queue_ratio times the load's own requests.
     phase_scale = {name: max(scale, min(cfg["max_scale"], cfg["queue_ratio"] * med(xs) / cfg["cheap_p95_ms"]))
@@ -728,7 +755,9 @@ def main(binary, budget_path, quick):
 
     print()
     print(f"idle p95 {idle_p95:.1f} ms (quiet is {quiet} ms or less): limits scaled by {scale:.2f}: "
-          f"p95 {lim_p95:.0f} ms, max {lim_max:.0f} ms, attention alone {lim_att:.0f} ms, inbox alone {lim_inbox:.0f} ms")
+          f"p95 {lim_p95:.0f} ms, max {lim_max:.0f} ms, "
+          + ", ".join(f"{p} alone {v:.1f} ms" for p, v in lim_gallery.items())
+          + f", inbox alone {lim_inbox:.0f} ms")
     for name, sc in phase_scale.items():
         print(f"{name}: its requests {med(queued[name]):.0f} ms on average: limits scaled by {sc:.2f}: "
               f"p95 {cfg['cheap_p95_ms'] * sc:.0f} ms, max {cfg['cheap_max_ms'] * sc:.0f} ms")
@@ -751,13 +780,15 @@ def main(binary, budget_path, quick):
                 if over:
                     failed.append(f"{label} under {name}")
             print(f"{name:<14} {label:<28} {n:>5} {v95:>9.1f} {vmax:>9.1f}  {verdict}")
-    att = med(attention)
-    att_ok = att <= lim_att
-    if not att_ok:
-        failed.append("attention alone")
-    print(f"{'alone':<14} {'GET attention (median)':<28} {len(attention) * ATTENTION_SAMPLES:>5} {att:>9.1f} {'':>9}  {'ok' if att_ok else 'FAIL'}")
     # Each request is judged on its own median, so one slow request cannot
-    # hide behind two fast ones.
+    # hide behind a fast one.
+    for path, _ in GALLERY_REQUESTS:
+        v = med(gallery[path])
+        ok = v <= lim_gallery[path]
+        if not ok:
+            failed.append(f"gallery alone {path}")
+        label = "GET " + path
+        print(f"{'gallery alone':<14} {label:<28} {len(gallery[path]) * GALLERY_SAMPLES:>5} {v:>9.1f} {'':>9}  {'ok' if ok else 'FAIL'}")
     for path in INBOX_REQUESTS:
         v = med(inbox[path])
         ok = v <= lim_inbox
