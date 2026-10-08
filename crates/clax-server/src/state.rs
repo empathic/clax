@@ -72,4 +72,7 @@ pub struct AppState {
     /// The journal appender's wake-up, which `store` nudges after each
     /// commit that recorded an audit event.
     pub audit_wake: Arc<crate::audit::AuditWake>,
+    /// What bounds the audit exports: one at a time, a stall limit and a
+    /// time limit.
+    pub exports: Arc<crate::routes::toolpath::Exports>,
 }

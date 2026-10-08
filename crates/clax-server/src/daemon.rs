@@ -557,6 +557,7 @@ pub async fn serve(
         terminal_after_s,
         calibration: Arc::default(),
         audit_wake: crate::audit::AuditWake::new(),
+        exports: crate::routes::toolpath::Exports::new(),
     };
     state.audit_wake.install(&state.store);
     state.stream.listen(&state.events);

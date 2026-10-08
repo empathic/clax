@@ -21,6 +21,7 @@ pub mod read;
 pub mod serve;
 pub mod status;
 pub mod stop;
+pub mod toolpath;
 pub mod tools;
 pub mod version;
 pub mod versions;

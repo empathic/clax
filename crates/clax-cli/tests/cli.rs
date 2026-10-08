@@ -1440,3 +1440,213 @@ fn a_codex_session_start_tells_the_person_once_which_tools_codex_asks_about() {
         "the hook never writes Codex's config"
     );
 }
+
+#[test]
+fn toolpath_export_writes_the_history_and_keeps_existing_files() {
+    let e = Env::new();
+    let index = write(e.dir.path(), "site/index.html", "<p>v1</p>");
+    let out = e
+        .cmd()
+        .args(["publish", "--json", "--port", "0", "--title", "Notes"])
+        .arg(&index)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let id = serde_json::from_slice::<serde_json::Value>(&out).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let dest = e.dir.path().join("page.path.json");
+    let url = format!("http://localhost:7480/a/{id}");
+    let summary = e
+        .cmd()
+        .args(["toolpath", "export", "--json", "--artifact", &url, "-o"])
+        .arg(&dest)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let summary: serde_json::Value = serde_json::from_slice(&summary).unwrap();
+    let text = std::fs::read_to_string(&dest).unwrap();
+    assert_eq!(summary["bytes"], text.len());
+    let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(doc["paths"][0]["path"]["id"], format!("clax-artifact-{id}"));
+    assert_eq!(
+        doc["meta"]["clax"]["selection"]["artifacts"],
+        serde_json::json!([id])
+    );
+    // An existing file is refused, before the daemon is asked, and kept.
+    e.cmd()
+        .args(["toolpath", "export", "-o"])
+        .arg(&dest)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--force"));
+    assert_eq!(std::fs::read_to_string(&dest).unwrap(), text);
+    // A refusal names the option to use, and writes nothing.
+    let jsonl = e.dir.path().join("all.path.jsonl");
+    e.cmd()
+        .args(["toolpath", "export", "--format", "jsonl", "-o"])
+        .arg(&jsonl)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--shape journal"));
+    assert!(!jsonl.exists());
+    // To stdout, the journal shape as JSONL; the same bytes each time.
+    let lines = |e: &Env| {
+        e.cmd()
+            .args([
+                "toolpath",
+                "export",
+                "--shape",
+                "journal",
+                "--format",
+                "jsonl",
+                "--no-text",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+    let first = lines(&e);
+    assert_eq!(first, lines(&e));
+    let first = String::from_utf8(first).unwrap();
+    assert!(first.starts_with("{\"PathOpen\"") && !first.contains("\"Notes\""));
+    // --force replaces the file.
+    e.cmd()
+        .args(["toolpath", "export", "--pretty", "--force", "-o"])
+        .arg(&dest)
+        .assert()
+        .success();
+    assert!(
+        std::fs::read_to_string(&dest)
+            .unwrap()
+            .contains("\n  \"paths\": [")
+    );
+    let status: serde_json::Value = serde_json::from_slice(
+        &e.cmd()
+            .args(["toolpath", "status", "--json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    )
+    .unwrap();
+    assert!(status["newest_seq"].as_i64().unwrap() >= 2);
+    e.stop();
+}
+
+/// A stand-in daemon's daemon.json, removed on drop: it names the test
+/// process, which `clax stop` and [`Env`]'s drop must never signal.
+struct StandIn(std::path::PathBuf);
+
+impl Drop for StandIn {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// A stand-in daemon on a free port, named by `home`'s daemon.json: it
+/// answers `/healthz`, and answers an export with the start of a document
+/// and then nothing, holding the connection open.
+fn stalling_daemon(home: &std::path::Path) -> StandIn {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::fs::create_dir_all(home).unwrap();
+    std::fs::write(
+        home.join("daemon.json"),
+        serde_json::json!({
+            "port": port, "pid": std::process::id(), "token": "t",
+            "started_at": "2026-10-08T00:00:00Z", "bind": "127.0.0.1",
+            "version": env!("CARGO_PKG_VERSION"),
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut line = String::new();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            reader.read_line(&mut line).unwrap();
+            loop {
+                let mut h = String::new();
+                if reader.read_line(&mut h).unwrap() == 0 || h == "\r\n" {
+                    break;
+                }
+            }
+            if line.contains("/healthz") {
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                );
+            } else {
+                let part = b"{\"graph\":{\"id\":\"x\"},\"paths\":[";
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n",
+                    part.len()
+                );
+                let _ = stream.write_all(part);
+                let _ = stream.write_all(b"\r\n");
+                let _ = stream.flush();
+                held.push(stream);
+            }
+        }
+    });
+    StandIn(home.join("daemon.json"))
+}
+
+#[test]
+fn an_interrupted_toolpath_export_removes_its_partial_file() {
+    use nix::sys::signal::{Signal, kill};
+    let e = Env::new();
+    let _daemon = stalling_daemon(&e.dir.path().join("ax"));
+    let dest = e.dir.path().join("page.path.json");
+    let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("clax"))
+        .env("CLAX_HOME", e.dir.path().join("ax"))
+        .env("HOME", e.dir.path())
+        .env("CLAX_CODEX_BIN", "")
+        .args(["toolpath", "export", "-o"])
+        .arg(&dest)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Wait (bounded) until the export has started writing the file.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while std::fs::metadata(&dest).map_or(true, |m| m.len() == 0) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the export never started writing"
+        );
+        assert!(child.try_wait().unwrap().is_none(), "the export exited");
+        std::thread::yield_now();
+    }
+    kill(
+        nix::unistd::Pid::from_raw(child.id() as i32),
+        Signal::SIGINT,
+    )
+    .unwrap();
+    let status = child.wait().unwrap();
+    assert_eq!(status.code(), Some(130));
+    assert!(!dest.exists(), "the partial file is left");
+    assert_eq!(
+        std::fs::read_dir(e.dir.path())
+            .unwrap()
+            .filter(|f| {
+                f.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("page.path.json")
+            })
+            .count(),
+        0
+    );
+}

@@ -19,6 +19,7 @@ pub mod sites;
 pub mod stream;
 pub mod threads;
 pub mod token;
+pub mod toolpath;
 pub mod viewers;
 pub mod watches;
 pub mod working;
@@ -146,6 +147,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route("/api/live/sites/split", post(sites::split))
         .route("/api/live/sites/answer", post(sites::answer))
         .route("/api/extension", get(extension::status))
+        .route("/api/toolpath/status", get(toolpath::status))
         .route(
             "/api/extension/credentials",
             post(extension::mint).delete(extension::revoke),
@@ -322,6 +324,9 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             post(sample::tool_result),
         )
         .route("/api/sessions/{id}/feedback", get(feedback::poll))
+        // Streams for as long as its reader takes: no request deadline, no
+        // buffering ETag.
+        .route("/api/toolpath/export", get(toolpath::export))
         .route("/api/sessions/{id}/notices", get(feedback::notices))
         // A long-poll: outside the request timeout, as the feedback poll.
         .route("/api/sessions/{id}/questions/{qid}", get(questions::poll))
@@ -456,7 +461,8 @@ mod l10 {
         Filtered,
         /// It names no artifact.
         NoArtifact,
-        /// It refuses every caller but the owner (`who.require_owner(…)`); every
+        /// It refuses every caller but the owner (`who.require_owner(…)`, or
+        /// the audit history's narrower token-or-owner-cookie check); every
         /// owner credential sees live pages (the extension's is
         /// loopback-only).
         Owner,
@@ -532,6 +538,8 @@ mod l10 {
         ("health::healthz", NoArtifact),
         ("assets::blob", SeesLive),
         ("perf::calibrate", Token),
+        ("toolpath::export", Owner),
+        ("toolpath::status", Owner),
     ];
 
     /// Routes whose handler is not a module function, and why they are safe.
@@ -573,6 +581,7 @@ mod l10 {
             "stream" => include_str!("stream.rs"),
             "threads" => include_str!("threads.rs"),
             "token" => include_str!("token.rs"),
+            "toolpath" => include_str!("toolpath.rs"),
             "viewers" => include_str!("viewers.rs"),
             "watches" => include_str!("watches.rs"),
             "working" => include_str!("working.rs"),
@@ -889,7 +898,11 @@ mod l10 {
                         "{name} does not filter by sees_live_pages"
                     ),
                     Owner => assert!(
-                        sig.contains("who: Identity") && src.contains("who.require_owner("),
+                        sig.contains("who: Identity")
+                            && (src.contains("who.require_owner(")
+                                || src.split_once('{').is_some_and(|(_, body)| body
+                                    .trim_start()
+                                    .starts_with("owner_reads_history(&who)?;"))),
                         "{name} does not refuse callers other than the owner"
                     ),
                     NoArtifact => assert!(

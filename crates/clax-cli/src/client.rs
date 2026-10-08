@@ -1006,6 +1006,31 @@ impl Client {
                 .send()?,
         )
     }
+    /// GET `path` with `query` and the bearer token, for a response read as
+    /// it streams: no deadline on the whole transfer (the daemon gives up
+    /// on a reader that stops reading), 5 s to connect. A refusal is an
+    /// error naming its code and message.
+    pub fn get_stream(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+    ) -> anyhow::Result<reqwest::blocking::Response> {
+        let http = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .timeout(None)
+            .connect_timeout(Duration::from_secs(5))
+            .build()?;
+        let res = http
+            .get(format!("{}{path}", self.base))
+            .bearer_auth(&self.token)
+            .query(query)
+            .send()?;
+        if res.status().is_success() {
+            Ok(res)
+        } else {
+            Self::check(res).map(|_| unreachable!("a failed status is an error"))
+        }
+    }
     pub fn post(&self, path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
         Self::check(
             self.http

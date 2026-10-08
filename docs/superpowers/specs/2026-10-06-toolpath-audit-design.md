@@ -787,18 +787,32 @@ clax toolpath export [--artifact <ID|URL>]... [--live <page URL>]...
                      [--since <RFC 3339 | YYYY-MM-DD>] [--until <…>]
                      [--shape artifacts|journal] [--format json|jsonl]
                      [--no-text] [--no-names] [--no-paths]
-                     [--pretty] [-o <file>]
+                     [--pretty] [-o <file> [--force]]
 clax toolpath status [--json]
 ```
 
 - **Selection:** no selector means the whole install.
-  - `--artifact` and `--live` choose artifacts.
-  - `--by-session` keeps only steps whose actor is that agent session, plus
-    the owner and viewer steps on the same artifacts. It filters steps; it
-    does not change the shape (O7).
+  - `--artifact` and `--live` choose artifacts. A live page is matched by
+    its origin and path (a query or fragment in the URL is not part of
+    it): the page there now, under its joined site's key origin, and any
+    page a `live.page` event records there.
+  - `--by-session` takes a Clax or harness session ID. It keeps the steps
+    of that session (a step whose `session_id` column names it, or whose
+    actor, or the agent a system actor acts for in `for_actor`, is it),
+    plus the owner, viewer and anonymous steps (a person's, or a system
+    step's that names the person in `for_actor`) on the artifacts its
+    steps touched.
+    It filters steps; it does not change the shape (O7).
   - Selectors of one kind union; selectors of different kinds intersect.
+    The kinds are the artifacts chosen (`--artifact` and `--live`
+    together), the sessions, and the time range. An artifact selector
+    leaves out the install path.
   - `--since` is inclusive and `--until` exclusive, both on `at`. A bare
     date means 00:00 UTC.
+  - A selector that names nothing in the history (an unknown artifact,
+    live page or session), a time that does not parse, or an empty range
+    is refused (400, with a code), before any output.
+  - A path with no selected step is left out, since a path needs a head.
 - **`--shape artifacts`** (the default): the paths of §8.2.
 - **`--shape journal`:** one linear audit-trail path of every selected step,
   shaped like a segment, with ID `clax-export-<digest>`.
@@ -806,8 +820,30 @@ clax toolpath status [--json]
   which means `--shape journal` or a single selected artifact. Otherwise the
   command fails with an error naming `--shape journal`, because the JSONL RFC
   puts one path in each file.
-- **Output:** stdout by default. With `-o`, the export is written to
-  `<file>.tmp-<ULID>` and then renamed.
+  An empty JSONL result is refused too, and `--pretty` with JSONL is
+  refused (`invalid_option`).
+- **Redaction:** none unless an option is given; the options used are
+  listed in the export (§11).
+- **Output:** stdout by default. With `-o`:
+  - An existing `<file>` (a dangling symlink included) is refused unless
+    `--force` is given, before the daemon is asked.
+  - Without `--force`, `<file>` is created exclusively (mode 0600), so a
+    file that appears after that check is refused, never replaced. The
+    export streams into it and is synced. On any failure `<file>` is
+    removed. While the export runs, the partial file is visible under its
+    name; SIGINT and SIGTERM remove it, and a SIGKILL leaves it, ended
+    early (see the end check below).
+  - With `--force`, the export is written to `<file>.tmp-<ULID>` (created
+    new, mode 0600), synced, and renamed over `<file>`, so `<file>` is the
+    old file or the whole new one. A failure or SIGINT or SIGTERM removes
+    the temporary file.
+  - With `--json`, a written file is reported as `{"file", "bytes"}` on
+    stdout; otherwise one line goes to stderr.
+- **End check:** the CLI fails (exit 1, "the export ended early") unless
+  what it received ends as a whole export does: a JSON document with its
+  closing brace (and a newline when indented), JSONL with its `PathClose`
+  line. The daemon also aborts an export cut short (§8.3); the check
+  catches one whose abort did not reach the client.
 
 ### 8.2 Graph shape
 
@@ -839,6 +875,13 @@ clax toolpath status [--json]
 }
 ```
 
+The example lists a path's keys in the schema's order. The export writes
+each path as `{"steps": […], "path": {…}, "meta": {…}}`, so its `head` and
+`meta.actors` follow the steps it streams; JSON key order carries no
+meaning. `graph.meta.clax` also names the `shape`, and its `selection`
+always holds `artifacts`, `live`, `by_sessions`, `since` and `until`
+(normalized: sorted IDs and page URLs, times as UTC with milliseconds).
+
 The rules:
 
 - **Artifact path:** every step whose `artifact_id` or `artifact2_id` is the
@@ -850,8 +893,23 @@ The rules:
 - **Steps on two artifacts:** a `thread.move` appears in both artifact paths
   under the same step ID. Each copy gets
   `{"rel":"same-change","href":"toolpath:<other path ID>/<step ID>"}`.
-- **Refs to objects outside the selection** keep their `clax://` form. Refs
-  inside the graph also get a `toolpath:` form.
+  The `same-change` ref is written only when the other path is in the
+  graph.
+- **Artifact path meta:** `title` is the artifact's title (`Artifact <ID>`
+  under `--no-text`, or when the artifact is gone), and `meta.clax` names
+  its `artifact_kind` and, for a live page, its `origin` and `path`. A
+  `view` ref names its browser URL.
+- **Refs to objects outside the selection** keep their `clax://` form. A
+  ref to another artifact path in the graph also gets a `toolpath:<path
+  ID>` form beside it, and a `produced` ref names a step in the graph by
+  `toolpath:<path ID>/<step ID>` instead (the first of its paths, in path
+  order).
+- **Journal shape:** one path, ID `clax-export-<digest>`, based on the
+  install, every selected step in `seq` order. As JSONL, `PathOpen.meta.clax`
+  carries what `graph.meta.clax` carries in JSON (install, build,
+  selection, shape, redaction); so does a single artifact path's.
+- **Unrenderable rows** become `clax.unrenderable` steps, as in the
+  journal (§7.3).
 - **The graph ID's digest** is the first 12 hex characters of the SHA-256 of
   the canonical selection JSON.
 - **Correlation:** none, so the graph carries no `correlates` marker (O6).
@@ -860,22 +918,49 @@ The rules:
 
 `GET /api/toolpath/export?<the CLI options as query parameters>`:
 
-- **Who:** owner only (the daemon token or the owner cookie). A LAN viewer
-  gets 403.
+- **Who:** owner only (the daemon token or the owner cookie). Anyone else,
+  a LAN viewer included, gets 403, decided from the credentials before
+  anything is read or made.
+- **Parameters:** `artifact` (an artifact ID; the CLI turns a URL into
+  one), `live` and `by_session` repeat; `since`,
+  `until`, `shape`, `format` and the flags `no_text`, `no_names`,
+  `no_paths` and `pretty` (`true` or `false`) appear at most once. An
+  unknown or repeated parameter is refused (400).
+- **One at a time:** an export holds a store worker, a reader connection
+  and its snapshot, so one runs at a time; another gets 503
+  `export_busy` before any work.
+- **Streaming:** the export runs on a store worker in one read
+  transaction and streams in 64 KiB chunks, querying one path at a time.
+  A refusal comes before the first byte, as an error status. After the
+  first byte, the export's outcome decides how the body ends: a whole
+  export ends its transfer normally, and its last bytes are the graph's
+  closing brace (JSON) or its `PathClose` line (JSONL). Anything else (an
+  error, a reader that stops reading for 60 s, an export past its
+  15-minute limit, a panic) aborts the transfer without its final chunk,
+  so a client sees an error, never a short document that looks whole. Measured on
+  10× the perf seed (159,506 events, release, load 28–32): the whole
+  install exports 202 MiB in 2.4–3.0 s in either shape, at a peak of
+  17.5 MB of memory for the whole process against 9.8 MB for opening the
+  store alone.
 - **Response:** streamed `application/json`, or `application/x-ndjson` for
   JSONL.
 - **Consistency:** the export reads one snapshot, in a single read
   transaction.
 - **Order:** artifact paths in artifact ID order, then the install path;
   steps in `seq` order.
-- **Determinism:** the same database and the same arguments give
-  byte-identical output. The export has no `exported_at`.
+- **Determinism:** the same database, arguments, exporting build and
+  browser base give byte-identical output (the build is named in
+  `graph.meta.clax`, the browser base in `view` refs and `meta.clax.url`). The export has no `exported_at`.
 
 `GET /api/toolpath/status` returns:
 
 ```json
 {"journal": true, "dir": "…", "segment": "…", "cursor": 5930, "newest_seq": 5931, "lag_ms": 12, "last_error": null}
 ```
+
+It is owner only, as export is. Until the appender runs (plan Task 11),
+`journal` is false and `segment`, `cursor`, `lag_ms` and `last_error` are
+null.
 
 ## 9. Git capture
 
@@ -1323,8 +1408,13 @@ This rule is the same for Claude Code, Codex, Pi, Gemini and Grok (O4).
   after each batch that hashed 16 MiB. The daemon publishes the same in
   `starting.json`, and the client that started it waits while it moves on
   (§14).
-- **Export.** It streams. Memory is bounded by one path's steps plus the
-  `ActorDef` set.
+- **Export.** It streams (§8.3). Memory holds up to six 64 KiB chunks
+  (one filling, four queued, one being sent), the selection's sets, the
+  list of paths and the `ActorDef` set of the path being written, never a
+  path's steps. It holds one snapshot, so the WAL cannot reset past it and
+  grows by the writes made meanwhile; writers never wait on it, since
+  every checkpoint is passive; an artifact path reads its two indexes in `seq` order and
+  merges them, so SQLite sorts nothing either.
 
 ## 14. Failure modes
 

@@ -2414,6 +2414,76 @@ pub(crate) mod tests {
         );
     }
 
+    /// A writer that counts what it is given and keeps none of it.
+    struct Counting(u64);
+
+    impl std::io::Write for Counting {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0 += b.len() as u64;
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Measures exporting the backfilled perf seed times
+    /// `CLAX_BACKFILL_SCALE` (default 10): the whole install in the
+    /// artifacts shape, then in the journal shape. With `CLAX_SCALE_HOME`
+    /// set, the home there is seeded once and reused, so a second run
+    /// measures opening and exporting alone; with `CLAX_SCALE_EXPORT=0` it
+    /// opens without exporting, the baseline for peak memory. Run in
+    /// release, alone, under `/usr/bin/time -l`.
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn export_at_scale() {
+        use crate::toolpath::RenderEnv;
+        use crate::toolpath::project::{Export, ExportEnv, Shape};
+        let scale = std::env::var("CLAX_BACKFILL_SCALE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(10);
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = std::env::var_os("CLAX_SCALE_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| tmp.path().to_path_buf());
+        let home = if dir.join("ax").join("clax.db").exists() {
+            Home::at(dir.join("ax"))
+        } else {
+            old_home(&dir, |c, h| perf_seed(c, h, scale))
+        };
+        let started = std::time::Instant::now();
+        let st = Store::open(&home).unwrap();
+        eprintln!(
+            "opened: {} events in {:?}",
+            st.newest_seq().unwrap(),
+            started.elapsed()
+        );
+        if std::env::var("CLAX_SCALE_EXPORT").as_deref() == Ok("0") {
+            return;
+        }
+        let env = ExportEnv {
+            render: RenderEnv::export(st.install_id().unwrap(), "http://localhost:7480"),
+            clax_version: "0.0.0".into(),
+            clax_commit: "unknown".into(),
+        };
+        for shape in [Shape::Artifacts, Shape::Journal] {
+            let req = Export {
+                shape,
+                ..Default::default()
+            };
+            let mut out = Counting(0);
+            let started = std::time::Instant::now();
+            st.export(&req, &env, &mut out).unwrap();
+            eprintln!(
+                "export {}: {} MiB in {:?}",
+                shape.name(),
+                out.0 >> 20,
+                started.elapsed()
+            );
+        }
+    }
+
     /// A reopened thread keeps the link its agent's resolve made to version
     /// 1; it is its own `thread.addressed`, not version 1's address.
     #[test]

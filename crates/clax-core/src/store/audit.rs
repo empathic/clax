@@ -9,10 +9,13 @@
 
 use super::Store;
 use super::sessions::with_for_actor;
+use crate::CoreError;
 use crate::Result;
 use crate::audit::{AgentActor, AuditCtx, AuditIds, AuditKind, AuditRecord, SystemReason};
+use crate::live::PageKey;
+use crate::toolpath::project::{self, ArtifactInfo, Export, ExportEnv, Scope, Source};
 use crate::working::{StopReason, Transition};
-use rusqlite::{Row, params};
+use rusqlite::{OptionalExtension, Row, params};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -367,6 +370,213 @@ impl Store {
             Ok(c.query_row(NEWEST_SEQ, [], |r| r.get::<_, Option<i64>>(0))?
                 .unwrap_or(0))
         })
+    }
+
+    /// Runs `f` over the recorded history as one [`Source`], in one read
+    /// transaction, so every row and artifact `f` reads comes from one
+    /// snapshot. The read has no time limit (an export streams for as long
+    /// as its reader takes); it stops with [`CoreError::TaskFailed`] once
+    /// the store shuts down.
+    pub fn select<T>(&self, f: impl FnOnce(&dyn Source) -> Result<T>) -> Result<T> {
+        self.readers.run(false, |c| {
+            f(&StoreSource {
+                c,
+                shut_down: &self.shut_down,
+            })
+        })
+    }
+
+    /// Writes the export `req` to `w` (spec §8): [`project::export`] over
+    /// [`Store::select`].
+    pub fn export(&self, req: &Export, env: &ExportEnv, w: &mut dyn std::io::Write) -> Result<()> {
+        self.select(|src| project::export(src, req, env, w))
+    }
+}
+
+const EVENT_COLUMNS: &str =
+    "seq, at, kind, actor, artifact_id, artifact2_id, thread_id, session_id,
+        question_id, call_id, origin, body, backfilled";
+
+/// The store's history as a [`Source`], read on one connection inside one
+/// read transaction.
+struct StoreSource<'c> {
+    c: &'c rusqlite::Connection,
+    shut_down: &'c std::sync::atomic::AtomicBool,
+}
+
+impl StoreSource<'_> {
+    fn each(
+        &self,
+        sql: &str,
+        params: &[&dyn rusqlite::ToSql],
+        f: &mut dyn FnMut(AuditRow) -> Result<bool>,
+    ) -> Result<()> {
+        let mut q = self.c.prepare_cached(sql)?;
+        let mut rows = q.query(params)?;
+        let mut n = 0u32;
+        while let Some(r) = rows.next()? {
+            n = n.wrapping_add(1);
+            if n.is_multiple_of(1024) && self.shut_down.load(Ordering::SeqCst) {
+                return Err(CoreError::TaskFailed);
+            }
+            if !f(row_to_event(r)?)? {
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl StoreSource<'_> {
+    /// The rows on artifact `a`, in `seq` order: a merge of the rows whose
+    /// `artifact_id` is `a` and those whose `artifact2_id` is, each read
+    /// in `seq` order from its index, so no row is held to be sorted.
+    fn artifact_rows(&self, a: &str, f: &mut dyn FnMut(AuditRow) -> Result<bool>) -> Result<()> {
+        let mut first = self.c.prepare_cached(&format!(
+            "SELECT {EVENT_COLUMNS} FROM audit_events WHERE artifact_id = ?1 ORDER BY seq"
+        ))?;
+        let mut second = self.c.prepare_cached(&format!(
+            "SELECT {EVENT_COLUMNS} FROM audit_events
+             WHERE artifact2_id = ?1 AND artifact_id IS NOT ?1 ORDER BY seq"
+        ))?;
+        let mut xs = first.query(params![a])?;
+        let mut ys = second.query(params![a])?;
+        let mut x = xs.next()?.map(row_to_event).transpose()?;
+        let mut y = ys.next()?.map(row_to_event).transpose()?;
+        let mut n = 0u32;
+        loop {
+            let take_x = match (&x, &y) {
+                (None, None) => return Ok(()),
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (Some(p), Some(q)) => p.seq < q.seq,
+            };
+            let row = if take_x {
+                std::mem::replace(&mut x, xs.next()?.map(row_to_event).transpose()?)
+            } else {
+                std::mem::replace(&mut y, ys.next()?.map(row_to_event).transpose()?)
+            };
+            n = n.wrapping_add(1);
+            if n.is_multiple_of(1024) && self.shut_down.load(Ordering::SeqCst) {
+                return Err(CoreError::TaskFailed);
+            }
+            if !f(row.expect("one side holds a row"))? {
+                return Ok(());
+            }
+        }
+    }
+}
+
+impl Source for StoreSource<'_> {
+    fn rows(&self, scope: Scope<'_>, f: &mut dyn FnMut(AuditRow) -> Result<bool>) -> Result<()> {
+        match scope {
+            Scope::Artifact(a) => self.artifact_rows(a, f),
+            Scope::Install => self.each(
+                &format!(
+                    "SELECT {EVENT_COLUMNS} FROM audit_events
+                     WHERE artifact_id IS NULL AND artifact2_id IS NULL ORDER BY seq"
+                ),
+                &[],
+                f,
+            ),
+            Scope::All => self.each(
+                &format!("SELECT {EVENT_COLUMNS} FROM audit_events ORDER BY seq"),
+                &[],
+                f,
+            ),
+            Scope::Mentioning(values) => {
+                let mut sql = format!("SELECT {EVENT_COLUMNS} FROM audit_events WHERE 0");
+                let mut params: Vec<&dyn rusqlite::ToSql> = Vec::new();
+                for (i, v) in values.iter().enumerate() {
+                    let n = i + 1;
+                    sql.push_str(&format!(
+                        " OR session_id = ?{n} OR instr(actor, ?{n}) > 0 OR instr(body, ?{n}) > 0"
+                    ));
+                    params.push(v);
+                }
+                sql.push_str(" ORDER BY seq");
+                self.each(&sql, &params, f)
+            }
+        }
+    }
+
+    fn row(&self, seq: i64) -> Result<Option<AuditRow>> {
+        Ok(self
+            .c
+            .prepare_cached(&format!(
+                "SELECT {EVENT_COLUMNS} FROM audit_events WHERE seq = ?1"
+            ))?
+            .query_row(params![seq], row_to_event)
+            .optional()?)
+    }
+
+    fn artifact_ids(&self) -> Result<Vec<String>> {
+        let mut q = self.c.prepare_cached(
+            "SELECT artifact_id FROM audit_events WHERE artifact_id IS NOT NULL
+             UNION SELECT artifact2_id FROM audit_events WHERE artifact2_id IS NOT NULL
+             ORDER BY 1",
+        )?;
+        let ids = q
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(ids)
+    }
+
+    fn artifact_known(&self, id: &str) -> Result<bool> {
+        Ok(self.c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM artifacts WHERE id = ?1)
+                 OR EXISTS(SELECT 1 FROM audit_events WHERE artifact_id = ?1)
+                 OR EXISTS(SELECT 1 FROM audit_events WHERE artifact2_id = ?1)",
+            params![id],
+            |r| r.get(0),
+        )?)
+    }
+
+    fn live_artifacts(&self, key: &PageKey) -> Result<Vec<String>> {
+        let mut q = self.c.prepare_cached(
+            "SELECT artifact_id FROM live_pages
+              WHERE path = ?2
+                AND origin IN (?1, COALESCE((SELECT site FROM live_sites WHERE origin = ?1), ?1))
+             UNION
+             SELECT artifact_id FROM live_merged_pages
+              WHERE path = ?2
+                AND origin IN (?1, COALESCE((SELECT site FROM live_sites WHERE origin = ?1), ?1))
+             UNION
+             SELECT artifact_id FROM audit_events
+              WHERE kind = 'live.page' AND artifact_id IS NOT NULL
+                AND origin IN (?1, COALESCE((SELECT site FROM live_sites WHERE origin = ?1), ?1))
+                AND json_extract(body, '$.path') = ?2
+             ORDER BY 1",
+        )?;
+        let ids = q
+            .query_map(params![key.origin, key.path], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(ids)
+    }
+
+    fn artifact(&self, id: &str) -> Result<ArtifactInfo> {
+        let info = self
+            .c
+            .prepare_cached(
+                "SELECT a.title, a.kind, COALESCE(p.origin, m.origin), COALESCE(p.path, m.path)
+                   FROM artifacts a
+                   LEFT JOIN live_pages p ON p.artifact_id = a.id
+                   LEFT JOIN live_merged_pages m ON m.artifact_id = a.id
+                  WHERE a.id = ?1",
+            )?
+            .query_row(params![id], |r| {
+                let origin: Option<String> = r.get(2)?;
+                let path: Option<String> = r.get(3)?;
+                Ok(ArtifactInfo {
+                    title: r.get(0)?,
+                    kind: r.get(1)?,
+                    live: origin
+                        .zip(path)
+                        .map(|(origin, path)| PageKey { origin, path }),
+                })
+            })
+            .optional()?;
+        Ok(info.unwrap_or_default())
     }
 }
 
