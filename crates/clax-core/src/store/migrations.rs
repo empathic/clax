@@ -483,6 +483,16 @@ pub const MIGRATIONS: &[&str] = &[
         LEFT JOIN comments c ON c.id = i.comment_id
         LEFT JOIN versions v ON v.artifact_id = i.artifact_id AND v.n = i.version_n;
     DROP TABLE _owner;",
+    // 22: covering indexes for the gallery's whole-home reads (attention,
+    // participants): each per-thread or per-artifact lookup reads what it
+    // needs from the index instead of one table row per comment or version.
+    // `comments_by_thread` keeps its leading columns, so every query that
+    // used it orders and seeks as before.
+    "DROP INDEX comments_by_thread;
+    CREATE INDEX comments_by_thread ON comments(thread_id, created_at, id, author_public_id, via_session_id);
+    DROP INDEX version_threads_by_thread;
+    CREATE INDEX version_threads_by_thread ON version_threads(thread_id, created_at, version_n);
+    CREATE INDEX versions_by_session ON versions(artifact_id, session_id, created_at);",
 ];
 
 #[cfg(test)]

@@ -657,6 +657,7 @@ fn hot_queries() -> Vec<Hot> {
                 "watches_by_artifact",
                 "threads_by_artifact",
                 "comments_by_thread",
+                "versions_by_session",
             ],
         ),
         (
@@ -667,6 +668,7 @@ fn hot_queries() -> Vec<Hot> {
                 "watches_by_artifact",
                 "threads_by_artifact",
                 "comments_by_thread",
+                "versions_by_session",
             ],
         ),
         (
@@ -900,8 +902,27 @@ fn check_all(c: &Connection, stats: &str) {
             !text.contains("comments_by_author") && !text.contains("mentions_by_viewer"),
             "{name} ({stats}) reaches comments by author or mention:\n{text}"
         );
+        if GALLERY_QUERIES.iter().any(|g| name.starts_with(g)) {
+            for d in &plan {
+                for ix in [
+                    "comments_by_thread",
+                    "version_threads_by_thread",
+                    "versions_by_session",
+                ] {
+                    assert!(
+                        !d.split_whitespace().any(|w| w == ix)
+                            || d.contains(&format!("COVERING INDEX {ix}")),
+                        "{name} ({stats}) reads a table row per {ix} entry:\n{text}"
+                    );
+                }
+            }
+        }
     }
 }
+
+/// The gallery's whole-home queries, by name prefix: they read comments and
+/// version links through covering indexes, never a row per entry.
+const GALLERY_QUERIES: &[&str] = &["attention of", "people of", "agents of"];
 
 #[test]
 fn hot_queries_use_their_indexes_with_and_without_statistics() {
