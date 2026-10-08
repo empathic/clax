@@ -200,28 +200,33 @@ pub async fn list(
         || iq.since.is_some()
         || iq.until.is_some()
         || iq.read != ReadFilter::All;
-    // A search or a count reads up to the whole inbox: the bulk lane.
-    let out = s
-        .store_call_bulk(move |db| {
-            let (rows, next) = db.inbox_list(&iq)?;
-            let items = views(db, &rows)?;
-            let unread = db.inbox_unread()?;
-            let mut out = json!({
-                "items": items,
-                "next_cursor": next.map(|n| n.to_string()),
-                "unread": unread,
-            });
-            if filtered {
-                let n = db.inbox_count(&iq, TOTAL_CAP + 1)?;
-                out["total"] = if n > TOTAL_CAP {
-                    json!(format!("{TOTAL_CAP}+"))
-                } else {
-                    json!(n)
-                };
-            }
-            Ok(out)
-        })
-        .await?;
+    // A filtered list (a search included) also counts what matches, which
+    // reads up to the whole inbox, so it waits in the bulk lane; an
+    // unfiltered page reads one page and the unread count.
+    let job = move |db: &clax_core::Store| {
+        let (rows, next) = db.inbox_list(&iq)?;
+        let items = views(db, &rows)?;
+        let unread = db.inbox_unread()?;
+        let mut out = json!({
+            "items": items,
+            "next_cursor": next.map(|n| n.to_string()),
+            "unread": unread,
+        });
+        if filtered {
+            let n = db.inbox_count(&iq, TOTAL_CAP + 1)?;
+            out["total"] = if n > TOTAL_CAP {
+                json!(format!("{TOTAL_CAP}+"))
+            } else {
+                json!(n)
+            };
+        }
+        Ok(out)
+    };
+    let out = if filtered {
+        s.store_call_bulk(job).await?
+    } else {
+        s.store_call(job).await?
+    };
     Ok(Json(out))
 }
 
