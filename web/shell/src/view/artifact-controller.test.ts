@@ -102,6 +102,25 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     ctl.dispose();
   });
 
+  it("has the page move itself to the address bar's fragment, leaving the frame's src and the gate as they were", async () => {
+    const { ctl, frame } = await started();
+    const posted: { type: string; hash?: string }[] = [];
+    frame.contentWindow!.postMessage = ((m: { type: string }) => { posted.push(m); }) as Window["postMessage"];
+    // Moved before the page greeted: handed over ahead of the welcome.
+    history.pushState(null, "", `/a/${ID}#early`);
+    dispatchEvent(new PopStateEvent("popstate"));
+    expect(posted).toEqual([]);
+    hello(frame.contentWindow!);
+    expect(posted.slice(0, 2)).toEqual([{ type: "clax:hash", hash: "#early" }, expect.objectContaining({ type: "clax:welcome" })]);
+    frame.dispatchEvent(new Event("load"));
+    posted.length = 0;
+    history.pushState(null, "", `/a/${ID}#later`);
+    dispatchEvent(new PopStateEvent("popstate"));
+    expect(posted).toEqual([{ type: "clax:hash", hash: "#later" }]);
+    expect(frame.getAttribute("src")).toBe(`/c/${ID}/v/2/`);
+    ctl.dispose();
+  });
+
   it("says when a lazy part of the bridge could not load, only for the greeted page and a known part", async () => {
     const { ctl, frame } = await started();
     frame.contentWindow!.postMessage = (() => {}) as Window["postMessage"];

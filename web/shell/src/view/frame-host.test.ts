@@ -39,7 +39,7 @@ describe("FrameHost", () => {
     expect(made).not.toBe(stale);
     expect(stale.isConnected).toBe(false);
   });
-  it("adopts a served frame only with the shell's exact attributes, and sends it to the fragment", () => {
+  it("adopts a served frame only with the shell's exact attributes, and keeps the fragment for its page rather than navigating it", () => {
     const attrs = (sandbox: string | null, allow = "clipboard-write; fullscreen", title = "artifact content") =>
       `<iframe class="frame" title="${title}" src="/c/x/v/1/" allow="${allow}"${sandbox === null ? "" : ` sandbox="${sandbox}"`}></iframe>`;
     for (const [markup, sandboxed] of [
@@ -61,8 +61,13 @@ describe("FrameHost", () => {
     const s = stage();
     s.insertAdjacentHTML("afterbegin", attrs(FRAME_SANDBOX));
     const served = s.querySelector("iframe")!;
-    expect(new FrameHost(s, () => {}).show("/c/x/v/1/#part-2", true, "1")).toBe(served);
-    expect(served.getAttribute("src")).toBe("/c/x/v/1/#part-2");
+    const host = new FrameHost(s, () => {});
+    expect(host.show("/c/x/v/1/#part-2", true, "1")).toBe(served);
+    expect(served.getAttribute("src")).toBe("/c/x/v/1/");
+    expect(host.takeFragment()).toBe("#part-2");
+    expect(host.takeFragment()).toBe(null);
+    expect(host.show("/c/x/v/1/#part-2", true, "1")).toBe(served);
+    expect(host.takeFragment(), "only an adoption keeps one").toBe(null);
   });
   it("removes a served frame it did not adopt", () => {
     const s = stage();

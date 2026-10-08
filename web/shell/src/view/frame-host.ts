@@ -20,8 +20,12 @@ function servedAs(el: HTMLIFrameElement, src: string, sandboxed: boolean): boole
  * on a render: it is replaced only when `key` (version and frame mode)
  * changes, and one the daemon already put in the stage is adopted when its
  * `src` (without the fragment) and attributes are what the shell would have
- * made; it is then sent to the fragment. Any other frame in the stage is
- * removed. Adopting a frame opens nothing: the gate opens only on a hello.
+ * made. Any other frame in the stage is removed. Adopting a frame opens nothing: the gate opens only on a hello.
+ * An adopted frame is not sent to `src`'s fragment (the daemon's `src` has
+ * none): setting it on a frame whose document has loaded is a fragment
+ * navigation that, in Chromium, fires a load event at the frame element
+ * with no new document. The fragment is kept for the caller instead
+ * (`takeFragment`), to hand to the page once it greets.
  * `onLoad` runs on every load of a document in it, navigations inside the
  * frame included (loads before the adoption are the caller's to replay). */
 export class FrameHost {
@@ -30,6 +34,8 @@ export class FrameHost {
   /** The `src` the frame was last given (not where it has navigated since). */
   private src = "";
   private readonly loaded = () => this.onLoad();
+  /** The fragment of the `src` an adopted frame was not sent to. */
+  private fragment: string | null = null;
 
   constructor(private readonly stage: HTMLElement, private readonly onLoad: () => void) {}
 
@@ -45,7 +51,8 @@ export class FrameHost {
     const served = this.el ? null : this.stage.querySelector<HTMLIFrameElement>(":scope > iframe.frame");
     if (served && servedAs(served, src, sandboxed)) {
       this.take(served, key, src);
-      if (served.getAttribute("src") !== src) served.src = src;
+      const hash = src.indexOf("#");
+      if (hash >= 0) this.fragment = src.slice(hash);
       return served;
     }
     served?.remove();
@@ -61,6 +68,13 @@ export class FrameHost {
     return el;
   }
 
+  /** The fragment an adopted frame was not sent to, once; null when none. */
+  takeFragment(): string | null {
+    const f = this.fragment;
+    this.fragment = null;
+    return f;
+  }
+
   /** Removes the frame, and a served one not adopted. */
   remove(): void {
     if (!this.el) this.stage.querySelector(":scope > iframe.frame")?.remove();
@@ -69,6 +83,7 @@ export class FrameHost {
     this.el = null;
     this.key = "";
     this.src = "";
+    this.fragment = null;
   }
 
   private take(el: HTMLIFrameElement, key: string, src: string): void {

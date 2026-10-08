@@ -267,6 +267,8 @@ type PartName = keyof Parts;
         break;
       case "clax:use-result": case "clax:call-result": case "clax:event": rpc.accept(m); break;
       case "clax:comment-mode": shellMode = m.on; followMode(); break;
+      // In place, with no entry of its own (the shell sends only a fragment).
+      case "clax:hash": location.replace(location.pathname + location.search + (m.hash || "#")); break;
       case "clax:resolve-anchors": {
         if (commentsContext.live) break;
         // The anchors take effect (for reflows too) once the page has parsed,

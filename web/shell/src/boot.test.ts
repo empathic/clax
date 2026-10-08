@@ -316,15 +316,20 @@ describe("the first load from the daemon's HTML", { timeout: MOUNT_TIMEOUT_MS },
     expect(answered(posted)).toEqual([]);
   });
 
-  it("opens the served frame at the URL's fragment and keeps it in the address bar", async () => {
+  it("hands the URL's fragment to the served frame's page ahead of its welcome, and keeps it in the address bar", async () => {
     stubFetch(async () => new Response("{}"));
     sessionStorage.setItem("clax.origin-ok", "0");
     history.replaceState(null, "", `/a/${ID}#part-2`);
     const root = served(SANDBOXED);
     const frame = root.querySelector("iframe")!;
+    const posted = posts(frame);
     await mountServed(root, boot({ mode: "sandbox", src: `/c/${ID}/v/2/` }));
     expect(root.querySelector("iframe")).toBe(frame);
-    expect(frame.getAttribute("src")).toBe(`/c/${ID}/v/2/#part-2`);
+    // The frame is not navigated: a fragment navigation the shell starts
+    // fires a load event at it in Chromium, which would close the gate.
+    expect(frame.getAttribute("src")).toBe(`/c/${ID}/v/2/`);
+    fromFrame(frame.contentWindow!, HELLO);
+    expect(posted.slice(0, 2)).toEqual([{ type: "clax:hash", hash: "#part-2" }, expect.objectContaining({ type: "clax:welcome" })]);
     expect(location.hash).toBe("#part-2");
   });
 });

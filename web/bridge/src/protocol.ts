@@ -50,6 +50,14 @@ export type CapEvent = { type: "clax:event"; ns: string; topic: string; data: un
 export type ShellToBridge =
   | { type: "clax:welcome"; mode: "comment" | "view" }
   | { type: "clax:comment-mode"; on: boolean }
+  /** Moves the page to the fragment `hash` (`#…`, or `""` for none) in
+   * place, replacing its history entry (the page's own `clax:hash` reports
+   * where it moved by itself): the page navigates itself, since in
+   * Chromium a fragment navigation of a cross-origin or sandboxed frame
+   * that the shell starts (its `src`, its `location`) fires a load event at
+   * the frame element with no new document, which the shell could not tell
+   * from a document that never greeted. */
+  | { type: "clax:hash"; hash: string }
   /** `sameVersion`: the thread was made on the version the frame shows (an
    * area's element fingerprint is then not checked: its content may be live). */
   | { type: "clax:resolve-anchors"; requestId: string; anchors: { id: string; anchor: Anchor; sameVersion?: boolean }[] }
@@ -108,5 +116,5 @@ export type BridgeToShell =
   | UseRequest
   | CallRequest;
 
-export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:use-result", "clax:call-result", "clax:event"]);
+export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:use-result", "clax:call-result", "clax:event"]);
 export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:use", "clax:call"]);
