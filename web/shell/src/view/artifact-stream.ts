@@ -48,7 +48,8 @@ export class ArtifactStream {
   private docs: (() => void) | null = null;
   private questions: (() => void) | null = null;
   private stopped = false;
-  /** Ends the owner check's wait for the browser to be idle. */
+  /** Ends the owner check: its wait for the browser to be idle, and its asking. */
+  private readonly life = new AbortController();
   private cancelOwner: () => void = () => {};
 
   constructor(private readonly id: string, private readonly v: ArtifactStreamView) {
@@ -57,7 +58,7 @@ export class ArtifactStream {
     const load = () => void import("../q").then(m => { if (!this.stopped) this.questions = m.artifact(id, { keyboardTrail, guardedAction }, pageStream()); }, () => {});
     // Only in the owner's browsers (those the token is served to); a stopped
     // stream asks nothing more.
-    const owner = () => void ownerBrowser().then(o => { if (o && !this.stopped) load(); });
+    const owner = () => void ownerBrowser(this.life.signal).then(o => { if (o && !this.stopped) load(); });
     if (typeof requestIdleCallback === "function") {
       const h = requestIdleCallback(owner, { timeout: 2000 });
       this.cancelOwner = () => cancelIdleCallback(h);
@@ -77,6 +78,7 @@ export class ArtifactStream {
   stop(): void {
     this.stopped = true;
     this.cancelOwner();
+    this.life.abort();
     this.questions?.();
     this.questions = null;
     this.main();

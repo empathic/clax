@@ -211,21 +211,41 @@ describe("the worker", () => {
     expect(at(subscribe)).toBeLessThan(at(summary[1]));
   });
 
-  it("joins a pairing under way when a panel opens mid-pairing: one native host, then the page, the summary and the topics", async () => {
+  it("joins a pairing under way when a panel opens mid-pairing: one native host, slow then answered, then the page, the summary and the topics", async () => {
     let open!: () => void;
     d.hostGate = new Promise(r => { open = r; });
     const before = pairings;
+    w.tabs.turnOn(4, URL1, "http://localhost:5173");
     void w.tabs.route(4, URL1);
     await settle();
     const port = { postMessage: () => {}, onDisconnect: { addListener: () => {} } };
     w.inbox.attach(port as never);
     await settle();
     expect(pairings - before).toBe(1);
+    // The host answers later than PAIR_SLOW_MS: the tab says so, and the joined check waits for that one answer.
+    await vi.advanceTimersByTimeAsync(PAIR_SLOW_MS);
+    expect(w.tabs.state(4)?.error).toMatchObject({ code: "host_slow" });
+    expect(d.log.some(l => l.path === "/api/inbox/summary")).toBe(false);
     open();
     await settle();
     expect(pairings - before).toBe(1);
+    expect(w.tabs.state(4)?.error).toBeNull();
     expect(w.tabs.state(4)?.page?.artifact_id).toBe(AID);
     expect(d.log.some(l => l.path === "/api/inbox/summary")).toBe(true);
+    expect(d.held.get(d.open()[0].id)).toEqual(new Set([`artifact:${AID}`, `working:${AID}`, "site:http://localhost:5173", "questions", "inbox"]));
+  });
+
+  it("checks the owner again when the first pairing lands after a check found none", async () => {
+    const port = { postMessage: () => {}, onDisconnect: { addListener: () => {} } };
+    // Nothing stored and nothing under way: the check finds no pairing and starts none.
+    w.inbox.attach(port as never);
+    await settle();
+    expect(w.inbox.owner).toBeNull();
+    expect(d.log.some(l => l.path === "/api/inbox/summary")).toBe(false);
+    // The first pairing (a tab's route), with no re-pair: the check runs again.
+    await w.tabs.route(4, URL1);
+    await settle();
+    expect(w.inbox.owner).toBe(true);
     expect(d.held.get(d.open()[0].id)).toEqual(new Set([`artifact:${AID}`, `working:${AID}`, "questions", "inbox"]));
   });
 

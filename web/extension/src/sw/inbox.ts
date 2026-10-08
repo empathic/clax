@@ -54,6 +54,8 @@ export class WorkerInbox {
   private checking: Promise<void> | null = null;
   private wait = 0;
   private tries = 0;
+  /** A kick came while a check ran: once it ends, it runs again unless it is done. */
+  private again = false;
   private timer: unknown = null;
 
   constructor(private readonly d: InboxDeps) {}
@@ -76,10 +78,12 @@ export class WorkerInbox {
     if (this.ports.size === 1 || this.owner === null) void this.start();
   }
 
-  /** A pairing may have landed (a panel watched a tab or asked to retry, or
-   * the worker paired again): an owner check that is not done runs again. */
+  /** A pairing may have landed (any pairing the worker made, or a panel
+   * watched a tab or asked to retry): an owner check that is not done runs
+   * again, after the one running now if there is one. */
   kick(): void {
-    if (!this.ports.size || this.subscribed || this.owner === false || this.checking || this.timer !== null) return;
+    if (this.checking) { this.again = true; return; }
+    if (!this.ports.size || this.subscribed || this.owner === false || this.timer !== null) return;
     this.tries = 0;
     void this.start();
   }
@@ -98,7 +102,10 @@ export class WorkerInbox {
 
   /** Checks the owner (once at a time), then subscribes the topics. */
   private start(): Promise<void> {
-    this.checking ??= this.check().finally(() => { this.checking = null; });
+    this.checking ??= this.check().finally(() => {
+      this.checking = null;
+      if (this.again) { this.again = false; this.kick(); }
+    });
     return this.checking;
   }
 
@@ -135,6 +142,7 @@ export class WorkerInbox {
     if (this.timer !== null) { (this.d.cancel ?? clearTimeout)(this.timer as never); this.timer = null; }
     if (this.subscribed) this.d.hub.detach(HUB_ID);
     this.subscribed = false;
+    this.again = false;
     this.tries = 0;
     this.wait = 0;
     // Nothing is announced while no stream holds the topics: what is kept would go stale.
