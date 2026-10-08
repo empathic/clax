@@ -1,8 +1,9 @@
 {
   "cheap_p95_ms": 50,
   "cheap_max_ms": 250,
-  "list_alone_ms": 13,
-  "attention_alone_ms": 6,
+  "list_alone_ratio": 3.1,
+  "attention_alone_ratio": 1.5,
+  "alone_ceiling_ms": 50,
   "inbox_alone_ms": 50,
   "quiet_idle_p95_ms": 5,
   "max_scale": 3,

@@ -25,18 +25,28 @@ of those artifacts addressing them, and ask questions. With the seed
 artifacts' `published` items that is replies + versions + questions + 300.
 
 Each round also times the gallery's two requests (GET /api/artifacts and
-GET /api/viewers/me/attention) alone, and the three inbox requests alone,
-nothing else running. A probe's p95 and max are taken per round; the gate judges the
+GET /api/viewers/me/attention) alone, interleaved with a calibration read
+(see `Calibration`), and the three inbox requests alone, nothing else
+running. A probe's p95 and max are taken per round; the gate judges the
 median over rounds, so one burst of machine load in one round does not fail
 it. Requests still in flight when a window closes are waited for and count.
 
 Budgets live in scripts/perf-daemon-budget.json:
 - `cheap_p95_ms`, `cheap_max_ms`: every probe under every load;
-- `list_alone_ms`, `attention_alone_ms`: the gallery list and the
-  attention request alone, each judged on the median over rounds of its
-  fastest sample. They sit a little under twice the measured values, so a
-  query that gets twice as slow fails here even when the queued limits
-  below, which follow the galleries' own latency, would let it pass;
+- `list_alone_ratio`, `attention_alone_ratio`: the gallery list and the
+  attention request alone, each as its fastest sample over the fastest
+  calibration read of the same round, judged on the median over rounds and
+  not scaled: the calibration, a fixed SQLite read on a private database
+  timed between the requests, carries the machine's speed and its other
+  work, so the ratio is about the same on a fast Mac, a slower CI runner
+  and a loaded machine. A ratio over budget is measured once more at once
+  and fails only if over again. The budgets are about 1.4 times the
+  measured ratios, so a request that gets twice as slow fails even when the
+  queued limits below, which follow the galleries' own latency, would let
+  it pass. Every run prints the ratios and the calibration's time, for
+  re-tuning;
+- `alone_ceiling_ms`: the two requests' fastest times, scaled as below: a
+  guard against a broken calibration;
 - `inbox_alone_ms`: each of the inbox tab's three requests alone: the
   median over rounds of each request's own median, each judged;
 - `quiet_idle_p95_ms`, `max_scale`: the limits are the budgets times
@@ -232,8 +242,12 @@ class Daemon:
         except BaseException:
             # The caller never gets a Daemon to stop: stop this one here.
             self.p.kill()
-            self.p.wait(5)
-            self.log.close()
+            try:
+                self.p.wait(5)
+            except subprocess.TimeoutExpired:
+                pass
+            finally:
+                self.log.close()
             raise
 
     def wait_ready(self):
@@ -641,28 +655,68 @@ def run_phase(d, loads, st, method, window):
 
 GALLERY_SAMPLES = 7
 # The gallery's two requests, each timed alone, with its budget's key.
-GALLERY_REQUESTS = [("/api/artifacts", "list_alone_ms"), ("/api/viewers/me/attention", "attention_alone_ms")]
+GALLERY_REQUESTS = [("/api/artifacts", "list_alone_ratio"), ("/api/viewers/me/attention", "attention_alone_ratio")]
 
 
-def gallery_alone(d, st, n=GALLERY_SAMPLES):
+class Calibration:
+    """A fixed SQLite read on a private database that clax's schema and code
+    cannot move: 3,000 "threads" of 4 "comments" (fixed seed), and per thread
+    two correlated index lookups, shaped like the attention query, in about
+    3.4 ms on an M-series Mac. Timed between the gallery requests, it shows
+    what this machine's speed and its other work make of a read of that
+    kind just then."""
+    THREADS, PER = 3000, 4
+    QUERY = """SELECT count(*), sum(own), max(other) FROM (
+      SELECT t.id,
+        EXISTS (SELECT 1 FROM c WHERE c.tid = t.id AND c.author = 'u_a') AS own,
+        (SELECT max(c.created) FROM c WHERE c.tid = t.id AND (c.author IS NULL OR c.author != 'u_a')) AS other
+      FROM t ORDER BY t.grp, t.created)"""
+
+    def __init__(self, path):
+        import random
+        import sqlite3
+        self.db = sqlite3.connect(path, check_same_thread=False)
+        self.db.executescript(
+            "CREATE TABLE t (id TEXT PRIMARY KEY, grp INTEGER NOT NULL, created TEXT NOT NULL);"
+            "CREATE TABLE c (id INTEGER PRIMARY KEY, tid TEXT NOT NULL, author TEXT, created TEXT NOT NULL, body TEXT NOT NULL);"
+            "CREATE INDEX c_by_t ON c(tid, created);")
+        rng = random.Random(1)
+        self.db.executemany("INSERT INTO t VALUES (?, ?, ?)",
+                            [(f"t{i:06d}", i % 300, f"2026-01-01T{i:06d}") for i in range(self.THREADS)])
+        self.db.executemany("INSERT INTO c (tid, author, created, body) VALUES (?, ?, ?, ?)",
+                            [(f"t{i:06d}", rng.choice(["u_a", "u_b", None]), f"2026-01-02T{i:06d}{k:02d}", "x" * 60)
+                             for i in range(self.THREADS) for k in range(self.PER)])
+        self.db.commit()
+        self.run()  # warm-up
+
+    def run(self):
+        t0 = time.perf_counter()
+        self.db.execute(self.QUERY).fetchall()
+        return (time.perf_counter() - t0) * 1000
+
+
+def gallery_alone(d, st, cal, n=GALLERY_SAMPLES):
     """Each of a gallery load's two requests alone (the seed viewer, with
-    the token, as the galleries send them): {path: its fastest ms}. The
-    fastest of the samples is the request's own cost with the least of the
-    machine's other work in it, so a budget can sit close to it."""
+    the token, as the galleries send them), interleaved with the
+    calibration read: calibration, list, calibration, attention, `n` times.
+    Returns {path: (its fastest ms, that over the fastest calibration)}.
+    The fastest samples are the reads' own cost with the least of the
+    machine's other work in them, and load in between hits both of an
+    interleaved pair, so the ratio leaves out the machine's speed and load."""
     c = Client(d.port, d.token)
     ck = {"Cookie": "clax_viewer=" + st["viewer"]}
     for path, _ in GALLERY_REQUESTS:
         c.req("GET", path, headers=ck)  # warm-up
-    each = {}
-    for path, _ in GALLERY_REQUESTS:
-        ts = []
-        for _ in range(n):
+    ts = {path: [] for path, _ in GALLERY_REQUESTS}
+    cals = []
+    for _ in range(n):
+        for path, _ in GALLERY_REQUESTS:
+            cals.append(cal.run())
             s, _, dt, _ = c.req("GET", path, headers=ck)
             expect(s == 200, f"{path}: {s}")
-            ts.append(dt * 1000)
-        each[path] = min(ts)
+            ts[path].append(dt * 1000)
     c.close()
-    return each
+    return {path: (min(xs), min(xs) / min(cals)) for path, xs in ts.items()}
 
 
 INBOX_SAMPLES = 7
@@ -704,6 +758,7 @@ def main(binary, budget_path, quick):
         print(f"seeded the inbox: {seed_cfg['inbox_replies']} agent replies on {st['inbox_threads']} owner threads, "
               f"{st['inbox_versions']} versions, {seed_cfg['inbox_questions']} questions: "
               f"{st['inbox_unread']} unread items in {st['inbox_seconds']:.1f} s", flush=True)
+        cal = Calibration(os.path.join(scratch, "calibration.db"))
         loads = Loads(d.port, d.token, st)
         rounds, window = cfg["rounds"], cfg["window_s"]
         per = {name: {label: [] for label in CHEAP} for name, _ in PHASES}
@@ -713,7 +768,7 @@ def main(binary, budget_path, quick):
         inbox = {path: [] for path in INBOX_REQUESTS}
         for r in range(rounds):
             t0 = time.perf_counter()
-            gallery_each = gallery_alone(d, st)
+            gallery_each = gallery_alone(d, st, cal)
             for path, v in gallery_each.items():
                 gallery[path].append(v)
             inbox_each = inbox_alone(d)
@@ -726,9 +781,19 @@ def main(binary, budget_path, quick):
                 for label in CHEAP:
                     per[name][label].append(res[label])
                 infos[name].append(info)
-            print(f"round {r + 1}/{rounds}: {time.perf_counter() - t0:.1f} s, gallery alone "
-                  + ", ".join(f"{p} {v:.1f} ms" for p, v in gallery_each.items()) + "; inbox alone " + ", ".join(f"{p} {v:.1f} ms" for p, v in inbox_each.items()),
+            calib = next(iter(gallery_each.values()))
+            print(f"round {r + 1}/{rounds}: {time.perf_counter() - t0:.1f} s, calibration {calib[0] / calib[1]:.2f} ms, gallery alone "
+                  + ", ".join(f"{p} {ms:.1f} ms (x{q:.2f})" for p, (ms, q) in gallery_each.items()) + "; inbox alone " + ", ".join(f"{p} {v:.1f} ms" for p, v in inbox_each.items()),
                   flush=True)
+        # A ratio over its budget is measured once more, at once: a real
+        # regression is over again, a burst of the machine's other work
+        # most likely not.
+        over = [path for path, key in GALLERY_REQUESTS
+                if statistics.median(q for _, q in gallery[path]) > cfg[key]]
+        confirm = gallery_alone(d, st, cal) if over else {}
+        if over:
+            print("gallery alone over budget, measured again: "
+                  + ", ".join(f"{p} {ms:.1f} ms (x{q:.2f})" for p, (ms, q) in confirm.items()), flush=True)
     except SetupError as e:
         print(f"perf-daemon: setup failed: {e}", file=sys.stderr)
         if d is not None:
@@ -747,7 +812,7 @@ def main(binary, budget_path, quick):
     quiet = cfg["quiet_idle_p95_ms"]
     scale = min(cfg["max_scale"], max(1.0, idle_p95 / quiet))
     lim_p95, lim_max = cfg["cheap_p95_ms"] * scale, cfg["cheap_max_ms"] * scale
-    lim_gallery = {path: cfg[key] * scale for path, key in GALLERY_REQUESTS}
+    ceiling = cfg["alone_ceiling_ms"] * scale
     lim_inbox = cfg["inbox_alone_ms"] * scale
     # Under a queued load: at least queue_ratio times the load's own requests.
     phase_scale = {name: max(scale, min(cfg["max_scale"], cfg["queue_ratio"] * med(xs) / cfg["cheap_p95_ms"]))
@@ -756,7 +821,8 @@ def main(binary, budget_path, quick):
     print()
     print(f"idle p95 {idle_p95:.1f} ms (quiet is {quiet} ms or less): limits scaled by {scale:.2f}: "
           f"p95 {lim_p95:.0f} ms, max {lim_max:.0f} ms, "
-          + ", ".join(f"{p} alone {v:.1f} ms" for p, v in lim_gallery.items())
+          + ", ".join(f"{p} alone x{cfg[k]:.2f} the calibration" for p, k in GALLERY_REQUESTS)
+          + f" and {ceiling:.0f} ms"
           + f", inbox alone {lim_inbox:.0f} ms")
     for name, sc in phase_scale.items():
         print(f"{name}: its requests {med(queued[name]):.0f} ms on average: limits scaled by {sc:.2f}: "
@@ -782,13 +848,18 @@ def main(binary, budget_path, quick):
             print(f"{name:<14} {label:<28} {n:>5} {v95:>9.1f} {vmax:>9.1f}  {verdict}")
     # Each request is judged on its own median, so one slow request cannot
     # hide behind a fast one.
-    for path, _ in GALLERY_REQUESTS:
-        v = med(gallery[path])
-        ok = v <= lim_gallery[path]
+    # The ratio is judged unscaled: the calibration already carries the
+    # machine's speed and load. Over budget, it fails only when measured
+    # over again just after; the absolute ceiling guards a broken
+    # calibration.
+    for path, key in GALLERY_REQUESTS:
+        ms, q = med(x[0] for x in gallery[path]), med(x[1] for x in gallery[path])
+        over = q > cfg[key] and confirm[path][1] > cfg[key]
+        ok = not over and ms <= ceiling
         if not ok:
             failed.append(f"gallery alone {path}")
         label = "GET " + path
-        print(f"{'gallery alone':<14} {label:<28} {len(gallery[path]) * GALLERY_SAMPLES:>5} {v:>9.1f} {'':>9}  {'ok' if ok else 'FAIL'}")
+        print(f"{'gallery alone':<14} {label:<28} {len(gallery[path]) * GALLERY_SAMPLES:>5} {ms:>9.1f} {'x' + format(q, '.2f'):>9}  {'ok' if ok else 'FAIL'}")
     for path in INBOX_REQUESTS:
         v = med(inbox[path])
         ok = v <= lim_inbox
