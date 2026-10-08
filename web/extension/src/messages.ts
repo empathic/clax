@@ -7,7 +7,7 @@
 // unknown field, a field read through a prototype, or a symbol key refuses
 // it.
 import type { Anchor, AnchorResult } from "../../bridge/src/protocol";
-import type { Participants, Version } from "../../shell/src/api";
+import type { AnswerBody, InboxFilter, InboxItem, InboxKind, InboxPage, Participants, QuestionView, Version } from "../../shell/src/api";
 import type { Thread } from "../../shell/src/threads";
 import type { PresenceView } from "../../shell/src/view/presence-model";
 import type { Working } from "../../shell/src/view/working-model";
@@ -28,6 +28,12 @@ export const PICK_ID = /^[0-9a-f]{32}$/;
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const HANDLE = /^a_[0-9a-f]{22}$/;
 const ARTIFACT_ID = /^[0-9a-hjkmnp-tv-z]{12}$/;
+/** An inbox item's ID: a ULID, or `b` and 24 hex digits for an item filled in from the history. */
+export const ITEM_ID = /^(?:[0-9A-HJKMNP-TV-Z]{26}|b[0-9a-f]{24})$/;
+/** The most item IDs one bulk mark names (the daemon's bound). */
+export const MAX_MARK = 500;
+/** The longest answer text (the daemon's bound). */
+export const MAX_ANSWER = 10_000;
 
 export type Rect = { x: number; y: number; w: number; h: number };
 
@@ -167,7 +173,25 @@ export type WorkerToPanel =
   /** The clip `clip` asked for, as a `data:image/png` URL; null when the thread has none or it could not be fetched. */
   | { t: "clip"; req: number; url: string | null }
   /** The page `far-page` asked for: its live agents and versions; null when the thread is not in the site's listing or the page could not be read. */
-  | { t: "far-page"; req: number; page: FarPage | null };
+  | { t: "far-page"; req: number; page: FarPage | null }
+  /** The owner's inbox (spec 2026-10-06-agent-questions-and-inbox §9.6),
+   * told on a panel's connect and whenever it is fetched again: whether the
+   * daemon takes the extension as the owner (null until it answered), the
+   * unread count, and every open question, oldest first (each panel shows
+   * those about its page). */
+  | { t: "inbox"; owner: boolean | null; unread: number; questions: QuestionView[] }
+  /** A question as it is now (a `question` event). */
+  | { t: "q-event"; question: QuestionView }
+  /** An inbox item as it is now (made, marked, or its source changed);
+   * null: what the panel shows must be fetched again (a bulk mark). */
+  | { t: "inbox-event"; item: InboxItem | null; unread: number }
+  /** The answer to `q-answer`, `q-decline` or `q-release`: the question
+   * after it, or (`closed`) as something else closed it first. */
+  | { t: "q-done"; req: number; question: QuestionView; closed: boolean }
+  /** The answer to `inbox-page`. */
+  | { t: "inbox-page"; req: number; page: InboxPage }
+  /** The answer to `inbox-mark` and `inbox-mark-all`: the item when one was marked, how many were, and the unread count after. */
+  | { t: "marked"; req: number; item: InboxItem | null; marked: number; unread: number };
 /** Another page of the tab's site, as a thread of it opened in the panel needs it. */
 export type FarPage = { artifactId: string; agents: Participants["agents"]; versions: VersionTag[] };
 
@@ -213,6 +237,23 @@ export type PanelToWorker =
   /** Asks for every site Clax has live pages of: answered by `sites`. */
   | { t: "list-sites" }
   | { t: "retry" }
+  /** The owner's questions and inbox (spec 2026-10-06-agent-questions-and-inbox
+   * §9.6), on no tab: each is a request, answered by its `q-done`,
+   * `inbox-page` or `marked`, or a `failed` with its `req`. */
+  | { t: "q-answer"; req: number; questionId: string; body: AnswerBody }
+  | { t: "q-decline"; req: number; questionId: string }
+  /** "Answer in the terminal" (mirrored questions). */
+  | { t: "q-release"; req: number; questionId: string }
+  /** One page of the inbox matching `filter`, after cursor `before`. */
+  | { t: "inbox-page"; req: number; filter: InboxFilter; before: string | null }
+  /** Marks items read, or one item unread (`ids` names one then). */
+  | { t: "inbox-mark"; req: number; ids: string[]; read: boolean }
+  /** Marks every unread item matching `filter` read, up to `upto` (the newest `seq` shown). */
+  | { t: "inbox-mark-all"; req: number; filter: InboxFilter | null; upto: number | null }
+  /** Opens a daemon path (an item's `url`): a live page's item focuses a
+   * tab showing that page when there is one, else a new tab opens it on
+   * the paired daemon. */
+  | { t: "open-url"; url: string }
   /** Whether the panel's document is visible: the worker reports the owner here only while it is. */
   | { t: "visible"; on: boolean }
   | { t: "ping" };
@@ -355,6 +396,12 @@ export function isToPanel(m: unknown): m is WorkerToPanel {
     case "sites": return has("sites") && Array.isArray(m.sites) && m.sites.length <= MAX_SITES && m.sites.every(siteChoice);
     case "clip": return has("req", "url") && count(m.req) && (m.url === null || (str(m.url, MAX_CLIP_URL) && m.url.startsWith("data:image/png;base64,")));
     case "far-page": return has("req", "page") && count(m.req) && (m.page === null || farPage(m.page));
+    case "inbox": return has("owner", "unread", "questions") && (m.owner === null || bool(m.owner)) && count(m.unread) && Array.isArray(m.questions) && m.questions.every(obj);
+    case "q-event": return has("question") && obj(m.question);
+    case "inbox-event": return has("item", "unread") && (m.item === null || obj(m.item)) && count(m.unread);
+    case "q-done": return has("req", "question", "closed") && count(m.req) && obj(m.question) && bool(m.closed);
+    case "inbox-page": return has("req", "page") && count(m.req) && obj(m.page) && Array.isArray(m.page.items);
+    case "marked": return has("req", "item", "marked", "unread") && count(m.req) && (m.item === null || obj(m.item)) && count(m.marked) && count(m.unread);
     default: return false;
   }
 }
@@ -392,6 +439,26 @@ export function isToComposer(m: unknown): m is WorkerToComposer {
   }
 }
 
+const INBOX_KINDS = new Set<string>(["reply", "version", "published", "question", "finished"] satisfies InboxKind[]);
+const FILTER = ["q", "kind", "artifact", "agent", "since", "until", "read"];
+/** A date (`YYYY-MM-DD`) or an RFC 3339 time; the daemon parses it. */
+const when = (v: unknown) => str(v, 64) && /^\d{4}-\d{2}-\d{2}(?:[T ][0-9:.]+(?:Z|[+-]\d{2}:?\d{2})?)?$/.test(v);
+/** An inbox search as the panel builds one; the daemon validates it again. */
+const filter = (v: unknown): v is InboxFilter => shape(v, [], FILTER)
+  && (v.q === undefined || str(v.q, 1000))
+  && (v.kind === undefined || (Array.isArray(v.kind) && v.kind.length <= INBOX_KINDS.size && v.kind.every(k => typeof k === "string" && INBOX_KINDS.has(k))))
+  && (v.artifact === undefined || (typeof v.artifact === "string" && ARTIFACT_ID.test(v.artifact)))
+  && (v.agent === undefined || (typeof v.agent === "string" && /^[a-z0-9_-]{1,64}$/.test(v.agent)))
+  && (v.since === undefined || when(v.since)) && (v.until === undefined || when(v.until))
+  && (v.read === undefined || v.read === "unread" || v.read === "read" || v.read === "all");
+/** One answer per question (one to four): at most four labels and a text, each within the daemon's bounds. */
+const answerBody = (v: unknown): v is AnswerBody => shape(v, ["answers"]) && Array.isArray(v.answers) && v.answers.length >= 1 && v.answers.length <= 4
+  && v.answers.every(a => shape(a, ["selected", "text"]) && Array.isArray(a.selected) && a.selected.length <= 4
+    && a.selected.every(l => typeof l === "string" && l.length >= 1 && l.length <= 100) && strOrNull(a.text, MAX_ANSWER));
+/** A path on the daemon: rooted at `/`, never `//` (another host) or a backslash, printable ASCII. */
+export const daemonPath = (v: unknown): v is string => str(v, MAX_URL) && /^\/(?![/\\])[\x21-\x7e]*$/.test(v) && !v.includes("\\");
+const itemId = (v: unknown) => typeof v === "string" && ITEM_ID.test(v);
+
 export function isFromPanel(m: unknown): m is PanelToWorker {
   if (!obj(m) || !Object.hasOwn(m, "t")) return false;
   const has = (...keys: string[]) => shape(m, ["t", ...keys]);
@@ -420,6 +487,13 @@ export function isFromPanel(m: unknown): m is PanelToWorker {
     case "split": return has("req", "origin") && count(m.req) && origin(m.origin);
     case "answer": return has("with", "answer") && origin(m.with) && (m.answer === "never" || m.answer === "later");
     case "suggest": case "list-sites": return has();
+    case "q-answer": return has("req", "questionId", "body") && count(m.req) && ulid(m.questionId) && answerBody(m.body);
+    case "q-decline": case "q-release": return has("req", "questionId") && count(m.req) && ulid(m.questionId);
+    case "inbox-page": return has("req", "filter", "before") && count(m.req) && filter(m.filter) && (m.before === null || (typeof m.before === "string" && /^\d{1,20}$/.test(m.before)));
+    case "inbox-mark": return has("req", "ids", "read") && count(m.req) && bool(m.read) && Array.isArray(m.ids) && m.ids.length >= 1
+      && m.ids.length <= (m.read ? MAX_MARK : 1) && m.ids.every(itemId);
+    case "inbox-mark-all": return has("req", "filter", "upto") && count(m.req) && (m.filter === null || filter(m.filter)) && (m.upto === null || count(m.upto));
+    case "open-url": return has("url") && daemonPath(m.url);
     case "retry": case "ping": return has();
     default: return false;
   }

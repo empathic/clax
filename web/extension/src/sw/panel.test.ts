@@ -12,8 +12,9 @@ const thread = (id: string, status = "open") => ({ id, artifact_id: AID, status 
 const FAR_AID = "9x8w7v6t5s4r";
 const T3 = "01J9CCCCCCCCCCCCCCCCCCCCCC";
 
+const Q = "01J9QQQQQQQQQQQQQQQQQQQQQQ";
 const SITE = { key: "http://localhost:5173", name: "http://localhost:5174", joined: true, origins: [{ origin: "http://localhost:5174", joined_at: "t", last_used_at: "t2" }, { origin: "http://localhost:5173", joined_at: "t", last_used_at: "t1" }] };
-function setup(over: { remaining?: number; page?: typeof page | null; admits?: boolean; allUrls?: boolean; fail?: string; failCode?: string; error?: string; site?: string[]; down?: string[]; denied?: string[]; loading?: boolean; restoring?: Promise<void>;
+function setup(over: { closed?: boolean; remaining?: number; page?: typeof page | null; admits?: boolean; allUrls?: boolean; fail?: string; failCode?: string; error?: string; site?: string[]; down?: string[]; denied?: string[]; loading?: boolean; restoring?: Promise<void>;
   /** The threads of another page of the tab's site, in its listing. */
   far?: { id: string; artifact_id: string; clip_url: string | null }[] } = {}) {
   const calls: string[] = [];
@@ -43,14 +44,26 @@ function setup(over: { remaining?: number; page?: typeof page | null; admits?: b
       sites: api("sites", { sites: [{ site: SITE }] }),
       clip: api("clip", "data:image/png;base64,iVBORw0KGgo="),
       artifact: api("artifact", { artifact: { participants: { people: [], agents: [{ handle: `a_${"1".repeat(22)}`, harness: "claude", live: true }] } }, versions: [{ artifact_id: "x", n: 1, created_at: "t", label: "l", note: "n", files: { "index.html": {} }, agent_harness: "claude" }] }),
+      closeQuestion: api("closeQuestion", { question: { id: Q }, closed: over.closed ?? false }),
+      markItem: api("markItem", { item: { id: T1, read: true }, unread: 3 }),
+      markItems: api("markItems", { marked: 2, unread: 1 }),
     } as never,
+    inbox: {
+      page: async (f: unknown, before: string | null) => { calls.push(`page ${JSON.stringify(f)} ${before}`); return { items: [], next_cursor: null, unread: 4 }; },
+      count: (n: number) => { calls.push(`count ${n}`); },
+    },
+    open: {
+      daemon: async () => "http://127.0.0.1:7480",
+      create: async (url: string) => { calls.push(`create ${url}`); },
+      focus: async (tabId: number) => { calls.push(`focus ${tabId}`); },
+    },
     tabs: {
       ready: async () => { waited++; await over.restoring; },
       commentOn: async (tabId: number) => {
         if (over.loading) throw Object.assign(new Error("The page was still loading. Try again."), { code: "page_loading" });
         calls.push(`comment-on ${tabId}`);
       },
-      state: () => (pg === null ? undefined : { url: URL1, page: pg, threads: [thread(T1)], overlay: true, on: "http://localhost:5173", error: over.error ? { code: over.error, message: "m" } : null } as never),
+      state: (tabId: number) => (pg === null || tabId === 9 ? undefined : { url: URL1, page: pg, threads: [thread(T1)], overlay: true, on: "http://localhost:5173", error: over.error ? { code: over.error, message: "m" } : null } as never),
       admits: () => over.admits ?? false,
       route: async (tabId: number, url: string, fresh?: boolean) => { calls.push(`route ${tabId} ${url} ${!!fresh}`); return {} as never; },
       applied: (tabId: number, t: { id: string }) => calls.push(`applied ${tabId} ${t.id}`),
@@ -58,6 +71,7 @@ function setup(over: { remaining?: number; page?: typeof page | null; admits?: b
       setViewer: (v: { display_name: string }) => calls.push(`viewer ${v.display_name}`),
       select: (tabId: number, id: string | null) => calls.push(`select ${tabId} ${id}`),
       setCommentMode: (tabId: number, on: boolean) => calls.push(`comment-mode ${tabId} ${on}`),
+      onTabs: () => [9, 4],
       openThread: (tabId: number, id: string) => { calls.push(`open ${tabId} ${id}`); return id === T1 ? { path: "/users/7?x#/y", origins: over.site ?? ["http://localhost:5173"] } : null; },
       opening: (tabId: number, id: string, url: string) => { calls.push(`opening ${tabId} ${id} ${url}`); },
     } as never,
@@ -75,7 +89,7 @@ function setup(over: { remaining?: number; page?: typeof page | null; admits?: b
     turnOff: async tabId => { calls.push(`turn-off ${tabId}`); },
   };
   const run = (m: PanelToWorker, tabId: number | null = 4) => panelAction(d, tabId, m, r => out.push(r));
-  return { calls, out, run, waited: () => waited };
+  return { calls, out, run, d, waited: () => waited };
 }
 
 describe("panelAction on the tab's site", () => {
@@ -373,5 +387,63 @@ describe("panelAction", () => {
     const other = setup({ error: "http_500" });
     await other.run({ t: "retry" });
     expect(other.calls).toEqual([`route 4 ${URL1} true`]);
+  });
+});
+
+describe("panelAction for the owner's questions and inbox", () => {
+  it("answers, skips and moves questions through the owner routes, on no tab, and says when something closed one first", async () => {
+    const s = setup();
+    const body = { answers: [{ selected: ["Two"], text: null }] };
+    await s.run({ t: "q-answer", req: 1, questionId: Q, body }, null);
+    await s.run({ t: "q-decline", req: 2, questionId: Q }, null);
+    await s.run({ t: "q-release", req: 3, questionId: Q }, 4);
+    expect(s.calls).toEqual([`closeQuestion "${Q}" "answer" ${JSON.stringify(body)}`, `closeQuestion "${Q}" "decline" `, `closeQuestion "${Q}" "release" `]);
+    expect(s.out).toEqual([1, 2, 3].map(req => ({ t: "q-done", req, question: { id: Q }, closed: false })));
+    const c = setup({ closed: true });
+    await c.run({ t: "q-answer", req: 7, questionId: Q, body }, null);
+    expect(c.out).toEqual([{ t: "q-done", req: 7, question: { id: Q }, closed: true }]);
+  });
+
+  it("calls the API's methods on the API, as the real one needs its pairing", async () => {
+    const s = setup();
+    const out: WorkerToPanel[] = [];
+    const real = { pairing: "p", closeQuestion(this: { pairing: string }, qid: string) { return Promise.resolve({ question: { id: qid, via: this.pairing }, closed: false }); },
+      markItem(this: { pairing: string }) { return Promise.resolve({ item: { id: this.pairing }, unread: 0 }); } };
+    await panelAction({ ...s.d, api: real as never }, null, { t: "q-decline", req: 1, questionId: Q }, r => out.push(r));
+    await panelAction({ ...s.d, api: real as never }, null, { t: "inbox-mark", req: 2, ids: [T1], read: true }, r => out.push(r));
+    expect(out).toEqual([{ t: "q-done", req: 1, question: { id: Q, via: "p" }, closed: false }, { t: "marked", req: 2, item: { id: "p" }, marked: 1, unread: 0 }]);
+  });
+
+  it("answers a failed request with its failure and its request number", async () => {
+    const s = setup({ fail: "closeQuestion", failCode: "invalid_answer" });
+    await s.run({ t: "q-answer", req: 5, questionId: Q, body: { answers: [{ selected: [], text: "x" }] } }, null);
+    expect(s.out).toEqual([{ t: "failed", code: "invalid_answer", message: "No such thread.", req: 5 }]);
+  });
+
+  it("pages the inbox with the panel's filter and cursor, and marks items, the count going to every panel", async () => {
+    const s = setup();
+    await s.run({ t: "inbox-page", req: 1, filter: { q: "x", read: "unread" }, before: "42" }, null);
+    expect(s.calls).toEqual([`page {"q":"x","read":"unread"} 42`]);
+    expect(s.out[0]).toEqual({ t: "inbox-page", req: 1, page: { items: [], next_cursor: null, unread: 4 } });
+    await s.run({ t: "inbox-mark", req: 2, ids: [T1], read: false }, null);
+    expect(s.calls.slice(1)).toEqual([`markItem "${T1}" false`, "count 3"]);
+    expect(s.out[1]).toEqual({ t: "marked", req: 2, item: { id: T1, read: true }, marked: 1, unread: 3 });
+    await s.run({ t: "inbox-mark", req: 3, ids: [T1, T2], read: true }, null);
+    expect(s.calls.slice(3)).toEqual([`markItems {"ids":["${T1}","${T2}"]}`, "count 1"]);
+    expect(s.out[2]).toEqual({ t: "marked", req: 3, item: null, marked: 2, unread: 1 });
+    await s.run({ t: "inbox-mark-all", req: 4, filter: { q: "x" }, upto: 99 }, null);
+    expect(s.calls.slice(5)).toEqual([`markItems {"all":true,"filter":{"q":"x"},"upto":99}`, "count 1"]);
+  });
+
+  it("opens a live page's item in the tab showing that page, its thread selected, and anything else on the daemon in a new tab", async () => {
+    const s = setup();
+    // Tab 4 shows the live page AID (tab 9 is unknown).
+    await s.run({ t: "open-url", url: `/a/${AID}?thread=${T2}` }, null);
+    expect(s.calls).toEqual(["focus 4", `select 4 ${T2}`]);
+    await s.run({ t: "open-url", url: `/a/${AID}/v/3` }, null);
+    expect(s.calls.slice(2)).toEqual(["focus 4"]);
+    await s.run({ t: "open-url", url: "/a/8r4m0nzy3c5v?thread=x" }, null);
+    await s.run({ t: "open-url", url: "/inbox?q=01J9QQQQQQQQQQQQQQQQQQQQQQ" }, null);
+    expect(s.calls.slice(3)).toEqual(["create http://127.0.0.1:7480/a/8r4m0nzy3c5v?thread=x", "create http://127.0.0.1:7480/inbox?q=01J9QQQQQQQQQQQQQQQQQQQQQQ"]);
   });
 });

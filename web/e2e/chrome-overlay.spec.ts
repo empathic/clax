@@ -15,6 +15,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createServer } from "vite";
 import { type Live, expect as baseExpect, freePort, test } from "./extension-fixtures";
+import { publishAs } from "./fixtures";
 
 // Each test here runs Chromium, a daemon and a dev server of its own, and
 // most waits are a round trip through all three, the first through the
@@ -30,7 +31,7 @@ test.describe.configure({ timeout: TEST_MS });
 
 type Hook = {
   comment(tabId: number, url: string): Promise<void>;
-  state(tabId: number): { on: string | null; commentMode: boolean; overlay: boolean; active: boolean; route: string | null; error: unknown; selected: string | null; resolved: Record<string, { found: boolean }>; threads: unknown[] } | undefined;
+  state(tabId: number): { on: string | null; page?: { artifact_id: string } | null; commentMode: boolean; overlay: boolean; active: boolean; route: string | null; error: unknown; selected: string | null; resolved: Record<string, { found: boolean }>; threads: unknown[] } | undefined;
 };
 const hook = (live: Live) => ({
   /** What the command does once the origin's permission is held: turns Clax on in the tab (records the activeTab grant), or flips comment mode where it is on. */
@@ -137,6 +138,14 @@ class SidePanel {
   async goTo(text: string): Promise<void> {
     const ok = await this.eval<boolean>(`(() => { const card = [...document.querySelectorAll(".far")].find(c => c.textContent.includes(${JSON.stringify(text)})); const b = card?.querySelector("button[aria-label^='Go to page']"); if (b) setTimeout(() => b.click()); return !!b; })()`);
     if (!ok) throw new Error(`no card saying ${text}`);
+  }
+
+  /** Sends the CDP command `method` to the panel's page. */
+  async send<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+    const id = ++this.seq;
+    const answer = new Promise<unknown>(r => this.waiting.set(id, r));
+    await this.cdp.send("Target.sendMessageToTarget", { sessionId: this.session, message: JSON.stringify({ id, method, params }) });
+    return (await within(answer, `the panel did not answer ${method}`).finally(() => this.waiting.delete(id))) as T;
   }
 
   /** Clicks the panel's first button whose label or text matches `re`. The
@@ -917,4 +926,89 @@ test.describe("a real click on the toolbar icon, holding no site's permission (t
     expect(await h.panelEnabled(tabId)).toBe(false);
     await expect.poll(capture).toMatch(/activeTab/);
   });
+});
+
+test("the panel shows the live page's questions above its threads, answers one, and reads the inbox", async ({ live }, testInfo) => {
+  const { siteUrl } = live;
+  const origin = new URL(siteUrl).origin;
+  const home = `${origin}/`;
+  const h = hook(live);
+  const tid = await liveThread(live, home, "#save", "Save", "Home button note");
+  const aid: string = (await api(live, `/api/live/pages?url=${encodeURIComponent(home)}`)).page.artifact_id;
+  const session = await api(live, "/api/sessions", { method: "POST", body: JSON.stringify({ harness: "claude", harness_session_id: "e2e-questions", cwd: "/tmp/clax", pid: null, parent_pid: null }) });
+  const sid: string = session.session?.id ?? session.id;
+  const ask = async (artifactId: string, question: string, header: string, options: unknown[]) => (await api(live, `/api/sessions/${sid}/questions`, { method: "POST", body: JSON.stringify({
+    source: "ask", artifact_id: artifactId, questions: [{ question, header, multi_select: false, other: true, options }],
+  }) })).question.id as string;
+  const qLive = await ask(aid, "Which label should the save button use?", "Label", [
+    { label: "Save", description: "Short, as now", recommended: true }, { label: "Save changes", description: "Says what it saves" }]);
+  // Another page's: the Inbox tab shows it, the page's view does not.
+  const { artifact } = await publishAs(live.daemon.base, live.daemon.token, sid, "Quarterly Review", { "index.html": "<main><h2>Quarterly goals</h2></main>" });
+  await ask(artifact.id, "Which layout should the dashboard use?", "Layout", [{ label: "Two columns", preview: "+--------+-------+\n| charts | table |\n+--------+-------+" }, { label: "One column" }]);
+  // The owner sends the thread to the agent, which replies.
+  await api(live, `/api/artifacts/${aid}/threads/${tid}/send`, { method: "POST", body: "{}" });
+  expect((await api(live, `/api/artifacts/${aid}/threads/${tid}/comments`, { method: "POST", body: JSON.stringify({ body: "Renamed it to Save changes.", author_kind: "agent" }) }, sid)).comment?.author_kind).toBe("agent");
+
+  const page = await live.ctx.newPage();
+  await page.goto(home);
+  const tabId = await tabIdOf(live, home);
+  await h.comment(tabId, home);
+  // The tab's page is looked up (the worker paired) before the panel opens.
+  await expect.poll(async () => (await h.state(tabId))?.page?.artifact_id ?? null).toBe(aid);
+  const panel = await SidePanel.open(live, page, tabId);
+  // The side panel's width (spec §9.6: 360 px).
+  await panel.send("Emulation.setDeviceMetricsOverride", { width: 360, height: 900, deviceScaleFactor: 2, mobile: false });
+  const shot = async (name: string) => {
+    // Once the colours' transitions (a scheme just switched) have run.
+    await panel.eval<void>("Promise.all(document.getAnimations().map(a => a.finished)).then(() => {})");
+    const { data } = await panel.send<{ data: string }>("Page.captureScreenshot", { format: "png" });
+    const path = testInfo.outputPath(`${name}.png`);
+    writeFileSync(path, Buffer.from(data, "base64"));
+    await testInfo.attach(name, { path, contentType: "image/png" });
+  };
+  const scheme = (v: "light" | "dark") => panel.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: v }] });
+  await scheme("light");
+  await expect.poll(() => panel.text()).toContain("Which label should the save button use?");
+  const text = await panel.text();
+  expect(text.indexOf("Questions for you")).toBeLessThan(text.indexOf("Home button note"));
+  expect(text).not.toContain("Which layout should the dashboard use?");
+  const unread = async () => (await api(live, "/api/inbox/summary")).unread as number;
+  const tabLabel = () => panel.eval<string>(`document.querySelector("#ptab-inbox")?.getAttribute("aria-label") ?? ""`);
+  // Two questions, the reply and the new artifact.
+  expect(await unread()).toBe(4);
+  await expect.poll(tabLabel).toBe("Inbox, 4 unread");
+  await shot("page-light");
+  await scheme("dark");
+  await shot("page-dark");
+  await scheme("light");
+
+  // Answered from the panel: the daemon records it as through the extension.
+  await panel.eval<void>(`(() => { [...document.querySelectorAll(".qcard input[data-opt]")].find(i => i.value === "Save changes").click(); })()`);
+  await panel.click(/^ ?Answer claude/);
+  await expect.poll(async () => (await api(live, `/api/questions/${qLive}`)).question?.status).toBe("answered");
+  expect((await api(live, `/api/questions/${qLive}`)).question.answered_via).toBe("extension");
+  await expect.poll(() => panel.text()).toContain("Answered");
+  await shot("page-answered");
+
+  // The Inbox tab: unread first, the other page's question as a card, the read ones folded.
+  await panel.click(/^Inbox/);
+  await expect.poll(() => panel.text()).toContain("Which layout should the dashboard use?");
+  await expect.poll(() => panel.text()).toContain("replied on");
+  await shot("inbox-unread-light");
+  await scheme("dark");
+  await shot("inbox-unread-dark");
+  await scheme("light");
+  await panel.click(/^ ?Show \d+ read item/);
+  await expect.poll(() => panel.text()).toContain("Hide read items");
+  await shot("inbox-all-light");
+  // Search: typed into the box, applied after a pause.
+  await panel.eval<void>(`(() => { const i = document.querySelector('input[aria-label="Search the inbox"]'); i.value = "renamed"; i.dispatchEvent(new Event("input", { bubbles: true })); })()`);
+  await expect.poll(() => panel.text()).not.toContain("Which layout should the dashboard use?");
+  expect(await panel.text()).toContain("Renamed it to Save changes.");
+  await shot("inbox-search-light");
+  // Mark all read marks what the search matches: the reply. The answered question was read when answered.
+  await panel.click(/^ ?Mark all read/);
+  await expect.poll(unread).toBe(2);
+  await expect.poll(tabLabel).toBe("Inbox, 2 unread");
+  await shot("inbox-marked-light");
 });

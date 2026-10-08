@@ -6,12 +6,20 @@
 // messages `isToPanel` takes are acted on. When the worker goes away (Chrome
 // stopped it), the link connects again and watches the tab again. An
 // action's failure stays shown through the worker's later pushes until the
-// person acts again or watches another tab.
+// person acts again or watches another tab. The owner's questions and
+// inbox come over the same port (spec 2026-10-06-agent-questions-and-inbox
+// §9.6): the unread count, the open questions (kept by `questions`, whose
+// cards answer through the worker), and each item as it changes.
+import type { InboxItem } from "../../../shell/src/api";
 import { type FarPage, type PanelState, type PanelToWorker, type SiteChoice, type SiteView, type Suggestion, type WorkerToPanel, isToPanel } from "../messages";
+import { PanelQuestions } from "./questions";
 
 /** A request the worker answers with `step` (its `req` is the link's to give). */
 export type Ask = { t: "rule"; origin: string; pattern: string } | { t: "unrule"; origin: string; ruleId: string }
   | { t: "join"; origin: string; with: string } | { t: "split"; origin: string };
+/** A question or inbox request, without its `req`. */
+type Req<M = PanelToWorker> = M extends { req: number } ? Omit<M, "req"> : never;
+export type InboxReq = Exclude<Req, Ask | { t: "clip" | "far-page" }>;
 /** How long a request waits for the worker's answer (one batch of at most 200 threads). */
 export const REQUEST_MS = 120_000;
 type Step = { moved: number; remaining: number };
@@ -45,8 +53,13 @@ export class PanelLink {
   /** How many of the panel's actions have failed: a failure the panel was
    * told to hide shows again when an action fails again, even the same way. */
   failures = $state(0);
+  /** Whether the daemon takes the extension as the owner (null until it answered), and the unread count. */
+  inbox = $state<{ owner: boolean | null; unread: number }>({ owner: null, unread: 0 });
+  /** The open questions, and those closing here for a moment. */
+  readonly questions = new PanelQuestions(this);
+  private items = new Set<(item: InboxItem | null) => void>();
   private reqs = 0;
-  private asked = new Map<number, { ok(s: Step): void; fail(e: Failure): void }>();
+  private asked = new Map<number, { ok(m: WorkerToPanel): void; fail(e: Failure): void }>();
   /** The lookups (`clip`, `far-page`) asked for and not yet answered, by request number: null when it failed. */
   private lookups = new Map<number, (m: WorkerToPanel | null) => void>();
   private port: Port;
@@ -94,8 +107,8 @@ export class PanelLink {
       const ask = "req" in m && m.req !== undefined ? this.asked.get(m.req) : undefined;
       if (ask) {
         this.asked.delete((m as { req: number }).req);
-        if (m.t === "step") ask.ok({ moved: m.moved, remaining: m.remaining });
-        else if (m.t === "failed") ask.fail(failure(m.code, m.message));
+        if (m.t === "failed") ask.fail(failure(m.code, m.message));
+        else ask.ok(m);
         return;
       }
       if (m.t === "tab") this.state = this.failure && !m.state.error ? { ...m.state, error: this.failure } : m.state;
@@ -108,6 +121,12 @@ export class PanelLink {
         this.failures++;
       }
       else if (m.t === "stream-status") this.up = m.up;
+      else if (m.t === "inbox") { this.inbox = { owner: m.owner, unread: m.unread }; this.questions.list(m.questions); }
+      else if (m.t === "q-event") this.questions.upsert(m.question);
+      else if (m.t === "inbox-event") {
+        this.inbox = { ...this.inbox, unread: m.unread };
+        for (const f of [...this.items]) f(m.item);
+      }
     });
     port.onDisconnect.addListener(() => {
       for (const a of this.asked.values()) a.fail(failure("worker_restarted", "Clax restarted. Try again."));
@@ -146,13 +165,29 @@ export class PanelLink {
 
   /** Sends `m` with a request number of its own; answered by its `step`, or rejected with its failure. */
   request(m: Ask): Promise<Step> {
+    return this.send(m).then(r => {
+      if (r.t !== "step") throw failure("bad_reply", "Clax answered something else.");
+      return { moved: r.moved, remaining: r.remaining };
+    });
+  }
+
+  /** Sends a question or inbox request; resolves to the worker's answer, or rejects with its failure. */
+  ask(m: InboxReq): Promise<WorkerToPanel> { return this.send(m); }
+
+  /** Hears each inbox item as it changes (null: fetch what is shown again), until the returned function runs. */
+  onItem(f: (item: InboxItem | null) => void): () => void {
+    this.items.add(f);
+    return () => { this.items.delete(f); };
+  }
+
+  private send(m: Ask | InboxReq): Promise<WorkerToPanel> {
     const req = ++this.reqs;
     return new Promise((ok, fail) => {
       const timer = setTimeout(() => {
         if (this.asked.delete(req)) fail(failure("timeout", "Clax did not answer. Try again."));
       }, REQUEST_MS);
-      this.asked.set(req, { ok: s => { clearTimeout(timer); ok(s); }, fail: e => { clearTimeout(timer); fail(e); } });
-      this.post({ ...m, req });
+      this.asked.set(req, { ok: r => { clearTimeout(timer); ok(r); }, fail: e => { clearTimeout(timer); fail(e); } });
+      this.post({ ...m, req } as PanelToWorker);
     });
   }
 

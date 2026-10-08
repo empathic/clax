@@ -5,7 +5,8 @@
 // send) is not sent again after a network error: the person sees the
 // failure and retries. A new thread is sent again: it names its pick, which
 // the daemon makes one thread of.
-import type { Artifact, Version } from "../../../shell/src/api";
+import type { AnswerBody, Artifact, InboxFilter, InboxItem, InboxPage, InboxSummary, QuestionView, Version } from "../../../shell/src/api";
+import { inboxQuery } from "../../../shell/src/q/api";
 import type { Thread, Viewer } from "../../../shell/src/threads";
 import type { PresenceView } from "../../../shell/src/view/presence-model";
 import type { Working } from "../../../shell/src/view/working-model";
@@ -180,4 +181,32 @@ export class Api {
   answer(origin: string, withOrigin: string, answer: "never" | "later") { return this.send<unknown>("POST", "/api/live/sites/answer", { origin, with: withOrigin, answer }); }
   /** Who is on the live page now. */
   async presenceOf(aid: string) { ids(aid); return this.json<{ people?: PresenceView[] }>(`/api/artifacts/${aid}/presence`); }
+
+  // The owner's questions and inbox (spec 2026-10-06-agent-questions-and-inbox
+  // §6.2, §8.1): the daemon answers 403 `forbidden` to a caller it does not take as the owner.
+
+  /** The unread count, the open questions oldest first, and the newest unread items. */
+  inboxSummary() { return this.json<InboxSummary>("/api/inbox/summary"); }
+  /** One page of items matching `f`, newest first, after cursor `before`. */
+  inboxPage(f: InboxFilter, before: string | null) { return this.json<InboxPage>(`/api/inbox${inboxQuery(f, before)}`); }
+  /** Marks one item read or unread. */
+  markItem(id: string, read: boolean) { return this.send<{ item: InboxItem; unread: number }>("POST", `/api/inbox/${encodeURIComponent(id)}/${read ? "read" : "unread"}`, {}); }
+  /** Marks items read: these IDs, or every unread item matching `filter` up to `upto`. */
+  markItems(m: { ids: string[] } | { all: true; filter: InboxFilter | null; upto: number | null }) {
+    if ("ids" in m) return this.send<{ marked: number; unread: number }>("POST", "/api/inbox/read", { ids: m.ids });
+    const f = m.filter ?? {};
+    const filter = Object.fromEntries(Object.entries({ q: f.q?.trim() || undefined, kind: f.kind?.length ? f.kind : undefined, artifact: f.artifact, agent: f.agent, since: f.since, until: f.until }).filter(([, v]) => v !== undefined));
+    return this.send<{ marked: number; unread: number }>("POST", "/api/inbox/read", { all: true, ...(Object.keys(filter).length ? { filter } : {}), ...(m.upto !== null ? { upto: m.upto } : {}) });
+  }
+  /** Answers, skips (`decline`) or moves to the terminal (`release`) question
+   * `qid`: the question after it, or, when something closed it first (409),
+   * the question as it closed. Sent once: a lost answer is not sent again. */
+  async closeQuestion(qid: string, verb: "answer" | "decline" | "release", body?: AnswerBody): Promise<{ question: QuestionView; closed: boolean }> {
+    threadIds([qid]);
+    const res = await this.request(`/api/questions/${qid}/${verb}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) }, true);
+    const r = await res.json().catch(() => null) as { question?: QuestionView; error?: { code?: string; message?: string } } | null;
+    if (res.ok && r?.question) return { question: r.question, closed: false };
+    if (res.status === 409 && r?.question) return { question: r.question, closed: true };
+    throw new ApiFailure(r?.error?.code ?? `http_${res.status}`, r?.error?.message ?? res.statusText, res.status);
+  }
 }
