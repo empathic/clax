@@ -57,10 +57,10 @@ test:
     if cargo nextest --version >/dev/null 2>&1; then
         # One prebuilt clax for the tests that cannot name it (CLAX_TEST_BIN):
         # nextest runs each test in its own process, and each would build it.
+        # A copy kept by content (scripts/stable-bin.sh), so macOS assesses it
+        # once per build rather than once per run.
         cargo build -q -p clax-cli
-        mkdir -p target/clax-test
-        cp target/debug/clax target/clax-test/clax
-        CLAX_TEST_BIN="$PWD/target/clax-test/clax" cargo nextest run --workspace
+        CLAX_TEST_BIN="$PWD/$(scripts/stable-bin.sh target/debug/clax target/clax-bin/debug)" cargo nextest run --workspace
     else
         cargo test --workspace
     fi

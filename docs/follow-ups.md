@@ -297,8 +297,11 @@ lanes with web e2e beside the rest (about 55 s), then the perf gates alone
   text is scanned again, a run through a symbolic link to a scanned one is
   not), or, for a fake the code under test identifies by its file (an
   installed `clax`, a daemon's executable), write a file of its own and run
-  it once before renaming it into place; the gates run each
-  `clax` they copy or build once, as soon as it exists; and the plugin
+  it once before renaming it into place; the gates and `just test` keep the
+  `clax` they copy under `target/clax-bin`, by its content
+  (`scripts/stable-bin.sh`), so a copy is new, and run once, only after a
+  rebuild; the gates run each `clax` they build once, as soon as it exists;
+  and the plugin
   wrapper test, whose managed installs run freshly extracted binaries, runs
   copies of the wrapper with long limits, and short ones only in the cases
   about the limits. Terminals listed under System Settings, Privacy & Security,
