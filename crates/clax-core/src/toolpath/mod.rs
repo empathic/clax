@@ -39,6 +39,7 @@
 
 pub mod project;
 pub mod redact;
+pub mod segment;
 
 pub use redact::Redaction;
 
@@ -338,6 +339,50 @@ pub fn merge_actor_def(old: &Value, new: &Value) -> Value {
         );
     }
     out
+}
+
+/// `row` rendered as the next step of a linear chain whose previous step is
+/// `prev`, with the `ActorDef` definitions that chain must write before it:
+/// each actor the step names whose definition, merged into the one in
+/// `defined` ([`merge_actor_def`]; a first one is merged with nothing, so
+/// its identities are sorted too), is new or grew. The result depends on
+/// `defined` only through what it holds, so a writer that reads its
+/// definitions back from a file continues exactly as it would have. A row [`render`]
+/// refuses becomes [`unrenderable_step`], logged as met in `context`, so
+/// the chain never breaks. The journal and every export chain steps this
+/// one way (spec §7.2, §7.3); the caller records the returned definitions
+/// in `defined`.
+pub fn chain_step(
+    row: &AuditRow,
+    prev: Option<i64>,
+    env: &RenderEnv,
+    opts: &Redaction,
+    defined: &std::collections::BTreeMap<String, Value>,
+    context: &str,
+) -> (Value, Vec<(String, Value)>) {
+    let (step, actors) = match render(row, prev, env, opts) {
+        Ok(r) => (r.step, r.actors),
+        Err(e) => {
+            tracing::error!(seq = row.seq, kind = %row.kind, error = %e, "an audit event could not be rendered for {context}");
+            (unrenderable_step(row, prev, env), Vec::new())
+        }
+    };
+    let mut grew: Vec<(String, Value)> = Vec::new();
+    for (actor, def) in actors {
+        let old = grew
+            .iter()
+            .find(|(a, _)| *a == actor)
+            .map(|(_, d)| d)
+            .or_else(|| defined.get(&actor));
+        // A first definition is normalised as a merge would leave it, so
+        // merging it again with itself is no growth.
+        let merged = merge_actor_def(old.unwrap_or(&Value::Null), &def);
+        if old != Some(&merged) {
+            grew.retain(|(a, _)| *a != actor);
+            grew.push((actor, merged));
+        }
+    }
+    (step, grew)
 }
 
 /// A Clax object, for [`clax_uri`] (spec §10.2 and this module's

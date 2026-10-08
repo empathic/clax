@@ -498,6 +498,48 @@ fn apply_fixes(home: &Home, store: &Store) -> anyhow::Result<Vec<String>> {
     Ok(fixed)
 }
 
+/// `journal`: the audit journal, from the daemon's `GET
+/// /api/toolpath/status` (spec §3.5). It warns when the journal is behind
+/// with an error, when it has trailed the table for more than 10 s, when it
+/// is off because `[toolpath]` is invalid, and when retention could not
+/// remove a segment; a journal turned off on purpose is fine. Without a
+/// daemon (`daemon` false) there is nothing to read.
+fn journal_check(daemon: bool, status: Option<&serde_json::Value>) -> serde_json::Value {
+    let Some(v) = status else {
+        return if daemon {
+            warn(
+                "journal",
+                "could not read the journal status from the daemon",
+            )
+        } else {
+            check("journal", true, "not checked: the daemon is not running")
+        };
+    };
+    let segment = v["segment"].as_str().unwrap_or("no segment yet");
+    let error = v["last_error"].as_str();
+    if v["journal"] != true {
+        return match error {
+            Some(e) => warn("journal", e),
+            None => check("journal", true, "off ([toolpath] journal = false)"),
+        };
+    }
+    let lag = v["lag_ms"].as_i64().unwrap_or(0);
+    let (cursor, newest) = (&v["cursor"], &v["newest_seq"]);
+    let at = format!("{segment}, event {cursor} of {newest}");
+    match (error, v["warning"].as_str()) {
+        (Some(e), _) => warn(
+            "journal",
+            format!("behind at event {cursor} of {newest}: {e}"),
+        ),
+        (None, _) if lag > 10_000 => warn(
+            "journal",
+            format!("behind for {} s at event {cursor} of {newest}", lag / 1000),
+        ),
+        (None, Some(w)) => warn("journal", format!("{at}; {w}")),
+        (None, None) => check("journal", true, at),
+    }
+}
+
 /// `config`: the home's `config.toml` reads and parses, its `[serve] port`,
 /// when present, is a port, and so is `CLAX_PORT` (`env`), when set. The
 /// detail names the port daemons for this home start on and where it comes
@@ -619,6 +661,13 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
         Some(local),
     ));
     checks.push(extension_check(&super::extension::status(home)));
+    checks.push(journal_check(
+        client.is_some(),
+        client
+            .as_ref()
+            .and_then(|c| c.get("/api/toolpath/status").ok())
+            .as_ref(),
+    ));
     if let Some(agent) = args.agent {
         checks.extend(doctor_agent::checks(agent, home, client.as_ref()));
     }
@@ -662,7 +711,9 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{codex_approvals_check, codex_push_check, config_check, extension_check};
+    use super::{
+        codex_approvals_check, codex_push_check, config_check, extension_check, journal_check,
+    };
     use serde_json::{Value, json};
 
     #[test]
@@ -883,5 +934,54 @@ mod tests {
                 .starts_with("CLAX_CODEX_BIN names /x"),
             "{bad}"
         );
+    }
+
+    #[test]
+    fn the_journal_line_warns_when_it_is_behind() {
+        let status = |journal: bool, lag: Value, error: Value| {
+            json!({"journal": journal, "dir": "/h/toolpath/journal",
+                   "segment": "clax-6a1f0c3e-20261006-001.path.jsonl", "cursor": 40,
+                   "newest_seq": 42, "lag_ms": lag, "last_error": error})
+        };
+        let line = |v: Option<&Value>| {
+            let c = journal_check(v.is_some(), v);
+            (
+                c["ok"].as_bool().unwrap(),
+                c["warn"].as_bool().unwrap_or(false),
+                c["detail"].as_str().unwrap().to_string(),
+            )
+        };
+        let (ok, warned, detail) = line(Some(&status(true, json!(12), Value::Null)));
+        assert!(ok && !warned);
+        assert_eq!(
+            detail,
+            "clax-6a1f0c3e-20261006-001.path.jsonl, event 40 of 42"
+        );
+        let (ok, warned, detail) = line(Some(&status(true, json!(12_500), Value::Null)));
+        assert!(ok && warned);
+        assert_eq!(detail, "behind for 12 s at event 40 of 42");
+        let (_, warned, detail) = line(Some(&status(
+            true,
+            json!(300),
+            json!("writing the journal: No space left on device (os error 28)"),
+        )));
+        assert!(warned && detail.contains("os error 28"), "{detail}");
+        let (ok, warned, detail) = line(Some(&status(false, Value::Null, Value::Null)));
+        assert!(ok && !warned && detail.contains("journal = false"));
+        let (_, warned, _) = line(Some(&status(
+            false,
+            Value::Null,
+            json!("journal off: [toolpath] ..."),
+        )));
+        assert!(warned);
+        let (ok, warned, _) = line(None);
+        assert!(ok && !warned);
+        let c = journal_check(true, None);
+        assert_eq!(c["warn"], true);
+        assert!(c["detail"].as_str().unwrap().contains("could not read"));
+        let mut v = status(true, json!(0), Value::Null);
+        v["warning"] = json!("journal_retain_days: removing x: Permission denied (os error 13)");
+        let (ok, warned, detail) = line(Some(&v));
+        assert!(ok && warned && detail.contains("os error 13"), "{detail}");
     }
 }

@@ -2989,3 +2989,482 @@ async fn one_export_runs_at_a_time() {
     drop(held);
     assert_eq!(ts.get_authed("/api/toolpath/export").await.status(), 200);
 }
+
+// --- the journal appender (spec §7) -----------------------------------------
+
+use clax_core::toolpath::segment::{MemFs, SegmentConfig, SegmentWriter};
+use clax_server::audit::{Appender, JournalStart, JournalStatus, start_journal};
+use std::sync::Arc;
+
+const JOURNAL: &str = "/home/toolpath/journal";
+
+fn seg_config(ts: &TestServer) -> SegmentConfig {
+    SegmentConfig::new(ts.store.install_id().unwrap(), "test", "0000000")
+}
+
+fn manual_clock() -> Arc<clax_core::working::ManualClock> {
+    Arc::new(clax_core::working::ManualClock::at("2026-10-06T12:00:00Z"))
+}
+
+/// The journal every recorded event makes, written in one go.
+fn journal_of(ts: &TestServer) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+    let fs = MemFs::new();
+    let mut w = SegmentWriter::open_or_recover(
+        JOURNAL,
+        seg_config(ts),
+        manual_clock(),
+        Box::new(fs.clone()),
+    )
+    .unwrap();
+    w.append_batch(&ts.store.events_after(0, 100_000).unwrap())
+        .unwrap();
+    fs.state().files.clone()
+}
+
+fn appender(
+    ts: &TestServer,
+    fs: &MemFs,
+    clock: Arc<clax_core::working::ManualClock>,
+    status: Arc<JournalStatus>,
+) -> Appender {
+    Appender::new(
+        ts.store.clone(),
+        JOURNAL,
+        seg_config(ts),
+        clock,
+        Box::new(fs.clone()),
+        status,
+    )
+}
+
+#[tokio::test]
+async fn journal_off_still_records_table_and_catches_up() {
+    let ts = TestServer::spawn().await;
+    // Off: the table is written, the journal is not.
+    let off = start_journal(
+        JournalStart {
+            store: ts.store.clone(),
+            dir: ts.home.root().join("toolpath/journal"),
+            wake: clax_server::audit::AuditWake::new(),
+            status: ts.journal.clone(),
+            version: "test".into(),
+        },
+        Ok(clax_core::config::ToolpathConfig {
+            journal: false,
+            ..Default::default()
+        }),
+    );
+    assert!(off.is_none());
+    for i in 0..3 {
+        ts.publish(&format!("Page {i}"), &[("index.html", "<h1>p</h1>")])
+            .await;
+    }
+    let newest = last_seq(&ts);
+    assert!(newest >= 3);
+    assert!(!ts.home.root().join("toolpath").exists());
+    let v = ts
+        .get_authed("/api/toolpath/status")
+        .await
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(
+        (v["journal"].clone(), v["cursor"].clone()),
+        (json!(false), Value::Null)
+    );
+    // On again: the journal catches up with everything recorded meanwhile,
+    // as one journal written from the start would hold it.
+    let fs = MemFs::new();
+    let mut a = appender(&ts, &fs, manual_clock(), ts.journal.clone());
+    a.drain_now().unwrap();
+    assert_eq!(fs.state().files, journal_of(&ts));
+    let v = ts
+        .get_authed("/api/toolpath/status")
+        .await
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(v["journal"], true);
+    assert_eq!(v["cursor"], newest);
+    assert_eq!(v["lag_ms"], 0);
+    assert_eq!(v["last_error"], Value::Null);
+    // The segment is named by the first event's day.
+    let names: Vec<String> = fs
+        .paths()
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names.len(), 1);
+    assert_eq!(v["segment"].as_str().unwrap(), names[0]);
+    assert_eq!(v["warning"], Value::Null);
+}
+
+#[tokio::test]
+async fn eio_backs_off_and_retries_same_batch() {
+    let ts = TestServer::spawn().await;
+    for i in 0..3 {
+        ts.publish(&format!("Page {i}"), &[("index.html", "<h1>p</h1>")])
+            .await;
+    }
+    let fs = MemFs::new();
+    let clock = manual_clock();
+    let mut a = appender(&ts, &fs, clock.clone(), ts.journal.clone());
+    // A disk that fails mid-write: the events stay recorded, the journal
+    // falls behind, and status says why.
+    fs.fail(&["append"], 100, 5);
+    fs.state().partial = Some(100);
+    let e = a.drain_now().unwrap_err();
+    assert!(e.contains("os error 5"), "{e}");
+    let v = ts
+        .get_authed("/api/toolpath/status")
+        .await
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert!(
+        v["last_error"].as_str().unwrap().contains("os error 5"),
+        "{v}"
+    );
+    assert_eq!(v["cursor"], 0);
+    assert!(v["lag_ms"].as_i64().is_some());
+    // Retries back off from 1 s, doubling to 60 s, and write nothing while
+    // they wait.
+    let attempts = |fs: &MemFs| fs.state().appends;
+    let mut waits = Vec::new();
+    for _ in 0..8 {
+        let before = attempts(&fs);
+        let mut waited = 0;
+        loop {
+            clock.advance(1);
+            waited += 1;
+            let _ = a.drain_now();
+            if attempts(&fs) > before {
+                break;
+            }
+        }
+        waits.push(waited);
+    }
+    assert_eq!(waits, [1, 2, 4, 8, 16, 32, 60, 60]);
+    // Once the disk writes again, the same events are written once, byte
+    // for byte as an unbroken journal holds them.
+    fs.state().fail_count = 0;
+    clock.advance(60);
+    ts.publish("After", &[("index.html", "<h1>a</h1>")]).await;
+    a.drain_now().unwrap();
+    assert_eq!(fs.state().files, journal_of(&ts));
+    let v = ts
+        .get_authed("/api/toolpath/status")
+        .await
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(v["last_error"], Value::Null);
+    assert_eq!(v["cursor"], last_seq(&ts));
+    assert_eq!(v["lag_ms"], 0);
+    // A full disk, a refused directory: the same.
+    for (op, errno) in [("append", 28), ("create_dir_all", 13)] {
+        let fs = MemFs::new();
+        let mut a = appender(&ts, &fs, clock.clone(), JournalStatus::off(None));
+        fs.fail(&[op], 1, errno);
+        assert!(
+            a.drain_now()
+                .unwrap_err()
+                .contains(&format!("os error {errno}"))
+        );
+        clock.advance(1);
+        a.drain_now().unwrap();
+        assert_eq!(fs.state().files, journal_of(&ts));
+    }
+}
+
+#[tokio::test]
+async fn the_journal_thread_follows_the_config_and_closes_at_stop() {
+    let ts = TestServer::spawn().await;
+    let dir = ts.home.root().join("toolpath/journal");
+    let start = |wake: Arc<clax_server::audit::AuditWake>| JournalStart {
+        store: ts.store.clone(),
+        dir: dir.clone(),
+        wake,
+        status: ts.journal.clone(),
+        version: "test".into(),
+    };
+    // An invalid [toolpath] leaves the journal off and says why.
+    let bad = start_journal(
+        start(clax_server::audit::AuditWake::new()),
+        Err(clax_core::CoreError::invalid(
+            "bad_config",
+            "[toolpath] other: unknown field",
+        )),
+    );
+    assert!(bad.is_none());
+    let v = ts
+        .get_authed("/api/toolpath/status")
+        .await
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(v["journal"], false);
+    assert!(
+        v["last_error"].as_str().unwrap().contains("[toolpath]"),
+        "{v}"
+    );
+    // On: the thread recovers and writes; stopping it catches up, syncs and
+    // closes the segment.
+    ts.publish("Notes", &[("index.html", "<h1>n</h1>")]).await;
+    let wake = clax_server::audit::AuditWake::new();
+    let j = start_journal(
+        start(wake.clone()),
+        Ok(clax_core::config::ToolpathConfig::default()),
+    )
+    .expect("the journal starts");
+    ts.publish("More", &[("index.html", "<h1>m</h1>")]).await;
+    j.stop();
+    let state = ts.journal.get();
+    assert_eq!(state.cursor, Some(last_seq(&ts)));
+    // Found by name wherever its day put it.
+    let name = state.segment.unwrap();
+    let file = walk(&dir)
+        .into_iter()
+        .find(|p| p.file_name().unwrap().to_string_lossy() == name)
+        .unwrap();
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.starts_with("{\"PathOpen\":"));
+    assert!(text.ends_with(&format!(
+        "{{\"Head\":{{\"step_id\":\"e{:012}\"}}}}\n{{\"PathClose\":{{}}}}\n",
+        last_seq(&ts)
+    )));
+    assert_eq!(
+        text.lines().filter(|l| l.starts_with("{\"Step\":")).count() as i64,
+        ts.store.events_after(0, 100_000).unwrap().len() as i64
+    );
+}
+
+/// Every file under `dir`.
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[tokio::test]
+async fn drains_do_not_sync_and_a_quiet_second_does() {
+    let ts = TestServer::spawn().await;
+    ts.publish("Notes", &[("index.html", "<h1>n</h1>")]).await;
+    let fs = MemFs::new();
+    let clock = manual_clock();
+    let mut a = appender(&ts, &fs, clock.clone(), JournalStatus::off(None));
+    let syncs = |fs: &MemFs| fs.state().syncs.values().sum::<u32>();
+    // Nudge-driven drains write without syncing, however many there are...
+    for i in 0..5 {
+        ts.publish(&format!("P{i}"), &[("index.html", "<h1>p</h1>")])
+            .await;
+        a.drain_now().unwrap();
+    }
+    assert_eq!(syncs(&fs), 0);
+    // ...until bytes have waited 5 s,
+    clock.advance(5);
+    ts.publish("Late", &[("index.html", "<h1>l</h1>")]).await;
+    a.drain_now().unwrap();
+    assert_eq!(syncs(&fs), 1);
+    // and a quiet second syncs at once.
+    ts.publish("Quiet", &[("index.html", "<h1>q</h1>")]).await;
+    a.drain_now().unwrap();
+    assert_eq!(syncs(&fs), 1);
+    a.quiet_tick().unwrap();
+    assert_eq!(syncs(&fs), 2);
+    a.quiet_tick().unwrap();
+    assert_eq!(syncs(&fs), 2, "nothing unsynced");
+}
+
+#[tokio::test]
+async fn a_panicking_appender_says_the_journal_stopped() {
+    let ts = TestServer::spawn().await;
+    ts.publish("Notes", &[("index.html", "<h1>n</h1>")]).await;
+    let fs = MemFs::new();
+    fs.state().panic_on = Some("append");
+    let status = JournalStatus::off(None);
+    let a = appender(&ts, &fs, manual_clock(), status.clone());
+    assert!(status.get().journal);
+    let (_tx, rx) = std::sync::mpsc::sync_channel(1);
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let t = std::thread::spawn(move || a.run(rx, stop));
+    assert!(t.join().is_err(), "it panicked");
+    let s = status.get();
+    assert!(!s.journal);
+    assert_eq!(
+        s.last_error.as_deref(),
+        Some("the journal appender stopped unexpectedly")
+    );
+}
+
+/// A file system whose appends wait until the test opens the gate.
+struct GatedFs {
+    inner: MemFs,
+    gate: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl clax_core::toolpath::segment::JournalFs for GatedFs {
+    fn create_dir_all(&mut self, d: &std::path::Path) -> std::io::Result<()> {
+        self.inner.create_dir_all(d)
+    }
+    fn list(&mut self, d: &std::path::Path) -> std::io::Result<Vec<String>> {
+        self.inner.list(d)
+    }
+    fn len(&mut self, p: &std::path::Path) -> std::io::Result<Option<u64>> {
+        self.inner.len(p)
+    }
+    fn read_at(&mut self, p: &std::path::Path, o: u64, b: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.read_at(p, o, b)
+    }
+    fn create(&mut self, p: &std::path::Path) -> std::io::Result<()> {
+        self.inner.create(p)
+    }
+    fn append(&mut self, p: &std::path::Path, d: &[u8]) -> std::io::Result<()> {
+        let (open, cv) = &*self.gate;
+        let mut g = open.lock().unwrap();
+        while !*g {
+            g = cv.wait(g).unwrap();
+        }
+        drop(g);
+        self.inner.append(p, d)
+    }
+    fn sync_data(&mut self, p: &std::path::Path) -> std::io::Result<()> {
+        self.inner.sync_data(p)
+    }
+    fn set_len(&mut self, p: &std::path::Path, l: u64) -> std::io::Result<()> {
+        self.inner.set_len(p, l)
+    }
+    fn rename(&mut self, f: &std::path::Path, t: &std::path::Path) -> std::io::Result<()> {
+        self.inner.rename(f, t)
+    }
+    fn remove(&mut self, p: &std::path::Path) -> std::io::Result<()> {
+        self.inner.remove(p)
+    }
+}
+
+#[tokio::test]
+async fn recording_never_waits_on_a_wedged_journal() {
+    let mut wake = None;
+    let ts = TestServer::spawn_with(|st| wake = Some(st.audit_wake.clone())).await;
+    let wake = wake.unwrap();
+    ts.publish("First", &[("index.html", "<h1>f</h1>")]).await;
+    let fs = MemFs::new();
+    let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let a = Appender::new(
+        ts.store.clone(),
+        JOURNAL,
+        seg_config(&ts),
+        manual_clock(),
+        Box::new(GatedFs {
+            inner: fs.clone(),
+            gate: gate.clone(),
+        }),
+        JournalStatus::off(None),
+    );
+    let rx = wake.take_receiver().unwrap();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let thread_stop = stop.clone();
+    let t = std::thread::spawn(move || a.run(rx, thread_stop));
+    // The appender is stuck in its first write; every publish still
+    // returns, each nudging a full channel.
+    let started = std::time::Instant::now();
+    for i in 0..20 {
+        ts.publish(&format!("Page {i}"), &[("index.html", "<h1>p</h1>")])
+            .await;
+    }
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    assert!(
+        fs.state().files.values().all(|f| f.is_empty()),
+        "nothing written yet"
+    );
+    // Released, it catches up with all of them.
+    {
+        let (open, cv) = &*gate;
+        *open.lock().unwrap() = true;
+        cv.notify_all();
+    }
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    wake.nudge();
+    t.join().unwrap();
+    let mut want = journal_of(&ts);
+    // The stop closed the segment the reference leaves open.
+    let path = want.keys().next().unwrap().clone();
+    want.get_mut(&path).unwrap().extend_from_slice(
+        format!(
+            "{{\"Head\":{{\"step_id\":\"e{:012}\"}}}}\n{{\"PathClose\":{{}}}}\n",
+            last_seq(&ts)
+        )
+        .as_bytes(),
+    );
+    let got = fs.state().files.clone();
+    assert_eq!(got.get(&path), want.get(&path));
+}
+
+#[test]
+fn a_wedged_appender_does_not_hold_the_daemons_exit() {
+    // The daemon's own runtime, dropped at the end as `clax serve` drops
+    // it: a blocking-pool thread would hold the drop until the appender
+    // returned, and a wedged one never does.
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut wake = None;
+    let ts = rt.block_on(TestServer::spawn_with(|st| {
+        wake = Some(st.audit_wake.clone())
+    }));
+    let wake = wake.unwrap();
+    rt.block_on(ts.publish("Notes", &[("index.html", "<h1>n</h1>")]));
+    let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let a = Appender::new(
+        ts.store.clone(),
+        JOURNAL,
+        seg_config(&ts),
+        manual_clock(),
+        Box::new(GatedFs {
+            inner: MemFs::new(),
+            gate: gate.clone(),
+        }),
+        JournalStatus::off(None),
+    );
+    let rx = wake.take_receiver().unwrap();
+    let h = clax_server::audit::spawn_appender(a, rx, wake.clone()).unwrap();
+    // Its first write never returns; the stop gives up at its limit.
+    let started = std::time::Instant::now();
+    let stopped = rt.block_on(h.stop_within(std::time::Duration::from_millis(300)));
+    assert!(!stopped, "a wedged appender cannot close its segment");
+    drop(ts);
+    drop(rt);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(3),
+        "the stop and the runtime's drop took {:?}",
+        started.elapsed()
+    );
+    // Released, the left-behind thread finishes on its own.
+    let (open, cv) = &*gate;
+    *open.lock().unwrap() = true;
+    cv.notify_all();
+}
+
+#[tokio::test]
+async fn a_responsive_appender_stops_within_its_limit() {
+    let mut wake = None;
+    let ts = TestServer::spawn_with(|st| wake = Some(st.audit_wake.clone())).await;
+    let wake = wake.unwrap();
+    ts.publish("Notes", &[("index.html", "<h1>n</h1>")]).await;
+    let fs = MemFs::new();
+    let a = appender(&ts, &fs, manual_clock(), JournalStatus::off(None));
+    let rx = wake.take_receiver().unwrap();
+    let h = clax_server::audit::spawn_appender(a, rx, wake.clone()).unwrap();
+    assert!(h.stop_within(std::time::Duration::from_secs(10)).await);
+    let text = String::from_utf8(fs.state().files.values().next().unwrap().clone()).unwrap();
+    assert!(text.ends_with("{\"PathClose\":{}}\n"));
+}

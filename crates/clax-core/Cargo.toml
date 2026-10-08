@@ -11,6 +11,7 @@ workspace = true
 base64.workspace = true
 chrono.workspace = true
 mime_guess.workspace = true
+nix = { workspace = true, features = ["fs"] }
 rand.workspace = true
 sha2 = "0.11"
 rusqlite.workspace = true

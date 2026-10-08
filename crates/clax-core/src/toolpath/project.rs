@@ -37,7 +37,7 @@
 //! step in the graph by its `toolpath:` form instead. Every other ref keeps
 //! its `clax://` form.
 
-use super::{KIND_URI, Obj, Redaction, RenderEnv, clax_uri, merge_actor_def, render, step_id};
+use super::{KIND_URI, Obj, Redaction, RenderEnv, clax_uri, step_id};
 use crate::audit::{Actor, sha256_hex};
 use crate::live::{PageKey, parse_page_url};
 use crate::store::audit::AuditRow;
@@ -538,23 +538,9 @@ impl PathState {
         env: &RenderEnv,
         opts: &Redaction,
     ) -> (Value, Vec<(String, Value)>) {
-        let (step, actors) = match render(row, self.prev, env, opts) {
-            Ok(r) => (r.step, r.actors),
-            Err(e) => {
-                tracing::error!(seq = row.seq, kind = %row.kind, error = %e, "an audit event could not be rendered for an export");
-                (super::unrenderable_step(row, self.prev, env), Vec::new())
-            }
-        };
-        let mut grew = Vec::new();
-        for (actor, def) in actors {
-            let merged = match self.actors.get(&actor) {
-                Some(old) => merge_actor_def(old, &def),
-                None => def,
-            };
-            if self.actors.get(&actor) != Some(&merged) {
-                self.actors.insert(actor.clone(), merged.clone());
-                grew.push((actor, merged));
-            }
+        let (step, grew) = super::chain_step(row, self.prev, env, opts, &self.actors, "an export");
+        for (actor, def) in &grew {
+            self.actors.insert(actor.clone(), def.clone());
         }
         self.first.get_or_insert(row.seq);
         self.prev = Some(row.seq);

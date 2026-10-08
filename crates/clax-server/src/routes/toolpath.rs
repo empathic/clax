@@ -300,24 +300,31 @@ pub async fn export(
     .await
 }
 
-/// `GET /api/toolpath/status` (spec §8.3): the journal's state. Owner
-/// only. Until the journal appender runs, `journal` is false and the
-/// segment, cursor, lag and last error are null; `newest_seq` is the
-/// newest recorded event's.
+/// `GET /api/toolpath/status` (spec §3.5, §8.3): the journal's state.
+/// Owner only. `journal` says whether the appender runs; `segment` is the
+/// open segment's file name (else the newest one's), `cursor` the last
+/// journalled `seq` against `newest_seq`, the newest recorded; `lag_ms` is
+/// how long the journal has trailed the table (0 when caught up), and
+/// `last_error` why it is behind or off, and `warning` a problem that does
+/// not hold it back (retention). Each is null when there is none,
+/// and `cursor` and `lag_ms` are null while the journal does not run.
 pub async fn status(
     axum::extract::State(s): axum::extract::State<AppState>,
     who: Identity,
 ) -> Result<axum::Json<serde_json::Value>, crate::error::ApiError> {
     owner_reads_history(&who)?;
     let newest = s.store_call(|st| st.newest_seq()).await?;
+    let j = s.journal.get();
+    let lag = s.journal.lag_ms(newest, chrono::Utc::now());
     Ok(axum::Json(serde_json::json!({
-        "journal": false,
-        "dir": s.home.root().join("toolpath").join("journal"),
-        "segment": null,
-        "cursor": null,
+        "journal": j.journal,
+        "dir": crate::audit::journal_dir(&s.home),
+        "segment": j.segment,
+        "cursor": j.cursor.filter(|_| j.journal),
         "newest_seq": newest,
-        "lag_ms": null,
-        "last_error": null,
+        "lag_ms": lag,
+        "last_error": j.last_error,
+        "warning": j.warning,
     })))
 }
 

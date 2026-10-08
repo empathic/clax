@@ -126,15 +126,11 @@
           "first_seq": 1,
           "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
           "projection": "journal",
-          "segment": "20261006-001"
+          "redaction": [],
+          "segment": "20261006-001",
+          "segment_max_bytes": 67108864
         },
         "kind": "https://toolpath.net/kinds/clax-audit/v1.0.0",
-        "refs": [
-          {
-            "href": "clax-6a1f0c3e-20261005-001.path.jsonl",
-            "rel": "continues"
-          }
-        ],
         "source": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
         "title": "Clax audit trail 2026-10-06 #1"
       },
