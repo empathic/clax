@@ -191,6 +191,10 @@ async fn port_taken_for(port: u16) -> u16 {
     info.port
 }
 
+// Linux only: a wildcard listener can raise the macOS firewall's dialog.
+// On macOS the [::1] test below covers the same localhost shadowing without
+// a non-loopback listener.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn serve_skips_a_port_a_wildcard_listener_holds() {
     // A 127.0.0.1 bind can succeed beside a wildcard listener (macOS), yet a
@@ -212,6 +216,7 @@ async fn serve_skips_a_port_held_on_ipv6_loopback_only() {
         return; // No IPv6 loopback here.
     };
     let port = holder.local_addr().unwrap().port();
+    assert!(port_held(port));
     let took = port_taken_for(port).await;
     assert_ne!(took, port);
 }
