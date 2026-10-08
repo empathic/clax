@@ -122,8 +122,9 @@ pub struct FeedbackQuery {
 /// progress, tier 5 is skipped for the session: `codex queue` does not push
 /// to it ([`crate::push::dispatch`]), and a `tier=inject` poll (the Pi
 /// injection loop) takes nothing and answers empty at once, `{feedback: [],
-/// answers: [], text: null, waited_s: 0}` (also when it was already waiting
-/// and is woken), so the rows and answers go to the wait poll. The inject
+/// answers: [], text: null, waited_s: 0}`, so the rows and answers go to the
+/// wait poll. An inject poll already waiting when the wait poll starts is
+/// woken by that start and answers the same way. The inject
 /// poll checks before each take; a wait poll that starts between that check
 /// and the take can lose one hand over to it.
 ///
@@ -207,6 +208,8 @@ pub async fn poll(
                 "waited_s": started.elapsed().as_secs(),
             })));
         }
+        #[cfg(debug_assertions)]
+        let _parked = s.feedback_waiters.park(&take.session_id, take.tier);
         tokio::select! {
             _ = &mut notified => {}
             _ = tokio::time::sleep_until(deadline) => {}
@@ -343,20 +346,39 @@ pub async fn expire(
     Ok(Json(json!({"expired": s.feedback_waiters.expire(&sid)})))
 }
 
+#[cfg(debug_assertions)]
+#[derive(Deserialize)]
+pub struct WaitersQuery {
+    until: Option<usize>,
+    parked: Option<String>,
+}
+
 /// `GET /api/_test/sessions/<sid>/feedback/waiters?until=<n>` (debug
 /// builds): `{count}`, how many `wait_for_feedback` polls of session `sid`
 /// are in progress, answered once the count is `until` (or after 5 s), at
-/// once without it.
+/// once without it. With `parked=<tier>`, counts instead the session's
+/// feedback polls of that tier that are parked waiting to be woken.
 #[cfg(debug_assertions)]
 pub async fn waiters(
     State(s): State<AppState>,
     _t: RequireToken,
     sid: Result<Path<String>, PathRejection>,
-    q: Result<Query<super::questions::UntilQuery>, QueryRejection>,
+    q: Result<Query<WaitersQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let sid = path(sid)?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
+    let parked =
+        match q.parked.as_deref() {
+            None => None,
+            Some(t) => Some(Tier::parse(t).ok_or_else(|| {
+                ApiError::bad_request("invalid_tier", format!("unknown tier '{t}'"))
+            })?),
+        };
     let w = &s.feedback_waiters;
-    let n = crate::questions::count_until(w.changed(), || w.count(&sid), q.until).await;
+    let count = || match parked {
+        Some(tier) => w.parked(&sid, tier),
+        None => w.count(&sid),
+    };
+    let n = crate::questions::count_until(w.changed(), count, q.until).await;
     Ok(Json(json!({"count": n})))
 }

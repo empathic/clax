@@ -2,6 +2,8 @@
 //! wake-ups) and the JSON view of a thread.
 
 use crate::state::AppState;
+#[cfg(debug_assertions)]
+use clax_core::feedback::Tier;
 use clax_core::feedback::Touched;
 use clax_core::model::Thread;
 use clax_core::store::live::LivePage;
@@ -14,7 +16,9 @@ use tokio::sync::Notify;
 /// One `Notify` per session that has long-polled for feedback, and how many
 /// `wait_for_feedback` long-polls (`tier=wait`, `wait > 0`) each session has
 /// in progress. Other tiers' long-polls (the Pi `inject` loop) are woken but
-/// never counted.
+/// never counted. Starting a `wait_for_feedback` long-poll wakes the
+/// session's other long-polls, so a parked `inject` or notices poll sees the
+/// wait and yields at once.
 #[derive(Default)]
 pub struct FeedbackWaiters {
     notifies: Mutex<HashMap<String, Arc<Notify>>>,
@@ -25,6 +29,10 @@ pub struct FeedbackWaiters {
     /// are still to end at once ([`FeedbackWaiters::expire`]).
     #[cfg(debug_assertions)]
     expired: Mutex<HashMap<String, usize>>,
+    /// Debug builds: how many feedback long-polls of each session and tier
+    /// are parked, waiting to be woken ([`FeedbackWaiters::park`]).
+    #[cfg(debug_assertions)]
+    parked: Mutex<HashMap<(String, Tier), usize>>,
 }
 
 impl FeedbackWaiters {
@@ -58,19 +66,47 @@ impl FeedbackWaiters {
 
     /// Counts a `wait_for_feedback` long-poll of `session_id` as in progress
     /// until the returned guard is dropped (on every exit, including the
-    /// client going away). Only `tier=wait` polls enter.
+    /// client going away), and wakes the session's parked long-polls so
+    /// tier 5 sees the wait. Only `tier=wait` polls enter.
     pub fn enter(self: &Arc<Self>, session_id: &str) -> WaitGuard {
+        let session_id = session_id.to_string();
         *self
             .active
             .lock()
             .unwrap()
-            .entry(session_id.to_string())
+            .entry(session_id.clone())
             .or_default() += 1;
+        self.wake(std::iter::once(&session_id));
         self.changed.notify_waiters();
         WaitGuard {
             waiters: self.clone(),
-            session_id: session_id.to_string(),
+            session_id,
         }
+    }
+
+    /// Debug builds: counts a feedback long-poll of `session_id` and `tier`
+    /// as parked until the returned guard is dropped.
+    #[cfg(debug_assertions)]
+    pub fn park(self: &Arc<Self>, session_id: &str, tier: Tier) -> ParkGuard {
+        let key = (session_id.to_string(), tier);
+        *self.parked.lock().unwrap().entry(key.clone()).or_default() += 1;
+        self.changed.notify_waiters();
+        ParkGuard {
+            waiters: self.clone(),
+            key,
+        }
+    }
+
+    /// Debug builds: how many feedback long-polls of `session_id` and
+    /// `tier` are parked.
+    #[cfg(debug_assertions)]
+    pub fn parked(&self, session_id: &str, tier: Tier) -> usize {
+        self.parked
+            .lock()
+            .unwrap()
+            .get(&(session_id.to_string(), tier))
+            .copied()
+            .unwrap_or(0)
     }
 
     /// How many `wait_for_feedback` long-polls of `session_id` are in
@@ -84,7 +120,8 @@ impl FeedbackWaiters {
             .unwrap_or(0)
     }
 
-    /// Notified whenever a `wait_for_feedback` long-poll starts or ends.
+    /// Notified whenever a `wait_for_feedback` long-poll starts or ends, and
+    /// in debug builds whenever a long-poll parks or unparks.
     pub fn changed(&self) -> &Notify {
         &self.changed
     }
@@ -149,6 +186,29 @@ impl Drop for WaitGuard {
                         .lock()
                         .unwrap()
                         .remove(&self.session_id);
+                }
+            }
+        }
+        self.waiters.changed.notify_waiters();
+    }
+}
+
+/// A parked feedback long-poll ([`FeedbackWaiters::park`]).
+#[cfg(debug_assertions)]
+pub struct ParkGuard {
+    waiters: Arc<FeedbackWaiters>,
+    key: (String, Tier),
+}
+
+#[cfg(debug_assertions)]
+impl Drop for ParkGuard {
+    fn drop(&mut self) {
+        {
+            let mut parked = self.waiters.parked.lock().unwrap();
+            if let Some(n) = parked.get_mut(&self.key) {
+                *n -= 1;
+                if *n == 0 {
+                    parked.remove(&self.key);
                 }
             }
         }
@@ -401,5 +461,19 @@ mod tests {
         );
         drop(b);
         assert!(!w.is_waiting("s"));
+    }
+
+    #[tokio::test]
+    async fn starting_a_wait_wakes_the_sessions_parked_polls() {
+        let w = Arc::new(FeedbackWaiters::default());
+        let (mine, other) = (w.get("s"), w.get("t"));
+        let woken = mine.notified();
+        let untouched = other.notified();
+        tokio::pin!(woken, untouched);
+        woken.as_mut().enable();
+        untouched.as_mut().enable();
+        let _g = w.enter("s");
+        assert!(futures::poll!(woken).is_ready());
+        assert!(futures::poll!(untouched).is_pending());
     }
 }
