@@ -944,6 +944,25 @@ fn hot_queries_use_their_indexes_with_and_without_statistics() {
         check_all(c, "after ANALYZE");
         check_questions(c, "after ANALYZE");
         check_inbox(c, "after ANALYZE");
+        // A home upgraded by migration 22: its tables have statistics, the
+        // indexes it rebuilt or added have none yet.
+        let stat4: bool = c.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'sqlite_stat4')",
+            [],
+            |r| r.get(0),
+        )?;
+        let rebuilt = "('comments_by_thread', 'version_threads_by_thread', 'versions_by_session')";
+        c.execute_batch(&format!(
+            "DELETE FROM sqlite_stat1 WHERE idx IN {rebuilt}; ANALYZE sqlite_schema;"
+        ))?;
+        if stat4 {
+            c.execute_batch(&format!(
+                "DELETE FROM sqlite_stat4 WHERE idx IN {rebuilt}; ANALYZE sqlite_schema;"
+            ))?;
+        }
+        check_all(c, "rebuilt indexes without statistics");
+        check_questions(c, "rebuilt indexes without statistics");
+        check_inbox(c, "rebuilt indexes without statistics");
         Ok(())
     })
     .unwrap();
