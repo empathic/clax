@@ -25,13 +25,17 @@ export function cachedOriginOk(): boolean | null {
  * artifact origin failed and the daemon is unreachable), the answer is
  * false for now and the next view probes again. */
 export async function probeOrigin(origin: string, f: typeof fetch = fetch): Promise<boolean> {
-  // 1 or 0 when sure (the cached form), undefined when not; the first to settle it wins.
+  // 1 or 0 when sure (the cached form), undefined when not; the first to
+  // settle it wins, and the request still out is then aborted. A timer left
+  // behind fires within 10 s and does nothing.
+  const ctl = new AbortController();
   const v = await new Promise<number | undefined>(done => {
-    const up = f("/healthz").then(r => r.ok, () => false);
     setTimeout(done, 10_000);
-    f(`${origin}/healthz`).then(r => done(+r.ok), () => up.then(u => done(u ? 0 : undefined)));
-    void up.then(u => u && setTimeout(done, 1000, 0));
+    // Truthy once the daemon answered here, which starts the grace.
+    const up = f("/healthz", ctl).then(r => r.ok && setTimeout(done, 1000, 0), () => false);
+    f(`${origin}/healthz`, ctl).then(r => done(+r.ok), () => up.then(u => done(u ? 0 : undefined)));
   });
+  ctl.abort();
   if (v !== undefined) try { sessionStorage.setItem(CACHE_KEY, `${v}`); } catch { /* storage unavailable */ }
   return v === 1;
 }
