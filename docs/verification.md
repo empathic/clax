@@ -384,6 +384,11 @@ test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.78s
 ```
 
+These ran when each file in a crate's `tests/` was a test binary of its own.
+The same tests now run as modules of the crate's one integration test binary:
+`cargo test -q -p $1 --test integration $2::` (clax-hooks' `golden` is still
+`--test golden`).
+
 Playwright, in `web/`:
 
 ```
