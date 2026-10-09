@@ -26,9 +26,11 @@ pub const INVITE_TTL_SECS: i64 = 24 * 3600;
 pub const MAX_LIVE_INVITES: usize = 20;
 /// How long a request waits for the owner before it expires.
 pub const PENDING_TTL_SECS: i64 = 10 * 60;
-/// Most pending requests from one peer address.
+/// Most requests from one peer address within [`PENDING_TTL_SECS`],
+/// whatever became of them.
 pub const MAX_PENDING_PER_IP: usize = 3;
-/// Most pending requests in all.
+/// Most requests in all within [`PENDING_TTL_SECS`], whatever became of
+/// them.
 pub const MAX_PENDING: usize = 20;
 /// The continuation's `wait`: a poll sooner than this after the last is
 /// `too_fast`.
@@ -43,6 +45,9 @@ pub const MAX_WRONG_CODES: i64 = 3;
 pub const BROWSER_LINK_TTL_SECS: i64 = 10 * 60;
 /// Longest client name, in characters.
 pub const MAX_CLIENT_NAME_CHARS: usize = 64;
+/// How long a request that never had tokens issued (denied, expired or
+/// cancelled) is kept before [`Store::expire_grants`] deletes it.
+pub const UNISSUED_RETENTION_SECS: i64 = 24 * 3600;
 
 /// Who an invite is for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -136,11 +141,13 @@ pub struct Grant {
 /// What a grant request made.
 #[derive(Debug)]
 pub enum GrantStart {
-    /// An invite's grant: approved, with its tokens. `browser_code` is
+    /// An invite's grant: approved, with its tokens and the access it
+    /// holds (the person's rights within its narrowing). `browser_code` is
     /// `None` for the owner's machines (the browser link is refused for the
     /// owner row, §6.5).
     Approved {
         grant: Grant,
+        access: Rights,
         token: Secret,
         manage: Secret,
         continue_token: Secret,
@@ -159,9 +166,11 @@ pub enum GrantStart {
 pub enum ContinueOutcome {
     /// Still waiting for the owner.
     Pending { grant: Grant },
-    /// Approved: the tokens, issued once, and a new continuation token.
+    /// Approved: the tokens, issued once, a new continuation token, and the
+    /// access the grant holds.
     Approved {
         grant: Grant,
+        access: Rights,
         token: Secret,
         manage: Secret,
         continue_token: Secret,
@@ -173,6 +182,9 @@ pub enum ContinueOutcome {
 #[derive(Debug, Default)]
 pub struct RevokedGrant {
     pub grant_id: String,
+    /// The grant ended now; `false` when it had ended already and nothing
+    /// changed.
+    pub ended: bool,
     /// Its sessions that were live, now ended (`revoked`).
     pub sessions_ended: Vec<String>,
     /// Feedback their ends released.
@@ -404,6 +416,20 @@ fn rights_of_row(c: &rusqlite::Connection, viewer_id: &str) -> Result<Rights> {
     }
 }
 
+/// The access a grant of viewer row `viewer_id` holds: the person's rights
+/// within `narrow`.
+fn grant_access(
+    c: &rusqlite::Connection,
+    viewer_id: &str,
+    narrow: Option<&Rights>,
+) -> Result<Rights> {
+    let rights = rights_of_row(c, viewer_id)?;
+    Ok(match narrow {
+        Some(n) => rights.intersect(n),
+        None => rights,
+    })
+}
+
 /// A grant's narrowing from the access its client asked for: none when the
 /// access covers the person's rights.
 fn narrowing(person: &Rights, access: &Rights) -> Option<Rights> {
@@ -496,6 +522,7 @@ fn end_grant(
     if n == 0 {
         return Ok(out);
     }
+    out.ended = true;
     tx.execute(
         "UPDATE grant_tokens SET revoked_at = ?2 WHERE grant_id = ?1 AND revoked_at IS NULL",
         params![gid, now],
@@ -756,7 +783,8 @@ impl Store {
     /// # Errors
     /// `invalid_invite` for an expired, used, revoked or unknown code (one
     /// message for all four); `limit_reached` with [`MAX_PENDING_PER_IP`]
-    /// pending requests from the peer or [`MAX_PENDING`] in all;
+    /// requests from the peer in the last ten minutes, cancelled ones
+    /// included, or [`MAX_PENDING`] in all;
     /// `key_in_use` when a live grant holds the key; `invalid_args` for a
     /// client name over [`MAX_CLIENT_NAME_CHARS`] characters or with control
     /// characters.
@@ -845,8 +873,10 @@ impl Store {
                         "UPDATE invites SET used_at = ?2, grant_id = ?3 WHERE id = ?1",
                         params![invite_id, now, gid],
                     )?;
+                    let grant = grant_in(tx, &gid)?.expect("the grant was written");
                     Ok(GrantStart::Approved {
-                        grant: grant_in(tx, &gid)?.expect("the grant was written"),
+                        access: grant_access(tx, &viewer_id, grant.narrow.as_ref())?,
+                        grant,
                         token: issued.token,
                         manage: issued.manage,
                         continue_token: issued.continue_token,
@@ -854,9 +884,13 @@ impl Store {
                     })
                 }
                 None => {
+                    // Every request of the last PENDING_TTL_SECS counts,
+                    // whatever became of it: a requester that cancels its
+                    // request and asks again stays within the caps.
                     let (from_peer, all): (i64, i64) = tx.query_row(
-                        "SELECT COALESCE(SUM(peer_ip = ?1), 0), COUNT(*) FROM grants WHERE status = 'pending'",
-                        params![g.peer_ip],
+                        "SELECT COALESCE(SUM(peer_ip = ?1), 0), COUNT(*) FROM grants
+                         WHERE via = 'request' AND created_at >= ?2",
+                        params![g.peer_ip, self.ago(PENDING_TTL_SECS)],
                         |r| Ok((r.get(0)?, r.get(1)?)),
                     )?;
                     if from_peer as usize >= MAX_PENDING_PER_IP || all as usize >= MAX_PENDING {
@@ -1077,8 +1111,15 @@ impl Store {
                         "UPDATE grants SET last_used_at = ?2 WHERE id = ?1",
                         params![gid, now],
                     )?;
+                    let grant = grant_in(tx, gid)?.expect("the grant exists");
+                    let viewer_id: String = tx.query_row(
+                        "SELECT viewer_id FROM grants WHERE id = ?1",
+                        params![gid],
+                        |r| r.get(0),
+                    )?;
                     Ok(Ok(ContinueOutcome::Approved {
-                        grant: grant_in(tx, gid)?.expect("the grant exists"),
+                        access: grant_access(tx, &viewer_id, grant.narrow.as_ref())?,
+                        grant,
                         token: issued.token,
                         manage: issued.manage,
                         continue_token: issued.continue_token,
@@ -1288,12 +1329,13 @@ impl Store {
         })
     }
 
-    /// Every token of every grant, by hash, for the daemon's in-memory
-    /// index (spec §6.4): access tokens, manage tokens and current
-    /// continuation tokens, each with its grant's key. A revoked token, and
-    /// every token of a grant revoked or expired after approval, is marked
-    /// `revoked`; a denied or unapproved expired request's continuation
-    /// token is not (its poll answers `denied`).
+    /// Every token of every grant whose tokens were issued, by hash, for
+    /// the daemon's in-memory index (spec §6.4): access tokens, manage
+    /// tokens and current continuation tokens, each with its grant's key. A
+    /// revoked token, and every token of a grant that has ended, is marked
+    /// `revoked`. A request that never had tokens issued is not in it: its
+    /// continuation is checked against the store
+    /// ([`Store::unissued_continuation`]).
     pub fn credential_index(&self) -> Result<Vec<Credential>> {
         self.with_read(|c| {
             let mut stmt = c.prepare(
@@ -1304,9 +1346,8 @@ impl Store {
                  SELECT manage_sha256, 'manage', id, client_key, status <> 'approved'
                    FROM grants WHERE manage_sha256 IS NOT NULL
                  UNION ALL
-                 SELECT continue_sha256, 'continue', id, client_key,
-                        status = 'revoked' OR (status = 'expired' AND manage_sha256 IS NOT NULL)
-                   FROM grants WHERE continue_sha256 <> ''",
+                 SELECT continue_sha256, 'continue', id, client_key, status <> 'approved'
+                   FROM grants WHERE manage_sha256 IS NOT NULL",
             )?;
             let rows = stmt
                 .query_map([], |r| {
@@ -1340,6 +1381,37 @@ impl Store {
                     })
                 })
                 .collect())
+        })
+    }
+
+    /// The client key of grant `gid` when it never had tokens issued and
+    /// `continue_token` is its continuation token (compared in constant
+    /// time): what a pending, denied, expired or cancelled request's
+    /// continuation calls are signed with. `None` otherwise.
+    pub fn unissued_continuation(
+        &self,
+        gid: &str,
+        continue_token: &str,
+    ) -> Result<Option<[u8; 32]>> {
+        self.with_read(|c| {
+            let row: Option<(String, String)> = c
+                .query_row(
+                    "SELECT client_key, continue_sha256 FROM grants
+                     WHERE id = ?1 AND manage_sha256 IS NULL",
+                    params![gid],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            Ok(row.and_then(|(key, hash)| {
+                if !matches(continue_token, Some(&hash)) {
+                    return None;
+                }
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(key)
+                    .ok()?
+                    .try_into()
+                    .ok()
+            }))
         })
     }
 
@@ -1433,9 +1505,12 @@ impl Store {
     /// Also reports requests that [`Store::request_grant`] or
     /// [`Store::continue_grant`] expired since the last call, and returns
     /// to plain viewers the people whose invites all lapsed without a
-    /// grant. Returns what each expiry ended.
+    /// grant, and deletes the requests that never had tokens issued
+    /// (denied, expired or cancelled) once [`UNISSUED_RETENTION_SECS`] old.
+    /// Returns what each expiry ended.
     pub fn expire_grants(&self) -> Result<Vec<RevokedGrant>> {
         let pending_cutoff = self.ago(PENDING_TTL_SECS);
+        let retention_cutoff = self.ago(UNISSUED_RETENTION_SECS);
         let idle_cutoff = self.ago(GRANT_IDLE_SECS);
         self.with_tx(|tx| {
             let now = self.now();
@@ -1448,6 +1523,7 @@ impl Store {
                     .map(|gid| {
                         gid.map(|grant_id| RevokedGrant {
                             grant_id,
+                            ended: true,
                             ..Default::default()
                         })
                     })
@@ -1474,6 +1550,15 @@ impl Store {
                 )?);
             }
             out.sort_by(|a, b| a.grant_id.cmp(&b.grant_id));
+            // Requests that never had tokens issued leave no trace in the
+            // index or the sessions; past their retention, and once
+            // reported, they go.
+            tx.execute(
+                "DELETE FROM grants WHERE manage_sha256 IS NULL AND created_at < ?1
+                   AND (status = 'denied'
+                        OR (status IN ('expired', 'revoked') AND ended_at IS NOT NULL))",
+                params![retention_cutoff],
+            )?;
             release_unconnected(tx, None, &now)?;
             Ok(out)
         })
@@ -1606,6 +1691,7 @@ pub(crate) mod tests {
             manage,
             continue_token,
             browser_code,
+            ..
         } = st
             .request_grant(grant(KEY_A, Some(code_.expose())))
             .unwrap()
@@ -2359,15 +2445,19 @@ pub(crate) mod tests {
                 .find(|c| c.sha256 == h)
         };
         let (pending_grant, cont, code) = pending(&st, KEY_B);
-        let c = find(&st, cont.expose()).expect("a pending request's continuation");
+        assert!(
+            find(&st, cont.expose()).is_none(),
+            "a request enters the index once its tokens are issued"
+        );
         assert_eq!(
-            (c.kind, c.grant_id.as_str(), c.key, c.revoked),
-            (
-                CredentialKind::Continue,
-                pending_grant.id.as_str(),
-                KEY_B,
-                false
-            )
+            st.unissued_continuation(&pending_grant.id, cont.expose())
+                .unwrap(),
+            Some(KEY_B)
+        );
+        assert_eq!(
+            st.unissued_continuation(&pending_grant.id, "cxc_other")
+                .unwrap(),
+            None
         );
         st.approve_grant(&pending_grant.id, code.expose(), "Mia", None)
             .unwrap();
@@ -2381,8 +2471,19 @@ pub(crate) mod tests {
         };
         assert!(find(&st, cont.expose()).is_none(), "the old one is gone");
         assert_eq!(
-            find(&st, mia_cont.expose()).map(|c| (c.kind, c.revoked)),
-            Some((CredentialKind::Continue, false))
+            find(&st, mia_cont.expose()).map(|c| (c.kind, c.grant_id, c.key, c.revoked)),
+            Some((
+                CredentialKind::Continue,
+                pending_grant.id.clone(),
+                KEY_B,
+                false
+            ))
+        );
+        assert_eq!(
+            st.unissued_continuation(&pending_grant.id, mia_cont.expose())
+                .unwrap(),
+            None,
+            "an issued grant is the index's"
         );
         assert_eq!(
             find(&st, mia_token.expose()).map(|c| (c.kind, c.key, c.revoked)),
@@ -2402,10 +2503,107 @@ pub(crate) mod tests {
             Some(false),
             "another grant's token stays live"
         );
-        // A denied request's continuation is not revoked: its poll answers.
+        // A denied request never enters the index; the store answers it.
         let (denied, dcont, _) = pending(&st, KEY_A);
         st.deny_grant(&denied.id).unwrap();
-        assert_eq!(find(&st, dcont.expose()).map(|c| c.revoked), Some(false));
+        assert!(find(&st, dcont.expose()).is_none());
+        assert_eq!(
+            st.unissued_continuation(&denied.id, dcont.expose())
+                .unwrap(),
+            Some(KEY_A)
+        );
+    }
+
+    #[test]
+    fn cancelled_requests_count_against_the_caps_for_their_ten_minutes() {
+        let (_d, clock, st) = store();
+        for i in 0..MAX_PENDING_PER_IP as u8 {
+            let GrantStart::Pending {
+                grant,
+                continue_token,
+                ..
+            } = st.request_grant(from_ip([10 + i; 32], "10.0.0.1")).unwrap()
+            else {
+                panic!("pending")
+            };
+            let ended = st
+                .disconnect_grant(&grant.id, continue_token.expose())
+                .unwrap();
+            assert!(ended.ended);
+        }
+        assert_eq!(
+            code(st.request_grant(from_ip([99; 32], "10.0.0.1"))),
+            "limit_reached"
+        );
+        clock.advance(PENDING_TTL_SECS + 1);
+        st.request_grant(from_ip([99; 32], "10.0.0.1")).unwrap();
+    }
+
+    #[test]
+    fn requests_never_issued_are_deleted_after_their_retention() {
+        let (_d, clock, st) = store();
+        let (denied, _, _) = pending(&st, KEY_A);
+        st.deny_grant(&denied.id).unwrap();
+        let (cancelled, cont, _) = pending(&st, KEY_B);
+        st.disconnect_grant(&cancelled.id, cont.expose()).unwrap();
+        let (_, _, _) = pending(&st, [3; 32]);
+        let (sam, _, _) = approved(&st, "Sam", [4; 32]);
+        clock.advance(PENDING_TTL_SECS + 1);
+        // The lapsed request is reported first, and kept.
+        assert_eq!(st.expire_grants().unwrap().len(), 1);
+        assert_eq!(st.list_grants().unwrap().len(), 4);
+        clock.advance(UNISSUED_RETENTION_SECS);
+        st.expire_grants().unwrap();
+        let left: Vec<String> = st
+            .list_grants()
+            .unwrap()
+            .into_iter()
+            .map(|g| g.id)
+            .collect();
+        assert_eq!(left, vec![sam], "an issued grant stays as history");
+        assert!(matches!(st.grant(&denied.id), Err(CoreError::NotFound)));
+    }
+
+    #[test]
+    fn ending_an_ended_grant_ends_nothing() {
+        let (_d, _c, st) = store();
+        let (gid, _, _) = approved(&st, "Sam", KEY_A);
+        assert!(st.revoke_grant(&gid, EndedBy::Owner).unwrap().ended);
+        let again = st.revoke_grant(&gid, EndedBy::Owner).unwrap();
+        assert!(!again.ended && again.sessions_ended.is_empty());
+    }
+
+    #[test]
+    fn issued_tokens_carry_the_access_the_grant_holds() {
+        let (_d, clock, st) = store();
+        let (_, c) = st
+            .create_invite(InvitePerson::New("Sam".into()), None)
+            .unwrap();
+        let reader = Rights::preset(crate::rights::PRESET_READER).unwrap();
+        let GrantStart::Approved { access, .. } = st
+            .request_grant(NewGrant {
+                access: reader.clone(),
+                ..grant(KEY_A, Some(c.expose()))
+            })
+            .unwrap()
+        else {
+            panic!("approved")
+        };
+        assert!(access.is_narrower_or_equal(&reader) && reader.is_narrower_or_equal(&access));
+        let (g, cont, code_) = pending(&st, KEY_B);
+        st.approve_grant(&g.id, code_.expose(), "Mia", None)
+            .unwrap();
+        clock.advance(CONTINUE_WAIT_SECS);
+        let ContinueOutcome::Approved { access, .. } =
+            st.continue_grant(&g.id, cont.expose()).unwrap()
+        else {
+            panic!("approved")
+        };
+        let collaborator = Rights::preset(crate::rights::PRESET_COLLABORATOR).unwrap();
+        assert!(
+            access.is_narrower_or_equal(&collaborator)
+                && collaborator.is_narrower_or_equal(&access)
+        );
     }
 
     #[test]

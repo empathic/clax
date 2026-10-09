@@ -1,17 +1,22 @@
 //! Key-bound requests of the grant flow (spec §6.3, §6.4, §6.6): the
-//! in-memory index of every grant token, the two nonce caches, and the
+//! in-memory index of issued grant tokens, the two nonce caches, and the
 //! signature checks of `POST /api/grants` and of the continuation and
 //! manage calls.
 //!
 //! A grant request carries no token: its key comes from its body, so it is
 //! read (at most [`REQUEST_BODY_LIMIT`]) after `t` is tested, and its nonce
 //! is checked, its signature verified and its nonce recorded under one lock
-//! of a small cache of its own ([`GrantAuth::requests`]). Every other signed
-//! call names its key through a token the [`GrantIndex`] knows, so the main
-//! cache only ever holds keys of known grants: the token is looked up, the
-//! nonce checked, the body read, the signature verified, and only then the
-//! nonce recorded (with a second presence test), so a bad signature spends
-//! nothing.
+//! of a small cache of its own ([`RequestNonces`]). A request's continuation
+//! calls, until its tokens are issued, use that cache too, their key read
+//! from the store by grant. Every other signed call names its key through a
+//! token the [`GrantIndex`] knows, so the main cache only ever holds keys
+//! of issued grants: the token is looked up, the nonce checked, the body
+//! read, the signature verified, and only then the nonce recorded (with a
+//! second presence test), so a bad signature spends nothing.
+//!
+//! The index changes one grant at a time, in memory, after the change
+//! committed; it is read whole from the store only on start and, after an
+//! update that failed, on the next sweep.
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -23,9 +28,9 @@ use clax_core::sig::{self, NonceCache, SigError, SignInput};
 use clax_core::store::people::CredentialKind;
 use clax_core::{Store, secret};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, RwLock};
 
 /// The most a grant-flow request's body may hold: the first request of a
 /// grant has no token yet (spec §6.6), and the continuation and manage
@@ -33,11 +38,17 @@ use std::sync::{Arc, Mutex, RwLock};
 pub const REQUEST_BODY_LIMIT: usize = 16 * 1024;
 /// Seconds a grant request's nonce is remembered.
 const REQUEST_WINDOW_S: i64 = 240;
-/// Grant-request nonces per key in a window: a client makes one request.
+/// Grant-request nonces per key in a window: a client makes one request
+/// and polls it.
 const REQUEST_NONCES_PER_KEY: usize = 16;
-/// Keys and nonces the grant-request cache holds at once.
-const REQUEST_KEYS: usize = 256;
-const REQUEST_NONCES: usize = 4096;
+/// Keys the grant-request cache holds at once; a new key past them evicts
+/// the oldest.
+pub const REQUEST_KEYS: usize = 256;
+/// Nonces the grant-request cache holds at once: every key at its cap.
+const REQUEST_NONCES: usize = REQUEST_KEYS * REQUEST_NONCES_PER_KEY;
+/// Keys one peer address holds in the grant-request cache; a new one past
+/// them evicts that peer's oldest.
+pub const REQUEST_KEYS_PER_PEER: usize = 16;
 
 /// What one token is, as the index knows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,76 +61,287 @@ pub struct GrantRef {
     pub revoked: bool,
 }
 
-/// Tokens by SHA-256.
-type Tokens = HashMap<[u8; 32], GrantRef>;
+/// The index could not take a change: it is marked for a rebuild from the
+/// store on the next sweep ([`GrantIndex::rebuild_if_stale`]).
+#[derive(Debug)]
+pub struct IndexStale;
 
-/// Every grant token's SHA-256 with its grant (spec §6.4), loaded on start
-/// and reloaded after every change. A reload reads the store after the
-/// change committed; of two reloads, the one that started later wins, so
-/// the index never goes back to an older state.
+#[derive(Default)]
+struct Tokens {
+    by_hash: HashMap<[u8; 32], GrantRef>,
+    by_grant: HashMap<String, Vec<[u8; 32]>>,
+}
+
+impl Tokens {
+    fn insert(&mut self, hash: [u8; 32], g: GrantRef) {
+        self.by_grant
+            .entry(g.grant_id.clone())
+            .or_default()
+            .push(hash);
+        self.by_hash.insert(hash, g);
+    }
+}
+
+/// The SHA-256 of every token of every grant whose tokens were issued
+/// (spec §6.4): what each is, its grant, its key, and whether the grant has
+/// ended. A request that never had tokens issued is not in it.
 #[derive(Default)]
 pub struct GrantIndex {
-    map: RwLock<(u64, Arc<Tokens>)>,
-    started: AtomicU64,
+    tokens: RwLock<Tokens>,
+    /// Bumped by every change, so a rebuild that raced one is not
+    /// installed over it.
+    changes: AtomicU64,
+    stale: AtomicBool,
+    /// The next change fails (debug builds, for tests).
+    #[cfg(debug_assertions)]
+    fail_next: AtomicBool,
 }
 
 impl GrantIndex {
-    /// The index of `st`'s tokens.
+    /// The index of `st`'s issued tokens.
     ///
     /// # Errors
     /// The store's.
     pub fn load(st: &Store) -> clax_core::Result<GrantIndex> {
         let index = GrantIndex::default();
-        index.reload(st)?;
+        *index.tokens.write().unwrap_or_else(|e| e.into_inner()) = Self::read(st)?;
         Ok(index)
+    }
+
+    fn read(st: &Store) -> clax_core::Result<Tokens> {
+        let mut t = Tokens::default();
+        for c in st.credential_index()? {
+            t.insert(
+                c.sha256,
+                GrantRef {
+                    grant_id: c.grant_id,
+                    kind: c.kind,
+                    key: c.key,
+                    revoked: c.revoked,
+                },
+            );
+        }
+        Ok(t)
     }
 
     /// The token whose SHA-256 is `hash`.
     pub fn lookup(&self, hash: &[u8; 32]) -> Option<GrantRef> {
-        let map = self.map.read().unwrap_or_else(|e| e.into_inner()).1.clone();
-        map.get(hash).cloned()
+        self.tokens
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .by_hash
+            .get(hash)
+            .cloned()
     }
 
-    /// Reads every token from `st` again.
-    ///
-    /// # Errors
-    /// The store's; the index keeps what it had.
-    pub fn reload(&self, st: &Store) -> clax_core::Result<()> {
-        let started = self.started.fetch_add(1, Ordering::SeqCst) + 1;
-        let fresh: HashMap<[u8; 32], GrantRef> = st
-            .credential_index()?
-            .into_iter()
-            .map(|c| {
-                (
-                    c.sha256,
-                    GrantRef {
-                        grant_id: c.grant_id,
-                        kind: c.kind,
-                        key: c.key,
-                        revoked: c.revoked,
-                    },
-                )
-            })
-            .collect();
-        self.install(started, fresh);
+    /// How many tokens it holds.
+    pub fn len(&self) -> usize {
+        self.tokens
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .by_hash
+            .len()
+    }
+
+    /// Whether it holds no token.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Whether a change failed and a rebuild is due.
+    pub fn is_stale(&self) -> bool {
+        self.stale.load(Ordering::SeqCst)
+    }
+
+    /// Makes the next change fail, as a failure after the store committed
+    /// would (debug builds, for tests).
+    #[cfg(debug_assertions)]
+    pub fn fail_next_change(&self) {
+        self.fail_next.store(true, Ordering::SeqCst);
+    }
+
+    fn change(&self, f: impl FnOnce(&mut Tokens)) -> Result<(), IndexStale> {
+        #[cfg(debug_assertions)]
+        if self.fail_next.swap(false, Ordering::SeqCst) {
+            self.stale.store(true, Ordering::SeqCst);
+            return Err(IndexStale);
+        }
+        let mut t = self.tokens.write().unwrap_or_else(|e| e.into_inner());
+        self.changes.fetch_add(1, Ordering::SeqCst);
+        f(&mut t);
         Ok(())
     }
 
-    /// Installs `fresh`, read by the reload numbered `started`, unless a
-    /// reload that started later installed its own already.
-    fn install(&self, started: u64, fresh: HashMap<[u8; 32], GrantRef>) {
-        let mut g = self.map.write().unwrap_or_else(|e| e.into_inner());
-        if started > g.0 {
-            *g = (started, Arc::new(fresh));
+    /// Grant `gid`, signing with `key`, was issued `token`, `manage` and
+    /// `continue_token`: they replace whatever tokens it had.
+    ///
+    /// # Errors
+    /// [`IndexStale`] when the change could not be made.
+    pub fn issued(
+        &self,
+        gid: &str,
+        key: [u8; 32],
+        token: &Secret,
+        manage: &Secret,
+        continue_token: &Secret,
+    ) -> Result<(), IndexStale> {
+        self.change(|t| {
+            for h in t.by_grant.remove(gid).unwrap_or_default() {
+                t.by_hash.remove(&h);
+            }
+            for (s, kind) in [
+                (token, CredentialKind::Access),
+                (manage, CredentialKind::Manage),
+                (continue_token, CredentialKind::Continue),
+            ] {
+                t.insert(
+                    secret::sha256(s.expose()),
+                    GrantRef {
+                        grant_id: gid.to_string(),
+                        kind,
+                        key,
+                        revoked: false,
+                    },
+                );
+            }
+        })
+    }
+
+    /// Grant `gid` ended: every token of it is `grant_revoked` from now.
+    ///
+    /// # Errors
+    /// [`IndexStale`] when the change could not be made.
+    pub fn ended(&self, gid: &str) -> Result<(), IndexStale> {
+        self.change(|t| {
+            let hashes = t.by_grant.get(gid).cloned().unwrap_or_default();
+            for h in hashes {
+                if let Some(g) = t.by_hash.get_mut(&h) {
+                    g.revoked = true;
+                }
+            }
+        })
+    }
+
+    /// Reads the whole index from `st` again when a change failed. A change
+    /// made while it read leaves the rebuild for the next call. Whether it
+    /// rebuilt.
+    ///
+    /// # Errors
+    /// The store's; the index stays marked.
+    pub fn rebuild_if_stale(&self, st: &Store) -> clax_core::Result<bool> {
+        if !self.is_stale() {
+            return Ok(false);
         }
+        let before = self.changes.load(Ordering::SeqCst);
+        let fresh = Self::read(st)?;
+        let mut t = self.tokens.write().unwrap_or_else(|e| e.into_inner());
+        if self.changes.load(Ordering::SeqCst) != before {
+            return Ok(false);
+        }
+        *t = fresh;
+        self.stale.store(false, Ordering::SeqCst);
+        Ok(true)
+    }
+}
+
+/// Logs a failed index change after the store committed; the index is
+/// rebuilt on the next sweep, and the request still succeeds.
+pub fn note_stale(r: Result<(), IndexStale>, what: &str) {
+    if r.is_err() {
+        tracing::warn!(
+            what,
+            "grant index change failed; rebuilding on the next sweep"
+        );
+    }
+}
+
+/// The nonce cache of keys that come from no issued token: grant requests
+/// (the key in the body) and a request's continuation calls until its
+/// tokens are issued. Anyone on the LAN can make such keys, so instead of
+/// refusing a new key when full, it evicts the oldest one: of the peer's
+/// own when the peer holds [`REQUEST_KEYS_PER_PEER`], else of all when the
+/// cache holds [`REQUEST_KEYS`]. Forgetting such a key's nonces is harmless:
+/// replaying a grant request spends no invite twice (an invite is used
+/// once, a live key is `key_in_use`) and hands out only a continuation the
+/// replayer cannot sign for.
+pub struct RequestNonces {
+    cache: NonceCache,
+    /// Keys in the order they arrived, with their peer.
+    order: VecDeque<([u8; 32], String)>,
+}
+
+impl RequestNonces {
+    fn new() -> RequestNonces {
+        RequestNonces {
+            cache: NonceCache::new(REQUEST_WINDOW_S, REQUEST_NONCES_PER_KEY)
+                .with_caps(REQUEST_KEYS, REQUEST_NONCES),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn evict_at(&mut self, i: usize) {
+        if let Some((k, _)) = self.order.remove(i) {
+            self.cache.forget(&k);
+        }
+    }
+
+    /// Makes room for `key` of peer `ip`.
+    fn admit(&mut self, key: &[u8; 32], ip: &str) {
+        if self.order.iter().any(|(k, _)| k == key) {
+            return;
+        }
+        let mine: Vec<usize> = self
+            .order
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, p))| p == ip)
+            .map(|(i, _)| i)
+            .collect();
+        if mine.len() >= REQUEST_KEYS_PER_PEER {
+            self.evict_at(mine[0]);
+        }
+        while self.order.len() >= REQUEST_KEYS {
+            self.evict_at(0);
+        }
+        self.order.push_back((*key, ip.to_string()));
+    }
+
+    fn check(
+        &mut self,
+        key: &[u8; 32],
+        ip: &str,
+        nonce: &str,
+        t: i64,
+        now: i64,
+    ) -> Result<(), SigError> {
+        self.admit(key, ip);
+        self.cache.check(key, nonce, t, now)
+    }
+
+    fn record(
+        &mut self,
+        key: &[u8; 32],
+        ip: &str,
+        nonce: &str,
+        t: i64,
+        now: i64,
+    ) -> Result<(), SigError> {
+        self.admit(key, ip);
+        self.cache.record(key, nonce, t, now)
+    }
+
+    fn sweep(&mut self, now: i64) {
+        self.cache.sweep(now);
+        let cache = &self.cache;
+        self.order.retain(|(k, _)| cache.has_key(k));
     }
 }
 
 /// The grant flow's signature state: the token index and the nonce caches.
 pub struct GrantAuth {
     pub index: GrantIndex,
-    /// Nonces of grant requests, whose key comes from the body.
-    requests: Mutex<NonceCache>,
+    /// Nonces of keys that come from no issued token.
+    requests: Mutex<RequestNonces>,
     /// Nonces of keys known through [`GrantAuth::index`].
     nonces: Mutex<NonceCache>,
 }
@@ -132,10 +354,7 @@ impl GrantAuth {
     pub fn load(st: &Store) -> clax_core::Result<GrantAuth> {
         Ok(GrantAuth {
             index: GrantIndex::load(st)?,
-            requests: Mutex::new(
-                NonceCache::new(REQUEST_WINDOW_S, REQUEST_NONCES_PER_KEY)
-                    .with_caps(REQUEST_KEYS, REQUEST_NONCES),
-            ),
+            requests: Mutex::new(RequestNonces::new()),
             nonces: Mutex::new(NonceCache::new(sig::NONCE_WINDOW_S, sig::NONCES_PER_KEY)),
         })
     }
@@ -148,11 +367,11 @@ impl GrantAuth {
 
     /// Keys with nonces remembered: (grant requests, the rest).
     pub fn cached_keys(&self) -> (usize, usize) {
-        (lock(&self.requests).keys(), lock(&self.nonces).keys())
+        (lock(&self.requests).cache.keys(), lock(&self.nonces).keys())
     }
 }
 
-fn lock(m: &Mutex<NonceCache>) -> std::sync::MutexGuard<'_, NonceCache> {
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -311,55 +530,58 @@ fn input<'a>(h: &'a Head, body: &[u8], token: Option<&str>) -> SignInput<'a> {
 
 /// Verifies `POST /api/grants` (spec §6.3, §6.6): no browser credential,
 /// `t` within the skew before the body is read, then the body (at most
-/// [`REQUEST_BODY_LIMIT`]), whose key `key_of` reads; the nonce checked,
-/// the signature verified over an empty token line, and the nonce recorded,
-/// under one lock of the grant-request cache.
+/// [`REQUEST_BODY_LIMIT`]), which `parse` reads into the request and its
+/// key; the nonce checked, the signature verified over an empty token
+/// line, and the nonce recorded, under one lock of the grant-request cache.
 ///
 /// # Errors
 /// 403 `forbidden_origin`, 401 `invalid_signature`, `stale_request` or
 /// `replayed_request`, 413 `body_too_large`, 429 `limit_reached`, or what
-/// `key_of` refuses the body with.
-pub async fn grant_request(
+/// `parse` refuses the body with.
+pub async fn grant_request<T>(
     s: &AppState,
     req: axum::extract::Request,
-    key_of: impl FnOnce(&[u8]) -> Result<[u8; 32], ApiError>,
-) -> Result<Signed, Refusal> {
+    parse: impl FnOnce(&[u8]) -> Result<(T, [u8; 32]), ApiError>,
+) -> Result<(Signed, T), Refusal> {
     let st = &s.store;
     let (parts, body) = req.into_parts();
     no_browser(&parts.headers)?;
     let h = head(&parts, st)?;
     let now = st.now_utc().timestamp();
-    let skew = lock(&s.grant_auth.requests).skew();
-    if h.header.t.abs_diff(now) > skew.unsigned_abs() {
+    if h.header.t.abs_diff(now) > sig::MAX_SKEW_S.unsigned_abs() {
         return Err(refuse(SigError::Stale, st));
     }
     let body = read_body(&parts.headers, body).await?;
-    let key = key_of(&body)?;
+    let (parsed, key) = parse(&body)?;
     let now = st.now_utc().timestamp();
     {
         let mut c = lock(&s.grant_auth.requests);
-        c.check(&key, &h.header.nonce, h.header.t, now)
+        c.check(&key, &h.peer_ip, &h.header.nonce, h.header.t, now)
             .map_err(|e| refuse(e, st))?;
         if !sig::verify(&key, &input(&h, &body, None), &h.header.sig) {
             return Err(refuse(SigError::Bad, st));
         }
-        c.record(&key, &h.header.nonce, h.header.t, now)
+        c.record(&key, &h.peer_ip, &h.header.nonce, h.header.t, now)
             .map_err(|e| refuse(e, st))?;
     }
-    Ok(Signed {
-        body,
-        host: h.host,
-        key,
-        token: None,
-        peer_ip: h.peer_ip,
-    })
+    Ok((
+        Signed {
+            body,
+            host: h.host,
+            key,
+            token: None,
+            peer_ip: h.peer_ip,
+        },
+        parsed,
+    ))
 }
 
 /// Verifies a continuation or manage call on grant `gid` (spec §4.2,
 /// §6.4, §6.6): `Authorization: GNAP <token>` naming a token of kind
-/// `kind` of that grant in the index, then the signature header, `t` and
-/// the nonce's absence, all before the body is read; then the body, the
-/// signature over the token, and the nonce's record.
+/// `kind` of that grant (in the index, or for a request whose tokens were
+/// never issued, its continuation in the store), then the signature
+/// header, `t` and the nonce's absence, all before the body is read; then
+/// the body, the signature over the token, and the nonce's record.
 ///
 /// # Errors
 /// 403 `forbidden_origin`; 401 `invalid_token` for a missing or unknown
@@ -376,49 +598,49 @@ pub async fn gnap(
     let (parts, body) = req.into_parts();
     no_browser(&parts.headers)?;
     let token = gnap_token(&parts.headers).ok_or_else(invalid_token)?;
-    let found = s
-        .grant_auth
-        .index
-        .lookup(&secret::sha256(token.expose()))
-        .filter(|g| g.kind == kind && g.grant_id == gid)
-        .ok_or_else(invalid_token)?;
-    if found.revoked {
-        return Err(ApiError::new(
-            StatusCode::UNAUTHORIZED,
-            "grant_revoked",
-            "this machine's grant was revoked: connect again",
-        )
-        .into());
-    }
+    let (key, issued) = match s.grant_auth.index.lookup(&secret::sha256(token.expose())) {
+        Some(g) if g.kind != kind || g.grant_id != gid => return Err(invalid_token()),
+        Some(g) if g.revoked => {
+            return Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "grant_revoked",
+                "this machine's grant was revoked: connect again",
+            )
+            .into());
+        }
+        Some(g) => (g.key, true),
+        None if kind == CredentialKind::Continue => {
+            let (gid, t) = (gid.to_string(), token.clone());
+            let key = s
+                .store_call(move |st| st.unissued_continuation(&gid, t.expose()))
+                .await?
+                .ok_or_else(invalid_token)?;
+            (key, false)
+        }
+        None => return Err(invalid_token()),
+    };
     let h = head(&parts, st)?;
-    lock(&s.grant_auth.nonces)
-        .check(
-            &found.key,
-            &h.header.nonce,
-            h.header.t,
-            st.now_utc().timestamp(),
-        )
-        .map_err(|e| refuse(e, st))?;
+    let (n, t) = (&h.header.nonce, h.header.t);
+    let checked = if issued {
+        lock(&s.grant_auth.nonces).check(&key, n, t, st.now_utc().timestamp())
+    } else {
+        lock(&s.grant_auth.requests).check(&key, &h.peer_ip, n, t, st.now_utc().timestamp())
+    };
+    checked.map_err(|e| refuse(e, st))?;
     let body = read_body(&parts.headers, body).await?;
-    if !sig::verify(
-        &found.key,
-        &input(&h, &body, Some(token.expose())),
-        &h.header.sig,
-    ) {
+    if !sig::verify(&key, &input(&h, &body, Some(token.expose())), &h.header.sig) {
         return Err(refuse(SigError::Bad, st));
     }
-    lock(&s.grant_auth.nonces)
-        .record(
-            &found.key,
-            &h.header.nonce,
-            h.header.t,
-            st.now_utc().timestamp(),
-        )
-        .map_err(|e| refuse(e, st))?;
+    let recorded = if issued {
+        lock(&s.grant_auth.nonces).record(&key, n, t, st.now_utc().timestamp())
+    } else {
+        lock(&s.grant_auth.requests).record(&key, &h.peer_ip, n, t, st.now_utc().timestamp())
+    };
+    recorded.map_err(|e| refuse(e, st))?;
     Ok(Signed {
         body,
         host: h.host,
-        key: found.key,
+        key,
         token: Some(token),
         peer_ip: h.peer_ip,
     })
@@ -438,28 +660,89 @@ fn gnap_token(headers: &HeaderMap) -> Option<Secret> {
 mod tests {
     use super::*;
 
-    fn one(kind: CredentialKind) -> HashMap<[u8; 32], GrantRef> {
-        HashMap::from([(
-            [1u8; 32],
-            GrantRef {
-                grant_id: "g_1".into(),
-                kind,
-                key: [2u8; 32],
-                revoked: false,
-            },
-        )])
+    fn secret(s: &str) -> Secret {
+        Secret::new(s.to_string())
     }
 
     #[test]
-    fn a_reload_that_started_earlier_never_replaces_a_later_one() {
+    fn the_index_changes_one_grant_at_a_time() {
         let index = GrantIndex::default();
-        index.install(2, one(CredentialKind::Manage));
-        index.install(1, one(CredentialKind::Access));
+        let (a, m, c) = (secret("cxg_a"), secret("cxm_a"), secret("cxc_a"));
+        index.issued("g_1", [2u8; 32], &a, &m, &c).unwrap();
+        index
+            .issued(
+                "g_2",
+                [3u8; 32],
+                &secret("cxg_b"),
+                &secret("cxm_b"),
+                &secret("cxc_b"),
+            )
+            .unwrap();
+        assert_eq!(index.len(), 6);
+        let found = index.lookup(&secret::sha256("cxm_a")).unwrap();
         assert_eq!(
-            index.lookup(&[1u8; 32]).map(|g| g.kind),
-            Some(CredentialKind::Manage)
+            (
+                found.grant_id.as_str(),
+                found.kind,
+                found.key,
+                found.revoked
+            ),
+            ("g_1", CredentialKind::Manage, [2u8; 32], false)
         );
-        index.install(3, HashMap::new());
-        assert_eq!(index.lookup(&[1u8; 32]), None);
+        // Issuing again replaces the grant's tokens.
+        index
+            .issued("g_1", [2u8; 32], &a, &m, &secret("cxc_a2"))
+            .unwrap();
+        assert_eq!(index.len(), 6);
+        assert!(index.lookup(&secret::sha256("cxc_a")).is_none());
+        index.ended("g_1").unwrap();
+        assert!(index.lookup(&secret::sha256("cxg_a")).unwrap().revoked);
+        assert!(!index.lookup(&secret::sha256("cxg_b")).unwrap().revoked);
+        index.ended("g_unknown").unwrap();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn a_failed_change_marks_the_index_for_a_rebuild() {
+        let index = GrantIndex::default();
+        index.fail_next_change();
+        assert!(index.ended("g_1").is_err());
+        assert!(index.is_stale());
+        assert!(index.ended("g_1").is_ok(), "only the next change fails");
+    }
+
+    #[test]
+    fn a_full_request_cache_evicts_the_oldest_key_and_a_peers_own_first() {
+        let mut r = RequestNonces::new();
+        let n = sig::new_nonce();
+        let key = |i: u32| {
+            let mut k = [0u8; 32];
+            k[..4].copy_from_slice(&i.to_be_bytes());
+            k
+        };
+        for i in 0..REQUEST_KEYS as u32 {
+            let ip = format!("10.0.{}.{}", i / 8, i % 8);
+            r.record(&key(i), &ip, &n, 0, 0).unwrap();
+        }
+        assert_eq!(r.cache.keys(), REQUEST_KEYS);
+        r.record(&key(9999), "10.9.9.9", &n, 0, 0).unwrap();
+        assert_eq!(r.cache.keys(), REQUEST_KEYS);
+        assert!(!r.cache.has_key(&key(0)) && r.cache.has_key(&key(1)));
+        // A peer at its own cap evicts its own oldest, nobody else's.
+        let mut r = RequestNonces::new();
+        r.record(&key(100), "10.0.0.2", &n, 0, 0).unwrap();
+        for i in 0..REQUEST_KEYS_PER_PEER as u32 + 1 {
+            r.record(&key(i), "10.0.0.1", &n, 0, 0).unwrap();
+        }
+        assert!(r.cache.has_key(&key(100)));
+        assert!(!r.cache.has_key(&key(0)) && r.cache.has_key(&key(1)));
+        assert_eq!(r.cache.keys(), REQUEST_KEYS_PER_PEER + 1);
+        // A replay of a remembered key is still refused.
+        assert_eq!(
+            r.check(&key(1), "10.0.0.1", &n, 0, 0),
+            Err(SigError::Replayed)
+        );
+        r.sweep(1000);
+        assert!(r.order.is_empty() && r.cache.is_empty());
     }
 }
