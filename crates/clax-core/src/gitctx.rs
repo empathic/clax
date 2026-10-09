@@ -414,9 +414,7 @@ impl Git {
     /// does not answer in time, or names an unreadable or older version is
     /// unsupported, and every capture with it is `unavailable`.
     pub fn probe(path: &std::path::Path) -> Git {
-        let runner = capture_impl::Runner::new(path, std::path::Path::new("/"));
-        let line = capture_impl::version(&runner, std::time::Instant::now() + PROBE_DEADLINE);
-        runner.cancel();
+        let line = version_line(path, std::time::Instant::now() + PROBE_DEADLINE);
         Git {
             path: path.to_path_buf(),
             supported: line.as_deref().is_some_and(version_supported),
@@ -449,6 +447,188 @@ pub fn version_supported(line: &str) -> bool {
     match (parts.next().flatten(), parts.next().flatten()) {
         (Some(major), Some(minor)) => (major, minor) >= MIN_GIT,
         _ => false,
+    }
+}
+
+/// The first line of `path`'s `git version`, run in the capture environment
+/// outside any repository and waited for until `deadline`; `None` when it
+/// cannot be run or does not answer in time (it is then killed).
+fn version_line(path: &std::path::Path, deadline: std::time::Instant) -> Option<String> {
+    let runner = capture_impl::Runner::new(path, std::path::Path::new("/"));
+    let line = capture_impl::version(&runner, deadline);
+    runner.cancel();
+    line
+}
+
+/// How long after a version probe that got no answer [`GitProbe`] tries
+/// again, at first; each further miss doubles it, up to
+/// [`PROBE_RETRY_MAX`].
+pub const PROBE_RETRY_FIRST: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The longest wait between version probes that get no answer.
+pub const PROBE_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// One git executable whose version is read once per process, for
+/// [`GitProbe::capture`]. Only an answer is kept: a probe that gets none
+/// within [`PROBE_DEADLINE`] (a git that hangs, or cannot be run) is tried
+/// again on a capture [`PROBE_RETRY_FIRST`] later, the wait doubling up to
+/// [`PROBE_RETRY_MAX`], and the captures in between are `unavailable`
+/// without running anything. The probe runs on a thread of its own, so a
+/// capture waits for it only until its own deadline: the first capture's
+/// wait for the version counts against its [`CAPTURE_DEADLINE`], and a
+/// probe still running then makes that capture a `timeout`.
+#[derive(Clone)]
+pub struct GitProbe {
+    inner: std::sync::Arc<ProbeInner>,
+}
+
+impl std::fmt::Debug for GitProbe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GitProbe")
+            .field("path", &self.inner.path)
+            .finish()
+    }
+}
+
+/// A clock for the probe's retry waits; [`std::time::Instant::now`] unless
+/// a test sets one.
+type Clock = Box<dyn Fn() -> std::time::Instant + Send + Sync>;
+
+struct ProbeInner {
+    path: std::path::PathBuf,
+    state: std::sync::Mutex<ProbeState>,
+    changed: std::sync::Condvar,
+    now: Clock,
+    probe_deadline: std::time::Duration,
+}
+
+struct ProbeState {
+    /// The version's verdict, once git answered.
+    answer: Option<Git>,
+    /// Whether a probe is running.
+    running: bool,
+    /// When the next probe may run, after one that got no answer.
+    retry_at: Option<std::time::Instant>,
+    /// The wait set after the next probe that gets no answer.
+    backoff: std::time::Duration,
+}
+
+impl GitProbe {
+    /// The executable at `path`, not yet probed.
+    pub fn new(path: &std::path::Path) -> GitProbe {
+        GitProbe::with_clock(path, Box::new(std::time::Instant::now), PROBE_DEADLINE)
+    }
+
+    /// [`GitProbe::new`] whose retry waits read `now` and whose probe waits
+    /// `probe_deadline` for `git version`: for tests that move time on
+    /// without sleeping.
+    pub fn with_clock(
+        path: &std::path::Path,
+        now: Clock,
+        probe_deadline: std::time::Duration,
+    ) -> GitProbe {
+        GitProbe {
+            inner: std::sync::Arc::new(ProbeInner {
+                path: path.to_path_buf(),
+                state: std::sync::Mutex::new(ProbeState {
+                    answer: None,
+                    running: false,
+                    retry_at: None,
+                    backoff: PROBE_RETRY_FIRST,
+                }),
+                changed: std::sync::Condvar::new(),
+                now,
+                probe_deadline,
+            }),
+        }
+    }
+
+    /// The executable's path.
+    pub fn path(&self) -> &std::path::Path {
+        &self.inner.path
+    }
+
+    /// Starts the version probe now, when none has answered or is running
+    /// and no retry wait is pending, without waiting for it.
+    pub fn start(&self) {
+        let mut s = self.lock();
+        self.start_locked(&mut s);
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, ProbeState> {
+        self.inner.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Starts a probe unless there is an answer, one is running, or the
+    /// retry wait has not passed; false when none runs or can run.
+    fn start_locked(&self, s: &mut ProbeState) -> bool {
+        if s.answer.is_some() || s.running {
+            return s.running;
+        }
+        if s.retry_at.is_some_and(|t| (self.inner.now)() < t) {
+            return false;
+        }
+        s.running = true;
+        let inner = self.inner.clone();
+        std::thread::spawn(move || {
+            let line = version_line(
+                &inner.path,
+                std::time::Instant::now() + inner.probe_deadline,
+            );
+            let mut s = inner.state.lock().unwrap_or_else(|e| e.into_inner());
+            s.running = false;
+            match line {
+                Some(l) => {
+                    s.answer = Some(Git {
+                        path: inner.path.clone(),
+                        supported: version_supported(&l),
+                    });
+                }
+                None => {
+                    s.retry_at = Some((inner.now)() + s.backoff);
+                    s.backoff = (s.backoff * 2).min(PROBE_RETRY_MAX);
+                }
+            }
+            inner.changed.notify_all();
+        });
+        true
+    }
+
+    /// The probed executable, waiting for its probe until `deadline`:
+    /// `timeout` when the probe is still running then, `unavailable` when
+    /// it got no answer and the retry wait has not passed.
+    fn git(&self, deadline: std::time::Instant) -> Result<Git, &'static str> {
+        let mut s = self.lock();
+        loop {
+            if let Some(g) = &s.answer {
+                return Ok(g.clone());
+            }
+            if !self.start_locked(&mut s) {
+                return Err("unavailable");
+            }
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return Err("timeout");
+            }
+            s = self
+                .inner
+                .changed
+                .wait_timeout(s, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+
+    /// [`capture`] with this executable, the wait for its version (on the
+    /// first capture, or a retry) included in `deadline`.
+    pub fn capture(&self, cwd: &std::path::Path, deadline: std::time::Instant) -> GitField {
+        if cwd.as_os_str().is_empty() || !cwd.is_dir() {
+            return GitField::Capture("no-cwd");
+        }
+        match self.git(deadline) {
+            Ok(git) => capture(cwd, deadline, &git),
+            Err(outcome) => GitField::Capture(outcome),
+        }
     }
 }
 

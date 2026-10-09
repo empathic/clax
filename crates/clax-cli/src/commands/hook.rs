@@ -1,11 +1,13 @@
 use crate::client::Client;
 use clax_core::Home;
+use clax_core::gitctx::{self, GitField};
 use clax_hooks::ask::{self, Asked, Budget};
 use clax_hooks::events::{self, Daemon};
 use clax_hooks::input::HookInput;
 use clax_hooks::output::HookOutput;
 use std::io::{Read, Write};
-use std::sync::mpsc;
+use std::path::Path;
+use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 /// The whole `session-start` invocation is abandoned after this long.
@@ -153,21 +155,145 @@ pub struct Args {
     pub event: Event,
 }
 
-impl Daemon for Client {
+/// The channel `clax hook` names on every request (spec
+/// 2026-10-06-toolpath-audit-design §6.9).
+pub const VIA: &str = "hook";
+
+/// Whether `event`'s hook captures the git state of its working directory
+/// (spec §9.3): the session join, the hook-driven questions, and the Stop
+/// hook, whose turn end ends the session's working records.
+fn captures_git(event: Event) -> bool {
+    matches!(
+        event,
+        Event::SessionStart | Event::Stop | Event::Ask | Event::Asked
+    )
+}
+
+/// The git state of the hook's working directory, captured once, on a
+/// thread of its own, from the hook's first daemon request on: a hook that
+/// makes no request runs no git.
+struct HookGit {
+    cwd: Option<String>,
+    task: Mutex<Option<std::thread::JoinHandle<GitField>>>,
+    done: OnceLock<GitField>,
+}
+
+impl HookGit {
+    fn new(cwd: Option<&str>) -> HookGit {
+        HookGit {
+            cwd: cwd.map(str::to_string),
+            task: Mutex::new(None),
+            done: OnceLock::new(),
+        }
+    }
+
+    /// Starts the capture unless it has started.
+    fn start(&self) {
+        if self.done.get().is_some() {
+            return;
+        }
+        let mut task = self.task.lock().unwrap_or_else(|e| e.into_inner());
+        if task.is_some() {
+            return;
+        }
+        let cwd = self.cwd.clone().filter(|c| !c.is_empty());
+        // The deadline starts now: the wait for git's version counts
+        // against it.
+        let deadline = Instant::now() + clax_mcp::git::deadline_from_env();
+        *task = Some(std::thread::spawn(move || {
+            let Some(cwd) = cwd else {
+                return GitField::Capture("no-cwd");
+            };
+            match gitctx::find_git(std::env::var_os("PATH").as_deref()) {
+                Some(git) => gitctx::GitProbe::new(&git).capture(Path::new(&cwd), deadline),
+                None => GitField::Capture("unavailable"),
+            }
+        }));
+    }
+
+    /// The capture, waiting for it (it ends by its deadline).
+    fn wait(&self) -> &GitField {
+        self.start();
+        if let Some(t) = self.task.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            let field = t.join().unwrap_or(GitField::Capture("unavailable"));
+            let _ = self.done.set(field);
+        }
+        self.done.get().unwrap_or(&GitField::Capture("unavailable"))
+    }
+
+    /// The capture if it has finished, starting it if it has not started.
+    fn now(&self) -> Option<&GitField> {
+        self.start();
+        let finished = self
+            .task
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|t| t.is_finished());
+        if finished {
+            return Some(self.wait());
+        }
+        self.done.get()
+    }
+}
+
+/// The daemon as a hook talks to it: every request names the `hook`
+/// channel, and, for an event that captures git, carries `x-clax-git`.
+/// Every request but a `GET` waits for the capture; a `GET` carries it
+/// once it is there.
+struct HookDaemon<'a> {
+    client: &'a Client,
+    git: Option<HookGit>,
+}
+
+impl<'a> HookDaemon<'a> {
+    fn new(client: &'a Client, event: Event, input: &HookInput) -> HookDaemon<'a> {
+        HookDaemon {
+            client,
+            git: captures_git(event).then(|| HookGit::new(input.cwd.as_deref())),
+        }
+    }
+
+    fn send(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+        timeout: Option<Duration>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let git = self.git.as_ref().and_then(|g| {
+            if method == reqwest::Method::GET {
+                g.now()
+            } else {
+                Some(g.wait())
+            }
+        });
+        let header = git.and_then(gitctx::encode_header);
+        let headers: Vec<(&str, &str)> = header
+            .as_deref()
+            .map(|h| ("x-clax-git", h))
+            .into_iter()
+            .collect();
+        self.client
+            .request_with(method, path, body, timeout, &headers)
+    }
+}
+
+impl Daemon for HookDaemon<'_> {
     fn browser_url(&self, path: &str) -> String {
-        Client::browser_url(self, path)
+        self.client.browser_url(path)
     }
     fn get(&self, path: &str) -> anyhow::Result<serde_json::Value> {
-        Client::get(self, path)
+        self.send(reqwest::Method::GET, path, None, None)
     }
     fn get_with_timeout(&self, path: &str, timeout: Duration) -> anyhow::Result<serde_json::Value> {
-        Client::get_with_timeout(self, path, timeout)
+        self.send(reqwest::Method::GET, path, None, Some(timeout))
     }
     fn post(&self, path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        Client::post(self, path, body)
+        self.send(reqwest::Method::POST, path, Some(body), None)
     }
     fn patch(&self, path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        Client::patch(self, path, body)
+        self.send(reqwest::Method::PATCH, path, Some(body), None)
     }
 }
 
@@ -466,7 +592,9 @@ fn handle(
     }
     let client = Client::discover(home)
         .ok_or_else(|| anyhow::anyhow!("no clax daemon is running"))?
-        .with_timeout(budget(agent, event).1);
+        .with_timeout(budget(agent, event).1)
+        .with_via(VIA);
+    let client = HookDaemon::new(&client, event, &input);
     // Codex's `codex queue` finds its app-server socket under CODEX_HOME, which
     // the daemon's own environment may lack.
     let codex_home = std::env::var("CODEX_HOME")
@@ -529,7 +657,7 @@ enum AskMsg {
 
 /// A [`Daemon`] that reports when the long poll starts.
 struct Reporting<'a> {
-    client: &'a Client,
+    client: &'a HookDaemon<'a>,
     tx: mpsc::Sender<AskMsg>,
 }
 
@@ -538,17 +666,17 @@ impl Daemon for Reporting<'_> {
         self.client.browser_url(path)
     }
     fn get(&self, path: &str) -> anyhow::Result<serde_json::Value> {
-        Daemon::get(self.client, path)
+        self.client.get(path)
     }
     fn get_with_timeout(&self, path: &str, timeout: Duration) -> anyhow::Result<serde_json::Value> {
         let _ = self.tx.send(AskMsg::Polling(timeout));
-        Daemon::get_with_timeout(self.client, path, timeout)
+        self.client.get_with_timeout(path, timeout)
     }
     fn post(&self, path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        Daemon::post(self.client, path, body)
+        self.client.post(path, body)
     }
     fn patch(&self, path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        Daemon::patch(self.client, path, body)
+        self.client.patch(path, body)
     }
 }
 
@@ -617,7 +745,8 @@ fn ask_worker(agent: Agent, home: &Home, tx: mpsc::Sender<AskMsg>) -> AskMsg {
     let Some(client) = Client::discover(home) else {
         return AskMsg::Failed("no clax daemon is running".to_string());
     };
-    let client = client.with_timeout(ASK_REQUEST_TIMEOUT);
+    let client = client.with_timeout(ASK_REQUEST_TIMEOUT).with_via(VIA);
+    let client = HookDaemon::new(&client, Event::Ask, &input);
     let daemon = Reporting {
         client: &client,
         tx,

@@ -46,6 +46,11 @@ fn git(dir: &Path, args: &[&str]) -> Vec<u8> {
     out.stdout
 }
 
+/// A marker program: installed once (so macOS assesses it once), it leaves
+/// a file named as it is called in `markers` beside the repository's work
+/// tree, where git runs hooks and the fsmonitor.
+const MARKER: &str = "#!/bin/sh\ntouch \"../markers/$(basename \"$0\")\"\n";
+
 /// A repository with one commit of `a.txt` on `main`.
 fn repo() -> (tempfile::TempDir, PathBuf) {
     let d = tempfile::tempdir().unwrap();
@@ -390,17 +395,7 @@ fn capture_runs_no_configured_program() {
     let hooks = root.join(".git/hooks");
     std::fs::create_dir_all(&hooks).unwrap();
     for hook in ["post-index-change", "reference-transaction"] {
-        let path = hooks.join(hook);
-        std::fs::write(
-            &path,
-            format!(
-                "#!/bin/sh\ntouch {}\n",
-                markers.join(hook).to_str().unwrap()
-            ),
-        )
-        .unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        clax_fake_exe::install(&hooks.join(hook), MARKER);
     }
     // A tracked file whose stat changed but whose content did not: a diff
     // that refreshed the index would take `index.lock`, rewrite the index
@@ -518,16 +513,10 @@ fn an_old_git_runs_nothing() {
     let markers = d.path().join("markers");
     std::fs::create_dir(&markers).unwrap();
     let mark = |name: &str| format!("touch {}", markers.join(name).to_str().unwrap());
-    let fsmonitor = d.path().join("fsmonitor.sh");
-    std::fs::write(&fsmonitor, format!("#!/bin/sh\n{}\n", mark("fsmonitor"))).unwrap();
+    let fsmonitor = clax_fake_exe::install(&d.path().join("fsmonitor"), MARKER);
     let hooks = root.join(".git/hooks");
     std::fs::create_dir_all(&hooks).unwrap();
-    let hook = hooks.join("post-index-change");
-    std::fs::write(&hook, format!("#!/bin/sh\n{}\n", mark("hook"))).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    for f in [&fsmonitor, &hook] {
-        std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    clax_fake_exe::install(&hooks.join("post-index-change"), MARKER);
     let bare = d.path().join("remote.git");
     git(d.path(), &["init", "-q", "--bare", bare.to_str().unwrap()]);
     for (k, v) in [
@@ -624,4 +613,303 @@ fn diff_unavailable_only_on_a_dirty_tree() {
     assert!(c.validate().is_err());
     c.dirty = true;
     assert_eq!(c.validate(), Ok(()));
+}
+
+/// A git that answers `version` only once the file `answer` beside it
+/// exists, and otherwise runs the real git; every `version` run appends a
+/// line to `versions` beside it.
+fn flaky_git(dir: &Path) -> PathBuf {
+    let real = git_bin();
+    clax_fake_exe::install(
+        &dir.join("git"),
+        &format!(
+            "#!/bin/sh\nhere=\"$(dirname \"$0\")\"\nfor a in \"$@\"; do\n  if [ \"$a\" = version ]; then\n    echo run >> \"$here/versions\"\n    [ -f \"$here/answer\" ] || exit 1\n    echo 'git version 2.50.1'\n    exit 0\n  fi\ndone\nexec {} \"$@\"\n",
+            real.to_str().unwrap()
+        ),
+    )
+}
+
+/// A clock for the probe's retry waits that a test moves on by hand.
+fn manual_clock() -> (
+    std::sync::Arc<std::sync::atomic::AtomicU64>,
+    Box<dyn Fn() -> Instant + Send + Sync>,
+) {
+    let base = Instant::now();
+    let offset = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let o = offset.clone();
+    let now =
+        Box::new(move || base + Duration::from_secs(o.load(std::sync::atomic::Ordering::SeqCst)));
+    (offset, now)
+}
+
+fn version_runs(dir: &Path) -> usize {
+    std::fs::read_to_string(dir.join("versions"))
+        .map(|s| s.lines().count())
+        .unwrap_or(0)
+}
+
+/// A version probe that gets no answer is not kept for the life of the
+/// process: the captures during the retry wait are `unavailable` and run
+/// nothing, the probe runs again after it (30 s, then 60 s), and an answer,
+/// once there is one, is kept.
+#[test]
+fn a_probe_without_an_answer_is_retried_with_backoff() {
+    let (d, root) = repo();
+    let bin = d.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let probe_git = flaky_git(&bin);
+    let (clock, now) = manual_clock();
+    let probe = GitProbe::with_clock(&probe_git, now, PROBE_DEADLINE);
+    let advance = |s: u64| clock.fetch_add(s, std::sync::atomic::Ordering::SeqCst);
+
+    assert_eq!(
+        probe.capture(&root, soon()),
+        GitField::Capture("unavailable")
+    );
+    assert_eq!(version_runs(&bin), 1);
+    // Within the wait, nothing runs.
+    advance(29);
+    assert_eq!(
+        probe.capture(&root, soon()),
+        GitField::Capture("unavailable")
+    );
+    assert_eq!(version_runs(&bin), 1);
+    // After it, the probe runs again; a second miss doubles the wait.
+    advance(1);
+    assert_eq!(
+        probe.capture(&root, soon()),
+        GitField::Capture("unavailable")
+    );
+    assert_eq!(version_runs(&bin), 2);
+    advance(59);
+    assert_eq!(
+        probe.capture(&root, soon()),
+        GitField::Capture("unavailable")
+    );
+    assert_eq!(version_runs(&bin), 2);
+    std::fs::write(bin.join("answer"), "").unwrap();
+    advance(1);
+    let c = ctx(probe.capture(&root, soon()));
+    assert_eq!(c.repo_root, root.to_str().unwrap());
+    assert_eq!(version_runs(&bin), 3);
+    // An answer is kept: git is not asked again, even once it stops answering.
+    std::fs::remove_file(bin.join("answer")).unwrap();
+    advance(10_000);
+    assert!(matches!(probe.capture(&root, soon()), GitField::Ok(_)));
+    assert_eq!(version_runs(&bin), 3);
+}
+
+/// An answer naming an old git is kept too: it is an answer.
+#[test]
+fn an_old_version_is_kept() {
+    let d = tempfile::tempdir().unwrap();
+    let old = clax_fake_exe::install(
+        &d.path().join("git"),
+        "#!/bin/sh\necho run >> \"$(dirname \"$0\")/versions\"\necho 'git version 2.39.5'\n",
+    );
+    let probe = GitProbe::new(&old);
+    for _ in 0..3 {
+        assert_eq!(
+            probe.capture(d.path(), soon()),
+            GitField::Capture("unavailable")
+        );
+    }
+    assert_eq!(version_runs(d.path()), 1);
+}
+
+/// The first capture's wait for the version counts against its deadline:
+/// a git whose `version` never answers makes it a `timeout` at the
+/// deadline, not after the probe's own 2 s.
+#[test]
+fn the_first_captures_wait_for_the_version_is_within_its_deadline() {
+    let d = tempfile::tempdir().unwrap();
+    let hung = clax_fake_exe::install(&d.path().join("git"), "#!/bin/sh\nexec tail -f /dev/null\n");
+    // A probe deadline past the capture's, but short, so the test does not
+    // wait out the real one.
+    let probe_deadline = CAPTURE_DEADLINE * 2;
+    let probe = GitProbe::with_clock(&hung, Box::new(Instant::now), probe_deadline);
+    let started = Instant::now();
+    let got = probe.capture(d.path(), started + CAPTURE_DEADLINE);
+    assert_eq!(got, GitField::Capture("timeout"));
+    assert!(
+        started.elapsed() < probe_deadline,
+        "returned after {:?}",
+        started.elapsed()
+    );
+    // The probe goes on to its own deadline, kills the hung git and gets no
+    // answer: the next capture waits for that, and is `unavailable`.
+    assert_eq!(
+        probe.capture(d.path(), soon()),
+        GitField::Capture("unavailable")
+    );
+    // A missing directory is `no-cwd` before any probe.
+    assert_eq!(
+        GitProbe::new(&hung).capture(&d.path().join("gone"), soon()),
+        GitField::Capture("no-cwd")
+    );
+}
+
+/// The cases both captures must agree on (spec §9.1: "the Pi extension
+/// runs the same command"); the Pi extension's tests read the same file.
+const VECTORS: &str = include_str!("../tests/toolpath/git-capture-vectors.json");
+
+/// Builds `case` of the shared vectors under `base`, as their `about` says.
+fn build_vector_case(fixture: &serde_json::Value, case: &serde_json::Value, base: &Path) {
+    for step in case["steps"].as_array().unwrap() {
+        if let Some(d) = step["mkdir"].as_str() {
+            std::fs::create_dir_all(base.join(d)).unwrap();
+        } else if let Some(f) = step["write"].as_str() {
+            std::fs::write(base.join(f), step["text"].as_str().unwrap()).unwrap();
+        } else if let Some(f) = step["remove"].as_str() {
+            std::fs::remove_file(base.join(f)).unwrap();
+        } else if let Some(args) = step["git"].as_array() {
+            let mut cmd = Command::new(git_bin());
+            cmd.current_dir(base.join(step["in"].as_str().unwrap_or("")));
+            for c in fixture["config"].as_array().unwrap() {
+                cmd.args(["-c", c.as_str().unwrap()]);
+            }
+            for (k, v) in fixture["env"].as_object().unwrap() {
+                cmd.env(k, v.as_str().unwrap());
+            }
+            cmd.args(args.iter().map(|a| a.as_str().unwrap()));
+            let out = cmd.output().unwrap();
+            assert!(out.status.success(), "{step}: {out:?}");
+        } else {
+            panic!("unknown step {step}");
+        }
+    }
+}
+
+/// What a capture reports, in the vectors' form: the context without
+/// `captured_at`, its `repo_root` relative to `base`.
+fn vector_form(field: &GitField, base: &Path) -> serde_json::Value {
+    match field {
+        GitField::Ok(c) => {
+            let mut v = serde_json::to_value(c).unwrap();
+            let o = v.as_object_mut().unwrap();
+            o.remove("captured_at");
+            let root = Path::new(&c.repo_root)
+                .strip_prefix(base)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
+            o.insert("repo_root".into(), root.into());
+            v
+        }
+        GitField::Capture(o) => serde_json::json!({ "git_capture": o }),
+        GitField::Absent => serde_json::Value::Null,
+    }
+}
+
+#[test]
+fn capture_matches_the_shared_vectors() {
+    let doc: serde_json::Value = serde_json::from_str(VECTORS).unwrap();
+    let mut wrong = Vec::new();
+    for case in doc["cases"].as_array().unwrap() {
+        let d = tempfile::tempdir().unwrap();
+        let base = d.path().canonicalize().unwrap();
+        build_vector_case(&doc["fixture"], case, &base);
+        let cwd = base.join(case["cwd"].as_str().unwrap());
+        let got = vector_form(&capture(&cwd, soon(), real_git()), &base);
+        if got != case["expect"] {
+            wrong.push(format!("{}: {got}", case["name"]));
+        }
+    }
+    assert!(wrong.is_empty(), "captures differ:\n{}", wrong.join("\n"));
+}
+
+/// A promisor remote alone, without `extensions.partialClone`, makes a
+/// partial clone: a diff needing a missing blob is unavailable, not a
+/// failed capture.
+#[test]
+fn a_promisor_remote_alone_makes_a_partial_clone() {
+    let (_d, root) = repo();
+    git(
+        &root,
+        &["config", "remote.origin.url", "/nonexistent/remote.git"],
+    );
+    git(&root, &["config", "remote.origin.promisor", "true"]);
+    let blob = String::from_utf8(git(&root, &["rev-parse", "HEAD:a.txt"])).unwrap();
+    let blob = blob.trim();
+    std::fs::remove_file(root.join(".git/objects").join(&blob[..2]).join(&blob[2..])).unwrap();
+    std::fs::write(root.join("a.txt"), "changed\n").unwrap();
+    let c = ctx(capture(&root, soon(), real_git()));
+    assert!(c.dirty && c.diff_unavailable, "{c:?}");
+}
+
+/// Every command runs with the pins, `GIT_NO_LAZY_FETCH=1`, and nothing
+/// of this process's environment but the kept variables.
+#[test]
+fn every_command_runs_with_the_pins_and_a_cleared_environment() {
+    let (d, root) = repo();
+    let bin = d.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let spy = clax_fake_exe::install(
+        &bin.join("git"),
+        &format!(
+            "#!/bin/sh\n{{ env | sort; echo ---; }} >> \"$(dirname \"$0\")/envs\"\nexec {} \"$@\"\n",
+            git_bin().to_str().unwrap()
+        ),
+    );
+    assert!(matches!(
+        capture(&root, soon(), &Git::assume_supported(&spy)),
+        GitField::Ok(_)
+    ));
+    let log = std::fs::read_to_string(bin.join("envs")).unwrap();
+    let runs: Vec<&str> = log
+        .split("---\n")
+        .filter(|r| !r.trim().is_empty())
+        .collect();
+    assert!(runs.len() >= 5, "{} runs", runs.len());
+    let allowed = [
+        "PATH",
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "TMPDIR",
+        "GIT_OPTIONAL_LOCKS",
+        "GIT_TERMINAL_PROMPT",
+        "LC_ALL",
+        "GIT_PAGER",
+        "GIT_NO_LAZY_FETCH",
+        "GIT_CONFIG_COUNT",
+        "PWD",
+        "SHLVL",
+        "_",
+        "OLDPWD",
+    ];
+    for run in runs {
+        let vars: std::collections::HashMap<&str, &str> =
+            run.lines().filter_map(|l| l.split_once('=')).collect();
+        for k in vars.keys() {
+            assert!(
+                allowed.contains(k)
+                    || k.strip_prefix("GIT_CONFIG_KEY_")
+                        .or(k.strip_prefix("GIT_CONFIG_VALUE_"))
+                        .is_some_and(|n| n.parse::<u32>().is_ok()),
+                "{k} reached git"
+            );
+        }
+        assert_eq!(vars.get("GIT_NO_LAZY_FETCH"), Some(&"1"));
+        let count: usize = vars["GIT_CONFIG_COUNT"].parse().unwrap();
+        let pins: std::collections::HashMap<&str, &str> = (0..count)
+            .map(|i| {
+                (
+                    vars[format!("GIT_CONFIG_KEY_{i}").as_str()],
+                    vars.get(format!("GIT_CONFIG_VALUE_{i}").as_str())
+                        .copied()
+                        .unwrap_or(""),
+                )
+            })
+            .collect();
+        for (k, v) in [
+            ("core.fsmonitor", "false"),
+            ("core.hooksPath", "/dev/null"),
+            ("diff.autoRefreshIndex", "false"),
+            ("core.quotePath", "true"),
+            ("diff.suppressBlankEmpty", "false"),
+        ] {
+            assert_eq!(pins.get(k), Some(&v), "{k}");
+        }
+    }
 }

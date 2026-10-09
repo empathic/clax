@@ -504,6 +504,7 @@ dependencies = [
  "chrono",
  "clax-core",
  "clax-fake-exe",
+ "clax-hooks",
  "clax-mcp",
  "clax-server",
  "futures",

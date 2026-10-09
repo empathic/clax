@@ -41,6 +41,7 @@ mod api_working;
 mod api_working_auto;
 mod common;
 mod daemon;
+mod harness_ids;
 mod sample_anthropic;
 
 /// Cargo's test autodiscovery is off for this crate (`autotests = false` in

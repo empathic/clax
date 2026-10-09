@@ -9,7 +9,9 @@ import { readFileSync } from "node:fs";
 import { extname, isAbsolute, join, basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type, type Static, type TSchema } from "typebox";
+import { beginCall, currentCall, inCall, type CallScope } from "./calls.ts";
 import { ClientError, DaemonClient, type Registration } from "./client.ts";
+import { CAPTURE_DEADLINE_MS, captureCwd, type GitField } from "./git.ts";
 import { binaryVersion, claxHome, discover, endpointOf, ensure, findBinary, logPath, upgradeHeld } from "./daemon.ts";
 
 /** Default cap on the bytes `read` returns. */
@@ -679,13 +681,36 @@ export interface ClaxOptions {
   /** The clock, in milliseconds, by which the injection loop judges whether
    * a long-poll came back within [`INJECT_EARLY_MS`]; `Date.now` when absent. */
   now?: () => number;
+  /** How long a git capture may run; [`CAPTURE_DEADLINE_MS`] when absent
+   * (tests on a loaded machine lengthen it). */
+  gitDeadlineMs?: number;
 }
 
 /** The Clax tools for one Pi session. */
 class Tools {
   private client: DaemonClient | undefined;
+  /** Tool-call reports still being sent. */
+  private readonly reports = new Set<Promise<void>>();
 
   constructor(private readonly home: string, private readonly opts: ClaxOptions) {}
+
+  /** The git state of `cwd` (spec §9.3), captured now. */
+  captureGit(cwd: string | undefined): Promise<GitField> {
+    return captureCwd(cwd, this.opts.gitDeadlineMs ?? CAPTURE_DEADLINE_MS, this.env);
+  }
+
+  /** Reports the end of call `scope` in the background. */
+  report(scope: CallScope, outcome: "ok" | "error"): void {
+    const c = this.client;
+    if (!c) return;
+    const sent: Promise<void> = c.reportToolCall(scope.report(outcome)).catch(() => undefined).finally(() => this.reports.delete(sent));
+    this.reports.add(sent);
+  }
+
+  /** Waits for the reports still being sent (each ends by its deadline). */
+  async settleReports(): Promise<void> {
+    await Promise.allSettled([...this.reports]);
+  }
 
   private get env(): NodeJS.ProcessEnv {
     return this.opts.env ?? process.env;
@@ -709,7 +734,7 @@ class Tools {
         if (!info) throw new Error("no clax daemon is running");
         return endpointOf(info);
       };
-      this.client = new DaemonClient(refresh, find, registration);
+      this.client = new DaemonClient(refresh, find, registration, () => this.captureGit(ctx.cwd));
     }
     return this.client;
   }
@@ -743,12 +768,16 @@ class Tools {
    * none yet). */
   private async resolveRef(c: DaemonClient, urlOrId: string): Promise<{ id: string; version?: number }> {
     const t = await this.targetOf(c, urlOrId);
-    if (t.kind === "artifact") return t.version === undefined ? { id: t.id } : { id: t.id, version: t.version };
+    if (t.kind === "artifact") {
+      currentCall()?.noteArtifact(t.id);
+      return t.version === undefined ? { id: t.id } : { id: t.id, version: t.version };
+    }
     const r = await this.call(() => c.livePage(t.url));
     const id = r.page?.artifact_id;
     if (typeof id !== "string") {
       throw toolError("invalid_id", `no live page at ${t.url} yet: watch it, or comment on it in Chrome with the Clax extension first`);
     }
+    currentCall()?.noteArtifact(id);
     return { id };
   }
 
@@ -1406,8 +1435,28 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       live = false;
       stopInject?.();
       stopInject = undefined;
+      // The calls' reports go first: a report sent after the session ended
+      // would register it again.
+      await tools.settleReports();
       await tools.existingClient()?.endSession(opts.endTimeoutMs).catch(() => undefined);
     });
+
+    /** Runs `run` as Pi's call `toolCallId` of Clax tool `name` (spec
+     * §6.7): its requests carry the call, a tool that changes history
+     * captures git, and the call is reported once its result is back. */
+    const asCall = async <T>(name: string, toolCallId: string, params: unknown, ctx: ExtensionContext, run: () => Promise<T>): Promise<T> => {
+      const scope = beginCall({ tool: name, harnessTool: `clax_${name}`, harnessCallId: toolCallId, params, git: () => tools.captureGit(ctx.cwd) });
+      // Arguments with no canonical form lose the record, never the call.
+      if (!scope) return run();
+      let outcome: "ok" | "error" = "error";
+      try {
+        const result = await inCall(scope, run);
+        outcome = "ok";
+        return result;
+      } finally {
+        tools.report(scope, outcome);
+      }
+    };
 
     // Working records (spec §10 "Working"): any tool call renews them, at most
     // every RENEW_EVERY_MS; the end of the agent loop ends the turn's records.
@@ -1445,10 +1494,10 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
         description,
         promptSnippet,
         parameters,
-        async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+        async execute(toolCallId, params, _signal, _onUpdate, ctx) {
           let result: Json;
           try {
-            result = await run(ctx, params as Static<P>);
+            result = await asCall(name, toolCallId, params, ctx, () => run(ctx, params as Static<P>));
           } catch (e) {
             throw internal(e);
           }
@@ -1554,14 +1603,14 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       description: "Wait up to `timeout_s` seconds (1 to 600, default 50) for comments the person sends to you, on one artifact or any you watch, and for their late answers to questions you asked. Returns comments in `feedback` and answers in `answers` as soon as any arrive, or `call_again: true` when none did; call it again while the person wants live feedback.",
       promptSnippet: "Wait for comments the person sends to you on a Clax artifact",
       parameters: WaitArgs,
-      async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      async execute(toolCallId, params, signal, _onUpdate, ctx) {
         let out: Awaited<ReturnType<Tools["waitForFeedback"]>>;
         // The injection loop holds while the wait runs (see startInject).
         waits++;
         waitEpoch++;
         wakeLoop();
         try {
-          out = await tools.waitForFeedback(ctx, params as Static<typeof WaitArgs>, signal);
+          out = await asCall("wait_for_feedback", toolCallId, params, ctx, () => tools.waitForFeedback(ctx, params as Static<typeof WaitArgs>, signal));
         } catch (e) {
           throw internal(e);
         } finally {
