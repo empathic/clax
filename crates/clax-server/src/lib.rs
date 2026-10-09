@@ -9,6 +9,7 @@ pub mod db_caller;
 pub mod error;
 pub mod extension;
 pub mod feedback;
+pub mod grant_auth;
 pub mod host;
 pub mod http_cache;
 pub mod identity;

@@ -1,10 +1,12 @@
 pub mod artifacts;
 pub mod assets;
+pub mod connect;
 pub mod content;
 pub mod docs;
 pub mod events;
 pub mod extension;
 pub mod feedback;
+pub mod grants;
 pub mod health;
 pub mod inbox;
 pub mod live;
@@ -242,7 +244,21 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route(
             "/api/sessions/{id}/working/{aid}",
             axum::routing::put(working::put).delete(working::delete),
-        );
+        )
+        .route("/api/grants", get(grants::list).post(grants::request))
+        .route("/api/grants/{gid}", delete(grants::revoke))
+        .route(
+            "/api/grants/{gid}/continue",
+            post(grants::poll).delete(grants::disconnect),
+        )
+        .route("/api/grants/{gid}/token", delete(grants::revoke_token))
+        .route("/api/grants/{gid}/approve", post(grants::approve))
+        .route("/api/grants/{gid}/deny", post(grants::deny))
+        .route(
+            "/api/people/invites",
+            get(grants::list_invites).post(grants::create_invite),
+        )
+        .route("/api/people/invites/{id}", delete(grants::revoke_invite));
     #[cfg(feature = "test-routes")]
     let api_fast = api_fast
         .route("/api/_test/sleep/{ms}", get(test_sleep))
@@ -265,7 +281,8 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route(
             "/api/_test/sessions/{id}/feedback/expire",
             post(feedback::expire),
-        );
+        )
+        .route("/api/_test/grants/sweep", post(grants::test_sweep));
     #[cfg(feature = "test-routes")]
     let api_fast = api_fast.layer(axum::middleware::from_fn(test_delay));
     let api_fast = api_fast.layer(axum::middleware::from_fn(crate::http_cache::api_etag));
@@ -343,6 +360,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .merge(api_slow)
         .merge(shell_routes)
         .route("/_blob/{asset_id}", get(assets::blob))
+        .route("/connect/b/{code}", get(connect::browser_link))
         .route("/c/{aid}/v/{n}", get(content::redirect_to_slash))
         .route("/c/{aid}/v/{n}/", get(content::index))
         .route("/c/{aid}/v/{n}/{*path}", get(content::file))
@@ -552,6 +570,19 @@ mod l10 {
         ("perf::calibrate", Token),
         ("toolpath::export", Owner),
         ("toolpath::status", Owner),
+        ("grants::list", Owner),
+        ("grants::request", NoArtifact),
+        ("grants::revoke", NoArtifact),
+        ("grants::poll", NoArtifact),
+        ("grants::disconnect", NoArtifact),
+        ("grants::revoke_token", NoArtifact),
+        ("grants::approve", NoArtifact),
+        ("grants::deny", NoArtifact),
+        ("grants::list_invites", Owner),
+        ("grants::create_invite", NoArtifact),
+        ("grants::revoke_invite", NoArtifact),
+        ("grants::test_sweep", Token),
+        ("connect::browser_link", NoArtifact),
     ];
 
     /// Routes whose handler is not a module function, and why they are safe.
@@ -575,6 +606,8 @@ mod l10 {
         match m {
             "artifacts" => include_str!("artifacts.rs"),
             "assets" => include_str!("assets.rs"),
+            "connect" => include_str!("connect.rs"),
+            "grants" => include_str!("grants.rs"),
             "content" => include_str!("content.rs"),
             "docs" => include_str!("docs.rs"),
             "events" => include_str!("events.rs"),
@@ -760,6 +793,46 @@ mod l10 {
         (
             "inbox::unread_one",
             "the owner's inbox read marks, not history (§6.11)",
+        ),
+        (
+            "grants::request",
+            "the grant flow; its events are not recorded yet",
+        ),
+        (
+            "grants::revoke",
+            "the grant flow; its events are not recorded yet",
+        ),
+        (
+            "grants::poll",
+            "the grant flow; its events are not recorded yet",
+        ),
+        (
+            "grants::disconnect",
+            "the grant flow; its events are not recorded yet",
+        ),
+        (
+            "grants::revoke_token",
+            "the grant flow; its events are not recorded yet",
+        ),
+        (
+            "grants::approve",
+            "the grant flow; its events are not recorded yet",
+        ),
+        (
+            "grants::deny",
+            "the grant flow; its events are not recorded yet",
+        ),
+        (
+            "grants::create_invite",
+            "the grant flow; its events are not recorded yet",
+        ),
+        (
+            "grants::revoke_invite",
+            "the grant flow; its events are not recorded yet",
+        ),
+        (
+            "grants::test_sweep",
+            "debug builds only; expires grants as the daemon's sweep does",
         ),
     ];
 

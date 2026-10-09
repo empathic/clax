@@ -138,6 +138,13 @@ pub enum Event {
         read: bool,
         unread: u32,
     },
+    /// People, invites or grants changed (spec 2026-10-08-multi-agent-
+    /// multi-person §6.2–§6.4): `change` names what (`what`) with the
+    /// invite's or grant's view, never a code or token. Only the owner-only
+    /// `people` stream topic carries it; `/api/events` never does.
+    People {
+        change: serde_json::Value,
+    },
 }
 
 impl Event {
@@ -156,7 +163,10 @@ impl Event {
             | Event::Doc { artifact_id, .. } => artifact_id,
             Event::Site { .. } => "",
             // Owner-only; it belongs to no artifact's routing.
-            Event::Question { .. } | Event::InboxItem { .. } | Event::InboxRead { .. } => "",
+            Event::Question { .. }
+            | Event::InboxItem { .. }
+            | Event::InboxRead { .. }
+            | Event::People { .. } => "",
         }
     }
 
@@ -178,6 +188,7 @@ impl Event {
             Event::Question { .. } => "question",
             Event::InboxItem { .. } => "inbox_item",
             Event::InboxRead { .. } => "inbox_read",
+            Event::People { .. } => "people",
         }
     }
 
@@ -441,6 +452,9 @@ mod tests {
                 ids: None,
                 read: true,
                 unread: 0,
+            },
+            Event::People {
+                change: serde_json::json!({"what": "grant_requested"}),
             },
         ] {
             assert_eq!(serde_json::to_value(&ev).unwrap()["type"], ev.name());

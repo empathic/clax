@@ -201,6 +201,12 @@ pub async fn update(
             "only the owner follows questions and the inbox",
         ));
     }
+    if add.contains(&Topic::People) && !who.is_owner() {
+        return Err(ApiError::forbidden(
+            "forbidden",
+            "only the owner follows people, invites and grants",
+        ));
+    }
     let token = token_or_cookie(&headers, &s.token, &who);
     let check = add.clone();
     let caller = s
