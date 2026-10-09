@@ -53,7 +53,8 @@ export const test = playwrightTest.extend<{ freshDaemon: Daemon }, { daemon: Dae
 const tick = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 /** Starts a daemon on a fresh home whose config.toml is `opts.config` (`NO_KEY_CONFIG` by default);
- * with `opts.home` and `opts.port`, on that home and port (a restart). `stop({ keepHome: true })` leaves the home.
+ * with `opts.home`, on that home (which it does not create); with `opts.port` too, on that port (a restart).
+ * `stop({ keepHome: true })` leaves the home; `ended()` says whether the daemon has exited.
  * It runs the binary daemon-setup.ts built, on a port the system picks, and
  * waits up to `opts.startMs` (20 s by default) for its daemon.json and its
  * health check; a start that fails says so with the end of the daemon's stderr. */
@@ -77,12 +78,16 @@ export async function startDaemon(opts: { config?: string; home?: string; port?:
   let base = "";
   let token = "";
   let port = 0;
+  const ended = () => child.exitCode !== null || child.signalCode !== null;
   const stop = async (o: { keepHome?: boolean } = {}) => {
     if (base && token) await fetch(`${base}/api/admin/shutdown`, { method: "POST", headers: { authorization: `Bearer ${token}` } }).catch(() => {});
-    if (child.exitCode === null && child.signalCode === null) {
-      // The shutdown lets the daemon end on its own; it is killed if it has not within 5 s.
+    if (!ended()) {
+      // The shutdown lets the daemon end on its own; it is sent SIGTERM if it
+      // has not within 5 s, and SIGKILL if that has not ended it within 5 s more.
       await Promise.race([exited, tick(5000)]);
-      if (child.exitCode === null && child.signalCode === null) child.kill();
+      if (!ended()) child.kill();
+      await Promise.race([exited, tick(5000)]);
+      if (!ended()) child.kill("SIGKILL");
       await Promise.race([exited, tick(5000)]);
     }
     if (!o.keepHome) rmSync(home, { recursive: true, force: true });
@@ -110,7 +115,7 @@ export async function startDaemon(opts: { config?: string; home?: string; port?:
       await tick(10);
     }
   } catch (e) { await stop({ keepHome: !!opts.home }); throw e; }
-  return { base, token, stop, home, port };
+  return { base, token, stop, home, port, ended };
 }
 
 export async function publish(base: string, token: string, title: string, files: Record<string, string>, ifVersion?: number, id?: string) {
