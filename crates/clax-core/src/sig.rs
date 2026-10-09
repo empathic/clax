@@ -39,7 +39,10 @@ pub const NONCES_PER_KEY: usize = 65_536;
 /// leaves room for every one while bounding what key churn can hold.
 pub const MAX_KEYS: usize = 4096;
 /// Nonces a [`NonceCache`] holds at once over every key, by default: 2^20,
-/// about 40 MB at most, sixteen saturated keys.
+/// about 40 MB at most, sixteen saturated keys. The cap is first come, first
+/// served: one key cannot starve the others (its own cap,
+/// [`NONCES_PER_KEY`], is a sixteenth of this), but sixteen saturated keys
+/// can, refusing every other key until their nonces age out.
 pub const MAX_NONCES: usize = 1 << 20;
 /// Length of a nonce: 16 random bytes in base64url.
 pub const NONCE_LEN: usize = 22;
@@ -148,9 +151,11 @@ impl KeyPair {
     /// Signs `input`, giving the `Clax-Signature` header.
     ///
     /// # Errors
-    /// [`SigError::Bad`] for an input [`verify`] would refuse whatever the
-    /// signature: a control character in the method, path, host or nonce,
-    /// or a nonce that is not [`NONCE_LEN`] base64url characters.
+    /// [`SigError::Bad`] for an input the daemon refuses whatever the
+    /// signature: a control character in the method, path, host or nonce
+    /// (which [`verify`] refuses), or a nonce that is not [`NONCE_LEN`]
+    /// canonical base64url characters (which [`parse_header`] and
+    /// [`NonceCache::check`] refuse).
     pub fn sign(&self, input: &SignInput<'_>) -> Result<SigHeader, SigError> {
         if input.ambiguous() || nonce_bits(input.nonce).is_err() {
             return Err(SigError::Bad);
@@ -251,7 +256,8 @@ fn unb64<const N: usize>(s: &str) -> Option<[u8; N]> {
 /// stand before and after each parameter, so also at the value's ends;
 /// none may stand around `=`.
 /// `t` is decimal Unix seconds without sign or leading zeros, `n` is
-/// [`NONCE_LEN`] base64url characters, and `s` is a signature in unpadded
+/// [`NONCE_LEN`] canonical base64url characters (16 bytes, the test
+/// [`NonceCache::check`] applies), and `s` is a signature in unpadded
 /// base64url.
 ///
 /// # Errors
@@ -288,12 +294,7 @@ pub fn parse_header(value: impl AsRef<[u8]>) -> Result<SigHeader, SigError> {
         return Err(SigError::Bad);
     }
     let t: i64 = t.parse().map_err(|_| SigError::Bad)?;
-    let nonce_ok = n.len() == NONCE_LEN
-        && n.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-    if !nonce_ok {
-        return Err(SigError::Bad);
-    }
+    nonce_bits(n)?;
     let sig = unb64::<SIG_LEN>(s).ok_or(SigError::Bad)?;
     Ok(SigHeader {
         t,
@@ -494,15 +495,20 @@ impl NonceCache {
     }
 
     /// After the signature verifies, the second presence test and the
-    /// record. `t` is not tested again (a slow body must not make a
-    /// verified request stale); the nonce is recorded at the later of `now`
-    /// and `t − skew`, so it is remembered at least until `t + skew` however
-    /// long the body took or wherever the clock stepped. Of two copies of
-    /// one request, one is recorded and the other is
-    /// [`SigError::Replayed`]. `t` must have passed [`NonceCache::check`].
+    /// record. `t` is not tested again for staleness (a slow body must not
+    /// make a verified request stale); the nonce is recorded at the later of
+    /// `now` and `t − skew`, so it is remembered at least until `t + skew`
+    /// however long the body took or wherever the clock stepped. Of two
+    /// copies of one request, one is recorded and the other is
+    /// [`SigError::Replayed`]. `t` must have passed [`NonceCache::check`];
+    /// a `t` so far ahead that `t − skew` lies beyond `now` and a whole
+    /// window, which no checked `t` reaches, is refused rather than
+    /// recorded in the future, where its bucket would hold the key's later
+    /// nonces until then.
     ///
     /// # Errors
-    /// [`SigError::Bad`], [`SigError::Replayed`] or [`SigError::Full`].
+    /// [`SigError::Stale`], [`SigError::Bad`], [`SigError::Replayed`] or
+    /// [`SigError::Full`].
     pub fn record(
         &mut self,
         key: &[u8; PUBLIC_LEN],
@@ -511,6 +517,9 @@ impl NonceCache {
         now: i64,
     ) -> Result<(), SigError> {
         let n = nonce_bits(nonce)?;
+        if t.saturating_sub(self.skew()) > now.saturating_add(self.window_s) {
+            return Err(SigError::Stale);
+        }
         self.room(key, n, now)?;
         let at = now.max(t.saturating_sub(self.skew()));
         let k = match self.keys.entry(*key) {
@@ -829,6 +838,38 @@ mod tests {
             c.check(&key, &n, t, t + MAX_SKEW_S),
             Err(SigError::Replayed)
         );
+    }
+
+    #[test]
+    fn a_record_far_in_the_future_is_refused_and_holds_nothing() {
+        let mut c = NonceCache::new(NONCE_WINDOW_S, 4);
+        let key = [7u8; 32];
+        assert_eq!(c.record(&key, &nn(1), 1_000_000, 0), Err(SigError::Stale));
+        assert!(c.is_empty() && c.keys() == 0);
+        // The furthest a checked `t` and a stepped-back clock reach records.
+        let edge = MAX_SKEW_S + NONCE_WINDOW_S;
+        assert!(c.record(&key, &nn(2), edge, 0).is_ok());
+        assert_eq!(c.record(&key, &nn(3), edge + 1, 0), Err(SigError::Stale));
+        // The key's later nonces still record once their time comes.
+        for i in 4..7 {
+            c.record(&key, &nn(i), 600, 600).unwrap();
+        }
+    }
+
+    #[test]
+    fn the_header_and_the_cache_test_a_nonce_alike() {
+        let s = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([9u8; 64]);
+        // 22 base64url characters whose last one carries nonzero unused bits.
+        let loose = format!("{}B", "A".repeat(21));
+        assert_eq!(
+            parse_header(format!("t=5, n={loose}, s={s}")),
+            Err(SigError::Bad)
+        );
+        let mut c = NonceCache::new(NONCE_WINDOW_S, 4);
+        assert_eq!(c.check(&[1u8; 32], &loose, 5, 5), Err(SigError::Bad));
+        let fine = nn(1);
+        assert!(parse_header(format!("t=5, n={fine}, s={s}")).is_ok());
+        assert!(c.check(&[1u8; 32], &fine, 5, 5).is_ok());
     }
 
     #[test]
