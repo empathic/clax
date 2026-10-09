@@ -20,6 +20,7 @@ pub mod perf;
 pub mod presence;
 pub mod publish;
 pub mod questions;
+pub mod rights;
 pub mod room;
 pub mod store;
 pub mod toolpath;
