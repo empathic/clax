@@ -2,6 +2,7 @@
 //! in `tests/` (but for those of `tests/web_dist.rs`): every test binary costs
 //! a link and, on macOS, an assessment of the new executable on its first run.
 
+mod api_agent_auth;
 mod api_artifacts;
 mod api_assets;
 mod api_attention;

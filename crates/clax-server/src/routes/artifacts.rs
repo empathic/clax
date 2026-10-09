@@ -1,5 +1,6 @@
 //! REST routes for artifacts and versions.
 
+use crate::agent::{Agent, ArtifactsList, TokenOrAgent};
 use crate::auth::RequireToken;
 use crate::auth::has_token;
 use crate::error::ApiError;
@@ -128,19 +129,26 @@ pub const VIA_HEADER: &str = "x-clax-via";
 /// Header naming the session a publish is attributed to.
 pub const SESSION_HEADER: &str = "x-clax-session";
 
-/// The session named by `X-Clax-Session`, checked to exist and be live.
+/// The session named by `X-Clax-Session`, checked to exist, be live, and
+/// be one of the caller's credential's: `grant` (`None` for the daemon
+/// token, M4).
 ///
 /// # Errors
-/// `unknown_session` when the header is not valid text, or names a session that
-/// does not exist or has ended.
+/// `unknown_session` when the header names a session that does not exist
+/// or has ended; `foreign_session` when it names another credential's.
 pub(crate) fn publishing_session(
     st: &Store,
     header: &Option<String>,
+    grant: Option<&str>,
 ) -> Result<Option<String>, CoreError> {
     let Some(id) = header else {
         return Ok(None);
     };
     match st.get_session(id)? {
+        Some(sess) if sess.grant_id.as_deref() != grant => Err(CoreError::invalid(
+            "foreign_session",
+            "that session is not one of this credential's",
+        )),
         Some(sess) if sess.ended_at.is_none() => Ok(Some(sess.id)),
         _ => Err(CoreError::invalid(
             "unknown_session",
@@ -293,6 +301,7 @@ pub struct ListQuery {
 /// ([`crate::live::sees_live_pages`]).
 pub async fn list(
     State(s): State<AppState>,
+    _a: Agent<ArtifactsList>,
     extensions: axum::http::Extensions,
     headers: HeaderMap,
     q: Result<Query<ListQuery>, QueryRejection>,
@@ -428,7 +437,7 @@ pub async fn create(
     let ctx = s.feedback_ctx();
     let (artifact, version) = s
         .store_call(move |st| {
-            let session = publishing_session(st, &session)?;
+            let session = publishing_session(st, &session, None)?;
             let (artifact, version) = st.create_artifact(&audit, p, session.as_deref())?;
             if let Some(sid) = &session {
                 let aid = ArtifactId::parse(&artifact.id)?;
@@ -620,7 +629,7 @@ pub async fn list_versions(
 
 pub async fn publish(
     State(s): State<AppState>,
-    _t: RequireToken,
+    TokenOrAgent(a): TokenOrAgent<crate::agent::Publish>,
     audit: AuditCtx,
     headers: HeaderMap,
     aid: Result<Path<String>, PathRejection>,
@@ -639,13 +648,14 @@ pub async fn publish(
     .await?;
     let truncated = p.note_truncated;
     let session = session_header(&headers)?;
+    let grant = a.grant().map(str::to_string);
     let by_page = headers.get(VIA_HEADER).and_then(|v| v.to_str().ok()) == Some("page");
     p.by_page = by_page;
     let events = s.events.clone();
     let ctx = s.feedback_ctx();
     let (artifact, version) = s
         .store_call(move |st| {
-            let session = publishing_session(st, &session)?;
+            let session = publishing_session(st, &session, grant.as_deref())?;
             // Read before the clear below: the threads this session was
             // working on are linked to the new version.
             if let Some(sid) = &session {

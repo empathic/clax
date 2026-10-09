@@ -4,6 +4,7 @@
 //! prints.
 
 use super::artifacts::{body, parse_id, path};
+use crate::agent::{FeedbackAck, FeedbackNotices, FeedbackPoll, TokenOrAgent};
 use crate::auth::RequireToken;
 use crate::error::ApiError;
 use crate::feedback::apply;
@@ -135,7 +136,7 @@ pub struct FeedbackQuery {
 /// separately.
 pub async fn poll(
     State(s): State<AppState>,
-    _t: RequireToken,
+    _a: TokenOrAgent<FeedbackPoll>,
     headers: HeaderMap,
     sid: Result<Path<String>, PathRejection>,
     q: Result<Query<FeedbackQuery>, QueryRejection>,
@@ -250,7 +251,7 @@ pub struct NoticesQuery {
 /// answers empty at once.
 pub async fn notices(
     State(s): State<AppState>,
-    _t: RequireToken,
+    _a: TokenOrAgent<FeedbackNotices>,
     sid: Result<Path<String>, PathRejection>,
     q: Result<Query<NoticesQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -316,7 +317,7 @@ pub struct AckBody {
 /// Unknown session: 404; ended session: 400 `unknown_session`.
 pub async fn ack(
     State(s): State<AppState>,
-    _t: RequireToken,
+    _a: TokenOrAgent<FeedbackAck>,
     audit: AuditCtx,
     sid: Result<Path<String>, PathRejection>,
     req: Result<Json<AckBody>, JsonRejection>,

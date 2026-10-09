@@ -230,6 +230,21 @@ pub enum Unissued {
     Ended,
 }
 
+/// Who a verified request of grant `grant_id` speaks for (spec §6.1,
+/// §7.2): its person and the rights it acts with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GrantCaller {
+    pub grant_id: String,
+    /// The person's public ID; `None` for a grant of the owner's row.
+    pub person: Option<String>,
+    /// The session the request names (`X-Clax-Session`), one of the
+    /// grant's.
+    pub session: Option<String>,
+    /// `person ∩ grant narrowing`, and with a session `∩ its narrowing ∪
+    /// its elevation` (the elevation only while the session is live, M2).
+    pub rights: Rights,
+}
+
 /// What revoking a person ended.
 #[derive(Debug, Default)]
 pub struct RevokedPerson {
@@ -1472,6 +1487,99 @@ impl Store {
         })
     }
 
+    /// Who a verified request of grant `gid` naming `session` speaks for
+    /// (spec §6.1, §6.7, §7.2).
+    ///
+    /// # Errors
+    /// `grant_revoked` when `gid` is not an approved grant (it ended after
+    /// the request was authenticated); `foreign_session` when `session` is
+    /// not one of the grant's.
+    pub fn grant_caller(&self, gid: &str, session: Option<&str>) -> Result<GrantCaller> {
+        self.with_read(|c| {
+            let row: Option<(String, String, bool, String, Option<String>)> = c
+                .query_row(
+                    "SELECT g.status, g.viewer_id, COALESCE(v.owner, 0), v.public_id, g.narrow_json
+                     FROM grants g JOIN viewers v ON v.id = g.viewer_id WHERE g.id = ?1",
+                    params![gid],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )
+                .optional()?;
+            let Some((_, viewer_id, owner, public_id, narrow)) = row.filter(|r| r.0 == "approved")
+            else {
+                return Err(CoreError::invalid(
+                    "grant_revoked",
+                    "this machine's grant was revoked: connect again",
+                ));
+            };
+            let person_rights = rights_of_row(c, &viewer_id)?;
+            let grant_narrow = narrow.as_deref().map(read_rights).transpose()?;
+            let (session_narrow, elevate) = match session {
+                None => (None, None),
+                Some(sid) => {
+                    let row: Option<(Option<String>, Option<String>, Option<String>)> = c
+                        .query_row(
+                            "SELECT narrow_json, elevate_json, ended_at FROM sessions
+                             WHERE id = ?1 AND grant_id = ?2",
+                            params![sid, gid],
+                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                        )
+                        .optional()?;
+                    let (narrow, elevate, ended) = row.ok_or_else(|| {
+                        CoreError::invalid(
+                            "foreign_session",
+                            "that session is not one of this credential's",
+                        )
+                    })?;
+                    (
+                        narrow.as_deref().map(read_rights).transpose()?,
+                        elevate
+                            .filter(|_| ended.is_none())
+                            .as_deref()
+                            .map(read_rights)
+                            .transpose()?,
+                    )
+                }
+            };
+            Ok(GrantCaller {
+                grant_id: gid.to_string(),
+                person: (!owner).then_some(public_id),
+                session: session.map(str::to_string),
+                rights: crate::rights::effective(
+                    &person_rights,
+                    grant_narrow.as_ref(),
+                    session_narrow.as_ref(),
+                    elevate.as_ref(),
+                ),
+            })
+        })
+    }
+
+    /// Whether artifact `aid` was created by `person` (a public ID; `None`
+    /// for the owner): the `own` location of rights (spec §7.1).
+    pub fn artifact_created_by(&self, aid: &str, person: Option<&str>) -> Result<bool> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM artifacts WHERE id = ?1 AND person IS ?2)",
+                params![aid, person],
+                |r| r.get(0),
+            )?)
+        })
+    }
+
+    /// Which of `ids` name a grant row (of any status).
+    pub fn existing_grant_ids(&self, ids: &[String]) -> Result<std::collections::HashSet<String>> {
+        self.with_read(|c| {
+            let mut stmt = c.prepare("SELECT 1 FROM grants WHERE id = ?1")?;
+            let mut out = std::collections::HashSet::new();
+            for id in ids {
+                if stmt.exists(params![id])? {
+                    out.insert(id.clone());
+                }
+            }
+            Ok(out)
+        })
+    }
+
     /// The IDs of every grant that has ended: denied, revoked or expired.
     pub fn ended_grant_ids(&self) -> Result<Vec<String>> {
         self.with_read(|c| {
@@ -2204,6 +2312,108 @@ pub(crate) mod tests {
             panic!()
         };
         assert_eq!(g.narrow, Some(reader));
+    }
+
+    #[test]
+    fn a_grant_caller_has_the_persons_rights_within_every_narrowing_and_a_live_elevation() {
+        use crate::rights::{PRESET_COLLABORATOR, PRESET_FULL, PRESET_READER, RightType};
+        let (_d, _c, st) = store();
+        let (gid, _, _) = approved(&st, "Sam", KEY_A);
+        let sam = st.grant(&gid).unwrap().person.unwrap();
+        let none = |_: &str| false;
+        let c = st.grant_caller(&gid, None).unwrap();
+        assert_eq!(c.person.as_deref(), Some(sam.as_str()));
+        assert_eq!(c.session, None);
+        assert_eq!(c.rights, Rights::preset(PRESET_COLLABORATOR).unwrap());
+        // The grant's narrowing applies.
+        let reader = Rights::preset(PRESET_READER).unwrap();
+        st.narrow_grant(&gid, Some(reader.clone())).unwrap();
+        let c = st.grant_caller(&gid, None).unwrap();
+        assert!(
+            !c.rights
+                .allows(RightType::Comments, "write", Some("x"), &none)
+        );
+        // A session's elevation applies while it is live, and its narrowing
+        // always.
+        let s1 = st.register_session(DAEMON, reg(Some(&gid))).unwrap();
+        let full = Rights::preset(PRESET_FULL).unwrap();
+        st.with_tx(|tx| {
+            tx.execute(
+                "UPDATE sessions SET elevate_json = ?2 WHERE id = ?1",
+                params![s1.id, write_rights(&full)],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let c = st.grant_caller(&gid, Some(&s1.id)).unwrap();
+        assert_eq!(c.session.as_deref(), Some(s1.id.as_str()));
+        assert!(
+            c.rights
+                .allows(RightType::Artifacts, "delete", Some("x"), &none)
+        );
+        st.end_session(DAEMON, &s1.id).unwrap();
+        let c = st.grant_caller(&gid, Some(&s1.id)).unwrap();
+        assert!(
+            !c.rights
+                .allows(RightType::Artifacts, "delete", Some("x"), &none),
+            "an ended session's elevation is gone"
+        );
+        // Another grant's or the token's session is foreign.
+        let (g2, _, _) = approved(&st, "Mia", KEY_B);
+        let s2 = st.register_session(DAEMON, reg(Some(&g2))).unwrap();
+        let s0 = st.register_session(DAEMON, reg(None)).unwrap();
+        for sid in [&s2.id, &s0.id, &"nope".to_string()] {
+            assert_eq!(code(st.grant_caller(&gid, Some(sid))), "foreign_session");
+        }
+        // A revoked grant speaks for no one.
+        st.revoke_grant(&gid, EndedBy::Owner).unwrap();
+        assert_eq!(code(st.grant_caller(&gid, None)), "grant_revoked");
+        assert_eq!(code(st.grant_caller("g_unknown", None)), "grant_revoked");
+        // A grant of the owner's row is the owner's agents: no person.
+        let (_, c) = st.create_invite(InvitePerson::Owner, None).unwrap();
+        let GrantStart::Approved { grant: g, .. } =
+            st.request_grant(grant([3; 32], Some(c.expose()))).unwrap()
+        else {
+            panic!()
+        };
+        let c = st.grant_caller(&g.id, None).unwrap();
+        assert_eq!(c.person, None);
+        // Everything, within the collaborator access the machine asked for.
+        let collaborator = Rights::preset(PRESET_COLLABORATOR).unwrap();
+        assert!(
+            c.rights.is_narrower_or_equal(&collaborator)
+                && collaborator.is_narrower_or_equal(&c.rights)
+        );
+    }
+
+    #[test]
+    fn own_artifacts_are_those_the_person_created() {
+        let (_d, _c, st) = store();
+        let (gid, _, _) = approved(&st, "Sam", KEY_A);
+        let sam = st.grant(&gid).unwrap().person.unwrap();
+        let s = st.register_session(DAEMON, reg(Some(&gid))).unwrap();
+        let p = |t: &str| {
+            crate::publish::validate(
+                serde_json::from_value(serde_json::json!({
+                    "title": t, "files": {"index.html": {"content": "<p>", "encoding": "utf8"}}
+                }))
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let (mine, _) = st.create_artifact(DAEMON, p("mine"), Some(&s.id)).unwrap();
+        let (owners, _) = st.create_artifact(DAEMON, p("owner's"), None).unwrap();
+        assert!(
+            st.artifact_created_by(mine.id.as_str(), Some(&sam))
+                .unwrap()
+        );
+        assert!(!st.artifact_created_by(mine.id.as_str(), None).unwrap());
+        assert!(st.artifact_created_by(owners.id.as_str(), None).unwrap());
+        assert!(
+            !st.artifact_created_by(owners.id.as_str(), Some(&sam))
+                .unwrap()
+        );
+        assert!(!st.artifact_created_by("nope", None).unwrap());
     }
 
     #[test]

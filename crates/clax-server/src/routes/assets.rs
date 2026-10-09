@@ -1,5 +1,6 @@
 //! Asset upload, listing, deletion, and the /_blob/<id> byte route.
 
+use crate::agent::{AssetsUpload, TokenOrAgent};
 use crate::auth::RequireToken;
 use crate::error::ApiError;
 use crate::live::SeesLive;
@@ -15,6 +16,9 @@ use axum::response::{IntoResponse, Response};
 use clax_core::CoreError;
 use clax_core::audit::AuditCtx;
 use serde_json::{Value, json};
+
+/// The most an asset upload's body may hold.
+pub const UPLOAD_BODY_LIMIT: usize = 21 * 1024 * 1024;
 
 pub(crate) fn multipart_error(status: StatusCode, message: String) -> ApiError {
     if status == StatusCode::PAYLOAD_TOO_LARGE {
@@ -33,7 +37,7 @@ pub(crate) fn multipart_error(status: StatusCode, message: String) -> ApiError {
 /// `live_page`.
 pub async fn upload(
     State(s): State<AppState>,
-    _t: RequireToken,
+    _a: TokenOrAgent<AssetsUpload>,
     audit: AuditCtx,
     aid: Result<Path<String>, PathRejection>,
     mp: Result<Multipart, MultipartRejection>,

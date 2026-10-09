@@ -30,6 +30,8 @@
 //! still depends on the token (see [`crate::db_caller`]): the owner cookie
 //! alone grants no more than a viewer cookie does.
 
+use crate::auth::{Caller, Person};
+use crate::error::ApiError;
 use crate::state::AppState;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
@@ -140,7 +142,21 @@ pub struct Identity {
     /// The extension gateway admitted the request with a live extension
     /// credential ([`crate::extension::ViaExtension`]).
     pub extension: bool,
+    /// The request carries an agent credential of another machine
+    /// (`Authorization: Clax-Grant`), verified or not: it is never the
+    /// owner, a viewer or anonymous.
+    pub grant_header: bool,
+    /// The grant whose signature [`crate::agent::verify_layer`] verified.
+    pub grant: Option<crate::agent::VerifiedGrant>,
+    /// `X-Clax-Session`: the session an agent speaks for.
+    pub header_session: Option<String>,
+    /// `X-Clax-Channel: agent`; counts only with the token.
+    pub agent_marker: bool,
 }
+
+pub use crate::routes::artifacts::SESSION_HEADER;
+/// The agent-channel marker's header (`agent`).
+pub const CHANNEL_HEADER: &str = "x-clax-channel";
 
 impl Identity {
     /// The credentials in `headers`, for a daemon whose token is `token`, on
@@ -148,13 +164,27 @@ impl Identity {
     pub fn of(headers: &HeaderMap, token: &str, peer: Option<std::net::SocketAddr>) -> Identity {
         let local = is_local(headers, peer);
         let cookies_count = local && !crate::viewer::fetched_from_elsewhere(headers);
+        let grant_header = crate::auth::is_grant_request(headers);
         Identity {
-            token: crate::auth::has_token(headers, token),
-            events_cookie: cookies_count && crate::auth::has_events_cookie(headers, token),
-            owner_cookie: cookies_count && has_owner_cookie(headers, token),
-            cookie: crate::viewer::read(headers),
+            token: !grant_header && crate::auth::has_token(headers, token),
+            events_cookie: !grant_header
+                && cookies_count
+                && crate::auth::has_events_cookie(headers, token),
+            owner_cookie: !grant_header && cookies_count && has_owner_cookie(headers, token),
+            cookie: (!grant_header)
+                .then(|| crate::viewer::read(headers))
+                .flatten(),
             local,
             extension: false,
+            grant_header,
+            grant: None,
+            header_session: headers
+                .get(SESSION_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string),
+            agent_marker: headers
+                .get(CHANNEL_HEADER)
+                .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"agent")),
         }
     }
 
@@ -166,15 +196,137 @@ impl Identity {
         extensions: &axum::http::Extensions,
         token: &str,
     ) -> Identity {
+        let id = Identity::of(headers, token, peer_of(extensions));
         Identity {
-            extension: extensions.get::<crate::extension::ViaExtension>().is_some(),
-            ..Identity::of(headers, token, peer_of(extensions))
+            extension: !id.grant_header
+                && extensions.get::<crate::extension::ViaExtension>().is_some(),
+            grant: extensions.get::<crate::agent::VerifiedGrant>().cloned(),
+            ..id
         }
     }
 
-    /// Whether the request speaks for the owner: any owner credential.
+    /// The [`Caller`] when finding it needs no store read: the owner, the
+    /// owner's agents naming no session, and anonymous callers.
+    pub fn quick_caller(&self, path_session: Option<&str>) -> Option<Caller> {
+        if self.grant_header {
+            return None;
+        }
+        if self.token {
+            return (path_session.is_none() && self.header_session.is_none()).then(|| {
+                if self.agent_marker {
+                    Caller::OwnerAgent { session: None }
+                } else {
+                    Caller::Owner {
+                        browser: self.owner_browser(),
+                    }
+                }
+            });
+        }
+        if self.owner_browser() {
+            return Some(Caller::Owner { browser: true });
+        }
+        self.cookie.is_none().then_some(Caller::Anonymous)
+    }
+
+    /// Who the request speaks for (spec §6.1, M8). `path_session` is the
+    /// session the route's path names (`/api/sessions/{id}/…`), decoded as
+    /// the handler reads it.
+    ///
+    /// - An agent credential is a `PersonAgent` once
+    ///   [`crate::agent::verify_layer`] verified it (else 401
+    ///   `invalid_signature`); its `X-Clax-Session` and path session must be
+    ///   its grant's (403 `foreign_session`), and a path session needs
+    ///   `X-Clax-Session` (400 `no_session`).
+    /// - The token is an `OwnerAgent` when the request names a session or
+    ///   carries the agent-channel marker, else the `Owner`; a session it
+    ///   names that is another credential's is 403 `foreign_session` (one
+    ///   that does not exist is left to the handler, for its path, and
+    ///   refused in the header).
+    /// - An owner browser credential is the `Owner`; a `clax_viewer` cookie
+    ///   is a `Person` or a `Viewer`; anything else is `Anonymous`.
+    ///
+    /// # Errors
+    /// As above, `grant_revoked` for a grant that ended, and the store's.
+    pub fn caller(&self, st: &Store, path_session: Option<&str>) -> Result<Caller, ApiError> {
+        if let Some(c) = self.quick_caller(path_session) {
+            return Ok(c);
+        }
+        if self.grant_header {
+            let Some(g) = &self.grant else {
+                return Err(ApiError::new(
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    "invalid_signature",
+                    "the request's signature was not verified",
+                ));
+            };
+            let gc = st.grant_caller(&g.grant_id, self.header_session.as_deref())?;
+            if let Some(ps) = path_session {
+                let Some(hs) = gc.session.as_deref() else {
+                    return Err(ApiError::bad_request(
+                        "no_session",
+                        "a session route needs X-Clax-Session naming one of this machine's sessions",
+                    ));
+                };
+                if ps != hs && st.session_of(ps, Some(&g.grant_id))?.is_none() {
+                    return Err(foreign_session());
+                }
+            }
+            return Ok(Caller::PersonAgent {
+                person: gc.person,
+                grant: gc.grant_id,
+                session: gc.session,
+                rights: std::sync::Arc::new(gc.rights),
+            });
+        }
+        if self.token {
+            if let Some(hs) = &self.header_session
+                && st.session_of(hs, None)?.is_none()
+            {
+                return Err(foreign_session());
+            }
+            if let Some(ps) = path_session
+                && st.get_session(ps)?.is_some_and(|s| s.grant_id.is_some())
+            {
+                return Err(foreign_session());
+            }
+            let session = path_session
+                .map(str::to_string)
+                .or_else(|| self.header_session.clone());
+            return Ok(if session.is_some() || self.agent_marker {
+                Caller::OwnerAgent { session }
+            } else {
+                Caller::Owner {
+                    browser: self.owner_browser(),
+                }
+            });
+        }
+        if self.owner_browser() {
+            return Ok(Caller::Owner { browser: true });
+        }
+        let viewer = match &self.cookie {
+            Some(c) => st.get_viewer(c)?,
+            None => None,
+        };
+        Ok(match viewer {
+            Some(v) if v.person && v.person_revoked_at.is_none() => Caller::Person { viewer: v },
+            Some(v) => Caller::Viewer { viewer: v },
+            None => Caller::Anonymous,
+        })
+    }
+
+    /// Whose a person-scoped route's data is ([`Caller::person`]).
+    ///
+    /// # Errors
+    /// [`Identity::caller`]'s.
+    pub fn person(&self, st: &Store) -> Result<Person, ApiError> {
+        self.caller(st, None).map(|c| c.person())
+    }
+
+    /// Whether the request speaks for the owner: any owner credential. An
+    /// agent credential of another machine never does.
     pub fn is_owner(&self) -> bool {
-        self.token || self.events_cookie || self.owner_cookie || self.extension
+        !self.grant_header
+            && (self.token || self.events_cookie || self.owner_cookie || self.extension)
     }
 
     /// 403 `forbidden` ("only the owner `what`") unless the request speaks
@@ -194,7 +346,7 @@ impl Identity {
     /// shell's token request hands out the owner and events cookies, and the
     /// extension is a browser of the owner's.
     pub fn owner_browser(&self) -> bool {
-        self.owner_cookie || self.events_cookie || self.extension
+        !self.grant_header && (self.owner_cookie || self.events_cookie || self.extension)
     }
 
     /// The viewer the request speaks for: the owner's row for the owner
@@ -291,6 +443,15 @@ impl FromRequestParts<AppState> for Identity {
             &state.token,
         ))
     }
+}
+
+/// 403 `foreign_session`: the request names a session of another
+/// credential (M4).
+pub fn foreign_session() -> ApiError {
+    ApiError::forbidden(
+        "foreign_session",
+        "that session is not one of this credential's",
+    )
 }
 
 #[cfg(test)]
