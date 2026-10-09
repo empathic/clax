@@ -208,9 +208,10 @@ run() {
     printf '%s\t%s\t%s\n' "$name" "$dt" "$rc" >> "$GATES_TMP/times"
     if [ "$rc" = 0 ]; then
         # A gate that passed without judging (no budgets on this platform,
-        # say) still says so.
+        # say) still says so, and a NOTE: line (measurements kept for
+        # re-tuning budgets) shows in a passing run's output too.
         { printf '%-30s ok    %6ss\n' "$name" "$dt"
-          [ "$VERBOSE" = "--verbose" ] || grep -E '^WARNING: ' "$log" || true; } | flush
+          [ "$VERBOSE" = "--verbose" ] || grep -E '^(WARNING|NOTE): ' "$log" || true; } | flush
         return 0
     fi
     { printf '%-30s FAIL  %6ss\n' "$name" "$dt"

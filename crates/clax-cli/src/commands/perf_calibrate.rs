@@ -9,13 +9,18 @@ use std::path::PathBuf;
 
 #[derive(clap::Args)]
 pub struct Args {
-    /// Where to create the calibration database; must not exist.
+    /// Where to create the calibration database; nothing may be there,
+    /// not even a symbolic link.
     pub db: PathBuf,
 }
 
 pub fn run(a: &Args) -> anyhow::Result<()> {
-    anyhow::ensure!(!a.db.exists(), "{} already exists", a.db.display());
-    let cal = clax_core::perf::Calibration::create(&a.db)?;
+    let cal = clax_core::perf::Calibration::create(&a.db).map_err(|e| match e {
+        clax_core::CoreError::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists => {
+            anyhow::anyhow!("{} already exists", a.db.display())
+        }
+        e => e.into(),
+    })?;
     let mut out = std::io::stdout().lock();
     writeln!(out, "{}", serde_json::json!({"ready": true}))?;
     out.flush()?;

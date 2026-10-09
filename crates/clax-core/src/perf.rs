@@ -28,13 +28,24 @@ pub struct Calibration {
 }
 
 impl Calibration {
-    /// Creates the database at `path` (which must not exist) with
-    /// [`THREADS`] threads of [`PER_THREAD`] comments, the same rows on
-    /// every machine, and runs the read once to warm the page cache.
+    /// Creates the database at `path` with [`THREADS`] threads of
+    /// [`PER_THREAD`] comments, the same rows on every machine, and runs the
+    /// read once to warm the page cache. The page cache holds the whole
+    /// database and temporary B-trees stay in memory, so the read costs
+    /// memory and CPU only.
+    ///
+    /// # Errors
+    /// When anything, a symbolic link included, is at `path` already: the
+    /// path is claimed with an exclusive create before SQLite opens it.
     pub fn create(path: &Path) -> Result<Calibration> {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
         let mut conn = Connection::open(path)?;
         conn.execute_batch(
-            "CREATE TABLE t (id TEXT PRIMARY KEY, grp INTEGER NOT NULL, created TEXT NOT NULL);
+            "PRAGMA cache_size=-16000; PRAGMA temp_store=MEMORY;
+             CREATE TABLE t (id TEXT PRIMARY KEY, grp INTEGER NOT NULL, created TEXT NOT NULL);
              CREATE TABLE c (id INTEGER PRIMARY KEY, tid TEXT NOT NULL, author TEXT,
                              created TEXT NOT NULL, body TEXT NOT NULL);
              CREATE INDEX c_by_t ON c(tid, created);",
@@ -84,21 +95,40 @@ impl Calibration {
 mod tests {
     use super::*;
 
+    /// The workload, pinned: a change to the rows or the read changes what
+    /// the gate's `list_alone_ratio` and `attention_alone_ratio` budgets
+    /// were measured against (scripts/perf-daemon-budget.json), so it means
+    /// measuring them again.
     #[test]
-    fn the_read_covers_every_thread_the_same_way_each_time() {
+    fn the_workload_is_the_one_the_budgets_were_measured_on() {
         let dir = tempfile::tempdir().unwrap();
         let cal = Calibration::create(&dir.path().join("cal.db")).unwrap();
-        let counts = |c: &Calibration| -> (i64, i64) {
-            c.conn
-                .query_row(QUERY, [], |r| Ok((r.get(0)?, r.get(1)?)))
-                .unwrap()
-        };
-        let (threads, own) = counts(&cal);
-        assert_eq!(threads, THREADS as i64);
-        // The fixed sequence gives the same authors on every machine.
-        let again = Calibration::create(&dir.path().join("again.db")).unwrap();
-        assert_eq!(counts(&again), (threads, own));
-        assert!(own > 0 && own < threads, "{own}");
+        let got: (i64, i64, String) = cal
+            .conn
+            .query_row(QUERY, [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap();
+        assert_eq!(got, (3000, 2440, "2026-01-02T00299903".to_string()));
+        let pages: i64 = cal
+            .conn
+            .query_row("PRAGMA page_count", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(pages, 463);
         cal.run().unwrap();
+    }
+
+    #[test]
+    fn create_refuses_an_existing_path_and_a_dangling_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let taken = dir.path().join("taken.db");
+        std::fs::write(&taken, b"keep").unwrap();
+        assert!(Calibration::create(&taken).is_err());
+        assert_eq!(std::fs::read(&taken).unwrap(), b"keep");
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link.db");
+            std::os::unix::fs::symlink(dir.path().join("absent.db"), &link).unwrap();
+            assert!(Calibration::create(&link).is_err());
+            assert!(!dir.path().join("absent.db").exists());
+        }
     }
 }
