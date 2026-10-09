@@ -644,7 +644,8 @@ impl Store {
 
     /// Session `sid` when it is one of credential `grant_id`'s (`None`: the
     /// daemon token's); `None` for a missing session or another
-    /// credential's.
+    /// credential's. Ownership only: an ended session is returned too, so a
+    /// caller that needs a live one checks `ended_at` itself.
     pub fn session_of(&self, sid: &str, grant_id: Option<&str>) -> Result<Option<Session>> {
         self.with_read(|c| {
             Ok(c.query_row(

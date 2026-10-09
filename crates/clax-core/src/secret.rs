@@ -25,7 +25,8 @@ const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const USER_LETTERS: &[u8; 24] = b"ABCDEFGHJKLMNPQRSTUVWXYZ";
 
 /// A secret value: shown to its holder once, otherwise only hashed.
-#[derive(Clone, PartialEq, Eq)]
+/// It has no `PartialEq`: compare hashes with [`constant_time_eq`].
+#[derive(Clone)]
 pub struct Secret(String);
 
 impl Secret {
@@ -201,7 +202,7 @@ mod tests {
             Some("WXYZ4821")
         );
         assert_eq!(canonical_user_code("WXIZ-4821"), None);
-        assert_ne!(token(ACCESS_PREFIX), token(ACCESS_PREFIX));
+        assert_ne!(token(ACCESS_PREFIX).expose(), token(ACCESS_PREFIX).expose());
     }
 
     #[test]
