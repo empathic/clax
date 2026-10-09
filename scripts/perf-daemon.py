@@ -36,19 +36,22 @@ Budgets live in scripts/perf-daemon-budget.json:
 - `list_alone_ratio`, `attention_alone_ratio`: the gallery list and the
   attention request alone, each as its fastest sample over the fastest
   calibration read of the same round (15 samples each), judged on the
-  median over rounds and not scaled: the calibration, a fixed SQLite read
-  on a private database that `clax perf-calibrate` runs through the binary's
-  own bundled SQLite, timed between the requests, carries the machine's
-  speed and its other
-  work, so the ratio is about the same on a fast Mac, a slower CI runner
-  and a loaded machine. A ratio over budget is measured once more at once
-  and fails only if over again. The budgets are 1.4 times the largest
-  ratios measured (list x2.32, attention x1.12 on an M-series Mac, quiet
-  and under 12 and 24 CPU burners), and twice the smallest (x2.21, x1.04)
-  is over them, so a request that gets twice as slow fails even when the
+  median over rounds and not scaled. The calibration is a fixed SQLite read
+  on a private database that `clax perf-calibrate` runs through the
+  binary's own bundled SQLite, timed between the requests; it carries the
+  machine's speed and its other work, so the ratio stays about the same
+  under load. A ratio over budget is measured once more at once and fails
+  only if over again. The budgets are 1.4 times the largest ratios
+  measured (list x2.62, attention x1.20, on an M-series Mac, quiet and
+  under 12 and 24 CPU burners), and twice the smallest (x2.21, x1.02) is
+  over them, so a request that gets twice as slow fails even when the
   queued limits below, which follow the galleries' own latency, would let
-  it pass. Every run prints its platform, the calibration's time and the
-  ratios of every round, to re-tune from (CI's log included);
+  it pass (injected, doubling the list's or the attention's store work:
+  list x3.98-4.19, attention x1.94-2.33, each failed and confirmed). They
+  come from one macOS machine; each run prints a NOTE: line with its
+  platform, the calibration's time and every round's ratios, which
+  quality_gates.sh shows even when the gate passes, to re-derive them from
+  CI's log;
 - `alone_ceiling_ms`: the two requests' fastest times, scaled as below: a
   guard against a broken calibration;
 - `inbox_alone_ms`: each of the inbox tab's three requests alone: the
@@ -87,6 +90,7 @@ import math
 import os
 import platform
 import re
+import select
 import shutil
 import signal
 import socket
@@ -674,18 +678,64 @@ class Calibration:
     and its other work make of a read of that kind just then. The process
     stays up; each line written to it runs the read once."""
 
+    READY_S = 30  # creating the database
+    RUN_S = 10  # one read
+
     def __init__(self, binary, scratch):
         env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAX_", "CLAUDE_"))}
+        # The command opens no home; the binary resolves one before any
+        # command runs, so it is named, and never created.
         env.update(CLAX_HOME=os.path.join(scratch, "calibration-home"))
         self.p = subprocess.Popen([binary, "perf-calibrate", os.path.join(scratch, "calibration.db")],
                                   env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-        line = self.p.stdout.readline()
-        expect(line and json.loads(line).get("ready"), f"clax perf-calibrate did not start: {line!r}")
+        try:
+            expect(self.reply(self.READY_S).get("ready") is True, "clax perf-calibrate did not say it is ready")
+        except BaseException:
+            # The caller never gets a Calibration to close: stop it here.
+            self.kill()
+            raise
+
+    def reply(self, timeout):
+        """The calibrator's next line, as JSON. One request is in flight and
+        each reply is one flushed line, so the pipe's own buffer is empty
+        while `select` waits on the descriptor. Any failure (no line within
+        `timeout` seconds, an ended process, a line that is not the
+        protocol's) stops the process and is a SetupError."""
+        try:
+            ready, _, _ = select.select([self.p.stdout], [], [], timeout)
+            if not ready:
+                raise SetupError(f"clax perf-calibrate gave no answer within {timeout} s")
+            line = self.p.stdout.readline()
+            if not line:
+                raise SetupError(f"clax perf-calibrate stopped: exit {self.p.poll()}")
+            return json.loads(line)
+        except SetupError:
+            self.kill()
+            raise
+        except (OSError, ValueError) as e:
+            self.kill()
+            raise SetupError(f"clax perf-calibrate failed: {e!r}") from e
 
     def run(self):
-        self.p.stdin.write("run\n")
-        self.p.stdin.flush()
-        return json.loads(self.p.stdout.readline())["ms"]
+        try:
+            self.p.stdin.write("run\n")
+            self.p.stdin.flush()
+        except OSError as e:
+            self.kill()
+            raise SetupError(f"clax perf-calibrate stopped: exit {self.p.poll()}") from e
+        ms = self.reply(self.RUN_S).get("ms")
+        if not isinstance(ms, (int, float)):
+            self.kill()
+            raise SetupError(f"clax perf-calibrate answered without a time: {ms!r}")
+        return ms
+
+    def kill(self):
+        if self.p.poll() is None:
+            self.p.kill()
+        try:
+            self.p.wait(5)
+        except subprocess.TimeoutExpired:
+            pass
 
     def close(self):
         if self.p.poll() is None:
@@ -856,9 +906,10 @@ def main(binary, budget_path, quick):
     # machine's speed and load. Over budget, it fails only when measured
     # over again just after; the absolute ceiling guards a broken
     # calibration.
-    # For re-tuning the ratio budgets from any machine's log (CI's included).
+    # For re-tuning the ratio budgets from any machine's log: a NOTE: line,
+    # which quality_gates.sh shows even when the gate passes (CI's log).
     first = GALLERY_REQUESTS[0][0]
-    print(f"gallery alone on {platform.platform()}, {os.cpu_count()} CPUs: calibration per round "
+    print(f"NOTE: gallery alone on {platform.platform()}, {os.cpu_count()} CPUs: calibration per round "
           + ", ".join(f"{ms / q:.2f}" for ms, q in gallery[first]) + " ms; ratios per round "
           + "; ".join(f"{p} " + ", ".join(f"x{q:.2f}" for _, q in gallery[p]) + f" (budget x{cfg[k]})"
                       for p, k in GALLERY_REQUESTS))

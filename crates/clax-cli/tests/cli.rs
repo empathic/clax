@@ -1309,9 +1309,13 @@ fn perf_calibrate_times_its_read_per_line_and_stays_out_of_help() {
     assert_eq!(lines.len(), 3, "{lines:?}");
     assert_eq!(lines[0]["ready"], true);
     assert!(lines[1..].iter().all(|l| l["ms"].as_f64().unwrap() > 0.0));
-    // An existing database is refused.
+    // An existing database is refused, and left as it was.
+    let before = std::fs::read(&db).unwrap();
     let again = e.cmd().arg("perf-calibrate").arg(&db).output().unwrap();
     assert!(!again.status.success());
+    let err = String::from_utf8_lossy(&again.stderr);
+    assert!(err.contains("already exists"), "{err}");
+    assert_eq!(std::fs::read(&db).unwrap(), before);
     let help = e.cmd().arg("--help").output().unwrap();
     assert!(!String::from_utf8_lossy(&help.stdout).contains("perf-calibrate"));
 }
