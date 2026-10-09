@@ -81,8 +81,8 @@ pub struct NewGrant {
     pub peer_ip: String,
     /// The access asked for; it can only narrow the person's rights.
     pub access: Rights,
-    /// An invite code, as typed.
-    pub invite: Option<String>,
+    /// An invite code, as typed (a secret: `Debug` redacts it).
+    pub invite: Option<Secret>,
 }
 
 /// How a grant ended (`grants.ended_by`).
@@ -543,7 +543,9 @@ impl Store {
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
                 .optional()?;
-            let Some((gid, stored, expires, viewer_id)) = row else {
+            // The lookup by the hash of a 32-byte random code is the check:
+            // the index compares hashes, not the code.
+            let Some((gid, _, expires, viewer_id)) = row else {
                 return Ok(Err(CoreError::NotFound));
             };
             // One use, live or not: a code that was presented is spent.
@@ -551,7 +553,7 @@ impl Store {
                 "UPDATE grants SET browser_sha256 = NULL, browser_expires_at = NULL WHERE id = ?1",
                 params![gid],
             )?;
-            if !constant_time_eq(hash.as_bytes(), stored.as_bytes()) || expires <= now {
+            if expires <= now {
                 return Ok(Err(CoreError::NotFound));
             }
             let viewer = tx
@@ -572,13 +574,23 @@ impl Store {
     /// the viewer marked a person for `Viewer`, the owner row (made when
     /// missing) for `Owner`. Returns it with its code, shown once: 12
     /// Crockford base32 characters in three groups. It expires in 24 hours.
+    /// `rights` (a person's; ignored for `Owner`, whose rights are all) are
+    /// set in the same transaction, `None` keeping the person's.
+    ///
+    /// A viewer or new person made a person here goes back to a plain
+    /// viewer when its invites are revoked or expire without its ever
+    /// holding a grant ([`Store::revoke_invite`], [`Store::expire_grants`]).
     ///
     /// # Errors
     /// `limit_reached` with [`MAX_LIVE_INVITES`] live; `invalid_name` or
     /// `name_taken` for a new person's name (spec §11), and `name_taken`
     /// for a viewer whose name a connected person or the owner has;
     /// `unknown_viewer` for a public ID that names no viewer, or the owner.
-    pub fn create_invite(&self, who: InvitePerson) -> Result<(Invite, Secret)> {
+    pub fn create_invite(
+        &self,
+        who: InvitePerson,
+        rights: Option<Rights>,
+    ) -> Result<(Invite, Secret)> {
         let code = secret::invite_code();
         let canon = secret::canonical_invite(code.expose()).expect("a minted code is canonical");
         self.with_tx(|tx| {
@@ -636,6 +648,12 @@ impl Store {
                     tx.query_row("SELECT id FROM viewers WHERE owner = 1", [], |r| r.get(0))?
                 }
             };
+            if let (Some(r), false) = (&rights, who == InvitePerson::Owner) {
+                tx.execute(
+                    "UPDATE viewers SET rights_json = ?2 WHERE id = ?1",
+                    params![viewer_id, write_rights(r)],
+                )?;
+            }
             let id = new_ulid();
             tx.execute(
                 "INSERT INTO invites (id, code_sha256, viewer_id, created_at, expires_at)
@@ -669,17 +687,30 @@ impl Store {
         })
     }
 
-    /// Revokes invite `id` unless it was used or revoked already.
+    /// Revokes invite `id` unless it was used or revoked already. A person
+    /// it made who never held a grant and has no other live invite goes
+    /// back to a plain viewer.
     ///
     /// # Errors
     /// `NotFound` when no such invite exists.
     pub fn revoke_invite(&self, id: &str) -> Result<Invite> {
         self.with_tx(|tx| {
+            let now = self.now();
             tx.execute(
                 "UPDATE invites SET revoked_at = ?2
                  WHERE id = ?1 AND used_at IS NULL AND revoked_at IS NULL",
-                params![id, self.now()],
+                params![id, now],
             )?;
+            let viewer: Option<String> = tx
+                .query_row(
+                    "SELECT viewer_id FROM invites WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(v) = viewer {
+                release_unconnected(tx, Some(&v), &now)?;
+            }
             tx.query_row(
                 &format!("{INVITE_SELECT} WHERE i.id = ?1"),
                 params![id],
@@ -708,15 +739,17 @@ impl Store {
         let key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(g.key);
         let invite_hash = g
             .invite
-            .as_deref()
-            .map(|code| secret::canonical_invite(code).map(|c| sha256_hex(&c)));
+            .as_ref()
+            .map(|code| secret::canonical_invite(code.expose()).map(|c| sha256_hex(&c)));
         self.with_tx(|tx| {
             let now = self.now();
-            let stale = self.ago(PENDING_TTL_SECS);
+            // Unfinished requests past their time free their keys now;
+            // `expire_grants` reports them (`ended_at` is set then).
             tx.execute(
-                "UPDATE grants SET status = 'expired', ended_at = ?1, ended_by = 'expiry'
-                 WHERE status = 'pending' AND created_at < ?2",
-                params![now, stale],
+                &format!(
+                    "UPDATE grants SET status = 'expired', ended_by = 'expiry' WHERE {UNFINISHED_STALE}"
+                ),
+                params![self.ago(PENDING_TTL_SECS)],
             )?;
             let invite = match invite_hash {
                 None => None,
@@ -967,19 +1000,25 @@ impl Store {
             if !matches(continue_token, stored_hash(tx, gid, "continue_sha256")?.as_deref()) {
                 return Err(invalid_token());
             }
-            let (status, created_at, last, manage): (String, String, Option<String>, Option<String>) =
-                tx.query_row(
-                    "SELECT status, created_at, last_used_at, manage_sha256 FROM grants WHERE id = ?1",
-                    params![gid],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-                )?;
+            let (status, created_at, last, manage, decided): (
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                String,
+            ) = tx.query_row(
+                "SELECT status, created_at, last_used_at, manage_sha256, COALESCE(decided_at, '')
+                 FROM grants WHERE id = ?1",
+                params![gid],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )?;
             match status.as_str() {
                 "pending" => {
                     if created_at < self.ago(PENDING_TTL_SECS) {
+                        // Reported, and given `ended_at`, by `expire_grants`.
                         tx.execute(
-                            "UPDATE grants SET status = 'expired', ended_at = ?2, ended_by = 'expiry'
-                             WHERE id = ?1",
-                            params![gid, now],
+                            "UPDATE grants SET status = 'expired', ended_by = 'expiry' WHERE id = ?1",
+                            params![gid],
                         )?;
                         return Ok(Err(denied()));
                     }
@@ -996,6 +1035,14 @@ impl Store {
                     Ok(Ok(ContinueOutcome::Pending {
                         grant: grant_in(tx, gid)?.expect("the grant exists"),
                     }))
+                }
+                "approved" if manage.is_none() && decided < self.ago(PENDING_TTL_SECS) => {
+                    // Reported, and given `ended_at`, by `expire_grants`.
+                    tx.execute(
+                        "UPDATE grants SET status = 'expired', ended_by = 'expiry' WHERE id = ?1",
+                        params![gid],
+                    )?;
+                    Ok(Err(denied()))
                 }
                 "approved" if manage.is_none() => {
                     let owner = grant_in(tx, gid)?.expect("the grant exists").owner;
@@ -1243,20 +1290,28 @@ impl Store {
     }
 
     /// The rights of person `public_id` (spec §7): everything for the owner,
-    /// else what was set, by default the collaborator preset.
+    /// else what was set, by default the collaborator preset. A revoked
+    /// person keeps theirs, as history.
     ///
     /// # Errors
+    /// `not_a_person` for a viewer who is neither a person nor the owner;
     /// `NotFound` for an unknown public ID.
     pub fn person_rights(&self, public_id: &str) -> Result<Rights> {
         self.with_read(|c| {
-            let id: String = c
+            let (id, person, owner): (String, bool, bool) = c
                 .query_row(
-                    "SELECT id FROM viewers WHERE public_id = ?1",
+                    "SELECT id, person, owner FROM viewers WHERE public_id = ?1",
                     params![public_id],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
                 .optional()?
                 .ok_or(CoreError::NotFound)?;
+            if !person && !owner {
+                return Err(CoreError::invalid(
+                    "not_a_person",
+                    "only a connected person or the owner has rights",
+                ));
+            }
             rights_of_row(c, &id)
         })
     }
@@ -1290,30 +1345,80 @@ impl Store {
         })
     }
 
-    /// Expires pending requests older than [`PENDING_TTL_SECS`] and approved
-    /// grants unused for [`GRANT_IDLE_SECS`] (counted from approval when
-    /// never used), each with its tokens and live sessions. Returns what
-    /// each expiry ended.
+    /// Expires unfinished requests (pending, or approved with their tokens
+    /// never collected) older than [`PENDING_TTL_SECS`], freeing their keys,
+    /// and approved grants unused for [`GRANT_IDLE_SECS`] (counted from
+    /// approval when never used), each with its tokens and live sessions.
+    /// Also reports requests that [`Store::request_grant`] or
+    /// [`Store::continue_grant`] expired since the last call, and returns
+    /// to plain viewers the people whose invites all lapsed without a
+    /// grant. Returns what each expiry ended.
     pub fn expire_grants(&self) -> Result<Vec<RevokedGrant>> {
         let pending_cutoff = self.ago(PENDING_TTL_SECS);
         let idle_cutoff = self.ago(GRANT_IDLE_SECS);
         self.with_tx(|tx| {
             let now = self.now();
-            let due: Vec<String> = {
+            let mut out: Vec<RevokedGrant> = {
                 let mut stmt = tx.prepare(
-                    "SELECT id FROM grants WHERE status = 'pending' AND created_at < ?1
-                     UNION ALL
-                     SELECT id FROM grants WHERE status = 'approved'
-                       AND COALESCE(last_used_at, decided_at, created_at) < ?2",
+                    "UPDATE grants SET ended_at = ?1 WHERE status = 'expired' AND ended_at IS NULL
+                     RETURNING id",
                 )?;
+                stmt.query_map(params![now], |r| r.get(0))?
+                    .map(|gid| {
+                        gid.map(|grant_id| RevokedGrant {
+                            grant_id,
+                            ..Default::default()
+                        })
+                    })
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            let due: Vec<String> = {
+                let mut stmt = tx.prepare(&format!(
+                    "SELECT id FROM grants WHERE {UNFINISHED_STALE}
+                     UNION ALL
+                     SELECT id FROM grants WHERE status = 'approved' AND manage_sha256 IS NOT NULL
+                       AND COALESCE(last_used_at, decided_at, created_at) < ?2"
+                ))?;
                 stmt.query_map(params![pending_cutoff, idle_cutoff], |r| r.get(0))?
                     .collect::<rusqlite::Result<_>>()?
             };
-            due.iter()
-                .map(|gid| end_grant(self, tx, &AuditCtx::DAEMON, gid, EndedBy::Expiry, &now))
-                .collect()
+            for gid in &due {
+                out.push(end_grant(
+                    self,
+                    tx,
+                    &AuditCtx::DAEMON,
+                    gid,
+                    EndedBy::Expiry,
+                    &now,
+                )?);
+            }
+            out.sort_by(|a, b| a.grant_id.cmp(&b.grant_id));
+            release_unconnected(tx, None, &now)?;
+            Ok(out)
         })
     }
+}
+
+/// Grants whose request is unfinished past its time (`?1`: the cutoff,
+/// [`PENDING_TTL_SECS`] ago): pending, or approved with their tokens never
+/// collected (a lost continuation response).
+const UNFINISHED_STALE: &str = "((status = 'pending' AND created_at < ?1)
+    OR (status = 'approved' AND manage_sha256 IS NULL AND decided_at < ?1))";
+
+/// Returns to plain viewers (and to the default rights) the people, of
+/// `viewer_id` or of every row when `None`, who never held a grant, are
+/// unrevoked, and have no live invite: an invite's person whose invites
+/// were revoked or expired unredeemed.
+fn release_unconnected(tx: &Transaction<'_>, viewer_id: Option<&str>, now: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE viewers SET person = 0, rights_json = NULL
+         WHERE person = 1 AND owner = 0 AND person_revoked_at IS NULL AND (?1 IS NULL OR id = ?1)
+           AND NOT EXISTS (SELECT 1 FROM grants g WHERE g.viewer_id = viewers.id)
+           AND NOT EXISTS (SELECT 1 FROM invites i WHERE i.viewer_id = viewers.id
+                             AND i.used_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > ?2)",
+        params![viewer_id, now],
+    )?;
+    Ok(())
 }
 
 fn unhex32(s: &str) -> Option<[u8; 32]> {
@@ -1352,7 +1457,7 @@ pub(crate) mod tests {
             client_name: "sam-mbp".into(),
             peer_ip: "192.168.1.20".into(),
             access: Rights::preset(crate::rights::PRESET_COLLABORATOR).unwrap(),
-            invite: invite.map(String::from),
+            invite: invite.map(|c| Secret::new(c.into())),
         }
     }
 
@@ -1373,7 +1478,9 @@ pub(crate) mod tests {
     /// Sam, connected by invite with `key`: the grant ID, access token and
     /// manage token.
     pub(crate) fn approved(st: &Store, name: &str, key: [u8; 32]) -> (String, Secret, Secret) {
-        let (_, c) = st.create_invite(InvitePerson::New(name.into())).unwrap();
+        let (_, c) = st
+            .create_invite(InvitePerson::New(name.into()), None)
+            .unwrap();
         match st.request_grant(grant(key, Some(c.expose()))).unwrap() {
             GrantStart::Approved {
                 grant,
@@ -1408,7 +1515,9 @@ pub(crate) mod tests {
     #[test]
     fn invite_is_single_use_and_binds_the_first_key() {
         let (_d, _c, st) = store();
-        let (inv, code_) = st.create_invite(InvitePerson::New("Sam".into())).unwrap();
+        let (inv, code_) = st
+            .create_invite(InvitePerson::New("Sam".into()), None)
+            .unwrap();
         assert_eq!(inv.person_name.as_deref(), Some("Sam"));
         let GrantStart::Approved {
             grant: g,
@@ -1436,7 +1545,9 @@ pub(crate) mod tests {
         assert_eq!(used.grant_id.as_deref(), Some(g.id.as_str()));
         assert!(used.used_at.is_some());
         // The code is accepted however it is typed.
-        let (_, c2) = st.create_invite(InvitePerson::New("Mia".into())).unwrap();
+        let (_, c2) = st
+            .create_invite(InvitePerson::New("Mia".into()), None)
+            .unwrap();
         let typed = c2.expose().replace('-', "").to_lowercase();
         assert!(matches!(
             st.request_grant(grant(KEY_B, Some(&typed))).unwrap(),
@@ -1447,9 +1558,13 @@ pub(crate) mod tests {
     #[test]
     fn expired_revoked_and_unknown_invites_are_one_error() {
         let (_d, clock, st) = store();
-        let (_, expired) = st.create_invite(InvitePerson::New("Sam".into())).unwrap();
+        let (_, expired) = st
+            .create_invite(InvitePerson::New("Sam".into()), None)
+            .unwrap();
         clock.advance(INVITE_TTL_SECS + 1);
-        let (inv, revoked) = st.create_invite(InvitePerson::New("Mia".into())).unwrap();
+        let (inv, revoked) = st
+            .create_invite(InvitePerson::New("Mia".into()), None)
+            .unwrap();
         st.revoke_invite(&inv.id).unwrap();
         for c in [
             expired.expose(),
@@ -1470,26 +1585,26 @@ pub(crate) mod tests {
         let (_d, _c, st) = store();
         let lan = st.upsert_viewer(&crate::new_ulid(), Some("Lan")).unwrap();
         let (inv, _) = st
-            .create_invite(InvitePerson::Viewer(lan.public_id.clone()))
+            .create_invite(InvitePerson::Viewer(lan.public_id.clone()), None)
             .unwrap();
         assert_eq!(inv.person, lan.public_id);
         assert!(st.get_viewer(&lan.id).unwrap().unwrap().person);
-        let (me, _) = st.create_invite(InvitePerson::Owner).unwrap();
+        let (me, _) = st.create_invite(InvitePerson::Owner, None).unwrap();
         assert!(me.owner);
         assert_eq!(
-            code(st.create_invite(InvitePerson::Viewer(me.person.clone()))),
+            code(st.create_invite(InvitePerson::Viewer(me.person.clone()), None)),
             "unknown_viewer"
         );
         assert_eq!(
-            code(st.create_invite(InvitePerson::New("lan".into()))),
+            code(st.create_invite(InvitePerson::New("lan".into()), None)),
             "name_taken"
         );
         for i in 2..MAX_LIVE_INVITES {
-            st.create_invite(InvitePerson::New(format!("P{i}")))
+            st.create_invite(InvitePerson::New(format!("P{i}")), None)
                 .unwrap();
         }
         assert_eq!(
-            code(st.create_invite(InvitePerson::New("Late".into()))),
+            code(st.create_invite(InvitePerson::New("Late".into()), None)),
             "limit_reached"
         );
     }
@@ -1497,7 +1612,7 @@ pub(crate) mod tests {
     #[test]
     fn an_owner_invite_connects_the_owner_without_a_browser_link() {
         let (_d, _c, st) = store();
-        let (_, c) = st.create_invite(InvitePerson::Owner).unwrap();
+        let (_, c) = st.create_invite(InvitePerson::Owner, None).unwrap();
         let GrantStart::Approved {
             grant: g,
             browser_code,
@@ -1678,7 +1793,9 @@ pub(crate) mod tests {
     #[test]
     fn disconnecting_through_the_continuation_ends_the_grant() {
         let (_d, _c, st) = store();
-        let (_, c) = st.create_invite(InvitePerson::New("Sam".into())).unwrap();
+        let (_, c) = st
+            .create_invite(InvitePerson::New("Sam".into()), None)
+            .unwrap();
         let GrantStart::Approved {
             grant: g,
             continue_token,
@@ -1769,7 +1886,9 @@ pub(crate) mod tests {
         let (g2, t2, _) = approved(&st, "Mia", KEY_B);
         let mia = st.grant(&g2).unwrap().person.unwrap();
         let s2 = st.register_session(DAEMON, reg(Some(&g2))).unwrap();
-        let (left, _) = st.create_invite(InvitePerson::Viewer(mia.clone())).unwrap();
+        let (left, _) = st
+            .create_invite(InvitePerson::Viewer(mia.clone()), None)
+            .unwrap();
         let r = st.revoke_person(&mia).unwrap();
         assert_eq!(r.grants.len(), 1);
         assert_eq!(r.grants[0].sessions_ended, vec![s2.id.clone()]);
@@ -1781,7 +1900,8 @@ pub(crate) mod tests {
             "the row stays as history"
         );
         // A revoked person's name is free again.
-        st.create_invite(InvitePerson::New("Mia".into())).unwrap();
+        st.create_invite(InvitePerson::New("Mia".into()), None)
+            .unwrap();
         let owner = st.owner_viewer(false).unwrap();
         assert_eq!(code(st.revoke_person(&owner.public_id)), "not_a_person");
     }
@@ -1808,7 +1928,9 @@ pub(crate) mod tests {
             Some(reader.clone())
         );
 
-        let (_, c) = st.create_invite(InvitePerson::New("Mia".into())).unwrap();
+        let (_, c) = st
+            .create_invite(InvitePerson::New("Mia".into()), None)
+            .unwrap();
         let GrantStart::Approved { grant: g, .. } = st
             .request_grant(NewGrant {
                 access: reader.clone(),
@@ -1825,10 +1947,10 @@ pub(crate) mod tests {
     fn name_tokens_fold_case_diacritics_and_spaces() {
         assert_eq!(name_token("  Zoë  Ångström "), "zoe-angstrom");
         let (_d, _c, st) = store();
-        st.create_invite(InvitePerson::New("Zoë Ångström".into()))
+        st.create_invite(InvitePerson::New("Zoë Ångström".into()), None)
             .unwrap();
         assert_eq!(
-            code(st.create_invite(InvitePerson::New("zoe   angstrom".into()))),
+            code(st.create_invite(InvitePerson::New("zoe   angstrom".into()), None)),
             "name_taken"
         );
         let long = "x".repeat(MAX_CLIENT_NAME_CHARS + 1);
@@ -1900,7 +2022,7 @@ pub(crate) mod tests {
     #[test]
     fn claiming_a_browser_for_the_owner_keeps_the_owners_grants_and_skips_people() {
         let (_d, _c, st) = store();
-        let (_, c) = st.create_invite(InvitePerson::Owner).unwrap();
+        let (_, c) = st.create_invite(InvitePerson::Owner, None).unwrap();
         let GrantStart::Approved { grant: g, .. } =
             st.request_grant(grant(KEY_A, Some(c.expose()))).unwrap()
         else {
@@ -1922,7 +2044,8 @@ pub(crate) mod tests {
         // A person's locally minted browser is never claimed for the owner.
         let person = crate::new_ulid();
         let v = st.mint_viewer(&person, true).unwrap();
-        st.create_invite(InvitePerson::Viewer(v.public_id)).unwrap();
+        st.create_invite(InvitePerson::Viewer(v.public_id), None)
+            .unwrap();
         assert_eq!(
             st.claim_for_owner(crate::audit::Via::Shell, &person)
                 .unwrap(),
@@ -1931,7 +2054,9 @@ pub(crate) mod tests {
     }
 
     fn invited_with_link(st: &Store, name: &str, key: [u8; 32]) -> (Grant, Secret) {
-        let (_, c) = st.create_invite(InvitePerson::New(name.into())).unwrap();
+        let (_, c) = st
+            .create_invite(InvitePerson::New(name.into()), None)
+            .unwrap();
         match st.request_grant(grant(key, Some(c.expose()))).unwrap() {
             GrantStart::Approved {
                 grant,
@@ -2017,22 +2142,237 @@ pub(crate) mod tests {
     }
 
     /// Hashes of secrets are compared only through `constant_time_eq`: no
-    /// line of the store's code compares a hash, a stored value or a code
-    /// with `==` or `!=` (timing is not observable in a unit test, so this
-    /// guards the source).
+    /// line of the store's code compares a hash, a stored or presented
+    /// value, an exposed secret or a `Secret` with `==`, `!=` or `.eq(`
+    /// (timing is not observable in a unit test, so this guards the
+    /// source; review guards the rest).
     #[test]
     fn secret_hashes_are_never_compared_with_eq() {
         let src = include_str!("people.rs");
         let code = &src[..src.find("#[cfg(test)]").unwrap()];
         let bad: Vec<&str> = code
             .lines()
-            .filter(|l| l.contains("==") || l.contains("!="))
+            .filter(|l| ["==", "!=", ".eq(", ".ne("].iter().any(|op| l.contains(op)))
             .filter(|l| {
-                ["hash", "stored", "sha256", "presented", "expose"]
-                    .iter()
-                    .any(|w| l.contains(w))
+                [
+                    "hash",
+                    "stored",
+                    "_sha256",
+                    "presented",
+                    "expose",
+                    "Secret",
+                    "code",
+                ]
+                .iter()
+                .any(|w| l.contains(w))
             })
             .collect();
         assert!(bad.is_empty(), "{bad:#?}");
+    }
+
+    fn tokens_of(st: &Store, gid: &str) -> Vec<([u8; 32], String)> {
+        st.token_index()
+            .unwrap()
+            .into_iter()
+            .filter(|(_, g)| g == gid)
+            .collect()
+    }
+
+    #[test]
+    fn the_rotated_continuation_token_cannot_issue_again() {
+        let (_d, clock, st) = store();
+        let (g, cont, user_code) = pending(&st, KEY_A);
+        st.approve_grant(&g.id, user_code.expose(), "Sam", None)
+            .unwrap();
+        clock.advance(CONTINUE_WAIT_SECS);
+        let ContinueOutcome::Approved {
+            token,
+            continue_token,
+            ..
+        } = st.continue_grant(&g.id, cont.expose()).unwrap()
+        else {
+            panic!()
+        };
+        for _ in 0..2 {
+            clock.advance(CONTINUE_WAIT_SECS);
+            assert_eq!(
+                code(st.continue_grant(&g.id, continue_token.expose())),
+                "already_issued"
+            );
+        }
+        assert_eq!(
+            tokens_of(&st, &g.id),
+            vec![(secret::sha256(token.expose()), g.id.clone())]
+        );
+    }
+
+    #[test]
+    fn a_request_past_ten_minutes_cannot_be_approved() {
+        let (_d, clock, st) = store();
+        let (g, _, user_code) = pending(&st, KEY_A);
+        let viewers = |st: &Store| -> i64 {
+            st.with_read(|c| Ok(c.query_row("SELECT COUNT(*) FROM viewers", [], |r| r.get(0))?))
+                .unwrap()
+        };
+        let before = viewers(&st);
+        clock.advance(PENDING_TTL_SECS + 1);
+        assert_eq!(
+            code(st.approve_grant(&g.id, user_code.expose(), "Sam", None)),
+            "not_pending"
+        );
+        assert_ne!(st.grant(&g.id).unwrap().status, "approved");
+        assert_eq!(viewers(&st), before, "no person was made");
+    }
+
+    #[test]
+    fn denying_ends_a_request_once_and_never_an_approved_grant() {
+        let (_d, clock, st) = store();
+        let (g, cont, user_code) = pending(&st, KEY_A);
+        assert_eq!(st.deny_grant(&g.id).unwrap().status, "denied");
+        assert_eq!(st.grant(&g.id).unwrap().status, "denied");
+        clock.advance(CONTINUE_WAIT_SECS);
+        assert_eq!(code(st.continue_grant(&g.id, cont.expose())), "denied");
+        assert_eq!(
+            code(st.approve_grant(&g.id, user_code.expose(), "Sam", None)),
+            "not_pending"
+        );
+        assert_eq!(code(st.deny_grant(&g.id)), "not_pending");
+        let (gid, token, _) = approved(&st, "Mia", KEY_B);
+        assert_eq!(code(st.deny_grant(&gid)), "not_pending");
+        assert!(st.token_live(token.expose()).unwrap());
+        assert!(matches!(
+            st.deny_grant("g_unknown"),
+            Err(CoreError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn the_token_index_holds_each_live_token_once_and_revoking_marks_the_rows() {
+        let (_d, _c, st) = store();
+        let (gid, token, manage) = approved(&st, "Sam", KEY_A);
+        assert_eq!(
+            st.token_index().unwrap(),
+            vec![(secret::sha256(token.expose()), gid.clone())]
+        );
+        st.revoke_token(&gid, manage.expose()).unwrap();
+        let unrevoked: i64 = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT COUNT(*) FROM grant_tokens WHERE grant_id = ?1 AND revoked_at IS NULL",
+                    [&gid],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(unrevoked, 0);
+    }
+
+    #[test]
+    fn invite_codes_never_print() {
+        let g = grant(KEY_A, Some("K7QF-M2XD-9PNA"));
+        let shown = format!("{g:?}");
+        assert!(
+            !shown.contains("K7QF") && !shown.contains("9PNA"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn an_invite_carries_its_persons_rights() {
+        let (_d, _c, st) = store();
+        let reader = Rights::preset(crate::rights::PRESET_READER).unwrap();
+        let (inv, _) = st
+            .create_invite(InvitePerson::New("Sam".into()), Some(reader.clone()))
+            .unwrap();
+        assert_eq!(st.person_rights(&inv.person).unwrap(), reader);
+        let (me, _) = st.create_invite(InvitePerson::Owner, Some(reader)).unwrap();
+        assert_eq!(
+            st.person_rights(&me.person).unwrap(),
+            Rights::full(),
+            "ignored for the owner"
+        );
+    }
+
+    #[test]
+    fn an_unredeemed_invites_person_goes_back_to_a_viewer() {
+        let (_d, clock, st) = store();
+        let lan = st.upsert_viewer(&crate::new_ulid(), Some("Lan")).unwrap();
+        let (inv, _) = st
+            .create_invite(InvitePerson::Viewer(lan.public_id.clone()), None)
+            .unwrap();
+        assert!(st.get_viewer(&lan.id).unwrap().unwrap().person);
+        st.revoke_invite(&inv.id).unwrap();
+        assert!(!st.get_viewer(&lan.id).unwrap().unwrap().person);
+        assert_eq!(code(st.person_rights(&lan.public_id)), "not_a_person");
+        // A new person whose invite expires frees the name; a person with a
+        // grant stays one.
+        st.create_invite(InvitePerson::New("Sam".into()), None)
+            .unwrap();
+        approved(&st, "Mia", KEY_A);
+        clock.advance(INVITE_TTL_SECS + 1);
+        st.expire_grants().unwrap();
+        st.create_invite(InvitePerson::New("Sam".into()), None)
+            .unwrap();
+        assert_eq!(
+            code(st.create_invite(InvitePerson::New("Mia".into()), None)),
+            "name_taken"
+        );
+    }
+
+    #[test]
+    fn requests_expired_on_the_way_are_reported_and_lost_approvals_free_the_key() {
+        let (_d, clock, st) = store();
+        let (stale, _, _) = pending(&st, KEY_A);
+        clock.advance(PENDING_TTL_SECS + 1);
+        // The same key asks again: the stale request expires on the way.
+        let (fresh, cont, user_code) = pending(&st, KEY_A);
+        assert_eq!(st.grant(&stale.id).unwrap().status, "expired");
+        let ended = st.expire_grants().unwrap();
+        assert_eq!(
+            ended
+                .iter()
+                .map(|e| e.grant_id.as_str())
+                .collect::<Vec<_>>(),
+            [stale.id.as_str()]
+        );
+        assert!(st.grant(&stale.id).unwrap().ended_at.is_some());
+        assert!(st.expire_grants().unwrap().is_empty(), "reported once");
+        // Approved, but the client never collects its tokens.
+        st.approve_grant(&fresh.id, user_code.expose(), "Sam", None)
+            .unwrap();
+        clock.advance(PENDING_TTL_SECS + 1);
+        let ended = st.expire_grants().unwrap();
+        assert_eq!(
+            ended
+                .iter()
+                .map(|e| e.grant_id.as_str())
+                .collect::<Vec<_>>(),
+            [fresh.id.as_str()]
+        );
+        assert_eq!(code(st.continue_grant(&fresh.id, cont.expose())), "denied");
+        assert!(matches!(
+            st.request_grant(grant(KEY_A, None)).unwrap(),
+            GrantStart::Pending { .. }
+        ));
+    }
+
+    #[test]
+    fn a_lost_approval_polled_late_is_denied_and_frees_the_key() {
+        let (_d, clock, st) = store();
+        let (g, cont, user_code) = pending(&st, KEY_A);
+        st.approve_grant(&g.id, user_code.expose(), "Sam", None)
+            .unwrap();
+        clock.advance(PENDING_TTL_SECS + 1);
+        assert_eq!(code(st.continue_grant(&g.id, cont.expose())), "denied");
+        assert!(st.token_index().unwrap().is_empty());
+        assert!(st.request_grant(grant(KEY_A, None)).is_ok());
+        assert_eq!(
+            st.expire_grants()
+                .unwrap()
+                .iter()
+                .map(|e| e.grant_id.as_str())
+                .collect::<Vec<_>>(),
+            [g.id.as_str()]
+        );
     }
 }
