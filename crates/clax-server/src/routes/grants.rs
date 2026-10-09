@@ -133,6 +133,13 @@ pub async fn sweep(s: &AppState) -> Result<usize, ApiError> {
     s.store_call(move |st| {
         let ended = st.expire_grants()?;
         announce_ended(&state, &ctx, st, &ended, "expiry");
+        // Requests purged since leave the index's record of ended grants.
+        let index = &state.grant_auth.index;
+        if !index.ended_grants().is_empty() {
+            let kept: std::collections::HashSet<String> =
+                st.ended_grant_ids()?.into_iter().collect();
+            index.forget_ended(|g| !kept.contains(g));
+        }
         if state.grant_auth.index.rebuild_if_stale(st)? {
             tracing::info!("grant index rebuilt");
         }
@@ -556,46 +563,53 @@ pub async fn poll(
 ) -> Result<Response, Refusal> {
     let gid = path(gid)?;
     let Signed {
-        host, token, key, ..
+        host,
+        token,
+        key,
+        t,
+        ..
     } = grant_auth::gnap(&s, req, &gid, CredentialKind::Continue).await?;
     let token = token.expect("a continuation call carries its token");
     let state = s.clone();
     let v = s
-        .store_call(move |st| match st.continue_grant(&gid, token.expose())? {
-            ContinueOutcome::Pending { grant } => Ok(json!({
-                "continue": {
-                    "access_token": {"value": token.expose()},
-                    "uri": format!("/api/grants/{}/continue", grant.id),
-                    "wait": CONTINUE_WAIT_SECS,
-                },
-            })),
-            ContinueOutcome::Approved {
-                grant,
-                access,
-                token: issued,
-                manage,
-                continue_token,
-                browser_code,
-            } => {
-                grant_auth::note_stale(
-                    state.grant_auth.index.issued(
-                        &grant.id,
-                        key,
-                        &issued,
-                        &manage,
-                        &continue_token,
-                    ),
-                    "tokens issued",
-                );
-                let link = browser_link(&host, browser_code.as_ref());
-                let v = issued_response(&grant, &access, &issued, &manage, &continue_token, link);
-                announce(
-                    &state,
-                    json!({"what": "grant_connected", "grant": grant_view(&grant)}),
-                );
-                Ok(v)
-            }
-        })
+        .store_call(
+            move |st| match st.continue_grant(&gid, token.expose(), t)? {
+                ContinueOutcome::Pending { grant } => Ok(json!({
+                    "continue": {
+                        "access_token": {"value": token.expose()},
+                        "uri": format!("/api/grants/{}/continue", grant.id),
+                        "wait": CONTINUE_WAIT_SECS,
+                    },
+                })),
+                ContinueOutcome::Approved {
+                    grant,
+                    access,
+                    token: issued,
+                    manage,
+                    continue_token,
+                    browser_code,
+                } => {
+                    grant_auth::note_stale(
+                        state.grant_auth.index.issued(
+                            &grant.id,
+                            key,
+                            &issued,
+                            &manage,
+                            &continue_token,
+                        ),
+                        "tokens issued",
+                    );
+                    let link = browser_link(&host, browser_code.as_ref());
+                    let v =
+                        issued_response(&grant, &access, &issued, &manage, &continue_token, link);
+                    announce(
+                        &state,
+                        json!({"what": "grant_connected", "grant": grant_view(&grant)}),
+                    );
+                    Ok(v)
+                }
+            },
+        )
         .await?;
     Ok(no_store(Json(v).into_response()))
 }
@@ -609,11 +623,11 @@ pub async fn disconnect(
     req: axum::extract::Request,
 ) -> Result<Response, Refusal> {
     let gid = path(gid)?;
-    let Signed { token, .. } = grant_auth::gnap(&s, req, &gid, CredentialKind::Continue).await?;
+    let Signed { token, t, .. } = grant_auth::gnap(&s, req, &gid, CredentialKind::Continue).await?;
     let token = token.expect("a continuation call carries its token");
     let (state, ctx) = (s.clone(), s.feedback_ctx());
     s.store_call(move |st| {
-        let ended = st.disconnect_grant(&gid, token.expose())?;
+        let ended = st.disconnect_grant(&gid, token.expose(), t)?;
         announce_ended(&state, &ctx, st, &[ended], "person");
         Ok(())
     })
