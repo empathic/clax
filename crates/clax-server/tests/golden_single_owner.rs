@@ -98,6 +98,8 @@ struct Minted {
     pids: Vec<u32>,
     cwds: Vec<String>,
     ulids_after_ms: u64,
+    /// The artifact IDs the collection's creates minted.
+    artifact_ids: Vec<String>,
     /// Holds the clients' working directory and `HOME`.
     scratch: tempfile::TempDir,
 }
@@ -118,6 +120,7 @@ impl Minted {
             pids: vec![std::process::id()],
             cwds,
             ulids_after_ms: newest_ulid_ms(&fixture),
+            artifact_ids: Vec::new(),
             scratch,
         }
     }
@@ -134,6 +137,7 @@ impl Minted {
             "cwds": self.cwds,
             "exes": exes(),
             "ulids_after_ms": self.ulids_after_ms,
+            "artifact_ids": self.artifact_ids,
         })
     }
 
@@ -217,6 +221,7 @@ fn tools_for(ts: &TestServer, s: Session) -> ClaxTools {
         Some(s),
         ts.home.log_path(),
     )
+    .with_opener(clax_mcp::tools::Opener::Program("/usr/bin/true".into()))
 }
 
 /// A tool result as JSON: its content (text parsed as JSON where it is
@@ -297,10 +302,12 @@ async fn tier_payload(
 /// Every agent-facing output of the daemon `ts` serves, with feedback
 /// handed over by `tier`, in this order: the notices `clax feedback follow
 /// --once` prints for the live session; the tier's payload; then, through
-/// the session's MCP tools, `status`, `list`, and for each artifact
-/// (ascending ID) `read` of each version's files, `comments_read` (all
+/// the session's MCP tools, `status`, `list`, the artifact listing, and for
+/// each artifact (ascending ID) its detail and threads (the bodies the Pi
+/// extension renders), `read` of each version's files, `comments_read` (all
 /// threads, then each thread), `db_list` of each collection, and `clax
-/// versions`; then the session listing and the working roster. Each tool
+/// versions`; then the session listing and the working roster; then the
+/// rest of the MCP surface, writes included ([`write_script`]). Each tool
 /// result keeps the feedback it carried. The value's `minted` key lists
 /// what [`normalise_minted`] replaces.
 pub async fn collect_agent_outputs(ts: &TestServer, tier: Tier) -> Value {
@@ -391,6 +398,8 @@ pub async fn collect_agent_outputs(ts: &TestServer, tier: Tier) -> Value {
         artifacts.insert(
             aid.clone(),
             json!({
+                "detail": detail,
+                "threads": threads,
                 "read": reads,
                 "comments_read": all,
                 "comments_read_each": each,
@@ -401,16 +410,224 @@ pub async fn collect_agent_outputs(ts: &TestServer, tier: Tier) -> Value {
     }
     let sessions = get_json(ts, "/api/sessions").await;
     let working = get_json(ts, "/api/working").await;
+    let writes = write_script(ts, &tools, &aids, &mut m).await;
     json!({
         "notices": notices,
         "payload": payload,
         "status": status,
         "list": list,
+        "listed": listed,
         "artifacts": artifacts,
         "sessions": sessions,
         "working": working,
+        "writes": writes,
         "minted": m.value(),
     })
+}
+
+/// One row of the fixture's database: the first column of `sql`'s first
+/// row, bound to `p`.
+fn fixture_id(ts: &TestServer, sql: &str, p: &str) -> String {
+    let c = rusqlite::Connection::open_with_flags(
+        ts.home.db_path(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    c.query_row(sql, [p], |r| r.get(0))
+        .unwrap_or_else(|e| panic!("{sql} with {p}: {e}"))
+}
+
+/// The thread whose first comment is `body`.
+fn thread_by_text(ts: &TestServer, body: &str) -> String {
+    fixture_id(
+        ts,
+        "SELECT thread_id FROM comments WHERE body = ?1 ORDER BY created_at, id LIMIT 1",
+        body,
+    )
+}
+
+/// After every read, the rest of the MCP surface on the same copy, in this
+/// fixed order, each call recorded with its arguments and result:
+/// `comments_read` in its default view (open threads) for each artifact;
+/// `working` set; `comments_reply` on Mia's thread, then one with
+/// `addressed` (refused on an artifact); `comments_resolve` on
+/// the lede thread; `watch` of Launch Plan off, then on; `publish` of
+/// Quarterly Review v3 (`if_version` 2, `addresses`), a stale `if_version`
+/// 1 publish (the conflict), a create without a title (refused), the
+/// create of Release Notes and its update to v2; `asset_upload`; `pin`, `unpin` and `open`; the `db_*` tools (`db_get`,
+/// `db_query`, `db_set`, `db_update`, a stale `db_update`, `db_str_replace`,
+/// `db_batch`, `db_delete`); `ask` on the answered and the declined
+/// question, and `ask` cancelling the open one; `working` cleared;
+/// `comments_read` of Mia's thread (with the reply); then `delete` of
+/// Launch Plan. The artifact IDs the creates minted are recorded in `m`
+/// for [`normalise_minted`].
+async fn write_script(
+    ts: &TestServer,
+    tools: &ClaxTools,
+    aids: &[String],
+    m: &mut Minted,
+) -> Value {
+    let artifact = |title: &str| fixture_id(ts, "SELECT id FROM artifacts WHERE title = ?1", title);
+    let question = |header: &str| {
+        fixture_id(
+            ts,
+            "SELECT id FROM questions WHERE questions_json LIKE ?1",
+            &format!("%\"header\":\"{header}\"%"),
+        )
+    };
+    let launch = artifact("Launch Plan");
+    let review = artifact("Quarterly Review");
+    let tracker = artifact("Team Tracker");
+    let mia = thread_by_text(ts, "The Q3 number looks off; finance has 3.9M.");
+    let lede = thread_by_text(ts, "Say \"year on year\" here.");
+    let asset = m.scratch.path().join("work/chart.svg");
+    std::fs::write(
+        &asset,
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"/>",
+    )
+    .unwrap();
+    let asset = asset.display().to_string();
+
+    let mut out = Vec::new();
+    macro_rules! call {
+        ($tool:ident, $args:expr) => {{
+            let a: Value = $args;
+            let r = tool_value(tools.$tool(args(a.clone())).await);
+            out.push(json!({"tool": stringify!($tool), "args": a, "result": r.clone()}));
+            r
+        }};
+    }
+    for aid in aids {
+        call!(comments_read, json!({"url_or_id": aid}));
+    }
+    call!(
+        working,
+        json!({"url_or_id": review, "thread_ids": [mia], "message": "Checking the Q3 figures"})
+    );
+    call!(
+        comments_reply,
+        json!({"url_or_id": review, "thread_id": mia,
+            "text": "Finance is right: Q3 is 3.9M. I will fix the table."})
+    );
+    call!(
+        comments_reply,
+        json!({"url_or_id": review, "thread_id": mia, "text": "Fixed.", "addressed": true})
+    );
+    call!(
+        comments_resolve,
+        json!({"url_or_id": review, "thread_id": lede})
+    );
+    call!(watch, json!({"url_or_id": launch, "on": false}));
+    call!(watch, json!({"url_or_id": launch, "on": true}));
+    call!(
+        publish,
+        json!({"id": review, "if_version": 2, "html": REVIEW_V3, "note": "Q3 figure fixed",
+            "label": "Q3 fix", "addresses": [mia]})
+    );
+    call!(
+        publish,
+        json!({"id": review, "if_version": 1, "html": REVIEW_V3, "note": "Stale"})
+    );
+    call!(publish, json!({"html": "<p>No title</p>"}));
+    let created = call!(
+        publish,
+        json!({"html": NOTES_V1, "description": "What changed in v2", "icon": "notes",
+            "files": {"style.css": {"content": "main { max-width: 40rem; }"}}})
+    );
+    let notes = created["content"][0]["artifact_id"]
+        .as_str()
+        .expect("the create's artifact ID")
+        .to_string();
+    call!(
+        publish,
+        json!({"id": notes, "if_version": 1, "html": NOTES_V2, "note": "Dated the release",
+            "files": {"style.css": null}})
+    );
+    call!(
+        asset_upload,
+        json!({"url_or_id": review, "file_path": asset})
+    );
+    call!(pin, json!({"url_or_id": review}));
+    call!(unpin, json!({"url_or_id": review}));
+    call!(open, json!({"url_or_id": review}));
+    call!(
+        db_get,
+        json!({"url_or_id": tracker, "collection": "tasks", "doc_id": "t1"})
+    );
+    call!(
+        db_query,
+        json!({"url_or_id": tracker, "collection": "tasks",
+            "query": {"where": [["done", "==", false]], "order_by": {"field": "title"}}})
+    );
+    call!(
+        db_set,
+        json!({"url_or_id": tracker, "collection": "tasks", "doc_id": "t4",
+            "data": {"title": "Record the demo", "done": false}})
+    );
+    call!(
+        db_update,
+        json!({"url_or_id": tracker, "collection": "tasks", "doc_id": "t3",
+            "data": {"done": true}, "if_version": 4})
+    );
+    call!(
+        db_update,
+        json!({"url_or_id": tracker, "collection": "tasks", "doc_id": "t1",
+            "data": {"done": true}, "if_version": 2})
+    );
+    call!(
+        db_str_replace,
+        json!({"url_or_id": tracker, "collection": "tasks", "doc_id": "t1",
+            "field": "title", "old_str": "v2", "new_str": "version 2", "if_version": 1})
+    );
+    call!(
+        db_batch,
+        json!({"url_or_id": tracker, "writes": [
+            {"op": "set", "collection": "notes", "doc_id": "n2", "data": {"text": "Bring the slides."}},
+            {"op": "update", "collection": "notes", "doc_id": "n1", "data": {"text": "Demo on Friday at 11."}, "if_version": 3}
+        ]})
+    );
+    call!(
+        db_delete,
+        json!({"url_or_id": tracker, "collection": "tasks", "doc_id": "t2", "if_version": 2})
+    );
+    call!(
+        ask,
+        json!({"question_id": question("Chart"), "timeout_s": 1})
+    );
+    call!(
+        ask,
+        json!({"question_id": question("Colour"), "timeout_s": 1})
+    );
+    call!(
+        ask,
+        json!({"question_id": question("Date"), "cancel": true})
+    );
+    call!(working, json!({"url_or_id": review, "done": true}));
+    call!(
+        comments_read,
+        json!({"url_or_id": review, "thread_id": mia})
+    );
+    call!(delete, json!({"url_or_id": launch}));
+    m.artifact_ids = artifact_ids(ts)
+        .into_iter()
+        .filter(|id| !aids.contains(id))
+        .collect();
+    Value::Array(out)
+}
+
+/// Every artifact ID in the daemon's database, deleted ones included, in
+/// order.
+fn artifact_ids(ts: &TestServer) -> Vec<String> {
+    let c = rusqlite::Connection::open_with_flags(
+        ts.home.db_path(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let mut st = c.prepare("SELECT id FROM artifacts ORDER BY id").unwrap();
+    st.query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
 }
 
 /// The collections of `aid`'s page database, in order.
@@ -489,6 +706,9 @@ fn newest_ulid_ms(text: &str) -> u64 {
 ///   becomes `"<minted>"` (null stays null);
 /// - every ULID newer than the fixture's newest becomes `<ulid:N>`, numbered
 ///   by first appearance, in values and in keys;
+/// - every artifact ID the collection minted (a create's random ID) becomes
+///   `<artifact:N>`, numbered by first appearance, wherever it appears: in
+///   values and keys, inside URLs and paths;
 /// - `127.0.0.1:<port>` and `localhost:<port>` lose the test daemon's port
 ///   (`:<port>`), and the temporary home's path becomes `<home>`;
 /// - each client working directory becomes `<cwd>`, each client executable
@@ -527,6 +747,15 @@ pub fn normalise_minted(mut value: Value) -> Value {
         pids,
         after_ms: minted["ulids_after_ms"].as_u64().unwrap(),
         ulids: Vec::new(),
+        minted_artifacts: minted["artifact_ids"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        artifacts: Vec::new(),
     };
     n.value(None, value)
 }
@@ -537,6 +766,10 @@ struct Normaliser {
     after_ms: u64,
     /// Minted ULIDs in order of first appearance.
     ulids: Vec<String>,
+    /// The artifact IDs the collection minted.
+    minted_artifacts: Vec<String>,
+    /// Those of them seen so far, in order of first appearance.
+    artifacts: Vec<String>,
 }
 
 impl Normaliser {
@@ -568,6 +801,36 @@ impl Normaliser {
         }
     }
 
+    /// `s` with each minted artifact ID replaced by `<artifact:N>`, numbered
+    /// by first appearance.
+    fn artifact_ids(&mut self, s: String) -> String {
+        let mut found: Vec<(usize, usize)> = Vec::new();
+        for (i, id) in self.minted_artifacts.iter().enumerate() {
+            found.extend(s.match_indices(id.as_str()).map(|(at, _)| (at, i)));
+        }
+        if found.is_empty() {
+            return s;
+        }
+        found.sort();
+        let mut out = String::with_capacity(s.len());
+        let mut last = 0;
+        for (at, i) in found {
+            let id = &self.minted_artifacts[i];
+            let n = match self.artifacts.iter().position(|x| x == id) {
+                Some(k) => k + 1,
+                None => {
+                    self.artifacts.push(id.clone());
+                    self.artifacts.len()
+                }
+            };
+            out.push_str(&s[last..at]);
+            out.push_str(&format!("<artifact:{n}>"));
+            last = at + id.len();
+        }
+        out.push_str(&s[last..]);
+        out
+    }
+
     fn text(&mut self, s: &str) -> String {
         let mut out = String::with_capacity(s.len());
         let mut last = 0;
@@ -586,6 +849,7 @@ impl Normaliser {
             }
         }
         out.push_str(&s[last..]);
+        out = self.artifact_ids(out);
         for (from, to) in &self.texts {
             if out.contains(from.as_str()) {
                 out = out.replace(from.as_str(), to);
@@ -632,7 +896,11 @@ fn normalise_minted_replaces_only_the_listed_values() {
             "cwds": ["/tmp/s/work"],
             "exes": ["/tmp/t/deps/golden-1"],
             "ulids_after_ms": ulid_ms(old).unwrap(),
+            "artifact_ids": ["zzzzyyyyxxxx", "ccccdddd0000"],
         },
+        "a_made": "http://localhost:51234/a/zzzzyyyyxxxx/v/2",
+        "a_other": "ccccdddd0000 then zzzzyyyyxxxx, not abcdabcdabcd",
+        "ccccdddd0000": "/tmp/x/ax/artifacts/ccccdddd0000/index.html",
         "created_at": "2026-09-14T10:00:00.000Z",
         "ended_at": null,
         "since": "x",
@@ -652,6 +920,9 @@ fn normalise_minted_replaces_only_the_listed_values() {
     assert_eq!(
         normalise_minted(v),
         json!({
+            "a_made": "http://localhost:<port>/a/<artifact:1>/v/2",
+            "a_other": "<artifact:2> then <artifact:1>, not abcdabcdabcd",
+            "<artifact:2>": "<home>/artifacts/<artifact:2>/index.html",
             "created_at": "<minted>",
             "ended_at": null,
             "since": "<minted>",
@@ -1001,6 +1272,19 @@ const REVIEW_V1: &str = "<!doctype html><html><head><title>Quarterly Review</tit
 <link rel=stylesheet href=style.css></head><body><main><h2>Quarterly goals</h2>\
 <p class=lede>Revenue grew 12% on Q2.</p><table><tr><td>Q3</td><td>4.1M</td></tr></table>\
 </main></body></html>";
+/// Release Notes v1 and v2, created and updated by the collector's write
+/// script.
+const NOTES_V1: &str = "<!doctype html><html><head><title>Release Notes</title>\
+<link rel=stylesheet href=style.css></head><body><main><h1>Release Notes</h1>\
+<p>Version 2 ships the sticky header.</p></main></body></html>";
+const NOTES_V2: &str = "<!doctype html><html><head><title>Release Notes</title></head>\
+<body><main><h1>Release Notes</h1><p>Version 2 ships the sticky header on 1 October.</p>\
+</main></body></html>";
+/// Quarterly Review v3, published by the collector's write script.
+const REVIEW_V3: &str = "<!doctype html><html><head><title>Quarterly Review</title>\
+<link rel=stylesheet href=style.css></head><body><header class=sticky>Quarterly Review</header>\
+<main><h2>Quarterly goals</h2><p class=lede>Revenue grew 12% on Q2.</p>\
+<table><tr><td>Q3</td><td>3.9M</td></tr></table></main></body></html>";
 const REVIEW_V2: &str = "<!doctype html><html><head><title>Quarterly Review</title>\
 <link rel=stylesheet href=style.css></head><body><header class=sticky>Quarterly Review</header>\
 <main><h2>Quarterly goals</h2><p class=lede>Revenue grew 12% on Q2.</p>\

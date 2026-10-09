@@ -109,6 +109,8 @@ scripts/perf-daemon.py, perf-daemon-budget.json baseline phase, two-person seed,
 docs/contract.md                                People, grants, rights, the route table, visibility, names, ownership
 ```
 
+Each new file in a crate's `tests/` is a module of that crate's `integration` test binary (`mod <name>;` in `tests/integration.rs`; `autotests = false`, and `every_test_file_is_a_module` fails on an undeclared file); one test file runs with `cargo test -p <crate> --test integration <name>`.
+
 ---
 
 ### Task 0: An injectable clock, the golden collector and the single-owner golden
@@ -117,12 +119,12 @@ Spec §19 (the golden test). This is the branch's first code commit and changes 
 
 **Files:**
 - Modify: `crates/clax-core/src/store/mod.rs` (`Store` holds an `Arc<dyn Clock>`, the `working::Clock` trait, defaulting to `SystemClock`; `Store::now()` reads it; `Store::open_with_clock`), `crates/clax-core/src/store/sessions.rs` (`register_session` and the reaper take time from the store's clock instead of `chrono::Utc::now()`), every other `chrono::Utc::now()` in `clax-core/src/store/` likewise, `crates/clax-server/src/testing.rs` (`TestServer::from_fixture_with_clock(sql, at)`)
-- Create: `crates/clax-server/tests/golden_single_owner.rs` (`collect_agent_outputs(ts, tier)`, `normalise_minted(value)`, an ignored `write_golden` test), `crates/clax-server/tests/fixtures/single-owner-21.sql`, `crates/clax-server/tests/fixtures/single-owner-21.golden.json`
+- Create: `crates/clax-server/tests/golden_single_owner.rs` (`collect_agent_outputs(ts, tier)`, `normalise_minted(value)`, an ignored `write_golden` test; declared as `mod golden_single_owner;` in `tests/integration.rs`), `crates/clax-server/tests/fixtures/single-owner-21.sql`, `crates/clax-server/tests/fixtures/single-owner-21.golden.json`
 
-**Interfaces (produces):** `Store::open_with_clock(home, clock)`, `TestServer::from_fixture_with_clock`, `collect_agent_outputs(&TestServer, Tier) -> Value` (comments_read of every thread, read, list, versions, docs, roster, the tier's payload, notices, each through the real client for its channel where one exists: the hook binary for stop and prompt, `clax feedback follow` for notices), `normalise_minted(Value) -> Value` (by an explicit list: keys `*_at`, `since`, `waited_s`; ULIDs newer than the fixture; the test server's base URL and port; the temporary home's path, as in `clip_path`; client PIDs and working directories).
+**Interfaces (produces):** `Store::open_with_clock(home, clock)`, `TestServer::from_fixture_with_clock`, `collect_agent_outputs(&TestServer, Tier) -> Value` (comments_read of every thread and in its default view, read, list, versions, docs, roster, the tier's payload, notices, the artifact listing, detail and threads bodies the Pi extension renders, then a fixed script of every other MCP tool, writes included, each through the real client for its channel where one exists: the hook binary for stop and prompt, `clax feedback follow` for notices), `normalise_minted(Value) -> Value` (by an explicit list: keys `*_at`, `since`, `waited_s`; ULIDs newer than the fixture; artifact IDs minted during collection, as `<artifact:N>` in first-seen order; the test server's base URL and port; the temporary home's path, as in `clip_path`; client PIDs, working directories and executables).
 
 - [ ] **Step 1: Write the failing test** — `store_time_comes_from_the_injected_clock` (a `ManualClock` fixes `created_at`, `started_at` and `last_seen_at` of a registered session and a thread).
-- [ ] **Step 2:** fails. **Step 3:** inject the clock; build the fixture (pre-migration-12 unattributed comments, anonymous and named LAN viewers, `via_page` comments and documents from the owner's browser, feedback in every state, questions, inbox, one live agent); write the collector; run `cargo test -p clax-server --test golden_single_owner -- --ignored --exact write_golden` to write the golden, one entry per tier, each on a fresh copy of the fixture under the fixed clock.
+- [ ] **Step 2:** fails. **Step 3:** inject the clock; build the fixture (pre-migration-12 unattributed comments, anonymous and named LAN viewers, `via_page` comments and documents from the owner's browser, feedback in every state, questions, inbox, one live agent); write the collector; run `cargo test -p clax-server --test integration -- --ignored --exact golden_single_owner::write_golden` to write the golden, one entry per tier, each on a fresh copy of the fixture under the fixed clock.
 - [ ] **Step 4:** `scripts/quality_gates.sh` unchanged and green; running `write_golden` twice (two servers, two ports, two homes) gives identical files.
 
 **Regeneration.** If main moves before this branch merges, rebase Task 0 onto the new main and run `write_golden` there, before any later task, and commit the new golden with that rebased commit. That is the only time the golden is ever regenerated; every later task compares against it.
@@ -447,7 +449,7 @@ async fn grant_routes_are_signed() {
 }
 ```
 
-- [ ] **Steps 2–4:** fail, implement, pass (`cargo test -p clax-server --test api_grants`, then the whole crate).
+- [ ] **Steps 2–4:** fail, implement, pass (`cargo test -p clax-server --test integration api_grants`, then the whole crate).
 - [ ] **Step 5: Commit** — `"Add the GNAP grant flow: invites, user-code requests for new people, continuation and revocation"`
 
 ---
