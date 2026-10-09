@@ -1385,9 +1385,13 @@ browser, feedback in every state, and one live agent. It collects every
 agent-facing output per tier on a fresh copy of the fixture under a fixed
 clock. It normalises two things, each by an explicit list: values minted
 during collection or by the test environment (keys `*_at`, `since`,
-`waited_s`; ULIDs newer than the fixture; the test server's base URL and
+`waited_s`; ULIDs newer than the fixture; artifact IDs minted during
+collection (a create's random ID), as numbered placeholders in
+first-seen order, like the ULIDs, wherever they appear (IDs, URLs and
+paths); the test server's base URL and
 port; the temporary home's path, as in `clip_path`; client PIDs and
-working directories), and §19's expected changes (item 6's fields, item 1's
+working directories, and client executables (the test binary that
+answers MCP `status`)), and §19's expected changes (item 6's fields, item 1's
 names, item 7's suffix), which it expects rather than ignores. Text
 payloads are compared exactly otherwise. The golden is produced on this
 branch at Task 0's commit, which adds only an injectable clock (the
