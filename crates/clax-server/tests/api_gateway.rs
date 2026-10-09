@@ -282,6 +282,7 @@ async fn everything_else_is_refused() {
         (Method::GET, format!("/c/{aid}/v/1/"), 403),
         (Method::GET, format!("/a/{aid}"), 403),
         (Method::GET, "/mcp".to_string(), 403),
+        (Method::POST, "/api/admin/perf/calibrate".to_string(), 403),
         (Method::GET, "/api/live/pages/".to_string(), 403),
         (Method::GET, format!("/api/artifacts/{hid}"), 404),
         (Method::GET, format!("/api/artifacts/{hid}/threads"), 404),

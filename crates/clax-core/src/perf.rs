@@ -1,12 +1,13 @@
 //! The calibration read of the daemon latency gate (`scripts/perf-daemon.py`):
-//! a fixed SQLite read on a private database that Clax's schema and queries
-//! cannot move, through the same bundled SQLite and build flags as the
-//! store. The gate times it between the gallery requests and judges each
-//! request as a ratio to it, which leaves out the machine's speed and load.
+//! a fixed SQLite read on a private in-memory database that Clax's schema
+//! and queries cannot move, through the same bundled SQLite and build flags
+//! as the store. The daemon runs it on a store worker
+//! (`POST /api/admin/perf/calibrate`), and the gate times it between the
+//! gallery requests and judges each request as a ratio to it, which leaves
+//! out the machine's speed and load.
 
 use crate::Result;
 use rusqlite::{Connection, params};
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// Threads in the calibration database.
@@ -28,23 +29,17 @@ pub struct Calibration {
 }
 
 impl Calibration {
-    /// Creates the database at `path` with [`THREADS`] threads of
+    /// Creates the database in memory with [`THREADS`] threads of
     /// [`PER_THREAD`] comments, the same rows on every machine, and runs the
-    /// read once to warm the page cache. The page cache holds the whole
-    /// database and temporary B-trees stay in memory, so the read costs
-    /// memory and CPU only.
+    /// read once. The database and temporary B-trees stay in memory, so the
+    /// read costs memory and CPU only.
     ///
     /// # Errors
-    /// When anything, a symbolic link included, is at `path` already: the
-    /// path is claimed with an exclusive create before SQLite opens it.
-    pub fn create(path: &Path) -> Result<Calibration> {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)?;
-        let mut conn = Connection::open(path)?;
+    /// SQLite's.
+    pub fn create() -> Result<Calibration> {
+        let mut conn = Connection::open_in_memory()?;
         conn.execute_batch(
-            "PRAGMA cache_size=-16000; PRAGMA temp_store=MEMORY;
+            "PRAGMA temp_store=MEMORY;
              CREATE TABLE t (id TEXT PRIMARY KEY, grp INTEGER NOT NULL, created TEXT NOT NULL);
              CREATE TABLE c (id INTEGER PRIMARY KEY, tid TEXT NOT NULL, author TEXT,
                              created TEXT NOT NULL, body TEXT NOT NULL);
@@ -101,8 +96,7 @@ mod tests {
     /// measuring them again.
     #[test]
     fn the_workload_is_the_one_the_budgets_were_measured_on() {
-        let dir = tempfile::tempdir().unwrap();
-        let cal = Calibration::create(&dir.path().join("cal.db")).unwrap();
+        let cal = Calibration::create().unwrap();
         let got: (i64, i64, String) = cal
             .conn
             .query_row(QUERY, [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
@@ -114,21 +108,5 @@ mod tests {
             .unwrap();
         assert_eq!(pages, 463);
         cal.run().unwrap();
-    }
-
-    #[test]
-    fn create_refuses_an_existing_path_and_a_dangling_link() {
-        let dir = tempfile::tempdir().unwrap();
-        let taken = dir.path().join("taken.db");
-        std::fs::write(&taken, b"keep").unwrap();
-        assert!(Calibration::create(&taken).is_err());
-        assert_eq!(std::fs::read(&taken).unwrap(), b"keep");
-        #[cfg(unix)]
-        {
-            let link = dir.path().join("link.db");
-            std::os::unix::fs::symlink(dir.path().join("absent.db"), &link).unwrap();
-            assert!(Calibration::create(&link).is_err());
-            assert!(!dir.path().join("absent.db").exists());
-        }
     }
 }

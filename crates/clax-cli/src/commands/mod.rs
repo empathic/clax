@@ -15,7 +15,6 @@ pub mod list;
 pub mod mcp;
 pub mod native_host;
 pub mod open;
-pub mod perf_calibrate;
 pub mod pin;
 pub mod publish;
 pub mod read;

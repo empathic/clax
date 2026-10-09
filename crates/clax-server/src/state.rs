@@ -66,4 +66,7 @@ pub struct AppState {
     pub question_clock: Arc<dyn clax_core::working::Clock>,
     /// `[questions] terminal_after_s`, read when the daemon starts.
     pub terminal_after_s: u64,
+    /// The latency gate's calibration database, built on first use
+    /// ([`crate::routes::perf`]).
+    pub calibration: crate::routes::perf::Slot,
 }
