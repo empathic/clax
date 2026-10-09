@@ -120,6 +120,7 @@ impl TestServer {
             question_sleeper: Arc::new(crate::questions::TokioSleeper),
             question_clock: Arc::new(clax_core::working::SystemClock),
             terminal_after_s: clax_core::config::TERMINAL_AFTER_S,
+            calibration: Arc::default(),
         };
         f(&mut state);
         state.stream.listen(&state.events);

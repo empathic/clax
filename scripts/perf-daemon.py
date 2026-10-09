@@ -34,24 +34,34 @@ it. Requests still in flight when a window closes are waited for and count.
 Budgets live in scripts/perf-daemon-budget.json:
 - `cheap_p95_ms`, `cheap_max_ms`: every probe under every load;
 - `list_alone_ratio`, `attention_alone_ratio`: the gallery list and the
-  attention request alone, each as its fastest sample over the fastest
-  calibration read of the same round (15 samples each), judged on the
+  attention request alone, each as its fastest round trip over the fastest
+  calibration round trip of the same round (15 samples each), judged on the
   median over rounds and not scaled. The calibration is a fixed SQLite read
-  on a private database that `clax perf-calibrate` runs through the
-  binary's own bundled SQLite, timed between the requests; it carries the
+  on a private in-memory database that the daemon under test runs on one of
+  its store workers, in the bulk lane as the two requests are
+  (POST /api/admin/perf/calibrate), timed between the requests: it shares
+  their process, worker threads, SQLite and HTTP path and carries the
   machine's speed and its other work, so the ratio stays about the same
-  under load. A ratio over budget is measured once more at once and fails
-  only if over again. The budgets are 1.4 times the largest ratios
-  measured (list x2.62, attention x1.20, on an M-series Mac, quiet and
-  under 12 and 24 CPU burners), and twice the smallest (x2.21, x1.02) is
-  over them, so a request that gets twice as slow fails even when the
+  under load. (Run in a separate process, as it once was, macOS put it on
+  slower cores under load while the daemon kept faster ones, and a doubled
+  list passed.) The read's own time inside the daemon is printed too; the
+  ratio over it varied more between runs. A ratio over budget is measured
+  once more at once and fails only if over again. The budgets are 1.4
+  times the largest ratios measured in 27 quick runs (list x2.55,
+  attention x1.11, on an M-series Mac with 12 cores, nine runs each quiet
+  and under 12 and 24 CPU burners), and twice the smallest (x2.07, x0.96)
+  is over them, so a request that gets twice as slow fails even when the
   queued limits below, which follow the galleries' own latency, would let
-  it pass (injected, doubling the list's or the attention's store work:
-  list x3.98-4.19, attention x1.94-2.33, each failed and confirmed). They
-  come from one macOS machine; each run prints a NOTE: line with its
-  platform, the calibration's time and every round's ratios, which
-  quality_gates.sh shows even when the gate passes, to re-derive them from
-  CI's log;
+  it pass. Injected, doubling the list's store work gave x3.61-x3.98 and
+  doubling the attention's x1.75-x2.59 under all three loads: 55 of 57
+  such runs were over budget. The two that were not (list, 12 burners,
+  x3.49 and x2.76) ran their calibration 1.3 and 1.8 times slower than
+  usual for most of the daemon's life, which lowers both ratios; so did 2
+  of 36 control runs (the lowest at x1.74, under half the list budget).
+  The budgets come from one macOS machine; each run prints a NOTE: line
+  with its platform, the calibration's times (round trip and inside the
+  daemon) and every round's ratios over both, which quality_gates.sh shows
+  even when the gate passes, to re-derive them from CI's log;
 - `alone_ceiling_ms`: the two requests' fastest times, scaled as below: a
   guard against a broken calibration;
 - `inbox_alone_ms`: each of the inbox tab's three requests alone: the
@@ -90,7 +100,6 @@ import math
 import os
 import platform
 import re
-import select
 import shutil
 import signal
 import socket
@@ -668,90 +677,60 @@ GALLERY_REQUESTS = [("/api/artifacts", "list_alone_ratio"), ("/api/viewers/me/at
 
 
 class Calibration:
-    """The calibration read, run by `clax perf-calibrate` (hidden) from the
-    binary under test, so it goes through the daemon's bundled SQLite and
-    build flags: a fixed read on a private database that clax's schema and
-    code cannot move (clax_core::perf: 3,000 "threads" of 4 "comments", the
-    same rows on every machine, two correlated index lookups per thread,
-    shaped like the attention query; about 3.2 ms on an M-series Mac).
+    """The calibration read, run by the daemon under test on one of its
+    store workers (POST /api/admin/perf/calibrate, the token only), so it
+    shares the daemon's process, worker threads, bundled SQLite and HTTP
+    path with the gallery requests: a fixed read on a private in-memory
+    database that clax's schema and code cannot move (clax_core::perf:
+    3,000 "threads" of 4 "comments", the same rows on every machine, two
+    correlated index lookups per thread, shaped like the attention query).
     Timed between the gallery requests, it shows what this machine's speed
-    and its other work make of a read of that kind just then. The process
-    stays up; each line written to it runs the read once."""
+    and its other work make of a read of that kind just then. The daemon
+    builds the database on the first call."""
 
-    READY_S = 30  # creating the database
-    RUN_S = 10  # one read
+    PATH = "/api/admin/perf/calibrate"
 
-    def __init__(self, binary, scratch):
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAX_", "CLAUDE_"))}
-        # The command opens no home; the binary resolves one before any
-        # command runs, so it is named, and never created.
-        env.update(CLAX_HOME=os.path.join(scratch, "calibration-home"))
-        self.p = subprocess.Popen([binary, "perf-calibrate", os.path.join(scratch, "calibration.db")],
-                                  env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-        try:
-            expect(self.reply(self.READY_S).get("ready") is True, "clax perf-calibrate did not say it is ready")
-        except BaseException:
-            # The caller never gets a Calibration to close: stop it here.
-            self.kill()
-            raise
-
-    def reply(self, timeout):
-        """The calibrator's next line, as JSON. One request is in flight and
-        each reply is one flushed line, so the pipe's own buffer is empty
-        while `select` waits on the descriptor. Any failure (no line within
-        `timeout` seconds, an ended process, a line that is not the
-        protocol's) stops the process and is a SetupError."""
-        try:
-            ready, _, _ = select.select([self.p.stdout], [], [], timeout)
-            if not ready:
-                raise SetupError(f"clax perf-calibrate gave no answer within {timeout} s")
-            line = self.p.stdout.readline()
-            if not line:
-                raise SetupError(f"clax perf-calibrate stopped: exit {self.p.poll()}")
-            return json.loads(line)
-        except SetupError:
-            self.kill()
-            raise
-        except (OSError, ValueError) as e:
-            self.kill()
-            raise SetupError(f"clax perf-calibrate failed: {e!r}") from e
+    def __init__(self, d):
+        self.c = Client(d.port, d.token)
+        self.run()  # builds the database
 
     def run(self):
+        """One read: (the round trip, the read's own time inside the
+        daemon), in ms."""
         try:
-            self.p.stdin.write("run\n")
-            self.p.stdin.flush()
+            s, body, dt, _ = self.c.req("POST", self.PATH, body={})
         except OSError as e:
-            self.kill()
-            raise SetupError(f"clax perf-calibrate stopped: exit {self.p.poll()}") from e
-        ms = self.reply(self.RUN_S).get("ms")
-        if not isinstance(ms, (int, float)):
-            self.kill()
-            raise SetupError(f"clax perf-calibrate answered without a time: {ms!r}")
-        return ms
-
-    def kill(self):
-        if self.p.poll() is None:
-            self.p.kill()
+            raise SetupError(f"POST {self.PATH} failed: {e!r}") from e
+        expect(s == 200, f"POST {self.PATH}: {s} {body[:200]!r}")
         try:
-            self.p.wait(5)
-        except subprocess.TimeoutExpired:
-            pass
+            ms = json.loads(body)["ms"]
+        except (ValueError, KeyError, TypeError) as e:
+            raise SetupError(f"POST {self.PATH} answered without a time: {body[:200]!r}") from e
+        expect(isinstance(ms, (int, float)) and ms > 0, f"POST {self.PATH} answered {ms!r}")
+        return dt * 1000, ms
 
     def close(self):
-        if self.p.poll() is None:
-            self.p.stdin.close()
-            try:
-                self.p.wait(5)
-            except subprocess.TimeoutExpired:
-                self.p.kill()
-                self.p.wait(5)
+        self.c.close()
+
+
+class Alone:
+    """One round of one gallery request alone: its fastest round trip, and
+    the fastest calibration, as a round trip and as the read's own time
+    inside the daemon. The gate judges `ratio`, round trip over round trip:
+    the gallery request is timed as a round trip too, so both carry the
+    same HTTP path, and the ratio leaves it out with the machine's speed."""
+
+    def __init__(self, ms, cal_trip, cal_inside):
+        self.ms, self.cal_trip, self.cal_inside = ms, cal_trip, cal_inside
+        self.ratio = ms / cal_trip
+        self.ratio_inside = ms / cal_inside
 
 
 def gallery_alone(d, st, cal, n=GALLERY_SAMPLES):
     """Each of a gallery load's two requests alone (the seed viewer, with
     the token, as the galleries send them), interleaved with the
     calibration read: calibration, list, calibration, attention, `n` times.
-    Returns {path: (its fastest ms, that over the fastest calibration)}.
+    Returns {path: Alone}.
     The fastest samples are the reads' own cost with the least of the
     machine's other work in them, and load in between hits both of an
     interleaved pair, so the ratio leaves out the machine's speed and load."""
@@ -760,15 +739,17 @@ def gallery_alone(d, st, cal, n=GALLERY_SAMPLES):
     for path, _ in GALLERY_REQUESTS:
         c.req("GET", path, headers=ck)  # warm-up
     ts = {path: [] for path, _ in GALLERY_REQUESTS}
-    cals = []
+    trips, inside = [], []
     for _ in range(n):
         for path, _ in GALLERY_REQUESTS:
-            cals.append(cal.run())
+            trip, own = cal.run()
+            trips.append(trip)
+            inside.append(own)
             s, _, dt, _ = c.req("GET", path, headers=ck)
             expect(s == 200, f"{path}: {s}")
             ts[path].append(dt * 1000)
     c.close()
-    return {path: (min(xs), min(xs) / min(cals)) for path, xs in ts.items()}
+    return {path: Alone(min(xs), min(trips), min(inside)) for path, xs in ts.items()}
 
 
 INBOX_SAMPLES = 7
@@ -810,7 +791,7 @@ def main(binary, budget_path, quick):
         print(f"seeded the inbox: {seed_cfg['inbox_replies']} agent replies on {st['inbox_threads']} owner threads, "
               f"{st['inbox_versions']} versions, {seed_cfg['inbox_questions']} questions: "
               f"{st['inbox_unread']} unread items in {st['inbox_seconds']:.1f} s", flush=True)
-        cal = Calibration(binary, scratch)
+        cal = Calibration(d)
         loads = Loads(d.port, d.token, st)
         rounds, window = cfg["rounds"], cfg["window_s"]
         per = {name: {label: [] for label in CHEAP} for name, _ in PHASES}
@@ -834,18 +815,19 @@ def main(binary, budget_path, quick):
                     per[name][label].append(res[label])
                 infos[name].append(info)
             calib = next(iter(gallery_each.values()))
-            print(f"round {r + 1}/{rounds}: {time.perf_counter() - t0:.1f} s, calibration {calib[0] / calib[1]:.2f} ms, gallery alone "
-                  + ", ".join(f"{p} {ms:.1f} ms (x{q:.2f})" for p, (ms, q) in gallery_each.items()) + "; inbox alone " + ", ".join(f"{p} {v:.1f} ms" for p, v in inbox_each.items()),
+            print(f"round {r + 1}/{rounds}: {time.perf_counter() - t0:.1f} s, calibration {calib.cal_trip:.2f} ms "
+                  f"({calib.cal_inside:.2f} ms inside the daemon), gallery alone "
+                  + ", ".join(f"{p} {a.ms:.1f} ms (x{a.ratio:.2f})" for p, a in gallery_each.items()) + "; inbox alone " + ", ".join(f"{p} {v:.1f} ms" for p, v in inbox_each.items()),
                   flush=True)
         # A ratio over its budget is measured once more, at once: a real
         # regression is over again, a burst of the machine's other work
         # most likely not.
         over = [path for path, key in GALLERY_REQUESTS
-                if statistics.median(q for _, q in gallery[path]) > cfg[key]]
+                if statistics.median(a.ratio for a in gallery[path]) > cfg[key]]
         confirm = gallery_alone(d, st, cal) if over else {}
         if over:
             print("gallery alone over budget, measured again: "
-                  + ", ".join(f"{p} {ms:.1f} ms (x{q:.2f})" for p, (ms, q) in confirm.items()), flush=True)
+                  + ", ".join(f"{p} {a.ms:.1f} ms (x{a.ratio:.2f})" for p, a in confirm.items()), flush=True)
     except SetupError as e:
         print(f"perf-daemon: setup failed: {e}", file=sys.stderr)
         if d is not None:
@@ -910,12 +892,14 @@ def main(binary, budget_path, quick):
     # which quality_gates.sh shows even when the gate passes (CI's log).
     first = GALLERY_REQUESTS[0][0]
     print(f"NOTE: gallery alone on {platform.platform()}, {os.cpu_count()} CPUs: calibration per round "
-          + ", ".join(f"{ms / q:.2f}" for ms, q in gallery[first]) + " ms; ratios per round "
-          + "; ".join(f"{p} " + ", ".join(f"x{q:.2f}" for _, q in gallery[p]) + f" (budget x{cfg[k]})"
+          + ", ".join(f"{a.cal_trip:.2f}" for a in gallery[first]) + " ms ("
+          + ", ".join(f"{a.cal_inside:.2f}" for a in gallery[first]) + " ms inside the daemon); ratios per round "
+          + "; ".join(f"{p} " + ", ".join(f"x{a.ratio:.2f}" for a in gallery[p]) + f" (budget x{cfg[k]}; over the time inside "
+                      + ", ".join(f"x{a.ratio_inside:.2f}" for a in gallery[p]) + ")"
                       for p, k in GALLERY_REQUESTS))
     for path, key in GALLERY_REQUESTS:
-        ms, q = med(x[0] for x in gallery[path]), med(x[1] for x in gallery[path])
-        over = q > cfg[key] and confirm[path][1] > cfg[key]
+        ms, q = med(a.ms for a in gallery[path]), med(a.ratio for a in gallery[path])
+        over = q > cfg[key] and confirm[path].ratio > cfg[key]
         ok = not over and ms <= ceiling
         if not ok:
             failed.append(f"gallery alone {path}")

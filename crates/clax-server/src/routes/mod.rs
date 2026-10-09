@@ -9,6 +9,7 @@ pub mod health;
 pub mod inbox;
 pub mod live;
 pub mod mcp;
+pub mod perf;
 pub mod questions;
 pub mod room;
 pub mod sample;
@@ -223,6 +224,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route("/api/artifacts/{aid}/docs:acquire", post(docs::acquire))
         .route("/api/artifacts/{aid}/working", get(working::for_artifact))
         .route("/api/artifacts/{aid}/presence", get(artifacts::presence))
+        .route("/api/admin/perf/calibrate", post(perf::calibrate))
         .route("/api/sessions/{id}/working", get(working::for_session))
         .route("/api/sessions/{id}/working/renew", post(working::renew))
         .route("/api/sessions/{id}/working/end", post(working::end))
@@ -514,6 +516,7 @@ mod l10 {
         ("shell::static_file", NoArtifact),
         ("health::healthz", NoArtifact),
         ("assets::blob", SeesLive),
+        ("perf::calibrate", Token),
     ];
 
     /// Routes whose handler is not a module function, and why they are safe.
@@ -541,6 +544,7 @@ mod l10 {
             "health" => include_str!("health.rs"),
             "inbox" => include_str!("inbox.rs"),
             "live" => include_str!("live.rs"),
+            "perf" => include_str!("perf.rs"),
             "questions" => include_str!("questions.rs"),
             "room" => include_str!("room.rs"),
             "sample" => include_str!("sample.rs"),
