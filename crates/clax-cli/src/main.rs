@@ -141,6 +141,9 @@ pub enum Cmd {
     /// The Chrome native messaging host for the Clax extension (Chrome runs it).
     #[command(hide = true)]
     NativeHost(commands::native_host::Args),
+    /// The daemon latency gate's calibration read (scripts/perf-daemon.py runs it).
+    #[command(hide = true)]
+    PerfCalibrate(commands::perf_calibrate::Args),
 }
 
 impl Cli {
@@ -293,6 +296,7 @@ fn main() {
         Cmd::Extension(c) => commands::extension::run(&cli, &home, c),
         Cmd::Haiku => commands::haiku::run(&cli),
         Cmd::NativeHost(a) => commands::native_host::run(&cli, &home, a),
+        Cmd::PerfCalibrate(a) => commands::perf_calibrate::run(a),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");
