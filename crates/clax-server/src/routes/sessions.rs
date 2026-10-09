@@ -50,6 +50,11 @@ pub async fn register(
     let mut r = body(req)?;
     check_harness(&r.harness)?;
     r.grant_id = a.grant().map(str::to_string);
+    if r.grant_id.is_some() {
+        // A process of another machine: never probed as a local one by the
+        // reaper (`parent_pid` stays, for matching within the grant).
+        r.pid = None;
+    }
     r.transcript_path = transcript(r.transcript_path)?;
     let audit = audit.agent_side();
     let session = s

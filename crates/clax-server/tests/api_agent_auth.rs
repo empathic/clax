@@ -68,7 +68,7 @@ impl Raw {
         let headers = [
             ("authorization", format!("Clax-Grant {}", c.access())),
             ("clax-signature", c.signature("POST", path, body, !good)),
-            ("content-type", "application/octet-stream".to_string()),
+            ("content-type", "application/json".to_string()),
             ("content-length", len.to_string()),
         ];
         Raw::open(ts, c, "POST", path, &headers).await
@@ -97,34 +97,6 @@ impl Raw {
             v["error"]["code"].as_str().unwrap_or_default().to_string(),
         )
     }
-}
-
-/// A multipart body of one `file` field of `n` bytes, and its content
-/// type.
-fn upload_body(n: usize) -> (Vec<u8>, String) {
-    let boundary = "clax-test-boundary";
-    let mut b = format!(
-        "--{boundary}\r\ncontent-disposition: form-data; name=\"file\"; filename=\"a.bin\"\r\ncontent-type: application/octet-stream\r\n\r\n"
-    )
-    .into_bytes();
-    b.extend(std::iter::repeat_n(b'x', n));
-    b.extend(format!("\r\n--{boundary}--\r\n").into_bytes());
-    (b, format!("multipart/form-data; boundary={boundary}"))
-}
-
-/// A signed upload of an `n`-byte asset to `aid` by `c`.
-async fn upload(c: &TestClient, aid: &str, sid: &str, n: usize) -> reqwest::Response {
-    let (body, ty) = upload_body(n);
-    let path = format!("/api/artifacts/{aid}/assets");
-    c.call(Call {
-        method: "POST",
-        path: &path,
-        authorization: Some(format!("Clax-Grant {}", c.access())),
-        body: Some(body),
-        headers: vec![("x-clax-session", sid.to_string()), ("content-type", ty)],
-        ..Default::default()
-    })
-    .await
 }
 
 #[tokio::test]
@@ -213,13 +185,8 @@ async fn path_session_must_belong_to_the_grant() {
         .as_str()
         .unwrap()
         .to_string();
-    for other in [
-        &owner_sid,
-        &mia_sid,
-        &"01J9Z3K4M5N6P7Q8R9S0T1V2W3".to_string(),
-    ] {
+    for other in [&owner_sid, &mia_sid] {
         for p in [
-            format!("/api/sessions/{other}/feedback"),
             format!("/api/sessions/{other}"),
             format!("/api/sessions/{other}/working"),
             format!("/api/sessions/{other}/watches"),
@@ -228,9 +195,22 @@ async fn path_session_must_belong_to_the_grant() {
             assert_eq!(status_code(r).await, (403, "foreign_session".into()), "{p}");
         }
     }
+    // A session that does not exist is 400 `unknown_session`, which the
+    // shim and Pi take as the sign to register again.
+    let unknown = "01J9Z3K4M5N6P7Q8R9S0T1V2W3";
+    for (h, p) in [
+        (Some(unknown), "/api/sessions".to_string()),
+        (
+            Some(sid.as_str()),
+            format!("/api/sessions/{unknown}/watches"),
+        ),
+    ] {
+        let r = sam.get(h, &p).await;
+        assert_eq!(status_code(r).await, (400, "unknown_session".into()), "{p}");
+    }
     // A header naming a foreign session.
     for other in [&owner_sid, &mia_sid] {
-        let r = sam.get(Some(other), "/api/artifacts").await;
+        let r = sam.get(Some(other), "/api/sessions").await;
         assert_eq!(status_code(r).await, (403, "foreign_session".into()));
     }
     // The token naming a grant's session, in the path or the header.
@@ -256,9 +236,34 @@ async fn path_session_must_belong_to_the_grant() {
         .await
         .unwrap();
     assert_eq!(status_code(r).await, (403, "foreign_session".into()));
-    // The grant's own session passes.
+    // A session that does not exist is the handler's to answer, as before.
+    let r = ts
+        .authed(ts.client.post(format!("{}/api/artifacts/{aid}/versions", ts.base)))
+        .header("x-clax-session", unknown)
+        .json(&json!({"if_version": 1, "files": {"index.html": {"content": "<p>2", "encoding": "utf8"}}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(status_code(r).await, (400, "unknown_session".into()));
+    let r = ts
+        .authed(ts.client.get(format!("{}/api/artifacts", ts.base)))
+        .header("x-clax-session", unknown)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    // The grant's own session passes, and so does another of its own
+    // named in the path (whose session then acts).
     let r = sam
         .get(Some(&sid), &format!("/api/sessions/{sid}/watches"))
+        .await;
+    assert_eq!(r.status(), 200);
+    let sid2 = sam.register("claude", "h3").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = sam
+        .get(Some(&sid), &format!("/api/sessions/{sid2}/watches"))
         .await;
     assert_eq!(r.status(), 200);
 }
@@ -334,7 +339,6 @@ async fn a_bad_signature_is_refused_on_get_delete_and_post() {
         .to_string();
     let aid = ts.any_artifact().await;
     for (m, p) in [
-        ("GET", "/api/artifacts".to_string()),
         ("GET", format!("/api/sessions/{sid}/watches")),
         ("DELETE", format!("/api/sessions/{sid}/watches/{aid}")),
         ("POST", format!("/api/sessions/{sid}/feedback/ack")),
@@ -360,56 +364,32 @@ async fn a_bad_signature_is_refused_on_get_delete_and_post() {
 
 #[tokio::test]
 async fn unverified_bodies_are_bounded() {
-    let (ts, timer) = TestServer::spawn_agent_timer().await;
+    let (ts, timer) = TestServer::spawn_agent_timer_with_budget(3 * MIB).await;
     let sam = ts.connect_person("Sam", "clax:collaborator").await;
     let mia = ts.connect_person("Mia", "clax:collaborator").await;
-    let aid = ts.any_artifact().await;
-    let assets = format!("/api/artifacts/{aid}/assets");
-    // One large unverified body per key: a second waits in the queue, and
-    // its wait ends after 30 s with 429.
+    let reg = "/api/sessions";
+    // One large unverified body per key: a second waits in the key's
+    // queue; another key's is not held up by it, but by the budget.
     let r0 = ts.agent_gate.state().read;
-    let mut first = Raw::agent(&ts, &sam, &assets, b"", 2 * MIB, false).await;
-    // Enough of it to stay above the rate for 30 s.
-    first.send(&vec![b'x'; 2 * MIB - 32 * 1024]).await;
-    ts.wait_gate("the first body read", |g| {
-        g.read == r0 + (2 * MIB - 32 * 1024) as u64
-    })
-    .await;
-    let second = Raw::agent(&ts, &sam, &assets, b"", 2 * MIB, false).await;
+    let mut first = Raw::agent(&ts, &sam, reg, b"", 2 * MIB, false).await;
+    first.send(&vec![b'x'; MIB]).await;
+    ts.wait_gate("the first body read", |g| g.read == r0 + MIB as u64)
+        .await;
+    let second = Raw::agent(&ts, &sam, reg, b"", 2 * MIB, false).await;
     ts.wait_gate("the second queued", |g| g.queued == 1 && g.held == 1)
         .await;
-    // Another key is not held up by Sam's.
-    let other = Raw::agent(&ts, &mia, &assets, b"", 2 * MIB, false).await;
-    ts.wait_gate("Mia's read under her own permit", |g| g.held == 2)
-        .await;
-    timer.advance(Duration::from_secs(30));
-    assert_eq!(second.response().await, (429, "limit_reached".into()));
-    first.send(&vec![b'x'; 32 * 1024]).await;
-    assert_eq!(first.response().await, (401, "invalid_signature".into()));
-    drop(other);
-    // The budget: 90 MiB reserved up front by one body, so a 40 MiB one
-    // waits for room, and after 30 s is 503 busy, having read nothing.
-    let publish = format!("/api/artifacts/{aid}/versions");
-    ts.wait_gate("every permit back", |g| g.held == 0 && g.reserved == 0)
-        .await;
-    let read_before = ts.agent_gate.state().read;
-    let mut big = Raw::agent(&ts, &sam, &publish, b"", 90 * MIB, false).await;
-    big.send(&vec![b'x'; 2 * MIB]).await;
-    ts.wait_gate("90 MiB reserved", |g| g.reserved == 90 * MIB)
-        .await;
-    let waits = Raw::agent(&ts, &mia, &publish, b"", 40 * MIB, false).await;
-    ts.wait_gate("the second waits for budget", |g| g.budget_waiting == 1)
-        .await;
-    timer.advance(Duration::from_secs(30));
-    assert_eq!(waits.response().await, (503, "busy".into()));
-    assert_eq!(
-        ts.agent_gate.state().read,
-        read_before + (2 * MIB) as u64,
-        "the refused body was never read"
-    );
-    drop(big);
-    ts.wait_gate("the dropped body's permit and budget back", |g| {
-        g.held == 0 && g.reserved == 0 && g.queued == 0 && g.budget_waiting == 0
+    let other = Raw::agent(&ts, &mia, reg, b"", 2 * MIB, false).await;
+    ts.wait_gate("Mia's waits for budget", |g| {
+        g.held == 2 && g.budget_waiting == 1
+    })
+    .await;
+    // The first body's whole read ends 12 s in (10 s and 1 s per MiB),
+    // though it kept above the rate: 408.
+    timer.advance(Duration::from_secs(12));
+    assert_eq!(first.response().await, (408, "timeout".into()));
+    drop((second, other));
+    ts.wait_gate("everything back", |g| {
+        g.held == 0 && g.reserved == 0 && g.queued == 0 && g.budget_waiting == 0 && g.small == 0
     })
     .await;
     let g = ts.gate().await;
@@ -417,59 +397,48 @@ async fn unverified_bodies_are_bounded() {
         (g["reserved"].as_u64(), g["held"].as_u64()),
         (Some(0), Some(0))
     );
+
+    // Past the whole budget: 503 busy before any of it is read.
+    let (ts, _timer) = TestServer::spawn_agent_timer_with_budget(MIB + MIB / 2).await;
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let r0 = ts.agent_gate.state().read;
+    let big = Raw::agent(&ts, &sam, reg, b"", 2 * MIB, false).await;
+    assert_eq!(big.response().await, (503, "busy".into()));
+    assert_eq!(ts.agent_gate.state().read, r0);
 }
 
 #[tokio::test]
 async fn concurrent_large_uploads_from_one_machine_succeed() {
     let ts = lan_server().await;
-    let sam = ts.connect_person("Sam", "clax:full").await;
-    let s1 = sam.register("claude", "h1").await["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let s2 = sam.register("claude", "h2").await["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let aid = ts.any_artifact().await;
-    // Both are verified (one waits for the key's permit) and reach the
-    // handler, which answers 503 `not_yet` until the route's filter is live.
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    // Two agents of one machine send bodies over 1 MiB at once: both are
+    // verified (one waits for the key's permit) and reach the handler.
+    let body = |h: &str| {
+        json!({"harness": "claude", "harness_session_id": h,
+                               "cwd": "x".repeat(3 * MIB / 2)})
+    };
     let (a, b) = tokio::join!(
-        upload(&sam, &aid, &s1, 5 * MIB),
-        upload(&sam, &aid, &s2, 5 * MIB)
+        sam.agent("POST", "/api/sessions", None, Some(body("h1"))),
+        sam.agent("POST", "/api/sessions", None, Some(body("h2")))
     );
     for r in [a, b] {
-        assert_eq!(status_code(r).await, (503, "not_yet".into()));
+        assert_eq!(r.status(), 201);
     }
-    assert!(ts.agent_gate.state().read as usize >= 10 * MIB);
 
-    // The queue holds 4: a sixth upload is refused at once.
-    let (ts, timer) = TestServer::spawn_agent_timer().await;
+    // The key's queue holds 4: a sixth is refused at once.
+    let (ts, _timer) = TestServer::spawn_agent_timer().await;
     let sam = ts.connect_person("Sam", "clax:collaborator").await;
-    let aid = ts.any_artifact().await;
-    let path = format!("/api/artifacts/{aid}/assets");
-    let r0 = ts.agent_gate.state().read;
-    let mut holder = Raw::agent(&ts, &sam, &path, b"", 5 * MIB, false).await;
-    // Enough of it to stay above the rate past the queue's 30 s.
-    holder.send(&vec![b'x'; 2 * MIB]).await;
-    ts.wait_gate("the holder's read", |g| {
-        g.held == 1 && g.read == r0 + (2 * MIB) as u64
-    })
-    .await;
+    let path = "/api/sessions";
+    let holder = Raw::agent(&ts, &sam, path, b"", 2 * MIB, false).await;
+    ts.wait_gate("the holder", |g| g.held == 1).await;
     let mut queued = Vec::new();
     for i in 1..=4 {
-        queued.push(Raw::agent(&ts, &sam, &path, b"", 5 * MIB, false).await);
+        queued.push(Raw::agent(&ts, &sam, path, b"", 2 * MIB, false).await);
         ts.wait_gate("queued", |g| g.queued == i).await;
     }
-    let sixth = Raw::agent(&ts, &sam, &path, b"", 5 * MIB, false).await;
+    let sixth = Raw::agent(&ts, &sam, path, b"", 2 * MIB, false).await;
     assert_eq!(sixth.response().await, (429, "limit_reached".into()));
-    // The queue's 30 s wait ends on the timer; the holder reads on.
-    timer.advance(Duration::from_secs(30));
-    for q in queued {
-        assert_eq!(q.response().await, (429, "limit_reached".into()));
-    }
-    holder.send(&vec![b'x'; 3 * MIB]).await;
-    assert_eq!(holder.response().await, (401, "invalid_signature".into()));
+    drop((holder, queued));
     ts.wait_gate("all released", |g| {
         g.held == 0 && g.queued == 0 && g.reserved == 0
     })
@@ -479,19 +448,15 @@ async fn concurrent_large_uploads_from_one_machine_succeed() {
 #[tokio::test]
 async fn a_trickled_unverified_body_is_dropped() {
     let (ts, timer) = TestServer::spawn_agent_timer().await;
-    let sam = ts.connect_person("Sam", "clax:full").await;
-    let sid = sam.register("claude", "h1").await["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let aid = ts.any_artifact().await;
-    let path = format!("/api/artifacts/{aid}/assets");
-    let (body, _) = upload_body(2 * MIB);
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let path = "/api/sessions";
+    let body =
+        serde_json::to_vec(&json!({"harness": "claude", "cwd": "x".repeat(2 * MIB - 64)})).unwrap();
+    // Below 64 KiB/s once the first 10 s are over.
     let r0 = ts.agent_gate.state().read;
-    let mut raw = Raw::agent(&ts, &sam, &path, &body, body.len(), true).await;
+    let mut raw = Raw::agent(&ts, &sam, path, &body, body.len(), true).await;
     raw.send(&body[..1024]).await;
     ts.wait_gate("a KiB read", |g| g.read == r0 + 1024).await;
-    // 9 s in, still within the grace.
     timer.advance(Duration::from_secs(9));
     raw.send(&body[1024..2048]).await;
     ts.wait_gate("two KiB read", |g| g.read == r0 + 2048).await;
@@ -502,9 +467,26 @@ async fn a_trickled_unverified_body_is_dropped() {
         (g["reserved"].as_u64(), g["held"].as_u64()),
         (Some(0), Some(0))
     );
-    // A real upload then proceeds: verified, it reaches the handler.
-    let r = upload(&sam, &aid, &sid, 2 * MIB).await;
-    assert_eq!(status_code(r).await, (503, "not_yet".into()));
+    // Fast enough for the rate, but not whole within 10 s and 1 s per MiB.
+    let r0 = ts.agent_gate.state().read;
+    let mut raw = Raw::agent(&ts, &sam, path, &body, body.len(), true).await;
+    raw.send(&body[..3 * MIB / 2]).await;
+    ts.wait_gate("most of it read", |g| g.read == r0 + (3 * MIB / 2) as u64)
+        .await;
+    timer.advance(Duration::from_secs(11));
+    raw.send(&body[3 * MIB / 2..3 * MIB / 2 + 1024]).await;
+    ts.wait_gate("a little more", |g| {
+        g.read == r0 + (3 * MIB / 2 + 1024) as u64
+    })
+    .await;
+    timer.advance(Duration::from_secs(1));
+    assert_eq!(raw.response().await, (408, "timeout".into()));
+    ts.wait_gate("released", |g| g.held == 0 && g.reserved == 0)
+        .await;
+    // A real body then proceeds: verified, it reaches the handler.
+    let mut raw = Raw::agent(&ts, &sam, path, &body, body.len(), true).await;
+    raw.send(&body).await;
+    assert_eq!(raw.response().await.0, 201);
 }
 
 #[tokio::test]
@@ -588,40 +570,43 @@ async fn bad_signatures_consume_no_nonces() {
 #[tokio::test]
 async fn the_route_limit_caps_the_pre_handler_read() {
     let ts = lan_server().await;
-    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let sam = ts.connect_person("Sam", "clax:full").await;
     let sid = sam.register("claude", "h1").await["id"]
         .as_str()
         .unwrap()
         .to_string();
     let aid = ts.any_artifact().await;
-    // 3 MiB to a docs route (2 MiB): 413 before anything is read.
-    let doc = json!({"data": {"x": "y".repeat(3 * MIB)}});
-    let r = sam
-        .agent(
-            "PUT",
-            &format!("/api/artifacts/{aid}/docs/a"),
-            Some(&sid),
-            Some(doc),
-        )
-        .await;
-    assert_eq!(status_code(r).await, (413, "body_too_large".into()));
     let read_before = ts.agent_gate.state().read;
-    assert!(read_before < 1024, "only the registration was read");
-    // A 90 MiB publish is within its limit: read, verified, and handed on.
-    let big =
-        json!({"files": {"index.html": {"content": "x".repeat(90 * MIB), "encoding": "utf8"}}});
+    // Over a route's limit (registration: 2 MiB): 413 before anything is
+    // read.
+    let big = Raw::agent(&ts, &sam, "/api/sessions", b"", 3 * MIB, false).await;
+    assert_eq!(big.response().await, (413, "body_too_large".into()));
+    // A Filtered route not yet live: 503 before anything is read, whatever
+    // its limit allows.
+    let publish = format!("/api/artifacts/{aid}/versions");
+    let headers = [
+        ("authorization", format!("Clax-Grant {}", sam.access())),
+        (
+            "clax-signature",
+            sam.signature("POST", &publish, b"", false),
+        ),
+        ("x-clax-session", sid.clone()),
+        ("content-length", (90 * MIB).to_string()),
+    ];
+    let raw = Raw::open(&ts, &sam, "POST", &publish, &headers).await;
+    assert_eq!(raw.response().await, (503, "not_yet".into()));
+    assert_eq!(ts.agent_gate.state().read, read_before);
+    // Within the limit: read, verified and handed on.
     let r = sam
         .agent(
             "POST",
-            &format!("/api/artifacts/{aid}/versions"),
-            Some(&sid),
-            Some(big),
+            "/api/sessions",
+            None,
+            Some(json!({"harness": "claude", "cwd": "x".repeat(MIB + MIB / 2)})),
         )
         .await;
-    // The handler's checks run after verification: a collaborator may not
-    // update an artifact the owner made.
-    assert_eq!(status_code(r).await, (403, "not_permitted".into()));
-    assert!((ts.agent_gate.state().read - read_before) as usize > 90 * MIB);
+    assert_eq!(r.status(), 201);
+    assert!((ts.agent_gate.state().read - read_before) as usize > MIB);
     assert_eq!(ts.agent_gate.state().reserved, 0);
 }
 
@@ -844,23 +829,8 @@ async fn session_less_grant_requests_use_person_and_grant_rights() {
     assert_eq!(status_code(r).await, (503, "not_yet".into()));
     let r = sam.get(None, &format!("/api/sessions/{sid}/watches")).await;
     assert_eq!(status_code(r).await, (400, "no_session".into()));
-    // Rights are checked at the artifact the path names.
+    // A reader may watch.
     let aid = ts.any_artifact().await;
-    let r = sam
-        .agent(
-            "POST",
-            &format!("/api/artifacts/{aid}/versions"),
-            Some(&sid),
-            Some(json!({"files": {"index.html": {"content": "<p>", "encoding": "utf8"}}})),
-        )
-        .await;
-    let v: Value = r.json().await.unwrap();
-    assert_eq!(v["error"]["code"], "not_permitted");
-    assert_eq!(
-        v["error"]["right"],
-        json!({"type": "clax-artifacts", "action": "update"})
-    );
-    // A reader may watch, and may not write a document.
     let reader = ts.connect_person("Rae", "clax:reader").await;
     let rid = reader.register("claude", "h1").await["id"]
         .as_str()
@@ -875,16 +845,7 @@ async fn session_less_grant_requests_use_person_and_grant_rights() {
         )
         .await;
     assert_eq!(r.status(), 200);
-    let r = reader
-        .agent(
-            "PUT",
-            &format!("/api/artifacts/{aid}/docs/a"),
-            Some(&rid),
-            Some(json!({"data": {}})),
-        )
-        .await;
-    assert_eq!(status_code(r).await, (403, "not_permitted".into()));
-    // A narrowing of the grant applies to its requests.
+    // The grant's narrowing applies, checked at the path's artifact.
     let gid = sam.grant_id();
     ts.store
         .narrow_grant(
@@ -905,7 +866,12 @@ async fn session_less_grant_requests_use_person_and_grant_rights() {
             None,
         )
         .await;
-    assert_eq!(status_code(r).await, (403, "not_permitted".into()));
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(v["error"]["code"], "not_permitted");
+    assert_eq!(
+        v["error"]["right"],
+        json!({"type": "clax-comments", "action": "watch"})
+    );
 }
 
 /// The routes of `routes/mod.rs` with the method of each handler, and
@@ -1057,3 +1023,142 @@ async fn a_grant_credential_is_refused_wherever_no_need_is_declared() {
 
 // The token's own callers are unchanged: every existing `api_*` suite runs
 // as before, and the single-owner golden is compared byte for byte.
+
+#[tokio::test]
+async fn small_bodies_are_bounded_per_key() {
+    let (ts, _timer) = TestServer::spawn_agent_timer().await;
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let mia = ts.connect_person("Mia", "clax:collaborator").await;
+    let path = "/api/sessions";
+    let mut open = Vec::new();
+    for i in 1..=8 {
+        open.push(Raw::agent(&ts, &sam, path, b"", MIB, false).await);
+        ts.wait_gate("small bodies in flight", |g| g.small == i * MIB)
+            .await;
+    }
+    let ninth = Raw::agent(&ts, &sam, path, b"", MIB, false).await;
+    assert_eq!(ninth.response().await, (429, "limit_reached".into()));
+    // Another key has its own allowance.
+    let theirs = Raw::agent(&ts, &mia, path, b"", MIB, false).await;
+    ts.wait_gate("Mia's too", |g| g.small == 9 * MIB).await;
+    drop((open, theirs));
+    ts.wait_gate("every allowance back", |g| g.small == 0 && g.reserved == 0)
+        .await;
+}
+
+/// Makes a live page as the owner's browser does: a comment on a page the
+/// extension snapshots. Its artifact ID.
+async fn live_page(ts: &TestServer) -> String {
+    let v = ts.viewer(Some("Alex")).await;
+    let form = reqwest::multipart::Form::new()
+        .text("url", "http://localhost:5173/")
+        .text("title", "Settings")
+        .text(
+            "anchor",
+            json!({"kind": "element", "selector": "main", "quote": "Save", "file": "index.html"})
+                .to_string(),
+        )
+        .text("body", "The button overflows")
+        .text("pending", "[]")
+        .text("snapshot", "<p>private</p>")
+        .part(
+            "clip",
+            reqwest::multipart::Part::bytes(clax_server::testing::FAKE_PNG.to_vec())
+                .mime_str("image/png")
+                .unwrap(),
+        );
+    let r = ts
+        .client
+        .post(format!("{}/api/live/threads", ts.base))
+        .header("cookie", format!("clax_viewer={}", v.cookie))
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    let v: Value = r.json().await.unwrap();
+    v["page"]["artifact_id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn live_pages_are_hidden_from_agents_of_other_machines() {
+    let ts = lan_server().await;
+    let live = live_page(&ts).await;
+    let lan = ts.connect_person("Sam", "clax:full").await;
+    // A machine reaching the daemon over loopback (a tunnel, a local
+    // proxy) is no closer to the owner's browsing.
+    let local = ts.connect_person("Lou", "clax:full").await.on_loopback();
+    for c in [&lan, &local] {
+        let sid = c.register("claude", "h1").await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let watch = format!("/api/sessions/{sid}/watches/{live}");
+        for (m, p, body) in [
+            ("PUT", watch.clone(), None),
+            ("DELETE", watch.clone(), None),
+            ("GET", format!("/api/artifacts/{live}"), None),
+            (
+                "POST",
+                format!("/api/artifacts/{live}/versions"),
+                Some(json!({"files": {}})),
+            ),
+            (
+                "POST",
+                format!("/api/artifacts/{live}/assets"),
+                Some(json!({})),
+            ),
+            (
+                "PUT",
+                format!("/api/artifacts/{live}/docs/a"),
+                Some(json!({"data": {}})),
+            ),
+        ] {
+            let r = c.agent(m, &p, Some(&sid), body).await;
+            assert_eq!(r.status(), 404, "{m} {p}");
+        }
+        let list: Value = c
+            .get(Some(&sid), &format!("/api/sessions/{sid}/watches"))
+            .await
+            .json()
+            .await
+            .unwrap();
+        assert!(!list.to_string().contains(&live), "{list}");
+    }
+}
+
+#[tokio::test]
+async fn a_remote_session_is_ended_when_idle_whatever_pid_it_reports() {
+    let clock = std::sync::Arc::new(clax_core::working::ManualClock::at("2026-10-01T09:00:00Z"));
+    let ts = TestServer::spawn_on_with_clock("0.0.0.0".parse().unwrap(), clock.clone()).await;
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let me = std::process::id();
+    let remote = sam
+        .register_with(json!({"harness": "claude", "cwd": "/w", "pid": me, "parent_pid": 77}))
+        .await;
+    let rid = remote["id"].as_str().unwrap();
+    assert_eq!(ts.store.get_session(rid).unwrap().unwrap().pid, None);
+    let local: Value = ts
+        .post_json(
+            "/api/sessions",
+            json!({"harness": "claude", "cwd": "/w", "pid": me}),
+        )
+        .await
+        .json()
+        .await
+        .unwrap();
+    let lid = local["session"]["id"].as_str().unwrap();
+    clock.advance(clax_core::Store::SESSION_IDLE_SECS as i64 + 1);
+    let alive = |p: u32| p == me;
+    let reaped = ts
+        .store
+        .reap_sessions(
+            Duration::from_secs(clax_core::Store::SESSION_IDLE_SECS),
+            &alive,
+        )
+        .unwrap();
+    assert!(reaped.ended.iter().any(|s| s == rid), "{:?}", reaped.ended);
+    assert!(
+        !reaped.ended.iter().any(|s| s == lid),
+        "a live local process keeps its session"
+    );
+}

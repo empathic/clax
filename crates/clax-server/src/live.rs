@@ -229,13 +229,15 @@ impl LiveIds {
 }
 
 /// Whether the request may see live pages: it came from a loopback peer, or
-/// it carries the token. (Unlike [`crate::identity::is_local`], the `Host`
-/// does not matter: the `/api` host rule applies on its own.)
+/// it carries the token; never with an agent credential of another machine,
+/// whatever its peer (spec §7.5). (Unlike [`crate::identity::is_local`],
+/// the `Host` does not matter: the `/api` host rule applies on its own.)
 pub fn sees_live_pages(headers: &HeaderMap, ext: &Extensions, token: &str) -> bool {
-    has_token(headers, token)
-        || ext
-            .get::<ConnectInfo<Conn>>()
-            .is_some_and(|c| is_loopback(c.0.peer))
+    !crate::auth::is_grant_request(headers)
+        && (has_token(headers, token)
+            || ext
+                .get::<ConnectInfo<Conn>>()
+                .is_some_and(|c| is_loopback(c.0.peer)))
 }
 
 /// Whether `path` is one of the live-page routes (`/api/live/…`), which

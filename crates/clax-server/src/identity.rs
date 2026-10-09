@@ -235,13 +235,14 @@ impl Identity {
     /// - An agent credential is a `PersonAgent` once
     ///   [`crate::agent::verify_layer`] verified it (else 401
     ///   `invalid_signature`); its `X-Clax-Session` and path session must be
-    ///   its grant's (403 `foreign_session`), and a path session needs
-    ///   `X-Clax-Session` (400 `no_session`).
+    ///   its grant's (400 `unknown_session` for one that does not exist, 403
+    ///   `foreign_session` for another credential's), a path session needs
+    ///   `X-Clax-Session` (400 `no_session`), and its rights are those of the
+    ///   path's session when the path names one, else the header's.
     /// - The token is an `OwnerAgent` when the request names a session or
     ///   carries the agent-channel marker, else the `Owner`; a session it
-    ///   names that is another credential's is 403 `foreign_session` (one
-    ///   that does not exist is left to the handler, for its path, and
-    ///   refused in the header).
+    ///   names (path or header) that is another credential's is 403
+    ///   `foreign_session`; one that does not exist is left to the handler.
     /// - An owner browser credential is the `Owner`; a `clax_viewer` cookie
     ///   is a `Person` or a `Viewer`; anything else is `Anonymous`.
     ///
@@ -259,18 +260,22 @@ impl Identity {
                     "the request's signature was not verified",
                 ));
             };
-            let gc = st.grant_caller(&g.grant_id, self.header_session.as_deref())?;
-            if let Some(ps) = path_session {
-                let Some(hs) = gc.session.as_deref() else {
-                    return Err(ApiError::bad_request(
-                        "no_session",
-                        "a session route needs X-Clax-Session naming one of this machine's sessions",
-                    ));
-                };
-                if ps != hs && st.session_of(ps, Some(&g.grant_id))?.is_none() {
-                    return Err(foreign_session());
-                }
+            if path_session.is_some() && self.header_session.is_none() {
+                return Err(ApiError::bad_request(
+                    "no_session",
+                    "a session route needs X-Clax-Session naming one of this machine's sessions",
+                ));
             }
+            for sid in [self.header_session.as_deref(), path_session]
+                .into_iter()
+                .flatten()
+            {
+                own_session(st, sid, Some(&g.grant_id))?;
+            }
+            // The agent acting is the session whose resources the path
+            // names; else the one the header names.
+            let acting = path_session.or(self.header_session.as_deref());
+            let gc = st.grant_caller(&g.grant_id, acting)?;
             return Ok(Caller::PersonAgent {
                 person: gc.person,
                 grant: gc.grant_id,
@@ -279,15 +284,13 @@ impl Identity {
             });
         }
         if self.token {
-            if let Some(hs) = &self.header_session
-                && st.session_of(hs, None)?.is_none()
+            for sid in [self.header_session.as_deref(), path_session]
+                .into_iter()
+                .flatten()
             {
-                return Err(foreign_session());
-            }
-            if let Some(ps) = path_session
-                && st.get_session(ps)?.is_some_and(|s| s.grant_id.is_some())
-            {
-                return Err(foreign_session());
+                if st.get_session(sid)?.is_some_and(|s| s.grant_id.is_some()) {
+                    return Err(foreign_session());
+                }
             }
             let session = path_session
                 .map(str::to_string)
@@ -442,6 +445,22 @@ impl FromRequestParts<AppState> for Identity {
             &parts.extensions,
             &state.token,
         ))
+    }
+}
+
+/// That session `sid` is one of credential `grant`'s (M4).
+///
+/// # Errors
+/// 400 `unknown_session` when no session `sid` exists; 403
+/// `foreign_session` when it is another credential's.
+fn own_session(st: &Store, sid: &str, grant: Option<&str>) -> Result<(), ApiError> {
+    match st.get_session(sid)? {
+        None => Err(ApiError::bad_request(
+            "unknown_session",
+            "that session does not exist",
+        )),
+        Some(s) if s.grant_id.as_deref() == grant => Ok(()),
+        Some(_) => Err(foreign_session()),
     }
 }
 
