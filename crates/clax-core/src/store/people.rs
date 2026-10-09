@@ -39,6 +39,8 @@ pub const GRANT_IDLE_SECS: i64 = 30 * 24 * 3600;
 pub const USE_NOTE_SECS: i64 = 3600;
 /// The wrong user code that denies a request.
 pub const MAX_WRONG_CODES: i64 = 3;
+/// How long a browser link may be redeemed (spec §6.5).
+pub const BROWSER_LINK_TTL_SECS: i64 = 10 * 60;
 /// Longest client name, in characters.
 pub const MAX_CLIENT_NAME_CHARS: usize = 64;
 
@@ -333,7 +335,7 @@ fn check_person_name(tx: &Transaction<'_>, name: &str, except: Option<&str>) -> 
     let Some(name) = checked_name(name)? else {
         return Err(CoreError::invalid("invalid_name", "a person needs a name"));
     };
-    let token = name_token(name);
+    let form = name_token(name);
     let taken = || CoreError::invalid("name_taken", format!("the name '{name}' is taken"));
     let mut stmt = tx.prepare(
         "SELECT display_name FROM viewers WHERE display_name IS NOT NULL
@@ -341,13 +343,13 @@ fn check_person_name(tx: &Transaction<'_>, name: &str, except: Option<&str>) -> 
     )?;
     let names = stmt.query_map(params![except], |r| r.get::<_, String>(0))?;
     for other in names {
-        if name_token(&other?) == token {
+        if name_token(&other?) == form {
             return Err(taken());
         }
     }
     let agent: bool = tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM sessions WHERE ended_at IS NULL AND name = ?1 COLLATE NOCASE)",
-        params![token],
+        params![form],
         |r| r.get(0),
     )?;
     if agent {
@@ -406,9 +408,15 @@ struct Issued {
 }
 
 /// Mints the access, manage and continuation tokens (and, unless `owner`,
-/// a browser code) of grant `gid`, storing the access token's hash and the
-/// manage and continuation hashes.
-fn issue(tx: &Transaction<'_>, gid: &str, owner: bool, now: &str) -> Result<Issued> {
+/// a browser code redeemable until `browser_expires`) of grant `gid`,
+/// storing their hashes.
+fn issue(
+    tx: &Transaction<'_>,
+    gid: &str,
+    owner: bool,
+    now: &str,
+    browser_expires: &str,
+) -> Result<Issued> {
     let issued = Issued {
         token: secret::token(secret::ACCESS_PREFIX),
         manage: secret::token(secret::MANAGE_PREFIX),
@@ -420,11 +428,15 @@ fn issue(tx: &Transaction<'_>, gid: &str, owner: bool, now: &str) -> Result<Issu
         params![issued.token.sha256_hex(), gid, now],
     )?;
     tx.execute(
-        "UPDATE grants SET manage_sha256 = ?2, continue_sha256 = ?3 WHERE id = ?1",
+        "UPDATE grants SET manage_sha256 = ?2, continue_sha256 = ?3,
+            browser_sha256 = ?4, browser_expires_at = CASE WHEN ?4 IS NULL THEN NULL ELSE ?5 END
+         WHERE id = ?1",
         params![
             gid,
             issued.manage.sha256_hex(),
-            issued.continue_token.sha256_hex()
+            issued.continue_token.sha256_hex(),
+            issued.browser_code.as_ref().map(Secret::sha256_hex),
+            browser_expires
         ],
     )?;
     Ok(issued)
@@ -505,6 +517,55 @@ fn matches(presented: &str, stored: Option<&str>) -> bool {
 impl Store {
     fn ago(&self, secs: i64) -> String {
         super::stamp(self.now_utc() - Duration::seconds(secs))
+    }
+
+    fn browser_expiry(&self) -> String {
+        super::stamp(self.now_utc() + Duration::seconds(BROWSER_LINK_TTL_SECS))
+    }
+
+    /// Redeems a browser link's `code` (spec §6.5): once, within
+    /// [`BROWSER_LINK_TTL_SECS`] of its issue, while its grant is approved
+    /// and its person unrevoked. Returns the person's viewer row, whose `id`
+    /// becomes the browser's `clax_viewer` cookie; the code is cleared.
+    ///
+    /// # Errors
+    /// `NotFound` for an unknown, used or expired code (the link's 404),
+    /// and for a revoked grant or person.
+    pub fn redeem_browser_code(&self, code: &str) -> Result<Viewer> {
+        let hash = sha256_hex(code);
+        self.with_tx(|tx| {
+            let now = self.now();
+            let row: Option<(String, String, String, String)> = tx
+                .query_row(
+                    "SELECT id, browser_sha256, browser_expires_at, viewer_id FROM grants
+                     WHERE browser_sha256 = ?1",
+                    params![hash],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .optional()?;
+            let Some((gid, stored, expires, viewer_id)) = row else {
+                return Ok(Err(CoreError::NotFound));
+            };
+            // One use, live or not: a code that was presented is spent.
+            tx.execute(
+                "UPDATE grants SET browser_sha256 = NULL, browser_expires_at = NULL WHERE id = ?1",
+                params![gid],
+            )?;
+            if !constant_time_eq(hash.as_bytes(), stored.as_bytes()) || expires <= now {
+                return Ok(Err(CoreError::NotFound));
+            }
+            let viewer = tx
+                .query_row(
+                    "SELECT v.id, v.public_id, v.display_name, v.created_at, v.person, v.person_revoked_at
+                     FROM viewers v JOIN grants g ON g.viewer_id = v.id
+                     WHERE v.id = ?1 AND g.id = ?2 AND g.status = 'approved'
+                       AND v.owner = 0 AND v.person = 1 AND v.person_revoked_at IS NULL",
+                    params![viewer_id, gid],
+                    row_to_viewer,
+                )
+                .optional()?;
+            Ok(viewer.ok_or(CoreError::NotFound))
+        })?
     }
 
     /// Makes an invite for `who` (spec §6.2): a new person row for `New`,
@@ -720,7 +781,7 @@ impl Store {
                             now
                         ],
                     )?;
-                    let issued = issue(tx, &gid, owner, &now)?;
+                    let issued = issue(tx, &gid, owner, &now, &self.browser_expiry())?;
                     tx.execute(
                         "UPDATE invites SET used_at = ?2, grant_id = ?3 WHERE id = ?1",
                         params![invite_id, now, gid],
@@ -938,7 +999,7 @@ impl Store {
                 }
                 "approved" if manage.is_none() => {
                     let owner = grant_in(tx, gid)?.expect("the grant exists").owner;
-                    let issued = issue(tx, gid, owner, &now)?;
+                    let issued = issue(tx, gid, owner, &now, &self.browser_expiry())?;
                     tx.execute(
                         "UPDATE grants SET last_used_at = ?2 WHERE id = ?1",
                         params![gid, now],
@@ -1867,5 +1928,111 @@ pub(crate) mod tests {
                 .unwrap(),
             super::super::viewers::Claim::Nothing
         );
+    }
+
+    fn invited_with_link(st: &Store, name: &str, key: [u8; 32]) -> (Grant, Secret) {
+        let (_, c) = st.create_invite(InvitePerson::New(name.into())).unwrap();
+        match st.request_grant(grant(key, Some(c.expose()))).unwrap() {
+            GrantStart::Approved {
+                grant,
+                browser_code: Some(b),
+                ..
+            } => (grant, b),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_browser_link_is_redeemed_once_for_its_person() {
+        let (_d, _c, st) = store();
+        let (g, link) = invited_with_link(&st, "Sam", KEY_A);
+        assert!(matches!(
+            st.redeem_browser_code("not-the-code"),
+            Err(CoreError::NotFound)
+        ));
+        let v = st.redeem_browser_code(link.expose()).unwrap();
+        assert_eq!(Some(v.public_id.clone()), g.person);
+        assert!(v.person && !v.id.is_empty());
+        assert!(
+            matches!(
+                st.redeem_browser_code(link.expose()),
+                Err(CoreError::NotFound)
+            ),
+            "one use"
+        );
+    }
+
+    #[test]
+    fn a_browser_link_expires_after_ten_minutes() {
+        let (_d, clock, st) = store();
+        let (_, link) = invited_with_link(&st, "Sam", KEY_A);
+        clock.advance(BROWSER_LINK_TTL_SECS);
+        assert!(matches!(
+            st.redeem_browser_code(link.expose()),
+            Err(CoreError::NotFound)
+        ));
+        let (_, early) = invited_with_link(&st, "Mia", KEY_B);
+        clock.advance(BROWSER_LINK_TTL_SECS - 1);
+        assert!(st.redeem_browser_code(early.expose()).is_ok());
+    }
+
+    #[test]
+    fn a_browser_link_survives_a_restart_and_follows_the_request_flow() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let clock = Arc::new(ManualClock::at(T0));
+        let link = {
+            let st = Store::open_with_clock(&home, clock.clone()).unwrap();
+            let (g, cont, user_code) = pending(&st, KEY_A);
+            st.approve_grant(&g.id, user_code.expose(), "Sam", None)
+                .unwrap();
+            clock.advance(CONTINUE_WAIT_SECS);
+            match st.continue_grant(&g.id, cont.expose()).unwrap() {
+                ContinueOutcome::Approved {
+                    browser_code: Some(b),
+                    ..
+                } => b,
+                other => panic!("{other:?}"),
+            }
+        };
+        let st = Store::open_with_clock(&home, clock).unwrap();
+        assert_eq!(
+            st.redeem_browser_code(link.expose())
+                .unwrap()
+                .display_name
+                .as_deref(),
+            Some("Sam")
+        );
+    }
+
+    #[test]
+    fn a_browser_link_dies_with_its_grant() {
+        let (_d, _c, st) = store();
+        let (g, link) = invited_with_link(&st, "Sam", KEY_A);
+        st.revoke_grant(&g.id, EndedBy::Owner).unwrap();
+        assert!(matches!(
+            st.redeem_browser_code(link.expose()),
+            Err(CoreError::NotFound)
+        ));
+    }
+
+    /// Hashes of secrets are compared only through `constant_time_eq`: no
+    /// line of the store's code compares a hash, a stored value or a code
+    /// with `==` or `!=` (timing is not observable in a unit test, so this
+    /// guards the source).
+    #[test]
+    fn secret_hashes_are_never_compared_with_eq() {
+        let src = include_str!("people.rs");
+        let code = &src[..src.find("#[cfg(test)]").unwrap()];
+        let bad: Vec<&str> = code
+            .lines()
+            .filter(|l| l.contains("==") || l.contains("!="))
+            .filter(|l| {
+                ["hash", "stored", "sha256", "presented", "expose"]
+                    .iter()
+                    .any(|w| l.contains(w))
+            })
+            .collect();
+        assert!(bad.is_empty(), "{bad:#?}");
     }
 }
