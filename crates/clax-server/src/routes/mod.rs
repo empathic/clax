@@ -499,10 +499,14 @@ mod l10 {
     /// How a handler of a route outside the path rule keeps live pages hidden.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Guard {
-        /// It takes `RequireToken` or `TokenOrAgent`: the token sees live
-        /// pages, and an agent of another machine sees none (its requests
-        /// carry no owner credential, so `hide_live_pages` hides them).
+        /// It takes `RequireToken`: the token sees live pages, and an agent
+        /// of another machine never gets past it.
         Token,
+        /// It takes `Agent<…>` or `TokenOrAgent<…>`, and names an artifact
+        /// only as its path's `{aid}`: the token sees live pages, and the
+        /// extractor answers an agent of another machine 404 for a live
+        /// page there (`hide_live_pages` does not cover `/api/sessions/…`).
+        AgentPath,
         /// It takes `SeesLive` and checks the artifact its query or body names.
         SeesLive,
         /// A listing or stream that leaves live pages out unless
@@ -523,17 +527,17 @@ mod l10 {
         ("token::token", NoArtifact),
         ("artifacts::list", Filtered),
         ("artifacts::create", Token),
-        ("sessions::list", Token),
-        ("sessions::register", Token),
-        ("sessions::join", Token),
-        ("sessions::get", Token),
-        ("sessions::patch", Token),
+        ("sessions::list", AgentPath),
+        ("sessions::register", AgentPath),
+        ("sessions::join", AgentPath),
+        ("sessions::get", AgentPath),
+        ("sessions::patch", AgentPath),
         ("sessions::push_status", NoArtifact),
         ("sessions::tool_call_ids", Token),
         ("sample::daemon", Token),
         ("threads::list_all", Token),
         ("working::roster", Token),
-        ("working::for_session", Token),
+        ("working::for_session", AgentPath),
         ("working::renew", Token),
         ("working::end", Token),
         ("working::put", Token),
@@ -555,16 +559,16 @@ mod l10 {
         ("stream::open_streams", Token),
         ("events::events", Filtered),
         ("events::open_streams", Token),
-        ("watches::list", Token),
-        ("watches::put", Token),
-        ("watches::delete", Token),
+        ("watches::list", AgentPath),
+        ("watches::put", AgentPath),
+        ("watches::delete", AgentPath),
         ("watches::live_put", Token),
         ("watches::live_delete", Token),
-        ("feedback::ack", Token),
+        ("feedback::ack", AgentPath),
         ("toolpath::session_tool_call", Token),
         ("toolpath::tool_call", Token),
-        ("feedback::poll", Token),
-        ("feedback::notices", Token),
+        ("feedback::poll", AgentPath),
+        ("feedback::notices", AgentPath),
         ("questions::create", Token),
         ("questions::poll", Token),
         ("questions::withdraw", Token),
@@ -1024,6 +1028,25 @@ mod l10 {
         }
     }
 
+    /// `Agent` finds the session a route's path names by the parameter
+    /// `{id}` under `/api/sessions/` (`agent::names_a_session`): a route
+    /// that named it otherwise would skip the session check.
+    #[test]
+    fn every_session_route_names_its_session_id() {
+        let src = include_str!("mod.rs");
+        let src = &src[..src.find("mod l10 {").unwrap()];
+        for (path, _) in routes(src) {
+            for prefix in ["/api/sessions/{", "/api/_test/sessions/{"] {
+                if let Some(rest) = path.strip_prefix(prefix) {
+                    assert!(
+                        rest.starts_with("id}"),
+                        "{path} names its session otherwise than {{id}}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn every_route_keeps_live_pages_hidden() {
         let aid = "7q3k9mzx2b4t";
@@ -1059,10 +1082,19 @@ mod l10 {
                 let src = function(module_source(&m), &f);
                 let sig = &src[..src.find('{').unwrap()];
                 match guard {
-                    Token => assert!(
-                        sig.contains("RequireToken") || sig.contains("TokenOrAgent<"),
-                        "{name} takes no RequireToken"
-                    ),
+                    Token => assert!(sig.contains("RequireToken"), "{name} takes no RequireToken"),
+                    AgentPath => {
+                        assert!(sig.contains("Agent<"), "{name} takes no Agent");
+                        assert!(
+                            !src.contains("Query<") || !src.contains("parse_id("),
+                            "{name} may name an artifact outside its path"
+                        );
+                        let agent = include_str!("../agent.rs");
+                        assert!(
+                            agent.contains("s.live_ids.contains(a.as_str())"),
+                            "Agent no longer hides live pages"
+                        );
+                    }
                     SeesLive => assert!(
                         sig.contains("SeesLive") && src.contains(".check("),
                         "{name} does not check SeesLive"

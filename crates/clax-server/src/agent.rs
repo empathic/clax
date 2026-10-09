@@ -232,9 +232,10 @@ impl FromRequestParts<AppState> for Caller {
 }
 
 /// A route's caller, checked against the route's [`Need`] (M7): for a
-/// person's agent, the right `N::RIGHT` at the artifact the route's path
-/// names (`{aid}`; 403 `not_permitted`), and for a `Filtered` route whose
-/// filter is not live, 503 `not_yet`. The sessions the request names
+/// person's agent, 404 when the route's path names a live page (`{aid}`),
+/// the right `N::RIGHT` at the artifact the path names (403
+/// `not_permitted`), and for a `Filtered` route whose filter is not live,
+/// 503 `not_yet`. The sessions the request names
 /// (path and `X-Clax-Session`) are the caller's ([`Identity::caller`]).
 /// Every other caller passes as it is: the handler decides what it may do.
 pub struct Agent<N: Need> {
@@ -323,6 +324,14 @@ impl<N: Need> FromRequestParts<AppState> for Agent<N> {
             (_, a) => a.and_then(|a| ArtifactId::parse(&a).ok()),
         };
         if let Caller::PersonAgent { person, rights, .. } = &caller {
+            // Live pages are the owner's own browsing: never an agent's of
+            // another machine (spec §7.5, chrome-overlay L10).
+            if artifact
+                .as_ref()
+                .is_some_and(|a| s.live_ids.contains(a.as_str()))
+            {
+                return Err(ApiError::not_found());
+            }
             if let Some((kind, action)) = N::RIGHT {
                 let allowed = match &artifact {
                     Some(a) => {
@@ -345,11 +354,7 @@ impl<N: Need> FromRequestParts<AppState> for Agent<N> {
                 }
             }
             if N::CLASS == Class::Filtered && !FILTERED_LIVE.contains(&N::NAME) {
-                return Err(ApiError::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "not_yet",
-                    "this route is not yet available to agents of another machine",
-                ));
+                return Err(not_yet());
             }
         }
         Ok(Agent {
@@ -391,6 +396,16 @@ pub const GRACE: Duration = Duration::from_secs(10);
 /// The slowest an unverified body may arrive on average after [`GRACE`],
 /// in bytes a second.
 pub const MIN_RATE: u64 = 64 * 1024;
+/// Unverified bytes of bodies of at most [`LARGE_BODY`] one key may have
+/// in flight at once.
+pub const SMALL_PER_KEY: usize = 8 * 1024 * 1024;
+
+/// The longest an unverified body of `n` bytes (its declared length, or
+/// for a chunked one the route's limit) may take to arrive in full:
+/// [`GRACE`] and one second per MiB.
+pub fn read_deadline(n: usize) -> Duration {
+    GRACE + Duration::from_secs_f64(n as f64 / (1024.0 * 1024.0))
+}
 
 /// The clock of [`Gate`]'s waits and rates: Tokio's in the daemon, one the
 /// test drives in tests.
@@ -428,7 +443,10 @@ struct Slot {
 /// time with a short queue, a budget of bytes overall, and a minimum rate.
 pub struct Gate {
     budget: Arc<Semaphore>,
+    budget_total: usize,
     keys: Mutex<HashMap<[u8; 32], Slot>>,
+    /// Unverified bytes of small bodies in flight, by key.
+    small: Mutex<HashMap<[u8; 32], usize>>,
     timer: Arc<dyn Timer>,
     /// Unverified bytes read, ever.
     read: AtomicU64,
@@ -450,15 +468,24 @@ pub struct GateState {
     pub queued: usize,
     /// Requests waiting for budget.
     pub budget_waiting: usize,
+    /// Unverified bytes of small bodies in flight, every key's.
+    pub small: usize,
     /// Unverified bytes read since the daemon started.
     pub read: u64,
 }
 
 impl Gate {
     pub fn new(timer: Arc<dyn Timer>) -> Gate {
+        Gate::with_budget(timer, BUDGET)
+    }
+
+    /// A gate whose overall budget is `budget` bytes (tests).
+    pub fn with_budget(timer: Arc<dyn Timer>, budget: usize) -> Gate {
         Gate {
-            budget: Arc::new(Semaphore::new(BUDGET)),
+            budget: Arc::new(Semaphore::new(budget)),
+            budget_total: budget,
             keys: Mutex::new(HashMap::new()),
+            small: Mutex::new(HashMap::new()),
             timer,
             read: AtomicU64::new(0),
             budget_waiting: Default::default(),
@@ -491,13 +518,14 @@ impl Gate {
     pub fn state(&self) -> GateState {
         let keys = grant_auth::lock(&self.keys);
         GateState {
-            reserved: BUDGET - self.budget.available_permits(),
+            reserved: self.budget_total - self.budget.available_permits(),
             held: keys
                 .values()
                 .filter(|s| s.sem.available_permits() == 0)
                 .count(),
             queued: keys.values().map(|s| s.waiting).sum(),
             budget_waiting: self.budget_waiting.load(Ordering::SeqCst),
+            small: grant_auth::lock(&self.small).values().sum(),
             read: self.read.load(Ordering::SeqCst),
         }
     }
@@ -573,7 +601,7 @@ impl Gate {
         let Ok(count) = u32::try_from(n) else {
             return Err(busy());
         };
-        if n > BUDGET {
+        if n > self.budget_total {
             return Err(busy());
         }
         if let Ok(p) = self.budget.clone().try_acquire_many_owned(count) {
@@ -586,6 +614,55 @@ impl Gate {
             p = self.budget.clone().acquire_many_owned(count) => p.map(Some).map_err(|_| busy()),
             () = deadline => Err(busy()),
         }
+    }
+}
+
+/// A request's share of its key's small-body allowance
+/// ([`SMALL_PER_KEY`]); returned when dropped.
+struct Small {
+    gate: Arc<Gate>,
+    key: [u8; 32],
+    n: usize,
+}
+
+impl Small {
+    fn new(gate: &Arc<Gate>, key: [u8; 32]) -> Small {
+        Small {
+            gate: gate.clone(),
+            key,
+            n: 0,
+        }
+    }
+
+    /// Takes `n` more bytes of the key's allowance.
+    ///
+    /// # Errors
+    /// 429 `limit_reached` when the key would pass [`SMALL_PER_KEY`].
+    fn add(&mut self, n: usize) -> Result<(), ApiError> {
+        let mut small = grant_auth::lock(&self.gate.small);
+        let used = small.entry(self.key).or_default();
+        if *used + n > SMALL_PER_KEY {
+            return Err(limit_reached());
+        }
+        *used += n;
+        self.n += n;
+        drop(small);
+        self.gate.changed.notify_waiters();
+        Ok(())
+    }
+}
+
+impl Drop for Small {
+    fn drop(&mut self) {
+        let mut small = grant_auth::lock(&self.gate.small);
+        if let Some(used) = small.get_mut(&self.key) {
+            *used -= self.n;
+            if *used == 0 {
+                small.remove(&self.key);
+            }
+        }
+        drop(small);
+        self.gate.changed.notify_waiters();
     }
 }
 
@@ -634,6 +711,15 @@ impl Drop for KeyPermit {
         drop(self.permit.take());
         self.gate.tidy(&self.key);
     }
+}
+
+/// 503 `not_yet`: a `Filtered` route whose filter is not live.
+fn not_yet() -> ApiError {
+    ApiError::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "not_yet",
+        "this route is not yet available to agents of another machine",
+    )
 }
 
 fn limit_reached() -> ApiError {
@@ -751,9 +837,10 @@ fn bodyless(headers: &HeaderMap) -> bool {
 }
 
 /// Reads an unverified body of at most `limit` bytes within the gate's
-/// bounds: a key's permit for a large one, the budget for every byte, and
-/// the minimum rate after the grace. Permit and budget are released when
-/// it returns.
+/// bounds: a key's permit for a large one and its small-body allowance for
+/// a small one, the budget for every byte, the minimum rate after the
+/// grace, and the absolute deadline ([`read_deadline`]). Permit, allowance
+/// and budget are released when it returns.
 async fn read_unverified(
     gate: &Arc<Gate>,
     key: [u8; 32],
@@ -775,20 +862,33 @@ async fn read_unverified(
     if declared.is_some_and(|n| n > limit) {
         return Err(too_large(limit));
     }
+    let mut small = Some(Small::new(gate, key));
     let mut permit = match declared {
-        Some(n) if n > LARGE_BODY => Some(gate.key_permit(key).await?),
-        _ => None,
+        Some(n) if n > LARGE_BODY => {
+            small = None;
+            Some(gate.key_permit(key).await?)
+        }
+        Some(n) => {
+            if let Some(s) = small.as_mut() {
+                s.add(n)?;
+            }
+            None
+        }
+        None => None,
     };
     let mut reserved = match declared {
         Some(n) => gate.reserve(n).await?,
         None => None,
     };
     let start = gate.timer.now();
+    let whole = start + read_deadline(declared.unwrap_or(limit));
     let mut buf = Vec::with_capacity(declared.unwrap_or(0));
     let mut stream = body.into_data_stream();
     loop {
         let allowed = Duration::from_secs_f64(buf.len() as f64 / MIN_RATE as f64);
-        let deadline = gate.timer.sleep_until(start + allowed.max(GRACE));
+        let deadline = gate
+            .timer
+            .sleep_until((start + allowed.max(GRACE)).min(whole));
         let chunk = tokio::select! {
             biased;
             c = stream.next() => c,
@@ -808,15 +908,20 @@ async fn read_unverified(
                     None => reserved = Some(more),
                 }
             }
-            if buf.len() + chunk.len() > LARGE_BODY && permit.is_none() {
-                permit = Some(gate.key_permit(key).await?);
+            if buf.len() + chunk.len() > LARGE_BODY {
+                if permit.is_none() {
+                    small = None;
+                    permit = Some(gate.key_permit(key).await?);
+                }
+            } else if let Some(s) = small.as_mut() {
+                s.add(chunk.len())?;
             }
         }
         gate.read.fetch_add(chunk.len() as u64, Ordering::SeqCst);
         gate.changed.notify_waiters();
         buf.extend_from_slice(&chunk);
     }
-    drop((permit, reserved));
+    drop((permit, reserved, small));
     Ok(Bytes::from(buf))
 }
 
@@ -840,6 +945,10 @@ pub async fn verify_layer(State(s): State<AppState>, mut req: Request, next: Nex
     let Some(need) = need else {
         return crate::auth::grants_refused().into_response();
     };
+    if need.class == Class::Filtered && !FILTERED_LIVE.contains(&need.name) {
+        // Closed to every agent of another machine: nothing to read.
+        return not_yet().into_response();
+    }
     let (mut parts, body) = req.into_parts();
     let body = if bodyless(&parts.headers) {
         Bytes::new()
@@ -934,6 +1043,95 @@ mod tests {
         assert_eq!(p.limit, crate::routes::artifacts::PUBLISH_BODY_LIMIT);
         assert_eq!(p.right, Some((RightType::Artifacts, "update")));
         assert_eq!(p.class, Class::Filtered);
+    }
+
+    /// `DEFAULT_LIMIT` is axum's own default, which the routes without a
+    /// layer of their own keep.
+    #[tokio::test]
+    async fn the_default_limit_is_axums() {
+        use tower::ServiceExt;
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::post(|b: Bytes| async move { b.len().to_string() }),
+        );
+        for (n, want) in [(DEFAULT_LIMIT, 200), (DEFAULT_LIMIT + 1, 413)] {
+            let req = Request::post("/")
+                .header(header::CONTENT_LENGTH, n)
+                .body(Body::from(vec![0u8; n]))
+                .unwrap();
+            let res = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(res.status().as_u16(), want, "{n}");
+        }
+    }
+
+    /// A [`Timer`] whose time moves only by [`Stepped::advance`].
+    #[derive(Default)]
+    struct Stepped(Mutex<SteppedState>);
+
+    /// The time a [`Stepped`] reads, and each pending sleep's deadline.
+    type SteppedState = (Duration, Vec<(Duration, tokio::sync::oneshot::Sender<()>)>);
+
+    impl Timer for Stepped {
+        fn now(&self) -> Duration {
+            self.0.lock().unwrap().0
+        }
+        fn sleep_until(&self, at: Duration) -> BoxFuture<'static, ()> {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            self.0.lock().unwrap().1.push((at, tx));
+            Box::pin(async move {
+                if rx.await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            })
+        }
+    }
+
+    impl Stepped {
+        fn advance(&self, d: Duration) {
+            let mut st = self.0.lock().unwrap();
+            st.0 += d;
+            let now = st.0;
+            for (at, tx) in std::mem::take(&mut st.1) {
+                if at <= now {
+                    let _ = tx.send(());
+                } else {
+                    st.1.push((at, tx));
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_queued_body_and_a_budget_wait_end_after_thirty_seconds() {
+        let timer = Arc::new(Stepped::default());
+        let gate = Arc::new(Gate::with_budget(timer.clone(), 4));
+        let key = [1u8; 32];
+        let held = gate.key_permit(key).await.unwrap();
+        let reserved = gate.reserve(4).await.unwrap();
+        let (g, k) = (gate.clone(), key);
+        let queued = tokio::spawn(async move { g.key_permit(k).await.err().map(|e| e.code) });
+        let g = gate.clone();
+        let waiting = tokio::spawn(async move { g.reserve(1).await.err().map(|e| e.code) });
+        gate.wait_until(
+            |s| s.queued == 1 && s.budget_waiting == 1,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("both waiting");
+        timer.advance(WAIT - Duration::from_secs(1));
+        tokio::task::yield_now().await;
+        assert!(!queued.is_finished() && !waiting.is_finished());
+        timer.advance(Duration::from_secs(1));
+        assert_eq!(queued.await.unwrap(), Some("limit_reached"));
+        assert_eq!(waiting.await.unwrap(), Some("busy"));
+        drop((held, reserved));
+        assert_eq!(gate.state(), GateState::default());
+    }
+
+    #[test]
+    fn the_whole_read_has_an_absolute_deadline() {
+        assert_eq!(read_deadline(0), GRACE);
+        assert_eq!(read_deadline(96 * 1024 * 1024), Duration::from_secs(106));
     }
 
     #[test]
