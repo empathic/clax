@@ -437,6 +437,7 @@ dependencies = [
  "mime_guess",
  "nix",
  "rand 0.9.5",
+ "ring",
  "rusqlite",
  "ryu-js",
  "schemars",

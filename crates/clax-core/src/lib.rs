@@ -23,6 +23,7 @@ pub mod questions;
 pub mod rights;
 pub mod room;
 pub mod secret;
+pub mod sig;
 pub mod store;
 pub mod toolpath;
 pub mod working;
