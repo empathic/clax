@@ -1156,3 +1156,91 @@ async fn a_failed_index_change_still_hands_out_the_tokens() {
     );
     assert_eq!(sam.revoke_token().await.status(), 204);
 }
+
+#[tokio::test]
+async fn a_sniffed_pending_poll_cannot_be_replayed_after_a_flood() {
+    let clock = Arc::new(ManualClock::at(T0));
+    let ts = lan_server_at(&clock).await;
+    let (c, gid, user_code) = pending(&ts, "clax:reader").await;
+    let cont = c.held().continue_token.unwrap();
+    let path = format!("/api/grants/{gid}/continue");
+    let nonce = clax_core::sig::new_nonce();
+    // The poll a sniffer captures: same key, path, token, time and nonce
+    // sign to the same request.
+    let poll = |skew: i64| Call {
+        method: "POST",
+        path: &path,
+        authorization: Some(format!("GNAP {cont}")),
+        nonce: Some(nonce.clone()),
+        skew,
+        ..Default::default()
+    };
+    clock.advance(5);
+    assert_eq!(c.call(poll(0)).await.status(), 200);
+    let res = ts
+        .owner_browser()
+        .post(
+            &format!("/api/grants/{gid}/approve"),
+            json!({"user_code": user_code, "name": "Sam"}),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    // Sixteen addresses flood the grant-request cache with throwaway keys.
+    for p in 0..16u32 {
+        for _ in 0..16 {
+            let res = TestClient::new(&ts)
+                .from_peer(peer(100 + p))
+                .grant_request_raw(json!({"clax": {"invite": "AAAA-AAAA-AAAA"}}))
+                .await;
+            assert_eq!(res.status(), 400);
+        }
+    }
+    clock.advance(3);
+    let sniffer = TestClient::with_key(&ts, KeyPair::from_pkcs8(c.key.pkcs8().expose()).unwrap())
+        .from_peer(peer(200));
+    let res = sniffer.call(poll(-3)).await;
+    assert_eq!(status_code(res).await, (401, "replayed_request".into()));
+    let (status, v) = c.poll().await;
+    assert_eq!(status, 200, "{v}");
+    assert!(
+        v["access_token"]["value"]
+            .as_str()
+            .unwrap()
+            .starts_with("cxg_")
+    );
+}
+
+#[tokio::test]
+async fn a_guessed_continuation_costs_no_store_read_before_its_signature_header() {
+    let ts = lan_server().await;
+    let c = TestClient::new(&ts);
+    for call in [
+        Call {
+            method: "POST",
+            path: "/api/grants/g_guess/continue",
+            authorization: Some("GNAP cxc_guess".into()),
+            unsigned: true,
+            ..Default::default()
+        },
+        Call {
+            method: "POST",
+            path: "/api/grants/g_guess/continue",
+            authorization: Some("GNAP cxc_guess".into()),
+            skew: 500,
+            ..Default::default()
+        },
+    ] {
+        let unsigned = call.unsigned;
+        let res = c.call(call).await;
+        let want = if unsigned {
+            "invalid_signature"
+        } else {
+            "stale_request"
+        };
+        assert_eq!(status_code(res).await, (401, want.into()));
+    }
+    let res = c
+        .gnap("POST", "/api/grants/g_guess/continue", "cxc_guess")
+        .await;
+    assert_eq!(status_code(res).await, (401, "invalid_token".into()));
+}

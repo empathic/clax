@@ -554,6 +554,7 @@ pub const MIGRATIONS: &[&str] = &[
         user_code_sha256 TEXT,
         wrong_codes INTEGER NOT NULL DEFAULT 0,
         continue_sha256 TEXT NOT NULL,
+        continue_t INTEGER,
         manage_sha256 TEXT,
         narrow_json TEXT,
         created_at TEXT NOT NULL,
