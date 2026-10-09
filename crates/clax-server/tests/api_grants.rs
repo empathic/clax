@@ -1244,3 +1244,14 @@ async fn a_guessed_continuation_costs_no_store_read_before_its_signature_header(
         .await;
     assert_eq!(status_code(res).await, (401, "invalid_token".into()));
 }
+
+#[tokio::test]
+async fn a_poll_and_a_disconnect_in_one_second_both_succeed() {
+    let clock = Arc::new(ManualClock::at(T0));
+    let ts = lan_server_at(&clock).await;
+    let (c, gid, _) = pending(&ts, "clax:reader").await;
+    clock.advance(5);
+    assert_eq!(c.poll().await.0, 200);
+    assert_eq!(c.disconnect().await.status(), 204);
+    assert_eq!(ts.store.grant(&gid).unwrap().status, "revoked");
+}

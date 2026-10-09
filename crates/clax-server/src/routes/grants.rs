@@ -567,13 +567,14 @@ pub async fn poll(
         token,
         key,
         t,
+        nonce,
         ..
     } = grant_auth::gnap(&s, req, &gid, CredentialKind::Continue).await?;
     let token = token.expect("a continuation call carries its token");
     let state = s.clone();
     let v = s
         .store_call(
-            move |st| match st.continue_grant(&gid, token.expose(), t)? {
+            move |st| match st.continue_grant(&gid, token.expose(), t, &nonce)? {
                 ContinueOutcome::Pending { grant } => Ok(json!({
                     "continue": {
                         "access_token": {"value": token.expose()},
@@ -623,11 +624,13 @@ pub async fn disconnect(
     req: axum::extract::Request,
 ) -> Result<Response, Refusal> {
     let gid = path(gid)?;
-    let Signed { token, t, .. } = grant_auth::gnap(&s, req, &gid, CredentialKind::Continue).await?;
+    let Signed {
+        token, t, nonce, ..
+    } = grant_auth::gnap(&s, req, &gid, CredentialKind::Continue).await?;
     let token = token.expect("a continuation call carries its token");
     let (state, ctx) = (s.clone(), s.feedback_ctx());
     s.store_call(move |st| {
-        let ended = st.disconnect_grant(&gid, token.expose(), t)?;
+        let ended = st.disconnect_grant(&gid, token.expose(), t, &nonce)?;
         announce_ended(&state, &ctx, st, &[ended], "person");
         Ok(())
     })

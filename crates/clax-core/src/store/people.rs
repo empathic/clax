@@ -569,18 +569,22 @@ fn stored_hash(tx: &Transaction<'_>, gid: &str, column: &str) -> Result<Option<S
     .ok_or(CoreError::NotFound)
 }
 
-/// Accepts a continuation call signed at `t` on grant `gid` when `t` is
-/// later than every call accepted before: a replayed call, whatever became
-/// of its nonce, is refused here.
-fn accept_t(tx: &Transaction<'_>, gid: &str, t: i64) -> Result<()> {
+/// Accepts a continuation call signed at `t` with `nonce` on grant `gid`
+/// unless an earlier `t` than the last accepted call's, or the same `t` and
+/// nonce: a replay of an older call is refused here whatever became of its
+/// nonce, and one in the same second by the nonce caches (and the stored
+/// nonce, for the last call).
+fn accept_t(tx: &Transaction<'_>, gid: &str, t: i64, nonce: &str) -> Result<()> {
     let n = tx.execute(
-        "UPDATE grants SET continue_t = ?2 WHERE id = ?1 AND (continue_t IS NULL OR continue_t < ?2)",
-        params![gid, t],
+        "UPDATE grants SET continue_t = ?2, continue_nonce = ?3 WHERE id = ?1
+           AND (continue_t IS NULL OR continue_t < ?2
+                OR (continue_t = ?2 AND continue_nonce IS NOT ?3))",
+        params![gid, t, nonce],
     )?;
     if n == 0 {
         return Err(CoreError::invalid(
             "replayed_request",
-            "a continuation call must be signed later than the last one",
+            "a continuation call must not be signed before the last one, nor repeat it",
         ));
     }
     Ok(())
@@ -1079,15 +1083,16 @@ impl Store {
     /// the wait after the last (or the request); `denied` for a grant
     /// denied, revoked or expired (a pending one past [`PENDING_TTL_SECS`]
     /// expires here); `already_issued` for an approved grant whose tokens
-    /// were handed out; `replayed_request` unless `t`, the call's signed
-    /// time, is later than every continuation call accepted before (tested
-    /// after `too_fast`, so a client's second poll within a second is
-    /// `too_fast`); `NotFound` for an unknown grant.
+    /// were handed out; `replayed_request` when `t`, the call's signed time,
+    /// is before the last accepted continuation call's, or equals it with
+    /// the same `nonce` (tested after `too_fast`); `NotFound` for an unknown
+    /// grant.
     pub fn continue_grant(
         &self,
         gid: &str,
         continue_token: &str,
         t: i64,
+        nonce: &str,
     ) -> Result<ContinueOutcome> {
         let denied = || CoreError::invalid("denied", "this request was denied or has expired");
         // As in `approve_grant`: the inner error commits (an expiry).
@@ -1124,7 +1129,7 @@ impl Store {
                             format!("poll at most once every {CONTINUE_WAIT_SECS} seconds"),
                         ));
                     }
-                    accept_t(tx, gid, t)?;
+                    accept_t(tx, gid, t, nonce)?;
                     tx.execute(
                         "UPDATE grants SET last_used_at = ?2 WHERE id = ?1",
                         params![gid, now],
@@ -1142,7 +1147,7 @@ impl Store {
                     Ok(Err(denied()))
                 }
                 "approved" if manage.is_none() => {
-                    accept_t(tx, gid, t)?;
+                    accept_t(tx, gid, t, nonce)?;
                     let owner = grant_in(tx, gid)?.expect("the grant exists").owner;
                     let issued = issue(tx, gid, owner, &now, &self.browser_expiry())?;
                     tx.execute(
@@ -1205,14 +1210,15 @@ impl Store {
     ///
     /// # Errors
     /// `invalid_token` unless `continue_token` is the grant's current one;
-    /// `replayed_request` unless `t`, the call's signed time, is later than
-    /// every continuation call accepted before; `NotFound` for an unknown
-    /// grant.
+    /// `replayed_request` when `t`, the call's signed time, is before the
+    /// last accepted continuation call's, or equals it with the same
+    /// `nonce`; `NotFound` for an unknown grant.
     pub fn disconnect_grant(
         &self,
         gid: &str,
         continue_token: &str,
         t: i64,
+        nonce: &str,
     ) -> Result<RevokedGrant> {
         self.with_tx(|tx| {
             if !matches(
@@ -1221,7 +1227,7 @@ impl Store {
             ) {
                 return Err(invalid_token());
             }
-            accept_t(tx, gid, t)?;
+            accept_t(tx, gid, t, nonce)?;
             end_grant(
                 self,
                 tx,
@@ -1672,6 +1678,11 @@ pub(crate) mod tests {
     pub(crate) const KEY_A: [u8; 32] = [1; 32];
 
     /// A continuation call's signed time: later than every one before.
+    /// A continuation call's nonce: new each time.
+    pub(crate) fn n() -> String {
+        crate::sig::new_nonce()
+    }
+
     pub(crate) fn t() -> i64 {
         static N: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
         N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -1889,13 +1900,13 @@ pub(crate) mod tests {
             token,
             browser_code,
             ..
-        } = st.continue_grant(&g.id, cont.expose(), t()).unwrap()
+        } = st.continue_grant(&g.id, cont.expose(), t(), &n()).unwrap()
         else {
             panic!()
         };
         assert!(st.token_live(token.expose()).unwrap() && browser_code.is_some());
         assert_eq!(
-            code(st.continue_grant(&g.id, cont.expose(), t())),
+            code(st.continue_grant(&g.id, cont.expose(), t(), &n())),
             "invalid_token",
             "rotated"
         );
@@ -1939,7 +1950,10 @@ pub(crate) mod tests {
             "not_pending"
         );
         clock.advance(CONTINUE_WAIT_SECS);
-        assert_eq!(code(st.continue_grant(&g.id, cont.expose(), t())), "denied");
+        assert_eq!(
+            code(st.continue_grant(&g.id, cont.expose(), t(), &n())),
+            "denied"
+        );
         // A lowercase code without the dash is the same code.
         let (g, _, user_code) = pending(&st, KEY_B);
         let typed = user_code.expose().replace('-', "").to_lowercase();
@@ -1978,25 +1992,28 @@ pub(crate) mod tests {
         let (_d, clock, st) = store();
         let (g, cont, _) = pending(&st, KEY_A);
         assert_eq!(
-            code(st.continue_grant(&g.id, cont.expose(), t())),
+            code(st.continue_grant(&g.id, cont.expose(), t(), &n())),
             "too_fast"
         );
         clock.advance(CONTINUE_WAIT_SECS);
         assert!(matches!(
-            st.continue_grant(&g.id, cont.expose(), t()).unwrap(),
+            st.continue_grant(&g.id, cont.expose(), t(), &n()).unwrap(),
             ContinueOutcome::Pending { .. }
         ));
         clock.advance(CONTINUE_WAIT_SECS - 1);
         assert_eq!(
-            code(st.continue_grant(&g.id, cont.expose(), t())),
+            code(st.continue_grant(&g.id, cont.expose(), t(), &n())),
             "too_fast"
         );
         assert_eq!(
-            code(st.continue_grant(&g.id, "cxc_wrong", t())),
+            code(st.continue_grant(&g.id, "cxc_wrong", t(), &n())),
             "invalid_token"
         );
         clock.advance(PENDING_TTL_SECS);
-        assert_eq!(code(st.continue_grant(&g.id, cont.expose(), t())), "denied");
+        assert_eq!(
+            code(st.continue_grant(&g.id, cont.expose(), t(), &n())),
+            "denied"
+        );
         assert_eq!(st.grant(&g.id).unwrap().status, "expired");
     }
 
@@ -2051,10 +2068,10 @@ pub(crate) mod tests {
             panic!()
         };
         assert_eq!(
-            code(st.disconnect_grant(&g.id, token.expose(), t())),
+            code(st.disconnect_grant(&g.id, token.expose(), t(), &n())),
             "invalid_token"
         );
-        st.disconnect_grant(&g.id, continue_token.expose(), t())
+        st.disconnect_grant(&g.id, continue_token.expose(), t(), &n())
             .unwrap();
         assert!(!st.token_live(token.expose()).unwrap());
     }
@@ -2358,7 +2375,7 @@ pub(crate) mod tests {
             st.approve_grant(&g.id, user_code.expose(), "Sam", None)
                 .unwrap();
             clock.advance(CONTINUE_WAIT_SECS);
-            match st.continue_grant(&g.id, cont.expose(), t()).unwrap() {
+            match st.continue_grant(&g.id, cont.expose(), t(), &n()).unwrap() {
                 ContinueOutcome::Approved {
                     browser_code: Some(b),
                     ..
@@ -2435,14 +2452,14 @@ pub(crate) mod tests {
             token,
             continue_token,
             ..
-        } = st.continue_grant(&g.id, cont.expose(), t()).unwrap()
+        } = st.continue_grant(&g.id, cont.expose(), t(), &n()).unwrap()
         else {
             panic!()
         };
         for _ in 0..2 {
             clock.advance(CONTINUE_WAIT_SECS);
             assert_eq!(
-                code(st.continue_grant(&g.id, continue_token.expose(), t())),
+                code(st.continue_grant(&g.id, continue_token.expose(), t(), &n())),
                 "already_issued"
             );
         }
@@ -2477,7 +2494,10 @@ pub(crate) mod tests {
         assert_eq!(st.deny_grant(&g.id).unwrap().status, "denied");
         assert_eq!(st.grant(&g.id).unwrap().status, "denied");
         clock.advance(CONTINUE_WAIT_SECS);
-        assert_eq!(code(st.continue_grant(&g.id, cont.expose(), t())), "denied");
+        assert_eq!(
+            code(st.continue_grant(&g.id, cont.expose(), t(), &n())),
+            "denied"
+        );
         assert_eq!(
             code(st.approve_grant(&g.id, user_code.expose(), "Sam", None)),
             "not_pending"
@@ -2545,7 +2565,7 @@ pub(crate) mod tests {
             continue_token: mia_cont,
             ..
         } = st
-            .continue_grant(&pending_grant.id, cont.expose(), t())
+            .continue_grant(&pending_grant.id, cont.expose(), t(), &n())
             .unwrap()
         else {
             panic!("approved")
@@ -2608,7 +2628,7 @@ pub(crate) mod tests {
                 panic!("pending")
             };
             let ended = st
-                .disconnect_grant(&grant.id, continue_token.expose(), t())
+                .disconnect_grant(&grant.id, continue_token.expose(), t(), &n())
                 .unwrap();
             assert!(ended.ended);
         }
@@ -2626,7 +2646,7 @@ pub(crate) mod tests {
         let (denied, _, _) = pending(&st, KEY_A);
         st.deny_grant(&denied.id).unwrap();
         let (cancelled, cont, _) = pending(&st, KEY_B);
-        st.disconnect_grant(&cancelled.id, cont.expose(), t())
+        st.disconnect_grant(&cancelled.id, cont.expose(), t(), &n())
             .unwrap();
         let (_, _, _) = pending(&st, [3; 32]);
         let (sam, _, _) = approved(&st, "Sam", [4; 32]);
@@ -2647,33 +2667,40 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_continuation_call_is_accepted_only_later_than_the_last() {
+    fn a_continuation_call_is_refused_before_the_last_or_repeating_it() {
         let (_d, clock, st) = store();
         let (g, cont, code_) = pending(&st, KEY_A);
         clock.advance(CONTINUE_WAIT_SECS);
-        st.continue_grant(&g.id, cont.expose(), 100).unwrap();
+        st.continue_grant(&g.id, cont.expose(), 100, "n1").unwrap();
         st.approve_grant(&g.id, code_.expose(), "Sam", None)
             .unwrap();
-        // The pending poll, replayed after the approval, takes nothing.
-        for replay in [100, 99] {
+        // The pending poll, replayed after the approval, takes nothing; nor
+        // does an older one.
+        for (t, nonce) in [(100, "n1"), (99, "n0")] {
             assert_eq!(
-                code(st.continue_grant(&g.id, cont.expose(), replay)),
+                code(st.continue_grant(&g.id, cont.expose(), t, nonce)),
                 "replayed_request"
             );
         }
+        // Another call in the same second is accepted.
         assert!(matches!(
-            st.continue_grant(&g.id, cont.expose(), 101).unwrap(),
+            st.continue_grant(&g.id, cont.expose(), 100, "n2").unwrap(),
             ContinueOutcome::Approved { .. }
         ));
         let (d, dcont, _) = pending(&st, KEY_B);
         clock.advance(CONTINUE_WAIT_SECS);
-        st.continue_grant(&d.id, dcont.expose(), 50).unwrap();
+        st.continue_grant(&d.id, dcont.expose(), 50, "m1").unwrap();
         assert_eq!(
-            code(st.disconnect_grant(&d.id, dcont.expose(), 50)),
+            code(st.disconnect_grant(&d.id, dcont.expose(), 50, "m1")),
             "replayed_request"
         );
+        assert_eq!(
+            code(st.disconnect_grant(&d.id, dcont.expose(), 49, "m9")),
+            "replayed_request"
+        );
+        // A poll and a disconnect in one second.
         assert!(
-            st.disconnect_grant(&d.id, dcont.expose(), 51)
+            st.disconnect_grant(&d.id, dcont.expose(), 50, "m2")
                 .unwrap()
                 .ended
         );
@@ -2714,7 +2741,7 @@ pub(crate) mod tests {
             .unwrap();
         clock.advance(CONTINUE_WAIT_SECS);
         let ContinueOutcome::Approved { access, .. } =
-            st.continue_grant(&g.id, cont.expose(), t()).unwrap()
+            st.continue_grant(&g.id, cont.expose(), t(), &n()).unwrap()
         else {
             panic!("approved")
         };
@@ -2825,7 +2852,7 @@ pub(crate) mod tests {
             [fresh.id.as_str()]
         );
         assert_eq!(
-            code(st.continue_grant(&fresh.id, cont.expose(), t())),
+            code(st.continue_grant(&fresh.id, cont.expose(), t(), &n())),
             "denied"
         );
         assert!(matches!(
@@ -2841,7 +2868,10 @@ pub(crate) mod tests {
         st.approve_grant(&g.id, user_code.expose(), "Sam", None)
             .unwrap();
         clock.advance(PENDING_TTL_SECS + 1);
-        assert_eq!(code(st.continue_grant(&g.id, cont.expose(), t())), "denied");
+        assert_eq!(
+            code(st.continue_grant(&g.id, cont.expose(), t(), &n())),
+            "denied"
+        );
         assert!(st.token_index().unwrap().is_empty());
         assert!(st.request_grant(grant(KEY_A, None)).is_ok());
         assert_eq!(
