@@ -585,6 +585,20 @@ impl NonceCache {
         self.rotation.retain(|k| keys.contains_key(k));
     }
 
+    /// Forgets every nonce of `key`: for a cache that evicts a key rather
+    /// than refusing a new one.
+    pub fn forget(&mut self, key: &[u8; PUBLIC_LEN]) {
+        if let Some(k) = self.keys.remove(key) {
+            self.total -= k.len;
+            self.rotation.retain(|r| r != key);
+        }
+    }
+
+    /// Whether `key` has nonces remembered.
+    pub fn has_key(&self, key: &[u8; PUBLIC_LEN]) -> bool {
+        self.keys.contains_key(key)
+    }
+
     /// How many nonces are remembered, over every key.
     pub fn len(&self) -> usize {
         self.total
@@ -870,6 +884,20 @@ mod tests {
         let fine = nn(1);
         assert!(parse_header(format!("t=5, n={fine}, s={s}")).is_ok());
         assert!(c.check(&[1u8; 32], &fine, 5, 5).is_ok());
+    }
+
+    #[test]
+    fn forgetting_a_key_frees_its_room() {
+        let mut c = NonceCache::new(240, 4).with_caps(2, 100);
+        c.record(&[1u8; 32], &nn(1), 0, 0).unwrap();
+        c.record(&[2u8; 32], &nn(1), 0, 0).unwrap();
+        assert_eq!(c.check(&[3u8; 32], &nn(1), 0, 0), Err(SigError::Full));
+        c.forget(&[1u8; 32]);
+        assert!(!c.has_key(&[1u8; 32]) && c.has_key(&[2u8; 32]));
+        assert_eq!((c.len(), c.keys(), c.rotation.len()), (1, 1, 1));
+        c.record(&[3u8; 32], &nn(1), 0, 0).unwrap();
+        c.forget(&[9u8; 32]);
+        assert_eq!(c.len(), 2);
     }
 
     #[test]

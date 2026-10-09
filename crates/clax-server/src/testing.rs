@@ -15,6 +15,9 @@ use std::time::Duration;
 pub const LAN_HEADER: &str = "x-clax-test-lan";
 /// The LAN peer a request with [`LAN_HEADER`] arrives from.
 pub const LAN_PEER: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 7);
+/// The header that names another peer address for a request with
+/// [`LAN_HEADER`], so a test can speak from many LAN machines.
+pub const PEER_HEADER: &str = "x-clax-test-peer";
 /// The daemon's LAN interface address a request with [`LAN_HEADER`]
 /// arrives on.
 pub const LAN_LOCAL: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
@@ -73,10 +76,16 @@ async fn as_lan(
             .extensions()
             .get::<axum::extract::ConnectInfo<crate::auth::Conn>>()
             .map(|c| c.0);
+        let peer = req
+            .headers()
+            .get(PEER_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<IpAddr>().ok())
+            .unwrap_or(IpAddr::V4(LAN_PEER));
         if let Some(c) = conn {
             req.extensions_mut()
                 .insert(axum::extract::ConnectInfo(crate::auth::Conn {
-                    peer: SocketAddr::new(IpAddr::V4(LAN_PEER), c.peer.port()),
+                    peer: SocketAddr::new(peer, c.peer.port()),
                     local: SocketAddr::new(IpAddr::V4(LAN_LOCAL), c.local.port()),
                 }));
         }
@@ -1208,6 +1217,14 @@ pub struct Call<'a> {
     pub nonce: Option<String>,
     /// More headers.
     pub headers: Vec<(&'static str, String)>,
+    /// Send another method than the one signed.
+    pub sent_method: Option<&'a str>,
+    /// Send to another path and query than the one signed.
+    pub sent_path: Option<&'a str>,
+    /// Send another `Host` than the one signed.
+    pub sent_host: Option<String>,
+    /// Send another body than the one signed.
+    pub sent_body: Option<Vec<u8>>,
 }
 
 /// The tokens a [`TestClient`] holds.
@@ -1232,6 +1249,8 @@ pub struct TestClient {
     store: Arc<Store>,
     pub key: clax_core::sig::KeyPair,
     held: std::sync::Mutex<Held>,
+    /// The LAN address it speaks from ([`LAN_PEER`] unless set).
+    peer: Option<IpAddr>,
 }
 
 impl TestClient {
@@ -1254,7 +1273,14 @@ impl TestClient {
             store: ts.store.clone(),
             key,
             held: Default::default(),
+            peer: None,
         }
+    }
+
+    /// The same client speaking from LAN address `ip`.
+    pub fn from_peer(mut self, ip: IpAddr) -> TestClient {
+        self.peer = Some(ip);
+        self
     }
 
     /// The tokens held now.
@@ -1278,11 +1304,18 @@ impl TestClient {
                 .and_then(|a| a.split_once(' '))
                 .map(|(_, t)| t.to_string())
         });
-        let method = reqwest::Method::from_bytes(c.method.as_bytes()).unwrap();
+        let method =
+            reqwest::Method::from_bytes(c.sent_method.unwrap_or(c.method).as_bytes()).unwrap();
         let mut req = self
             .client
-            .request(method, format!("{}{}", self.base, c.path))
-            .header("host", &self.host);
+            .request(
+                method,
+                format!("{}{}", self.base, c.sent_path.unwrap_or(c.path)),
+            )
+            .header("host", c.sent_host.as_deref().unwrap_or(&self.host));
+        if let Some(ip) = self.peer {
+            req = req.header(PEER_HEADER, ip.to_string());
+        }
         if !c.unsigned {
             let nonce = c.nonce.unwrap_or_else(new_nonce);
             let input = SignInput {
@@ -1303,6 +1336,7 @@ impl TestClient {
         if let Some(a) = c.authorization {
             req = req.header("authorization", a);
         }
+        let body = c.sent_body.unwrap_or(body);
         if !body.is_empty() {
             req = req.header("content-type", "application/json");
         }
