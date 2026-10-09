@@ -12,7 +12,8 @@ use super::sessions::with_for_actor;
 use crate::CoreError;
 use crate::Result;
 use crate::audit::{
-    AgentActor, AuditCtx, AuditIds, AuditKind, AuditRecord, SystemReason, ToolCallReport,
+    AgentActor, AuditCtx, AuditIds, AuditKind, AuditRecord, SystemReason, ToolCallIdReport,
+    ToolCallReport,
 };
 use crate::live::PageKey;
 use crate::toolpath::project::{self, ArtifactInfo, Export, ExportEnv, Scope, Source};
@@ -70,6 +71,97 @@ impl AuditState {
             tracing::error!("the audit nudge panicked; the event is recorded");
         }
     }
+}
+
+/// What [`Store::record_tool_call_id`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallIdMatch {
+    /// It recorded `tool.call_id` at `seq`, naming `call_id` (`None` when
+    /// no call matched).
+    Recorded { seq: i64, call_id: Option<String> },
+    /// The harness call ID was already recorded; nothing was.
+    Repeated,
+}
+
+/// What a call-ID report finds among its session's recent events (spec
+/// §6.7). A call qualifies when it is a `tool.call` with the report's bare
+/// tool name and argument hash, it ended within [`CALL_ID_ENDED`] of the
+/// report's arrival, it carries no harness call ID, and no `tool.call_id`
+/// names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallIdScan {
+    /// The report's harness call ID is already recorded for the session.
+    Repeated,
+    /// No call qualifies.
+    None,
+    /// Exactly one call qualifies: its ID and artifact.
+    One(String, Option<String>),
+    /// More than one call qualifies, so none is chosen.
+    Many,
+}
+
+/// How far from a report's arrival a call's `ended_at` may fall for the
+/// report to name it.
+pub const CALL_ID_ENDED: chrono::TimeDelta = chrono::TimeDelta::seconds(5);
+
+/// How far back, by recording time, a call-ID report looks for calls,
+/// their claims and its own earlier record.
+pub const CALL_ID_LOOKBACK: chrono::TimeDelta = chrono::TimeDelta::seconds(60);
+
+/// [`CallIdScan`] for `report`, arriving at `arrival`, over the `tool.call`
+/// and `tool.call_id` events of session `sid` recorded in the
+/// [`CALL_ID_LOOKBACK`] before it. Rows are filtered by their own time,
+/// never by their order, so a clock that stepped back hides nothing.
+fn scan_call_id(
+    c: &rusqlite::Connection,
+    sid: &str,
+    report: &ToolCallIdReport,
+    arrival: chrono::DateTime<chrono::Utc>,
+) -> Result<CallIdScan> {
+    let since = (arrival - CALL_ID_LOOKBACK).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    // `+session_id`: the range on `at` picks the rows, through its index.
+    let mut q = c.prepare_cached(
+        "SELECT kind, call_id, artifact_id, body FROM audit_events
+         WHERE +session_id = ?1 AND at >= ?2 AND kind IN ('tool.call', 'tool.call_id')",
+    )?;
+    let mut rows = q.query(params![sid, since])?;
+    let tool = report.bare_tool();
+    let mut claimed: Vec<String> = Vec::new();
+    let mut candidates: Vec<(String, Option<String>)> = Vec::new();
+    while let Some(r) = rows.next()? {
+        let kind: String = r.get(0)?;
+        let call_id: Option<String> = r.get(1)?;
+        let body: serde_json::Value =
+            serde_json::from_str(&r.get::<_, String>(3)?).unwrap_or_default();
+        let field = |k: &str| body.get(k).and_then(serde_json::Value::as_str);
+        if kind == AuditKind::ToolCallId.as_str() {
+            if field("harness_call_id") == Some(report.tool_use_id.as_str()) {
+                return Ok(CallIdScan::Repeated);
+            }
+            claimed.extend(call_id);
+            continue;
+        }
+        let Some(call_id) = call_id else { continue };
+        let ended_near = field("ended_at")
+            .and_then(|e| chrono::DateTime::parse_from_rfc3339(e).ok())
+            .is_some_and(|e| (e.with_timezone(&chrono::Utc) - arrival).abs() <= CALL_ID_ENDED);
+        if ended_near
+            && field("tool") == Some(tool)
+            && field("args_sha256") == Some(report.args_sha256.as_str())
+            && field("harness_call_id").is_none()
+        {
+            candidates.push((call_id, r.get(2)?));
+        }
+    }
+    candidates.retain(|(c, _)| !claimed.contains(c));
+    Ok(match candidates.len() {
+        0 => CallIdScan::None,
+        1 => {
+            let (call, artifact) = candidates.remove(0);
+            CallIdScan::One(call, artifact)
+        }
+        _ => CallIdScan::Many,
+    })
 }
 
 /// One stored audit event. `kind`, `actor` and `body` are kept as stored,
@@ -369,6 +461,56 @@ impl Store {
                 ..ctx.clone()
             };
             self.record_audit(tx, &ctx, rec).map(Some)
+        })
+    }
+
+    /// Looks, on a reader, for the call that a harness call ID `report`ed
+    /// for session `sid` at `arrival` names (spec §6.7); see [`CallIdScan`].
+    pub fn scan_tool_call_id(
+        &self,
+        sid: &str,
+        report: &ToolCallIdReport,
+        arrival: chrono::DateTime<chrono::Utc>,
+    ) -> Result<CallIdScan> {
+        self.with_read(|c| scan_call_id(c, sid, report, arrival))
+    }
+
+    /// Records `tool.call_id` for a harness call ID `report`ed for session
+    /// `sid` at `arrival` (spec §6.7), as `ctx`, scanning again in the
+    /// writer's transaction so two reports never claim one call. When
+    /// exactly one call qualifies ([`CallIdScan::One`]) the event names it
+    /// and takes its artifact; when none or more than one does, or when
+    /// `contested` (another report for the same call was looking at the
+    /// same time), it records `call_id: null`. A harness call ID already
+    /// recorded records nothing.
+    pub fn record_tool_call_id(
+        &self,
+        ctx: &AuditCtx,
+        sid: &str,
+        report: &ToolCallIdReport,
+        arrival: chrono::DateTime<chrono::Utc>,
+        contested: bool,
+    ) -> Result<CallIdMatch> {
+        self.with_tx(|tx| {
+            let (call_id, artifact) = match scan_call_id(tx, sid, report, arrival)? {
+                CallIdScan::Repeated => return Ok(CallIdMatch::Repeated),
+                CallIdScan::One(call, artifact) if !contested => (Some(call), artifact),
+                CallIdScan::One(..) | CallIdScan::None | CallIdScan::Many => (None, None),
+            };
+            let mut rec = AuditRecord::new(AuditKind::ToolCallId, Store::now())
+                .with("call_id", call_id.clone())
+                .with("harness_call_id", report.tool_use_id.as_str())
+                .with("harness_tool", report.tool_name.as_str())
+                .with("args_sha256", report.args_sha256.as_str());
+            rec.ids.call = call_id.clone();
+            rec.ids.artifact = artifact;
+            rec.ids.session = Some(sid.to_string());
+            let ctx = AuditCtx {
+                call: None,
+                ..ctx.clone()
+            };
+            let seq = self.record_audit(tx, &ctx, rec)?;
+            Ok(CallIdMatch::Recorded { seq, call_id })
         })
     }
 

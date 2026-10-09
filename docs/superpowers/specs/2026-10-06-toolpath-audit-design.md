@@ -589,12 +589,51 @@ carry no `harness_tool`; the exact IDs below come from the harness side.
   `harness_call_id`. Its registered tool name is `harness_tool`.
 - **Claude Code.** A PostToolUse hook matching Clax's MCP tools reads
   `tool_use_id`, `tool_name` and `tool_input`. It computes the argument hash
-  from `tool_input` by §12.2, then POSTs
-  `{tool_use_id, tool_name, args_sha256}`. The daemon looks for the session's
-  most recent `tool.call` that has the same bare tool name and hash, falls
-  within 60 s, and has no harness ID yet. It records `tool.call_id`, naming
-  that `call_id`, or `null` when nothing matches. Steps are never rewritten,
-  so the link is a later event.
+  from `tool_input` by §12.2 (an absent or null `tool_input` is `{}`, as
+  for the shim), then POSTs `{tool_use_id, tool_name, args_sha256}` to
+  `/api/sessions/<sid>/tool-call-ids`. The daemon records `tool.call_id`,
+  naming the one `tool.call` that qualifies, or `null`. Steps are never
+  rewritten, so the link is a later event.
+  - **Which calls qualify.** A `tool.call` of the session qualifies when
+    all of these hold:
+    - it has the report's bare tool name (§12.3) and argument hash;
+    - its `ended_at` falls within 5 s of the report's arrival (PostToolUse
+      runs as the call ends, so an older identical call, such as one whose
+      hook was lost, is never taken);
+    - it has no harness ID yet: its body carries no `harness_call_id`, and
+      no earlier `tool.call_id` names it.
+  - **Choosing.** If exactly one call qualifies, the report names it. If
+    more than one does (identical calls in flight), it records `null` at
+    once rather than guess (§12.3). If none does yet, it waits. A report
+    also records `null` at once when another report for the same session,
+    bare tool name and argument hash is already waiting, and the waiting
+    one then records `null` too: two such reports cannot tell their calls
+    apart (for example identical calls whose reports both arrive before
+    either call).
+  - **Waiting.** The shim reports its call in the background, so the
+    hook's report can arrive first. A report that finds no call waits up to
+    500 ms, woken only by its own session's `tool.call` records, then
+    records `null`. At most 64 reports wait at once; a report past that
+    records `null` at once.
+  - **Cost.** The scans run on a reader. The writer is taken only to
+    record, and the record scans again in its transaction, so two reports
+    never claim one call. The scan covers the session's `tool.call` and
+    `tool.call_id` events recorded in the last 60 s, filtered by their own
+    time, not their order.
+  - **The hook.** It is `clax hook --agent claude call-id`. Its matcher is
+    `mcp__.*clax.*__.*`, and it gives up after 3 s. Like every hook, it
+    exits 0 and logs a failure to `hooks.log`.
+  - **Artifact.** A matched `tool.call_id` takes the call's artifact, so an
+    artifact export carries the link. `call_id` also fills its column.
+  - **Answers.** The route answers as follows:
+    - 201 `{recorded: true, seq, call_id}` when it records;
+    - 200 `{recorded: false}` for a `tool_use_id` already recorded for the
+      session in the last 60 s;
+    - 204, recording nothing, for a `tool_name` whose bare name is not one
+      of Clax's own tools (its MCP registry), such as another server whose
+      name holds `clax`;
+    - 400 `invalid_tool_call_id` for a malformed report;
+    - 404 `unknown_session`.
 - **Codex and Grok.** They hand Clax no call ID for free. Their calls carry
   the name, hash and time, and a reader joins them by §12.3. If their hook
   input later turns out to carry a call ID for MCP tools, they use the same

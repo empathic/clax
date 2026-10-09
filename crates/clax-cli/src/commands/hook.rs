@@ -29,6 +29,12 @@ const FEEDBACK_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const TOOL_DEADLINE: Duration = Duration::from_secs(2);
 /// Each `tool` daemon request is abandoned after this long.
 const TOOL_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
+/// The whole `call-id` (PostToolUse on a Clax tool) invocation is
+/// abandoned after this long: within the 5 s the plugin gives it, past the
+/// daemon's wait for a call reported late (`CALL_ID_GRACE`, 500 ms).
+const CALL_ID_DEADLINE: Duration = Duration::from_secs(3);
+/// Each `call-id` daemon request is abandoned after this long.
+const CALL_ID_REQUEST_TIMEOUT: Duration = Duration::from_millis(1500);
 /// Grok Build gives `SessionEnd` hooks 1.5 s by default, so `session-end
 /// --agent grok` gives up after this long.
 const GROK_END_DEADLINE: Duration = Duration::from_millis(1200);
@@ -96,6 +102,7 @@ fn budget(agent: Agent, event: Event) -> (Duration, Duration) {
         (_, Event::Stop) => (STOP_DEADLINE, FEEDBACK_REQUEST_TIMEOUT),
         (_, Event::Prompt) => (PROMPT_DEADLINE, FEEDBACK_REQUEST_TIMEOUT),
         (_, Event::Tool) => (TOOL_DEADLINE, TOOL_REQUEST_TIMEOUT),
+        (_, Event::CallId) => (CALL_ID_DEADLINE, CALL_ID_REQUEST_TIMEOUT),
         (_, Event::Ask) => (ASK_SETUP_DEADLINE, ASK_REQUEST_TIMEOUT),
         (_, Event::Asked) => (ASKED_DEADLINE, ASKED_REQUEST_TIMEOUT),
     }
@@ -110,6 +117,7 @@ impl Event {
             Event::Stop => "stop",
             Event::Prompt => "prompt",
             Event::Tool => "tool",
+            Event::CallId => "call-id",
             Event::Ask => "ask",
             Event::Asked => "asked",
         }
@@ -138,6 +146,9 @@ pub enum Event {
     Prompt,
     /// A tool call finished; renew the session's working records.
     Tool,
+    /// A Clax tool call finished; report the harness's ID for it (Claude
+    /// Code only).
+    CallId,
     /// Claude Code is about to show AskUserQuestion; offer it in Clax first
     /// (Claude Code only).
     Ask,
@@ -635,6 +646,10 @@ fn handle(
         Event::Stop => events::stop(agent.harness(), &input, &client),
         Event::Prompt => events::prompt(agent.harness(), &input, &client),
         Event::Tool => events::tool(agent.harness(), &input, &client),
+        Event::CallId if matches!(agent, Agent::Claude) => {
+            events::tool_call_id(agent.harness(), &input, &client)
+        }
+        Event::CallId => Ok(HookOutput::none()),
         Event::Asked if matches!(agent, Agent::Claude) => ask::asked(&input, &client),
         // `ask` runs in `run_ask`; neither is wired for other harnesses.
         Event::Ask | Event::Asked => Ok(HookOutput::none()),

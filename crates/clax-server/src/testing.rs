@@ -130,6 +130,10 @@ impl TestServer {
             // No appender; tests of the journal start their own.
             journal: crate::audit::JournalStatus::off(None),
             exports: crate::routes::toolpath::Exports::new(),
+            call_ids: Arc::new(crate::routes::sessions::CallIdWait::new(
+                crate::routes::sessions::CALL_ID_GRACE,
+                crate::routes::sessions::CALL_ID_CAP,
+            )),
         };
         f(&mut state);
         state.audit_wake.install(&state.store);

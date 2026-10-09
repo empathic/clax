@@ -240,6 +240,50 @@ pub fn tool(harness: &str, input: &HookInput, daemon: &dyn Daemon) -> anyhow::Re
     Ok(HookOutput::none())
 }
 
+/// `PostToolUse` on a Clax MCP tool (Claude Code): reports the harness's
+/// call ID for the call to the live session's
+/// `POST /api/sessions/<sid>/tool-call-ids` as `{tool_use_id, tool_name,
+/// args_sha256}`, the hash computed from `tool_input` as passed (an absent
+/// or null one is `{}`) by the canonical argument hash the shim uses (spec
+/// 2026-10-06-toolpath-audit-design §6.7, §12.2). Prints nothing; with no
+/// live session, reports nothing.
+///
+/// # Errors
+/// When the input has no `session_id` or `tool_use_id`, its `tool_name` is
+/// not a Clax tool, or a daemon request fails.
+pub fn tool_call_id(
+    harness: &str,
+    input: &HookInput,
+    daemon: &dyn Daemon,
+) -> anyhow::Result<HookOutput> {
+    let field = |k: &str| {
+        input
+            .rest
+            .get(k)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+    };
+    let Some(tool_use_id) = field("tool_use_id") else {
+        bail!("hook input has no tool_use_id");
+    };
+    let tool_name = field("tool_name").unwrap_or_default();
+    if clax_core::audit::bare_clax_tool(tool_name).is_none() {
+        bail!("hook input's tool_name is not a Clax tool");
+    }
+    // Missing arguments, absent or null, are `{}` (§12.2), as for the shim.
+    let args_sha256 = match input.rest.get("tool_input") {
+        Some(args) if !args.is_null() => clax_core::toolpath::args::args_sha256(args),
+        _ => clax_core::toolpath::args::object_sha256(&serde_json::Map::new()),
+    };
+    if let Some(sid) = live_session(harness, input, daemon)? {
+        daemon.post(
+            &format!("/api/sessions/{sid}/tool-call-ids"),
+            &json!({"tool_use_id": tool_use_id, "tool_name": tool_name, "args_sha256": args_sha256}),
+        )?;
+    }
+    Ok(HookOutput::none())
+}
+
 /// Tier 3. Adds pending feedback to the prompt as additional context.
 ///
 /// # Errors

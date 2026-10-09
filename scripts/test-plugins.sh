@@ -188,6 +188,29 @@ PY
 then pass "the Claude Code plugin mirrors AskUserQuestion (ask, asked); Codex and Grok do not"
 else fail "the Claude Code PreToolUse/PostToolUse AskUserQuestion hooks are missing or misconfigured (spec §6.6)"; fi
 
+# Claude Code reports its ID for each Clax tool call (audit spec §6.7):
+# `call-id` as a PostToolUse hook matched to Clax's MCP tools only, whether
+# the matcher is searched or matched whole. The Codex and Grok plugins do
+# not wire it.
+if python3 - plugins/claude-code/hooks/hooks.json plugins/clax/hooks/hooks.json plugins/clax-grok/hooks/hooks.json 2>/dev/null <<'PY'
+import json, re, sys
+claude = json.load(open(sys.argv[1]))["hooks"]
+prefix = '"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh" exec hook --agent claude '
+post = [e for e in claude.get("PostToolUse", []) if any(h["command"].endswith(" call-id") for h in e["hooks"])]
+ok = len(post) == 1 and post[0]["hooks"] == [{"type": "command", "command": prefix + "call-id", "timeout": 5}]
+m = post[0].get("matcher", "") if post else ""
+for name in ("mcp__plugin_clax_clax__publish", "mcp__clax__list", "mcp__plugin_clax_clax__wait_for_feedback"):
+    ok = ok and bool(re.search(m, name)) and bool(re.fullmatch(m, name))
+for name in ("Bash", "AskUserQuestion", "mcp__github__create_issue", "Read"):
+    ok = ok and not re.search(m, name)
+for other in sys.argv[2:]:
+    hooks = json.load(open(other))["hooks"]
+    ok = ok and not any(h.get("command", "").endswith(" call-id") for e in hooks.values() for entry in e for h in entry.get("hooks", []))
+sys.exit(0 if ok else 1)
+PY
+then pass "the Claude Code plugin reports Clax tool call IDs (call-id); Codex and Grok do not"
+else fail "the Claude Code PostToolUse call-id hook is missing or misconfigured (audit spec §6.7)"; fi
+
 for f in plugins/claude-code/commands/comments.md plugins/claude-code/commands/watch.md plugins/claude-code/commands/wait.md plugins/claude-code/commands/extension.md; do
     [ -f "$f" ] || fail "$f is missing"
 done

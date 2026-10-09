@@ -567,6 +567,10 @@ pub async fn serve(
         audit_wake: crate::audit::AuditWake::new(),
         journal: crate::audit::JournalStatus::off(None),
         exports: crate::routes::toolpath::Exports::new(),
+        call_ids: Arc::new(crate::routes::sessions::CallIdWait::new(
+            crate::routes::sessions::CALL_ID_GRACE,
+            crate::routes::sessions::CALL_ID_CAP,
+        )),
     };
     state.audit_wake.install(&state.store);
     // The appender recovers the journal and catches it up on its own

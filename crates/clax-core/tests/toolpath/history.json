@@ -951,10 +951,8 @@
     "call": {
      "call_id": "01JBC0000000000000000000C3",
      "tool": "publish",
-     "harness_tool": "mcp__plugin_clax_clax__publish",
      "args_sha256": "sha256:8690a626d077a8f6c9b1d06917dcfcf9203b5ff0b5d954b1442b27f22f73a302",
-     "started_at": "2026-10-06T14:03:11.402Z",
-     "harness_call_id": "toolu_01ABC"
+     "started_at": "2026-10-06T14:03:11.402Z"
     }
    },
    "backfilled": false
@@ -1003,7 +1001,6 @@
     "call": {
      "call_id": "01JBC0000000000000000000C3",
      "tool": "publish",
-     "harness_tool": "mcp__plugin_clax_clax__publish",
      "args_sha256": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
      "started_at": "2026-10-06T14:03:11.402Z"
     }
@@ -1195,12 +1192,10 @@
     "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
     "call_id": "01JBC0000000000000000000C3",
     "tool": "publish",
-    "harness_tool": "mcp__plugin_clax_clax__publish",
     "args_sha256": "sha256:8690a626d077a8f6c9b1d06917dcfcf9203b5ff0b5d954b1442b27f22f73a302",
     "started_at": "2026-10-06T14:03:11.402Z",
     "ended_at": "2026-10-06T14:03:11.913Z",
     "outcome": "ok",
-    "harness_call_id": "toolu_01ABC",
     "produced": [
      22,
      23
@@ -1221,7 +1216,7 @@
     "transcript_path": "/Users/alex/.claude/projects/-Users-alex-work-app/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44.jsonl"
    },
    "ids": {
-    "artifact": null,
+    "artifact": "k3m9q2w8x1ab",
     "artifact2": null,
     "thread": null,
     "session": "01JB9S00000000000000000001",

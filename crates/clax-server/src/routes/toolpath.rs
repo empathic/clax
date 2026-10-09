@@ -386,12 +386,13 @@ pub async fn session_tool_call(
         ));
     }
     let report = tool_call_report(req)?;
+    let id = sid.clone();
     let recorded = s
         .store_call(move |st| {
-            if st.session_actor(&sid)?.is_none() {
+            if st.session_actor(&id)?.is_none() {
                 return Ok(None);
             }
-            let ctx = audit.for_session(st, &sid)?;
+            let ctx = audit.for_session(st, &id)?;
             st.record_tool_call(&ctx, &report).map(Some)
         })
         .await?;
@@ -402,6 +403,10 @@ pub async fn session_tool_call(
             "no such session",
         ));
     };
+    if seq.is_some() {
+        // A call-ID report of this session may be waiting for this call.
+        s.call_ids.recorded(&sid);
+    }
     Ok(tool_call_response(seq))
 }
 
