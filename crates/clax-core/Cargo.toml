@@ -14,6 +14,7 @@ chrono.workspace = true
 mime_guess.workspace = true
 nix = { workspace = true, features = ["fs"] }
 rand.workspace = true
+ring.workspace = true
 sha2 = "0.11"
 rusqlite.workspace = true
 ryu-js = "1"
