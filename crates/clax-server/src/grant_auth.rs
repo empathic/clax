@@ -486,6 +486,8 @@ pub struct Signed {
     pub token: Option<Secret>,
     /// The time it was signed at.
     pub t: i64,
+    /// Its nonce.
+    pub nonce: String,
     /// The peer it came from.
     pub peer_ip: String,
 }
@@ -617,6 +619,7 @@ pub async fn grant_request<T>(
             key,
             token: None,
             t: h.header.t,
+            nonce: h.header.nonce.clone(),
             peer_ip: h.peer_ip,
         },
         parsed,
@@ -705,6 +708,7 @@ pub async fn gnap(
         key,
         token: Some(token),
         t,
+        nonce: h.header.nonce.clone(),
         peer_ip: h.peer_ip,
     })
 }
