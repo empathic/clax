@@ -578,6 +578,9 @@ pub async fn serve(
         port,
         lan_host: None,
         grant_auth,
+        agent_gate: Arc::new(crate::agent::Gate::new(Arc::new(
+            crate::agent::TokioTimer::default(),
+        ))),
     };
     state.audit_wake.install(&state.store);
     // The appender recovers the journal and catches it up on its own

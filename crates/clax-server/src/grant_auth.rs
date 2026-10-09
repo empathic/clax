@@ -233,14 +233,32 @@ impl GrantIndex {
         })
     }
 
-    /// Forgets the ended grants `gone` says have no row any more (purged
-    /// requests); whether any went.
-    pub fn forget_ended(&self, gone: impl Fn(&str) -> bool) -> bool {
+    /// Forgets the ended grants without tokens that have no row any more
+    /// (purged requests); whether any went. `existing` says which of the
+    /// grants it is given still have a row: it is asked under the index's
+    /// lock, so a grant that ends while the sweep runs is either recorded
+    /// before the question (and kept, its row being there) or after it.
+    /// Grant IDs are never reused, so a grant without a row can never be
+    /// issued tokens.
+    pub fn forget_ended(
+        &self,
+        existing: impl FnOnce(&[String]) -> std::collections::HashSet<String>,
+    ) -> bool {
         let mut t = self.tokens.write().unwrap_or_else(|e| e.into_inner());
+        let candidates: Vec<String> = t
+            .ended
+            .iter()
+            .filter(|g| !t.by_grant.contains_key(*g))
+            .cloned()
+            .collect();
+        if candidates.is_empty() {
+            return false;
+        }
+        let kept = existing(&candidates);
         let before = t.ended.len();
-        let by_grant = std::mem::take(&mut t.by_grant);
-        t.ended.retain(|g| by_grant.contains_key(g) || !gone(g));
-        t.by_grant = by_grant;
+        for g in candidates.iter().filter(|g| !kept.contains(*g)) {
+            t.ended.remove(g);
+        }
         t.ended.len() != before
     }
 
@@ -275,6 +293,18 @@ impl GrantIndex {
         self.stale.store(false, Ordering::SeqCst);
         Ok(true)
     }
+}
+
+/// Forgets the index's ended grants whose rows `st` no longer holds
+/// (purged requests), asking the store which rows exist while the index is
+/// locked ([`GrantIndex::forget_ended`]); a store error forgets nothing.
+pub fn forget_purged(index: &GrantIndex, st: &Store) -> bool {
+    index.forget_ended(|ids| {
+        st.existing_grant_ids(ids).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "reading grant rows to forget failed");
+            ids.iter().cloned().collect()
+        })
+    })
 }
 
 /// Logs a failed index change after the store committed; the index is
@@ -372,6 +402,10 @@ impl RequestNonces {
 /// `MAX_PENDING` made in the last ten minutes, and live no longer, so this
 /// many keys leave room to spare.
 const PENDING_KEYS: usize = 64;
+/// Continuation nonces a request's key may spend in a window before its
+/// tokens are issued: a client polls every 5 s (48 polls in 240 s), with
+/// room for retries.
+const PENDING_NONCES_PER_KEY: usize = 256;
 
 /// The grant flow's signature state: the token index and the nonce caches.
 pub struct GrantAuth {
@@ -383,6 +417,8 @@ pub struct GrantAuth {
     pending: Mutex<NonceCache>,
     /// Nonces of keys known through [`GrantAuth::index`].
     nonces: Mutex<NonceCache>,
+    /// When each grant's use was last written.
+    noted: Mutex<HashMap<String, i64>>,
 }
 
 impl GrantAuth {
@@ -394,11 +430,9 @@ impl GrantAuth {
         Ok(GrantAuth {
             index: GrantIndex::load(st)?,
             requests: Mutex::new(RequestNonces::new()),
-            pending: Mutex::new(
-                NonceCache::new(sig::NONCE_WINDOW_S, sig::NONCES_PER_KEY)
-                    .with_caps(PENDING_KEYS, sig::MAX_NONCES),
-            ),
+            pending: Mutex::new(pending_cache()),
             nonces: Mutex::new(NonceCache::new(sig::NONCE_WINDOW_S, sig::NONCES_PER_KEY)),
+            noted: Mutex::new(HashMap::new()),
         })
     }
 
@@ -415,7 +449,64 @@ impl GrantAuth {
     }
 }
 
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+/// The cache of unissued requests' continuation nonces: never full below
+/// [`PENDING_KEYS`] keys each within [`PENDING_NONCES_PER_KEY`].
+fn pending_cache() -> NonceCache {
+    NonceCache::new(sig::NONCE_WINDOW_S, PENDING_NONCES_PER_KEY)
+        .with_caps(PENDING_KEYS, PENDING_KEYS * PENDING_NONCES_PER_KEY)
+}
+
+impl GrantAuth {
+    /// Whether `nonce` of an issued grant's `key`, signed at `t`, may be
+    /// spent at `now`: the header check, which records nothing.
+    ///
+    /// # Errors
+    /// [`SigError::Stale`], [`SigError::Bad`], [`SigError::Replayed`] or
+    /// [`SigError::Full`].
+    pub fn check_nonce(
+        &self,
+        key: &[u8; 32],
+        nonce: &str,
+        t: i64,
+        now: i64,
+    ) -> Result<(), SigError> {
+        lock(&self.nonces).check(key, nonce, t, now)
+    }
+
+    /// Records `nonce` of an issued grant's `key` once its signature
+    /// verified, testing again under the cache's lock that it is new: of
+    /// two copies of one request, one is recorded and the other is
+    /// [`SigError::Replayed`].
+    ///
+    /// # Errors
+    /// As [`NonceCache::record`].
+    pub fn record_nonce(
+        &self,
+        key: &[u8; 32],
+        nonce: &str,
+        t: i64,
+        now: i64,
+    ) -> Result<(), SigError> {
+        lock(&self.nonces).record(key, nonce, t, now)
+    }
+
+    /// Whether grant `gid`'s use at `now` is due to be written
+    /// (`last_used_at`, at most once per
+    /// [`clax_core::store::people::USE_NOTE_SECS`]): remembered here, so a
+    /// request costs no store write otherwise.
+    pub fn use_due(&self, gid: &str, now: i64) -> bool {
+        let mut noted = lock(&self.noted);
+        match noted.get(gid) {
+            Some(&at) if now - at < clax_core::store::people::USE_NOTE_SECS => false,
+            _ => {
+                noted.insert(gid.to_string(), now);
+                true
+            }
+        }
+    }
+}
+
+pub(crate) fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -448,7 +539,7 @@ fn http_date(st: &Store) -> Option<HeaderValue> {
     HeaderValue::from_str(&st.now_utc().format("%a, %d %b %Y %H:%M:%S GMT").to_string()).ok()
 }
 
-fn refuse(e: SigError, st: &Store) -> Refusal {
+pub(crate) fn refuse(e: SigError, st: &Store) -> Refusal {
     let message = match e {
         SigError::Stale => "the request's time is more than 120 seconds from the daemon's clock",
         SigError::Replayed => "the request's nonce was already used",
@@ -465,7 +556,7 @@ fn refuse(e: SigError, st: &Store) -> Refusal {
     }
 }
 
-fn invalid_token() -> Refusal {
+pub(crate) fn invalid_token() -> Refusal {
     ApiError::new(
         StatusCode::UNAUTHORIZED,
         "invalid_token",
@@ -493,17 +584,18 @@ pub struct Signed {
 }
 
 /// The parts of a request that are signed, before its body is read.
-struct Head {
-    method: String,
-    path_and_query: String,
-    host: String,
-    header: sig::SigHeader,
-    peer_ip: String,
+#[derive(Clone)]
+pub(crate) struct Head {
+    pub(crate) method: String,
+    pub(crate) path_and_query: String,
+    pub(crate) host: String,
+    pub(crate) header: sig::SigHeader,
+    pub(crate) peer_ip: String,
 }
 
 /// 403 `forbidden_origin` for a browser's request: an agent credential
 /// never comes with an `Origin` or a cookie (spec §6.6).
-fn no_browser(headers: &HeaderMap) -> Result<(), Refusal> {
+pub(crate) fn no_browser(headers: &HeaderMap) -> Result<(), Refusal> {
     if headers.contains_key(header::ORIGIN) || headers.contains_key(header::COOKIE) {
         return Err(ApiError::forbidden(
             "forbidden_origin",
@@ -514,7 +606,7 @@ fn no_browser(headers: &HeaderMap) -> Result<(), Refusal> {
     Ok(())
 }
 
-fn head(parts: &axum::http::request::Parts, st: &Store) -> Result<Head, Refusal> {
+pub(crate) fn head(parts: &axum::http::request::Parts, st: &Store) -> Result<Head, Refusal> {
     let header = parts
         .headers
         .get("clax-signature")
@@ -564,7 +656,7 @@ async fn read_body(headers: &HeaderMap, body: axum::body::Body) -> Result<Bytes,
         .map_err(|_| too_large())
 }
 
-fn input<'a>(h: &'a Head, body: &[u8], token: Option<&str>) -> SignInput<'a> {
+pub(crate) fn input<'a>(h: &'a Head, body: &[u8], token: Option<&str>) -> SignInput<'a> {
     SignInput {
         method: &h.method,
         path_and_query: &h.path_and_query,
@@ -829,6 +921,100 @@ mod tests {
     }
 
     #[test]
+    fn a_pending_key_spends_at_most_its_cap_and_the_cache_holds_every_key_at_its_cap() {
+        let mut c = pending_cache();
+        let key = |i: u32| {
+            let mut k = [0u8; 32];
+            k[..4].copy_from_slice(&i.to_be_bytes());
+            k
+        };
+        for _ in 0..PENDING_NONCES_PER_KEY {
+            c.record(&key(0), &sig::new_nonce(), 0, 0).unwrap();
+        }
+        assert_eq!(
+            c.check(&key(0), &sig::new_nonce(), 0, 0),
+            Err(SigError::Full),
+            "a key's polls are capped"
+        );
+        // Every other live request still has room for all of its own.
+        for i in 1..PENDING_KEYS as u32 {
+            for _ in 0..PENDING_NONCES_PER_KEY {
+                c.record(&key(i), &sig::new_nonce(), 0, 0).unwrap();
+            }
+        }
+        assert_eq!(c.len(), PENDING_KEYS * PENDING_NONCES_PER_KEY);
+    }
+
+    fn store() -> (
+        tempfile::TempDir,
+        std::sync::Arc<clax_core::working::ManualClock>,
+        Store,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let clock =
+            std::sync::Arc::new(clax_core::working::ManualClock::at("2026-10-01T09:00:00Z"));
+        let st = Store::open_with_clock(&clax_core::Home::at(dir.path().join("ax")), clock.clone())
+            .unwrap();
+        (dir, clock, st)
+    }
+
+    fn request(st: &Store, key: [u8; 32]) -> (String, String) {
+        match st
+            .request_grant(clax_core::store::people::NewGrant {
+                key,
+                client_name: "sam-mbp".into(),
+                peer_ip: "192.168.1.20".into(),
+                access: clax_core::rights::Rights::preset(clax_core::rights::PRESET_COLLABORATOR)
+                    .unwrap(),
+                invite: None,
+            })
+            .unwrap()
+        {
+            clax_core::store::people::GrantStart::Pending {
+                grant, user_code, ..
+            } => (grant.id, user_code.expose().to_string()),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_revocation_during_the_sweep_keeps_its_record_and_only_purged_rows_are_forgotten() {
+        use clax_core::store::people::EndedBy;
+        let (_d, clock, st) = store();
+        let index = GrantIndex::load(&st).unwrap();
+        // A request approved, its tokens not yet collected.
+        let (gid, code) = request(&st, [7; 32]);
+        st.approve_grant(&gid, &code, "Sam", None).unwrap();
+        // The sweep starts: at that moment the grant is live. Then the
+        // revocation lands, before the sweep forgets anything.
+        assert!(st.ended_grant_ids().unwrap().is_empty());
+        st.revoke_grant(&gid, EndedBy::Owner).unwrap();
+        index.ended(&gid).unwrap();
+        assert!(!forget_purged(&index, &st), "its row is there: kept");
+        // The poll that collects the tokens, racing the revocation, makes
+        // them revoked.
+        index
+            .issued(
+                &gid,
+                [7; 32],
+                &secret("cxg_r"),
+                &secret("cxm_r"),
+                &secret("cxc_r"),
+            )
+            .unwrap();
+        assert!(index.lookup(&secret::sha256("cxg_r")).unwrap().revoked);
+        // A denied request's record goes once its row is purged.
+        let (gone, _) = request(&st, [8; 32]);
+        st.deny_grant(&gone).unwrap();
+        index.ended(&gone).unwrap();
+        assert!(!forget_purged(&index, &st));
+        clock.advance(clax_core::store::people::UNISSUED_RETENTION_SECS + 1);
+        st.expire_grants().unwrap();
+        assert!(forget_purged(&index, &st));
+        assert_eq!(index.ended_grants(), vec![gid]);
+    }
+
+    #[test]
     fn a_grant_ended_before_its_tokens_are_recorded_keeps_them_revoked() {
         let index = GrantIndex::default();
         index.ended("g_1").unwrap();
@@ -866,7 +1052,7 @@ mod tests {
         // A request that ended without tokens is forgotten once its row
         // is gone; a grant with tokens keeps its record.
         index.ended("g_2").unwrap();
-        assert!(index.forget_ended(|_| true));
+        assert!(index.forget_ended(|_| Default::default()));
         assert_eq!(index.ended_grants(), vec!["g_1".to_string()]);
     }
 }

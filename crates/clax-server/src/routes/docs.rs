@@ -77,6 +77,7 @@ pub async fn get(
 /// Replaces or creates the document: `{doc, created}`.
 pub async fn put(
     State(s): State<AppState>,
+    _a: crate::agent::Agent<crate::agent::DocsPut>,
     _o: SameOrigin,
     who: CallerParts,
     audit: AuditCtx,

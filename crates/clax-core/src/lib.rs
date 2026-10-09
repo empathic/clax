@@ -26,6 +26,7 @@ pub mod secret;
 pub mod sig;
 pub mod store;
 pub mod toolpath;
+pub mod visibility;
 pub mod working;
 pub mod wrap;
 

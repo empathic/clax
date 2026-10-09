@@ -72,7 +72,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
     shell::bridge_version();
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any);
     let publish_limit = DefaultBodyLimit::max(artifacts::PUBLISH_BODY_LIMIT);
-    let asset_limit = DefaultBodyLimit::max(21 * 1024 * 1024);
+    let asset_limit = DefaultBodyLimit::max(assets::UPLOAD_BODY_LIMIT);
     let ask_limit = DefaultBodyLimit::max(questions::ASK_BODY_LIMIT);
     let api_fast = Router::new()
         .route("/api/token", get(token::token))
@@ -222,7 +222,9 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route(
             "/api/artifacts/{aid}/docs/{*path}",
             get(docs::get)
-                .put(docs::put)
+                .put(docs::put.layer(DefaultBodyLimit::max(
+                    <crate::agent::DocsPut as crate::agent::Need>::LIMIT,
+                )))
                 .patch(docs::patch)
                 .delete(docs::delete),
         )
@@ -283,6 +285,12 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             post(feedback::expire),
         )
         .route("/api/_test/grants/sweep", post(grants::test_sweep))
+        .route("/api/_test/agent/gate", get(crate::agent::test_gate))
+        .route("/api/_test/caller", get(crate::agent::test_caller))
+        .route(
+            "/api/_test/sessions/{id}/caller",
+            get(crate::agent::test_caller),
+        )
         .route("/api/_test/grants/index", get(grants::test_index))
         .route(
             "/api/_test/grants/index/fail",
@@ -387,6 +395,13 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             }),
         );
     }
+    // An agent of another machine's request is verified before any handler
+    // runs, on every route (spec §6.6): a route layer, so it sees the route
+    // matched, over every route above.
+    let r = r.route_layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::agent::verify_layer,
+    ));
     // Live pages answer 404 to callers that may not see them, before any
     // handler runs (spec 2026-10-05-chrome-overlay-design L10).
     // The extension gateway runs first (the last layer is outermost): only
@@ -484,7 +499,9 @@ mod l10 {
     /// How a handler of a route outside the path rule keeps live pages hidden.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Guard {
-        /// It takes `RequireToken`: the token sees live pages.
+        /// It takes `RequireToken` or `TokenOrAgent`: the token sees live
+        /// pages, and an agent of another machine sees none (its requests
+        /// carry no owner credential, so `hide_live_pages` hides them).
         Token,
         /// It takes `SeesLive` and checks the artifact its query or body names.
         SeesLive,
@@ -590,6 +607,8 @@ mod l10 {
         ("grants::test_index", Token),
         ("grants::test_fail_index", Token),
         ("connect::browser_link", NoArtifact),
+        ("agent::test_gate", Token),
+        ("agent::test_caller", NoArtifact),
     ];
 
     /// Routes whose handler is not a module function, and why they are safe.
@@ -610,7 +629,11 @@ mod l10 {
     ];
 
     fn module_source(m: &str) -> &'static str {
-        match m {
+        module_source_opt(m).unwrap_or_else(|| panic!("no route module {m}"))
+    }
+
+    fn module_source_opt(m: &str) -> Option<&'static str> {
+        Some(match m {
             "artifacts" => include_str!("artifacts.rs"),
             "assets" => include_str!("assets.rs"),
             "connect" => include_str!("connect.rs"),
@@ -637,8 +660,9 @@ mod l10 {
             "viewers" => include_str!("viewers.rs"),
             "watches" => include_str!("watches.rs"),
             "working" => include_str!("working.rs"),
-            _ => panic!("no route module {m}"),
-        }
+            "agent" => include_str!("../agent.rs"),
+            _ => return None,
+        })
     }
 
     /// Each `.route("<path>", <handlers>)` of `src`: the path and the
@@ -692,7 +716,7 @@ mod l10 {
                 e += 1;
             }
             let (m, f) = (&text[s..at], &text[at + 2..e]);
-            if !m.is_empty() && !f.is_empty() && m != "axum" && m != "routing" {
+            if !m.is_empty() && !f.is_empty() && !["axum", "routing", "crate"].contains(&m) {
                 out.push((m.to_string(), f.to_string()));
             }
             i = at + 2;
@@ -731,7 +755,7 @@ mod l10 {
                     continue;
                 }
                 let name: String = after.chars().take_while(|c| ident(*c)).collect();
-                let Some((m, f)) = name.split_once("::") else {
+                let Some((m, f)) = name.trim_start_matches("crate::").split_once("::") else {
                     continue;
                 };
                 let sig = function(module_source(m), f);
@@ -872,7 +896,7 @@ mod l10 {
                         continue;
                     }
                     let name: String = after.chars().take_while(|c| ident(*c)).collect();
-                    let Some((m, f)) = name.split_once("::") else {
+                    let Some((m, f)) = name.trim_start_matches("crate::").split_once("::") else {
                         // An inline handler: INLINE says what it is.
                         continue;
                     };
@@ -921,6 +945,85 @@ mod l10 {
         }
     }
 
+    /// Each `method(module::function` of a route's handlers' text.
+    pub(super) fn method_handlers(text: &str) -> Vec<(String, String, String)> {
+        let mut out = Vec::new();
+        let b = text.as_bytes();
+        for m in ["get", "post", "put", "patch", "delete"] {
+            let pat = format!("{m}(");
+            let mut i = 0;
+            while let Some(k) = text[i..].find(&pat) {
+                let at = i + k;
+                i = at + pat.len();
+                if at > 0 && (b[at - 1].is_ascii_alphanumeric() || b[at - 1] == b'_') {
+                    continue;
+                }
+                let rest = &text[i..];
+                let end = rest
+                    .find(|c: char| !(c.is_ascii_lowercase() || c == '_' || c == ':'))
+                    .unwrap_or(rest.len());
+                if let Some((module, f)) = rest[..end].split_once("::")
+                    && !module.is_empty()
+                    && !f.is_empty()
+                    && !f.contains(':')
+                {
+                    out.push((m.to_uppercase(), module.to_string(), f.to_string()));
+                }
+            }
+        }
+        out
+    }
+
+    /// The need an `Agent<…>` or `TokenOrAgent<…>` in `sig` names.
+    fn agent_need(sig: &str) -> Option<String> {
+        let at = sig.find("Agent<")? + "Agent<".len();
+        let rest = &sig[at..];
+        let name = &rest[..rest.find('>')?];
+        Some(name.rsplit("::").next().unwrap().to_string())
+    }
+
+    /// Every route an agent of another machine reaches is declared in
+    /// `agent::ROUTES` under the need its handler takes, and every
+    /// declaration is a route's: `verify_layer` finds a route's need by
+    /// method and path, and a handler without `Agent<…>` is never in it.
+    #[test]
+    fn every_agent_route_is_declared_for_its_handler() {
+        let src = include_str!("mod.rs");
+        let src = &src[..src.find("mod l10 {").unwrap()];
+        let mut seen = std::collections::HashSet::new();
+        for (path, text) in routes(src) {
+            for (method, m, f) in method_handlers(&text) {
+                if module_source_opt(&m).is_none() {
+                    continue;
+                }
+                let fsrc = function(module_source(&m), &f);
+                let sig = &fsrc[..fsrc.find('{').unwrap()];
+                let declared = crate::agent::ROUTES
+                    .iter()
+                    .find(|(rm, rp, _)| *rm == method && *rp == path);
+                match (agent_need(sig), declared) {
+                    (Some(n), Some((_, _, info))) => {
+                        assert_eq!(info.name, n, "{method} {path}: {m}::{f} takes Agent<{n}>");
+                        seen.insert((method.clone(), path.clone()));
+                    }
+                    (Some(n), None) => panic!(
+                        "{method} {path}: {m}::{f} takes Agent<{n}> but agent::ROUTES lacks it"
+                    ),
+                    (None, Some(_)) => panic!(
+                        "agent::ROUTES declares {method} {path}, whose handler {m}::{f} takes no Agent"
+                    ),
+                    (None, None) => {}
+                }
+            }
+        }
+        for (m, p, _) in crate::agent::ROUTES {
+            assert!(
+                seen.contains(&(m.to_string(), p.to_string())),
+                "agent::ROUTES declares {m} {p}, which no handler serves"
+            );
+        }
+    }
+
     #[test]
     fn every_route_keeps_live_pages_hidden() {
         let aid = "7q3k9mzx2b4t";
@@ -956,7 +1059,10 @@ mod l10 {
                 let src = function(module_source(&m), &f);
                 let sig = &src[..src.find('{').unwrap()];
                 match guard {
-                    Token => assert!(sig.contains("RequireToken"), "{name} takes no RequireToken"),
+                    Token => assert!(
+                        sig.contains("RequireToken") || sig.contains("TokenOrAgent<"),
+                        "{name} takes no RequireToken"
+                    ),
                     SeesLive => assert!(
                         sig.contains("SeesLive") && src.contains(".check("),
                         "{name} does not check SeesLive"

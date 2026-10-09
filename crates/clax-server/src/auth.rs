@@ -1,27 +1,170 @@
-//! Bearer-token gate for write routes, the `Host` check on every `/api` route
-//! (DNS rebinding), and the loopback check for /api/token.
+//! Who a request speaks for ([`Caller`]), the owner-only gate
+//! ([`RequireToken`]), the `Host` check on every `/api` route (DNS
+//! rebinding), and the loopback check for /api/token.
 
 use crate::error::ApiError;
 use crate::state::AppState;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
+use clax_core::model::Viewer;
+use clax_core::rights::Rights;
+use clax_core::visibility::Reader;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
-/// Extractor that admits a request only when its `Authorization` header is
-/// `Bearer <token>` with the daemon's token. The scheme name is matched
-/// case-insensitively (RFC 9110 section 11.1); the token is compared in constant time.
+/// Who a request speaks for (spec §6.1, M8): every handler learns it from
+/// here, through [`crate::identity::Identity::caller`] or the
+/// [`crate::agent::Agent`] extractor, and never reads `Authorization`
+/// itself.
+#[derive(Clone, Debug)]
+pub enum Caller {
+    /// An owner browser credential (`browser`), or the daemon token on a
+    /// request that names no session and carries no agent-channel marker
+    /// (the CLI used by hand, scripts).
+    Owner { browser: bool },
+    /// The daemon token on a request that names a session (its path or
+    /// `X-Clax-Session`) or carries `X-Clax-Channel: agent`.
+    OwnerAgent { session: Option<String> },
+    /// A verified `Clax-Grant` request (spec §6.6). `person` is `None` for a
+    /// grant of the owner's row; `session` comes from `X-Clax-Session`.
+    /// Never the owner, whatever its person.
+    PersonAgent {
+        person: Option<String>,
+        grant: String,
+        session: Option<String>,
+        rights: Arc<Rights>,
+    },
+    /// A `clax_viewer` cookie naming a connected, unrevoked person.
+    Person { viewer: Viewer },
+    /// Any other `clax_viewer` cookie with a viewer row.
+    Viewer { viewer: Viewer },
+    /// No credential.
+    Anonymous,
+}
+
+/// Whose a person-scoped route's data is (spec §6.1): the owner's, a
+/// connected person's (by public ID), an agent's, or no one's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Person {
+    Owner,
+    Viewer(String),
+    Agent,
+    None,
+}
+
+impl Caller {
+    /// The person whose agent reads, for the visibility filter: `None` for
+    /// callers that are not agent channels.
+    pub fn reader(&self) -> Option<Reader> {
+        match self {
+            Caller::OwnerAgent { .. } | Caller::PersonAgent { person: None, .. } => {
+                Some(Reader::Owner)
+            }
+            Caller::PersonAgent {
+                person: Some(p), ..
+            } => Some(Reader::Person(p.clone())),
+            _ => None,
+        }
+    }
+
+    /// An owner browser credential or a connected person's browser (M20's
+    /// routes also require `SameOrigin`).
+    pub fn browser(&self) -> bool {
+        matches!(
+            self,
+            Caller::Owner { browser: true } | Caller::Person { .. }
+        )
+    }
+
+    /// The session an agent caller speaks for.
+    pub fn session(&self) -> Option<&str> {
+        match self {
+            Caller::OwnerAgent { session } | Caller::PersonAgent { session, .. } => {
+                session.as_deref()
+            }
+            _ => None,
+        }
+    }
+
+    /// An agent channel: the owner's agents and a grant's.
+    pub fn is_agent(&self) -> bool {
+        matches!(self, Caller::OwnerAgent { .. } | Caller::PersonAgent { .. })
+    }
+
+    /// The owner: a browser of theirs or the CLI by hand. An agent of a
+    /// grant of the owner's row is not.
+    pub fn is_owner(&self) -> bool {
+        matches!(self, Caller::Owner { .. })
+    }
+
+    /// The owner's browser: what the grant decisions require (M20).
+    pub fn owner_browser(&self) -> bool {
+        matches!(self, Caller::Owner { browser: true })
+    }
+
+    /// Whose a person-scoped route's data is.
+    pub fn person(&self) -> Person {
+        match self {
+            Caller::Owner { .. } => Person::Owner,
+            Caller::Person { viewer } => Person::Viewer(viewer.public_id.clone()),
+            Caller::OwnerAgent { .. } | Caller::PersonAgent { .. } => Person::Agent,
+            Caller::Viewer { .. } | Caller::Anonymous => Person::None,
+        }
+    }
+}
+
+/// Whether any `Authorization` header of `headers` carries scheme `scheme`
+/// (matched ignoring case).
+pub fn has_scheme(headers: &axum::http::HeaderMap, scheme: &str) -> bool {
+    headers
+        .get_all(axum::http::header::AUTHORIZATION)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|v| {
+            v.split_once(' ')
+                .map_or(v, |(s, _)| s)
+                .eq_ignore_ascii_case(scheme)
+        })
+}
+
+/// The scheme of an agent credential of another machine (spec §6.6).
+pub const GRANT_SCHEME: &str = "Clax-Grant";
+
+/// Whether the request carries an agent credential (`Authorization:
+/// Clax-Grant`), valid or not.
+pub fn is_grant_request(headers: &axum::http::HeaderMap) -> bool {
+    has_scheme(headers, GRANT_SCHEME)
+}
+
+/// Extractor for the routes that stay the owner's own: it admits a request
+/// only when its `Authorization` header is `Bearer <token>` with the daemon's
+/// token (the scheme matched case-insensitively, RFC 9110 section 11.1; the
+/// token compared in constant time). An agent credential of another machine
+/// is 403 `forbidden`, never a fallback to anything else.
 pub struct RequireToken;
 
 impl FromRequestParts<AppState> for RequireToken {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
+        if is_grant_request(&parts.headers) {
+            return Err(grants_refused());
+        }
         if has_token(&parts.headers, &state.token) {
             Ok(RequireToken)
         } else {
             Err(ApiError::unauthorized())
         }
     }
+}
+
+/// 403 `forbidden` for an agent of another machine on a route that is not
+/// theirs.
+pub fn grants_refused() -> ApiError {
+    ApiError::forbidden(
+        "forbidden",
+        "agents of another machine may not use this route",
+    )
 }
 
 /// True when `headers` carry `Authorization: Bearer <token>` (scheme matched
