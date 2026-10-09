@@ -1319,8 +1319,19 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
     // is queued after the current work when it is busy. The poll only
     // discovers a running daemon, never starts one. Shutdown cancels the poll
     // and any pause at once, leaving no timer behind.
+    //
+    // While this session's wait_for_feedback is in progress the loop holds:
+    // the daemon wakes a parked poll when the wait starts and answers it
+    // empty (the wait takes the feedback), and the loop then polls again
+    // only once the last wait has ended, at once and with no retry pause.
+    // A retry pause that a wait's start or end lands in ends there too.
     let live = false;
     let stopInject: (() => void) | undefined;
+    /** wait_for_feedback calls in progress. */
+    let waits = 0;
+    /** The loop's current pause, ended early when a wait starts or the last one ends. */
+    const wakers = new Set<() => void>();
+    const wakeLoop = () => { for (const w of [...wakers]) w(); };
     const retryMs = opts.injectRetryMs ?? INJECT_RETRY_MS;
     const startBudgetMs = opts.startBudgetMs ?? START_BUDGET_MS;
     const now = opts.now ?? (() => Date.now());
@@ -1328,28 +1339,34 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       if (!live || stopInject) return;
       const abort = new AbortController();
       stopInject = () => abort.abort();
-      // Waits `ms`, or less when the loop is stopped.
-      const pause = (ms: number) => new Promise<void>(r => {
+      // Waits `ms` (with none, until woken), or less when the loop is stopped
+      // or a wait starts or ends.
+      const pause = (ms?: number) => new Promise<void>(r => {
         if (abort.signal.aborted) return r();
-        const done = () => { clearTimeout(t); abort.signal.removeEventListener("abort", done); r(); };
-        const t = setTimeout(done, ms);
+        const done = () => { clearTimeout(t); wakers.delete(done); abort.signal.removeEventListener("abort", done); r(); };
+        const t = ms === undefined ? undefined : setTimeout(done, ms);
+        wakers.add(done);
         abort.signal.addEventListener("abort", done);
       });
       void (async () => {
         while (!abort.signal.aborted) {
+          if (waits > 0) {
+            await pause();
+            continue;
+          }
           const started = now();
           let res: any;
           try {
             res = await c.pollFeedback("inject", INJECT_WAIT_S, abort.signal);
           } catch {
             if (abort.signal.aborted) return;
-            await pause(retryMs);
+            if (waits === 0) await pause(retryMs);
             continue;
           }
           if (abort.signal.aborted) return;
           if (typeof res.text === "string" && res.text) {
             pi.sendUserMessage(res.text, { deliverAs: "followUp" });
-          } else if (now() - started < INJECT_EARLY_MS) {
+          } else if (waits === 0 && now() - started < INJECT_EARLY_MS) {
             await pause(retryMs);
           }
         }
@@ -1530,10 +1547,15 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       parameters: WaitArgs,
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
         let out: Awaited<ReturnType<Tools["waitForFeedback"]>>;
+        // The injection loop holds while the wait runs (see startInject).
+        waits++;
+        wakeLoop();
         try {
           out = await tools.waitForFeedback(ctx, params as Static<typeof WaitArgs>);
         } catch (e) {
           throw internal(e);
+        } finally {
+          if (--waits === 0) wakeLoop();
         }
         const content: { type: "text"; text: string }[] = [{ type: "text", text: render(out.result, out.feedback, out.answers) }];
         if ((out.feedback.length || out.answers.length) && out.text !== null) content.push({ type: "text", text: `---\n${out.text}` });

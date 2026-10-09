@@ -667,7 +667,7 @@ describe("comments", () => {
     expect(pi.sent).toHaveLength(0);
   }, 20_000);
 
-  it("tier 5 yields to wait_for_feedback: a poll made during the wait comes back empty and the loop pauses", async () => {
+  it("tier 5 yields to wait_for_feedback: a loop started during the wait holds until it ends, then polls", async () => {
     // session_start finds no daemon, so the loop starts at the first tool
     // result after the daemon appears, which comes while the wait is in progress.
     const home = join(scratch, "inject-yield");
@@ -687,15 +687,73 @@ describe("comments", () => {
     const waiting = pi.callToolAsPi("clax_wait_for_feedback", { url_or_id: aid, timeout_s: 600 }, ctx);
     expect((await api(daemon, `/api/_test/sessions/${sid}/feedback/waiters?until=1`)).count).toBe(1);
     expect(polls).toHaveLength(0);
+    // The status result starts the loop, which makes no poll and no pause while the wait runs.
     parts(await pi.callToolAsPi("clax_status", {}, ctx));
-    // The daemon answers the loop's poll `{feedback: [], text: null, waited_s: 0}`, and the loop pauses.
-    await expect.poll(() => pauses.created.size, { timeout: 10_000 }).toBe(1);
-    expect(polls).toHaveLength(1);
-    expect(await polls[0].settled).toBe("answered");
+    await turns();
+    expect(polls).toHaveLength(0);
+    expect(pauses.created.size).toBe(0);
     await browserThread(aid, "@agent during the wait");
     expect(parts(await waiting).json.feedback).toHaveLength(1);
+    // The wait ended: the loop polls at once.
+    await expect.poll(() => polls.length, { timeout: 10_000 }).toBe(1);
+    expect(pauses.created.size).toBe(0);
     expect(pi.sent).toHaveLength(0);
   }, 20_000);
+
+  // The fake daemon answers as the daemon does: a parked inject poll is woken
+  // empty when a wait starts, and an inject poll during a wait answers empty
+  // at once. The poll was parked under or over INJECT_EARLY_MS when the wait
+  // began; neither changes what the loop does. Timers are fake and never
+  // advanced, so a retry pause would never end.
+  it.each([0, 2_000])("tier 5 holds while wait_for_feedback runs and polls again as soon as it ends (parked %i ms)", async parkedMs => {
+    const empty = { feedback: [], answers: [], text: null, waited_s: 0 };
+    const parked: ((body: unknown) => void)[] = [];
+    let inWait = false;
+    let endWait: (() => void) | undefined;
+    const fake = await fakeDaemonHome((req, reply) => {
+      if (!req.url?.startsWith("/api/sessions/s1/feedback")) return false;
+      const tier = new URL(req.url, "http://x").searchParams.get("tier");
+      if (tier === "inject") {
+        if (inWait) reply(empty);
+        else parked.push(reply);
+      } else if (tier === "wait") {
+        inWait = true;
+        for (const r of parked.splice(0)) r(empty);
+        endWait = () => { inWait = false; reply(empty); };
+      } else return false;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const pauses = trackTimers(INJECT_RETRY_MS);
+      const polls = trackPolls();
+      let clock = 0;
+      const pi = new FakePi();
+      claxExtension({ home: fake.home, env: withBin(join(scratch, "no-such-clax")), now: () => clock })(pi.api);
+      const { ctx } = fakeContext(scratch, `pi-inject-hold-${parkedMs}`);
+      loaded.push({ pi, ctx });
+      await pi.emit("session_start", {}, ctx);
+      await expect.poll(() => parked.length, { timeout: 10_000 }).toBe(1);
+      clock += parkedMs;
+      const waiting = pi.callToolAsPi("clax_wait_for_feedback", { timeout_s: 600 }, ctx);
+      await expect.poll(() => endWait !== undefined, { timeout: 10_000 }).toBe(true);
+      // The woken poll answered empty; the loop neither polls again nor pauses.
+      expect(await polls[0].settled).toBe("answered");
+      await turns();
+      expect(polls).toHaveLength(1);
+      expect(pauses.created.size).toBe(0);
+      endWait!();
+      expect(parts(await waiting).json).toEqual({ feedback: [], waited_s: 0, call_again: true });
+      // Polled again with no timer run: the next poll parks.
+      await expect.poll(() => parked.length, { timeout: 10_000 }).toBe(1);
+      expect(polls).toHaveLength(2);
+      expect(pauses.created.size).toBe(0);
+      await pi.emit("session_shutdown", {}, ctx);
+      loaded.splice(loaded.findIndex(l => l.pi === pi), 1);
+    } finally {
+      vi.useRealTimers();
+      fake.close();
+    }
+  });
 
   it("tier 1 leaves error results alone and the feedback pending", async () => {
     const { pi, ctx } = load(daemon.home, "pi-tier1-error");
@@ -1132,6 +1190,12 @@ function trackPolls(): Poll[] {
     return res;
   });
   return polls;
+}
+
+/** Lets pending promise reactions and I/O callbacks run (`setImmediate`,
+ * which the fake timers here leave real). */
+async function turns(n = 5): Promise<void> {
+  for (let i = 0; i < n; i++) await new Promise<void>(r => setImmediate(r));
 }
 
 /** Records the timers of `ms` milliseconds created from here on, and which of
