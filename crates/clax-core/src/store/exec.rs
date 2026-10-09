@@ -1244,9 +1244,13 @@ mod tests {
         }
         // A caller has its result just before its worker counts the bulk
         // job as ended; every count comes back down.
-        while lock(&st.workers.get().unwrap().shared.queue).bulk_running != 0 {
-            tokio::task::yield_now().await;
-        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while lock(&st.workers.get().unwrap().shared.queue).bulk_running != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("every bulk job counted as ended");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
