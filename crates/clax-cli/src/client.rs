@@ -170,6 +170,8 @@ pub struct Client {
     pub token: String,
     pub info: DaemonInfo,
     http: reqwest::blocking::Client,
+    /// The channel named in `x-clax-via` on every request, when set.
+    via: Option<&'static str>,
 }
 
 /// Sends `sig` to process `pid`, ignoring failure (a process that has
@@ -588,7 +590,49 @@ impl Client {
             token: info.token.clone(),
             info,
             http: http(),
+            via: None,
         }
+    }
+
+    /// This client naming `via` as its channel (`x-clax-via`, spec
+    /// 2026-10-06-toolpath-audit-design §6.9) on every request.
+    pub fn with_via(mut self, via: &'static str) -> Client {
+        self.via = Some(via);
+        self
+    }
+
+    /// `req` with the bearer token and the channel, if one is set.
+    fn authed(&self, req: reqwest::blocking::RequestBuilder) -> reqwest::blocking::RequestBuilder {
+        let req = req.bearer_auth(&self.token);
+        match self.via {
+            Some(v) => req.header("x-clax-via", v),
+            None => req,
+        }
+    }
+
+    /// A `method` request to `path` with the token and channel, `body` as
+    /// JSON when given, `timeout` for this request alone when given, and
+    /// the `headers` named; its JSON answer, or an error naming the
+    /// refusal's code and message.
+    pub fn request_with(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+        timeout: Option<Duration>,
+        headers: &[(&str, &str)],
+    ) -> anyhow::Result<serde_json::Value> {
+        let mut req = self.authed(self.http.request(method, format!("{}{path}", self.base)));
+        if let Some(b) = body {
+            req = req.json(b);
+        }
+        if let Some(t) = timeout {
+            req = req.timeout(t);
+        }
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        Self::check(req.send()?)
     }
 
     /// This client with every request bounded by `timeout`.
@@ -986,9 +1030,7 @@ impl Client {
     /// GET with the bearer token (the session routes need it; the others ignore it).
     pub fn get(&self, path: &str) -> anyhow::Result<serde_json::Value> {
         Self::check(
-            self.http
-                .get(format!("{}{path}", self.base))
-                .bearer_auth(&self.token)
+            self.authed(self.http.get(format!("{}{path}", self.base)))
                 .send()?,
         )
     }
@@ -999,9 +1041,7 @@ impl Client {
         timeout: Duration,
     ) -> anyhow::Result<serde_json::Value> {
         Self::check(
-            self.http
-                .get(format!("{}{path}", self.base))
-                .bearer_auth(&self.token)
+            self.authed(self.http.get(format!("{}{path}", self.base)))
                 .timeout(timeout)
                 .send()?,
         )
@@ -1020,9 +1060,8 @@ impl Client {
             .timeout(None)
             .connect_timeout(Duration::from_secs(5))
             .build()?;
-        let res = http
-            .get(format!("{}{path}", self.base))
-            .bearer_auth(&self.token)
+        let res = self
+            .authed(http.get(format!("{}{path}", self.base)))
             .query(query)
             .send()?;
         if res.status().is_success() {
@@ -1033,27 +1072,21 @@ impl Client {
     }
     pub fn post(&self, path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
         Self::check(
-            self.http
-                .post(format!("{}{path}", self.base))
-                .bearer_auth(&self.token)
+            self.authed(self.http.post(format!("{}{path}", self.base)))
                 .json(body)
                 .send()?,
         )
     }
     pub fn patch(&self, path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
         Self::check(
-            self.http
-                .patch(format!("{}{path}", self.base))
-                .bearer_auth(&self.token)
+            self.authed(self.http.patch(format!("{}{path}", self.base)))
                 .json(body)
                 .send()?,
         )
     }
     pub fn delete(&self, path: &str) -> anyhow::Result<()> {
         Self::check(
-            self.http
-                .delete(format!("{}{path}", self.base))
-                .bearer_auth(&self.token)
+            self.authed(self.http.delete(format!("{}{path}", self.base)))
                 .send()?,
         )
         .map(|_| ())
@@ -1067,10 +1100,7 @@ impl Client {
         path: &str,
         body: Option<&serde_json::Value>,
     ) -> anyhow::Result<serde_json::Value> {
-        let mut req = self
-            .http
-            .request(method, format!("{}{path}", self.base))
-            .bearer_auth(&self.token);
+        let mut req = self.authed(self.http.request(method, format!("{}{path}", self.base)));
         if let Some(b) = body {
             req = req.json(b);
         }

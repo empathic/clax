@@ -547,7 +547,8 @@ Export is owner-only (§8.3).
 | `tool.call_id` | `call_id` (or `null` when unmatched), `harness_call_id`, `harness_tool`, `args_sha256` |
 
 Every Clax tool call is recorded, read-only tools included, for every
-harness (O4).
+harness (O4), except a call whose arguments have no canonical form
+(§12.2), which runs unrecorded.
 
 **During the call.** The agent side sends the call's identity in an
 `x-clax-call` header, base64url JSON
@@ -1180,7 +1181,8 @@ environment cleared down to `PATH`, `HOME`, `XDG_CONFIG_HOME` and `TMPDIR`
 plus `GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 LC_ALL=C GIT_PAGER=cat
 GIT_NO_LAZY_FETCH=1`.
 So no inherited `GIT_DIR`, `GIT_CONFIG_*`, `GIT_EXEC_PATH` or `GIT_TRACE*`
-points git elsewhere or injects configuration. Configuration is pinned
+points git elsewhere or injects configuration. The git executable itself is
+trusted as found on the agent side's `PATH`. Configuration is pinned
 through `GIT_CONFIG_COUNT`:
 
 - `core.fsmonitor=false` and `core.hooksPath=/dev/null`;
@@ -1219,11 +1221,17 @@ fsmonitor, hooks and filters; and `GIT_NO_LAZY_FETCH` (from 2.44), without
 which `git status` or the diff fetches a partial clone's missing objects
 and runs the remote's `uploadpack` or ssh. So the agent side reads
 `git version` once per git executable (in the capture environment,
-outside any repository, within 2 s, kept for the life of the process),
-and under a git older than 2.44, one that does not answer, or one whose
-version does not parse, every capture is `unavailable` and runs no other
-git command. Users of an older git (Debian 11 and 12, Ubuntu 20.04 and
-22.04) get no git context until they upgrade. In a partial clone under a
+outside any repository, within 2 s), and under a git older than 2.44, or
+one whose version does not parse, every capture is `unavailable` and runs
+no other git command. Only an answer is kept for the life of the process:
+a probe that gets none within 2 s (a git that hangs or cannot be run) is
+tried again on a capture 30 s later, the wait doubling with each miss up
+to 10 minutes, and the captures in between are `unavailable` without
+running git. The probe runs beside the capture that needs it, and that
+capture's wait for it counts against its 300 ms deadline (step 2): a
+probe still running then makes it `timeout`, and the probe goes on.
+Users of an older git (Debian 11 and 12, Ubuntu 20.04 and 22.04) get no
+git context until they upgrade. In a partial clone under a
 supported git, a diff that would need a missing object fails instead of
 fetching, and is recorded as `diff_unavailable`.
 `safe.directory` is never passed, so a repository another user owns is
@@ -1613,7 +1621,14 @@ This rule is the same for Claude Code, Codex, Pi, Gemini and Grok (O4).
   result has returned, plus one `INSERT`. The argument hash is SHA-256 over
   the arguments. A large `publish` HTML string costs well under 1 ms per MiB.
 - **Agent side.** Git capture costs at most 300 ms per mutating tool call,
-  overlapped with the tool's own work (§9.3). A call that also registers
+  overlapped with the tool's own work (§9.3). That includes the first
+  capture's wait for `git version` (§9.2), so a slow first `git version`
+  costs that capture a `timeout`, never more time. `clax hook` is a process
+  per hook, so each capturing hook probes `git version` again (about
+  17 ms through macOS's `/usr/bin/git` shim). On macOS the first hook after
+  the xcrun cache is invalidated (a reboot, or a Command Line Tools or Xcode
+  update) waits 400–480 ms for it and records `timeout`; later hooks are
+  `ok`. A call that also registers
   the session (the first call while the daemon was down, or a
   re-registration after a 401) waits for the registration's capture and
   then its own: up to about 600 ms. Measured by plan Task 12 on
@@ -1733,7 +1748,15 @@ This rule is the same for Claude Code, Codex, Pi, Gemini and Grok (O4).
   - export is owner-only.
 - **Git capture:** fixture repositories (clean, dirty, staged, untracked,
   detached, unborn, no remote, userinfo URL, linked worktree, not a repo). A
-  blocking fake `git` tests the timeout.
+  blocking fake `git` tests the timeout. The fixed cases in
+  `crates/clax-core/tests/toolpath/git-capture-vectors.json`, with their
+  expected contexts, are checked by both the Rust capture and the Pi
+  extension's: they pin the fields each repository state yields, the diff
+  flags and hash, filter neutralising, and the refused lazy fetch of a
+  partial clone. The other pins (fsmonitor, hooks, index refresh, the
+  cleared environment, submodules, a promisor remote alone) are checked by
+  each side's own tests, with a control showing plain git runs the
+  program.
 - **Perf:** the existing gates, with unchanged budgets.
 
 ## 16. Review questions: resolved

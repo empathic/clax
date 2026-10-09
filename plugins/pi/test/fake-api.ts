@@ -56,14 +56,14 @@ export class FakePi {
     for (const h of this.handlers.get(event) ?? []) await h(payload, ctx);
   }
 
-  /** Calls tool `name` as Pi's agent loop does, with `signal` as the call's
-   * abort signal: a thrown error becomes a text result holding its message,
-   * flagged `isError`. */
-  async callTool(name: string, params: unknown, ctx: ExtensionContext, signal?: AbortSignal): Promise<ToolOutcome> {
+  /** Calls tool `name` as Pi's agent loop does, with Pi's tool-call ID
+   * `toolCallId` and `signal` as the call's abort signal: a thrown error
+   * becomes a text result holding its message, flagged `isError`. */
+  async callTool(name: string, params: unknown, ctx: ExtensionContext, toolCallId = "call-1", signal?: AbortSignal): Promise<ToolOutcome> {
     const tool = this.tools.get(name);
     if (!tool) throw new Error(`no tool ${name}`);
     try {
-      const r = await tool.execute("call-1", params as never, signal, undefined, ctx);
+      const r = await tool.execute(toolCallId, params as never, signal, undefined, ctx);
       return { content: r.content as ToolOutcome["content"], isError: false };
     } catch (e) {
       return { content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }], isError: true };

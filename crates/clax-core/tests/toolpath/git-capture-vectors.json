@@ -1,0 +1,286 @@
+{
+  "about": "Git capture (spec 2026-10-06-toolpath-audit-design §9.1, §9.2) of fixed repository states. The Rust capture (crates/clax-core/src/gitctx_capture_tests.rs) and the Pi extension's (plugins/pi/test/git.test.ts) both build each case and must report `expect` exactly. Each case starts in an empty directory: `mkdir` makes a directory, `write` writes `text` as UTF-8, `remove` deletes a file, and `git` runs git in the directory `in` (the case's own when absent) with `fixture.config` as -c options and `fixture.env` set. The capture runs in `cwd`. `expect` is the context without `captured_at`, its `repo_root` relative to the case's directory, or {\"git_capture\": outcome}.",
+  "fixture": {
+    "config": ["user.name=Test", "user.email=test@example.com", "commit.gpgsign=false", "init.defaultBranch=main", "core.autocrlf=false", "protocol.file.allow=always"],
+    "env": {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "GIT_AUTHOR_DATE": "1791000000 +0000", "GIT_COMMITTER_DATE": "1791000000 +0000"}
+  },
+  "cases": [
+    {
+      "name": "clean",
+      "cwd": "app",
+      "steps": [
+        {"mkdir": "app"},
+        {"in": "app", "git": ["init", "-q"]},
+        {"write": "app/a.txt", "text": "one\ntwo\nthree\n"},
+        {"in": "app", "git": ["add", "a.txt"]},
+        {"in": "app", "git": ["commit", "-q", "-m", "one"]},
+        {"in": "app", "git": ["remote", "add", "origin", "https://u:tok@github.com/o/r.git?x=1#f"]}
+      ],
+      "expect": {"branch": "main", "dirty": false, "head": "e9cfc274129bfe9dd31d89cc3a1825021d9e278c", "remote": "origin", "remote_url": "https://github.com/o/r.git", "repo_root": "app", "untracked": 0}
+    },
+    {
+      "name": "subdirectory",
+      "cwd": "app/sub",
+      "steps": [
+        {"mkdir": "app"},
+        {"in": "app", "git": ["init", "-q"]},
+        {"write": "app/a.txt", "text": "one\ntwo\nthree\n"},
+        {"in": "app", "git": ["add", "a.txt"]},
+        {"in": "app", "git": ["commit", "-q", "-m", "one"]},
+        {"mkdir": "app/sub"}
+      ],
+      "expect": {"branch": "main", "dirty": false, "head": "e9cfc274129bfe9dd31d89cc3a1825021d9e278c", "repo_root": "app", "untracked": 0}
+    },
+    {
+      "name": "dirty_tracked",
+      "cwd": "app",
+      "steps": [
+        {"mkdir": "app"},
+        {"in": "app", "git": ["init", "-q"]},
+        {"write": "app/a.txt", "text": "one\ntwo\nthree\n"},
+        {"in": "app", "git": ["add", "a.txt"]},
+        {"in": "app", "git": ["commit", "-q", "-m", "one"]},
+        {"write": "app/a.txt", "text": "one\n2\nthree\nfour\n"}
+      ],
+      "expect": {"branch": "main", "diff_bytes": 189, "diff_sha256": "sha256:9f1f10a6277a736730e037e0b1f1114e381e688fa5e15a0c8013b008b9881559", "dirty": true, "head": "e9cfc274129bfe9dd31d89cc3a1825021d9e278c", "repo_root": "app", "untracked": 0}
+    },
+    {
+      "name": "staged_only",
+      "cwd": "app",
+      "steps": [
+        {"mkdir": "app"},
+        {"in": "app", "git": ["init", "-q"]},
+        {"write": "app/a.txt", "text": "one\ntwo\nthree\n"},
+        {"in": "app", "git": ["add", "a.txt"]},
+        {"in": "app", "git": ["commit", "-q", "-m", "one"]},
+        {"write": "app/a.txt", "text": "staged\n"},
+        {"in": "app", "git": ["add", "a.txt"]}
+      ],
+      "expect": {"branch": "main", "diff_bytes": 186, "diff_sha256": "sha256:84c39c5a1ecac5b6145822269c9e3b41c1d301c1fcfbea0dce6efe4ddd03d588", "dirty": true, "head": "e9cfc274129bfe9dd31d89cc3a1825021d9e278c", "repo_root": "app", "untracked": 0}
+    },
+    {
+      "name": "staged_and_unstaged",
+      "cwd": "app",
+      "steps": [
+        {"mkdir": "app"},
+        {"in": "app", "git": ["init", "-q"]},
+        {"write": "app/a.txt", "text": "one\ntwo\nthree\n"},
+        {"in": "app", "git": ["add", "a.txt"]},
+        {"in": "app", "git": ["commit", "-q", "-m", "one"]},
+        {"write": "app/a.txt", "text": "staged\n"},
+        {"in": "app", "git": ["add", "a.txt"]},
+        {"write": "app/a.txt", "text": "staged\nand not\n"}
+      ],
+      "expect": {"branch": "main", "diff_bytes": 197, "diff_sha256": "sha256:3353080798246884afcf31fa6301bba4f24946ebd36116f40977bb45f699bc3a", "dirty": true, "head": "e9cfc274129bfe9dd31d89cc3a1825021d9e278c", "repo_root": "app", "untracked": 0}
+    },
+    {
+      "name": "untracked_only",
+      "cwd": "app",
+      "steps": [
+        {"mkdir": "app"},
+        {"in": "app", "git": ["init", "-q"]},
+        {"write": "app/a.txt", "text": "one\ntwo\nthree\n"},
+        {"in": "app", "git": ["add", "a.txt"]},
+        {"in": "app", "git": ["commit", "-q", "-m", "one"]},
+        {"write": "app/new1.txt", "text": "x"},
+        {"write": "app/new2.txt", "text": "y"}
+      ],
+      "expect": {"branch": "main", "dirty": true, "head": "e9cfc274129bfe9dd31d89cc3a1825021d9e278c", "repo_root": "app", "untracked": 2}
+    },
+    {
+      "name": "rename_and_untracked",
+      "cwd": "app",
+      "steps": [
+        {"mkdir": "app"},
+        {"in": "app", "git": ["init", "-q"]},
+        {"write": "app/a.txt", "text": "one\ntwo\nthree\n"},
+        {"in": "app", "git": ["add", "a.txt"]},
+        {"in": "app", "git": ["commit", "-q", "-m", "one"]},
+        {"in": "app", "git": ["mv", "a.txt", "b.txt"]},
+        {"write": "app/new.txt", "text": "x"}
+      ],
+      "expect": {"branch": "main", "diff_bytes": 396, "diff_sha256": "sha256:df595b59af705fed955d88cfb7f060761c531e0f33adac70a64746351c842a9e", "dirty": true, "head": "e9cfc274129bfe9dd31d89cc3a1825021d9e278c", "repo_root": "app", "untracked": 1}
+    },
+    {
+      "name": "deleted",
+      "cwd": "app",
+      "steps": [
+        {"mkdir": "app"},
+        {"in": "app", "git": ["init", "-q"]},
+        {"write": "app/a.txt", "text": "one\ntwo\nthree\n"},
+        {"in": "app", "git": ["add", "a.txt"]},
+        {"in": "app", "git": ["commit", "-q", "-m", "one"]},
+        {"remove": "app/a.txt"}
+      ],
+      "expect": {"branch": "main", "diff_bytes": 200, "diff_sha256": "sha256:4caeeb17dd8d0f1d1397a7b7959141d5fda00ab968da9e76d3bde46359cb3354", "dirty": true, "head": "e9cfc274129bfe9dd31d89cc3a1825021d9e278c", "repo_root": "app", "untracked": 0}
+    },
+    {
+      "name": "binary",
+      "cwd": "app",
+      "steps": [
+        {"mkdir": "app"},
+        {"in": "app", "git": ["init", "-q"]},
+        {"write": "app/a.txt", "text": "one\ntwo\nthree\n"},
+        {"in": "app", "git": ["add", "a.txt"]},
+        {"in": "app", "git": ["commit", "-q", "-m", "one"]},
+        {"write": "app/bin.dat", "text": "\u0000\u0001\u0002binary\u0000"},
+        {"in": "app", "git": ["add", "bin.dat"]},
+        {"in": "app", "git": ["commit", "-q", "-m", "bin"]},
+        {"write": "app/bin.dat", "text": "\u0000\u0003binary changed\u0000"}
+      ],
+      "expect": {"branch": "main", "diff_bytes": 232, "diff_sha256": "sha256:f2fa3413f6c8d9877d9b710597202177a420f178b618abc5d97b9de61c7dd468", "dirty": true, "head": "590a63538586d22ddfe885c8e0a38e33922f0882", "repo_root": "app", "untracked": 0}
+    },
+    {
+      "name": "non_ascii_name",
+      "cwd": "app",
+      "steps": [
+        {"mkdir": "app"},
+        {"in": "app", "git": ["init", "-q"]},
+        {"write": "app/a.txt", "text": "one\ntwo\nthree\n"},
+        {"in": "app", "git": ["add", "a.txt"]},
+        {"in": "app", "git": ["commit", "-q", "-m", "one"]},
+        {"write": "app/été.txt", "text": "summer\n"},
+        {"in": "app", "git": ["add", "été.txt"]},
+        {"in": "app", "git": ["commit", "-q", "-m", "ete"]},
+        {"write": "app/été.txt", "text": "winter\n"}
+      ],
+      "expect": {"branch": "main", "diff_bytes": 247, "diff_sha256": "sha256:77f8c338ff56de0945ea85ab134858ab3465fe43509e8ffc9e766ae74d69a069", "dirty": true, "head": "3d69c90ce1c6cb7b2070242efaa3f55d32bb9add", "repo_root": "app", "untracked": 0}
+    },
+    {
+      "name": "filter_not_run",
+      "cwd": "app",
+      "steps": [
+        {"mkdir": "app"},
+        {"in": "app", "git": ["init", "-q"]},
+        {"write": "app/a.txt", "text": "one\ntwo\nthree\n"},
+        {"in": "app", "git": ["add", "a.txt"]},
+        {"in": "app", "git": ["commit", "-q", "-m", "one"]},
+        {"write": "app/.gitattributes", "text": "*.txt filter=up diff=up\n"},
+        {"in": "app", "git": ["add", ".gitattributes"]},
+        {"in": "app", "git": ["commit", "-q", "-m", "attrs"]},
+        {"in": "app", "git": ["config", "filter.up.clean", "tr a-z A-Z"]},
+        {"in": "app", "git": ["config", "filter.up.smudge", "tr A-Z a-z"]},
+        {"in": "app", "git": ["config", "diff.up.textconv", "tr a-z A-Z"]},
+        {"write": "app/a.txt", "text": "one\nTWO\nthree\n"}
+      ],
+      "expect": {"branch": "main", "diff_bytes": 185, "diff_sha256": "sha256:50f6369b046e70eb8516ec8651aaffea92c9767adecb483455ed2dd9497fe74d", "dirty": true, "head": "48ea5aadec05fef08f2bcd1dd9599d169a16790e", "repo_root": "app", "untracked": 0}
+    },
+    {
+      "name": "detached",
+      "cwd": "app",
+      "steps": [
+        {"mkdir": "app"},
+        {"in": "app", "git": ["init", "-q"]},
+        {"write": "app/a.txt", "text": "one\ntwo\nthree\n"},
+        {"in": "app", "git": ["add", "a.txt"]},
+        {"in": "app", "git": ["commit", "-q", "-m", "one"]},
+        {"in": "app", "git": ["checkout", "-q", "--detach"]}
+      ],
+      "expect": {"dirty": false, "head": "e9cfc274129bfe9dd31d89cc3a1825021d9e278c", "repo_root": "app", "untracked": 0}
+    },
+    {
+      "name": "unborn",
+      "cwd": "app",
+      "steps": [
+        {"mkdir": "app"},
+        {"in": "app", "git": ["init", "-q"]}
+      ],
+      "expect": {"branch": "main", "dirty": false, "repo_root": "app", "untracked": 0}
+    },
+    {
+      "name": "unborn_staged",
+      "cwd": "app",
+      "steps": [
+        {"mkdir": "app"},
+        {"in": "app", "git": ["init", "-q"]},
+        {"write": "app/a.txt", "text": "one\n"},
+        {"in": "app", "git": ["add", "a.txt"]}
+      ],
+      "expect": {"branch": "main", "diff_bytes": 182, "diff_sha256": "sha256:5b6acd582bcd1ab15111e194e2580392705cce6c23be1b13a9e5b79d9475458a", "dirty": true, "repo_root": "app", "untracked": 0}
+    },
+    {
+      "name": "first_remote",
+      "cwd": "app",
+      "steps": [
+        {"mkdir": "app"},
+        {"in": "app", "git": ["init", "-q"]},
+        {"write": "app/a.txt", "text": "one\ntwo\nthree\n"},
+        {"in": "app", "git": ["add", "a.txt"]},
+        {"in": "app", "git": ["commit", "-q", "-m", "one"]},
+        {"in": "app", "git": ["remote", "add", "zeta", "git@host:z/r.git"]},
+        {"in": "app", "git": ["remote", "add", "beta", "ssh://u:p@host/b.git"]}
+      ],
+      "expect": {"branch": "main", "dirty": false, "head": "e9cfc274129bfe9dd31d89cc3a1825021d9e278c", "remote": "beta", "remote_url": "ssh://host/b.git", "repo_root": "app", "untracked": 0}
+    },
+    {
+      "name": "origin_over_first",
+      "cwd": "app",
+      "steps": [
+        {"mkdir": "app"},
+        {"in": "app", "git": ["init", "-q"]},
+        {"write": "app/a.txt", "text": "one\ntwo\nthree\n"},
+        {"in": "app", "git": ["add", "a.txt"]},
+        {"in": "app", "git": ["commit", "-q", "-m", "one"]},
+        {"in": "app", "git": ["remote", "add", "beta", "ssh://git@host/b.git"]},
+        {"in": "app", "git": ["remote", "add", "origin", "/srv/git/app.git"]}
+      ],
+      "expect": {"branch": "main", "dirty": false, "head": "e9cfc274129bfe9dd31d89cc3a1825021d9e278c", "remote": "origin", "remote_url": "/srv/git/app.git", "repo_root": "app", "untracked": 0}
+    },
+    {
+      "name": "upstream_remote",
+      "cwd": "app",
+      "steps": [
+        {"mkdir": "app"},
+        {"in": "app", "git": ["init", "-q"]},
+        {"write": "app/a.txt", "text": "one\ntwo\nthree\n"},
+        {"in": "app", "git": ["add", "a.txt"]},
+        {"in": "app", "git": ["commit", "-q", "-m", "one"]},
+        {"in": "app", "git": ["remote", "add", "origin", "https://host/o.git"]},
+        {"in": "app", "git": ["remote", "add", "zeta", "git@host:z/r.git"]},
+        {"in": "app", "git": ["config", "branch.main.remote", "zeta"]}
+      ],
+      "expect": {"branch": "main", "dirty": false, "head": "e9cfc274129bfe9dd31d89cc3a1825021d9e278c", "remote": "zeta", "remote_url": "git@host:z/r.git", "repo_root": "app", "untracked": 0}
+    },
+    {
+      "name": "linked_worktree",
+      "cwd": "wt",
+      "steps": [
+        {"mkdir": "app"},
+        {"in": "app", "git": ["init", "-q"]},
+        {"write": "app/a.txt", "text": "one\ntwo\nthree\n"},
+        {"in": "app", "git": ["add", "a.txt"]},
+        {"in": "app", "git": ["commit", "-q", "-m", "one"]},
+        {"in": "app", "git": ["worktree", "add", "-q", "-b", "side", "../wt"]},
+        {"write": "wt/a.txt", "text": "side\n"}
+      ],
+      "expect": {"branch": "side", "diff_bytes": 184, "diff_sha256": "sha256:0f70b1195c89877f35bdb62ff6c74a0e7de6adbafb79addd9a46f0e5b7b86d81", "dirty": true, "head": "e9cfc274129bfe9dd31d89cc3a1825021d9e278c", "repo_root": "wt", "untracked": 0}
+    },
+    {
+      "name": "not_a_repo",
+      "cwd": "plain",
+      "steps": [
+        {"mkdir": "plain"}
+      ],
+      "expect": {"git_capture": "not-a-repo"}
+    },
+    {
+      "name": "partial_clone_missing_blob",
+      "cwd": "app",
+      "steps": [
+        {"mkdir": "app"},
+        {"in": "app", "git": ["init", "-q"]},
+        {"write": "app/a.txt", "text": "one\ntwo\nthree\n"},
+        {"in": "app", "git": ["add", "a.txt"]},
+        {"in": "app", "git": ["commit", "-q", "-m", "one"]},
+        {"git": ["clone", "-q", "--bare", "app", "remote.git"]},
+        {"in": "app", "git": ["config", "core.repositoryformatversion", "1"]},
+        {"in": "app", "git": ["config", "extensions.partialClone", "origin"]},
+        {"in": "app", "git": ["config", "remote.origin.url", "../remote.git"]},
+        {"in": "app", "git": ["config", "remote.origin.promisor", "true"]},
+        {"remove": "app/.git/objects/4c/b29ea38f70d7c61b2a3a25b02e3bdf44905402"},
+        {"write": "app/a.txt", "text": "changed\n"}
+      ],
+      "expect": {"branch": "main", "diff_unavailable": true, "dirty": true, "head": "e9cfc274129bfe9dd31d89cc3a1825021d9e278c", "remote": "origin", "remote_url": "../remote.git", "repo_root": "app", "untracked": 0}
+    }
+  ]
+}

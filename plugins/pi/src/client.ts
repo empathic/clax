@@ -3,6 +3,8 @@
 // Requests go through node:http rather than fetch because fetch cannot bound
 // connection setup separately from the whole request.
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
+import { currentCall, type ToolCallReport } from "./calls.ts";
+import { encodeHeader, type GitField } from "./git.ts";
 
 /** Deadline for ordinary requests. */
 export const REQUEST_TIMEOUT_MS = 30_000;
@@ -12,6 +14,11 @@ export const PUBLISH_TIMEOUT_MS = 120_000;
 export const END_TIMEOUT_MS = 3_000;
 /** Deadline for establishing a connection; a live daemon on loopback accepts at once. */
 export const CONNECT_TIMEOUT_MS = 2_000;
+/** Deadline for a tool call's report, sent in the background. */
+export const REPORT_TIMEOUT_MS = 3_000;
+/** The channel the extension names on every request (`x-clax-via`, spec
+ * 2026-10-06-toolpath-audit-design §6.9). */
+export const VIA = "pi";
 
 /** Why a daemon call failed:
  * - `unreachable`: no connection (refused, not established within the connect
@@ -230,10 +237,13 @@ export class DaemonClient {
   /** The refresh in flight, so concurrent failures refresh once. */
   private refreshing: Promise<void> | undefined;
 
+  /** `captureGit`, when given, captures the git state each registration
+   * carries; it runs while the daemon is found. */
   constructor(
     private readonly refreshFn: Find,
     private readonly discoverFn: Find,
     private readonly registration: Registration,
+    private readonly captureGit?: () => Promise<GitField>,
   ) {}
 
   /** The browser base URL of the current daemon, once known. */
@@ -269,7 +279,10 @@ export class DaemonClient {
   private async refresh(stale: Stale, find: Find, deadline?: number): Promise<void> {
     while (this.refreshing) await this.refreshing.catch(() => {});
     if (this.endpoint && this.registered && (this.endpoint !== stale.endpoint || this.sessionId !== stale.sessionId)) return;
+    const call = currentCall();
     const run = (async () => {
+      // The registration's git state, captured while the daemon is found.
+      const git = this.captureGit?.().catch((): GitField => ({ capture: "unavailable" }));
       let endpoint: Endpoint;
       try {
         endpoint = await find();
@@ -278,11 +291,14 @@ export class DaemonClient {
       }
       this.endpoint = endpoint;
       this.registered = false;
+      const headers: Record<string, string> = { authorization: `Bearer ${endpoint.token}`, "content-type": "application/json", "x-clax-via": VIA };
+      if (call?.encoded) headers["x-clax-call"] = call.encoded;
+      if (git) headers["x-clax-git"] = encodeHeader(await git);
       let res: RawResponse;
       try {
         res = await attempt(`${endpoint.base}/api/sessions`, {
           method: "POST",
-          headers: { authorization: `Bearer ${endpoint.token}`, "content-type": "application/json" },
+          headers,
           body: JSON.stringify(this.registration),
           timeoutMs: remaining(deadline, REQUEST_TIMEOUT_MS),
         });
@@ -303,8 +319,21 @@ export class DaemonClient {
   }
 
   private headers(endpoint: Endpoint, extra: Record<string, string> = {}): Record<string, string> {
-    const h: Record<string, string> = { authorization: `Bearer ${endpoint.token}`, ...extra };
+    const h: Record<string, string> = { authorization: `Bearer ${endpoint.token}`, "x-clax-via": VIA, ...extra };
     if (this.sessionId) h["x-clax-session"] = this.sessionId;
+    return h;
+  }
+
+  /** The headers naming the call the current code runs for, if any: its
+   * `x-clax-call`, and its `x-clax-git` (every request but a `GET` waits for
+   * the capture; a `GET` carries it once it is there). */
+  private async callHeaders(method: string): Promise<Record<string, string>> {
+    const call = currentCall();
+    const h: Record<string, string> = {};
+    if (!call) return h;
+    if (call.encoded) h["x-clax-call"] = call.encoded;
+    const git = method === "GET" ? call.gitHeaderNow() : await call.gitHeader();
+    if (git) h["x-clax-git"] = git;
     return h;
   }
 
@@ -316,10 +345,11 @@ export class DaemonClient {
     const endpoint = this.endpoint;
     if (!endpoint) throw new ClientError("unreachable", "no daemon found");
     const stale = this.stale();
+    const call = await this.callHeaders(opts.method);
     const go = (ep: Endpoint) =>
       attempt(`${ep.base}${typeof path === "function" ? path() : path}`, {
         ...opts,
-        headers: this.headers(ep, opts.headers),
+        headers: this.headers(ep, { ...call, ...opts.headers }),
         timeoutMs: remaining(deadline, opts.timeoutMs ?? REQUEST_TIMEOUT_MS),
       });
     try {
@@ -584,6 +614,15 @@ export class DaemonClient {
    * session's rows for these comments only. */
   ackComments(commentIds: string[]): Promise<any> {
     return this.json(() => `${this.sessionPath()}/feedback/ack`, this.jsonBody("POST", { comment_ids: commentIds }));
+  }
+
+  /** `POST /api/sessions/<sid>/tool-calls`: reports a finished tool call
+   * (spec §6.7), within [`REPORT_TIMEOUT_MS`]. Never starts a daemon or
+   * registers a session: without a registered session there is nothing to
+   * report to, and it resolves at once. */
+  async reportToolCall(report: ToolCallReport): Promise<void> {
+    if (!this.registeredSession) return;
+    await this.json(() => `${this.sessionPath()}/tool-calls`, this.jsonBody("POST", report, REPORT_TIMEOUT_MS), this.discoverFn, Date.now() + REPORT_TIMEOUT_MS);
   }
 
   /** `PATCH /api/sessions/<id>` `{"ended": true}` for the registered session,

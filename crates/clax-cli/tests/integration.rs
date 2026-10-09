@@ -12,6 +12,7 @@ mod extension;
 mod first_start;
 mod follow;
 mod grok_dedupe;
+mod hook_audit;
 mod init;
 mod journal;
 mod mcp_preflight;

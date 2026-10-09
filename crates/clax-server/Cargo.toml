@@ -46,6 +46,7 @@ test-support = ["dep:tempfile"]
 
 [dev-dependencies]
 clax-server = { path = ".", features = ["test-routes", "test-support"] }
+clax-hooks = { path = "../clax-hooks" }
 bytes = "1"
 sha2 = "0.11"
 reqwest = { workspace = true, features = ["stream"] }

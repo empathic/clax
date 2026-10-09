@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { validateToolArguments, type Tool } from "@mariozechner/pi-ai";
@@ -131,6 +131,33 @@ describe("clax Pi extension", () => {
     await pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
     const ended = (await sessions()).find(x => x.id === s.id);
     expect(ended.ended_at).not.toBeNull();
+  });
+
+  it("records each call with Pi's tool-call ID, the pi channel and the git state", async () => {
+    const repo = join(scratch, "ids-repo");
+    mkdirSync(repo, { recursive: true });
+    const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=T", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main", ...args], { cwd: repo, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }).toString().trim();
+    git("init", "-q");
+    writeFileSync(join(repo, "a.txt"), "one\n");
+    git("add", "a.txt");
+    git("commit", "-q", "-m", "one");
+    const head = git("rev-parse", "HEAD");
+    const pi = new FakePi();
+    claxExtension({ home: daemon.home, env: withBin(claxBin), gitDeadlineMs: 20_000 })(pi.api);
+    const { ctx } = fakeContext(repo, "pi-ids-1");
+    loaded.push({ pi, ctx });
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    const pub = await pi.callTool("clax_publish", { html: "<title>Ids</title>", title: "Ids" }, ctx, "toolu_pi_e2e_1");
+    expect(pub.isError).toBe(false);
+    // Shutting down sends the call's report before ending the session.
+    await pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
+    const sid = (await sessions()).find(s => s.harness_session_id === "pi-ids-1").id;
+    const doc = await api(daemon, `/api/toolpath/export?by_session=${sid}`);
+    const refs = new Set<string>();
+    for (const p of doc.paths) for (const st of p.steps ?? []) for (const r of st.meta?.refs ?? []) refs.add(`${r.rel} ${r.href}`);
+    expect(refs).toContain("agent-session agent://pi/pi-ids-1");
+    expect(refs).toContain("tool-use agent://pi/pi-ids-1/tool/toolu_pi_e2e_1");
+    expect(refs).toContain(`at-revision git:file://${realpathSync(repo)}@${head}`);
   });
 
   it("publishes a page and reads it back", async () => {
@@ -711,11 +738,11 @@ describe("comments", () => {
     // wait_for_feedback's result carries no tier 1 feedback and so does not start the loop.
     const waiting = pi.callToolAsPi("clax_wait_for_feedback", { url_or_id: aid, timeout_s: 600 }, ctx);
     expect((await api(daemon, `/api/_test/sessions/${sid}/feedback/waiters?until=1`)).count).toBe(1);
-    expect(polls).toHaveLength(0);
+    expect(pollsSeen(polls)).toHaveLength(0);
     // The status result starts the loop, which makes no poll and no pause while the wait runs.
     parts(await pi.callToolAsPi("clax_status", {}, ctx));
     await turns();
-    expect(polls).toHaveLength(0);
+    expect(pollsSeen(polls)).toHaveLength(0);
     expect(pauses.created.size).toBe(0);
     await browserThread(aid, "@agent during the wait");
     expect(parts(await waiting).json.feedback).toHaveLength(1);
@@ -764,13 +791,13 @@ describe("comments", () => {
       // The woken poll answered empty; the loop neither polls again nor pauses.
       expect(await polls[0].settled).toBe("answered");
       await turns();
-      expect(polls).toHaveLength(1);
+      expect(pollsSeen(polls)).toHaveLength(1);
       expect(pauses.created.size).toBe(0);
       endWait!();
       expect(parts(await waiting).json).toEqual({ feedback: [], waited_s: 0, call_again: true });
       // Polled again with no timer run: the next poll parks.
       await expect.poll(() => parked.length, { timeout: 10_000 }).toBe(1);
-      expect(polls).toHaveLength(2);
+      expect(pollsSeen(polls)).toHaveLength(2);
       expect(pauses.created.size).toBe(0);
       await pi.emit("session_shutdown", {}, ctx);
       loaded.splice(loaded.findIndex(l => l.pi === pi), 1);
@@ -809,7 +836,7 @@ describe("comments", () => {
       parked.shift()!(empty);
       expect(await polls[0].settled).toBe("answered");
       await expect.poll(() => parked.length, { timeout: 10_000 }).toBe(1);
-      expect(polls).toHaveLength(2);
+      expect(pollsSeen(polls)).toHaveLength(2);
       expect(pauses.created.size).toBe(0);
     } finally {
       vi.useRealTimers();
@@ -845,15 +872,15 @@ describe("comments", () => {
       await pi.emit("session_start", {}, ctx);
       await expect.poll(() => parked.length, { timeout: 10_000 }).toBe(1);
       const stop = new AbortController();
-      const waiting = pi.callTool("clax_wait_for_feedback", { timeout_s: 600 }, ctx, stop.signal);
+      const waiting = pi.callTool("clax_wait_for_feedback", { timeout_s: 600 }, ctx, "call-1", stop.signal);
       expect(await polls[0].settled).toBe("answered");
       await turns();
-      expect(polls).toHaveLength(1);
+      expect(pollsSeen(polls)).toHaveLength(1);
       stop.abort();
       expect((await waiting).isError).toBe(true);
       await expect.poll(() => waitClosed, { timeout: 10_000 }).toBe(true);
       await expect.poll(() => parked.length, { timeout: 10_000 }).toBe(1);
-      expect(polls).toHaveLength(2);
+      expect(pollsSeen(polls)).toHaveLength(2);
       expect(pauses.created.size).toBe(0);
     } finally {
       vi.useRealTimers();
@@ -1023,7 +1050,7 @@ describe("comments", () => {
     await pi.emit("session_shutdown", {}, ctx);
     // The aborted poll settles, and the loop, which awaited it first, has returned.
     expect(await polls[0].settled).toBe("failed");
-    expect(polls).toHaveLength(1);
+    expect(pollsSeen(polls)).toHaveLength(1);
     expect(pauses.alive()).toHaveLength(0);
   });
 
@@ -1273,22 +1300,28 @@ describe("comments", () => {
   });
 });
 
-/** One long-poll of an injection loop (`DaemonClient.pollFeedback`): the
- * signal that aborts it, its outcome so far, and a promise of that outcome
- * which settles after the loop awaiting the poll has run on. */
+/** One long-poll of an injection loop (`DaemonClient.pollFeedback`): its
+ * tier, the client that made it (numbered from 1 in the order clients first
+ * polled, one per extension instance), the signal that aborts it, its outcome
+ * so far, and a promise of that outcome which settles after the loop
+ * awaiting the poll has run on. */
 interface Poll {
+  tier: string;
+  client: number;
   signal: AbortSignal;
   state: "pending" | "answered" | "failed";
   settled: Promise<"answered" | "failed">;
 }
 
-/** Records every injection loop long-poll from here on, until the test ends. */
+/** Records every long-poll from here on, until the test ends. */
 function trackPolls(): Poll[] {
   const polls: Poll[] = [];
+  const clients = new Map<DaemonClient, number>();
   const real = DaemonClient.prototype.pollFeedback;
   vi.spyOn(DaemonClient.prototype, "pollFeedback").mockImplementation(function (this: DaemonClient, tier: string, waitS: number, signal: AbortSignal) {
     const res = real.call(this, tier, waitS, signal);
-    const poll: Poll = { signal, state: "pending", settled: undefined as never };
+    if (!clients.has(this)) clients.set(this, clients.size + 1);
+    const poll: Poll = { tier, client: clients.get(this)!, signal, state: "pending", settled: undefined as never };
     // The loop awaits `res` itself, so its reaction runs before any test
     // reaction to `settled`, which is chained after this one.
     poll.settled = res.then(() => (poll.state = "answered"), () => (poll.state = "failed"));
@@ -1296,6 +1329,12 @@ function trackPolls(): Poll[] {
     return res;
   });
   return polls;
+}
+
+/** `polls` as `tier#client:state`, so a count that fails says which loop
+ * polled. */
+function pollsSeen(polls: Poll[]): string[] {
+  return polls.map(p => `${p.tier}#${p.client}:${p.state}`);
 }
 
 /** Lets pending promise reactions and I/O callbacks run (`setImmediate`,
@@ -1321,8 +1360,9 @@ function trackTimers(ms: number) {
 }
 
 /** An Clax home whose daemon answers `/healthz`, registers every session as
- * `s1` and ends it, and passes other requests to `handle`, which answers through `reply` or
- * returns false to leave the request unanswered. */
+ * `s1` and ends it, records its tool-call and call-ID reports, and passes
+ * other requests to `handle`, which answers through `reply` or returns false
+ * to leave the request unanswered. */
 async function fakeDaemonHome(handle: (req: import("node:http").IncomingMessage, reply: (body: unknown) => void) => unknown) {
   const home = join(scratch, `fake-${Math.random().toString(36).slice(2)}`);
   mkdirSync(home, { recursive: true });
@@ -1334,6 +1374,15 @@ async function fakeDaemonHome(handle: (req: import("node:http").IncomingMessage,
     }
     if (req.method === "PATCH" && req.url === "/api/sessions/s1") {
       return reply({ session: { id: "s1", harness: "pi", harness_session_id: "h", cwd: "/", pid: 1, parent_pid: 1, started_at: "", last_seen_at: "", ended_at: "2026-01-01T00:00:00Z" } });
+    }
+    // Tool-call reports and call-ID reports are answered as the daemon does.
+    if (req.method === "POST" && req.url === "/api/sessions/s1/tool-calls") {
+      res.statusCode = 201;
+      return reply({ recorded: true, seq: 1 });
+    }
+    if (req.method === "POST" && req.url === "/api/sessions/s1/tool-call-ids") {
+      res.statusCode = 204;
+      return res.end();
     }
     handle(req, reply);
   });

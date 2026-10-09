@@ -4,7 +4,9 @@ Clax is a local server for HTML artifacts that agents publish. It stores every v
 
 ## Prerequisites
 
-Rust 1.94 (pinned by `rust-toolchain.toml`), Node 22, and `just`.
+Rust 1.94 (pinned by `rust-toolchain.toml`), Node 22, and `just`. The tests
+also need git 2.44 or later on `PATH`: the git capture tests build fixture
+repositories with it, and Clax captures nothing under an older git.
 
 ## Install
 
