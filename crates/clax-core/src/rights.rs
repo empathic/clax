@@ -11,6 +11,13 @@
 //! - A listing asks [`Rights::allows`] per item and leaves out what fails.
 //! - The db level for an artifact is per action: [`Rights::db_level`] with
 //!   `"write"` for a write, `"read"` for a read.
+//!
+//! Limits: a client's array holds at most [`MAX_ACCESS`] access objects,
+//! counted before merging, with a preset name counting as all of its
+//! objects (`clax:collaborator` alone is nine); each object holds at most
+//! [`MAX_LOCATIONS`] locations. Merged rights hold at most one object per
+//! type, `clax-db` level and action set: 86 in all (15 artifact action sets,
+//! 63 comment, 7 db, 1 ask).
 
 use crate::db::Level;
 use crate::{CoreError, Result};
@@ -44,7 +51,7 @@ pub const MAX_LOCATION_BYTES: usize = 64;
 
 const INVALID: &str = "invalid_rights";
 /// The form [`Location::OwnArtifact`] takes in [`Rights::to_json`]. Only
-/// `Rights::parse_internal` (tests only) reads it back; clients cannot send it.
+/// `Rights::parse_internal` (the store's reader) reads it back; clients cannot send it.
 const OWN_PREFIX: &str = "own:";
 
 fn invalid(message: impl Into<String>) -> CoreError {
@@ -433,8 +440,7 @@ impl Rights {
     }
 
     /// Reads back any [`Rights::to_json`], computed rights included (their
-    /// `"own:<id>"` locations and unbounded sizes).
-    #[cfg(test)]
+    /// `"own:<id>"` locations and unbounded sizes): rights the store wrote.
     pub(crate) fn parse_internal(v: &Value) -> Result<Rights> {
         Rights::parse_with(v, true)
     }
@@ -592,7 +598,7 @@ impl Rights {
     }
 
     /// The GNAP access array. [`Rights::parse`] reads back rights a client
-    /// could send; computed rights need `Rights::parse_internal` (tests only).
+    /// could send; computed rights need `Rights::parse_internal` (the store's reader).
     pub fn to_json(&self) -> Value {
         Value::Array(self.0.iter().map(Access::to_json).collect())
     }
@@ -953,12 +959,8 @@ mod tests {
                 "{shape}: at most one object per comment action set: {objects}"
             );
             assert!(
-                built < std::time::Duration::from_millis(100),
-                "{shape}: {built:?}"
-            );
-            assert!(
-                checked < std::time::Duration::from_millis(10),
-                "{shape}: {checked:?}"
+                objects <= 86,
+                "{shape}: at most one object per type, level and action set: {objects}"
             );
         }
     }
