@@ -108,6 +108,21 @@ impl From<CoreError> for ApiError {
                 code: "limit_reached",
                 message,
             } => ApiError::new(StatusCode::TOO_MANY_REQUESTS, "limit_reached", message),
+            // The grant flow (spec §6.2–§6.4).
+            CoreError::Invalid {
+                code:
+                    code @ ("name_taken" | "key_in_use" | "not_pending" | "already_issued"
+                    | "not_on_lan"),
+                message,
+            } => ApiError::new(StatusCode::CONFLICT, code, message),
+            CoreError::Invalid {
+                code: code @ ("invalid_token" | "grant_revoked"),
+                message,
+            } => ApiError::new(StatusCode::UNAUTHORIZED, code, message),
+            CoreError::Invalid {
+                code: "denied",
+                message,
+            } => ApiError::new(StatusCode::FORBIDDEN, "denied", message),
             CoreError::Invalid { code, message } => ApiError::bad_request(code, message),
             e @ CoreError::NotDeclared { .. } => ApiError::forbidden("not_declared", e.to_string()),
             e @ CoreError::Corrupt { .. } => {

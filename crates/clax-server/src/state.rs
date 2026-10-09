@@ -79,4 +79,14 @@ pub struct AppState {
     pub exports: Arc<crate::routes::toolpath::Exports>,
     /// How Claude Code's call-ID reports wait for their `tool.call`.
     pub call_ids: Arc<crate::routes::sessions::CallIdWait>,
+    /// The address the daemon listens on: invites need one other than
+    /// loopback (spec §6.2).
+    pub bind: std::net::IpAddr,
+    /// The port the daemon listens on.
+    pub port: u16,
+    /// The address invites name; `None` to use the bound one or, for an
+    /// unspecified bind, the machine's LAN address at each invite.
+    pub lan_host: Option<std::net::IpAddr>,
+    /// The grant flow's token index and nonce caches (spec §6.4, §6.6).
+    pub grant_auth: Arc<crate::grant_auth::GrantAuth>,
 }
