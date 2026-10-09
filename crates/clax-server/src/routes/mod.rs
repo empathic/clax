@@ -183,6 +183,10 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         )
         .route("/api/tool-calls", post(toolpath::tool_call))
         .route(
+            "/api/sessions/{id}/tool-call-ids",
+            post(sessions::tool_call_ids),
+        )
+        .route(
             "/api/sessions/{id}/questions",
             post(questions::create.layer(ask_limit)),
         )
@@ -485,6 +489,7 @@ mod l10 {
         ("sessions::get", Token),
         ("sessions::patch", Token),
         ("sessions::push_status", NoArtifact),
+        ("sessions::tool_call_ids", Token),
         ("sample::daemon", Token),
         ("threads::list_all", Token),
         ("working::roster", Token),

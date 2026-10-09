@@ -77,4 +77,6 @@ pub struct AppState {
     /// What bounds the audit exports: one at a time, a stall limit and a
     /// time limit.
     pub exports: Arc<crate::routes::toolpath::Exports>,
+    /// How Claude Code's call-ID reports wait for their `tool.call`.
+    pub call_ids: Arc<crate::routes::sessions::CallIdWait>,
 }

@@ -139,6 +139,9 @@ binary differ.
     starting `clax` unless this session's stamp file
     (`~/.clax/run/tool-hook/`) is at least a minute old, so most tool calls
     cost only a few small shell commands. It always exits 0.
+  - `PostToolUse` on Clax's own tools (`call-id`, 5 s; gives up after 3 s):
+    reports Claude Code's ID for the tool call, so Clax's audit history
+    names the exact call in the transcript.
   - `SessionEnd` (`session-end`, 5 s): ends the session.
 - The `clax` skill: when to publish, the page contract, and the comment
   loop.

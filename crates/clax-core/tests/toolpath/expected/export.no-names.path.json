@@ -1143,8 +1143,6 @@
               "call": {
                 "args_sha256": "sha256:8690a626d077a8f6c9b1d06917dcfcf9203b5ff0b5d954b1442b27f22f73a302",
                 "call_id": "01JBC0000000000000000000C3",
-                "harness_call_id": "toolu_01ABC",
-                "harness_tool": "mcp__plugin_clax_clax__publish",
                 "started_at": "2026-10-06T14:03:11.402Z",
                 "tool": "publish"
               },
@@ -1234,7 +1232,6 @@
               "call": {
                 "args_sha256": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
                 "call_id": "01JBC0000000000000000000C3",
-                "harness_tool": "mcp__plugin_clax_clax__publish",
                 "started_at": "2026-10-06T14:03:11.402Z",
                 "tool": "publish"
               },
@@ -1604,8 +1601,6 @@
                 "args_sha256": "sha256:8690a626d077a8f6c9b1d06917dcfcf9203b5ff0b5d954b1442b27f22f73a302",
                 "call_id": "01JBC0000000000000000000C3",
                 "ended_at": "2026-10-06T14:03:11.913Z",
-                "harness_call_id": "toolu_01ABC",
-                "harness_tool": "mcp__plugin_clax_clax__publish",
                 "outcome": "ok",
                 "produced": [
                   22,
@@ -1655,10 +1650,6 @@
                 "rel": "agent-session"
               },
               {
-                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44/tool/toolu_01ABC",
-                "rel": "tool-use"
-              },
-              {
                 "href": "file:///Users/alex/.claude/projects/-Users-alex-work-app/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44.jsonl",
                 "rel": "transcript"
               },
@@ -1675,6 +1666,70 @@
               "e000000000028"
             ],
             "timestamp": "2026-10-06T14:03:23.029Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001/call/01JBC0000000000000000000C3": {
+              "structural": {
+                "args_sha256": "sha256:8690a626d077a8f6c9b1d06917dcfcf9203b5ff0b5d954b1442b27f22f73a302",
+                "call_id": "01JBC0000000000000000000C3",
+                "harness_call_id": "toolu_01ABC",
+                "harness_tool": "mcp__plugin_clax_clax__publish",
+                "type": "clax.tool.call_id"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "call_id": "01JBC0000000000000000000C3",
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "tool.call_id",
+              "seq": 30,
+              "session_id": "01JB9S00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "hook"
+            },
+            "description": "Matched harness call toolu_01ABC to tool call 01JBC0000000000000000000C3",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44/tool/toolu_01ABC",
+                "rel": "tool-use"
+              },
+              {
+                "href": "file:///Users/alex/.claude/projects/-Users-alex-work-app/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44.jsonl",
+                "rel": "transcript"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000030",
+            "parents": [
+              "e000000000029"
+            ],
+            "timestamp": "2026-10-06T14:03:30.030Z"
           }
         },
         {
@@ -1714,7 +1769,7 @@
             "actor": "human:clax-owner",
             "id": "e000000000033",
             "parents": [
-              "e000000000029"
+              "e000000000030"
             ],
             "timestamp": "2026-10-06T14:03:51.033Z"
           }
@@ -3386,60 +3441,6 @@
         },
         {
           "change": {
-            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001/call/01JBC0000000000000000000C3": {
-              "structural": {
-                "args_sha256": "sha256:8690a626d077a8f6c9b1d06917dcfcf9203b5ff0b5d954b1442b27f22f73a302",
-                "call_id": "01JBC0000000000000000000C3",
-                "harness_call_id": "toolu_01ABC",
-                "harness_tool": "mcp__plugin_clax_clax__publish",
-                "type": "clax.tool.call_id"
-              }
-            }
-          },
-          "meta": {
-            "clax": {
-              "backfilled": false,
-              "call_id": "01JBC0000000000000000000C3",
-              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
-              "clax_version": "0.3.1",
-              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-              "kind": "tool.call_id",
-              "seq": 30,
-              "session_id": "01JB9S00000000000000000001",
-              "v": 1,
-              "via": "hook"
-            },
-            "description": "Matched harness call toolu_01ABC to tool call 01JBC0000000000000000000C3",
-            "refs": [
-              {
-                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
-                "rel": "session"
-              },
-              {
-                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
-                "rel": "agent-session"
-              },
-              {
-                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44/tool/toolu_01ABC",
-                "rel": "tool-use"
-              },
-              {
-                "href": "file:///Users/alex/.claude/projects/-Users-alex-work-app/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44.jsonl",
-                "rel": "transcript"
-              }
-            ]
-          },
-          "step": {
-            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
-            "id": "e000000000030",
-            "parents": [
-              "e000000000010"
-            ],
-            "timestamp": "2026-10-06T14:03:30.030Z"
-          }
-        },
-        {
-          "change": {
             "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001": {
               "structural": {
                 "args_sha256": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
@@ -3482,7 +3483,7 @@
             "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
             "id": "e000000000031",
             "parents": [
-              "e000000000030"
+              "e000000000010"
             ],
             "timestamp": "2026-10-06T14:03:37.031Z"
           }

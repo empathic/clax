@@ -13,6 +13,7 @@ mod first_start;
 mod follow;
 mod grok_dedupe;
 mod hook_audit;
+mod hook_call_ids;
 mod init;
 mod journal;
 mod mcp_preflight;

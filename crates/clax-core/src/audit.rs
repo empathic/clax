@@ -368,6 +368,70 @@ impl ToolCallReport {
     }
 }
 
+/// The bare Clax tool name of a harness's tool name (spec §12.3): the part
+/// after the last `__` or `.`, when the part before it names Clax (holds
+/// `clax`) and the rest is a bare tool name (lowercase letters, digits and
+/// `_`, at most 64 bytes). `mcp__plugin_clax_clax__publish` is `publish`.
+pub fn bare_clax_tool(harness_tool: &str) -> Option<&str> {
+    let (prefix, bare) = match (harness_tool.rfind("__"), harness_tool.rfind('.')) {
+        (Some(u), Some(d)) if d > u => (&harness_tool[..d], &harness_tool[d + 1..]),
+        (Some(u), _) => (&harness_tool[..u], &harness_tool[u + 2..]),
+        (None, Some(d)) => (&harness_tool[..d], &harness_tool[d + 1..]),
+        (None, None) => return None,
+    };
+    let bare_ok = !bare.is_empty()
+        && bare.len() <= 64
+        && bare
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+    (prefix.contains("clax") && bare_ok).then_some(bare)
+}
+
+/// What Claude Code's PostToolUse hook reports for a Clax tool call (spec
+/// §6.7, `POST /api/sessions/<sid>/tool-call-ids`): the harness's call ID,
+/// the tool name as the harness gave it, and the hash of the tool's input
+/// (§12.2). Fields this build does not know are ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCallIdReport {
+    pub tool_use_id: String,
+    pub tool_name: String,
+    pub args_sha256: String,
+}
+
+/// The longest `tool_use_id` or `tool_name` a call-ID report may give, in
+/// bytes.
+pub const MAX_HARNESS_NAME: usize = 256;
+
+impl ToolCallIdReport {
+    /// The bare Clax tool name of `tool_name`, once [`Self::validate`] passed.
+    pub fn bare_tool(&self) -> &str {
+        bare_clax_tool(&self.tool_name).unwrap_or_default()
+    }
+
+    /// Checks a non-empty `tool_use_id` and `tool_name` of at most
+    /// [`MAX_HARNESS_NAME`] bytes without control or format characters, a
+    /// `tool_name` that names a Clax tool ([`bare_clax_tool`]), and a
+    /// well-formed `args_sha256`.
+    pub fn validate(&self) -> Result<(), String> {
+        for (name, v) in [
+            ("tool_use_id", &self.tool_use_id),
+            ("tool_name", &self.tool_name),
+        ] {
+            gitctx::text(name, v)?;
+            if v.len() > MAX_HARNESS_NAME {
+                return Err(format!("{name} is longer than {MAX_HARNESS_NAME} bytes"));
+            }
+        }
+        if bare_clax_tool(&self.tool_name).is_none() {
+            return Err("tool_name is not a Clax tool".into());
+        }
+        if !gitctx::is_sha256_ref(&self.args_sha256) {
+            return Err("args_sha256 is not sha256:<64 lowercase hex>".into());
+        }
+        Ok(())
+    }
+}
+
 /// Everything a request contributes to the records it makes: the actor, the
 /// channel, the agent's git state and the tool call.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -760,5 +824,21 @@ mod tests {
         assert_eq!(c.via, Via::Daemon);
         assert_eq!(c.git, GitField::Absent);
         assert_eq!(c.call, None);
+    }
+
+    #[test]
+    fn a_harness_tool_name_gives_its_bare_clax_name() {
+        for (name, bare) in [
+            ("mcp__plugin_clax_clax__publish", Some("publish")),
+            ("mcp__clax__wait_for_feedback", Some("wait_for_feedback")),
+            ("clax.db_get", Some("db_get")),
+            ("mcp__github__publish", None),
+            ("mcp__clax__Publish", None),
+            ("mcp__clax__", None),
+            ("publish", None),
+            ("Bash", None),
+        ] {
+            assert_eq!(bare_clax_tool(name), bare, "{name}");
+        }
     }
 }
