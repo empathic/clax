@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { type AddressInfo, createServer as createNetServer } from "node:net";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -71,8 +71,14 @@ const DAEMON_START_MS = 60_000;
  * names the home, has the same text in every test. */
 const WORKER_HOME = join(tmpdir(), `clax-e2e-ext-${process.pid}`);
 
+/** The daemon of this worker's last test: it must have exited before the
+ * next test empties and reuses its home. */
+let lastDaemon: Daemon | undefined;
+
 /** Where `keep` stores the host scripts, by content. */
 const KEPT = join(tmpdir(), "clax-e2e-host");
+/** How long `keep` leaves a stored copy no test has used. */
+const KEPT_FOR_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Replaces the executable `file` with a symbolic link to a kept copy of the
@@ -99,6 +105,16 @@ function keep(file: string): boolean {
   }
   rmSync(file);
   symlinkSync(kept, file);
+  // Copies unused for a day go (each worker's launcher names its own home,
+  // so its copy recurs only within the worker); best-effort.
+  const now = new Date();
+  utimesSync(dir, now, now);
+  for (const name of readdirSync(KEPT)) {
+    const other = join(KEPT, name);
+    try {
+      if (other !== dir && now.getTime() - statSync(other).mtimeMs > KEPT_FOR_MS) rmSync(other, { recursive: true, force: true });
+    } catch { /* another worker removed it */ }
+  }
   return fresh;
 }
 
@@ -150,6 +166,7 @@ export const test = base.extend<{ live: Live; variant: Variant; gesture: boolean
     if (!existsSync(join(EXT_DIR, "manifest.json"))) throw new Error("web/dist-extension-test is missing: run `npm run build` in web/");
     // The native host's wrapper runs the `bin` setting's clax: this run's.
     const config = `bin = ${JSON.stringify(process.env.CLAX_E2E_BIN)}\n${NO_KEY_CONFIG}`;
+    if (lastDaemon && !lastDaemon.ended()) throw new Error(`the previous test's daemon on ${WORKER_HOME} is still running`);
     rmSync(WORKER_HOME, { recursive: true, force: true });
     mkdirSync(WORKER_HOME, { mode: 0o700 });
     writeFileSync(join(WORKER_HOME, "config.toml"), config);
@@ -216,6 +233,7 @@ export const test = base.extend<{ live: Live; variant: Variant; gesture: boolean
     await use(l);
     await l.ctx.close();
     await site.close().catch(() => {});
+    lastDaemon = l.daemon;
     await l.daemon.stop();
     rmSync(profile, { recursive: true, force: true });
     rmSync(siteDir, { recursive: true, force: true });
