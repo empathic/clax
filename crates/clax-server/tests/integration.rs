@@ -42,8 +42,9 @@ mod daemon;
 mod sample_anthropic;
 
 /// Cargo's test autodiscovery is off for this crate (`autotests = false` in
-/// its manifest), so a file in `tests/` runs only once a test binary's root
-/// declares it as a module.
+/// its manifest), so a file in `tests/`, or a directory there with a
+/// `main.rs` or `mod.rs`, runs only once a test binary's root declares it as
+/// a module.
 #[test]
 fn every_test_file_is_a_module() {
     let tests = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
@@ -54,17 +55,23 @@ fn every_test_file_is_a_module() {
         .collect();
     for entry in std::fs::read_dir(&tests).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+        let (stem, what) = if path.is_dir() {
+            if !path.join("main.rs").exists() && !path.join("mod.rs").exists() {
+                continue;
+            }
+            (path.file_name().unwrap().to_str().unwrap(), "/")
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            (path.file_stem().unwrap().to_str().unwrap(), ".rs")
+        } else {
             continue;
-        }
-        let stem = path.file_stem().unwrap().to_str().unwrap();
+        };
         if roots.contains(&stem) {
             continue;
         }
         let decl = format!("mod {stem};");
         assert!(
             declared.iter().any(|d| d.lines().any(|l| l.trim() == decl)),
-            "tests/{stem}.rs is not a module of any test binary: declare it in tests/{}.rs",
+            "tests/{stem}{what} is not a module of any test binary: declare it in tests/{}.rs",
             roots[0]
         );
     }
