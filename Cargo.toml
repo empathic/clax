@@ -54,7 +54,8 @@ predicates = "3"
 
 # Debug builds, and the tests built on them, keep line tables for this
 # workspace's crates, so backtraces still name file:line, and no debug info
-# for dependencies: smaller and faster to build and link.
+# for dependencies: smaller and faster to build and link. Locals in a
+# debugger need full debug info: `CARGO_PROFILE_DEV_DEBUG=true cargo build`.
 [profile.dev]
 debug = "line-tables-only"
 
