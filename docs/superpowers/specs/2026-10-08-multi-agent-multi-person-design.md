@@ -497,7 +497,7 @@ gives every handler one `Caller` (M8):
 
 | Caller | Credential | Reader for the filter |
 |---|---|---|
-| `Owner` | an owner browser credential (owner cookie, events cookie, extension), or the daemon token on a request that names no session and carries no agent-channel marker: the CLI used by hand outside any harness, and scripts | none: not an agent channel (§8.5) |
+| `Owner {browser}` | an owner browser credential (owner cookie, events cookie, extension: `browser` true), or the daemon token on a request that names no session and carries no agent-channel marker (`browser` false): the CLI used by hand outside any harness, and scripts | none: not an agent channel (§8.5) |
 | `OwnerAgent {session}` | the daemon token on a request that names a token session in its path (`/api/sessions/{id}/…`: the hooks, `clax feedback follow`) or in `X-Clax-Session` (the shim, Pi), or that carries `X-Clax-Channel: agent` (every agent-side client sends it, including `/mcp`'s internal client and the shim before its registration completes, and the CLI whenever it runs under a harness (§16: `CLAX_CHANNEL=agent`, which the plugins' wrapper exports, or a harness's shell variables); `session` none then). The marker counts only with the token | the owner |
 | `PersonAgent {person, grant, session}` | `Authorization: Clax-Grant` with a valid signature (§6.6); `session` from `X-Clax-Session`, optional (§6.7) | the person (the owner when the grant's person is the owner row) |
 | `Person {viewer}` | a `clax_viewer` cookie naming a connected, unrevoked person row | none |
@@ -661,10 +661,15 @@ pre-buffered. For a grant's request:
   read, waiting up to 30 s for room (then 503 `busy`); a chunked body
   reserves chunk by chunk and is refused with 503 `busy` when its running
   total cannot be reserved within 30 s;
-- **unverified reads have a minimum rate**: after its first 10 s, an
-  unverified body slower than 64 KiB/s on average is dropped with 408
-  `timeout` and its permit and budget released, so a trickled body cannot
-  hold the key's permit or the budget;
+- **unverified reads have a minimum rate and a deadline**: after its first
+  10 s, an unverified body slower than 64 KiB/s on average is dropped with
+  408 `timeout`, and so is one not read in full within 10 s plus 1 s per
+  MiB of its declared length (of the route's `LIMIT` for a chunked body:
+  about 106 s for a 96 MiB publish); either way its permit, allowance and
+  budget are released, so a trickled body cannot hold them long;
+- **small bodies are bounded per key too**: one key's unverified bodies of
+  1 MiB or less hold at most 8 MiB in flight together (beyond, 429
+  `limit_reached`);
 - **a nonce is recorded only after its signature verifies**: the header
   check only tests for presence; after verification the nonce is inserted
   under the cache's lock with a second presence test, so of two copies of a
@@ -695,12 +700,22 @@ costs about 20 µs and verifying about 50 µs.
   for every candidate it tries (harness session ID, parent PID,
   ancestors).
 - **Listing** (`GET /api/sessions`, which hooks use to find their session
-  by harness session ID): a grant sees only its own grant's sessions.
+  by harness session ID): a grant sees only its own grant's sessions, and
+  the token only the token's (so a hook never finds a grant's session by
+  its harness session ID). The owner sees other machines' agents in People
+  and the agents roster (§17), not in `clax doctor` or `clax feedback`.
 - **Paths and headers:** every session ID in a path (`/api/sessions/{id}/…`)
   or in `X-Clax-Session` must name a session of the caller's grant (or, for
-  the token, a token session): otherwise 403 `foreign_session`. The check
-  is in the `Agent<N>` extractor (M7), which reads the same `Path` as the
-  handler.
+  the token, a token session): one of another credential is 403
+  `foreign_session`. A session ID that names no session is 400
+  `unknown_session` for a grant (the shim and Pi register again on it), and
+  left to the handler for the token (today's answers). A grant's request
+  whose path names one of its sessions acts with that session's rights,
+  whichever of its sessions the header names. The check is in the
+  `Agent<N>` extractor (M7), which reads the same `Path` as the handler.
+- **Remote processes:** a grant's registration keeps no `pid`: it is a
+  process of another machine, which the reaper must not probe as a local
+  one (§14); its `parent_pid` stays, for matching within the grant.
 - **Session-less grant requests** (the remote CLI): rights are `person ∩
   grant.narrow`, the reader is the person, and session routes are refused
   (400 `no_session`). The commands that work remotely are `clax list`,
@@ -1524,8 +1539,11 @@ agents not to.
 8. **Denial of service.** The token, timestamp and nonce are checked
    before the body is read; with a sniffed token, unverified bytes in
    flight are bounded per key and overall through bounded queues,
-   unverified reads must keep a minimum rate, and bad signatures spend no
-   nonces (§6.6);
+   unverified reads must keep a minimum rate and end by a deadline, and
+   bad signatures spend no nonces (§6.6). Known limitation: a sniffed
+   access token, without the key, can still hold its victim's large-body
+   permit for up to that deadline (10 s plus 1 s per MiB), again and
+   again; it can never produce a verified request (§25);
    limits on pending requests, wrong codes, open approval requests,
    nonces, invites and grants (20 live per person).
 9. **Names reach other agents unfiltered.** Person names (≤ 60
@@ -1607,6 +1625,11 @@ agents not to.
 - Agent names are unique only among live sessions.
 - Approvals are per person, not per agent.
 - Names are a small unfiltered injection surface (§21.9).
+- A sniffed access token without its key cannot make a verified request,
+  but it can hold its victim's large-body permit (and a queue of 4 behind
+  it) and up to its route's `LIMIT` of the budget for as long as an
+  unverified read may last, 10 s plus 1 s per MiB (§6.6, §21.8), and
+  again after each.
 
 ## 26. Open questions
 
@@ -1726,3 +1749,15 @@ agents not to.
   - §5.1 keeps the browser link's code on its grant (`browser_sha256`,
     `browser_expires_at`), so a link survives a daemon restart (upgrades
     restart the daemon); redeeming it clears it.
+- **Amendment** (2026-10-09, plan Task 5, review rulings):
+  - §6.1: `Owner` carries `browser`, so the grant decisions (M20) tell
+    the owner's browser from the owner's token.
+  - §6.6: an unverified read has an absolute deadline (10 s plus 1 s per
+    MiB declared), beside the 64 KiB/s floor, and a key's small bodies
+    hold at most 8 MiB in flight; a `Filtered` route not yet live answers
+    a grant 503 `not_yet` before reading its body.
+  - §6.7: the token lists only token sessions; an unknown session ID is
+    400 `unknown_session` (a grant) or the handler's answer (the token),
+    and 403 `foreign_session` only for another credential's session; a
+    path session acts with its own rights; a grant's `pid` is not kept.
+  - §25: the sniffed-token hold on a victim's large-body permit.

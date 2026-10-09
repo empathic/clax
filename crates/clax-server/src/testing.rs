@@ -147,10 +147,16 @@ impl TestServer {
     /// whose bounds on agents' unverified bodies wait and measure rates on
     /// the returned timer.
     pub async fn spawn_agent_timer() -> (TestServer, Arc<ManualTimer>) {
+        Self::spawn_agent_timer_with_budget(crate::agent::BUDGET).await
+    }
+
+    /// [`TestServer::spawn_agent_timer`] with an overall budget of
+    /// `budget` bytes of unverified bodies.
+    pub async fn spawn_agent_timer_with_budget(budget: usize) -> (TestServer, Arc<ManualTimer>) {
         let timer = Arc::new(ManualTimer::default());
         let t = timer.clone();
         let ts = Self::spawn_on(IpAddr::V4(Ipv4Addr::UNSPECIFIED), move |s| {
-            s.agent_gate = Arc::new(crate::agent::Gate::new(t));
+            s.agent_gate = Arc::new(crate::agent::Gate::with_budget(t, budget));
         })
         .await;
         (ts, timer)
@@ -1400,6 +1406,13 @@ impl TestClient {
             held: Default::default(),
             peer: None,
         }
+    }
+
+    /// The same client speaking from this machine (a loopback peer, as
+    /// through a tunnel or a local proxy).
+    pub fn on_loopback(mut self) -> TestClient {
+        self.client = reqwest::Client::new();
+        self
     }
 
     /// The same client speaking from LAN address `ip`.
