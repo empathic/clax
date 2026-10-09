@@ -13,7 +13,8 @@
 //! which [`parse_header`] reads strictly. The daemon tests `t` and the nonce
 //! with [`NonceCache::check`] before reading the body, verifies the signature
 //! with [`verify`], and only then spends the nonce with
-//! [`NonceCache::record`], so a bad signature spends nothing.
+//! [`NonceCache::record`], so a bad signature spends nothing; `record` does
+//! not test `t` again, so a slow body cannot make a verified request stale.
 
 use crate::secret::{hex, random_bytes};
 use base64::Engine as _;
@@ -25,13 +26,21 @@ use std::fmt;
 
 /// First line of the canonical string.
 pub const VERSION_LINE: &str = "clax-ed25519 v1";
-/// Seconds `t` may differ from the daemon's clock: half of [`NONCE_WINDOW_S`],
-/// as [`NonceCache`] takes it.
-pub const MAX_SKEW_S: i64 = 120;
 /// Seconds a verified nonce is remembered for its key.
 pub const NONCE_WINDOW_S: i64 = 240;
+/// Seconds `t` may differ from the daemon's clock: half the window, as
+/// [`NonceCache::skew`] derives it.
+pub const MAX_SKEW_S: i64 = NONCE_WINDOW_S / 2;
 /// Verified nonces remembered per key within [`NONCE_WINDOW_S`].
 pub const NONCES_PER_KEY: usize = 65_536;
+/// Keys a [`NonceCache`] holds at once by default. Signing keys are live
+/// grants and pending requests (at most 20 pending, `MAX_PENDING`), all made
+/// by the owner's approvals and invites, so a real install has tens; 4096
+/// leaves room for every one while bounding what key churn can hold.
+pub const MAX_KEYS: usize = 4096;
+/// Nonces a [`NonceCache`] holds at once over every key, by default: 2^20,
+/// about 40 MB at most, sixteen saturated keys.
+pub const MAX_NONCES: usize = 1 << 20;
 /// Length of a nonce: 16 random bytes in base64url.
 pub const NONCE_LEN: usize = 22;
 /// Length of a public key in bytes.
@@ -50,8 +59,9 @@ pub enum SigError {
     /// The nonce was already used by this key within the window.
     #[error("the request's nonce was already used")]
     Replayed,
-    /// The key has used [`NONCES_PER_KEY`] nonces within the window.
-    #[error("too many requests from this key")]
+    /// The key has used its nonces for the window, or the cache holds its
+    /// most keys or nonces overall.
+    #[error("too many recent signed requests")]
     Full,
     /// A malformed header, key or signature, or one that does not verify.
     #[error("the request's signature is malformed or does not verify")]
@@ -136,16 +146,24 @@ impl KeyPair {
     }
 
     /// Signs `input`, giving the `Clax-Signature` header.
-    pub fn sign(&self, input: &SignInput<'_>) -> SigHeader {
+    ///
+    /// # Errors
+    /// [`SigError::Bad`] for an input [`verify`] would refuse whatever the
+    /// signature: a control character in the method, path, host or nonce,
+    /// or a nonce that is not [`NONCE_LEN`] base64url characters.
+    pub fn sign(&self, input: &SignInput<'_>) -> Result<SigHeader, SigError> {
+        if input.ambiguous() || nonce_bits(input.nonce).is_err() {
+            return Err(SigError::Bad);
+        }
         let sig = self.pair.sign(&input.canonical());
-        SigHeader {
+        Ok(SigHeader {
             t: input.t,
             nonce: input.nonce.to_owned(),
             sig: sig
                 .as_ref()
                 .try_into()
                 .expect("an Ed25519 signature is 64 bytes"),
-        }
+        })
     }
 }
 
@@ -229,7 +247,9 @@ fn unb64<const N: usize>(s: &str) -> Option<[u8; N]> {
 }
 
 /// Parses a `Clax-Signature` value: exactly the parameters `t`, `n` and
-/// `s`, each once, in any order, separated by commas with optional spaces.
+/// `s`, each once, in any order, separated by commas. Spaces (not tabs) may
+/// stand before and after each parameter, so also at the value's ends;
+/// none may stand around `=`.
 /// `t` is decimal Unix seconds without sign or leading zeros, `n` is
 /// [`NONCE_LEN`] base64url characters, and `s` is a signature in unpadded
 /// base64url.
@@ -317,55 +337,148 @@ pub fn fingerprint(public: &[u8; PUBLIC_LEN]) -> String {
 
 /// Nonces each key used recently. Time comes in as `now`; the cache never
 /// reads a clock.
+///
+/// Each key's nonces are kept in buckets of [`BUCKETS`]-th of the window,
+/// oldest first. A bucket is dropped whole once its last second is older
+/// than the window, so a nonce is remembered for at least the window (and
+/// up to one bucket longer), and forgetting a full key is one deallocation
+/// per bucket rather than one per nonce.
+///
+/// Memory is bounded three ways: `per_key` nonces per key, `max_keys` keys
+/// and `max_total` nonces overall, each refused with [`SigError::Full`].
+/// Every call also tidies up to [`TIDY_PER_CALL`] other keys, dropping their
+/// old buckets and removing keys left with none, so idle keys leave without
+/// a timer; [`NonceCache::sweep`] does the same for every key at once.
 #[derive(Debug)]
 pub struct NonceCache {
     window_s: i64,
+    bucket_s: i64,
     per_key: usize,
+    max_keys: usize,
+    max_total: usize,
+    total: usize,
     keys: HashMap<[u8; PUBLIC_LEN], KeyNonces>,
+    /// Every key in `keys`, once, in the order [`NonceCache::tidy`] visits
+    /// them.
+    rotation: VecDeque<[u8; PUBLIC_LEN]>,
 }
+
+/// Buckets per window.
+pub const BUCKETS: i64 = 16;
+/// Other keys each [`NonceCache::check`] or [`NonceCache::record`] tidies.
+/// With keys arriving once each, a key waits at most a quarter of a lap
+/// past its expiry, so at most 4/3 of the keys live within the retention
+/// are held.
+pub const TIDY_PER_CALL: usize = 4;
 
 #[derive(Debug, Default)]
 struct KeyNonces {
-    /// Each remembered nonce.
-    seen: HashSet<Box<str>>,
-    /// The same nonces and when each was recorded, oldest first.
-    order: VecDeque<(i64, Box<str>)>,
+    /// Oldest first, epochs increasing.
+    buckets: VecDeque<Bucket>,
+    len: usize,
+}
+
+#[derive(Debug)]
+struct Bucket {
+    /// Recording time divided by the bucket width.
+    epoch: i64,
+    /// Each nonce once, as its 16 decoded bytes.
+    nonces: HashSet<u128>,
 }
 
 impl KeyNonces {
-    /// Forgets the nonces recorded more than `window_s` before `now`, from
-    /// the oldest: each nonce is forgotten once, so this is amortised O(1)
-    /// per record. A clock that stepped back only keeps nonces longer.
-    fn evict(&mut self, now: i64, window_s: i64) {
-        while let Some((at, _)) = self.order.front() {
-            if now.saturating_sub(*at) <= window_s {
+    fn contains(&self, n: u128) -> bool {
+        self.buckets.iter().any(|b| b.nonces.contains(&n))
+    }
+
+    /// Drops the buckets whose last second is more than `window_s` before
+    /// `now`, returning how many nonces went. A clock that stepped back only
+    /// keeps nonces longer.
+    fn evict(&mut self, now: i64, window_s: i64, bucket_s: i64) -> usize {
+        let mut gone = 0;
+        while let Some(b) = self.buckets.front() {
+            let last = b
+                .epoch
+                .saturating_mul(bucket_s)
+                .saturating_add(bucket_s - 1);
+            if now.saturating_sub(last) <= window_s {
                 break;
             }
-            if let Some((_, n)) = self.order.pop_front() {
-                self.seen.remove(&n);
-            }
+            gone += b.nonces.len();
+            self.buckets.pop_front();
         }
+        self.len -= gone;
+        gone
     }
+
+    /// Records `n` at `at`. A time before the newest bucket goes into that
+    /// bucket, which only keeps it longer.
+    fn insert(&mut self, n: u128, at: i64, bucket_s: i64) {
+        let epoch = at.div_euclid(bucket_s);
+        match self.buckets.back_mut() {
+            Some(b) if b.epoch >= epoch => {
+                b.nonces.insert(n);
+            }
+            _ => self.buckets.push_back(Bucket {
+                epoch,
+                nonces: HashSet::from([n]),
+            }),
+        }
+        self.len += 1;
+    }
+}
+
+/// `nonce` as its 16 bytes, if it is [`NONCE_LEN`] canonical base64url
+/// characters.
+fn nonce_bits(nonce: &str) -> Result<u128, SigError> {
+    if nonce.len() != NONCE_LEN {
+        return Err(SigError::Bad);
+    }
+    unb64::<16>(nonce)
+        .map(u128::from_be_bytes)
+        .ok_or(SigError::Bad)
 }
 
 impl NonceCache {
     /// A cache remembering each verified nonce for `window_s` seconds
     /// ([`NONCE_WINDOW_S`]), at most `per_key` ([`NONCES_PER_KEY`]) per key
-    /// at once. `t` may be up to half the window from `now`.
+    /// at once, for at most [`MAX_KEYS`] keys and [`MAX_NONCES`] nonces in
+    /// all. `t` may be up to half the window from `now`.
     pub fn new(window_s: i64, per_key: usize) -> NonceCache {
         NonceCache {
             window_s,
+            bucket_s: (window_s / BUCKETS).max(1),
             per_key,
+            max_keys: MAX_KEYS,
+            max_total: MAX_NONCES,
+            total: 0,
             keys: HashMap::new(),
+            rotation: VecDeque::new(),
         }
     }
 
-    /// The test before the body is read: `t` is within half the window of
-    /// `now`, `key` has not used `nonce` within the window, and `key` has
-    /// room for another nonce. Spends nothing.
+    /// The same cache with at most `max_keys` keys and `max_total` nonces.
+    pub fn with_caps(mut self, max_keys: usize, max_total: usize) -> NonceCache {
+        self.max_keys = max_keys;
+        self.max_total = max_total;
+        self
+    }
+
+    /// How far `t` may be from `now`: half the window, so a nonce is
+    /// remembered while its `t` stays fresh ([`MAX_SKEW_S`] for
+    /// [`NONCE_WINDOW_S`]).
+    pub fn skew(&self) -> i64 {
+        self.window_s / 2
+    }
+
+    /// The test before the body is read: `t` is within [`NonceCache::skew`]
+    /// of `now`, the nonce has the shape [`parse_header`] reads, `key` has
+    /// not used it within the window, and there is room to record it.
+    /// Spends nothing.
     ///
     /// # Errors
-    /// [`SigError::Stale`], [`SigError::Replayed`] or [`SigError::Full`].
+    /// [`SigError::Stale`], [`SigError::Bad`], [`SigError::Replayed`] or
+    /// [`SigError::Full`].
     pub fn check(
         &mut self,
         key: &[u8; PUBLIC_LEN],
@@ -373,28 +486,23 @@ impl NonceCache {
         t: i64,
         now: i64,
     ) -> Result<(), SigError> {
-        if t.abs_diff(now) > self.skew() {
+        if t.abs_diff(now) > self.skew().unsigned_abs() {
             return Err(SigError::Stale);
         }
-        let Some(k) = self.keys.get_mut(key) else {
-            return Ok(());
-        };
-        k.evict(now, self.window_s);
-        if k.seen.contains(nonce) {
-            Err(SigError::Replayed)
-        } else if k.order.len() >= self.per_key {
-            Err(SigError::Full)
-        } else {
-            Ok(())
-        }
+        let n = nonce_bits(nonce)?;
+        self.room(key, n, now)
     }
 
-    /// After the signature verifies: [`NonceCache::check`] again, then
-    /// records `nonce` for `key` at `now`. Of two copies of one request, one
-    /// is recorded and the other is [`SigError::Replayed`].
+    /// After the signature verifies, the second presence test and the
+    /// record. `t` is not tested again (a slow body must not make a
+    /// verified request stale); the nonce is recorded at the later of `now`
+    /// and `t − skew`, so it is remembered at least until `t + skew` however
+    /// long the body took or wherever the clock stepped. Of two copies of
+    /// one request, one is recorded and the other is
+    /// [`SigError::Replayed`]. `t` must have passed [`NonceCache::check`].
     ///
     /// # Errors
-    /// As [`NonceCache::check`].
+    /// [`SigError::Bad`], [`SigError::Replayed`] or [`SigError::Full`].
     pub fn record(
         &mut self,
         key: &[u8; PUBLIC_LEN],
@@ -402,38 +510,85 @@ impl NonceCache {
         t: i64,
         now: i64,
     ) -> Result<(), SigError> {
-        self.check(key, nonce, t, now)?;
-        let k = self.keys.entry(*key).or_default();
-        let nonce: Box<str> = nonce.into();
-        k.seen.insert(nonce.clone());
-        k.order.push_back((now, nonce));
+        let n = nonce_bits(nonce)?;
+        self.room(key, n, now)?;
+        let at = now.max(t.saturating_sub(self.skew()));
+        let k = match self.keys.entry(*key) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                self.rotation.push_back(*key);
+                e.insert(KeyNonces::default())
+            }
+        };
+        k.insert(n, at, self.bucket_s);
+        self.total += 1;
         Ok(())
     }
 
-    /// Forgets every nonce older than the window, and every key left with
-    /// none. For a periodic sweep: [`NonceCache::check`] already forgets a
-    /// key's old nonces as it goes.
-    pub fn sweep(&mut self, now: i64) {
-        self.keys.retain(|_, k| {
-            k.evict(now, self.window_s);
-            !k.order.is_empty()
-        });
+    /// Tidies, then whether `key` may record `n` at `now`.
+    fn room(&mut self, key: &[u8; PUBLIC_LEN], n: u128, now: i64) -> Result<(), SigError> {
+        self.tidy(now);
+        let full = match self.keys.get_mut(key) {
+            Some(k) => {
+                self.total -= k.evict(now, self.window_s, self.bucket_s);
+                if k.contains(n) {
+                    return Err(SigError::Replayed);
+                }
+                k.len >= self.per_key
+            }
+            None => self.keys.len() >= self.max_keys,
+        };
+        if full || self.total >= self.max_total {
+            return Err(SigError::Full);
+        }
+        Ok(())
     }
 
-    /// How far `t` may be from `now`: half the window, so a nonce recorded
-    /// at any `now` its `t` allows is remembered while that `t` stays fresh.
-    fn skew(&self) -> u64 {
-        (self.window_s / 2).unsigned_abs()
+    /// Visits the next [`TIDY_PER_CALL`] keys in rotation: drops their old
+    /// buckets and removes those left empty.
+    fn tidy(&mut self, now: i64) {
+        for _ in 0..TIDY_PER_CALL.min(self.rotation.len()) {
+            let Some(key) = self.rotation.pop_front() else {
+                break;
+            };
+            if let Some(k) = self.keys.get_mut(&key) {
+                self.total -= k.evict(now, self.window_s, self.bucket_s);
+                if k.len == 0 {
+                    self.keys.remove(&key);
+                } else {
+                    self.rotation.push_back(key);
+                }
+            }
+        }
+    }
+
+    /// Forgets every nonce older than the window, and every key left with
+    /// none: for a periodic sweep, O(keys).
+    pub fn sweep(&mut self, now: i64) {
+        let (window_s, bucket_s) = (self.window_s, self.bucket_s);
+        let mut gone = 0;
+        self.keys.retain(|_, k| {
+            gone += k.evict(now, window_s, bucket_s);
+            k.len > 0
+        });
+        self.total -= gone;
+        let keys = &self.keys;
+        self.rotation.retain(|k| keys.contains_key(k));
     }
 
     /// How many nonces are remembered, over every key.
     pub fn len(&self) -> usize {
-        self.keys.values().map(|k| k.order.len()).sum()
+        self.total
     }
 
     /// Whether no nonce is remembered.
     pub fn is_empty(&self) -> bool {
-        self.keys.values().all(|k| k.order.is_empty())
+        self.total == 0
+    }
+
+    /// How many keys have nonces remembered.
+    pub fn keys(&self) -> usize {
+        self.keys.len()
     }
 }
 
@@ -508,21 +663,27 @@ mod tests {
         );
     }
 
+    /// The `i`th test nonce: 22 base64url characters.
+    fn nn(i: u32) -> String {
+        b64(&u128::from(i).to_be_bytes())
+    }
+
     #[test]
     fn sign_verify_and_tamper() {
         let k = KeyPair::generate();
-        let i = input("GET", "/api/artifacts", "h", 100, "n1", b"", "t");
-        let h = k.sign(&i);
-        assert_eq!((h.t, h.nonce.as_str()), (100, "n1"));
+        let (n1, n2) = (nn(1), nn(2));
+        let i = input("GET", "/api/artifacts", "h", 100, &n1, b"", "t");
+        let h = k.sign(&i).unwrap();
+        assert_eq!((h.t, h.nonce.as_str()), (100, n1.as_str()));
         assert!(verify(&k.public(), &i, &h.sig));
         for bad in [
-            input("POST", "/api/artifacts", "h", 100, "n1", b"", "t"),
-            input("GET", "/api/artifacts?a", "h", 100, "n1", b"", "t"),
-            input("GET", "/api/artifacts", "x", 100, "n1", b"", "t"),
-            input("GET", "/api/artifacts", "h", 101, "n1", b"", "t"),
-            input("GET", "/api/artifacts", "h", 100, "n2", b"", "t"),
-            input("GET", "/api/artifacts", "h", 100, "n1", b"x", "t"),
-            input("GET", "/api/artifacts", "h", 100, "n1", b"", "u"),
+            input("POST", "/api/artifacts", "h", 100, &n1, b"", "t"),
+            input("GET", "/api/artifacts?a", "h", 100, &n1, b"", "t"),
+            input("GET", "/api/artifacts", "x", 100, &n1, b"", "t"),
+            input("GET", "/api/artifacts", "h", 101, &n1, b"", "t"),
+            input("GET", "/api/artifacts", "h", 100, &n2, b"", "t"),
+            input("GET", "/api/artifacts", "h", 100, &n1, b"x", "t"),
+            input("GET", "/api/artifacts", "h", 100, &n1, b"", "u"),
             SignInput {
                 token_sha256: None,
                 ..i
@@ -537,59 +698,73 @@ mod tests {
     }
 
     #[test]
-    fn control_characters_and_wrong_lengths_never_verify() {
+    fn control_characters_and_wrong_lengths_never_sign_or_verify() {
         let k = KeyPair::generate();
-        for (m, p, host, n) in [
-            ("GET", "/a\nGET", "h", "n"),
-            ("GET\r", "/a", "h", "n"),
-            ("GET", "/a", "h\n1", "n"),
-            ("GET", "/a", "h", "n\0"),
+        let n = nn(1);
+        let good = input("GET", "/a", "h", 1, &n, b"", "t");
+        let sig = k.sign(&good).unwrap().sig;
+        for (m, p, host) in [
+            ("GET", "/a\nGET", "h"),
+            ("GET\r", "/a", "h"),
+            ("GET", "/a", "h\n1"),
         ] {
-            let i = input(m, p, host, 1, n, b"", "t");
-            let h = k.sign(&i);
-            assert!(!verify(&k.public(), &i, &h.sig), "{i:?}");
+            let i = input(m, p, host, 1, &n, b"", "t");
+            assert_eq!(k.sign(&i), Err(SigError::Bad), "{i:?}");
+            // A signature made over the same canonical bytes by hand still
+            // does not verify.
+            let raw: [u8; SIG_LEN] = k.pair.sign(&i.canonical()).as_ref().try_into().unwrap();
+            assert!(!verify(&k.public(), &i, &raw), "{i:?}");
         }
-        let i = input("GET", "/a", "h", 1, "n", b"", "t");
-        let h = k.sign(&i);
+        for bad_nonce in ["n1", "\0", &format!("{n}A"), &format!("{}+", &n[1..])] {
+            let i = input("GET", "/a", "h", 1, bad_nonce, b"", "t");
+            assert_eq!(k.sign(&i), Err(SigError::Bad), "{bad_nonce:?}");
+        }
         let public = k.public();
-        assert!(!verify(&public[..31], &i, &h.sig));
-        assert!(!verify(&[public.as_slice(), &[0]].concat(), &i, &h.sig));
-        assert!(!verify(&public, &i, &h.sig[..63]));
-        assert!(!verify(&public, &i, &[h.sig.as_slice(), &[0]].concat()));
-        assert!(!verify(&[], &i, &[]));
+        assert!(!verify(&public[..31], &good, &sig));
+        assert!(!verify(&[public.as_slice(), &[0]].concat(), &good, &sig));
+        assert!(!verify(&public, &good, &sig[..63]));
+        assert!(!verify(&public, &good, &[sig.as_slice(), &[0]].concat()));
+        assert!(!verify(&[], &good, &[]));
     }
 
     #[test]
     fn replay_and_staleness_are_refused() {
         let mut c = NonceCache::new(240, 4);
         let key = [7u8; 32];
-        assert!(c.record(&key, "a", 1000, 1000).is_ok());
-        assert_eq!(c.check(&key, "a", 1000, 1001), Err(SigError::Replayed));
-        assert_eq!(c.record(&key, "a", 1000, 1001), Err(SigError::Replayed));
-        assert_eq!(c.check(&key, "b", 1000, 1121), Err(SigError::Stale));
-        assert_eq!(c.check(&key, "b", 1000, 879), Err(SigError::Stale));
-        assert_eq!(c.record(&key, "b", 1000, 1121), Err(SigError::Stale));
-        assert!(c.check(&key, "b", 1000, 1120).is_ok(), "120 s is in time");
-        assert!(c.check(&key, "b", 1000, 880).is_ok());
-        for n in ["c", "d", "e"] {
+        let [a, b, cc, d, e, f] = [1, 2, 3, 4, 5, 6].map(nn);
+        assert!(c.record(&key, &a, 1000, 1000).is_ok());
+        assert_eq!(c.check(&key, &a, 1000, 1001), Err(SigError::Replayed));
+        assert_eq!(c.record(&key, &a, 1000, 1001), Err(SigError::Replayed));
+        assert_eq!(c.check(&key, &b, 1000, 1121), Err(SigError::Stale));
+        assert_eq!(c.check(&key, &b, 1000, 879), Err(SigError::Stale));
+        assert!(c.check(&key, &b, 1000, 1120).is_ok(), "120 s is in time");
+        assert!(c.check(&key, &b, 1000, 880).is_ok());
+        for n in [&b, &cc, &d] {
             c.record(&key, n, 1000, 1000).unwrap();
         }
-        assert_eq!(c.check(&key, "f", 1000, 1000), Err(SigError::Full));
-        assert_eq!(c.record(&key, "f", 1000, 1000), Err(SigError::Full));
+        assert_eq!(c.check(&key, &e, 1000, 1000), Err(SigError::Full));
+        assert_eq!(c.record(&key, &e, 1000, 1000), Err(SigError::Full));
+        assert_eq!(
+            c.record(&key, &a, 1000, 1000),
+            Err(SigError::Replayed),
+            "a replay at the cap is still a replay"
+        );
         assert!(
-            c.record(&[8u8; 32], "a", 1000, 1000).is_ok(),
+            c.record(&[8u8; 32], &a, 1000, 1000).is_ok(),
             "each key has its own nonces"
         );
         assert_eq!(
-            c.check(&key, "a", 1240, 1240),
+            c.check(&key, &a, 1240, 1240),
             Err(SigError::Replayed),
             "a nonce is remembered for the whole window"
         );
         assert!(
-            c.record(&key, "f", 1300, 1300).is_ok(),
+            c.record(&key, &f, 1300, 1300).is_ok(),
             "entries older than the window are evicted"
         );
-        assert!(c.record(&key, "a", 1300, 1300).is_ok());
+        assert!(c.record(&key, &a, 1300, 1300).is_ok());
+        assert_eq!(c.check(&key, "a", 1300, 1300), Err(SigError::Bad));
+        assert_eq!(c.record(&key, "a", 1300, 1300), Err(SigError::Bad));
     }
 
     #[test]
@@ -597,10 +772,10 @@ mod tests {
         let mut c = NonceCache::new(NONCE_WINDOW_S, NONCES_PER_KEY);
         let key = [1u8; 32];
         for _ in 0..3 {
-            c.check(&key, "a", 50, 50).unwrap();
+            c.check(&key, &nn(1), 50, 50).unwrap();
         }
-        assert!(c.is_empty(), "a check spends nothing");
-        c.record(&key, "a", 50, 50).unwrap();
+        assert!(c.is_empty() && c.keys() == 0, "a check spends nothing");
+        c.record(&key, &nn(1), 50, 50).unwrap();
         assert_eq!(c.len(), 1);
     }
 
@@ -611,29 +786,102 @@ mod tests {
         let mut c = NonceCache::new(NONCE_WINDOW_S, NONCES_PER_KEY);
         let key = [2u8; 32];
         let t = 10_000;
-        c.record(&key, "a", t, t - MAX_SKEW_S).unwrap();
+        c.record(&key, &nn(1), t, t - MAX_SKEW_S).unwrap();
         assert_eq!(
-            c.check(&key, "a", t, t + MAX_SKEW_S),
+            c.check(&key, &nn(1), t, t + MAX_SKEW_S),
             Err(SigError::Replayed)
         );
         assert_eq!(
-            c.check(&key, "a", t, t + MAX_SKEW_S + 1),
+            c.check(&key, &nn(1), t, t + MAX_SKEW_S + 1),
             Err(SigError::Stale)
+        );
+    }
+
+    #[test]
+    fn a_slow_body_is_recorded_once() {
+        let mut c = NonceCache::new(NONCE_WINDOW_S, NONCES_PER_KEY);
+        let key = [5u8; 32];
+        let t = 10_000;
+        let n = nn(9);
+        c.check(&key, &n, t, t).unwrap();
+        // The body took 300 s; the request verified.
+        assert!(c.record(&key, &n, t, t + 300).is_ok());
+        assert_eq!(c.record(&key, &n, t, t + 300), Err(SigError::Replayed));
+        assert_eq!(c.check(&key, &n, t + 300, t + 300), Err(SigError::Replayed));
+        // Another, checked at t and recorded at t + 500: a replay of it
+        // within its time is refused.
+        let m = nn(10);
+        c.check(&key, &m, t, t).unwrap();
+        c.record(&key, &m, t, t + 500).unwrap();
+        assert_eq!(c.check(&key, &m, t + 500, t + 500), Err(SigError::Replayed));
+    }
+
+    #[test]
+    fn a_clock_stepped_back_keeps_the_nonce_through_its_time() {
+        let mut c = NonceCache::new(NONCE_WINDOW_S, NONCES_PER_KEY);
+        let key = [6u8; 32];
+        let t = 10_000;
+        let n = nn(3);
+        c.check(&key, &n, t, t - MAX_SKEW_S).unwrap();
+        // The clock stepped back 10 s before the record.
+        c.record(&key, &n, t, t - MAX_SKEW_S - 10).unwrap();
+        assert_eq!(
+            c.check(&key, &n, t, t + MAX_SKEW_S),
+            Err(SigError::Replayed)
         );
     }
 
     #[test]
     fn sweep_forgets_old_nonces_and_idle_keys() {
         let mut c = NonceCache::new(240, 8);
-        c.record(&[1u8; 32], "a", 0, 0).unwrap();
-        c.record(&[2u8; 32], "a", 200, 200).unwrap();
-        c.sweep(240);
+        c.record(&[1u8; 32], &nn(1), 0, 0).unwrap();
+        c.record(&[2u8; 32], &nn(1), 200, 200).unwrap();
+        // The first bucket holds seconds 0 to 14: kept through 254.
+        c.sweep(254);
         assert_eq!(c.len(), 2);
-        c.sweep(241);
-        assert_eq!(c.len(), 1);
-        assert_eq!(c.keys.len(), 1, "an idle key is dropped");
+        c.sweep(255);
+        assert_eq!((c.len(), c.keys()), (1, 1), "an idle key is dropped");
         c.sweep(1000);
-        assert!(c.is_empty());
+        assert!(c.is_empty() && c.keys() == 0);
+        assert!(c.rotation.is_empty());
+    }
+
+    #[test]
+    fn one_shot_keys_stay_bounded_without_a_sweep() {
+        let mut c = NonceCache::new(NONCE_WINDOW_S, NONCES_PER_KEY);
+        let mut most = 0;
+        // Ten new keys a second for an hour, each used once.
+        for i in 0..36_000u32 {
+            let now = i64::from(i / 10);
+            let mut key = [0u8; 32];
+            key[..4].copy_from_slice(&i.to_be_bytes());
+            c.record(&key, &nn(i), now, now).unwrap();
+            most = most.max(c.keys());
+        }
+        // Retention (a window and a bucket, 255 s) holds 2,550 of them;
+        // tidying four keys a call holds at most 4/3 of that.
+        assert!(most <= 2_550 * 4 / 3, "{most}");
+        assert_eq!(c.keys(), c.len());
+        assert_eq!(c.rotation.len(), c.keys());
+    }
+
+    #[test]
+    fn keys_and_nonces_overall_are_capped() {
+        let mut c = NonceCache::new(240, 100).with_caps(3, 5);
+        for k in 1..=3u8 {
+            c.record(&[k; 32], &nn(1), 0, 0).unwrap();
+        }
+        assert_eq!(c.check(&[4; 32], &nn(1), 0, 0), Err(SigError::Full));
+        assert_eq!(c.record(&[4; 32], &nn(1), 0, 0), Err(SigError::Full));
+        c.record(&[1; 32], &nn(2), 0, 0).unwrap();
+        c.record(&[2; 32], &nn(2), 0, 0).unwrap();
+        assert_eq!(c.record(&[3; 32], &nn(2), 0, 0), Err(SigError::Full));
+        // Once the window passes, tidying frees both caps.
+        for i in 0..4 {
+            let _ = c.check(&[1; 32], &nn(10 + i), 300, 300);
+        }
+        assert_eq!(c.keys(), 0);
+        c.record(&[4; 32], &nn(1), 300, 300).unwrap();
     }
 
     #[test]
@@ -641,12 +889,14 @@ mod tests {
         let mut c = NonceCache::new(NONCE_WINDOW_S, NONCES_PER_KEY);
         let key = [3u8; 32];
         for (t, now) in [(i64::MIN, i64::MAX), (i64::MAX, i64::MIN), (i64::MAX, 0)] {
-            assert_eq!(c.record(&key, "a", t, now), Err(SigError::Stale));
+            assert_eq!(c.check(&key, &nn(1), t, now), Err(SigError::Stale));
         }
-        c.record(&key, "a", i64::MAX, i64::MAX).unwrap();
-        c.record(&key, "b", i64::MIN, i64::MIN).unwrap();
+        c.record(&key, &nn(1), i64::MAX, i64::MAX).unwrap();
+        c.record(&key, &nn(2), i64::MIN, i64::MIN).unwrap();
+        c.record(&[9; 32], &nn(2), i64::MIN, i64::MIN).unwrap();
         c.sweep(i64::MAX);
         c.sweep(i64::MIN);
+        let _ = c.check(&key, &nn(3), i64::MIN, i64::MIN);
     }
 
     #[test]
@@ -661,7 +911,7 @@ mod tests {
         assert_eq!(n.len(), NONCE_LEN);
         assert_ne!(n, new_nonce());
         let i = input("PUT", "/api/a/x?y", "h:1", 1_760_000_000, &n, b"b", "t");
-        let h = back.sign(&i);
+        let h = back.sign(&i).unwrap();
         let value = h.to_string();
         assert!(value.starts_with(&format!("t=1760000000, n={n}, s=")));
         let parsed = parse_header(&value).unwrap();
@@ -747,27 +997,60 @@ mod tests {
     fn random_bytes_never_panic() {
         let mut rng = StdRng::seed_from_u64(0x5eed);
         let k = KeyPair::generate();
-        let i = input("GET", "/", "h", 1, "n", b"", "t");
-        let good = k.sign(&i).to_string().into_bytes();
-        let sig = k.sign(&i).sig;
-        let mut c = NonceCache::new(NONCE_WINDOW_S, 16);
-        for round in 0..3_000 {
+        let n = nn(1);
+        let i = input("GET", "/", "h", 1, &n, b"", "t");
+        let h = k.sign(&i).unwrap();
+        let good = h.to_string().into_bytes();
+        let mut c = NonceCache::new(NONCE_WINDOW_S, 16).with_caps(64, 512);
+        let (mut parsed, mut reached) = (0, 0);
+        for round in 0..1_000 {
             let len = rng.random_range(0..200);
             let mut b: Vec<u8> = (0..len).map(|_| rng.random()).collect();
             // Half the rounds mutate a valid header, to reach deeper.
             if round % 2 == 0 {
                 b = good.clone();
+                // Mostly bytes of the header's own alphabet, so that many
+                // still parse.
+                let alphabet = b"AQgw09-_,= tns";
                 for _ in 0..rng.random_range(1..4) {
                     let at = rng.random_range(0..b.len());
-                    b[at] = rng.random();
+                    b[at] = if rng.random_bool(0.8) {
+                        alphabet[rng.random_range(0..alphabet.len())]
+                    } else {
+                        rng.random()
+                    };
                 }
             }
-            let _ = parse_header(&b);
+            if let Ok(p) = parse_header(&b) {
+                parsed += 1;
+                let r = SignInput {
+                    t: p.t,
+                    nonce: &p.nonce,
+                    ..i
+                };
+                // Verifies only if the mutation left the header intact.
+                assert_eq!(verify(&k.public(), &r, &p.sig), p == h);
+                let now = rng.random_range(-200..200);
+                let _ = c.check(&k.public(), &p.nonce, p.t, now);
+                let _ = c.record(&k.public(), &p.nonce, p.t, now);
+            }
             let _ = KeyPair::from_pkcs8(&b);
             let text = String::from_utf8_lossy(&b);
             let _ = decode_public(&text);
             let split = b.len() / 2;
             assert!(!verify(&b[..split], &i, &b[split..]));
+            // Correctly sized keys and signatures reach ring's verify.
+            let key: [u8; PUBLIC_LEN] = rng.random();
+            let mut sig = [0u8; SIG_LEN];
+            rng.fill(&mut sig[..]);
+            assert!(!verify(&key, &i, &sig));
+            assert!(!verify(&k.public(), &i, &sig));
+            if rng.random_bool(0.1) {
+                // Also with a real signature's halves kept.
+                sig[..32].copy_from_slice(&h.sig[..32]);
+                assert!(!verify(&key, &i, &sig));
+            }
+            reached += 1;
             let r = SignInput {
                 method: &text,
                 path_and_query: &text,
@@ -776,9 +1059,17 @@ mod tests {
                 t: rng.random(),
                 ..i
             };
-            assert!(!verify(&k.public(), &r, &sig));
-            let _ = c.record(&k.public(), &text, rng.random(), rng.random());
+            assert!(!verify(&k.public(), &r, &h.sig));
+            let _ = k.sign(&r);
+            let mut key = [0u8; PUBLIC_LEN];
+            key[0] = rng.random_range(0..100);
+            let (t, now) = (rng.random(), rng.random());
+            let _ = c.check(&key, &text, t, now);
+            let _ = c.record(&key, &text, t, now);
+            let _ = c.record(&key, &nn(rng.random()), t, now);
         }
+        assert!(parsed > 100 && reached == 1_000, "{parsed}");
+        assert!(c.keys() <= 64 && c.len() <= 512);
     }
 
     #[test]
@@ -813,50 +1104,70 @@ mod tests {
     #[ignore]
     fn cost() {
         use std::time::Instant;
+        /// Heap bytes the buckets' tables hold: a `u128` and a control
+        /// byte per slot (hashbrown), plus the bucket structs.
+        fn table_bytes(c: &NonceCache) -> usize {
+            c.keys
+                .values()
+                .flat_map(|k| &k.buckets)
+                .map(|b| b.nonces.capacity() * 17 * 8 / 7 + size_of::<Bucket>())
+                .sum()
+        }
         let key = [4u8; 32];
-        let mut c = NonceCache::new(NONCE_WINDOW_S, NONCES_PER_KEY);
-        let nonces: Vec<String> = (0..2 * NONCES_PER_KEY).map(|_| new_nonce()).collect();
+        let cap = NONCES_PER_KEY;
+        let nonces: Vec<String> = (0..2 * cap as u32).map(nn).collect();
+        let mut c = NonceCache::new(NONCE_WINDOW_S, cap);
         let start = Instant::now();
-        for n in &nonces[..NONCES_PER_KEY] {
+        for n in &nonces[..cap] {
             c.record(&key, n, 0, 0).unwrap();
         }
         let fill = start.elapsed();
+        let full_key_bytes = table_bytes(&c);
         let start = Instant::now();
-        for n in &nonces[NONCES_PER_KEY..] {
+        for n in &nonces[cap..] {
             assert_eq!(c.check(&key, n, 0, 0), Err(SigError::Full));
         }
         let full = start.elapsed();
-        // Steady state at the cap: one nonce a second over the window's
-        // edge, each record evicting one.
-        let mut c = NonceCache::new(NONCE_WINDOW_S, NONCES_PER_KEY);
-        // A nonce is kept through `now - at == window`: 241 seconds of them.
-        let per = NONCES_PER_KEY as i64 / (NONCE_WINDOW_S + 1);
-        for (j, n) in nonces[..NONCES_PER_KEY].iter().enumerate() {
+        // The whole cap expiring at once, on one record.
+        let start = Instant::now();
+        c.record(&key, &nn(u32::MAX), 300, 300).unwrap();
+        let burst = start.elapsed();
+        assert_eq!(c.len(), 1);
+        // Steady state at the cap: an even rate filling the retention
+        // (window plus a bucket), each new bucket dropping an old one.
+        let mut c = NonceCache::new(NONCE_WINDOW_S, cap);
+        let per = cap as i64 / (NONCE_WINDOW_S + NONCE_WINDOW_S / BUCKETS);
+        for (j, n) in nonces[..cap].iter().enumerate() {
             let now = j as i64 / per;
             c.record(&key, n, now, now).unwrap();
         }
         let start = Instant::now();
-        let base = NONCES_PER_KEY as i64 / per;
-        for (j, n) in nonces[NONCES_PER_KEY..].iter().enumerate() {
+        let base = cap as i64 / per;
+        let mut worst = std::time::Duration::ZERO;
+        for (j, n) in nonces[cap..].iter().enumerate() {
             let now = base + j as i64 / per;
+            let one = Instant::now();
             c.record(&key, n, now, now).unwrap();
+            worst = worst.max(one.elapsed());
         }
         let steady = start.elapsed();
-        // The whole cap expiring at once, on one check.
-        let mut c = NonceCache::new(NONCE_WINDOW_S, NONCES_PER_KEY);
-        for n in &nonces[..NONCES_PER_KEY] {
-            c.record(&key, n, 0, 0).unwrap();
+        // The overall cap: sixteen saturated keys.
+        let mut c = NonceCache::new(NONCE_WINDOW_S, cap);
+        for k in 0..(MAX_NONCES / cap) as u8 {
+            for n in &nonces[..cap] {
+                c.record(&[k; 32], n, 0, 0).unwrap();
+            }
         }
-        let start = Instant::now();
-        c.record(&key, "x", 241, 241).unwrap();
-        let burst = start.elapsed();
+        assert_eq!(c.record(&[99; 32], &nonces[0], 0, 0), Err(SigError::Full));
+        let all_bytes = table_bytes(&c);
 
         let k = KeyPair::generate();
-        let i = input("POST", "/api/artifacts", "h", 1, "n", b"{}", "t");
+        let n = nn(1);
+        let i = input("POST", "/api/artifacts", "h", 1, &n, b"{}", "t");
         let start = Instant::now();
-        let mut h = k.sign(&i);
+        let mut h = k.sign(&i).unwrap();
         for _ in 0..999 {
-            h = k.sign(&i);
+            h = k.sign(&i).unwrap();
         }
         let sign = start.elapsed() / 1000;
         let start = Instant::now();
@@ -864,14 +1175,16 @@ mod tests {
             assert!(verify(&k.public(), &i, &h.sig));
         }
         let ver = start.elapsed() / 1000;
-        let n = NONCES_PER_KEY as u32;
+        let n = cap as u32;
         println!(
-            "fill {:?}/record, full-cap check {:?}, steady record {:?}, \
-             burst evict of {n} {:?}, sign {sign:?}, verify {ver:?}",
+            "fill {:?}/record, full-cap check {:?}, steady record {:?} (worst {worst:?}), \
+             expiring a full key {burst:?}, full key {} KiB, {MAX_NONCES} nonces {} MiB, \
+             sign {sign:?}, verify {ver:?}",
             fill / n,
             full / n,
             steady / n,
-            burst
+            full_key_bytes / 1024,
+            all_bytes / (1024 * 1024),
         );
     }
 }
