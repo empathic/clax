@@ -337,8 +337,11 @@ CREATE TABLE grants (
     decided_at TEXT,
     last_used_at TEXT,
     ended_at TEXT,
-    ended_by TEXT                                -- 'owner' | 'person' | 'expiry'
+    ended_by TEXT,                               -- 'owner' | 'person' | 'expiry'
+    browser_sha256 TEXT,                         -- the browser link's code (§6.5), until redeemed
+    browser_expires_at TEXT                      -- 10 minutes after it was issued
 );
+CREATE UNIQUE INDEX grants_browser ON grants(browser_sha256) WHERE browser_sha256 IS NOT NULL;
 CREATE UNIQUE INDEX grants_live_key ON grants(client_key) WHERE status IN ('pending', 'approved');
 CREATE INDEX grants_by_viewer ON grants(viewer_id, status);
 CREATE INDEX grants_pending ON grants(created_at) WHERE status = 'pending';
@@ -1720,3 +1723,6 @@ agents not to.
     session ID is unique per `grant_id` (M4): with the global index, a
     grant's registration with another credential's live harness session ID
     would fail on the index, or block that credential's own registration.
+  - §5.1 keeps the browser link's code on its grant (`browser_sha256`,
+    `browser_expires_at`), so a link survives a daemon restart (upgrades
+    restart the daemon); redeeming it clears it.
