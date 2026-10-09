@@ -560,8 +560,11 @@ pub const MIGRATIONS: &[&str] = &[
         decided_at TEXT,
         last_used_at TEXT,
         ended_at TEXT,
-        ended_by TEXT
+        ended_by TEXT,
+        browser_sha256 TEXT,
+        browser_expires_at TEXT
     );
+    CREATE UNIQUE INDEX grants_browser ON grants(browser_sha256) WHERE browser_sha256 IS NOT NULL;
     CREATE UNIQUE INDEX grants_live_key ON grants(client_key) WHERE status IN ('pending', 'approved');
     CREATE INDEX grants_by_viewer ON grants(viewer_id, status);
     CREATE INDEX grants_pending ON grants(created_at) WHERE status = 'pending';
