@@ -25,7 +25,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::Secret;
 use clax_core::sig::{self, NonceCache, SigError, SignInput};
-use clax_core::store::people::CredentialKind;
+use clax_core::store::people::{CredentialKind, Unissued};
 use clax_core::{Store, secret};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
@@ -70,6 +70,11 @@ pub struct IndexStale;
 struct Tokens {
     by_hash: HashMap<[u8; 32], GrantRef>,
     by_grant: HashMap<String, Vec<[u8; 32]>>,
+    /// Grants that ended, whether or not they held tokens then: tokens
+    /// issued to one later (a race of an issue with a revocation, each
+    /// changing the index after its own commit) are born revoked. Grant
+    /// IDs are never reused.
+    ended: std::collections::HashSet<String>,
 }
 
 impl Tokens {
@@ -109,7 +114,10 @@ impl GrantIndex {
     }
 
     fn read(st: &Store) -> clax_core::Result<Tokens> {
-        let mut t = Tokens::default();
+        let mut t = Tokens {
+            ended: st.ended_grant_ids()?.into_iter().collect(),
+            ..Default::default()
+        };
         for c in st.credential_index()? {
             t.insert(
                 c.sha256,
@@ -189,6 +197,7 @@ impl GrantIndex {
             for h in t.by_grant.remove(gid).unwrap_or_default() {
                 t.by_hash.remove(&h);
             }
+            let revoked = t.ended.contains(gid);
             for (s, kind) in [
                 (token, CredentialKind::Access),
                 (manage, CredentialKind::Manage),
@@ -200,19 +209,21 @@ impl GrantIndex {
                         grant_id: gid.to_string(),
                         kind,
                         key,
-                        revoked: false,
+                        revoked,
                     },
                 );
             }
         })
     }
 
-    /// Grant `gid` ended: every token of it is `grant_revoked` from now.
+    /// Grant `gid` ended: every token of it is `grant_revoked` from now,
+    /// including tokens [`GrantIndex::issued`] records for it later.
     ///
     /// # Errors
     /// [`IndexStale`] when the change could not be made.
     pub fn ended(&self, gid: &str) -> Result<(), IndexStale> {
         self.change(|t| {
+            t.ended.insert(gid.to_string());
             let hashes = t.by_grant.get(gid).cloned().unwrap_or_default();
             for h in hashes {
                 if let Some(g) = t.by_hash.get_mut(&h) {
@@ -220,6 +231,28 @@ impl GrantIndex {
                 }
             }
         })
+    }
+
+    /// Forgets the ended grants `gone` says have no row any more (purged
+    /// requests); whether any went.
+    pub fn forget_ended(&self, gone: impl Fn(&str) -> bool) -> bool {
+        let mut t = self.tokens.write().unwrap_or_else(|e| e.into_inner());
+        let before = t.ended.len();
+        let by_grant = std::mem::take(&mut t.by_grant);
+        t.ended.retain(|g| by_grant.contains_key(g) || !gone(g));
+        t.by_grant = by_grant;
+        t.ended.len() != before
+    }
+
+    /// The ended grants it remembers.
+    pub fn ended_grants(&self) -> Vec<String> {
+        self.tokens
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .ended
+            .iter()
+            .cloned()
+            .collect()
     }
 
     /// Reads the whole index from `st` again when a change failed. A change
@@ -306,16 +339,14 @@ impl RequestNonces {
         self.order.push_back((*key, ip.to_string()));
     }
 
-    fn check(
-        &mut self,
-        key: &[u8; 32],
-        ip: &str,
-        nonce: &str,
-        t: i64,
-        now: i64,
-    ) -> Result<(), SigError> {
-        self.admit(key, ip);
-        self.cache.check(key, nonce, t, now)
+    fn check(&mut self, key: &[u8; 32], nonce: &str, t: i64, now: i64) -> Result<(), SigError> {
+        // A new key enters (and may evict) only once its signature
+        // verifies, in `record`: a bad signature evicts nothing.
+        let known = self.order.iter().any(|(k, _)| k == key);
+        match self.cache.check(key, nonce, t, now) {
+            Err(SigError::Full) if !known => Ok(()),
+            r => r,
+        }
     }
 
     fn record(
@@ -337,11 +368,19 @@ impl RequestNonces {
     }
 }
 
+/// Live requests whose tokens are not issued yet: at most
+/// `MAX_PENDING` made in the last ten minutes, and live no longer, so this
+/// many keys leave room to spare.
+const PENDING_KEYS: usize = 64;
+
 /// The grant flow's signature state: the token index and the nonce caches.
 pub struct GrantAuth {
     pub index: GrantIndex,
-    /// Nonces of keys that come from no issued token.
+    /// Nonces of grant requests, whose key comes from the body; evicts.
     requests: Mutex<RequestNonces>,
+    /// Nonces of live requests' continuation calls until their tokens are
+    /// issued; never evicts (the request caps bound its keys).
+    pending: Mutex<NonceCache>,
     /// Nonces of keys known through [`GrantAuth::index`].
     nonces: Mutex<NonceCache>,
 }
@@ -355,6 +394,10 @@ impl GrantAuth {
         Ok(GrantAuth {
             index: GrantIndex::load(st)?,
             requests: Mutex::new(RequestNonces::new()),
+            pending: Mutex::new(
+                NonceCache::new(sig::NONCE_WINDOW_S, sig::NONCES_PER_KEY)
+                    .with_caps(PENDING_KEYS, sig::MAX_NONCES),
+            ),
             nonces: Mutex::new(NonceCache::new(sig::NONCE_WINDOW_S, sig::NONCES_PER_KEY)),
         })
     }
@@ -362,6 +405,7 @@ impl GrantAuth {
     /// Forgets the nonces of both caches older than their window.
     pub fn sweep(&self, now: i64) {
         lock(&self.requests).sweep(now);
+        lock(&self.pending).sweep(now);
         lock(&self.nonces).sweep(now);
     }
 
@@ -440,6 +484,8 @@ pub struct Signed {
     pub key: [u8; 32],
     /// The `GNAP` token it carried (none for a grant request).
     pub token: Option<Secret>,
+    /// The time it was signed at.
+    pub t: i64,
     /// The peer it came from.
     pub peer_ip: String,
 }
@@ -556,7 +602,7 @@ pub async fn grant_request<T>(
     let now = st.now_utc().timestamp();
     {
         let mut c = lock(&s.grant_auth.requests);
-        c.check(&key, &h.peer_ip, &h.header.nonce, h.header.t, now)
+        c.check(&key, &h.header.nonce, h.header.t, now)
             .map_err(|e| refuse(e, st))?;
         if !sig::verify(&key, &input(&h, &body, None), &h.header.sig) {
             return Err(refuse(SigError::Bad, st));
@@ -570,6 +616,7 @@ pub async fn grant_request<T>(
             host: h.host,
             key,
             token: None,
+            t: h.header.t,
             peer_ip: h.peer_ip,
         },
         parsed,
@@ -598,7 +645,8 @@ pub async fn gnap(
     let (parts, body) = req.into_parts();
     no_browser(&parts.headers)?;
     let token = gnap_token(&parts.headers).ok_or_else(invalid_token)?;
-    let (key, issued) = match s.grant_auth.index.lookup(&secret::sha256(token.expose())) {
+    let found = s.grant_auth.index.lookup(&secret::sha256(token.expose()));
+    let (key, h, issued) = match found {
         Some(g) if g.kind != kind || g.grant_id != gid => return Err(invalid_token()),
         Some(g) if g.revoked => {
             return Err(ApiError::new(
@@ -608,40 +656,55 @@ pub async fn gnap(
             )
             .into());
         }
-        Some(g) => (g.key, true),
+        Some(g) => (g.key, head(&parts, st)?, true),
         None if kind == CredentialKind::Continue => {
-            let (gid, t) = (gid.to_string(), token.clone());
-            let key = s
-                .store_call(move |st| st.unissued_continuation(&gid, t.expose()))
+            // A request whose tokens are not issued: the header and `t`
+            // first, so a guess costs no store read.
+            let h = head(&parts, st)?;
+            if h.header.t.abs_diff(st.now_utc().timestamp()) > sig::MAX_SKEW_S.unsigned_abs() {
+                return Err(refuse(SigError::Stale, st));
+            }
+            let (gid, tok) = (gid.to_string(), token.clone());
+            match s
+                .store_call(move |st| st.unissued_continuation(&gid, tok.expose()))
                 .await?
-                .ok_or_else(invalid_token)?;
-            (key, false)
+            {
+                Some(Unissued::Live(key)) => (key, h, false),
+                Some(Unissued::Ended) => {
+                    return Err(ApiError::new(
+                        StatusCode::FORBIDDEN,
+                        "denied",
+                        "this request was denied, cancelled or has expired",
+                    )
+                    .into());
+                }
+                None => return Err(invalid_token()),
+            }
         }
         None => return Err(invalid_token()),
     };
-    let h = head(&parts, st)?;
-    let (n, t) = (&h.header.nonce, h.header.t);
-    let checked = if issued {
-        lock(&s.grant_auth.nonces).check(&key, n, t, st.now_utc().timestamp())
+    let cache = if issued {
+        &s.grant_auth.nonces
     } else {
-        lock(&s.grant_auth.requests).check(&key, &h.peer_ip, n, t, st.now_utc().timestamp())
+        &s.grant_auth.pending
     };
-    checked.map_err(|e| refuse(e, st))?;
+    let (n, t) = (&h.header.nonce, h.header.t);
+    lock(cache)
+        .check(&key, n, t, st.now_utc().timestamp())
+        .map_err(|e| refuse(e, st))?;
     let body = read_body(&parts.headers, body).await?;
     if !sig::verify(&key, &input(&h, &body, Some(token.expose())), &h.header.sig) {
         return Err(refuse(SigError::Bad, st));
     }
-    let recorded = if issued {
-        lock(&s.grant_auth.nonces).record(&key, n, t, st.now_utc().timestamp())
-    } else {
-        lock(&s.grant_auth.requests).record(&key, &h.peer_ip, n, t, st.now_utc().timestamp())
-    };
-    recorded.map_err(|e| refuse(e, st))?;
+    lock(cache)
+        .record(&key, n, t, st.now_utc().timestamp())
+        .map_err(|e| refuse(e, st))?;
     Ok(Signed {
         body,
         host: h.host,
         key,
         token: Some(token),
+        t,
         peer_ip: h.peer_ip,
     })
 }
@@ -738,11 +801,68 @@ mod tests {
         assert!(!r.cache.has_key(&key(0)) && r.cache.has_key(&key(1)));
         assert_eq!(r.cache.keys(), REQUEST_KEYS_PER_PEER + 1);
         // A replay of a remembered key is still refused.
-        assert_eq!(
-            r.check(&key(1), "10.0.0.1", &n, 0, 0),
-            Err(SigError::Replayed)
-        );
+        assert_eq!(r.check(&key(1), &n, 0, 0), Err(SigError::Replayed));
         r.sweep(1000);
         assert!(r.order.is_empty() && r.cache.is_empty());
+    }
+
+    #[test]
+    fn a_new_key_evicts_nothing_until_its_signature_verifies() {
+        let mut r = RequestNonces::new();
+        let n = sig::new_nonce();
+        let key = |i: u32| {
+            let mut k = [0u8; 32];
+            k[..4].copy_from_slice(&i.to_be_bytes());
+            k
+        };
+        for i in 0..REQUEST_KEYS as u32 {
+            r.record(&key(i), &format!("10.0.{}.{}", i / 8, i % 8), &n, 0, 0)
+                .unwrap();
+        }
+        // The check of a new key passes on a full cache, and takes nothing.
+        assert!(r.check(&key(9999), &n, 0, 0).is_ok());
+        assert!(r.cache.has_key(&key(0)) && r.order.len() == REQUEST_KEYS);
+    }
+
+    #[test]
+    fn a_grant_ended_before_its_tokens_are_recorded_keeps_them_revoked() {
+        let index = GrantIndex::default();
+        index.ended("g_1").unwrap();
+        index
+            .issued(
+                "g_1",
+                [2u8; 32],
+                &secret("cxg_a"),
+                &secret("cxm_a"),
+                &secret("cxc_a"),
+            )
+            .unwrap();
+        for t in ["cxg_a", "cxm_a", "cxc_a"] {
+            assert!(index.lookup(&secret::sha256(t)).unwrap().revoked, "{t}");
+        }
+        assert_eq!(index.ended_grants(), vec!["g_1".to_string()]);
+    }
+
+    #[test]
+    fn a_grant_ended_after_its_tokens_are_recorded_revokes_them() {
+        let index = GrantIndex::default();
+        index
+            .issued(
+                "g_1",
+                [2u8; 32],
+                &secret("cxg_a"),
+                &secret("cxm_a"),
+                &secret("cxc_a"),
+            )
+            .unwrap();
+        index.ended("g_1").unwrap();
+        for t in ["cxg_a", "cxm_a", "cxc_a"] {
+            assert!(index.lookup(&secret::sha256(t)).unwrap().revoked, "{t}");
+        }
+        // A request that ended without tokens is forgotten once its row
+        // is gone; a grant with tokens keeps its record.
+        index.ended("g_2").unwrap();
+        assert!(index.forget_ended(|_| true));
+        assert_eq!(index.ended_grants(), vec!["g_1".to_string()]);
     }
 }
