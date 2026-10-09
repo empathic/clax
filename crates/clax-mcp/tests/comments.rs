@@ -403,6 +403,7 @@ async fn wait_for_feedback_returns_on_a_send_and_asks_to_call_again() {
             .unwrap()
             .starts_with("---\n[clax] 1 comment sent to you:")
     );
+    let started = Instant::now();
     let (v, trailing) = blocks(
         &t.wait_for_feedback(Parameters(WaitArgs {
             url_or_id: None,
@@ -411,10 +412,8 @@ async fn wait_for_feedback_returns_on_a_send_and_asks_to_call_again() {
         .await
         .unwrap(),
     );
-    // A wait that ran out: nothing, and a prompt to call again. `waited_s` is
-    // the daemon's wall clock, at least the timeout and more on a loaded
-    // machine.
-    assert_ran_out(&v, 1);
+    // A wait that ran out: nothing, and a prompt to call again.
+    assert_ran_out(&v, 1, started);
     assert!(trailing.is_none());
     // `timeout_s: 0` waits the one-second minimum, so a loop cannot spin.
     let started = Instant::now();
@@ -427,14 +426,18 @@ async fn wait_for_feedback_returns_on_a_send_and_asks_to_call_again() {
         .unwrap(),
     );
     assert!(started.elapsed() >= Duration::from_secs(1));
-    assert_ran_out(&v, 1);
+    assert_ran_out(&v, 1, started);
 }
 
-/// `v` is the answer to a wait that ran out after at least `secs` seconds.
-fn assert_ran_out(v: &Value, secs: u64) {
+/// `v` is the answer to a wait, called at `started`, that ran out after at
+/// least `secs` seconds. `waited_s` is the daemon's wall clock: at least the
+/// timeout, more on a loaded machine, and never more than the caller waited.
+fn assert_ran_out(v: &Value, secs: u64, started: Instant) {
     assert_eq!(v["feedback"], json!([]), "{v}");
     assert_eq!(v["call_again"], true, "{v}");
-    assert!(v["waited_s"].as_u64().unwrap() >= secs, "{v}");
+    let waited = v["waited_s"].as_u64().unwrap();
+    assert!(waited >= secs, "{v}");
+    assert!(waited <= started.elapsed().as_secs(), "{v}");
     assert_eq!(v.as_object().unwrap().len(), 3, "{v}");
 }
 
