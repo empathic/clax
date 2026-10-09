@@ -162,16 +162,22 @@ test("the stream carries no token in its URL, and the events cookie gives it the
   await page.goto(`${d.base}/a/${a}`);
   await expect.poll(() => live(page)).toBeGreaterThan(0);
   // The worker may have opened its stream before its network events were on:
-  // a new viewer name reopens every tab's stream, now in view.
+  // naming the viewer (the daemon's caller is then a named viewer) reopens
+  // every tab's stream, now in view, once.
   await reqs.enabled;
-  const before = reqs.urls.filter(u => u.includes("/api/stream")).length;
+  const opens = () => reqs.urls.filter(u => u.startsWith("GET ") && new URL(u.slice(4)).pathname === "/api/stream").length;
+  const before = opens();
   await setName(page, "Wren");
-  await expect.poll(() => reqs.urls.filter(u => u.includes("/api/stream")).length).toBeGreaterThan(before);
+  await expect.poll(opens).toBeGreaterThan(before);
   expect(reqs.urls.join(" ")).not.toContain(d.token);
   expect(reqs.urls.join(" ")).not.toContain("token=");
   // A worker sends no Authorization header: the cookie made this stream the
   // owner's browser's (`admin`, with its viewer cookie).
   await expect.poll(async () => (await streams()).levels).toEqual(["admin"]);
+  // One rename, announced by its request and by the presence event it causes,
+  // reopens the stream once: a stream aborted before it answers stays open
+  // on the daemon while Chrome drains it (up to 5 s).
+  expect(opens(), "streams opened for the rename").toBe(before + 1);
   const ev = (await ctx.cookies()).filter(c => c.name === `clax_events_${new URL(d.base).port}`);
   expect(ev.map(c => c.path).sort()).toEqual(["/api/events", "/api/stream"]);
   for (const c of ev) {
