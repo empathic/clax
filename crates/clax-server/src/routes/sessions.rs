@@ -1,6 +1,9 @@
 //! REST routes for harness sessions.
 
 use super::artifacts::{body, path};
+use crate::agent::{
+    SessionsGet, SessionsJoin, SessionsList, SessionsPatch, SessionsRegister, TokenOrAgent,
+};
 use crate::audit::DeferredAudit;
 use crate::auth::RequireToken;
 use crate::error::ApiError;
@@ -32,18 +35,21 @@ fn check_harness(harness: &str) -> Result<(), ApiError> {
     }
 }
 
-/// Registers a session; `harness` must be one of [`HARNESSES`]. A
-/// `transcript_path` (the harness's extension API's session file) is kept
-/// as a join's is. A new session records `session.start`, and a refresh
-/// that changes it `session.join`, as its own agent (audit spec §6.8).
+/// Registers a session under the caller's credential (spec §6.7: a
+/// grant's agent under its grant, matching only its grant's rows);
+/// `harness` must be one of [`HARNESSES`]. A `transcript_path` (the
+/// harness's extension API's session file) is kept as a join's is. A new
+/// session records `session.start`, and a refresh that changes it
+/// `session.join`, as its own agent (audit spec §6.8).
 pub async fn register(
     State(s): State<AppState>,
-    _t: RequireToken,
+    TokenOrAgent(a): TokenOrAgent<SessionsRegister>,
     audit: DeferredAudit,
     req: Result<Json<RegisterSession>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let mut r = body(req)?;
     check_harness(&r.harness)?;
+    r.grant_id = a.grant().map(str::to_string);
     r.transcript_path = transcript(r.transcript_path)?;
     let audit = audit.agent_side();
     let session = s
@@ -94,16 +100,18 @@ pub struct JoinBody {
     transcript_path: Option<String>,
 }
 
-/// Joins a harness session ID to its session (see `Store::join_session`) and,
-/// for Codex, records `codex_home`; a join without it keeps the recorded value.
-/// A join that makes or changes the session records `session.start` or
-/// `session.join`, as its own agent (audit spec §6.8).
+/// Joins a harness session ID to its session among the caller's
+/// credential's (see `Store::join_session`) and, for Codex, records
+/// `codex_home`; a join without it keeps the recorded value. A grant's
+/// `codex_home` names a directory of another machine and is ignored. A join that makes or changes the session records
+/// `session.start` or `session.join`, as its own agent (audit spec §6.8).
 pub async fn join(
     State(s): State<AppState>,
-    _t: RequireToken,
+    TokenOrAgent(a): TokenOrAgent<SessionsJoin>,
     audit: DeferredAudit,
     req: Result<Json<JoinBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
+    let grant = a.grant().map(str::to_string);
     let b = body(req)?;
     check_harness(&b.harness)?;
     if b.harness_session_id.is_empty() {
@@ -126,9 +134,13 @@ pub async fn join(
                     ancestor_pids: b.ancestor_pids,
                     transcript_path: transcript,
                 },
-                None,
+                grant.as_deref(),
             )?;
-            if let Some(h) = b.codex_home.as_deref().filter(|_| b.harness == "codex") {
+            if let Some(h) = b
+                .codex_home
+                .as_deref()
+                .filter(|_| b.harness == "codex" && grant.is_none())
+            {
                 st.set_codex_home(&session.id, h)?;
             }
             Ok(session)
@@ -146,12 +158,14 @@ pub struct PatchBody {
     ended: bool,
 }
 
+/// Heartbeats or ends one of the caller's sessions (the extractor checks
+/// the session is the caller's):
 /// `{"heartbeat": true}` renews the session (records nothing);
 /// `{"ended": true}` ends it, recording `session.end` as its agent and the
 /// ends of its working records.
 pub async fn patch(
     State(s): State<AppState>,
-    _t: RequireToken,
+    _a: TokenOrAgent<SessionsPatch>,
     audit: DeferredAudit,
     id: Result<Path<String>, PathRejection>,
     req: Result<Json<PatchBody>, JsonRejection>,
@@ -194,23 +208,27 @@ pub struct ListQuery {
     live: bool,
 }
 
-/// Lists sessions. Session rows carry working directories and process IDs,
-/// so reading them needs the token.
+/// Lists the caller's credential's sessions: a grant's own, or the token's
+/// (spec §6.7). Session rows carry working directories and process IDs,
+/// so reading them needs a credential.
 pub async fn list(
     State(s): State<AppState>,
-    _t: RequireToken,
+    TokenOrAgent(a): TokenOrAgent<SessionsList>,
     q: Result<Query<ListQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
-    let sessions = s.store_call(move |st| st.list_sessions(q.live)).await?;
+    let grant = a.grant().map(str::to_string);
+    let sessions = s
+        .store_call(move |st| st.list_sessions_for(grant.as_deref(), q.live))
+        .await?;
     Ok(Json(json!({"sessions": sessions})))
 }
 
-/// One session and how feedback can be pushed to it ([`push_info`]); needs
-/// the token, as [`list`] does.
+/// One of the caller's sessions and how feedback can be pushed to it
+/// ([`push_info`]); needs a credential, as [`list`] does.
 pub async fn get(
     State(s): State<AppState>,
-    _t: RequireToken,
+    _a: TokenOrAgent<SessionsGet>,
     id: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = path(id)?;

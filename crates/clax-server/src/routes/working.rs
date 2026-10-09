@@ -1,6 +1,7 @@
 //! Working routes (spec §6, §10 "Working").
 
 use super::artifacts::{body, parse_id, path};
+use crate::agent::TokenOrAgent;
 use crate::audit::DeferredAudit;
 use crate::auth::RequireToken;
 use crate::error::ApiError;
@@ -176,7 +177,7 @@ pub async fn delete(
 /// `GET /api/sessions/<sid>/working` (token): `{working}` with session fields.
 pub async fn for_session(
     State(s): State<AppState>,
-    _t: RequireToken,
+    _a: TokenOrAgent<crate::agent::WorkingForSession>,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let sid = path(p)?;

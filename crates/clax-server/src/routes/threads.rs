@@ -79,7 +79,7 @@ pub(crate) fn publish_thread(
 /// # Errors
 /// `unknown_session` otherwise.
 fn agent_session(st: &Store, header: &Option<String>) -> clax_core::Result<Session> {
-    let sid = publishing_session(st, header)?.ok_or_else(|| {
+    let sid = publishing_session(st, header, None)?.ok_or_else(|| {
         CoreError::invalid(
             "unknown_session",
             "agent replies, resolves, reopens, and deletes need X-Clax-Session naming a live session",

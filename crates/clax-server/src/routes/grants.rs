@@ -11,6 +11,7 @@
 //! an error.
 
 use super::artifacts::{body, path};
+use crate::auth::Caller;
 use crate::error::ApiError;
 use crate::grant_auth::{self, Refusal, Signed};
 use crate::identity::Identity;
@@ -33,9 +34,9 @@ use serde_json::{Value, json};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// 403 `browser_required` unless a browser of the owner's makes the request
-/// (M20). Until `Caller` exists, that is [`Identity::owner_browser`].
-fn require_browser(who: &Identity, what: &str) -> Result<(), ApiError> {
-    if who.owner_browser() {
+/// (M20): [`Caller::browser`] for the owner.
+fn require_browser(caller: &Caller, what: &str) -> Result<(), ApiError> {
+    if caller.browser() && caller.is_owner() {
         Ok(())
     } else {
         Err(ApiError::forbidden(
@@ -134,12 +135,7 @@ pub async fn sweep(s: &AppState) -> Result<usize, ApiError> {
         let ended = st.expire_grants()?;
         announce_ended(&state, &ctx, st, &ended, "expiry");
         // Requests purged since leave the index's record of ended grants.
-        let index = &state.grant_auth.index;
-        if !index.ended_grants().is_empty() {
-            let kept: std::collections::HashSet<String> =
-                st.ended_grant_ids()?.into_iter().collect();
-            index.forget_ended(|g| !kept.contains(g));
-        }
+        crate::grant_auth::forget_purged(&state.grant_auth.index, st);
         if state.grant_auth.index.rebuild_if_stale(st)? {
             tracing::info!("grant index rebuilt");
         }
@@ -250,10 +246,10 @@ fn lan_address(s: &AppState) -> Result<IpAddr, ApiError> {
 pub async fn create_invite(
     State(s): State<AppState>,
     _o: SameOrigin,
-    who: Identity,
+    caller: Caller,
     req: Result<Json<InviteBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
-    require_browser(&who, "inviting a person")?;
+    require_browser(&caller, "inviting a person")?;
     let b = body(req)?;
     let target = match (b.name, b.viewer, b.me) {
         (Some(n), None, false) => InvitePerson::New(n),
@@ -315,10 +311,10 @@ pub async fn list_invites(
 pub async fn revoke_invite(
     State(s): State<AppState>,
     _o: SameOrigin,
-    who: Identity,
+    caller: Caller,
     id: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    require_browser(&who, "revoking an invite")?;
+    require_browser(&caller, "revoking an invite")?;
     let id = path(id)?;
     let state = s.clone();
     let invite = s
@@ -709,11 +705,11 @@ pub struct ApproveBody {
 pub async fn approve(
     State(s): State<AppState>,
     _o: SameOrigin,
-    who: Identity,
+    caller: Caller,
     gid: Result<Path<String>, PathRejection>,
     req: Result<Json<ApproveBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    require_browser(&who, "approving a connection")?;
+    require_browser(&caller, "approving a connection")?;
     let gid = path(gid)?;
     let b = body(req)?;
     if b.viewer.is_some() || b.me.is_some() {
@@ -763,10 +759,10 @@ pub async fn approve(
 pub async fn deny(
     State(s): State<AppState>,
     _o: SameOrigin,
-    who: Identity,
+    caller: Caller,
     gid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    require_browser(&who, "denying a connection")?;
+    require_browser(&caller, "denying a connection")?;
     let gid = path(gid)?;
     let state = s.clone();
     let grant = s
@@ -788,10 +784,10 @@ pub async fn deny(
 pub async fn revoke(
     State(s): State<AppState>,
     _o: SameOrigin,
-    who: Identity,
+    caller: Caller,
     gid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    require_browser(&who, "revoking a connection")?;
+    require_browser(&caller, "revoking a connection")?;
     let gid = path(gid)?;
     let (state, ctx) = (s.clone(), s.feedback_ctx());
     let grant = s

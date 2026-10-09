@@ -114,6 +114,8 @@ pub struct TestServer {
     /// The journal state the status route reports; no appender runs unless
     /// a test starts one with it.
     pub journal: Arc<crate::audit::JournalStatus>,
+    /// The bounds on agents' unverified bodies.
+    pub agent_gate: Arc<crate::agent::Gate>,
     extension_id: String,
     _dir: tempfile::TempDir,
 }
@@ -131,7 +133,27 @@ impl TestServer {
     /// same-family loopback when `bind` is unspecified.
     pub async fn spawn_on(bind: IpAddr, f: impl FnOnce(&mut AppState)) -> TestServer {
         let dir = tempfile::tempdir().unwrap();
-        Self::start(dir, bind, Arc::new(SystemClock), f).await
+        Self::start(dir, bind, Arc::new(SystemClock), f, false).await
+    }
+
+    /// [`TestServer::spawn_on`] with the shutdown route
+    /// (`POST /api/admin/shutdown`) the daemon serves.
+    pub async fn spawn_on_with_shutdown(bind: IpAddr) -> TestServer {
+        let dir = tempfile::tempdir().unwrap();
+        Self::start(dir, bind, Arc::new(SystemClock), |_| {}, true).await
+    }
+
+    /// A test daemon listening on every interface (it may invite people)
+    /// whose bounds on agents' unverified bodies wait and measure rates on
+    /// the returned timer.
+    pub async fn spawn_agent_timer() -> (TestServer, Arc<ManualTimer>) {
+        let timer = Arc::new(ManualTimer::default());
+        let t = timer.clone();
+        let ts = Self::spawn_on(IpAddr::V4(Ipv4Addr::UNSPECIFIED), move |s| {
+            s.agent_gate = Arc::new(crate::agent::Gate::new(t));
+        })
+        .await;
+        (ts, timer)
     }
 
     /// A test daemon whose store, working and presence registries and
@@ -144,7 +166,7 @@ impl TestServer {
     /// one that may invite people: its invites name [`LAN_LOCAL`]).
     pub async fn spawn_on_with_clock(bind: IpAddr, clock: Arc<ManualClock>) -> TestServer {
         let dir = tempfile::tempdir().unwrap();
-        Self::start(dir, bind, clock, |_| {}).await
+        Self::start(dir, bind, clock, |_| {}, false).await
     }
 
     /// A test daemon on a fresh copy of fixture `name` (a file of this
@@ -163,7 +185,7 @@ impl TestServer {
         let dir = tempfile::tempdir().unwrap();
         load_fixture(&Home::at(dir.path().join("ax")), &sql);
         let clock = Arc::new(ManualClock::at(at));
-        Self::start(dir, IpAddr::V4(Ipv4Addr::LOCALHOST), clock, |_| {}).await
+        Self::start(dir, IpAddr::V4(Ipv4Addr::LOCALHOST), clock, |_| {}, false).await
     }
 
     /// Serves the home `ax` under `dir` on `bind`, every time read from `clock`.
@@ -172,6 +194,7 @@ impl TestServer {
         bind: IpAddr,
         clock: Arc<dyn Clock>,
         f: impl FnOnce(&mut AppState),
+        shutdown: bool,
     ) -> TestServer {
         let home = Home::at(dir.path().join("ax"));
         let store = Arc::new(Store::open_with_clock(&home, clock.clone()).unwrap());
@@ -233,6 +256,9 @@ impl TestServer {
             // `lan()` requests arrive on.
             lan_host: bind.is_unspecified().then_some(IpAddr::V4(LAN_LOCAL)),
             grant_auth,
+            agent_gate: Arc::new(crate::agent::Gate::new(Arc::new(
+                crate::agent::TokioTimer::default(),
+            ))),
         };
         f(&mut state);
         state.audit_wake.install(&state.store);
@@ -245,7 +271,13 @@ impl TestServer {
         let presence = state.presence.clone();
         let extension_id = state.extension_id.clone();
         let journal = state.journal.clone();
-        let app = build_router(state).layer(axum::middleware::from_fn(as_lan));
+        let agent_gate = state.agent_gate.clone();
+        let app = if shutdown {
+            crate::build_router_with_shutdown(state, tokio::sync::watch::channel(false).0)
+        } else {
+            build_router(state)
+        }
+        .layer(axum::middleware::from_fn(as_lan));
         tokio::spawn(async move {
             axum::serve(
                 listener,
@@ -266,6 +298,7 @@ impl TestServer {
             presence,
             addr,
             journal,
+            agent_gate,
             extension_id,
             _dir: dir,
         }
@@ -1141,6 +1174,98 @@ impl ManualSleeper {
     }
 }
 
+/// A [`crate::agent::Timer`] whose time moves only when the test advances
+/// it ([`ManualTimer::advance`]).
+#[derive(Default)]
+pub struct ManualTimer {
+    state: std::sync::Mutex<TimerState>,
+}
+
+/// The time a [`ManualTimer`] reads, and each pending sleep's deadline.
+type TimerState = (Duration, Vec<(Duration, tokio::sync::oneshot::Sender<()>)>);
+
+impl crate::agent::Timer for ManualTimer {
+    fn now(&self) -> Duration {
+        self.state.lock().unwrap().0
+    }
+
+    fn sleep_until(&self, at: Duration) -> futures::future::BoxFuture<'static, ()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        {
+            let mut st = self.state.lock().unwrap();
+            if at <= st.0 {
+                let _ = tx.send(());
+            } else {
+                st.1.push((at, tx));
+            }
+        }
+        Box::pin(async move {
+            if rx.await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        })
+    }
+}
+
+impl ManualTimer {
+    /// Moves time on by `d`, ending every sleep due by then; how many.
+    pub fn advance(&self, d: Duration) -> usize {
+        let mut st = self.state.lock().unwrap();
+        st.0 += d;
+        let now = st.0;
+        let (due, keep): (Vec<_>, Vec<_>) = st.1.drain(..).partition(|(at, _)| *at <= now);
+        st.1 = keep;
+        due.into_iter()
+            .filter_map(|(_, tx)| tx.send(()).ok())
+            .count()
+    }
+}
+
+impl TestServer {
+    /// Returns once the agent gate's state satisfies `f`; panics after 5 s.
+    pub async fn wait_gate(
+        &self,
+        what: &str,
+        f: impl Fn(crate::agent::GateState) -> bool,
+    ) -> crate::agent::GateState {
+        self.agent_gate
+            .wait_until(f, Duration::from_secs(5))
+            .await
+            .unwrap_or_else(|| panic!("{what} within 5 s: {:?}", self.agent_gate.state()))
+    }
+
+    /// `GET /api/_test/agent/gate`: what the agent gate holds.
+    pub async fn gate(&self) -> serde_json::Value {
+        let res = self.get_authed("/api/_test/agent/gate").await;
+        assert_eq!(res.status(), 200);
+        res.json().await.unwrap()
+    }
+
+    /// Registers a live session with parent PID `pid`; the session.
+    pub async fn register_session_pid(&self, harness: &str, hsid: &str, pid: u32) -> String {
+        let res = self
+            .post_json(
+                "/api/sessions",
+                serde_json::json!({"harness": harness, "harness_session_id": hsid,
+                                   "cwd": "/w", "parent_pid": pid}),
+            )
+            .await;
+        assert_eq!(res.status(), 201);
+        res.json::<serde_json::Value>().await.unwrap()["session"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// The ID of an artifact the owner published, made for the asking.
+    pub async fn any_artifact(&self) -> String {
+        self.publish("any", &[("index.html", "<p>any</p>")]).await["artifact"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+}
+
 impl TestServer {
     /// A test daemon whose question polls and graces run on the returned
     /// clock (the grace is 5 s; a poll of `wait=n` sleeps `n` s).
@@ -1445,6 +1570,114 @@ impl TestClient {
             &format!("/api/grants/{}/continue", self.grant_id()),
             h.continue_token.as_deref().expect("a continuation token"),
         )
+        .await
+    }
+
+    /// The access token held; panics without one.
+    pub fn access(&self) -> String {
+        self.held().access.expect("an access token")
+    }
+
+    /// The base URL and `Host` its requests use.
+    pub fn target(&self) -> (&str, &str) {
+        (&self.base, &self.host)
+    }
+
+    /// `Clax-Signature` for `method path` with `body`, signed now with
+    /// the access token and this key (`corrupt` flips a bit of it).
+    pub fn signature(&self, method: &str, path: &str, body: &[u8], corrupt: bool) -> String {
+        use sha2::Digest;
+        let nonce = clax_core::sig::new_nonce();
+        let mut h = self
+            .key
+            .sign(&clax_core::sig::SignInput {
+                method,
+                path_and_query: path,
+                host: &self.host,
+                t: self.store.now_utc().timestamp(),
+                nonce: &nonce,
+                body_sha256: sha2::Sha256::digest(body).into(),
+                token_sha256: Some(clax_core::secret::sha256(&self.access())),
+            })
+            .unwrap();
+        if corrupt {
+            h.sig[0] ^= 1;
+        }
+        h.to_string()
+    }
+
+    /// A signed agent request with the access token (`Clax-Grant`),
+    /// naming `session` in `X-Clax-Session`, with JSON `body`.
+    pub async fn agent(
+        &self,
+        method: &str,
+        path: &str,
+        session: Option<&str>,
+        body: Option<serde_json::Value>,
+    ) -> reqwest::Response {
+        let mut headers = Vec::new();
+        if let Some(s) = session {
+            headers.push(("x-clax-session", s.to_string()));
+        }
+        self.call(Call {
+            method,
+            path,
+            authorization: Some(format!("Clax-Grant {}", self.access())),
+            body: body.map(|b| serde_json::to_vec(&b).unwrap()),
+            headers,
+            ..Default::default()
+        })
+        .await
+    }
+
+    /// A signed `GET` with the access token.
+    pub async fn get(&self, session: Option<&str>, path: &str) -> reqwest::Response {
+        self.agent("GET", path, session, None).await
+    }
+
+    /// Registers a session of this machine's (`POST /api/sessions`); the
+    /// session, asserting a 201.
+    pub async fn register_with(&self, body: serde_json::Value) -> serde_json::Value {
+        let res = self.agent("POST", "/api/sessions", None, Some(body)).await;
+        let status = res.status();
+        let v: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(status, 201, "{v}");
+        v["session"].clone()
+    }
+
+    /// [`TestClient::register_with`] for `harness` and harness session ID
+    /// `hsid`.
+    pub async fn register(&self, harness: &str, hsid: &str) -> serde_json::Value {
+        self.register_with(serde_json::json!({"harness": harness,
+                                              "harness_session_id": hsid, "cwd": "/w"}))
+            .await
+    }
+
+    /// [`TestClient::register`] with parent PID `pid`.
+    pub async fn register_pid(&self, harness: &str, hsid: &str, pid: u32) -> serde_json::Value {
+        self.register_with(
+            serde_json::json!({"harness": harness, "harness_session_id": hsid,
+                                              "cwd": "/w", "parent_pid": pid}),
+        )
+        .await
+    }
+
+    /// `method path` with the access token, a fresh `t` and nonce, naming
+    /// `sid`, and a signature that does not verify.
+    pub async fn call_with_bad_signature(
+        &self,
+        sid: &str,
+        method: &str,
+        path: &str,
+    ) -> reqwest::Response {
+        self.call(Call {
+            method,
+            path,
+            authorization: Some(format!("Clax-Grant {}", self.access())),
+            headers: vec![("x-clax-session", sid.to_string())],
+            corrupt: true,
+            ..Default::default()
+        })
         .await
     }
 

@@ -120,9 +120,9 @@ impl From<CoreError> for ApiError {
                 message,
             } => ApiError::new(StatusCode::UNAUTHORIZED, code, message),
             CoreError::Invalid {
-                code: "denied",
+                code: code @ ("denied" | "foreign_session"),
                 message,
-            } => ApiError::new(StatusCode::FORBIDDEN, "denied", message),
+            } => ApiError::new(StatusCode::FORBIDDEN, code, message),
             CoreError::Invalid { code, message } => ApiError::bad_request(code, message),
             e @ CoreError::NotDeclared { .. } => ApiError::forbidden("not_declared", e.to_string()),
             e @ CoreError::Corrupt { .. } => {

@@ -89,4 +89,6 @@ pub struct AppState {
     pub lan_host: Option<std::net::IpAddr>,
     /// The grant flow's token index and nonce caches (spec §6.4, §6.6).
     pub grant_auth: Arc<crate::grant_auth::GrantAuth>,
+    /// The bounds on agents' unverified request bodies (spec §6.6).
+    pub agent_gate: Arc<crate::agent::Gate>,
 }
