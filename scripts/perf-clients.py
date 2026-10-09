@@ -20,7 +20,13 @@ few artifacts, and then:
    probe process times cheap requests; each client stamps every version and
    thread event it receives, and the gate takes write-to-client latency
    (the write's request start to the client reading the event) and checks
-   that every subscribed client got every event;
+   that every subscribed client got every event. Every delivery of one
+   write waits on that write's store commit, so the deliveries come in one
+   cluster per write (430 deliveries at 1,000 clients): a commit the disk
+   holds up (a sync, a checkpoint) moves its whole cluster. A cluster that
+   is 5% or more of the deliveries sets the p95 by itself, so the load
+   makes at least `min_writes` writes; each run prints a NOTE:
+   line with the p95, the max and the slowest writes' own request times;
 6. opens one client that never reads (a small receive buffer), floods the
    `db` artifact it follows with document writes, and checks that it gets
    `resync` for that topic when it reads again, that the daemon's memory did
@@ -36,6 +42,9 @@ few artifacts, and then:
 
 Budgets live in scripts/perf-clients-budget.json:
 - `delivery_p95_ms`, `delivery_max_ms`: write-to-client latency;
+- `min_writes`: the fewest writes the load window may make; fewer is a
+  failure, since then one slow commit alone sets the p95 (at 40, one write
+  is about 2.5% of the deliveries);
 - `cheap_p95_ms`: the cheap requests' p95 under that load;
 - `rss_per_client_kb`: daemon RSS growth per connected client;
 - `idle_cpu_pct`: daemon CPU, percent of one core, with every client idle;
@@ -63,6 +72,7 @@ import http.client
 import json
 import math
 import os
+import platform
 import re
 import resource
 import shutil
@@ -577,9 +587,10 @@ def probe_window(d, aid, seconds):
 
 def write_load(d, st, seconds, rate):
     """Versions and comments on the hot artifacts, alternating, at `rate` per
-    second, and presence reports at 2 per second. Returns {key: start time}."""
+    second, and presence reports at 2 per second. Returns {key: start time}
+    and {key: the write request's own time, in ms}."""
     c, pc = Client(d.port, d.token), Client(d.port)
-    written = {}
+    written, took = {}, {}
     n = {aid: 1 for aid in st["hot"]}
     comments = {tid: 1 for tid in st["threads"].values()}
     stop = threading.Event()
@@ -600,23 +611,26 @@ def write_load(d, st, seconds, rate):
         aid = st["hot"][i % len(st["hot"])]
         if i % 2 == 0:
             n[aid] += 1
-            written[f"v {aid} {n[aid]}"] = time.monotonic()
-            s, body, _, _ = c.req("POST", f"/api/artifacts/{aid}/versions",
-                                  {"if_version": n[aid] - 1, "files": {"index.html": {"content": f"<main>v{n[aid]}</main>", "encoding": "utf8"}}})
+            key = f"v {aid} {n[aid]}"
+            written[key] = time.monotonic()
+            s, body, dt, _ = c.req("POST", f"/api/artifacts/{aid}/versions",
+                                   {"if_version": n[aid] - 1, "files": {"index.html": {"content": f"<main>v{n[aid]}</main>", "encoding": "utf8"}}})
             expect(s == 201, f"publish: {s} {body[:200]!r}")
         else:
             tid = st["threads"][aid]
             comments[tid] += 1
-            written[f"c {tid} {comments[tid]}"] = time.monotonic()
-            s, body, _, _ = c.req("POST", f"/api/artifacts/{aid}/threads/{tid}/comments", {"body": f"note {i}"}, st["cookie"], auth=False)
+            key = f"c {tid} {comments[tid]}"
+            written[key] = time.monotonic()
+            s, body, dt, _ = c.req("POST", f"/api/artifacts/{aid}/threads/{tid}/comments", {"body": f"note {i}"}, st["cookie"], auth=False)
             expect(s == 201, f"comment: {s} {body[:200]!r}")
+        took[key] = dt * 1000
         i += 1
         time.sleep(max(0, 1 / rate - (time.monotonic() - tick)))
     stop.set()
     pt.join(5)
     c.close()
     pc.close()
-    return written
+    return written, took
 
 
 def expected_deliveries(written, plan, st):
@@ -760,19 +774,34 @@ def main(binary, budget_path, quick):
         pr = Probes(d.port, st["aids"][1])
         c0, w0 = d.cpu_s(), time.monotonic()
         try:
-            written = write_load(d, st, cfg["load_s"], cfg["write_rate_hz"])
+            written, took = write_load(d, st, cfg["load_s"], cfg["write_rate_hz"])
             time.sleep(1.0)  # deliveries in flight land
             cheap = pr.finish()
         finally:
             pr.kill()
         load_cpu = 100 * (d.cpu_s() - c0) / (time.monotonic() - w0)
         got = workers.mark()
-        lat = [(now - written[key]) * 1000 for _, _, key, now in got["recv"] if key in written]
+        by_write = {}
+        for _, _, key, now in got["recv"]:
+            if key in written:
+                by_write.setdefault(key, []).append((now - written[key]) * 1000)
+        lat = [x for xs in by_write.values() for x in xs]
         want = expected_deliveries(written, plan, st)
         expect(lat, "no event reached any client")
         results["delivery_p95_ms"], results["delivery_max_ms"] = p95(lat), max(lat)
         results["cheap_p95_ms"] = max(cheap.values())
-        load_info = (f"{len(written)} writes in {cfg['load_s']} s; {len(lat)} of {want} deliveries; "
+        n_writes = len(written)
+        # A write whose deliveries all came late, with a request time as
+        # long, waited on its commit; deliveries late after a quick request
+        # waited on the fan-out.
+        slowest = sorted(by_write, key=lambda k: statistics.median(by_write[k]), reverse=True)[:3]
+        slow_writes = ", ".join(
+            f"{'version' if k[0] == 'v' else 'comment'} {statistics.median(by_write[k]):.1f} ms "
+            f"(its request {took[k]:.1f} ms)" for k in slowest)
+        print(f"NOTE: delivery p95 {results['delivery_p95_ms']:.1f} ms, max {results['delivery_max_ms']:.1f} ms, "
+              f"over {n_writes} writes on {platform.platform()}, {os.cpu_count()} CPUs; "
+              f"the slowest writes' median delivery: {slow_writes}", flush=True)
+        load_info = (f"{n_writes} writes in {cfg['load_s']} s; {len(lat)} of {want} deliveries; "
                      f"events by name {got['counts']}; daemon CPU {load_cpu:.1f}% under load; "
                      f"cheap p95 {', '.join(f'{k} {v:.1f} ms' for k, v in cheap.items())}")
         loss = want - len(lat)
@@ -838,6 +867,7 @@ def main(binary, budget_path, quick):
             failed.append(k)
         print(f"{k:<22} {v:>10.1f} {lim:>10.1f}  {'ok' if ok else 'FAIL'}")
     checks = [
+        ("enough writes for p95", n_writes >= cfg["min_writes"], f"{n_writes} of {cfg['min_writes']}"),
         ("every delivery arrived", loss == 0, f"{loss} missing"),
         ("no resync under load", resyncs_under_load == 0, f"{resyncs_under_load} resyncs"),
         ("slow client got resync", slow_resync, "none seen"),
