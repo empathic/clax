@@ -2320,6 +2320,23 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_person_revoked_before_connecting_stays_revoked_when_the_invite_lapses() {
+        let (_d, clock, st) = store();
+        let (inv, _) = st
+            .create_invite(InvitePerson::New("Ola".into()), None)
+            .unwrap();
+        let r = st.revoke_person(&inv.person).unwrap();
+        assert_eq!(r.invites, vec![inv.id]);
+        clock.advance(INVITE_TTL_SECS + 1);
+        st.expire_grants().unwrap();
+        let v = st.viewer_by_public_id(&inv.person).unwrap().unwrap();
+        assert!(
+            v.person && v.person_revoked_at.is_some(),
+            "the revocation stays on record, not a plain viewer"
+        );
+    }
+
+    #[test]
     fn requests_expired_on_the_way_are_reported_and_lost_approvals_free_the_key() {
         let (_d, clock, st) = store();
         let (stale, _, _) = pending(&st, KEY_A);
