@@ -14,6 +14,7 @@ pub mod ids;
 pub mod live;
 pub mod mentions;
 pub mod model;
+pub mod perf;
 pub mod presence;
 pub mod publish;
 pub mod questions;

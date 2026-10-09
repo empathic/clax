@@ -1286,6 +1286,37 @@ fn haiku_prints_one_of_ten() {
 }
 
 #[test]
+fn perf_calibrate_times_its_read_per_line_and_stays_out_of_help() {
+    let e = Env::new();
+    let db = e.dir.path().join("calibration.db");
+    let out = e
+        .cmd()
+        .arg("perf-calibrate")
+        .arg(&db)
+        .write_stdin("run\nrun\n")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let lines: Vec<serde_json::Value> = String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(lines[0]["ready"], true);
+    assert!(lines[1..].iter().all(|l| l["ms"].as_f64().unwrap() > 0.0));
+    // An existing database is refused.
+    let again = e.cmd().arg("perf-calibrate").arg(&db).output().unwrap();
+    assert!(!again.status.success());
+    let help = e.cmd().arg("--help").output().unwrap();
+    assert!(!String::from_utf8_lossy(&help.stdout).contains("perf-calibrate"));
+}
+
+#[test]
 fn publish_takes_a_note_and_addresses() {
     let e = Env::new();
     let index = write(

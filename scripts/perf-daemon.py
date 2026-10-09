@@ -35,16 +35,20 @@ Budgets live in scripts/perf-daemon-budget.json:
 - `cheap_p95_ms`, `cheap_max_ms`: every probe under every load;
 - `list_alone_ratio`, `attention_alone_ratio`: the gallery list and the
   attention request alone, each as its fastest sample over the fastest
-  calibration read of the same round, judged on the median over rounds and
-  not scaled: the calibration, a fixed SQLite read on a private database
-  timed between the requests, carries the machine's speed and its other
+  calibration read of the same round (15 samples each), judged on the
+  median over rounds and not scaled: the calibration, a fixed SQLite read
+  on a private database that `clax perf-calibrate` runs through the binary's
+  own bundled SQLite, timed between the requests, carries the machine's
+  speed and its other
   work, so the ratio is about the same on a fast Mac, a slower CI runner
   and a loaded machine. A ratio over budget is measured once more at once
-  and fails only if over again. The budgets are about 1.4 times the
-  measured ratios, so a request that gets twice as slow fails even when the
+  and fails only if over again. The budgets are 1.4 times the largest
+  ratios measured (list x2.32, attention x1.12 on an M-series Mac, quiet
+  and under 12 and 24 CPU burners), and twice the smallest (x2.21, x1.04)
+  is over them, so a request that gets twice as slow fails even when the
   queued limits below, which follow the galleries' own latency, would let
-  it pass. Every run prints the ratios and the calibration's time, for
-  re-tuning;
+  it pass. Every run prints its platform, the calibration's time and the
+  ratios of every round, to re-tune from (CI's log included);
 - `alone_ceiling_ms`: the two requests' fastest times, scaled as below: a
   guard against a broken calibration;
 - `inbox_alone_ms`: each of the inbox tab's three requests alone: the
@@ -81,6 +85,7 @@ import http.client
 import json
 import math
 import os
+import platform
 import re
 import shutil
 import signal
@@ -653,46 +658,43 @@ def run_phase(d, loads, st, method, window):
     return out, info
 
 
-GALLERY_SAMPLES = 7
+GALLERY_SAMPLES = 15
 # The gallery's two requests, each timed alone, with its budget's key.
 GALLERY_REQUESTS = [("/api/artifacts", "list_alone_ratio"), ("/api/viewers/me/attention", "attention_alone_ratio")]
 
 
 class Calibration:
-    """A fixed SQLite read on a private database that clax's schema and code
-    cannot move: 3,000 "threads" of 4 "comments" (fixed seed), and per thread
-    two correlated index lookups, shaped like the attention query, in about
-    3.4 ms on an M-series Mac. Timed between the gallery requests, it shows
-    what this machine's speed and its other work make of a read of that
-    kind just then."""
-    THREADS, PER = 3000, 4
-    QUERY = """SELECT count(*), sum(own), max(other) FROM (
-      SELECT t.id,
-        EXISTS (SELECT 1 FROM c WHERE c.tid = t.id AND c.author = 'u_a') AS own,
-        (SELECT max(c.created) FROM c WHERE c.tid = t.id AND (c.author IS NULL OR c.author != 'u_a')) AS other
-      FROM t ORDER BY t.grp, t.created)"""
+    """The calibration read, run by `clax perf-calibrate` (hidden) from the
+    binary under test, so it goes through the daemon's bundled SQLite and
+    build flags: a fixed read on a private database that clax's schema and
+    code cannot move (clax_core::perf: 3,000 "threads" of 4 "comments", the
+    same rows on every machine, two correlated index lookups per thread,
+    shaped like the attention query; about 3.2 ms on an M-series Mac).
+    Timed between the gallery requests, it shows what this machine's speed
+    and its other work make of a read of that kind just then. The process
+    stays up; each line written to it runs the read once."""
 
-    def __init__(self, path):
-        import random
-        import sqlite3
-        self.db = sqlite3.connect(path, check_same_thread=False)
-        self.db.executescript(
-            "CREATE TABLE t (id TEXT PRIMARY KEY, grp INTEGER NOT NULL, created TEXT NOT NULL);"
-            "CREATE TABLE c (id INTEGER PRIMARY KEY, tid TEXT NOT NULL, author TEXT, created TEXT NOT NULL, body TEXT NOT NULL);"
-            "CREATE INDEX c_by_t ON c(tid, created);")
-        rng = random.Random(1)
-        self.db.executemany("INSERT INTO t VALUES (?, ?, ?)",
-                            [(f"t{i:06d}", i % 300, f"2026-01-01T{i:06d}") for i in range(self.THREADS)])
-        self.db.executemany("INSERT INTO c (tid, author, created, body) VALUES (?, ?, ?, ?)",
-                            [(f"t{i:06d}", rng.choice(["u_a", "u_b", None]), f"2026-01-02T{i:06d}{k:02d}", "x" * 60)
-                             for i in range(self.THREADS) for k in range(self.PER)])
-        self.db.commit()
-        self.run()  # warm-up
+    def __init__(self, binary, scratch):
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAX_", "CLAUDE_"))}
+        env.update(CLAX_HOME=os.path.join(scratch, "calibration-home"))
+        self.p = subprocess.Popen([binary, "perf-calibrate", os.path.join(scratch, "calibration.db")],
+                                  env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        line = self.p.stdout.readline()
+        expect(line and json.loads(line).get("ready"), f"clax perf-calibrate did not start: {line!r}")
 
     def run(self):
-        t0 = time.perf_counter()
-        self.db.execute(self.QUERY).fetchall()
-        return (time.perf_counter() - t0) * 1000
+        self.p.stdin.write("run\n")
+        self.p.stdin.flush()
+        return json.loads(self.p.stdout.readline())["ms"]
+
+    def close(self):
+        if self.p.poll() is None:
+            self.p.stdin.close()
+            try:
+                self.p.wait(5)
+            except subprocess.TimeoutExpired:
+                self.p.kill()
+                self.p.wait(5)
 
 
 def gallery_alone(d, st, cal, n=GALLERY_SAMPLES):
@@ -746,7 +748,7 @@ def main(binary, budget_path, quick):
         cfg = {**cfg, **cfg["quick"]}
     seed_cfg = cfg["seed"]
     scratch = tempfile.mkdtemp(prefix="clax-perf-daemon.")
-    d = None
+    d = cal = None
     try:
         d = Daemon(binary, scratch)
         print(f"daemon on 127.0.0.1:{d.port}, scratch home {d.home}", flush=True)
@@ -758,7 +760,7 @@ def main(binary, budget_path, quick):
         print(f"seeded the inbox: {seed_cfg['inbox_replies']} agent replies on {st['inbox_threads']} owner threads, "
               f"{st['inbox_versions']} versions, {seed_cfg['inbox_questions']} questions: "
               f"{st['inbox_unread']} unread items in {st['inbox_seconds']:.1f} s", flush=True)
-        cal = Calibration(os.path.join(scratch, "calibration.db"))
+        cal = Calibration(binary, scratch)
         loads = Loads(d.port, d.token, st)
         rounds, window = cfg["rounds"], cfg["window_s"]
         per = {name: {label: [] for label in CHEAP} for name, _ in PHASES}
@@ -803,6 +805,8 @@ def main(binary, budget_path, quick):
                 pass
         return 2
     finally:
+        if cal is not None:
+            cal.close()
         if d is not None:
             d.stop()
         shutil.rmtree(scratch, ignore_errors=True)
@@ -852,6 +856,12 @@ def main(binary, budget_path, quick):
     # machine's speed and load. Over budget, it fails only when measured
     # over again just after; the absolute ceiling guards a broken
     # calibration.
+    # For re-tuning the ratio budgets from any machine's log (CI's included).
+    first = GALLERY_REQUESTS[0][0]
+    print(f"gallery alone on {platform.platform()}, {os.cpu_count()} CPUs: calibration per round "
+          + ", ".join(f"{ms / q:.2f}" for ms, q in gallery[first]) + " ms; ratios per round "
+          + "; ".join(f"{p} " + ", ".join(f"x{q:.2f}" for _, q in gallery[p]) + f" (budget x{cfg[k]})"
+                      for p, k in GALLERY_REQUESTS))
     for path, key in GALLERY_REQUESTS:
         ms, q = med(x[0] for x in gallery[path]), med(x[1] for x in gallery[path])
         over = q > cfg[key] and confirm[path][1] > cfg[key]
