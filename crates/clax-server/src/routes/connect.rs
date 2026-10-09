@@ -4,8 +4,11 @@
 //! on to `/people`. A `clax_viewer` cookie the browser already carried is
 //! replaced, never folded, so a raced or sniffed link moves no one's
 //! history. The code is spent on its first use; it is refused for the owner
-//! (whose grants have no code) and from a browser on the daemon's own
-//! machine (a loopback peer naming a local host), which keeps the code.
+//! (whose grants have no code), and refused without being spent from a
+//! browser on the daemon's own machine (a loopback peer naming a local
+//! host) and for a navigation another page made (`Sec-Fetch-Site` other
+//! than `none` or `same-origin`), so no page can make a browser someone
+//! else.
 //!
 //! The code is in the URL, so every answer is `no-store` and sends no
 //! `Referer` onward.
@@ -58,7 +61,7 @@ fn gone() -> Response {
 /// `GET /connect/b/<code>`: 200 with a page that sets the `clax_viewer`
 /// cookie to the person's viewer and moves on to `/people`; 404 for a code
 /// that is unknown, used, expired, or whose grant or person has ended; 403
-/// from the daemon's own machine.
+/// from the daemon's own machine or from another page.
 pub async fn browser_link(
     State(s): State<AppState>,
     code: Result<Path<String>, axum::extract::rejection::PathRejection>,
@@ -69,6 +72,17 @@ pub async fn browser_link(
             StatusCode::FORBIDDEN,
             "Open on the connected machine",
             "This link joins the browser of the machine that connected. Open it there.",
+            None,
+        );
+    }
+    // `clax connect` opens the link from outside any page (`Sec-Fetch-Site:
+    // none`); a page that sends a browser here (a link, a script) would
+    // make that browser someone else's (login CSRF).
+    if crate::viewer::fetched_from_elsewhere(req.headers()) {
+        return page(
+            StatusCode::FORBIDDEN,
+            "Open from clax connect",
+            "This link works only when clax connect opens it. Run clax connect again on your machine.",
             None,
         );
     }

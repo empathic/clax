@@ -282,7 +282,12 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             "/api/_test/sessions/{id}/feedback/expire",
             post(feedback::expire),
         )
-        .route("/api/_test/grants/sweep", post(grants::test_sweep));
+        .route("/api/_test/grants/sweep", post(grants::test_sweep))
+        .route("/api/_test/grants/index", get(grants::test_index))
+        .route(
+            "/api/_test/grants/index/fail",
+            post(grants::test_fail_index),
+        );
     #[cfg(feature = "test-routes")]
     let api_fast = api_fast.layer(axum::middleware::from_fn(test_delay));
     let api_fast = api_fast.layer(axum::middleware::from_fn(crate::http_cache::api_etag));
@@ -582,6 +587,8 @@ mod l10 {
         ("grants::create_invite", NoArtifact),
         ("grants::revoke_invite", NoArtifact),
         ("grants::test_sweep", Token),
+        ("grants::test_index", Token),
+        ("grants::test_fail_index", Token),
         ("connect::browser_link", NoArtifact),
     ];
 
@@ -829,6 +836,10 @@ mod l10 {
         (
             "grants::revoke_invite",
             "the grant flow; its events are not recorded yet",
+        ),
+        (
+            "grants::test_fail_index",
+            "debug builds only; makes the token index's next change fail",
         ),
         (
             "grants::test_sweep",

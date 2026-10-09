@@ -823,3 +823,336 @@ async fn the_people_topic_is_the_owners() {
     let visitor = ts.viewer(None).await;
     assert_eq!(visitor.subscribe_status(&["people"]).await, 403);
 }
+
+/// The token index's size and state, and the request cache's keys.
+async fn index(ts: &TestServer) -> Value {
+    ts.get_authed("/api/_test/grants/index")
+        .await
+        .json()
+        .await
+        .unwrap()
+}
+
+fn peer(i: u32) -> std::net::IpAddr {
+    std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+        10,
+        1,
+        (i / 250) as u8,
+        (i % 250) as u8 + 1,
+    ))
+}
+
+#[tokio::test]
+async fn the_caps_hold_against_cancelling_and_asking_again() {
+    let clock = Arc::new(ManualClock::at(T0));
+    let ts = lan_server_at(&clock).await;
+    let ask = |i: u32| TestClient::new(&ts).from_peer(peer(i));
+    for _ in 0..3 {
+        let c = ask(0);
+        c.grant_request(json!({})).await;
+        assert_eq!(c.disconnect().await.status(), 204);
+        assert_eq!(c.poll().await.1["error"]["code"], "denied", "cancelled");
+    }
+    let res = ask(0).grant_request_raw(json!({})).await;
+    assert_eq!(status_code(res).await, (429, "limit_reached".into()));
+    for i in 1..18 {
+        let c = ask(i);
+        c.grant_request(json!({})).await;
+        assert_eq!(c.disconnect().await.status(), 204);
+    }
+    let res = ask(99).grant_request_raw(json!({})).await;
+    assert_eq!(
+        status_code(res).await,
+        (429, "limit_reached".into()),
+        "twenty in all"
+    );
+    clock.advance(10 * 60 + 1);
+    ask(0).grant_request(json!({})).await;
+}
+
+#[tokio::test]
+async fn the_index_holds_issued_grants_only_and_ended_requests_are_purged() {
+    let clock = Arc::new(ManualClock::at(T0));
+    let ts = lan_server_at(&clock).await;
+    let owner = ts.owner_browser();
+    for round in 0..3u32 {
+        for i in 0..10u32 {
+            let c = TestClient::new(&ts).from_peer(peer(round * 10 + i));
+            c.grant_request(json!({})).await;
+            if i % 2 == 0 {
+                assert_eq!(c.disconnect().await.status(), 204);
+            } else {
+                let res = owner
+                    .post(&format!("/api/grants/{}/deny", c.grant_id()), json!({}))
+                    .await;
+                assert_eq!(res.status(), 200);
+            }
+            assert_eq!(index(&ts).await["tokens"], 0, "round {round}, request {i}");
+        }
+        clock.advance(10 * 60 + 1);
+    }
+    assert_eq!(ts.store.list_grants().unwrap().len(), 30);
+    let sam = ts.connect_person("Sam", "clax:reader").await;
+    assert_eq!(index(&ts).await["tokens"], 3);
+    clock.advance(24 * 3600);
+    let res = ts.post_json("/api/_test/grants/sweep", json!({})).await;
+    assert_eq!(res.status(), 200);
+    let left: Vec<String> = ts
+        .store
+        .list_grants()
+        .unwrap()
+        .into_iter()
+        .map(|g| g.id)
+        .collect();
+    assert_eq!(left, vec![sam.grant_id()], "issued grants stay as history");
+    assert_eq!(index(&ts).await["tokens"], 3);
+}
+
+#[tokio::test]
+async fn a_flood_of_throwaway_keys_never_locks_out_an_invite() {
+    let ts = lan_server().await;
+    let flood = |from: u32| {
+        let ts = &ts;
+        async move {
+            for _ in 0..256 {
+                let res = TestClient::new(ts)
+                    .from_peer(peer(from))
+                    .grant_request_raw(json!({"clax": {"invite": "AAAA-AAAA-AAAA"}}))
+                    .await;
+                assert_eq!(status_code(res).await, (400, "invalid_invite".into()));
+            }
+        }
+    };
+    flood(1).await;
+    let cmd = ts.invite_command("Sam").await;
+    TestClient::new(&ts)
+        .from_peer(peer(2))
+        .grant_request(json!({"clax": {"invite": code_of(&cmd)}}))
+        .await;
+    // A flood from the very address the real machine uses.
+    flood(3).await;
+    let cmd = ts.invite_command("Mia").await;
+    TestClient::new(&ts)
+        .from_peer(peer(3))
+        .grant_request(json!({"clax": {"invite": code_of(&cmd)}}))
+        .await;
+    let v = index(&ts).await;
+    assert!(v["request_keys"].as_u64().unwrap() <= 256, "{v}");
+}
+
+#[tokio::test]
+async fn signatures_bind_host_body_query_method_and_route() {
+    let clock = Arc::new(ManualClock::at(T0));
+    let ts = lan_server_at(&clock).await;
+    let c = TestClient::new(&ts);
+    let body = serde_json::to_vec(&c.grant_body(json!({}))).unwrap();
+    let mut longer = body.clone();
+    longer.push(b' ');
+    let host = format!("localhost:{}", ts.addr.port());
+    for tamper in [
+        Call {
+            sent_host: Some(host.clone()),
+            ..Default::default()
+        },
+        Call {
+            sent_body: Some(longer),
+            ..Default::default()
+        },
+        Call {
+            sent_path: Some("/api/grants?x=1"),
+            ..Default::default()
+        },
+    ] {
+        let res = c
+            .call(Call {
+                method: "POST",
+                path: "/api/grants",
+                body: Some(body.clone()),
+                ..tamper
+            })
+            .await;
+        assert_eq!(status_code(res).await, (401, "invalid_signature".into()));
+    }
+    assert!(ts.store.list_grants().unwrap().is_empty());
+    // A poll signed as POST and sent as DELETE disconnects nothing.
+    c.grant_request(json!({})).await;
+    let gid = c.grant_id();
+    let cont = c.held().continue_token.unwrap();
+    let path = format!("/api/grants/{gid}/continue");
+    let res = c
+        .call(Call {
+            method: "POST",
+            path: &path,
+            authorization: Some(format!("GNAP {cont}")),
+            sent_method: Some("DELETE"),
+            ..Default::default()
+        })
+        .await;
+    assert_eq!(status_code(res).await, (401, "invalid_signature".into()));
+    assert_eq!(ts.store.grant(&gid).unwrap().status, "pending");
+    // A manage call signed for one route and sent to another.
+    let sam = ts.connect_person("Sam", "clax:reader").await;
+    let gid = sam.grant_id();
+    let manage = sam.held().manage.unwrap();
+    let (signed, sent) = (
+        format!("/api/grants/{gid}/continue"),
+        format!("/api/grants/{gid}/token"),
+    );
+    let res = sam
+        .call(Call {
+            method: "DELETE",
+            path: &signed,
+            authorization: Some(format!("GNAP {manage}")),
+            sent_path: Some(&sent),
+            ..Default::default()
+        })
+        .await;
+    assert_eq!(status_code(res).await, (401, "invalid_signature".into()));
+    assert_eq!(ts.store.grant(&gid).unwrap().status, "approved");
+    assert_eq!(sam.revoke_token().await.status(), 204);
+}
+
+#[tokio::test]
+async fn responses_with_tokens_or_codes_are_not_stored() {
+    let clock = Arc::new(ManualClock::at(T0));
+    let ts = lan_server_at(&clock).await;
+    let res = ts
+        .owner_browser()
+        .post("/api/people/invites", json!({"name": "Sam"}))
+        .await;
+    assert_eq!(res.headers()["cache-control"], "no-store");
+    let cmd = res.json::<Value>().await.unwrap()["invite"]["command"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = TestClient::new(&ts)
+        .grant_request_raw(json!({"clax": {"invite": code_of(&cmd)}}))
+        .await;
+    assert_eq!(
+        (
+            res.status().as_u16(),
+            res.headers()["cache-control"].to_str().unwrap()
+        ),
+        (200, "no-store")
+    );
+    let (c, gid, user_code) = pending(&ts, "clax:reader").await;
+    clock.advance(5);
+    let (path, cont) = (
+        format!("/api/grants/{gid}/continue"),
+        c.held().continue_token.unwrap(),
+    );
+    let res = c.gnap("POST", &path, &cont).await;
+    assert_eq!(
+        (
+            res.status().as_u16(),
+            res.headers()["cache-control"].to_str().unwrap()
+        ),
+        (200, "no-store"),
+        "a pending poll echoes the continuation"
+    );
+    let res = ts
+        .owner_browser()
+        .post(
+            &format!("/api/grants/{gid}/approve"),
+            json!({"user_code": user_code, "name": "Mia"}),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    clock.advance(5);
+    let res = c.gnap("POST", &path, &cont).await;
+    assert_eq!(
+        (
+            res.status().as_u16(),
+            res.headers()["cache-control"].to_str().unwrap()
+        ),
+        (200, "no-store")
+    );
+    let res = TestClient::new(&ts).grant_request_raw(json!({})).await;
+    assert_eq!(
+        (
+            res.status().as_u16(),
+            res.headers()["cache-control"].to_str().unwrap()
+        ),
+        (201, "no-store")
+    );
+}
+
+#[tokio::test]
+async fn the_browser_link_refuses_navigations_from_other_pages() {
+    let ts = lan_server().await;
+    let cmd = ts.invite_command("Sam").await;
+    let r = TestClient::new(&ts)
+        .grant_request(json!({"clax": {"invite": code_of(&cmd)}}))
+        .await;
+    let link = r["clax"]["browser_link"].as_str().unwrap();
+    let (lan, _) = ts.lan();
+    for site in ["cross-site", "same-site"] {
+        let res = lan
+            .get(link)
+            .header("sec-fetch-site", site)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 403, "{site}");
+        assert!(res.headers().get("set-cookie").is_none());
+    }
+    let res = lan
+        .get(link)
+        .header("sec-fetch-site", "none")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "the code was kept");
+}
+
+#[tokio::test]
+async fn ending_an_ended_grant_announces_nothing() {
+    let ts = lan_server().await;
+    let sam = ts.connect_person("Sam", "clax:reader").await;
+    let mut people = ts.stream_as_owner(&["people"]).await;
+    let owner = ts.owner_browser();
+    let path = format!("/api/grants/{}", sam.grant_id());
+    for _ in 0..2 {
+        let res = owner.delete(&path).await;
+        assert_eq!(res.status(), 200);
+        let v: Value = res.json().await.unwrap();
+        assert_eq!(v["grant"]["status"], "revoked");
+    }
+    ts.invite_command("Marker").await;
+    let ev = people.next_named("people").await;
+    assert_eq!(ev["change"]["what"], "grant_ended");
+    let ev = people.next_named("people").await;
+    assert_eq!(
+        ev["change"]["what"], "invite_created",
+        "one end, announced once"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_index_change_still_hands_out_the_tokens() {
+    let ts = lan_server().await;
+    let res = ts
+        .post_json("/api/_test/grants/index/fail", json!({}))
+        .await;
+    assert_eq!(res.status(), 204);
+    let sam = ts.connect_person("Sam", "clax:reader").await;
+    assert!(sam.held().access.unwrap().starts_with("cxg_"));
+    let v = index(&ts).await;
+    assert_eq!(
+        (v["tokens"].as_u64(), v["stale"].as_bool()),
+        (Some(0), Some(true))
+    );
+    assert_eq!(
+        status_code(sam.revoke_token().await).await,
+        (401, "invalid_token".into()),
+        "unknown until the rebuild"
+    );
+    let res = ts.post_json("/api/_test/grants/sweep", json!({})).await;
+    assert_eq!(res.status(), 200);
+    let v = index(&ts).await;
+    assert_eq!(
+        (v["tokens"].as_u64(), v["stale"].as_bool()),
+        (Some(3), Some(false))
+    );
+    assert_eq!(sam.revoke_token().await.status(), 204);
+}
