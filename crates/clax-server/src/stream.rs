@@ -57,7 +57,9 @@ pub const MAX_DETACHED: usize = 4096;
 /// 2026-10-05-chrome-overlay-design §9.5), and `questions` (every agent
 /// question's changes, for the owner alone; spec
 /// 2026-10-06-agent-questions-and-inbox-design §6.3), and `inbox` (the
-/// owner's inbox items and read marks, §8.2).
+/// owner's inbox items and read marks, §8.2), and `people` (people,
+/// invites and grants, for the owner alone; spec
+/// 2026-10-08-multi-agent-multi-person §6.2–§6.4).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Topic {
     Gallery,
@@ -68,6 +70,7 @@ pub enum Topic {
     Site(String),
     Questions,
     Inbox,
+    People,
 }
 
 impl Topic {
@@ -86,6 +89,9 @@ impl Topic {
         }
         if s == "inbox" {
             return Ok(Topic::Inbox);
+        }
+        if s == "people" {
+            return Ok(Topic::People);
         }
         if let Some(origin) = s.strip_prefix("site:") {
             let normal = clax_core::live::parse_page_url(origin)
@@ -123,14 +129,17 @@ impl Topic {
             Topic::Site(o) => format!("site:{o}"),
             Topic::Questions => "questions".into(),
             Topic::Inbox => "inbox".into(),
+            Topic::People => "people".into(),
         }
     }
 
     /// The artifact the topic is about; `None` for the gallery, a site,
-    /// `questions` and `inbox`.
+    /// `questions`, `inbox` and `people`.
     pub fn artifact(&self) -> Option<&str> {
         match self {
-            Topic::Gallery | Topic::Site(_) | Topic::Questions | Topic::Inbox => None,
+            Topic::Gallery | Topic::Site(_) | Topic::Questions | Topic::Inbox | Topic::People => {
+                None
+            }
             Topic::Artifact(a) | Topic::Presence(a) | Topic::Working(a) | Topic::Docs(a) => Some(a),
         }
     }
@@ -147,6 +156,7 @@ impl Topic {
             Topic::Site(o) => vec![Chan::Site(o.clone())],
             Topic::Questions => vec![Chan::Questions],
             Topic::Inbox => vec![Chan::Inbox],
+            Topic::People => vec![Chan::People],
             Topic::Docs(a) => {
                 let mut v: Vec<Chan> = [Level::View, Level::Interact, Level::Admin, Level::Owner]
                     .into_iter()
@@ -179,6 +189,8 @@ enum Chan {
     Questions,
     /// The owner's inbox; only owner streams subscribe.
     Inbox,
+    /// People, invites and grants; only owner streams subscribe.
+    People,
 }
 
 impl Chan {
@@ -188,6 +200,7 @@ impl Chan {
             Chan::Site(o) => format!("site:{o}"),
             Chan::Questions => "questions".into(),
             Chan::Inbox => "inbox".into(),
+            Chan::People => "people".into(),
             Chan::Artifact(a) => format!("artifact:{a}"),
             Chan::Presence(a) => format!("presence:{a}"),
             Chan::Working(a) => format!("working:{a}"),
@@ -307,11 +320,12 @@ pub enum SubError {
 /// Whether a live-only stream (one opened through the extension gateway) may
 /// take topic `t`: an `artifact`, `presence` or `working` topic of a live
 /// page in `live`, a `site` topic, `questions` or `inbox` (the extension acts
-/// as the owner); never `gallery` or a `docs` topic (spec
-/// 2026-10-05-chrome-overlay-design §9.5).
+/// as the owner); never `gallery`, a `docs` topic (spec
+/// 2026-10-05-chrome-overlay-design §9.5) or `people`, which the panel does
+/// not show.
 pub fn live_only_admits(live: &crate::live::LiveIds, t: &Topic) -> bool {
     match t {
-        Topic::Gallery | Topic::Docs(_) => false,
+        Topic::Gallery | Topic::Docs(_) | Topic::People => false,
         Topic::Site(_) | Topic::Questions | Topic::Inbox => true,
         Topic::Artifact(a) | Topic::Presence(a) | Topic::Working(a) => live.contains(a),
     }
@@ -461,6 +475,7 @@ fn routes(ev: &Event) -> Vec<(Chan, Gate)> {
         // Only owner streams hold the topic (checked at subscribe time).
         Event::Question { .. } => vec![(Chan::Questions, Gate::Any)],
         Event::InboxItem { .. } | Event::InboxRead { .. } => vec![(Chan::Inbox, Gate::Any)],
+        Event::People { .. } => vec![(Chan::People, Gate::Any)],
         Event::Doc {
             private_to,
             read_level,
@@ -1747,6 +1762,43 @@ mod tests {
         assert!(got[1].1.starts_with("event: inbox_read\n"), "{}", got[1].1);
         assert!(got[1].1.contains(r#""ids":null"#), "{}", got[1].1);
         assert!(drain(&mut q).is_empty(), "no other topic carries the inbox");
+    }
+
+    #[test]
+    fn the_people_topic_takes_people_events_alone() {
+        assert_eq!(Topic::parse("people"), Ok(Topic::People));
+        assert_eq!(Topic::People.name(), "people");
+        assert_eq!(Topic::People.artifact(), None);
+        assert!(Topic::parse("people:x").is_err());
+        assert!(!live_only_admits(
+            &crate::live::LiveIds::default(),
+            &Topic::People
+        ));
+        let hub = Hub::new(Default::default());
+        let c = viewer(Level::Owner, Some("u_o"));
+        let mut p = hub.open(c.clone(), true, None, None);
+        hub.update(&p.id, &c, &[Topic::People], &[]).unwrap();
+        assert!(!hub.holds_owner_topics(), "people opens no owner surface");
+        let mut q = hub.open(c.clone(), true, None, None);
+        hub.update(
+            &q.id,
+            &c,
+            &[Topic::Questions, Topic::Inbox, Topic::Gallery],
+            &[],
+        )
+        .unwrap();
+        hub.dispatch(&Event::People {
+            change: json!({"what": "grant_requested", "grant": {"id": "g_1"}}),
+        });
+        let got = drain(&mut p);
+        assert_eq!(got.len(), 1);
+        assert!(got[0].1.starts_with("event: people\n"), "{}", got[0].1);
+        assert!(
+            got[0].1.contains(r#""topic":"people""#) && got[0].1.contains(r#""id":"g_1""#),
+            "{}",
+            got[0].1
+        );
+        assert!(drain(&mut q).is_empty(), "no other topic carries people");
     }
 
     #[test]

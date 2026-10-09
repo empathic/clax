@@ -136,13 +136,15 @@ pub async fn events(
     let types = list(q.types);
     let passes = move |ev: &Event| -> bool {
         // A site's change names no artifact: only `site:` topics carry it.
-        // Questions and the inbox are the owner's; only their stream topics carry them.
+        // Questions, the inbox and people are the owner's; only their stream
+        // topics carry them.
         if matches!(
             ev,
             Event::Site { .. }
                 | Event::Question { .. }
                 | Event::InboxItem { .. }
                 | Event::InboxRead { .. }
+                | Event::People { .. }
         ) {
             return false;
         }

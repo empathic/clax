@@ -24,6 +24,8 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// sends SIGTERM; what the journal does not write, the next start writes
 /// from the table.
 const JOURNAL_STOP_TIMEOUT: Duration = Duration::from_millis(1500);
+/// How often grants due to expire are expired and the nonce caches swept.
+const GRANT_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Discovery record written to `daemon.json` (mode 0600) once at daemon startup;
 /// clients read it to find the port and bearer token of the running daemon.
@@ -527,6 +529,7 @@ pub async fn serve(
     let events_shutdown = shutdown_tx.subscribe();
     let live_ids = Arc::new(crate::live::LiveIds::load(&store)?);
     let ext_creds = Arc::new(crate::extension::Credentials::load(&store)?);
+    let grant_auth = Arc::new(crate::grant_auth::GrantAuth::load(&store)?);
     let state = AppState {
         store,
         home: cfg.home.clone(),
@@ -571,6 +574,10 @@ pub async fn serve(
             crate::routes::sessions::CALL_ID_GRACE,
             crate::routes::sessions::CALL_ID_CAP,
         )),
+        bind: cfg.bind,
+        port,
+        lan_host: None,
+        grant_auth,
     };
     state.audit_wake.install(&state.store);
     // The appender recovers the journal and catches it up on its own
@@ -609,6 +616,7 @@ pub async fn serve(
     tracing::info!(provider = ?state.sample.provider_name(), "sample provider");
     let fctx = state.feedback_ctx();
     let reap_state = state.clone();
+    let grant_state = state.clone();
     let (state_working, state_events) = (state.working.clone(), state.events.clone());
     let state_presence = state.presence.clone();
     let state_stream = state.stream.clone();
@@ -663,6 +671,20 @@ pub async fn serve(
                 Ok(r) if r.ended.is_empty() => {}
                 Ok(r) => tracing::info!(count = r.ended.len(), "ended idle sessions"),
                 Err(e) => tracing::warn!(error = %e, "session reaper failed"),
+            }
+        }
+    });
+
+    // Grants due to expire on start, then every minute; the nonce caches
+    // forget what is older than their window.
+    let grant_sweeper = tokio::spawn(async move {
+        let mut every = tokio::time::interval(GRANT_SWEEP_INTERVAL);
+        loop {
+            every.tick().await;
+            match crate::routes::grants::sweep(&grant_state).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(count = n, "expired grants"),
+                Err(e) => tracing::warn!(code = e.code, "grant sweep failed"),
             }
         }
     });
@@ -726,6 +748,7 @@ pub async fn serve(
         _ = drain_deadline => tracing::warn!("connections did not drain in time; exiting"),
     }
     reaper.abort();
+    grant_sweeper.abort();
     optimizer.abort();
     sweeper.abort();
     // The journal has closed its segment (it began to as shutdown began)

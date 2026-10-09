@@ -128,8 +128,14 @@ impl TestServer {
     /// A test daemon whose store, working and presence registries and
     /// question clock all read `clock`.
     pub async fn spawn_with_clock(clock: Arc<ManualClock>) -> TestServer {
+        Self::spawn_on_with_clock(IpAddr::V4(Ipv4Addr::LOCALHOST), clock).await
+    }
+
+    /// [`TestServer::spawn_with_clock`] listening on `bind` (`0.0.0.0` for
+    /// one that may invite people: its invites name [`LAN_LOCAL`]).
+    pub async fn spawn_on_with_clock(bind: IpAddr, clock: Arc<ManualClock>) -> TestServer {
         let dir = tempfile::tempdir().unwrap();
-        Self::start(dir, IpAddr::V4(Ipv4Addr::LOCALHOST), clock, |_| {}).await
+        Self::start(dir, bind, clock, |_| {}).await
     }
 
     /// A test daemon on a fresh copy of fixture `name` (a file of this
@@ -170,6 +176,7 @@ impl TestServer {
         let ext_creds =
             Arc::new(crate::extension::Credentials::load_with(&store, clock.clone()).unwrap());
         let started_at = store.now();
+        let grant_auth = Arc::new(crate::grant_auth::GrantAuth::load(&store).unwrap());
         let mut state = AppState {
             store,
             home: home.clone(),
@@ -211,6 +218,12 @@ impl TestServer {
                 crate::routes::sessions::CALL_ID_GRACE,
                 crate::routes::sessions::CALL_ID_CAP,
             )),
+            bind,
+            port,
+            // Invites from a daemon on every interface name the address
+            // `lan()` requests arrive on.
+            lan_host: bind.is_unspecified().then_some(IpAddr::V4(LAN_LOCAL)),
+            grant_auth,
         };
         f(&mut state);
         state.audit_wake.install(&state.store);
@@ -1127,5 +1140,336 @@ impl TestServer {
         let c = clock.clone();
         let ts = Self::spawn_with(move |s| s.question_sleeper = c).await;
         (ts, clock)
+    }
+}
+
+/// A browser of the owner's ([`TestServer::owner_browser`]): requests with
+/// the owner cookie, from this machine.
+pub struct OwnerBrowser {
+    base: String,
+    client: reqwest::Client,
+    cookie: String,
+}
+
+impl OwnerBrowser {
+    fn request(&self, m: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+        self.client
+            .request(m, format!("{}{path}", self.base))
+            .header("cookie", &self.cookie)
+    }
+
+    /// `GET <path>`.
+    pub async fn get(&self, path: &str) -> reqwest::Response {
+        self.request(reqwest::Method::GET, path)
+            .send()
+            .await
+            .unwrap()
+    }
+
+    /// `POST <path>` with JSON `body`.
+    pub async fn post(&self, path: &str, body: serde_json::Value) -> reqwest::Response {
+        self.request(reqwest::Method::POST, path)
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+    }
+
+    /// `DELETE <path>`.
+    pub async fn delete(&self, path: &str) -> reqwest::Response {
+        self.request(reqwest::Method::DELETE, path)
+            .send()
+            .await
+            .unwrap()
+    }
+}
+
+/// One signed request of a [`TestClient`], as [`TestClient::call`] sends
+/// it; the defaults sign it correctly with the client's key.
+#[derive(Default)]
+pub struct Call<'a> {
+    pub method: &'a str,
+    pub path: &'a str,
+    /// `Authorization`, whole (`GNAP cxc_…`).
+    pub authorization: Option<String>,
+    /// The token the signature covers; by default the one in
+    /// `authorization`.
+    pub signed_token: Option<String>,
+    pub body: Option<Vec<u8>>,
+    /// Sign with this key instead of the client's.
+    pub key: Option<&'a clax_core::sig::KeyPair>,
+    /// Send no `Clax-Signature`.
+    pub unsigned: bool,
+    /// Flip a bit of the signature.
+    pub corrupt: bool,
+    /// Seconds added to `t`.
+    pub skew: i64,
+    /// The nonce; a fresh one by default.
+    pub nonce: Option<String>,
+    /// More headers.
+    pub headers: Vec<(&'static str, String)>,
+}
+
+/// The tokens a [`TestClient`] holds.
+#[derive(Clone, Debug, Default)]
+pub struct Held {
+    pub grant_id: Option<String>,
+    pub access: Option<String>,
+    pub manage: Option<String>,
+    pub continue_token: Option<String>,
+    /// The last grant response that issued tokens.
+    pub issued: Option<serde_json::Value>,
+}
+
+/// Another machine's Clax ([`TestServer::connect_person`]): an Ed25519 key
+/// pair that signs every request (spec §6.6), sent from the LAN
+/// ([`TestServer::lan`]) to this machine's loopback address, which it
+/// names as its `Host`.
+pub struct TestClient {
+    base: String,
+    host: String,
+    client: reqwest::Client,
+    store: Arc<Store>,
+    pub key: clax_core::sig::KeyPair,
+    held: std::sync::Mutex<Held>,
+}
+
+impl TestClient {
+    /// A client of `ts` with a new key pair and no grant yet.
+    pub fn new(ts: &TestServer) -> TestClient {
+        Self::with_key(ts, clax_core::sig::KeyPair::generate())
+    }
+
+    /// A client of `ts` with key pair `key` and no grant yet.
+    pub fn with_key(ts: &TestServer, key: clax_core::sig::KeyPair) -> TestClient {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert(LAN_HEADER, reqwest::header::HeaderValue::from_static("1"));
+        TestClient {
+            base: ts.base.clone(),
+            host: ts.base.trim_start_matches("http://").to_string(),
+            client: reqwest::Client::builder()
+                .default_headers(h)
+                .build()
+                .unwrap(),
+            store: ts.store.clone(),
+            key,
+            held: Default::default(),
+        }
+    }
+
+    /// The tokens held now.
+    pub fn held(&self) -> Held {
+        self.held.lock().unwrap().clone()
+    }
+
+    /// The grant's ID; panics without one.
+    pub fn grant_id(&self) -> String {
+        self.held().grant_id.expect("a grant")
+    }
+
+    /// Sends `c`, signed as it says.
+    pub async fn call(&self, c: Call<'_>) -> reqwest::Response {
+        use clax_core::sig::{SignInput, new_nonce};
+        use sha2::Digest;
+        let body = c.body.unwrap_or_default();
+        let signed_token = c.signed_token.or_else(|| {
+            c.authorization
+                .as_deref()
+                .and_then(|a| a.split_once(' '))
+                .map(|(_, t)| t.to_string())
+        });
+        let method = reqwest::Method::from_bytes(c.method.as_bytes()).unwrap();
+        let mut req = self
+            .client
+            .request(method, format!("{}{}", self.base, c.path))
+            .header("host", &self.host);
+        if !c.unsigned {
+            let nonce = c.nonce.unwrap_or_else(new_nonce);
+            let input = SignInput {
+                method: c.method,
+                path_and_query: c.path,
+                host: &self.host,
+                t: self.store.now_utc().timestamp() + c.skew,
+                nonce: &nonce,
+                body_sha256: sha2::Sha256::digest(&body).into(),
+                token_sha256: signed_token.as_deref().map(clax_core::secret::sha256),
+            };
+            let mut h = c.key.unwrap_or(&self.key).sign(&input).unwrap();
+            if c.corrupt {
+                h.sig[0] ^= 1;
+            }
+            req = req.header("clax-signature", h.to_string());
+        }
+        if let Some(a) = c.authorization {
+            req = req.header("authorization", a);
+        }
+        if !body.is_empty() {
+            req = req.header("content-type", "application/json");
+        }
+        for (k, v) in c.headers {
+            req = req.header(k, v);
+        }
+        req.body(body).send().await.unwrap()
+    }
+
+    /// `body` with `client` (this key, named `test-machine`) when it has
+    /// none, and `interact.start: ["user_code"]` when it has neither that nor
+    /// an invite.
+    pub fn grant_body(&self, mut body: serde_json::Value) -> serde_json::Value {
+        if body.get("client").is_none() {
+            body["client"] = serde_json::json!({
+                "key": {"proof": "clax-ed25519", "jwk": {"kty": "OKP", "crv": "Ed25519",
+                        "x": clax_core::sig::encode_public(&self.key.public())}},
+                "display": {"name": "test-machine"},
+            });
+        }
+        if body.get("interact").is_none() && body.pointer("/clax/invite").is_none() {
+            body["interact"] = serde_json::json!({"start": ["user_code"]});
+        }
+        body
+    }
+
+    /// `POST /api/grants` with [`TestClient::grant_body`] of `body`,
+    /// signed; keeps the tokens a success hands out.
+    pub async fn grant_request_raw(&self, body: serde_json::Value) -> reqwest::Response {
+        let body = serde_json::to_vec(&self.grant_body(body)).unwrap();
+        self.call(Call {
+            method: "POST",
+            path: "/api/grants",
+            body: Some(body),
+            ..Default::default()
+        })
+        .await
+    }
+
+    /// [`TestClient::grant_request_raw`], asserting a 200 or 201; the
+    /// response, whose tokens the client keeps.
+    pub async fn grant_request(&self, body: serde_json::Value) -> serde_json::Value {
+        let res = self.grant_request_raw(body).await;
+        let status = res.status();
+        let v: serde_json::Value = res.json().await.unwrap();
+        assert!(status == 200 || status == 201, "{status}: {v}");
+        self.keep(&v);
+        v
+    }
+
+    /// Keeps the grant ID and tokens grant response `v` hands out.
+    pub fn keep(&self, v: &serde_json::Value) {
+        let mut h = self.held.lock().unwrap();
+        let s = |p: &str| v.pointer(p).and_then(|x| x.as_str()).map(str::to_string);
+        if let Some(uri) = s("/continue/uri") {
+            h.grant_id = uri
+                .strip_prefix("/api/grants/")
+                .and_then(|r| r.strip_suffix("/continue"))
+                .map(str::to_string);
+        }
+        if let Some(t) = s("/continue/access_token/value") {
+            h.continue_token = Some(t);
+        }
+        if let Some(t) = s("/access_token/value") {
+            h.access = Some(t);
+            h.manage = s("/access_token/manage/access_token/value");
+            h.issued = Some(v.clone());
+        }
+    }
+
+    /// A `GNAP` call with `token` on `path`, signed.
+    pub async fn gnap(&self, method: &str, path: &str, token: &str) -> reqwest::Response {
+        self.call(Call {
+            method,
+            path,
+            authorization: Some(format!("GNAP {token}")),
+            ..Default::default()
+        })
+        .await
+    }
+
+    /// `POST /api/grants/<gid>/continue` with the continuation token: the
+    /// status and body; the tokens an approval hands out are kept.
+    pub async fn poll(&self) -> (u16, serde_json::Value) {
+        let h = self.held();
+        let res = self
+            .gnap(
+                "POST",
+                &format!("/api/grants/{}/continue", self.grant_id()),
+                h.continue_token.as_deref().expect("a continuation token"),
+            )
+            .await;
+        let status = res.status().as_u16();
+        let v: serde_json::Value = res.json().await.unwrap_or_default();
+        if status == 200 {
+            self.keep(&v);
+        }
+        (status, v)
+    }
+
+    /// `DELETE /api/grants/<gid>/continue` with the continuation token.
+    pub async fn disconnect(&self) -> reqwest::Response {
+        let h = self.held();
+        self.gnap(
+            "DELETE",
+            &format!("/api/grants/{}/continue", self.grant_id()),
+            h.continue_token.as_deref().expect("a continuation token"),
+        )
+        .await
+    }
+
+    /// `DELETE /api/grants/<gid>/token` with the manage token.
+    pub async fn revoke_token(&self) -> reqwest::Response {
+        let h = self.held();
+        self.gnap(
+            "DELETE",
+            &format!("/api/grants/{}/token", self.grant_id()),
+            h.manage.as_deref().expect("a manage token"),
+        )
+        .await
+    }
+}
+
+impl TestServer {
+    /// A browser of the owner's on this machine.
+    pub fn owner_browser(&self) -> OwnerBrowser {
+        OwnerBrowser {
+            base: self.base.clone(),
+            client: self.client.clone(),
+            cookie: self.owner_cookie(),
+        }
+    }
+
+    /// The `clax connect` command of a new invite for a new person named
+    /// `name`, made in the owner's browser (the daemon must listen beyond
+    /// loopback).
+    pub async fn invite_command(&self, name: &str) -> String {
+        self.invite_with(serde_json::json!({ "name": name })).await
+    }
+
+    /// The command of an invite made with `body`; asserts a 201.
+    pub async fn invite_with(&self, body: serde_json::Value) -> String {
+        let res = self.owner_browser().post("/api/people/invites", body).await;
+        let status = res.status();
+        let v: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(status, 201, "{v}");
+        v["invite"]["command"].as_str().unwrap().to_string()
+    }
+
+    /// A new person `name` with rights `preset`, connected by invite: their
+    /// machine, holding its tokens.
+    pub async fn connect_person(&self, name: &str, preset: &str) -> TestClient {
+        let cmd = self
+            .invite_with(serde_json::json!({"name": name, "rights": preset}))
+            .await;
+        let code = cmd.rsplit_once("/i/").expect("an invite command").1;
+        let c = TestClient::new(self);
+        c.grant_request(serde_json::json!({
+            "access_token": {"access": [preset]},
+            "clax": {"invite": code},
+        }))
+        .await;
+        c
+    }
+
+    /// Whether a viewer row `id` exists.
+    pub fn viewer_exists(&self, id: &str) -> bool {
+        self.store.get_viewer(id).unwrap().is_some()
     }
 }

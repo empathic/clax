@@ -181,6 +181,32 @@ pub struct RevokedGrant {
     pub withdrawn_questions: Vec<String>,
 }
 
+/// Which of a grant's tokens a [`Credential`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CredentialKind {
+    /// An access token (`cxg_`), carried as `Clax-Grant`.
+    Access,
+    /// The manage token (`cxm_`), carried as `GNAP` to revoke.
+    Manage,
+    /// The current continuation token (`cxc_`), carried as `GNAP` to poll
+    /// or disconnect.
+    Continue,
+}
+
+/// One token the daemon knows, by hash (spec §6.4, §6.6): what it is, its
+/// grant, the key its requests must be signed with, and whether its grant
+/// has ended (`grant_revoked`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Credential {
+    pub sha256: [u8; 32],
+    pub kind: CredentialKind,
+    pub grant_id: String,
+    pub key: [u8; 32],
+    /// The token was revoked, or its grant revoked or expired after
+    /// approval.
+    pub revoked: bool,
+}
+
 /// What revoking a person ended.
 #[derive(Debug, Default)]
 pub struct RevokedPerson {
@@ -1262,6 +1288,61 @@ impl Store {
         })
     }
 
+    /// Every token of every grant, by hash, for the daemon's in-memory
+    /// index (spec §6.4): access tokens, manage tokens and current
+    /// continuation tokens, each with its grant's key. A revoked token, and
+    /// every token of a grant revoked or expired after approval, is marked
+    /// `revoked`; a denied or unapproved expired request's continuation
+    /// token is not (its poll answers `denied`).
+    pub fn credential_index(&self) -> Result<Vec<Credential>> {
+        self.with_read(|c| {
+            let mut stmt = c.prepare(
+                "SELECT t.sha256, 'access', g.id, g.client_key,
+                        t.revoked_at IS NOT NULL OR g.status <> 'approved'
+                   FROM grant_tokens t JOIN grants g ON g.id = t.grant_id
+                 UNION ALL
+                 SELECT manage_sha256, 'manage', id, client_key, status <> 'approved'
+                   FROM grants WHERE manage_sha256 IS NOT NULL
+                 UNION ALL
+                 SELECT continue_sha256, 'continue', id, client_key,
+                        status = 'revoked' OR (status = 'expired' AND manage_sha256 IS NOT NULL)
+                   FROM grants WHERE continue_sha256 <> ''",
+            )?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, bool>(4)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows
+                .into_iter()
+                .filter_map(|(hash, kind, grant_id, key, revoked)| {
+                    let key = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                        .decode(key)
+                        .ok()?
+                        .try_into()
+                        .ok()?;
+                    Some(Credential {
+                        sha256: unhex32(&hash)?,
+                        kind: match kind.as_str() {
+                            "access" => CredentialKind::Access,
+                            "manage" => CredentialKind::Manage,
+                            _ => CredentialKind::Continue,
+                        },
+                        grant_id,
+                        key,
+                        revoked,
+                    })
+                })
+                .collect())
+        })
+    }
+
     /// Whether access token `token` is live: unrevoked, of an approved grant.
     pub fn token_live(&self, token: &str) -> Result<bool> {
         let hash = sha256_hex(token);
@@ -2265,6 +2346,66 @@ pub(crate) mod tests {
             })
             .unwrap();
         assert_eq!(unrevoked, 0);
+    }
+
+    #[test]
+    fn the_credential_index_holds_every_token_with_its_key_and_marks_ended_grants() {
+        let (_d, _c, st) = store();
+        let find = |st: &Store, token: &str| {
+            let h = secret::sha256(token);
+            st.credential_index()
+                .unwrap()
+                .into_iter()
+                .find(|c| c.sha256 == h)
+        };
+        let (pending_grant, cont, code) = pending(&st, KEY_B);
+        let c = find(&st, cont.expose()).expect("a pending request's continuation");
+        assert_eq!(
+            (c.kind, c.grant_id.as_str(), c.key, c.revoked),
+            (
+                CredentialKind::Continue,
+                pending_grant.id.as_str(),
+                KEY_B,
+                false
+            )
+        );
+        st.approve_grant(&pending_grant.id, code.expose(), "Mia", None)
+            .unwrap();
+        let ContinueOutcome::Approved {
+            token: mia_token,
+            continue_token: mia_cont,
+            ..
+        } = st.continue_grant(&pending_grant.id, cont.expose()).unwrap()
+        else {
+            panic!("approved")
+        };
+        assert!(find(&st, cont.expose()).is_none(), "the old one is gone");
+        assert_eq!(
+            find(&st, mia_cont.expose()).map(|c| (c.kind, c.revoked)),
+            Some((CredentialKind::Continue, false))
+        );
+        assert_eq!(
+            find(&st, mia_token.expose()).map(|c| (c.kind, c.key, c.revoked)),
+            Some((CredentialKind::Access, KEY_B, false))
+        );
+        let (gid, token, manage) = approved(&st, "Sam", KEY_A);
+        assert_eq!(
+            find(&st, manage.expose()).map(|c| (c.kind, c.grant_id, c.revoked)),
+            Some((CredentialKind::Manage, gid.clone(), false))
+        );
+        st.revoke_token(&gid, manage.expose()).unwrap();
+        for t in [&token, &manage] {
+            assert_eq!(find(&st, t.expose()).map(|c| c.revoked), Some(true));
+        }
+        assert_eq!(
+            find(&st, mia_token.expose()).map(|c| c.revoked),
+            Some(false),
+            "another grant's token stays live"
+        );
+        // A denied request's continuation is not revoked: its poll answers.
+        let (denied, dcont, _) = pending(&st, KEY_A);
+        st.deny_grant(&denied.id).unwrap();
+        assert_eq!(find(&st, dcont.expose()).map(|c| c.revoked), Some(false));
     }
 
     #[test]
