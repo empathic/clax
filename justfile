@@ -60,7 +60,8 @@ test:
         # A copy kept by content (scripts/stable-bin.sh), so macOS assesses it
         # once per build rather than once per run.
         cargo build -q -p clax-cli
-        CLAX_TEST_BIN="$PWD/$(scripts/stable-bin.sh target/debug/clax target/clax-bin/debug)" cargo nextest run --workspace
+        bin="$(scripts/stable-bin.sh target/debug/clax target/clax-bin/debug)"
+        CLAX_TEST_BIN="$PWD/$bin" cargo nextest run --workspace
     else
         cargo test --workspace
     fi

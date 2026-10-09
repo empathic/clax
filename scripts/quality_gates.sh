@@ -70,7 +70,8 @@ lane_scripts() {
     run "justfile"              scripts/test-justfile.sh &&
     run "release scripts"       scripts/test-release.sh &&
     run "tool hook gate"        scripts/test-tool-hook.sh &&
-    run "extension signing"     scripts/test-extension-signing.sh
+    run "extension signing"     scripts/test-extension-signing.sh &&
+    run "stable bin"            scripts/test-stable-bin.sh
 }
 lane_installer() {
     run "release installer"     scripts/test-install.sh
@@ -99,7 +100,7 @@ lane_e2e() {
 # as they can: cargo builds one thing at a time in target/, and clippy's
 # checks share no artifacts with the test build. The test build's `clax`
 # (the one the Rust tests name) is run once when it is built, as
-# CLAX_TEST_BIN is.
+# stable-bin.sh runs each new copy it keeps.
 lane_rust() {
     run "build clax"            bash -c 'cargo build -q -p clax-cli && mkdir -p "$(dirname "$CLAX_TEST_BIN")" && kept="$(scripts/stable-bin.sh target/debug/clax target/clax-bin/debug)" && ln -sfn "$PWD/$kept" "$CLAX_TEST_BIN"' &&
     mark clax-built &&
