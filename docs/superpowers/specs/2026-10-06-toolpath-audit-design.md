@@ -332,15 +332,35 @@ session:
 - the shim's session gives `agent`.
 
 The sessionless `/mcp` route records `{"type":"agent","session_id":null}`.
-It renders as `agent:clax-mcp` (§10.1). Only the token and `x-clax-via: mcp`
-without a known session give that actor: a `hook` or `pi` request with the
-token and no known session records the owner, on its own channel. The
-agent-side headers (`x-clax-via`, `x-clax-session`, `x-clax-git`,
-`x-clax-call`) count only with the token; a browser's are ignored. Every
-agent side names its channel in `x-clax-via` (`mcp` from the shim and the
-daemon's own `/mcp` client, `hook` from `clax hook`, `pi` from the Pi
-extension); without one, a token request with a session is `mcp` and
-without one `cli`.
+It renders as `agent:clax-mcp` (§10.1). The agent-side headers
+(`x-clax-via`, `x-clax-session`, `x-clax-git`, `x-clax-call`) count only on
+a verified agent channel: the token, or a grant of another machine whose
+signature the daemon verified; a browser's are ignored. Every agent side
+names its channel in `x-clax-via` (`mcp` from the shim and the daemon's own
+`/mcp` client, `hook` from `clax hook`, `pi` from the Pi extension, `cli`
+from the CLI's tool commands); without one, an agent channel's request with
+a session is `mcp` and without one `cli`.
+
+**Who is an agent (amendment, 2026-10-10).** The journal counts callers as
+the multi-person design's `Caller` does (that design §6.1, §8.5), so one
+request is never an agent there and the owner here:
+
+- the token naming a known session of its own (`x-clax-session`, or the
+  session the route's path names) records that session's agent;
+- the token with the agent-channel marker (`X-Clax-Channel: agent`, sent by
+  the shim, the hooks, Pi, `clax feedback follow` and the CLI whenever it
+  runs under a harness) and no known session records an agent with no
+  session, naming its channel unless that is `mcp`; so does the token
+  naming the `mcp` channel;
+- the token without the marker and without a known session (the CLI used
+  by hand, scripts) records the owner on its channel, `cli` unless it
+  names another;
+- a verified grant records its session's agent (with `grant_id` and
+  `person`) when `x-clax-session` names one of the grant's sessions, else
+  an agent with no session naming the grant, its person and its channel;
+- an answer given in the terminal, which the asking agent's hook reports,
+  is the person at that terminal: the owner for the token, the grant's
+  person for a grant.
 
 ### 5.3 Version content hash
 

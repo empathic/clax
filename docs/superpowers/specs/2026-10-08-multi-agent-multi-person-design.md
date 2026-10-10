@@ -1451,23 +1451,33 @@ If main moves before this branch merges, Task 0 is rebased onto the new
 main and the golden regenerated there, before any later task; that is the
 only regeneration allowed. Items 3, 4 and 8 are tested on their own.
 
-## 20. The Toolpath audit branch
+## 20. The Toolpath audit journal
 
-The audit branch records every change with `actor` and, for system actors,
-`for_actor`, in `audit_events`, in the change's transaction. Until it
-merges, each store function that makes one of these changes returns what
-the event needs, so the merge adds the record call and nothing else.
+The Toolpath audit journal (`2026-10-06-toolpath-audit-design.md`, on main
+since migration 23) records every change with `actor` and, for system
+actors, `for_actor`, in `audit_events`, in the change's transaction. This
+design's callers are recorded as `Caller` counts them (audit spec §5.2,
+amended 2026-10-10): a person's agent with its grant and person, the CLI
+under a harness and every other request with `X-Clax-Channel: agent` as an
+agent, and a connected person's browser as a person. The agent side's
+`x-clax-via`, `x-clax-git` and `x-clax-call` count on every verified agent
+channel, grants included. `X-Clax-Channel: agent` says whether a request is
+an agent's; `x-clax-via` says which agent side sent it; neither replaces
+the other.
 
 ### 20.1 Actors
 
 | Actor | JSON (audit §5.2 shape) | Toolpath string |
 |---|---|---|
 | A person's agent | `{"type":"agent", …, "person":"u_…", "grant_id":"g_…"}` (owner agents: `person` absent) | `agent:<harness>/<session>`; `ActorDef.identities` adds `{system:"clax-person", id:"<install>/<public ID>"}` and `{system:"clax-grant", id:<grant ID>}` |
+| A grant's agent naming no session | `{"type":"agent","session_id":null,"grant_id":"g_…","person":"u_…","channel":"cli"}` | `agent:clax-grant/<grant ID>` |
 | A connected person in a browser | `{"type":"viewer","public_id":"u_…","display_name":"Sam","person":true}` | `human:clax-person/<public ID>` |
 | A grant request before approval | `{"type":"client","grant_id":"g_…","client_name":"sam-mbp"}` | `tool:clax-client/<grant ID>` |
 | Expiry | `{"type":"system","reason":"expiry"}` | `tool:clax/<version>`, `system_reason` `expiry` |
 
-`via` gains `remote` (a request with an agent credential).
+`via` keeps the channel the agent side names (`mcp`, `hook`, `pi`, `cli`)
+for a grant's requests too; `grant_id` in the actor says it came from
+another machine, so no `remote` channel is added.
 
 ### 20.2 Events
 
