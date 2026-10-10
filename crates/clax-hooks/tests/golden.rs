@@ -1076,10 +1076,31 @@ fn ask_in_background(d: &Daemon) -> std::thread::JoinHandle<Ran> {
     })
 }
 
-/// Starts `ask` with a surface open, and returns the surface, the running
-/// hook and the question's ID once the hook polls it.
-fn asking(d: &Daemon) -> (Surface, std::thread::JoinHandle<Ran>, String) {
+#[test]
+fn ask_before_the_session_has_a_page_goes_to_the_terminal_at_once() {
+    let d = Daemon::start();
     d.claude_session("cc-ask-1");
+    let _s = Surface::open(&d);
+    let r = hook(
+        &d.home(),
+        "claude",
+        "ask",
+        &fixture("claude-pre-tool-use-ask.json"),
+    );
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
+    assert!(
+        d.hooks_log()
+            .contains(" ask mode=terminal outcome=terminal waited_s=0")
+    );
+    let listed = d.get_authed("/api/questions?status=all");
+    assert_eq!(listed["questions"][0]["status"], "released");
+}
+
+/// Starts `ask` with a surface open for a session that has published a
+/// page, and returns the surface, the running hook and the question's ID
+/// once the hook polls it.
+fn asking(d: &Daemon) -> (Surface, std::thread::JoinHandle<Ran>, String) {
+    d.session_with_artifact("claude", "cc-ask-1");
     let s = Surface::open(d);
     let run = ask_in_background(d);
     let q = s.next("question");
