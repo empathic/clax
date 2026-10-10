@@ -216,6 +216,8 @@ export class EventStream {
   private rejoin: Timer | undefined;
   /** The viewer changed while this page had no link. */
   private wantReconnect = false;
+  /** The caller last asked for, for a reconnect asked before a link. */
+  private caller: string | undefined;
   private hooked = false;
   private notifyHandlers = new Set<(data: Record<string, unknown>) => void>();
   /** What this link's hub was last told about focus; null until it is told (each new link). */
@@ -258,12 +260,14 @@ export class EventStream {
     return () => { this.notifyHandlers.delete(f); };
   }
 
-  /** Opens a new stream for every tab: the viewer changed, and the daemon
-   * fixes a stream's caller when it opens. Every watcher hears `ready`.
-   * Without a link yet, the next link asks for it: the hub it joins may hold
-   * a stream opened for the old viewer. */
-  reconnect(): void {
-    if (this.link) this.link.send({ t: "reconnect" });
+  /** Opens a new stream for every tab: the caller changed to `caller` (a
+   * key), and the daemon fixes a stream's caller when it opens. The hub
+   * reopens once per caller, however many tabs ask. Every watcher hears
+   * `ready`. Without a link yet, the next link asks for it: the hub it joins
+   * may hold a stream opened for the old caller. */
+  reconnect(caller?: string): void {
+    if (caller !== undefined) this.caller = caller;
+    if (this.link) this.link.send({ t: "reconnect", caller });
     else this.wantReconnect = true;
   }
 
@@ -388,7 +392,7 @@ export class EventStream {
       this.link = link;
       this.sent = "";
       this.focusSent = null;
-      if (this.wantReconnect) { this.wantReconnect = false; link.send({ t: "reconnect" }); }
+      if (this.wantReconnect) { this.wantReconnect = false; link.send({ t: "reconnect", caller: this.caller }); }
       this.sync();
       this.onFocus();
     })();

@@ -264,6 +264,13 @@ describe("EventStream", () => {
     expect(links[0].msgs.filter(m => m.t === "reconnect")).toHaveLength(2);
   });
 
+  it("carries the caller on a reconnect asked before the link", async () => {
+    s.reconnect("u_1true");
+    s.watch(["gallery"], () => {});
+    await flush();
+    expect(links[0].msgs.filter(m => m.t === "reconnect")).toEqual([{ t: "reconnect", caller: "u_1true" }]);
+  });
+
   it("answers the hub's pings, so a hub without Web Locks keeps it", async () => {
     s.watch(["gallery"], () => {});
     await flush();
