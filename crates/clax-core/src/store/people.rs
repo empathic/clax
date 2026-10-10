@@ -344,10 +344,12 @@ fn new_grant_id() -> String {
     out
 }
 
-/// Checks `name` for a person (spec §11): a valid, non-empty display name
-/// whose token form ([`crate::names::token_form`]) is neither the owner's
-/// nor another connected person's (other than viewer `except`) nor a live
-/// agent's name. Returns it trimmed.
+/// Checks `name` for a person (spec §11, §9.6): a valid, non-empty display
+/// name whose token form ([`crate::names::token_form`]) is neither the
+/// owner's, nor another connected person's, nor that of a viewer never
+/// invited and not revoked (other than viewer `except`; a revoked person's
+/// or a lapsed invite's name is free again), nor a live agent's name.
+/// Returns it trimmed.
 fn check_person_name(tx: &Transaction<'_>, name: &str, except: Option<&str>) -> Result<String> {
     let Some(name) = checked_name(name)? else {
         return Err(CoreError::invalid("invalid_name", "a person needs a name"));
@@ -362,6 +364,22 @@ fn check_person_name(tx: &Transaction<'_>, name: &str, except: Option<&str>) -> 
     for other in names {
         if token_form(&other?) == form {
             return Err(taken());
+        }
+    }
+    let mut stmt = tx.prepare(
+        "SELECT v.display_name FROM viewers v WHERE v.display_name IS NOT NULL
+           AND v.owner = 0 AND v.person = 0 AND v.person_revoked_at IS NULL AND v.id IS NOT ?1
+           AND NOT EXISTS (SELECT 1 FROM invites WHERE viewer_id = v.id)",
+    )?;
+    let viewers = stmt.query_map(params![except], |r| r.get::<_, String>(0))?;
+    for other in viewers {
+        if token_form(&other?) == form {
+            return Err(CoreError::invalid(
+                "name_taken",
+                format!(
+                    "a viewer on your LAN is named '{name}': invite that viewer instead, or choose another name"
+                ),
+            ));
         }
     }
     let agent: bool = tx.query_row(
