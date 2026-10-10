@@ -20,6 +20,8 @@
 use super::Store;
 use crate::audit::{AuditCtx, AuditKind, AuditRecord, sha256_hex};
 use crate::db::{Caller, Op, Rules, collection_path, doc_path, invalid_argument};
+use crate::store::approvals::OWNER;
+use crate::visibility::{Author, authors_of_doc};
 use crate::{ArtifactId, CoreError, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
@@ -627,6 +629,7 @@ fn write_in(
                 params![id.as_str(), dp.path, dp.collection, body.json, version as i64, now],
             )?;
             rc.record(id, &dp, Some(version), Some(&body.json), now)?;
+            add_authors(c, id, &dp.path, caller, current.is_some())?;
             let doc = Doc {
                 id: dp.path.rsplit('/').next().unwrap_or_default().to_string(),
                 path: dp.path.clone(),
@@ -657,6 +660,11 @@ fn write_in(
             if n > 0 {
                 let version = next_version(c, id, current.as_ref().map_or(0, |d| d.version))?;
                 rc.record(id, &dp, Some(version), None, now)?;
+                // A new document at the path starts a new author set.
+                c.execute(
+                    "DELETE FROM doc_authors WHERE artifact_id = ?1 AND path = ?2",
+                    params![id.as_str(), dp.path],
+                )?;
             }
             Ok(Written {
                 path: dp.path.clone(),
@@ -675,6 +683,49 @@ fn write_in(
     }
 }
 
+/// Adds `caller`'s words to the authors of the document at `path` (spec
+/// §8.2, M11): the writer, and for a page's write the page's publisher
+/// (its current version's, now). The set only grows: touching or rewriting
+/// someone else's document never makes it the writer's alone. A document
+/// with no rows is the owner's, so while every author added is the owner
+/// nothing is stored; the first other author makes the owner's authorship
+/// of an existing (`existed`) document explicit before joining it.
+fn add_authors(
+    c: &Connection,
+    id: &ArtifactId,
+    path: &str,
+    caller: &Caller,
+    existed: bool,
+) -> Result<()> {
+    let mut add: Vec<String> = Vec::with_capacity(2);
+    if let Some(t) = caller.person.token() {
+        add.push(t.to_string());
+    }
+    if caller.via_page {
+        add.push(super::threads::page_publisher(c, id.as_str())?);
+    }
+    let rows: bool = c
+        .prepare_cached(
+            "SELECT EXISTS (SELECT 1 FROM doc_authors WHERE artifact_id = ?1 AND path = ?2)",
+        )?
+        .query_row(params![id.as_str(), path], |r| r.get(0))?;
+    if !rows {
+        if add.iter().all(|a| a == OWNER) {
+            return Ok(());
+        }
+        if existed {
+            add.insert(0, OWNER.to_string());
+        }
+    }
+    let mut stmt = c.prepare_cached(
+        "INSERT OR IGNORE INTO doc_authors (artifact_id, path, author) VALUES (?1, ?2, ?3)",
+    )?;
+    for a in add {
+        stmt.execute(params![id.as_str(), path, a])?;
+    }
+    Ok(())
+}
+
 /// `patch` merged into the document at `path`; `invalid_argument` when it
 /// does not exist (an update never creates).
 fn update_body(path: &str, cur: Option<&Doc>, patch: Value) -> Result<Option<Value>> {
@@ -688,6 +739,22 @@ impl Store {
     /// `NotFound` when the artifact is missing or deleted.
     pub fn doc_declared(&self, id: &ArtifactId) -> Result<bool> {
         self.with_read(|c| Ok(caps_in(c, id)?.get("db").is_some()))
+    }
+
+    /// The authors of the document at `path` (spec §8.2): every writer
+    /// since it was created, in the order they first wrote; the owner when
+    /// none is stored (or the document does not exist).
+    pub fn doc_authors(&self, id: &ArtifactId, path: &str) -> Result<Vec<Author>> {
+        let dp = doc_path(path)?;
+        self.with_read(|c| {
+            let mut stmt = c.prepare_cached(
+                "SELECT author FROM doc_authors WHERE artifact_id = ?1 AND path = ?2 ORDER BY rowid",
+            )?;
+            let tokens = stmt
+                .query_map(params![id.as_str(), dp.path], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(authors_of_doc(&tokens))
+        })
     }
 
     /// The document at `path`, or `None` when it is absent or `caller` may not read it.
@@ -1111,10 +1178,7 @@ mod tests {
     const B: &str = "u_00000000000000000000bb";
 
     fn who(level: Level, viewer: Option<&str>) -> Caller {
-        Caller {
-            level,
-            viewer: viewer.map(str::to_string),
-        }
+        Caller::new(level, viewer.map(str::to_string))
     }
     fn admin() -> Caller {
         who(Level::Admin, None)

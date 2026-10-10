@@ -313,11 +313,28 @@ fn row_to_comment(r: &Row<'_>) -> rusqlite::Result<Comment> {
         via_page: r.get::<_, i64>("via_page")? != 0,
         body: r.get("body")?,
         created_at: r.get("created_at")?,
+        page_person: r.get("page_person")?,
+        agent_person: r.get("agent_person")?,
     })
 }
 
+/// The publisher of artifact `aid`'s current version as a page's write
+/// records it (`comments.page_person`, `doc_authors`): their public ID, or
+/// `*owner` (spec §8.2).
+pub(crate) fn page_publisher(c: &Connection, aid: &str) -> Result<String> {
+    Ok(c.prepare_cached(
+        "SELECT v.person FROM artifacts a JOIN versions v ON v.artifact_id = a.id AND v.n = a.current_version
+         WHERE a.id = ?1",
+    )?
+    .query_row(params![aid], |r| r.get::<_, Option<String>>(0))
+    .optional()?
+    .flatten()
+    .unwrap_or_else(|| crate::store::approvals::OWNER.to_string()))
+}
+
 /// Comments with their author's session harness; callers append `WHERE ...`.
-const COMMENT_SELECT: &str = "SELECT c.id, c.thread_id, c.author_kind, c.author_name, c.author_public_id, s.harness AS via_harness, c.via_page, c.body, c.created_at
+const COMMENT_SELECT: &str = "SELECT c.id, c.thread_id, c.author_kind, c.author_name, c.author_public_id, s.harness AS via_harness, c.via_page, c.body, c.created_at,
+        c.page_person, s.person AS agent_person
      FROM comments c LEFT JOIN sessions s ON s.id = c.via_session_id";
 
 fn load_comments(c: &Connection, thread_id: &str) -> Result<Vec<Comment>> {
@@ -330,7 +347,8 @@ fn load_comments(c: &Connection, thread_id: &str) -> Result<Vec<Comment>> {
 }
 
 /// The comments of each of `thread_ids`, oldest first, by thread ID.
-pub(crate) const COMMENTS_OF_MANY: &str = "SELECT c.id, c.thread_id, c.author_kind, c.author_name, c.author_public_id, s.harness AS via_harness, c.via_page, c.body, c.created_at
+pub(crate) const COMMENTS_OF_MANY: &str = "SELECT c.id, c.thread_id, c.author_kind, c.author_name, c.author_public_id, s.harness AS via_harness, c.via_page, c.body, c.created_at,
+        c.page_person, s.person AS agent_person
      FROM json_each(?1) j CROSS JOIN comments c ON c.thread_id = j.value
      LEFT JOIN sessions s ON s.id = c.via_session_id
      ORDER BY c.thread_id, c.created_at, c.id";
@@ -571,10 +589,16 @@ impl Store {
                 params![tid, id.as_str(), t.version_n, anchor_json, t.clip.is_some(), now],
             )?;
             let cid = new_ulid();
+            // A page's comment also counts the page's publisher, fixed now (M11).
+            let page_person = if t.via_page {
+                Some(page_publisher(tx, id.as_str())?)
+            } else {
+                None
+            };
             tx.execute(
-                "INSERT INTO comments (id, thread_id, author_kind, author_name, author_public_id, via_session_id, via_page, body, created_at)
-                 VALUES (?1, ?2, 'viewer', ?3, ?4, NULL, ?5, ?6, ?7)",
-                params![cid, tid, t.author_name, t.author_public_id, t.via_page, t.body, now],
+                "INSERT INTO comments (id, thread_id, author_kind, author_name, author_public_id, via_session_id, via_page, body, created_at, page_person)
+                 VALUES (?1, ?2, 'viewer', ?3, ?4, NULL, ?5, ?6, ?7, ?8)",
+                params![cid, tid, t.author_name, t.author_public_id, t.via_page, t.body, now, page_person],
             )?;
             insert_mentions(tx, &cid, &t.body)?;
             let (live_path, after) = then(tx, &tid)?;
@@ -599,6 +623,8 @@ impl Store {
                 via_page: t.via_page,
                 body: t.body.clone(),
                 created_at: now.clone(),
+                page_person,
+                agent_person: None,
             };
             self.record_audit(tx, ctx, comment_record(id.as_str(), &first))?;
             for rec in after {
@@ -681,19 +707,32 @@ impl Store {
             via_page: c.via_page && c.author_kind == AUTHOR_VIEWER,
             body: c.body,
             created_at: self.now(),
+            page_person: None,
+            agent_person: None,
         };
         self.with_tx(|tx| {
             let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
+            // A page's comment also counts the page's publisher, fixed now (M11).
+            comment.page_person = if comment.via_page {
+                Some(page_publisher(tx, &t.artifact_id)?)
+            } else {
+                None
+            };
             tx.execute(
-                "INSERT INTO comments (id, thread_id, author_kind, author_name, author_public_id, via_session_id, via_page, body, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![comment.id, comment.thread_id, comment.author_kind, comment.author_name, comment.author_public_id, c.via_session_id, comment.via_page, comment.body, comment.created_at],
+                "INSERT INTO comments (id, thread_id, author_kind, author_name, author_public_id, via_session_id, via_page, body, created_at, page_person)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![comment.id, comment.thread_id, comment.author_kind, comment.author_name, comment.author_public_id, c.via_session_id, comment.via_page, comment.body, comment.created_at, comment.page_person],
             )?;
-            comment.via_harness = match &c.via_session_id {
+            (comment.via_harness, comment.agent_person) = match &c.via_session_id {
                 Some(sid) => tx
-                    .query_row("SELECT harness FROM sessions WHERE id = ?1", params![sid], |r| r.get(0))
-                    .optional()?,
-                None => None,
+                    .query_row(
+                        "SELECT harness, person FROM sessions WHERE id = ?1",
+                        params![sid],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?
+                    .map_or((None, None), |(h, p)| (Some(h), p)),
+                None => (None, None),
             };
             if comment.author_kind == AUTHOR_AGENT {
                 super::inbox::note_reply(

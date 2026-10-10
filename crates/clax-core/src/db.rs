@@ -3,6 +3,7 @@
 //! Task 5), "PATH GRAMMAR" and "ACCESS RULES"). Evaluation is pure: the store loads the artifact's
 //! declaration on every call and asks [`Rules::allows`].
 
+use crate::visibility::Author;
 use crate::{CoreError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -60,11 +61,38 @@ pub enum Op {
     Write,
 }
 
-/// Who is calling: their level and, for a browser viewer, their public ID.
+/// Who is calling: their level and, for a browser viewer, their public ID;
+/// and whose words their writes put in a document (spec
+/// 2026-10-08-multi-agent-multi-person §8.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Caller {
     pub level: Level,
     pub viewer: Option<String>,
+    /// The writer, added to a document's authors by every write: the owner
+    /// (the owner's browsers and agents), a person or viewer by public ID,
+    /// or [`Author::Unconnected`] for an anonymous caller.
+    pub person: Author,
+    /// A page writes through the `db` capability in a browser: the page's
+    /// publisher (its current version's, at the write) is added too.
+    pub via_page: bool,
+}
+
+impl Caller {
+    /// A caller at `level` as `viewer`, not a page, whose writes are its
+    /// viewer's, else the owner's at [`Level::Owner`], else anonymous.
+    pub fn new(level: Level, viewer: Option<String>) -> Caller {
+        let person = match (&viewer, level) {
+            (Some(p), _) => Author::Person(p.clone()),
+            (None, Level::Owner) => Author::Owner,
+            (None, _) => Author::Unconnected,
+        };
+        Caller {
+            level,
+            viewer,
+            person,
+            via_page: false,
+        }
+    }
 }
 
 /// A validated document path and its parts.
@@ -429,10 +457,7 @@ mod tests {
     use serde_json::json;
 
     fn caller(level: Level, viewer: Option<&str>) -> Caller {
-        Caller {
-            level,
-            viewer: viewer.map(str::to_string),
-        }
+        Caller::new(level, viewer.map(str::to_string))
     }
     fn code(e: CoreError) -> &'static str {
         match e {

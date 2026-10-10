@@ -5,8 +5,12 @@ use super::changelog::{fill_addresses, link_version};
 use super::live::{LivePage, live_page_of_conn};
 use crate::audit::{AuditCtx, AuditKind, AuditRecord, content_manifest_sha256, sha256_hex};
 use crate::live::KIND_LIVE;
-use crate::model::{Artifact, CONTRACT_VERSION, FileMeta, Version};
+use crate::model::{
+    Artifact, ArtifactAuthors, CONTRACT_VERSION, FileMeta, Version, VersionAuthors,
+};
 use crate::publish::{FileChange, INDEX, ValidatedPublish};
+use crate::store::approvals::OWNER;
+use crate::visibility::{Author, file_authors};
 use crate::{ArtifactId, CoreError, Result, new_ulid};
 use rusqlite::{OptionalExtension, Row, params};
 use std::collections::BTreeMap;
@@ -157,7 +161,27 @@ pub(super) fn row_to_artifact(r: &Row<'_>) -> rusqlite::Result<Result<Artifact>>
         contract_version: r.get("contract_version")?,
         owner_session_id: r.get("owner_session_id")?,
         kind: r.get("kind")?,
+        authors: ArtifactAuthors {
+            creator: r.get("person")?,
+            current: current_authors(r.get::<_, Option<String>>("current_authors")?.as_deref()),
+        },
     }))
+}
+
+/// The current version's `[person, by_page, page_person]`, as
+/// [`SELECT`]'s `current_authors` holds it (none before version 1).
+fn current_authors(json: Option<&str>) -> VersionAuthors {
+    let v: Option<(Option<String>, i64, Option<String>)> =
+        json.and_then(|j| serde_json::from_str(j).ok());
+    match v {
+        Some((person, by_page, page_person)) => VersionAuthors {
+            person,
+            by_page: by_page != 0,
+            page_person,
+            files: None,
+        },
+        None => VersionAuthors::default(),
+    }
 }
 
 /// Keeps the readable rows, logging and dropping the corrupt ones.
@@ -181,7 +205,10 @@ fn skip_corrupt<T>(rows: Vec<Result<T>>) -> Result<Vec<T>> {
 
 pub(super) const SELECT: &str =
     "SELECT id, title, description, icon, created_at, updated_at, current_version,
-    owner_session_id, pinned, capabilities_json, contract_version, kind FROM artifacts";
+    owner_session_id, pinned, capabilities_json, contract_version, kind, person,
+    (SELECT json_array(v.person, v.by_page, v.page_person) FROM versions v
+     WHERE v.artifact_id = artifacts.id AND v.n = artifacts.current_version) AS current_authors
+    FROM artifacts";
 
 /// The live artifact `id` (not deleted, at least one version) on `c`, or `None`.
 pub(crate) fn live_artifact_in(c: &rusqlite::Connection, id: &str) -> Result<Option<Artifact>> {
@@ -315,6 +342,10 @@ impl Store {
             self.record_audit(tx, ctx, delete_record(&now, id.as_str(), &title, current))?;
             tx.execute(
                 "DELETE FROM docs WHERE artifact_id = ?1",
+                params![id.as_str()],
+            )?;
+            tx.execute(
+                "DELETE FROM doc_authors WHERE artifact_id = ?1",
                 params![id.as_str()],
             )?;
             tx.execute(
@@ -577,6 +608,7 @@ impl Store {
                             "DELETE FROM threads WHERE artifact_id = ?1",
                             "DELETE FROM watches WHERE artifact_id = ?1",
                             "DELETE FROM docs WHERE artifact_id = ?1",
+                            "DELETE FROM doc_authors WHERE artifact_id = ?1",
                             "DELETE FROM leases WHERE artifact_id = ?1",
                         ] {
                             tx.execute(sql, params![row.artifact_id])?;
@@ -664,6 +696,13 @@ pub(super) fn row_to_version(r: &Row<'_>) -> rusqlite::Result<Result<Version>> {
         Ok(f) => f,
         Err(e) => return Ok(Err(e)),
     };
+    let file_authors = match r.get::<_, Option<String>>("file_authors_json")? {
+        None => None,
+        Some(_) => match json_column(r, "file_authors_json", &artifact_id, Some(n))? {
+            Ok(f) => Some(f),
+            Err(e) => return Ok(Err(e)),
+        },
+    };
     Ok(Ok(Version {
         artifact_id,
         n,
@@ -676,14 +715,93 @@ pub(super) fn row_to_version(r: &Row<'_>) -> rusqlite::Result<Result<Version>> {
         agent: r.get("agent")?,
         agent_harness: r.get("agent_harness")?,
         content_sha256: r.get("content_sha256")?,
+        authors: VersionAuthors {
+            person: r.get("person")?,
+            by_page: r.get::<_, i64>("by_page")? != 0,
+            page_person: r.get("page_person")?,
+            files: file_authors,
+        },
     }))
 }
 
 pub(super) const SELECT_VERSION: &str =
     "SELECT artifact_id, n, label, created_at, session_id, files_json, note, content_sha256,
+        person, by_page, page_person, file_authors_json,
         (SELECT agent_handle FROM sessions s WHERE s.id = versions.session_id) AS agent,
         (SELECT harness FROM sessions s WHERE s.id = versions.session_id) AS agent_harness
      FROM versions";
+
+/// The authorship of version `expected + 1` of `aid`, published by `p`
+/// from `session_id` with `files`: its publisher (`p.person`, else the
+/// session's person), for a page's publish the previous version's
+/// publisher, and each file's authors: a file `p` writes is the
+/// publisher's (and that page publisher's); a file carried forward keeps
+/// the previous version's authors of it. `files` is `None` when every file
+/// is the owner's alone.
+fn version_authors(
+    tx: &rusqlite::Transaction<'_>,
+    aid: &str,
+    expected: u32,
+    p: &ValidatedPublish,
+    session_id: Option<&str>,
+    files: &BTreeMap<String, FileMeta>,
+) -> Result<VersionAuthors> {
+    let person: Option<String> = match &p.person {
+        Some(person) => Some(person.clone()),
+        None => tx
+            .query_row(
+                "SELECT person FROM sessions WHERE id = ?1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten(),
+    };
+    let prev = if expected == 0 {
+        None
+    } else {
+        tx.query_row(
+            &format!("{SELECT_VERSION} WHERE artifact_id = ?1 AND n = ?2"),
+            params![aid, expected],
+            row_to_version,
+        )
+        .optional()?
+        .transpose()?
+    };
+    let page_person = if p.by_page {
+        prev.as_ref().and_then(|v| v.authors.person.clone())
+    } else {
+        None
+    };
+    let mut written = vec![Author::of_token(person.as_deref())];
+    if p.by_page && !written.contains(&Author::of_token(page_person.as_deref())) {
+        written.push(Author::of_token(page_person.as_deref()));
+    }
+    let mut map: BTreeMap<String, Vec<Option<String>>> = BTreeMap::new();
+    for path in files.keys() {
+        let carried = !matches!(p.files.get(path), Some(FileChange::Put(_)));
+        let authors = match (&prev, carried) {
+            (Some(v), true) => file_authors(&v.authors, path),
+            _ => written.clone(),
+        };
+        map.insert(
+            path.clone(),
+            authors
+                .iter()
+                .map(|a| a.token().map(str::to_string))
+                .collect(),
+        );
+    }
+    let owners_alone = map
+        .values()
+        .all(|a| a.iter().all(|t| t.as_deref() == Some(OWNER)));
+    Ok(VersionAuthors {
+        person,
+        by_page: p.by_page,
+        page_person,
+        files: (!owners_alone).then_some(map),
+    })
+}
 
 impl Store {
     /// Creates an artifact and writes its version 1. `p.files` are all stored;
@@ -872,14 +990,13 @@ impl Store {
                 return Err(CoreError::Conflict { current });
             }
             // The publisher's person; a page's own version also keeps the
-            // previous version's publisher, fixed now (spec §5.1, M11).
+            // previous version's publisher, fixed now; and each file's
+            // authors (spec §5.1, M11).
+            let authors = version_authors(tx, id.as_str(), expected, p, session_id, &files)?;
             tx.execute(
                 "INSERT INTO versions (artifact_id, n, label, created_at, session_id, files_json, note,
-                    content_sha256, person, by_page, page_person)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
-                         COALESCE(?9, (SELECT person FROM sessions WHERE id = ?5)), ?10,
-                         CASE WHEN ?10 THEN (SELECT person FROM versions
-                                             WHERE artifact_id = ?1 AND n = ?2 - 1) END)",
+                    content_sha256, person, by_page, page_person, file_authors_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     id.as_str(),
                     n,
@@ -889,8 +1006,13 @@ impl Store {
                     files_json,
                     p.note,
                     content_sha256,
-                    p.person,
-                    p.by_page
+                    authors.person,
+                    p.by_page,
+                    authors.page_person,
+                    authors
+                        .files
+                        .as_ref()
+                        .map(|f| serde_json::to_string(f).expect("serialisable map"))
                 ],
             )?;
             link_version(tx, id.as_str(), n, p, &self.now())?;
