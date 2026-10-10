@@ -114,7 +114,7 @@ async function quietPaint(browser: Browser, base: string, id: string, mode: Fram
     const first = await ctx.newPage();
     await first.goto(`${base}/a/${id}`);
     await contentFrame(first, id, 1);
-    await first.getByRole("button", { name: "Comment" }).waitFor();
+    await first.getByRole("button", { name: "Comment", exact: true }).waitFor();
     await first.close();
 
     const quiet = await ctx.newPage();
@@ -146,7 +146,7 @@ async function coldLatency(browser: Browser, base: string, id: string, mode: Fra
     const first = await ctx.newPage();
     await first.goto(`${base}/a/${id}`);
     await contentFrame(first, id, 1);
-    await first.getByRole("button", { name: "Comment" }).waitFor();
+    await first.getByRole("button", { name: "Comment", exact: true }).waitFor();
     await first.close();
 
     const page = await ctx.newPage();
@@ -160,7 +160,7 @@ async function coldLatency(browser: Browser, base: string, id: string, mode: Fra
     const frame = await contentFrame(page, id, 1);
     // Clicked once the page has parsed, so the bridge has asked for the part.
     await poll(() => frame.evaluate(() => document.readyState !== "loading" ? true : null), "the frame's parse");
-    const comment = page.getByRole("button", { name: "Comment", disabled: false });
+    const comment = page.getByRole("button", { name: "Comment", exact: true, disabled: false });
     await comment.click({ force: true });
     release();
     const click = await poll(() => page.evaluate(() => (window as unknown as { claxPerf?: Rec }).claxPerf?.click ?? null), "the click on Comment");
@@ -183,7 +183,7 @@ async function sample(browser: Browser, base: string, port: string, id: string, 
     const first = await ctx.newPage();
     await first.goto(`${base}/a/${id}`);
     await contentFrame(first, id, 1);
-    await first.getByRole("button", { name: "Comment" }).waitFor();
+    await first.getByRole("button", { name: "Comment", exact: true }).waitFor();
     await first.close();
 
     const page = await ctx.newPage();
@@ -193,7 +193,7 @@ async function sample(browser: Browser, base: string, port: string, id: string, 
     // which adds about 46 ms of Playwright to the app's time. `force` skips
     // those checks but still sends real input through Chromium, so the shell
     // sees a trusted click, as a person's; `dispatchEvent` would be synthetic.
-    const comment = page.getByRole("button", { name: "Comment", disabled: false });
+    const comment = page.getByRole("button", { name: "Comment", exact: true, disabled: false });
     await comment.waitFor({ state: "attached" });
     await comment.click({ force: true });
     const frame = await contentFrame(page, id, 1);
