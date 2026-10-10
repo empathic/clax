@@ -118,13 +118,6 @@ export type ViewState = {
   sampleCalls: { n: number; cap: number | null } | null;
 };
 
-/** The caller the daemon fixes for a stream this viewer opens, as a key:
- * the viewer's public ID and whether it has a name (a named viewer is at
- * `interact`, an unnamed one at `view`); "" for no viewer. */
-export function streamCaller(v: Viewer | null): string {
-  return v ? `${v.public_id}\n${v.display_name != null}` : "";
-}
-
 /** The artifact is loaded and the frame mode decided: the islands show. */
 export function viewReady(s: ViewState): s is ViewState & { data: Loaded } {
   return !s.error && !!s.data && s.origin !== undefined;
@@ -1286,25 +1279,10 @@ export class ArtifactController {
     };
     // The daemon reads the viewer cookie when the stream opens (its level for
     // `doc` events is fixed then), so open it once the lookup has set the
-    // cookie, and reopen when a later lookup or a rename changes the caller
-    // the daemon sees: another viewer, or one named or unnamed. Another name
-    // for a named viewer is the same caller, and so is every announcement of
-    // one change after the first (a rename is announced by its request and
-    // by the presence event it causes).
-    let openedAs: string | null = null;
-    const first = (v?: Viewer) => {
-      if (!this.live || this.stream) return;
-      openedAs = streamCaller(v ?? null);
-      void open(false);
-    };
-    void getViewer().then(first, () => first());
-    this.life.defer(onViewer(v => {
-      if (!this.live || !this.stream) return;
-      const caller = streamCaller(v);
-      if (caller === openedAs) return;
-      openedAs = caller;
-      void open(true);
-    }));
+    // cookie, and reopen when a later lookup or a rename changes the viewer.
+    const first = () => { if (this.live && !this.stream) void open(false); };
+    void getViewer().then(first, first);
+    this.life.defer(onViewer(() => { if (this.live && this.stream) void open(true); }));
   }
 
   /** The `docs` topic, once the stream is open, for a page that declares `db`. */

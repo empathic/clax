@@ -8,7 +8,7 @@ import { ApiError, getArtifact } from "../api";
 import type { ArtifactEvent } from "../events";
 import { nav } from "../nav";
 import { type StreamEvent, pageStream } from "../stream";
-import { type Thread, getViewer, renamedViewer, upsert } from "../threads";
+import { type Thread, type Viewer, getViewer, renamedViewer, upsert } from "../threads";
 import type { ArtifactController } from "./artifact-controller";
 import { holdKeysAcrossLoad } from "./keys";
 import { type ThreadDelta, applyPresence, applyThread } from "./deltas";
@@ -38,8 +38,19 @@ async function getThread(aid: string, tid: string): Promise<Thread> {
 
 const DOCS_EVENTS = new Set(["doc", "ready", "resync", "stream_down", "stream_up"]);
 
-/** Opens a new stream for every tab: the viewer changed. */
-export const reconnect = () => pageStream().reconnect();
+/** The caller the page's stream was opened or last reopened as. */
+let streamCaller: string | undefined;
+/** The caller the daemon fixes for a stream when it opens: the viewer, and
+ * whether it is named (a named viewer is at `interact`, an unnamed one at
+ * `view`). */
+const callerOf = (v: Viewer) => v.public_id + (v.display_name != null);
+
+/** Opens a new stream for every tab when the viewer changed the caller the
+ * daemon sees: another viewer, or one named or unnamed. Another name for a
+ * named viewer is the same caller, and so is every announcement of one
+ * change after the first (a rename is announced by its request and by the
+ * presence event it causes). */
+export const reconnect = () => void getViewer().then(v => { if (streamCaller !== (streamCaller = callerOf(v))) pageStream().reconnect(); }, () => {});
 
 export class ArtifactStream {
   private readonly main: () => void;
@@ -49,6 +60,8 @@ export class ArtifactStream {
 
   constructor(private readonly id: string, private readonly v: ArtifactStreamView) {
     this.main = pageStream().watch([`artifact:${id}`, `presence:${id}`, `working:${id}`], e => this.on(e));
+    // The stream opens as the viewer looked up by now (the view opens it once the lookup is done).
+    void getViewer().then(me => { streamCaller ??= callerOf(me); }, () => {});
     void import("./artifact-questions").then(m => { if (!this.stopped) this.questions = m.artifactQuestions(id); }, () => {});
   }
 

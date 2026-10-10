@@ -17,9 +17,13 @@ const delta = (status: "open" | "resolved", count: number, last: string) =>
 let answers: ((t: unknown) => void)[] = [];
 beforeEach(() => {
   answers = [];
-  vi.stubGlobal("fetch", vi.fn(() => new Promise(resolve => {
-    answers.push(thread => resolve(new Response(JSON.stringify({ thread }), { status: 200 })));
-  })));
+  // The viewer lookup (the stream notes the caller it opens as) answers at
+  // once; each thread fetch waits for the test.
+  vi.stubGlobal("fetch", vi.fn((url: string) => url === "/api/token" ? Promise.resolve(new Response(JSON.stringify({ token: "tk" })))
+    : url === "/api/viewers/me" ? Promise.resolve(new Response(JSON.stringify({ viewer: { public_id: "u_1", display_name: null, created_at: "x" } })))
+    : new Promise(resolve => {
+      answers.push(thread => resolve(new Response(JSON.stringify({ thread }), { status: 200 })));
+    })));
 });
 afterEach(() => vi.unstubAllGlobals());
 
