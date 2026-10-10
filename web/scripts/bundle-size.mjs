@@ -28,7 +28,13 @@ import pako from "pako";
 const dist = new URL("../dist/", import.meta.url);
 const budgetFile = new URL("../perf/bundle-budget.json", import.meta.url);
 const read = p => readFileSync(new URL(p, dist));
-const gz = p => pako.gzip(read(p), { level: 9 }).length;
+// Every chunk's file name carries an 8-character hash of its content, and an
+// entry names its lazy chunks: a change to a lazy chunk alone would move the
+// entry's gzip size by a few bytes either way. Each name's hash is replaced by
+// a fixed placeholder of the same length before measuring, so an entry's size
+// moves only with its own code.
+const unhashed = b => Buffer.from(b.toString("latin1").replace(/-[A-Za-z0-9_-]{8}\.(js|css)\b/g, "-________.$1"), "latin1");
+const gz = p => pako.gzip(unhashed(read(p)), { level: 9 }).length;
 const manifest = JSON.parse(read(".vite/manifest.json"));
 
 function closure(key, seen = new Set()) {
