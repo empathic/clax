@@ -29,6 +29,7 @@ pub type Slot = Arc<tokio::sync::Mutex<Option<Calibration>>>;
 /// itself is admitted: the token narrowed with `?as_level=` (as an agent's
 /// db tools narrow it) is refused with 403.
 pub async fn calibrate(
+    _d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     State(s): State<AppState>,
     RawQuery(q): RawQuery,

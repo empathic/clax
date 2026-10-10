@@ -155,7 +155,10 @@ fn entry(req: &HeaderMap, name: &str) -> Result<Response, ApiError> {
 }
 
 /// `/`: the gallery.
-pub async fn gallery_page(req: HeaderMap) -> Result<Response, ApiError> {
+pub async fn gallery_page(
+    _d: crate::agent::DeniedToGrants,
+    req: HeaderMap,
+) -> Result<Response, ApiError> {
     entry(&req, "index.html")
 }
 
@@ -175,6 +178,7 @@ pub async fn gallery_page(req: HeaderMap) -> Result<Response, ApiError> {
 /// bytes sent, so a revalidation answers `304` only for the same bytes.
 pub async fn artifact_page(
     axum::extract::State(s): axum::extract::State<crate::state::AppState>,
+    _d: crate::agent::DeniedToGrants,
     uri: axum::http::Uri,
     extensions: axum::http::Extensions,
     req: HeaderMap,
@@ -303,6 +307,7 @@ const CONTRACT_FILES: &[(&str, &str)] = &[
 /// definitions, and `contract/clax-extensions.d.ts` Clax's additions to
 /// them, as plain text.
 pub async fn static_file(
+    _d: crate::agent::DeniedToGrants,
     p: Result<Path<String>, PathRejection>,
     RawQuery(query): RawQuery,
     req: HeaderMap,

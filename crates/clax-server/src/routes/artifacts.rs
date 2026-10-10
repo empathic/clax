@@ -1,8 +1,7 @@
 //! REST routes for artifacts and versions.
 
 use crate::agent::{Agent, ArtifactsList, TokenOrAgent};
-use crate::auth::RequireToken;
-use crate::auth::has_token;
+use crate::auth::Caller;
 use crate::error::ApiError;
 use crate::state::AppState;
 use axum::Json;
@@ -258,6 +257,13 @@ pub(crate) fn live_part(st: &Store, a: &Artifact) -> clax_core::Result<Option<Li
     }))
 }
 
+/// Whether `c` sees session IDs: the owner and the owner's agents. Anyone
+/// else (a viewer, a person's agent) gets the artifact without them
+/// ([`strip_sessions`]).
+pub(crate) fn sees_sessions(c: &Caller) -> bool {
+    matches!(c, Caller::Owner { .. } | Caller::OwnerAgent { .. })
+}
+
 /// Leaves out the session IDs a token-less caller must not see (spec §14):
 /// the artifact's `owner_session_id` and each version's `session_id`.
 pub(crate) fn strip_sessions(v: &mut Value) {
@@ -301,7 +307,7 @@ pub struct ListQuery {
 /// ([`crate::live::sees_live_pages`]).
 pub async fn list(
     State(s): State<AppState>,
-    _a: Agent<ArtifactsList>,
+    a: Agent<ArtifactsList>,
     extensions: axum::http::Extensions,
     headers: HeaderMap,
     q: Result<Query<ListQuery>, QueryRejection>,
@@ -412,7 +418,7 @@ pub async fn list(
         }
     };
     let mut v = json!({"artifacts": artifacts});
-    if !has_token(&headers, &s.token) {
+    if !sees_sessions(&a.caller) {
         strip_sessions(&mut v);
     }
     Ok(Json(v))
@@ -421,7 +427,7 @@ pub async fn list(
 /// Creates an artifact. The body must carry a non-blank `title`.
 pub async fn create(
     State(s): State<AppState>,
-    _t: RequireToken,
+    TokenOrAgent(a): TokenOrAgent<crate::agent::ArtifactsCreate>,
     audit: AuditCtx,
     headers: HeaderMap,
     req: Result<JsonBytes, JsonRejection>,
@@ -433,11 +439,12 @@ pub async fn create(
     require_title(p.title.as_deref())?;
     let truncated = p.note_truncated;
     let session = session_header(&headers)?;
+    let grant = a.grant().map(str::to_string);
     let events = s.events.clone();
     let ctx = s.feedback_ctx();
     let (artifact, version) = s
         .store_call(move |st| {
-            let session = publishing_session(st, &session, None)?;
+            let session = publishing_session(st, &session, grant.as_deref())?;
             let (artifact, version) = st.create_artifact(&audit, p, session.as_deref())?;
             if let Some(sid) = &session {
                 let aid = ArtifactId::parse(&artifact.id)?;
@@ -471,6 +478,7 @@ pub async fn create(
 /// private to the cookie.
 pub async fn get(
     State(s): State<AppState>,
+    a: Agent<crate::agent::ArtifactsGet>,
     extensions: axum::http::Extensions,
     headers: HeaderMap,
     aid: Result<Path<String>, PathRejection>,
@@ -503,7 +511,7 @@ pub async fn get(
             Ok(v)
         })
         .await?;
-    if !has_token(&headers, &s.token) {
+    if !sees_sessions(&a.caller) {
         strip_sessions(&mut v);
     }
     if has_viewer {
@@ -536,6 +544,7 @@ pub struct PatchBody {
 /// here, away or recently gone (spec §10, "Presence"), never a cookie.
 pub async fn presence(
     State(s): State<AppState>,
+    _a: Agent<crate::agent::Presence>,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(p)?)?;
@@ -551,7 +560,7 @@ pub async fn presence(
 
 pub async fn patch(
     State(s): State<AppState>,
-    _t: RequireToken,
+    _a: TokenOrAgent<crate::agent::ArtifactsPatch>,
     audit: AuditCtx,
     aid: Result<Path<String>, PathRejection>,
     req: Result<Json<PatchBody>, JsonRejection>,
@@ -581,7 +590,7 @@ pub async fn patch(
 
 pub async fn delete(
     State(s): State<AppState>,
-    _t: RequireToken,
+    _a: TokenOrAgent<crate::agent::ArtifactsDelete>,
     audit: AuditCtx,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<StatusCode, ApiError> {
@@ -610,7 +619,7 @@ pub async fn delete(
 /// Every version of the artifact; without the token, no session ID.
 pub async fn list_versions(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    a: Agent<crate::agent::VersionsList>,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
@@ -621,7 +630,7 @@ pub async fn list_versions(
         })
         .await?;
     let mut v = json!({"versions": versions});
-    if !has_token(&headers, &s.token) {
+    if !sees_sessions(&a.caller) {
         strip_sessions(&mut v);
     }
     Ok(Json(v))
@@ -702,7 +711,7 @@ pub async fn publish(
 /// Version `n`; without the token, no session ID.
 pub async fn get_version(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    a: Agent<crate::agent::VersionGet>,
     params: Result<Path<(String, u32)>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let (aid, n) = path(params)?;
@@ -714,7 +723,7 @@ pub async fn get_version(
         })
         .await?;
     let mut v = json!({"version": v});
-    if !has_token(&headers, &s.token) {
+    if !sees_sessions(&a.caller) {
         strip_sessions(&mut v);
     }
     Ok(Json(v))
@@ -722,6 +731,7 @@ pub async fn get_version(
 
 pub async fn files(
     State(s): State<AppState>,
+    _a: Agent<crate::agent::FilesList>,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;

@@ -108,6 +108,7 @@ fn framed_by_shell(
 }
 
 pub async fn redirect_to_slash(
+    _d: crate::agent::DeniedToGrants,
     p: Result<Path<(String, u32)>, PathRejection>,
 ) -> Result<Redirect, ApiError> {
     let (aid, n) = path(p)?;
@@ -117,6 +118,7 @@ pub async fn redirect_to_slash(
 
 pub async fn index(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     origin: Option<Extension<OnArtifactOrigin>>,
     req: HeaderMap,
     p: Result<Path<(String, u32)>, PathRejection>,
@@ -201,6 +203,7 @@ async fn lookup(
 /// is not UTF-8, which is revalidated like every page.
 pub async fn file(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     origin: Option<Extension<OnArtifactOrigin>>,
     req: HeaderMap,
     p: Result<Path<(String, u32, String)>, PathRejection>,
@@ -267,6 +270,7 @@ pub async fn file(
 /// sandbox` because it shares the API's origin.
 pub async fn raw_file(
     State(s): State<AppState>,
+    _a: crate::agent::Agent<crate::agent::FileContent>,
     p: Result<Path<(String, u32, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let (aid, n, rel) = path(p)?;

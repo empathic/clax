@@ -26,6 +26,7 @@ use clax_core::store::viewers::Claim;
 /// the claim retired leaves every presence list and room at once.
 pub async fn token(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     ConnectInfo(Conn { peer: addr, .. }): ConnectInfo<Conn>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {

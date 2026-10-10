@@ -27,6 +27,7 @@ pub struct MintBody {
 /// makes the owner viewer when there is none.
 pub async fn mint(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     b: Result<Json<MintBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -57,7 +58,11 @@ pub async fn mint(
 /// `GET /api/extension` (W): the ID in effect, how many credentials are
 /// live, when one was last used, and the owner viewer (null while there is
 /// none; reading this never makes it).
-pub async fn status(State(s): State<AppState>, _t: RequireToken) -> Result<Json<Value>, ApiError> {
+pub async fn status(
+    State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
+    _t: RequireToken,
+) -> Result<Json<Value>, ApiError> {
     let (live, viewer) = s
         .store_call(|st| Ok((st.live_extension_credentials()?, st.owner()?)))
         .await?;
@@ -72,7 +77,11 @@ pub async fn status(State(s): State<AppState>, _t: RequireToken) -> Result<Json<
 /// `DELETE /api/extension/credentials` (W): revokes every credential and
 /// ends every stream opened with one; `{revoked}` is how many of them were
 /// live.
-pub async fn revoke(State(s): State<AppState>, _t: RequireToken) -> Result<Json<Value>, ApiError> {
+pub async fn revoke(
+    State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
+    _t: RequireToken,
+) -> Result<Json<Value>, ApiError> {
     let creds = s.ext_creds.clone();
     let n = s
         .store_call(move |st| creds.refresh(st, |st| st.revoke_extension_credentials()))

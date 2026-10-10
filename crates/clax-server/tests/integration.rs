@@ -9,6 +9,7 @@ mod api_attention;
 mod api_auth;
 mod api_batch;
 mod api_caching;
+mod api_canary;
 mod api_changelog;
 mod api_content;
 mod api_docs;

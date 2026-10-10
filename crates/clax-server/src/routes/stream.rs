@@ -2,7 +2,6 @@
 //! /api/stream/<id>`: its subscriptions (see [`crate::stream`]).
 
 use super::artifacts::{body, parse_id, path};
-use crate::auth::has_token;
 use crate::error::ApiError;
 use crate::state::AppState;
 use crate::stream::{Conn, MAX_TOPICS, SubError, Topic, parse_last_event_id};
@@ -40,15 +39,19 @@ use std::convert::Infallible;
 /// more, once that credential is revoked or expires.
 pub async fn open(
     State(s): State<AppState>,
+    d: crate::agent::DeniedToGrants,
     who: crate::identity::Identity,
     extensions: axum::http::Extensions,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    // The stream serves people (spec §7.5): an agent reads through the
+    // filtered routes.
+    d.refuse_agents()?;
     let local = crate::live::sees_live_pages(&headers, &extensions, &s.token);
     let credential = extensions
         .get::<crate::extension::ExtensionCredential>()
         .map(|c| c.hash().to_string());
-    let token = token_or_cookie(&headers, &s.token, &who);
+    let token = token_or_cookie(&who);
     let caller = s
         .store_call(move |st| crate::db_caller::caller_of(st, token, &who))
         .await?;
@@ -89,8 +92,8 @@ pub async fn open(
 /// browser does not mark as made from another origin ([`Identity::of`]).
 ///
 /// [`Identity::of`]: crate::identity::Identity::of
-fn token_or_cookie(headers: &HeaderMap, token: &str, who: &crate::identity::Identity) -> bool {
-    has_token(headers, token) || who.events_cookie
+fn token_or_cookie(who: &crate::identity::Identity) -> bool {
+    who.token || who.events_cookie
 }
 
 /// Debug builds only: how many `/api/stream` streams the hub holds
@@ -104,6 +107,7 @@ fn token_or_cookie(headers: &HeaderMap, token: &str, who: &crate::identity::Iden
 #[cfg(debug_assertions)]
 pub async fn open_streams(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: crate::auth::RequireToken,
 ) -> axum::Json<Value> {
     let st = s.stream.stats();
@@ -155,14 +159,15 @@ fn topics(names: &[String]) -> Result<Vec<Topic>, ApiError> {
 /// that is not a live page (`questions` and `inbox` it may take). Refuses a foreign `Origin` like the viewer routes.
 pub async fn update(
     State(s): State<AppState>,
+    d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     who: crate::identity::Identity,
     sees: crate::live::SeesLive,
     via: Option<axum::Extension<crate::extension::ExtensionCredential>>,
     p: Result<Path<String>, PathRejection>,
-    headers: HeaderMap,
     req: Result<Json<UpdateBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
     let id = path(p)?;
     let b = body(req)?;
     if b.subscribe.len() > MAX_TOPICS || b.unsubscribe.len() > MAX_TOPICS {
@@ -207,7 +212,7 @@ pub async fn update(
             "only the owner follows people, invites and grants",
         ));
     }
-    let token = token_or_cookie(&headers, &s.token, &who);
+    let token = token_or_cookie(&who);
     let check = add.clone();
     let caller = s
         .store_call(move |st| {

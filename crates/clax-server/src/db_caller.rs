@@ -8,7 +8,6 @@
 //! for ([`crate::identity`]: the owner's for an owner's browser), whatever the
 //! level.
 
-use crate::auth::has_token;
 use crate::error::ApiError;
 use crate::identity::Identity;
 use crate::state::AppState;
@@ -116,6 +115,12 @@ pub struct CallerParts {
     pub token: bool,
     pub who: Identity,
     pub as_level: Option<Level>,
+    /// A person's agent: its person (`None` for the owner's row) and
+    /// rights, from which its level comes (spec §6.1).
+    pub agent: Option<(Option<String>, std::sync::Arc<clax_core::rights::Rights>)>,
+    /// The request writes (any method but `GET` and `HEAD`): a person's
+    /// agent's level is its rights' for `write`, else for `read`.
+    pub write: bool,
 }
 
 impl FromRequestParts<AppState> for CallerParts {
@@ -142,10 +147,24 @@ impl FromRequestParts<AppState> for CallerParts {
                 ));
             }
         };
+        let who = Identity::from_parts(&parts.headers, &parts.extensions, &state.token);
+        let agent = if who.grant_header {
+            match crate::agent::resolve(state, who.clone(), None).await? {
+                crate::auth::Caller::PersonAgent { person, rights, .. } => Some((person, rights)),
+                _ => return Err(crate::auth::grants_refused()),
+            }
+        } else {
+            None
+        };
         Ok(CallerParts {
-            token: has_token(&parts.headers, &state.token),
-            who: Identity::from_parts(&parts.headers, &parts.extensions, &state.token),
+            token: who.token,
+            who,
             as_level,
+            agent,
+            write: !matches!(
+                parts.method,
+                axum::http::Method::GET | axum::http::Method::HEAD
+            ),
         })
     }
 }
@@ -155,6 +174,11 @@ impl CallerParts {
     /// is no viewer).
     pub fn resolve(&self, st: &Store) -> clax_core::Result<Caller> {
         let base = base_caller(st, self.token, &self.who)?;
+        self.narrowed(base)
+    }
+
+    /// `base` narrowed by `?as_level=`.
+    fn narrowed(&self, base: Caller) -> clax_core::Result<Caller> {
         Ok(Caller {
             level: self.as_level.map_or(base.level, |l| l.min(base.level)),
             viewer: base.viewer,
@@ -167,7 +191,30 @@ impl CallerParts {
     /// does not include `db` (a publish or a metadata edit can drop it); the
     /// token keeps access, so agents can seed data before the page that
     /// reads it is published.
+    ///
+    /// A person's agent's level is its rights' `clax-db` level for the
+    /// request's action at `id` (`view` when none), its viewer its person's
+    /// (the owner's for a grant of the owner's row); it needs the
+    /// declaration as a viewer does.
     pub fn resolve_for(&self, st: &Store, id: &ArtifactId) -> clax_core::Result<Caller> {
+        if let Some((person, rights)) = &self.agent {
+            if !st.doc_declared(id)? {
+                return Err(CoreError::NotDeclared { capability: "db" });
+            }
+            let own = |x: &str| {
+                st.artifact_created_by(x, person.as_deref())
+                    .unwrap_or(false)
+            };
+            let action = if self.write { "write" } else { "read" };
+            let level = rights
+                .db_level(id.as_str(), action, &own)
+                .unwrap_or(Level::View);
+            let viewer = match person {
+                Some(p) => Some(p.clone()),
+                None => st.owner()?.map(|v| v.public_id),
+            };
+            return self.narrowed(Caller { level, viewer });
+        }
         if !self.token && !st.doc_declared(id)? {
             return Err(CoreError::NotDeclared { capability: "db" });
         }
@@ -197,9 +244,10 @@ impl FromRequestParts<AppState> for Subscriber {
         let query_token = query_param(parts, "token")
             .flatten()
             .is_some_and(|v| crate::auth::token_matches(&v, &state.token));
+        let who = Identity::from_parts(&parts.headers, &parts.extensions, &state.token);
         Ok(Subscriber {
-            token: query_token || has_token(&parts.headers, &state.token),
-            who: Identity::from_parts(&parts.headers, &parts.extensions, &state.token),
+            token: query_token || who.token,
+            who,
         })
     }
 }

@@ -2,9 +2,9 @@
 //! the listing, and scope watches on page URLs (`/live-watches`, spec
 //! 2026-10-05 L2).
 
-use super::artifacts::{body, parse_id, path};
+use super::artifacts::{body, path};
 use super::live::{page_url, page_view};
-use crate::agent::TokenOrAgent;
+use crate::agent::{DeniedToGrants, TokenOrAgent};
 use crate::audit::DeferredAudit;
 use crate::auth::RequireToken;
 use crate::error::ApiError;
@@ -31,13 +31,13 @@ struct WatchBody {
 /// agent (audit spec §6.4).
 pub async fn put(
     State(s): State<AppState>,
-    _a: TokenOrAgent<crate::agent::WatchesPut>,
+    TokenOrAgent(a): TokenOrAgent<crate::agent::WatchesPut>,
     audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
     raw: Bytes,
 ) -> Result<Json<Value>, ApiError> {
-    let (sid, aid) = path(p)?;
-    let id = parse_id(&aid)?;
+    let (sid, _) = path(p)?;
+    let id = a.artifact()?;
     let b: WatchBody = if raw.is_empty() {
         WatchBody::default()
     } else {
@@ -61,12 +61,12 @@ pub async fn put(
 /// as the session's agent.
 pub async fn delete(
     State(s): State<AppState>,
-    _a: TokenOrAgent<crate::agent::WatchesDelete>,
+    TokenOrAgent(a): TokenOrAgent<crate::agent::WatchesDelete>,
     audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<StatusCode, ApiError> {
-    let (sid, aid) = path(p)?;
-    let id = parse_id(&aid)?;
+    let (sid, _) = path(p)?;
+    let id = a.artifact()?;
     s.store_call(move |st| {
         let audit = audit.for_session(st, &sid)?;
         st.unwatch(&audit, &sid, &id)
@@ -114,6 +114,7 @@ fn scope_label(origin: &str, path: &str) -> String {
 /// agent (audit spec §6.3, §6.4).
 pub async fn live_put(
     State(s): State<AppState>,
+    _d: DeniedToGrants,
     _t: RequireToken,
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
@@ -186,6 +187,7 @@ pub struct LiveUnwatchQuery {
 /// The watches it stops are recorded as the session's agent.
 pub async fn live_delete(
     State(s): State<AppState>,
+    _d: DeniedToGrants,
     _t: RequireToken,
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,

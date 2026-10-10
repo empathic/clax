@@ -58,6 +58,7 @@ pub struct WriteBody {
 /// 404 with `path` when it is missing or the caller may not read it.
 pub async fn get(
     State(s): State<AppState>,
+    _a: crate::agent::Agent<crate::agent::DocsGet>,
     _o: SameOrigin,
     who: CallerParts,
     p: DocParams,
@@ -111,6 +112,7 @@ pub async fn put(
 /// Merges into the existing document: `{doc}`.
 pub async fn patch(
     State(s): State<AppState>,
+    _a: crate::agent::Agent<crate::agent::DocsPatch>,
     _o: SameOrigin,
     who: CallerParts,
     audit: AuditCtx,
@@ -151,6 +153,7 @@ pub struct DeleteQuery {
 /// Deletes the document: `{deleted}` (`false` when there was none).
 pub async fn delete(
     State(s): State<AppState>,
+    _a: crate::agent::Agent<crate::agent::DocsDelete>,
     _o: SameOrigin,
     who: CallerParts,
     audit: AuditCtx,
@@ -195,6 +198,7 @@ pub struct ListQuery {
 /// of `[field, operator, value]` triples.
 pub async fn list(
     State(s): State<AppState>,
+    _a: crate::agent::Agent<crate::agent::DocsList>,
     _o: SameOrigin,
     who: CallerParts,
     aid: Result<Path<String>, PathRejection>,
@@ -254,6 +258,7 @@ pub struct BatchBody {
 /// Applies up to 50 writes atomically: `{results: [{op, path, version, deleted}]}`.
 pub async fn batch(
     State(s): State<AppState>,
+    _a: crate::agent::Agent<crate::agent::DocsBatch>,
     _o: SameOrigin,
     who: CallerParts,
     audit: AuditCtx,
@@ -328,6 +333,7 @@ pub struct StrReplaceBody {
 /// document.
 pub async fn str_replace(
     State(s): State<AppState>,
+    _a: crate::agent::Agent<crate::agent::DocsStrReplace>,
     _o: SameOrigin,
     who: CallerParts,
     audit: AuditCtx,
@@ -377,6 +383,7 @@ pub struct AcquireBody {
 /// `{acquired, version, expires_at, holder}`.
 pub async fn acquire(
     State(s): State<AppState>,
+    _a: crate::agent::Agent<crate::agent::DocsAcquire>,
     _o: SameOrigin,
     who: CallerParts,
     audit: AuditCtx,

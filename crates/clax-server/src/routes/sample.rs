@@ -9,7 +9,8 @@
 //! route streams `start`, `text`, `tool_call`, and one `done` or `error` over
 //! SSE; closing the stream cancels the call.
 
-use crate::auth::{RequireToken, has_token};
+use crate::agent::DeniedToGrants;
+use crate::auth::RequireToken;
 use crate::error::ApiError;
 use crate::identity::Identity;
 use crate::routes::artifacts::parse_id;
@@ -88,16 +89,16 @@ fn owner_browser(who: Identity) -> Result<String, ApiError> {
 /// caller, and the view's limits. Without the token: never available.
 pub async fn status(
     State(s): State<AppState>,
+    d: DeniedToGrants,
     Path(aid): Path<String>,
     _o: SameOrigin,
-    headers: axum::http::HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&aid)?;
     let canonical = id.as_str().to_string();
     s.store_call(move |st| st.get_artifact(&id))
         .await?
         .ok_or_else(ApiError::not_found)?;
-    if !has_token(&headers, &s.token) {
+    if !d.holds_token() {
         return Ok(Json(
             json!({"available": false, "provider": null, "limits": request::limits_json(false), "calls_today": 0, "daily_call_cap": null}),
         ));
@@ -137,12 +138,15 @@ pub(crate) fn stream_response(
 /// `POST /api/artifacts/{aid}/sample`.
 pub async fn sample(
     State(s): State<AppState>,
+    d: DeniedToGrants,
     Path(aid): Path<String>,
     _o: SameOrigin,
     _t: RequireToken,
     who: Identity,
     body: Result<Json<SampleBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
+    // A page's sampling streams to the person's browser, never an agent.
+    d.refuse_agents()?;
     // `Some` from here on: the per-viewer APIs below take the cookie as an option.
     let cookie = Some(owner_browser(who)?);
     let aid = declared(&s, &aid).await?;
@@ -235,6 +239,7 @@ pub struct ToolResultBody {
 /// `POST /api/artifacts/{aid}/sample/{call}/tool_result`: a page tool's answer.
 pub async fn tool_result(
     State(s): State<AppState>,
+    _d: DeniedToGrants,
     Path((aid, call)): Path<(String, String)>,
     _o: SameOrigin,
     _t: RequireToken,
@@ -270,7 +275,11 @@ pub async fn tool_result(
 
 /// `GET /api/sample` (token): whether this daemon samples, and why not.
 /// Names the key variable, never its value. `clax doctor` reads it.
-pub async fn daemon(State(s): State<AppState>, _t: RequireToken) -> Json<Value> {
+pub async fn daemon(
+    State(s): State<AppState>,
+    _d: DeniedToGrants,
+    _t: RequireToken,
+) -> Json<Value> {
     use crate::sample::OffReason;
     let (reason, detail) = match s.sample.reason() {
         None => (None, None),

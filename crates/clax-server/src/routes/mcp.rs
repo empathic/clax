@@ -19,7 +19,15 @@ use rmcp::transport::streamable_http_server::session::local::LocalSessionManager
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use std::sync::Arc;
 
-async fn require_token(_t: RequireToken, req: Request, next: Next) -> Response {
+/// `/mcp` is the owner's: a person's agent is refused (`DeniedToGrants`),
+/// and the token is required. Its internal client sends the agent-channel
+/// marker, so its tools reach the routes as the owner's agent.
+async fn require_token(
+    _d: crate::agent::DeniedToGrants,
+    _t: RequireToken,
+    req: Request,
+    next: Next,
+) -> Response {
     next.run(req).await
 }
 
