@@ -293,7 +293,9 @@ pub async fn raw_file(
                     return Ok(Err(authors));
                 }
             }
-            Ok(Ok(st.file_path(&id, n, &rel)?.ok_or(CoreError::NotFound)?))
+            Ok(Ok(st
+                .file_path(&id, n, &rel)?
+                .ok_or(CoreError::NotFound)?))
         })
         .await?;
     let (disk, meta) = match found {
