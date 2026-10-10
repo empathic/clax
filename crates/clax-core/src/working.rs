@@ -76,6 +76,10 @@ pub struct WorkingView {
     pub thread_ids: Vec<String>,
     pub started_at: String,
     pub last_heartbeat: String,
+    /// The session the record is of, for the visibility filter (a
+    /// record's message is its session's person's). Never served.
+    #[serde(skip)]
+    pub session_id: String,
 }
 
 /// A record as its session's token holder reads it.
@@ -234,7 +238,7 @@ fn stamp(t: DateTime<Utc>) -> String {
 }
 
 impl Record {
-    fn view(&self) -> WorkingView {
+    fn view(&self, sid: &str) -> WorkingView {
         WorkingView {
             key: self.key.clone(),
             agent: self.agent.clone(),
@@ -243,6 +247,7 @@ impl Record {
             thread_ids: self.threads.clone(),
             started_at: stamp(self.started_at),
             last_heartbeat: stamp(self.heartbeat),
+            session_id: sid.to_string(),
         }
     }
     fn ended(&self, sid: &str, aid: &str) -> Ended {
@@ -390,7 +395,7 @@ impl Working {
 
     fn session_view(sid: &str, aid: &str, r: &Record) -> SessionWorking {
         SessionWorking {
-            view: r.view(),
+            view: r.view(sid),
             session_id: sid.to_string(),
             artifact_id: aid.to_string(),
             expires_at: stamp(r.heartbeat + Duration::seconds(WORKING_TTL_SECS)),
@@ -611,7 +616,7 @@ impl Working {
         let mut v: Vec<_> = map
             .iter()
             .filter(|((_, a), r)| a == aid && self.live(r, now))
-            .map(|(_, r)| (r.started_at, r.view()))
+            .map(|((s, _), r)| (r.started_at, r.view(s)))
             .collect();
         v.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.key.cmp(&a.1.key)));
         v.into_iter().map(|(_, x)| x).collect()
