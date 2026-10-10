@@ -426,3 +426,51 @@ fn scripts_that_run_init_isolate_the_browser_directories() {
         "the scan found the scripts that run clax init"
     );
 }
+
+/// One framed native message.
+fn native_frame(v: &Value) -> Vec<u8> {
+    let b = serde_json::to_vec(v).unwrap();
+    let mut out = (b.len() as u32).to_ne_bytes().to_vec();
+    out.extend(b);
+    out
+}
+
+#[test]
+fn the_installed_launcher_pairs_as_the_owner_under_a_harness_environment() {
+    let e = Env::new();
+    e.cmd(&["extension", "install"]);
+    let home = e.p("ax");
+    let stop = |h: &Path| {
+        let _ = Command::cargo_bin("clax")
+            .unwrap()
+            .env_clear()
+            .env("CLAX_HOME", h)
+            .arg("stop")
+            .output();
+    };
+    struct Stop<'a>(&'a Path, &'a dyn Fn(&Path));
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            (self.1)(self.0)
+        }
+    }
+    let _stop = Stop(&home, &stop);
+    // Chrome runs the launcher; here it inherits an agent's environment,
+    // and the wrapper it execs would mark an agent channel.
+    let out = Command::new(e.p("ax/extension/host/launch.sh"))
+        .env_clear()
+        .env("HOME", e.dir.path())
+        .env("CLAX_BIN", assert_cmd::cargo::cargo_bin("clax"))
+        .env("CLAX_NO_OPEN", "1")
+        .env("CLAUDECODE", "1")
+        .env("CLAX_CHANNEL", "agent")
+        .args(["--port", "0", &e.origin()])
+        .write_stdin(native_frame(&serde_json::json!({"type": "pair", "v": 1})))
+        .output()
+        .unwrap();
+    let stdout = &out.stdout;
+    assert!(stdout.len() > 4, "{}", String::from_utf8_lossy(&out.stderr));
+    let v: Value = serde_json::from_slice(&stdout[4..]).unwrap();
+    assert_eq!(v["type"], "paired", "{v}");
+    assert!(v["credential"].as_str().unwrap().starts_with("cxe_"), "{v}");
+}

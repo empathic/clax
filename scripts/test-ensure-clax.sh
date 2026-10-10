@@ -853,13 +853,13 @@ for args in "list --json" "comments" "--json versions x" "hook --agent claude st
     run exec $args
     case "$OUT" in "channel=agent args: "*) ;; *) ok=0; echo "  exec $args: $OUT" ;; esac
 done
-for args in "serve" "stop" "doctor --agent claude --json" "init --agent claude" "--port 7 serve" "--json stop"; do
+for args in "serve" "stop" "doctor --agent claude --json" "init --agent claude" "--port 7 serve" "--json stop" "native-host chrome-extension://x/"; do
     # shellcheck disable=SC2086
     run exec $args
     case "$OUT" in "channel=none args: "*) ;; *) ok=0; echo "  exec $args: $OUT" ;; esac
 done
-if [ "$ok" = 1 ]; then pass "exec exports CLAX_CHANNEL=agent for every command but serve, stop, doctor and init"
-else fail "exec exports CLAX_CHANNEL=agent for every command but serve, stop, doctor and init"; fi
+if [ "$ok" = 1 ]; then pass "exec exports CLAX_CHANNEL=agent for every command but serve, stop, doctor, init and native-host"
+else fail "exec exports CLAX_CHANNEL=agent for every command but serve, stop, doctor, init and native-host"; fi
 
 if [ ! -e "$TOOLS/offhost.log" ]; then pass "no case asked for a URL off 127.0.0.1"
 else fail "no case asked for a URL off 127.0.0.1 ($(cat "$TOOLS/offhost.log"))"; fi

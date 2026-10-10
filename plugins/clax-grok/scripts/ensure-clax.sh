@@ -9,7 +9,7 @@
 #   ensure-clax.sh exec <args>       run any other clax command
 #   ensure-clax.sh pinned-version    print PINNED_VERSION (empty when none)
 #
-# Every `exec` but of serve, stop, doctor and init exports
+# Every `exec` but of serve, stop, doctor, init and native-host exports
 # CLAX_CHANNEL=agent: the command serves an agent (spec §16).
 #
 # The binary, in this order (PATH is never consulted):
@@ -109,8 +109,9 @@ case "${1:-}" in
         esac
         # Every command a plugin runs serves an agent (spec §16): its
         # requests carry the agent-channel marker. The daemon's own
-        # lifecycle and setup commands (serve, stop, doctor, init) are the
-        # exceptions. The command is the first word after `exec` that is not
+        # lifecycle and setup commands (serve, stop, doctor, init) and the
+        # extension's native host (Chrome runs it for the owner's browser)
+        # are the exceptions. The command is the first word after `exec` that is not
         # an option (`--port` takes a value).
         CLAX_CMD=""
         skip=""
@@ -123,7 +124,7 @@ case "${1:-}" in
             esac
         done
         case "$CLAX_CMD" in
-            serve|stop|doctor|init) ;;
+            serve|stop|doctor|init|native-host) ;;
             *) export CLAX_CHANNEL=agent ;;
         esac
         ;;

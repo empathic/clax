@@ -142,16 +142,19 @@ fn mint_failed(e: anyhow::Error, probe: Option<u16>, daemon_version: &str) -> Ho
 
 /// Ensures a daemon of this version, as `clax mcp` does (discovering it,
 /// replacing an older one or starting one), and mints a credential with the
-/// token.
+/// token, as the owner ([`Client::owner_channel`]): the mint route refuses
+/// agent channels.
 fn pair(cli: &crate::Cli, home: &Home) -> Result<Value, HostError> {
     let port = cli.port_for(home).map_err(|e| HostError {
         code: "daemon_unavailable",
         message: format!("{e:#}"),
     })?;
-    let c = Client::connect_matching_version(home, port).map_err(|e| HostError {
-        code: "daemon_unavailable",
-        message: format!("{e:#}; see {}", home.log_path().display()),
-    })?;
+    let c = Client::connect_matching_version(home, port)
+        .map_err(|e| HostError {
+            code: "daemon_unavailable",
+            message: format!("{e:#}; see {}", home.log_path().display()),
+        })?
+        .owner_channel();
     let mint = c
         .post(
             "/api/extension/credentials",
