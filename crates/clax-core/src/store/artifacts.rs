@@ -1829,7 +1829,16 @@ mod tests {
         let e = store
             .publish_version(DAEMON, &id, publish(puts, Some(1)), None)
             .unwrap_err();
-        assert!(matches!(e, crate::CoreError::Invalid { code: "invalid_path", .. }), "{e:?}");
+        assert!(
+            matches!(
+                e,
+                crate::CoreError::Invalid {
+                    code: "invalid_path",
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
         // Hidden from the publisher, the colliding paths are dropped as a
         // remove would drop them; the rest are carried.
         let mut p = publish(puts, Some(1));
