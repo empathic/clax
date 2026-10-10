@@ -1204,7 +1204,15 @@ mod agents {
 
     /// The route table of spec §7.5 for the routes an agent reaches, copied
     /// here as data: method, path, class, right (type and action).
-    const EXPECTED: &[(&str, &str, Class, Option<(RightType, &str)>)] = {
+    /// A row of the table: method, path, class, right.
+    type Row = (
+        &'static str,
+        &'static str,
+        Class,
+        Option<(RightType, &'static str)>,
+    );
+
+    const EXPECTED: &[Row] = {
         use Class::*;
         use RightType::*;
         &[

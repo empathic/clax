@@ -35,6 +35,7 @@ impl Env {
             "CODEX_THREAD_ID",
             "CODEX_SANDBOX",
             "CODEX_CI",
+            "PI_CODING_AGENT",
         ] {
             c.env_remove(var);
         }
