@@ -40,6 +40,7 @@ mod api_timeout;
 mod api_tool_call_ids;
 mod api_toolpath;
 mod api_viewers;
+mod api_visibility;
 mod api_watches;
 mod api_working;
 mod api_working_auto;

@@ -1486,10 +1486,16 @@ impl TestClient {
             req = req.header("authorization", a);
         }
         let body = c.sent_body.unwrap_or(body);
-        if !body.is_empty() {
+        let headers = c.sent_headers.unwrap_or(c.headers);
+        // JSON unless the call names its own type (a multipart form).
+        if !body.is_empty()
+            && !headers
+                .iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        {
             req = req.header("content-type", "application/json");
         }
-        for (k, v) in c.sent_headers.unwrap_or(c.headers) {
+        for (k, v) in headers {
             req = req.header(k, v);
         }
         req.body(body).send().await.unwrap()

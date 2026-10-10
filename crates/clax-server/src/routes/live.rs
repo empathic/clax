@@ -463,16 +463,9 @@ pub async fn thread(
                 .first()
                 .map(|c| c.body.clone())
                 .unwrap_or_default();
-            let (view, _) = announce_new_thread(
-                st,
-                &ctx,
-                &audit,
-                thread,
-                mention,
-                Some(&named),
-                true,
-                with_path,
-            )?;
+            let (thread, _) =
+                announce_new_thread(st, &ctx, &audit, thread, mention, Some(&named), true)?;
+            let view = thread_view(st, &thread, ctx.codex_push(), with_path)?;
             let page = st.live_page_of(&id)?.ok_or(CoreError::NotFound)?;
             Ok(Answer {
                 made: true,

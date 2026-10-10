@@ -1332,7 +1332,7 @@ async fn the_token_never_names_a_grants_session_on_any_session_route() {
 #[tokio::test]
 async fn the_extractor_refuses_a_persons_agent_on_an_owner_agents_route() {
     use axum::extract::FromRequestParts;
-    use clax_server::agent::{Agent, ThreadsAll, ThreadsList, VerifiedGrant};
+    use clax_server::agent::{Agent, ThreadsAll, VerifiedGrant, VersionsList};
     let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
     let s2 = slot.clone();
     let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), move |st| {
@@ -1358,7 +1358,7 @@ async fn the_extractor_refuses_a_persons_agent_on_an_owner_agents_route() {
         .expect("refused");
     assert_eq!((e.status.as_u16(), e.code), (403, "forbidden"));
     // A route open to grants goes on to its other checks.
-    let e = Agent::<ThreadsList>::from_request_parts(&mut parts(), &state)
+    let e = Agent::<VersionsList>::from_request_parts(&mut parts(), &state)
         .await
         .err()
         .expect("not yet");
