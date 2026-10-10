@@ -342,26 +342,33 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     ctl.dispose();
   });
 
-  it("reopens the stream once per change of the caller the daemon sees, and not for another name or a repeated announcement", async () => {
+  it("asks the hub for a stream opened as each announced viewer's caller", async () => {
+    // A LAN view: no token, so the caller is the viewer and whether it is named.
+    const { ctl, frame } = await started({ lan: true });
+    await streamOf(frame);
+    const { renamedViewer } = await import("../threads");
+    const w = FakeWorker.last!;
+    const said = () => w.msgs.flatMap(m => (m.t === "reconnect" ? [`${m.t} ${m.caller}`] : []));
+    const viewer = (public_id: string, display_name: string | null) => ({ public_id, display_name, created_at: "x" });
+    // Each announcement asks with its caller; the hub reopens once per caller
+    // (stream-hub.test.ts), so a repeat or another name for a named viewer reopens nothing.
+    // The ask reads the viewer when it goes, so each step waits for its own.
+    const asks: string[] = [];
+    for (const [id, name, caller] of [["u_1", "Wren", "u_1true"], ["u_1", "Wren", "u_1true"], ["u_1", "Ada", "u_1true"], ["u_2", "Ada", "u_2true"], ["u_2", null, "u_2false"]] as const) {
+      renamedViewer(viewer(id, name));
+      asks.push(`reconnect ${caller}`);
+      await vi.waitFor(() => expect(said()).toEqual(asks));
+    }
+    ctl.dispose();
+  });
+
+  it("asks as the owner's browser, named or not, once it holds the token", async () => {
     const { ctl, frame } = await started();
     await streamOf(frame);
     const { renamedViewer } = await import("../threads");
     const w = FakeWorker.last!;
-    const reconnects = () => w.msgs.filter(m => m.t === "reconnect").length;
-    const viewer = (public_id: string, display_name: string | null) => ({ public_id, display_name, created_at: "x" });
-    // Each step's reopen is asked for after its announcement's earlier ones,
-    // so a count reached is every reopen asked for so far.
-    // Named: the daemon's level for it changes. The same rename announced
-    // again (by the presence event it causes), and another name, are the same caller.
-    renamedViewer(viewer("u_1", "Wren"));
-    await vi.waitFor(() => expect(reconnects()).toBe(1));
-    renamedViewer(viewer("u_1", "Wren"));
-    renamedViewer(viewer("u_1", "Ada"));
-    // Another viewer, then the same one unnamed.
-    renamedViewer(viewer("u_2", "Ada"));
-    await vi.waitFor(() => expect(reconnects()).toBe(2));
-    renamedViewer(viewer("u_2", null));
-    await vi.waitFor(() => expect(reconnects()).toBe(3));
+    renamedViewer({ public_id: "u_1", display_name: "Wren", created_at: "x" });
+    await vi.waitFor(() => expect(w.msgs.filter(m => m.t === "reconnect")).toEqual([{ t: "reconnect", caller: "admin" }]));
     ctl.dispose();
   });
 

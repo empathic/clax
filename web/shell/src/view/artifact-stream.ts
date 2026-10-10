@@ -4,11 +4,11 @@
 // declares `db`. Thread and presence deltas are applied to what the view
 // holds, and the view handles the full events they amount to. It also starts
 // the owner's question surfaces (artifact-questions.ts, a module of their own).
-import { ApiError, getArtifact } from "../api";
+import { ApiError, getArtifact, getToken, onToken } from "../api";
 import type { ArtifactEvent } from "../events";
 import { nav } from "../nav";
 import { type StreamEvent, pageStream } from "../stream";
-import { type Thread, type Viewer, getViewer, renamedViewer, upsert } from "../threads";
+import { type Thread, getViewer, renamedViewer, upsert } from "../threads";
 import type { ArtifactController } from "./artifact-controller";
 import { holdKeysAcrossLoad } from "./keys";
 import { type ThreadDelta, applyPresence, applyThread } from "./deltas";
@@ -38,19 +38,23 @@ async function getThread(aid: string, tid: string): Promise<Thread> {
 
 const DOCS_EVENTS = new Set(["doc", "ready", "resync", "stream_down", "stream_up"]);
 
-/** The caller the page's stream was opened or last reopened as. */
-let streamCaller: string | undefined;
-/** The caller the daemon fixes for a stream when it opens: the viewer, and
- * whether it is named (a named viewer is at `interact`, an unnamed one at
- * `view`). */
-const callerOf = (v: Viewer) => v.public_id + (v.display_name != null);
+/** The caller the daemon fixes for this browser's stream when it opens, as
+ * a key (the hub keys a stream's `ready` the same way, `callerKey`): with
+ * the token (the events cookie) the owner's browser, at `admin` named or
+ * not; without it the viewer, and whether it is named (a named viewer is at
+ * `interact`, an unnamed one at `view`). */
+const caller = () => Promise.all([getToken(), getViewer()]).then(([t, v]) => t ? OWNER : v.public_id + (v.display_name != null));
+const OWNER = "admin";
 
-/** Opens a new stream for every tab when the viewer changed the caller the
- * daemon sees: another viewer, or one named or unnamed. Another name for a
- * named viewer is the same caller, and so is every announcement of one
- * change after the first (a rename is announced by its request and by the
- * presence event it causes). */
-export const reconnect = () => void getViewer().then(v => { if (streamCaller !== (streamCaller = callerOf(v))) pageStream().reconnect(); }, () => {});
+/** Asks the hub for a new stream for every tab when the caller changed
+ * (another viewer, one named or unnamed, the token gained): it reopens once
+ * per caller, so another name for a named viewer, the owner's rename, and
+ * every tab's announcement of one change after the first reopen nothing. */
+export const reconnect = () => void caller().then(c => pageStream().reconnect(c), () => {});
+// A token that arrives late (its first request failed) makes this browser
+// the owner's: the caller changed. Asked at once, before the owner's topics
+// the token starts reach the hub.
+onToken(() => pageStream().reconnect(OWNER));
 
 export class ArtifactStream {
   private readonly main: () => void;
@@ -60,8 +64,6 @@ export class ArtifactStream {
 
   constructor(private readonly id: string, private readonly v: ArtifactStreamView) {
     this.main = pageStream().watch([`artifact:${id}`, `presence:${id}`, `working:${id}`], e => this.on(e));
-    // The stream opens as the viewer looked up by now (the view opens it once the lookup is done).
-    void getViewer().then(me => { streamCaller ??= callerOf(me); }, () => {});
     void import("./artifact-questions").then(m => { if (!this.stopped) this.questions = m.artifactQuestions(id); }, () => {});
   }
 

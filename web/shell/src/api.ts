@@ -99,14 +99,24 @@ export async function getPresence(aid: string): Promise<PresenceView[] | null> {
 }
 
 let tokenPromise: Promise<string | null> | null = null;
+const tokenHeard = new Set<() => void>();
+let tokenFailed = false;
+/** Calls `fn` each time a token request answers with the token after an
+ * earlier one failed: only then did this page gain the events cookie. */
+export const onToken = (fn: () => void) => { tokenHeard.add(fn); };
 /** The write token, only served to loopback browsers; null on a LAN viewer. */
 export function getToken(): Promise<string | null> {
   if (!tokenPromise) {
     const p: Promise<string | null> = fetch("/api/token").then(async r => {
-      if (r.ok) return (await r.json()).token as string;
+      if (r.ok) {
+        const t = (await r.json()).token as string;
+        if (tokenFailed) { tokenFailed = false; for (const f of tokenHeard) f(); }
+        return t;
+      }
       if (r.status === 403) return null;
       throw new Error(`token request failed: ${r.status}`);
     }).catch(() => {
+      tokenFailed = true;
       if (tokenPromise === p) tokenPromise = null;
       return null;
     });

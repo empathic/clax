@@ -61,8 +61,9 @@ export class Net {
     });
   }) as typeof fetch;
   get open(): Conn[] { return this.conns.filter(c => !c.aborted); }
-  ready(c: Conn, stream: string, resumed = false, topics: string[] = []) {
-    c.push(`event: ready\ndata: ${JSON.stringify({ stream, seq: 0, resumed, topics })}\n\n`);
+  /** The stream says `ready`, opened for `caller` (`{level, viewer}`) when given. */
+  ready(c: Conn, stream: string, resumed = false, topics: string[] = [], caller?: { level: string; viewer: string | null }) {
+    c.push(`event: ready\ndata: ${JSON.stringify({ stream, seq: 0, resumed, topics, ...(caller ? { caller } : {}) })}\n\n`);
   }
   event(c: Conn, stream: string, seq: number, topic: string, name: string, data: object = {}) {
     c.push(`event: ${name}\ndata: ${JSON.stringify({ topic, ...data })}\nid: ${stream}:${seq}\n\n`);

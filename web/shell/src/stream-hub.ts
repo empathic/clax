@@ -31,13 +31,14 @@ import { parseBlock } from "./sse";
 
 /** What a tab sends the hub. `hello` names the tab's Web Lock (held while
  * the tab lives), when it has one; `topics` is the tab's whole set;
- * `focus` whether the tab has focus; `reconnect` opens a new stream (the
- * viewer changed, so the caller did). */
+ * `focus` whether the tab has focus; `reconnect` opens a new stream, the
+ * caller having changed to `caller` (a key: see `callerKey`), unless the
+ * stream is already opened as that caller. */
 export type TabMsg =
   | { t: "hello"; lock?: string }
   | { t: "topics"; topics: string[] }
   | { t: "focus"; focused: boolean }
-  | { t: "reconnect" }
+  | { t: "reconnect"; caller?: string }
   | { t: "ping" }
   | { t: "bye" };
 
@@ -74,6 +75,18 @@ export const CATCH_UP = 20;
 export const CATCH_UP_SHOWN = 3;
 
 type Timer = ReturnType<typeof setTimeout>;
+
+/** The key of the caller a stream's `ready` names (`{level, viewer}`), as
+ * the tabs compute it (view/artifact-stream.ts): `admin` for the owner's
+ * browser, named or not; else the viewer's public ID and whether it is
+ * named (`interact`); null when `ready` names none. */
+export function callerKey(c: unknown): string | null {
+  if (!c || typeof c !== "object") return null;
+  const { level, viewer } = c as { level?: unknown; viewer?: unknown };
+  if (typeof level !== "string") return null;
+  return level === "admin" || level === "owner" ? level : `${viewer}${level === "interact"}`;
+}
+
 /** `focusedAt` orders the tabs by when they last gained focus (0: never). */
 type Client = { topics: Set<string>; live: Set<string>; heard: number; locked: boolean; focused: boolean; focusedAt: number };
 
@@ -102,6 +115,11 @@ export class Hub {
   /** Topics the daemon refused, with its code; retried once no tab wants them. */
   private refused = new Map<string, string>();
   private streamId: string | null = null;
+  /** The caller the open stream was opened for, as its `ready` said. */
+  private caller: string | null = null;
+  /** The caller a tab asked for while no stream was up: the next `ready`
+   * says whether its stream is opened as it. */
+  private asked: string | null = null;
   private seq = 0;
   private conn: AbortController | null = null;
   private up = false;
@@ -173,6 +191,14 @@ export class Hub {
         if (msg.focused) c.focusedAt = ++this.focusSeq;
         break;
       case "reconnect":
+        // Every tab asks when the caller changes (each hears the change), and
+        // the hub may have reopened already (the daemon refused the old stream
+        // to the new caller): the stream's own `ready` says what it is opened
+        // as, so the first ask reopens it and the others find it done.
+        if (msg.caller !== undefined) {
+          if (!this.up) { this.asked = msg.caller; break; }
+          if (msg.caller === this.caller) break;
+        }
         this.streamId = null;
         if (this.conn) this.connect();
         break;
@@ -307,6 +333,15 @@ export class Hub {
     if (!data || typeof data !== "object") return;
     if (name === "ready") {
       this.arm(ac, IDLE_MS);
+      this.caller = callerKey(data.caller);
+      const asked = this.asked;
+      this.asked = null;
+      if (asked !== null && asked !== this.caller) {
+        // A tab asked for another caller while this stream was being opened.
+        this.streamId = null;
+        this.connect();
+        return;
+      }
       const resumed = data.resumed === true && data.stream === this.streamId;
       this.streamId = String(data.stream);
       if (resumed) {

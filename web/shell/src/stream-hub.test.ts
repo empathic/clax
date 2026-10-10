@@ -132,6 +132,80 @@ describe("the stream hub", () => {
     expect(net.posts.at(-1)!.url).toBe(`/api/stream/${S2}`);
   });
 
+  it("reopens once per caller however many tabs ask: three tabs announcing one rename reopen the stream once", async () => {
+    const unnamed = { level: "view", viewer: "u_1" };
+    const named = { level: "interact", viewer: "u_1" };
+    for (const t of ["t1", "t2", "t3"]) hub.receive(t, { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    expect(net.conns).toHaveLength(1);
+    net.ready(net.conns[0], S1, false, [], unnamed);
+    await tick();
+    // An announcement that leaves the caller as the stream was opened reopens nothing.
+    hub.receive("t2", { t: "reconnect", caller: "u_1false" });
+    await tick();
+    expect(net.conns).toHaveLength(1);
+    // The rename: every tab hears it and asks; the first ask reopens, the
+    // others ask while that stream is opening, and its `ready` settles them.
+    for (const t of ["t1", "t2", "t3"]) hub.receive(t, { t: "reconnect", caller: "u_1true" });
+    await tick();
+    expect(net.conns).toHaveLength(2);
+    net.ready(net.conns[1], S2, false, [], named);
+    await tick();
+    expect(net.conns).toHaveLength(2);
+    hub.receive("t3", { t: "reconnect", caller: "u_1true" });
+    await tick();
+    expect(net.conns).toHaveLength(2);
+    // A drop and the hub's own reconnect resume the stream as it was opened.
+    net.conns[1].end();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(net.conns).toHaveLength(3);
+    net.ready(net.conns[2], S2, true, [`artifact:${A}`], named);
+    await tick();
+    hub.receive("t1", { t: "reconnect", caller: "u_1true" });
+    await tick();
+    expect(net.conns).toHaveLength(3);
+  });
+
+  it("does not reopen for a changed caller its own new stream is already opened as", async () => {
+    hub.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    net.ready(net.conns[0], S1, false, [], { level: "view", viewer: "u_1" });
+    await tick();
+    // The token arrives (the browser is now the owner's): a subscription sent
+    // with the new cookie finds the old stream refused, and the hub opens a
+    // new one, before the tab's ask for the change reaches it.
+    net.auto = false;
+    hub.receive("t1", { t: "topics", topics: [`artifact:${A}`, "inbox"] });
+    await tick();
+    net.posts.at(-1)!.answer(404, { error: { code: "unknown_stream" } });
+    await tick();
+    expect(net.conns).toHaveLength(2);
+    // Asked while that stream opens: its `ready` decides.
+    hub.receive("t1", { t: "reconnect", caller: "admin" });
+    await tick();
+    expect(net.conns).toHaveLength(2);
+    net.auto = true;
+    net.ready(net.conns[1], S2, false, [], { level: "admin", viewer: "u_0" });
+    await tick();
+    expect(net.conns).toHaveLength(2);
+    // Asked once it is up, for the caller it has: nothing.
+    hub.receive("t1", { t: "reconnect", caller: "admin" });
+    await tick();
+    expect(net.conns).toHaveLength(2);
+  });
+
+  it("reopens when the stream that answers an ask is opened as another caller", async () => {
+    hub.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    hub.receive("t1", { t: "reconnect", caller: "u_1true" });
+    net.ready(net.conns[0], S1, false, [], { level: "view", viewer: "u_1" });
+    await tick();
+    expect(net.conns).toHaveLength(2);
+    net.ready(net.conns[1], S2, false, [], { level: "interact", viewer: "u_1" });
+    await tick();
+    expect(net.conns).toHaveLength(2);
+  });
+
   it("fails a stream that does not say ready in time, and retries with backoff", async () => {
     hub.receive("t1", { t: "topics", topics: ["gallery"] });
     await tick();
