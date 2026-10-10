@@ -4,6 +4,7 @@
   // paint (sidebar-chunk.ts), so none of this is in the artifact entry.
   import type { ArtifactController, Loaded, ViewState } from "../view/artifact-controller";
   import Sidebar from "./Sidebar.svelte";
+  import { postWhole } from "../view/whole-comment";
 
   let { ctl, s }: { ctl: ArtifactController; s: ViewState & { data: Loaded } } = $props();
 </script>
@@ -16,4 +17,5 @@
   onResolve={t => ctl.resolveThread(t)} onReply={(t, body) => ctl.reply(t, body)}
   selection={s.selection} batchNote={s.batchNote} batchBusy={s.batchBusy} sendTo={s.sendTo}
   onToggle={(t, shift, order) => ctl.toggleSelect(t, shift, order)} onClear={() => ctl.clearSelection()} onNote={v => ctl.setBatchNote(v)}
+  compose={{ version: ctl.shown(s), onPost: body => postWhole(ctl, ctl.shown(s), body) }}
   onSendSelection={() => void ctl.sendSelection()} onSendUnsent={() => void ctl.sendUnsent()} onChoose={h => ctl.chooseTarget(h)} />

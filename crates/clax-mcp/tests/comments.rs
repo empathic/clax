@@ -606,6 +606,78 @@ async fn comments_read_describes_a_drawn_area() {
     assert_eq!(a["summary"], "area in body > main (42% × 18%)");
 }
 
+/// A comment on the whole artifact reaches the agent with its anchor line,
+/// reads back with an `artifact` anchor on no page, and is answered and
+/// resolved like any sent thread.
+#[tokio::test]
+async fn a_whole_artifact_comment_goes_through_the_loop() {
+    let ts = TestServer::spawn().await;
+    let (t, _sid) = session_tools(&ts).await;
+    let aid = publish(&t).await;
+    let form = reqwest::multipart::Form::new()
+        .text("anchor", json!({"kind": "artifact"}).to_string())
+        .text("body", "Make the colours warmer.")
+        .text("version", "1");
+    let res = ts
+        .client
+        .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let tid = res.json::<Value>().await.unwrap()["thread"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ts.send_thread(&aid, &tid).await;
+    let (v, trailing) = blocks(&t.list(Parameters(ListArgs::default())).await.unwrap());
+    assert_eq!(v["feedback"][0]["anchor"]["kind"], "artifact");
+    let trailing = trailing.expect("trailing block");
+    assert!(
+        trailing.contains(
+            "\nAnchored on: the whole artifact  (v1)\nClip: none (the comment is about the whole artifact)\n"
+        ),
+        "{trailing}"
+    );
+    let (v, _) = blocks(
+        &t.comments_read(Parameters(CommentsReadArgs {
+            url_or_id: aid.clone(),
+            thread_id: Some(tid.clone()),
+            ..Default::default()
+        }))
+        .await
+        .unwrap(),
+    );
+    let a = &v["threads"][0]["anchor"];
+    assert_eq!(
+        *a,
+        json!({"kind": "artifact", "selector": null, "quote": null, "custom_name": null,
+               "file": "", "area": null, "summary": "the whole artifact"})
+    );
+    assert_eq!(v["threads"][0]["clip_path"], Value::Null);
+    let (v, _) = blocks(
+        &t.comments_reply(Parameters(CommentsReplyArgs {
+            url_or_id: aid.clone(),
+            thread_id: tid.clone(),
+            text: "Warmed the palette.".into(),
+            addressed: None,
+        }))
+        .await
+        .unwrap(),
+    );
+    assert_eq!(v["replied"], true);
+    let (v, _) = blocks(
+        &t.comments_resolve(Parameters(CommentsResolveArgs {
+            url_or_id: aid,
+            thread_id: tid,
+        }))
+        .await
+        .unwrap(),
+    );
+    assert_eq!(v["resolved"], true);
+}
+
 #[tokio::test]
 async fn working_marks_the_artifact_and_done_clears_it() {
     let ts = TestServer::spawn().await;

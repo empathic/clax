@@ -1,5 +1,7 @@
 //! Comment anchors: where on a page a thread points, as the bridge records it.
 //! A version may hold several HTML pages; an anchor names its page in `file`.
+//! An `artifact` anchor points at nothing on any page: its thread is about the
+//! whole artifact, and its `file` is empty.
 //! DOM resolution happens in the browser; the daemon only validates, stores,
 //! and summarises anchors.
 
@@ -30,7 +32,15 @@ pub enum AnchorKind {
     Range,
     Custom,
     Area,
+    /// The whole artifact: no page, element, text, or area. Every target
+    /// field is null and `file` is empty ([`WHOLE_FILE`]).
+    Artifact,
 }
+
+/// The `file` of an `artifact` anchor: it is on no page.
+pub const WHOLE_FILE: &str = "";
+/// What [`Anchor::summary`] says for an `artifact` anchor.
+pub const WHOLE_SUMMARY: &str = "the whole artifact";
 
 /// A drawn rectangle as fractions (0 to 1) of its element's border box: `x`
 /// and `y` from its top left corner, `w` and `h` of its width and height.
@@ -101,7 +111,8 @@ pub struct AnchorRect {
 }
 
 /// Spec §9 "Anchors". Every field but `kind` and `file` may be null. `file` is
-/// the published path of the page the anchor is on, `index.html` when absent.
+/// the published path of the page the anchor is on, `index.html` when absent;
+/// an `artifact` anchor is on no page, and its `file` is empty.
 /// An `area` anchor is a rectangle the viewer drew: `selector` names the
 /// smallest element containing it, `area` places it within that element, and
 /// `rect` holds it in viewport pixels at draw time; `area` is serialized only
@@ -185,9 +196,16 @@ impl Anchor {
     /// most [`MAX_FILE`] bytes; whether
     /// the version holds it is the store's check.
     ///
+    /// An `artifact` anchor carries no selector, quote, prefix, suffix,
+    /// `html_hash`, `rect`, `custom_name`, `area`, or `route`, and its `file`
+    /// is empty ([`Anchor::normalized`] empties the index default).
+    ///
     /// # Errors
     /// `Invalid { code: "invalid_anchor" }` naming the first problem.
     pub fn validate(&self) -> Result<()> {
+        if self.kind == AnchorKind::Artifact {
+            return self.validate_whole();
+        }
         match self.kind {
             AnchorKind::Element | AnchorKind::Range | AnchorKind::Area
                 if self.selector.as_deref().is_none_or(str::is_empty) =>
@@ -254,7 +272,46 @@ impl Anchor {
         Ok(())
     }
 
-    /// One line naming the anchor: the route and ` › ` when there is one,
+    /// An `artifact` anchor names nothing on a page.
+    fn validate_whole(&self) -> Result<()> {
+        let targets = self.selector.is_some()
+            || self.quote.is_some()
+            || self.prefix.is_some()
+            || self.suffix.is_some()
+            || self.html_hash.is_some()
+            || self.rect.is_some()
+            || self.custom_name.is_some()
+            || self.area.is_some()
+            || self.route.is_some();
+        if targets {
+            return Err(bad(
+                "artifact anchors carry no selector, quote, prefix, suffix, html_hash, rect, custom_name, area, or route",
+            ));
+        }
+        if self.file != WHOLE_FILE {
+            return Err(bad("artifact anchors name no page: file is empty"));
+        }
+        Ok(())
+    }
+
+    /// Whether the anchor is about the whole artifact.
+    pub fn is_whole(&self) -> bool {
+        self.kind == AnchorKind::Artifact
+    }
+
+    /// The anchor as stored: an `artifact` anchor sent without a `file` (read
+    /// as the index) or with `index.html` has its `file` emptied, since it is
+    /// on no page. Any other anchor is unchanged.
+    #[must_use]
+    pub fn normalized(mut self) -> Self {
+        if self.is_whole() && self.file == INDEX_FILE {
+            self.file = WHOLE_FILE.to_string();
+        }
+        self
+    }
+
+    /// One line naming the anchor: `the whole artifact` for an `artifact`
+    /// anchor; otherwise the route and ` › ` when there is one,
     /// the file and ` › ` when it is not `index.html`, the selector (or `custom:<name>`, or for an area
     /// `area in <selector> (<w>% × <h>%)`, its share of the element's width
     /// and height rounded to whole percent, `<1%` for a share under half a
@@ -262,6 +319,9 @@ impl Anchor {
     /// spaces and the quote in «» when there is one, whitespace collapsed,
     /// `«`/`»` in the quote replaced by `"`, cut to 120 characters with `…`.
     pub fn summary(&self) -> String {
+        if self.is_whole() {
+            return WHOLE_SUMMARY.to_string();
+        }
         let target = match self.kind {
             AnchorKind::Custom => format!("custom:{}", self.custom_name.as_deref().unwrap_or("")),
             AnchorKind::Area => {
@@ -271,7 +331,9 @@ impl Anchor {
                     None => format!("area in {sel}"),
                 }
             }
-            _ => self.selector.clone().unwrap_or_default(),
+            AnchorKind::Element | AnchorKind::Range | AnchorKind::Artifact => {
+                self.selector.clone().unwrap_or_default()
+            }
         };
         let target = if self.file == INDEX_FILE {
             target
@@ -609,5 +671,70 @@ mod tests {
             ..Default::default()
         });
         assert!(a.summary().ends_with("(100% × <1%)"), "{}", a.summary());
+    }
+
+    #[test]
+    fn artifact_anchors_name_no_page_and_summarise_as_the_whole_artifact() {
+        let a: Anchor = serde_json::from_value(json!({"kind": "artifact"})).unwrap();
+        assert_eq!(
+            a.file, INDEX_FILE,
+            "serde reads a missing file as the index"
+        );
+        a.validate()
+            .expect_err("the index default is emptied before validation");
+        let a = a.normalized();
+        assert_eq!(a.file, WHOLE_FILE);
+        a.validate().unwrap();
+        assert_eq!(a.summary(), "the whole artifact");
+        assert!(a.is_whole());
+        let v = serde_json::to_value(&a).unwrap();
+        assert_eq!(v["kind"], "artifact");
+        assert_eq!(v["file"], "");
+        assert_eq!(serde_json::from_value::<Anchor>(v).unwrap(), a);
+        let explicit: Anchor =
+            serde_json::from_value(json!({"kind": "artifact", "file": ""})).unwrap();
+        explicit.validate().unwrap();
+        let elsewhere: Anchor =
+            serde_json::from_value(json!({"kind": "artifact", "file": "about.html"})).unwrap();
+        assert!(
+            elsewhere.normalized().validate().is_err(),
+            "an artifact anchor is on no page"
+        );
+        for (name, extra) in [
+            ("selector", json!({"selector": "h2"})),
+            ("quote", json!({"quote": "Goals"})),
+            ("prefix", json!({"prefix": "a"})),
+            ("suffix", json!({"suffix": "b"})),
+            ("html_hash", json!({"html_hash": "sha256:ab"})),
+            ("custom_name", json!({"custom_name": "chart"})),
+            ("route", json!({"route": "?a=1"})),
+            (
+                "rect",
+                json!({"rect": {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "scrollX": 0.0, "scrollY": 0.0, "viewportW": 1.0}}),
+            ),
+            (
+                "area",
+                json!({"area": {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}}),
+            ),
+        ] {
+            let mut v = json!({"kind": "artifact"});
+            for (k, val) in extra.as_object().unwrap() {
+                v[k] = val.clone();
+            }
+            let a: Anchor = serde_json::from_value(v).unwrap();
+            assert!(
+                matches!(
+                    a.normalized().validate(),
+                    Err(CoreError::Invalid {
+                        code: "invalid_anchor",
+                        ..
+                    })
+                ),
+                "{name}"
+            );
+        }
+        let e: Anchor =
+            serde_json::from_value(json!({"kind": "element", "selector": "h2"})).unwrap();
+        assert_eq!(e.clone().normalized(), e, "other anchors are unchanged");
     }
 }

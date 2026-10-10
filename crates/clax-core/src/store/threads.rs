@@ -480,8 +480,9 @@ impl Store {
     ///
     /// # Errors
     /// `NotFound` for a missing or deleted artifact; `invalid_anchor` (also
-    /// when the version holds no file at `anchor.file`), `invalid_comment`, or
-    /// `unknown_version` for bad input.
+    /// when the version holds no file at `anchor.file`; an `artifact` anchor
+    /// names none and is stored with its `file` emptied), `invalid_comment`,
+    /// or `unknown_version` for bad input.
     pub fn create_thread(&self, ctx: &AuditCtx, id: &ArtifactId, t: NewThread) -> Result<Thread> {
         self.create_thread_then(ctx, id, t, |_, _| Ok((None, Vec::new())))
     }
@@ -501,6 +502,8 @@ impl Store {
             &str,
         ) -> Result<(Option<String>, Vec<crate::audit::AuditRecord>)>,
     ) -> Result<Thread> {
+        let mut t = t;
+        t.anchor = t.anchor.normalized();
         t.anchor.validate()?;
         check_body(&t.body)?;
         let tid = new_ulid();
@@ -545,7 +548,8 @@ impl Store {
                     version: Some(t.version_n),
                 })?;
 
-            if !files.contains_key(&t.anchor.file) {
+            // An `artifact` anchor is on no page; any version holds it.
+            if !t.anchor.is_whole() && !files.contains_key(&t.anchor.file) {
                 return Err(CoreError::invalid(
                     "invalid_anchor",
                     format!(

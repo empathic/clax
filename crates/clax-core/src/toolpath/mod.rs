@@ -928,8 +928,13 @@ impl Event<'_> {
                 self.show("to_public_id")
             ),
             Some(K::ThreadOpen) => format!(
-                "Opened thread {} on version {} of {}",
+                "Opened thread {}{} on version {} of {}",
                 thread(),
+                // A thread about the whole artifact points at no page.
+                match self.body.get("anchor").and_then(|a| a.get("kind")) {
+                    Some(Value::String(k)) if k == "artifact" => " about the whole artifact",
+                    _ => "",
+                },
                 self.show("version_n"),
                 art()
             ),

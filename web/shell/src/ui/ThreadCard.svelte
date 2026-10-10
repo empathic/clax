@@ -3,7 +3,8 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { isSubmitKey } from "../view/composer-model";
-  import { type Thread, type Viewer, anchorLabel } from "../threads";
+  import type { Thread, Viewer } from "../threads";
+  import { threadLabel as anchorLabel } from "../view/whole-comment";
   import { relativeTime } from "../format";
   import { type HistoryEvent, type VersionTag, addressedNote, commentVersion } from "../view/history-model";
   import Clip from "./Clip.svelte";
@@ -105,12 +106,12 @@
     {#if fold}
       <button type="button" class="card-head" bind:this={head} aria-expanded={fold.open} aria-controls={body}
         onclick={e => { e.stopPropagation(); toggle(!fold.open); }}
-        ><span class="fold-caret" aria-hidden="true"></span><span class="anchor-label">{anchorLabel(t.anchor)}</span>{@render badge?.()}{#if t.anchor.file !== file}<span class="file-label muted small" title={pageLabel(t.anchor.file)}>on {pageLabel(t.anchor.file)}</span>{/if}<span class="muted small">{when}</span
+        ><span class="fold-caret" aria-hidden="true"></span><span class="anchor-label">{anchorLabel(t.anchor)}</span>{@render badge?.()}{#if t.anchor.file !== file && t.anchor.kind !== "artifact"}<span class="file-label muted small" title={pageLabel(t.anchor.file)}>on {pageLabel(t.anchor.file)}</span>{/if}<span class="muted small">{when}</span
       ></button>
     {:else}
       <button type="button" class="card-head" bind:this={head} aria-pressed={selected === t.id} onclick={e => { e.stopPropagation(); onSelect(t); }}
         >{#if n !== undefined}<span class="thread-num">{n}</span>{/if}<span class="anchor-label">{anchorLabel(t.anchor)}</span
-        >{#if outdated}<span class="vt out">outdated</span>{/if}{#if t.anchor.file !== file}<span class="file-label muted small" title={pageLabel(t.anchor.file)}>on {pageLabel(t.anchor.file)}</span>{/if}<span class="muted small">{when}</span
+        >{#if outdated}<span class="vt out">outdated</span>{/if}{#if t.anchor.file !== file && t.anchor.kind !== "artifact"}<span class="file-label muted small" title={pageLabel(t.anchor.file)}>on {pageLabel(t.anchor.file)}</span>{/if}<span class="muted small">{when}</span
       ></button>
     {/if}
   </header>

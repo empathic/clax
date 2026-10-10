@@ -345,7 +345,8 @@ fn replay(
 /// threads of `pending` still pending on the page; other addresses stay
 /// pending), and creates the thread on that version as the request's
 /// viewer, with the anchor's `route` from `url` and `clip` as its
-/// screenshot; an `@agent` mention sends it. Answers `201 {thread, page,
+/// screenshot; an `@agent` mention sends it. An `artifact` anchor is
+/// refused (`invalid_anchor`): it is made in the Clax view. Answers `201 {thread, page,
 /// version, clip_error?}`; a clip failing `clip_problem` is dropped and
 /// reported.
 ///
@@ -374,6 +375,12 @@ pub async fn thread(
             ApiError::bad_request("invalid_anchor", "field 'anchor' is required")
         })?)
         .map_err(|e| ApiError::bad_request("invalid_anchor", e.to_string()))?;
+    if anchor.is_whole() {
+        return Err(ApiError::bad_request(
+            "invalid_anchor",
+            "a comment on a live page points at the page; one on the whole artifact is made in the Clax view",
+        ));
+    }
     anchor.route = pu.route.clone();
     let snapshot = f
         .snapshot

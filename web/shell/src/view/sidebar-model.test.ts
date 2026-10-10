@@ -14,6 +14,14 @@ describe("sidebarSections", () => {
     expect(s.resolved.map(x => x.id)).toEqual(["e"]);
     expect([...s.numbers]).toEqual([["a", 1]]);
   });
+  it("leads Open with threads about the whole artifact, unnumbered and never Detached", () => {
+    const whole = (id: string) => ({ ...t(id, ""), anchor: { kind: "artifact", file: "" } }) as unknown as Thread;
+    const s = sidebarSections([t("a"), whole("w"), t("c", "about.html")], { w: lost }, "index.html", f => f === "index.html" || f === "about.html");
+    expect(s.open.map(x => x.id)).toEqual(["w", "a", "c"]);
+    expect(s.detached).toEqual([]);
+    expect([...s.numbers]).toEqual([["a", 1]]);
+    expect(sidebarSections([whole("w")], {}, "about.html").open.map(x => x.id)).toEqual(["w"]);
+  });
   it("defaults the page to the index when none is given", () => {
     expect(sidebarSections([t("a")], {}, undefined).file).toBe("index.html");
   });
