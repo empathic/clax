@@ -1011,7 +1011,7 @@ async fn a_grant_credential_is_refused_wherever_no_need_is_declared() {
         );
         checked += 1;
     }
-    assert!(checked > 100, "{checked}");
+    assert!(checked > 60, "{checked}");
     // The shutdown route is still there for the token.
     let r = ts
         .authed(ts.client.post(format!("{}/api/admin/shutdown", ts.base)))
@@ -1161,4 +1161,46 @@ async fn a_remote_session_is_ended_when_idle_whatever_pid_it_reports() {
         !reaped.ended.iter().any(|s| s == lid),
         "a live local process keeps its session"
     );
+}
+
+/// The daemon token never names another credential's session (M4): every
+/// route under `/api/sessions/{id}`, whatever its class, is 403
+/// `foreign_session` for the token naming a grant's session in its path.
+#[tokio::test]
+async fn the_token_never_names_a_grants_session_on_any_session_route() {
+    let ts = lan_server().await;
+    let aid = ts.any_artifact().await;
+    let sam = ts.connect_person("Sam", "clax:full").await;
+    let sid = sam.register("claude", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut checked = 0;
+    for (method, path, _) in every_route() {
+        if !path.starts_with("/api/sessions/{id}") && !path.starts_with("/api/_test/sessions/{id}")
+        {
+            continue;
+        }
+        let concrete = path
+            .replace("{id}", &sid)
+            .replace("{aid}", &aid)
+            .replace("{qid}", "q1");
+        let req = ts.client.request(
+            reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
+            format!("{}{concrete}", ts.base),
+        );
+        let req = if method == "GET" || method == "DELETE" {
+            req
+        } else {
+            req.json(&json!({}))
+        };
+        let r = ts.authed(req).send().await.unwrap();
+        assert_eq!(
+            status_code(r).await,
+            (403, "foreign_session".into()),
+            "{method} {path}"
+        );
+        checked += 1;
+    }
+    assert!(checked >= 20, "{checked}");
 }

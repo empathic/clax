@@ -5,7 +5,6 @@
 
 use super::assets::multipart_error;
 use super::threads::{announce_new_thread, mentions_agent, publish_thread};
-use crate::auth::has_token;
 use crate::error::ApiError;
 use crate::feedback::{thread_view, thread_views};
 use crate::identity::Identity;
@@ -15,7 +14,7 @@ use axum::Json;
 use axum::extract::multipart::MultipartRejection;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Multipart, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use clax_core::audit::AuditCtx;
 use clax_core::live::{PageKey, PageUrl, PathPattern, parse_page_url};
 use clax_core::model::Artifact;
@@ -167,6 +166,7 @@ pub struct PageQuery {
 /// ([`rule_view`], or null). Never creates a page.
 pub async fn page(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     q: Result<Query<PageQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -356,12 +356,15 @@ fn replay(
 /// as it is now (`version` is the one it was made on).
 pub async fn thread(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     audit: AuditCtx,
     mp: Result<Multipart, MultipartRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
+    // Thread views serve people (spec §7.5): an agent reads a live
+    // page's threads through the filtered routes.
+    d.refuse_agents()?;
     let mp = mp.map_err(|e| multipart_error(e.status(), e.body_text()))?;
     let f = read_fields(mp).await?;
     let pu = page_url(
@@ -394,7 +397,7 @@ pub async fn thread(
     let body = f.body.unwrap_or_default();
     let mention = mentions_agent(&body);
     let pick = f.pick_id;
-    let with_path = has_token(&headers, &s.token);
+    let with_path = d.holds_token();
     let ctx = s.feedback_ctx();
     let events = s.events.clone();
     let live_ids = s.live_ids.clone();
@@ -558,6 +561,7 @@ async fn read_snapshot_fields(mut mp: Multipart) -> Result<SnapshotFields, ApiEr
 /// pending or the page does not exist; this route never creates a page.
 pub async fn snapshot(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     audit: AuditCtx,
     mp: Result<Multipart, MultipartRejection>,
@@ -705,15 +709,18 @@ fn summary_status(t: &Value) -> &'static str {
 /// origin's merge rules ([`rule_view`]), oldest first.
 pub async fn site(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     q: Result<Query<SiteQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
+    // Thread views serve people (spec §7.5): an agent reads a live
+    // page's threads through the filtered routes.
+    d.refuse_agents()?;
     owner_reads(&who)?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let origin = origin_of(&s, &q.origin)?;
-    let with_path = has_token(&headers, &s.token);
+    let with_path = d.holds_token();
     let codex = s.feedback_ctx().codex_push();
     let o = origin.clone();
     let (pages, rules, joined) = s
@@ -936,12 +943,16 @@ pub struct MoveBody {
 /// on a live page.
 pub async fn move_thread(
     State(s): State<AppState>,
+    d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     OwnerWrite(who): OwnerWrite,
     audit: AuditCtx,
     p: Result<axum::extract::Path<String>, axum::extract::rejection::PathRejection>,
     body: Result<Json<MoveBody>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
+    // Thread views serve people (spec §7.5): an agent reads a live
+    // page's threads through the filtered routes.
+    d.refuse_agents()?;
     let tid = super::artifacts::path(p)?;
     let b = super::artifacts::body(body)?;
     let pu = page_url(&s, &b.page_url)?;
@@ -1000,6 +1011,7 @@ pub async fn move_thread(
 /// oldest first.
 pub async fn rules(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     q: Result<Query<SiteQuery>, QueryRejection>,
@@ -1036,6 +1048,7 @@ pub struct RuleBody {
 /// `own_origin`, `too_many_rules`.
 pub async fn add_rule(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     OwnerWrite(who): OwnerWrite,
     audit: AuditCtx,
@@ -1113,6 +1126,7 @@ pub async fn add_rule(
 /// (404 after that).
 pub async fn delete_rule(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     OwnerWrite(who): OwnerWrite,
     audit: AuditCtx,

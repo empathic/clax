@@ -386,7 +386,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         let tx = std::sync::Arc::new(tx);
         r = r.route(
             "/api/admin/shutdown",
-            post(move |_t: RequireToken| {
+            post(move |_d: crate::agent::DeniedToGrants, _t: RequireToken| {
                 let tx = tx.clone();
                 async move {
                     let _ = tx.send(true);
@@ -451,7 +451,10 @@ async fn test_audit_ctx(ctx: clax_core::audit::AuditCtx) -> axum::Json<serde_jso
 }
 
 #[cfg(feature = "test-routes")]
-async fn test_sleep(axum::extract::Path(ms): axum::extract::Path<u64>) -> StatusCode {
+async fn test_sleep(
+    _d: crate::agent::DeniedToGrants,
+    axum::extract::Path(ms): axum::extract::Path<u64>,
+) -> StatusCode {
     tokio::time::sleep(Duration::from_millis(ms)).await;
     StatusCode::OK
 }
@@ -461,6 +464,7 @@ async fn test_sleep(axum::extract::Path(ms): axum::extract::Path<u64>) -> Status
 #[cfg(feature = "test-routes")]
 async fn test_slow_publish(
     axum::extract::State(s): axum::extract::State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     axum::extract::Path(ms): axum::extract::Path<u64>,
 ) -> Result<StatusCode, ApiError> {
     let events = s.events.clone();
@@ -502,11 +506,19 @@ mod l10 {
         /// It takes `RequireToken`: the token sees live pages, and an agent
         /// of another machine never gets past it.
         Token,
-        /// It takes `Agent<…>` or `TokenOrAgent<…>`, and names an artifact
-        /// only as its path's `{aid}`: the token sees live pages, and the
-        /// extractor answers an agent of another machine 404 for a live
-        /// page there (`hide_live_pages` does not cover `/api/sessions/…`).
+        /// It takes `Agent<…>` or `TokenOrAgent<…>`, and reaches an artifact
+        /// only through the extractor: `.artifact()` (its path's `{aid}`)
+        /// or `.named_artifact(…)` (one its query or body names), never
+        /// parsing an ID itself. The token sees live pages; the extractor
+        /// answers an agent of another machine 404 for a live page either
+        /// way (`hide_live_pages` does not cover `/api/sessions/…`).
         AgentPath,
+        /// It takes `Agent<…>` or `TokenOrAgent<…>` whose need keeps a
+        /// person's agent off the route (`agent::ROUTES`: `grants` false,
+        /// or a `Filtered` need not yet in `FILTERED_LIVE`): the token sees
+        /// live pages, and no agent of another machine reaches it. A task
+        /// that opens it to grants must give it another guard.
+        GrantsKept,
         /// It takes `SeesLive` and checks the artifact its query or body names.
         SeesLive,
         /// A listing or stream that leaves live pages out unless
@@ -526,7 +538,7 @@ mod l10 {
     const GUARDS: &[(&str, Guard)] = &[
         ("token::token", NoArtifact),
         ("artifacts::list", Filtered),
-        ("artifacts::create", Token),
+        ("artifacts::create", GrantsKept),
         ("sessions::list", AgentPath),
         ("sessions::register", AgentPath),
         ("sessions::join", AgentPath),
@@ -535,13 +547,13 @@ mod l10 {
         ("sessions::push_status", NoArtifact),
         ("sessions::tool_call_ids", Token),
         ("sample::daemon", Token),
-        ("threads::list_all", Token),
-        ("working::roster", Token),
+        ("threads::list_all", GrantsKept),
+        ("working::roster", GrantsKept),
         ("working::for_session", AgentPath),
-        ("working::renew", Token),
-        ("working::end", Token),
-        ("working::put", Token),
-        ("working::delete", Token),
+        ("working::renew", AgentPath),
+        ("working::end", AgentPath),
+        ("working::put", AgentPath),
+        ("working::delete", AgentPath),
         ("working::skew", Token),
         ("viewers::lookup", NoArtifact),
         ("viewers::me", NoArtifact),
@@ -569,11 +581,11 @@ mod l10 {
         ("toolpath::tool_call", Token),
         ("feedback::poll", AgentPath),
         ("feedback::notices", AgentPath),
-        ("questions::create", Token),
-        ("questions::poll", Token),
-        ("questions::withdraw", Token),
-        ("questions::release", Token),
-        ("questions::terminal", Token),
+        ("questions::create", AgentPath),
+        ("questions::poll", AgentPath),
+        ("questions::withdraw", AgentPath),
+        ("questions::release", AgentPath),
+        ("questions::terminal", AgentPath),
         ("questions::waiters", Token),
         ("feedback::waiters", Token),
         ("questions::expire", Token),
@@ -632,11 +644,11 @@ mod l10 {
         ("/api/admin/shutdown", "RequireToken"),
     ];
 
-    fn module_source(m: &str) -> &'static str {
+    pub(super) fn module_source(m: &str) -> &'static str {
         module_source_opt(m).unwrap_or_else(|| panic!("no route module {m}"))
     }
 
-    fn module_source_opt(m: &str) -> Option<&'static str> {
+    pub(super) fn module_source_opt(m: &str) -> Option<&'static str> {
         Some(match m {
             "artifacts" => include_str!("artifacts.rs"),
             "assets" => include_str!("assets.rs"),
@@ -665,13 +677,14 @@ mod l10 {
             "watches" => include_str!("watches.rs"),
             "working" => include_str!("working.rs"),
             "agent" => include_str!("../agent.rs"),
+            "mcp" => include_str!("mcp.rs"),
             _ => return None,
         })
     }
 
     /// Each `.route("<path>", <handlers>)` of `src`: the path and the
     /// handlers' text.
-    fn routes(src: &str) -> Vec<(String, String)> {
+    pub(super) fn routes(src: &str) -> Vec<(String, String)> {
         let mut out = Vec::new();
         let mut rest = src;
         while let Some(i) = rest.find(".route(") {
@@ -704,7 +717,7 @@ mod l10 {
     }
 
     /// The `module::function` handlers named in `text`.
-    fn handlers(text: &str) -> Vec<(String, String)> {
+    pub(super) fn handlers(text: &str) -> Vec<(String, String)> {
         let mut out = Vec::new();
         let b = text.as_bytes();
         let ident = |c: u8| c.is_ascii_lowercase() || c == b'_';
@@ -729,7 +742,7 @@ mod l10 {
     }
 
     /// The text of `pub async fn name` in `src`: its signature and body.
-    fn function<'a>(src: &'a str, name: &str) -> &'a str {
+    pub(super) fn function<'a>(src: &'a str, name: &str) -> &'a str {
         let start = src
             .find(&format!("pub async fn {name}("))
             .unwrap_or_else(|| panic!("no handler {name}"));
@@ -978,6 +991,19 @@ mod l10 {
         out
     }
 
+    /// The declared need of the handler `m::f` routed at `path` in `text`.
+    pub(super) fn need_of_handler(
+        path: &str,
+        text: &str,
+        m: &str,
+        f: &str,
+    ) -> Option<crate::agent::NeedInfo> {
+        method_handlers(text)
+            .into_iter()
+            .find(|(_, hm, hf)| hm == m && hf == f)
+            .and_then(|(method, _, _)| crate::agent::need_of(&method.parse().unwrap(), path))
+    }
+
     /// The need an `Agent<…>` or `TokenOrAgent<…>` in `sig` names.
     fn agent_need(sig: &str) -> Option<String> {
         let at = sig.find("Agent<")? + "Agent<".len();
@@ -1085,14 +1111,29 @@ mod l10 {
                     Token => assert!(sig.contains("RequireToken"), "{name} takes no RequireToken"),
                     AgentPath => {
                         assert!(sig.contains("Agent<"), "{name} takes no Agent");
-                        assert!(
-                            !src.contains("Query<") || !src.contains("parse_id("),
-                            "{name} may name an artifact outside its path"
-                        );
+                        for parse in ["parse_id(", "ArtifactId::parse(", "ArtifactId::new("] {
+                            assert!(
+                                !src.contains(parse),
+                                "{name} parses an artifact ID itself ({parse}): reach it through \
+                                 the extractor's .artifact() or .named_artifact()"
+                            );
+                        }
                         let agent = include_str!("../agent.rs");
+                        let extractor = function(agent, "named_artifact");
                         assert!(
-                            agent.contains("s.live_ids.contains(a.as_str())"),
+                            agent.contains("s.live_ids.contains(a.as_str())")
+                                && extractor.contains("s.live_ids.contains(id.as_str())"),
                             "Agent no longer hides live pages"
+                        );
+                    }
+                    GrantsKept => {
+                        let need = need_of_handler(&path, &text, &m, &f)
+                            .unwrap_or_else(|| panic!("{name} takes no declared Agent"));
+                        assert!(
+                            !need.grants
+                                || (need.class == crate::agent::Class::Filtered
+                                    && !crate::agent::FILTERED_LIVE.contains(&need.name)),
+                            "{name} is open to a person's agent: give it another guard"
                         );
                     }
                     SeesLive => assert!(

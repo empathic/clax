@@ -40,6 +40,7 @@ pub(crate) fn site_view(site: &JoinedSite) -> Value {
 /// not finished has still to re-file); one entry per joined site.
 pub async fn list(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
 ) -> Result<Json<Value>, ApiError> {
@@ -88,6 +89,7 @@ pub struct SuggestQuery {
 /// within a day) for. Never writes.
 pub async fn suggest(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     q: Result<Query<SuggestQuery>, QueryRejection>,
@@ -233,6 +235,7 @@ fn join_batch(
 /// `unknown_site`, `too_many_origins`, `too_many_rules`.
 pub async fn join(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     OwnerWrite(who): OwnerWrite,
     audit: AuditCtx,
@@ -284,6 +287,7 @@ pub struct SplitBody {
 /// 409 `joining` while the site has a join to finish.
 pub async fn split(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     _w: OwnerWrite,
     audit: AuditCtx,
@@ -330,6 +334,7 @@ pub struct AnswerBody {
 /// `same_origin`.
 pub async fn answer(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     _w: OwnerWrite,
     audit: AuditCtx,

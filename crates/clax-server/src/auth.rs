@@ -102,6 +102,20 @@ impl Caller {
         matches!(self, Caller::Owner { browser: true })
     }
 
+    /// 403 `not_for_agents` for the owner's agents and 403 `forbidden` for
+    /// a person's: what a route that serves people answers an agent channel
+    /// (spec §7.5, the `not_for_agents` rule).
+    ///
+    /// # Errors
+    /// As above.
+    pub fn refuse_agents(&self) -> Result<(), ApiError> {
+        match self {
+            Caller::OwnerAgent { .. } => Err(not_for_agents()),
+            Caller::PersonAgent { .. } => Err(grants_refused()),
+            _ => Ok(()),
+        }
+    }
+
     /// Whose a person-scoped route's data is.
     pub fn person(&self) -> Person {
         match self {
@@ -164,6 +178,16 @@ pub fn grants_refused() -> ApiError {
     ApiError::forbidden(
         "forbidden",
         "agents of another machine may not use this route",
+    )
+}
+
+/// 403 `not_for_agents`: a route that serves people (the owner's browsers,
+/// the CLI used by hand) refuses an agent channel; agents reach the same
+/// content through the routes the filter covers.
+pub fn not_for_agents() -> ApiError {
+    ApiError::forbidden(
+        "not_for_agents",
+        "this serves people, not agents: open it in a browser",
     )
 }
 

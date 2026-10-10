@@ -64,6 +64,10 @@ pub struct NeedInfo {
     /// The most body an agent's request may carry, read and verified
     /// before the handler runs; the route's own body limit.
     pub limit: usize,
+    /// A person's agent may use the route. False for a route that serves
+    /// the owner's agents only (`GET /api/threads`: Filtered for them,
+    /// Denied to a person's agent, which lists per artifact).
+    pub grants: bool,
 }
 
 /// What an agent needs to use a route: the right checked at the artifact
@@ -73,18 +77,31 @@ pub trait Need: Send + Sync + 'static {
     const RIGHT: Option<(RightType, &'static str)>;
     const CLASS: Class;
     const LIMIT: usize;
+    /// A person's agent may use the route ([`NeedInfo::grants`]).
+    const GRANTS: bool = true;
     const INFO: NeedInfo = NeedInfo {
         name: Self::NAME,
         right: Self::RIGHT,
         class: Self::CLASS,
         limit: Self::LIMIT,
+        grants: Self::GRANTS,
     };
 }
 
 /// Declares a route's [`Need`]: `need!(Name, Type, "action", Class,
 /// LIMIT)`, or `need!(Name, None, Class, LIMIT)` for a route that checks no
-/// right.
+/// right; a trailing `owner_agents_only` keeps a person's agent off it.
 macro_rules! need {
+    ($name:ident, $ty:ident, $action:literal, $class:ident, $limit:expr, owner_agents_only) => {
+        pub struct $name;
+        impl Need for $name {
+            const NAME: &'static str = stringify!($name);
+            const RIGHT: Option<(RightType, &'static str)> = Some((RightType::$ty, $action));
+            const CLASS: Class = Class::$class;
+            const LIMIT: usize = $limit;
+            const GRANTS: bool = false;
+        }
+    };
     ($name:ident, None, $class:ident, $limit:expr) => {
         pub struct $name;
         impl Need for $name {
@@ -105,6 +122,13 @@ macro_rules! need {
     };
 }
 
+/// One [`ROUTE_NEEDS`] entry: a handler and its need's right and class.
+macro_rules! route_need {
+    ($handler:literal, $need:ident) => {
+        ($handler, <$need as Need>::RIGHT, <$need as Need>::CLASS)
+    };
+}
+
 /// axum's default body limit, which routes without a layer of their own
 /// keep.
 pub const DEFAULT_LIMIT: usize = 2 * 1024 * 1024;
@@ -116,12 +140,27 @@ need!(SessionsGet, None, Own, DEFAULT_LIMIT);
 need!(SessionsPatch, None, Own, DEFAULT_LIMIT);
 need!(ArtifactsList, Artifacts, "read", Filtered, DEFAULT_LIMIT);
 need!(
+    ArtifactsCreate,
+    Artifacts,
+    "create",
+    Filtered,
+    crate::routes::artifacts::PUBLISH_BODY_LIMIT
+);
+need!(ArtifactsGet, Artifacts, "read", Filtered, DEFAULT_LIMIT);
+need!(ArtifactsPatch, Artifacts, "update", Filtered, DEFAULT_LIMIT);
+need!(ArtifactsDelete, Artifacts, "delete", Own, DEFAULT_LIMIT);
+need!(VersionsList, Artifacts, "read", Filtered, DEFAULT_LIMIT);
+need!(VersionGet, Artifacts, "read", Filtered, DEFAULT_LIMIT);
+need!(
     Publish,
     Artifacts,
     "update",
     Filtered,
     crate::routes::artifacts::PUBLISH_BODY_LIMIT
 );
+need!(FilesList, Artifacts, "read", Filtered, DEFAULT_LIMIT);
+need!(FileContent, Artifacts, "read", Filtered, DEFAULT_LIMIT);
+need!(AssetsList, Artifacts, "read", Filtered, DEFAULT_LIMIT);
 need!(
     AssetsUpload,
     Artifacts,
@@ -129,14 +168,76 @@ need!(
     Filtered,
     crate::routes::assets::UPLOAD_BODY_LIMIT
 );
+need!(AssetsDelete, Artifacts, "delete", Own, DEFAULT_LIMIT);
+need!(Presence, Artifacts, "read", Own, DEFAULT_LIMIT);
+need!(
+    WorkingForArtifact,
+    Comments,
+    "watch",
+    Filtered,
+    DEFAULT_LIMIT
+);
+need!(WorkingRoster, Comments, "watch", Filtered, DEFAULT_LIMIT);
+need!(
+    ThreadsAll,
+    Comments,
+    "read",
+    Filtered,
+    DEFAULT_LIMIT,
+    owner_agents_only
+);
+need!(ThreadsList, Comments, "read", Filtered, DEFAULT_LIMIT);
+need!(ThreadGet, Comments, "read", Filtered, DEFAULT_LIMIT);
+need!(ThreadClip, Comments, "read", Filtered, DEFAULT_LIMIT);
+need!(
+    ThreadsCreate,
+    Comments,
+    "write",
+    Filtered,
+    crate::routes::threads::THREAD_BODY_LIMIT
+);
+need!(ThreadComment, Comments, "reply", Filtered, DEFAULT_LIMIT);
+need!(ThreadResolve, Comments, "resolve", Filtered, DEFAULT_LIMIT);
+need!(ThreadReopen, Comments, "resolve", Filtered, DEFAULT_LIMIT);
+need!(ThreadDelete, Comments, "resolve", Own, DEFAULT_LIMIT);
+need!(ThreadSend, Comments, "send", Filtered, DEFAULT_LIMIT);
+need!(ThreadsSendBatch, Comments, "send", Filtered, DEFAULT_LIMIT);
+need!(DocsGet, Db, "read", Filtered, DEFAULT_LIMIT);
+need!(DocsList, Db, "read", Filtered, DEFAULT_LIMIT);
 need!(DocsPut, Db, "write", Filtered, DEFAULT_LIMIT);
+need!(DocsPatch, Db, "write", Filtered, DEFAULT_LIMIT);
+need!(DocsDelete, Db, "write", Filtered, DEFAULT_LIMIT);
+need!(
+    DocsBatch,
+    Db,
+    "write",
+    Filtered,
+    crate::routes::docs::DOCS_BATCH_LIMIT
+);
+need!(DocsStrReplace, Db, "write", Filtered, DEFAULT_LIMIT);
+need!(DocsAcquire, Db, "write", Filtered, DEFAULT_LIMIT);
 need!(FeedbackPoll, Comments, "watch", Filtered, DEFAULT_LIMIT);
 need!(FeedbackNotices, Comments, "watch", Filtered, DEFAULT_LIMIT);
 need!(FeedbackAck, Comments, "watch", Own, DEFAULT_LIMIT);
 need!(WorkingForSession, Comments, "watch", Own, DEFAULT_LIMIT);
+need!(WorkingRenew, Comments, "watch", Own, DEFAULT_LIMIT);
+need!(WorkingEnd, Comments, "watch", Own, DEFAULT_LIMIT);
+need!(WorkingPut, Comments, "watch", Own, DEFAULT_LIMIT);
+need!(WorkingDelete, Comments, "watch", Own, DEFAULT_LIMIT);
 need!(WatchesList, Comments, "watch", Own, DEFAULT_LIMIT);
 need!(WatchesPut, Comments, "watch", Own, DEFAULT_LIMIT);
 need!(WatchesDelete, Comments, "watch", Own, DEFAULT_LIMIT);
+need!(
+    QuestionsCreate,
+    Ask,
+    "ask",
+    Own,
+    crate::routes::questions::ASK_BODY_LIMIT
+);
+need!(QuestionsPoll, Ask, "ask", Own, DEFAULT_LIMIT);
+need!(QuestionsWithdraw, Ask, "ask", Own, DEFAULT_LIMIT);
+need!(QuestionsRelease, Ask, "ask", Own, DEFAULT_LIMIT);
+need!(QuestionsTerminal, Ask, "ask", Own, DEFAULT_LIMIT);
 
 /// Every route an agent of another machine may reach, by method and the
 /// path it is routed at (`MatchedPath`), with its need: [`verify_layer`]
@@ -150,13 +251,112 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
     ("GET", "/api/sessions/{id}", SessionsGet::INFO),
     ("PATCH", "/api/sessions/{id}", SessionsPatch::INFO),
     ("GET", "/api/artifacts", ArtifactsList::INFO),
+    ("POST", "/api/artifacts", ArtifactsCreate::INFO),
+    ("GET", "/api/artifacts/{aid}", ArtifactsGet::INFO),
+    ("PATCH", "/api/artifacts/{aid}", ArtifactsPatch::INFO),
+    ("DELETE", "/api/artifacts/{aid}", ArtifactsDelete::INFO),
+    ("GET", "/api/artifacts/{aid}/versions", VersionsList::INFO),
+    ("GET", "/api/artifacts/{aid}/versions/{n}", VersionGet::INFO),
     ("POST", "/api/artifacts/{aid}/versions", Publish::INFO),
+    ("GET", "/api/artifacts/{aid}/files", FilesList::INFO),
+    (
+        "GET",
+        "/api/artifacts/{aid}/versions/{n}/files/{*path}",
+        FileContent::INFO,
+    ),
+    ("GET", "/api/artifacts/{aid}/assets", AssetsList::INFO),
     ("POST", "/api/artifacts/{aid}/assets", AssetsUpload::INFO),
+    (
+        "DELETE",
+        "/api/artifacts/{aid}/assets/{asset_id}",
+        AssetsDelete::INFO,
+    ),
+    ("GET", "/api/artifacts/{aid}/presence", Presence::INFO),
+    (
+        "GET",
+        "/api/artifacts/{aid}/working",
+        WorkingForArtifact::INFO,
+    ),
+    ("GET", "/api/working", WorkingRoster::INFO),
+    ("GET", "/api/threads", ThreadsAll::INFO),
+    ("GET", "/api/artifacts/{aid}/threads", ThreadsList::INFO),
+    ("POST", "/api/artifacts/{aid}/threads", ThreadsCreate::INFO),
+    ("GET", "/api/artifacts/{aid}/threads/{tid}", ThreadGet::INFO),
+    (
+        "DELETE",
+        "/api/artifacts/{aid}/threads/{tid}",
+        ThreadDelete::INFO,
+    ),
+    (
+        "GET",
+        "/api/artifacts/{aid}/threads/{tid}/clip",
+        ThreadClip::INFO,
+    ),
+    (
+        "POST",
+        "/api/artifacts/{aid}/threads/{tid}/comments",
+        ThreadComment::INFO,
+    ),
+    (
+        "POST",
+        "/api/artifacts/{aid}/threads/{tid}/resolve",
+        ThreadResolve::INFO,
+    ),
+    (
+        "POST",
+        "/api/artifacts/{aid}/threads/{tid}/reopen",
+        ThreadReopen::INFO,
+    ),
+    (
+        "POST",
+        "/api/artifacts/{aid}/threads/{tid}/send",
+        ThreadSend::INFO,
+    ),
+    (
+        "POST",
+        "/api/artifacts/{aid}/threads:send",
+        ThreadsSendBatch::INFO,
+    ),
+    ("GET", "/api/artifacts/{aid}/docs", DocsList::INFO),
+    ("GET", "/api/artifacts/{aid}/docs/{*path}", DocsGet::INFO),
     ("PUT", "/api/artifacts/{aid}/docs/{*path}", DocsPut::INFO),
+    (
+        "PATCH",
+        "/api/artifacts/{aid}/docs/{*path}",
+        DocsPatch::INFO,
+    ),
+    (
+        "DELETE",
+        "/api/artifacts/{aid}/docs/{*path}",
+        DocsDelete::INFO,
+    ),
+    ("POST", "/api/artifacts/{aid}/docs:batch", DocsBatch::INFO),
+    (
+        "POST",
+        "/api/artifacts/{aid}/docs:str_replace",
+        DocsStrReplace::INFO,
+    ),
+    (
+        "POST",
+        "/api/artifacts/{aid}/docs:acquire",
+        DocsAcquire::INFO,
+    ),
     ("GET", "/api/sessions/{id}/feedback", FeedbackPoll::INFO),
     ("GET", "/api/sessions/{id}/notices", FeedbackNotices::INFO),
     ("POST", "/api/sessions/{id}/feedback/ack", FeedbackAck::INFO),
     ("GET", "/api/sessions/{id}/working", WorkingForSession::INFO),
+    (
+        "POST",
+        "/api/sessions/{id}/working/renew",
+        WorkingRenew::INFO,
+    ),
+    ("POST", "/api/sessions/{id}/working/end", WorkingEnd::INFO),
+    ("PUT", "/api/sessions/{id}/working/{aid}", WorkingPut::INFO),
+    (
+        "DELETE",
+        "/api/sessions/{id}/working/{aid}",
+        WorkingDelete::INFO,
+    ),
     ("GET", "/api/sessions/{id}/watches", WatchesList::INFO),
     ("PUT", "/api/sessions/{id}/watches/{aid}", WatchesPut::INFO),
     (
@@ -164,6 +364,95 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
         "/api/sessions/{id}/watches/{aid}",
         WatchesDelete::INFO,
     ),
+    (
+        "POST",
+        "/api/sessions/{id}/questions",
+        QuestionsCreate::INFO,
+    ),
+    (
+        "GET",
+        "/api/sessions/{id}/questions/{qid}",
+        QuestionsPoll::INFO,
+    ),
+    (
+        "POST",
+        "/api/sessions/{id}/questions/{qid}/withdraw",
+        QuestionsWithdraw::INFO,
+    ),
+    (
+        "POST",
+        "/api/sessions/{id}/questions/{qid}/release",
+        QuestionsRelease::INFO,
+    ),
+    (
+        "POST",
+        "/api/sessions/{id}/questions:terminal",
+        QuestionsTerminal::INFO,
+    ),
+];
+
+/// Each handler an agent may reach, by `module::function`, with the right
+/// and class its `need!` declares: the spec's route table (§7.5) as the
+/// handlers declare it, for the contract and the canary sweep. A guard test
+/// in `routes` checks each handler's `Agent<N>` against its entry, and that
+/// every entry is a routed handler's.
+pub const ROUTE_NEEDS: &[(&str, Option<(RightType, &str)>, Class)] = &[
+    route_need!("sessions::list", SessionsList),
+    route_need!("sessions::register", SessionsRegister),
+    route_need!("sessions::join", SessionsJoin),
+    route_need!("sessions::get", SessionsGet),
+    route_need!("sessions::patch", SessionsPatch),
+    route_need!("artifacts::list", ArtifactsList),
+    route_need!("artifacts::create", ArtifactsCreate),
+    route_need!("artifacts::get", ArtifactsGet),
+    route_need!("artifacts::patch", ArtifactsPatch),
+    route_need!("artifacts::delete", ArtifactsDelete),
+    route_need!("artifacts::list_versions", VersionsList),
+    route_need!("artifacts::get_version", VersionGet),
+    route_need!("artifacts::publish", Publish),
+    route_need!("artifacts::files", FilesList),
+    route_need!("content::raw_file", FileContent),
+    route_need!("assets::list", AssetsList),
+    route_need!("assets::upload", AssetsUpload),
+    route_need!("assets::delete", AssetsDelete),
+    route_need!("artifacts::presence", Presence),
+    route_need!("working::for_artifact", WorkingForArtifact),
+    route_need!("working::roster", WorkingRoster),
+    route_need!("threads::list_all", ThreadsAll),
+    route_need!("threads::list", ThreadsList),
+    route_need!("threads::create", ThreadsCreate),
+    route_need!("threads::get", ThreadGet),
+    route_need!("threads::delete", ThreadDelete),
+    route_need!("threads::clip", ThreadClip),
+    route_need!("threads::comment", ThreadComment),
+    route_need!("threads::resolve", ThreadResolve),
+    route_need!("threads::reopen", ThreadReopen),
+    route_need!("threads::send", ThreadSend),
+    route_need!("threads::send_batch", ThreadsSendBatch),
+    route_need!("docs::list", DocsList),
+    route_need!("docs::get", DocsGet),
+    route_need!("docs::put", DocsPut),
+    route_need!("docs::patch", DocsPatch),
+    route_need!("docs::delete", DocsDelete),
+    route_need!("docs::batch", DocsBatch),
+    route_need!("docs::str_replace", DocsStrReplace),
+    route_need!("docs::acquire", DocsAcquire),
+    route_need!("feedback::poll", FeedbackPoll),
+    route_need!("feedback::notices", FeedbackNotices),
+    route_need!("feedback::ack", FeedbackAck),
+    route_need!("working::for_session", WorkingForSession),
+    route_need!("working::renew", WorkingRenew),
+    route_need!("working::end", WorkingEnd),
+    route_need!("working::put", WorkingPut),
+    route_need!("working::delete", WorkingDelete),
+    route_need!("watches::list", WatchesList),
+    route_need!("watches::put", WatchesPut),
+    route_need!("watches::delete", WatchesDelete),
+    route_need!("questions::create", QuestionsCreate),
+    route_need!("questions::poll", QuestionsPoll),
+    route_need!("questions::withdraw", QuestionsWithdraw),
+    route_need!("questions::release", QuestionsRelease),
+    route_need!("questions::terminal", QuestionsTerminal),
 ];
 
 /// The `Filtered` needs whose filter is live: a person's agent reaches
@@ -232,16 +521,22 @@ impl FromRequestParts<AppState> for Caller {
 }
 
 /// A route's caller, checked against the route's [`Need`] (M7): for a
-/// person's agent, 404 when the route's path names a live page (`{aid}`),
-/// the right `N::RIGHT` at the artifact the path names (403
-/// `not_permitted`), and for a `Filtered` route whose filter is not live,
-/// 503 `not_yet`. The sessions the request names
-/// (path and `X-Clax-Session`) are the caller's ([`Identity::caller`]).
-/// Every other caller passes as it is: the handler decides what it may do.
+/// person's agent, 403 `forbidden` on a route that serves the owner's
+/// agents only, 404 when the route's path names a live page (`{aid}`), the
+/// right `N::RIGHT` at the artifact the path names (403 `not_permitted`),
+/// and for a `Filtered` route whose filter is not live, 503 `not_yet`. The
+/// sessions the request names (path and `X-Clax-Session`) are the caller's
+/// ([`Identity::caller`]). Every other caller passes as it is: the handler
+/// decides what it may do.
+///
+/// A handler reaches an artifact only through [`Agent::artifact`] (its
+/// path's `{aid}`) or [`Agent::named_artifact`] (one its query or body
+/// names), which keep live pages and artifacts outside the agent's rights
+/// from a person's agent.
 pub struct Agent<N: Need> {
     pub caller: Caller,
-    /// The artifact the route's path names, when it parses.
-    pub artifact: Option<ArtifactId>,
+    /// The `{aid}` the route's path names, as sent.
+    raw_artifact: Option<String>,
     /// The request carried the daemon token.
     token: bool,
     _n: PhantomData<N>,
@@ -265,6 +560,150 @@ impl<N: Need> Agent<N> {
             Caller::PersonAgent { grant, .. } => Some(grant),
             _ => None,
         }
+    }
+
+    /// The artifact the route's path names (`{aid}`): 400 for a malformed
+    /// ID, as the routes have always answered. For a person's agent the
+    /// extractor has already checked it (live pages, rights).
+    ///
+    /// # Errors
+    /// 400 for a malformed or missing ID.
+    pub fn artifact(&self) -> Result<ArtifactId, ApiError> {
+        crate::routes::artifacts::parse_id(self.raw_artifact.as_deref().unwrap_or_default())
+    }
+
+    /// An artifact the request names outside its path (its query or body):
+    /// for a person's agent, 404 for a live page or one that does not exist
+    /// and 403 `not_permitted` unless its rights allow reading it; for any
+    /// other caller, just the parse.
+    ///
+    /// # Errors
+    /// As above, and 400 for a malformed ID.
+    pub async fn named_artifact(&self, s: &AppState, raw: &str) -> Result<ArtifactId, ApiError> {
+        let id = crate::routes::artifacts::parse_id(raw)?;
+        if let Caller::PersonAgent { person, rights, .. } = &self.caller {
+            if s.live_ids.contains(id.as_str()) {
+                return Err(ApiError::not_found());
+            }
+            let right = (RightType::Artifacts, "read");
+            if !allowed_at(s, rights, person, right, &id).await? {
+                return Err(not_permitted(right));
+            }
+        }
+        Ok(id)
+    }
+
+    /// For a person's agent, that its rights allow `right` at artifact `id`
+    /// as well (a route whose right depends on what the request does).
+    ///
+    /// # Errors
+    /// 403 `not_permitted` naming `right`.
+    pub async fn also_needs(
+        &self,
+        s: &AppState,
+        right: (RightType, &'static str),
+        id: &ArtifactId,
+    ) -> Result<(), ApiError> {
+        if let Caller::PersonAgent { person, rights, .. } = &self.caller
+            && !allowed_at(s, rights, person, right, id).await?
+        {
+            return Err(not_permitted(right));
+        }
+        Ok(())
+    }
+}
+
+/// Whether `rights` allow `right` at artifact `id`, `own` meaning created
+/// by `person` (read from the store).
+async fn allowed_at(
+    s: &AppState,
+    rights: &Arc<clax_core::rights::Rights>,
+    person: &Option<String>,
+    (kind, action): (RightType, &'static str),
+    id: &ArtifactId,
+) -> Result<bool, ApiError> {
+    let (rights, person, aid) = (rights.clone(), person.clone(), id.as_str().to_string());
+    s.store_call(move |st| {
+        let own = |x: &str| {
+            st.artifact_created_by(x, person.as_deref())
+                .unwrap_or(false)
+        };
+        Ok(rights.allows(kind, action, Some(&aid), &own))
+    })
+    .await
+}
+
+/// A route that refuses a person's agent (spec §7.5, `Denied`): 403
+/// `forbidden` for a `Clax-Grant` request. A token request whose path names
+/// a session is checked as [`Identity::caller`] does, so the token never
+/// names another credential's session (M4). The handler calls
+/// [`DeniedToGrants::refuse_agents`] when it builds a view of others'
+/// content or streams events: those serve people, not agents.
+pub struct DeniedToGrants {
+    who: Identity,
+    path_session: Option<String>,
+}
+
+impl DeniedToGrants {
+    /// 403 `not_for_agents` for the owner's agents (the token with a session
+    /// in its path or `X-Clax-Session`, or the agent-channel marker).
+    ///
+    /// # Errors
+    /// As above.
+    pub fn refuse_agents(&self) -> Result<(), ApiError> {
+        let agent = self.who.token
+            && (self.who.agent_marker
+                || self.who.header_session.is_some()
+                || self.path_session.is_some());
+        if agent {
+            Err(crate::auth::not_for_agents())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// The request carried the daemon token (the owner by hand or the
+    /// owner's agent): what the daemon shows only to them.
+    pub fn holds_token(&self) -> bool {
+        self.who.token
+    }
+
+    /// The request's caller, resolved in full (a store read for some).
+    ///
+    /// # Errors
+    /// [`Identity::caller`]'s.
+    pub async fn caller(&self, s: &AppState) -> Result<Caller, ApiError> {
+        resolve(s, self.who.clone(), self.path_session.clone()).await
+    }
+}
+
+impl FromRequestParts<AppState> for DeniedToGrants {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, s: &AppState) -> Result<Self, ApiError> {
+        if crate::auth::is_grant_request(&parts.headers) {
+            return Err(crate::auth::grants_refused());
+        }
+        let who = Identity::from_parts(&parts.headers, &parts.extensions, &s.token);
+        let path_session = path_session(parts, s).await;
+        let d = DeniedToGrants { who, path_session };
+        if d.who.token && d.path_session.is_some() {
+            // M4: the path's session must be the token's.
+            d.caller(s).await?;
+        }
+        Ok(d)
+    }
+}
+
+/// A route of the grant flow (spec §6.3, §7.5 `Grant`): its handler checks
+/// the GNAP credentials and signature itself.
+pub struct GrantFlow;
+
+impl FromRequestParts<AppState> for GrantFlow {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(_: &mut Parts, _: &AppState) -> Result<Self, Self::Rejection> {
+        Ok(GrantFlow)
     }
 }
 
@@ -308,7 +747,7 @@ impl<N: Need> FromRequestParts<AppState> for Agent<N> {
         let id = Identity::from_parts(&parts.headers, &parts.extensions, &s.token);
         let token = id.token;
         let ps = path_session(parts, s).await;
-        let aid = RawPathParams::from_request_parts(parts, s)
+        let raw_artifact = RawPathParams::from_request_parts(parts, s)
             .await
             .ok()
             .and_then(|p| {
@@ -317,13 +756,14 @@ impl<N: Need> FromRequestParts<AppState> for Agent<N> {
                     .map(|(_, v)| v.to_string())
             });
         let caller = resolve(s, id, ps).await?;
-        let artifact = match (&caller, aid) {
-            (Caller::PersonAgent { .. }, Some(a)) => {
-                Some(ArtifactId::parse(&a).map_err(|_| ApiError::not_found())?)
-            }
-            (_, a) => a.and_then(|a| ArtifactId::parse(&a).ok()),
-        };
         if let Caller::PersonAgent { person, rights, .. } = &caller {
+            if !N::GRANTS {
+                return Err(crate::auth::grants_refused());
+            }
+            let artifact = raw_artifact
+                .as_deref()
+                .map(|a| ArtifactId::parse(a).map_err(|_| ApiError::not_found()))
+                .transpose()?;
             // Live pages are the owner's own browsing: never an agent's of
             // another machine (spec §7.5, chrome-overlay L10).
             if artifact
@@ -334,18 +774,7 @@ impl<N: Need> FromRequestParts<AppState> for Agent<N> {
             }
             if let Some((kind, action)) = N::RIGHT {
                 let allowed = match &artifact {
-                    Some(a) => {
-                        let (rights, person, aid) =
-                            (rights.clone(), person.clone(), a.as_str().to_string());
-                        s.store_call(move |st| {
-                            let own = |x: &str| {
-                                st.artifact_created_by(x, person.as_deref())
-                                    .unwrap_or(false)
-                            };
-                            Ok(rights.allows(kind, action, Some(&aid), &own))
-                        })
-                        .await?
-                    }
+                    Some(a) => allowed_at(s, rights, person, (kind, action), a).await?,
                     None if action == "create" => rights.allows(kind, action, None, &|_| false),
                     None => rights.allows_somewhere(kind, action),
                 };
@@ -359,7 +788,7 @@ impl<N: Need> FromRequestParts<AppState> for Agent<N> {
         }
         Ok(Agent {
             caller,
-            artifact,
+            raw_artifact,
             token,
             _n: PhantomData,
         })
@@ -942,7 +1371,7 @@ pub async fn verify_layer(State(s): State<AppState>, mut req: Request, next: Nex
         .extensions()
         .get::<MatchedPath>()
         .and_then(|m| need_of(req.method(), m.as_str()));
-    let Some(need) = need else {
+    let Some(need) = need.filter(|n| n.grants) else {
         return crate::auth::grants_refused().into_response();
     };
     if need.class == Class::Filtered && !FILTERED_LIVE.contains(&need.name) {
@@ -991,6 +1420,7 @@ pub async fn verify_layer(State(s): State<AppState>, mut req: Request, next: Nex
 #[cfg(debug_assertions)]
 pub async fn test_gate(
     State(s): State<AppState>,
+    _d: DeniedToGrants,
     _t: crate::auth::RequireToken,
 ) -> axum::Json<GateState> {
     axum::Json(s.agent_gate.state())
@@ -999,7 +1429,7 @@ pub async fn test_gate(
 /// `GET /api/_test/caller` and `GET /api/_test/sessions/{id}/caller`
 /// (debug builds): the caller the request resolves to.
 #[cfg(debug_assertions)]
-pub async fn test_caller(caller: Caller) -> axum::Json<serde_json::Value> {
+pub async fn test_caller(_d: DeniedToGrants, caller: Caller) -> axum::Json<serde_json::Value> {
     use serde_json::json;
     axum::Json(match &caller {
         Caller::Owner { browser } => json!({"caller": "owner", "browser": browser}),

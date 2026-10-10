@@ -64,6 +64,7 @@ fn gone() -> Response {
 /// from the daemon's own machine or from another page.
 pub async fn browser_link(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     code: Result<Path<String>, axum::extract::rejection::PathRejection>,
     req: axum::extract::Request,
 ) -> Response {

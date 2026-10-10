@@ -301,13 +301,16 @@ fn push_info(
 /// came from, and why push is unavailable when it is. `bin`, the path of the
 /// daemon's `codex` (it usually names the user's home), is included only for
 /// a request with the token.
-pub async fn push_status(State(s): State<AppState>, headers: axum::http::HeaderMap) -> Json<Value> {
+pub async fn push_status(
+    State(s): State<AppState>,
+    d: crate::agent::DeniedToGrants,
+) -> Json<Value> {
     let mut codex = json!({
         "available": s.codex.available(),
         "source": s.codex.source,
         "reason": s.codex.reason(),
     });
-    if crate::auth::has_token(&headers, &s.token) {
+    if d.holds_token() {
         codex["bin"] = json!(
             s.codex
                 .bin
@@ -519,6 +522,7 @@ fn clax_tool(bare: &str) -> bool {
 /// [`ToolCallIdReport::validate`]: clax_core::audit::ToolCallIdReport::validate
 pub async fn tool_call_ids(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     audit: DeferredAudit,
     id: Result<Path<String>, PathRejection>,

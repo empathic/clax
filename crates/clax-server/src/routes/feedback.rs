@@ -3,7 +3,7 @@
 //! `GET /api/sessions/<sid>/notices` (W), the notices `clax feedback follow`
 //! prints.
 
-use super::artifacts::{body, parse_id, path};
+use super::artifacts::{body, path};
 use crate::agent::{FeedbackAck, FeedbackNotices, FeedbackPoll, TokenOrAgent};
 use crate::auth::RequireToken;
 use crate::error::ApiError;
@@ -136,7 +136,7 @@ pub struct FeedbackQuery {
 /// separately.
 pub async fn poll(
     State(s): State<AppState>,
-    _a: TokenOrAgent<FeedbackPoll>,
+    TokenOrAgent(a): TokenOrAgent<FeedbackPoll>,
     headers: HeaderMap,
     sid: Result<Path<String>, PathRejection>,
     q: Result<Query<FeedbackQuery>, QueryRejection>,
@@ -148,12 +148,10 @@ pub async fn poll(
         Some(t) => Tier::parse(t)
             .ok_or_else(|| ApiError::bad_request("invalid_tier", format!("unknown tier '{t}'")))?,
     };
-    let artifact = q
-        .artifact
-        .as_deref()
-        .map(parse_id)
-        .transpose()?
-        .map(|a| a.as_str().to_string());
+    let artifact = match q.artifact.as_deref() {
+        Some(raw) => Some(a.named_artifact(&s, raw).await?.as_str().to_string()),
+        None => None,
+    };
     let check = sid.clone();
     // Built once: the poll's deliveries are recorded as this session's agent.
     let audit = std::sync::Arc::new(
@@ -355,6 +353,7 @@ pub async fn ack(
 #[cfg(debug_assertions)]
 pub async fn expire(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     sid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -377,6 +376,7 @@ pub struct WaitersQuery {
 #[cfg(debug_assertions)]
 pub async fn waiters(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     sid: Result<Path<String>, PathRejection>,
     q: Result<Query<WaitersQuery>, QueryRejection>,

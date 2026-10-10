@@ -113,12 +113,15 @@ type Streams = StreamMap<Option<String>, BroadcastStream<Arc<Frame>>>;
 /// `GET /api/artifacts/{aid}/room`.
 pub async fn room(
     State(s): State<AppState>,
+    d: crate::agent::DeniedToGrants,
     Path(aid): Path<String>,
     Query(q): Query<RoomQuery>,
     _o: SameOrigin,
     subscriber: Subscriber,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
+    // The room streams presence and documents to people (spec §7.5).
+    d.refuse_agents()?;
     let id = parse_id(&aid)?;
     if !peer_label_ok(&q.peer) {
         return Err(ApiError::bad_request(

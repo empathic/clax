@@ -1,7 +1,6 @@
 //! Asset upload, listing, deletion, and the /_blob/<id> byte route.
 
-use crate::agent::{AssetsUpload, TokenOrAgent};
-use crate::auth::RequireToken;
+use crate::agent::{Agent, AssetsUpload, DeniedToGrants, TokenOrAgent};
 use crate::error::ApiError;
 use crate::live::SeesLive;
 use crate::routes::artifacts::{parse_id, path};
@@ -85,6 +84,7 @@ pub async fn upload(
 
 pub async fn list(
     State(s): State<AppState>,
+    _a: Agent<crate::agent::AssetsList>,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let aid = path(aid)?;
@@ -100,7 +100,7 @@ pub async fn list(
 
 pub async fn delete(
     State(s): State<AppState>,
-    _t: RequireToken,
+    _a: TokenOrAgent<crate::agent::AssetsDelete>,
     audit: AuditCtx,
     params: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<StatusCode, ApiError> {
@@ -118,6 +118,7 @@ pub async fn delete(
 /// may not see live pages ([`SeesLive`]), as a missing one does.
 pub async fn blob(
     State(s): State<AppState>,
+    _d: DeniedToGrants,
     sees: SeesLive,
     asset_id: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {

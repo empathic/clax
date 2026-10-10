@@ -272,6 +272,7 @@ where
 /// after it aborts the transfer ([`stream_export`]).
 pub async fn export(
     axum::extract::State(s): axum::extract::State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     who: Identity,
     axum::extract::RawQuery(query): axum::extract::RawQuery,
 ) -> Result<axum::response::Response, crate::error::ApiError> {
@@ -318,6 +319,7 @@ pub async fn export(
 /// and `cursor` and `lag_ms` are null while the journal does not run.
 pub async fn status(
     axum::extract::State(s): axum::extract::State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     who: Identity,
 ) -> Result<axum::Json<serde_json::Value>, crate::error::ApiError> {
     owner_reads_history(&who)?;
@@ -373,6 +375,7 @@ fn tool_call_response(seq: Option<i64>) -> (StatusCode, axum::Json<serde_json::V
 /// recorded (an ended session's late reports are kept).
 pub async fn session_tool_call(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
@@ -415,6 +418,7 @@ pub async fn session_tool_call(
 /// sessionless agent.
 pub async fn tool_call(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     audit: DeferredAudit,
     req: Result<axum::Json<ToolCallReport>, JsonRejection>,
