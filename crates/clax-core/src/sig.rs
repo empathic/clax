@@ -3,8 +3,10 @@
 //! A connected machine holds an Ed25519 [`KeyPair`] and signs every request
 //! over a fixed canonical string ([`SignInput::canonical`]): the method, the
 //! path and query as sent, the `Host`, the time `t`, a nonce, the SHA-256 of
-//! the body and the SHA-256 of the access token (an empty line for the grant
-//! request, which has no token yet). The signature travels in
+//! the body, the SHA-256 of the access token (an empty line for the grant
+//! request, which has no token yet) and the SHA-256 of the agent-side
+//! headers ([`AGENT_HEADERS`], serialized by [`encode_agent_headers`]). The
+//! signature travels in
 //!
 //! ```text
 //! Clax-Signature: t=<unix seconds>, n=<22 base64url chars>, s=<86 base64url chars>
@@ -24,8 +26,22 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 
-/// First line of the canonical string.
-pub const VERSION_LINE: &str = "clax-ed25519 v1";
+/// First line of the canonical string. `v2` is the only version: it signs
+/// the agent-side headers ([`AGENT_HEADERS`]) as well as `v1`'s lines, and
+/// `v1` is never accepted.
+pub const VERSION_LINE: &str = "clax-ed25519 v2";
+/// The agent-side headers a signature covers, in the order
+/// [`encode_agent_headers`] takes them: the session the request acts as,
+/// the agent-channel marker, the agent side that sent it, its git context
+/// and the tool call it is made under. Lowercase; names match ignoring
+/// case.
+pub const AGENT_HEADERS: [&str; 5] = [
+    "x-clax-session",
+    "x-clax-channel",
+    "x-clax-via",
+    "x-clax-git",
+    "x-clax-call",
+];
 /// Seconds a verified nonce is remembered for its key.
 pub const NONCE_WINDOW_S: i64 = 240;
 /// Seconds `t` may differ from the daemon's clock: half the window, as
@@ -187,23 +203,27 @@ pub struct SignInput<'a> {
     /// SHA-256 of the access token; `None` for the grant request, which
     /// signs an empty token line.
     pub token_sha256: Option<[u8; 32]>,
+    /// [`agent_headers_sha256`] of the request's [`AGENT_HEADERS`].
+    pub agent_headers_sha256: [u8; 32],
 }
 
 impl SignInput<'_> {
     /// The signed message: the UTF-8 of [`VERSION_LINE`], the method, the
     /// path and query, the host, `t`, the nonce, the body's SHA-256 in
-    /// lowercase hex and the token's (or nothing), joined by `\n`, with no
-    /// trailing newline.
+    /// lowercase hex, the token's (or nothing) and the agent headers'
+    /// ([`agent_headers_sha256`]), joined by `\n`, with no trailing
+    /// newline.
     pub fn canonical(&self) -> Vec<u8> {
         let token = self.token_sha256.map(|h| hex(&h)).unwrap_or_default();
         format!(
-            "{VERSION_LINE}\n{}\n{}\n{}\n{}\n{}\n{}\n{token}",
+            "{VERSION_LINE}\n{}\n{}\n{}\n{}\n{}\n{}\n{token}\n{}",
             self.method,
             self.path_and_query,
             self.host,
             self.t,
             self.nonce,
             hex(&self.body_sha256),
+            hex(&self.agent_headers_sha256),
         )
         .into_bytes()
     }
@@ -215,6 +235,68 @@ impl SignInput<'_> {
             .iter()
             .any(|f| f.chars().any(char::is_control))
     }
+}
+
+/// The values of a request's [`AGENT_HEADERS`], in their order: `None` for
+/// a header the request does not carry, the value's bytes as sent for one
+/// it does.
+pub type AgentHeaderValues<'a> = [Option<&'a [u8]>; AGENT_HEADERS.len()];
+
+/// The values of [`AGENT_HEADERS`] among `headers` (name and value pairs,
+/// names matched ignoring case; every other header is ignored).
+///
+/// # Errors
+/// [`SigError::Bad`] when one of them is given more than once, even with
+/// the same value: one signature never stands for two readings.
+pub fn agent_header_values<'a>(
+    headers: impl IntoIterator<Item = (&'a str, &'a [u8])>,
+) -> Result<AgentHeaderValues<'a>, SigError> {
+    let mut values: AgentHeaderValues<'a> = [None; AGENT_HEADERS.len()];
+    for (name, value) in headers {
+        let Some(i) = AGENT_HEADERS
+            .iter()
+            .position(|h| h.eq_ignore_ascii_case(name))
+        else {
+            continue;
+        };
+        if values[i].replace(value).is_some() {
+            return Err(SigError::Bad);
+        }
+    }
+    Ok(values)
+}
+
+/// The fixed serialization of the agent headers' values that
+/// [`agent_headers_sha256`] hashes: for each of [`AGENT_HEADERS`] in order,
+/// one record ending in `\n`, which is `-` for an absent header and, for a
+/// present one, `+`, the value's length in bytes in decimal, `:` and the
+/// value's bytes. An absent header and an empty one differ (`-` and `+0:`),
+/// and the length prefix keeps any value from reading as another record.
+pub fn encode_agent_headers(values: &AgentHeaderValues<'_>) -> Vec<u8> {
+    let mut out = Vec::new();
+    for v in values {
+        match v {
+            None => out.push(b'-'),
+            Some(v) => {
+                out.extend_from_slice(format!("+{}:", v.len()).as_bytes());
+                out.extend_from_slice(v);
+            }
+        }
+        out.push(b'\n');
+    }
+    out
+}
+
+/// The SHA-256 of [`encode_agent_headers`] of `values`: the last line of
+/// the canonical string, in lowercase hex.
+pub fn agent_headers_sha256(values: &AgentHeaderValues<'_>) -> [u8; 32] {
+    Sha256::digest(encode_agent_headers(values)).into()
+}
+
+/// [`agent_headers_sha256`] of a request that carries none of
+/// [`AGENT_HEADERS`].
+pub fn no_agent_headers_sha256() -> [u8; 32] {
+    agent_headers_sha256(&[None; AGENT_HEADERS.len()])
 }
 
 /// A parsed `Clax-Signature` header.
@@ -641,49 +723,110 @@ mod tests {
             nonce,
             body_sha256: sha(body),
             token_sha256: Some(sha(token.as_bytes())),
+            agent_headers_sha256: no_agent_headers_sha256(),
         }
     }
 
     #[test]
     fn canonical_string_is_fixed() {
-        let i = input(
-            "POST",
-            "/api/artifacts?x=1",
-            "192.168.1.5:7480",
-            1_760_000_000,
-            "n0",
-            b"{}",
-            "cxg_t",
-        );
-        let s = String::from_utf8(i.canonical()).unwrap();
-        let lines: Vec<_> = s.lines().collect();
+        let session = b"01J9ZK3M4N5P6Q7R8S9T0V1W2X".as_slice();
+        // Session, channel and via present, git absent, call empty.
+        let values = [
+            Some(session),
+            Some(b"agent".as_slice()),
+            Some(b"mcp".as_slice()),
+            None,
+            Some(b"".as_slice()),
+        ];
         assert_eq!(
-            lines[..6],
-            [
-                "clax-ed25519 v1",
+            encode_agent_headers(&values),
+            b"+26:01J9ZK3M4N5P6Q7R8S9T0V1W2X\n+5:agent\n+3:mcp\n-\n+0:\n"
+        );
+        let i = SignInput {
+            agent_headers_sha256: agent_headers_sha256(&values),
+            ..input(
                 "POST",
                 "/api/artifacts?x=1",
                 "192.168.1.5:7480",
-                "1760000000",
-                "n0"
-            ]
-        );
+                1_760_000_000,
+                "n0",
+                b"{}",
+                "cxg_t",
+            )
+        };
+        let s = String::from_utf8(i.canonical()).unwrap();
         assert_eq!(
-            lines[6],
-            "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+            s,
+            "clax-ed25519 v2\n\
+             POST\n\
+             /api/artifacts?x=1\n\
+             192.168.1.5:7480\n\
+             1760000000\n\
+             n0\n\
+             44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\n\
+             e363d964cd2aef8c9f8019233052f146fd7c41533e194244bd856d9dedfdfcd4\n\
+             0200b59637463a41412fc63797d0699f6daaab4bed5d838ac1a4c264398d66b5"
         );
-        assert_eq!(lines[7], hex(&sha(b"cxg_t")));
-        assert_eq!(lines.len(), 8);
-        assert!(!s.ends_with('\n'));
-        // The grant request has no token: its last line is empty.
+        assert_eq!(s.lines().count(), 9);
+        // A request with none of the headers.
+        assert_eq!(
+            hex(&no_agent_headers_sha256()),
+            "a00d0d823baf03fa53cba1260dd2f71fc7e8694679ce444737a7168dfab351e8"
+        );
+        // The grant request has no token: its token line is empty.
         let grant = SignInput {
             token_sha256: None,
             ..i
         };
         let g = String::from_utf8(grant.canonical()).unwrap();
-        assert!(
-            g.ends_with("\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\n")
+        assert!(g.ends_with(
+            "\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\n\n\
+             0200b59637463a41412fc63797d0699f6daaab4bed5d838ac1a4c264398d66b5"
+        ));
+    }
+
+    #[test]
+    fn agent_headers_are_read_once_each_in_a_fixed_order() {
+        let pairs = [
+            ("X-Clax-Call", b"c".as_slice()),
+            ("content-type", b"x"),
+            ("x-clax-session", b"s"),
+        ];
+        let v = agent_header_values(pairs).unwrap();
+        assert_eq!(
+            v,
+            [Some(b"s".as_slice()), None, None, None, Some(b"c".as_slice())]
         );
+        // A header given twice is refused, whatever its values and case.
+        for twice in [
+            vec![("x-clax-session", b"a".as_slice()), ("x-clax-session", b"b")],
+            vec![("x-clax-via", b"mcp".as_slice()), ("X-Clax-Via", b"mcp")],
+            vec![("x-clax-git", b"".as_slice()), ("x-clax-git", b"")],
+        ] {
+            assert_eq!(agent_header_values(twice.clone()), Err(SigError::Bad), "{twice:?}");
+        }
+    }
+
+    #[test]
+    fn absent_and_empty_agent_headers_hash_differently() {
+        for i in 0..AGENT_HEADERS.len() {
+            let mut empty = [None; AGENT_HEADERS.len()];
+            empty[i] = Some(b"".as_slice());
+            assert_ne!(
+                agent_headers_sha256(&empty),
+                no_agent_headers_sha256(),
+                "{}",
+                AGENT_HEADERS[i]
+            );
+            // Nor does one header's value read as another's.
+            let mut shifted = [None; AGENT_HEADERS.len()];
+            shifted[(i + 1) % AGENT_HEADERS.len()] = Some(b"".as_slice());
+            assert_ne!(agent_headers_sha256(&empty), agent_headers_sha256(&shifted));
+        }
+        // A value holding a record separator stays one value.
+        let a = [Some(b"x\n-".as_slice()), None, None, None, None];
+        let b = [Some(b"x".as_slice()), None, None, None, None];
+        assert_ne!(encode_agent_headers(&a), encode_agent_headers(&b));
     }
 
     /// The `i`th test nonce: 22 base64url characters.
@@ -709,6 +852,16 @@ mod tests {
             input("GET", "/api/artifacts", "h", 100, &n1, b"", "u"),
             SignInput {
                 token_sha256: None,
+                ..i
+            },
+            SignInput {
+                agent_headers_sha256: agent_headers_sha256(&[
+                    Some(b"".as_slice()),
+                    None,
+                    None,
+                    None,
+                    None,
+                ]),
                 ..i
             },
         ] {
