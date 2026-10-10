@@ -1,8 +1,8 @@
 //! REST routes for artifacts and versions.
 
 use crate::agent::{Agent, ArtifactsList, TokenOrAgent, page_marker, person_agent_session};
-use crate::feedback::VisFor;
 use crate::error::ApiError;
+use crate::feedback::VisFor;
 use crate::state::AppState;
 use axum::Json;
 use axum::body::Bytes;
@@ -491,7 +491,6 @@ fn publisher(caller: &crate::auth::Caller) -> Option<String> {
         _ => None,
     }
 }
-
 
 /// The artifact (with the owner fields of [`with_owner`]) and its versions,
 /// filtered for an agent channel's reader. Without the token, no session ID

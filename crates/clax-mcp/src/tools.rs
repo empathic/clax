@@ -1151,9 +1151,19 @@ impl ClaxTools {
         let path = a
             .path
             .unwrap_or_else(|| clax_core::publish::INDEX.to_string());
-        let meta = version["files"]
-            .get(&path)
-            .ok_or_else(|| not_found(format!("version {n} of {id} has no file '{path}'")))?;
+        let Some(meta) = version["files"].get(&path) else {
+            // A version that withholds files from this agent's person lists
+            // none of them; the daemon answers a withheld file and a missing
+            // one alike (403 `withheld`), which the agent is handed.
+            if version["files_withheld"].as_u64().unwrap_or(0) > 0
+                && let Err(e) = self.client.file_bytes(&id, n, &path).await
+            {
+                return Err(self.fail(e));
+            }
+            return Err(not_found(format!(
+                "version {n} of {id} has no file '{path}'"
+            )));
+        };
         let content_type = meta["content_type"].as_str().unwrap_or("").to_string();
         let bytes = self
             .client

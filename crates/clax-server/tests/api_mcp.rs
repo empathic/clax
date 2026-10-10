@@ -399,3 +399,48 @@ async fn mcp_tool_calls_are_the_sessionless_agent_under_a_call() {
     );
     assert_eq!(call_id.as_deref(), body["call"]["call_id"].as_str());
 }
+
+/// The `read` tool, for an agent whose person may not see a file, hands
+/// it the daemon's `withheld` answer, alike for a withheld file and one
+/// the version lacks, and never the name it was asked for.
+#[tokio::test]
+async fn the_read_tool_answers_a_withheld_file_as_withheld() {
+    use crate::common::people::{CARRIED_NAME, FILE_NAME, World};
+    let w = World::two_people().await;
+    let session = mcp_session(&w.ts).await;
+    let aid = &w.read.artifact;
+    let mut answers = Vec::new();
+    for (i, path) in [FILE_NAME, CARRIED_NAME, "not-there.css"]
+        .into_iter()
+        .enumerate()
+    {
+        let v = mcp_call(
+            &w.ts,
+            &session,
+            10 + i as u32,
+            "read",
+            json!({"url_or_id": aid, "version": 2, "path": path}),
+        )
+        .await;
+        let text = v.to_string();
+        assert_eq!(v["result"]["isError"], true, "{path}: {text}");
+        assert!(
+            text.contains("withheld") && text.contains("Mia"),
+            "{path}: {text}"
+        );
+        assert!(!text.contains(path), "{path}: {text}");
+        answers.push(v["result"]["content"].clone());
+    }
+    assert!(answers.windows(2).all(|p| p[0] == p[1]), "{answers:?}");
+    // A file it may see reads as before.
+    let v = mcp_call(
+        &w.ts,
+        &session,
+        20,
+        "read",
+        json!({"url_or_id": aid, "version": 2, "path": "owner.html"}),
+    )
+    .await;
+    assert_eq!(v["result"]["isError"], false, "{v}");
+    assert!(v.to_string().contains("<p>mine</p>"), "{v}");
+}

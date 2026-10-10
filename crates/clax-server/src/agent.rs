@@ -683,12 +683,11 @@ impl ReadRights {
     pub fn allows(&self, a: &clax_core::model::Artifact) -> bool {
         match &self.0 {
             None => true,
-            Some((rights, person)) => rights.allows(
-                RightType::Artifacts,
-                "read",
-                Some(&a.id),
-                &|x| x == a.id && a.authors.creator == *person,
-            ),
+            Some((rights, person)) => {
+                rights.allows(RightType::Artifacts, "read", Some(&a.id), &|x| {
+                    x == a.id && a.authors.creator == *person
+                })
+            }
         }
     }
 
