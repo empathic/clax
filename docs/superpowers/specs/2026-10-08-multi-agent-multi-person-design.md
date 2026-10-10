@@ -870,18 +870,18 @@ of the owner's agents only, a person their agents' (§18).
 
 | Route | Class | Right |
 |---|---|---|
-| `GET /api/artifacts` | Filtered; artifacts the agent may not `read` are left out | artifacts read |
-| `POST /api/artifacts` | Filtered (returns the new artifact) | artifacts create |
+| `GET /api/artifacts` | Filtered; artifacts the agent may not `read` and live pages are left out (with `?artifact=`, answered as one that does not exist) | artifacts read |
+| `POST /api/artifacts` | Filtered (returns the new artifact); a person's agent creates from a session (400 `no_session`), as its person | artifacts create |
 | `GET /api/artifacts/{aid}` (embedded `working`, `participants`) | Filtered | artifacts read |
-| `PATCH /api/artifacts/{aid}` (pin, metadata) | Filtered (returns the artifact) | artifacts update |
+| `PATCH /api/artifacts/{aid}` (pin, metadata) | Filtered (returns the artifact); a person's agent edits from a session (400 `no_session`), never with `x-clax-via: page` (400 `invalid_via_page`) | artifacts update |
 | `DELETE /api/artifacts/{aid}` | Own | artifacts delete |
-| `GET …/versions`, `GET …/versions/{n}` | Filtered (labels, notes, file names) | artifacts read |
-| `POST …/versions` (publish) | Filtered (returns the artifact; on conflict the current version's summary) | artifacts update |
-| `GET …/files`, `GET …/versions/{n}/files/{*path}` | Filtered (names; content 403 `withheld`) | artifacts read |
+| `GET …/versions`, `GET …/versions/{n}` | Filtered (labels, notes, files, and `content_sha256` when a file is withheld) | artifacts read |
+| `POST …/versions` (publish) | Filtered (returns the artifact and the new version, whose carried files keep their authors; on conflict the current version's summary, which clients read through `GET /api/artifacts/{aid}`); a person's agent publishes from a session (400 `no_session`), as its person, never with `x-clax-via: page` (400 `invalid_via_page`), and leaves untargeted feedback untargeted | artifacts update |
+| `GET …/files`, `GET …/versions/{n}/files/{*path}` | Filtered (names; content 403 `withheld` with the authors of the version's withheld files, for a withheld file and, while the version withholds any, for a path it lacks) | artifacts read |
 | `GET /c/{aid}/v/{n}/…`, `GET /_blob/{asset}` | Denied to grants (browser content routes; agents read through the routes above) | — |
-| `GET …/assets` / `POST …/assets` / `DELETE …/assets/{id}` | Filtered (names) / Filtered (returns the asset) / Own | read / update / delete |
+| `GET …/assets` / `POST …/assets` / `DELETE …/assets/{id}` | Filtered (names, types, sizes) / Filtered (returns the asset; a person's agent uploads from a session, never with `x-clax-via: page`) / Own | read / update / delete |
 | `GET …/presence` | Own (display names and states only) | artifacts read |
-| `GET /api/artifacts/{aid}/working`, `GET /api/working` | Filtered (messages, titles) | comments watch |
+| `GET /api/artifacts/{aid}/working`, `GET /api/working` | Filtered (messages; the roster leaves out live pages and, for a person's agent, artifacts it may not `read`, and names no other credential's session) | comments watch |
 | `GET /api/threads` (all threads; `clax comments`, `/clax:comments`) | Filtered; Denied to `PersonAgent` (they list per artifact, §6.7) | comments read |
 | `GET …/threads`, `GET …/threads/{tid}`, `GET …/threads/{tid}/clip` | Filtered | comments read |
 | `POST …/threads` (create) | Filtered (returns the thread with its anchor); a person's agent writes from a session (400 `no_session`) | comments write |
@@ -911,7 +911,10 @@ Listing under location-limited rights leaves out what the agent may not
 `read`. A thread write other than creating a thread (a comment or reply,
 resolve, reopen, delete, send or batch send) also needs `comments read` at
 the artifact (403 `not_permitted`): an agent acts only on threads it can
-list. Feedback on an artifact the agent may no longer read is held as
+list. Creating a thread anchored on a file the agent may not see answers
+as an anchor on a file the version lacks (400 `invalid_anchor`), so a
+guessed name is never confirmed; `index.html`, which every version has,
+is never refused. Feedback on an artifact the agent may no longer read is held as
 withheld, with the placeholder "you no longer have access to this page".
 
 ## 8. The visibility filter
@@ -975,12 +978,16 @@ Withheld fields are replaced, never dropped:
   The thread gains `"withheld": {"count", "authors": [{"public_id",
   "name"}], "approval": "none" | "requested" | "declined"}` whenever any
   field of it is withheld.
-- **Artifact:** `title`, `description`, `icon`, `capabilities` null and `"withheld":
-  {"authors": […]}`; embedded working messages null with `"withheld":
-  true`.
+- **Artifact:** each of `title`, `description`, `icon`, `capabilities`
+  null when its own authors are withheld, and `"withheld": {"authors":
+  […]}` naming every author withheld; embedded working messages null
+  with `"withheld": true`.
 - **Version:** `label` and `note` null when withheld; each withheld file
-  left out of `files`, with `"files_withheld": n`; its content route
-  answers 403 `withheld` with the authors.
+  left out of `files`, with `"files_withheld": n`, and then
+  `content_sha256` (a hash over every file's name and bytes) null; its
+  content route answers 403 `withheld` with the authors of the version's
+  withheld files, alike for a path the version lacks while it withholds
+  any file, so the route never confirms a guessed name.
 - **Document:** read by its path, `{"doc_id", "version", "withheld":
   {"authors": […]}}`, no `data` (the caller named the path). In `GET
   …/docs`, withheld documents are counted, never listed: only visible
@@ -989,7 +996,8 @@ Withheld fields are replaced, never dropped:
   whatever the filter), so neither their paths nor their field values are
   revealed. Content-dependent writes on a withheld document are 403
   `withheld` before evaluation (§7.5).
-- **Asset:** name null, `"withheld": true`.
+- **Asset:** name null, and `content_type`, `ext` and `size` (which its
+  bytes decide) null, `"withheld": true`; its ID, artifact and time stay.
 - **Feedback text** (§8.4): for a withheld comment body, one line per
   (author, thread): `[clax] N comments from <name> on "<title>" (thread
   <ID>) are withheld until your person approves them.` then `Your person
