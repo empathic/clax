@@ -190,7 +190,11 @@ fn harness_session_of(a: &AgentActor) -> Option<&str> {
 pub fn actor_string(actor: &Actor, clax_version: &str) -> String {
     match actor {
         Actor::Agent(a) => match (&a.session_id, harness_session_of(a)) {
-            (None, _) => "agent:clax-mcp".into(),
+            (None, _) => match (&a.grant_id, a.channel) {
+                (Some(g), _) => format!("agent:clax-grant/{}", actor_segment(g)),
+                (None, Some(via)) => format!("agent:clax-{}", via.as_str()),
+                (None, None) => "agent:clax-mcp".into(),
+            },
             (Some(_), Some(hsid)) => format!(
                 "agent:{}/{}",
                 actor_segment(provider_for(harness_of(a))),
@@ -203,8 +207,14 @@ pub fn actor_string(actor: &Actor, clax_version: &str) -> String {
             ),
         },
         Actor::Owner { .. } => "human:clax-owner".into(),
-        Actor::Viewer { public_id, .. } => {
-            format!("human:clax-viewer/{}", actor_segment(public_id))
+        Actor::Viewer {
+            public_id, person, ..
+        } => {
+            let kind = if *person { "person" } else { "viewer" };
+            format!("human:clax-{kind}/{}", actor_segment(public_id))
+        }
+        Actor::Client { grant_id, .. } => {
+            format!("tool:clax-client/{}", actor_segment(grant_id))
         }
         Actor::Anonymous => "human:clax-anonymous".into(),
         Actor::System { .. } => format!("tool:clax/{}", actor_segment(clax_version)),
@@ -243,7 +253,19 @@ fn company_for(harness: &str) -> Option<&'static str> {
 pub fn actor_def(actor: &Actor, install: &str, clax_commit: &str, opts: &Redaction) -> Value {
     let identity = |system: &str, id: &str| json!({"system": system, "id": id});
     match actor {
-        Actor::Agent(a) if a.session_id.is_none() => json!({"name": "MCP client (no session)"}),
+        Actor::Agent(a) if a.session_id.is_none() => {
+            let name = match (&a.grant_id, a.channel) {
+                (Some(_), _) => "Agent of another machine (no session)".to_string(),
+                (None, Some(via)) => format!("Agent through {} (no session)", via.as_str()),
+                (None, None) => "MCP client (no session)".to_string(),
+            };
+            let mut def = json!({"name": name});
+            let ids = grant_identities(a, install);
+            if !ids.is_empty() {
+                def["identities"] = ids.into();
+            }
+            def
+        }
         Actor::Agent(a) => {
             let harness = harness_of(a);
             let provider = provider_for(harness);
@@ -257,6 +279,7 @@ pub fn actor_def(actor: &Actor, install: &str, clax_commit: &str, opts: &Redacti
             if let Some(handle) = &a.agent_handle {
                 ids.push(identity("clax-agent", handle));
             }
+            ids.extend(grant_identities(a, install));
             if let Some(t) = &a.transcript_path {
                 if opts.no_paths {
                     ids.push(identity(
@@ -280,6 +303,7 @@ pub fn actor_def(actor: &Actor, install: &str, clax_commit: &str, opts: &Redacti
         Actor::Viewer {
             public_id,
             display_name,
+            ..
         } => {
             let mut def = json!({
                 "identities": [identity("clax", &format!("{install}/{public_id}"))],
@@ -289,12 +313,36 @@ pub fn actor_def(actor: &Actor, install: &str, clax_commit: &str, opts: &Redacti
             }
             def
         }
+        Actor::Client {
+            grant_id,
+            client_name,
+        } => {
+            let mut def = json!({"identities": [identity("clax-grant", grant_id)]});
+            if !opts.no_names {
+                def["name"] = client_name.as_str().into();
+            }
+            def
+        }
         Actor::Anonymous => json!({"name": "Anonymous viewer"}),
         Actor::System { .. } => json!({
             "name": "Clax",
             "identities": [identity("clax-build", clax_commit)],
         }),
     }
+}
+
+/// The identities a grant's agent adds (spec §10.1, and spec
+/// 2026-10-08-multi-agent-multi-person §20.1): its person, as
+/// `clax-person` scoped to `install`, and its grant, as `clax-grant`.
+fn grant_identities(a: &AgentActor, install: &str) -> Vec<Value> {
+    let mut ids = Vec::new();
+    if let Some(p) = &a.person {
+        ids.push(json!({"system": "clax-person", "id": format!("{install}/{p}")}));
+    }
+    if let Some(g) = &a.grant_id {
+        ids.push(json!({"system": "clax-grant", "id": g}));
+    }
+    ids
 }
 
 /// The actors `row`'s step names, with their `ActorDef` definitions: its

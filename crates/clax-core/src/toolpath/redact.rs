@@ -292,8 +292,8 @@ fn body_class(kind: &str, field: &str) -> Class {
 fn actor_class(field: &str) -> Class {
     match field {
         "type" | "session_id" | "harness" | "harness_session_id" | "agent_handle" | "public_id"
-        | "reason" => Class::Safe,
-        "display_name" => Class::Name,
+        | "reason" | "grant_id" | "person" | "channel" => Class::Safe,
+        "display_name" | "client_name" => Class::Name,
         "transcript_path" => Class::Path,
         _ => Class::Unclassified,
     }
