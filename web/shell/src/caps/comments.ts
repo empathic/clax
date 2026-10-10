@@ -589,7 +589,7 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
 async function addPageComment(aid: string, tid: string, body: string): Promise<Thread> {
   const res = await fetch(`/api/artifacts/${encodeURIComponent(aid)}/threads/${encodeURIComponent(tid)}/comments`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-clax-via": "page" },
     body: JSON.stringify({ body, via_page: true }),
   });
   if (!res.ok) {
