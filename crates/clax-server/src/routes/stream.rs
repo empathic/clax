@@ -25,7 +25,8 @@ use std::convert::Infallible;
 /// owner or viewer cookie; see [`crate::identity`]) is resolved once, here, with the levels of the `db`
 /// routes; subscriptions made on the
 /// stream must come from the same caller. The body opens with `event: ready`
-/// (`{stream, seq, resumed, topics}`), then carries each subscribed topic's
+/// (`{stream, seq, resumed, topics, caller}`, `caller` being `{level,
+/// viewer}`: the level and viewer public ID the stream was opened for), then carries each subscribed topic's
 /// events with `id: <stream>:<seq>`, `resync` (`{topic, reason}`) for a
 /// topic the client must refetch, and a `: keep-alive` comment every
 /// `AppState::sse_keep_alive` while idle. It ends when the daemon shuts down
@@ -94,9 +95,10 @@ fn token_or_cookie(headers: &HeaderMap, token: &str, who: &crate::identity::Iden
 
 /// Debug builds only: how many `/api/stream` streams the hub holds
 /// (`held`, detached ones included), how many have a connection open
-/// (`open`), and the caller level of each open one (`levels`), so browser
-/// tests can check that a browser holds one, at the level its cookie gives.
-/// `{open, held, levels}`.
+/// (`open`), the caller level of each open one (`levels`), and how many it
+/// has opened since it started (`opened`; a resume opens none), so browser
+/// tests can check that a browser holds one, at the level its cookie gives,
+/// and count the streams it opens. `{open, held, levels, opened}`.
 #[cfg(debug_assertions)]
 pub async fn open_streams(
     State(s): State<AppState>,
@@ -109,7 +111,9 @@ pub async fn open_streams(
         .into_iter()
         .map(|l| serde_json::to_value(l).unwrap_or(Value::Null))
         .collect();
-    axum::Json(json!({ "open": st.attached, "held": st.streams, "levels": levels }))
+    axum::Json(
+        json!({ "open": st.attached, "held": st.streams, "levels": levels, "opened": st.opened }),
+    )
 }
 
 #[derive(Deserialize)]

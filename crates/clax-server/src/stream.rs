@@ -331,6 +331,8 @@ pub struct Stats {
     pub streams: usize,
     pub attached: usize,
     pub channels: usize,
+    /// Streams opened since the hub started (resumes not counted).
+    pub opened: u64,
 }
 
 /// A connection's view of its stream, as [`Hub::open`] hands it out.
@@ -339,6 +341,8 @@ pub struct Opened {
     pub resumed: bool,
     pub seq: u64,
     pub topics: Vec<String>,
+    /// The caller the stream was opened for (a resume keeps it).
+    pub caller: Caller,
     epoch: u64,
     rx: mpsc::Receiver<Arc<Item>>,
     shared: Arc<Shared>,
@@ -726,6 +730,7 @@ impl Hub {
                 resumed: true,
                 seq,
                 topics: s.topics.keys().map(Topic::name).collect(),
+                caller: s.caller.clone(),
                 epoch: s.epoch,
                 rx,
                 shared: s.shared.clone(),
@@ -738,7 +743,7 @@ impl Hub {
         let entry = StreamEntry {
             key: g.next_key,
             epoch: 1,
-            caller,
+            caller: caller.clone(),
             local,
             credential,
             topics: BTreeMap::new(),
@@ -752,6 +757,7 @@ impl Hub {
             resumed: false,
             seq,
             topics: vec![],
+            caller,
             epoch: 1,
             rx,
             shared,
@@ -964,6 +970,7 @@ impl Hub {
             streams: g.streams.len(),
             attached: g.streams.values().filter(|s| s.tx.is_some()).count(),
             channels: g.chans.len(),
+            opened: g.next_key,
         }
     }
 }
@@ -1042,7 +1049,8 @@ impl Conn {
         keep_alive: Duration,
         shutdown: tokio::sync::watch::Receiver<bool>,
     ) -> Conn {
-        let ready = json!({"stream": o.id, "seq": o.seq, "resumed": o.resumed, "topics": o.topics});
+        let caller = json!({"level": o.caller.level, "viewer": o.caller.viewer});
+        let ready = json!({"stream": o.id, "seq": o.seq, "resumed": o.resumed, "topics": o.topics, "caller": caller});
         let mut out = VecDeque::with_capacity(o.prelude.len() + 1);
         out.push_back(Bytes::from(format!("event: ready\ndata: {ready}\n\n")));
         out.extend(o.prelude);
@@ -1638,7 +1646,8 @@ mod tests {
             Stats {
                 streams: 0,
                 attached: 0,
-                channels: 0
+                channels: 0,
+                opened: 1
             }
         );
         assert!(!hub.open(c, true, None, Some((&o.id, 0))).resumed);
