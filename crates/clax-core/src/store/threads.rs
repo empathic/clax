@@ -521,6 +521,24 @@ impl Store {
         self.create_thread_then(ctx, id, t, |_, _| Ok((None, Vec::new())))
     }
 
+    /// [`Store::create_thread`] for a creator who may not see the files
+    /// `hidden` of the version: an anchor on one of them is refused exactly
+    /// as an anchor on a file the version lacks is, after every check that
+    /// comes before that one, so the answer tells nothing of the names
+    /// (spec 2026-10-08-multi-agent-multi-person §8.3).
+    ///
+    /// # Errors
+    /// [`Store::create_thread`]'s.
+    pub fn create_thread_hiding(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        t: NewThread,
+        hidden: &[String],
+    ) -> Result<Thread> {
+        self.create_thread_inner(ctx, id, t, hidden, |_, _| Ok((None, Vec::new())))
+    }
+
     /// [`Store::create_thread`], running `then` with the new thread's ID in
     /// the transaction that writes it: an error from `then` rolls the thread
     /// back. `then` answers the `live_path` it set, which `thread.open`
@@ -531,6 +549,22 @@ impl Store {
         ctx: &AuditCtx,
         id: &ArtifactId,
         t: NewThread,
+        then: impl FnOnce(
+            &rusqlite::Transaction<'_>,
+            &str,
+        ) -> Result<(Option<String>, Vec<crate::audit::AuditRecord>)>,
+    ) -> Result<Thread> {
+        self.create_thread_inner(ctx, id, t, &[], then)
+    }
+
+    /// [`Store::create_thread_then`], an anchor on any of `hidden` refused
+    /// as one on a file the version lacks ([`Store::create_thread_hiding`]).
+    fn create_thread_inner(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        t: NewThread,
+        hidden: &[String],
         then: impl FnOnce(
             &rusqlite::Transaction<'_>,
             &str,
@@ -583,7 +617,9 @@ impl Store {
                 })?;
 
             // An `artifact` anchor is on no page; any version holds it.
-            if !t.anchor.is_whole() && !files.contains_key(&t.anchor.file) {
+            if !t.anchor.is_whole()
+                && (!files.contains_key(&t.anchor.file) || hidden.contains(&t.anchor.file))
+            {
                 return Err(CoreError::invalid(
                     "invalid_anchor",
                     format!(
