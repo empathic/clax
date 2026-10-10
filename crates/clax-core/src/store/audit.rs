@@ -442,18 +442,32 @@ impl Store {
     }
 
     /// Records `tool.call` for `report` under `ctx` (spec §6.7), once per
-    /// call: a call already recorded records nothing, and `None` is
-    /// returned. `produced` lists the events recorded under the call, in
-    /// `seq` order. The event belongs to the first artifact those events
-    /// touched, else to the artifact the report names when it exists, else
-    /// to the install.
+    /// call of its reporting agent: a call that agent already recorded
+    /// records nothing, and `None` is returned. `produced` lists the events
+    /// recorded under the call for that agent, in `seq` order: an agent's
+    /// events are those of its session (`ctx`'s; for the sessionless agent,
+    /// those of agents with neither a session nor a grant), and Clax's own
+    /// and the owner's those naming that session (none: naming no session).
+    /// So an agent of another credential sending the same call ID neither
+    /// joins nor pre-empts the call. The event belongs to the first
+    /// artifact those events touched, else to the artifact the report
+    /// names when it exists, else to the install.
     pub fn record_tool_call(&self, ctx: &AuditCtx, report: &ToolCallReport) -> Result<Option<i64>> {
+        let session = match &ctx.actor {
+            crate::audit::Actor::Agent(a) => a.session_id.clone(),
+            _ => None,
+        };
         self.with_tx(|tx| {
             let mut q = tx.prepare_cached(
-                "SELECT seq, kind, artifact_id FROM audit_events WHERE call_id = ?1 ORDER BY seq",
+                "SELECT seq, kind, artifact_id FROM audit_events WHERE call_id = ?1
+                   AND CASE WHEN json_extract(actor, '$.type') = 'agent'
+                     THEN json_extract(actor, '$.session_id') IS ?2
+                       AND (?2 IS NOT NULL OR json_extract(actor, '$.grant_id') IS NULL)
+                     ELSE session_id IS ?2 END
+                 ORDER BY seq",
             )?;
             let rows: Vec<(i64, String, Option<String>)> = q
-                .query_map(params![report.call_id], |r| {
+                .query_map(params![report.call_id, session], |r| {
                     Ok((r.get(0)?, r.get(1)?, r.get(2)?))
                 })?
                 .collect::<rusqlite::Result<_>>()?;
@@ -916,6 +930,82 @@ pub(crate) mod tests {
         // A repeated report records nothing.
         assert_eq!(st.record_tool_call(&ctx(), &report(call_id)).unwrap(), None);
         assert_eq!(st.events_for_call(call_id).unwrap().len(), 3);
+    }
+
+    /// An agent's context: session `sid` (`None`: sessionless), of grant
+    /// `grant` (`None`: the daemon token).
+    fn agent_ctx(sid: Option<&str>, grant: Option<&str>) -> AuditCtx {
+        AuditCtx {
+            actor: Actor::Agent(crate::audit::AgentActor {
+                session_id: sid.map(str::to_string),
+                harness: Some("claude".into()),
+                harness_session_id: None,
+                agent_handle: None,
+                transcript_path: None,
+                grant_id: grant.map(str::to_string),
+                person: grant.map(|_| "u_5a3e000000000000000000".to_string()),
+                channel: None,
+            }),
+            via: Via::Mcp,
+            git: GitField::Absent,
+            call: None,
+        }
+    }
+
+    #[test]
+    fn tool_call_lists_only_what_its_reporting_agent_produced() {
+        let (_d, st) = store();
+        // Two agents send the same call ID: the owner's session, and a
+        // session of another machine's grant; and a sessionless agent of
+        // that grant, and the daemon's sessionless `/mcp`.
+        let call_id = "01JBC0000000000000000000C5";
+        let mine = "01JBC0000000000000000000S1";
+        let theirs = "01JBC0000000000000000000S2";
+        let under = |c: AuditCtx| AuditCtx {
+            call: Some(report(call_id).call()),
+            ..c
+        };
+        let record =
+            |c: &AuditCtx, t: &str| st.with_tx(|tx| st.record_audit(tx, c, rec(t))).unwrap();
+        let my_seq = record(&under(agent_ctx(Some(mine), None)), "mine");
+        let their_seq = record(&under(agent_ctx(Some(theirs), Some("g1"))), "theirs");
+        let grant_sessionless = record(&under(agent_ctx(None, Some("g1"))), "g");
+        let mcp_seq = record(&under(agent_ctx(None, None)), "mcp");
+        // A change Clax makes for my session under the call is mine.
+        let mut sys = rec("settled");
+        sys.ids.session = Some(mine.into());
+        let sys_seq = st
+            .with_tx(|tx| st.record_audit(tx, &under(AuditCtx::system(SystemReason::Daemon)), sys))
+            .unwrap();
+        let produced = |seq: i64| -> serde_json::Value {
+            let row = st.events_after(seq - 1, 1).unwrap().remove(0);
+            assert_eq!(row.kind, "tool.call");
+            serde_json::from_str::<serde_json::Value>(&row.body).unwrap()["produced"].clone()
+        };
+        let seq = st
+            .record_tool_call(&agent_ctx(Some(mine), None), &report(call_id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(produced(seq), serde_json::json!([my_seq, sys_seq]));
+        // The other machine's report is not taken as already recorded.
+        let seq = st
+            .record_tool_call(&agent_ctx(Some(theirs), Some("g1")), &report(call_id))
+            .unwrap()
+            .expect("its own call");
+        assert_eq!(produced(seq), serde_json::json!([their_seq]));
+        let seq = st
+            .record_tool_call(&agent_ctx(None, None), &report(call_id))
+            .unwrap()
+            .expect("the sessionless agent's own call");
+        assert_eq!(produced(seq), serde_json::json!([mcp_seq]));
+        assert!(grant_sessionless > 0);
+        // Each reporter's repeat records nothing.
+        for c in [
+            agent_ctx(Some(mine), None),
+            agent_ctx(Some(theirs), Some("g1")),
+        ] {
+            assert_eq!(st.record_tool_call(&c, &report(call_id)).unwrap(), None);
+        }
     }
 
     #[test]

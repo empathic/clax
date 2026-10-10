@@ -159,6 +159,12 @@ pub struct Thread {
     pub resolved_at: Option<String>,
     pub resolved_by: Option<String>,
     pub comments: Vec<Comment>,
+    /// For an agent's resolve (`resolved_by` `agent:<harness>`), whose
+    /// agent it was: `*owner` or a person's public ID (`None` for a
+    /// viewer's resolve, and for agents' resolves from before it was
+    /// recorded). For the visibility filter; never served.
+    #[serde(skip)]
+    pub resolved_by_person: Option<String>,
 }
 
 /// `author_kind` is `viewer` or `agent`; an agent comment names the harness in

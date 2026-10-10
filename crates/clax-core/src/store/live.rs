@@ -1278,14 +1278,30 @@ mod tests {
         // the resolve is not written either.
         let other = crate::store::test_util::artifact(&st, None);
         let err = st
-            .resolve_thread_addressed(DAEMON, &other, &t.id, "agent:claude", "claude", true)
+            .resolve_thread_addressed(
+                DAEMON,
+                &other,
+                &t.id,
+                "agent:claude",
+                "claude",
+                true,
+                Some("*owner"),
+            )
             .unwrap_err();
         assert!(matches!(err, crate::CoreError::NotFound), "{err:?}");
         assert_eq!(st.get_thread(&t.id).unwrap().unwrap().status, "open");
         assert_eq!(st.pending_address(&t.id).unwrap(), None);
 
         let (r, _) = st
-            .resolve_thread_addressed(DAEMON, &id, &t.id, "agent:claude", "claude", true)
+            .resolve_thread_addressed(
+                DAEMON,
+                &id,
+                &t.id,
+                "agent:claude",
+                "claude",
+                true,
+                Some("*owner"),
+            )
             .unwrap();
         assert_eq!(r.status, "resolved");
         assert_eq!(
