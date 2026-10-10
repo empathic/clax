@@ -640,10 +640,12 @@ fn person(c: &Connection, pid: Option<&str>) -> Result<Option<Actor>> {
         Some((display_name, false)) => Actor::Viewer {
             public_id: pid.to_string(),
             display_name,
+            person: false,
         },
         None => Actor::Viewer {
             public_id: pid.to_string(),
             display_name: None,
+            person: false,
         },
     }))
 }

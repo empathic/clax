@@ -93,11 +93,14 @@ impl std::fmt::Display for AuditKind {
     }
 }
 
-/// An agent actor: a registered harness session, or the sessionless `/mcp`
-/// route, which has no `session_id` (serialized as `null`).
+/// An agent actor: a registered harness session, or an agent channel that
+/// names no session (the sessionless `/mcp` route, or another channel's
+/// request with no known session), which has no `session_id` (serialized
+/// as `null`).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct AgentActor {
-    /// The Clax session ULID; `None` only for the sessionless `/mcp` route.
+    /// The Clax session ULID; `None` for an agent channel that names no
+    /// session.
     pub session_id: Option<String>,
     /// The session's harness (`claude`, `codex`, `pi`, `grok`, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -111,6 +114,19 @@ pub struct AgentActor {
     /// The harness's transcript file, where the harness reports one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript_path: Option<String>,
+    /// The grant of another machine the agent acts under (spec
+    /// 2026-10-08-multi-agent-multi-person §6.4); absent for the daemon
+    /// token's agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_id: Option<String>,
+    /// The public ID of the connected person whose agent this is; absent
+    /// for the owner's agents (a grant of the owner's row included).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub person: Option<String>,
+    /// The channel of an agent that names no session, when it is not `mcp`
+    /// (`cli`, `hook`, `pi`): what names it in place of a session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<Via>,
 }
 
 /// Why Clax itself made a change.
@@ -125,6 +141,12 @@ pub enum SystemReason {
     Backfill,
     /// Any other internal change.
     Daemon,
+    /// A grant, or a request for one, lapsed.
+    Expiry,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Who made a change (spec §5.2). Serialized as an object tagged by `type`.
@@ -136,11 +158,22 @@ pub enum Actor {
     Owner {
         public_id: String,
     },
-    /// A LAN viewer, by public ID and the display name they chose.
+    /// A LAN viewer, by public ID and the display name they chose; `person`
+    /// for a connected person (spec 2026-10-08-multi-agent-multi-person
+    /// §6.1, `Caller::Person`).
     Viewer {
         public_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         display_name: Option<String>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        person: bool,
+    },
+    /// The client of another machine asking for a grant, before anyone
+    /// approved it (spec 2026-10-08-multi-agent-multi-person §20.1): its
+    /// grant and the name it gave itself.
+    Client {
+        grant_id: String,
+        client_name: String,
     },
     Anonymous,
     System {
@@ -635,6 +668,7 @@ mod tests {
             harness_session_id: Some("3f2c".into()),
             agent_handle: Some("a_9f".into()),
             transcript_path: Some("/Users/alex/.claude/projects/p/3f2c.jsonl".into()),
+            ..Default::default()
         });
         let cases = [
             (
@@ -648,6 +682,56 @@ mod tests {
                 json!({"type":"agent","session_id":null}),
             ),
             (
+                Actor::Agent(AgentActor {
+                    session_id: Some("01JB8Q2WXYZ0000000000000AB".into()),
+                    harness: Some("codex".into()),
+                    agent_handle: Some("a_77".into()),
+                    grant_id: Some("g_abc".into()),
+                    person: Some("u_77c0".into()),
+                    ..Default::default()
+                }),
+                json!({"type":"agent","session_id":"01JB8Q2WXYZ0000000000000AB","harness":"codex",
+                       "agent_handle":"a_77","grant_id":"g_abc","person":"u_77c0"}),
+            ),
+            (
+                Actor::Agent(AgentActor {
+                    grant_id: Some("g_abc".into()),
+                    person: Some("u_77c0".into()),
+                    channel: Some(Via::Cli),
+                    ..Default::default()
+                }),
+                json!({"type":"agent","session_id":null,"grant_id":"g_abc","person":"u_77c0",
+                       "channel":"cli"}),
+            ),
+            (
+                Actor::Agent(AgentActor {
+                    channel: Some(Via::Hook),
+                    ..Default::default()
+                }),
+                json!({"type":"agent","session_id":null,"channel":"hook"}),
+            ),
+            (
+                Actor::Viewer {
+                    public_id: "u_77c0".into(),
+                    display_name: Some("Sam".into()),
+                    person: true,
+                },
+                json!({"type":"viewer","public_id":"u_77c0","display_name":"Sam","person":true}),
+            ),
+            (
+                Actor::Client {
+                    grant_id: "g_abc".into(),
+                    client_name: "sam-mbp".into(),
+                },
+                json!({"type":"client","grant_id":"g_abc","client_name":"sam-mbp"}),
+            ),
+            (
+                Actor::System {
+                    reason: SystemReason::Expiry,
+                },
+                json!({"type":"system","reason":"expiry"}),
+            ),
+            (
                 Actor::Owner {
                     public_id: "u_4be1".into(),
                 },
@@ -657,6 +741,7 @@ mod tests {
                 Actor::Viewer {
                     public_id: "u_77c0".into(),
                     display_name: Some("Sam".into()),
+                    person: false,
                 },
                 json!({"type":"viewer","public_id":"u_77c0","display_name":"Sam"}),
             ),
@@ -664,6 +749,7 @@ mod tests {
                 Actor::Viewer {
                     public_id: "u_77c0".into(),
                     display_name: None,
+                    person: false,
                 },
                 json!({"type":"viewer","public_id":"u_77c0"}),
             ),
