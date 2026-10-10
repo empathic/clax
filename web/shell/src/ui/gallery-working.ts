@@ -46,6 +46,8 @@ export { ownerBrowser } from "../owner";
 export { pageStream } from "../stream";
 /** The question module (the inbox's summary, Inbox, notifications). */
 export const q = () => import("../q");
+/** The inbox page, its own chunk: `/inbox` loads it beside `q`. */
+export const inboxPage = () => import("../q/InboxPage.svelte");
 
 /** A card's markers, its working agents named as its participants name them. */
 export const cardMarkers = (a: Artifact, att: AttentionSummary | undefined, working: Working[]) =>

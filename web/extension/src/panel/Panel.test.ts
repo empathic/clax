@@ -680,9 +680,9 @@ describe("Panel for the owner's questions and inbox", () => {
     expect(cards[0].querySelector("a.about")).toBeNull();
     // Answered through the worker.
     await fireEvent.click(screen.getByLabelText(/Two/));
-    await fireEvent.click(screen.getByRole("tab", { name: "Sidebars" }));
+    await fireEvent.click(screen.getByRole("tab", { name: /^Sidebars,/ }));
     await fireEvent.click(screen.getByLabelText(/Left/));
-    await fireEvent.click(screen.getByRole("tab", { name: "Notes" }));
+    await fireEvent.click(screen.getByRole("tab", { name: /^Notes,/ }));
     await fireEvent.input(screen.getByPlaceholderText("Your answer"), { target: { value: "ok" } });
     await fireEvent.click(screen.getByRole("button", { name: "Answer claude" }));
     expect(asked[0]).toMatchObject({ t: "q-answer", questionId: fixtures.view().id, body: { answers: [{ selected: ["Two"], text: null }, { selected: ["Left"], text: null }, { selected: [], text: "ok" }] } });

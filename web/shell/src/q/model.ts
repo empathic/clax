@@ -89,13 +89,26 @@ export function cutHeader(h: string): string {
   return cs.length > HEADER ? `${cs.slice(0, HEADER - 1).join("").trimEnd()}…` : h;
 }
 
-/** The answer to question `i` of `q`, as the person reads it: the picked
- * labels as shown, then "Other: …" or the free text; "—" for none. */
+/** Answer `a` to question `s`, as the person reads it: the picked labels
+ * as shown, then "Other: …" or the free text; "" for none. */
+export function answerLine(s: QuestionSpec, a: { selected: string[]; text: string | null } | undefined): string {
+  const parts = [...(a?.selected ?? []).map(l => { const o = s.options.find(x => x.label === l); return o ? shownLabel(o) : l; }), ...(a?.text ? [s.options.length ? `Other: ${a.text}` : a.text] : [])];
+  return parts.join(", ");
+}
+
+/** The answer to question `i` of `q` (see `answerLine`); "—" for none. */
 export function answerText(q: QuestionView, i: number): string {
-  const a = q.answers?.[i];
-  const opts = q.questions[i].options;
-  const parts = [...(a?.selected ?? []).map(l => { const o = opts.find(x => x.label === l); return o ? shownLabel(o) : l; }), ...(a?.text ? [opts.length ? `Other: ${a.text}` : a.text] : [])];
-  return parts.join(", ") || "—";
+  return answerLine(q.questions[i], q.answers?.[i]) || "—";
+}
+
+/** The first question after `from` (wrapping round) that `done` marks
+ * unanswered; -1 when every one is answered. `from` -1 starts at the first. */
+export function nextOpen(done: boolean[], from: number): number {
+  for (let k = 1; k <= done.length; k++) {
+    const i = (from + k) % done.length;
+    if (!done[i]) return i;
+  }
+  return -1;
 }
 
 /** An option's label as shown: a recommended option's label loses a

@@ -3,13 +3,20 @@
 <script lang="ts">
   // One agent question (spec 2026-10-06-agent-questions-and-inbox-design
   // §9.1): who asks and about what, one chip per question (tabs when
-  // several, each marked done when answered), options with descriptions and
+  // several, each marked answered with its answer under its header, or
+  // marked not answered), options with descriptions and
   // a Recommended chip (a mirrored label's trailing "(Recommended)" is not
   // shown twice), "Other…", a preview beside the options when the card is
   // wide (stacked when narrow), free text, and Answer / Skip / Answer in
-  // the terminal. Keys while focus is in the card: arrows between
-  // options, Space toggles, 1–4 pick, Enter answers once every question has
-  // an answer. Answer, Skip and Answer in the terminal follow the keyboard
+  // the terminal. With several questions, picking a single choice's option
+  // (a click, Space or a digit) moves on to the next unanswered question
+  // after a moment; a multi choice and "Other" text wait for the person to
+  // move. Back and Next move one question either way, and the primary
+  // action says how many are left ("Answer 2 more"), pressed early, it goes
+  // to the first unanswered question. Keys while focus is in the card:
+  // arrows between options, Space toggles, 1–4 pick, B and N back and
+  // next, Enter answers once every question has an answer (before that it
+  // goes to the first unanswered). Answer, Skip and Answer in the terminal follow the keyboard
   // trail rule (`guardedAction`). A closed question says what closed it and
   // shows its answers; a card that closes while mounted announces it (and,
   // when something else closed it first, that the person's action was not
@@ -21,10 +28,11 @@
   // fields hear `input` in the capture phase, as no delegated handler would
   // hear one that does not bubble; a binding's helper would be split out of
   // the sidebar's chunk.
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import { ApiError, type AnswerBody, type QuestionStatus, type QuestionView } from "../api";
+  import { after } from "../clock";
   import { relativeTime } from "../format";
-  import { agentLabel, answerText, closedLabel, complete, cutHeader, emptyDraft, pick, previewOf, shownLabel, toBody, typeOther } from "./model";
+  import { agentLabel, answerLine, answerText, closedLabel, complete, cutHeader, emptyDraft, nextOpen, pick, previewOf, shownLabel, toBody, typeOther } from "./model";
   import { trail } from "./trail";
 
   type Props = {
@@ -39,6 +47,8 @@
     /** "Answer in the terminal" (mirrored questions only). */
     onRelease?(): Promise<void>;
   };
+  /** How long a picked single choice shows before the card moves on. */
+  const ADVANCE_MS = 250;
   const p: Props = $props();
   let draft = $state(untrack(() => emptyDraft(p.q)));
   let tab = $state(0);
@@ -63,7 +73,9 @@
   const who = $derived(agentLabel(p.q.agent, (p.others ?? [p.q]).map(o => o.agent)));
   const done = $derived(complete(p.q, draft));
   const ready = $derived(done.every(Boolean));
-  const spec = $derived(p.q.questions[Math.min(tab, p.q.questions.length - 1)]);
+  const n = $derived(p.q.questions.length);
+  const left = $derived(done.filter(d => !d).length);
+  const spec =$derived(p.q.questions[Math.min(tab, p.q.questions.length - 1)]);
   const preview = $derived(previewOf(spec, focused, draft[tab]));
   const open = $derived(p.q.status === "open");
   const base = $derived(`q-${p.q.id}`);
@@ -76,6 +88,7 @@
   const NOT_TAKEN: Partial<Record<QuestionStatus, string>> = { answered: "Not answered", declined: "Not skipped", released: "Not moved" };
   $effect(() => {
     if (open) { wasOpen = true; return; }
+    stopAdvance();
     if (!wasOpen) return;
     wasOpen = false;
     const label = closedLabel(p.q);
@@ -106,10 +119,45 @@
       f().then(() => { busy = false; }, err => { busy = false; pending = null; hint = failed(err); queueMicrotask(regain); });
     });
   };
-  const answer = (e: Event) => { if (ready) run(e, "answer", "answered", () => p.onAnswer(toBody(p.q, draft))); };
-  const choose = (label: string) => { draft = pick(p.q, tab, label, draft); };
-  const other = { get: () => draft[tab].text, set: (v: string) => { draft = typeOther(p.q, tab, v, draft); } };
-  const show = (i: number) => { tab = i; focused = null; };
+  // The pending move on after a pick, if any.
+  let advancing: (() => void) | undefined;
+  const stopAdvance = () => { advancing?.(); advancing = undefined; };
+  $effect(() => stopAdvance);
+  const show = (i: number) => { stopAdvance(); tab = i; focused = null; };
+  // Focuses the shown question's picked option, else its first control, once it is rendered.
+  const focusPart = () => tick().then(() => {
+    const body = card?.querySelector(".panel .body");
+    (body?.querySelector<HTMLElement>("input[data-opt]:checked") ?? body?.querySelector<HTMLElement>("input, textarea"))?.focus();
+  });
+  // Shows question `i`; `focus` moves focus to it, for a move that removes the focused control.
+  const go = (i: number, focus: boolean) => {
+    if (i < 0 || i >= n) return;
+    show(i);
+    if (focus) void focusPart();
+  };
+  // The card for an event from inside it.
+  const from = (e: Event) => { card = (e.currentTarget as HTMLElement).closest<HTMLElement>(".qcard") ?? card; };
+  const answer = (e: Event) => {
+    from(e);
+    if (ready) run(e, "answer", "answered", () => p.onAnswer(toBody(p.q, draft)));
+    else if (n > 1) go(nextOpen(done, -1), true);
+  };
+  // Picks `label` on the shown question. A single choice `advance`s: after
+  // ADVANCE_MS the card shows the next unanswered question, if any, taking
+  // focus there when it is in the card.
+  const choose = (label: string, advance = false) => {
+    draft = pick(p.q, tab, label, draft);
+    stopAdvance();
+    if (!advance || n < 2 || spec.multi_select) return;
+    const at = tab;
+    advancing = after(ADVANCE_MS, () => {
+      advancing = undefined;
+      const i = nextOpen(complete(p.q, draft), at);
+      if (!open || tab !== at || i < 0) return;
+      go(i, inside);
+    });
+  };
+  const other = { get: () => draft[tab].text, set: (v: string) => { stopAdvance(); draft = typeOther(p.q, tab, v, draft); } };
 
   const optionInputs = () => [...(card?.querySelectorAll<HTMLInputElement>(".opt input[data-opt]") ?? [])];
   const onKey = (e: KeyboardEvent) => {
@@ -124,11 +172,20 @@
       return;
     }
     if (typing) return;
-    if (t.getAttribute("role") === "tab" && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+    const onTab = t.getAttribute("role") === "tab";
+    const focusTab = () => queueMicrotask(() => card?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.focus());
+    if (onTab && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
       e.preventDefault();
-      const n = p.q.questions.length;
       show((tab + (e.key === "ArrowRight" ? 1 : n - 1)) % n);
-      queueMicrotask(() => card?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.focus());
+      focusTab();
+      return;
+    }
+    const move = n > 1 ? ({ b: -1, n: 1 } as Record<string, number>)[e.key.toLowerCase()] : undefined;
+    if (move) {
+      e.preventDefault();
+      // Focus on an option would go with its question; focus on a tab follows the selection.
+      go(tab + move, !!t.closest(".body"));
+      if (onTab) focusTab();
       return;
     }
     const inputs = optionInputs();
@@ -136,7 +193,7 @@
       const o = spec.options[Number(e.key) - 1];
       if (!o) return;
       e.preventDefault();
-      choose(o.label);
+      choose(o.label, true);
       inputs[Number(e.key) - 1]?.focus();
       return;
     }
@@ -175,8 +232,12 @@
     {#if p.q.questions.length > 1}
       <div class="chips" role="tablist" aria-label="Questions">
         {#each p.q.questions as s, i (s.question)}
+          {@const line = done[i] ? answerLine(s, { selected: draft[i].selected, text: draft[i].text.trim() }) : ""}
           <button type="button" class="chip" data-done={done[i] ? "" : undefined} role="tab" id={`${base}-tab-${i}`} aria-controls={`${base}-panel`} aria-selected={tab === i}
-            title={s.header} aria-label={done[i] ? `${s.header}, answered` : s.header} tabindex={tab === i ? 0 : -1} onclick={() => show(i)}>{#if done[i]}<span class="tick" aria-hidden="true">✓</span>{/if}{cutHeader(s.header)}</button>
+            title={s.header} aria-label={done[i] ? `${s.header}, answered: ${line}` : `${s.header}, not answered`} tabindex={tab === i ? 0 : -1} onclick={() => show(i)}>
+            <span class="hdr"><span class="mark" aria-hidden="true">{done[i] ? "✓" : ""}</span>{cutHeader(s.header)}</span>
+            <span class="ans">{done[i] ? line : "Not answered"}</span>
+          </button>
         {/each}
       </div>
     {:else}
@@ -193,7 +254,7 @@
             {#each spec.options as o, j (o.label)}
               <label class="opt" data-on={draft[tab].selected.includes(o.label) ? "" : undefined} onmouseenter={() => { focused = o.label; }} onfocusin={() => { focused = o.label; }}>
                 <input type={spec.multi_select ? "checkbox" : "radio"} name={`${base}-${tab}`} value={o.label} data-opt
-                  checked={draft[tab].selected.includes(o.label)} onclick={() => choose(o.label)} />
+                  checked={draft[tab].selected.includes(o.label)} onclick={() => choose(o.label, true)} />
                 <span class="num" aria-hidden="true">{j + 1}</span>
                 <span class="txt"><span class="lbl">{shownLabel(o)}</span>{#if o.recommended}<span class="rec">Recommended</span>{/if}
                   {#if o.description}<span class="desc">{o.description}</span>{/if}</span>
@@ -215,7 +276,16 @@
       {/each}
     </div>
     <footer class="acts">
-      <button type="button" class="primary" disabled={busy || !ready} onclick={answer}>Answer {who}</button>
+      {#if n > 1}
+        <!-- aria-disabled, not disabled: a button disabled under focus drops it. -->
+        <div class="steps" role="group" aria-label="Move between questions">
+          <button type="button" aria-disabled={tab === 0} aria-keyshortcuts="B" title="Previous question (B)" onclick={() => go(tab - 1, false)}>Back</button>
+          <span class="pos">{tab + 1} of {n}</span>
+          <button type="button" aria-disabled={tab === n - 1} aria-keyshortcuts="N" title="Next question (N)" onclick={() => go(tab + 1, false)}>Next</button>
+        </div>
+      {/if}
+      <button type="button" class="primary" disabled={busy || (!ready && n < 2)} data-left={ready ? undefined : ""}
+        title={ready || n < 2 ? undefined : "Go to the first unanswered question"} onclick={answer}>{ready || n < 2 ? `Answer ${who}` : `Answer ${left} more`}</button>
       <button type="button" disabled={busy} onclick={e => run(e, "skip", "declined", p.onDecline)}>Skip</button>
       {#if p.q.source === "hook" && p.onRelease}
         <button type="button" disabled={busy} onclick={e => run(e, "move it to the terminal", "released", p.onRelease!)}>Answer in the terminal</button>
@@ -239,11 +309,16 @@
     .qcard .about { color: var(--fg); text-decoration: underline; text-decoration-color: var(--border-hover); text-underline-offset: 2px; }
     .qcard .about:hover { text-decoration-color: currentColor; }
     .qcard time { margin-left: auto; white-space: nowrap; }
-    .qcard .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
-    .qcard .chip { font: 500 12px/1 var(--font); min-height: 26px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border-hover); background: var(--card); color: var(--muted); gap: 4px; }
-    .qcard .chip[aria-selected="true"] { border-color: var(--fg); color: var(--fg); background: var(--hover); }
-    .qcard .chip[data-done] .tick { color: var(--agent-ink); font-weight: 700; }
-    .qcard .chip.solo { display: inline-flex; align-items: center; min-height: 0; margin-bottom: 6px; color: var(--fg); background: var(--hover); border-color: transparent; }
+    .qcard .chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 6px; margin-bottom: 10px; }
+    .qcard .chips .chip { display: grid; justify-items: start; align-content: start; gap: 2px; min-width: 0; min-height: 0; padding: 5px 8px 6px; text-align: left; font: 500 12px/16px var(--font); border-radius: var(--radius-sm); border: 1px dashed var(--border-strong); background: var(--card); color: var(--muted); }
+    .qcard .chips .chip[data-done] { border-style: solid; border-color: var(--border-hover); }
+    .qcard .chips .chip[aria-selected="true"] { border: 1px solid var(--fg); color: var(--fg); background: var(--hover); box-shadow: inset 0 -2px 0 var(--fg); }
+    .qcard .chip .hdr { display: flex; align-items: center; gap: 5px; max-width: 100%; overflow: hidden; white-space: nowrap; }
+    .qcard .chip .mark { flex: none; display: inline-grid; place-items: center; width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid var(--border-strong); font: 700 9px/1 var(--font); }
+    .qcard .chip[data-done] .mark { border-color: var(--agent); background: var(--agent); color: var(--on-accent); }
+    .qcard .chip .ans { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; color: var(--fg); }
+    .qcard .chip:not([data-done]) .ans { color: var(--muted); font-style: italic; }
+    .qcard .chip.solo { display: inline-flex; align-items: center; margin-bottom: 6px; font: 500 12px/1 var(--font); padding: 4px 10px; border-radius: 999px; color: var(--fg); background: var(--hover); }
     .qcard .qtext { margin: 0 0 8px; font: 600 14px/1.45 var(--font); white-space: pre-wrap; overflow-wrap: anywhere; }
     .qcard .body { min-width: 0; }
     .qcard .body[data-preview] { display: grid; gap: 10px; }
@@ -266,6 +341,11 @@
     .qcard textarea { display: block; width: 100%; resize: vertical; min-height: 64px; }
     .qcard .acts { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; margin-top: 10px; }
     .qcard .acts .primary { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+    .qcard .acts .primary[data-left] { background: var(--card); color: var(--fg); border-color: var(--border-strong); }
+    .qcard .acts .primary[data-left]:hover { background: var(--hover); border-color: var(--border-strong); }
+    .qcard .steps { display: flex; align-items: center; gap: 6px; margin-right: auto; }
+    .qcard .steps .pos { font: 500 12px var(--mono); color: var(--muted); white-space: nowrap; }
+    .qcard .steps button[aria-disabled="true"] { opacity: .5; cursor: default; }
     .qcard .closed { margin: 0 0 6px; font: 600 13px/20px var(--font); color: var(--fg); }
     .qcard .answers { margin: 0; display: grid; gap: 6px; }
     .qcard .answers > div { display: grid; gap: 1px; min-width: 0; }
