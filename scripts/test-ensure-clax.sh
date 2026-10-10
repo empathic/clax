@@ -842,6 +842,25 @@ if [ "$RC" = 0 ] && echo "$ERR" | grep "warning: $FAKEBIN/clax is clax 0.0.1, bu
     pass "a bin setting of another version warns"
 else fail "a bin setting of another version warns (err=$ERR)"; fi
 
+# --- The agent channel (spec §16) -----------------------------------------
+
+new_env
+printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\necho "channel=${CLAX_CHANNEL:-none} args: $*"\n' "$V" | fake_exe "$FAKEBIN/clax"
+set_bin "$FAKEBIN/clax"
+ok=1
+for args in "list --json" "comments" "--json versions x" "hook --agent claude stop" "inbox"; do
+    # shellcheck disable=SC2086
+    run exec $args
+    case "$OUT" in "channel=agent args: "*) ;; *) ok=0; echo "  exec $args: $OUT" ;; esac
+done
+for args in "serve" "stop" "doctor --agent claude --json" "init --agent claude" "--port 7 serve" "--json stop"; do
+    # shellcheck disable=SC2086
+    run exec $args
+    case "$OUT" in "channel=none args: "*) ;; *) ok=0; echo "  exec $args: $OUT" ;; esac
+done
+if [ "$ok" = 1 ]; then pass "exec exports CLAX_CHANNEL=agent for every command but serve, stop, doctor and init"
+else fail "exec exports CLAX_CHANNEL=agent for every command but serve, stop, doctor and init"; fi
+
 if [ ! -e "$TOOLS/offhost.log" ]; then pass "no case asked for a URL off 127.0.0.1"
 else fail "no case asked for a URL off 127.0.0.1 ($(cat "$TOOLS/offhost.log"))"; fi
 
