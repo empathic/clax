@@ -6,9 +6,10 @@
 //! responses carry the unread count after them.
 
 use super::artifacts::{body, path};
+use crate::agent::DeniedToGrants;
 use crate::error::ApiError;
 use crate::identity::Identity;
-use crate::inbox::{view, views};
+use crate::inbox::{view as inbox_view, views as inbox_views};
 use crate::state::AppState;
 use crate::viewer::SameOrigin;
 use axum::Json;
@@ -156,11 +157,13 @@ fn query_of<T>(q: Result<Query<T>, QueryRejection>) -> Result<T, ApiError> {
 /// `invalid_query` for a bad filter, date or cursor.
 pub async fn list(
     State(s): State<AppState>,
+    d: DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     q: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     who.require_owner("reads the inbox")?;
+    d.refuse_agents()?;
     let q = query_of(q)?;
     let mut iq = Filter {
         q: q.q,
@@ -205,7 +208,7 @@ pub async fn list(
     // unfiltered page reads one page and the unread count.
     let job = move |db: &clax_core::Store| {
         let (rows, next) = db.inbox_list(&iq)?;
-        let items = views(db, &rows)?;
+        let items = inbox_views(db, &rows)?;
         let unread = db.inbox_unread()?;
         let mut out = json!({
             "items": items,
@@ -236,10 +239,12 @@ pub async fn list(
 /// bar. Each part is read on its own, one just after another.
 pub async fn summary(
     State(s): State<AppState>,
+    d: DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
 ) -> Result<Json<Value>, ApiError> {
     who.require_owner("reads the inbox")?;
+    d.refuse_agents()?;
     let out = s
         .store_call(move |db| {
             let (open, _) = db.list_questions(ListStatus::Open, SUMMARY_QUESTIONS)?;
@@ -256,7 +261,7 @@ pub async fn summary(
             Ok(json!({
                 "unread": db.inbox_unread()?,
                 "questions": questions,
-                "latest": views(db, &rows)?,
+                "latest": inbox_views(db, &rows)?,
             }))
         })
         .await?;
@@ -276,16 +281,18 @@ fn item_id(p: Result<Path<String>, PathRejection>) -> Result<String, ApiError> {
 /// `GET /api/inbox/<id>` (owner) → `{item}`; 404 when there is none.
 pub async fn get_one(
     State(s): State<AppState>,
+    d: DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     who.require_owner("reads the inbox")?;
+    d.refuse_agents()?;
     let id = item_id(p)?;
     let item = s
         .store_call(move |db| {
             let i = db.inbox_item(&id)?.ok_or(CoreError::NotFound)?;
-            view(db, &i)
+            inbox_view(db, &i)
         })
         .await?;
     Ok(Json(json!({"item": item})))
@@ -298,7 +305,7 @@ async fn mark_one(s: AppState, id: String, read: bool) -> Result<Json<Value>, Ap
             db.inbox_item(&id)?.ok_or(CoreError::NotFound)?;
             db.inbox_mark(std::slice::from_ref(&id), read)?;
             let i = db.inbox_item(&id)?.ok_or(CoreError::NotFound)?;
-            Ok(json!({"item": view(db, &i)?, "unread": db.inbox_unread()?}))
+            Ok(json!({"item": inbox_view(db, &i)?, "unread": db.inbox_unread()?}))
         })
         .await?;
     Ok(Json(out))
@@ -308,11 +315,13 @@ async fn mark_one(s: AppState, id: String, read: bool) -> Result<Json<Value>, Ap
 /// `{item, unread}`; 404 when there is none. Idempotent.
 pub async fn read_one(
     State(s): State<AppState>,
+    d: DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     who.require_owner("reads the inbox")?;
+    d.refuse_agents()?;
     mark_one(s, item_id(p)?, true).await
 }
 
@@ -320,11 +329,13 @@ pub async fn read_one(
 /// there is none.
 pub async fn unread_one(
     State(s): State<AppState>,
+    d: DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     who.require_owner("reads the inbox")?;
+    d.refuse_agents()?;
     mark_one(s, item_id(p)?, false).await
 }
 
@@ -349,11 +360,13 @@ pub struct ReadBody {
 /// neither or both, too many IDs, or a bad filter.
 pub async fn read_many(
     State(s): State<AppState>,
+    d: DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     req: Result<Json<ReadBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     who.require_owner("reads the inbox")?;
+    d.refuse_agents()?;
     let b = body(req)?;
     enum Mark {
         Ids(Vec<String>),

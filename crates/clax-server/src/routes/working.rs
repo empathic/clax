@@ -88,13 +88,13 @@ pub struct SetBody {
 /// record records `working.start` as the session's agent.
 pub async fn put(
     State(s): State<AppState>,
-    _t: RequireToken,
+    TokenOrAgent(a): TokenOrAgent<crate::agent::WorkingPut>,
     audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
     req: Result<Json<SetBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    let (sid, aid) = path(p)?;
-    let id = parse_id(&aid)?;
+    let (sid, _) = path(p)?;
+    let id = a.artifact()?;
     let b = body(req)?;
     let (message, truncated) = match b.message.as_deref() {
         Some(m) => clean_message(m),
@@ -142,13 +142,13 @@ pub struct ClearQuery {
 /// `finished` inbox item; it records `working.stop` as the session's agent.
 pub async fn delete(
     State(s): State<AppState>,
-    _t: RequireToken,
+    TokenOrAgent(a): TokenOrAgent<crate::agent::WorkingDelete>,
     audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
     q: Result<Query<ClearQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    let (sid, aid) = path(p)?;
-    let id = parse_id(&aid)?;
+    let (sid, _) = path(p)?;
+    let id = a.artifact()?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let threads: Option<Vec<String>> = q.thread_ids.map(|t| {
         t.split(',')
@@ -193,13 +193,17 @@ pub async fn for_session(
 
 /// `GET /api/working` (token): `{working}`, every live record with its
 /// session and artifact (the working roster), newest `started_at` first.
-pub async fn roster(State(s): State<AppState>, _t: RequireToken) -> Json<Value> {
+pub async fn roster(
+    State(s): State<AppState>,
+    _a: TokenOrAgent<crate::agent::WorkingRoster>,
+) -> Json<Value> {
     Json(json!({"working": s.working.roster()}))
 }
 
 /// `GET /api/artifacts/<aid>/working` (no token): `{working}`, never naming a session.
 pub async fn for_artifact(
     State(s): State<AppState>,
+    _a: crate::agent::Agent<crate::agent::WorkingForArtifact>,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(p)?)?;
@@ -216,7 +220,7 @@ pub async fn for_artifact(
 /// `POST /api/sessions/<sid>/working/renew` (W): `{renewed}`.
 pub async fn renew(
     State(s): State<AppState>,
-    _t: RequireToken,
+    _a: TokenOrAgent<crate::agent::WorkingRenew>,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let sid = path(p)?;
@@ -235,7 +239,7 @@ pub async fn renew(
 /// records `working.stop` (reason `explicit`) as the session's agent.
 pub async fn end(
     State(s): State<AppState>,
-    _t: RequireToken,
+    _a: TokenOrAgent<crate::agent::WorkingEnd>,
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -265,6 +269,7 @@ pub struct SkewBody {
 #[cfg(debug_assertions)]
 pub async fn skew(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     req: Result<Json<SkewBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {

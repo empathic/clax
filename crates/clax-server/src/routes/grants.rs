@@ -147,7 +147,11 @@ pub async fn sweep(s: &AppState) -> Result<usize, ApiError> {
 /// `GET /api/_test/grants/index` (debug builds): the token index's size
 /// and state, and the nonce caches' keys.
 #[cfg(debug_assertions)]
-pub async fn test_index(State(s): State<AppState>, _t: crate::auth::RequireToken) -> Json<Value> {
+pub async fn test_index(
+    State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
+    _t: crate::auth::RequireToken,
+) -> Json<Value> {
     let (requests, keys) = s.grant_auth.cached_keys();
     let index = &s.grant_auth.index;
     Json(json!({"tokens": index.len(), "stale": index.is_stale(),
@@ -159,6 +163,7 @@ pub async fn test_index(State(s): State<AppState>, _t: crate::auth::RequireToken
 #[cfg(debug_assertions)]
 pub async fn test_fail_index(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: crate::auth::RequireToken,
 ) -> StatusCode {
     s.grant_auth.index.fail_next_change();
@@ -179,6 +184,7 @@ fn no_store(mut res: Response) -> Response {
 #[cfg(debug_assertions)]
 pub async fn test_sweep(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _t: crate::auth::RequireToken,
 ) -> Result<Json<Value>, ApiError> {
     let ended = sweep(&s).await?;
@@ -245,10 +251,12 @@ fn lan_address(s: &AppState) -> Result<IpAddr, ApiError> {
 /// daemon listens on loopback only.
 pub async fn create_invite(
     State(s): State<AppState>,
+    d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     caller: Caller,
     req: Result<Json<InviteBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
+    d.refuse_agents()?;
     require_browser(&caller, "inviting a person")?;
     let b = body(req)?;
     let target = match (b.name, b.viewer, b.me) {
@@ -297,8 +305,10 @@ pub async fn create_invite(
 /// their codes.
 pub async fn list_invites(
     State(s): State<AppState>,
+    d: crate::agent::DeniedToGrants,
     who: Identity,
 ) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
     who.require_owner("sees invites")?;
     let invites = s.store_call(|st| st.list_invites()).await?;
     Ok(Json(
@@ -310,10 +320,12 @@ pub async fn list_invites(
 /// invite used or revoked already stays as it was.
 pub async fn revoke_invite(
     State(s): State<AppState>,
+    d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     caller: Caller,
     id: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
     require_browser(&caller, "revoking an invite")?;
     let id = path(id)?;
     let state = s.clone();
@@ -456,6 +468,7 @@ fn issued_response(
 /// for the owner.
 pub async fn request(
     State(s): State<AppState>,
+    _g: crate::agent::GrantFlow,
     req: axum::extract::Request,
 ) -> Result<Response, Refusal> {
     let (
@@ -554,6 +567,7 @@ pub async fn request(
 /// Denied or expired: 403 `denied`.
 pub async fn poll(
     State(s): State<AppState>,
+    _g: crate::agent::GrantFlow,
     gid: Result<Path<String>, PathRejection>,
     req: axum::extract::Request,
 ) -> Result<Response, Refusal> {
@@ -616,6 +630,7 @@ pub async fn poll(
 /// grant ends with its tokens and sessions, as a revocation. 204.
 pub async fn disconnect(
     State(s): State<AppState>,
+    _g: crate::agent::GrantFlow,
     gid: Result<Path<String>, PathRejection>,
     req: axum::extract::Request,
 ) -> Result<Response, Refusal> {
@@ -638,6 +653,7 @@ pub async fn disconnect(
 /// the access token and with it the whole grant (spec §6.4). 204.
 pub async fn revoke_token(
     State(s): State<AppState>,
+    _g: crate::agent::GrantFlow,
     gid: Result<Path<String>, PathRejection>,
     req: axum::extract::Request,
 ) -> Result<Response, Refusal> {
@@ -666,9 +682,11 @@ pub struct ListGrantsQuery {
 /// status when given.
 pub async fn list(
     State(s): State<AppState>,
+    d: crate::agent::DeniedToGrants,
     who: Identity,
     q: Result<Query<ListGrantsQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
     who.require_owner("sees grants")?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let grants = s.store_call(|st| st.list_grants()).await?;
@@ -704,11 +722,13 @@ pub struct ApproveBody {
 /// owner, which take an invite; 409 `name_taken`; 409 `not_pending`.
 pub async fn approve(
     State(s): State<AppState>,
+    d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     caller: Caller,
     gid: Result<Path<String>, PathRejection>,
     req: Result<Json<ApproveBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
     require_browser(&caller, "approving a connection")?;
     let gid = path(gid)?;
     let b = body(req)?;
@@ -758,10 +778,12 @@ pub async fn approve(
 /// `not_pending` unless it is pending.
 pub async fn deny(
     State(s): State<AppState>,
+    d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     caller: Caller,
     gid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
     require_browser(&caller, "denying a connection")?;
     let gid = path(gid)?;
     let state = s.clone();
@@ -783,10 +805,12 @@ pub async fn deny(
 /// already stays as it was.
 pub async fn revoke(
     State(s): State<AppState>,
+    d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     caller: Caller,
     gid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
     require_browser(&caller, "revoking a connection")?;
     let gid = path(gid)?;
     let (state, ctx) = (s.clone(), s.feedback_ctx());

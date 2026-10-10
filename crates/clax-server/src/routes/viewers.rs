@@ -17,8 +17,8 @@ use axum::Json;
 use axum::extract::Query;
 use axum::extract::State;
 use axum::extract::rejection::{JsonRejection, QueryRejection};
+use axum::http::header;
 use axum::http::header::SET_COOKIE;
-use axum::http::{HeaderMap, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::{CoreError, new_ulid};
 use serde::Deserialize;
@@ -76,6 +76,7 @@ async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Res
 /// machine) on first contact.
 pub async fn me(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
 ) -> Result<Response, ApiError> {
@@ -88,6 +89,7 @@ pub async fn me(
 /// that lists the viewer.
 pub async fn set_me(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     req: Result<Json<NameBody>, JsonRejection>,
@@ -116,8 +118,8 @@ pub struct LookupQuery {
 /// cookies.
 pub async fn lookup(
     State(s): State<AppState>,
+    d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
-    headers: HeaderMap,
     q: Result<Query<LookupQuery>, QueryRejection>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_argument", e.body_text()))?;
@@ -144,7 +146,7 @@ pub async fn lookup(
                 .await?
         }
         (None, Some(text)) => {
-            if !crate::auth::has_token(&headers, &s.token) {
+            if !d.holds_token() {
                 return Err(ApiError::unauthorized());
             }
             let text = text.trim().to_string();
@@ -180,6 +182,7 @@ pub struct SeenQuery {
 /// this viewer has viewed unpinned; null for none or no cookie.
 pub async fn seen(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     sees: crate::live::SeesLive,
@@ -211,6 +214,7 @@ pub struct SeenBody {
 /// 400 `no_viewer` without a viewer cookie.
 pub async fn set_seen(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     sees: crate::live::SeesLive,
@@ -257,6 +261,7 @@ pub struct AttentionQuery {
 /// ...}}`, or `{artifacts: {}}` when it is not live (400 for a malformed ID).
 pub async fn attention(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     sees: crate::live::SeesLive,
@@ -304,6 +309,7 @@ pub async fn attention(
 /// viewer's marks on the artifact. 400 `no_viewer` without a viewer cookie.
 pub async fn set_looked(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     sees: crate::live::SeesLive,
@@ -362,6 +368,7 @@ pub struct PresenceBody {
 /// [`clax_core::presence::MAX_PEOPLE`] others and none of them is gone.
 pub async fn set_presence(
     State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     sees: crate::live::SeesLive,

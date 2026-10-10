@@ -6,11 +6,13 @@
 //! 403, and they keep the viewer routes' origin rules.
 
 use super::artifacts::{body, body_within, path};
+use crate::agent::{DeniedToGrants, TokenOrAgent};
 use crate::audit::DeferredAudit;
+use crate::auth::Caller;
 use crate::auth::RequireToken;
 use crate::error::ApiError;
 use crate::identity::Identity;
-use crate::questions::{announce, arm_grace, start_grace, view};
+use crate::questions::{announce, arm_grace, start_grace, view as question_view};
 use crate::state::AppState;
 use crate::viewer::SameOrigin;
 use axum::Json;
@@ -21,7 +23,7 @@ use axum::response::{IntoResponse, Response};
 use clax_core::audit::AuditCtx;
 use clax_core::questions::{Answer, Question, from_claude, from_claude_answers, validate_ask};
 use clax_core::store::questions::{Close, ListStatus, NewQuestion, Source, Status};
-use clax_core::{ArtifactId, CoreError, Store};
+use clax_core::{CoreError, Store};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::time::Duration;
@@ -76,6 +78,38 @@ fn live(db: &Store, sid: &str) -> clax_core::Result<()> {
     }
 }
 
+/// The view of a question as its asking agent sees it: a person's agent
+/// gets its artifact's ID and kind, never its title, until the filter
+/// covers questions (the title is an author field, spec §8.2).
+fn for_asker(caller: &Caller, mut v: Value) -> Value {
+    if matches!(caller, Caller::PersonAgent { .. })
+        && let Some(a) = v.get_mut("artifact").and_then(Value::as_object_mut)
+    {
+        a.insert("title".into(), Value::Null);
+    }
+    v
+}
+
+/// [`for_asker`] on the `question` of a response.
+fn answer_asker(
+    caller: &Caller,
+    r: Result<Json<Value>, QuestionError>,
+) -> Result<Json<Value>, QuestionError> {
+    match r {
+        Ok(Json(mut v)) => {
+            if let Some(q) = v.get_mut("question") {
+                *q = for_asker(caller, q.take());
+            }
+            Ok(Json(v))
+        }
+        Err(QuestionError::Closed { message, question }) => Err(QuestionError::Closed {
+            message,
+            question: for_asker(caller, question),
+        }),
+        Err(e) => Err(e),
+    }
+}
+
 /// What applying a [`Close`] came to.
 pub(crate) enum Closed {
     /// Applied and announced; the new view.
@@ -104,7 +138,7 @@ pub(crate) fn close(
 ) -> clax_core::Result<Closed> {
     match db.close_question(ctx, qid, c) {
         Ok(q) => {
-            let v = view(db, &q)?;
+            let v = question_view(db, &q)?;
             announce(s, &q, v.clone());
             Ok(Closed::Done(v))
         }
@@ -113,7 +147,7 @@ pub(crate) fn close(
             message,
         }) => {
             let q = db.question(qid)?.ok_or(CoreError::NotFound)?;
-            Ok(Closed::Already(message, view(db, &q)?))
+            Ok(Closed::Already(message, question_view(db, &q)?))
         }
         Err(e) => Err(e),
     }
@@ -143,7 +177,7 @@ pub struct CreateBody {
 /// released).
 pub async fn create(
     State(s): State<AppState>,
-    _t: RequireToken,
+    TokenOrAgent(a): TokenOrAgent<crate::agent::QuestionsCreate>,
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<CreateBody>, JsonRejection>,
@@ -177,6 +211,19 @@ pub async fn create(
         (None, Source::Ask) => None,
     };
     let named = b.artifact_id.is_some();
+    // The artifact through the agent's gate: a named one must parse (and,
+    // for a person's agent, be one it may read); a working record's that
+    // does not is about none.
+    let artifact_id = match artifact_id {
+        Some(raw) => match a.named_artifact(&s, &raw).await {
+            Ok(id) => Some(id),
+            // A malformed ID names no artifact (404), as for any caller.
+            Err(e) if named && matches!(a.caller, Caller::PersonAgent { .. }) => return Err(e),
+            Err(_) if named => return Err(ApiError::not_found()),
+            Err(_) => None,
+        },
+        None => None,
+    };
     let tool_use_id = b.tool_use_id;
     let st = s.clone();
     let (row, made, v) = s
@@ -185,9 +232,9 @@ pub async fn create(
             // A named artifact must be live; a working record's may have
             // gone since, and then the question is about the session's
             // artifact, if it has one.
-            let mut live = match artifact_id.as_deref().map(ArtifactId::parse) {
-                Some(Ok(id)) => db.get_artifact(&id)?.map(|a| a.id),
-                _ => None,
+            let mut live = match &artifact_id {
+                Some(id) => db.get_artifact(id)?.map(|a| a.id),
+                None => None,
             };
             if named && live.is_none() {
                 return Err(CoreError::NotFound);
@@ -212,7 +259,7 @@ pub async fn create(
                     released,
                 },
             )?;
-            let v = view(db, &row)?;
+            let v = question_view(db, &row)?;
             if made {
                 announce(&st, &row, v.clone());
             }
@@ -227,6 +274,7 @@ pub async fn create(
     } else {
         "wait"
     };
+    let v = for_asker(&a.caller, v);
     let out = json!({"question": v, "mode": mode, "terminal_after_s": after, "surface_open": surface_open});
     let status = if made {
         StatusCode::CREATED
@@ -259,7 +307,7 @@ pub struct WaitQuery {
 /// new poll is refused rather than an older one ended).
 pub async fn poll(
     State(s): State<AppState>,
-    _t: RequireToken,
+    TokenOrAgent(a): TokenOrAgent<crate::agent::QuestionsPoll>,
     p: Result<Path<(String, String)>, PathRejection>,
     q: Result<Query<WaitQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -328,12 +376,12 @@ pub async fn poll(
                 if matches!(row.status, Status::Answered | Status::Declined) {
                     db.take_question(&row.id)?;
                 }
-                view(db, &row).map(Some)
+                question_view(db, &row).map(Some)
             })
             .await?;
         if let Some(v) = out {
             return Ok(Json(
-                json!({"question": v, "waited_s": started.elapsed().as_secs()}),
+                json!({"question": for_asker(&a.caller, v), "waited_s": started.elapsed().as_secs()}),
             ));
         }
         tokio::select! {
@@ -369,12 +417,15 @@ async fn session_close(
 /// (reason `explicit`).
 pub async fn withdraw(
     State(s): State<AppState>,
-    _t: RequireToken,
+    TokenOrAgent(a): TokenOrAgent<crate::agent::QuestionsWithdraw>,
     audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Json<Value>, QuestionError> {
     let (sid, qid) = path(p)?;
-    session_close(s, audit, sid, qid, Close::Withdraw).await
+    answer_asker(
+        &a.caller,
+        session_close(s, audit, sid, qid, Close::Withdraw).await,
+    )
 }
 
 /// `POST /api/sessions/<sid>/questions/<qid>/release` → `{question}`: the
@@ -383,12 +434,15 @@ pub async fn withdraw(
 /// not open. Records `question.release` (reason `timer`).
 pub async fn release(
     State(s): State<AppState>,
-    _t: RequireToken,
+    TokenOrAgent(a): TokenOrAgent<crate::agent::QuestionsRelease>,
     audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Json<Value>, QuestionError> {
     let (sid, qid) = path(p)?;
-    session_close(s, audit, sid, qid, Close::Expire).await
+    answer_asker(
+        &a.caller,
+        session_close(s, audit, sid, qid, Close::Expire).await,
+    )
 }
 
 #[derive(Deserialize)]
@@ -405,7 +459,7 @@ pub struct TerminalBody {
 /// the owner, who answered (`answered_via: terminal`).
 pub async fn terminal(
     State(s): State<AppState>,
-    _t: RequireToken,
+    TokenOrAgent(a): TokenOrAgent<crate::agent::QuestionsTerminal>,
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<TerminalBody>, JsonRejection>,
@@ -429,7 +483,7 @@ pub async fn terminal(
         .await?;
     Ok(match closed {
         None => StatusCode::NO_CONTENT.into_response(),
-        Some(c) => c.respond()?.into_response(),
+        Some(c) => answer_asker(&a.caller, c.respond())?.into_response(),
     })
 }
 
@@ -446,6 +500,7 @@ pub struct UntilQuery {
 #[cfg(debug_assertions)]
 pub async fn expire(
     State(s): State<AppState>,
+    _d: DeniedToGrants,
     _t: RequireToken,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -459,6 +514,7 @@ pub async fn expire(
 #[cfg(debug_assertions)]
 pub async fn waiters(
     State(s): State<AppState>,
+    _d: DeniedToGrants,
     _t: RequireToken,
     p: Result<Path<String>, PathRejection>,
     q: Result<Query<UntilQuery>, QueryRejection>,
@@ -485,11 +541,13 @@ pub struct ListQuery {
 /// `limit` is clamped to 1..=200. 400 `invalid_query` for another status.
 pub async fn list(
     State(s): State<AppState>,
+    d: DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     q: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     who.require_owner("sees and answers questions")?;
+    d.refuse_agents()?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let which = match q.status.as_deref() {
         None | Some("open") => ListStatus::Open,
@@ -508,7 +566,7 @@ pub async fn list(
             let (rows, open) = db.list_questions(which, limit)?;
             let views = rows
                 .iter()
-                .map(|r| view(db, r))
+                .map(|r| question_view(db, r))
                 .collect::<clax_core::Result<Vec<_>>>()?;
             Ok(json!({"questions": views, "open": open}))
         })
@@ -520,16 +578,26 @@ pub async fn list(
 /// none.
 pub async fn get_one(
     State(s): State<AppState>,
+    d: DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     who.require_owner("sees and answers questions")?;
+    d.refuse_agents()?;
     let qid = path(p)?;
     let v = s
         .store_call(move |db| {
             let q = db.question(&qid)?.ok_or(CoreError::NotFound)?;
-            view(db, &q)
+            // Person-scoped (spec §18): a person's agent's question is not
+            // the owner's to see.
+            if db
+                .get_session(&q.session_id)?
+                .is_some_and(|s| s.person.is_some())
+            {
+                return Err(CoreError::NotFound);
+            }
+            question_view(db, &q)
         })
         .await?;
     Ok(Json(json!({"question": v})))
@@ -568,6 +636,7 @@ pub struct AnswerBody {
 /// Records `question.answer`.
 pub async fn answer(
     State(s): State<AppState>,
+    d: DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     audit: DeferredAudit,
@@ -575,6 +644,7 @@ pub async fn answer(
     req: Result<Json<AnswerBody>, JsonRejection>,
 ) -> Result<Json<Value>, QuestionError> {
     who.require_owner("sees and answers questions")?;
+    d.refuse_agents()?;
     let qid = path(p)?;
     let b = body(req)?;
     let via = if who.extension {
@@ -601,12 +671,14 @@ pub async fn answer(
 /// Records `question.decline`.
 pub async fn decline(
     State(s): State<AppState>,
+    d: DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, QuestionError> {
     who.require_owner("sees and answers questions")?;
+    d.refuse_agents()?;
     owner_close(s, audit, path(p)?, Close::Decline).await
 }
 
@@ -616,11 +688,13 @@ pub async fn decline(
 /// `question.release` (reason `owner`).
 pub async fn release_owner(
     State(s): State<AppState>,
+    d: DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, QuestionError> {
     who.require_owner("sees and answers questions")?;
+    d.refuse_agents()?;
     owner_close(s, audit, path(p)?, Close::Release).await
 }

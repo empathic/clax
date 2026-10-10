@@ -337,27 +337,44 @@ macro_rules! late {
 pub(crate) const BY_ID: &str = concat!(select!(), "WHERE id = ?1");
 pub(crate) const BY_TOOL_USE: &str =
     concat!(select!(), "WHERE session_id = ?1 AND tool_use_id = ?2");
-pub(crate) const OPEN_COUNT: &str = "SELECT COUNT(*) FROM questions WHERE status = 'open'";
+/// The owner's lists hold the questions of the owner's agents only (spec
+/// §7.5, §18: person-scoped): never one a person's agent asked.
+macro_rules! owners {
+    () => {
+        " AND session_id NOT IN (SELECT id FROM sessions WHERE person IS NOT NULL)"
+    };
+}
+pub(crate) const OPEN_COUNT: &str = concat!(
+    "SELECT COUNT(*) FROM questions WHERE status = 'open'",
+    owners!()
+);
 pub(crate) const OPEN_COUNT_OF_SESSION: &str =
     "SELECT COUNT(*) FROM questions WHERE session_id = ?1 AND status = 'open'";
 pub(crate) const OPEN_OLDEST: &str = concat!(
     select!(),
-    "WHERE status = 'open' ORDER BY created_at, id LIMIT ?1"
+    "WHERE status = 'open'",
+    owners!(),
+    " ORDER BY created_at, id LIMIT ?1"
 );
 pub(crate) const OPEN_NEWEST: &str = concat!(
     select!(),
-    "WHERE status = 'open' ORDER BY created_at DESC, id DESC LIMIT ?1"
+    "WHERE status = 'open'",
+    owners!(),
+    " ORDER BY created_at DESC, id DESC LIMIT ?1"
 );
 /// Closed questions use the partial index `questions_closed`, whose
 /// condition (`status <> 'open'`) each query repeats word for word.
 pub(crate) const CLOSED_NEWEST: &str = concat!(
     select!(),
-    "WHERE status <> 'open' ORDER BY closed_at DESC, id DESC LIMIT ?1"
+    "WHERE status <> 'open'",
+    owners!(),
+    " ORDER BY closed_at DESC, id DESC LIMIT ?1"
 );
 pub(crate) const CLOSED_BEFORE: &str = concat!(
     select!(),
-    "WHERE status <> 'open' AND (closed_at, id) < (?1, ?2)
-     ORDER BY closed_at DESC, id DESC LIMIT ?3"
+    "WHERE status <> 'open' AND (closed_at, id) < (?1, ?2)",
+    owners!(),
+    " ORDER BY closed_at DESC, id DESC LIMIT ?3"
 );
 pub(crate) const LATE_ANSWERS: &str = concat!(select!(), late!());
 pub(crate) const OPEN_OF_SESSION: &str = "SELECT id, session_id, artifact_id FROM questions

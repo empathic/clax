@@ -1,10 +1,11 @@
 //! Comment threads (spec §6 "Comments"): create with anchor and clip, comment,
 //! send to the agent, resolve, list, and serve clips.
 
-use super::artifacts::{body, parse_id, path, publishing_session, session_header};
+use super::artifacts::{body, parse_id, path, publishing_session, sees_sessions};
 use super::assets::multipart_error;
+use crate::agent::{Agent, TokenOrAgent};
 use crate::audit::DeferredAudit;
-use crate::auth::{RequireToken, has_token};
+use crate::auth::Caller;
 use crate::error::ApiError;
 use crate::feedback::{apply, thread_view, thread_views};
 use crate::identity::Identity;
@@ -15,7 +16,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::multipart::MultipartRejection;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Multipart, Path, Query, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::audit::AuditCtx;
 use clax_core::feedback::Touched;
@@ -73,19 +74,40 @@ pub(crate) fn publish_thread(
     Ok(())
 }
 
-/// The live session an agent reply or resolve comes from: `X-Clax-Session`
-/// is required, and must name a session that exists and has not ended.
+/// The live session an agent reply or resolve comes from: the caller's
+/// session (`X-Clax-Session`, or the path's) is required, and must exist,
+/// not have ended, and be the caller's credential's (`grant`).
 ///
 /// # Errors
-/// `unknown_session` otherwise.
-fn agent_session(st: &Store, header: &Option<String>) -> clax_core::Result<Session> {
-    let sid = publishing_session(st, header, None)?.ok_or_else(|| {
+/// `unknown_session` otherwise; `foreign_session` for another credential's.
+fn agent_session(
+    st: &Store,
+    session: &Option<String>,
+    grant: Option<&str>,
+) -> clax_core::Result<Session> {
+    let sid = publishing_session(st, session, grant)?.ok_or_else(|| {
         CoreError::invalid(
             "unknown_session",
             "agent replies, resolves, reopens, and deletes need X-Clax-Session naming a live session",
         )
     })?;
     st.get_session(&sid)?.ok_or(CoreError::NotFound)
+}
+
+/// Whether `c` may act as an agent (reply, resolve, reopen or delete with
+/// `as: agent`): the owner's token or an agent channel. Its session decides
+/// which agent ([`agent_session`]).
+fn may_act_as_agent(c: &Caller) -> bool {
+    sees_sessions(c) || c.is_agent()
+}
+
+/// The session and grant an agent action of `c` names.
+fn acting(c: &Caller) -> (Option<String>, Option<String>) {
+    let grant = match c {
+        Caller::PersonAgent { grant, .. } => Some(grant.clone()),
+        _ => None,
+    };
+    (c.session().map(str::to_string), grant)
 }
 
 /// The thread `tid` if it belongs to the live artifact `id`.
@@ -106,13 +128,13 @@ pub struct ListQuery {
 
 pub async fn list(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    a: Agent<crate::agent::ThreadsList>,
     aid: Result<Path<String>, PathRejection>,
     q: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
-    let with_path = has_token(&headers, &s.token);
+    let with_path = sees_sessions(&a.caller);
     let codex = s.feedback_ctx().codex_push();
     let limit = q.limit.unwrap_or(DEFAULT_THREAD_PAGE).clamp(1, 200);
     let (threads, next) = s
@@ -139,7 +161,7 @@ pub struct AllQuery {
 /// `GET /api/artifacts`.
 pub async fn list_all(
     State(s): State<AppState>,
-    _t: RequireToken,
+    _a: TokenOrAgent<crate::agent::ThreadsAll>,
     q: Result<Query<AllQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
@@ -184,12 +206,12 @@ pub async fn list_all(
 
 pub async fn get(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    a: Agent<crate::agent::ThreadGet>,
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let (aid, tid) = path(p)?;
     let id = parse_id(&aid)?;
-    let with_path = has_token(&headers, &s.token);
+    let with_path = sees_sessions(&a.caller);
     let codex = s.feedback_ctx().codex_push();
     let view = s
         .store_call(move |st| thread_view(st, &thread_of(st, &id, &tid)?, codex, with_path))
@@ -200,6 +222,7 @@ pub async fn get(
 /// The clip PNG, sandboxed like `/_blob`.
 pub async fn clip(
     State(s): State<AppState>,
+    _a: Agent<crate::agent::ThreadClip>,
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let (aid, tid) = path(p)?;
@@ -304,7 +327,7 @@ async fn refuse_merged_away(s: &AppState, aid: &str) -> Result<(), ApiError> {
 
 pub async fn create(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    a: Agent<crate::agent::ThreadsCreate>,
     _o: SameOrigin,
     who: Identity,
     audit: DeferredAudit,
@@ -399,7 +422,7 @@ pub async fn create(
     let clip_error = clip.as_deref().and_then(clip_problem);
     let clip = if clip_error.is_some() { None } else { clip };
     let ctx = s.feedback_ctx();
-    let with_path = has_token(&headers, &s.token);
+    let with_path = sees_sessions(&a.caller);
     let view = s
         .store_call(move |st| {
             let audit = audit.resolve(st)?;
@@ -469,7 +492,7 @@ fn respond(o: Outcome, created: StatusCode) -> Response {
 /// written. A request with a foreign `Origin` is refused ([`SameOrigin`]).
 pub async fn comment(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    a: Agent<crate::agent::ThreadComment>,
     _o: SameOrigin,
     who: Identity,
     audit: DeferredAudit,
@@ -508,18 +531,23 @@ pub async fn comment(
             "addressed is for live pages; publish with addresses instead",
         ));
     }
-    let authed = has_token(&headers, &s.token);
-    if agent && !authed {
+    if agent && !may_act_as_agent(&a.caller) {
         return Err(ApiError::unauthorized());
     }
-    let session = session_header(&headers)?;
+    if !agent {
+        // Not an agent reply: writing a comment.
+        a.also_needs(&s, (clax_core::rights::RightType::Comments, "write"), &id)
+            .await?;
+    }
+    let with_path = sees_sessions(&a.caller);
+    let (session, grant) = acting(&a.caller);
     let ctx = s.feedback_ctx();
     let o = s
         .store_call(move |st| {
             let t = thread_of(st, &id, &tid)?;
             let mut touched = Touched::default();
             let c = if agent {
-                let sess = agent_session(st, &session)?;
+                let sess = agent_session(st, &session, grant.as_deref())?;
                 if !t.sent_to_agent {
                     return Ok(Outcome::Guidance(GUIDANCE_REPLY));
                 }
@@ -571,7 +599,7 @@ pub async fn comment(
             apply(&ctx, st, &touched);
             let t = thread_of(st, &id, &tid)?;
             publish_thread(&ctx, st, &t)?;
-            let view = thread_view(st, &t, ctx.codex_push(), authed)?;
+            let view = thread_view(st, &t, ctx.codex_push(), with_path)?;
             let mut out = json!({"comment": c, "thread": view});
             if addressed {
                 out["addressed"] = json!("pending");
@@ -614,7 +642,7 @@ fn send_target(st: &Store, id: &ArtifactId, to: Option<&str>) -> clax_core::Resu
 /// ([`SameOrigin`]).
 pub async fn send(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    a: Agent<crate::agent::ThreadSend>,
     _o: SameOrigin,
     audit: DeferredAudit,
     p: Result<Path<(String, String)>, PathRejection>,
@@ -629,7 +657,7 @@ pub async fn send(
             .map_err(|e| ApiError::bad_request("invalid_json", e.to_string()))?
     };
     let ctx = s.feedback_ctx();
-    let with_path = has_token(&headers, &s.token);
+    let with_path = sees_sessions(&a.caller);
     let view = s
         .store_call(move |st| {
             thread_of(st, &id, &tid)?;
@@ -668,7 +696,7 @@ pub struct BatchBody {
 /// tier hands its rows over together.
 pub async fn send_batch(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    a: Agent<crate::agent::ThreadsSendBatch>,
     _o: SameOrigin,
     who: Identity,
     audit: DeferredAudit,
@@ -678,7 +706,7 @@ pub async fn send_batch(
     let id = parse_id(&path(aid)?)?;
     let b = body(req)?;
     let ctx = s.feedback_ctx();
-    let with_path = has_token(&headers, &s.token);
+    let with_path = sees_sessions(&a.caller);
     let v = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
@@ -731,7 +759,7 @@ struct ResolveBody {
 /// address). A request with a foreign `Origin` is refused ([`SameOrigin`]).
 pub async fn resolve(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    a: Agent<crate::agent::ThreadResolve>,
     _o: SameOrigin,
     who: Identity,
     audit: DeferredAudit,
@@ -741,11 +769,11 @@ pub async fn resolve(
     let (aid, tid) = path(p)?;
     let id = parse_id(&aid)?;
     let agent = acting_as(&raw)?;
-    let authed = has_token(&headers, &s.token);
-    if agent && !authed {
+    if agent && !may_act_as_agent(&a.caller) {
         return Err(ApiError::unauthorized());
     }
-    let session = session_header(&headers)?;
+    let with_path = sees_sessions(&a.caller);
+    let (session, grant) = acting(&a.caller);
     let ctx = s.feedback_ctx();
     let live = s.live_ids.contains(id.as_str());
     let o = s
@@ -754,7 +782,7 @@ pub async fn resolve(
             let mut touched = Touched::default();
             let mut resolver: Option<Session> = None;
             let by = if agent {
-                let sess = agent_session(st, &session)?;
+                let sess = agent_session(st, &session, grant.as_deref())?;
                 if !t.sent_to_agent {
                     return Ok(Outcome::Guidance(GUIDANCE_RESOLVE));
                 }
@@ -796,7 +824,7 @@ pub async fn resolve(
             });
             apply(&ctx, st, &touched);
             publish_thread(&ctx, st, &t)?;
-            let view = thread_view(st, &t, ctx.codex_push(), authed)?;
+            let view = thread_view(st, &t, ctx.codex_push(), with_path)?;
             Ok(Outcome::Done(json!({"thread": view})))
         })
         .await?;
@@ -854,7 +882,7 @@ async fn require_interact(s: &AppState, authed: bool, who: Identity) -> Result<(
 /// event. A request with a foreign `Origin` is refused ([`SameOrigin`]).
 pub async fn reopen(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    a: Agent<crate::agent::ThreadReopen>,
     _o: SameOrigin,
     who: Identity,
     audit: DeferredAudit,
@@ -864,18 +892,19 @@ pub async fn reopen(
     let (aid, tid) = path(p)?;
     let id = parse_id(&aid)?;
     let agent = acting_as(&raw)?;
-    let authed = has_token(&headers, &s.token);
+    let authed = may_act_as_agent(&a.caller);
     if agent && !authed {
         return Err(ApiError::unauthorized());
     }
     require_interact(&s, authed, who).await?;
-    let session = session_header(&headers)?;
+    let with_path = sees_sessions(&a.caller);
+    let (session, grant) = acting(&a.caller);
     let ctx = s.feedback_ctx();
     let o = s
         .store_call(move |st| {
             let t = thread_of(st, &id, &tid)?;
             if agent {
-                agent_session(st, &session)?;
+                agent_session(st, &session, grant.as_deref())?;
                 if !t.sent_to_agent {
                     return Ok(Outcome::Guidance(GUIDANCE_REOPEN));
                 }
@@ -884,7 +913,7 @@ pub async fn reopen(
             let t = st.reopen_thread(&audit, &tid)?;
             publish_thread(&ctx, st, &t)?;
             Ok(Outcome::Done(
-                json!({"thread": thread_view(st, &t, ctx.codex_push(), authed)?}),
+                json!({"thread": thread_view(st, &t, ctx.codex_push(), with_path)?}),
             ))
         })
         .await?;
@@ -904,7 +933,7 @@ pub struct DeleteQuery {
 /// ([`SameOrigin`]).
 pub async fn delete(
     State(s): State<AppState>,
-    headers: HeaderMap,
+    a: Agent<crate::agent::ThreadDelete>,
     _o: SameOrigin,
     who: Identity,
     audit: DeferredAudit,
@@ -915,18 +944,18 @@ pub async fn delete(
     let id = parse_id(&aid)?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let agent = agent_as(q.as_.as_deref())?;
-    let authed = has_token(&headers, &s.token);
+    let authed = may_act_as_agent(&a.caller);
     if agent && !authed {
         return Err(ApiError::unauthorized());
     }
     require_interact(&s, authed, who).await?;
-    let session = session_header(&headers)?;
+    let (session, grant) = acting(&a.caller);
     let ctx = s.feedback_ctx();
     let o = s
         .store_call(move |st| {
             let t = thread_of(st, &id, &tid)?;
             if agent {
-                agent_session(st, &session)?;
+                agent_session(st, &session, grant.as_deref())?;
                 if !t.sent_to_agent {
                     return Ok(Outcome::Guidance(GUIDANCE_DELETE));
                 }

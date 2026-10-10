@@ -52,7 +52,10 @@ impl Drop for OpenStream {
 /// Debug builds only: how many event streams are open, so browser tests can
 /// check that a page holds no more than one. `{open}`.
 #[cfg(debug_assertions)]
-pub async fn open_streams(_t: crate::auth::RequireToken) -> axum::Json<serde_json::Value> {
+pub async fn open_streams(
+    _d: crate::agent::DeniedToGrants,
+    _t: crate::auth::RequireToken,
+) -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({ "open": OPEN_STREAMS.load(Ordering::Relaxed) }))
 }
 
@@ -105,11 +108,15 @@ fn list(v: Option<String>) -> Option<BTreeSet<String>> {
 /// when the daemon begins shutting down.
 pub async fn events(
     State(s): State<AppState>,
+    d: crate::agent::DeniedToGrants,
     Query(q): Query<EventsQuery>,
     extensions: axum::http::Extensions,
     headers: HeaderMap,
     who: crate::db_caller::Subscriber,
-) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, crate::error::ApiError> {
+    // The event stream serves people (spec §7.5): an agent reads through
+    // the filtered routes.
+    d.refuse_agents()?;
     let hidden = (!crate::live::sees_live_pages(&headers, &extensions, &s.token))
         .then(|| s.live_ids.clone());
     let who = who.or_events_cookie();
@@ -227,7 +234,7 @@ pub async fn events(
             std::future::pending::<()>().await;
         }
     };
-    Sse::new(futures::StreamExt::take_until(
+    Ok(Sse::new(futures::StreamExt::take_until(
         ready.chain(tokio_stream::iter(replay)).chain(live),
         stop,
     ))
@@ -235,7 +242,7 @@ pub async fn events(
         KeepAlive::new()
             .interval(s.sse_keep_alive)
             .text("keep-alive"),
-    )
+    ))
 }
 
 #[cfg(test)]
