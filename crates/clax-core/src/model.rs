@@ -19,6 +19,36 @@ pub struct Artifact {
     /// `html` (published by an agent) or `live` (a live page, spec 2026-10-05 §5.1).
     #[serde(default = "html_kind")]
     pub kind: String,
+    /// Who wrote its title, description, icon and capabilities, for the
+    /// visibility filter (spec 2026-10-08-multi-agent-multi-person §8.2).
+    /// Never served.
+    #[serde(skip)]
+    pub authors: ArtifactAuthors,
+}
+
+/// Who wrote an artifact's own text: its creator and its current
+/// version's publisher.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ArtifactAuthors {
+    /// `artifacts.person`: the creator's person; `None`: the owner.
+    pub creator: Option<String>,
+    /// The current version's publisher (its `files` unset).
+    pub current: VersionAuthors,
+}
+
+/// Who wrote a version (spec 2026-10-08-multi-agent-multi-person §5.1,
+/// §8.2). Person values are public IDs, `*owner`, or `None` for the owner.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VersionAuthors {
+    /// `versions.person`: the publisher's person.
+    pub person: Option<String>,
+    /// A page published it.
+    pub by_page: bool,
+    /// For `by_page`, the previous version's publisher, fixed at write.
+    pub page_person: Option<String>,
+    /// `versions.file_authors_json`: each file's authors, fixed at
+    /// publish; `None` (and a file it does not list): the publisher's.
+    pub files: Option<BTreeMap<String, Vec<Option<String>>>>,
 }
 
 fn html_kind() -> String {
@@ -60,6 +90,9 @@ pub struct Version {
     /// `None` only on versions written before content hashes, until backfill.
     #[serde(default)]
     pub content_sha256: Option<String>,
+    /// Who wrote it, for the visibility filter. Never served.
+    #[serde(skip)]
+    pub authors: VersionAuthors,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -70,6 +103,10 @@ pub struct Asset {
     pub size: u64,
     pub ext: String,
     pub created_at: String,
+    /// The uploader's person (`assets.person`); `None`: the owner. For the
+    /// visibility filter; never served.
+    #[serde(skip)]
+    pub person: Option<String>,
 }
 
 /// One harness conversation (Claude Code, Codex, Pi) that publishes artifacts.
@@ -138,6 +175,15 @@ pub struct Comment {
     pub via_page: bool,
     pub body: String,
     pub created_at: String,
+    /// For `via_page`, the page's publisher at write (`comments.page_person`:
+    /// a public ID or `*owner`; `None`: the owner). For the visibility
+    /// filter; never served.
+    #[serde(skip)]
+    pub page_person: Option<String>,
+    /// For an agent comment, its session's person (`None`: the owner's
+    /// agent). For the visibility filter; never served.
+    #[serde(skip)]
+    pub agent_person: Option<String>,
 }
 
 /// A session's watch on an artifact; `replies_armed` gates the Stop-hook and

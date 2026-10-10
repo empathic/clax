@@ -963,6 +963,7 @@ fn asset_upload(
                 size: r.get::<_, i64>(2)? as u64,
                 ext: r.get(3)?,
                 created_at: r.get(4)?,
+                person: None,
             })
         })
         .optional()?;
@@ -1114,6 +1115,7 @@ fn version(
         agent: None,
         agent_harness: None,
         content_sha256: content,
+        authors: Default::default(),
     };
     let page = if live { page_of(tx, aid)? } else { None };
     let mut rec = version_record(&a, &v, &carried, None, page.as_ref());
@@ -1232,6 +1234,8 @@ fn comment_add(c: &Connection, at: &str, cid: &str) -> Result<Option<AuditRecord
                     via_page: r.get(7)?,
                     body: r.get(8)?,
                     created_at: at.to_string(),
+                    page_person: None,
+                    agent_person: None,
                 },
                 r.get::<_, Option<String>>(5)?,
             ))

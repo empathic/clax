@@ -6,7 +6,10 @@
 //! `?as_level=view|interact|admin` narrows the level and never raises it. The
 //! caller's viewer identity is the public ID of the viewer the request speaks
 //! for ([`crate::identity`]: the owner's for an owner's browser), whatever the
-//! level.
+//! level. A browser's writes are a page's (the `db` capability is the only
+//! browser writer of documents), so they add the page's publisher to a
+//! document's authors as well as the writer (spec
+//! 2026-10-08-multi-agent-multi-person §8.2).
 
 use crate::error::ApiError;
 use crate::identity::Identity;
@@ -14,6 +17,7 @@ use crate::state::AppState;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use clax_core::db::{Caller, Level};
+use clax_core::visibility::Author;
 use clax_core::{ArtifactId, CoreError, Store};
 
 /// The value of the first `key=` parameter of `parts`' query string,
@@ -74,15 +78,15 @@ fn base_caller(st: &Store, token: bool, who: &Identity) -> clax_core::Result<Cal
             Caller {
                 level: Level::Admin,
                 viewer: Some(st.owner_viewer(true)?.public_id),
+                person: Author::Owner,
+                via_page: true,
             }
         } else {
-            Caller {
-                level: Level::Owner,
-                viewer: None,
-            }
+            Caller::new(Level::Owner, None)
         });
     }
-    let viewer = if who.is_owner() {
+    let owner = who.is_owner();
+    let viewer = if owner {
         who.viewer(st)?
     } else {
         cookie_viewer
@@ -92,9 +96,16 @@ fn base_caller(st: &Store, token: bool, who: &Identity) -> clax_core::Result<Cal
     } else {
         Level::View
     };
+    let viewer = viewer.map(|v| v.public_id);
     Ok(Caller {
         level,
-        viewer: viewer.map(|v| v.public_id),
+        person: if owner {
+            Author::Owner
+        } else {
+            Author::of_viewer(viewer.as_deref())
+        },
+        viewer,
+        via_page: true,
     })
 }
 
@@ -181,7 +192,7 @@ impl CallerParts {
     fn narrowed(&self, base: Caller) -> clax_core::Result<Caller> {
         Ok(Caller {
             level: self.as_level.map_or(base.level, |l| l.min(base.level)),
-            viewer: base.viewer,
+            ..base
         })
     }
 
@@ -213,7 +224,12 @@ impl CallerParts {
                 Some(p) => Some(p.clone()),
                 None => st.owner()?.map(|v| v.public_id),
             };
-            return self.narrowed(Caller { level, viewer });
+            return self.narrowed(Caller {
+                level,
+                viewer,
+                person: Author::of_token(person.as_deref()),
+                via_page: false,
+            });
         }
         if !self.token && !st.doc_declared(id)? {
             return Err(CoreError::NotDeclared { capability: "db" });

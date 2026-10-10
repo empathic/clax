@@ -1175,10 +1175,7 @@ mod tests {
     use super::*;
 
     fn viewer(level: Level, v: Option<&str>) -> Caller {
-        Caller {
-            level,
-            viewer: v.map(str::to_string),
-        }
+        Caller::new(level, v.map(str::to_string))
     }
 
     const A: &str = "7q3k9mzx2b4t";
