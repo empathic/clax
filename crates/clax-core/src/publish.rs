@@ -85,8 +85,10 @@ pub struct ValidatedPublish {
     /// Threads the publishing session was marked working on (empty from
     /// [`validate`]; the caller fills it). Ones that no longer exist are skipped.
     pub working_threads: Vec<String>,
-    /// The page itself published through the shell (false from
-    /// [`validate`]; the caller sets it). Recorded, not stored.
+    /// The publisher's person (public ID); `None` for the owner, or to take
+    /// the publishing session's person. The caller fills it.
+    pub person: Option<String>,
+    /// The page published this version of itself (the caller fills it).
     pub by_page: bool,
 }
 
@@ -346,6 +348,7 @@ pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
         note_truncated,
         addresses,
         working_threads: Vec::new(),
+        person: None,
         by_page: false,
     })
 }

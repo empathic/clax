@@ -60,6 +60,7 @@ pub mod inbox;
 pub mod joined;
 pub mod live;
 pub mod migrations;
+pub mod people;
 #[cfg(test)]
 mod plans;
 pub mod questions;
@@ -395,7 +396,7 @@ pub(crate) mod test_util {
                     cwd: "/w".into(),
                     pid: None,
                     parent_pid: None,
-                    transcript_path: None,
+                    ..Default::default()
                 },
             )
             .unwrap()
@@ -441,9 +442,9 @@ mod tests {
                     harness: "claude".into(),
                     harness_session_id: Some("h1".into()),
                     cwd: "/w".into(),
-                    transcript_path: None,
                     pid: None,
                     parent_pid: None,
+                    ..Default::default()
                 },
             )
             .unwrap();
@@ -457,9 +458,9 @@ mod tests {
                     harness: "claude".into(),
                     harness_session_id: Some("h1".into()),
                     cwd: "/w".into(),
-                    transcript_path: None,
                     pid: None,
                     parent_pid: None,
+                    ..Default::default()
                 },
             )
             .unwrap();
