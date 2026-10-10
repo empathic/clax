@@ -1,9 +1,18 @@
 //! What every route and every agent channel hands an agent (spec §7.5,
-//! §8.5, §8.6, M7, M8): the routes that serve people refuse the owner's
-//! agents, the all-threads listing is the owner's agents' only, and the
-//! owner's question list holds the owner's agents' questions only.
+//! §8.5, §8.6, M7, M8): no canary of Mia's, who no one approved, reaches an
+//! agent through any route or real client; the routes that serve people
+//! refuse the owner's agents; the all-threads listing is the owner's
+//! agents' only; and the owner's question list holds the owner's agents'
+//! questions only.
+//!
+//! The filter is not live yet: a `Filtered` route answers a person's agent
+//! 503 `not_yet`, and the owner's agents still get today's content. So the
+//! sweeps as the owner's agent, and through the real clients, are ignored
+//! until the tasks that filter them lift them.
 
 use crate::common::TestServer;
+use crate::common::clients::{HARNESS_ENVS, RealClients};
+use crate::common::people::{AgentOf, World};
 use serde_json::{Value, json};
 
 async fn status_code(res: reqwest::Response) -> (u16, String) {
@@ -210,4 +219,228 @@ async fn the_owners_question_list_holds_only_the_owners_agents_questions() {
         )
         .await;
     assert_eq!(r.status().as_u16(), 404);
+}
+
+/// Every call of the sweep as `agent`: no response byte carries a canary.
+async fn sweep(w: &World, agent: &AgentOf<'_>) {
+    let calls = w.every_agent_call(agent);
+    assert!(calls.len() > 150, "{}", calls.len());
+    let mut leaks = Vec::new();
+    for call in &calls {
+        let body = call.run(w, agent).await;
+        for c in w.canaries() {
+            if body.contains(c) {
+                leaks.push(format!(
+                    "{} leaked {c} to {}: {}",
+                    call.name,
+                    agent.label,
+                    &body[..body.len().min(300)]
+                ));
+            }
+        }
+    }
+    assert!(leaks.is_empty(), "{}", leaks.join("\n"));
+}
+
+#[tokio::test]
+async fn no_canary_reaches_an_unapproved_agent() {
+    let w = World::two_people().await;
+    sweep(&w, &w.sam_agent()).await;
+}
+
+#[tokio::test]
+#[ignore = "lifted by Task 12: the owner's agents get unfiltered content until Tasks 9-12 filter each route"]
+async fn no_canary_reaches_an_unapproved_owner_agent() {
+    let w = World::two_people().await;
+    sweep(&w, &w.owner_agent()).await;
+}
+
+/// The world's seed puts each canary where the sweeps look for it: the
+/// owner by hand (the token alone) reads every one.
+#[tokio::test]
+async fn the_owner_by_hand_sees_every_canary() {
+    let w = World::two_people().await;
+    let ts = &w.ts;
+    let aid = &w.read.artifact;
+    let mut seen = String::new();
+    for path in [
+        format!("/api/artifacts/{aid}"),
+        format!("/api/artifacts/{aid}/versions/1"),
+        format!("/api/artifacts/{aid}/versions/1/files/index.html"),
+        format!("/api/artifacts/{aid}/versions/2/files/MIACANARYcarried.css"),
+        format!("/_blob/{}", w.read.asset),
+        format!("/api/artifacts/{aid}/docs?collection=notes"),
+        format!("/api/artifacts/{aid}/threads?include_resolved=true"),
+        format!("/api/artifacts/{aid}/threads/{}/clip", w.read.thread),
+        format!("/api/artifacts/{aid}/working"),
+    ] {
+        let r = ts.get_authed(&path).await;
+        assert!(r.status().is_success(), "{path}: {}", r.status());
+        seen.push_str(&String::from_utf8_lossy(&r.bytes().await.unwrap()));
+    }
+    // Mia's agent's question is hers: the owner's list leaves it out.
+    let db = rusqlite::Connection::open(ts.home.db_path()).unwrap();
+    let questions: String = db
+        .query_row(
+            "SELECT questions_json FROM questions WHERE session_id = ?1",
+            [&w.mia_session],
+            |r| r.get(0),
+        )
+        .unwrap();
+    seen.push_str(&questions);
+    for c in w.canaries() {
+        assert!(seen.contains(c), "the seed put {c} nowhere the owner reads");
+    }
+}
+
+#[tokio::test]
+#[ignore = "lifted by Task 12 (the Pi extension's part by Task 19): every agent channel is filtered then"]
+async fn no_canary_reaches_an_agent_through_a_real_client() {
+    let w = World::two_people().await;
+    let clients = RealClients::new(&w);
+    let mut leaks = Vec::new();
+    for out in clients.run_every_channel().await {
+        for c in w.canaries() {
+            if out.text.contains(c) {
+                leaks.push(format!("{} leaked {c}", out.channel));
+            }
+        }
+    }
+    assert!(leaks.is_empty(), "{}", leaks.join("\n"));
+}
+
+/// The real clients run, each printing what it hands its agent: the
+/// harness the ignored sweep above uses.
+#[tokio::test]
+async fn every_real_client_runs_against_the_test_daemon() {
+    let w = World::two_people().await;
+    let clients = RealClients::new(&w);
+    let outs = clients.run_every_channel().await;
+    let channels: Vec<&str> = outs.iter().map(|o| o.channel.as_str()).collect();
+    for want in [
+        "clax hook --agent claude stop",
+        "clax hook --agent claude prompt",
+        "clax hook --agent claude session-start",
+        "clax feedback follow --once",
+        "the MCP shim",
+        "/mcp",
+        "the Pi extension",
+    ] {
+        assert!(channels.contains(&want), "{want}: {channels:?}");
+    }
+    assert!(
+        channels.iter().filter(|c| c.contains(".md: ")).count() >= 8,
+        "{channels:?}"
+    );
+    let shim = &outs
+        .iter()
+        .find(|o| o.channel == "the MCP shim")
+        .unwrap()
+        .text;
+    assert!(shim.contains(&w.read.artifact), "{shim}");
+    let pi = &outs
+        .iter()
+        .find(|o| o.channel == "the Pi extension")
+        .unwrap()
+        .text;
+    assert!(
+        pi.contains("clax_list: ") && pi.contains(&w.read.artifact),
+        "{pi}"
+    );
+    let list = &outs
+        .iter()
+        .find(|o| {
+            o.channel.ends_with(
+                "list.md: \"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh\" exec list --json",
+            )
+        })
+        .unwrap()
+        .text;
+    assert!(list.contains(&w.read.artifact), "{list}");
+}
+
+#[tokio::test]
+async fn cli_under_a_harness_environment_is_an_agent_channel() {
+    let w = World::two_people().await;
+    let clients = RealClients::new(&w);
+    // Under a harness, `clax inbox` reaches a route that serves people:
+    // one readable line, exit 2.
+    for (k, v) in HARNESS_ENVS {
+        let (text, code) = clients.clax(&["inbox"], &[(k, v)]).await;
+        assert_eq!(code, 2, "{k}={v}: {text}");
+        assert!(
+            text.trim()
+                .starts_with("The inbox is for people: open http://")
+                && text.contains("/inbox in a browser."),
+            "{k}={v}: {text}"
+        );
+    }
+    // The owner by hand: no harness variable, or CLAX_CHANNEL=owner over
+    // one, reads the inbox and sees Mia's words.
+    for env in [
+        &[][..],
+        &[("CLAX_CHANNEL", "owner"), ("CLAUDECODE", "1")][..],
+    ] {
+        let (text, code) = clients.clax(&["inbox", "--all"], env).await;
+        assert_eq!(code, 0, "{env:?}: {text}");
+        let (text, code) = clients.clax(&["--json", "list"], env).await;
+        assert_eq!(code, 0, "{env:?}: {text}");
+        assert!(
+            text.contains(crate::common::people::TITLE),
+            "{env:?}: {text}"
+        );
+        let (text, _) = clients.clax(&["comments", "--all"], env).await;
+        assert!(
+            text.contains(crate::common::people::REPLY),
+            "{env:?}: {text}"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "lifted by Task 12: clax list and clax comments are filtered for the owner's agents then"]
+async fn cli_under_a_harness_environment_carries_no_canary() {
+    let w = World::two_people().await;
+    let clients = RealClients::new(&w);
+    let mut leaks = Vec::new();
+    for out in clients.cli_under_harnesses().await {
+        for c in w.canaries() {
+            if out.text.contains(c) {
+                leaks.push(format!("{} leaked {c}", out.channel));
+            }
+        }
+    }
+    assert!(leaks.is_empty(), "{}", leaks.join("\n"));
+}
+
+#[tokio::test]
+#[ignore = "lifted by Task 9: GET /api/threads is filtered for the owner's agents then"]
+async fn all_threads_listing_is_filtered_for_owner_agents() {
+    let w = World::two_people().await;
+    let ts = &w.ts;
+    let by_hand: Value = ts
+        .get_authed("/api/threads?include_resolved=true")
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert!(by_hand.to_string().contains(crate::common::people::COMMENT));
+    let agent: Value = ts
+        .authed(
+            ts.client
+                .get(format!("{}/api/threads?include_resolved=true", ts.base)),
+        )
+        .header("x-clax-channel", "agent")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let text = agent.to_string();
+    for c in w.canaries() {
+        assert!(!text.contains(c), "{c}: {text}");
+    }
+    let r = w.sam.get(Some(&w.sam_session), "/api/threads").await;
+    assert_eq!(status_code(r).await, (403, "forbidden".into()));
 }
