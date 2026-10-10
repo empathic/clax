@@ -37,7 +37,7 @@ for (const mode of ["subdomain", "sandbox"] as FrameMode[]) {
     const frame = page.frame({ url })!;
     await expect.poll(() => frame.evaluate(() => location.hash)).toBe("#part-2");
     expect(new URL(page.url()).hash).toBe("#part-2");
-    await page.getByRole("button", { name: "Comment" }).click();
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
     await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
     expect(await page.evaluate(() => (window as unknown as { claxFrames: number }).claxFrames)).toBe(1);
     const el = page.locator(".stage > iframe.frame");

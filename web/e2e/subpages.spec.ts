@@ -144,7 +144,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.evaluate(() => { location.hash = "#viewer"; });
     await expect(frame.locator("#h")).toHaveText("#viewer");
     await expect(page).toHaveURL(`${d.base}/a/${id}/hash.html#viewer`);
-    await page.getByRole("button", { name: "Comment" }).click();
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
     await commentModeIn(frame);
   });
 
@@ -164,7 +164,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.evaluate(() => history.back());
     await expect.poll(() => frame.evaluate(() => location.hash)).toBe("");
     await expect.poll(() => frame.evaluate(() => (window as unknown as { greets?: number }).greets ?? 0)).toBe(1);
-    await page.getByRole("button", { name: "Comment" }).click();
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
     await commentModeIn(frame);
   });
 
