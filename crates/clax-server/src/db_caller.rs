@@ -132,6 +132,9 @@ pub struct CallerParts {
     /// The request writes (any method but `GET` and `HEAD`): a person's
     /// agent's level is its rights' for `write`, else for `read`.
     pub write: bool,
+    /// It names itself a page's (`x-clax-via: page`, which the shell's `db`
+    /// capability sends): its writes add the page's authors.
+    pub page: bool,
 }
 
 impl FromRequestParts<AppState> for CallerParts {
@@ -176,6 +179,11 @@ impl FromRequestParts<AppState> for CallerParts {
                 parts.method,
                 axum::http::Method::GET | axum::http::Method::HEAD
             ),
+            page: parts
+                .headers
+                .get(crate::routes::artifacts::VIA_HEADER)
+                .and_then(|v| v.to_str().ok())
+                == Some("page"),
         })
     }
 }
@@ -192,6 +200,7 @@ impl CallerParts {
     fn narrowed(&self, base: Caller) -> clax_core::Result<Caller> {
         Ok(Caller {
             level: self.as_level.map_or(base.level, |l| l.min(base.level)),
+            via_page: base.via_page || self.page,
             ..base
         })
     }

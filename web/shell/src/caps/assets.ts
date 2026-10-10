@@ -89,7 +89,9 @@ async function checkBody(blob: Blob, type: string): Promise<void> {
 
 export const assetsHandler: HandlerFactory = env => {
   const base = `/api/artifacts/${encodeURIComponent(env.aid)}/assets`;
-  const auth = (): Record<string, string> => ({ authorization: `Bearer ${env.token ?? ""}` });
+  // Every write here is the page's: the marker makes the daemon count every
+  // author of the page in it (multi-person spec §8.2).
+  const auth = (): Record<string, string> => ({ authorization: `Bearer ${env.token ?? ""}`, "x-clax-via": "page" });
   const inflight = new Set<AbortController>();
   let disposed = false;
   const closed = () => new CapError("unavailable", "this view has closed");

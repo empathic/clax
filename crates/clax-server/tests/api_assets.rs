@@ -166,3 +166,90 @@ async fn non_multipart_upload_is_json_400() {
         "invalid_multipart"
     );
 }
+
+/// A script of Mia's, carried forward under the owner's index.html, uploads
+/// from the owner's browser: the upload carries Mia (spec
+/// 2026-10-08-multi-agent-multi-person §8.2, M11).
+#[tokio::test]
+async fn a_pages_upload_carries_every_author_of_the_page() {
+    use clax_core::visibility::{Author, authors_of_asset};
+    let ts = TestServer::spawn().await;
+    let (invite, _) = ts
+        .store
+        .create_invite(
+            &clax_core::audit::AuditCtx::DAEMON,
+            clax_core::store::people::InvitePerson::New("Mia".into()),
+            None,
+        )
+        .unwrap();
+    let mia = invite.person;
+    let created = ts
+        .publish(
+            "R",
+            &[
+                ("index.html", "<script src=app.js></script>"),
+                ("app.js", "MIA"),
+            ],
+        )
+        .await;
+    let id = created["artifact"]["id"].as_str().unwrap().to_string();
+    // Version 1 is Mia's, as her own publish writes it.
+    let db = rusqlite::Connection::open(ts.home.db_path()).unwrap();
+    db.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
+    db.execute(
+        "UPDATE versions SET person = ?2, file_authors_json = ?3 WHERE artifact_id = ?1 AND n = 1",
+        rusqlite::params![
+            id,
+            mia,
+            serde_json::json!({"index.html": [mia], "app.js": [mia]}).to_string()
+        ],
+    )
+    .unwrap();
+    drop(db);
+    // The owner's agent rewrites index.html; app.js is carried.
+    let res = ts
+        .authed(
+            ts.client
+                .post(format!("{}/api/artifacts/{id}/versions", ts.base))
+                .json(&serde_json::json!({"if_version": 1, "files": {
+                    "index.html": {"content": "<h1>x</h1><script src=app.js></script>", "encoding": "utf8"}}})),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201, "{}", res.text().await.unwrap());
+    let upload = |page: bool| {
+        let part = reqwest::multipart::Part::bytes(b"MIA".to_vec())
+            .file_name("notes.txt")
+            .mime_str("text/plain")
+            .unwrap();
+        let mut req = ts.authed(
+            ts.client
+                .post(format!("{}/api/artifacts/{id}/assets", ts.base))
+                .multipart(reqwest::multipart::Form::new().part("file", part)),
+        );
+        if page {
+            req = req.header("x-clax-via", "page");
+        }
+        req.send()
+    };
+    let authors = |res: serde_json::Value| {
+        let aid = res["asset"]["id"].as_str().unwrap().to_string();
+        let (asset, _) = ts.store.get_asset(&aid).unwrap().unwrap();
+        authors_of_asset(&asset)
+    };
+    let res = upload(true).await.unwrap();
+    assert_eq!(res.status(), 201);
+    assert_eq!(
+        authors(res.json().await.unwrap()),
+        vec![Author::Owner, Author::Person(mia.clone())],
+        "the page's upload carries Mia's script"
+    );
+    let res = upload(false).await.unwrap();
+    assert_eq!(res.status(), 201);
+    assert_eq!(
+        authors(res.json().await.unwrap()),
+        vec![Author::Owner],
+        "the owner's agent's upload is the owner's"
+    );
+}
