@@ -1,0 +1,25 @@
+# Every CLI command reaches the daemon through the clients that carry the
+# agent-channel marker under a harness (spec 2026-10-08 §16): `Client` in
+# src/client.rs and the `DaemonClient` src/commands/tools.rs makes from it.
+# Those two files allow these; nothing else in the crate may make an HTTP
+# client or a `DaemonClient` of its own. The integration tests talk to test
+# daemons directly and allow them in tests/integration.rs. The textual guard
+# `every_command_reaches_the_daemon_through_the_marked_clients` in
+# src/commands/tools.rs stays as a second net.
+disallowed-methods = [
+    { path = "reqwest::blocking::Client::new", reason = "reach the daemon through crate::client::Client" },
+    { path = "reqwest::blocking::Client::builder", reason = "reach the daemon through crate::client::Client" },
+    { path = "reqwest::blocking::ClientBuilder::new", reason = "reach the daemon through crate::client::Client" },
+    { path = "reqwest::blocking::get", reason = "reach the daemon through crate::client::Client" },
+    { path = "reqwest::Client::new", reason = "reach the daemon through crate::client::Client" },
+    { path = "reqwest::Client::builder", reason = "reach the daemon through crate::client::Client" },
+    { path = "reqwest::ClientBuilder::new", reason = "reach the daemon through crate::client::Client" },
+    { path = "reqwest::get", reason = "reach the daemon through crate::client::Client" },
+    { path = "clax_mcp::client::DaemonClient::new", reason = "use commands::tools::daemon_client" },
+    { path = "clax_mcp::client::DaemonClient::with_channel", reason = "use commands::tools::daemon_client" },
+    { path = "clax_mcp::client::DaemonClient::managed", reason = "use commands::tools::daemon_client" },
+]
+disallowed-types = [
+    { path = "reqwest::blocking::ClientBuilder", reason = "reach the daemon through crate::client::Client" },
+    { path = "reqwest::ClientBuilder", reason = "reach the daemon through crate::client::Client" },
+]

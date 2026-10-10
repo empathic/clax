@@ -1,4 +1,9 @@
 //! HTTP client for the daemon, with discovery and auto-start.
+//!
+//! One of the two places the crate may make an HTTP client
+//! (`crates/clax-cli/clippy.toml`): every request it sends carries the
+//! agent-channel marker when the CLI is an agent channel.
+#![allow(clippy::disallowed_methods, clippy::disallowed_types)]
 
 use anyhow::{Context, anyhow, bail};
 use clax_core::Home;
