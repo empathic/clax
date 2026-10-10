@@ -21,6 +21,7 @@ disallowed-methods = [
     { path = "clax_mcp::client::DaemonClient::new", reason = "use commands::tools::daemon_client" },
     { path = "clax_mcp::client::DaemonClient::with_channel", reason = "use commands::tools::daemon_client" },
     { path = "clax_mcp::client::DaemonClient::managed", reason = "use commands::tools::daemon_client" },
+    { path = "clax::client::Client::owner_channel", reason = "only the extension's native host speaks as the owner whatever its environment" },
 ]
 disallowed-types = [
     { path = "reqwest::blocking::Client", reason = "reach the daemon through crate::client::Client" },

@@ -12,6 +12,7 @@ base64.workspace = true
 getrandom = "0.3"
 icu_normalizer = "2"
 icu_properties = "2"
+unicode-security = "0.1"
 chrono.workspace = true
 mime_guess.workspace = true
 nix = { workspace = true, features = ["fs"] }
