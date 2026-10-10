@@ -238,6 +238,8 @@ need!(QuestionsPoll, Ask, "ask", Own, DEFAULT_LIMIT);
 need!(QuestionsWithdraw, Ask, "ask", Own, DEFAULT_LIMIT);
 need!(QuestionsRelease, Ask, "ask", Own, DEFAULT_LIMIT);
 need!(QuestionsTerminal, Ask, "ask", Own, DEFAULT_LIMIT);
+need!(ToolCallReport, None, Own, DEFAULT_LIMIT);
+need!(ToolCallIdReport, None, Own, DEFAULT_LIMIT);
 
 /// Every route an agent of another machine may reach, by method and the
 /// path it is routed at (`MatchedPath`), with its need: [`verify_layer`]
@@ -389,6 +391,16 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
         "/api/sessions/{id}/questions:terminal",
         QuestionsTerminal::INFO,
     ),
+    (
+        "POST",
+        "/api/sessions/{id}/tool-calls",
+        ToolCallReport::INFO,
+    ),
+    (
+        "POST",
+        "/api/sessions/{id}/tool-call-ids",
+        ToolCallIdReport::INFO,
+    ),
 ];
 
 /// A [`ROUTE_NEEDS`] entry: handler, right (type and action), class.
@@ -456,6 +468,8 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("questions::withdraw", QuestionsWithdraw),
     route_need!("questions::release", QuestionsRelease),
     route_need!("questions::terminal", QuestionsTerminal),
+    route_need!("toolpath::session_tool_call", ToolCallReport),
+    route_need!("sessions::tool_call_ids", ToolCallIdReport),
 ];
 
 /// The `Filtered` needs whose filter is live: a person's agent reaches

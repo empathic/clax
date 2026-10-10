@@ -5,7 +5,6 @@ use crate::agent::{
     SessionsGet, SessionsJoin, SessionsList, SessionsPatch, SessionsRegister, TokenOrAgent,
 };
 use crate::audit::DeferredAudit;
-use crate::auth::RequireToken;
 use crate::error::ApiError;
 use crate::push::CodexPush;
 use crate::state::AppState;
@@ -509,7 +508,8 @@ fn clax_tool(bare: &str) -> bool {
         .any(|n| n == bare)
 }
 
-/// `POST /api/sessions/<sid>/tool-call-ids` (token): Claude Code's
+/// `POST /api/sessions/<sid>/tool-call-ids` (token, or an agent of another
+/// machine for its own session): Claude Code's
 /// PostToolUse hook reports `{tool_use_id, tool_name, args_sha256}` for a
 /// Clax tool call, and `tool.call_id` is recorded as the session's agent
 /// (spec §6.7). It names the one call that qualifies ([`CallIdScan`]): a
@@ -533,8 +533,7 @@ fn clax_tool(bare: &str) -> bool {
 /// [`ToolCallIdReport::validate`]: clax_core::audit::ToolCallIdReport::validate
 pub async fn tool_call_ids(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
-    _t: RequireToken,
+    _a: crate::agent::TokenOrAgent<crate::agent::ToolCallIdReport>,
     audit: DeferredAudit,
     id: Result<Path<String>, PathRejection>,
     req: Result<Json<clax_core::audit::ToolCallIdReport>, JsonRejection>,
