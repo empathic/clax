@@ -340,6 +340,22 @@ pub(super) fn insert_backfilled(tx: &rusqlite::Transaction<'_>, rec: AuditRecord
     insert_row(tx, &at, kind, &actor, &ids, &body, true)
 }
 
+/// Inserts `rec`, made under `ctx`, in `tx`, for changes made while the
+/// store opens (before it serves, so there is no nudge to fire: the
+/// journal appender catches up from the table on start).
+pub(super) fn insert_at_open(
+    tx: &rusqlite::Transaction<'_>,
+    ctx: &AuditCtx,
+    rec: AuditRecord,
+) -> Result<()> {
+    let actor = serde_json::to_string(&ctx.actor).expect("serialisable actor");
+    let kind = rec.kind.as_str();
+    let at = rec.at.clone();
+    let ids = rec.ids.clone();
+    let body = body_json(ctx, rec);
+    insert_row(tx, &at, kind, &actor, &ids, &body, false)
+}
+
 impl Store {
     /// Records `rec`, made under `ctx`, in `tx`: the event commits or rolls
     /// back with the change it describes. Returns its `seq`. The event's
@@ -809,7 +825,20 @@ pub(crate) mod tests {
     use crate::CoreError;
     use crate::audit::{Actor, AuditKind, CallHeader, SystemReason, Via};
     use crate::gitctx::GitField;
-    use crate::store::test_util::store;
+
+    /// A store whose journal starts empty: the event it records as it
+    /// opens (migration 25's approval) is removed, and seqs start at 1.
+    fn store() -> (tempfile::TempDir, Store) {
+        let (d, st) = crate::store::test_util::store();
+        st.with_write(|c| {
+            c.execute_batch(
+                "DELETE FROM audit_events; DELETE FROM sqlite_sequence WHERE name = 'audit_events';",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        (d, st)
+    }
     use crate::{Home, Store};
     use std::sync::mpsc;
 

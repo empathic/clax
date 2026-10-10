@@ -159,6 +159,7 @@ impl Store {
         let mut conn = exec::open_writer(&path)?;
         migrate(&mut conn)?;
         backfill::run(&mut conn, home, report)?;
+        approvals::record_migration_approval(&mut conn)?;
         conn.execute_batch(&format!(
             "PRAGMA analysis_limit={ANALYSIS_LIMIT}; PRAGMA optimize=0x10002;"
         ))?;

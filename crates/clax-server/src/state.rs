@@ -6,25 +6,26 @@ use std::time::Duration;
 
 /// The visibility generation (spec 2026-10-08-multi-agent-multi-person
 /// M17): the store's counter, bumped by every committed change to what an
-/// agent may see, and a channel that hears each new value, for waking the
-/// waiters whose view it changed.
+/// agent may see, and a notification of each bump for waking the waiters
+/// whose view it changed. The store tells it on its writer, so it only
+/// wakes waiters (`Notify::notify_waiters`): no receiver holds anything the
+/// writer waits for.
 #[derive(Clone)]
 pub struct VisGen {
     counter: Arc<AtomicU64>,
-    changed: tokio::sync::watch::Receiver<u64>,
+    changed: Arc<tokio::sync::Notify>,
 }
 
 impl VisGen {
     /// The generation of `store`, listening for its bumps (it replaces any
     /// visibility listener `store` had).
     pub fn install(store: &Store) -> VisGen {
-        let (tx, rx) = tokio::sync::watch::channel(store.visibility_generation());
-        store.set_visibility_listener(move |g| {
-            tx.send_replace(g);
-        });
+        let changed = Arc::new(tokio::sync::Notify::new());
+        let wake = changed.clone();
+        store.set_visibility_listener(move |_| wake.notify_waiters());
         VisGen {
             counter: store.visibility_counter(),
-            changed: rx,
+            changed,
         }
     }
 
@@ -34,11 +35,12 @@ impl VisGen {
         self.counter.load(Ordering::Acquire)
     }
 
-    /// A receiver that wakes on each bump after it is made.
-    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
-        let mut rx = self.changed.clone();
-        rx.mark_unchanged();
-        rx
+    /// A future that completes at the next bump. A waiter makes it and
+    /// calls `enable()` on it (pinned) before reading [`VisGen::current`],
+    /// then awaits it: a bump between the read and the await still wakes
+    /// it.
+    pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.changed.notified()
     }
 }
 
@@ -146,13 +148,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let st = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
         let g = VisGen::install(&st);
-        let mut rx = g.subscribe();
+        let mut wait = std::pin::pin!(g.notified());
+        wait.as_mut().enable();
         assert_eq!(g.current(), 0);
         let id = st.live_approvals(None).unwrap()[0].id.clone();
         st.revoke_approval(&AuditCtx::DAEMON, &id, None).unwrap();
+        // The bump came after the waiter was enabled: it is woken.
+        wait.await;
         assert_eq!(g.current(), 1);
-        rx.changed().await.unwrap();
-        assert_eq!(*rx.borrow_and_update(), 1);
+        let mut wait = std::pin::pin!(g.notified());
+        wait.as_mut().enable();
         st.approve(
             &AuditCtx::DAEMON,
             None,
@@ -161,8 +166,7 @@ mod tests {
             Via::Shell,
         )
         .unwrap();
-        rx.changed().await.unwrap();
-        assert_eq!(*rx.borrow_and_update(), 2);
+        wait.await;
         assert_eq!(g.clone().current(), 2);
     }
 }

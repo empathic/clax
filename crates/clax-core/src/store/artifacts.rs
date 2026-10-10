@@ -24,6 +24,10 @@ pub struct MetaPatch {
     pub pinned: Option<bool>,
     /// A full-set capabilities declaration that replaces the stored one.
     pub capabilities: Option<serde_json::Value>,
+    /// Who sets the text fields (spec §8.2); `None`: the owner.
+    pub by: Option<Author>,
+    /// A page sets them: its page's authors are added.
+    pub via_page: bool,
 }
 
 /// The `artifact.create` record of `a` (spec §6.1), at `at`.
@@ -148,6 +152,13 @@ pub(super) fn row_to_artifact(r: &Row<'_>) -> rusqlite::Result<Result<Artifact>>
         Ok(c) => c,
         Err(e) => return Ok(Err(e)),
     };
+    let text = match r.get::<_, Option<String>>("text_authors_json")? {
+        None => None,
+        Some(_) => match json_column(r, "text_authors_json", &id, None)? {
+            Ok(t) => Some(t),
+            Err(e) => return Ok(Err(e)),
+        },
+    };
     Ok(Ok(Artifact {
         id,
         title: r.get("title")?,
@@ -163,25 +174,9 @@ pub(super) fn row_to_artifact(r: &Row<'_>) -> rusqlite::Result<Result<Artifact>>
         kind: r.get("kind")?,
         authors: ArtifactAuthors {
             creator: r.get("person")?,
-            current: current_authors(r.get::<_, Option<String>>("current_authors")?.as_deref()),
+            text,
         },
     }))
-}
-
-/// The current version's `[person, by_page, page_person]`, as
-/// [`SELECT`]'s `current_authors` holds it (none before version 1).
-fn current_authors(json: Option<&str>) -> VersionAuthors {
-    let v: Option<(Option<String>, i64, Option<String>)> =
-        json.and_then(|j| serde_json::from_str(j).ok());
-    match v {
-        Some((person, by_page, page_person)) => VersionAuthors {
-            person,
-            by_page: by_page != 0,
-            page_person,
-            files: None,
-        },
-        None => VersionAuthors::default(),
-    }
 }
 
 /// Keeps the readable rows, logging and dropping the corrupt ones.
@@ -206,9 +201,7 @@ fn skip_corrupt<T>(rows: Vec<Result<T>>) -> Result<Vec<T>> {
 pub(super) const SELECT: &str =
     "SELECT id, title, description, icon, created_at, updated_at, current_version,
     owner_session_id, pinned, capabilities_json, contract_version, kind, person,
-    (SELECT json_array(v.person, v.by_page, v.page_person) FROM versions v
-     WHERE v.artifact_id = artifacts.id AND v.n = artifacts.current_version) AS current_authors
-    FROM artifacts";
+    text_authors_json FROM artifacts";
 
 /// The live artifact `id` (not deleted, at least one version) on `c`, or `None`.
 pub(crate) fn live_artifact_in(c: &rusqlite::Connection, id: &str) -> Result<Option<Artifact>> {
@@ -272,13 +265,59 @@ impl Store {
         patch: MetaPatch,
     ) -> Result<Artifact> {
         self.with_tx(|tx| {
-            let n = tx.execute(
+            let Some(before) = tx
+                .query_row(
+                    &format!("{SELECT} WHERE id = ?1 AND deleted_at IS NULL"),
+                    params![id.as_str()],
+                    row_to_artifact,
+                )
+                .optional()?
+                .transpose()?
+            else {
+                return Err(CoreError::NotFound);
+            };
+            // The fields it sets are the patcher's now, and a page's
+            // patch also its page's authors' (spec §8.2).
+            let set: Vec<&str> = TEXT_FIELDS
+                .into_iter()
+                .zip([
+                    patch.title.is_some(),
+                    patch.description.is_some(),
+                    patch.icon.is_some(),
+                    patch.capabilities.is_some(),
+                ])
+                .filter_map(|(f, g)| g.then_some(f))
+                .collect();
+            let mut by = tokens([patch.by.clone().unwrap_or(Author::Owner)]);
+            if patch.via_page {
+                for t in page_authors_in(tx, id.as_str())? {
+                    if !by.contains(&t) {
+                        by.push(t);
+                    }
+                }
+            }
+            let text = if set.is_empty() {
+                before
+                    .authors
+                    .text
+                    .as_ref()
+                    .map(|t| serde_json::to_string(t).expect("serialisable map"))
+            } else {
+                text_authors(
+                    before.authors.text.clone(),
+                    before.authors.creator.as_deref(),
+                    &set,
+                    &by,
+                )
+            };
+            tx.execute(
                 "UPDATE artifacts SET
                     title = COALESCE(?2, title),
                     description = COALESCE(?3, description),
                     icon = COALESCE(?4, icon),
                     pinned = COALESCE(?5, pinned),
-                    capabilities_json = COALESCE(?6, capabilities_json)
+                    capabilities_json = COALESCE(?6, capabilities_json),
+                    text_authors_json = ?7
                  WHERE id = ?1 AND deleted_at IS NULL",
                 params![
                     id.as_str(),
@@ -286,12 +325,10 @@ impl Store {
                     patch.description,
                     patch.icon,
                     patch.pinned.map(|b| b as i64),
-                    patch.capabilities.as_ref().map(|c| c.to_string())
+                    patch.capabilities.as_ref().map(|c| c.to_string()),
+                    text
                 ],
             )?;
-            if n == 0 {
-                return Err(CoreError::NotFound);
-            }
             let mut fields = serde_json::Map::new();
             let mut set = |k: &str, v: Option<serde_json::Value>| {
                 if let Some(v) = v {
@@ -603,6 +640,10 @@ impl Store {
                             "DELETE FROM batch_threads WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM send_batches WHERE artifact_id = ?1
                                 AND NOT EXISTS(SELECT 1 FROM batch_threads WHERE batch_id = send_batches.id)",
+                            "DELETE FROM page_authors WHERE kind = 'comment' AND id IN
+                                (SELECT c.id FROM comments c JOIN threads t ON t.id = c.thread_id WHERE t.artifact_id = ?1)",
+                            "DELETE FROM page_authors WHERE kind = 'asset' AND id IN
+                                (SELECT id FROM assets WHERE artifact_id = ?1)",
                             "DELETE FROM comments WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM thread_moves WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM threads WHERE artifact_id = ?1",
@@ -718,7 +759,6 @@ pub(super) fn row_to_version(r: &Row<'_>) -> rusqlite::Result<Result<Version>> {
         authors: VersionAuthors {
             person: r.get("person")?,
             by_page: r.get::<_, i64>("by_page")? != 0,
-            page_person: r.get("page_person")?,
             files: file_authors,
         },
     }))
@@ -726,18 +766,70 @@ pub(super) fn row_to_version(r: &Row<'_>) -> rusqlite::Result<Result<Version>> {
 
 pub(super) const SELECT_VERSION: &str =
     "SELECT artifact_id, n, label, created_at, session_id, files_json, note, content_sha256,
-        person, by_page, page_person, file_authors_json,
+        person, by_page, file_authors_json,
         (SELECT agent_handle FROM sessions s WHERE s.id = versions.session_id) AS agent,
         (SELECT harness FROM sessions s WHERE s.id = versions.session_id) AS agent_harness
      FROM versions";
 
+/// The text fields of an artifact that carry authors of their own (spec
+/// §8.2): `artifacts.text_authors_json`'s keys.
+pub const TEXT_FIELDS: [&str; 4] = ["title", "description", "icon", "capabilities"];
+
+/// Author tokens, each once in first-seen order.
+fn tokens(authors: impl IntoIterator<Item = Author>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for a in authors {
+        if let Some(t) = a.token()
+            && !out.iter().any(|o| o == t)
+        {
+            out.push(t.to_string());
+        }
+    }
+    out
+}
+
+/// Whether every list of `map` names the owner alone (stored as NULL).
+fn owners_alone(map: &BTreeMap<String, Vec<Option<String>>>) -> bool {
+    map.values()
+        .all(|a| a.iter().all(|t| t.is_none() || t.as_deref() == Some(OWNER)))
+}
+
+/// The authors of every file of `v` (spec §8.2, M11): what a page running
+/// `v` holds, so what its writes carry.
+fn every_file_author(v: &Version) -> Vec<String> {
+    tokens(
+        v.files
+            .keys()
+            .flat_map(|path| file_authors(&v.authors, path)),
+    )
+}
+
+/// The page authors of artifact `aid` now (spec §8.2, M11): every author
+/// of every file of its current version, as tokens (`*owner` for the
+/// owner), the owner's alone when it has no version. A page's write
+/// (a comment, a document, an upload, its own publish) carries all of them.
+pub(crate) fn page_authors_in(c: &rusqlite::Connection, aid: &str) -> Result<Vec<String>> {
+    let v = c
+        .prepare_cached(&format!(
+            "{SELECT_VERSION} WHERE artifact_id = ?1
+               AND n = (SELECT current_version FROM artifacts WHERE id = ?1)"
+        ))?
+        .query_row(params![aid], row_to_version)
+        .optional()?
+        .transpose()?;
+    Ok(match v {
+        Some(v) => every_file_author(&v),
+        None => vec![OWNER.to_string()],
+    })
+}
+
 /// The authorship of version `expected + 1` of `aid`, published by `p`
-/// from `session_id` with `files`: its publisher (`p.person`, else the
-/// session's person), for a page's publish the previous version's
-/// publisher, and each file's authors: a file `p` writes is the
-/// publisher's (and that page publisher's); a file carried forward keeps
-/// the previous version's authors of it. `files` is `None` when every file
-/// is the owner's alone.
+/// from `session_id` with `files`, and the authors of what it writes: its
+/// publisher (`p.person`, else the session's person) and, for a page's
+/// publish, every author of the previous version's files (the page that
+/// published it). A file `p` writes has those authors; a file carried
+/// forward keeps the previous version's authors of it. `files` is `None`
+/// when every file is the owner's alone.
 fn version_authors(
     tx: &rusqlite::Transaction<'_>,
     aid: &str,
@@ -745,7 +837,7 @@ fn version_authors(
     p: &ValidatedPublish,
     session_id: Option<&str>,
     files: &BTreeMap<String, FileMeta>,
-) -> Result<VersionAuthors> {
+) -> Result<(VersionAuthors, Vec<String>)> {
     let person: Option<String> = match &p.person {
         Some(person) => Some(person.clone()),
         None => tx
@@ -768,39 +860,80 @@ fn version_authors(
         .optional()?
         .transpose()?
     };
-    let page_person = if p.by_page {
-        prev.as_ref().and_then(|v| v.authors.person.clone())
-    } else {
-        None
-    };
-    let mut written = vec![Author::of_token(person.as_deref())];
-    if p.by_page && !written.contains(&Author::of_token(page_person.as_deref())) {
-        written.push(Author::of_token(page_person.as_deref()));
+    let mut written = tokens([Author::of_token(person.as_deref())]);
+    if p.by_page {
+        for t in prev.as_ref().map(every_file_author).unwrap_or_default() {
+            if !written.contains(&t) {
+                written.push(t);
+            }
+        }
     }
     let mut map: BTreeMap<String, Vec<Option<String>>> = BTreeMap::new();
     for path in files.keys() {
         let carried = !matches!(p.files.get(path), Some(FileChange::Put(_)));
         let authors = match (&prev, carried) {
-            (Some(v), true) => file_authors(&v.authors, path),
+            (Some(v), true) => tokens(file_authors(&v.authors, path)),
             _ => written.clone(),
         };
+        map.insert(path.clone(), authors.into_iter().map(Some).collect());
+    }
+    let alone = owners_alone(&map);
+    Ok((
+        VersionAuthors {
+            person,
+            by_page: p.by_page,
+            files: (!alone).then_some(map),
+        },
+        written,
+    ))
+}
+
+/// `current`'s text authors with each field of [`TEXT_FIELDS`] in `set`
+/// now `authors`'s, as stored: `None` when every field is the owner's
+/// alone and the creator (`creator`) is the owner.
+fn text_authors(
+    current: Option<BTreeMap<String, Vec<Option<String>>>>,
+    creator: Option<&str>,
+    set: &[&str],
+    authors: &[String],
+) -> Option<String> {
+    let mut map = current.unwrap_or_default();
+    for f in set {
         map.insert(
-            path.clone(),
-            authors
-                .iter()
-                .map(|a| a.token().map(str::to_string))
-                .collect(),
+            (*f).to_string(),
+            authors.iter().cloned().map(Some).collect(),
         );
     }
-    let owners_alone = map
-        .values()
-        .all(|a| a.iter().all(|t| t.as_deref() == Some(OWNER)));
-    Ok(VersionAuthors {
-        person,
-        by_page: p.by_page,
-        page_person,
-        files: (!owners_alone).then_some(map),
-    })
+    let creator_owner = matches!(Author::of_token(creator), Author::Owner);
+    if creator_owner && owners_alone(&map) {
+        None
+    } else {
+        // A field it does not list is the creator's: list every field, so
+        // the stored map stands alone.
+        for f in TEXT_FIELDS {
+            map.entry(f.to_string())
+                .or_insert_with(|| vec![Some(creator.unwrap_or(OWNER).to_string())]);
+        }
+        Some(serde_json::to_string(&map).expect("serialisable map"))
+    }
+}
+
+/// The text fields `p` sets (all of them for version 1, which makes them).
+fn fields_set(p: &ValidatedPublish, first: bool) -> Vec<&'static str> {
+    if first {
+        return TEXT_FIELDS.to_vec();
+    }
+    let given = [
+        p.title.is_some(),
+        p.description.is_some(),
+        p.icon.is_some(),
+        p.capabilities.is_some(),
+    ];
+    TEXT_FIELDS
+        .into_iter()
+        .zip(given)
+        .filter_map(|(f, g)| g.then_some(f))
+        .collect()
 }
 
 impl Store {
@@ -992,11 +1125,12 @@ impl Store {
             // The publisher's person; a page's own version also keeps the
             // previous version's publisher, fixed now; and each file's
             // authors (spec §5.1, M11).
-            let authors = version_authors(tx, id.as_str(), expected, p, session_id, &files)?;
+            let (authors, written) =
+                version_authors(tx, id.as_str(), expected, p, session_id, &files)?;
             tx.execute(
                 "INSERT INTO versions (artifact_id, n, label, created_at, session_id, files_json, note,
-                    content_sha256, person, by_page, page_person, file_authors_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    content_sha256, person, by_page, file_authors_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     id.as_str(),
                     n,
@@ -1008,7 +1142,6 @@ impl Store {
                     content_sha256,
                     authors.person,
                     p.by_page,
-                    authors.page_person,
                     authors
                         .files
                         .as_ref()
@@ -1017,10 +1150,23 @@ impl Store {
             )?;
             link_version(tx, id.as_str(), n, p, &self.now())?;
             let extra = then(tx, n)?;
+            // Each text field it sets is its writers' now; the rest keep
+            // their authors (spec §8.2).
+            let before = tx.query_row(
+                &format!("{SELECT} WHERE id = ?1"),
+                params![id.as_str()],
+                row_to_artifact,
+            )??;
+            let text = text_authors(
+                before.authors.text,
+                before.authors.creator.as_deref(),
+                &fields_set(p, expected == 0),
+                &written,
+            );
             tx.execute(
                 "UPDATE artifacts SET current_version = ?2, updated_at = ?3,
                     title = COALESCE(?4, title), description = COALESCE(?5, description), icon = COALESCE(?6, icon),
-                    capabilities_json = COALESCE(?7, capabilities_json)
+                    capabilities_json = COALESCE(?7, capabilities_json), text_authors_json = ?8
                  WHERE id = ?1",
                 params![
                     id.as_str(),
@@ -1029,7 +1175,8 @@ impl Store {
                     p.title,
                     p.description,
                     p.icon,
-                    p.capabilities.as_ref().map(|c| c.to_string())
+                    p.capabilities.as_ref().map(|c| c.to_string()),
+                    text
                 ],
             )?;
             super::inbox::note_version(

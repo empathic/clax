@@ -684,8 +684,8 @@ fn write_in(
 }
 
 /// Adds `caller`'s words to the authors of the document at `path` (spec
-/// §8.2, M11): the writer, and for a page's write the page's publisher
-/// (its current version's, now). The set only grows: touching or rewriting
+/// §8.2, M11): the writer, and for a page's write every author of the
+/// page (of every file of its current version, now). The set only grows: touching or rewriting
 /// someone else's document never makes it the writer's alone. A document
 /// with no rows is the owner's, so while every author added is the owner
 /// nothing is stored; the first other author makes the owner's authorship
@@ -702,7 +702,11 @@ fn add_authors(
         add.push(t.to_string());
     }
     if caller.via_page {
-        add.push(super::threads::page_publisher(c, id.as_str())?);
+        for a in super::artifacts::page_authors_in(c, id.as_str())? {
+            if !add.contains(&a) {
+                add.push(a);
+            }
+        }
     }
     let rows: bool = c
         .prepare_cached(

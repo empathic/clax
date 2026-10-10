@@ -513,6 +513,7 @@ impl Store {
                                     size: r.get::<_, Option<u32>>(14)?.unwrap_or(0),
                                     note: r.get(15)?,
                                     sent_by: r.get::<_, Option<String>>(16)?.unwrap_or_default(),
+                                    sender: r.get(17)?,
                                 }),
                                 None => None,
                             },
@@ -912,7 +913,7 @@ impl Store {
 pub(crate) const TAKE_FEEDBACK: &str = "SELECT f.id, f.thread_id, f.comment_id, f.delivered_at IS NOT NULL AS delivered,
                         t.artifact_id, a.title, t.version_n, t.anchor_json, t.has_clip,
                         c.author_name, c.body, c.created_at, c.via_page,
-                        f.batch_id, b.size, b.note, b.sent_by
+                        f.batch_id, b.size, b.note, b.sent_by, b.sender
                  FROM feedback f
                  LEFT JOIN send_batches b ON b.id = f.batch_id
                  JOIN threads t ON t.id = f.thread_id

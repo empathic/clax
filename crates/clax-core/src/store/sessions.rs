@@ -1426,10 +1426,12 @@ mod tests {
     #[test]
     fn session_changes_record_start_join_and_end_and_refreshes_record_nothing() {
         let (_d, st) = store();
+        // After what the store records as it opens (migration 25's approval).
+        let opened = st.newest_seq().unwrap();
         let s = st
             .register_session(DAEMON, reg(None, Some(10), Some(5)))
             .unwrap();
-        let ev = recorded(&st, 0);
+        let ev = recorded(&st, opened);
         assert_eq!(ev.len(), 1);
         assert_eq!(ev[0].0, "session.start");
         // The session's own agent, through the caller's channel.

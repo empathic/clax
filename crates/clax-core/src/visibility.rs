@@ -11,7 +11,7 @@ use crate::Result;
 use crate::model::{Artifact, Asset, Comment, Thread, Version, VersionAuthors};
 use crate::store::Store;
 use crate::store::approvals::{OWNER, UNCONNECTED};
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use std::collections::HashSet;
 
 /// The person an agent channel reads for (spec §6.1): the owner, for the
@@ -92,12 +92,15 @@ fn push(out: &mut Vec<Author>, a: Author) {
     }
 }
 
-/// The authors of a version's own words: its publisher, and for a version
-/// a page published (`by_page`) the page's publisher fixed at that write.
-fn publisher(person: Option<&str>, by_page: bool, page_person: Option<&str>) -> Vec<Author> {
-    let mut out = vec![Author::of_token(person)];
-    if by_page {
-        push(&mut out, Author::of_token(page_person));
+/// The authors of a page's write, as recorded (`page_authors`, or a
+/// document's rows): none recorded is the owner (pre-migration rows).
+fn page_set(tokens: &[String]) -> Vec<Author> {
+    if tokens.is_empty() {
+        return vec![Author::Owner];
+    }
+    let mut out = Vec::new();
+    for t in tokens {
+        push(&mut out, Author::of_token(Some(t)));
     }
     out
 }
@@ -105,15 +108,17 @@ fn publisher(person: Option<&str>, by_page: bool, page_person: Option<&str>) -> 
 /// A comment's body (§8.2): an agent comment's is its session's person;
 /// a viewer comment's is its writer (anonymous, or from before public
 /// IDs: [`Author::Unconnected`]), and for one a page wrote (`via_page`)
-/// also the page's publisher at write time (`page_person`; none recorded:
-/// the owner).
+/// also every author of the page at write time (`page_authors`; none
+/// recorded: the owner).
 pub fn authors_of_comment(c: &Comment) -> Vec<Author> {
     if c.author_kind == crate::store::threads::AUTHOR_AGENT {
         return vec![Author::of_token(c.agent_person.as_deref())];
     }
     let mut out = vec![Author::of_viewer(c.author_public_id.as_deref())];
     if c.via_page {
-        push(&mut out, Author::of_token(c.page_person.as_deref()));
+        for a in page_set(&c.page_authors) {
+            push(&mut out, a);
+        }
     }
     out
 }
@@ -135,7 +140,7 @@ pub fn file_authors(a: &VersionAuthors, path: &str) -> Vec<Author> {
             }
             out
         }
-        _ => publisher(a.person.as_deref(), a.by_page, a.page_person.as_deref()),
+        _ => vec![Author::of_token(a.person.as_deref())],
     }
 }
 
@@ -169,47 +174,78 @@ pub fn authors_of_resolved_by(resolved_by: &str) -> Vec<Author> {
     }
 }
 
-/// A batch's note: its sender, by public ID (none: [`Author::Unconnected`]).
-pub fn authors_of_batch_note(sender_public_id: Option<&str>) -> Vec<Author> {
-    vec![Author::of_viewer(sender_public_id)]
+/// A batch's note: its sender (`send_batches.sender`: `*owner`, a public
+/// ID or `*unconnected`); a batch from before senders were recorded is
+/// [`Author::Unconnected`], since a LAN viewer may have sent it.
+pub fn authors_of_batch_note(sender: Option<&str>) -> Vec<Author> {
+    match sender {
+        Some(t) => vec![Author::of_token(Some(t))],
+        None => vec![Author::Unconnected],
+    }
 }
 
 /// A version's label and note: its publisher, and for a version a page
-/// published, the page's publisher fixed at that write. Its files have
+/// published, every author of the page that published it (which its
+/// written files record, so: every author of its files). Its files have
 /// authors of their own ([`authors_of_file`]).
 pub fn authors_of_version(version: &Version) -> Vec<Author> {
     let a = &version.authors;
-    publisher(a.person.as_deref(), a.by_page, a.page_person.as_deref())
-}
-
-/// An artifact's title, description, icon and `capabilities`: its creator
-/// and its current version's publisher (with that version's page
-/// publisher when a page published it).
-pub fn authors_of_artifact_text(a: &Artifact) -> Vec<Author> {
-    let mut out = vec![Author::of_token(a.authors.creator.as_deref())];
-    let c = &a.authors.current;
-    for p in publisher(c.person.as_deref(), c.by_page, c.page_person.as_deref()) {
-        push(&mut out, p);
+    let mut out = vec![Author::of_token(a.person.as_deref())];
+    if a.by_page {
+        for path in version.files.keys() {
+            for f in file_authors(a, path) {
+                push(&mut out, f);
+            }
+        }
     }
     out
 }
 
-/// An asset's name and bytes: its uploader.
+/// One of an artifact's text fields (`title`, `description`, `icon`,
+/// `capabilities`): the authors of the publish or metadata change that
+/// last set it; one never set since its authors were recorded is its
+/// creator's.
+pub fn authors_of_artifact_field(a: &Artifact, field: &str) -> Vec<Author> {
+    match a.authors.text.as_ref().and_then(|t| t.get(field)) {
+        Some(tokens) if !tokens.is_empty() => {
+            let mut out = Vec::new();
+            for t in tokens {
+                push(&mut out, Author::of_token(t.as_deref()));
+            }
+            out
+        }
+        _ => vec![Author::of_token(a.authors.creator.as_deref())],
+    }
+}
+
+/// An artifact's title, description, icon and `capabilities` together
+/// (they are withheld together, §8.3): every author of each.
+pub fn authors_of_artifact_text(a: &Artifact) -> Vec<Author> {
+    let mut out = Vec::new();
+    for f in crate::store::artifacts::TEXT_FIELDS {
+        for x in authors_of_artifact_field(a, f) {
+            push(&mut out, x);
+        }
+    }
+    out
+}
+
+/// An asset's name and bytes: its uploader, and for a page's upload every
+/// author of the page at the upload.
 pub fn authors_of_asset(a: &Asset) -> Vec<Author> {
-    vec![Author::of_token(a.person.as_deref())]
+    let mut out = vec![Author::of_token(a.person.as_deref())];
+    if !a.page_authors.is_empty() {
+        for x in page_set(&a.page_authors) {
+            push(&mut out, x);
+        }
+    }
+    out
 }
 
 /// A document's fields: every stored author (`doc_authors.author`), or the
 /// owner when it has none.
 pub fn authors_of_doc(tokens: &[String]) -> Vec<Author> {
-    if tokens.is_empty() {
-        return vec![Author::Owner];
-    }
-    let mut out = Vec::new();
-    for t in tokens {
-        push(&mut out, Author::of_token(Some(t)));
-    }
-    out
+    page_set(tokens)
 }
 
 /// A working record's message: its session's person (`None`: the owner).
@@ -257,9 +293,12 @@ pub struct Visibility {
 }
 
 impl Visibility {
-    /// Sees everything, and never goes stale: for callers that are not
-    /// agent channels (§8.5).
-    pub fn all() -> Visibility {
+    /// Sees everything, and never goes stale; for tests only. A caller that
+    /// is not an agent channel (§8.5) is not filtered at all, so no
+    /// production path needs a view that sees everything, and an agent
+    /// channel can only be handed [`Visibility::for_reader`]'s.
+    #[cfg(test)]
+    pub(crate) fn all() -> Visibility {
         Visibility {
             generation: 0,
             reader: None,
@@ -291,7 +330,7 @@ impl Visibility {
                 owner: c
                     .prepare_cached("SELECT public_id FROM viewers WHERE owner = 1")?
                     .query_row([], |r| r.get(0))
-                    .ok(),
+                    .optional()?,
                 ..Approved::default()
             };
             let mut stmt = c.prepare_cached(APPROVALS_OF)?;
@@ -618,6 +657,10 @@ mod tests {
         mia: String,
         lan: String,
         sam_grant: String,
+        /// A revoked person (§6.4).
+        rae: String,
+        /// Invited, not yet connected: a person since the invite (§6.2).
+        ivy: String,
     }
 
     fn two_people() -> World {
@@ -631,6 +674,17 @@ mod tests {
             .upsert_viewer("01ARZ3NDEKTSV4RRFFQ69G5FAV", Some("Lan"))
             .unwrap()
             .public_id;
+        let (rae_grant, _, _) = approved(&st, "Rae", [3; 32]);
+        let rae = st.viewer_of_grant(&rae_grant).unwrap().public_id;
+        st.revoke_person(DAEMON, &rae).unwrap();
+        let (invite, _) = st
+            .create_invite(
+                DAEMON,
+                crate::store::people::InvitePerson::New("Ivy".into()),
+                None,
+            )
+            .unwrap();
+        let ivy = invite.person;
         World {
             _dir: dir,
             st,
@@ -639,6 +693,8 @@ mod tests {
             mia,
             lan,
             sam_grant,
+            rae,
+            ivy,
         }
     }
 
@@ -942,7 +998,11 @@ mod tests {
         );
         assert_eq!(authors_of_file(&v2, "a.css"), vec![p(&w.mia)], "carried");
         let a = w.st.get_artifact(&aid).unwrap().unwrap();
-        assert_eq!(authors_of_artifact_text(&a), vec![p(&w.mia), Author::Owner]);
+        assert_eq!(
+            authors_of_artifact_text(&a),
+            vec![p(&w.mia)],
+            "the page's publish set no text field"
+        );
     }
 
     #[test]
@@ -1132,7 +1192,7 @@ mod tests {
             vec![Author::Owner, Author::Unconnected]
         );
         let asset =
-            w.st.add_asset_by(DAEMON, &aid, "text/plain", b"x", Some(&w.mia))
+            w.st.add_asset_by(DAEMON, &aid, "text/plain", b"x", Some(&w.mia), false)
                 .unwrap();
         assert_eq!(authors_of_asset(&asset), vec![p(&w.mia)]);
         let listed = w.st.list_assets(&aid).unwrap();
@@ -1195,8 +1255,16 @@ mod tests {
         w.write_doc(&a1, p(&w.mia), false, "update", "notes/1", json!({"n": 2}));
         let aid = w.publish_as(Some(&w.mia), &[("index.html", "<p>m</p>")]);
         let t = w.thread_by(&aid, Some(&me), true);
-        w.st.approve(DAEMON, Some(&w.sam), &me, Scope::Everywhere, Via::Shell)
-            .unwrap();
+        // Sam approved the LAN viewer on one artifact: folded into the
+        // owner, that must not become an approval of the owner there.
+        w.st.approve(
+            DAEMON,
+            Some(&w.sam),
+            &me,
+            Scope::Artifact(a1.to_string()),
+            Via::Shell,
+        )
+        .unwrap();
         w.st.approve(
             DAEMON,
             Some(&w.sam),
@@ -1209,8 +1277,16 @@ mod tests {
         // publisher as the viewer to see it fold too.
         w.st.with_write(|c| {
             c.execute(
-                "UPDATE comments SET page_person = ?1 WHERE thread_id = ?2",
+                "INSERT INTO page_authors (kind, id, author) SELECT 'comment', id, ?1 FROM comments WHERE thread_id = ?2",
                 rusqlite::params![me, t.id],
+            )?;
+            c.execute(
+                "UPDATE artifacts SET text_authors_json = ?1 WHERE id = ?2",
+                rusqlite::params![json!({"title": [me], "description": [me], "icon": [w.mia], "capabilities": [w.mia]}).to_string(), aid.as_str()],
+            )?;
+            c.execute(
+                "INSERT INTO send_batches (id, artifact_id, sent_by, size, created_at, sender) VALUES ('b1', ?1, 'Me', 1, 'x', ?2)",
+                rusqlite::params![aid.as_str(), me],
             )?;
             c.execute(
                 "UPDATE versions SET file_authors_json = ?1 WHERE artifact_id = ?2",
@@ -1228,15 +1304,40 @@ mod tests {
             vec![Author::Owner, p(&w.mia)]
         );
         let thread = w.st.get_thread(&t.id).unwrap().unwrap();
-        assert_eq!(thread.comments[0].page_person.as_deref(), Some(OWNER));
+        assert_eq!(
+            normalise(&authors_of_comment(&thread.comments[0]), Some(&w.owner)),
+            vec![Author::Owner, p(&w.mia)],
+            "its writer and its page's authors, the folded one now the owner"
+        );
+        let a = w.st.get_artifact(&aid).unwrap().unwrap();
+        assert_eq!(authors_of_artifact_field(&a, "title"), vec![Author::Owner]);
+        assert_eq!(authors_of_artifact_field(&a, "icon"), vec![p(&w.mia)]);
+        let sender: String =
+            w.st.with_read(|c| {
+                Ok(
+                    c.query_row("SELECT sender FROM send_batches WHERE id = 'b1'", [], |r| {
+                        r.get(0)
+                    })?,
+                )
+            })
+            .unwrap();
+        assert_eq!(sender, OWNER);
         assert_eq!(
             authors_of_file(&w.version(&aid, 1), "index.html"),
             vec![Author::Owner, p(&w.mia)]
         );
-        // Sam's two approvals now both name the owner: one stays live.
+        // Sam's approval of the folded viewer ends rather than becoming
+        // one of all the owner's content; his approval of the owner stays.
         let live = w.st.live_approvals(Some(&w.sam)).unwrap();
         assert_eq!(live.len(), 1, "{live:?}");
         assert_eq!(live[0].author, w.owner);
+        let revokes =
+            w.st.events_after(0, 100_000)
+                .unwrap()
+                .into_iter()
+                .filter(|r| r.kind == "approval.revoke")
+                .count();
+        assert_eq!(revokes, 1, "the ended approval is recorded");
     }
 
     #[test]
@@ -1409,6 +1510,8 @@ mod tests {
             p(&w.sam),
             p(&w.mia),
             p(&w.lan),
+            p(&w.rae),
+            p(&w.ivy),
             Author::Unconnected,
             Author::System,
         ];
@@ -1433,7 +1536,12 @@ mod tests {
             Some(Scope::Artifact(other.to_string())),
             Some(Scope::Everywhere),
         ];
-        let people = [w.sam.as_str(), w.mia.as_str()];
+        let people = [
+            w.sam.as_str(),
+            w.mia.as_str(),
+            w.rae.as_str(),
+            w.ivy.as_str(),
+        ];
         let switch = w.st.live_approvals(None).unwrap()[0].id.clone();
         let mut checked = 0;
         for switch_on in [true, false] {
@@ -1510,7 +1618,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(checked, 2 * 3 * 7 * 6 * 4);
+        assert_eq!(checked, 2 * 3 * 9 * 6 * 4);
     }
 
     /// Seeded random worlds: random approvals by the owner, Sam and Mia,
@@ -1530,6 +1638,8 @@ mod tests {
             p(&w.sam),
             p(&w.mia),
             p(&w.lan),
+            p(&w.rae),
+            p(&w.ivy),
             Author::Unconnected,
             Author::System,
         ];
@@ -1540,11 +1650,13 @@ mod tests {
             let mut made = Vec::new();
             for _ in 0..rng.random_range(0..8) {
                 let by = approvers[rng.random_range(0..3)].clone();
-                let author = match rng.random_range(0..5) {
+                let author = match rng.random_range(0..7) {
                     0 => w.owner.clone(),
                     1 => w.sam.clone(),
                     2 => w.mia.clone(),
                     3 => w.lan.clone(),
+                    4 => w.rae.clone(),
+                    5 => w.ivy.clone(),
                     _ => UNCONNECTED.to_string(),
                 };
                 let scope = match rng.random_range(0..3) {
@@ -1625,7 +1737,9 @@ mod tests {
                         for a in &authors {
                             let other = match a {
                                 Author::Person(x)
-                                    if x != me && x != &w.owner && (x == &w.sam || x == &w.mia) =>
+                                    if x != me
+                                        && x != &w.owner
+                                        && [&w.sam, &w.mia, &w.rae, &w.ivy].contains(&x) =>
                                 {
                                     Some(x.as_str())
                                 }
@@ -1694,7 +1808,12 @@ mod tests {
                             Author::System => "system".into(),
                         })
                         .collect();
-                    let people = [w.sam.as_str(), w.mia.as_str()];
+                    let people = [
+                        w.sam.as_str(),
+                        w.mia.as_str(),
+                        w.rae.as_str(),
+                        w.ivy.as_str(),
+                    ];
                     let want = keyed
                         .iter()
                         .all(|k| oracle(&rk, k, &people, &table, art, thread));
@@ -1775,5 +1894,364 @@ mod tests {
         );
         assert_eq!(anchored_on("Mia"), "Anchored on: (withheld: page by Mia)");
         assert_eq!((CLIP, NOTE), ("Clip: withheld", "(note withheld)"));
+    }
+
+    /// A carried-forward script of Mia's runs in the owner's browser under
+    /// the owner's index.html: what it writes is Mia's too (C1, M11).
+    #[test]
+    fn a_carried_script_s_page_writes_count_its_author() {
+        let w = two_people();
+        let a = w
+            .st
+            .create_artifact(
+                DAEMON,
+                request(
+                    json!({"title": "db", "capabilities": {"db": {}},
+                       "files": files(&[("index.html", "<script src=app.js></script>"), ("app.js", "MIA")])}),
+                    Some(&w.mia),
+                    false,
+                ),
+                None,
+            )
+            .unwrap()
+            .0;
+        let aid = ArtifactId::parse(&a.id).unwrap();
+        // The owner's agent edits the heading: index.html written, app.js carried.
+        w.publish_next(
+            &aid,
+            None,
+            false,
+            &[("index.html", "<h1>x</h1><script src=app.js></script>")],
+        );
+        assert_eq!(
+            authors_of_file(&w.version(&aid, 2), "app.js"),
+            vec![p(&w.mia)]
+        );
+        // The owner's browser runs the page; Mia's app.js writes a
+        // document, a comment and an upload.
+        w.write_doc(
+            &aid,
+            Author::Owner,
+            true,
+            "set",
+            "notes/9",
+            json!({"t": "MIA's words"}),
+        );
+        let doc = w.st.doc_authors(&aid, "notes/9").unwrap();
+        assert_eq!(doc, vec![Author::Owner, p(&w.mia)]);
+        let t =
+            w.st.create_thread(
+                DAEMON,
+                &aid,
+                NewThread {
+                    version_n: 2,
+                    anchor: crate::Anchor {
+                        file: "index.html".into(),
+                        ..anchor()
+                    },
+                    author_name: "o".into(),
+                    author_public_id: Some(w.owner.clone()),
+                    body: "MIA's words".into(),
+                    clip: None,
+                    via_page: true,
+                },
+            )
+            .unwrap();
+        let c = authors_of_comment(&t.comments[0]);
+        let loaded = w.st.get_thread(&t.id).unwrap().unwrap();
+        assert_eq!(authors_of_comment(&loaded.comments[0]), c, "as stored");
+        let asset =
+            w.st.add_asset_by(DAEMON, &aid, "text/plain", b"MIA", None, true)
+                .unwrap();
+        let listed = w.st.list_assets(&aid).unwrap();
+        assert_eq!(authors_of_asset(&listed[0]), authors_of_asset(&asset));
+        let owner = w.reader(&Reader::Owner);
+        assert!(
+            !owner.sees(&doc, aid.as_str(), None),
+            "Mia's code wrote the document"
+        );
+        assert!(
+            !owner.sees(&c, aid.as_str(), Some(&t.id)),
+            "Mia's code wrote the comment"
+        );
+        assert!(
+            !owner.sees(&authors_of_asset(&asset), aid.as_str(), None),
+            "and the upload"
+        );
+        // An approval of Mia lets them through.
+        w.st.approve(
+            DAEMON,
+            None,
+            &w.mia,
+            Scope::Artifact(aid.to_string()),
+            Via::Shell,
+        )
+        .unwrap();
+        let owner = w.reader(&Reader::Owner);
+        assert!(owner.sees(&doc, aid.as_str(), None) && owner.sees(&c, aid.as_str(), Some(&t.id)));
+        // Sam's agents, approving the owner only, see none of it either.
+        w.st.approve(
+            DAEMON,
+            Some(&w.sam),
+            &w.owner,
+            Scope::Everywhere,
+            Via::Connect,
+        )
+        .unwrap();
+        assert!(
+            !w.reader(&Reader::Person(w.sam.clone()))
+                .sees(&doc, aid.as_str(), None)
+        );
+    }
+
+    /// A page that publishes itself, twice: the second publish ran code
+    /// the first carried from Mia, so it keeps Mia (I1).
+    #[test]
+    fn a_chain_of_page_publishes_keeps_every_earlier_author() {
+        let w = two_people();
+        let aid = w.publish_as(Some(&w.mia), &[("index.html", "<p>m</p>")]);
+        w.publish_next(&aid, None, true, &[("index.html", "<p>page v2</p>")]);
+        w.publish_next(&aid, None, true, &[("index.html", "<p>page v3</p>")]);
+        let v3 = w.version(&aid, 3);
+        assert_eq!(
+            authors_of_file(&v3, "index.html"),
+            vec![Author::Owner, p(&w.mia)]
+        );
+        assert_eq!(authors_of_version(&v3), vec![Author::Owner, p(&w.mia)]);
+        // A publish that is not the page's own takes its publisher alone.
+        w.publish_next(&aid, Some(&w.sam), false, &[("index.html", "<p>sam</p>")]);
+        assert_eq!(
+            authors_of_file(&w.version(&aid, 4), "index.html"),
+            vec![p(&w.sam)]
+        );
+    }
+
+    /// Title, description, icon and capabilities keep the authors of what
+    /// last set each, through publishes that leave them and through
+    /// metadata changes (I2).
+    #[test]
+    fn artifact_text_fields_keep_their_own_authors() {
+        let w = two_people();
+        let aid = w.publish_as(None, &[("index.html", "<p>o</p>")]);
+        let a = || w.st.get_artifact(&aid).unwrap().unwrap();
+        assert_eq!(authors_of_artifact_text(&a()), vec![Author::Owner]);
+        assert_eq!(a().authors.text, None, "the owner's alone stores nothing");
+        // Sam's agent sets the title in v2; the owner's v3 leaves it.
+        let cur = a().current_version;
+        let mut req = request(
+            json!({"if_version": cur, "title": "SAM", "files": files(&[("index.html", "<p>s</p>")])}),
+            Some(&w.sam),
+            false,
+        );
+        req.person = Some(w.sam.clone());
+        w.st.publish_version(DAEMON, &aid, req, None).unwrap();
+        w.publish_next(&aid, None, false, &[("index.html", "<p>o3</p>")]);
+        assert_eq!(authors_of_artifact_field(&a(), "title"), vec![p(&w.sam)]);
+        assert_eq!(
+            authors_of_artifact_field(&a(), "description"),
+            vec![Author::Owner]
+        );
+        assert_eq!(
+            authors_of_artifact_text(&a()),
+            vec![p(&w.sam), Author::Owner],
+            "field order"
+        );
+        let owner = w.reader(&Reader::Owner);
+        assert!(!owner.sees(&authors_of_artifact_text(&a()), aid.as_str(), None));
+        // A metadata change by Mia's agent sets the icon.
+        w.st.update_meta(
+            DAEMON,
+            &aid,
+            crate::MetaPatch {
+                icon: Some("M".into()),
+                by: Some(p(&w.mia)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(authors_of_artifact_field(&a(), "icon"), vec![p(&w.mia)]);
+        assert_eq!(
+            authors_of_artifact_field(&a(), "title"),
+            vec![p(&w.sam)],
+            "untouched"
+        );
+        // Pinning sets no text.
+        w.st.update_meta(
+            DAEMON,
+            &aid,
+            crate::MetaPatch {
+                pinned: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(authors_of_artifact_field(&a(), "icon"), vec![p(&w.mia)]);
+        // The owner retitles: the title is the owner's again.
+        w.st.update_meta(
+            DAEMON,
+            &aid,
+            crate::MetaPatch {
+                title: Some("Mine".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            authors_of_artifact_field(&a(), "title"),
+            vec![Author::Owner]
+        );
+        // A page's metadata change carries its page's authors.
+        w.st.update_meta(
+            DAEMON,
+            &aid,
+            crate::MetaPatch {
+                description: Some("D".into()),
+                via_page: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // v3 is the owner's alone: the page's authors are the owner.
+        assert_eq!(
+            authors_of_artifact_field(&a(), "description"),
+            vec![Author::Owner]
+        );
+        // An artifact created by a person: every field theirs.
+        let mia = w.publish_as(Some(&w.mia), &[("index.html", "<p>m</p>")]);
+        let m = w.st.get_artifact(&mia).unwrap().unwrap();
+        for f in crate::store::artifacts::TEXT_FIELDS {
+            assert_eq!(authors_of_artifact_field(&m, f), vec![p(&w.mia)], "{f}");
+        }
+    }
+
+    /// §6.4 and §6.2: a revoked person, and one invited but not yet
+    /// connected, are persons: the owner's switch for viewers who are not
+    /// connected covers neither (I3).
+    #[test]
+    fn revoked_and_invited_people_are_not_unconnected() {
+        let w = two_people();
+        let o = w.reader(&Reader::Owner);
+        assert!(
+            !o.sees(&[p(&w.rae)], "a", None),
+            "a revoked person is not *unconnected (§6.4)"
+        );
+        assert!(
+            !o.sees(&[p(&w.ivy)], "a", None),
+            "an invited person is not *unconnected (§6.2)"
+        );
+        assert!(o.sees(&[p(&w.lan)], "a", None));
+        w.st.revoke_person(DAEMON, &w.sam).unwrap();
+        assert!(!w.reader(&Reader::Owner).sees(&[p(&w.sam)], "a", None));
+    }
+
+    #[test]
+    fn a_revoked_person_approves_nothing() {
+        let w = two_people();
+        let refused = w.st.approve(
+            DAEMON,
+            Some(&w.rae),
+            &w.owner,
+            Scope::Everywhere,
+            Via::Shell,
+        );
+        assert!(
+            matches!(
+                refused,
+                Err(crate::CoreError::Invalid {
+                    code: "not_a_person",
+                    ..
+                })
+            ),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn redeeming_an_invite_that_reconnects_a_person_bumps_the_generation() {
+        let w = two_people();
+        let (_, code) =
+            w.st.create_invite(
+                DAEMON,
+                crate::store::people::InvitePerson::Viewer(w.rae.clone()),
+                None,
+            )
+            .unwrap();
+        let g = w.st.visibility_generation();
+        w.st.request_grant(
+            DAEMON,
+            crate::store::people::tests::grant([9; 32], Some(code.expose())),
+        )
+        .unwrap();
+        assert!(w.st.visibility_generation() > g, "Rae is connected again");
+    }
+
+    #[test]
+    fn the_migration_s_approval_is_in_the_journal_once() {
+        let (dir, _c, st) = store();
+        let a = st.live_approvals(None).unwrap()[0].clone();
+        let grants = |st: &Store| -> Vec<serde_json::Value> {
+            st.events_after(0, 100_000)
+                .unwrap()
+                .into_iter()
+                .filter(|r| r.kind == "approval.grant")
+                .map(|r| serde_json::from_str(&r.body).unwrap())
+                .collect()
+        };
+        let got = grants(&st);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0]["approval_id"], a.id.as_str());
+        assert_eq!(got[0]["author"], UNCONNECTED);
+        assert_eq!(got[0]["created_via"], "migration");
+        let home = st.home().clone();
+        drop(st);
+        let st = Store::open(&home).unwrap();
+        assert_eq!(grants(&st).len(), 1, "once per home");
+        drop(dir);
+    }
+
+    #[test]
+    fn a_batch_note_is_its_sender_s() {
+        let w = two_people();
+        let aid = w.publish_as(None, &[("index.html", "<p>o</p>")]);
+        let t = w.thread_by(&aid, Some(&w.lan), false).id;
+        let r =
+            w.st.send_batch(
+                DAEMON,
+                &aid,
+                crate::store::batches::SendBatch {
+                    thread_ids: vec![t.clone()],
+                    note: Some("LAN's note".into()),
+                    sent_by: "Lan".into(),
+                    sender: w.lan.clone(),
+                    to: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            authors_of_batch_note(r.batch.sender.as_deref()),
+            vec![p(&w.lan)]
+        );
+        let sends = w.st.thread_sends(&t).unwrap();
+        assert_eq!(
+            authors_of_batch_note(sends[0].sender.as_deref()),
+            vec![p(&w.lan)]
+        );
+        assert_eq!(
+            authors_of_batch_note(None),
+            vec![Author::Unconnected],
+            "before senders were recorded"
+        );
+        assert!(
+            serde_json::to_value(&sends[0])
+                .unwrap()
+                .get("sender")
+                .is_none()
+        );
+        assert!(
+            serde_json::to_value(&r.batch)
+                .unwrap()
+                .get("sender")
+                .is_none()
+        );
     }
 }

@@ -120,6 +120,11 @@ pub struct FeedbackBatch {
     pub size: u32,
     pub note: Option<String>,
     pub sent_by: String,
+    /// The sender as an author token (`send_batches.sender`: `*owner`, a
+    /// public ID or `*unconnected`; `None` for a batch from before it was
+    /// recorded), for the visibility filter. Never served.
+    #[serde(skip)]
+    pub sender: Option<String>,
 }
 
 /// What a store change affected: sessions that now have undelivered rows
@@ -428,6 +433,7 @@ mod tests {
             size: 2,
             note: Some("Before the \"demo\"".into()),
             sent_by: "Alex".into(),
+            sender: None,
         };
         let one = FeedbackItem {
             thread_id: "T1".into(),
