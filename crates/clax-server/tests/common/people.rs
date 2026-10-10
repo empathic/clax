@@ -668,6 +668,17 @@ impl Call {
     /// Sends the call as `agent` against `w`: the status and every byte of
     /// the response, headers included.
     pub async fn run(&self, w: &World, agent: &AgentOf<'_>) -> String {
+        // An event stream resumes from the start of the bus, so a stream
+        // that answered would replay the events the world's writes made,
+        // up to a marker event published now, which ends the read.
+        let epoch = w.ts.events.epoch().to_string();
+        let resume = format!("{epoch}-0");
+        let marker = self.path.starts_with("/api/events").then(|| {
+            w.ts.events.publish(clax_core::Event::ArtifactDeleted {
+                artifact_id: "zzzzzzzzzzzz".into(),
+            });
+            format!("id: {epoch}-{}", w.ts.events.last_id())
+        });
         let res = match &agent.who {
             As::Grant(c) => {
                 c.call(clax_server::testing::Call {
@@ -675,7 +686,10 @@ impl Call {
                     path: &self.path,
                     authorization: Some(format!("Clax-Grant {}", c.access())),
                     body: self.body.clone(),
-                    headers: vec![("x-clax-session", agent.session.clone())],
+                    headers: vec![
+                        ("x-clax-session", agent.session.clone()),
+                        ("last-event-id", resume.clone()),
+                    ],
                     ..Default::default()
                 })
                 .await
@@ -687,7 +701,8 @@ impl Call {
                         format!("{}{}", w.ts.base, self.path),
                     ))
                     .header("x-clax-channel", "agent")
-                    .header("x-clax-session", &agent.session);
+                    .header("x-clax-session", &agent.session)
+                    .header("last-event-id", &resume);
                 if let Some(b) = &self.body {
                     req = req
                         .header("content-type", "application/json")
@@ -703,9 +718,9 @@ impl Call {
             .get("content-type")
             .is_some_and(|v| v.to_str().unwrap_or("").starts_with("text/event-stream"));
         let body = if streaming {
-            // An event stream: up to its first whole frame (an event or a
-            // keep-alive), which the daemon sends at once.
-            first_frame(res, &self.name).await
+            // An event stream: up to its first whole frame after `ready`
+            // (a replayed event, or a keep-alive).
+            first_frame(res, &self.name, marker.as_deref()).await
         } else {
             String::from_utf8_lossy(&res.bytes().await.unwrap_or_default()).into_owned()
         };
@@ -713,14 +728,20 @@ impl Call {
     }
 }
 
-/// What event stream `res` sends up to the end of its first frame (a blank
-/// line); fails when none comes.
-async fn first_frame(mut res: reqwest::Response, name: &str) -> String {
+/// What event stream `res` sends up to the end of the frame whose `id:`
+/// line is `until` (the replay's last event), or without one, up to its
+/// first whole frame (a blank line) that is not `event: ready`
+/// (`ready` carries no content). Fails when none comes within 30 s.
+async fn first_frame(mut res: reqwest::Response, name: &str, until: Option<&str>) -> String {
     let mut out = Vec::new();
     let got = tokio::time::timeout(std::time::Duration::from_secs(30), async {
         while let Ok(Some(chunk)) = res.chunk().await {
             out.extend_from_slice(&chunk);
-            if out.windows(2).any(|w| w == b"\n\n") {
+            let done = match until {
+                Some(id) => whole_frame_with(&out, id),
+                None => past_ready(&out),
+            };
+            if done {
                 return true;
             }
         }
@@ -733,6 +754,45 @@ async fn first_frame(mut res: reqwest::Response, name: &str) -> String {
         String::from_utf8_lossy(&out)
     );
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Whether `bytes` hold a whole frame with the line `id`.
+fn whole_frame_with(bytes: &[u8], id: &str) -> bool {
+    let text = String::from_utf8_lossy(bytes);
+    let mut frames: Vec<&str> = text.split("\n\n").collect();
+    frames.pop();
+    frames.iter().any(|f| f.lines().any(|l| l.trim_end() == id))
+}
+
+/// Whether `bytes` hold a whole frame other than a `ready` event.
+fn past_ready(bytes: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(bytes);
+    let mut frames: Vec<&str> = text.split("\n\n").collect();
+    frames.pop(); // the unfinished rest
+    frames
+        .iter()
+        .any(|f| !f.lines().any(|l| l.trim_end() == "event: ready"))
+}
+
+#[test]
+fn a_ready_frame_alone_is_not_enough() {
+    assert!(!past_ready(b"id: e-0\nevent: ready\ndata: {}\n\n"));
+    assert!(!past_ready(
+        b"id: e-0\nevent: ready\ndata: {}\n\nid: e-1\nevent: thread"
+    ));
+    assert!(past_ready(
+        b"id: e-0\nevent: ready\ndata: {}\n\nid: e-1\nevent: thread\ndata: {}\n\n"
+    ));
+    assert!(past_ready(b": keep-alive\n\n"));
+    assert!(past_ready(b"{\"error\":1}\n\n"));
+    assert!(!whole_frame_with(
+        b"id: e-1\ndata: x\n\nid: e-2\ndata: y",
+        "id: e-2"
+    ));
+    assert!(whole_frame_with(
+        b"id: e-1\ndata: x\n\nid: e-2\ndata: y\n\n",
+        "id: e-2"
+    ));
 }
 
 /// Every route of `routes/mod.rs` (but the test-only ones): method and
