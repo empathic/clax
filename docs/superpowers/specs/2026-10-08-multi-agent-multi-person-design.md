@@ -1519,7 +1519,7 @@ another machine, so no `remote` channel is added.
 | `agent.narrow`, `agent.elevate` | `session, access` | person, owner |
 | `approval.request` | `request_id, approver, author, artifact_id, thread_id, cause, count` | asking agent or router |
 | `approval.decide` | `request_id, scope` | approver |
-| `approval.grant`, `approval.revoke` | `approval_id, approver, author, scope, artifact_id, thread_id, via` | approver |
+| `approval.grant`, `approval.revoke` | `approval_id, approver, author, scope, created_via` (the artifact and thread in the event's IDs) | approver |
 | `content.withheld` | `feedback_ids[], author, thread_id, session` | system `daemon`, `for_actor` the agent (once per placeholder) |
 | `thread.take` | `thread_id, session, cause (send\|mention\|first_delivery\|handoff)` | sender, or system |
 | `thread.release` | `thread_id, session, reason (explicit\|session_end\|grant_revoked)` | agent or system |
@@ -1528,8 +1528,9 @@ another machine, so no `remote` channel is added.
 
 Recorded since the rebase onto the audit journal (2026-10-10; audit spec
 §6.13): `invite.*`, `grant.*`, `person.rights`, `person.revoke` and
-`agent.name`. A grant request's flow is `flow`, since `via` is the event
-envelope's channel. The other kinds arrive with the tasks that add their
+`agent.name`; since migration 25, `approval.grant` and `approval.revoke`.
+A grant request's flow is `flow`, and where an approval was made
+`created_via`, since `via` is the event envelope's channel. The other kinds arrive with the tasks that add their
 changes. People, invites and grants need no backfill: they arrive after
 the audit migration, so the journal records them from their first row.
 

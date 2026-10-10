@@ -601,6 +601,63 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE versions ADD COLUMN page_person TEXT;
     ALTER TABLE versions ADD COLUMN file_authors_json TEXT;
     ALTER TABLE assets ADD COLUMN person TEXT;",
+    // 25: visibility (spec 2026-10-08-multi-agent-multi-person §5.2): who
+    // approved whose words reaching their agents, the requests for such
+    // approvals, and each document's authors. A document without
+    // `doc_authors` rows is the owner's, and a `via_page` comment without
+    // `page_person` was written on an owner's page, so existing rows stay
+    // the owner's. The owner's one approval, of `*unconnected` everywhere,
+    // keeps LAN viewers' words reaching the owner's agents (O6, M14).
+    "CREATE TABLE approvals (
+        id TEXT PRIMARY KEY,
+        approver TEXT,
+        author TEXT NOT NULL,
+        scope TEXT NOT NULL CHECK (scope IN ('thread', 'artifact', 'everywhere')),
+        artifact_id TEXT,
+        thread_id TEXT,
+        created_at TEXT NOT NULL,
+        created_via TEXT NOT NULL CHECK (created_via IN ('shell', 'extension', 'connect', 'migration')),
+        request_id TEXT,
+        revoked_at TEXT
+    );
+    CREATE UNIQUE INDEX approvals_live ON approvals(
+        COALESCE(approver, ''), author, scope, COALESCE(artifact_id, ''), COALESCE(thread_id, ''))
+        WHERE revoked_at IS NULL;
+    CREATE INDEX approvals_by_approver ON approvals(COALESCE(approver, ''), author) WHERE revoked_at IS NULL;
+
+    CREATE TABLE approval_requests (
+        id TEXT PRIMARY KEY,
+        approver TEXT,
+        author TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        thread_id TEXT,
+        session_id TEXT,
+        cause TEXT NOT NULL CHECK (cause IN ('ask', 'routing')),
+        count INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'open'
+            CHECK (status IN ('open', 'approved', 'declined', 'withdrawn')),
+        decided_scope TEXT CHECK (decided_scope IN ('thread', 'artifact', 'everywhere')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        decided_at TEXT
+    );
+    CREATE UNIQUE INDEX approval_requests_open ON approval_requests(
+        COALESCE(approver, ''), author, artifact_id, COALESCE(thread_id, ''))
+        WHERE status = 'open';
+    CREATE INDEX approval_requests_by_session ON approval_requests(session_id, status);
+
+    CREATE TABLE doc_authors (
+        artifact_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        author TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, path, author)
+    );
+    ALTER TABLE feedback ADD COLUMN placeholder_at TEXT;
+    ALTER TABLE comments ADD COLUMN page_person TEXT;
+
+    INSERT INTO approvals (id, approver, author, scope, created_at, created_via)
+    VALUES ('a' || lower(hex(randomblob(12))), NULL, '*unconnected', 'everywhere',
+            strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'migration');",
 ];
 
 /// The audit journal's migration, as a schema version (the
@@ -610,6 +667,11 @@ pub const AUDIT_MIGRATION: u32 = 23;
 /// The migration that adds people, grants and their tokens, as a schema
 /// version (spec 2026-10-08-multi-agent-multi-person §5.1).
 pub const PEOPLE_MIGRATION: u32 = 24;
+
+/// The migration that adds approvals, approval requests and document
+/// authors, as a schema version (spec 2026-10-08-multi-agent-multi-person
+/// §5.2).
+pub const VISIBILITY_MIGRATION: u32 = 25;
 
 /// Runs the Rust part of the migration that brings the schema to
 /// `version`, in that migration's transaction, after its SQL.
@@ -636,7 +698,7 @@ fn install_id(tx: &rusqlite::Transaction<'_>) -> crate::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AUDIT_MIGRATION, MIGRATIONS, PEOPLE_MIGRATION};
+    use super::{AUDIT_MIGRATION, MIGRATIONS, PEOPLE_MIGRATION, VISIBILITY_MIGRATION};
     use crate::store::test_util::DAEMON;
     use crate::{Home, Store, is_public_id};
     use rusqlite::{Connection, params};
@@ -1375,6 +1437,70 @@ mod tests {
         let s = serde_json::to_value(&sessions[0]).unwrap();
         assert!(
             s.get("person").is_none() && s.get("name").is_none() && s.get("grant_id").is_none()
+        );
+    }
+    #[test]
+    fn migration_25_keeps_rows_the_owners_and_lets_lan_viewers_reach_the_owners_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        let before = VISIBILITY_MIGRATION as usize - 1;
+        assert!(MIGRATIONS[before].contains("CREATE TABLE approvals"));
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            for sql in &MIGRATIONS[..before] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.execute(
+                "INSERT INTO install (k, v) VALUES ('id', ?1)",
+                ["0".repeat(32)],
+            )
+            .unwrap();
+            c.pragma_update(None, "user_version", before as u32)
+                .unwrap();
+            c.execute_batch(
+                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+                    VALUES ('7q3k9mzx2b4t', 't', 'x', 'x', 1, '0');
+                 INSERT INTO versions (artifact_id, n, created_at, files_json) VALUES ('7q3k9mzx2b4t', 1, 'x', '{}');
+                 INSERT INTO threads (id, artifact_id, version_n, anchor_json, status, created_at)
+                    VALUES ('t1', '7q3k9mzx2b4t', 1, '{}', 'open', 'x');
+                 INSERT INTO comments (id, thread_id, author_kind, author_name, via_page, body, created_at)
+                    VALUES ('c1', 't1', 'viewer', 'Lan', 1, 'b', 'x');
+                 INSERT INTO docs (artifact_id, path, collection, json, version, updated_at)
+                    VALUES ('7q3k9mzx2b4t', 'notes/1', 'notes', '{}', 1, 'x');",
+            )
+            .unwrap();
+        }
+        let st = Store::open(&home).unwrap();
+        type Live = Vec<(Option<String>, String, String, String)>;
+        let (page_person, doc_authors, approvals): (Option<String>, i64, Live) = st
+            .with_read(|c| {
+                let pp = c.query_row("SELECT page_person FROM comments WHERE id = 'c1'", [], |r| r.get(0))?;
+                let da = c.query_row("SELECT COUNT(*) FROM doc_authors", [], |r| r.get(0))?;
+                let mut stmt = c.prepare("SELECT approver, author, scope, created_via FROM approvals WHERE revoked_at IS NULL")?;
+                let a = stmt
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok((pp, da, a))
+            })
+            .unwrap();
+        assert_eq!(
+            page_person, None,
+            "an existing page comment was written on the owner's page"
+        );
+        assert_eq!(doc_authors, 0, "an existing document is the owner's");
+        assert_eq!(
+            approvals,
+            vec![(
+                None,
+                "*unconnected".into(),
+                "everywhere".into(),
+                "migration".into()
+            )]
+        );
+        assert!(
+            st.owner_sees_all().unwrap(),
+            "a single-owner install takes the fast path"
         );
     }
 }

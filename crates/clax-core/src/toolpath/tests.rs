@@ -350,7 +350,7 @@ pub(super) fn segment(h: &History, closed: bool) -> String {
 }
 
 /// The `seq` of the golden history's last row (`tests/toolpath/history.json`).
-const LAST_SEQ: i64 = 73;
+const LAST_SEQ: i64 = 75;
 
 #[test]
 fn render_each_kind_matches_golden() {
@@ -1681,6 +1681,18 @@ fn every_recorded_kind_is_classified_and_renders_conformant() {
         st.revoke_invite(ctx, &invite.id).unwrap();
         let (request, _, _) = pending(&st, KEY_B);
         st.deny_grant(ctx, &request.id).unwrap();
+        let a = st
+            .approve(
+                ctx,
+                None,
+                &sam,
+                crate::store::approvals::Scope::Artifact(
+                    crate::store::test_util::artifact(&st, None).to_string(),
+                ),
+                crate::store::approvals::Via::Shell,
+            )
+            .unwrap();
+        st.revoke_approval(ctx, &a.id, None).unwrap();
         st.revoke_person(ctx, &sam).unwrap();
         st.set_session_name(ctx, &sid, "named-one", crate::NameSource::Agent)
             .unwrap();

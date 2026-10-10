@@ -45,6 +45,7 @@
 //! file-system work, ordered so that a failure on either side leaves no
 //! half-written state.
 
+pub mod approvals;
 pub mod artifacts;
 pub mod assets;
 pub mod attention;
@@ -100,6 +101,9 @@ pub struct Store {
     inbox_listener: RwLock<Option<SharedListener>>,
     /// Audit recording state: the nudge and the install ID.
     audit: audit::AuditState,
+    /// The visibility generation and its listener (spec
+    /// 2026-10-08-multi-agent-multi-person M17).
+    visibility: approvals::VisState,
     /// Where every time the store writes or compares is read
     /// ([`Store::now`]). IDs are minted from the system clock.
     clock: Arc<dyn Clock>,
@@ -182,6 +186,7 @@ impl Store {
             inbox_changes,
             inbox_listener: RwLock::new(None),
             audit: audit::AuditState::default(),
+            visibility: approvals::VisState::default(),
             clock,
         })
     }
@@ -254,7 +259,9 @@ impl Store {
     /// When the committed transaction made or updated inbox items, the inbox
     /// listener hears of them once the write turn is released. When `f`
     /// recorded an audit event ([`Store::record_audit`]), the audit nudge
-    /// ([`Store::set_audit_nudge`]) fires after the commit.
+    /// ([`Store::set_audit_nudge`]) fires after the commit. When `f` changed
+    /// what agents may see ([`Store::visibility_changed`]), the visibility
+    /// generation is bumped after the commit.
     pub(crate) fn with_tx<T>(
         &self,
         f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
@@ -262,9 +269,12 @@ impl Store {
         let (out, changes, recorded) = self.writer.run(|conn| {
             self.inbox_changes.lock().unwrap().clear();
             let _job = self.audit.begin();
+            self.visibility.begin();
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let out = f(&tx)?;
             tx.commit()?;
+            // Inside the turn, so generations follow commit order.
+            self.visibility.committed();
             // Taken inside the turn: the next writer's changes are its own.
             Ok((
                 out,

@@ -654,6 +654,8 @@ fn end_grant(
         return Ok(out);
     }
     out.ended = true;
+    // Its agents' rights end with it (M17).
+    st.visibility_changed();
     tx.execute(
         "UPDATE grant_tokens SET revoked_at = ?2 WHERE grant_id = ?1 AND revoked_at IS NULL",
         params![gid, now],
@@ -829,6 +831,11 @@ impl Store {
                     format!("at most {MAX_LIVE_INVITES} invites are live at once"),
                 ));
             }
+            if who != InvitePerson::Owner {
+                // A new person, or a viewer made one: no longer
+                // `*unconnected` (M14, M17).
+                self.visibility_changed();
+            }
             let viewer_id = match &who {
                 InvitePerson::New(name) => {
                     let name = check_person_name(tx, name, None)?;
@@ -939,8 +946,11 @@ impl Store {
                     |r| r.get(0),
                 )
                 .optional()?;
-            if let Some(v) = viewer {
-                release_unconnected(tx, Some(&v), &now)?;
+            if let Some(v) = viewer
+                && release_unconnected(tx, Some(&v), &now)? > 0
+            {
+                // Back to `*unconnected` (M14, M17).
+                self.visibility_changed();
             }
             let invite = tx
                 .query_row(
@@ -1206,6 +1216,7 @@ impl Store {
                 )));
             }
             let name = check_person_name(tx, name, None)?;
+            self.visibility_changed();
             let viewer_id = new_ulid();
             tx.execute(
                 "INSERT INTO viewers (id, public_id, display_name, created_at, person, rights_json)
@@ -1515,6 +1526,7 @@ impl Store {
                 let rec = AuditRecord::new(AuditKind::PersonRevoke, now.as_str())
                     .with("person", public_id);
                 self.record_audit(tx, ctx, rec)?;
+                self.visibility_changed();
             }
             Ok(out)
         })
@@ -1537,6 +1549,7 @@ impl Store {
             let rec = grant_record(AuditKind::GrantNarrow, &self.now(), gid)
                 .with("narrow", narrow.as_ref().map(Rights::to_json));
             self.record_audit(tx, ctx, rec)?;
+            self.visibility_changed();
             Ok(grant_in(tx, gid)?.expect("the grant exists"))
         })
     }
@@ -1882,6 +1895,7 @@ impl Store {
                 .with("person", public_id)
                 .with("rights", rights.as_ref().map(Rights::to_json));
             self.record_audit(tx, ctx, rec)?;
+            self.visibility_changed();
             Ok(())
         })
     }
@@ -1940,7 +1954,9 @@ impl Store {
                         OR (status IN ('expired', 'revoked') AND ended_at IS NOT NULL))",
                 params![retention_cutoff],
             )?;
-            release_unconnected(tx, None, &now)?;
+            if release_unconnected(tx, None, &now)? > 0 {
+                self.visibility_changed();
+            }
             Ok(out)
         })
     }
@@ -1955,9 +1971,9 @@ const UNFINISHED_STALE: &str = "((status = 'pending' AND created_at < ?1)
 /// Returns to plain viewers (and to the default rights) the people, of
 /// `viewer_id` or of every row when `None`, who never held a grant, are
 /// unrevoked, and have no live invite: an invite's person whose invites
-/// were revoked or expired unredeemed.
-fn release_unconnected(tx: &Transaction<'_>, viewer_id: Option<&str>, now: &str) -> Result<()> {
-    tx.execute(
+/// were revoked or expired unredeemed. Returns how many it returned.
+fn release_unconnected(tx: &Transaction<'_>, viewer_id: Option<&str>, now: &str) -> Result<usize> {
+    let n = tx.execute(
         "UPDATE viewers SET person = 0, rights_json = NULL
          WHERE person = 1 AND owner = 0 AND person_revoked_at IS NULL AND (?1 IS NULL OR id = ?1)
            AND NOT EXISTS (SELECT 1 FROM grants g WHERE g.viewer_id = viewers.id)
@@ -1965,7 +1981,7 @@ fn release_unconnected(tx: &Transaction<'_>, viewer_id: Option<&str>, now: &str)
                              AND i.used_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > ?2)",
         params![viewer_id, now],
     )?;
-    Ok(())
+    Ok(n)
 }
 
 fn unhex32(s: &str) -> Option<[u8; 32]> {

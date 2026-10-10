@@ -462,6 +462,8 @@ pub enum Obj<'a> {
     Grant(&'a str),
     /// An invite, by its ID.
     Invite(&'a str),
+    /// An approval, by its ID.
+    Approval(&'a str),
     /// A history row the backfill skipped: table, row ID.
     BackfillRow(&'a str, &'a str),
 }
@@ -490,6 +492,7 @@ pub fn clax_uri(install: &str, obj: Obj<'_>) -> String {
         Obj::Step(seq) => format!("{base}/step/{}", step_id(seq)),
         Obj::Grant(g) => format!("{base}/grant/{}", seg(g)),
         Obj::Invite(i) => format!("{base}/invite/{}", seg(i)),
+        Obj::Approval(i) => format!("{base}/approval/{}", seg(i)),
         Obj::BackfillRow(t, r) => format!("{base}/backfill/{}/{}", seg(t), seg(r)),
     }
 }
@@ -689,6 +692,9 @@ impl Event<'_> {
             ) => self.str("grant_id").map(Obj::Grant),
             Some(K::PersonRights | K::PersonRevoke) => self.str("person").map(Obj::Person),
             Some(K::AgentName) => s.map(Obj::Session),
+            Some(K::ApprovalGrant | K::ApprovalRevoke) => {
+                self.str("approval_id").map(Obj::Approval)
+            }
             _ => None,
         };
         let generic = || match (a, t) {
@@ -1202,6 +1208,17 @@ impl Event<'_> {
             Some(K::GrantNarrow) => format!("Narrowed grant {}", self.show("grant_id")),
             Some(K::PersonRights) => format!("Set the rights of person {}", self.show("person")),
             Some(K::PersonRevoke) => format!("Revoked person {}", self.show("person")),
+            Some(K::ApprovalGrant) => format!(
+                "Let {}'s content reach the agents of {} ({})",
+                self.show("author"),
+                self.str("approver").unwrap_or("the owner"),
+                self.show("scope")
+            ),
+            Some(K::ApprovalRevoke) => format!(
+                "Revoked approval {} of {}'s content",
+                self.show("approval_id"),
+                self.show("author")
+            ),
             Some(K::AgentName) => format!(
                 "Named the agent of session {} ({})",
                 self.row.ids.session.as_deref().unwrap_or("unknown"),
