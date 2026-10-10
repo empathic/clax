@@ -6,7 +6,9 @@
 
 use crate::common::TestServer;
 use crate::common::people::{
-    BATCH_NOTE, CLIP, COMMENT, FILE_NAME, PREFIX, QUOTE, REPLY, SELECTOR, SUFFIX, World,
+    ASSET_BYTES, BATCH_NOTE, CAPABILITY, CARRIED_BYTES, CARRIED_NAME, CLIP, COMMENT, DESCRIPTION,
+    FILE_BYTES, FILE_NAME, ICON, LABEL, NOTE, PREFIX, QUOTE, REPLY, SELECTOR, SUFFIX, TITLE,
+    WORKING, World,
 };
 use clax_core::audit::AuditCtx;
 use clax_core::store::approvals::{Scope, Via};
@@ -928,4 +930,591 @@ async fn a_tool_call_report_names_no_artifact_the_agent_may_not_read() {
         );
         assert!(!row.body.contains(&artifact) || kept, "{}", row.body);
     }
+}
+
+// Artifacts, versions, files, assets and working records (spec §7.5
+// artifact rows, §8.2, §8.3, O9).
+
+/// Mia's canaries an artifact, its versions, files, assets and working
+/// records can carry.
+const ARTIFACT_CANARIES: &[&str] = &[
+    TITLE,
+    DESCRIPTION,
+    ICON,
+    CAPABILITY,
+    LABEL,
+    NOTE,
+    FILE_NAME,
+    FILE_BYTES,
+    CARRIED_NAME,
+    CARRIED_BYTES,
+    ASSET_BYTES,
+    WORKING,
+];
+
+fn no_artifact_canary(what: &str, text: &str) {
+    for c in ARTIFACT_CANARIES.iter().chain(THREAD_CANARIES) {
+        assert!(!text.contains(c), "{what} leaked {c}: {text}");
+    }
+}
+
+/// `method path` as Sam's agent from its session, with JSON `body`.
+async fn sam(w: &World, method: &str, path: &str, body: Option<Value>) -> (u16, Value) {
+    json_of(w.sam.agent(method, path, Some(&w.sam_session), body).await).await
+}
+
+/// Sam's person's rights become `preset`.
+fn sam_rights(w: &World, preset: &str) {
+    w.ts.store
+        .set_person_rights(
+            &AuditCtx::DAEMON,
+            &sam_public(w),
+            Some(clax_core::rights::Rights::preset(preset).unwrap()),
+        )
+        .unwrap();
+}
+
+/// The entry for `aid` in a listing's `artifacts`.
+fn entry<'a>(list: &'a Value, aid: &str) -> &'a Value {
+    list["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == json!(aid))
+        .unwrap_or_else(|| panic!("{aid} is not listed: {list}"))
+}
+
+fn assert_text_withheld(what: &str, a: &Value) {
+    for k in ["title", "description", "icon", "capabilities"] {
+        assert!(a[k].is_null(), "{what}: {k}: {a}");
+    }
+    assert_eq!(a["withheld"]["authors"][0]["name"], "Mia", "{what}: {a}");
+}
+
+#[tokio::test]
+async fn titles_are_withheld_in_list_and_read() {
+    let w = World::two_people().await;
+    let aid = &w.read.artifact;
+    // Sam's agent makes an artifact of its own.
+    let (status, v) = sam(
+        &w,
+        "POST",
+        "/api/artifacts",
+        Some(json!({"title": "Sam's plan", "description": "Sam's words",
+                    "files": {"index.html": {"content": "<p>Sam</p>", "encoding": "utf8"}}})),
+    )
+    .await;
+    assert_eq!(status, 201, "{v}");
+    assert_eq!(v["artifact"]["title"], "Sam's plan");
+    assert_eq!(v["version"]["files"]["index.html"]["size"], 10);
+    let own = v["artifact"]["id"].as_str().unwrap().to_string();
+    // Its list, its read, and a list of one: Mia's text is withheld, its
+    // own is not.
+    let (status, list) = sam(&w, "GET", "/api/artifacts", None).await;
+    assert_eq!(status, 200, "{list}");
+    no_artifact_canary("Sam's agent's list", &list.to_string());
+    assert_text_withheld("the list", entry(&list, aid));
+    assert_eq!(entry(&list, &own)["title"], "Sam's plan");
+    assert!(entry(&list, &own).get("withheld").is_none());
+    let (status, one) = sam(&w, "GET", &format!("/api/artifacts?artifact={aid}"), None).await;
+    assert_eq!(status, 200, "{one}");
+    no_artifact_canary("a list of one", &one.to_string());
+    assert_text_withheld("a list of one", entry(&one, aid));
+    let (status, v) = sam(&w, "GET", &format!("/api/artifacts/{aid}"), None).await;
+    assert_eq!(status, 200, "{v}");
+    no_artifact_canary("Sam's agent's read", &v.to_string());
+    assert_text_withheld("the read", &v["artifact"]);
+    // The owner's agent: Mia's titles are withheld from it too (O9).
+    let (status, list) = owner_agent(&w, "GET", "/api/artifacts", None).await;
+    assert_eq!(status, 200);
+    no_artifact_canary("the owner's agent's list", &list.to_string());
+    assert_text_withheld("the owner's list", entry(&list, aid));
+    let (_, v) = owner_agent(&w, "GET", &format!("/api/artifacts/{aid}"), None).await;
+    assert_text_withheld("the owner's read", &v["artifact"]);
+    // Sam's agent changes the title: that field is its person's now, the
+    // others stay Mia's.
+    sam_rights(&w, "clax:full");
+    let (status, v) = sam(
+        &w,
+        "PATCH",
+        &format!("/api/artifacts/{aid}"),
+        Some(json!({"title": "Renamed by Sam"})),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["artifact"]["title"], "Renamed by Sam");
+    assert!(v["artifact"]["description"].is_null(), "{v}");
+    assert_eq!(v["artifact"]["withheld"]["authors"][0]["name"], "Mia");
+    no_artifact_canary("a PATCH's answer", &v.to_string());
+    // Once Sam approves Mia, her words reach his agents.
+    approve(&w.ts, Some(&sam_public(&w)), &w.mia_public);
+    let (_, v) = sam(&w, "GET", &format!("/api/artifacts/{aid}"), None).await;
+    assert_eq!(v["artifact"]["description"], DESCRIPTION);
+    assert!(v["artifact"].get("withheld").is_none(), "{v}");
+}
+
+#[tokio::test]
+async fn list_leaves_out_unreadable_artifacts() {
+    let w = World::two_people().await;
+    let owners = w.ts.any_artifact().await;
+    // Sam's agent may read the scratch artifact alone.
+    narrow_sam(&w, Some(&w.scratch.artifact));
+    let (status, list) = sam(&w, "GET", "/api/artifacts", None).await;
+    assert_eq!(status, 200, "{list}");
+    let ids: Vec<&str> = list["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, [w.scratch.artifact.as_str()], "{list}");
+    // Naming one it may not read answers as naming none at all.
+    let (_, one) = sam(
+        &w,
+        "GET",
+        &format!("/api/artifacts?artifact={}", w.read.artifact),
+        None,
+    )
+    .await;
+    let (_, none) = sam(&w, "GET", "/api/artifacts?artifact=7q3k9mzx2b4t", None).await;
+    assert_eq!(one, none);
+    assert_eq!(one, json!({"artifacts": []}));
+    let (status, v) = sam(&w, "GET", &format!("/api/artifacts/{owners}"), None).await;
+    assert_eq!(
+        (status, v["error"]["code"].clone()),
+        (403, json!("not_permitted"))
+    );
+    // A live page is never listed, whatever the rights.
+    sam_rights(&w, "clax:full");
+    let (_, list) = sam(&w, "GET", "/api/artifacts", None).await;
+    assert!(!list.to_string().contains(&w.live), "{list}");
+    let (_, one) = sam(
+        &w,
+        "GET",
+        &format!("/api/artifacts?artifact={}", w.live),
+        None,
+    )
+    .await;
+    assert_eq!(one, json!({"artifacts": []}));
+    // The working roster likewise leaves out what it may not read.
+    narrow_sam(&w, Some(&w.scratch.artifact));
+    let (status, v) = sam(&w, "GET", "/api/working", None).await;
+    assert_eq!(status, 200, "{v}");
+    assert!(!v.to_string().contains(&w.read.artifact), "{v}");
+    no_artifact_canary("the roster", &v.to_string());
+}
+
+#[tokio::test]
+async fn version_files_and_notes_are_withheld() {
+    let w = World::two_people().await;
+    // Sam approved the owner, not Mia.
+    approve(&w.ts, Some(&sam_public(&w)), &owner_public(&w.ts));
+    let aid = &w.read.artifact;
+    for (who, get) in [("Sam's agent", true), ("the owner's agent", false)] {
+        let call = |path: String| {
+            let w = &w;
+            async move {
+                if get {
+                    sam(w, "GET", &path, None).await
+                } else {
+                    owner_agent(w, "GET", &path, None).await
+                }
+            }
+        };
+        let (status, v) = call(format!("/api/artifacts/{aid}/versions")).await;
+        assert_eq!(status, 200, "{who}: {v}");
+        no_artifact_canary(who, &v.to_string());
+        let vs = v["versions"].as_array().unwrap();
+        // Version 1 is Mia's: label, note and every file.
+        assert!(
+            vs[0]["label"].is_null() && vs[0]["note"].is_null(),
+            "{who}: {v}"
+        );
+        assert_eq!(vs[0]["files"], json!({}), "{who}");
+        assert_eq!(vs[0]["files_withheld"], 3, "{who}");
+        assert!(vs[0]["content_sha256"].is_null(), "{who}: {v}");
+        // Version 2 is the owner's agent's, carrying Mia's files.
+        assert_eq!(vs[1]["label"], "the owner's agent's", "{who}");
+        let files: Vec<&String> = vs[1]["files"].as_object().unwrap().keys().collect();
+        assert_eq!(files, ["owner.html"], "{who}");
+        assert_eq!(vs[1]["files_withheld"], 3, "{who}");
+        let (status, one) = call(format!("/api/artifacts/{aid}/versions/1")).await;
+        assert_eq!(status, 200, "{who}: {one}");
+        assert_eq!(one["version"], vs[0], "{who}");
+        let (status, v) = call(format!("/api/artifacts/{aid}")).await;
+        assert_eq!(status, 200);
+        assert_eq!(v["versions"][1], vs[1], "{who}");
+        let (status, f) = call(format!("/api/artifacts/{aid}/files")).await;
+        assert_eq!(status, 200, "{who}: {f}");
+        let files: Vec<&String> = f["files"].as_object().unwrap().keys().collect();
+        assert_eq!(files, ["owner.html"], "{who}: {f}");
+        assert_eq!(f["files_withheld"], 3, "{who}");
+        // Its content: a withheld file and one that is not there answer
+        // alike, so the route tells nothing of a guessed name.
+        let (status, _) = call(format!("/api/artifacts/{aid}/versions/2/files/owner.html")).await;
+        assert_eq!(status, 200, "{who}");
+        let mut answers = Vec::new();
+        for path in [CARRIED_NAME, FILE_NAME, "index.html", "not-there.css"] {
+            let (status, v) = call(format!("/api/artifacts/{aid}/versions/2/files/{path}")).await;
+            assert_eq!(
+                (status, v["error"]["code"].clone()),
+                (403, json!("withheld")),
+                "{who} {path}: {v}"
+            );
+            no_artifact_canary(who, &v.to_string());
+            answers.push(v);
+        }
+        assert!(answers.windows(2).all(|p| p[0] == p[1]), "{answers:?}");
+        assert_eq!(answers[0]["error"]["authors"][0]["name"], "Mia");
+    }
+    // Where nothing is withheld, a missing file is just missing.
+    let mine = w.ts.any_artifact().await;
+    let (status, _) = sam(
+        &w,
+        "GET",
+        &format!("/api/artifacts/{mine}/versions/1/files/not-there.css"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 404);
+}
+
+#[tokio::test]
+async fn embedded_working_messages_are_filtered() {
+    let w = World::two_people().await;
+    let aid = &w.read.artifact;
+    // Sam's agent works on the same artifact, with a message of its own.
+    let (status, v) = sam(
+        &w,
+        "PUT",
+        &format!("/api/sessions/{}/working/{aid}", w.sam_session),
+        Some(json!({"message": "Sam's agent at work"})),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    let check = |what: &str, records: &Value| {
+        let records = records
+            .as_array()
+            .unwrap_or_else(|| panic!("{what}: {records}"));
+        assert_eq!(records.len(), 2, "{what}: {records:?}");
+        let mias = records
+            .iter()
+            .find(|r| r["message"] != "Sam's agent at work")
+            .unwrap();
+        assert_eq!(
+            (mias["message"].clone(), mias["withheld"].clone()),
+            (Value::Null, json!(true)),
+            "{what}"
+        );
+        assert!(
+            records
+                .iter()
+                .any(|r| r["message"] == "Sam's agent at work"),
+            "{what}: {records:?}"
+        );
+    };
+    let (_, v) = sam(&w, "GET", &format!("/api/artifacts/{aid}"), None).await;
+    check("the read", &v["artifact"]["working"]);
+    let (_, v) = sam(&w, "GET", "/api/artifacts", None).await;
+    check("the list", &entry(&v, aid)["working"]);
+    let (_, v) = sam(&w, "GET", &format!("/api/artifacts/{aid}/working"), None).await;
+    check("the artifact's working", &v["working"]);
+    let (_, v) = sam(&w, "GET", "/api/working", None).await;
+    no_artifact_canary("the roster", &v.to_string());
+    let on: Vec<Value> = v["working"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["artifact_id"] == json!(aid))
+        .cloned()
+        .collect();
+    check("the roster", &json!(on));
+    // Another credential's session is not named to a person's agent.
+    let mias = on.iter().find(|r| r["withheld"] == true).unwrap();
+    assert!(mias["session_id"].is_null(), "{mias}");
+    let mine = on.iter().find(|r| r.get("withheld").is_none()).unwrap();
+    assert_eq!(mine["session_id"], json!(w.sam_session));
+    // The owner's agent: Mia's and Sam's words are both withheld from it.
+    let (_, v) = owner_agent(&w, "GET", &format!("/api/artifacts/{aid}/working"), None).await;
+    no_artifact_canary("the owner's agent", &v.to_string());
+    assert!(!v.to_string().contains("Sam's agent at work"), "{v}");
+}
+
+#[tokio::test]
+async fn publish_conflict_summary_is_filtered() {
+    let w = World::two_people().await;
+    let aid = &w.scratch.artifact;
+    sam_rights(&w, "clax:full");
+    let file = |c: &str| json!({"content": c, "encoding": "utf8"});
+    // A stale publish: the conflict, and the read a client summarises it
+    // from, carry nothing of Mia's.
+    let (status, v) = sam(
+        &w,
+        "POST",
+        &format!("/api/artifacts/{aid}/versions"),
+        Some(json!({"if_version": 1, "files": {"index.html": file("<p>Sam</p>")}})),
+    )
+    .await;
+    assert_eq!(
+        (status, v["error"]["code"].clone()),
+        (409, json!("conflict")),
+        "{v}"
+    );
+    no_artifact_canary("a conflict", &v.to_string());
+    let (_, v) = sam(&w, "GET", &format!("/api/artifacts/{aid}"), None).await;
+    no_artifact_canary("the read after a conflict", &v.to_string());
+    let (_, v) = owner_agent(
+        &w,
+        "POST",
+        &format!("/api/artifacts/{aid}/versions"),
+        Some(json!({"if_version": 1, "files": {"index.html": file("<p>x</p>")}})),
+    )
+    .await;
+    assert_eq!(v["error"]["code"], "conflict");
+    no_artifact_canary("the owner's agent's conflict", &v.to_string());
+    // A publish over Mia's version: Sam's agent's own file is its own;
+    // Mia's carried files keep her authors and stay withheld.
+    let (status, v) = sam(
+        &w,
+        "POST",
+        &format!("/api/artifacts/{aid}/versions"),
+        Some(json!({"if_version": 2, "label": "Sam's", "files": {
+            "index.html": file("<p>Sam's page</p>"), "sam.css": file("p {}")}})),
+    )
+    .await;
+    assert_eq!(status, 201, "{v}");
+    no_artifact_canary("a publish's answer", &v.to_string());
+    assert_eq!(v["version"]["label"], "Sam's");
+    let files: Vec<&String> = v["version"]["files"].as_object().unwrap().keys().collect();
+    assert_eq!(files, ["index.html", "sam.css"], "{v}");
+    assert_eq!(v["version"]["files_withheld"], 3, "{v}");
+    assert_text_withheld("a publish's artifact", &v["artifact"]);
+    let id = clax_core::ArtifactId::parse(aid).unwrap();
+    let v3 = w.ts.store.get_version(&id, 3).unwrap().unwrap();
+    assert_eq!(
+        clax_core::visibility::authors_of_file(&v3, CARRIED_NAME),
+        [clax_core::visibility::Author::Person(w.mia_public.clone())]
+    );
+    assert_eq!(
+        clax_core::visibility::authors_of_file(&v3, "sam.css"),
+        [clax_core::visibility::Author::Person(sam_public(&w))]
+    );
+}
+
+#[tokio::test]
+async fn a_persons_agent_writes_artifacts_from_a_session_and_never_as_a_page() {
+    let w = World::two_people().await;
+    let aid = &w.scratch.artifact;
+    sam_rights(&w, "clax:full");
+    let publish = json!({"if_version": 2, "files": {"index.html": {"content": "<p>x</p>", "encoding": "utf8"}}});
+    let create =
+        json!({"title": "t", "files": {"index.html": {"content": "<p>x</p>", "encoding": "utf8"}}});
+    let writes: Vec<(&str, String, Option<Value>)> = vec![
+        ("POST", "/api/artifacts".into(), Some(create)),
+        (
+            "POST",
+            format!("/api/artifacts/{aid}/versions"),
+            Some(publish),
+        ),
+        (
+            "PATCH",
+            format!("/api/artifacts/{aid}"),
+            Some(json!({"title": "t"})),
+        ),
+    ];
+    for (m, path, body) in &writes {
+        let (status, v) = json_of(w.sam.agent(m, path, None, body.clone()).await).await;
+        assert_eq!(
+            (status, v["error"]["code"].clone()),
+            (400, json!("no_session")),
+            "{m} {path}: {v}"
+        );
+    }
+    let (status, v) = agent_form(
+        &w.sam,
+        &format!("/api/artifacts/{aid}/assets"),
+        None,
+        &[("file", FAKE_PNG, Some("a.png"))],
+    )
+    .await;
+    assert_eq!(
+        (status, v["error"]["code"].clone()),
+        (400, json!("no_session")),
+        "{v}"
+    );
+    // The page marker is a browser's: refused from a grant.
+    for (m, path, body) in &writes[1..] {
+        let r = w
+            .sam
+            .call(Call {
+                method: m,
+                path,
+                authorization: Some(format!("Clax-Grant {}", w.sam.access())),
+                body: body.as_ref().map(|b| serde_json::to_vec(b).unwrap()),
+                headers: vec![
+                    ("x-clax-session", w.sam_session.clone()),
+                    ("x-clax-via", "page".into()),
+                ],
+                ..Default::default()
+            })
+            .await;
+        let (status, v) = json_of(r).await;
+        assert_eq!(
+            (status, v["error"]["code"].clone()),
+            (400, json!("invalid_via_page")),
+            "{m} {path}: {v}"
+        );
+    }
+    let (ct, body) = multipart(&[("file", FAKE_PNG, Some("a.png"))]);
+    let r = w
+        .sam
+        .call(Call {
+            method: "POST",
+            path: &format!("/api/artifacts/{aid}/assets"),
+            authorization: Some(format!("Clax-Grant {}", w.sam.access())),
+            body: Some(body),
+            headers: vec![
+                ("content-type", ct),
+                ("x-clax-session", w.sam_session.clone()),
+                ("x-clax-via", "page".into()),
+            ],
+            ..Default::default()
+        })
+        .await;
+    let (status, v) = json_of(r).await;
+    assert_eq!(
+        (status, v["error"]["code"].clone()),
+        (400, json!("invalid_via_page")),
+        "{v}"
+    );
+    // Nothing was written.
+    let a =
+        w.ts.store
+            .get_artifact(&clax_core::ArtifactId::parse(aid).unwrap())
+            .unwrap()
+            .unwrap();
+    assert_eq!((a.current_version, a.title.as_str()), (2, TITLE));
+}
+
+#[tokio::test]
+async fn asset_names_and_bytes_are_withheld() {
+    let w = World::two_people().await;
+    let aid = &w.scratch.artifact;
+    sam_rights(&w, "clax:full");
+    // Sam's agent uploads an asset of its own.
+    let (status, v) = agent_form(
+        &w.sam,
+        &format!("/api/artifacts/{aid}/assets"),
+        Some(&w.sam_session),
+        &[("file", FAKE_PNG, Some("a.png"))],
+    )
+    .await;
+    assert_eq!(status, 201, "{v}");
+    assert_eq!(v["asset"]["content_type"], "image/png");
+    assert!(v["asset"].get("withheld").is_none(), "{v}");
+    let own = v["asset"]["id"].as_str().unwrap().to_string();
+    for (who, (status, v)) in [
+        (
+            "Sam's agent",
+            sam(&w, "GET", &format!("/api/artifacts/{aid}/assets"), None).await,
+        ),
+        (
+            "the owner's agent",
+            owner_agent(&w, "GET", &format!("/api/artifacts/{aid}/assets"), None).await,
+        ),
+    ] {
+        assert_eq!(status, 200, "{who}: {v}");
+        no_artifact_canary(who, &v.to_string());
+        let assets = v["assets"].as_array().unwrap();
+        let mias = assets
+            .iter()
+            .find(|a| a["id"] == json!(w.scratch.asset))
+            .unwrap();
+        assert_eq!(mias["withheld"], true, "{who}: {mias}");
+        for k in ["name", "content_type", "size", "ext"] {
+            assert!(mias[k].is_null(), "{who}: {k}: {mias}");
+        }
+        assert_eq!(mias["artifact_id"], json!(aid));
+        if who == "Sam's agent" {
+            let mine = assets.iter().find(|a| a["id"] == json!(own)).unwrap();
+            assert_eq!(mine["content_type"], "image/png", "{mine}");
+        }
+    }
+    // The bytes are a browser's to fetch, never an agent's.
+    let r = w
+        .sam
+        .get(Some(&w.sam_session), &format!("/_blob/{}", w.scratch.asset))
+        .await;
+    assert_eq!(r.status(), 403);
+    let (status, v) = owner_agent(&w, "GET", &format!("/_blob/{}", w.scratch.asset), None).await;
+    assert_eq!(
+        (status, v["error"]["code"].clone()),
+        (403, json!("not_for_agents"))
+    );
+}
+
+#[tokio::test]
+async fn creating_a_thread_never_tells_whether_a_withheld_file_exists() {
+    let w = World::two_people().await;
+    let aid = &w.scratch.artifact;
+    let make = |file: &str| {
+        let w = &w;
+        let anchor = anchor_on(file, "q");
+        async move {
+            agent_form(
+                &w.sam,
+                &format!("/api/artifacts/{aid}/threads"),
+                Some(&w.sam_session),
+                &[
+                    ("anchor", anchor.as_bytes(), None),
+                    ("body", b"a guess", None),
+                    ("version", b"1", None),
+                ],
+            )
+            .await
+        }
+    };
+    let before =
+        w.ts.store
+            .list_threads(
+                &clax_core::ArtifactId::parse(aid).unwrap(),
+                true,
+                None,
+                1000,
+            )
+            .unwrap()
+            .0
+            .len();
+    for file in [FILE_NAME, CARRIED_NAME, "not-there.html"] {
+        let (status, v) = make(file).await;
+        assert_eq!(
+            (
+                status,
+                v["error"]["code"].clone(),
+                v["error"]["message"].clone()
+            ),
+            (
+                400,
+                json!("invalid_anchor"),
+                json!(format!("version 1 of artifact {aid} has no file {file}"))
+            ),
+            "{file}: {v}"
+        );
+    }
+    let after =
+        w.ts.store
+            .list_threads(
+                &clax_core::ArtifactId::parse(aid).unwrap(),
+                true,
+                None,
+                1000,
+            )
+            .unwrap()
+            .0
+            .len();
+    assert_eq!(before, after, "no thread was written");
+    // Every version has its index.html: a thread on it tells nothing.
+    let (status, v) = make("index.html").await;
+    assert_eq!(status, 201, "{v}");
+    assert_eq!(v["thread"]["anchor_withheld"], true);
 }

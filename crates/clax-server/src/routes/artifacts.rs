@@ -1,6 +1,7 @@
 //! REST routes for artifacts and versions.
 
-use crate::agent::{Agent, ArtifactsList, TokenOrAgent};
+use crate::agent::{Agent, ArtifactsList, TokenOrAgent, page_marker, person_agent_session};
+use crate::feedback::VisFor;
 use crate::error::ApiError;
 use crate::state::AppState;
 use axum::Json;
@@ -296,7 +297,10 @@ pub struct ListQuery {
 /// token, no session ID is included. With `?artifact=<aid>`, that artifact
 /// alone, or none when it is not live (400 for a malformed ID). Live pages
 /// are left out for a caller that may not see them
-/// ([`crate::live::sees_live_pages`]).
+/// ([`crate::live::sees_live_pages`]), and for a person's agent every
+/// artifact its rights do not let it read, answered as if it did not
+/// exist. An agent channel's fields are filtered for its reader (spec
+/// §8.3, O9).
 pub async fn list(
     State(s): State<AppState>,
     a: Agent<ArtifactsList>,
@@ -306,6 +310,8 @@ pub async fn list(
 ) -> Result<Json<Value>, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let local = crate::live::sees_live_pages(&headers, &extensions, &s.token);
+    let reads = a.read_rights();
+    let vf = VisFor::of(&a.caller, &s);
     let artifacts = match q.artifact.as_deref().map(parse_id).transpose()? {
         Some(id) => {
             let working = s.working.for_artifact(id.as_str());
@@ -313,20 +319,23 @@ pub async fn list(
                 let Some(a) = st.get_artifact(&id)? else {
                     return Ok(vec![]);
                 };
-                if !local && a.kind == KIND_LIVE {
+                if (!local && a.kind == KIND_LIVE) || !reads.allows(&a) {
                     return Ok(vec![]);
                 }
                 let owner = match &a.owner_session_id {
                     Some(sid) => st.get_session(sid)?,
                     None => None,
                 };
-                Ok(vec![with_owner(
+                let mut view = with_owner(
                     &a,
                     owner.as_ref(),
                     &working,
                     &st.participants(&id)?,
                     live_part(st, &a)?.as_ref(),
-                )])
+                );
+                let vis = vf.build(st)?;
+                vis.filter_artifact(st, &a, &working, &mut view)?;
+                Ok(vec![view])
             })
             .await?
         }
@@ -394,17 +403,21 @@ pub async fn list(
                     }))
                     .collect();
                 let none = Participants::default();
-                Ok(artifacts
+                let vis = vf.build(st)?;
+                artifacts
                     .iter()
                     .filter(|a| local || a.kind != KIND_LIVE)
                     .filter(|a| !merged.contains(&a.id))
+                    .filter(|a| reads.allows(a))
                     .map(|a| {
                         let owner = a.owner_session_id.as_ref().and_then(|sid| owners.get(sid));
                         let working = all.get(&a.id).map(Vec::as_slice).unwrap_or(&[]);
                         let people = participants.get(&a.id).unwrap_or(&none);
-                        with_owner(a, owner, working, people, pages.get(&a.id))
+                        let mut view = with_owner(a, owner, working, people, pages.get(&a.id));
+                        vis.filter_artifact(st, a, working, &mut view)?;
+                        Ok(view)
                     })
-                    .collect::<Vec<_>>())
+                    .collect::<clax_core::Result<Vec<_>>>()
             })
             .await?
         }
@@ -416,7 +429,9 @@ pub async fn list(
     Ok(Json(v))
 }
 
-/// Creates an artifact. The body must carry a non-blank `title`.
+/// Creates an artifact. The body must carry a non-blank `title`. A
+/// person's agent creates from a session, as its person (spec §6.7, §8.2);
+/// the answer is filtered for an agent channel's reader.
 pub async fn create(
     State(s): State<AppState>,
     TokenOrAgent(a): TokenOrAgent<crate::agent::ArtifactsCreate>,
@@ -424,16 +439,19 @@ pub async fn create(
     headers: HeaderMap,
     req: Result<JsonBytes, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let p = parse_body(req, "the publish limit", |r: PublishRequest| {
+    person_agent_session(&a.caller)?;
+    let mut p = parse_body(req, "the publish limit", |r: PublishRequest| {
         Ok(validate(r)?)
     })
     .await?;
     require_title(p.title.as_deref())?;
+    p.person = publisher(&a.caller);
     let truncated = p.note_truncated;
     let session = session_header(&headers)?;
     let grant = a.grant().map(str::to_string);
     let events = s.events.clone();
     let ctx = s.feedback_ctx();
+    let vf = VisFor::of(&a.caller, &s);
     let (artifact, version) = s
         .store_call(move |st| {
             let session = publishing_session(st, &session, grant.as_deref())?;
@@ -451,10 +469,11 @@ pub async fn create(
                 title: Some(artifact.title.clone()),
                 at: Some(version.created_at.clone()),
             });
-            Ok((artifact, version))
+            let vis = vf.build(st)?;
+            vis.filter_published(st, &artifact, &version)
         })
         .await?;
-    let url = format!("/a/{}", artifact.id);
+    let url = format!("/a/{}", artifact["id"].as_str().unwrap_or_default());
     Ok((
         StatusCode::CREATED,
         Json(
@@ -463,8 +482,20 @@ pub async fn create(
     ))
 }
 
-/// The artifact (with the owner fields of [`with_owner`]) and its versions.
-/// Without the token, no session ID is included. From a browser with a viewer
+/// Who publishes for `caller` (spec §8.2): a person's agent's person (none
+/// for a grant of the owner's row); `None` otherwise, which takes the
+/// publishing session's person.
+fn publisher(caller: &crate::auth::Caller) -> Option<String> {
+    match caller {
+        crate::auth::Caller::PersonAgent { person, .. } => person.clone(),
+        _ => None,
+    }
+}
+
+
+/// The artifact (with the owner fields of [`with_owner`]) and its versions,
+/// filtered for an agent channel's reader. Without the token, no session ID
+/// is included. From a browser with a viewer
 /// (the owner for the owner cookie, else the viewer cookie's; see
 /// [`crate::identity`]), also that viewer's `attention`, and the response is
 /// private to the cookie.
@@ -479,6 +510,7 @@ pub async fn get(
     let who = crate::identity::Identity::from_parts(&headers, &extensions, &s.token);
     let working = s.working.for_artifact(id.as_str());
     let has_viewer = who.owner_browser() || who.cookie.is_some();
+    let vf = VisFor::of(&a.caller, &s);
     let mut v = s
         .store_call(move |st| {
             let a = st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
@@ -487,15 +519,18 @@ pub async fn get(
                 Some(sid) => st.get_session(sid)?,
                 None => None,
             };
+            let vis = vf.build(st)?;
+            let mut artifact = with_owner(
+                &a,
+                owner.as_ref(),
+                &working,
+                &st.participants(&id)?,
+                live_part(st, &a)?.as_ref(),
+            );
+            vis.filter_artifact(st, &a, &working, &mut artifact)?;
             let mut v = json!({
-                "artifact": with_owner(
-                    &a,
-                    owner.as_ref(),
-                    &working,
-                    &st.participants(&id)?,
-                    live_part(st, &a)?.as_ref(),
-                ),
-                "versions": versions,
+                "artifact": artifact,
+                "versions": vis.filter_versions(&versions),
             });
             if let Some(viewer) = who.browser_viewer(st)? {
                 v["attention"] = json!(st.attention(&viewer.id, &id)?);
@@ -550,6 +585,9 @@ pub async fn presence(
     Ok(Json(json!({"people": people})))
 }
 
+/// Pins or edits an artifact's metadata. A person's agent edits from a
+/// session, never as a page (spec §6.7); the answer is filtered for an
+/// agent channel's reader.
 pub async fn patch(
     State(s): State<AppState>,
     a: TokenOrAgent<crate::agent::ArtifactsPatch>,
@@ -560,6 +598,7 @@ pub async fn patch(
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
     let b = body(req)?;
+    person_agent_session(&a.0.caller)?;
     // Who sets the text fields (spec §8.2): a person's agent's person, else
     // the owner; a page's patch also carries its page's authors.
     let by = match &a.0.caller {
@@ -568,13 +607,14 @@ pub async fn patch(
         }
         _ => clax_core::visibility::Author::Owner,
     };
-    let via_page = headers.get(VIA_HEADER).and_then(|v| v.to_str().ok()) == Some("page");
+    let via_page = page_marker(&a.0.caller, &headers)?;
     if let Some(c) = &b.capabilities {
         clax_core::capabilities::validate(c)?;
     }
+    let vf = VisFor::of(&a.0.caller, &s);
     let artifact = s
         .store_call(move |st| {
-            st.update_meta(
+            let a = st.update_meta(
                 &audit,
                 &id,
                 MetaPatch {
@@ -586,7 +626,11 @@ pub async fn patch(
                     by: Some(by),
                     via_page,
                 },
-            )
+            )?;
+            let mut view = json!(a);
+            let vis = vf.build(st)?;
+            vis.filter_artifact(st, &a, &[], &mut view)?;
+            Ok(view)
         })
         .await?;
     Ok(Json(json!({"artifact": artifact})))
@@ -620,17 +664,20 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Every version of the artifact; without the token, no session ID.
+/// Every version of the artifact, filtered for an agent channel's reader;
+/// without the token, no session ID.
 pub async fn list_versions(
     State(s): State<AppState>,
     a: Agent<crate::agent::VersionsList>,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
+    let vf = VisFor::of(&a.caller, &s);
     let versions = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            st.list_versions(&id)
+            let vis = vf.build(st)?;
+            Ok(vis.filter_versions(&st.list_versions(&id)?))
         })
         .await?;
     let mut v = json!({"versions": versions});
@@ -640,6 +687,10 @@ pub async fn list_versions(
     Ok(Json(v))
 }
 
+/// Publishes the next version. A person's agent publishes from a session,
+/// as its person and never as a page (spec §6.7, §8.2); the answer is
+/// filtered for an agent channel's reader, so a file carried forward from
+/// someone it has not approved stays withheld.
 pub async fn publish(
     State(s): State<AppState>,
     TokenOrAgent(a): TokenOrAgent<crate::agent::Publish>,
@@ -655,6 +706,8 @@ pub async fn publish(
             "a live page takes snapshots from the Clax extension; it cannot be published",
         ));
     }
+    person_agent_session(&a.caller)?;
+    let by_page = page_marker(&a.caller, &headers)?;
     let mut p = parse_body(req, "the publish limit", |r: PublishRequest| {
         Ok(validate(r)?)
     })
@@ -662,10 +715,14 @@ pub async fn publish(
     let truncated = p.note_truncated;
     let session = session_header(&headers)?;
     let grant = a.grant().map(str::to_string);
-    let by_page = headers.get(VIA_HEADER).and_then(|v| v.to_str().ok()) == Some("page");
     p.by_page = by_page;
+    p.person = publisher(&a.caller);
+    // A person's agent's publish leaves the owner's agents' untargeted
+    // feedback where it is: it is not the person's agent's to take.
+    let retarget = grant.is_none();
     let events = s.events.clone();
     let ctx = s.feedback_ctx();
+    let vf = VisFor::of(&a.caller, &s);
     let (artifact, version) = s
         .store_call(move |st| {
             let session = publishing_session(st, &session, grant.as_deref())?;
@@ -685,8 +742,10 @@ pub async fn publish(
                     clax_core::working::End::Publish,
                 );
                 crate::working::settle(st, &audit, &ctx.events, &ctx.working, &changed);
-                let touched = st.retarget_untargeted(&aid, sid)?;
-                crate::feedback::apply(&ctx, st, &touched);
+                if retarget {
+                    let touched = st.retarget_untargeted(&aid, sid)?;
+                    crate::feedback::apply(&ctx, st, &touched);
+                }
             }
             events.publish(Event::Version {
                 artifact_id: artifact.id.clone(),
@@ -700,10 +759,11 @@ pub async fn publish(
                     crate::routes::threads::publish_thread(&ctx, st, &t)?;
                 }
             }
-            Ok((artifact, version))
+            let vis = vf.build(st)?;
+            vis.filter_published(st, &artifact, &version)
         })
         .await?;
-    let url = format!("/a/{}", artifact.id);
+    let url = format!("/a/{}", artifact["id"].as_str().unwrap_or_default());
     Ok((
         StatusCode::CREATED,
         Json(
@@ -712,7 +772,8 @@ pub async fn publish(
     ))
 }
 
-/// Version `n`; without the token, no session ID.
+/// Version `n`, filtered for an agent channel's reader; without the token,
+/// no session ID.
 pub async fn get_version(
     State(s): State<AppState>,
     a: Agent<crate::agent::VersionGet>,
@@ -720,10 +781,15 @@ pub async fn get_version(
 ) -> Result<Json<Value>, ApiError> {
     let (aid, n) = path(params)?;
     let id = parse_id(&aid)?;
+    let vf = VisFor::of(&a.caller, &s);
     let v = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            st.get_version(&id, n)?.ok_or(CoreError::NotFound)
+            let v = st.get_version(&id, n)?.ok_or(CoreError::NotFound)?;
+            let mut view = json!(v);
+            let vis = vf.build(st)?;
+            vis.filter_version(&v, &mut view);
+            Ok(view)
         })
         .await?;
     let mut v = json!({"version": v});
@@ -733,18 +799,26 @@ pub async fn get_version(
     Ok(Json(v))
 }
 
+/// The current version's files: `{files, version}`, each file an agent
+/// channel's reader may not see left out (`files_withheld`).
 pub async fn files(
     State(s): State<AppState>,
-    _a: Agent<crate::agent::FilesList>,
+    a: Agent<crate::agent::FilesList>,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
+    let vf = VisFor::of(&a.caller, &s);
     let v = s
         .store_call(move |st| {
             let a = st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            st.get_version(&id, a.current_version)?
-                .ok_or(CoreError::NotFound)
+            let v = st
+                .get_version(&id, a.current_version)?
+                .ok_or(CoreError::NotFound)?;
+            let mut view = json!({"files": v.files, "version": v.n});
+            let vis = vf.build(st)?;
+            vis.filter_files(&v, &mut view);
+            Ok(view)
         })
         .await?;
-    Ok(Json(json!({"files": v.files, "version": v.n})))
+    Ok(Json(v))
 }

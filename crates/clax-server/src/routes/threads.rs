@@ -3,7 +3,7 @@
 
 use super::artifacts::{body, parse_id, path, publishing_session};
 use super::assets::multipart_error;
-use crate::agent::{Agent, TokenOrAgent};
+use crate::agent::{Agent, TokenOrAgent, person_agent_session};
 use crate::audit::DeferredAudit;
 use crate::auth::Caller;
 use crate::error::ApiError;
@@ -119,22 +119,7 @@ fn acting(c: &Caller) -> (Option<String>, Option<String>) {
 fn person_agent_comments(c: &Caller, via_page: bool) -> Result<(), ApiError> {
     person_agent_session(c)?;
     if via_page && matches!(c, Caller::PersonAgent { .. }) {
-        return Err(ApiError::bad_request(
-            "invalid_via_page",
-            "via_page marks a page's comments, which a browser writes",
-        ));
-    }
-    Ok(())
-}
-
-/// A person's agent writes content (comments, threads) and deletes threads
-/// only from a session (400 `no_session`). Other callers pass.
-fn person_agent_session(c: &Caller) -> Result<(), ApiError> {
-    if let Caller::PersonAgent { session: None, .. } = c {
-        return Err(ApiError::bad_request(
-            "no_session",
-            "an agent of another machine writes comments and deletes threads from a session: send X-Clax-Session",
-        ));
+        return Err(crate::agent::invalid_via_page());
     }
     Ok(())
 }
@@ -408,10 +393,11 @@ pub(crate) fn create_thread_now(
     id: &ArtifactId,
     t: NewThread,
     live_page: bool,
+    hidden: &[String],
 ) -> clax_core::Result<(Thread, Vec<String>)> {
     let mention = !t.via_page && mentions_agent(&t.body);
     let named = (!t.via_page).then(|| t.body.clone());
-    let thread = st.create_thread(audit, id, t)?;
+    let thread = st.create_thread_hiding(audit, id, t, hidden)?;
     announce_new_thread(st, ctx, audit, thread, mention, named.as_deref(), live_page)
 }
 
@@ -595,6 +581,21 @@ pub async fn create(
             let vis = vf.build(st)?;
             let audit = audit.resolve(st)?;
             let (author_name, author_public_id) = author(st, &who)?;
+            // A file the reader may not see is, to it, a file the version
+            // lacks (spec §8.3).
+            let version = match vis.filters() {
+                true => st.get_version(&id, version_n)?,
+                false => None,
+            };
+            let hidden: Vec<String> = match version {
+                Some(v) => v
+                    .files
+                    .keys()
+                    .filter(|f| vis.filter_anchor_file(&v, f))
+                    .cloned()
+                    .collect(),
+                None => Vec::new(),
+            };
             let (thread, unresolved) = create_thread_now(
                 st,
                 &ctx,
@@ -610,6 +611,7 @@ pub async fn create(
                     via_page,
                 },
                 live_page,
+                &hidden,
             )?;
             let view = vis.filter_thread(st, &thread, ctx.codex_push(), with_path)?;
             Ok((view, unresolved))

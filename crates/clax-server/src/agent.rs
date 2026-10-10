@@ -486,6 +486,20 @@ pub const FILTERED_LIVE: &[&str] = &[
     "ThreadReopen",
     "ThreadSend",
     "ThreadsSendBatch",
+    // Artifacts, versions, files, assets and working records (Task 10).
+    "ArtifactsList",
+    "ArtifactsCreate",
+    "ArtifactsGet",
+    "ArtifactsPatch",
+    "VersionsList",
+    "VersionGet",
+    "Publish",
+    "FilesList",
+    "FileContent",
+    "AssetsList",
+    "AssetsUpload",
+    "WorkingForArtifact",
+    "WorkingRoster",
 ];
 
 /// The need of the route `matched` serves for `method` (`HEAD` as `GET`).
@@ -629,6 +643,15 @@ impl<N: Need> Agent<N> {
         Ok(id)
     }
 
+    /// Which artifacts the caller may read, for a listing to leave out the
+    /// others (spec §7.5: listing under location-limited rights).
+    pub fn read_rights(&self) -> ReadRights {
+        ReadRights(match &self.caller {
+            Caller::PersonAgent { person, rights, .. } => Some((rights.clone(), person.clone())),
+            _ => None,
+        })
+    }
+
     /// For a person's agent, that its rights allow `right` at artifact `id`
     /// as well (a route whose right depends on what the request does).
     ///
@@ -647,6 +670,76 @@ impl<N: Need> Agent<N> {
         }
         Ok(())
     }
+}
+
+/// Which artifacts a caller may read ([`Agent::read_rights`]): a person's
+/// agent's rights and person; every other caller reads every artifact.
+#[derive(Clone)]
+pub struct ReadRights(Option<(Arc<clax_core::rights::Rights>, Option<String>)>);
+
+impl ReadRights {
+    /// Whether the caller may read artifact `a` (`own`: one its person
+    /// created).
+    pub fn allows(&self, a: &clax_core::model::Artifact) -> bool {
+        match &self.0 {
+            None => true,
+            Some((rights, person)) => rights.allows(
+                RightType::Artifacts,
+                "read",
+                Some(&a.id),
+                &|x| x == a.id && a.authors.creator == *person,
+            ),
+        }
+    }
+
+    /// Whether it is a person's agent's.
+    pub fn is_person_agent(&self) -> bool {
+        self.0.is_some()
+    }
+}
+
+/// A person's agent writes content (artifacts, versions, assets,
+/// comments, threads) and deletes threads only from a session (400
+/// `no_session`, spec §6.7): its person writes in a browser. Other callers
+/// pass.
+///
+/// # Errors
+/// As above.
+pub fn person_agent_session(c: &Caller) -> Result<(), ApiError> {
+    if let Caller::PersonAgent { session: None, .. } = c {
+        return Err(ApiError::bad_request(
+            "no_session",
+            "an agent of another machine writes from a session: send X-Clax-Session",
+        ));
+    }
+    Ok(())
+}
+
+/// 400 `invalid_via_page`: the page marker (`x-clax-via: page`, or a
+/// comment's `via_page`) from a person's agent. Only a page running in a
+/// browser writes as a page; a grant's request never does.
+pub fn invalid_via_page() -> ApiError {
+    ApiError::bad_request(
+        "invalid_via_page",
+        "only a page running in a browser writes as a page; an agent of another machine never does",
+    )
+}
+
+/// Whether `headers` carry the page marker (`x-clax-via: page`, which the
+/// shell's capabilities send for a page's writes): refused from a person's
+/// agent ([`invalid_via_page`]).
+///
+/// # Errors
+/// As above.
+pub fn page_marker(c: &Caller, headers: &HeaderMap) -> Result<bool, ApiError> {
+    let page = headers
+        .get(crate::routes::artifacts::VIA_HEADER)
+        .and_then(|v| v.to_str().ok())
+        == Some("page");
+    if page && matches!(c, Caller::PersonAgent { .. }) {
+        return Err(invalid_via_page());
+    }
+    Ok(page)
 }
 
 /// Whether `rights` allow `right` at artifact `id`, `own` meaning created

@@ -529,6 +529,10 @@ mod l10 {
         /// A listing or stream that leaves live pages out unless
         /// `sees_live_pages`.
         Filtered,
+        /// It takes `Agent<…>` or `TokenOrAgent<…>` and makes a new
+        /// artifact: it names none that exists, so neither parses one from
+        /// the request nor names one outside its path.
+        Creates,
         /// It names no artifact.
         NoArtifact,
         /// It refuses every caller but the owner (`who.require_owner(…)`, or
@@ -543,7 +547,7 @@ mod l10 {
     const GUARDS: &[(&str, Guard)] = &[
         ("token::token", NoArtifact),
         ("artifacts::list", Filtered),
-        ("artifacts::create", GrantsKept),
+        ("artifacts::create", Creates),
         ("sessions::list", AgentPath),
         ("sessions::register", AgentPath),
         ("sessions::join", AgentPath),
@@ -553,7 +557,7 @@ mod l10 {
         ("sessions::tool_call_ids", NoArtifact),
         ("sample::daemon", Token),
         ("threads::list_all", GrantsKept),
-        ("working::roster", GrantsKept),
+        ("working::roster", Filtered),
         ("working::for_session", AgentPath),
         ("working::renew", AgentPath),
         ("working::end", AgentPath),
@@ -1106,6 +1110,12 @@ mod l10 {
                                     && !crate::agent::FILTERED_LIVE.contains(&need.name)),
                             "{name} is open to a person's agent: give it another guard"
                         );
+                    }
+                    Creates => {
+                        assert!(sig.contains("Agent<"), "{name} takes no Agent");
+                        for named in ["parse_id(", "named_artifact(", ".artifact()"] {
+                            assert!(!src.contains(named), "{name} names an artifact ({named})");
+                        }
                     }
                     SeesLive => assert!(
                         sig.contains("SeesLive") && src.contains(".check("),

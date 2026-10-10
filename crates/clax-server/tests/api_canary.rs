@@ -5,11 +5,13 @@
 //! agents' only; and the owner's question list holds the owner's agents'
 //! questions only.
 //!
-//! The filter is live for threads, comments and clips; every other
-//! `Filtered` route answers a person's agent 503 `not_yet`, and the owner's
-//! agents still get today's content there. So the sweeps as the owner's
-//! agent, and through the real clients, are ignored until the tasks that
-//! filter them lift them.
+//! The filter is live for threads, comments and clips, and for artifacts,
+//! versions, files, assets and working records; every other `Filtered`
+//! route (documents, feedback) answers a person's agent 503 `not_yet`, and
+//! the owner's agents still get today's content there. So the sweeps as
+//! the owner's agent over every route, and through the real clients, are
+//! ignored until the tasks that filter them lift them; the owner's agent's
+//! sweep over the routes filtered so far is not.
 
 use crate::common::TestServer;
 use crate::common::clients::{HARNESS_ENVS, RealClients};
@@ -265,8 +267,20 @@ async fn no_canary_reaches_the_owners_agent_through_a_denied_route() {
     sweep(&w, &w.owner_agent(), |c| c.denied).await;
 }
 
+/// Whether `c` reaches a route whose filter is still to come: documents
+/// (Task 11) and feedback (Task 12).
+fn filtered_later(c: &Call) -> bool {
+    c.path.contains("/docs") || c.path.contains("/feedback") || c.path.contains("/notices")
+}
+
 #[tokio::test]
-#[ignore = "lifted by Task 12: the owner's agents get unfiltered content until Tasks 9-12 filter each route"]
+async fn no_canary_reaches_an_unapproved_owner_agent_through_filtered_routes() {
+    let w = World::two_people().await;
+    sweep(&w, &w.owner_agent(), |c| !c.denied && !filtered_later(c)).await;
+}
+
+#[tokio::test]
+#[ignore = "lifted by Task 12: the owner's agents get unfiltered content until Tasks 11-12 filter documents and feedback"]
 async fn no_canary_reaches_an_unapproved_owner_agent() {
     let w = World::two_people().await;
     sweep(&w, &w.owner_agent(), |c| !c.denied).await;
