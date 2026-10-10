@@ -889,7 +889,7 @@ of the owner's agents only, a person their agents' (§18).
 | `POST …/threads/{tid}/resolve`, `…/reopen` | Filtered (returns the thread) | comments resolve, and comments read |
 | `DELETE …/threads/{tid}` | Own; a person's agent deletes from a session (400 `no_session`) | comments resolve, and comments read |
 | `POST …/threads/{tid}/send`, `…/threads:send` | Filtered (returns the threads) | comments send, and comments read |
-| `GET/PUT/PATCH/DELETE …/docs/{*path}`, `GET …/docs`, `POST …/docs:batch`, `…/docs:str_replace`, `…/docs:acquire` | Filtered (every returned document; list `where`/`order_by` over visible documents only, §8.3); `str_replace`, `acquire` with a condition, and the matching `batch` operations on a document withheld from the caller are 403 `withheld` before anything is evaluated; blind `PUT`, `PATCH` and `DELETE` stay allowed | db read (GET) / db write |
+| `GET/PUT/PATCH/DELETE …/docs/{*path}`, `GET …/docs`, `POST …/docs:batch`, `…/docs:str_replace`, `…/docs:acquire` | Filtered (every returned document; list `where`/`order_by` over visible documents only, §8.3); `str_replace`, `acquire` with a condition, and the matching `batch` operations on a document withheld from the caller are 403 `withheld` (with its withheld authors) before anything is evaluated, the pin included; today's `acquire` (a lease, with an optional merge) and `batch` (`set`, `update`, `delete`) have none, so `str_replace` is the one refused; blind `PUT`, `PATCH`, `DELETE`, batch writes and `acquire` stay allowed, answer a withheld document's placeholder, and add the writer to its authors; a person's agent writes documents with or without a session (the remote `clax db …`, §6.7), never with `x-clax-via: page` (400 `invalid_via_page`) | db read (GET) / db write |
 | `POST /api/sessions`, `POST /api/sessions/join` | Own (binding, §6.7) | none |
 | `GET /api/sessions`, `GET/PATCH /api/sessions/{id}` | Own (the grant's own sessions) | none |
 | `GET/PUT/DELETE /api/sessions/{id}/watches…` | Own | comments watch |
@@ -989,12 +989,20 @@ Withheld fields are replaced, never dropped:
   withheld files, alike for a path the version lacks while it withholds
   any file, so the route never confirms a guessed name.
 - **Document:** read by its path, `{"doc_id", "version", "withheld":
-  {"authors": […]}}`, no `data` (the caller named the path). In `GET
+  {"authors": […]}}`, no `data` (the caller named the path); a write by
+  its path answers the same placeholder, and its `created`, `deleted`,
+  pin conflicts and batch results (`op`, `path`, `version`, `deleted`)
+  say no more than it does: that the named path holds a document, and
+  its version. In `GET
   …/docs`, withheld documents are counted, never listed: only visible
   documents are returned, evaluated, matched and ordered, and the response
   carries `"withheld_count": n` (the collection's documents left out,
-  whatever the filter), so neither their paths nor their field values are
-  revealed. Content-dependent writes on a withheld document are 403
+  whatever the filter, cursor and limit; never one the `db` rules
+  already hide from the caller), so neither their paths nor their field
+  values are revealed; pages and `next_cursor` run over visible documents
+  only, and so does the byte budget of an ordered query without a limit.
+  A response to a caller that sees every document carries no
+  `withheld_count`. Content-dependent writes on a withheld document are 403
   `withheld` before evaluation (§7.5).
 - **Asset:** name null, and `content_type`, `ext` and `size` (which its
   bytes decide) null, `"withheld": true`; its ID, artifact and time stay.

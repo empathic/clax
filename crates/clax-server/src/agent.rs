@@ -500,6 +500,15 @@ pub const FILTERED_LIVE: &[&str] = &[
     "AssetsUpload",
     "WorkingForArtifact",
     "WorkingRoster",
+    // Documents (Task 11).
+    "DocsGet",
+    "DocsList",
+    "DocsPut",
+    "DocsPatch",
+    "DocsDelete",
+    "DocsBatch",
+    "DocsStrReplace",
+    "DocsAcquire",
 ];
 
 /// The need of the route `matched` serves for `method` (`HEAD` as `GET`).

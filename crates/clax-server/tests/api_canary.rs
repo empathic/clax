@@ -5,17 +5,17 @@
 //! agents' only; and the owner's question list holds the owner's agents'
 //! questions only.
 //!
-//! The filter is live for threads, comments and clips, and for artifacts,
-//! versions, files, assets and working records; every other `Filtered`
-//! route (documents, feedback) answers a person's agent 503 `not_yet`, and
-//! the owner's agents still get today's content there. So the sweeps as
-//! the owner's agent over every route, and through the real clients, are
-//! ignored until the tasks that filter them lift them; the owner's agent's
-//! sweep over the routes filtered so far is not.
+//! The filter is live for threads, comments and clips, for artifacts,
+//! versions, files, assets and working records, and for documents; the
+//! feedback routes answer a person's agent 503 `not_yet`, and the owner's
+//! agents still get today's content there. So the sweeps as the owner's
+//! agent over every route, and through the real clients, are ignored
+//! until the tasks that filter them lift them; the owner's agent's sweep
+//! over the routes filtered so far is not.
 
 use crate::common::TestServer;
 use crate::common::clients::{HARNESS_ENVS, RealClients};
-use crate::common::people::{AgentOf, As, Call, World};
+use crate::common::people::{AgentOf, As, Call, DOC_PATH, World};
 use serde_json::{Value, json};
 
 async fn status_code(res: reqwest::Response) -> (u16, String) {
@@ -225,7 +225,10 @@ async fn the_owners_question_list_holds_only_the_owners_agents_questions() {
 }
 
 /// Every call of the sweep as `agent` that `which` keeps: no response
-/// byte carries a canary, unless the route refuses it `not_for_agents`.
+/// byte carries a canary, unless the route refuses it `not_for_agents`,
+/// or it is the document path and the call itself sent it (a document
+/// path the agent names comes back in its placeholder and errors, spec
+/// §8.3, §21.9; a listing, which names none, never holds a withheld one).
 async fn sweep(w: &World, agent: &AgentOf<'_>, which: impl Fn(&Call) -> bool) {
     let calls: Vec<Call> = w
         .every_agent_call(agent)
@@ -240,7 +243,7 @@ async fn sweep(w: &World, agent: &AgentOf<'_>, which: impl Fn(&Call) -> bool) {
             continue;
         }
         for c in w.canaries() {
-            if body.contains(c) {
+            if body.contains(c) && !(c == DOC_PATH && call.sends(c)) {
                 leaks.push(format!(
                     "{} leaked {c} to {}: {}",
                     call.name,
@@ -276,10 +279,10 @@ async fn no_canary_reaches_the_owners_agent_through_a_denied_route() {
     sweep(&w, &w.owner_agent(), |c| c.denied).await;
 }
 
-/// Whether `c` reaches a route whose filter is still to come: documents
-/// (Task 11) and feedback (Task 12).
+/// Whether `c` reaches a route whose filter is still to come: feedback
+/// (Task 12).
 fn filtered_later(c: &Call) -> bool {
-    c.path.contains("/docs") || c.path.contains("/feedback") || c.path.contains("/notices")
+    c.path.contains("/feedback") || c.path.contains("/notices")
 }
 
 #[tokio::test]
@@ -333,12 +336,14 @@ async fn the_owner_by_hand_sees_every_canary() {
     }
 }
 
-/// `outs`' leaks of `w`'s canaries.
+/// `outs`' leaks of `w`'s canaries: each one a channel prints, but the
+/// document path where its own command line named it (`clax db get …
+/// <doc ID>` prints the path it was asked for, spec §21.9).
 fn leaks(w: &World, outs: &[crate::common::clients::Out]) -> Vec<String> {
     let mut leaks = Vec::new();
     for out in outs {
         for c in w.canaries() {
-            if out.text.contains(c) {
+            if out.text.contains(c) && !(c == DOC_PATH && out.channel.contains(c)) {
                 leaks.push(format!("{} leaked {c}", out.channel));
             }
         }
@@ -454,7 +459,6 @@ async fn cli_under_a_harness_environment_is_an_agent_channel() {
 }
 
 #[tokio::test]
-#[ignore = "lifted by Task 12: every reading command is filtered for the owner's agents then"]
 async fn cli_under_a_harness_environment_carries_no_canary() {
     let w = World::two_people().await;
     let outs = RealClients::new(&w).cli_under_harnesses().await;
