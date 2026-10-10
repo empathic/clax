@@ -172,7 +172,45 @@ pub struct Client {
     http: reqwest::blocking::Client,
     /// The channel named in `x-clax-via` on every request, when set.
     via: Option<&'static str>,
+    /// Every request carries the agent-channel marker
+    /// ([`crate::channel::HEADER`]): under a harness
+    /// ([`crate::channel::from_process`]), and always for the hooks and
+    /// `clax feedback follow` ([`Client::as_agent`]).
+    pub agent: bool,
 }
+
+/// A refusal of a route that serves people, not agents (403
+/// `not_for_agents`): the CLI ran as an agent channel. `main` prints
+/// [`NotForAgents::line`] alone and exits 2.
+#[derive(Debug)]
+pub struct NotForAgents {
+    /// What the person opens instead, in a browser.
+    pub url: String,
+    /// The refused route serves the inbox.
+    pub inbox: bool,
+}
+
+impl NotForAgents {
+    /// The one line the CLI prints.
+    pub fn line(&self) -> String {
+        if self.inbox {
+            format!("The inbox is for people: open {} in a browser.", self.url)
+        } else {
+            format!(
+                "This is for people, not agents: open {} in a browser.",
+                self.url
+            )
+        }
+    }
+}
+
+impl std::fmt::Display for NotForAgents {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.line())
+    }
+}
+
+impl std::error::Error for NotForAgents {}
 
 /// Sends `sig` to process `pid`, ignoring failure (a process that has
 /// already exited).
@@ -595,6 +633,7 @@ impl Client {
             info,
             http: http(),
             via: None,
+            agent: crate::channel::from_process(),
         }
     }
 
@@ -605,13 +644,59 @@ impl Client {
         self
     }
 
-    /// `req` with the bearer token and the channel, if one is set.
+    /// This client as an agent channel whatever the environment: the hooks
+    /// and `clax feedback follow` serve an agent.
+    pub fn as_agent(mut self) -> Client {
+        self.agent = true;
+        self
+    }
+
+    /// A `method` request for `path` with the bearer token, the
+    /// agent-channel marker when this client is an agent channel, and the
+    /// channel it names (`x-clax-via`) when one is set.
+    fn request(&self, method: reqwest::Method, path: &str) -> reqwest::blocking::RequestBuilder {
+        self.authed(self.http.request(method, format!("{}{path}", self.base)))
+    }
+
+    /// `req` with the bearer token, the agent-channel marker when this
+    /// client is an agent channel, and the channel it names when one is set.
     fn authed(&self, req: reqwest::blocking::RequestBuilder) -> reqwest::blocking::RequestBuilder {
         let req = req.bearer_auth(&self.token);
+        let req = if self.agent {
+            req.header(crate::channel::HEADER, crate::channel::AGENT)
+        } else {
+            req
+        };
         match self.via {
             Some(v) => req.header("x-clax-via", v),
             None => req,
         }
+    }
+
+    /// [`Client::check`] for a request to `path`, with a `not_for_agents`
+    /// refusal as [`NotForAgents`].
+    fn finish(
+        &self,
+        path: &str,
+        res: reqwest::blocking::Response,
+    ) -> anyhow::Result<serde_json::Value> {
+        if res.status() == reqwest::StatusCode::FORBIDDEN {
+            let body: serde_json::Value = res.json().unwrap_or(serde_json::json!({}));
+            if body["error"]["code"] == "not_for_agents" {
+                let inbox = path.starts_with("/api/inbox");
+                return Err(NotForAgents {
+                    url: self.browser_url(if inbox { "/inbox" } else { "/" }),
+                    inbox,
+                }
+                .into());
+            }
+            let code = body["error"]["code"].as_str().unwrap_or("error");
+            let msg = body["error"]["message"]
+                .as_str()
+                .unwrap_or("request failed");
+            return Err(anyhow!("{code}: {msg}"));
+        }
+        Self::check(res)
     }
 
     /// A `method` request to `path` with the token and channel, `body` as
@@ -626,7 +711,7 @@ impl Client {
         timeout: Option<Duration>,
         headers: &[(&str, &str)],
     ) -> anyhow::Result<serde_json::Value> {
-        let mut req = self.authed(self.http.request(method, format!("{}{path}", self.base)));
+        let mut req = self.request(method, path);
         if let Some(b) = body {
             req = req.json(b);
         }
@@ -636,7 +721,7 @@ impl Client {
         for (k, v) in headers {
             req = req.header(*k, *v);
         }
-        Self::check(req.send()?)
+        self.finish(path, req.send()?)
     }
 
     /// This client with every request bounded by `timeout`.
@@ -1033,10 +1118,7 @@ impl Client {
     }
     /// GET with the bearer token (the session routes need it; the others ignore it).
     pub fn get(&self, path: &str) -> anyhow::Result<serde_json::Value> {
-        Self::check(
-            self.authed(self.http.get(format!("{}{path}", self.base)))
-                .send()?,
-        )
+        self.finish(path, self.request(reqwest::Method::GET, path).send()?)
     }
     /// [`Client::get`] with this request alone bounded by `timeout`.
     pub fn get_with_timeout(
@@ -1044,8 +1126,9 @@ impl Client {
         path: &str,
         timeout: Duration,
     ) -> anyhow::Result<serde_json::Value> {
-        Self::check(
-            self.authed(self.http.get(format!("{}{path}", self.base)))
+        self.finish(
+            path,
+            self.request(reqwest::Method::GET, path)
                 .timeout(timeout)
                 .send()?,
         )
@@ -1075,40 +1158,40 @@ impl Client {
         }
     }
     pub fn post(&self, path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        Self::check(
-            self.authed(self.http.post(format!("{}{path}", self.base)))
+        self.finish(
+            path,
+            self.request(reqwest::Method::POST, path)
                 .json(body)
                 .send()?,
         )
     }
     pub fn patch(&self, path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        Self::check(
-            self.authed(self.http.patch(format!("{}{path}", self.base)))
+        self.finish(
+            path,
+            self.request(reqwest::Method::PATCH, path)
                 .json(body)
                 .send()?,
         )
     }
     pub fn delete(&self, path: &str) -> anyhow::Result<()> {
-        Self::check(
-            self.authed(self.http.delete(format!("{}{path}", self.base)))
-                .send()?,
-        )
-        .map(|_| ())
+        self.finish(path, self.request(reqwest::Method::DELETE, path).send()?)
+            .map(|_| ())
     }
     /// A `method` request with the bearer token, with `body` as JSON when
-    /// given. The token makes the request the owner's, so on the viewer
-    /// routes it acts as the owner identity the owner's browsers share.
+    /// given. The token makes the request the owner's (or, as an agent
+    /// channel, the owner's agent's), so on the viewer routes it acts as the
+    /// owner identity the owner's browsers share.
     pub fn send(
         &self,
         method: reqwest::Method,
         path: &str,
         body: Option<&serde_json::Value>,
     ) -> anyhow::Result<serde_json::Value> {
-        let mut req = self.authed(self.http.request(method, format!("{}{path}", self.base)));
+        let mut req = self.request(method, path);
         if let Some(b) = body {
             req = req.json(b);
         }
-        Self::check(req.send()?)
+        self.finish(path, req.send()?)
     }
     pub fn shutdown(&self) -> anyhow::Result<()> {
         self.post("/api/admin/shutdown", &serde_json::json!({}))
@@ -1137,6 +1220,30 @@ pub(crate) mod tests {
             exe: None,
             commit: None,
         }
+    }
+
+    /// An agent channel's requests carry the marker; the CLI by hand's do
+    /// not. The hooks and `clax feedback follow` are agents whatever the
+    /// environment.
+    #[test]
+    fn an_agent_channels_requests_carry_the_marker() {
+        let marker = |c: &Client| {
+            let r = c
+                .request(reqwest::Method::GET, "/api/artifacts")
+                .build()
+                .unwrap();
+            assert_eq!(r.headers()["authorization"], "Bearer t");
+            r.headers()
+                .get(crate::channel::HEADER)
+                .map(|v| v.to_str().unwrap().to_string())
+        };
+        let mut c = Client::from_info(info("0.1.0"));
+        c.agent = false;
+        assert_eq!(marker(&c), None);
+        let c = c.as_agent();
+        assert_eq!(marker(&c).as_deref(), Some("agent"));
+        let c = c.with_timeout(Duration::from_secs(1));
+        assert_eq!(marker(&c).as_deref(), Some("agent"), "kept by a timeout");
     }
 
     #[test]

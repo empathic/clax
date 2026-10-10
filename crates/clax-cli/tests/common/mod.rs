@@ -27,6 +27,17 @@ impl Env {
         ] {
             c.env_remove(var);
         }
+        // The CLI by hand, wherever the tests run (an agent's shell sets
+        // these): never an agent channel unless a test says so.
+        for var in [
+            "CLAX_CHANNEL",
+            "CLAUDECODE",
+            "CODEX_THREAD_ID",
+            "CODEX_SANDBOX",
+            "CODEX_CI",
+        ] {
+            c.env_remove(var);
+        }
         c
     }
     pub fn stop(&self) {

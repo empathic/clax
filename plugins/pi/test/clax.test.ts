@@ -122,6 +122,44 @@ describe("clax Pi extension", () => {
     for (const t of FIXTURE.tools) expect(pi.tools.get(`clax_${t.name}`)?.description, t.name).toBe(t.description);
   });
 
+  it("is an agent channel: its process environment and every daemon request say so", async () => {
+    const home = join(scratch, `marker-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(home, { recursive: true });
+    const seen: { what: string; channel: string | undefined }[] = [];
+    const server = createHttpServer((req, res) => {
+      seen.push({ what: `${req.method} ${req.url}`, channel: req.headers["x-clax-channel"] as string | undefined });
+      const reply = (body: unknown) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(body)); };
+      if (req.url === "/healthz") return reply({ version: "0.1.0" });
+      if (req.method === "POST" && req.url === "/api/sessions") {
+        return reply({ session: { id: "s1", harness: "pi", harness_session_id: "h", cwd: "/", pid: 1, parent_pid: 1, started_at: "", last_seen_at: "", ended_at: null } });
+      }
+      if (req.url?.startsWith("/api/artifacts")) return reply({ artifacts: [] });
+      return reply({});
+    });
+    await new Promise<void>(r => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as { port: number }).port;
+    writeFileSync(join(home, "daemon.json"), JSON.stringify({
+      port, pid: process.pid, token: "t", started_at: "2026-01-01T00:00:00Z", bind: "127.0.0.1", version: "0.1.0",
+    }));
+    const before = process.env.CLAX_CHANNEL;
+    try {
+      delete process.env.CLAX_CHANNEL;
+      const { pi, ctx } = load(home, "pi-marker");
+      // Pi's bash tool inherits it: an agent's own `clax` calls are agent channels.
+      expect(process.env.CLAX_CHANNEL).toBe("agent");
+      await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+      await pi.callTool("clax_list", {}, ctx);
+      const api = seen.filter(r => r.what !== "GET /healthz");
+      expect(api.map(r => r.what)).toContain("POST /api/sessions");
+      expect(api.length).toBeGreaterThan(1);
+      for (const r of api) expect(r.channel, r.what).toBe("agent");
+    } finally {
+      if (before === undefined) delete process.env.CLAX_CHANNEL; else process.env.CLAX_CHANNEL = before;
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+
   it("registers a pi session on session_start and ends it on session_shutdown", async () => {
     const { pi, ctx } = load(daemon.home, "pi-session-1");
     await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);

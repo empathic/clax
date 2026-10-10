@@ -1344,6 +1344,9 @@ const USAGE = "usage: /clax open [ID] | list | status";
 /** The Clax extension, with `opts` overriding where it finds the daemon. */
 export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => void {
   return pi => {
+    // Pi's bash tool inherits this process's environment: a `clax` command
+    // an agent runs there is an agent channel (spec §16).
+    process.env.CLAX_CHANNEL = "agent";
     const tools = new Tools(opts.home ?? claxHome(opts.env ?? process.env), opts);
 
     // Tier 5: between session_start and session_shutdown, once the session is

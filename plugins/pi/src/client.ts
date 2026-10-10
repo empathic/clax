@@ -291,7 +291,7 @@ export class DaemonClient {
       }
       this.endpoint = endpoint;
       this.registered = false;
-      const headers: Record<string, string> = { authorization: `Bearer ${endpoint.token}`, "content-type": "application/json", "x-clax-via": VIA };
+      const headers: Record<string, string> = { authorization: `Bearer ${endpoint.token}`, "content-type": "application/json", "x-clax-channel": "agent", "x-clax-via": VIA };
       if (call?.encoded) headers["x-clax-call"] = call.encoded;
       if (git) headers["x-clax-git"] = encodeHeader(await git);
       let res: RawResponse;
@@ -319,7 +319,8 @@ export class DaemonClient {
   }
 
   private headers(endpoint: Endpoint, extra: Record<string, string> = {}): Record<string, string> {
-    const h: Record<string, string> = { authorization: `Bearer ${endpoint.token}`, "x-clax-via": VIA, ...extra };
+    // An agent channel (spec §16): every request says so.
+    const h: Record<string, string> = { authorization: `Bearer ${endpoint.token}`, "x-clax-channel": "agent", "x-clax-via": VIA, ...extra };
     if (this.sessionId) h["x-clax-session"] = this.sessionId;
     return h;
   }

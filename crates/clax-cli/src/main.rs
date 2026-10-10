@@ -1,5 +1,6 @@
 //! The `clax` command line: run the daemon and manage artifacts.
 
+mod channel;
 mod client;
 mod codex_approvals;
 mod commands;
@@ -304,6 +305,11 @@ fn main() {
         Cmd::NativeHost(a) => commands::native_host::run(&cli, &home, a),
     };
     if let Err(e) = result {
+        if let Some(n) = e.downcast_ref::<client::NotForAgents>() {
+            // Under a harness, a route that serves people: one readable line.
+            println!("{}", n.line());
+            std::process::exit(2);
+        }
         eprintln!("error: {e:#}");
         std::process::exit(1);
     }

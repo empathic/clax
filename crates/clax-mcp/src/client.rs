@@ -9,6 +9,10 @@ use serde_json::{Value, json};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+/// The agent-channel marker's header (spec §16): an agent channel's every
+/// request says `agent`.
+pub const CHANNEL_HEADER: &str = "x-clax-channel";
+
 /// Deadline for ordinary requests.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Deadline for publishes and asset uploads.
@@ -98,6 +102,10 @@ struct Inner {
     http: reqwest::Client,
     state: RwLock<State>,
     managed: Option<Managed>,
+    /// Every request carries `X-Clax-Channel: agent` (spec §16): true for
+    /// the shim and `/mcp`'s internal client; the CLI's tool commands set it
+    /// as the CLI decides ([`DaemonClient::with_channel`]).
+    agent: bool,
 }
 
 /// Whether finding the daemon may start one.
@@ -146,6 +154,7 @@ struct Conn<'a> {
     session_id: Option<String>,
     call: Option<Arc<CallScope>>,
     via: Option<&'static str>,
+    agent: bool,
 }
 
 impl Conn<'_> {
@@ -162,6 +171,9 @@ impl Conn<'_> {
         }
         if let Some(h) = self.call.as_ref().and_then(|c| c.call_header()) {
             req = req.header("x-clax-call", h);
+        }
+        if self.agent {
+            req = req.header(CHANNEL_HEADER, "agent");
         }
         req
     }
@@ -210,9 +222,21 @@ fn http_client() -> reqwest::Client {
 }
 
 impl DaemonClient {
-    /// A client for the daemon at `base`; every request carries `X-Clax-Session`
-    /// when `session_id` is set. Proxies are never used.
+    /// A client for the daemon at `base`, an agent channel: every request
+    /// carries `X-Clax-Channel: agent`, and `X-Clax-Session` when
+    /// `session_id` is set. Proxies are never used.
     pub fn new(base: String, token: String, session_id: Option<String>) -> DaemonClient {
+        DaemonClient::with_channel(base, token, session_id, true)
+    }
+
+    /// [`DaemonClient::new`], marking its requests as an agent channel's
+    /// only when `agent` (the CLI used by hand is the owner).
+    pub fn with_channel(
+        base: String,
+        token: String,
+        session_id: Option<String>,
+        agent: bool,
+    ) -> DaemonClient {
         let endpoint = Endpoint {
             base: base.trim_end_matches('/').to_string(),
             browser_base: String::new(),
@@ -228,6 +252,7 @@ impl DaemonClient {
                     registered: true,
                 }),
                 managed: None,
+                agent,
             }),
             call: None,
             via: None,
@@ -259,6 +284,7 @@ impl DaemonClient {
                     git: None,
                     lock: tokio::sync::Mutex::new(()),
                 }),
+                agent: true,
             }),
             call: None,
             via: Some(VIA),
@@ -411,6 +437,7 @@ impl DaemonClient {
             session_id: None,
             call: self.call.clone(),
             via: self.via,
+            agent: self.inner.agent,
         };
         let mut req = conn
             .request(reqwest::Method::POST, "/api/sessions")
@@ -447,6 +474,7 @@ impl DaemonClient {
             session_id: st.session_id,
             call: self.call.clone(),
             via: self.via,
+            agent: self.inner.agent,
         })
     }
 
@@ -1170,6 +1198,27 @@ fn encode_path(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The shim's and `/mcp`'s clients are agent channels; the CLI's tool
+    /// commands mark theirs as the CLI decides.
+    #[test]
+    fn requests_carry_the_agent_channel_marker_unless_by_hand() {
+        let marker = |c: &super::DaemonClient| {
+            let conn = c.conn().unwrap();
+            let r = conn
+                .request(reqwest::Method::GET, "/api/artifacts")
+                .build()
+                .unwrap();
+            r.headers()
+                .get(super::CHANNEL_HEADER)
+                .map(|v| v.to_str().unwrap().to_string())
+        };
+        let agent = super::DaemonClient::new("http://127.0.0.1:1".into(), "t".into(), None);
+        assert_eq!(marker(&agent).as_deref(), Some("agent"));
+        let by_hand =
+            super::DaemonClient::with_channel("http://127.0.0.1:1".into(), "t".into(), None, false);
+        assert_eq!(marker(&by_hand), None);
+    }
+
     #[test]
     fn encode_path_escapes_reserved_bytes_but_not_slashes() {
         assert_eq!(super::encode_path("a/b c#?.js"), "a/b%20c%23%3F.js");

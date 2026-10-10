@@ -172,7 +172,7 @@ export function binaryVersion(bin: string, env: NodeJS.ProcessEnv = process.env,
  * daemon. */
 export function upgradeHeld(bin: string, home: string, env: NodeJS.ProcessEnv = process.env): Promise<Record<string, unknown> | null> {
   return new Promise((resolve) => {
-    execFile(bin, ["status", "--json"], { env: { ...env, CLAX_HOME: home }, timeout: 3_000 }, (err, stdout) => {
+    execFile(bin, ["status", "--json"], { env: { ...env, CLAX_HOME: home, CLAX_CHANNEL: "agent" }, timeout: 3_000 }, (err, stdout) => {
       if (err) return resolve(null);
       try {
         const held = JSON.parse(String(stdout))?.upgrade_held;
@@ -193,7 +193,7 @@ export async function ensure(home: string, opts: DaemonOptions = {}): Promise<Da
   const bin = await findBinary(home, env, opts.wrapper);
   const args = ["serve", "--json", ...(opts.port === undefined ? [] : ["--port", String(opts.port)])];
   await new Promise<void>((resolve, reject) => {
-    execFile(bin, args, { env: { ...env, CLAX_HOME: home }, timeout: SERVE_TIMEOUT_MS }, (err, _stdout, stderr) => {
+    execFile(bin, args, { env: { ...env, CLAX_HOME: home, CLAX_CHANNEL: "agent" }, timeout: SERVE_TIMEOUT_MS }, (err, _stdout, stderr) => {
       if (!err) return resolve();
       const late = err.killed ? `it did not finish within ${SERVE_TIMEOUT_MS / 1000} s and was stopped` : "";
       const detail = [String(stderr).trim(), late].filter(Boolean).join("; ") || err.message;
