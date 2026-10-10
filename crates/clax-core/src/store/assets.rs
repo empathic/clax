@@ -19,6 +19,7 @@ fn row_to_asset(r: &Row<'_>) -> rusqlite::Result<Asset> {
         ext: r.get("ext")?,
         created_at: r.get("created_at")?,
         person: r.get("person")?,
+        page_authors: super::threads::json_list(r.get("page_authors")?),
     })
 }
 
@@ -71,8 +72,10 @@ fn ext_for(content_type: &str) -> String {
     }
 }
 
-const SELECT: &str =
-    "SELECT id, artifact_id, content_type, size, ext, created_at, person FROM assets";
+const SELECT: &str = "SELECT id, artifact_id, content_type, size, ext, created_at, person,
+    (SELECT json_group_array(pa.author) FROM page_authors pa
+     WHERE pa.kind = 'asset' AND pa.id = assets.id) AS page_authors
+    FROM assets";
 
 /// An asset row with where its bytes belong on disk, as listed by
 /// [`Store::list_all_asset_rows`].
@@ -127,11 +130,12 @@ impl Store {
         content_type: &str,
         bytes: &[u8],
     ) -> Result<Asset> {
-        self.add_asset_by(ctx, id, content_type, bytes, None)
+        self.add_asset_by(ctx, id, content_type, bytes, None, false)
     }
 
     /// [`Store::add_asset`] for an uploader: `person` is their person's
-    /// public ID, `None` for the owner.
+    /// public ID, `None` for the owner; `via_page` when a page uploads it,
+    /// which records every author of the page with it (spec §8.2, M11).
     pub fn add_asset_by(
         &self,
         ctx: &AuditCtx,
@@ -139,6 +143,7 @@ impl Store {
         content_type: &str,
         bytes: &[u8],
         person: Option<&str>,
+        via_page: bool,
     ) -> Result<Asset> {
         if !is_supported(content_type) {
             return Err(CoreError::invalid(
@@ -161,6 +166,7 @@ impl Store {
             ext: ext_for(content_type),
             created_at: self.now(),
             person: person.map(str::to_string),
+            page_authors: Vec::new(),
         };
         let dir = self.home.assets_dir(id);
         std::fs::create_dir_all(&dir)?;
@@ -175,14 +181,26 @@ impl Store {
         let inserted = self.with_tx(|c| {
             c.execute("INSERT INTO assets (id, artifact_id, content_type, size, ext, created_at, person) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![asset.id, asset.artifact_id, asset.content_type, asset.size as i64, asset.ext, asset.created_at, person])?;
+            let page = if via_page {
+                let a = super::artifacts::page_authors_in(c, &asset.artifact_id)?;
+                super::threads::add_page_authors(c, "asset", &asset.id, &a)?;
+                a
+            } else {
+                Vec::new()
+            };
             self.record_audit(c, ctx, rec)?;
-            Ok(())
+            Ok(page)
         });
-        if let Err(e) = inserted {
-            let _ = std::fs::remove_file(&final_path);
-            return Err(e);
+        match inserted {
+            Ok(page) => Ok(Asset {
+                page_authors: page,
+                ..asset
+            }),
+            Err(e) => {
+                let _ = std::fs::remove_file(&final_path);
+                Err(e)
+            }
         }
-        Ok(asset)
     }
 
     /// Looks up an asset by ID and returns it with the path of its bytes on disk.
@@ -241,6 +259,10 @@ impl Store {
         };
         remove_file_if_present(&path)?;
         self.with_tx(|c| {
+            c.execute(
+                "DELETE FROM page_authors WHERE kind = 'asset' AND id = ?1",
+                params![asset_id],
+            )?;
             let n = c.execute("DELETE FROM assets WHERE id = ?1", params![asset_id])?;
             if n > 0 {
                 let mut rec = AuditRecord::new(AuditKind::AssetDelete, self.now())
@@ -264,7 +286,7 @@ impl Store {
         let rows = self.with_read(|c| {
             let mut stmt = c.prepare(
                 "SELECT a.id, a.artifact_id, a.content_type, a.size, a.ext, a.created_at, a.person,
-                        r.deleted_at IS NOT NULL AS artifact_deleted
+                        NULL AS page_authors, r.deleted_at IS NOT NULL AS artifact_deleted
                  FROM assets a JOIN artifacts r ON r.id = a.artifact_id ORDER BY a.id",
             )?;
             Ok(stmt
@@ -328,6 +350,10 @@ impl Store {
             }
             remove_file_if_present(&row.path)?;
             self.with_tx(|c| {
+                c.execute(
+                    "DELETE FROM page_authors WHERE kind = 'asset' AND id = ?1",
+                    params![row.asset.id],
+                )?;
                 c.execute("DELETE FROM assets WHERE id = ?1", params![row.asset.id])?;
                 Ok(())
             })?;

@@ -808,6 +808,7 @@ recorded, only a hash of the client's public key.
 | `agent.name` | `name, source (agent\|person), previous` | the namer: the agent itself, its person or the owner; `session_id` the named agent's |
 | `approval.grant` | `approval_id, approver (null: the owner), author (a public ID or `*unconnected`), scope (thread\|artifact\|everywhere), created_via`; the scope's artifact and thread in the event's IDs | the approver |
 | `approval.revoke` | as `approval.grant`, of the approval revoked | the approver |
+| `approval.grant` of migration 25's `*unconnected` approval | as above, `created_via` `migration` | `system:daemon`, recorded once as the store first opens after the migration (after the backfill), at the approval's time |
 
 Each is keyed by its object: `clax://<install>/invite/<invite ID>`,
 `clax://<install>/grant/<grant ID>`, the person's `/u/<public ID>`,
