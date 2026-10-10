@@ -796,3 +796,136 @@ async fn a_hook_question_never_falls_back_to_a_page_a_persons_agent_may_not_read
     assert!(!v.to_string().contains(&w.live), "{v}");
     assert!(v["question"]["artifact"].is_null(), "{v}");
 }
+
+/// Sam's rights narrowed to every comment action but `read`, and to
+/// reading `readable` alone among artifacts (all of them when `None`).
+fn narrow_sam(w: &World, readable: Option<&str>) {
+    let at = readable.map_or_else(|| json!(["*"]), |a| json!([a]));
+    let rights = clax_core::rights::Rights::parse(&json!([
+        {"type": "clax-artifacts", "actions": ["read"], "locations": at},
+        {"type": "clax-comments", "actions": ["write", "reply", "resolve", "send", "watch"], "locations": ["*"]},
+        {"type": "clax-ask", "actions": ["ask"], "locations": ["*"]}
+    ]))
+    .unwrap();
+    w.ts.store
+        .set_person_rights(&AuditCtx::DAEMON, &sam_public(w), Some(rights))
+        .unwrap();
+}
+
+#[tokio::test]
+async fn every_thread_write_needs_comments_read() {
+    let w = World::two_people().await;
+    narrow_sam(&w, None);
+    let (aid, tid) = (&w.scratch.artifact, &w.scratch.thread);
+    let sid = Some(w.sam_session.as_str());
+    let base = format!("/api/artifacts/{aid}/threads/{tid}");
+    let writes: Vec<(&str, String, Option<Value>)> = vec![
+        (
+            "POST",
+            format!("{base}/comments"),
+            Some(json!({"body": "x", "author_kind": "agent"})),
+        ),
+        (
+            "POST",
+            format!("{base}/resolve"),
+            Some(json!({"as": "agent"})),
+        ),
+        (
+            "POST",
+            format!("{base}/reopen"),
+            Some(json!({"as": "agent"})),
+        ),
+        ("POST", format!("{base}/send"), None),
+        (
+            "POST",
+            format!("/api/artifacts/{aid}/threads:send"),
+            Some(json!({"thread_ids": [tid], "note": "n"})),
+        ),
+        ("DELETE", base.clone(), None),
+    ];
+    for (m, path, body) in writes {
+        let (status, v) = json_of(w.sam.agent(m, &path, sid, body).await).await;
+        assert_eq!(
+            (
+                status,
+                v["error"]["code"].clone(),
+                v["error"]["right"]["action"].clone()
+            ),
+            (403, json!("not_permitted"), json!("read")),
+            "{m} {path}: {v}"
+        );
+    }
+    // Nothing was written: the thread is there, still open.
+    let t = w.ts.store.get_thread(tid).unwrap().expect("not deleted");
+    assert_eq!(t.status, "open");
+}
+
+#[tokio::test]
+async fn a_persons_agent_deletes_threads_only_from_a_session() {
+    let w = World::two_people().await;
+    let (aid, tid) = (&w.scratch.artifact, &w.scratch.resolved);
+    let path = format!("/api/artifacts/{aid}/threads/{tid}");
+    // Sam's agent, without a session, deleting a thread of Mia's.
+    for q in ["", "?as=agent"] {
+        let (status, v) = json_of(
+            w.sam
+                .agent("DELETE", &format!("{path}{q}"), None, None)
+                .await,
+        )
+        .await;
+        assert_eq!(
+            (status, v["error"]["code"].clone()),
+            (400, json!("no_session")),
+            "{q}: {v}"
+        );
+    }
+    assert!(w.ts.store.get_thread(tid).unwrap().is_some(), "not deleted");
+}
+
+#[tokio::test]
+async fn a_tool_call_report_names_no_artifact_the_agent_may_not_read() {
+    let w = World::two_people().await;
+    let sid = w.sam_session.clone();
+    // Sam's agent may read the scratch artifact alone.
+    narrow_sam(&w, Some(&w.scratch.artifact));
+    let report = |call_id: &str, artifact: &str| {
+        json!({"call_id": call_id, "tool": "read",
+            "args_sha256": format!("sha256:{}", "cd".repeat(32)),
+            "started_at": "2026-10-10T10:00:00.000Z", "ended_at": "2026-10-10T10:00:00.400Z",
+            "outcome": "ok", "artifact_id": artifact})
+    };
+    for (call_id, artifact, kept) in [
+        ("01JBC0000000000000000000M1", w.live.clone(), false),
+        ("01JBC0000000000000000000M2", w.read.artifact.clone(), false),
+        (
+            "01JBC0000000000000000000M3",
+            w.scratch.artifact.clone(),
+            true,
+        ),
+    ] {
+        let r = w
+            .sam
+            .agent(
+                "POST",
+                &format!("/api/sessions/{sid}/tool-calls"),
+                Some(&sid),
+                Some(report(call_id, &artifact)),
+            )
+            .await;
+        let (status, v) = json_of(r).await;
+        assert_eq!(status, 201, "{artifact}: {v}");
+        let row =
+            w.ts.store
+                .events_after(v["seq"].as_i64().unwrap() - 1, 1)
+                .unwrap()
+                .remove(0);
+        assert_eq!(row.kind, "tool.call");
+        assert_eq!(
+            row.ids.artifact.is_some(),
+            kept,
+            "{artifact}: {:?}",
+            row.ids.artifact
+        );
+        assert!(!row.body.contains(&artifact) || kept, "{}", row.body);
+    }
+}

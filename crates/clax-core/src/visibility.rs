@@ -512,10 +512,11 @@ pub mod placeholder {
     }
 
     /// A thread's anchor: `quote`, `prefix`, `suffix` and `selector` null
-    /// in its `anchor`, and the other words the anchored page gave it with
-    /// them (its `custom_name`, the anchored `file`'s name, and its drawn
-    /// area's `tag` and `text` fingerprint, which is left out); the thread
-    /// marked `anchor_withheld: true`.
+    /// in its `anchor`, and everything else the anchored page gave it with
+    /// them (its `custom_name`, the anchored `file`'s name, the `html_hash`
+    /// of the anchored element's markup, and its drawn area's `tag`, `text`
+    /// and `children` fingerprint, which is left out); the thread marked
+    /// `anchor_withheld: true`.
     pub fn anchor(thread: &mut Value) {
         if let Some(anchor) = thread.get_mut("anchor").and_then(Value::as_object_mut) {
             for k in [
@@ -525,12 +526,14 @@ pub mod placeholder {
                 "selector",
                 "custom_name",
                 "file",
+                "html_hash",
             ] {
                 anchor.insert(k.into(), Value::Null);
             }
             if let Some(area) = anchor.get_mut("area").and_then(Value::as_object_mut) {
-                area.remove("tag");
-                area.remove("text");
+                for k in ["tag", "text", "children"] {
+                    area.remove(k);
+                }
             }
         }
         thread["anchor_withheld"] = json!(true);
@@ -2031,7 +2034,7 @@ mod tests {
         );
         let mut t = json!({"id": "t1", "anchor": {"kind": "element", "quote": "q", "prefix": "p", "suffix": "s", "selector": "#x",
                                "custom_name": "c", "file": "MIA.html", "html_hash": "sha256:00",
-                               "area": {"x": 0.1, "y": 0.1, "w": 0.5, "h": 0.5, "tag": "h2", "text": "Mia's words"}},
+                               "area": {"x": 0.1, "y": 0.1, "w": 0.5, "h": 0.5, "tag": "h2", "text": "Mia's words", "children": 3}},
                            "has_clip": true, "clip_url": "/c.png", "clip_path": "/home/c.png",
                            "resolved_by": "viewer:u_1", "resolved_by_name": "Mia"});
         anchor(&mut t);
@@ -2041,7 +2044,7 @@ mod tests {
         assert_eq!(
             t,
             json!({"id": "t1", "anchor": {"kind": "element", "quote": null, "prefix": null, "suffix": null, "selector": null,
-                       "custom_name": null, "file": null, "html_hash": "sha256:00",
+                       "custom_name": null, "file": null, "html_hash": null,
                        "area": {"x": 0.1, "y": 0.1, "w": 0.5, "h": 0.5}},
                    "anchor_withheld": true, "has_clip": false, "clip_url": null, "clip_path": null, "clip_withheld": true,
                    "resolved_by": null, "resolved_by_name": null,
@@ -2054,7 +2057,7 @@ mod tests {
         assert_eq!(
             bare,
             json!({"id": "t2", "anchor": {"kind": "element", "quote": null, "prefix": null, "suffix": null, "selector": null,
-                       "custom_name": null, "file": null},
+                       "custom_name": null, "file": null, "html_hash": null},
                    "anchor_withheld": true, "clip_withheld": true})
         );
         let mut b = json!({"id": "b1", "note": "n"});
