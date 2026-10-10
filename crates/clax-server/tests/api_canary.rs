@@ -292,7 +292,7 @@ async fn no_canary_reaches_an_unapproved_owner_agent_through_filtered_routes() {
 }
 
 #[tokio::test]
-#[ignore = "lifted by Task 12: the owner's agents get unfiltered content until Tasks 11-12 filter documents and feedback"]
+#[ignore = "lifted by Task 12: the owner's agents get unfiltered feedback until Task 12 filters it"]
 async fn no_canary_reaches_an_unapproved_owner_agent() {
     let w = World::two_people().await;
     sweep(&w, &w.owner_agent(), |c| !c.denied).await;
