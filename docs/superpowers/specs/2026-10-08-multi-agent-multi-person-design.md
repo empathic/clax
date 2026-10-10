@@ -899,6 +899,7 @@ of the owner's agents only, a person their agents' (§18).
 | `GET /api/sessions/{id}/working`, `POST …/working/renew`, `…/working/end`, `PUT/DELETE …/working/{aid}` | Own | comments watch |
 | `POST /api/sessions/{id}/questions`, `GET …/questions/{qid}`, `…/withdraw`, `…/release`, `…/questions:terminal` | Own (questions and answers are the agent's person's) | ask |
 | `POST /api/sessions/{id}/approvals`, `GET …/approvals/{rid}` | Own | ask |
+| `POST /api/sessions/{id}/tool-calls`, `POST /api/sessions/{id}/tool-call-ids` | Own (the session's own calls; `produced` lists only that session's events, and an artifact the agent may not read is reported as none) | none |
 | `POST /api/sessions/{id}/threads/{tid}/handoff` | Filtered (returns the thread) | comments reply |
 | `GET /api/agents` | Own (the caller's person's agents; other people's agents by name and state only) | none |
 | `GET /api/approvals`, `GET /api/approvals/requests` | Own (the person's own approvals and requests; request views carry author, thread, count and state, never the withheld content) | none |

@@ -550,7 +550,7 @@ mod l10 {
         ("sessions::get", AgentPath),
         ("sessions::patch", AgentPath),
         ("sessions::push_status", NoArtifact),
-        ("sessions::tool_call_ids", Token),
+        ("sessions::tool_call_ids", NoArtifact),
         ("sample::daemon", Token),
         ("threads::list_all", GrantsKept),
         ("working::roster", GrantsKept),
@@ -582,7 +582,7 @@ mod l10 {
         ("watches::live_put", Token),
         ("watches::live_delete", Token),
         ("feedback::ack", AgentPath),
-        ("toolpath::session_tool_call", Token),
+        ("toolpath::session_tool_call", AgentPath),
         ("toolpath::tool_call", Token),
         ("feedback::poll", AgentPath),
         ("feedback::notices", AgentPath),
@@ -1484,6 +1484,8 @@ mod agents {
                 Own,
                 Some((Ask, "ask")),
             ),
+            ("POST", "/api/sessions/{id}/tool-calls", Own, None),
+            ("POST", "/api/sessions/{id}/tool-call-ids", Own, None),
         ]
     };
 
