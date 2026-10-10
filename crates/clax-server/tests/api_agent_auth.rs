@@ -662,8 +662,14 @@ async fn a_repeated_agent_header_is_refused() {
         ..Default::default()
     };
     for twice in [
-        vec![("x-clax-session", sid.clone()), ("x-clax-session", sid.clone())],
-        vec![("x-clax-session", sid.clone()), ("X-Clax-Session", sid.clone())],
+        vec![
+            ("x-clax-session", sid.clone()),
+            ("x-clax-session", sid.clone()),
+        ],
+        vec![
+            ("x-clax-session", sid.clone()),
+            ("X-Clax-Session", sid.clone()),
+        ],
         vec![
             ("x-clax-session", sid.clone()),
             ("x-clax-via", "mcp".into()),

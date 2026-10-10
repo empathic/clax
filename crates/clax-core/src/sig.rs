@@ -795,15 +795,28 @@ mod tests {
         let v = agent_header_values(pairs).unwrap();
         assert_eq!(
             v,
-            [Some(b"s".as_slice()), None, None, None, Some(b"c".as_slice())]
+            [
+                Some(b"s".as_slice()),
+                None,
+                None,
+                None,
+                Some(b"c".as_slice())
+            ]
         );
         // A header given twice is refused, whatever its values and case.
         for twice in [
-            vec![("x-clax-session", b"a".as_slice()), ("x-clax-session", b"b")],
+            vec![
+                ("x-clax-session", b"a".as_slice()),
+                ("x-clax-session", b"b"),
+            ],
             vec![("x-clax-via", b"mcp".as_slice()), ("X-Clax-Via", b"mcp")],
             vec![("x-clax-git", b"".as_slice()), ("x-clax-git", b"")],
         ] {
-            assert_eq!(agent_header_values(twice.clone()), Err(SigError::Bad), "{twice:?}");
+            assert_eq!(
+                agent_header_values(twice.clone()),
+                Err(SigError::Bad),
+                "{twice:?}"
+            );
         }
     }
 
