@@ -808,9 +808,12 @@ release routes), `/api/live/site` and the other `/api/live/*` reads that
 return thread views, `/api/events`, `/api/stream*`, `/api/people*` and
 `GET /api/grants`. They serve the owner's browsers and the CLI used by
 hand; agents reach the same content through Filtered routes (a live
-page's threads through `comments_read`). Denied handlers that build no
-such view (`/api/token` for the shell, `/api/push`, `/healthz`, the shell
-pages) serve owner agents as today. A guard enforces the rule (§8.6).
+page's threads through `comments_read`). So do the browser content
+routes `/_blob/{asset}` and `/c/{aid}/v/{n}/…` and the artifact's shell
+page (`/a/{aid}…`, whose bootstrap embeds the artifact, its versions and
+threads). Denied handlers that build no such view (`/api/token` for the
+shell, `/api/push`, `/healthz`, the gallery and static shell files)
+serve owner agents as today. A guard enforces the rule (§8.6).
 `GET /api/questions*` is also person-scoped: the owner sees the questions
 of the owner's agents only, a person their agents' (§18).
 **Grant** routes are the grant flow.
@@ -1307,9 +1310,9 @@ The route table (§7.5) is the agents' contract. New routes:
   | `CLAX_CHANNEL=owner` | the owner, explicitly | not an agent channel (the owner's own scripts) |
   | `CLAX_CHANNEL=agent` | the plugins' wrapper `ensure-clax.sh exec` (every mode but `serve`, `stop`, `doctor`, `init`); Pi for its direct spawns | agent channel |
   | `CLAUDECODE=1` | Claude Code, in its Bash tool's and `!` commands' shells (observed in Claude Code 2.1.x; `scripts/smoke-claude-ask.sh` already unsets it to run Claude Code nested) | agent channel |
-  | `CODEX_THREAD_ID`, `CODEX_SANDBOX`, `CODEX_CI` | Codex, in its shell tool's environment (names present in the Codex 0.162.0 binary; which are set in the shell tool's environment is confirmed by the probe below) | agent channel |
-  | `GROK_SESSION_ID` | Grok Build, which passes it to the stdio MCP servers and hooks of a session (main spec §11); its shell tool's environment is confirmed by the probe | agent channel |
-  | none (Pi) | Pi sets no documented variable for its shell; the Clax Pi extension sets `CLAX_CHANNEL=agent` in the Pi process's environment when it loads, which Pi's bash tool inherits | agent channel |
+  | `CODEX_THREAD_ID`, `CODEX_CI` (any value), `CODEX_SANDBOX` (inside its sandbox) | Codex, in its shell tool's environment (probed with Codex 0.162.0 `codex exec`) | agent channel |
+  | `PI_CODING_AGENT=true` | Pi 0.73.1, which sets it in its own process; its bash tool inherits it, as it inherits the `CLAX_CHANNEL=agent` the Clax Pi extension sets when it loads | agent channel |
+  | (`GROK_SESSION_ID`, not read) | Grok Build passes it to the stdio MCP servers and hooks of a session (main spec §11); its shell tool was not probed, so the CLI does not read it until a probe confirms it | — |
 
   `scripts/probe-harness-env.sh`, run once under each harness by the
   implementer (and recorded in `docs/contract.md`), prints the
@@ -1761,3 +1764,10 @@ agents not to.
     and 403 `foreign_session` only for another credential's session; a
     path session acts with its own rights; a grant's `pid` is not kept.
   - §25: the sniffed-token hold on a victim's large-body permit.
+- **Amendment** (2026-10-09, plan Task 6, review rulings):
+  - §16's channel table lists what `scripts/probe-harness-env.sh` saw:
+    Pi sets `PI_CODING_AGENT=true`; `GROK_SESSION_ID` is not read until
+    Grok's shell is probed.
+  - §7.5: `/_blob`, `/c/…` and the artifact's shell page carry the
+    artifact's content, so they refuse the owner's agents with
+    `not_for_agents` as the other Denied views do.
