@@ -1134,7 +1134,8 @@ name is 409 `name_taken` when it looks like a protected name other than its
 holder's own: when they share a UTS #39 confusable skeleton, taken of the
 name's token form (case and diacritics folded, invisible and
 default-ignorable characters dropped, the right-to-left and left-to-right
-marks among them, whitespace and U+2800 as one space) and of the token form
+marks among them, spaces narrower than U+0020 such as the thin and hair
+spaces dropped, other whitespace and U+2800 as one space) and of the token form
 of the skeleton of the name as written. So `Аlex` with a Cyrillic `А`,
 `AIex`, `Ａｌｅｘ` and `Alex` with a Hangul filler collide with `Alex`, and the
 all-Cyrillic `Сосо` with `Coco`. A name holding a bidirectional embedding,
@@ -1411,9 +1412,11 @@ nothing else:
    agent gets, an unconnected LAN viewer's name reads `<name> (not
    connected)`.
 8. **Reserved display names** (§9.6): a LAN viewer cannot take a name that
-   looks like the owner's or a live agent's (409 `name_taken`), the owner
-   cannot take a live agent's, and a name with a bidirectional embedding,
-   override or isolate control is 400 `invalid_name`.
+   looks like the owner's, or a name that looks like a live agent's while
+   that agent is live (409 `name_taken`); the owner cannot take a name that
+   looks like a live agent's while it is live; and a name with a
+   bidirectional embedding, override or isolate control is 400
+   `invalid_name`.
 
 §19 covers agent-facing output and existing behaviour. New UI (the People
 link and page, the agent strip, owner chips, the Send menu's grouping) is
