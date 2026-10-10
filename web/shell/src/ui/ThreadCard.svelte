@@ -3,8 +3,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { isSubmitKey } from "../view/composer-model";
-  import type { Thread, Viewer } from "../threads";
-  import { threadLabel as anchorLabel } from "../view/whole-comment";
+  import { type Thread, type Viewer, anchorLabel as pickLabel } from "../threads";
   import { relativeTime } from "../format";
   import { type HistoryEvent, type VersionTag, addressedNote, commentVersion } from "../view/history-model";
   import Clip from "./Clip.svelte";
@@ -52,6 +51,8 @@
     onSelect(t: Thread): void; onSend(t: Thread): void; onResolve(t: Thread): void; onReply(t: Thread, body: string): void; onHover?(t: Thread | null): void;
   };
   let { t, n, now, selected, file, history, outdated, agent, when, marker = null, versions = [], onSeen, checked = false, onToggle, send: sendButton, fold, badge, meta, tools, clip, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
+  // A thread about the whole artifact (anchor kind `artifact`) has no spot to name.
+  const anchorLabel = (a: Thread["anchor"]) => (a.kind === "artifact" ? "The whole artifact" : pickLabel(a));
   let reply = $state("");
   // Send, Resolve and Reply are consequential: on a tainted keyboard trail
   // they take only a pointer's click (`guardedAction`), and `hint` says so
