@@ -698,6 +698,15 @@ impl Call {
         }
     }
 
+    /// Whether the call's own path or body carries `text`.
+    pub fn sends(&self, text: &str) -> bool {
+        self.path.contains(text)
+            || self
+                .body
+                .as_ref()
+                .is_some_and(|b| String::from_utf8_lossy(b).contains(text))
+    }
+
     /// Sends the call as `agent` against `w`: the status and every byte of
     /// the response, headers included.
     pub async fn run(&self, w: &World, agent: &AgentOf<'_>) -> String {
