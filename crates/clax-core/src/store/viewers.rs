@@ -33,15 +33,13 @@ pub(super) fn row_to_viewer(r: &rusqlite::Row<'_>) -> rusqlite::Result<Viewer> {
 }
 
 /// Checks a display name: at most [`MAX_NAME_CHARS`] characters, no control
-/// or bidirectional control characters, and one script (spec §9.6: a name
-/// cannot be made to render as another's; see [`crate::names::is_mixed_script`]).
-/// Returns it trimmed, `None` for an empty one.
+/// characters, and no bidirectional embedding, override or isolate
+/// controls ([`crate::names::has_bidi_control`]), which can make it render
+/// as another name. Any script, or mix of scripts, is fine. Returns it
+/// trimmed, `None` for an empty one.
 pub(super) fn checked_name(name: &str) -> Result<Option<&str>> {
     let n = name.trim();
-    if n.chars().any(char::is_control)
-        || n.chars().count() > MAX_NAME_CHARS
-        || crate::names::has_bidi_control(n)
-    {
+    if n.chars().any(char::is_control) || n.chars().count() > MAX_NAME_CHARS {
         return Err(CoreError::invalid(
             "invalid_name",
             format!(
@@ -49,43 +47,34 @@ pub(super) fn checked_name(name: &str) -> Result<Option<&str>> {
             ),
         ));
     }
-    if crate::names::is_mixed_script(n) {
+    if crate::names::has_bidi_control(n) {
         return Err(CoreError::invalid(
             "invalid_name",
-            "a display name is written in one script: no Latin mixed with Cyrillic, Greek or another script",
+            "a display name cannot hold bidirectional embedding, override or isolate characters (U+202A to U+202E, U+2066 to U+2069), which change how it reads",
         ));
     }
     Ok(Some(n).filter(|n| !n.is_empty()))
 }
 
-/// Refuses viewer `id` the display name `name` (spec §9.6) when its token
-/// form ([`crate::names::token_form`]) is the owner's or a connected
-/// person's other than its own, and, when `id` is the owner's or a
-/// connected person's, a live agent's name (§11).
+/// Refuses viewer `id` the display name `name` (spec §9.6) when it looks
+/// like ([`crate::names::CollisionKeys`]) a protected name other than its
+/// own: the owner's, a connected person's, or a live agent's.
 ///
 /// # Errors
 /// `name_taken` as above.
 fn check_viewer_name(tx: &rusqlite::Transaction<'_>, id: &str, name: &str) -> Result<()> {
-    let form = crate::names::token_form(name);
+    let key = crate::names::CollisionKeys::of(name);
     let taken = || CoreError::invalid("name_taken", format!("the name '{name}' is taken"));
     let mut stmt = tx.prepare_cached(
         "SELECT display_name FROM viewers WHERE display_name IS NOT NULL AND id != ?1
            AND (owner = 1 OR (person = 1 AND person_revoked_at IS NULL))",
     )?;
     for other in stmt.query_map(params![id], |r| r.get::<_, String>(0))? {
-        if crate::names::token_form(&other?) == form {
+        if crate::names::CollisionKeys::of(&other?).meets(&key) {
             return Err(taken());
         }
     }
-    let person: bool = tx
-        .query_row(
-            "SELECT owner = 1 OR (person = 1 AND person_revoked_at IS NULL) FROM viewers WHERE id = ?1",
-            params![id],
-            |r| r.get(0),
-        )
-        .optional()?
-        .unwrap_or(false);
-    if person && super::sessions::live_name_taken(tx, &form, None)? {
+    if super::sessions::live_name_looks_like(tx, &key)? {
         return Err(taken());
     }
     Ok(())

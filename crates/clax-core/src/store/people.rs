@@ -12,7 +12,7 @@ use super::sessions::EndReason;
 use super::viewers::{checked_name, row_to_viewer};
 use crate::audit::AuditCtx;
 use crate::model::Viewer;
-use crate::names::token_form;
+use crate::names::CollisionKeys;
 use crate::rights::Rights;
 use crate::secret::{self, Secret, constant_time_eq, sha256_hex};
 use crate::{CoreError, Result, new_public_id, new_ulid};
@@ -345,7 +345,7 @@ fn new_grant_id() -> String {
 }
 
 /// Checks `name` for a person (spec §11, §9.6): a valid, non-empty display
-/// name whose token form ([`crate::names::token_form`]) is neither the
+/// name that looks like ([`crate::names::CollisionKeys`]) neither the
 /// owner's, nor another connected person's, nor that of a viewer never
 /// invited and not revoked (other than viewer `except`; a revoked person's
 /// or a lapsed invite's name is free again), nor a live agent's name.
@@ -354,7 +354,7 @@ fn check_person_name(tx: &Transaction<'_>, name: &str, except: Option<&str>) -> 
     let Some(name) = checked_name(name)? else {
         return Err(CoreError::invalid("invalid_name", "a person needs a name"));
     };
-    let form = token_form(name);
+    let form = CollisionKeys::of(name);
     let taken = || CoreError::invalid("name_taken", format!("the name '{name}' is taken"));
     let mut stmt = tx.prepare(
         "SELECT display_name FROM viewers WHERE display_name IS NOT NULL
@@ -362,7 +362,7 @@ fn check_person_name(tx: &Transaction<'_>, name: &str, except: Option<&str>) -> 
     )?;
     let names = stmt.query_map(params![except], |r| r.get::<_, String>(0))?;
     for other in names {
-        if token_form(&other?) == form {
+        if CollisionKeys::of(&other?).meets(&form) {
             return Err(taken());
         }
     }
@@ -373,7 +373,7 @@ fn check_person_name(tx: &Transaction<'_>, name: &str, except: Option<&str>) -> 
     )?;
     let viewers = stmt.query_map(params![except], |r| r.get::<_, String>(0))?;
     for other in viewers {
-        if token_form(&other?) == form {
+        if CollisionKeys::of(&other?).meets(&form) {
             return Err(CoreError::invalid(
                 "name_taken",
                 format!(
@@ -382,12 +382,7 @@ fn check_person_name(tx: &Transaction<'_>, name: &str, except: Option<&str>) -> 
             ));
         }
     }
-    let agent: bool = tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sessions WHERE ended_at IS NULL AND name = ?1 COLLATE NOCASE)",
-        params![form],
-        |r| r.get(0),
-    )?;
-    if agent {
+    if super::sessions::live_name_looks_like(tx, &form)? {
         return Err(taken());
     }
     Ok(name.to_string())

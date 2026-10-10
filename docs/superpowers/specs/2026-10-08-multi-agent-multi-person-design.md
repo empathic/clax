@@ -1128,14 +1128,21 @@ commenting from a browser or script that is not signed in as them." with a
 switch, on by default. Off revokes the approval; on makes a new one. It is
 shown again beside the first invite. In every payload and view an agent
 gets, author lines for unconnected viewers read `<name> (not connected)`.
-A LAN viewer cannot take a display name equal (ignoring case and
-diacritics) to a connected person's or the owner's (409 `name_taken`), and a
-new person cannot be named after a live agent or after a viewer who was
+Display names may use any script, and any mix of scripts. Protected names
+are the owner's, each connected person's and each live agent's. A display
+name is 409 `name_taken` when it looks like a protected name other than its
+holder's own: when they share a UTS #39 confusable skeleton, taken of the
+name's token form (case and diacritics folded, invisible and
+default-ignorable characters dropped, the right-to-left and left-to-right
+marks among them, whitespace and U+2800 as one space) and of the token form
+of the skeleton of the name as written. So `Аlex` with a Cyrillic `А`,
+`AIex`, `Ａｌｅｘ` and `Alex` with a Hangul filler collide with `Alex`, and the
+all-Cyrillic `Сосо` with `Coco`. A name holding a bidirectional embedding,
+override or isolate control (U+202A–U+202E, U+2066–U+2069) is 400
+`invalid_name`. A new person also cannot be named after a viewer who was
 never invited and is not revoked (409 `name_taken`, saying to invite that
 viewer instead); a revoked person's or a lapsed invite's name is free
-again. A display name with a bidirectional control, or mixing scripts
-(Latin with Cyrillic or Greek, and so on), is 400 `invalid_name`, and
-invisible characters do not count when names are compared.
+again.
 
 ## 10. Routing to another person's agent
 
@@ -1403,9 +1410,10 @@ nothing else:
 7. **`(not connected)` author lines** (§9.6): in every payload and view an
    agent gets, an unconnected LAN viewer's name reads `<name> (not
    connected)`.
-8. **Reserved display names** (§9.6): a LAN viewer cannot take the owner's
-   display name (409 `name_taken`), and the owner cannot take a live
-   agent's name (409 `name_taken`).
+8. **Reserved display names** (§9.6): a LAN viewer cannot take a name that
+   looks like the owner's or a live agent's (409 `name_taken`), the owner
+   cannot take a live agent's, and a name with a bidirectional embedding,
+   override or isolate control is 400 `invalid_name`.
 
 §19 covers agent-facing output and existing behaviour. New UI (the People
 link and page, the agent strip, owner chips, the Send menu's grouping) is
@@ -1795,5 +1803,8 @@ agents not to.
   - §9.6: a new person cannot take the name of a viewer who was never
     invited and is not revoked; the refusal says to invite that viewer.
     A revoked person's or a lapsed invite's name is free again. Display
-    names refuse bidirectional controls and mixed scripts, and
-    comparisons ignore invisible characters (review I1).
+    names may use any script or mix of scripts; they refuse bidirectional
+    embedding, override and isolate controls, and a name that looks like
+    the owner's, a connected person's or a live agent's (a shared UTS #39
+    skeleton) is `name_taken` (review I1, re-review N1); §19 item 8 lists
+    what this changes for a single owner.
