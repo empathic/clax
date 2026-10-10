@@ -8,6 +8,7 @@
 
 use super::Store;
 use crate::audit::{AuditCtx, AuditKind, AuditRecord};
+use crate::visibility::placeholder::ApprovalState;
 use crate::{CoreError, Result, is_public_id, new_ulid};
 use rusqlite::{OptionalExtension, Row, params};
 use serde::Serialize;
@@ -506,6 +507,40 @@ impl Store {
             Ok(stmt
                 .query_map(params![approver], row_to_approval)?
                 .collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// Where `approver`'s (`None`: the owner) approval of any of `authors`
+    /// (public IDs, or [`UNCONNECTED`]) stands at thread `thread` of
+    /// artifact `artifact` (spec §8.3): `requested` while a request is open
+    /// there (for the thread, or for the artifact outside threads), else
+    /// `declined` when one was declined, else `none`.
+    pub fn request_state(
+        &self,
+        approver: Option<&str>,
+        artifact: &str,
+        thread: &str,
+        authors: &[String],
+    ) -> Result<ApprovalState> {
+        let authors = serde_json::to_string(authors).expect("strings serialise");
+        let (open, declined): (bool, bool) = self.with_read(|c| {
+            Ok(c.prepare_cached(
+                "SELECT COALESCE(MAX(status = 'open'), 0), COALESCE(MAX(status = 'declined'), 0)
+                 FROM approval_requests
+                 WHERE COALESCE(approver, '') = COALESCE(?1, '') AND artifact_id = ?2
+                   AND (thread_id = ?3 OR thread_id IS NULL)
+                   AND author IN (SELECT value FROM json_each(?4))",
+            )?
+            .query_row(params![approver, artifact, thread, authors], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?)
+        })?;
+        Ok(if open {
+            ApprovalState::Requested
+        } else if declined {
+            ApprovalState::Declined
+        } else {
+            ApprovalState::None
         })
     }
 }

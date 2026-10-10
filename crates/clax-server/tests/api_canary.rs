@@ -5,10 +5,11 @@
 //! agents' only; and the owner's question list holds the owner's agents'
 //! questions only.
 //!
-//! The filter is not live yet: a `Filtered` route answers a person's agent
-//! 503 `not_yet`, and the owner's agents still get today's content. So the
-//! sweeps as the owner's agent, and through the real clients, are ignored
-//! until the tasks that filter them lift them.
+//! The filter is live for threads, comments and clips; every other
+//! `Filtered` route answers a person's agent 503 `not_yet`, and the owner's
+//! agents still get today's content there. So the sweeps as the owner's
+//! agent, and through the real clients, are ignored until the tasks that
+//! filter them lift them.
 
 use crate::common::TestServer;
 use crate::common::clients::{HARNESS_ENVS, RealClients};
@@ -440,7 +441,6 @@ async fn cli_under_a_harness_environment_carries_no_canary() {
 }
 
 #[tokio::test]
-#[ignore = "lifted by Task 9: GET /api/threads is filtered for the owner's agents then"]
 async fn all_threads_listing_is_filtered_for_owner_agents() {
     let w = World::two_people().await;
     let ts = &w.ts;

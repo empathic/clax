@@ -7,10 +7,10 @@ use crate::agent::{Agent, TokenOrAgent};
 use crate::audit::DeferredAudit;
 use crate::auth::Caller;
 use crate::error::ApiError;
-use crate::feedback::{apply, thread_view, thread_views};
+use crate::feedback::{VisFor, apply, thread_view, thread_views};
 use crate::identity::Identity;
 use crate::state::AppState;
-use crate::viewer::{SameOrigin, author};
+use crate::viewer::{SameOrigin, acting_viewer, author};
 use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::multipart::MultipartRejection;
@@ -112,6 +112,40 @@ fn acting(c: &Caller) -> (Option<String>, Option<String>) {
     (c.session().map(str::to_string), grant)
 }
 
+/// What a person's agent's comment needs (spec §6.7): a session, since a
+/// person's own comments are written in their browser and agent replies
+/// come from agent sessions (400 `no_session`); and no `via_page`, which
+/// only a page's browser sets (400 `invalid_via_page`). Other callers pass.
+fn person_agent_comments(c: &Caller, via_page: bool) -> Result<(), ApiError> {
+    if let Caller::PersonAgent { session, .. } = c {
+        if session.is_none() {
+            return Err(ApiError::bad_request(
+                "no_session",
+                "an agent of another machine comments from a session: send X-Clax-Session",
+            ));
+        }
+        if via_page {
+            return Err(ApiError::bad_request(
+                "invalid_via_page",
+                "via_page marks a page's comments, which a browser writes",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// For a person's agent, that it may read the threads of `id` it writes
+/// to: an agent replies to, resolves, reopens or sends only threads it
+/// can list (403 `not_permitted`).
+async fn sees_threads<N: crate::agent::Need>(
+    a: &Agent<N>,
+    s: &AppState,
+    id: &ArtifactId,
+) -> Result<(), ApiError> {
+    a.also_needs(s, (clax_core::rights::RightType::Comments, "read"), id)
+        .await
+}
+
 /// The thread `tid` if it belongs to the live artifact `id`.
 fn thread_of(st: &Store, id: &ArtifactId, tid: &str) -> clax_core::Result<Thread> {
     match st.get_thread(tid)? {
@@ -139,11 +173,13 @@ pub async fn list(
     let with_path = a.holds_token();
     let codex = s.feedback_ctx().codex_push();
     let limit = q.limit.unwrap_or(DEFAULT_THREAD_PAGE).clamp(1, 200);
+    let vf = VisFor::of(&a.caller, &s);
     let (threads, next) = s
         .store_call(move |st| {
+            let vis = vf.build(st)?;
             let (ts, next) =
                 st.list_threads(&id, q.include_resolved, q.cursor.as_deref(), limit)?;
-            Ok((thread_views(st, &ts, codex, with_path)?, next))
+            Ok((vis.filter_threads(st, &ts, codex, with_path)?, next))
         })
         .await?;
     Ok(Json(json!({"threads": threads, "next_cursor": next})))
@@ -160,17 +196,22 @@ pub struct AllQuery {
 /// files, threads}]}`. `files` names the current version's files; each
 /// artifact's `threads` are thread views with `clip_path`, oldest first, and
 /// an artifact with none is left out. Artifacts come in the order of
-/// `GET /api/artifacts`.
+/// `GET /api/artifacts`. For the owner's agents each field goes through
+/// their visibility ([`crate::feedback::Vis`]): a withheld title is null
+/// with `withheld: {authors}`, withheld file names are left out and counted
+/// in `files_withheld`, and the threads are filtered as everywhere.
 pub async fn list_all(
     State(s): State<AppState>,
-    _a: TokenOrAgent<crate::agent::ThreadsAll>,
+    TokenOrAgent(agent): TokenOrAgent<crate::agent::ThreadsAll>,
     q: Result<Query<AllQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let codex = s.feedback_ctx().codex_push();
+    let vf = VisFor::of(&agent.caller, &s);
     // Every thread of the home: the bulk lane.
     let artifacts = s
         .store_call_bulk(move |st| {
+            let vis = vf.build(st)?;
             let mut out = Vec::new();
             for a in st.list_artifacts()? {
                 let id = ArtifactId::parse(&a.id)?;
@@ -188,17 +229,20 @@ pub async fn list_all(
                 if threads.is_empty() {
                     continue;
                 }
-                let files: Vec<String> = st
-                    .get_version(&id, a.current_version)?
-                    .map(|v| v.files.into_keys().collect())
+                let version = st.get_version(&id, a.current_version)?;
+                let files: Vec<&String> = version
+                    .as_ref()
+                    .map(|v| v.files.keys().collect())
                     .unwrap_or_default();
-                out.push(json!({
+                let mut entry = json!({
                     "artifact_id": a.id,
                     "title": a.title,
                     "current_version": a.current_version,
                     "files": files,
-                    "threads": thread_views(st, &threads, codex, true)?,
-                }));
+                    "threads": vis.filter_threads(st, &threads, codex, true)?,
+                });
+                vis.filter_listing_entry(st, &a, version.as_ref(), &mut entry)?;
+                out.push(entry);
             }
             Ok(out)
         })
@@ -215,29 +259,51 @@ pub async fn get(
     let id = parse_id(&aid)?;
     let with_path = a.holds_token();
     let codex = s.feedback_ctx().codex_push();
+    let vf = VisFor::of(&a.caller, &s);
     let view = s
-        .store_call(move |st| thread_view(st, &thread_of(st, &id, &tid)?, codex, with_path))
+        .store_call(move |st| {
+            let vis = vf.build(st)?;
+            vis.filter_thread(st, &thread_of(st, &id, &tid)?, codex, with_path)
+        })
         .await?;
     Ok(Json(json!({"thread": view})))
 }
 
-/// The clip PNG, sandboxed like `/_blob`.
+/// The clip PNG, sandboxed like `/_blob`. A clip an agent's visibility
+/// withholds (spec §8.3) is 403 `withheld`, naming its `authors`: none of
+/// it is read.
 pub async fn clip(
     State(s): State<AppState>,
-    _a: Agent<crate::agent::ThreadClip>,
+    a: Agent<crate::agent::ThreadClip>,
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let (aid, tid) = path(p)?;
     let id = parse_id(&aid)?;
+    let vf = VisFor::of(&a.caller, &s);
     let bytes = s
         .store_call(move |st| {
+            let vis = vf.build(st)?;
             let t = thread_of(st, &id, &tid)?;
             if !t.has_clip {
                 return Err(CoreError::NotFound);
             }
-            Ok(std::fs::read(st.home().clip_path(&id, &t.id))?)
+            if let Some(authors) = vis.filter_clip(st, &t)? {
+                return Ok(Err(authors));
+            }
+            Ok(Ok(std::fs::read(st.home().clip_path(&id, &t.id))?))
         })
         .await?;
+    let bytes = match bytes {
+        Ok(b) => b,
+        Err(authors) => {
+            let mut e = ApiError::forbidden(
+                "withheld",
+                "this clip is withheld until your person approves its authors",
+            );
+            e.extra.insert("authors".into(), json!(authors));
+            return Err(e);
+        }
+    };
     Ok((
         [
             (header::CONTENT_TYPE, "image/png"),
@@ -328,8 +394,8 @@ pub(crate) fn resolve_named(
 
 /// Creates the thread `t` on `id`, sends it when its body mentions
 /// `@agent` or a live agent's `@name` (unless the page wrote it), publishes
-/// the `thread` event, and returns the thread view (with `clip_path` when
-/// `with_path`) and the `@name`s that reached no agent. Both are recorded under `audit`.
+/// the `thread` event, and returns the thread and the `@name`s that reached
+/// no agent. Both are recorded under `audit`.
 pub(crate) fn create_thread_now(
     st: &Store,
     ctx: &crate::feedback::FeedbackCtx,
@@ -337,28 +403,18 @@ pub(crate) fn create_thread_now(
     id: &ArtifactId,
     t: NewThread,
     live_page: bool,
-    with_path: bool,
-) -> clax_core::Result<(Value, Vec<String>)> {
+) -> clax_core::Result<(Thread, Vec<String>)> {
     let mention = !t.via_page && mentions_agent(&t.body);
     let named = (!t.via_page).then(|| t.body.clone());
     let thread = st.create_thread(audit, id, t)?;
-    announce_new_thread(
-        st,
-        ctx,
-        audit,
-        thread,
-        mention,
-        named.as_deref(),
-        live_page,
-        with_path,
-    )
+    announce_new_thread(st, ctx, audit, thread, mention, named.as_deref(), live_page)
 }
 
 /// What follows writing a new thread: sends it to the agent when its first
 /// comment `mention`s one, and to each live agent `named` (the comment's
 /// body, `None` for a page's) names with `@name` ([`resolve_named`]),
-/// announces it, and answers its view and the `@name`s that reached no
-/// agent. Sends are recorded under `audit`.
+/// announces it, and answers it as it is then and the `@name`s that
+/// reached no agent. Sends are recorded under `audit`.
 pub(crate) fn announce_new_thread(
     st: &Store,
     ctx: &crate::feedback::FeedbackCtx,
@@ -367,8 +423,7 @@ pub(crate) fn announce_new_thread(
     mention: bool,
     named: Option<&str>,
     live_page: bool,
-    with_path: bool,
-) -> clax_core::Result<(Value, Vec<String>)> {
+) -> clax_core::Result<(Thread, Vec<String>)> {
     if mention {
         let (sent, touched) = st.send_to_agent(audit, &thread.id)?;
         thread = sent;
@@ -386,10 +441,7 @@ pub(crate) fn announce_new_thread(
         }
     }
     publish_thread(ctx, st, &thread)?;
-    Ok((
-        thread_view(st, &thread, ctx.codex_push(), with_path)?,
-        unresolved,
-    ))
+    Ok((thread, unresolved))
 }
 
 /// Multipart fields: `anchor` (JSON), `body`, `version`, optional `clip` (PNG),
@@ -509,6 +561,7 @@ pub async fn create(
         ApiError::bad_request("invalid_anchor", "multipart field 'anchor' is required")
     })?)
     .map_err(|e| ApiError::bad_request("invalid_anchor", e.to_string()))?;
+    person_agent_comments(&a.caller, via_page)?;
     if via_page && anchor.is_whole() {
         return Err(ApiError::bad_request(
             "invalid_anchor",
@@ -531,11 +584,13 @@ pub async fn create(
     let ctx = s.feedback_ctx();
     let with_path = a.holds_token();
     let live_page = s.live_ids.contains(id.as_str());
+    let vf = VisFor::of(&a.caller, &s);
     let (view, unresolved) = s
         .store_call(move |st| {
+            let vis = vf.build(st)?;
             let audit = audit.resolve(st)?;
             let (author_name, author_public_id) = author(st, &who)?;
-            create_thread_now(
+            let (thread, unresolved) = create_thread_now(
                 st,
                 &ctx,
                 &audit,
@@ -550,8 +605,9 @@ pub async fn create(
                     via_page,
                 },
                 live_page,
-                with_path,
-            )
+            )?;
+            let view = vis.filter_thread(st, &thread, ctx.codex_push(), with_path)?;
+            Ok((view, unresolved))
         })
         .await?;
     let mut out = json!({"thread": view});
@@ -647,17 +703,21 @@ pub async fn comment(
     if agent && !may_act_as_agent(&a) {
         return Err(ApiError::unauthorized());
     }
+    person_agent_comments(&a.caller, b.via_page)?;
     if !agent {
         // Not an agent reply: writing a comment.
         a.also_needs(&s, (clax_core::rights::RightType::Comments, "write"), &id)
             .await?;
     }
+    sees_threads(&a, &s, &id).await?;
     let with_path = a.holds_token();
     let (session, grant) = acting(&a.caller);
     let ctx = s.feedback_ctx();
     let live_page = s.live_ids.contains(id.as_str());
+    let vf = VisFor::of(&a.caller, &s);
     let o = s
         .store_call(move |st| {
+            let vis = vf.build(st)?;
             let t = thread_of(st, &id, &tid)?;
             let mut touched = Touched::default();
             let mut unresolved = Vec::new();
@@ -726,8 +786,8 @@ pub async fn comment(
             apply(&ctx, st, &touched);
             let t = thread_of(st, &id, &tid)?;
             publish_thread(&ctx, st, &t)?;
-            let view = thread_view(st, &t, ctx.codex_push(), with_path)?;
-            let mut out = json!({"comment": c, "thread": view});
+            let view = vis.filter_thread(st, &t, ctx.codex_push(), with_path)?;
+            let mut out = json!({"comment": vis.filter_comment(&aid, &c), "thread": view});
             if addressed {
                 out["addressed"] = json!("pending");
             }
@@ -786,10 +846,13 @@ pub async fn send(
         serde_json::from_slice(&raw)
             .map_err(|e| ApiError::bad_request("invalid_json", e.to_string()))?
     };
+    sees_threads(&a, &s, &id).await?;
     let ctx = s.feedback_ctx();
     let with_path = a.holds_token();
+    let vf = VisFor::of(&a.caller, &s);
     let view = s
         .store_call(move |st| {
+            let vis = vf.build(st)?;
             thread_of(st, &id, &tid)?;
             let to = send_target(st, &id, b.to.as_deref())?;
             let audit = audit.resolve(st)?;
@@ -801,7 +864,7 @@ pub async fn send(
             )?;
             apply(&ctx, st, &touched);
             publish_thread(&ctx, st, &t)?;
-            thread_view(st, &t, ctx.codex_push(), with_path)
+            vis.filter_thread(st, &t, ctx.codex_push(), with_path)
         })
         .await?;
     Ok(Json(json!({"thread": view})))
@@ -835,14 +898,17 @@ pub async fn send_batch(
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
     let b = body(req)?;
+    sees_threads(&a, &s, &id).await?;
     let ctx = s.feedback_ctx();
     let with_path = a.holds_token();
+    let vf = VisFor::of(&a.caller, &s);
     let agent_person = match &a.caller {
         crate::auth::Caller::PersonAgent { person, .. } => Some(person.clone()),
         _ => None,
     };
     let v = s
         .store_call(move |st| {
+            let vis = vf.build(st)?;
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
             let to = send_target(st, &id, b.to.as_deref())?;
             let audit = audit.resolve(st)?;
@@ -867,11 +933,7 @@ pub async fn send_batch(
                     thread: view.clone(),
                 });
             }
-            let views = if with_path {
-                thread_views(st, &sent, ctx.codex_push(), true)?
-            } else {
-                public
-            };
+            let views = vis.filter_threads(st, &sent, ctx.codex_push(), with_path)?;
             Ok(json!({"batch": r.batch, "sent": r.sent, "unchanged": r.unchanged, "threads": views}))
         })
         .await?;
@@ -912,12 +974,15 @@ pub async fn resolve(
     if agent && !may_act_as_agent(&a) {
         return Err(ApiError::unauthorized());
     }
+    sees_threads(&a, &s, &id).await?;
     let with_path = a.holds_token();
     let (session, grant) = acting(&a.caller);
     let ctx = s.feedback_ctx();
     let live = s.live_ids.contains(id.as_str());
+    let vf = VisFor::of(&a.caller, &s);
     let o = s
         .store_call(move |st| {
+            let vis = vf.build(st)?;
             let t = thread_of(st, &id, &tid)?;
             let mut touched = Touched::default();
             let mut resolver: Option<Session> = None;
@@ -930,7 +995,7 @@ pub async fn resolve(
                 resolver = Some(sess);
                 by
             } else {
-                match who.ensure_viewer(st)? {
+                match acting_viewer(st, &who)? {
                     Some(v) => format!("viewer:{}", v.public_id),
                     None => "viewer:anonymous".to_string(),
                 }
@@ -974,7 +1039,7 @@ pub async fn resolve(
             });
             apply(&ctx, st, &touched);
             publish_thread(&ctx, st, &t)?;
-            let view = thread_view(st, &t, ctx.codex_push(), with_path)?;
+            let view = vis.filter_thread(st, &t, ctx.codex_push(), with_path)?;
             Ok(Outcome::Done(json!({"thread": view})))
         })
         .await?;
@@ -1047,11 +1112,14 @@ pub async fn reopen(
         return Err(ApiError::unauthorized());
     }
     require_interact(&s, authed, who).await?;
+    sees_threads(&a, &s, &id).await?;
     let with_path = a.holds_token();
     let (session, grant) = acting(&a.caller);
     let ctx = s.feedback_ctx();
+    let vf = VisFor::of(&a.caller, &s);
     let o = s
         .store_call(move |st| {
+            let vis = vf.build(st)?;
             let t = thread_of(st, &id, &tid)?;
             if agent {
                 agent_session(st, &session, grant.as_deref())?;
@@ -1063,7 +1131,7 @@ pub async fn reopen(
             let t = st.reopen_thread(&audit, &tid)?;
             publish_thread(&ctx, st, &t)?;
             Ok(Outcome::Done(
-                json!({"thread": thread_view(st, &t, ctx.codex_push(), with_path)?}),
+                json!({"thread": vis.filter_thread(st, &t, ctx.codex_push(), with_path)?}),
             ))
         })
         .await?;

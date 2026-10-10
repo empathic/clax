@@ -460,7 +460,19 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
 
 /// The `Filtered` needs whose filter is live: a person's agent reaches
 /// them. Tasks 9–12 add to it as they filter each route.
-pub const FILTERED_LIVE: &[&str] = &[];
+pub const FILTERED_LIVE: &[&str] = &[
+    // Threads, comments and clips (Task 9).
+    "ThreadsAll",
+    "ThreadsList",
+    "ThreadGet",
+    "ThreadClip",
+    "ThreadsCreate",
+    "ThreadComment",
+    "ThreadResolve",
+    "ThreadReopen",
+    "ThreadSend",
+    "ThreadsSendBatch",
+];
 
 /// The need of the route `matched` serves for `method` (`HEAD` as `GET`).
 pub fn need_of(method: &Method, matched: &str) -> Option<NeedInfo> {
