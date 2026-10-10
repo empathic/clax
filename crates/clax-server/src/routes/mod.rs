@@ -1584,6 +1584,10 @@ mod agents {
         "grants::list_invites",
         "grants::create_invite",
         "grants::revoke_invite",
+        "assets::blob",
+        "content::index",
+        "content::file",
+        "shell::artifact_page",
     ];
 
     /// Routes whose handler is not a module function: each, and the text

@@ -1,7 +1,7 @@
 //! Comment threads (spec §6 "Comments"): create with anchor and clip, comment,
 //! send to the agent, resolve, list, and serve clips.
 
-use super::artifacts::{body, parse_id, path, publishing_session, sees_sessions};
+use super::artifacts::{body, parse_id, path, publishing_session};
 use super::assets::multipart_error;
 use crate::agent::{Agent, TokenOrAgent};
 use crate::audit::DeferredAudit;
@@ -94,11 +94,12 @@ fn agent_session(
     st.get_session(&sid)?.ok_or(CoreError::NotFound)
 }
 
-/// Whether `c` may act as an agent (reply, resolve, reopen or delete with
-/// `as: agent`): the owner's token or an agent channel. Its session decides
-/// which agent ([`agent_session`]).
-fn may_act_as_agent(c: &Caller) -> bool {
-    sees_sessions(c) || c.is_agent()
+/// Whether the caller of `a` may act as an agent (reply, resolve, reopen
+/// or delete with `as: agent`), and skips the name a viewer needs to
+/// reopen or delete: the daemon token or an agent of another machine. Its
+/// session decides which agent ([`agent_session`]).
+fn may_act_as_agent<N: crate::agent::Need>(a: &Agent<N>) -> bool {
+    a.holds_token() || a.caller.is_agent()
 }
 
 /// The session and grant an agent action of `c` names.
@@ -134,7 +135,7 @@ pub async fn list(
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
-    let with_path = sees_sessions(&a.caller);
+    let with_path = a.holds_token();
     let codex = s.feedback_ctx().codex_push();
     let limit = q.limit.unwrap_or(DEFAULT_THREAD_PAGE).clamp(1, 200);
     let (threads, next) = s
@@ -211,7 +212,7 @@ pub async fn get(
 ) -> Result<Json<Value>, ApiError> {
     let (aid, tid) = path(p)?;
     let id = parse_id(&aid)?;
-    let with_path = sees_sessions(&a.caller);
+    let with_path = a.holds_token();
     let codex = s.feedback_ctx().codex_push();
     let view = s
         .store_call(move |st| thread_view(st, &thread_of(st, &id, &tid)?, codex, with_path))
@@ -422,7 +423,7 @@ pub async fn create(
     let clip_error = clip.as_deref().and_then(clip_problem);
     let clip = if clip_error.is_some() { None } else { clip };
     let ctx = s.feedback_ctx();
-    let with_path = sees_sessions(&a.caller);
+    let with_path = a.holds_token();
     let view = s
         .store_call(move |st| {
             let audit = audit.resolve(st)?;
@@ -531,7 +532,7 @@ pub async fn comment(
             "addressed is for live pages; publish with addresses instead",
         ));
     }
-    if agent && !may_act_as_agent(&a.caller) {
+    if agent && !may_act_as_agent(&a) {
         return Err(ApiError::unauthorized());
     }
     if !agent {
@@ -539,7 +540,7 @@ pub async fn comment(
         a.also_needs(&s, (clax_core::rights::RightType::Comments, "write"), &id)
             .await?;
     }
-    let with_path = sees_sessions(&a.caller);
+    let with_path = a.holds_token();
     let (session, grant) = acting(&a.caller);
     let ctx = s.feedback_ctx();
     let o = s
@@ -657,7 +658,7 @@ pub async fn send(
             .map_err(|e| ApiError::bad_request("invalid_json", e.to_string()))?
     };
     let ctx = s.feedback_ctx();
-    let with_path = sees_sessions(&a.caller);
+    let with_path = a.holds_token();
     let view = s
         .store_call(move |st| {
             thread_of(st, &id, &tid)?;
@@ -706,7 +707,7 @@ pub async fn send_batch(
     let id = parse_id(&path(aid)?)?;
     let b = body(req)?;
     let ctx = s.feedback_ctx();
-    let with_path = sees_sessions(&a.caller);
+    let with_path = a.holds_token();
     let v = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
@@ -769,10 +770,10 @@ pub async fn resolve(
     let (aid, tid) = path(p)?;
     let id = parse_id(&aid)?;
     let agent = acting_as(&raw)?;
-    if agent && !may_act_as_agent(&a.caller) {
+    if agent && !may_act_as_agent(&a) {
         return Err(ApiError::unauthorized());
     }
-    let with_path = sees_sessions(&a.caller);
+    let with_path = a.holds_token();
     let (session, grant) = acting(&a.caller);
     let ctx = s.feedback_ctx();
     let live = s.live_ids.contains(id.as_str());
@@ -892,12 +893,12 @@ pub async fn reopen(
     let (aid, tid) = path(p)?;
     let id = parse_id(&aid)?;
     let agent = acting_as(&raw)?;
-    let authed = may_act_as_agent(&a.caller);
+    let authed = may_act_as_agent(&a);
     if agent && !authed {
         return Err(ApiError::unauthorized());
     }
     require_interact(&s, authed, who).await?;
-    let with_path = sees_sessions(&a.caller);
+    let with_path = a.holds_token();
     let (session, grant) = acting(&a.caller);
     let ctx = s.feedback_ctx();
     let o = s
@@ -944,7 +945,7 @@ pub async fn delete(
     let id = parse_id(&aid)?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let agent = agent_as(q.as_.as_deref())?;
-    let authed = may_act_as_agent(&a.caller);
+    let authed = may_act_as_agent(&a);
     if agent && !authed {
         return Err(ApiError::unauthorized());
     }

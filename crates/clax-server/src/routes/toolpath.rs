@@ -269,14 +269,17 @@ where
 /// read transaction on a store worker, and writes as it reads, so memory
 /// holds a few chunks and one path's actors, never the document. A refusal
 /// is an error status, since it comes before the first byte; a failure
-/// after it aborts the transfer ([`stream_export`]).
+/// after it aborts the transfer ([`stream_export`]). The history holds
+/// every person's content unfiltered, so the owner's agents get 403
+/// `not_for_agents` (spec 2026-10-08-multi-agent-multi-person §7.5).
 pub async fn export(
     axum::extract::State(s): axum::extract::State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    d: crate::agent::DeniedToGrants,
     who: Identity,
     axum::extract::RawQuery(query): axum::extract::RawQuery,
 ) -> Result<axum::response::Response, crate::error::ApiError> {
     owner_reads_history(&who)?;
+    d.refuse_agents()?;
     let req = export_query(query.as_deref().unwrap_or(""))?;
     let content_type = match req.format {
         project::Format::Json => "application/json",

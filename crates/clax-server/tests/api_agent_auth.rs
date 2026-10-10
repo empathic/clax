@@ -1204,3 +1204,43 @@ async fn the_token_never_names_a_grants_session_on_any_session_route() {
     }
     assert!(checked >= 20, "{checked}");
 }
+
+/// `Agent<N>` itself keeps a person's agent off a route that serves the
+/// owner's agents only (`need!(…, owner_agents_only)`), whatever reached
+/// it: `verify_layer` refuses such a request first over HTTP, so the
+/// extractor is driven directly with a verified grant.
+#[tokio::test]
+async fn the_extractor_refuses_a_persons_agent_on_an_owner_agents_route() {
+    use axum::extract::FromRequestParts;
+    use clax_server::agent::{Agent, ThreadsAll, ThreadsList, VerifiedGrant};
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let s2 = slot.clone();
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), move |st| {
+        *s2.lock().unwrap() = Some(st.clone());
+    })
+    .await;
+    let state = slot.lock().unwrap().take().unwrap();
+    let sam = ts.connect_person("Sam", "clax:full").await;
+    let parts = || {
+        let (mut parts, ()) = axum::http::Request::get("/api/threads")
+            .header("authorization", format!("Clax-Grant {}", sam.access()))
+            .body(())
+            .unwrap()
+            .into_parts();
+        parts.extensions.insert(VerifiedGrant {
+            grant_id: sam.grant_id(),
+        });
+        parts
+    };
+    let e = Agent::<ThreadsAll>::from_request_parts(&mut parts(), &state)
+        .await
+        .err()
+        .expect("refused");
+    assert_eq!((e.status.as_u16(), e.code), (403, "forbidden"));
+    // A route open to grants goes on to its other checks.
+    let e = Agent::<ThreadsList>::from_request_parts(&mut parts(), &state)
+        .await
+        .err()
+        .expect("not yet");
+    assert_eq!((e.status.as_u16(), e.code), (503, "not_yet"));
+}

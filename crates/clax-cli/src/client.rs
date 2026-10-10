@@ -1209,6 +1209,11 @@ pub(crate) mod tests {
         record_failed_upgrade(home, version, &canonical(exe), "0.0.0", reason);
     }
 
+    /// A client of a daemon that is not running (nothing is sent).
+    pub(crate) fn client_for_test() -> Client {
+        Client::from_info(info("0.1.0"))
+    }
+
     fn info(version: &str) -> DaemonInfo {
         DaemonInfo {
             port: 1,

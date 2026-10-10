@@ -541,6 +541,15 @@ impl World {
             };
             out.push(Call::new("GET", &p, None));
         }
+        out.push(Call::new(
+            "POST",
+            "/mcp",
+            Some(
+                json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "sweep", "version": "0"}}}),
+            ),
+        ));
         out.extend(deletes);
         out
     }
@@ -598,10 +607,38 @@ fn body_for(method: &str, path: &str, thread: &str) -> Option<Value> {
     })
 }
 
+/// Whether `method path` (a concrete path, with any query) is a Denied
+/// route: none of `agent::ROUTES` matches it.
+fn denied(method: &str, path: &str) -> bool {
+    let path = path.split('?').next().unwrap();
+    let parts: Vec<&str> = path.split('/').collect();
+    !clax_server::agent::ROUTES.iter().any(|(m, p, _)| {
+        let pattern: Vec<&str> = p.split('/').collect();
+        let same = |a: &str, b: &str| {
+            a == b || (a.starts_with('{') && !a.starts_with("{*")) || {
+                // `threads:send`, `docs:batch`: literal after the ID.
+                a.contains(':') && a.split(':').nth(1) == b.split(':').nth(1) && a.starts_with('{')
+            }
+        };
+        *m == method
+            && match pattern.iter().position(|x| x.starts_with("{*")) {
+                Some(i) => {
+                    parts.len() > i && pattern[..i].iter().zip(&parts).all(|(a, b)| same(a, b))
+                }
+                None => {
+                    pattern.len() == parts.len()
+                        && pattern.iter().zip(&parts).all(|(a, b)| same(a, b))
+                }
+            }
+    })
+}
+
 /// One request of the sweep.
 #[derive(Clone, Debug)]
 pub struct Call {
     pub name: String,
+    /// The route refuses a person's agent (no `need!`): a Denied route.
+    pub denied: bool,
     pub method: String,
     pub path: String,
     pub body: Option<Vec<u8>>,
@@ -610,6 +647,7 @@ pub struct Call {
 impl Call {
     fn new(method: &str, path: &str, body: Option<Value>) -> Call {
         Call {
+            denied: denied(method, path),
             name: format!("{method} {path}"),
             method: method.into(),
             path: path.into(),
@@ -619,6 +657,7 @@ impl Call {
 
     fn raw(method: &str, path: &str, body: Vec<u8>) -> Call {
         Call {
+            denied: denied(method, path),
             name: format!("{method} {path} (not JSON)"),
             method: method.into(),
             path: path.into(),
@@ -664,8 +703,9 @@ impl Call {
             .get("content-type")
             .is_some_and(|v| v.to_str().unwrap_or("").starts_with("text/event-stream"));
         let body = if streaming {
-            // An event stream: what arrives in the first moments of it.
-            read_for(res, std::time::Duration::from_millis(300)).await
+            // An event stream: up to its first whole frame (an event or a
+            // keep-alive), which the daemon sends at once.
+            first_frame(res, &self.name).await
         } else {
             String::from_utf8_lossy(&res.bytes().await.unwrap_or_default()).into_owned()
         };
@@ -673,15 +713,25 @@ impl Call {
     }
 }
 
-/// What `res` sends within `d`.
-async fn read_for(mut res: reqwest::Response, d: std::time::Duration) -> String {
+/// What event stream `res` sends up to the end of its first frame (a blank
+/// line); fails when none comes.
+async fn first_frame(mut res: reqwest::Response, name: &str) -> String {
     let mut out = Vec::new();
-    let _ = tokio::time::timeout(d, async {
+    let got = tokio::time::timeout(std::time::Duration::from_secs(30), async {
         while let Ok(Some(chunk)) = res.chunk().await {
             out.extend_from_slice(&chunk);
+            if out.windows(2).any(|w| w == b"\n\n") {
+                return true;
+            }
         }
+        false
     })
     .await;
+    assert!(
+        matches!(got, Ok(true)),
+        "{name}: the stream sent no whole frame: {}",
+        String::from_utf8_lossy(&out)
+    );
     String::from_utf8_lossy(&out).into_owned()
 }
 
