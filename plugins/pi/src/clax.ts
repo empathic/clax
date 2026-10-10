@@ -1288,11 +1288,11 @@ class Tools {
    * default [`DEFAULT_WAIT_S`]) for feedback and late answers. Returns the
    * result object (`call_again` only when nothing was handed over) and the
    * handover, whose `text` is the trailing block. */
-  async waitForFeedback(ctx: ExtensionContext, a: Static<typeof WaitArgs>): Promise<{ result: Json } & Handover> {
+  async waitForFeedback(ctx: ExtensionContext, a: Static<typeof WaitArgs>, signal?: AbortSignal): Promise<{ result: Json } & Handover> {
     const c = this.clientFor(ctx);
     const artifact = a.url_or_id === undefined ? undefined : (await this.resolveRef(c, a.url_or_id)).id;
     const secs = Math.min(Math.max(a.timeout_s ?? DEFAULT_WAIT_S, MIN_WAIT_S), MAX_WAIT_S);
-    const r = await this.call(() => c.feedback("wait", secs, artifact));
+    const r = await this.call(() => c.feedback("wait", secs, artifact, signal));
     const h = handoverOf(r);
     this.forgetAnswered(h.answers);
     return {
@@ -1324,11 +1324,17 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
     // the daemon wakes a parked poll when the wait starts and answers it
     // empty (the wait takes the feedback), and the loop then polls again
     // only once the last wait has ended, at once and with no retry pause.
-    // A retry pause that a wait's start or end lands in ends there too.
+    // A retry pause that a wait's start or end lands in ends there too, and
+    // a poll answered after a wait started (and perhaps ended) meanwhile
+    // takes none. A wait whose tool call is aborted ends its request, and so
+    // the hold, at once.
     let live = false;
     let stopInject: (() => void) | undefined;
     /** wait_for_feedback calls in progress. */
     let waits = 0;
+    /** Counts every wait's start and end: a poll answered after a wait began
+     * (and perhaps ended) meanwhile answered empty for the wait, not early. */
+    let waitEpoch = 0;
     /** The loop's current pause, ended early when a wait starts or the last one ends. */
     const wakers = new Set<() => void>();
     const wakeLoop = () => { for (const w of [...wakers]) w(); };
@@ -1355,18 +1361,19 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
             continue;
           }
           const started = now();
+          const epoch = waitEpoch;
           let res: any;
           try {
             res = await c.pollFeedback("inject", INJECT_WAIT_S, abort.signal);
           } catch {
             if (abort.signal.aborted) return;
-            if (waits === 0) await pause(retryMs);
+            if (waits === 0 && waitEpoch === epoch) await pause(retryMs);
             continue;
           }
           if (abort.signal.aborted) return;
           if (typeof res.text === "string" && res.text) {
             pi.sendUserMessage(res.text, { deliverAs: "followUp" });
-          } else if (waits === 0 && now() - started < INJECT_EARLY_MS) {
+          } else if (waits === 0 && waitEpoch === epoch && now() - started < INJECT_EARLY_MS) {
             await pause(retryMs);
           }
         }
@@ -1545,16 +1552,18 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       description: "Wait up to `timeout_s` seconds (1 to 600, default 50) for comments the person sends to you, on one artifact or any you watch, and for their late answers to questions you asked. Returns comments in `feedback` and answers in `answers` as soon as any arrive, or `call_again: true` when none did; call it again while the person wants live feedback.",
       promptSnippet: "Wait for comments the person sends to you on a Clax artifact",
       parameters: WaitArgs,
-      async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      async execute(_toolCallId, params, signal, _onUpdate, ctx) {
         let out: Awaited<ReturnType<Tools["waitForFeedback"]>>;
         // The injection loop holds while the wait runs (see startInject).
         waits++;
+        waitEpoch++;
         wakeLoop();
         try {
-          out = await tools.waitForFeedback(ctx, params as Static<typeof WaitArgs>);
+          out = await tools.waitForFeedback(ctx, params as Static<typeof WaitArgs>, signal);
         } catch (e) {
           throw internal(e);
         } finally {
+          waitEpoch++;
           if (--waits === 0) wakeLoop();
         }
         const content: { type: "text"; text: string }[] = [{ type: "text", text: render(out.result, out.feedback, out.answers) }];
