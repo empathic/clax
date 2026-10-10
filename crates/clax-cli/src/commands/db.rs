@@ -365,11 +365,28 @@ fn doc_line(d: &Value) -> String {
     )
 }
 
+/// The names of a withheld document's authors, as one line.
+fn withheld_by(d: &Value) -> String {
+    let names: Vec<String> = d["withheld"]["authors"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .map(|a| term::clean_line(a["name"].as_str().unwrap_or("?")))
+        .collect();
+    names.join(", ")
+}
+
 fn readable(cmd: &Cmd, r: &Value) -> String {
     let path = term::clean_line(r["path"].as_str().unwrap_or(""));
     match cmd {
         Cmd::Get(_) => match r["doc"].as_object() {
             None => format!("{path}: no such document"),
+            Some(d) if d.contains_key("withheld") => format!(
+                "{path}  v{}\nwithheld until your person approves its authors: {}",
+                d["version"],
+                withheld_by(&r["doc"])
+            ),
             Some(d) => format!(
                 "{path}  v{}\n{}",
                 d["version"],
@@ -389,6 +406,11 @@ fn readable(cmd: &Cmd, r: &Value) -> String {
             }
             if let Some(c) = r["next_cursor"].as_str() {
                 lines.push(format!("more: --cursor {}", term::clean_line(c)));
+            }
+            if let Some(n) = r["withheld_count"].as_u64().filter(|n| *n > 0) {
+                lines.push(format!(
+                    "{n} more withheld until your person approves their authors"
+                ));
             }
             lines.join("\n")
         }
@@ -428,5 +450,47 @@ fn readable(cmd: &Cmd, r: &Value) -> String {
             })
             .collect::<Vec<_>>()
             .join("\n"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn doc() -> Doc {
+        Doc {
+            target: "a".into(),
+            collection: "notes".into(),
+            doc_id: "n1".into(),
+        }
+    }
+
+    #[test]
+    fn a_withheld_document_reads_as_its_authors_and_a_listing_counts_the_rest() {
+        let get = Cmd::Get(GetArgs {
+            doc: doc(),
+            level: AsLevel { as_level: None },
+        });
+        let r = json!({"path": "notes/n1", "exists": true, "doc": {"id": "n1", "version": 3,
+            "withheld": {"authors": [{"public_id": "u_1", "name": "Mia"}]}}});
+        assert_eq!(
+            readable(&get, &r),
+            "notes/n1  v3\nwithheld until your person approves its authors: Mia"
+        );
+        let list = Cmd::List(ListArgs {
+            target: "a".into(),
+            collection: "notes".into(),
+            page: Page {
+                limit: None,
+                cursor: None,
+            },
+            level: AsLevel { as_level: None },
+        });
+        let r = json!({"docs": [], "next_cursor": null, "withheld_count": 2});
+        assert_eq!(
+            readable(&list, &r),
+            "no documents\n2 more withheld until your person approves their authors"
+        );
     }
 }

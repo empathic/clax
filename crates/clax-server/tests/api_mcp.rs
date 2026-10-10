@@ -444,3 +444,45 @@ async fn the_read_tool_answers_a_withheld_file_as_withheld() {
     assert_eq!(v["result"]["isError"], false, "{v}");
     assert!(v.to_string().contains("<p>mine</p>"), "{v}");
 }
+
+/// The db tools, for an agent whose person may not see a document, hand
+/// it the placeholder (`withheld` with its authors, no data) when it names
+/// the document, and a listing's count of withheld documents.
+#[tokio::test]
+async fn the_db_tools_answer_withheld_documents_as_withheld() {
+    use crate::common::people::{DOC_FIELD, World};
+    let w = World::two_people().await;
+    let session = mcp_session(&w.ts).await;
+    let aid = &w.read.artifact;
+    let v = mcp_call(
+        &w.ts,
+        &session,
+        10,
+        "db_get",
+        json!({"url_or_id": aid, "collection": "notes", "doc_id": "MIACANARYdocpath"}),
+    )
+    .await;
+    let text = v.to_string();
+    assert_eq!(v["result"]["isError"], false, "{text}");
+    assert!(!text.contains(DOC_FIELD), "{text}");
+    let r: Value =
+        serde_json::from_str(v["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(r["exists"], true, "{r}");
+    assert_eq!(r["doc"]["withheld"]["authors"][0]["name"], "Mia", "{r}");
+    assert!(r["doc"].get("data").is_none(), "{r}");
+    let v = mcp_call(
+        &w.ts,
+        &session,
+        11,
+        "db_list",
+        json!({"url_or_id": aid, "collection": "notes"}),
+    )
+    .await;
+    let r: Value =
+        serde_json::from_str(v["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        (r["docs"].clone(), r["withheld_count"].clone()),
+        (json!([]), json!(1)),
+        "{r}"
+    );
+}
