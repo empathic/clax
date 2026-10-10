@@ -474,12 +474,12 @@ pub async fn create(
         })
         .await?;
     let url = format!("/a/{}", artifact["id"].as_str().unwrap_or_default());
-    Ok((
-        StatusCode::CREATED,
-        Json(
-            json!({"artifact": artifact, "version": version, "url": url, "note_truncated": truncated}),
-        ),
-    ))
+    let mut v =
+        json!({"artifact": artifact, "version": version, "url": url, "note_truncated": truncated});
+    if !a.holds_token() {
+        strip_sessions(&mut v);
+    }
+    Ok((StatusCode::CREATED, Json(v)))
 }
 
 /// Who publishes for `caller` (spec §8.2): a person's agent's person (none
@@ -632,15 +632,22 @@ pub async fn patch(
             Ok(view)
         })
         .await?;
-    Ok(Json(json!({"artifact": artifact})))
+    let mut v = json!({"artifact": artifact});
+    if !a.0.holds_token() {
+        strip_sessions(&mut v);
+    }
+    Ok(Json(v))
 }
 
+/// Deletes an artifact. A person's agent deletes from a session (400
+/// `no_session`), as it writes.
 pub async fn delete(
     State(s): State<AppState>,
-    _a: TokenOrAgent<crate::agent::ArtifactsDelete>,
+    a: TokenOrAgent<crate::agent::ArtifactsDelete>,
     audit: AuditCtx,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<StatusCode, ApiError> {
+    person_agent_session(&a.0.caller)?;
     let id = parse_id(&path(aid)?)?;
     let events = s.events.clone();
     let cache = s.wrap_cache.clone();
@@ -730,6 +737,15 @@ pub async fn publish(
             if let Some(sid) = &session {
                 p.working_threads = ctx.working.threads_of(sid, id.as_str());
             }
+            // The previous version's files the reader may not see never
+            // constrain the publish (spec §21.7).
+            let vis = vf.build(st)?;
+            if vis.filters()
+                && let Some(n) = p.if_version
+                && let Some(prev) = st.get_version(&id, n)?
+            {
+                p.hidden = vis.filter_hidden_files(&prev);
+            }
             let (artifact, version) = st.publish_version(&audit, &id, p, session.as_deref())?;
             if let Some(sid) = &session {
                 let aid = ArtifactId::parse(&artifact.id)?;
@@ -758,17 +774,16 @@ pub async fn publish(
                     crate::routes::threads::publish_thread(&ctx, st, &t)?;
                 }
             }
-            let vis = vf.build(st)?;
             vis.filter_published(st, &artifact, &version)
         })
         .await?;
     let url = format!("/a/{}", artifact["id"].as_str().unwrap_or_default());
-    Ok((
-        StatusCode::CREATED,
-        Json(
-            json!({"artifact": artifact, "version": version, "url": url, "note_truncated": truncated}),
-        ),
-    ))
+    let mut v =
+        json!({"artifact": artifact, "version": version, "url": url, "note_truncated": truncated});
+    if !a.holds_token() {
+        strip_sessions(&mut v);
+    }
+    Ok((StatusCode::CREATED, Json(v)))
 }
 
 /// Version `n`, filtered for an agent channel's reader; without the token,

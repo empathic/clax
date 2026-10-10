@@ -15,7 +15,7 @@
 
 use crate::common::TestServer;
 use crate::common::clients::{HARNESS_ENVS, RealClients};
-use crate::common::people::{AgentOf, Call, World};
+use crate::common::people::{AgentOf, As, Call, World};
 use serde_json::{Value, json};
 
 async fn status_code(res: reqwest::Response) -> (u16, String) {
@@ -248,6 +248,15 @@ async fn sweep(w: &World, agent: &AgentOf<'_>, which: impl Fn(&Call) -> bool) {
                     &body[..body.len().min(300)]
                 ));
             }
+        }
+        // A person's agent is never named another credential's session.
+        if matches!(agent.who, As::Grant(_)) && body.contains(&w.mia_session) {
+            leaks.push(format!(
+                "{} named Mia's session to {}: {}",
+                call.name,
+                agent.label,
+                &body[..body.len().min(300)]
+            ));
         }
     }
     assert!(leaks.is_empty(), "{}", leaks.join("\n"));

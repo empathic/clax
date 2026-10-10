@@ -1096,12 +1096,89 @@ async fn list_leaves_out_unreadable_artifacts() {
     )
     .await;
     assert_eq!(one, json!({"artifacts": []}));
+    // The owner's agent works on the live page: on its roster, never on a
+    // person's agent's.
+    w.ts.put_working(
+        &w.owner_session,
+        &w.live,
+        json!({"message": "on the live page"}),
+    )
+    .await;
+    let (_, v) = sam(&w, "GET", "/api/working", None).await;
+    assert!(!v.to_string().contains(&w.live), "{v}");
+    let (_, v) = owner_agent(&w, "GET", "/api/working", None).await;
+    assert!(v.to_string().contains(&w.live), "{v}");
     // The working roster likewise leaves out what it may not read.
     narrow_sam(&w, Some(&w.scratch.artifact));
     let (status, v) = sam(&w, "GET", "/api/working", None).await;
     assert_eq!(status, 200, "{v}");
     assert!(!v.to_string().contains(&w.read.artifact), "{v}");
     no_artifact_canary("the roster", &v.to_string());
+    // A working record whose session is gone names no one: its message is
+    // withheld.
+    let gone = w.ts.register_session("claude", "gone-h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    w.ts.put_working(
+        &gone,
+        &w.scratch.artifact,
+        json!({"message": "GONESESSIONwords"}),
+    )
+    .await;
+    let db = rusqlite::Connection::open(w.ts.home.db_path()).unwrap();
+    db.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
+    db.execute("DELETE FROM sessions WHERE id = ?1", [&gone])
+        .unwrap();
+    drop(db);
+    let (_, v) = sam(
+        &w,
+        "GET",
+        &format!("/api/artifacts/{}/working", w.scratch.artifact),
+        None,
+    )
+    .await;
+    assert!(!v.to_string().contains("GONESESSIONwords"), "{v}");
+    // Read at `own`: what its person made, listed and on its roster.
+    let rights = clax_core::rights::Rights::parse(&json!([
+        {"type": "clax-artifacts", "actions": ["read"], "locations": ["own"]},
+        {"type": "clax-artifacts", "actions": ["create"], "locations": ["*"]},
+        {"type": "clax-comments", "actions": ["watch"], "locations": ["*"]}
+    ]))
+    .unwrap();
+    w.ts.store
+        .set_person_rights(&AuditCtx::DAEMON, &sam_public(&w), Some(rights))
+        .unwrap();
+    let (status, v) = sam(
+        &w,
+        "POST",
+        "/api/artifacts",
+        Some(json!({"title": "Sam's own",
+                    "files": {"index.html": {"content": "<p>s</p>", "encoding": "utf8"}}})),
+    )
+    .await;
+    assert_eq!(status, 201, "{v}");
+    let own = v["artifact"]["id"].as_str().unwrap().to_string();
+    let (status, v) = sam(
+        &w,
+        "PUT",
+        &format!("/api/sessions/{}/working/{own}", w.sam_session),
+        Some(json!({"message": "on my own"})),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    let (_, list) = sam(&w, "GET", "/api/artifacts", None).await;
+    let ids: Vec<&str> = list["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, [own.as_str()], "{list}");
+    let (_, v) = sam(&w, "GET", "/api/working", None).await;
+    let on: Vec<&Value> = v["working"].as_array().unwrap().iter().collect();
+    assert_eq!(on.len(), 1, "{v}");
+    assert_eq!(on[0]["artifact_id"], json!(own));
 }
 
 #[tokio::test]
@@ -1387,6 +1464,18 @@ async fn a_persons_agent_writes_artifacts_from_a_session_and_never_as_a_page() {
         (400, json!("invalid_via_page")),
         "{v}"
     );
+    // Deletes too come from a session.
+    for path in [
+        format!("/api/artifacts/{aid}/assets/{}", w.scratch.asset),
+        format!("/api/artifacts/{aid}"),
+    ] {
+        let (status, v) = json_of(w.sam.agent("DELETE", &path, None, None).await).await;
+        assert_eq!(
+            (status, v["error"]["code"].clone()),
+            (400, json!("no_session")),
+            "DELETE {path}: {v}"
+        );
+    }
     // Nothing was written.
     let a =
         w.ts.store
@@ -1394,6 +1483,192 @@ async fn a_persons_agent_writes_artifacts_from_a_session_and_never_as_a_page() {
             .unwrap()
             .unwrap();
     assert_eq!((a.current_version, a.title.as_str()), (2, TITLE));
+    assert!(w.ts.store.get_asset(&w.scratch.asset).unwrap().is_some());
+}
+
+/// An artifact Mia's agent makes from its session (its `owner_session_id`
+/// is Mia's), with withheld files `MIAXname.js` and a directory `MIAXdir`.
+async fn mia_agent_artifact(w: &World) -> String {
+    let file = |c: &str| json!({"content": c, "encoding": "utf8"});
+    let (status, v) = json_of(
+        w.mia
+            .agent(
+                "POST",
+                "/api/artifacts",
+                Some(&w.mia_session),
+                Some(
+                    json!({"title": TITLE, "description": DESCRIPTION, "files": {
+                        "index.html": file("<p>Mia</p>"),
+                        "MIAXname.js": file("/* m */"),
+                        "MIAXdir/MIAXnested.css": file("/* m */"),
+                    }}),
+                ),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(status, 201, "{v}");
+    v["artifact"]["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn write_answers_name_no_other_credentials_session() {
+    let w = World::two_people().await;
+    let aid = mia_agent_artifact(&w).await;
+    let stored =
+        w.ts.store
+            .get_artifact(&clax_core::ArtifactId::parse(&aid).unwrap())
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        stored.owner_session_id.as_deref(),
+        Some(w.mia_session.as_str())
+    );
+    sam_rights(&w, "clax:full");
+    let file = json!({"content": "<p>Sam</p>", "encoding": "utf8"});
+    for (m, path, body) in [
+        (
+            "PATCH",
+            format!("/api/artifacts/{aid}"),
+            json!({"pinned": true}),
+        ),
+        (
+            "PATCH",
+            format!("/api/artifacts/{aid}"),
+            json!({"title": "Sam's"}),
+        ),
+        (
+            "POST",
+            format!("/api/artifacts/{aid}/versions"),
+            json!({"if_version": 1, "files": {"index.html": file}}),
+        ),
+    ] {
+        let r = w
+            .sam
+            .agent(m, &path, Some(&w.sam_session), Some(body))
+            .await;
+        let status = r.status().as_u16();
+        let text = r.text().await.unwrap();
+        assert!(status < 300, "{m} {path}: {status} {text}");
+        assert!(!text.contains(&w.mia_session), "{m} {path}: {text}");
+        assert!(!text.contains("owner_session_id"), "{m} {path}: {text}");
+        no_artifact_canary(&format!("{m} {path}"), &text);
+    }
+}
+
+#[tokio::test]
+async fn a_persons_agents_publish_leaves_untargeted_feedback_untargeted() {
+    let w = World::two_people().await;
+    sam_rights(&w, "clax:full");
+    // The owner by hand: an artifact no session watches, and a thread sent
+    // to no agent in particular.
+    let aid = w.ts.any_artifact().await;
+    let tid = w.ts.thread(&aid, 1, "for any agent").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    w.ts.send_thread(&aid, &tid).await;
+    let untargeted = |w: &World| -> i64 {
+        let db = rusqlite::Connection::open(w.ts.home.db_path()).unwrap();
+        db.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
+        db.query_row(
+            "SELECT COUNT(*) FROM feedback WHERE thread_id = ?1 AND target_session_id IS NULL",
+            [&tid],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(untargeted(&w), 1);
+    let file = json!({"content": "<p>Sam</p>", "encoding": "utf8"});
+    let (status, v) = sam(
+        &w,
+        "POST",
+        &format!("/api/artifacts/{aid}/versions"),
+        Some(json!({"if_version": 1, "files": {"index.html": file}})),
+    )
+    .await;
+    assert_eq!(status, 201, "{v}");
+    assert_eq!(
+        untargeted(&w),
+        1,
+        "Sam's agent took the owner's agents' feedback"
+    );
+    // The owner's agent's publish takes it, as before.
+    let (status, v) = owner_agent(
+        &w,
+        "POST",
+        &format!("/api/artifacts/{aid}/versions"),
+        Some(json!({"if_version": 2, "files": {"index.html": file}})),
+    )
+    .await;
+    assert_eq!(status, 201, "{v}");
+    assert_eq!(untargeted(&w), 0);
+}
+
+#[tokio::test]
+async fn a_publish_never_tells_whether_a_guessed_name_is_withheld() {
+    let w = World::two_people().await;
+    let aid = mia_agent_artifact(&w).await;
+    sam_rights(&w, "clax:full");
+    let file = |c: &str| json!({"content": c, "encoding": "utf8"});
+    // An address of no thread rolls each publish back, after the paths.
+    let bogus = "01JZZZZZZZZZZZZZZZZZZZZZZZ";
+    for (hit, miss) in [
+        ("miaxname.js", "zzzname.js"),
+        ("MIAXname.js/x", "zzz.js/x"),
+        ("MIAXdir", "zzzdir"),
+    ] {
+        let mut answers = Vec::new();
+        for guess in [hit, miss] {
+            let (status, v) = sam(
+                &w,
+                "POST",
+                &format!("/api/artifacts/{aid}/versions"),
+                Some(json!({"if_version": 1, "addresses": [bogus],
+                            "files": {"index.html": file("<p>s</p>"), guess: file("x")}})),
+            )
+            .await;
+            answers.push((status, v));
+        }
+        assert_eq!(answers[0], answers[1], "{hit} against {miss}");
+        assert_eq!(
+            answers[0].1["error"]["code"], "unknown_thread",
+            "{answers:?}"
+        );
+    }
+    // A put over a withheld path replaces it, as a remove would.
+    let (status, v) = sam(
+        &w,
+        "POST",
+        &format!("/api/artifacts/{aid}/versions"),
+        Some(json!({"if_version": 1, "files": {"index.html": file("<p>s</p>"), "miaxname.js": file("x")}})),
+    )
+    .await;
+    assert_eq!(status, 201, "{v}");
+    let v2 =
+        w.ts.store
+            .get_version(&clax_core::ArtifactId::parse(&aid).unwrap(), 2)
+            .unwrap()
+            .unwrap();
+    let files: Vec<&String> = v2.files.keys().collect();
+    assert_eq!(
+        files,
+        ["MIAXdir/MIAXnested.css", "index.html", "miaxname.js"],
+        "{v}"
+    );
+    // A collision among paths the publisher sees is refused as before.
+    let (status, v) = sam(
+        &w,
+        "POST",
+        &format!("/api/artifacts/{aid}/versions"),
+        Some(json!({"if_version": 2, "files": {"index.html": file("<p>s</p>"), "MiaxName.js": file("y")}})),
+    )
+    .await;
+    assert_eq!(
+        (status, v["error"]["code"].clone()),
+        (400, json!("invalid_path")),
+        "{v}"
+    );
 }
 
 #[tokio::test]
