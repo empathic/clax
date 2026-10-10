@@ -1876,7 +1876,8 @@ control does.
 
 An agent asks the person one to four questions with `ask` (Pi:
 `clax_ask`); Claude Code's built-in `AskUserQuestion` is mirrored into Clax
-by a hook. The person answers in the shell or the extension's panel (or
+by a hook once the session has a page (it has published or watched an
+artifact); before that it is asked in the terminal. The person answers in the shell or the extension's panel (or
 any owner client, through the owner routes). Each set of questions is one **question**,
 stored for the session that asked it and never deleted.
 
@@ -1975,10 +1976,13 @@ is 404, an ended one 400 `unknown_session`, and another session's question
   is `AskUserQuestion`'s input as it is. The same `tool_use_id` again
   answers 200 with the first question. `artifact_id` must name a live
   artifact (404). A `hook` question with no `artifact_id` is about the
-  artifact of the session's newest working record, if any. `surface_open`
+  artifact of the session's newest working record, else about the session's
+  page: of the live artifacts it watches (publishing watches), the one it
+  last published a version of or started watching. `surface_open`
   is whether any owner stream holds the `questions` or `inbox` topic
   (attached, or detached within its 60 s grace). `mode` is `terminal`, and
-  the question is created `released`, only for a `hook` question when no
+  the question is created `released`, only for a `hook` question about no
+  artifact (the session has not published or watched one), or when no
   surface is open or `terminal_after_s` is 0.
 - **`GET /api/sessions/<sid>/questions/<qid>?wait=<s>`** → `{question,
   waited_s}` as soon as the question is not `open`, or after `wait` seconds
@@ -2106,7 +2110,10 @@ and `clax hook --agent claude asked` as a `PostToolUse` hook on it (timeout
 5 s). `ask` creates a `hook` question with the call's `tool_use_id` and,
 in `wait` mode, polls it for up to `terminal_after_s` seconds: an answer
 or a skip answers the tool call from Clax; on its timer or **Answer in the
-terminal** the question is released and the terminal dialog opens. `asked`
+terminal** the question is released and the terminal dialog opens. The
+daemon chooses `terminal` mode, and the terminal dialog opens at once,
+while the session has no page (it has published or watched no live
+artifact), no owner surface is open, or `terminal_after_s` is 0. `asked`
 records the terminal dialog's answers on a released question (`questions:
 terminal`). Reading the input, finding the daemon, the session lookup and
 the creation have 2 s together (1 s per request); the wait has
@@ -2164,7 +2171,8 @@ An item becomes read in any of these ways:
   artifact's version;
 - for a `question`, the owner answers, skips or moves it, or it is answered
   in the terminal. The hook's own timer release and a withdrawal leave it
-  unread;
+  unread. A mirrored question asked in the terminal because its session
+  has no page is read from the start;
 - a bulk mark.
 
 Only owner credentials' writes mark items read.

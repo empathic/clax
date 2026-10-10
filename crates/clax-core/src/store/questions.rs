@@ -531,7 +531,8 @@ fn not_mirrored() -> CoreError {
 impl Store {
     /// Records a question for live session `n.session_id`, asked under
     /// `ctx`: `question.ask`, followed by `question.release` (reason
-    /// `created`) for one created released. A second request with the same
+    /// `created`) for one created released. Its inbox item is unread, except
+    /// for one created released about no artifact, which is read. A second request with the same
     /// `tool_use_id` for the session returns the first row and `false`, and
     /// records nothing.
     ///
@@ -629,7 +630,15 @@ impl Store {
                 )?;
                 self.record_question(tx, ctx, rec, sid)?;
             }
-            super::inbox::note_question(tx, &q)?;
+            // A mirrored question about no artifact is asked in the
+            // terminal (its session has no page): it is never offered in
+            // Clax, so its inbox item is read from the start.
+            if super::inbox::note_question(tx, &q)?.is_some()
+                && n.released
+                && q.artifact_id.is_none()
+            {
+                super::inbox::question_changed(tx, &q, true)?;
+            }
             Ok((q, true))
         })
     }
@@ -1000,6 +1009,14 @@ mod tests {
         let (q, _) = st.create_question(DAEMON, n).unwrap();
         assert_eq!(q.status, Status::Released);
         assert!(q.closed_at.is_some());
+        // About no artifact, it was never offered in Clax: its item is read.
+        assert_eq!(st.inbox_unread().unwrap(), 0);
+        // About one, it was (Clax only mirrors it): its item is unread.
+        let mut n = new(&s, Source::Hook, Some("t2"));
+        n.released = true;
+        n.artifact_id = Some(crate::store::test_util::artifact(&st, None).as_str().into());
+        st.create_question(DAEMON, n).unwrap();
+        assert_eq!(st.inbox_unread().unwrap(), 1);
     }
 
     #[test]

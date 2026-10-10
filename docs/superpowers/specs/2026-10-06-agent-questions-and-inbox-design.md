@@ -80,7 +80,7 @@ the inbox, O5–O7 settled after the first draft). The rest follow from them and
 | Q1 | Owner only. Questions, inbox items, their existence and their read state are served only to owner credentials (the token, the owner's browsers, the extension). LAN viewers never see them. | They carry agents' private context and the owner's attention. |
 | Q2 | A question is bound to the session that asked it. Only that session waits on it, takes its answer or withdraws it, and its answer is delivered only to that session. | Answers are instructions to one agent. |
 | Q3 | Agent text (questions, options, previews, replies, notes, messages) and answers are untrusted text, rendered as text everywhere; previews are verbatim monospace text, never HTML or rendered markdown; tool results carry answers as JSON strings with a note. | Nothing agent-written is ever interpreted. |
-| Q4 | The hook's default is Clax first: when a Clax surface of the owner's is open, the hook holds `AskUserQuestion` in Clax for up to `terminal_after_s` (default 600 s) or until the person chooses **Answer in the terminal**; then the terminal's own dialog appears. With no surface open it lets the terminal dialog appear at once. | True racing is impossible (§4.3); this is the closest behaviour, and it never stalls a person who is not using Clax. |
+| Q4 | The hook's default is Clax first once the session has a page: when it has published or watched an artifact and a Clax surface of the owner's is open, the hook holds `AskUserQuestion` in Clax for up to `terminal_after_s` (default 600 s) or until the person chooses **Answer in the terminal**; then the terminal's own dialog appears. With no surface open, or before the session has a page, it lets the terminal dialog appear at once (owner decision 2026-10-10: a question with no page to sit beside stays in the terminal). | True racing is impossible (§4.3); this is the closest behaviour, and it never stalls a person who is not using Clax. |
 | Q5 | An answer that arrives while no `ask` call waits for it is delivered like a comment sent to the agent: tiers 1 to 4 and Pi's tier 5. | An agent whose call was cut short still gets the answer. |
 | N1 | Inbox items reference their sources (comment, version, question, artifact) by key and render from them when read; only a finished-work item, whose source (a working record) lives in memory, keeps its own small payload (the message and thread IDs). | No second copy of text that can drift; the history follows edits and deletions honestly. |
 | N2 | Search uses an FTS5 index (contentless, with deletes) beside indexed columns for the filters. | §7.4: an indexed `LIKE` cannot serve a word inside text; FTS5 is compiled into the bundled SQLite. |
@@ -119,8 +119,8 @@ again, the answer reaches the agent later (Q5). **Skip** sends `status:
 1. Claude calls `AskUserQuestion`. Claude Code runs the plugin's
    `PreToolUse` hook before it shows anything.
 2. The hook mirrors the question into Clax (as 3.1, step 2). The daemon
-   answers with the mode: `wait` when a Clax surface of the owner's is open,
-   else `terminal`.
+   answers with the mode: `wait` when the session has a page (§4.4) and a
+   Clax surface of the owner's is open, else `terminal`.
 3. In `terminal` mode the hook exits at once with no decision and the
    terminal dialog appears as it would without Clax. The question and its
    item are recorded as moved to the terminal (the item is unread, so the
@@ -267,10 +267,14 @@ chosen behaviour (O5).
 1. `PreToolUse`, matcher `AskUserQuestion`, `timeout` 3600 s, the status
    message above. It mirrors the question (`source: "hook"`, keyed by the
    call's `tool_use_id`).
-2. **Mode.** `wait` when, at that moment, a stream of the owner's holds the
+2. **Mode.** `wait` when, at that moment, the session has a page (it
+   watches a live artifact, as publishing makes it do, or has a working
+   record on one), a stream of the owner's holds the
    `questions` or `inbox` topic (a Clax tab, attached or within its 60 s
-   reconnect grace, or the extension's panel) and `terminal_after_s` is
-   above 0; otherwise `terminal`.
+   reconnect grace, or the extension's panel), and `terminal_after_s` is
+   above 0; otherwise `terminal`. A session that has not published or
+   watched anything asks in the terminal; once it has, its questions show
+   beside that page.
 3. **In `wait` mode** the hook holds one long poll on the question for up to
    `terminal_after_s` (config `[questions] terminal_after_s`, default 600,
    at most 3300; 0 means always `terminal`). The first of these settles it,
@@ -451,9 +455,11 @@ an ended one 400 `unknown_session`, and another session's question 404
   "terminal", terminal_after_s, surface_open}`. The same `tool_use_id` again
   returns the first question (200). `artifact_id` must name a live artifact
   (404). A hook question with no `artifact_id` takes the artifact of the
-  session's newest working record, if any. `mode` is `terminal` (and the
-  question is created `released`) only for a hook question with no surface
-  open or `terminal_after_s` 0. Errors: `invalid_question`, 429
+  session's newest working record, else of the live artifact the session
+  watches that it last published to or started watching. `mode` is
+  `terminal` (and the question is created `released`) only for a hook
+  question about no artifact, with no surface open, or with
+  `terminal_after_s` 0. Errors: `invalid_question`, 429
   `limit_reached` (8 open for the session, or 100 open in all).
 - `GET /api/sessions/<sid>/questions/<qid>?wait=<s>` → `{question,
   waited_s}` as soon as the question is not `open`, or after `wait` seconds
@@ -822,7 +828,14 @@ One Svelte component, `QuestionCard`, used everywhere:
   handle when another agent of the harness is listed), its project folder,
   the page it is about (a link, except on that page), the age.
 - Header chips, one per question; with several they are tabs, each marked
-  done when answered; **Answer** is enabled once every question has one.
+  answered (a tick, and the answer under its header) or not answered.
+  With several, picking a single choice's option moves on to the next
+  unanswered question after 250 ms; a multi choice and "Other" text wait
+  for the person to move. **Back** and **Next** (and the tabs) move to any
+  question either way. Until every question has an answer the primary
+  action says how many are left ("Answer 3 more") and goes to the first
+  unanswered question; then it is **Answer <agent>**. A single question's
+  **Answer** is enabled once it has an answer.
 - Choice questions: radios (single) or checkboxes (several), label,
   description, a "Recommended" chip; "Other…" with a text field when
   `other` (typing selects it; in a single choice it clears the selection).
@@ -839,7 +852,8 @@ One Svelte component, `QuestionCard`, used everywhere:
   a 409 what happened instead.
 
 Keys while focus is in the card: arrows between options, Space toggles,
-1–4 pick, Enter answers when complete.
+1–4 pick, B and N back and next, Enter answers when complete (before
+that, it goes to the first unanswered question).
 
 ### 9.2 `/inbox`
 
@@ -1036,7 +1050,8 @@ Each skill gains "Asking the person":
 - The gallery and artifact entries grow by at most 0.5 KiB gzip each (two
   topics, the top-bar count, the lazy import). `web/perf/bundle-budget.json`
   keeps `gallery` and `artifact` and adds `questions` (the `q` module) at
-  16 KiB. `/inbox` is the gallery entry plus that module. `sidepanel.js`
+  16 KiB. `/inbox` is the gallery entry plus that module and the inbox
+  page's own chunk, which loads beside it. `sidepanel.js`
   stays within 64 KiB (its Inbox tab loads on first open if needed).
 - The `q` module loads after first paint, so the first-paint and
   comment-ready gates of `web/perf/usable.perf.ts` are unaffected; `/inbox`

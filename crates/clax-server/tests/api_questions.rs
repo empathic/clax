@@ -60,6 +60,86 @@ async fn session(ts: &TestServer, hsid: &str) -> String {
         .to_string()
 }
 
+/// A session that has published a page, so its mirrored questions may wait in Clax.
+async fn paged(ts: &TestServer, hsid: &str) -> String {
+    let sid = session(ts, hsid).await;
+    ts.publish_as(&sid, "Board", "<p>b").await;
+    sid
+}
+
+#[tokio::test]
+async fn a_hook_question_waits_in_clax_only_once_its_session_has_a_page() {
+    let ts = TestServer::spawn().await;
+    let _surface = ts.stream_as_owner(&["questions"]).await;
+    let sid = session(&ts, "h1").await;
+    let path = format!("/api/sessions/{sid}/questions");
+    let ask = |t: &str| post(&ts, &path, hook(t));
+    // No page yet: asked in the terminal, though a surface is open.
+    let r: Value = ask("t1").await.json().await.unwrap();
+    assert_eq!(
+        (
+            r["mode"].as_str(),
+            r["question"]["status"].as_str(),
+            r["surface_open"].as_bool()
+        ),
+        (Some("terminal"), Some("released"), Some(true))
+    );
+    assert!(r["question"]["artifact"].is_null());
+    assert_eq!(
+        ts.store.inbox_unread().unwrap(),
+        0,
+        "nothing in Clax asks for attention"
+    );
+    // An `ask` question is not mirrored: it waits either way.
+    assert_eq!(ts.ask(&sid, body()).await["mode"], "wait");
+    // Once the session publishes, its next question waits beside that page.
+    let a = ts.publish_as(&sid, "Board", "<p>b").await;
+    let aid = a["artifact"]["id"].as_str().unwrap();
+    let r: Value = ask("t2").await.json().await.unwrap();
+    assert_eq!(
+        (r["mode"].as_str(), r["question"]["status"].as_str()),
+        (Some("wait"), Some("open"))
+    );
+    assert_eq!(r["question"]["artifact"]["id"], aid);
+}
+
+#[tokio::test]
+async fn a_hook_question_waits_beside_a_page_its_session_watches() {
+    let ts = TestServer::spawn().await;
+    let _surface = ts.stream_as_owner(&["questions"]).await;
+    let other = session(&ts, "h0").await;
+    let a = ts.publish_as(&other, "Board", "<p>b").await;
+    let aid = a["artifact"]["id"].as_str().unwrap();
+    let sid = session(&ts, "h1").await;
+    let r: Value = post(&ts, &format!("/api/sessions/{sid}/questions"), hook("t1"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        r["mode"], "terminal",
+        "another session's page is not its own"
+    );
+    let res = ts
+        .authed(
+            ts.client
+                .put(format!("{}/api/sessions/{sid}/watches/{aid}", ts.base)),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success(), "{}", res.status());
+    let r: Value = post(&ts, &format!("/api/sessions/{sid}/questions"), hook("t2"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        (r["mode"].as_str(), r["question"]["artifact"]["id"].as_str()),
+        (Some("wait"), Some(aid))
+    );
+}
+
 #[tokio::test]
 async fn ask_then_answer_wakes_the_poll() {
     let ts = TestServer::spawn().await;
@@ -229,7 +309,7 @@ async fn invalid_questions_and_limits() {
 async fn the_same_tool_use_returns_the_first_question() {
     let ts = TestServer::spawn().await;
     let _surface = ts.stream_as_owner(&["questions"]).await;
-    let sid = session(&ts, "h1").await;
+    let sid = paged(&ts, "h1").await;
     let res = post(
         &ts,
         &format!("/api/sessions/{sid}/questions"),
@@ -323,7 +403,7 @@ async fn withdraw_closes_an_open_question_once() {
 async fn a_release_then_an_answer_is_question_closed_with_the_state() {
     let ts = TestServer::spawn().await;
     let _surface = ts.stream_as_owner(&["questions"]).await;
-    let sid = session(&ts, "h1").await;
+    let sid = paged(&ts, "h1").await;
     let q = ts.ask(&sid, hook("t")).await;
     let qid = q["question"]["id"].as_str().unwrap().to_string();
     assert_eq!(
@@ -449,7 +529,7 @@ async fn a_question_takes_at_most_four_polls_at_once() {
 async fn an_ended_sessions_routes_are_unknown_session() {
     let ts = TestServer::spawn().await;
     let _surface = ts.stream_as_owner(&["questions"]).await;
-    let sid = session(&ts, "h1").await;
+    let sid = paged(&ts, "h1").await;
     let q = ts.ask(&sid, hook("t")).await;
     let qid = q["question"]["id"].as_str().unwrap().to_string();
     assert_eq!(
@@ -509,7 +589,7 @@ async fn an_ended_sessions_routes_are_unknown_session() {
 #[tokio::test]
 async fn a_hook_question_never_polled_is_withdrawn_after_the_grace() {
     let (ts, clock) = TestServer::spawn_question_clock().await;
-    let sid = session(&ts, "h1").await;
+    let sid = paged(&ts, "h1").await;
     let mut tap = owner_tap(&ts).await;
     let q = ts.ask(&sid, hook("toolu_1")).await;
     let qid = q["question"]["id"].as_str().unwrap().to_string();
@@ -527,7 +607,7 @@ async fn a_hook_question_never_polled_is_withdrawn_after_the_grace() {
 #[tokio::test]
 async fn a_hook_question_whose_poll_gave_up_is_withdrawn_after_the_grace() {
     let (ts, clock) = TestServer::spawn_question_clock().await;
-    let sid = session(&ts, "h1").await;
+    let sid = paged(&ts, "h1").await;
     let mut tap = owner_tap(&ts).await;
     let q = ts.ask(&sid, hook("toolu_1")).await;
     let qid = q["question"]["id"].as_str().unwrap().to_string();
@@ -553,7 +633,7 @@ async fn a_hook_question_whose_poll_gave_up_is_withdrawn_after_the_grace() {
 #[tokio::test]
 async fn the_grace_starts_when_the_last_poll_lets_go() {
     let (ts, clock) = TestServer::spawn_question_clock().await;
-    let sid = session(&ts, "h1").await;
+    let sid = paged(&ts, "h1").await;
     let mut tap = owner_tap(&ts).await;
     let q = ts.ask(&sid, hook("toolu_1")).await;
     let qid = q["question"]["id"].as_str().unwrap().to_string();
@@ -606,7 +686,7 @@ async fn an_ask_question_has_no_grace() {
 async fn a_closed_hook_question_gets_no_grace_from_a_poll() {
     let (ts, clock) = TestServer::spawn_question_clock().await;
     let _surface = ts.stream_as_owner(&["questions"]).await;
-    let sid = session(&ts, "h1").await;
+    let sid = paged(&ts, "h1").await;
     let q = ts.ask(&sid, hook("t")).await;
     let qid = q["question"]["id"].as_str().unwrap().to_string();
     clock.wait_for(GRACE, 1).await;
@@ -754,7 +834,7 @@ async fn listings_filter_by_status_and_limit() {
 async fn the_owner_declines_and_hands_questions_to_the_terminal() {
     let ts = TestServer::spawn().await;
     let mut ev = ts.stream_as_owner(&["questions"]).await;
-    let sid = session(&ts, "h1").await;
+    let sid = paged(&ts, "h1").await;
     let asked = ts.ask(&sid, body()).await["question"]["id"]
         .as_str()
         .unwrap()
@@ -956,7 +1036,7 @@ async fn owner_routes_refuse_lan_owner_cookies_artifact_origins_and_viewers() {
 #[tokio::test]
 async fn hook_mode_is_terminal_without_a_surface() {
     let ts = TestServer::spawn().await;
-    let sid = session(&ts, "h1").await;
+    let sid = paged(&ts, "h1").await;
     let mut b = hook("t1");
     let r: Value = post(&ts, &format!("/api/sessions/{sid}/questions"), b.clone())
         .await
@@ -990,7 +1070,7 @@ async fn hook_mode_is_terminal_without_a_surface() {
     );
     // A stream holding only `inbox` is a surface too.
     let ts = TestServer::spawn().await;
-    let sid = session(&ts, "h1").await;
+    let sid = paged(&ts, "h1").await;
     let _inbox = ts.stream_as_owner(&["inbox"]).await;
     b["tool_use_id"] = json!("t4");
     let r: Value = post(&ts, &format!("/api/sessions/{sid}/questions"), b)
@@ -1391,7 +1471,7 @@ async fn shutting_down_withdraws_the_hook_questions_polls_hold() {
     let (stop, stopping) = tokio::sync::watch::channel(false);
     let ts = TestServer::spawn_with(move |s| s.shutdown = stopping).await;
     let _surface = ts.stream_as_owner(&["questions"]).await;
-    let sid = session(&ts, "h1").await;
+    let sid = paged(&ts, "h1").await;
     let made = ts.ask(&sid, hook("t")).await;
     assert_eq!(made["mode"], "wait");
     let hq = made["question"]["id"].as_str().unwrap().to_string();
@@ -1467,7 +1547,7 @@ fn event(
 #[tokio::test]
 async fn each_question_route_records_its_transition_once() {
     let ts = TestServer::spawn().await;
-    let sid = session(&ts, "h1").await;
+    let sid = paged(&ts, "h1").await;
     let id = |v: Value| v["question"]["id"].as_str().unwrap().to_string();
     let newest = || ts.store.newest_seq().unwrap();
     let as_hook = |b: reqwest::RequestBuilder| {
@@ -1653,7 +1733,7 @@ async fn each_question_route_records_its_transition_once() {
 #[tokio::test]
 async fn the_grace_records_its_withdrawal_as_the_daemon() {
     let (ts, clock) = TestServer::spawn_question_clock().await;
-    let sid = session(&ts, "h1").await;
+    let sid = paged(&ts, "h1").await;
     let mut tap = owner_tap(&ts).await;
     let qid = ts.ask(&sid, hook("toolu_1")).await["question"]["id"]
         .as_str()

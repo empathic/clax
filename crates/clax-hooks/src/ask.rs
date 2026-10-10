@@ -1,6 +1,7 @@
 //! Mirroring Claude Code's `AskUserQuestion` into Clax (spec
 //! 2026-10-06-agent-questions-and-inbox-design §4.4). `PreToolUse` mirrors the
-//! call and, while a Clax surface of the owner's is open, waits for the
+//! call and, when the session has a page (it has published or watched an
+//! artifact) and a Clax surface of the owner's is open, waits for the
 //! person's answer there: answered → allow with the answers as the tool's
 //! input; skipped → deny; moved to the terminal, timed out, or any failure →
 //! no output, so the terminal dialog appears. `PostToolUse` records the
@@ -30,7 +31,8 @@ pub enum Outcome {
     /// Moved to the terminal in Clax, or withdrawn (its session ended, or
     /// the daemon shut down), while the hook waited.
     Released,
-    /// The daemon chose `terminal` mode: no Clax surface was open.
+    /// The daemon chose `terminal` mode: the session had no page, no Clax
+    /// surface was open, or `terminal_after_s` is 0.
     Terminal,
     /// `terminal_after_s` passed with no answer; the hook released it.
     Timeout,
