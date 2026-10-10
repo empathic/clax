@@ -7,7 +7,8 @@
 //! and `capabilities`; a version's label and note; file names and bytes,
 //! and a file the owner's agent carried forward from Mia's version into its
 //! own; an asset's bytes; a document's path and fields; a comment body; a
-//! thread's anchor quote, prefix, suffix and selector; a clip; a batch note;
+//! thread's anchor quote, prefix, suffix, selector and `html_hash`, and a
+//! drawn area's fingerprint; a clip; a batch note;
 //! a working message; a question Mia's agent asked. It also seeds a thread
 //! on a live page. Mia is connected and approved by no one.
 //!
@@ -47,6 +48,10 @@ pub const CANARIES: &[&str] = &[
     WORKING,
     QUESTION,
     REPLY,
+    HTML_HASH,
+    AREA_TAG,
+    AREA_TEXT,
+    AREA_CHILDREN,
 ];
 pub const TITLE: &str = "MIACANARYtitle";
 pub const DESCRIPTION: &str = "MIACANARYdescription";
@@ -71,6 +76,13 @@ pub const BATCH_NOTE: &str = "MIACANARYbatchnote";
 pub const WORKING: &str = "MIACANARYworking";
 pub const QUESTION: &str = "MIACANARYquestion";
 pub const REPLY: &str = "MIACANARYreply";
+/// An anchor's hash of the anchored element's markup.
+pub const HTML_HASH: &str = "sha256:MIACANARYhtmlhash";
+/// A drawn area's fingerprint: its element's tag, text and child count
+/// (a number, so a value no other field holds).
+pub const AREA_TAG: &str = "MIACANARYareatag";
+pub const AREA_TEXT: &str = "MIACANARYareatext";
+pub const AREA_CHILDREN: &str = "4294967291";
 
 /// One of Mia's artifacts, seeded with her canaries.
 #[derive(Clone, Debug)]
@@ -360,6 +372,7 @@ impl World {
         // in a batch with her note; another she resolves.
         let thread = self.mia_thread(&aid, COMMENT, true).await;
         let resolved = self.mia_thread(&aid, "Mia's other thread", false).await;
+        self.mia_area_thread(&aid).await;
         let r = self
             .mia_browser(
                 ts.client
@@ -407,8 +420,23 @@ impl World {
     /// her canaries and, when `clip`, with her clip.
     async fn mia_thread(&self, aid: &str, body: &str, clip: bool) -> String {
         let anchor = json!({"kind": "element", "selector": format!("#{SELECTOR}"), "quote": QUOTE,
-            "prefix": PREFIX, "suffix": SUFFIX, "html_hash": "sha256:00", "rect": null,
+            "prefix": PREFIX, "suffix": SUFFIX, "html_hash": HTML_HASH, "rect": null,
             "custom_name": null});
+        self.mia_thread_at(aid, anchor, body, clip).await
+    }
+
+    /// A thread Mia's browser starts on version 1 of `aid` with an area
+    /// she drew, fingerprinted with her canaries.
+    async fn mia_area_thread(&self, aid: &str) -> String {
+        let anchor = json!({"kind": "area", "selector": format!("#{SELECTOR}"),
+            "area": {"x": 0.1, "y": 0.1, "w": 0.5, "h": 0.5, "tag": AREA_TAG, "text": AREA_TEXT,
+                     "children": AREA_CHILDREN.parse::<u32>().unwrap()}});
+        self.mia_thread_at(aid, anchor, "Mia's area", false).await
+    }
+
+    /// A thread Mia's browser starts on version 1 of `aid` at `anchor`,
+    /// with her clip when `clip`.
+    async fn mia_thread_at(&self, aid: &str, anchor: Value, body: &str, clip: bool) -> String {
         let mut form = reqwest::multipart::Form::new()
             .text("anchor", anchor.to_string())
             .text("body", body.to_string())
