@@ -138,7 +138,7 @@ pub async fn room(
         .filter(|a| a.capabilities.get("room").is_some());
     let topics = declared.map(|a| Topics::from_capabilities(&a.capabilities).unwrap_or_default());
     let declares_user = declared.is_some_and(|a| a.capabilities.get("user").is_some());
-    let Caller { level, viewer } = caller;
+    let Caller { level, viewer, .. } = caller;
     let who = Who {
         peer: q.peer,
         by: if declares_user { viewer.clone() } else { None },

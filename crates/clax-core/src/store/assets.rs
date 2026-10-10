@@ -18,6 +18,7 @@ fn row_to_asset(r: &Row<'_>) -> rusqlite::Result<Asset> {
         size: r.get::<_, i64>("size")? as u64,
         ext: r.get("ext")?,
         created_at: r.get("created_at")?,
+        person: r.get("person")?,
     })
 }
 
@@ -70,7 +71,8 @@ fn ext_for(content_type: &str) -> String {
     }
 }
 
-const SELECT: &str = "SELECT id, artifact_id, content_type, size, ext, created_at FROM assets";
+const SELECT: &str =
+    "SELECT id, artifact_id, content_type, size, ext, created_at, person FROM assets";
 
 /// An asset row with where its bytes belong on disk, as listed by
 /// [`Store::list_all_asset_rows`].
@@ -158,6 +160,7 @@ impl Store {
             size: bytes.len() as u64,
             ext: ext_for(content_type),
             created_at: self.now(),
+            person: person.map(str::to_string),
         };
         let dir = self.home.assets_dir(id);
         std::fs::create_dir_all(&dir)?;
@@ -260,7 +263,7 @@ impl Store {
     pub fn list_all_asset_rows(&self) -> Result<Vec<AssetRow>> {
         let rows = self.with_read(|c| {
             let mut stmt = c.prepare(
-                "SELECT a.id, a.artifact_id, a.content_type, a.size, a.ext, a.created_at,
+                "SELECT a.id, a.artifact_id, a.content_type, a.size, a.ext, a.created_at, a.person,
                         r.deleted_at IS NOT NULL AS artifact_deleted
                  FROM assets a JOIN artifacts r ON r.id = a.artifact_id ORDER BY a.id",
             )?;

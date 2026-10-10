@@ -126,10 +126,7 @@ pub async fn events(
         .await
         .unwrap_or_else(|e| {
             tracing::warn!(error = ?e, "resolving an event subscriber failed; streaming at view");
-            Caller {
-                level: Level::View,
-                viewer: None,
-            }
+            Caller::new(Level::View, None)
         });
     let epoch: Arc<str> = s.events.epoch().into();
     let after = headers

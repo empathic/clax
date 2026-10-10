@@ -13,12 +13,10 @@
 //!
 //! The person columns are written as the daemon will write them when Mia
 //! publishes herself (`artifacts.person`, `versions.person`,
-//! `versions.file_authors_json`, `assets.person`); her browser writes the
-//! comments, the anchor, the clip, the batch note and the resolution, and
-//! her agent the working message and the question. Documents carry no
-//! author yet (spec §8.2's `doc_authors`, Task 8): until then a document's
-//! fields count as the owner's, and the sweeps' document checks are among
-//! those lifted later.
+//! `versions.file_authors_json`, `assets.person`) and writes her document
+//! (`doc_authors`); her browser writes the comments, the anchor, the clip,
+//! the batch note and the resolution, and her agent the working message
+//! and the question.
 
 use crate::common::TestServer;
 use clax_server::testing::{FAKE_PNG, TestClient};
@@ -350,6 +348,11 @@ impl World {
         db.execute(
             "UPDATE assets SET person = ?2 WHERE id = ?1",
             rusqlite::params![asset, mia],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO doc_authors (artifact_id, path, author) VALUES (?1, ?2, ?3)",
+            rusqlite::params![aid, format!("notes/{DOC_PATH}"), mia],
         )
         .unwrap();
         drop(db);

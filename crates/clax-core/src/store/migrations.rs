@@ -1193,10 +1193,7 @@ mod tests {
             .unwrap();
         assert_eq!(version, MIGRATIONS.len() as u32);
         let id = crate::ArtifactId::parse("7q3k9mzx2b4t").unwrap();
-        let admin = crate::db::Caller {
-            level: crate::db::Level::Admin,
-            viewer: None,
-        };
+        let admin = crate::db::Caller::new(crate::db::Level::Admin, None);
         let pin = crate::store::docs::Pin {
             if_version: None,
             lww: true,

@@ -6,6 +6,7 @@ use crate::audit::{Actor, AuditCtx, AuditKind, AuditRecord, Via, sha256_hex};
 use crate::gitctx::GitField;
 use crate::ids::{is_public_id, is_ulid, new_public_id};
 use crate::model::Viewer;
+use crate::store::approvals::OWNER;
 use crate::{CoreError, Result};
 use rusqlite::{OptionalExtension, params};
 
@@ -202,9 +203,13 @@ fn owner_row(c: &rusqlite::Connection) -> rusqlite::Result<Option<(Viewer, bool)
 /// of the two, pruned to [`crate::changelog::MAX_SEEN_PER_VIEWER`]), its
 /// looked-at marks (the later), its private documents
 /// (`data/users/<from>/...` move under `data/users/<into>/` with a new
-/// version; one whose destination exists stays where it is), its
-/// authorship as a person (`person` and `page_person` columns, which
-/// become NULL when `into` is the owner), and its invites and grants.
+/// version, their authors with them; one whose destination exists stays
+/// where it is), its authorship as a person (`person` and `page_person`
+/// columns, which become NULL when `into` is the owner; documents'
+/// authors, page comments' publisher and versions' file authors, which
+/// become `*owner`), its approvals given and received and its approval
+/// requests (a live one that would repeat one of `into`'s is revoked, or
+/// withdrawn), and its invites and grants.
 fn fold(
     st: &Store,
     ctx: &AuditCtx,
@@ -237,6 +242,7 @@ fn fold(
             params![from.id, into.id],
         )?;
     }
+    fold_authorship(st, tx, old, new, into_owner)?;
     tx.execute(
         "UPDATE comments SET author_public_id = ?2 WHERE author_public_id = ?1",
         params![old, new],
@@ -278,6 +284,100 @@ fn fold(
     )?;
     move_private_docs(st, ctx, tx, old, new)?;
     tx.execute("DELETE FROM viewers WHERE id = ?1", params![from.id])?;
+    Ok(())
+}
+
+/// Moves the authorship columns of migration 25 and `file_authors_json`
+/// from public ID `old` to `new` (to `*owner`, or NULL for an approver,
+/// when `into_owner`).
+fn fold_authorship(
+    st: &Store,
+    tx: &rusqlite::Transaction<'_>,
+    old: &str,
+    new: &str,
+    into_owner: bool,
+) -> Result<()> {
+    let token = if into_owner { OWNER } else { new };
+    tx.execute(
+        "UPDATE OR IGNORE doc_authors SET author = ?2 WHERE author = ?1",
+        params![old, token],
+    )?;
+    tx.execute("DELETE FROM doc_authors WHERE author = ?1", params![old])?;
+    tx.execute(
+        "UPDATE comments SET page_person = ?2 WHERE page_person = ?1",
+        params![old, token],
+    )?;
+    let versions: Vec<(String, i64, String)> = {
+        let mut stmt = tx.prepare(
+            "SELECT artifact_id, n, file_authors_json FROM versions
+             WHERE file_authors_json IS NOT NULL AND instr(file_authors_json, ?1) > 0",
+        )?;
+        stmt.query_map(params![old], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    for (aid, n, json) in versions {
+        let Ok(mut files) =
+            serde_json::from_str::<std::collections::BTreeMap<String, Vec<Option<String>>>>(&json)
+        else {
+            continue;
+        };
+        for authors in files.values_mut() {
+            let mut out: Vec<Option<String>> = Vec::with_capacity(authors.len());
+            for a in authors.drain(..) {
+                let a = if a.as_deref() == Some(old) {
+                    Some(token.to_string())
+                } else {
+                    a
+                };
+                if !out.contains(&a) {
+                    out.push(a);
+                }
+            }
+            *authors = out;
+        }
+        tx.execute(
+            "UPDATE versions SET file_authors_json = ?3 WHERE artifact_id = ?1 AND n = ?2",
+            params![
+                aid,
+                n,
+                serde_json::to_string(&files).expect("serialisable map")
+            ],
+        )?;
+    }
+    // Approvals and requests: a live one that would repeat one `new`
+    // already has ends first, so the unique indexes hold.
+    let approver = (!into_owner).then_some(new);
+    let now = st.now();
+    tx.execute(
+        "UPDATE approvals SET revoked_at = ?3 WHERE revoked_at IS NULL AND (approver = ?1 OR author = ?1)
+           AND EXISTS (SELECT 1 FROM approvals b WHERE b.revoked_at IS NULL AND b.id <> approvals.id
+             AND COALESCE(b.approver, '') = COALESCE(CASE WHEN approvals.approver = ?1 THEN ?2 ELSE approvals.approver END, '')
+             AND b.author = CASE WHEN approvals.author = ?1 THEN ?4 ELSE approvals.author END
+             AND b.scope = approvals.scope
+             AND COALESCE(b.artifact_id, '') = COALESCE(approvals.artifact_id, '')
+             AND COALESCE(b.thread_id, '') = COALESCE(approvals.thread_id, ''))",
+        params![old, approver, now, new],
+    )?;
+    tx.execute(
+        "UPDATE approval_requests SET status = 'withdrawn', updated_at = ?3
+         WHERE status = 'open' AND (approver = ?1 OR author = ?1)
+           AND EXISTS (SELECT 1 FROM approval_requests b WHERE b.status = 'open' AND b.id <> approval_requests.id
+             AND COALESCE(b.approver, '') = COALESCE(CASE WHEN approval_requests.approver = ?1 THEN ?2 ELSE approval_requests.approver END, '')
+             AND b.author = CASE WHEN approval_requests.author = ?1 THEN ?4 ELSE approval_requests.author END
+             AND b.artifact_id = approval_requests.artifact_id
+             AND COALESCE(b.thread_id, '') = COALESCE(approval_requests.thread_id, ''))",
+        params![old, approver, now, new],
+    )?;
+    for table in ["approvals", "approval_requests"] {
+        tx.execute(
+            &format!("UPDATE {table} SET approver = ?2 WHERE approver = ?1"),
+            params![old, approver],
+        )?;
+        tx.execute(
+            &format!("UPDATE {table} SET author = ?2 WHERE author = ?1"),
+            params![old, new],
+        )?;
+    }
     Ok(())
 }
 
@@ -353,6 +453,10 @@ fn move_private_docs(
         tx.execute(
             "DELETE FROM leases WHERE artifact_id = ?1 AND path = ?2",
             params![aid, path],
+        )?;
+        tx.execute(
+            "UPDATE doc_authors SET path = ?3 WHERE artifact_id = ?1 AND path = ?2",
+            params![aid, path, dest],
         )?;
     }
     Ok(())
