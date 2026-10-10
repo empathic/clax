@@ -755,6 +755,87 @@ describe("comments", () => {
     }
   });
 
+  // A wait that starts and ends while the loop's poll is in flight (one that
+  // finds pending feedback at once): the poll, woken empty by the wait's
+  // start, answers after the wait ended. It answered for the wait, not
+  // early, so the loop polls again at once rather than taking a retry pause.
+  it("tier 5 polls again at once after a wait that started and ended during one poll", async () => {
+    const empty = { feedback: [], answers: [], text: null, waited_s: 0 };
+    const parked: ((body: unknown) => void)[] = [];
+    const fake = await fakeDaemonHome((req, reply) => {
+      if (!req.url?.startsWith("/api/sessions/s1/feedback")) return false;
+      const tier = new URL(req.url, "http://x").searchParams.get("tier");
+      if (tier === "inject") parked.push(reply);
+      else if (tier === "wait") reply(empty);
+      else return false;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const pauses = trackTimers(INJECT_RETRY_MS);
+      const polls = trackPolls();
+      const pi = new FakePi();
+      // A clock that never moves: an empty answer looks early.
+      claxExtension({ home: fake.home, env: withBin(join(scratch, "no-such-clax")), now: () => 0 })(pi.api);
+      const { ctx } = fakeContext(scratch, "pi-inject-epoch");
+      loaded.push({ pi, ctx });
+      await pi.emit("session_start", {}, ctx);
+      await expect.poll(() => parked.length, { timeout: 10_000 }).toBe(1);
+      parts(await pi.callToolAsPi("clax_wait_for_feedback", { timeout_s: 5 }, ctx));
+      parked.shift()!(empty);
+      expect(await polls[0].settled).toBe("answered");
+      await expect.poll(() => parked.length, { timeout: 10_000 }).toBe(1);
+      expect(polls).toHaveLength(2);
+      expect(pauses.created.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      fake.close();
+    }
+  });
+
+  // An aborted wait_for_feedback (the person stopped the turn) ends its
+  // request, and the loop's hold with it, at once: no timer runs before the
+  // loop polls again.
+  it("tier 5 resumes at once when a wait_for_feedback call is aborted", async () => {
+    const empty = { feedback: [], answers: [], text: null, waited_s: 0 };
+    const parked: ((body: unknown) => void)[] = [];
+    let waitClosed = false;
+    const fake = await fakeDaemonHome((req, reply) => {
+      if (!req.url?.startsWith("/api/sessions/s1/feedback")) return false;
+      const tier = new URL(req.url, "http://x").searchParams.get("tier");
+      if (tier === "inject") parked.push(reply);
+      else if (tier === "wait") {
+        // Never answered: only the abort ends it. A parked inject poll is woken empty.
+        req.on("close", () => { waitClosed = true; });
+        for (const r of parked.splice(0)) r(empty);
+      } else return false;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const pauses = trackTimers(INJECT_RETRY_MS);
+      const polls = trackPolls();
+      const pi = new FakePi();
+      claxExtension({ home: fake.home, env: withBin(join(scratch, "no-such-clax")), now: () => 0 })(pi.api);
+      const { ctx } = fakeContext(scratch, "pi-inject-abort");
+      loaded.push({ pi, ctx });
+      await pi.emit("session_start", {}, ctx);
+      await expect.poll(() => parked.length, { timeout: 10_000 }).toBe(1);
+      const stop = new AbortController();
+      const waiting = pi.callTool("clax_wait_for_feedback", { timeout_s: 600 }, ctx, stop.signal);
+      expect(await polls[0].settled).toBe("answered");
+      await turns();
+      expect(polls).toHaveLength(1);
+      stop.abort();
+      expect((await waiting).isError).toBe(true);
+      await expect.poll(() => waitClosed, { timeout: 10_000 }).toBe(true);
+      await expect.poll(() => parked.length, { timeout: 10_000 }).toBe(1);
+      expect(polls).toHaveLength(2);
+      expect(pauses.created.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      fake.close();
+    }
+  });
+
   it("tier 1 leaves error results alone and the feedback pending", async () => {
     const { pi, ctx } = load(daemon.home, "pi-tier1-error");
     const aid = parts(await pi.callToolAsPi("clax_publish", { html: "<h2>Goals</h2>", title: "Pi error" }, ctx)).json.artifact_id;
