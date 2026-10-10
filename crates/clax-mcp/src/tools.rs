@@ -680,7 +680,12 @@ fn db_path(collection: &str, doc_id: &str) -> Result<String, CallToolResult> {
 }
 
 /// A document as the tools return it.
+/// A document as the db tools show it; one the agent's person may not see
+/// (the daemon's placeholder) as its ID, version and `withheld` authors.
 fn doc_view(d: &Value) -> Value {
+    if d.get("withheld").is_some() {
+        return json!({"id": d["doc_id"], "version": d["version"], "withheld": d["withheld"]});
+    }
     json!({"id": d["id"], "path": d["path"], "data": d["data"], "version": d["version"], "updated_at": d["updated_at"]})
 }
 
@@ -1862,9 +1867,12 @@ impl ClaxTools {
             .as_array()
             .map(|d| d.iter().map(doc_view).collect())
             .unwrap_or_default();
-        Ok(
-            json!({"artifact_id": id, "collection": a.collection, "docs": docs, "next_cursor": r["next_cursor"], "note": clax_core::db::UNTRUSTED_DOC_NOTE}),
-        )
+        let mut out = json!({"artifact_id": id, "collection": a.collection, "docs": docs, "next_cursor": r["next_cursor"], "note": clax_core::db::UNTRUSTED_DOC_NOTE});
+        // Documents the agent's person may not see are counted, never listed.
+        if let Some(n) = r.get("withheld_count") {
+            out["withheld_count"] = n.clone();
+        }
+        Ok(out)
     }
 
     async fn do_db_write(&self, a: DbWriteArgs, update: bool) -> Outcome {
