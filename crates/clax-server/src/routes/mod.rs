@@ -1843,13 +1843,14 @@ mod agents {
                 "plugins/{p}/scripts/ensure-clax.sh differs from scripts/ensure-clax.sh"
             );
         }
-        // `exec` exports CLAX_CHANNEL=agent but for serve, stop, doctor, init.
+        // `exec` exports CLAX_CHANNEL=agent but for serve, stop, doctor, init
+        // and native-host.
         let exec = &wrapper[wrapper.find("    exec)\n").expect("an exec mode")..];
         let exec = &exec[..exec.find("\n        ;;\n").unwrap()];
         assert!(
-            exec.contains("serve|stop|doctor|init) ;;")
+            exec.contains("serve|stop|doctor|init|native-host) ;;")
                 && exec.contains("*) export CLAX_CHANNEL=agent ;;"),
-            "ensure-clax.sh exec must export CLAX_CHANNEL=agent for every mode but serve, stop, doctor and init"
+            "ensure-clax.sh exec must export CLAX_CHANNEL=agent for every mode but serve, stop, doctor, init and native-host"
         );
         let tool_hook = read("scripts/tool-hook.sh");
         assert!(
