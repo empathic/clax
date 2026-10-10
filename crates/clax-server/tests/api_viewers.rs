@@ -206,3 +206,76 @@ async fn a_lan_viewer_cannot_take_a_persons_or_the_owners_name() {
     let (st, _) = set_name(&ts, &lan.cookie, "claude").await;
     assert_eq!(st, 200);
 }
+
+#[tokio::test]
+async fn names_that_render_as_a_persons_or_the_owners_are_refused() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let res = ts
+        .client
+        .put(format!("{}/api/viewers/me", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&serde_json::json!({"display_name": "Alex"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    ts.connect_person("Sam", "clax:collaborator").await;
+    let lan = ts.viewer(Some("Lan")).await;
+    let probes: &[(&str, u16)] = &[
+        ("\u{202E}xelA", 400), // a bidi override: renders "Alex"
+        ("A\u{200F}lex", 400), // a right-to-left mark
+        ("\u{2066}Sam\u{2069}", 400),
+        ("Alex\u{3164}", 409), // Hangul fillers render blank
+        ("Alex\u{FFA0}", 409),
+        ("A\u{115F}lex", 409),
+        ("Alex\u{2800}", 400),      // the braille blank: a script of its own
+        ("\u{0410}lex", 400),       // Cyrillic А with Latin
+        ("\u{0405}\u{0430}m", 400), // Cyrillic Ѕа with Latin m
+        ("\u{0391}lex", 400),       // Greek Α with Latin
+        ("Ａｌｅｘ", 409),          // full-width
+        ("Al\u{200B}ex", 409),      // zero-width space
+        ("Al\u{FE0F}ex", 409),      // a variation selector
+        ("Alex\u{E0041}", 409),     // a tag character
+        ("Al\u{034F}ex", 409),      // the combining grapheme joiner
+        ("Al\u{0}ex", 400),
+        ("Al\nex", 400),
+    ];
+    for (name, want) in probes {
+        let (st, v) = set_name(&ts, &lan.cookie, name).await;
+        assert_eq!(st, *want, "{name:?}: {v}");
+    }
+    let (_, me) = {
+        let res = ts
+            .client
+            .get(format!("{}/api/viewers/me", ts.base))
+            .header("cookie", format!("clax_viewer={}", lan.cookie))
+            .send()
+            .await
+            .unwrap();
+        (res.status(), res.json::<Value>().await.unwrap())
+    };
+    assert_eq!(me["viewer"]["display_name"], "Lan", "no probe renamed it");
+    // One script, or the mixes a language writes, is fine.
+    for ok in ["Саша", "Αλέξης", "山田 Taro", "김 Kim"] {
+        let (st, v) = set_name(&ts, &lan.cookie, ok).await;
+        assert_eq!(st, 200, "{ok:?}: {v}");
+    }
+}
+
+#[tokio::test]
+async fn the_owner_cannot_take_a_live_agents_name() {
+    let ts = TestServer::spawn().await;
+    ts.register_session("claude", "h1").await;
+    let put = |name: &'static str| {
+        ts.client
+            .put(format!("{}/api/viewers/me", ts.base))
+            .header("cookie", ts.owner_cookie())
+            .json(&serde_json::json!({"display_name": name}))
+            .send()
+    };
+    let res = put("Claude").await.unwrap();
+    assert_eq!(res.status(), 409);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["error"]["code"], "name_taken");
+    assert_eq!(put("Alex").await.unwrap().status(), 200);
+}

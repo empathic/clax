@@ -98,24 +98,30 @@ pub fn candidates<'a>(base: &'a str, harness: &'a str) -> impl Iterator<Item = S
 /// are the same person's name when their token forms are equal.
 pub fn token_form(display_name: &str) -> String {
     use icu_normalizer::DecomposingNormalizerBorrowed;
-    use icu_properties::CodePointMapData;
-    use icu_properties::props::GeneralCategory;
+    use icu_properties::props::{DefaultIgnorableCodePoint, GeneralCategory};
+    use icu_properties::{CodePointMapData, CodePointSetData};
     let lower = display_name.to_lowercase();
     let decomposed = DecomposingNormalizerBorrowed::new_nfkd().normalize(&lower);
     let gc = CodePointMapData::<GeneralCategory>::new();
+    let ignorable = CodePointSetData::new::<DefaultIgnorableCodePoint>();
     let mut out = String::with_capacity(decomposed.len());
     let mut space = false;
     for c in decomposed.chars() {
-        if matches!(
-            gc.get(c),
-            GeneralCategory::NonspacingMark
-                | GeneralCategory::EnclosingMark
-                | GeneralCategory::SpacingMark
-                | GeneralCategory::Format
-        ) {
+        // Invisible characters (Hangul fillers, variation selectors, tag
+        // characters) render as nothing.
+        if ignorable.contains(c)
+            || matches!(
+                gc.get(c),
+                GeneralCategory::NonspacingMark
+                    | GeneralCategory::EnclosingMark
+                    | GeneralCategory::SpacingMark
+                    | GeneralCategory::Format
+            )
+        {
             continue;
         }
-        if c.is_whitespace() {
+        // The braille blank renders as a space.
+        if c.is_whitespace() || c == '\u{2800}' {
             space = !out.is_empty();
             continue;
         }
@@ -126,6 +132,50 @@ pub fn token_form(display_name: &str) -> String {
         out.extend(fold_letter(c));
     }
     out
+}
+
+/// Whether `s` holds a bidirectional control (U+061C, U+200E/F,
+/// U+202A–E, U+2066–9), which can make a name render as another.
+pub fn has_bidi_control(s: &str) -> bool {
+    use icu_properties::CodePointSetData;
+    use icu_properties::props::BidiControl;
+    let bidi = CodePointSetData::new::<BidiControl>();
+    s.chars().any(|c| bidi.contains(c))
+}
+
+/// Whether `s` mixes scripts (Latin with Cyrillic or Greek, and so on), as
+/// a name made to look like another does. Common and inherited characters
+/// (digits, punctuation, marks) belong to every script, and the mixes a
+/// language writes are allowed: Latin with Han and Hiragana or Katakana,
+/// with Han and Bopomofo, or with Han and Hangul.
+pub fn is_mixed_script(s: &str) -> bool {
+    use icu_properties::CodePointMapData;
+    use icu_properties::props::Script;
+    let sc = CodePointMapData::<Script>::new();
+    let mut seen: Vec<Script> = Vec::new();
+    for c in s.chars() {
+        let x = sc.get(c);
+        if matches!(x, Script::Common | Script::Inherited | Script::Unknown) || seen.contains(&x) {
+            continue;
+        }
+        seen.push(x);
+    }
+    if seen.len() < 2 {
+        return false;
+    }
+    let allowed: [&[Script]; 3] = [
+        &[
+            Script::Latin,
+            Script::Han,
+            Script::Hiragana,
+            Script::Katakana,
+        ],
+        &[Script::Latin, Script::Han, Script::Bopomofo],
+        &[Script::Latin, Script::Han, Script::Hangul],
+    ];
+    !allowed
+        .iter()
+        .any(|set| seen.iter().all(|x| set.contains(x)))
 }
 
 /// Letters whose diacritic is part of the letter (no decomposition), as
@@ -151,10 +201,15 @@ pub fn is_reserved(name: &str, people: &[String]) -> bool {
 }
 
 /// The repository `cwd` is in and its branch (§11), read from the files
-/// with no `git` process: the basename of the nearest directory at or
-/// above `cwd` holding `.git` (a directory, or a worktree's file naming
-/// its git directory), and the branch its `HEAD` names (`None` when
-/// detached or unreadable). `(None, None)` outside any repository.
+/// with no `git` process. The nearest directory at or above `cwd` holding
+/// `.git` (a directory, or a worktree's file naming its git directory)
+/// gives the branch its `HEAD` names (`None` when detached or unreadable).
+/// The repository is named after its common git directory (`git rev-parse
+/// --git-common-dir`; a worktree's `commondir` file names it): the
+/// directory holding that `.git`, so a worktree's agent is named after its
+/// repository, not the worktree's directory. A bare repository's common
+/// directory is its own name without `.git`. `(None, None)` outside any
+/// repository.
 pub fn repo_and_branch(cwd: &Path) -> (Option<String>, Option<String>) {
     if cwd.as_os_str().is_empty() {
         return (None, None);
@@ -177,10 +232,28 @@ pub fn repo_and_branch(cwd: &Path) -> (Option<String>, Option<String>) {
         } else {
             continue;
         };
-        let repo = dir
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .filter(|n| !n.is_empty());
+        let common = git_dir.as_deref().and_then(|g| {
+            let c = read_head_line(&g.join("commondir"))?;
+            let c = Path::new(&c);
+            let c = if c.is_absolute() {
+                c.to_path_buf()
+            } else {
+                g.join(c)
+            };
+            std::fs::canonicalize(&c).ok()
+        });
+        let repo = match &common {
+            Some(c) if c.file_name().is_some_and(|n| n == ".git") => {
+                c.parent().and_then(Path::file_name)
+            }
+            Some(c) => c.file_name(),
+            None => dir.file_name(),
+        }
+        .map(|n| {
+            let n = n.to_string_lossy();
+            n.strip_suffix(".git").unwrap_or(&n).to_string()
+        })
+        .filter(|n| !n.is_empty());
         let branch = git_dir
             .and_then(|g| read_head_line(&g.join("HEAD")))
             .and_then(|l| {
@@ -344,6 +417,56 @@ mod tests {
     }
 
     #[test]
+    fn invisible_and_blank_characters_vanish_from_token_forms() {
+        for probe in [
+            "Alex\u{3164}",
+            "Alex\u{FFA0}",
+            "A\u{115F}lex",
+            "Alex\u{2800}",
+            "Al\u{FE0F}ex",
+            "Alex\u{E0041}",
+            "Al\u{034F}ex",
+        ] {
+            assert_eq!(token_form(probe), "alex", "{probe:?}");
+        }
+        assert_eq!(token_form("Mia\u{2800}Kovač"), "mia-kovac");
+    }
+
+    #[test]
+    fn bidi_controls_and_mixed_scripts_are_seen() {
+        for b in [
+            "\u{202E}xelA",
+            "A\u{200F}lex",
+            "\u{2066}Sam\u{2069}",
+            "Sam\u{061C}",
+        ] {
+            assert!(has_bidi_control(b), "{b:?}");
+        }
+        assert!(!has_bidi_control("Mia Kovač"));
+        for m in [
+            "\u{0410}lex",
+            "\u{0405}\u{0430}m",
+            "\u{0391}lex",
+            "Sam \u{0418}",
+        ] {
+            assert!(is_mixed_script(m), "{m:?}");
+        }
+        for ok in [
+            "Alex",
+            "Mia Kovač",
+            "Ѕаша",
+            "Αλέξης",
+            "山田 Taro",
+            "やまだ 山田 Taro",
+            "김 Kim 金",
+            "Sam 2",
+            "O'Brien-Smith",
+        ] {
+            assert!(!is_mixed_script(ok), "{ok:?}");
+        }
+    }
+
+    #[test]
     fn reserved_names_cover_the_words_and_peoples_names_in_any_case() {
         for w in RESERVED {
             assert!(is_reserved(w, &[]));
@@ -380,9 +503,30 @@ mod tests {
         std::fs::create_dir_all(&wt).unwrap();
         std::fs::write(gd.join("HEAD"), "ref: refs/heads/fix\n").unwrap();
         std::fs::write(wt.join(".git"), format!("gitdir: {}\n", gd.display())).unwrap();
+        std::fs::write(gd.join("commondir"), "../..\n").unwrap();
+        assert_eq!(
+            repo_and_branch(&wt),
+            (Some("web".into()), Some("fix".into())),
+            "a worktree is named after its repository"
+        );
+        // Without a commondir file, the worktree's own directory names it.
+        std::fs::remove_file(gd.join("commondir")).unwrap();
         assert_eq!(
             repo_and_branch(&wt),
             (Some("web-wt".into()), Some("fix".into()))
+        );
+        // A worktree of a bare repository.
+        let bare = d.path().join("api.git");
+        let bgd = bare.join("worktrees/feat");
+        std::fs::create_dir_all(&bgd).unwrap();
+        std::fs::write(bgd.join("HEAD"), "ref: refs/heads/feat\n").unwrap();
+        std::fs::write(bgd.join("commondir"), "../..\n").unwrap();
+        let bwt = d.path().join("feat");
+        std::fs::create_dir_all(&bwt).unwrap();
+        std::fs::write(bwt.join(".git"), format!("gitdir: {}\n", bgd.display())).unwrap();
+        assert_eq!(
+            repo_and_branch(&bwt),
+            (Some("api".into()), Some("feat".into()))
         );
         assert_eq!(
             repo_and_branch(Path::new("")),

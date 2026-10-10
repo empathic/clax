@@ -1752,3 +1752,83 @@ async fn at_name_reaches_a_persons_agent_only_where_its_rights_allow() {
     );
     assert!(watches(&ts, &sid, aid));
 }
+
+/// Sam, connected with `rights`, and an agent of Sam's named `sams`; its
+/// session ID.
+async fn sams_agent(ts: &TestServer, rights: Value) -> String {
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let s = sam
+        .register_with(
+            json!({"harness": "codex", "harness_session_id": "hs", "cwd": "/w", "repo": "sams"}),
+        )
+        .await;
+    assert_eq!(s["name"], "sams");
+    let person = ts.store.grant(&sam.grant_id()).unwrap().person.unwrap();
+    let rights = clax_core::rights::Rights::parse(&rights).unwrap();
+    ts.store.set_person_rights(&person, Some(rights)).unwrap();
+    s["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn at_name_never_reaches_a_persons_agent_on_a_live_page() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let (mine, _) = agent_in(&ts, "claude", "h1", "web").await;
+    let sams = sams_agent(&ts, json!(["clax:full"])).await;
+    let form = reqwest::multipart::Form::new()
+        .text("url", "http://localhost:5173/")
+        .text("title", "Settings")
+        .text(
+            "anchor",
+            json!({"kind": "element", "selector": "main", "quote": "Save", "file": "index.html"})
+                .to_string(),
+        )
+        .text("body", "@sams and @web: the button overflows")
+        .text("pending", "[]")
+        .text("snapshot", "<p>a live page</p>");
+    let r = ts
+        .client
+        .post(format!("{}/api/live/threads", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 201, "{}", r.text().await.unwrap());
+    let v: Value = r.json().await.unwrap();
+    let aid = v["page"]["artifact_id"].as_str().unwrap();
+    let tid = v["thread"]["id"].as_str().unwrap();
+    assert!(
+        !watches(&ts, &sams, aid),
+        "a person's agent never watches a live page"
+    );
+    assert_eq!(
+        targets(&ts, tid),
+        [Some(mine.clone())],
+        "the owner's agent only"
+    );
+}
+
+#[tokio::test]
+async fn at_name_needs_comments_watch_as_well_as_artifacts_read() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let (web, _) = agent_in(&ts, "claude", "h1", "web").await;
+    let a = ts.publish_as(&web, "Review", "<p>x</p>").await;
+    let aid = a["artifact"]["id"].as_str().unwrap();
+    let sams = sams_agent(
+        &ts,
+        json!([
+            {"type": "clax-artifacts", "actions": ["read"], "locations": ["*"]},
+            {"type": "clax-comments", "actions": ["read", "reply"], "locations": ["*"]}
+        ]),
+    )
+    .await;
+    let v: Value = ts
+        .create_thread(aid, 1, "@sams have a look", None)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["unresolved_mentions"], json!(["sams"]), "{v}");
+    assert!(!watches(&ts, &sams, aid));
+    assert!(targets(&ts, v["thread"]["id"].as_str().unwrap()).is_empty());
+}

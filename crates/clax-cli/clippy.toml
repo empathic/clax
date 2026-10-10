@@ -6,6 +6,9 @@
 # daemons directly and allow them in tests/integration.rs. The textual guard
 # `every_command_reaches_the_daemon_through_the_marked_clients` in
 # src/commands/tools.rs stays as a second net.
+# A crate's clippy.toml hides the workspace's: this repeats the root one.
+too-many-arguments-threshold = 8
+
 disallowed-methods = [
     { path = "reqwest::blocking::Client::new", reason = "reach the daemon through crate::client::Client" },
     { path = "reqwest::blocking::Client::builder", reason = "reach the daemon through crate::client::Client" },
@@ -20,6 +23,8 @@ disallowed-methods = [
     { path = "clax_mcp::client::DaemonClient::managed", reason = "use commands::tools::daemon_client" },
 ]
 disallowed-types = [
+    { path = "reqwest::blocking::Client", reason = "reach the daemon through crate::client::Client" },
+    { path = "reqwest::Client", reason = "reach the daemon through crate::client::Client" },
     { path = "reqwest::blocking::ClientBuilder", reason = "reach the daemon through crate::client::Client" },
     { path = "reqwest::ClientBuilder", reason = "reach the daemon through crate::client::Client" },
 ]

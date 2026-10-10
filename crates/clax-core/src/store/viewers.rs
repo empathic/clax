@@ -33,10 +33,15 @@ pub(super) fn row_to_viewer(r: &rusqlite::Row<'_>) -> rusqlite::Result<Viewer> {
 }
 
 /// Checks a display name: at most [`MAX_NAME_CHARS`] characters, no control
-/// characters. Returns it trimmed, `None` for an empty one.
+/// or bidirectional control characters, and one script (spec §9.6: a name
+/// cannot be made to render as another's; see [`crate::names::is_mixed_script`]).
+/// Returns it trimmed, `None` for an empty one.
 pub(super) fn checked_name(name: &str) -> Result<Option<&str>> {
     let n = name.trim();
-    if n.chars().any(char::is_control) || n.chars().count() > MAX_NAME_CHARS {
+    if n.chars().any(char::is_control)
+        || n.chars().count() > MAX_NAME_CHARS
+        || crate::names::has_bidi_control(n)
+    {
         return Err(CoreError::invalid(
             "invalid_name",
             format!(
@@ -44,13 +49,19 @@ pub(super) fn checked_name(name: &str) -> Result<Option<&str>> {
             ),
         ));
     }
+    if crate::names::is_mixed_script(n) {
+        return Err(CoreError::invalid(
+            "invalid_name",
+            "a display name is written in one script: no Latin mixed with Cyrillic, Greek or another script",
+        ));
+    }
     Ok(Some(n).filter(|n| !n.is_empty()))
 }
 
 /// Refuses viewer `id` the display name `name` (spec §9.6) when its token
 /// form ([`crate::names::token_form`]) is the owner's or a connected
-/// person's other than its own, and, when `id` is a connected person's,
-/// a live agent's name (§11).
+/// person's other than its own, and, when `id` is the owner's or a
+/// connected person's, a live agent's name (§11).
 ///
 /// # Errors
 /// `name_taken` as above.
@@ -68,7 +79,7 @@ fn check_viewer_name(tx: &rusqlite::Transaction<'_>, id: &str, name: &str) -> Re
     }
     let person: bool = tx
         .query_row(
-            "SELECT person = 1 AND person_revoked_at IS NULL FROM viewers WHERE id = ?1",
+            "SELECT owner = 1 OR (person = 1 AND person_revoked_at IS NULL) FROM viewers WHERE id = ?1",
             params![id],
             |r| r.get(0),
         )
@@ -423,11 +434,15 @@ impl Store {
     /// see [`Store::owner_viewer`]); `""` clears it. `browser` as there.
     ///
     /// # Errors
-    /// `invalid_name` as for [`Store::upsert_viewer`].
+    /// `invalid_name` as for [`Store::upsert_viewer`]; `name_taken` for a
+    /// connected person's name or a live agent's ([`check_viewer_name`]).
     pub fn set_owner_name(&self, name: &str, browser: bool) -> Result<Viewer> {
         let name = checked_name(name)?;
         let v = self.owner_viewer(browser)?;
         self.with_tx(|tx| {
+            if let Some(n) = name {
+                check_viewer_name(tx, &v.id, n)?;
+            }
             tx.execute(
                 "UPDATE viewers SET display_name = ?2 WHERE id = ?1",
                 params![v.id, name],

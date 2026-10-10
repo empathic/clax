@@ -631,22 +631,27 @@ impl Store {
     /// # Errors
     /// `NotFound` for no such session; `unknown_session` for an ended one;
     /// `name_locked` when the agent renames a session its person named;
-    /// `invalid_name` for a name outside `[a-z0-9][a-z0-9._-]{0,31}` or a
-    /// reserved word; `name_taken` for another live session's name
+    /// `invalid_name` for a name outside `[a-z0-9][a-z0-9._-]{0,31}`, one
+    /// ending in `.`, `_` or `-`, or a reserved word; `name_taken` for another live session's name
     /// (ignoring case) or the token form of the owner's or a connected
     /// person's display name.
     pub fn set_session_name(&self, sid: &str, name: &str, source: NameSource) -> Result<Session> {
         let invalid = || {
             CoreError::invalid(
                 "invalid_name",
-                "an agent name is 1 to 32 of a-z, 0-9, '.', '_' and '-', starting with a letter or digit, and not a reserved word",
+                "an agent name is 1 to 32 of a-z, 0-9, '.', '_' and '-', starting and ending with a letter or digit, and not a reserved word",
             )
         };
         if !name.is_ascii() {
             return Err(invalid());
         }
         let name = name.to_ascii_lowercase();
-        if !crate::names::is_valid(&name) || crate::names::RESERVED.contains(&name.as_str()) {
+        // A chosen name also ends in a letter or digit, as derived ones do:
+        // a trailing `.` would read as a sentence's end after `@name`.
+        if !crate::names::is_valid(&name)
+            || name.ends_with(['.', '_', '-'])
+            || crate::names::RESERVED.contains(&name.as_str())
+        {
             return Err(invalid());
         }
         self.with_tx(|tx| {
@@ -1733,6 +1738,9 @@ mod tests {
                 "web\u{200B}",
                 "web\n",
                 "a\u{0}",
+                "web.",
+                "web_",
+                "web-",
                 "a/b",
                 "@web",
                 &"x".repeat(33),
@@ -1929,6 +1937,61 @@ mod tests {
             );
             st.upsert_viewer(&sam_cookie, Some("Sam K")).unwrap();
             st.upsert_viewer(&lan, Some("web")).unwrap();
+        }
+
+        #[test]
+        fn the_owner_cannot_take_a_live_agents_or_a_persons_name() {
+            let (_d, _c, st) = store();
+            st.register_session(DAEMON, reg_repo("claude", "web", "main"))
+                .unwrap();
+            approved(&st, "Sam", KEY_A);
+            for taken in ["web", "WEB", "Sam", "sám"] {
+                assert_eq!(
+                    code(st.set_owner_name(taken, true)),
+                    "name_taken",
+                    "{taken}"
+                );
+            }
+            assert_eq!(
+                st.set_owner_name("Alex", true)
+                    .unwrap()
+                    .display_name
+                    .as_deref(),
+                Some("Alex")
+            );
+            st.set_owner_name("Alex", true).unwrap();
+            st.set_owner_name("", true).unwrap();
+        }
+
+        #[test]
+        fn a_new_person_cannot_take_an_uninvited_viewers_name() {
+            let (_d, clock, st) = store();
+            let jun = crate::new_ulid();
+            st.upsert_viewer(&jun, Some("Jun")).unwrap();
+            let e = st.create_invite(InvitePerson::New("JUN".into()), None);
+            assert_eq!(code(e), "name_taken");
+            let msg = match st.create_invite(InvitePerson::New("jun".into()), None) {
+                Err(CoreError::Invalid { message, .. }) => message,
+                other => panic!("{other:?}"),
+            };
+            assert!(msg.contains("invite that viewer instead"), "{msg}");
+            // Inviting that viewer is the way.
+            let public = st.get_viewer(&jun).unwrap().unwrap().public_id;
+            st.create_invite(InvitePerson::Viewer(public), None)
+                .unwrap();
+            // A revoked person's name is free again.
+            let (mia, _, _) = approved(&st, "Mia", KEY_A);
+            let mia = st.grant(&mia).unwrap().person.unwrap();
+            st.revoke_person(&mia).unwrap();
+            st.create_invite(InvitePerson::New("Mia".into()), None)
+                .unwrap();
+            // A lapsed invite's name is free again.
+            st.create_invite(InvitePerson::New("Ola".into()), None)
+                .unwrap();
+            clock.advance(crate::store::people::INVITE_TTL_SECS + 1);
+            st.expire_grants().unwrap();
+            st.create_invite(InvitePerson::New("Ola".into()), None)
+                .unwrap();
         }
     }
 
