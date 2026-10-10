@@ -884,11 +884,11 @@ of the owner's agents only, a person their agents' (§18).
 | `GET /api/artifacts/{aid}/working`, `GET /api/working` | Filtered (messages, titles) | comments watch |
 | `GET /api/threads` (all threads; `clax comments`, `/clax:comments`) | Filtered; Denied to `PersonAgent` (they list per artifact, §6.7) | comments read |
 | `GET …/threads`, `GET …/threads/{tid}`, `GET …/threads/{tid}/clip` | Filtered | comments read |
-| `POST …/threads` (create) | Filtered (returns the thread with its anchor) | comments write |
-| `POST …/threads/{tid}/comments` (incl. agent replies) | Filtered (returns the whole thread) | comments reply (an agent reply) / write |
-| `POST …/threads/{tid}/resolve`, `…/reopen` | Filtered (returns the thread) | comments resolve |
-| `DELETE …/threads/{tid}` | Own | comments resolve |
-| `POST …/threads/{tid}/send`, `…/threads:send` | Filtered (returns the threads) | comments send |
+| `POST …/threads` (create) | Filtered (returns the thread with its anchor); a person's agent writes from a session (400 `no_session`) | comments write |
+| `POST …/threads/{tid}/comments` (incl. agent replies) | Filtered (returns the whole thread); a person's agent writes from a session (400 `no_session`) | comments reply (an agent reply) / write, and comments read |
+| `POST …/threads/{tid}/resolve`, `…/reopen` | Filtered (returns the thread) | comments resolve, and comments read |
+| `DELETE …/threads/{tid}` | Own; a person's agent deletes from a session (400 `no_session`) | comments resolve, and comments read |
+| `POST …/threads/{tid}/send`, `…/threads:send` | Filtered (returns the threads) | comments send, and comments read |
 | `GET/PUT/PATCH/DELETE …/docs/{*path}`, `GET …/docs`, `POST …/docs:batch`, `…/docs:str_replace`, `…/docs:acquire` | Filtered (every returned document; list `where`/`order_by` over visible documents only, §8.3); `str_replace`, `acquire` with a condition, and the matching `batch` operations on a document withheld from the caller are 403 `withheld` before anything is evaluated; blind `PUT`, `PATCH` and `DELETE` stay allowed | db read (GET) / db write |
 | `POST /api/sessions`, `POST /api/sessions/join` | Own (binding, §6.7) | none |
 | `GET /api/sessions`, `GET/PATCH /api/sessions/{id}` | Own (the grant's own sessions) | none |
@@ -908,7 +908,10 @@ of the owner's agents only, a person their agents' (§18).
 | Everything else: `/api/token`, `/api/events`, `/api/stream*`, `/api/live/*`, `/api/sample*`, `/api/artifacts/{aid}/sample*`, `/api/artifacts/{aid}/room`, `/api/push`, `/api/extension*`, `/api/viewers*`, `/api/questions*`, `/api/inbox*`, `/api/people*`, `PUT /api/agents*`, changes to `/api/approvals*`, `GET /api/grants`, `/api/grants/{gid}/approve|deny`, `DELETE /api/grants/{gid}`, `/api/admin/shutdown`, `/connect/b/*`, the shell pages, `/healthz` | Denied | — |
 
 Listing under location-limited rights leaves out what the agent may not
-`read`. Feedback on an artifact the agent may no longer read is held as
+`read`. A thread write other than creating a thread (a comment or reply,
+resolve, reopen, delete, send or batch send) also needs `comments read` at
+the artifact (403 `not_permitted`): an agent acts only on threads it can
+list. Feedback on an artifact the agent may no longer read is held as
 withheld, with the placeholder "you no longer have access to this page".
 
 ## 8. The visibility filter
@@ -931,7 +934,7 @@ artifact Y (thread T)?" Yes when, for every Aᵢ:
 | A viewer comment's body | its writer (`author_public_id`; anonymous and pre-migration-12 unattributed comments count as `*unconnected`) |
 | A page-written comment's body (`via_page`) | its writer and every author of the page at write time (`page_authors`: the authors of every file of its current version; none recorded: the owner) |
 | An agent comment's body | the person of its session |
-| A thread's anchor (quote, prefix, suffix, selector, custom name, file name, an area's fingerprint) | the authors of the anchored file in the thread's version (`versions.file_authors_json`; the version's publisher when the file is unknown); none for an anchor on the whole artifact, which is on no page |
+| A thread's anchor (quote, prefix, suffix, selector, custom name, file name, `html_hash`, an area's fingerprint) | the authors of the anchored file in the thread's version (`versions.file_authors_json`; the version's publisher when the file is unknown); none for an anchor on the whole artifact, which is on no page |
 | A thread's `resolved_by` text; its batch note | the resolver (a viewer's public ID; for an agent's resolve the agent's person, `threads.resolved_by_person`; none recorded: `*unconnected`); the batch's sender (`send_batches.sender`; none recorded: `*unconnected`) |
 | A clip | the thread's first commenter and the anchor's authors |
 | A version's file (name and bytes) | that file's authors in `versions.file_authors_json`: for a file the version wrote, the publisher, and for a `by_page` version every author of the previous version's files; for a file it carried forward, the previous version's authors of that file |
@@ -963,7 +966,8 @@ Withheld fields are replaced, never dropped:
 - **Comment body:** `"body": null, "withheld": true` (the comment's ID,
   author name and person, and time stay).
 - **Thread:** a withheld anchor has `quote`, `prefix`, `suffix`, `selector`,
-  `custom_name` and `file` null, its `area` without `tag` and `text`, and
+  `custom_name`, `file` and `html_hash` null, its `area` without `tag`,
+  `text` and `children`, and
   `"anchor_withheld": true`; a withheld clip has no `clip`, `clip_url` and
   `clip_path` null, `has_clip` false and `"clip_withheld": true`, and its
   route answers 403 `withheld` with the authors; a withheld `resolved_by`

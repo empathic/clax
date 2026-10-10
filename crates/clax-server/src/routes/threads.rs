@@ -117,19 +117,24 @@ fn acting(c: &Caller) -> (Option<String>, Option<String>) {
 /// come from agent sessions (400 `no_session`); and no `via_page`, which
 /// only a page's browser sets (400 `invalid_via_page`). Other callers pass.
 fn person_agent_comments(c: &Caller, via_page: bool) -> Result<(), ApiError> {
-    if let Caller::PersonAgent { session, .. } = c {
-        if session.is_none() {
-            return Err(ApiError::bad_request(
-                "no_session",
-                "an agent of another machine comments from a session: send X-Clax-Session",
-            ));
-        }
-        if via_page {
-            return Err(ApiError::bad_request(
-                "invalid_via_page",
-                "via_page marks a page's comments, which a browser writes",
-            ));
-        }
+    person_agent_session(c)?;
+    if via_page && matches!(c, Caller::PersonAgent { .. }) {
+        return Err(ApiError::bad_request(
+            "invalid_via_page",
+            "via_page marks a page's comments, which a browser writes",
+        ));
+    }
+    Ok(())
+}
+
+/// A person's agent writes content (comments, threads) and deletes threads
+/// only from a session (400 `no_session`). Other callers pass.
+fn person_agent_session(c: &Caller) -> Result<(), ApiError> {
+    if let Caller::PersonAgent { session: None, .. } = c {
+        return Err(ApiError::bad_request(
+            "no_session",
+            "an agent of another machine writes comments and deletes threads from a session: send X-Clax-Session",
+        ));
     }
     Ok(())
 }
@@ -1147,8 +1152,9 @@ pub struct DeleteQuery {
 /// Deletes a thread with its comments, feedback rows, and clip, as the viewer
 /// or, with `?as=agent`, as the agent (the same rules as [`reopen`], the level
 /// check included). Answers `{deleted: true, thread_id}` and publishes
-/// `thread_deleted`. A request with a foreign `Origin` is refused
-/// ([`SameOrigin`]).
+/// `thread_deleted`. A person's agent deletes from a session (400
+/// `no_session`) and only where it may read threads (403 `not_permitted`).
+/// A request with a foreign `Origin` is refused ([`SameOrigin`]).
 pub async fn delete(
     State(s): State<AppState>,
     a: Agent<crate::agent::ThreadDelete>,
@@ -1166,7 +1172,9 @@ pub async fn delete(
     if agent && !authed {
         return Err(ApiError::unauthorized());
     }
+    person_agent_session(&a.caller)?;
     require_interact(&s, authed, who).await?;
+    sees_threads(&a, &s, &id).await?;
     let (session, grant) = acting(&a.caller);
     let ctx = s.feedback_ctx();
     let o = s
