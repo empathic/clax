@@ -2081,7 +2081,11 @@ mod tests {
         batch_note(&mut b);
         assert_eq!(b["note"], Value::Null);
         let mut a = json!({"id": "a1", "title": "T", "description": "D", "icon": "I", "capabilities": {"db": {}}, "current_version": 2});
-        artifact(&mut a, &["title", "description", "icon", "capabilities"], &authors);
+        artifact(
+            &mut a,
+            &["title", "description", "icon", "capabilities"],
+            &authors,
+        );
         assert_eq!(
             a,
             json!({"id": "a1", "title": null, "description": null, "icon": null, "capabilities": null, "current_version": 2,
