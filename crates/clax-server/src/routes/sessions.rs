@@ -11,7 +11,7 @@ use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use clax_core::model::Session;
-use clax_core::{CoreError, RegisterSession};
+use clax_core::{CoreError, JoinSession, RegisterSession};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -118,12 +118,15 @@ pub async fn join(
         .store_call(move |st| {
             let session = st.join_session(
                 &audit,
-                &b.harness,
-                b.parent_pid,
-                &b.harness_session_id,
-                b.cwd.as_deref(),
-                transcript.as_deref(),
-                &b.ancestor_pids,
+                JoinSession {
+                    harness: b.harness.clone(),
+                    parent_pid: b.parent_pid,
+                    harness_session_id: b.harness_session_id,
+                    cwd: b.cwd,
+                    ancestor_pids: b.ancestor_pids,
+                    transcript_path: transcript,
+                },
+                None,
             )?;
             if let Some(h) = b.codex_home.as_deref().filter(|_| b.harness == "codex") {
                 st.set_codex_home(&session.id, h)?;

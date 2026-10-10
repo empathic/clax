@@ -522,11 +522,89 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE TABLE install (k TEXT PRIMARY KEY, v TEXT NOT NULL);
     ALTER TABLE versions ADD COLUMN content_sha256 TEXT;
     ALTER TABLE sessions ADD COLUMN transcript_path TEXT;",
+    // 24: people, grants, sessions bound to their credential, and authors
+    // (spec 2026-10-08-multi-agent-multi-person §5.1). A connected person is
+    // a viewer with `person = 1`; `person` columns hold public IDs, NULL for
+    // the owner, so every existing row stays the owner's. A session's
+    // harness session ID is unique within its credential (`grant_id`, NULL
+    // for the daemon token), never across credentials (M4).
+    "ALTER TABLE viewers ADD COLUMN person INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE viewers ADD COLUMN person_revoked_at TEXT;
+    ALTER TABLE viewers ADD COLUMN rights_json TEXT;
+
+    CREATE TABLE invites (
+        id TEXT PRIMARY KEY,
+        code_sha256 TEXT NOT NULL UNIQUE,
+        viewer_id TEXT NOT NULL REFERENCES viewers(id),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used_at TEXT,
+        grant_id TEXT,
+        revoked_at TEXT
+    );
+
+    CREATE TABLE grants (
+        id TEXT PRIMARY KEY,
+        viewer_id TEXT REFERENCES viewers(id),
+        status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'denied', 'revoked', 'expired')),
+        via TEXT NOT NULL CHECK (via IN ('invite', 'request')),
+        client_key TEXT NOT NULL,
+        client_name TEXT NOT NULL,
+        peer_ip TEXT NOT NULL,
+        user_code_sha256 TEXT,
+        wrong_codes INTEGER NOT NULL DEFAULT 0,
+        continue_sha256 TEXT NOT NULL,
+        manage_sha256 TEXT,
+        narrow_json TEXT,
+        created_at TEXT NOT NULL,
+        decided_at TEXT,
+        last_used_at TEXT,
+        ended_at TEXT,
+        ended_by TEXT
+    );
+    CREATE UNIQUE INDEX grants_live_key ON grants(client_key) WHERE status IN ('pending', 'approved');
+    CREATE INDEX grants_by_viewer ON grants(viewer_id, status);
+    CREATE INDEX grants_pending ON grants(created_at) WHERE status = 'pending';
+
+    CREATE TABLE grant_tokens (
+        sha256 TEXT PRIMARY KEY,
+        grant_id TEXT NOT NULL REFERENCES grants(id),
+        created_at TEXT NOT NULL,
+        revoked_at TEXT
+    );
+    CREATE INDEX grant_tokens_by_grant ON grant_tokens(grant_id);
+
+    ALTER TABLE sessions ADD COLUMN grant_id TEXT;
+    ALTER TABLE sessions ADD COLUMN person TEXT;
+    ALTER TABLE sessions ADD COLUMN name TEXT;
+    ALTER TABLE sessions ADD COLUMN name_source TEXT CHECK (name_source IN ('derived', 'agent', 'person'));
+    ALTER TABLE sessions ADD COLUMN narrow_json TEXT;
+    ALTER TABLE sessions ADD COLUMN elevate_json TEXT;
+    ALTER TABLE sessions ADD COLUMN ended_reason TEXT
+        CHECK (ended_reason IN ('idle', 'exit', 'revoked', 'person'));
+    ALTER TABLE sessions ADD COLUMN ended_watches_json TEXT;
+    CREATE UNIQUE INDEX sessions_live_name ON sessions(name COLLATE NOCASE)
+        WHERE ended_at IS NULL AND name IS NOT NULL;
+    CREATE INDEX sessions_by_grant ON sessions(grant_id, harness, parent_pid) WHERE grant_id IS NOT NULL;
+    DROP INDEX sessions_harness_id;
+    CREATE UNIQUE INDEX sessions_harness_id ON sessions(harness, harness_session_id, COALESCE(grant_id, ''))
+        WHERE harness_session_id IS NOT NULL AND ended_at IS NULL;
+
+    ALTER TABLE artifacts ADD COLUMN person TEXT;
+    ALTER TABLE versions ADD COLUMN person TEXT;
+    ALTER TABLE versions ADD COLUMN by_page INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE versions ADD COLUMN page_person TEXT;
+    ALTER TABLE versions ADD COLUMN file_authors_json TEXT;
+    ALTER TABLE assets ADD COLUMN person TEXT;",
 ];
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
 pub const AUDIT_MIGRATION: u32 = 23;
+
+/// The migration that adds people, grants and their tokens, as a schema
+/// version (spec 2026-10-08-multi-agent-multi-person §5.1).
+pub const PEOPLE_MIGRATION: u32 = 24;
 
 /// Runs the Rust part of the migration that brings the schema to
 /// `version`, in that migration's transaction, after its SQL.
@@ -553,7 +631,7 @@ fn install_id(tx: &rusqlite::Transaction<'_>) -> crate::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AUDIT_MIGRATION, MIGRATIONS};
+    use super::{AUDIT_MIGRATION, MIGRATIONS, PEOPLE_MIGRATION};
     use crate::store::test_util::DAEMON;
     use crate::{Home, Store, is_public_id};
     use rusqlite::{Connection, params};
@@ -1225,5 +1303,73 @@ mod tests {
             home.ensure_dirs().unwrap();
             open_concurrently(&home, 6);
         }
+    }
+
+    #[test]
+    fn migration_24_keeps_rows_and_makes_them_the_owners() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        let before = PEOPLE_MIGRATION as usize - 1;
+        assert!(MIGRATIONS[before].contains("CREATE TABLE grants"));
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            for sql in &MIGRATIONS[..before] {
+                c.execute_batch(sql).unwrap();
+            }
+            // The audit migration's Rust step, which this raw replay skips.
+            c.execute(
+                "INSERT INTO install (k, v) VALUES ('id', ?1)",
+                ["0".repeat(32)],
+            )
+            .unwrap();
+            c.pragma_update(None, "user_version", before as u32)
+                .unwrap();
+            c.execute_batch(&format!(
+                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+                    VALUES ('7q3k9mzx2b4t', 't', 'x', 'x', 2, '0');
+                 INSERT INTO versions (artifact_id, n, created_at, files_json) VALUES ('7q3k9mzx2b4t', 1, 'x', '{{}}');
+                 INSERT INTO versions (artifact_id, n, created_at, files_json) VALUES ('7q3k9mzx2b4t', 2, 'x', '{{}}');
+                 INSERT INTO assets (id, artifact_id, content_type, size, ext, created_at)
+                    VALUES ('as1', '7q3k9mzx2b4t', 'image/png', 1, 'png', 'x');
+                 INSERT INTO sessions (id, harness, harness_session_id, cwd, started_at, last_seen_at, agent_handle)
+                    VALUES ('{SID}', 'claude', 'h1', '/w', 'x', 'x', 'a_00');
+                 INSERT INTO viewers (id, public_id, display_name, created_at)
+                    VALUES ('{COOKIE}', 'u_0000000000000000000000', 'Lan', 'x');"
+            ))
+            .unwrap();
+        }
+        let st = Store::open(&home).unwrap();
+        let sessions = st.list_sessions(false).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert!(sessions.iter().all(|s| s.person.is_none()
+            && s.grant_id.is_none()
+            && s.name.is_none()
+            && s.name_source.is_none()));
+        let people: Vec<Option<String>> = st
+            .with_read(|c| {
+                let mut stmt = c.prepare(
+                    "SELECT person FROM artifacts UNION ALL SELECT person FROM versions
+                     UNION ALL SELECT page_person FROM versions UNION ALL SELECT file_authors_json FROM versions
+                     UNION ALL SELECT person FROM assets",
+                )?;
+                Ok(stmt
+                    .query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .unwrap();
+        assert_eq!(people.len(), 8);
+        assert!(people.iter().all(Option::is_none));
+        let v = st.get_viewer(COOKIE).unwrap().unwrap();
+        assert!(!v.person && v.person_revoked_at.is_none());
+        let json = serde_json::to_value(&v).unwrap();
+        assert!(
+            json.get("person").is_none(),
+            "unchanged JSON for a viewer: {json}"
+        );
+        let s = serde_json::to_value(&sessions[0]).unwrap();
+        assert!(
+            s.get("person").is_none() && s.get("name").is_none() && s.get("grant_id").is_none()
+        );
     }
 }

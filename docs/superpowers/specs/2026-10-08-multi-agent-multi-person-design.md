@@ -114,7 +114,7 @@ reason.
 | M11 | **Effective authors** (§8.2): content carries the set of people whose words it holds. A comment or document a page wrote, and a page's self-published version, also count the page's publisher, fixed at write time. A version's file carried forward keeps the authors it had; a document's author set only grows until the document is deleted. | Page-written content is the confused-deputy path: a page running in the owner's browser writes "as the owner"; carrying a file forward or rewriting a document must not move its words to a new author. |
 | M12 | **An agent's own person's content is always visible.** | The filter guards against other people's words, not one's own. |
 | M13 | **Approvals are per author, at three scopes**: one thread (including later replies, R1), one artifact, or everywhere. An author is a person; their agents' words count as theirs. | O3's wording. |
-| M14 | **`*unconnected`.** Migration 23 gives the owner one approval for the author class `*unconnected` (every viewer who is not the owner and not a connected person, and anonymous callers) everywhere (O6). Connected people are never covered by it as themselves; their unsigned browsers and scripts are, which People states beside the switch (§9.6). | Today's reach for LAN viewers on every install, with its consequence shown. |
+| M14 | **`*unconnected`.** Migration 25 gives the owner one approval for the author class `*unconnected` (every viewer who is not the owner and not a connected person, and anonymous callers) everywhere (O6). Connected people are never covered by it as themselves; their unsigned browsers and scripts are, which People states beside the switch (§9.6). | Today's reach for LAN viewers on every install, with its consequence shown. |
 | M15 | **Connecting asks the connecting person about the owner.** `clax connect` asks "Let <owner>'s comments and pages reach your agents everywhere? [Y/n]" and records the answer as that person's approval. | A person who connects to someone's Clax is there to work on that person's pages. |
 | M16 | **Withheld bodies stay undelivered.** A feedback row whose comment body is withheld is not handed over; its session gets one placeholder per (author, thread) (`placeholder_at`), and the row is delivered once approved. A row whose body is visible is delivered with every other withheld field placeholdered. | Delivery semantics (once, acknowledged, resent) stay as they are for visible bodies. |
 | M17 | **Visibility and rights are current at every take.** Each take (and each wake of a long-poll) reads a generation counter and rebuilds `Visibility` and the rights when it changed. Every approval, approval revocation, rights or narrowing or elevation change, grant or person revocation, and viewer claim or fold (which moves authorship) bumps it and wakes the affected sessions' waiters. A waiter registers before it takes, so a bump between its take and its wait is never missed. | A long-poll may wait ten minutes; a revocation must apply to its next take. |
@@ -127,7 +127,7 @@ reason.
 | M24 | **Handoff is a tool** (`comments_handoff`); taken threads refuse other agents' replies and resolves (409 `thread_taken`). | Explicit, and two agents never answer one thread. |
 | M25 | **Session end cleans up** and makes one `ended` inbox note when the session owned threads or had open questions or approval requests. This reads O4's "one inbox note" as one note per ended session that had something to clean up; a session that ends with nothing open makes none. | O4, interpreted so idle sessions make no noise. |
 | M26 | **Another machine is a remote, not a second daemon.** `clax connect` writes `<home>/remote.json` and the key; while it exists, the shim, hooks, CLI and Pi extension talk to that daemon (signed) instead of starting one. | One switch in the client keeps every harness working unchanged. |
-| M27 | **Migrations 22–24** (people and grants; visibility; per-person inbox), numbered after main's 21. The `toolpath-audit` branch also claims 22: whichever lands on main first keeps 22 and the other renumbers its migrations up before merging. | Contiguous migrations; no build of an unmerged branch has run on a real home. |
+| M27 | **Migrations 24–26** (people and grants; visibility; per-person inbox), numbered after main's 23 (the audit journal). The numbers are relative: each schema task takes the next free number on main when it is implemented, and amends this text. The `toolpath-audit` branch landed on main first and kept 23; these follow it. | Contiguous migrations; no build of an unmerged branch has run on a real home. |
 
 ## 3. User flows
 
@@ -297,9 +297,9 @@ invite for themselves (**Invite → Me**).
 
 ## 5. Data model
 
-All three migrations follow main's 21. Numbers are provisional per M27.
+All three migrations follow main's 23. Numbers are provisional per M27.
 
-### 5.1 Migration 22: people, grants, sessions, authors
+### 5.1 Migration 24: people, grants, sessions, authors
 
 ```sql
 -- A connected person: a viewer with (or that had) a grant. The owner row
@@ -363,6 +363,11 @@ ALTER TABLE sessions ADD COLUMN ended_watches_json TEXT;   -- idle ends: the dir
 CREATE UNIQUE INDEX sessions_live_name ON sessions(name COLLATE NOCASE)
     WHERE ended_at IS NULL AND name IS NOT NULL;
 CREATE INDEX sessions_by_grant ON sessions(grant_id, harness, parent_pid) WHERE grant_id IS NOT NULL;
+-- A harness session ID is unique within its credential, never across them (M4):
+-- another grant's (or the token's) row with the same ID neither blocks nor matches.
+DROP INDEX sessions_harness_id;
+CREATE UNIQUE INDEX sessions_harness_id ON sessions(harness, harness_session_id, COALESCE(grant_id, ''))
+    WHERE harness_session_id IS NOT NULL AND ended_at IS NULL;
 
 ALTER TABLE artifacts ADD COLUMN person TEXT;          -- the creator's person; NULL: the owner
 ALTER TABLE versions ADD COLUMN person TEXT;           -- the publisher's person; NULL: the owner
@@ -380,7 +385,7 @@ asset is the owner's (§19). Existing sessions get no name; names are given
 at registration. `person` columns hold public IDs; the viewer claim and
 fold (main spec §11) rewrites them with the other author columns.
 
-### 5.2 Migration 23: visibility
+### 5.2 Migration 25: visibility
 
 ```sql
 CREATE TABLE approvals (
@@ -441,14 +446,14 @@ the owner's (zero change). Existing `via_page` comments get `page_person`
 NULL, read as the owner (every version before this migration is the
 owner's).
 
-### 5.3 Migration 24: the per-person inbox
+### 5.3 Migration 26: the per-person inbox
 
 `inbox_items.kind` has a `CHECK`, which SQLite cannot alter, so the table is
 rebuilt (as migration 19 rebuilt `thread_moves`), keeping every `seq` so
 `inbox_fts` rowids still match:
 
 ```sql
-CREATE TABLE inbox_items_24 (
+CREATE TABLE inbox_items_26 (
     seq INTEGER PRIMARY KEY,
     id TEXT NOT NULL UNIQUE,
     kind TEXT NOT NULL CHECK (kind IN ('reply', 'version', 'published', 'question', 'finished',
@@ -463,12 +468,12 @@ CREATE TABLE inbox_items_24 (
     created_at TEXT NOT NULL,
     read_at TEXT
 );
-INSERT INTO inbox_items_24 (seq, id, kind, key, artifact_id, thread_id, comment_id, version_n,
+INSERT INTO inbox_items_26 (seq, id, kind, key, artifact_id, thread_id, comment_id, version_n,
     question_id, session_id, harness, detail_json, created_at, read_at)
     SELECT seq, id, kind, key, artifact_id, thread_id, comment_id, version_n,
            question_id, session_id, harness, detail_json, created_at, read_at FROM inbox_items;
 DROP TABLE inbox_items;
-ALTER TABLE inbox_items_24 RENAME TO inbox_items;
+ALTER TABLE inbox_items_26 RENAME TO inbox_items;
 -- every index of migration 21, each led by COALESCE(recipient, ''):
 CREATE INDEX inbox_unread ON inbox_items(COALESCE(recipient, ''), seq) WHERE read_at IS NULL;
 CREATE INDEX inbox_by_recipient ON inbox_items(COALESCE(recipient, ''), seq);
@@ -1346,7 +1351,7 @@ channel. The same CLI run by a harness through the plugins' wrapper is.
 
 ## 19. Migration of single-owner installs
 
-After migrations 22–24, with no person ever connected, these change and
+After migrations 24–26, with no person ever connected, these change and
 nothing else:
 
 1. **Agent names.** New sessions get derived names, shown where the shell
@@ -1574,7 +1579,7 @@ agents not to.
   grant, invite and token state machines; session binding (PID collisions
   across grants); visibility for every field of §8.2 and every scope;
   document author sets; the generation counter; take with field filtering
-  and placeholders once; first-take races; names; migrations 22–24 from
+  and placeholders once; first-take races; names; migrations 24–26 from
   21; the delivery guard.
 - **clax-server:** grant flow; `Caller` resolution (every agent channel, including the hooks' path sessions and `/mcp`'s marker); signatures on bodyless requests; session binding on
   register, join, list, paths and headers; the route guard and the
@@ -1707,3 +1712,11 @@ agents not to.
     direct spawns; `verify_layer`'s pass-through, lookup by method and
     `MatchedPath`, placement and chunked accounting are stated; CLI
     commands refused as `not_for_agents` print a readable line.
+- **Amendment** (2026-10-09, plan Task 2):
+  - Main's migration 22 (covering indexes) landed first, so these
+    migrations are 23–25 (M27, §5, §19, §24). Main's migration 23 (the
+    Toolpath audit journal) landed next, so they are 24–26.
+  - §5.1 rebuilds `sessions_harness_id` with the credential, so a harness
+    session ID is unique per `grant_id` (M4): with the global index, a
+    grant's registration with another credential's live harness session ID
+    would fail on the index, or block that credential's own registration.

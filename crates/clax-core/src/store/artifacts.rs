@@ -716,9 +716,10 @@ impl Store {
         self.with_tx(|tx| {
             tx.execute(
                 "INSERT INTO artifacts (id, title, description, icon, created_at, updated_at, current_version,
-                    pinned, capabilities_json, contract_version, owner_session_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, 0, 0, ?6, ?7, ?8)",
-                params![id.as_str(), title, p.description, p.icon, now, caps.to_string(), CONTRACT_VERSION, session_id],
+                    pinned, capabilities_json, contract_version, owner_session_id, person)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, 0, 0, ?6, ?7, ?8,
+                         COALESCE(?9, (SELECT person FROM sessions WHERE id = ?8)))",
+                params![id.as_str(), title, p.description, p.icon, now, caps.to_string(), CONTRACT_VERSION, session_id, p.person],
             )?;
             Ok(())
         })?;
@@ -870,11 +871,27 @@ impl Store {
             if current != expected {
                 return Err(CoreError::Conflict { current });
             }
+            // The publisher's person; a page's own version also keeps the
+            // previous version's publisher, fixed now (spec §5.1, M11).
             tx.execute(
                 "INSERT INTO versions (artifact_id, n, label, created_at, session_id, files_json, note,
-                    content_sha256)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![id.as_str(), n, p.label, now, session_id, files_json, p.note, content_sha256],
+                    content_sha256, person, by_page, page_person)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                         COALESCE(?9, (SELECT person FROM sessions WHERE id = ?5)), ?10,
+                         CASE WHEN ?10 THEN (SELECT person FROM versions
+                                             WHERE artifact_id = ?1 AND n = ?2 - 1) END)",
+                params![
+                    id.as_str(),
+                    n,
+                    p.label,
+                    now,
+                    session_id,
+                    files_json,
+                    p.note,
+                    content_sha256,
+                    p.person,
+                    p.by_page
+                ],
             )?;
             link_version(tx, id.as_str(), n, p, &self.now())?;
             let extra = then(tx, n)?;
