@@ -9,8 +9,7 @@ export type PresenceView = { public_id: string; display_name: string | null; sta
 export const AWAY_AFTER_MS = 5 * 60_000;
 export const stateFor = (visible: boolean, idleMs: number): "here" | "away" => (visible && idleMs < AWAY_AFTER_MS ? "here" : "away");
 
-// A thread about the whole artifact (`whole-comment.ts`, which this module
-// does not import so that it stays in the threads panel's chunk).
+// A thread about the whole artifact (anchor kind `artifact`) has no spot to name.
 const labelOf = (a: Anchor): string => (a.kind === "artifact" ? "The whole artifact" : anchorLabel(a));
 
 /** Where this viewer is looking: the thread they selected, else the anchor they are writing on. */
