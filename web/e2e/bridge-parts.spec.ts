@@ -14,7 +14,7 @@ for (const mode of ["subdomain", "sandbox"] as FrameMode[]) {
     await expect.poll(async () => (await partsLoaded(frame)).some(n => /\/_clax\/bridge\/comment-[^/]+\.js$/.test(n))).toBe(true);
     const host = new URL(frame.url()).host;
     for (const n of await partsLoaded(frame)) expect(new URL(n).host).toBe(host);
-    await page.getByRole("button", { name: "Comment" }).click();
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
     await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
     // Comment mode turned on starts the clip part.
     await expect.poll(async () => (await partsLoaded(frame)).some(n => /\/_clax\/bridge\/clip-[^/]+\.js$/.test(n))).toBe(true);
@@ -100,7 +100,7 @@ for (const mode of ["subdomain", "sandbox"] as FrameMode[]) {
     const ok = await publish(d.base, d.token, "Import map", { "index.html": html });
     const frame = await openArtifact(page, d.base, ok.artifact.id, 1, mode);
     await expect(frame.locator("#out")).toHaveText("mapped");
-    await page.getByRole("button", { name: "Comment" }).click();
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
     await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
   });
 }
