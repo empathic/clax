@@ -206,8 +206,8 @@ fn owner_row(c: &rusqlite::Connection) -> rusqlite::Result<Option<(Viewer, bool)
 /// version, their authors with them; one whose destination exists stays
 /// where it is), its authorship as a person (`person` columns, which
 /// become NULL when `into` is the owner; documents' and pages' authors,
-/// batch senders, versions' file authors and artifacts' text authors,
-/// which become `*owner`), its approvals given and received and its
+/// batch senders, agents' resolves, versions' file authors and
+/// artifacts' text authors, which become `*owner`), its approvals given and received and its
 /// approval requests (see `fold_authorship`), and its invites and grants.
 fn fold(
     st: &Store,
@@ -308,7 +308,8 @@ fn rewrite_authors(json: &str, old: &str, token: &str) -> Option<String> {
 }
 
 /// Moves the authorship of migration 25 (document and page authors, batch
-/// senders, artifact text authors, approvals and their requests) and
+/// senders, agents' resolves, artifact text authors, approvals and their
+/// requests) and
 /// `file_authors_json` from public ID `old` to `new` (to `*owner`, or NULL
 /// for an approver, when `into_owner`).
 ///
@@ -339,6 +340,10 @@ fn fold_authorship(
     }
     tx.execute(
         "UPDATE send_batches SET sender = ?2 WHERE sender = ?1",
+        params![old, token],
+    )?;
+    tx.execute(
+        "UPDATE threads SET resolved_by_person = ?2 WHERE resolved_by_person = ?1",
         params![old, token],
     )?;
     for (table, column) in [

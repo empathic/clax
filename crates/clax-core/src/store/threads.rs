@@ -164,7 +164,7 @@ pub(crate) fn thread_record(kind: AuditKind, at: &str, aid: &str, tid: &str) -> 
 /// Threads of live artifacts; callers append `AND ...` conditions.
 pub(crate) const THREAD_SELECT: &str =
     "SELECT t.id, t.artifact_id, t.version_n, t.anchor_json, t.status,
-    t.sent_to_agent, t.has_clip, t.created_at, t.resolved_at, t.resolved_by
+    t.sent_to_agent, t.has_clip, t.created_at, t.resolved_at, t.resolved_by, t.resolved_by_person
     FROM threads t JOIN artifacts a ON a.id = t.artifact_id WHERE a.deleted_at IS NULL";
 
 /// The status of each thread of `?2` (a JSON array of thread IDs) that
@@ -261,6 +261,7 @@ struct ThreadRow {
     created_at: String,
     resolved_at: Option<String>,
     resolved_by: Option<String>,
+    resolved_by_person: Option<String>,
 }
 
 fn row_to_thread_row(r: &Row<'_>) -> rusqlite::Result<ThreadRow> {
@@ -275,6 +276,7 @@ fn row_to_thread_row(r: &Row<'_>) -> rusqlite::Result<ThreadRow> {
         created_at: r.get("created_at")?,
         resolved_at: r.get("resolved_at")?,
         resolved_by: r.get("resolved_by")?,
+        resolved_by_person: r.get("resolved_by_person")?,
     })
 }
 
@@ -298,6 +300,7 @@ impl ThreadRow {
             resolved_at: self.resolved_at,
             resolved_by: self.resolved_by,
             comments,
+            resolved_by_person: self.resolved_by_person,
         })
     }
 }
@@ -763,7 +766,8 @@ impl Store {
             if comment.author_kind == AUTHOR_VIEWER {
                 insert_mentions(tx, &comment.id, &comment.body)?;
                 tx.execute(
-                    "UPDATE threads SET status = 'open', resolved_at = NULL, resolved_by = NULL WHERE id = ?1",
+                    "UPDATE threads SET status = 'open', resolved_at = NULL, resolved_by = NULL,
+                        resolved_by_person = NULL WHERE id = ?1",
                     params![thread_id],
                 )?;
                 if t.status == "resolved" {
@@ -1024,7 +1028,7 @@ impl Store {
         thread_id: &str,
         by: &str,
     ) -> Result<(Thread, crate::feedback::Touched)> {
-        self.resolve_thread_then(ctx, thread_id, by, |_, _| Ok(None))
+        self.resolve_thread_then(ctx, thread_id, by, None, |_, _| Ok(None))
     }
 
     /// An agent's resolve of thread `tid` of artifact `id`, by `by`, that
@@ -1035,11 +1039,15 @@ impl Store {
     /// what [`Store::resolve_thread_touched`] does. The link rides in the
     /// resolve's `thread.resolve` (`addressed_version`); when the thread was
     /// already resolved, so no `thread.resolve` is recorded, a new link is
-    /// recorded as `thread.addressed` (source `resolve`).
+    /// recorded as `thread.addressed` (source `resolve`). `person` is whose
+    /// agent resolved it (`*owner` or a person's public ID), kept with the
+    /// first resolve as the resolver's person
+    /// ([`Thread::resolved_by_person`]).
     ///
     /// # Errors
     /// As [`Store::resolve_thread`]; `NotFound` also when `tid` is not a
     /// thread of `id`.
+    #[allow(clippy::too_many_arguments)]
     pub fn resolve_thread_addressed(
         &self,
         ctx: &AuditCtx,
@@ -1048,8 +1056,9 @@ impl Store {
         by: &str,
         harness: &str,
         live: bool,
+        person: Option<&str>,
     ) -> Result<(Thread, crate::feedback::Touched)> {
-        self.resolve_thread_then(ctx, tid, by, |tx, t| {
+        self.resolve_thread_then(ctx, tid, by, person, |tx, t| {
             if t.artifact_id != id.as_str() {
                 return Err(CoreError::NotFound);
             }
@@ -1070,15 +1079,19 @@ impl Store {
         ctx: &AuditCtx,
         thread_id: &str,
         by: &str,
+        person: Option<&str>,
         then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread) -> Result<Option<u32>>,
     ) -> Result<(Thread, crate::feedback::Touched)> {
         let touched = self.with_tx(|tx| {
             let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
             let now = self.now();
+            // The resolver's person goes with the resolver: only when this
+            // resolve is the one `resolved_by` keeps.
             tx.execute(
                 "UPDATE threads SET status = 'resolved', resolved_at = COALESCE(resolved_at, ?2),
+                    resolved_by_person = CASE WHEN resolved_by IS NULL THEN ?4 ELSE resolved_by_person END,
                     resolved_by = COALESCE(resolved_by, ?3) WHERE id = ?1",
-                params![thread_id, now, by],
+                params![thread_id, now, by, person],
             )?;
             let deleted = tx.execute(
                 "DELETE FROM feedback WHERE thread_id = ?1 AND delivered_at IS NULL",
@@ -1117,12 +1130,17 @@ impl Store {
         self.with_tx(|tx| {
             let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
             tx.execute(
-                "UPDATE threads SET status = 'open', resolved_at = NULL, resolved_by = NULL WHERE id = ?1",
+                "UPDATE threads SET status = 'open', resolved_at = NULL, resolved_by = NULL,
+                        resolved_by_person = NULL WHERE id = ?1",
                 params![thread_id],
             )?;
             if t.status == "resolved" {
-                let rec =
-                    thread_record(AuditKind::ThreadReopen, &self.now(), &t.artifact_id, thread_id);
+                let rec = thread_record(
+                    AuditKind::ThreadReopen,
+                    &self.now(),
+                    &t.artifact_id,
+                    thread_id,
+                );
                 self.record_audit(tx, ctx, rec)?;
             }
             Ok(())
@@ -1275,8 +1293,16 @@ mod tests {
         assert_eq!(k, ["thread.resolve", "comment.add", "thread.reopen"]);
         // An agent's resolve carries its link in `thread.resolve`; on a
         // thread already resolved it records the link alone.
-        st.resolve_thread_addressed(DAEMON, &id, &t.id, "agent:claude", "claude", false)
-            .unwrap();
+        st.resolve_thread_addressed(
+            DAEMON,
+            &id,
+            &t.id,
+            "agent:claude",
+            "claude",
+            false,
+            Some("*owner"),
+        )
+        .unwrap();
         let (k, seq) = kinds_after(&st, seq);
         assert_eq!(k, ["thread.resolve"]);
         let resolved = st.events_after(seq - 1, 1).unwrap();
@@ -1292,8 +1318,16 @@ mod tests {
             })
             .unwrap();
         let (_, seq) = kinds_after(&st, seq);
-        st.resolve_thread_addressed(DAEMON, &id, &t.id, "agent:claude", "claude", false)
-            .unwrap();
+        st.resolve_thread_addressed(
+            DAEMON,
+            &id,
+            &t.id,
+            "agent:claude",
+            "claude",
+            false,
+            Some("*owner"),
+        )
+        .unwrap();
         let rows = st.events_after(seq, 10).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].kind, "thread.addressed");
@@ -1303,8 +1337,16 @@ mod tests {
             (&1.into(), &"resolve".into())
         );
         let seq = rows[0].seq;
-        st.resolve_thread_addressed(DAEMON, &id, &t.id, "agent:claude", "claude", false)
-            .unwrap();
+        st.resolve_thread_addressed(
+            DAEMON,
+            &id,
+            &t.id,
+            "agent:claude",
+            "claude",
+            false,
+            Some("*owner"),
+        )
+        .unwrap();
         let (k, seq) = kinds_after(&st, seq);
         assert!(k.is_empty(), "already linked: {k:?}");
         st.delete_thread(DAEMON, &t.id).unwrap();

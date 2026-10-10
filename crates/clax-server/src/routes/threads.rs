@@ -941,7 +941,17 @@ pub async fn resolve(
             }
             let (t, withdrawn) = match &resolver {
                 Some(sess) => {
-                    st.resolve_thread_addressed(&audit, &id, &tid, &by, &sess.harness, live)?
+                    // Whose agent resolved it: its session's person.
+                    let person = sess.person.as_deref().unwrap_or(OWNER);
+                    st.resolve_thread_addressed(
+                        &audit,
+                        &id,
+                        &tid,
+                        &by,
+                        &sess.harness,
+                        live,
+                        Some(person),
+                    )?
                 }
                 None => st.resolve_thread_touched(&audit, &tid, &by)?,
             };
