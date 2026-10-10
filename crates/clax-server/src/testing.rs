@@ -1346,8 +1346,11 @@ pub struct Call<'a> {
     pub skew: i64,
     /// The nonce; a fresh one by default.
     pub nonce: Option<String>,
-    /// More headers.
+    /// More headers, signed when they are agent headers.
     pub headers: Vec<(&'static str, String)>,
+    /// Send these headers instead of `headers`, which are still the ones
+    /// signed.
+    pub sent_headers: Option<Vec<(&'static str, String)>>,
     /// Send another method than the one signed.
     pub sent_method: Option<&'a str>,
     /// Send to another path and query than the one signed.
@@ -1464,6 +1467,12 @@ impl TestClient {
                 nonce: &nonce,
                 body_sha256: sha2::Sha256::digest(&body).into(),
                 token_sha256: signed_token.as_deref().map(clax_core::secret::sha256),
+                agent_headers_sha256: clax_core::sig::agent_headers_sha256(
+                    &clax_core::sig::agent_header_values(
+                        c.headers.iter().map(|(k, v)| (*k, v.as_bytes())),
+                    )
+                    .expect("each agent header once"),
+                ),
             };
             let mut h = c.key.unwrap_or(&self.key).sign(&input).unwrap();
             if c.corrupt {
@@ -1478,7 +1487,7 @@ impl TestClient {
         if !body.is_empty() {
             req = req.header("content-type", "application/json");
         }
-        for (k, v) in c.headers {
+        for (k, v) in c.sent_headers.unwrap_or(c.headers) {
             req = req.header(k, v);
         }
         req.body(body).send().await.unwrap()
@@ -1596,8 +1605,9 @@ impl TestClient {
         (&self.base, &self.host)
     }
 
-    /// `Clax-Signature` for `method path` with `body`, signed now with
-    /// the access token and this key (`corrupt` flips a bit of it).
+    /// `Clax-Signature` for `method path` with `body` and no agent
+    /// headers, signed now with the access token and this key (`corrupt`
+    /// flips a bit of it).
     pub fn signature(&self, method: &str, path: &str, body: &[u8], corrupt: bool) -> String {
         use sha2::Digest;
         let nonce = clax_core::sig::new_nonce();
@@ -1611,6 +1621,7 @@ impl TestClient {
                 nonce: &nonce,
                 body_sha256: sha2::Sha256::digest(body).into(),
                 token_sha256: Some(clax_core::secret::sha256(&self.access())),
+                agent_headers_sha256: clax_core::sig::no_agent_headers_sha256(),
             })
             .unwrap();
         if corrupt {

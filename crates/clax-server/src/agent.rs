@@ -1383,8 +1383,11 @@ async fn by<T>(
 }
 
 /// Route layer: verifies a `Clax-Grant` request's signature before its
-/// handler runs, on every method (spec §6.6, M5); passes every other
-/// request through untouched, its body unread. A route without a `need!`
+/// handler runs, on every method (spec §6.6, M5), over the agent-side
+/// headers ([`clax_core::sig::AGENT_HEADERS`]) of the very request it hands
+/// on (one given twice is 401 `invalid_signature`, before the body is
+/// read); passes every other request through untouched, its body unread.
+/// A route without a `need!`
 /// ([`ROUTES`]) is 403 `forbidden` to an agent credential before anything
 /// is read.
 pub async fn verify_layer(State(s): State<AppState>, mut req: Request, next: Next) -> Response {
@@ -1407,6 +1410,12 @@ pub async fn verify_layer(State(s): State<AppState>, mut req: Request, next: Nex
         return not_yet().into_response();
     }
     let (mut parts, body) = req.into_parts();
+    let st = &s.store;
+    // The agent headers of the request handed on below, read once.
+    let agent = match grant_auth::agent_headers(&parts.headers, st) {
+        Ok(a) => a,
+        Err(r) => return r.into_response(),
+    };
     let body = if bodyless(&parts.headers) {
         Bytes::new()
     } else {
@@ -1415,10 +1424,9 @@ pub async fn verify_layer(State(s): State<AppState>, mut req: Request, next: Nex
             Err(e) => return e.into_response(),
         }
     };
-    let st = &s.store;
     if !sig::verify(
         &g.key,
-        &grant_auth::input(&g.head, &body, Some(g.token.expose())),
+        &grant_auth::input(&g.head, &body, Some(g.token.expose()), agent),
         &g.head.header.sig,
     ) {
         return grant_auth::refuse(SigError::Bad, st).into_response();

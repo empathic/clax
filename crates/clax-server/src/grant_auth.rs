@@ -656,7 +656,26 @@ async fn read_body(headers: &HeaderMap, body: axum::body::Body) -> Result<Bytes,
         .map_err(|_| too_large())
 }
 
-pub(crate) fn input<'a>(h: &'a Head, body: &[u8], token: Option<&str>) -> SignInput<'a> {
+/// The SHA-256 the signature covers of `headers`' agent-side headers
+/// ([`sig::AGENT_HEADERS`]): read from the request being verified, which
+/// is the request handed on, so what the handler reads is what was signed.
+///
+/// # Errors
+/// 401 `invalid_signature` when one of them is given more than once.
+pub(crate) fn agent_headers(headers: &HeaderMap, st: &Store) -> Result<[u8; 32], Refusal> {
+    sig::agent_header_values(headers.iter().map(|(k, v)| (k.as_str(), v.as_bytes())))
+        .map(|v| sig::agent_headers_sha256(&v))
+        .map_err(|e| refuse(e, st))
+}
+
+/// What `h` signs with `body`, `token` and the agent headers' digest
+/// `agent` ([`agent_headers`]).
+pub(crate) fn input<'a>(
+    h: &'a Head,
+    body: &[u8],
+    token: Option<&str>,
+    agent: [u8; 32],
+) -> SignInput<'a> {
     SignInput {
         method: &h.method,
         path_and_query: &h.path_and_query,
@@ -665,6 +684,7 @@ pub(crate) fn input<'a>(h: &'a Head, body: &[u8], token: Option<&str>) -> SignIn
         nonce: &h.header.nonce,
         body_sha256: Sha256::digest(body).into(),
         token_sha256: token.map(secret::sha256),
+        agent_headers_sha256: agent,
     }
 }
 
@@ -691,6 +711,7 @@ pub async fn grant_request<T>(
     if h.header.t.abs_diff(now) > sig::MAX_SKEW_S.unsigned_abs() {
         return Err(refuse(SigError::Stale, st));
     }
+    let agent = agent_headers(&parts.headers, st)?;
     let body = read_body(&parts.headers, body).await?;
     let (parsed, key) = parse(&body)?;
     let now = st.now_utc().timestamp();
@@ -698,7 +719,7 @@ pub async fn grant_request<T>(
         let mut c = lock(&s.grant_auth.requests);
         c.check(&key, &h.header.nonce, h.header.t, now)
             .map_err(|e| refuse(e, st))?;
-        if !sig::verify(&key, &input(&h, &body, None), &h.header.sig) {
+        if !sig::verify(&key, &input(&h, &body, None, agent), &h.header.sig) {
             return Err(refuse(SigError::Bad, st));
         }
         c.record(&key, &h.peer_ip, &h.header.nonce, h.header.t, now)
@@ -787,8 +808,13 @@ pub async fn gnap(
     lock(cache)
         .check(&key, n, t, st.now_utc().timestamp())
         .map_err(|e| refuse(e, st))?;
+    let agent = agent_headers(&parts.headers, st)?;
     let body = read_body(&parts.headers, body).await?;
-    if !sig::verify(&key, &input(&h, &body, Some(token.expose())), &h.header.sig) {
+    if !sig::verify(
+        &key,
+        &input(&h, &body, Some(token.expose()), agent),
+        &h.header.sig,
+    ) {
         return Err(refuse(SigError::Bad, st));
     }
     lock(cache)

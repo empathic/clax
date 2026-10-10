@@ -302,6 +302,13 @@ async fn authentication_precedes_the_body() {
                 nonce: &nonce,
                 body_sha256: sha2::Sha256::digest(b"").into(),
                 token_sha256: Some(clax_core::secret::sha256(&sam.access())),
+                agent_headers_sha256: clax_core::sig::agent_headers_sha256(&[
+                    Some(sid.as_bytes()),
+                    None,
+                    None,
+                    None,
+                    None,
+                ]),
             })
             .unwrap()
             .to_string()
@@ -565,6 +572,112 @@ async fn bad_signatures_consume_no_nonces() {
             }
         }
     }
+}
+
+/// A signed request held back and resent within its window with one agent
+/// header rewritten, emptied or dropped: each is 401 `invalid_signature`
+/// and spends no nonce, so the request as signed still passes once.
+#[tokio::test]
+async fn rewritten_agent_headers_fail_the_signature_and_spend_no_nonce() {
+    let ts = lan_server().await;
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let sid = |v: Value| v["id"].as_str().unwrap().to_string();
+    let (s1, s2) = (
+        sid(sam.register("claude", "h1").await),
+        sid(sam.register("claude", "h2").await),
+    );
+    let signed: Vec<(&'static str, String)> = vec![
+        ("x-clax-session", s1.clone()),
+        ("x-clax-channel", "agent".into()),
+        ("x-clax-via", "mcp".into()),
+        ("x-clax-git", "e30".into()),
+        ("x-clax-call", "e30".into()),
+    ];
+    let others = [s2.as_str(), "owner", "cli", "e31", "e31"];
+    let n = clax_core::sig::new_nonce();
+    let call = |nonce: String, headers, sent| Call {
+        method: "GET",
+        path: "/api/sessions",
+        authorization: Some(format!("Clax-Grant {}", sam.access())),
+        nonce: Some(nonce),
+        headers,
+        sent_headers: sent,
+        ..Default::default()
+    };
+    for (i, (name, _)) in signed.iter().enumerate() {
+        let rewrite = |v: Option<&str>| {
+            let mut h = signed.clone();
+            match v {
+                Some(v) => h[i].1 = v.to_string(),
+                None => {
+                    h.remove(i);
+                }
+            }
+            h
+        };
+        for v in [Some(others[i]), Some(""), None] {
+            let r = sam
+                .call(call(n.clone(), signed.clone(), Some(rewrite(v))))
+                .await;
+            assert_eq!(
+                status_code(r).await,
+                (401, "invalid_signature".into()),
+                "{name} as {v:?}"
+            );
+        }
+        // The rewritten value is one the daemon takes when it is signed.
+        let r = sam
+            .call(call(
+                clax_core::sig::new_nonce(),
+                rewrite(Some(others[i])),
+                None,
+            ))
+            .await;
+        assert_eq!(r.status(), 200, "{name} signed as {}", others[i]);
+    }
+    let r = sam.call(call(n.clone(), signed.clone(), None)).await;
+    assert_eq!(r.status(), 200, "no failed attempt spent the nonce");
+    let r = sam.call(call(n, signed, None)).await;
+    assert_eq!(status_code(r).await, (401, "replayed_request".into()));
+}
+
+/// An agent header given twice is refused, even with the value signed, and
+/// spends no nonce.
+#[tokio::test]
+async fn a_repeated_agent_header_is_refused() {
+    let ts = lan_server().await;
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let sid = sam.register("claude", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let n = clax_core::sig::new_nonce();
+    let call = |sent: Option<Vec<(&'static str, String)>>| Call {
+        method: "GET",
+        path: "/api/sessions",
+        authorization: Some(format!("Clax-Grant {}", sam.access())),
+        nonce: Some(n.clone()),
+        headers: vec![("x-clax-session", sid.clone())],
+        sent_headers: sent,
+        ..Default::default()
+    };
+    for twice in [
+        vec![("x-clax-session", sid.clone()), ("x-clax-session", sid.clone())],
+        vec![("x-clax-session", sid.clone()), ("X-Clax-Session", sid.clone())],
+        vec![
+            ("x-clax-session", sid.clone()),
+            ("x-clax-via", "mcp".into()),
+            ("x-clax-via", "mcp".into()),
+        ],
+    ] {
+        let r = sam.call(call(Some(twice.clone()))).await;
+        assert_eq!(
+            status_code(r).await,
+            (401, "invalid_signature".into()),
+            "{twice:?}"
+        );
+    }
+    assert_eq!(sam.call(call(None)).await.status(), 200);
 }
 
 #[tokio::test]

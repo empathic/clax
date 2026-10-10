@@ -8,8 +8,8 @@ attention §10, sessions and the owner identity §11, the MCP surface §12,
 security §14), `2026-10-05-chrome-overlay-design.md` (the extension
 gateway L5, the owner identity L6, live pages L10) and
 `2026-10-06-agent-questions-and-inbox-design.md` (questions, the inbox).
-Interacts with: `2026-10-06-toolpath-audit-design.md` (branch
-`toolpath-audit`, not yet merged; §20).
+Interacts with: `2026-10-06-toolpath-audit-design.md` (on main since
+migration 23; §20).
 Model: RFC 9635, the Grant Negotiation and Authorization Protocol (GNAP),
 https://www.rfc-editor.org/rfc/rfc9635.txt (§4 maps it and states every
 departure).
@@ -624,11 +624,35 @@ Clax-Signature: t=<unix seconds>, n=<nonce: 22 base64url chars>, s=<base64url Ed
 The signed message is the UTF-8 of
 
 ```
-clax-ed25519 v1\n<METHOD>\n<path and query as sent>\n<Host>\n<t>\n<n>\n<SHA-256 hex of the body>\n<SHA-256 hex of the token>
+clax-ed25519 v2\n<METHOD>\n<path and query as sent>\n<Host>\n<t>\n<n>\n<SHA-256 hex of the body>\n<SHA-256 hex of the token>\n<SHA-256 hex of the agent headers>
 ```
 
 The grant request signs with an empty token line; continuation and manage
 calls sign with their `GNAP` token.
+
+The last line covers the agent side's own headers, which pick the session
+a grant acts as (and so its rights) and fill the audit journal (§20):
+`X-Clax-Session`, `X-Clax-Channel`, `x-clax-via`, `x-clax-git` and
+`x-clax-call`, in that order. Each contributes one record ending in `\n`:
+`-` when the request does not carry it, else `+`, the value's length in
+bytes in decimal, `:` and the value's bytes as sent. An absent header and
+an empty one therefore differ (`-` and `+0:`). A request that carries one
+of them more than once is 401 `invalid_signature`, whatever the values. So
+`X-Clax-Session: 01J9ZK3M4N5P6Q7R8S9T0V1W2X`, `X-Clax-Channel: agent`,
+`x-clax-via: mcp`, no `x-clax-git` and an empty `x-clax-call` hash
+
+```
++26:01J9ZK3M4N5P6Q7R8S9T0V1W2X\n+5:agent\n+3:mcp\n-\n+0:\n
+```
+
+(`crates/clax-core/src/sig.rs`, `canonical_string_is_fixed`, pins this
+vector). The daemon reads these values from the request it verifies, the
+same request the handler then reads, before the body. `v2` is the only
+version: every signer (the CLI's remote client, the shim and hooks in
+remote mode, Pi) sends it, and the daemon accepts nothing else. Without
+the line, an on-path peer could hold back a signed request and resend it
+within its window, its nonce still unspent, naming another of the
+person's sessions or rewriting what the journal records.
 
 The daemon checks, in this order, before reading the body: the token's
 hash in the in-memory map (401 `invalid_token`; `grant_revoked` for a
@@ -1828,3 +1852,9 @@ agents not to.
     the owner's, a connected person's or a live agent's (a shared UTS #39
     skeleton) is `name_taken` (review I1, re-review N1); §19 item 8 lists
     what this changes for a single owner.
+- **Amendment** (2026-10-10, rebase review I1):
+  - §6.6: the canonical string is `clax-ed25519 v2`, adding a last line,
+    the SHA-256 of a fixed serialization of `X-Clax-Session`,
+    `X-Clax-Channel`, `x-clax-via`, `x-clax-git` and `x-clax-call` (an
+    absent header distinct from an empty one; a repeated one refused).
+    `v1` is dropped, not kept as a fallback: no client shipped it.
