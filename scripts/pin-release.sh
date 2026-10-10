@@ -13,7 +13,7 @@
 # every value has been found. Version fields are not changed: the plugins'
 # version is the checkout's (scripts/bump-version.sh), and a harness updates
 # an installed plugin only when that version changes, so land the pin in the
-# same push as the version it ships with (see README, "Releases").
+# same push as the version it ships with (see docs/usage.md, "Releasing").
 #
 # Environment:
 #   CLAX_RELEASE_BASE_URL   release download base; SHA256SUMS comes from

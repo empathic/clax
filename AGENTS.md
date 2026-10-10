@@ -1,6 +1,6 @@
 # Working on Clax as an agent
 
-The README's "Developing Clax" section covers the loops, the gates and the
+`docs/usage.md`'s "Developing Clax" section covers the loops, the gates and the
 test layout. This file adds the rules an agent must follow in this
 repository.
 
