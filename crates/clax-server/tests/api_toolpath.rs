@@ -3624,3 +3624,154 @@ async fn sessionless_tool_call_is_the_mcp_client() {
     assert_eq!(recs[0].artifact_id, None);
     assert_eq!(recs[0].body["produced"], json!([]));
 }
+
+/// A person's agent of another machine (a verified `Clax-Grant`) is
+/// recorded as its session's agent with its grant and person, keeping its
+/// channel, git state and tool call (audit spec §5.2, amended for people):
+/// its registration's `session.start` and its watch's `watch.start` alike.
+#[tokio::test]
+async fn a_persons_agent_is_recorded_with_its_grant_and_person() {
+    use clax_server::testing::Call;
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let gid = sam.grant_id();
+    let person = ts.store.viewer_of_grant(&gid).unwrap().public_id;
+    let aid = ts.any_artifact().await;
+    let seq = last_seq(&ts);
+    let session = sam.register("codex", "sam-h1").await;
+    let sid = session["id"].as_str().unwrap().to_string();
+    let recs = events_since(&ts, seq);
+    assert_eq!(recs[0].kind, "session.start");
+    assert_eq!(recs[0].actor["session_id"], sid.as_str());
+    assert_eq!(recs[0].actor["grant_id"], gid.as_str());
+    assert_eq!(recs[0].actor["person"], person.as_str());
+    let seq = last_seq(&ts);
+    let res = sam
+        .call(Call {
+            method: "PUT",
+            path: &format!("/api/sessions/{sid}/watches/{aid}"),
+            authorization: Some(format!("Clax-Grant {}", sam.access())),
+            headers: vec![
+                ("x-clax-session", sid.clone()),
+                ("x-clax-via", "pi".into()),
+                ("x-clax-git", encode_header(&GitField::Ok(git())).unwrap()),
+                ("x-clax-call", encode_call_header(&call()).unwrap()),
+            ],
+            ..Default::default()
+        })
+        .await;
+    assert_eq!(res.status(), 200, "{}", res.text().await.unwrap());
+    let recs = events_since(&ts, seq);
+    assert_eq!(recs.len(), 1);
+    let watch = &recs[0];
+    assert_eq!(watch.kind, "watch.start");
+    assert_eq!(watch.actor["type"], "agent");
+    assert_eq!(watch.actor["session_id"], sid.as_str());
+    assert_eq!(watch.actor["harness"], "codex");
+    assert_eq!(watch.actor["grant_id"], gid.as_str());
+    assert_eq!(watch.actor["person"], person.as_str());
+    assert_eq!(watch.body["via"], "pi");
+    assert_eq!(watch.body["git"]["branch"], "feat/settings");
+    assert_eq!(watch.body["call"]["call_id"], call().call_id.as_str());
+    assert_eq!(watch.call_id.as_deref(), Some(call().call_id.as_str()));
+}
+
+/// The daemon token with the agent-channel marker and no known session (the
+/// CLI under a harness, a hook or Pi before their session is known) is an
+/// agent, as `Caller` counts it, named by its channel; without the marker
+/// it is the owner.
+#[tokio::test]
+async fn the_agent_channel_marker_makes_the_token_an_agent() {
+    let ts = TestServer::spawn().await;
+    let owner = ts.owner_public_id().await;
+    let url = format!("{}{CTX}", ts.base);
+    let v = ctx(ts
+        .authed(ts.client.get(&url))
+        .header("x-clax-channel", "agent"))
+    .await;
+    assert_eq!(
+        v["actor"],
+        json!({"type": "agent", "session_id": null, "channel": "cli"})
+    );
+    assert_eq!(v["via"], "cli");
+    let v = ctx(ts
+        .authed(ts.client.get(&url))
+        .header("x-clax-channel", "agent")
+        .header("x-clax-via", "hook"))
+    .await;
+    assert_eq!(
+        v["actor"],
+        json!({"type": "agent", "session_id": null, "channel": "hook"})
+    );
+    assert_eq!(v["via"], "hook");
+    let v = ctx(ts
+        .authed(ts.client.get(&url))
+        .header("x-clax-channel", "agent")
+        .header("x-clax-via", "mcp"))
+    .await;
+    assert_eq!(v["actor"], json!({"type": "agent", "session_id": null}));
+    let v = ctx(ts.authed(ts.client.get(&url)).header("x-clax-via", "hook")).await;
+    assert_eq!(v["actor"], json!({"type": "owner", "public_id": owner}));
+}
+
+/// A connected person's browser is a viewer marked `person`.
+#[tokio::test]
+async fn a_connected_persons_browser_is_a_person() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let v = ts.store.viewer_of_grant(&sam.grant_id()).unwrap();
+    let url = format!("{}{CTX}", ts.base);
+    let got = ctx(ts
+        .client
+        .get(&url)
+        .header("cookie", format!("clax_viewer={}", v.id)))
+    .await;
+    assert_eq!(
+        got["actor"],
+        json!({"type": "viewer", "public_id": v.public_id, "display_name": "Sam", "person": true})
+    );
+    assert_eq!(got["via"], "lan");
+}
+
+/// An answer given in a person's terminal, which their agent's hook reports,
+/// is that person's.
+#[tokio::test]
+async fn a_terminal_answer_reported_by_a_persons_hook_is_the_persons() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let person = ts.store.viewer_of_grant(&sam.grant_id()).unwrap();
+    let sid = sam.register("claude", "sam-h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let ask = json!({"source": "hook", "tool_use_id": "t", "questions": [{"question": "Which?",
+        "header": "Pick", "multiSelect": false, "options": [{"label": "A", "description": "a"},
+        {"label": "B", "description": "b"}]}]});
+    let res = sam
+        .agent(
+            "POST",
+            &format!("/api/sessions/{sid}/questions"),
+            Some(&sid),
+            Some(ask),
+        )
+        .await;
+    assert!(res.status().is_success(), "{}", res.text().await.unwrap());
+    let seq = last_seq(&ts);
+    let res = sam
+        .agent(
+            "POST",
+            &format!("/api/sessions/{sid}/questions:terminal"),
+            Some(&sid),
+            Some(json!({"tool_use_id": "t", "answers": {"Which?": "B"}})),
+        )
+        .await;
+    assert_eq!(res.status(), 200, "{}", res.text().await.unwrap());
+    let recs = events_since(&ts, seq);
+    let answer = recs.iter().find(|r| r.kind == "question.answer").unwrap();
+    assert_eq!(
+        answer.actor,
+        json!({"type": "viewer", "public_id": person.public_id, "display_name": "Sam",
+               "person": true})
+    );
+    assert_eq!(answer.body["answered_via"], "terminal");
+}
