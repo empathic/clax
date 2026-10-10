@@ -586,11 +586,12 @@ pub mod placeholder {
         });
     }
 
-    /// An artifact: `title`, `description`, `icon` and `capabilities`
-    /// null, and `withheld: {authors}`.
-    pub fn artifact(artifact: &mut Value, authors: &[WithheldAuthor]) {
-        for k in ["title", "description", "icon", "capabilities"] {
-            artifact[k] = Value::Null;
+    /// An artifact whose text `fields` (of `title`, `description`, `icon`
+    /// and `capabilities`) are withheld: each null, and `withheld:
+    /// {authors}`, every author they withhold.
+    pub fn artifact(artifact: &mut Value, fields: &[&str], authors: &[WithheldAuthor]) {
+        for k in fields {
+            artifact[*k] = Value::Null;
         }
         artifact["withheld"] = json!({"authors": authors_json(authors)});
     }
@@ -609,7 +610,9 @@ pub mod placeholder {
     }
 
     /// A version's withheld files: each left out of `files`, and
-    /// `files_withheld: n`, how many were.
+    /// `files_withheld: n`, how many were. When any was, the version's
+    /// `content_sha256` (a hash over every file's name and bytes, which
+    /// would confirm a guess at them) is null too, where it has one.
     pub fn version_files(version: &mut Value, withheld: &[&str]) {
         let mut n = 0;
         if let Some(files) = version.get_mut("files").and_then(Value::as_object_mut) {
@@ -618,6 +621,11 @@ pub mod placeholder {
             }
         }
         version["files_withheld"] = json!(n);
+        if n > 0
+            && let Some(v) = version.get_mut("content_sha256")
+        {
+            *v = Value::Null;
+        }
     }
 
     /// A document read by its path: `{doc_id, version, withheld:
@@ -626,9 +634,18 @@ pub mod placeholder {
         json!({"doc_id": doc_id, "version": version, "withheld": {"authors": authors_json(authors)}})
     }
 
-    /// An asset: `name` null and `withheld: true`.
+    /// An asset: `name` null, and with it what its bytes decide (its
+    /// `content_type`, `ext` and `size`, where it has them), and
+    /// `withheld: true`. Its ID, artifact and time stay.
     pub fn asset(asset: &mut Value) {
         asset["name"] = Value::Null;
+        if let Some(a) = asset.as_object_mut() {
+            for k in ["content_type", "ext", "size"] {
+                if let Some(v) = a.get_mut(k) {
+                    *v = Value::Null;
+                }
+            }
+        }
         asset["withheld"] = json!(true);
     }
 
@@ -2064,31 +2081,50 @@ mod tests {
         batch_note(&mut b);
         assert_eq!(b["note"], Value::Null);
         let mut a = json!({"id": "a1", "title": "T", "description": "D", "icon": "I", "capabilities": {"db": {}}, "current_version": 2});
-        artifact(&mut a, &authors);
+        artifact(&mut a, &["title", "description", "icon", "capabilities"], &authors);
         assert_eq!(
             a,
             json!({"id": "a1", "title": null, "description": null, "icon": null, "capabilities": null, "current_version": 2,
                    "withheld": {"authors": [{"public_id": "u_1", "name": "Mia"}]}})
         );
+        // Only the fields named: the others are the reader's to see.
+        let mut a = json!({"id": "a1", "title": "Mine", "description": "D", "icon": "I", "capabilities": {}});
+        artifact(&mut a, &["description"], &authors);
+        assert_eq!(
+            a,
+            json!({"id": "a1", "title": "Mine", "description": null, "icon": "I", "capabilities": {},
+                   "withheld": {"authors": [{"public_id": "u_1", "name": "Mia"}]}})
+        );
         let mut wr = json!({"key": "k", "message": "m"});
         working(&mut wr);
         assert_eq!(wr, json!({"key": "k", "message": null, "withheld": true}));
-        let mut v = json!({"n": 2, "label": "L", "note": "N", "files": {"index.html": {}, "a.css": {}, "b.css": {}}});
+        let mut v = json!({"n": 2, "label": "L", "note": "N", "content_sha256": "sha256:ab",
+                           "files": {"index.html": {}, "a.css": {}, "b.css": {}}});
         version_text(&mut v);
         version_files(&mut v, &["a.css", "b.css", "gone.css"]);
         assert_eq!(
             v,
-            json!({"n": 2, "label": null, "note": null, "files": {"index.html": {}}, "files_withheld": 2})
+            json!({"n": 2, "label": null, "note": null, "content_sha256": null,
+                   "files": {"index.html": {}}, "files_withheld": 2})
+        );
+        // None withheld: the manifest hash names nothing withheld.
+        let mut v = json!({"n": 1, "content_sha256": "sha256:ab", "files": {"index.html": {}}});
+        version_files(&mut v, &[]);
+        assert_eq!(
+            v,
+            json!({"n": 1, "content_sha256": "sha256:ab", "files": {"index.html": {}}, "files_withheld": 0})
         );
         assert_eq!(
             document("notes/1", 3, &authors),
             json!({"doc_id": "notes/1", "version": 3, "withheld": {"authors": [{"public_id": "u_1", "name": "Mia"}]}})
         );
-        let mut s = json!({"id": "s1", "name": "notes.txt", "size": 3});
+        let mut s = json!({"id": "s1", "artifact_id": "a1", "content_type": "image/png", "ext": "png",
+                           "size": 3, "created_at": "t"});
         asset(&mut s);
         assert_eq!(
             s,
-            json!({"id": "s1", "name": null, "size": 3, "withheld": true})
+            json!({"id": "s1", "artifact_id": "a1", "name": null, "content_type": null, "ext": null,
+                   "size": null, "created_at": "t", "withheld": true})
         );
         assert_eq!(
             withheld_comments_line(2, "Mia", Some("Plan"), "Mia", "t1", false),
