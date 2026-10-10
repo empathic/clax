@@ -73,6 +73,12 @@ impl From<CoreError> for ApiError {
                 err.extra.insert("current".into(), json!(current));
                 err
             }
+            // The routes name the authors (`docs::str_replace`); a handler
+            // that does not answers without them.
+            CoreError::DocWithheld { .. } => ApiError::forbidden(
+                "withheld",
+                "this document is withheld until your person approves its authors",
+            ),
             CoreError::DocPinRequired { path, current } => {
                 let mut err = ApiError::bad_request(
                     "if_version_required",
