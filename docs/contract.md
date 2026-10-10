@@ -3968,6 +3968,420 @@ Reconnecting…") until it is back. A first load of the gallery or the
 artifact that has not answered within 8 s, or failed to connect, is
 abandoned and retried the same way, with a notice.
 
+## Toolpath journal and export
+
+Clax records every change to its artifacts as
+[Toolpath](https://toolpath.net) provenance. The design is
+`docs/superpowers/specs/2026-10-06-toolpath-audit-design.md`; this section
+is the contract a reader relies on. Clax only writes the records: it
+imports and correlates nothing.
+
+### Where events live
+
+- **`audit_events`** (migration 23) in `clax.db` is the source of truth.
+  Each row is written in the same transaction as the change it records, and
+  no code path updates or deletes one. Deleting an artifact leaves its rows;
+  the deletion is an event of its own. Rows are kept indefinitely.
+- **`seq`** is commit order (a single writer); a gap in it means nothing.
+  Consumers order by `seq`, never by `at`.
+- **The install ID** is 128 random bits in lowercase hex, minted once by
+  the migration into the `install` table (`k = 'id'`). It holds no
+  timestamp. It scopes every `clax://` URI and is opaque.
+- **Versions** carry `content_sha256` (see "Versions, seen marks and
+  attention").
+- **The journal** and every export are pure projections of the table.
+
+An event's body has this envelope; `at`, the actor and the ID columns are
+not repeated in it:
+
+```json
+{"v": 1,
+ "via": "mcp|hook|pi|cli|shell|extension|lan|daemon",
+ "clax_version": "0.3.1", "clax_commit": "<hex>|unknown",
+ "git": {…}, "git_capture": "ok|not-a-repo|timeout|unavailable|no-cwd|invalid",
+ "call": {"call_id": "01JB…", "tool": "publish", "args_sha256": "sha256:…"}}
+```
+
+`git`, `git_capture` and `call` are absent when they do not apply.
+`clax_version` and `clax_commit` name the build that recorded the event, so
+re-rendering it under a newer build gives the same bytes. An event is
+recorded exactly when the store writes: a request that changes nothing, or
+that the store refuses, records nothing.
+
+### Kinds
+
+Each kind's step has a `structural` change of type `clax.<kind>` carrying
+the body below.
+
+| Kind | Body | Recorded at |
+|---|---|---|
+| `artifact.create` | `title, kind (html\|live), icon, capabilities, contract_version` | first publish, or a live page's creation |
+| `version.publish` | `n, label, note, title, files{path:{sha256,size,content_type}}, content_sha256, carried[paths], addresses[thread IDs], by_page` | every version write |
+| `artifact.update` | `fields{title?, description?, icon?, pinned?, capabilities?}` | pin, unpin, metadata edits |
+| `artifact.delete` | `title, current_version` | delete |
+| `asset.upload` | `asset_id, path, sha256, size, content_type` | asset store writes |
+| `asset.delete` | `asset_id, path, size, content_type` | asset deletes |
+| `doc.write` | `collection, doc_id, version, op (set\|update\|delete\|str_replace\|acquire), sha256` (`null` for a delete; never content) | `db_*` writes |
+| `doc.move` | `from, to, collection, doc_id, version, sha256` | a private document following a viewer claimed for the owner |
+| `viewer.claim` | `from_public_id, to_public_id` | a claim that retires a public ID; a record naming `from_public_id` resolves to `to_public_id` |
+| `thread.open` | `version_n, anchor{kind, selector, quote, prefix, suffix, html_hash, file, route}, live_path, has_clip, first_comment_id` | a new thread, followed by its first `comment.add` |
+| `comment.add` | `comment_id, body, author_kind, author_name, via_harness, via_page` | every comment; a viewer comment that reopens a resolved thread records `comment.add` then `thread.reopen` |
+| `thread.resolve` | `resolved_by, addressed_version (n\|null)` | a resolve of an open thread |
+| `thread.reopen` | none | a reopen of a resolved thread |
+| `thread.delete` | `moved` | delete |
+| `thread.send` | `target ("watchers" \| {session_id, agent_handle}), feedback_ids[], batch_id?, thread_ids[]` | a send that changes something, automatic forwards included |
+| `feedback.delivered` | `feedback_id, tier` | a feedback row's first hand-over; `session_id` is the receiving session |
+| `feedback.release` | `feedback_id, tier (queue), reason` | a failed `codex queue` claim returned to undelivered (`system:daemon`) |
+| `thread.addressed` | `version_n, source (resolve)` | a link no other event carries (the links ride `version.publish.addresses`, `live.snapshot.addresses` and `thread.resolve.addressed_version`) |
+| `live.page` | `origin, path` | a live page's creation |
+| `live.snapshot` | the `version.publish` body plus `origin, path`; `source{artifact_id, n}` on a copy a move or merge made | a live page's version |
+| `thread.move` | `from_artifact_id, from_url, to_artifact_id, to_url, move_kind (move\|merge\|unmerge\|join), rule_id, move_id` | each thread move; `artifact_id` the source, `artifact2_id` the target |
+| `live.rule` | `rule_id, op (set\|delete\|drop), origin, pattern, created_at, deleting` | site-wide rule changes |
+| `live.join` | `origin, with, site, joined[origins], rules_moved[], rules_dropped[]` | a join that changes the sites |
+| `live.split` | `origin, before_site, site, never_with[origins]` | a split |
+| `live.page_rekey` | `from_origin, to_origin, path` | a page keyed under another origin of its site |
+| `live.page_merge` | `origin, path, merged_into` | a page a join emptied, merged into its site's page (`artifact2_id`) |
+| `live.join_answer` | `origin, with, answer (never\|later), until` | the owner's answer to a suggested join |
+| `watch.start`, `watch.stop` | `target (artifact\|page\|scope), replies_armed, source (direct\|scope), origin?, path?` (start: `cause? (scope\|move), move_id?`) | a new watch, a removal |
+| `watch.update` | `target, origin?, path?, fields{replies_armed?, source?}, cause?` | a change of a watch's arming, or a scope-made watch becoming direct |
+| `working.start` | `key, message, thread_ids[]` | a working record starting |
+| `working.stop` | `key, reason (explicit\|ttl\|session_end\|resolved\|deleted), duration_ms` | its end (a TTL lapse as `system:ttl`, timed to last heartbeat + 120 s) |
+| `question.ask` | `source (ask\|hook), tool_use_id, questions` | a new question |
+| `question.answer` | `answers, answered_via` | an answer (the owner) |
+| `question.decline` | none | a decline (the owner) |
+| `question.release` | `reason (owner\|timer\|created)` | a release to the terminal |
+| `question.withdraw` | `reason (explicit\|unwaited\|session_end\|daemon_start\|daemon_stop)` | a withdrawal |
+| `tool.call` | `call_id, tool, harness_tool?, args_sha256, started_at, ended_at, outcome (ok\|error), harness_call_id?, produced[seq]` | each Clax tool call's report (below) |
+| `tool.call_id` | `call_id (or null), harness_call_id, harness_tool, args_sha256` | Claude Code's PostToolUse report (below) |
+| `session.start` | `harness, harness_session_id, cwd, transcript_path, pid` (+ `git`) | a session's registration |
+| `session.join` | the same | a hook join or re-registration that changes one of them |
+| `session.end` | `reason (explicit\|ttl)` | an end (the reaper as `system:ttl`) |
+| `backfill.skip` | `table, row_id, reason` (a fixed phrase) | a history row the backfill could not convert |
+
+A system actor's event about someone names them in `body.for_actor`.
+Presence, heartbeats, later delivery tiers, stream subscriptions, reads
+other than tool calls, extension credential grants, a joined site's
+last-used marks, inbox items and read marks, and daemon start and stop are
+not recorded.
+
+**The backfill.** A home's first start under migration 23 records its
+existing history once, before the daemon serves (the `install` row
+`backfill` marks it done). Backfilled events have `backfilled: true`, actor
+`system:backfill`, `via: daemon`, no `git` and no `call`, name who acted in
+`for_actor` where the history keeps it, and list in `inferred` the body
+fields the history holds only as they are now. What the history cannot give
+is `null`. Earlier resolve and reopen cycles, hard-deleted rows,
+`feedback.release`, rules, splits, working records, document writes and tool
+calls are not reconstructed.
+
+### Actors
+
+The headers `x-clax-via`, `x-clax-session`, `x-clax-git` and `x-clax-call`
+count only with the daemon token; a browser's are ignored. The actor is
+taken from the request's identity and session:
+
+| Who | Actor string | `ActorDef` |
+|---|---|---|
+| an agent with a harness session ID | `agent:<provider>/<harness session ID>` | `name` ("Claude Code", "Codex", "Pi", "Grok"; "Agent" when unknown), `provider` (anthropic, openai, xai; none for Pi), `identities`: `clax-session`, `<provider>-session`, `clax-agent` (the agent handle) and, when known, `<provider>-transcript` |
+| an agent without one | `agent:<provider>/clax-<session ID>` (`agent:unknown/…` when the history no longer names the harness) | the same, minus the harness identities |
+| the sessionless `/mcp` route | `agent:clax-mcp` | `name` "MCP client (no session)" |
+| the owner | `human:clax-owner` | `name` "Clax owner"; identity `{system: "clax", id: "<install ID>/<public ID>"}` |
+| a LAN viewer | `human:clax-viewer/<public ID>` | `name` the display name (none under `--no-names`); identity `{system: "clax", id: "<install ID>/<public ID>"}` |
+| an anonymous viewer | `human:clax-anonymous` | `name` "Anonymous viewer" |
+| Clax itself | `tool:clax/<recording version>` | `name` "Clax"; identity `{system: "clax-build", id: <commit>}`; the reason (`ttl`, `rule`, `backfill`, `daemon`) is `meta.clax.system_reason` |
+
+The provider is `claude-code` for the `claude` harness; every other harness
+keeps its name. Characters outside the schema's actor pattern become `-`,
+and the `ActorDef` keeps the original. Only the token with `x-clax-via: mcp`
+and no known session is the sessionless agent; a `hook` or `pi` request
+without a session records the owner. Without `x-clax-via`, a token request
+with a session is `mcp` and one without is `cli`.
+
+### Git context and tool calls
+
+**`x-clax-git`.** On each mutating tool call (and on registration, a hook
+join, hook questions and the Stop hook's working stop) the agent side
+captures the git state of its working directory and sends it as base64url
+JSON of at most 2 KiB:
+
+```json
+{"repo_root": "/Users/alex/work/app", "remote": "origin",
+ "remote_url": "https://github.com/empathic/app.git", "branch": "feat/settings",
+ "head": "<40 or 64 hex>", "dirty": true, "diff_sha256": "sha256:…",
+ "diff_bytes": 18234, "untracked": 2, "captured_at": "2026-10-06T14:03:11.512Z"}
+```
+
+or `{"git_capture": "not-a-repo|timeout|unavailable|no-cwd|invalid"}`.
+`remote_url` has its query, fragment and userinfo stripped (an SSH-family
+URL keeps a bare user). The diff fields appear only when `dirty`;
+`diff_unavailable: true` replaces `diff_sha256` when a partial clone lacks
+the objects, and `diff_truncated: true` marks a diff hashed past 64 MiB.
+Only hashes leave the agent side: never diff contents, paths in the diff or
+file names. Capture runs no program the repository or user configured, has
+a 300 ms deadline (the action goes on and records `timeout`), and needs git
+2.44 or later: under an older git every capture is `unavailable`. The
+daemon records a header that fails decoding or the shape checks as
+`git_capture: "invalid"` and never fails the request over it.
+
+**`x-clax-call`.** Each request a tool call makes carries base64url JSON
+`{call_id, tool, harness_tool?, args_sha256, started_at, harness_call_id?}`
+(`call_id` a ULID the agent side mints). Every event recorded under it
+stores `call` in its body and `call_id` in its column. A call whose
+arguments have no canonical form runs unrecorded.
+
+**`POST /api/sessions/<sid>/tool-calls`** (and **`POST /api/tool-calls`**
+for the sessionless `/mcp`, with `x-clax-via: mcp`; without it the route
+records the owner on `cli`), token only, after the result has gone back:
+`{call_id, tool, harness_tool?, args_sha256, started_at, harness_call_id?,
+ended_at, outcome, artifact_id?}`. It records `tool.call` once per call and
+answers 201 `{recorded: true, seq}`; a repeated report answers 200
+`{recorded: false}`. 400 `invalid_tool_call` for a malformed body, 404
+`unknown_session` for a session that never existed (an ended session's late
+report is kept). `produced` lists the `seq` of every event made under the
+call. A `tool.call` belongs to the first artifact its events touched, else
+to the artifact its arguments named, else to the install.
+
+**`POST /api/sessions/<sid>/tool-call-ids`** (token): Claude Code's
+PostToolUse hook, `clax hook --agent claude call-id` (matcher
+`mcp__.*clax.*__.*`), sends `{tool_use_id, tool_name, args_sha256}`. The
+daemon records `tool.call_id` naming the one `tool.call` of the session with
+the same bare tool name and argument hash that ended within 5 s and has no
+harness ID yet. Several such calls, or another waiting report for the same
+session, tool and hash, record `null` at once; none waits up to 500 ms for
+the shim's report (at most 64 waiting), then records `null`. Answers: 201
+`{recorded: true, seq, call_id}`; 200 `{recorded: false}` for a
+`tool_use_id` already recorded in the last 60 s; 204 for a tool that is not
+one of Clax's own; 400 `invalid_tool_call_id`; 404 `unknown_session`. The
+Pi extension passes its `toolCallId` as `harness_call_id` directly. Codex
+and Grok give no call ID; their calls are joined by the rule below.
+
+### The journal
+
+`[toolpath] journal = true` (the default) appends every event to
+`<home>/toolpath/journal/YYYY/MM/clax-<install8>-<YYYYMMDD>-<nnn>.path.jsonl`
+(directories 0700, files 0600). `install8` is the install ID's first eight
+characters; `nnn` counts segments within a UTC day. Each segment is one
+Toolpath `Path` in the JSONL form:
+
+- a `PathOpen` with ID `clax-journal-<install8>-<YYYYMMDD>-<nnn>`, `meta.kind`
+  `https://toolpath.net/kinds/clax-audit/v1.0.0`, a `continues` ref to the
+  previous segment's file name (none on the first), and `meta.clax` naming
+  `projection: "journal"`, the install, the segment, `first_seq`, the
+  writing build, `redaction` and `segment_max_bytes`;
+- an `ActorDef` before an actor's first step in the segment, written again,
+  complete, whenever its definition grows;
+- one `Step` per event, its only parent the previous step;
+- `Head` and `PathClose` only when the segment closes (rotation or a
+  graceful shutdown).
+
+A segment rolls at the first event on a later UTC day, or when it would pass
+`segment_max_mb` (default 64, 1 to 4096). `journal_retain_days` (default 0,
+forever) removes closed segments older than that many days and never writes
+events past it. `journal_text = false` renders new segments under
+`--no-text`. An invalid `[toolpath]` table turns the journal off; recording
+goes on. Lines are whole: a crash leaves at most a partial last line, which
+the next start truncates before appending every row past the file's last
+`seq`, byte-identical to what was lost. A file Clax did not write is renamed
+`<name>.damaged` and never deleted. Journal lines carry no browser URL.
+
+`clax toolpath status [--json]` and owner-only `GET /api/toolpath/status`
+report `{journal, dir, segment, cursor, newest_seq, lag_ms, last_error,
+warning}`. `clax doctor`'s `journal` line warns on an error, a warning, or a
+lag over 10 s.
+
+### Export
+
+```
+clax toolpath export [--artifact <ID|URL>]... [--live <page URL>]...
+                     [--by-session <Clax or harness session ID>]...
+                     [--since <RFC 3339 | YYYY-MM-DD>] [--until <…>]
+                     [--shape artifacts|journal] [--format json|jsonl]
+                     [--no-text] [--no-names] [--no-paths]
+                     [--pretty] [-o <file> [--force]]
+```
+
+It calls `GET /api/toolpath/export` with the same options as query
+parameters (`artifact`, `live`, `by_session`, `since`, `until`, `shape`,
+`format`, `no_text`, `no_names`, `no_paths`, `pretty`). The route is owner
+only (403 for anyone else, LAN viewers included), runs one export at a
+time (503 `export_busy`), and refuses an unknown or repeated parameter, a
+selector naming nothing, a bad time or an empty range with 400 before any
+output.
+
+- **Selection.** None means the whole install. `--artifact` and `--live`
+  choose artifacts (a live page by origin and path); `--by-session` keeps
+  that session's steps and the people's steps on the artifacts it touched;
+  `--since` is inclusive, `--until` exclusive, on `at`, a bare date meaning
+  00:00 UTC. Selectors of one kind union; different kinds intersect.
+- **`--shape artifacts`** (default): a `Graph` with ID
+  `clax-<install8>-<digest12>` (`digest12`: the SHA-256 of the canonical
+  selection, first 12 hex) holding one path per artifact,
+  `clax-artifact-<ID>`, every step whose `artifact_id` or `artifact2_id` is
+  that artifact, in artifact ID order; then `clax-install-<install8>`, the
+  steps that touch no artifact. A step on two artifacts (a thread move)
+  appears in both, under one step ID, with symmetric `same-change` refs.
+  `graph.meta.clax` names the install, the exporting build, the shape, the
+  normalized selection, `first_seq`, `last_seq` and `redaction`.
+- **`--shape journal`**: one linear path, `clax-export-<digest>`.
+- **`--format jsonl`** only for a single path (`--shape journal` or one
+  artifact); `--pretty` with JSONL is refused.
+- **Output.** Streamed. With `-o`, an existing file is refused without
+  `--force`; the file is created exclusively (0600), or, with `--force`,
+  written to `<file>.tmp-<ULID>` and renamed over it; a failure or SIGINT
+  removes it. An export cut short aborts the transfer, and the CLI exits 1
+  ("the export ended early") unless what it received ends as a whole
+  export does.
+- **Determinism.** The same database, arguments, exporting build and
+  browser base give byte-identical output. Paths are in artifact ID order,
+  steps in `seq` order, keys sorted, and there is no export time.
+
+Every path's `meta.kind` is the `clax-audit` kind URI. An artifact path's
+`base.uri` is the artifact's `clax://` URI, never a repository; its title
+is the artifact's (`Artifact <ID>` under `--no-text` or once deleted); its
+`meta.clax` names `artifact_kind` and, for a live page, `origin` and
+`path`, and a `view` ref gives its browser URL.
+
+### Steps
+
+Step IDs are `e` and the 12-digit zero-padded `seq` (`e000000000311`), the
+same in the journal and every export. `step.timestamp` is the event's `at`
+(RFC 3339, milliseconds, UTC). `meta.clax` holds `seq`, `kind`, `install`,
+the recording build, `via`, `backfilled`, the non-null ID columns
+(`artifact_id`, `artifact2_id`, `thread_id`, `session_id`, `question_id`,
+`call_id`, `origin`), `system_reason` and `for_actor` where they apply, and
+`call` and `git` as recorded; in an export only, `url`. A row that cannot
+be rendered becomes a `clax.unrenderable` step carrying its `seq` and
+`kind`. No step carries `meta.source` or `meta.signatures`.
+
+**URIs.** Change keys and refs name objects by install-scoped, opaque URIs.
+Every segment is percent-encoded down to RFC 3986's unreserved characters
+(a document's collection keeps its `/`):
+
+```
+clax://<install>                                   the install
+clax://<install>/a/<artifact>                      artifact
+clax://<install>/a/<artifact>/v/<n>                version
+clax://<install>/a/<artifact>/t/<thread>           thread
+clax://<install>/a/<artifact>/t/<thread>/c/<comment>
+clax://<install>/a/<artifact>/d/<collection>/<doc>
+clax://<install>/a/<artifact>/asset/<asset ID>     asset
+clax://<install>/s/<session>                       agent session
+clax://<install>/s/<session>/call/<call ID>        tool call
+clax://<install>/call/<call ID>                    tool call of the sessionless /mcp
+clax://<install>/q/<question>                      question
+clax://<install>/u/<public ID>                     a person
+clax://<install>/rule/<rule ID>                    live-page rule
+clax://<install>/site/<origin>                     joined site, by its key origin
+clax://<install>/step/<step ID>                    a recorded step
+clax://<install>/backfill/<table>/<row ID>         a history row the backfill skipped
+```
+
+A step's change key is the object its kind names: a version for
+`version.publish` and `live.snapshot`, a comment for `comment.add`, a
+thread for the other thread kinds (a moved thread under its target), the
+document, asset, question or call for theirs, the session for watch,
+working and session events, the artifact for a batch `thread.send`, and the
+site for `live.join`, `live.split` and `live.join_answer`.
+
+**Refs** (`meta.refs`; readers keep `rel` values they do not know):
+
+| `rel` | From → to |
+|---|---|
+| `agent-session` | an agent step → `agent://<provider>/<harness session ID>`, or `clax://<install>/s/<session>` without one |
+| `transcript` | an agent step → `file://<transcript path>` |
+| `tool-call` | a step made under a call → `clax://<install>/s/<session>/call/<call ID>` |
+| `tool-use` | a `tool.call` or `tool.call_id` step with a harness call ID → `agent://<provider>/<harness session ID>/tool/<harness call ID>` |
+| `at-revision` | an agent step with `git.head` → `git:<normalized remote>@<head>` (`github:owner/repo` for GitHub; `git:file://<repo root>@<head>` without a remote) |
+| `artifact`, `thread`, `version`, `question` | a step → the objects it concerns |
+| `replies-to` | `comment.add` → its thread |
+| `addresses` | `version.publish`, `live.snapshot`, `thread.addressed`, and a `thread.resolve` with an `addressed_version` → the thread |
+| `resolves` | `thread.resolve` → the thread |
+| `moved-from`, `moved-to` | `thread.move` → the artifacts |
+| `answers` | `question.answer` → the question |
+| `produced` | `tool.call` → each step it produced (`toolpath:<path ID>/<step ID>` within the graph, else `clax://…/step/…`) |
+| `same-change` | a step ↔ its copy in another artifact path of the graph |
+| `session` | a step whose `session_id` names a session other than its agent's → that session |
+| `copied-from` | a copied `live.snapshot` → its source version |
+| `view` | a step or path → its browser URL (exports only) |
+| `continues` | a journal segment → the previous segment's file name |
+
+`at-revision` says the agent's working tree was on that commit, often with
+uncommitted changes (`git.dirty`); it is not the commit the step made.
+
+### Argument hash
+
+`args_sha256` is the join key between a Clax tool call and a harness
+transcript's. It is computed from the arguments exactly as the harness
+passed them (MCP `params.arguments`, Pi's `params`, Claude Code's
+`tool_use.input`, Codex's `function_call.arguments` parsed from its JSON
+string, Gemini's `functionCall.args`; missing arguments are `{}`; nothing is
+dropped, defaulted or normalized):
+
+1. Canonicalize with JCS (RFC 8785): keys sorted by UTF-16 code units, no
+   whitespace, numbers in ECMAScript `Number.prototype.toString` form,
+   strings escaped minimally (`\"`, `\\`, `\b`, `\f`, `\n`, `\r`, `\t`,
+   other controls as lowercase `\u00xx`, the rest literal UTF-8).
+2. `"sha256:"` and the lowercase hex SHA-256 of the canonical UTF-8 bytes.
+
+The vectors, in `crates/clax-core/tests/toolpath/args-hash-vectors.json`,
+which the Rust and the Pi implementations both check:
+
+| # | Arguments | Canonical form | `args_sha256` |
+|---|---|---|---|
+| 1 | `{}` | `{}` | `sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a` |
+| 2 | `{"id":"k3m9q2w8x1ab","if_version":3}` | the same | `sha256:c6e6f48ad9e94345a81d22b0fa628e053e81e5785a38f0f61965c9196a4bfe93` |
+| 3 | `{"b":[1,2,{"z":null,"a":true}],"a":"x"}` | `{"a":"x","b":[1,2,{"a":true,"z":null}]}` | `sha256:dcfe2a3d2102de1d1e5f2a65d1feaf2f69b60bea4c08409297eb9df544f8bb5b` |
+| 4 | `{"body":"Line 1\nLine \"2\"\ttab\u001f","thread_id":"01JB9ZK3"}` | the same | `sha256:f94816d9ea574279d2a70f9e7f981d99437f7cd24dcd9f0f73bb8e501af9ed94` |
+| 5 | `{"é":1,"e":2,"z":3}` | `{"e":2,"z":3,"é":1}` | `sha256:9fd95198b233351043c9e13cbc336297f31bc76a19d0ca2ff093cd1172fa47a1` |
+| 6 | `{"n":1.0,"m":-0.5,"big":100000000000000000000}` | `{"big":100000000000000000000,"m":-0.5,"n":1}` | `sha256:ed4f6fe44f96cbbe62384feebf79cb9dbc03ff889ae627811e31bd2ea5b2b557` |
+| 7 | `{"":2,"😀":1}` | `{"😀":1,"":2}`, both keys as literal UTF-8 (U+1F600 sorts first: D83D < E000) | `sha256:04208f6cdb854e2ab1b07dd3633a39dec854344fe72824cf7f2fdb4e2e33129e` |
+
+Vector 4's escapes are JSON escapes in the JSON text, and the canonical
+form keeps them; vector 6 needs a JCS number formatter.
+
+**The join rule**, within one harness session: first pair by exact harness
+call ID (a `tool.call` or `tool.call_id` with `harness_call_id`); then group
+the rest by (bare tool name, `args_sha256`) and pair in time order, only
+when the transcript call's time lies within [`started_at` − 30 s,
+`started_at` + 5 s]. A transcript call's bare name is the part after its
+last `__` or `.`, and the part before must contain `clax`
+(`mcp__plugin_clax_clax__publish`); Pi uses the recorded `harness_tool`.
+Each call pairs at most once, and an unpaired call stays unpaired. A
+harness that rewrites arguments before the tool sees them gives no match.
+
+### Redaction
+
+The table and the journal hold comment bodies, version notes, labels and
+titles, question and answer text, viewer display names and local paths.
+Export redacts on request; the options used are listed in
+`graph.meta.clax.redaction` (and a journal segment's `meta.clax.redaction`):
+
+| Option | Replaces | With |
+|---|---|---|
+| `--no-text` | comment `body`, version `note` and `label`, artifact `title` and `description`, question and answer text, a working `message`, an anchor's `quote`, `prefix` and `suffix`, an artifact's `capabilities`, and free-form reasons (`backfill.skip`, `feedback.release`) | `{"redacted": "text", "sha256": "sha256:<hex of the UTF-8 original>"}`; a structured value hashes its JCS form |
+| `--no-names` | viewer `display_name`, `author_name` | `{"redacted": "name"}` (public IDs stay); a viewer's `ActorDef` has no `name` |
+| `--no-paths` | `cwd`, `repo_root`, `transcript_path`, URLs that can carry a query (an anchor's `route`, a move's `from_url` and `to_url`), a `remote_url` that is a local path | `{"redacted": "path", "sha256": …}`; `file://` refs and an `at-revision` naming a local path are dropped; the transcript identity becomes `{system: "<provider>-transcript-sha256", id: "sha256:…"}` |
+| any option | a field with no class (one this build does not know, or any field of an unknown kind) | `{"redacted": "unclassified", "sha256": …}` |
+
+Redaction is deny by default: every field of every kind has a class
+(safe, text, name or path), and an unclassified one is hashed under any
+option. Hashes are unsalted, so redacted exports still join and an original
+can be verified (a short text can be confirmed by guessing). Argument
+hashes are never redacted. Under any option Clax never records diff
+contents, page content, document content, tool argument values, cookies,
+tokens, credentials or URL userinfo. A LAN viewer cannot read the journal,
+the table or an export.
+
+### Conformance
+
+Every journal segment, once sealed by the JSONL RFC's reading algorithm,
+and every export is a Toolpath document that validates against Toolpath's
+`schema/toolpath.schema.json`, vendored read-only with its source commit in
+`crates/clax-core/tests/toolpath/schema/`. The web unit gate validates the
+golden documents under `crates/clax-core/tests/toolpath/expected/` against
+it with Ajv (draft 2020-12, formats asserted;
+`web/scripts/toolpath-schema.test.ts`).
+
 ## Security model
 
 - The daemon binds `127.0.0.1` by default. `clax serve --bind 0.0.0.0` (or
