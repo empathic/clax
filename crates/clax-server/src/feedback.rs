@@ -6,11 +6,12 @@ use crate::state::AppState;
 #[cfg(debug_assertions)]
 use clax_core::feedback::Tier;
 use clax_core::feedback::Touched;
-use clax_core::model::{Artifact, Comment, Thread, Version};
+use clax_core::model::{Artifact, Asset, Comment, Thread, Version};
 use clax_core::store::approvals::UNCONNECTED;
 use clax_core::store::live::LivePage;
 use clax_core::visibility::placeholder::{self, ApprovalState, WithheldAuthor};
 use clax_core::visibility::{self, Author, Reader, Visibility};
+use clax_core::working::{SessionWorking, WorkingView};
 use clax_core::{ArtifactId, Event, EventBus, Store};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -507,6 +508,11 @@ impl Vis {
         self.0.as_ref().filter(|v| !v.is_all())
     }
 
+    /// Whether anything may be withheld from the reader.
+    pub fn filters(&self) -> bool {
+        self.filtering().is_some()
+    }
+
     /// [`thread_views`] of `threads`, each field the reader may not see
     /// replaced by its placeholder ([`Withhold::thread`]).
     ///
@@ -608,7 +614,11 @@ impl Vis {
             return Ok(());
         };
         let mut w = Withhold::new(st, vis);
-        let text = vis.withheld_authors(&visibility::authors_of_artifact_text(a), &a.id, None);
+        let text = vis.withheld_authors(
+            &visibility::authors_of_artifact_field(a, "title"),
+            &a.id,
+            None,
+        );
         if !text.is_empty() {
             entry["title"] = Value::Null;
             entry["withheld"] = json!({"authors": w.named(&text)?});
@@ -627,6 +637,206 @@ impl Vis {
         entry["files_withheld"] = json!(hidden.len());
         Ok(())
     }
+
+    /// An artifact's view `view` (its JSON, with or without the fields of
+    /// `with_owner`): each of its text fields (title, description, icon,
+    /// `capabilities`) the reader may not see null, with `withheld:
+    /// {authors}` naming whose they are; and, where the view embeds
+    /// `working`, `working`'s records ([`Vis::filter_working`]) in its
+    /// place.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn filter_artifact(
+        &self,
+        st: &Store,
+        a: &Artifact,
+        working: &[WorkingView],
+        view: &mut Value,
+    ) -> clax_core::Result<()> {
+        let Some(vis) = self.filtering() else {
+            return Ok(());
+        };
+        let mut w = Withhold::new(st, vis);
+        w.artifact(a, view)?;
+        if view.get("working").is_some() {
+            view["working"] = json!(w.working(&a.id, working)?);
+        }
+        Ok(())
+    }
+
+    /// `records` of artifact `aid` as views list them, each message the
+    /// reader may not see (it is its session's person's) null with
+    /// `withheld: true`.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn filter_working(
+        &self,
+        st: &Store,
+        aid: &str,
+        records: &[WorkingView],
+    ) -> clax_core::Result<Vec<Value>> {
+        match self.filtering() {
+            Some(vis) => Withhold::new(st, vis).working(aid, records),
+            None => Ok(records.iter().map(|r| json!(r)).collect()),
+        }
+    }
+
+    /// The working roster's `records`, each message the reader may not see
+    /// null with `withheld: true`.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn filter_roster(
+        &self,
+        st: &Store,
+        records: &[SessionWorking],
+    ) -> clax_core::Result<Vec<Value>> {
+        let Some(vis) = self.filtering() else {
+            return Ok(records.iter().map(|r| json!(r)).collect());
+        };
+        let mut w = Withhold::new(st, vis);
+        records
+            .iter()
+            .map(|r| {
+                let mut v = json!(r);
+                if w.hides_working(&r.artifact_id, &r.session_id)? {
+                    placeholder::working(&mut v);
+                }
+                Ok(v)
+            })
+            .collect()
+    }
+
+    /// Version `v`'s view `view`: its label and note null when the reader
+    /// may not see them, and each file it may not see left out of `files`,
+    /// counted in `files_withheld` (with the version's `content_sha256`
+    /// null when any is).
+    pub fn filter_version(&self, v: &Version, view: &mut Value) {
+        let Some(vis) = self.filtering() else {
+            return;
+        };
+        if !vis.sees(&visibility::authors_of_version(v), &v.artifact_id, None) {
+            placeholder::version_text(view);
+        }
+        let hidden = withheld_files(vis, v);
+        placeholder::version_files(view, &hidden);
+    }
+
+    /// A view of version `v`'s `files` (`{files, version}`): each file the
+    /// reader may not see left out, counted in `files_withheld`.
+    pub fn filter_files(&self, v: &Version, view: &mut Value) {
+        if let Some(vis) = self.filtering() {
+            placeholder::version_files(view, &withheld_files(vis, v));
+        }
+    }
+
+    /// A publish's answer: artifact `a` and its new version `v` as JSON,
+    /// filtered ([`Vis::filter_artifact`], [`Vis::filter_version`]): the
+    /// publisher's reader sees no file it carried forward from someone it
+    /// has not approved (spec §7.5, M11).
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn filter_published(
+        &self,
+        st: &Store,
+        a: &Artifact,
+        v: &Version,
+    ) -> clax_core::Result<(Value, Value)> {
+        let mut artifact = json!(a);
+        self.filter_artifact(st, a, &[], &mut artifact)?;
+        let mut version = json!(v);
+        self.filter_version(v, &mut version);
+        Ok((artifact, version))
+    }
+
+    /// [`Vis::filter_version`] of each of `versions`, as views.
+    pub fn filter_versions(&self, versions: &[Version]) -> Vec<Value> {
+        versions
+            .iter()
+            .map(|v| {
+                let mut view = json!(v);
+                self.filter_version(v, &mut view);
+                view
+            })
+            .collect()
+    }
+
+    /// The authors withholding file `path` of version `v` from the reader,
+    /// `None` when it may read it. So that the answer tells nothing of a
+    /// name the reader guessed, a file that is withheld and one the
+    /// version lacks answer alike while the version withholds any file:
+    /// with every author of its withheld files. A version that withholds
+    /// nothing withholds nothing here either (a missing file is then
+    /// missing).
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn filter_file_content(
+        &self,
+        st: &Store,
+        v: &Version,
+        path: &str,
+    ) -> clax_core::Result<Option<Vec<WithheldAuthor>>> {
+        let Some(vis) = self.filtering() else {
+            return Ok(None);
+        };
+        let hidden = withheld_files(vis, v);
+        if hidden.is_empty() || (v.files.contains_key(path) && !hidden.contains(&path)) {
+            return Ok(None);
+        }
+        let mut authors = Vec::new();
+        for p in hidden {
+            for a in vis.withheld_authors(&visibility::authors_of_file(v, p), &v.artifact_id, None)
+            {
+                if !authors.contains(&a) {
+                    authors.push(a);
+                }
+            }
+        }
+        Ok(Some(Withhold::new(st, vis).named(&authors)?))
+    }
+
+    /// Whether an anchor on `file` of version `v` must answer as one on a
+    /// file the version lacks: the reader may not see the file's name.
+    /// Every version has its `index.html`, so an anchor there tells
+    /// nothing and is never refused.
+    pub fn filter_anchor_file(&self, v: &Version, file: &str) -> bool {
+        let Some(vis) = self.filtering() else {
+            return false;
+        };
+        file != clax_core::publish::INDEX
+            && v.files.contains_key(file)
+            && !vis.sees(&visibility::authors_of_file(v, file), &v.artifact_id, None)
+    }
+
+    /// `assets` as views list them, each the reader may not see with its
+    /// name and what its bytes decide null, and `withheld: true`.
+    pub fn filter_assets(&self, assets: &[Asset]) -> Vec<Value> {
+        assets
+            .iter()
+            .map(|a| {
+                let mut v = json!(a);
+                if let Some(vis) = self.filtering()
+                    && !vis.sees(&visibility::authors_of_asset(a), &a.artifact_id, None)
+                {
+                    placeholder::asset(&mut v);
+                }
+                v
+            })
+            .collect()
+    }
+}
+
+/// The paths of version `v`'s files `vis` withholds, in order.
+fn withheld_files<'a>(vis: &Visibility, v: &'a Version) -> Vec<&'a str> {
+    v.files
+        .keys()
+        .filter(|p| !vis.sees(&visibility::authors_of_file(v, p), &v.artifact_id, None))
+        .map(String::as_str)
+        .collect()
 }
 
 /// Applies one reader's view to thread views, reading what it needs once:
@@ -636,6 +846,8 @@ struct Withhold<'a> {
     vis: &'a Visibility,
     versions: HashMap<(String, u32), Option<Version>>,
     names: HashMap<Author, WithheldAuthor>,
+    /// Each session's person, as read (`None` inside: the owner's).
+    persons: HashMap<String, Option<Option<String>>>,
 }
 
 impl<'a> Withhold<'a> {
@@ -645,7 +857,68 @@ impl<'a> Withhold<'a> {
             vis,
             versions: HashMap::new(),
             names: HashMap::new(),
+            persons: HashMap::new(),
         }
+    }
+
+    /// Whether the reader may not see the message of a working record of
+    /// session `sid` on `aid`: its session's person's words. A session
+    /// that is gone names no one: its message is withheld.
+    fn hides_working(&mut self, aid: &str, sid: &str) -> clax_core::Result<bool> {
+        if !self.persons.contains_key(sid) {
+            let p = self.st.get_session(sid)?.map(|s| s.person);
+            self.persons.insert(sid.to_string(), p);
+        }
+        Ok(match &self.persons[sid] {
+            Some(person) => !self.vis.sees(
+                &visibility::authors_of_working(person.as_deref()),
+                aid,
+                None,
+            ),
+            None => true,
+        })
+    }
+
+    /// `records` of `aid` as views, each message withheld as
+    /// [`Withhold::hides_working`] says.
+    fn working(&mut self, aid: &str, records: &[WorkingView]) -> clax_core::Result<Vec<Value>> {
+        records
+            .iter()
+            .map(|r| {
+                let mut v = json!(r);
+                if self.hides_working(aid, &r.session_id)? {
+                    placeholder::working(&mut v);
+                }
+                Ok(v)
+            })
+            .collect()
+    }
+
+    /// Artifact `a`'s view: each text field the reader may not see null,
+    /// and `withheld: {authors}` when any is.
+    fn artifact(&mut self, a: &Artifact, view: &mut Value) -> clax_core::Result<()> {
+        let mut fields = Vec::new();
+        let mut withheld: Vec<Author> = Vec::new();
+        for f in clax_core::store::artifacts::TEXT_FIELDS {
+            let w = self.vis.withheld_authors(
+                &visibility::authors_of_artifact_field(a, f),
+                &a.id,
+                None,
+            );
+            if !w.is_empty() {
+                fields.push(f);
+                for x in w {
+                    if !withheld.contains(&x) {
+                        withheld.push(x);
+                    }
+                }
+            }
+        }
+        if !fields.is_empty() {
+            let named = self.named(&withheld)?;
+            placeholder::artifact(view, &fields, &named);
+        }
+        Ok(())
     }
 
     fn version(&mut self, aid: &str, n: u32) -> clax_core::Result<Option<Version>> {

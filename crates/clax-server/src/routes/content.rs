@@ -271,20 +271,42 @@ pub async fn file(
 
 /// `GET /api/artifacts/<id>/versions/<n>/files/<path>`: a file's stored bytes,
 /// `index.html` included and never wrapped. Served with `Content-Security-Policy:
-/// sandbox` because it shares the API's origin.
+/// sandbox` because it shares the API's origin. A file an agent channel's
+/// reader may not see answers 403 `withheld` with its authors; while the
+/// version withholds any file, so does a path it lacks
+/// ([`crate::feedback::Vis::filter_file_content`]).
 pub async fn raw_file(
     State(s): State<AppState>,
-    _a: crate::agent::Agent<crate::agent::FileContent>,
+    a: crate::agent::Agent<crate::agent::FileContent>,
     p: Result<Path<(String, u32, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let (aid, n, rel) = path(p)?;
     let id = parse_id(&aid)?;
-    let (disk, meta) = s
+    let vf = crate::feedback::VisFor::of(&a.caller, &s);
+    let found = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            st.file_path(&id, n, &rel)?.ok_or(CoreError::NotFound)
+            let vis = vf.build(st)?;
+            if vis.filters() {
+                let v = st.get_version(&id, n)?.ok_or(CoreError::NotFound)?;
+                if let Some(authors) = vis.filter_file_content(st, &v, &rel)? {
+                    return Ok(Err(authors));
+                }
+            }
+            Ok(Ok(st.file_path(&id, n, &rel)?.ok_or(CoreError::NotFound)?))
         })
         .await?;
+    let (disk, meta) = match found {
+        Ok(f) => f,
+        Err(authors) => {
+            let mut e = ApiError::forbidden(
+                "withheld",
+                "this file is withheld until your person approves its authors",
+            );
+            e.extra.insert("authors".into(), serde_json::json!(authors));
+            return Err(e);
+        }
+    };
     let f = tokio::fs::File::open(&disk)
         .await
         .map_err(|_| ApiError::not_found())?;

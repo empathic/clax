@@ -702,17 +702,14 @@ async fn the_route_limit_caps_the_pre_handler_read() {
     assert_eq!(big.response().await, (413, "body_too_large".into()));
     // A Filtered route not yet live: 503 before anything is read, whatever
     // its limit allows.
-    let publish = format!("/api/artifacts/{aid}/versions");
+    let batch = format!("/api/artifacts/{aid}/docs:batch");
     let headers = [
         ("authorization", format!("Clax-Grant {}", sam.access())),
-        (
-            "clax-signature",
-            sam.signature("POST", &publish, b"", false),
-        ),
+        ("clax-signature", sam.signature("POST", &batch, b"", false)),
         ("x-clax-session", sid.clone()),
-        ("content-length", (90 * MIB).to_string()),
+        ("content-length", (12 * MIB).to_string()),
     ];
-    let raw = Raw::open(&ts, &sam, "POST", &publish, &headers).await;
+    let raw = Raw::open(&ts, &sam, "POST", &batch, &headers).await;
     assert_eq!(raw.response().await, (503, "not_yet".into()));
     assert_eq!(ts.agent_gate.state().read, read_before);
     // Within the limit: read, verified and handed on.
@@ -945,7 +942,7 @@ async fn session_less_grant_requests_use_person_and_grant_rights() {
         .unwrap()
         .to_string();
     let r = sam.get(None, "/api/artifacts").await;
-    assert_eq!(status_code(r).await, (503, "not_yet".into()));
+    assert_eq!(r.status(), 200);
     let r = sam.get(None, &format!("/api/sessions/{sid}/watches")).await;
     assert_eq!(status_code(r).await, (400, "no_session".into()));
     // A reader may watch.
@@ -1333,7 +1330,7 @@ async fn the_token_never_names_a_grants_session_on_any_session_route() {
 #[tokio::test]
 async fn the_extractor_refuses_a_persons_agent_on_an_owner_agents_route() {
     use axum::extract::FromRequestParts;
-    use clax_server::agent::{Agent, ThreadsAll, VerifiedGrant, VersionsList};
+    use clax_server::agent::{Agent, DocsList, ThreadsAll, VerifiedGrant};
     let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
     let s2 = slot.clone();
     let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), move |st| {
@@ -1359,7 +1356,7 @@ async fn the_extractor_refuses_a_persons_agent_on_an_owner_agents_route() {
         .expect("refused");
     assert_eq!((e.status.as_u16(), e.code), (403, "forbidden"));
     // A route open to grants goes on to its other checks.
-    let e = Agent::<VersionsList>::from_request_parts(&mut parts(), &state)
+    let e = Agent::<DocsList>::from_request_parts(&mut parts(), &state)
         .await
         .err()
         .expect("not yet");

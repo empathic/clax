@@ -194,25 +194,69 @@ pub async fn for_session(
 
 /// `GET /api/working` (token): `{working}`, every live record with its
 /// session and artifact (the working roster), newest `started_at` first.
+/// Live pages are left out for a caller that may not see them
+/// ([`crate::live::sees_live_pages`]); for a person's agent, so is every
+/// artifact it may not read, and the session of another credential is not
+/// named (spec §6.7). Each message is filtered for an agent channel's
+/// reader.
 pub async fn roster(
     State(s): State<AppState>,
-    _a: TokenOrAgent<crate::agent::WorkingRoster>,
-) -> Json<Value> {
-    Json(json!({"working": s.working.roster()}))
+    TokenOrAgent(a): TokenOrAgent<crate::agent::WorkingRoster>,
+    extensions: axum::http::Extensions,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let local = crate::live::sees_live_pages(&headers, &extensions, &s.token);
+    let reads = a.read_rights();
+    let grant = a.grant().map(str::to_string);
+    let vf = crate::feedback::VisFor::of(&a.caller, &s);
+    let records = s.working.roster();
+    let list = s
+        .store_call(move |st| {
+            let mut kept = Vec::new();
+            let mut grants = std::collections::HashMap::new();
+            for r in records {
+                let Some(art) = st.get_artifact(&ArtifactId::parse(&r.artifact_id)?)? else {
+                    continue;
+                };
+                if (!local && art.kind == clax_core::live::KIND_LIVE) || !reads.allows(&art) {
+                    continue;
+                }
+                kept.push(r);
+            }
+            let vis = vf.build(st)?;
+            let mut views = vis.filter_roster(st, &kept)?;
+            if reads.is_person_agent() {
+                for (r, v) in kept.iter().zip(&mut views) {
+                    if !grants.contains_key(&r.session_id) {
+                        let g = st.get_session(&r.session_id)?.and_then(|x| x.grant_id);
+                        grants.insert(r.session_id.clone(), g);
+                    }
+                    if grants[&r.session_id] != grant {
+                        v["session_id"] = Value::Null;
+                    }
+                }
+            }
+            Ok(views)
+        })
+        .await?;
+    Ok(Json(json!({"working": list})))
 }
 
-/// `GET /api/artifacts/<aid>/working` (no token): `{working}`, never naming a session.
+/// `GET /api/artifacts/<aid>/working` (no token): `{working}`, never naming
+/// a session; each message filtered for an agent channel's reader.
 pub async fn for_artifact(
     State(s): State<AppState>,
-    _a: crate::agent::Agent<crate::agent::WorkingForArtifact>,
+    a: crate::agent::Agent<crate::agent::WorkingForArtifact>,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(p)?)?;
     let w = s.working.clone();
+    let vf = crate::feedback::VisFor::of(&a.caller, &s);
     let list = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            Ok(w.for_artifact(id.as_str()))
+            let vis = vf.build(st)?;
+            vis.filter_working(st, id.as_str(), &w.for_artifact(id.as_str()))
         })
         .await?;
     Ok(Json(json!({"working": list})))
