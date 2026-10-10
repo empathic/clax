@@ -458,7 +458,8 @@ impl Store {
     /// and a claim that retires a public ID (the folded row's) as one
     /// `viewer.claim {from_public_id, to_public_id}`, so records naming the
     /// retired ID resolve to its successor; all made by the owner (as it is
-    /// after the claim) through `via`, in the claim's transaction.
+    /// after the claim) through `via`, in the claim's transaction. A claim
+    /// that claims anything bumps the visibility generation.
     pub fn claim_for_owner(&self, via: Via, cookie: &str) -> Result<Claim> {
         let by = |owner: &Viewer| AuditCtx {
             actor: Actor::Owner {
@@ -481,6 +482,8 @@ impl Store {
             else {
                 return Ok(Claim::Nothing);
             };
+            // Authorship moves (M17).
+            self.visibility_changed();
             match owner_row(tx)? {
                 Some((owner, true)) => {
                     fold(self, &by(&owner), tx, &legacy, &owner)?;

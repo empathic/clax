@@ -806,10 +806,12 @@ recorded, only a hash of the client's public key.
 | `person.rights` | `person, rights` | the owner |
 | `person.revoke` | `person` | the owner, after the `grant.revoke` and `invite.revoke` of what it ended |
 | `agent.name` | `name, source (agent\|person), previous` | the namer: the agent itself, its person or the owner; `session_id` the named agent's |
+| `approval.grant` | `approval_id, approver (null: the owner), author (a public ID or `*unconnected`), scope (thread\|artifact\|everywhere), created_via`; the scope's artifact and thread in the event's IDs | the approver |
+| `approval.revoke` | as `approval.grant`, of the approval revoked | the approver |
 
 Each is keyed by its object: `clax://<install>/invite/<invite ID>`,
-`clax://<install>/grant/<grant ID>`, the person's `/u/<public ID>`, or the
-named agent's session. They belong to the install path. `client_name`,
+`clax://<install>/grant/<grant ID>`, the person's `/u/<public ID>`,
+`clax://<install>/approval/<approval ID>`, or the named agent's session. They belong to the install path. `client_name`,
 `peer_ip`, and an agent's `name` and `previous` are classed as names
 (§11); the rest is safe. People and grants arrive with the multi-person
 migration, after the audit migration, so their whole history is recorded

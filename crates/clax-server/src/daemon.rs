@@ -530,6 +530,7 @@ pub async fn serve(
     let live_ids = Arc::new(crate::live::LiveIds::load(&store)?);
     let ext_creds = Arc::new(crate::extension::Credentials::load(&store)?);
     let grant_auth = Arc::new(crate::grant_auth::GrantAuth::load(&store)?);
+    let vis_gen = crate::state::VisGen::install(&store);
     let state = AppState {
         store,
         home: cfg.home.clone(),
@@ -581,6 +582,7 @@ pub async fn serve(
         agent_gate: Arc::new(crate::agent::Gate::new(Arc::new(
             crate::agent::TokioTimer::default(),
         ))),
+        vis_gen,
     };
     state.audit_wake.install(&state.store);
     // The appender recovers the journal and catches it up on its own

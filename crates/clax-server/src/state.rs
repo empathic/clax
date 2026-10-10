@@ -1,7 +1,46 @@
 use crate::wrap_cache::WrapCache;
 use clax_core::{EventBus, Home, Store};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+/// The visibility generation (spec 2026-10-08-multi-agent-multi-person
+/// M17): the store's counter, bumped by every committed change to what an
+/// agent may see, and a channel that hears each new value, for waking the
+/// waiters whose view it changed.
+#[derive(Clone)]
+pub struct VisGen {
+    counter: Arc<AtomicU64>,
+    changed: tokio::sync::watch::Receiver<u64>,
+}
+
+impl VisGen {
+    /// The generation of `store`, listening for its bumps (it replaces any
+    /// visibility listener `store` had).
+    pub fn install(store: &Store) -> VisGen {
+        let (tx, rx) = tokio::sync::watch::channel(store.visibility_generation());
+        store.set_visibility_listener(move |g| {
+            tx.send_replace(g);
+        });
+        VisGen {
+            counter: store.visibility_counter(),
+            changed: rx,
+        }
+    }
+
+    /// The current generation: read it before building a `Visibility`, so
+    /// a change committed meanwhile makes the result stale, never missed.
+    pub fn current(&self) -> u64 {
+        self.counter.load(Ordering::Acquire)
+    }
+
+    /// A receiver that wakes on each bump after it is made.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        let mut rx = self.changed.clone();
+        rx.mark_unchanged();
+        rx
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -91,4 +130,39 @@ pub struct AppState {
     pub grant_auth: Arc<crate::grant_auth::GrantAuth>,
     /// The bounds on agents' unverified request bodies (spec §6.6).
     pub agent_gate: Arc<crate::agent::Gate>,
+    /// The visibility generation (spec 2026-10-08-multi-agent-multi-person M17).
+    pub vis_gen: VisGen,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VisGen;
+    use clax_core::audit::AuditCtx;
+    use clax_core::store::approvals::{Scope, UNCONNECTED, Via};
+    use clax_core::{Home, Store};
+
+    #[tokio::test]
+    async fn the_generation_follows_the_stores_bumps() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
+        let g = VisGen::install(&st);
+        let mut rx = g.subscribe();
+        assert_eq!(g.current(), 0);
+        let id = st.live_approvals(None).unwrap()[0].id.clone();
+        st.revoke_approval(&AuditCtx::DAEMON, &id, None).unwrap();
+        assert_eq!(g.current(), 1);
+        rx.changed().await.unwrap();
+        assert_eq!(*rx.borrow_and_update(), 1);
+        st.approve(
+            &AuditCtx::DAEMON,
+            None,
+            UNCONNECTED,
+            Scope::Everywhere,
+            Via::Shell,
+        )
+        .unwrap();
+        rx.changed().await.unwrap();
+        assert_eq!(*rx.borrow_and_update(), 2);
+        assert_eq!(g.clone().current(), 2);
+    }
 }
