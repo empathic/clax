@@ -36,7 +36,9 @@ pub(crate) fn multipart_error(status: StatusCode, message: String) -> ApiError {
 /// `live_page`. A page's upload (`x-clax-via: page`, which the shell's
 /// `assets` capability sends) also carries every author of the page (spec
 /// 2026-10-08-multi-agent-multi-person §8.2); the uploader is a person's
-/// agent's person, else the owner.
+/// agent's person, else the owner. A person's agent uploads from a
+/// session and never as a page (spec §6.7); the answer is filtered for an
+/// agent channel's reader.
 pub async fn upload(
     State(s): State<AppState>,
     a: TokenOrAgent<AssetsUpload>,
@@ -53,6 +55,9 @@ pub async fn upload(
             "a live page keeps only its snapshots; it takes no assets",
         ));
     }
+    crate::agent::person_agent_session(&a.0.caller)?;
+    let via_page = crate::agent::page_marker(&a.0.caller, &headers)?;
+    let vf = crate::feedback::VisFor::of(&a.0.caller, &s);
     let mut mp = mp.map_err(|e| multipart_error(e.status(), e.body_text()))?;
     while let Some(field) = mp
         .next_field()
@@ -71,27 +76,26 @@ pub async fn upload(
             .bytes()
             .await
             .map_err(|e| multipart_error(e.status(), e.body_text()))?;
-        let via_page = headers
-            .get(crate::routes::artifacts::VIA_HEADER)
-            .and_then(|v| v.to_str().ok())
-            == Some("page");
         let person = match &a.0.caller {
             crate::auth::Caller::PersonAgent { person, .. } => person.clone(),
             _ => None,
         };
+        let vf = vf.clone();
         let asset = s
             .store_call(move |st| {
-                st.add_asset_by(
+                let asset = st.add_asset_by(
                     &audit,
                     &id,
                     &content_type,
                     &bytes,
                     person.as_deref(),
                     via_page,
-                )
+                )?;
+                let vis = vf.build(st)?;
+                Ok(vis.filter_assets(std::slice::from_ref(&asset)).remove(0))
             })
             .await?;
-        let url = format!("/_blob/{}", asset.id);
+        let url = format!("/_blob/{}", asset["id"].as_str().unwrap_or_default());
         return Ok((
             StatusCode::CREATED,
             Json(json!({"asset": asset, "url": url})),
@@ -103,17 +107,21 @@ pub async fn upload(
     ))
 }
 
+/// The artifact's assets, each an agent channel's reader may not see with
+/// its name and what its bytes decide withheld (spec §8.3).
 pub async fn list(
     State(s): State<AppState>,
-    _a: Agent<crate::agent::AssetsList>,
+    a: Agent<crate::agent::AssetsList>,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let aid = path(aid)?;
     let id = parse_id(&aid)?;
+    let vf = crate::feedback::VisFor::of(&a.caller, &s);
     let assets = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            st.list_assets(&id)
+            let vis = vf.build(st)?;
+            Ok(vis.filter_assets(&st.list_assets(&id)?))
         })
         .await?;
     Ok(Json(json!({"assets": assets})))

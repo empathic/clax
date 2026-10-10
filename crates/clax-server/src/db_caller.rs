@@ -162,6 +162,15 @@ impl FromRequestParts<AppState> for CallerParts {
             }
         };
         let who = Identity::from_parts(&parts.headers, &parts.extensions, &state.token);
+        let page = parts
+            .headers
+            .get(crate::routes::artifacts::VIA_HEADER)
+            .and_then(|v| v.to_str().ok())
+            == Some("page");
+        // A page writes through a browser, never through a grant.
+        if page && who.grant_header {
+            return Err(crate::agent::invalid_via_page());
+        }
         let agent = if who.grant_header {
             match crate::agent::resolve(state, who.clone(), None).await? {
                 crate::auth::Caller::PersonAgent { person, rights, .. } => Some((person, rights)),
@@ -179,11 +188,7 @@ impl FromRequestParts<AppState> for CallerParts {
                 parts.method,
                 axum::http::Method::GET | axum::http::Method::HEAD
             ),
-            page: parts
-                .headers
-                .get(crate::routes::artifacts::VIA_HEADER)
-                .and_then(|v| v.to_str().ok())
-                == Some("page"),
+            page,
         })
     }
 }
