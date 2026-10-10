@@ -13,7 +13,8 @@
 //! on a live page. Mia is connected and approved by no one.
 //!
 //! The person columns are written as the daemon will write them when Mia
-//! publishes herself (`artifacts.person`, `versions.person`,
+//! publishes herself (`artifacts.person` and `owner_session_id`, Mia's
+//! agent's session, `versions.person`,
 //! `versions.file_authors_json`, `assets.person`) and writes her document
 //! (`doc_authors`); her browser writes the comments, the anchor, the clip,
 //! the batch note and the resolution, and her agent the working message
@@ -342,9 +343,10 @@ impl World {
         .to_string();
         let db = rusqlite::Connection::open(ts.home.db_path()).unwrap();
         db.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
+        // Mia's agent made it from its session.
         db.execute(
-            "UPDATE artifacts SET person = ?2 WHERE id = ?1",
-            rusqlite::params![aid, mia],
+            "UPDATE artifacts SET person = ?2, owner_session_id = ?3 WHERE id = ?1",
+            rusqlite::params![aid, mia, self.mia_session],
         )
         .unwrap();
         db.execute(

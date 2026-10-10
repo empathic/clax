@@ -752,6 +752,17 @@ impl Vis {
         Ok((artifact, version))
     }
 
+    /// The paths of version `v`'s files the reader may not see.
+    pub fn filter_hidden_files(&self, v: &Version) -> Vec<String> {
+        match self.filtering() {
+            Some(vis) => withheld_files(vis, v)
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
     /// [`Vis::filter_version`] of each of `versions`, as views.
     pub fn filter_versions(&self, versions: &[Version]) -> Vec<Value> {
         versions

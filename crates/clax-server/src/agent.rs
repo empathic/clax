@@ -698,7 +698,8 @@ impl ReadRights {
 }
 
 /// A person's agent writes content (artifacts, versions, assets,
-/// comments, threads) and deletes threads only from a session (400
+/// comments, threads) and deletes artifacts, assets and threads only from a
+/// session (400
 /// `no_session`, spec §6.7): its person writes in a browser. Other callers
 /// pass.
 ///
