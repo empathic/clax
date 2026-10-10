@@ -721,6 +721,13 @@ fn check_collisions<'a>(paths: impl Iterator<Item = &'a String>) -> Result<()> {
     Ok(())
 }
 
+/// Whether paths `a` and `b` cannot both be in a version: equal under ASCII
+/// case folding, or one a directory of the other ([`check_collisions`]).
+fn collide(a: &str, b: &str) -> bool {
+    let (a, b) = (a.to_ascii_lowercase(), b.to_ascii_lowercase());
+    a == b || b.starts_with(&format!("{a}/")) || a.starts_with(&format!("{b}/"))
+}
+
 /// Paths that `p` writes (its `Put` entries).
 fn put_paths(p: &ValidatedPublish) -> impl Iterator<Item = &String> {
     p.files
@@ -1056,6 +1063,7 @@ impl Store {
         let carried: Vec<&String> = prev
             .keys()
             .filter(|path| *path != INDEX && !p.files.contains_key(*path))
+            .filter(|path| !(p.hidden.contains(*path) && put_paths(p).any(|q| collide(path, q))))
             .collect();
         let carried_paths: Vec<String> = carried.iter().map(|p| (*p).clone()).collect();
         check_collisions(carried.iter().copied().chain(put_paths(p)))?;
@@ -1791,6 +1799,44 @@ mod tests {
             .unwrap();
         assert!(store.get_artifact(&id).unwrap().is_none());
         assert!(store.list_artifacts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_put_over_a_hidden_path_drops_it_where_a_visible_one_is_refused() {
+        let (_d, store) = store();
+        let (a, _) = store
+            .create_artifact(
+                DAEMON,
+                publish(
+                    &[
+                        ("index.html", Some("v1")),
+                        ("Name.js", Some("1")),
+                        ("dir/b.css", Some("2")),
+                        ("keep.css", Some("3")),
+                    ],
+                    None,
+                ),
+                None,
+            )
+            .unwrap();
+        let id = crate::ArtifactId::parse(&a.id).unwrap();
+        let puts: &[(&str, Option<&str>)] = &[
+            ("index.html", Some("v2")),
+            ("name.js", Some("4")),
+            ("dir", Some("5")),
+        ];
+        // Visible, each collision is refused, and nothing is written.
+        let e = store
+            .publish_version(DAEMON, &id, publish(puts, Some(1)), None)
+            .unwrap_err();
+        assert!(matches!(e, crate::CoreError::Invalid { code: "invalid_path", .. }), "{e:?}");
+        // Hidden from the publisher, the colliding paths are dropped as a
+        // remove would drop them; the rest are carried.
+        let mut p = publish(puts, Some(1));
+        p.hidden = vec!["Name.js".into(), "dir/b.css".into(), "keep.css".into()];
+        let (_, v) = store.publish_version(DAEMON, &id, p, None).unwrap();
+        let files: Vec<&String> = v.files.keys().collect();
+        assert_eq!(files, ["dir", "index.html", "keep.css", "name.js"]);
     }
 
     #[test]

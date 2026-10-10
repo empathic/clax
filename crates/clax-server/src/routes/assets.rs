@@ -127,12 +127,15 @@ pub async fn list(
     Ok(Json(json!({"assets": assets})))
 }
 
+/// Deletes an asset. A person's agent deletes from a session (400
+/// `no_session`), as it uploads.
 pub async fn delete(
     State(s): State<AppState>,
-    _a: TokenOrAgent<crate::agent::AssetsDelete>,
+    a: TokenOrAgent<crate::agent::AssetsDelete>,
     audit: AuditCtx,
     params: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<StatusCode, ApiError> {
+    crate::agent::person_agent_session(&a.0.caller)?;
     let (aid, asset_id) = path(params)?;
     let id = parse_id(&aid)?;
     s.store_call(move |st| match st.get_asset(&asset_id)? {

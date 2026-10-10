@@ -90,6 +90,14 @@ pub struct ValidatedPublish {
     pub person: Option<String>,
     /// The page published this version of itself (the caller fills it).
     pub by_page: bool,
+    /// Paths of the previous version the publisher's reader may not see
+    /// (the caller fills it; spec 2026-10-08-multi-agent-multi-person
+    /// §21.7). They never constrain the publish: a put that collides with
+    /// one (the same name in another letter case, a file beneath it, or a
+    /// file over its directory) drops it, as a remove would, where a
+    /// collision with any other path is refused. So a publish never
+    /// confirms a withheld name by refusing it.
+    pub hidden: Vec<String>,
 }
 
 /// Accepts a relative path of one or more non-empty segments, with no `.` or
@@ -350,6 +358,7 @@ pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
         working_threads: Vec::new(),
         person: None,
         by_page: false,
+        hidden: Vec::new(),
     })
 }
 

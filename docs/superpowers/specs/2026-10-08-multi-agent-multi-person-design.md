@@ -870,18 +870,18 @@ of the owner's agents only, a person their agents' (§18).
 
 | Route | Class | Right |
 |---|---|---|
-| `GET /api/artifacts` | Filtered; artifacts the agent may not `read` and live pages are left out (with `?artifact=`, answered as one that does not exist) | artifacts read |
+| `GET /api/artifacts` | Filtered; artifacts the agent may not `read` are left out, and live pages for a caller that may not see them (a person's agent; the owner's agents list them, L10) (with `?artifact=`, answered as one that does not exist) | artifacts read |
 | `POST /api/artifacts` | Filtered (returns the new artifact); a person's agent creates from a session (400 `no_session`), as its person | artifacts create |
 | `GET /api/artifacts/{aid}` (embedded `working`, `participants`) | Filtered | artifacts read |
 | `PATCH /api/artifacts/{aid}` (pin, metadata) | Filtered (returns the artifact); a person's agent edits from a session (400 `no_session`), never with `x-clax-via: page` (400 `invalid_via_page`) | artifacts update |
-| `DELETE /api/artifacts/{aid}` | Own | artifacts delete |
+| `DELETE /api/artifacts/{aid}` | Own; a person's agent deletes from a session (400 `no_session`) | artifacts delete |
 | `GET …/versions`, `GET …/versions/{n}` | Filtered (labels, notes, files, and `content_sha256` when a file is withheld) | artifacts read |
 | `POST …/versions` (publish) | Filtered (returns the artifact and the new version, whose carried files keep their authors; on conflict the current version's summary, which clients read through `GET /api/artifacts/{aid}`); a person's agent publishes from a session (400 `no_session`), as its person, never with `x-clax-via: page` (400 `invalid_via_page`), and leaves untargeted feedback untargeted | artifacts update |
 | `GET …/files`, `GET …/versions/{n}/files/{*path}` | Filtered (names; content 403 `withheld` with the authors of the version's withheld files, for a withheld file and, while the version withholds any, for a path it lacks) | artifacts read |
 | `GET /c/{aid}/v/{n}/…`, `GET /_blob/{asset}` | Denied to grants (browser content routes; agents read through the routes above) | — |
-| `GET …/assets` / `POST …/assets` / `DELETE …/assets/{id}` | Filtered (names, types, sizes) / Filtered (returns the asset; a person's agent uploads from a session, never with `x-clax-via: page`) / Own | read / update / delete |
+| `GET …/assets` / `POST …/assets` / `DELETE …/assets/{id}` | Filtered (names, types, sizes) / Filtered (returns the asset; a person's agent uploads from a session, never with `x-clax-via: page`) / Own (a person's agent deletes from a session, 400 `no_session`) | read / update / delete |
 | `GET …/presence` | Own (display names and states only) | artifacts read |
-| `GET /api/artifacts/{aid}/working`, `GET /api/working` | Filtered (messages; the roster leaves out live pages and, for a person's agent, artifacts it may not `read`, and names no other credential's session) | comments watch |
+| `GET /api/artifacts/{aid}/working`, `GET /api/working` | Filtered (messages; the roster leaves out live pages for a caller that may not see them (a person's agent; the owner's agents keep them, L10) and, for a person's agent, artifacts it may not `read`, and names no other credential's session) | comments watch |
 | `GET /api/threads` (all threads; `clax comments`, `/clax:comments`) | Filtered; Denied to `PersonAgent` (they list per artifact, §6.7) | comments read |
 | `GET …/threads`, `GET …/threads/{tid}`, `GET …/threads/{tid}/clip` | Filtered | comments read |
 | `POST …/threads` (create) | Filtered (returns the thread with its anchor); a person's agent writes from a session (400 `no_session`) | comments write |
@@ -1645,8 +1645,13 @@ agents not to.
    after reading becomes its person's; a page runs in a person's browser,
    which sees everything, so a page can copy text it reads into a new
    comment or document as that person (and its publisher); deleting a
-   document and writing a new one at its path starts a new author set.
-   Known limitations.
+   document and writing a new one at its path starts a new author set;
+   an agent that may update an artifact can confirm a withheld file's
+   name only by replacing or removing it (`files_withheld` then drops),
+   a visible, destructive version credited to its person (a put that
+   collides with a withheld path, by letter case or as a file and a
+   directory, drops that path as a remove would, so a collision is never
+   refused on a withheld name). Known limitations.
 8. **Denial of service.** The token, timestamp and nonce are checked
    before the body is read; with a sniffed token, unverified bytes in
    flight are bounded per key and overall through bounded queues,
