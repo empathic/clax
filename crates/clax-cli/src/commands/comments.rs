@@ -263,7 +263,12 @@ fn last_activity(t: &Value) -> String {
     at
 }
 
+/// An open thread whose anchor's page the current version lacks. A thread
+/// about the whole artifact is on no page and never detached.
 fn is_detached(g: &Group, t: &Value) -> bool {
+    if t["anchor"]["kind"] == "artifact" {
+        return false;
+    }
     let file = t["anchor"]["file"]
         .as_str()
         .unwrap_or(clax_core::anchor::INDEX_FILE);

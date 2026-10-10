@@ -214,10 +214,13 @@ pub(crate) fn one_line(s: &str) -> String {
 /// (spec 2026-10-05 §9.3).
 pub fn render_item(i: &FeedbackItem) -> String {
     let resent = if i.resent { " (resent)" } else { "" };
-    let clip = i
-        .clip_path
-        .clone()
-        .unwrap_or_else(|| "none (no screenshot was captured for this comment)".to_string());
+    let clip = i.clip_path.clone().unwrap_or_else(|| {
+        if i.anchor.is_whole() {
+            "none (the comment is about the whole artifact)".to_string()
+        } else {
+            "none (no screenshot was captured for this comment)".to_string()
+        }
+    });
     if let Some(l) = &i.live {
         return format!(
             "[clax] Comment sent to you{resent} on {title} (live page {page}; Clax view {url}), thread {tid}\n\
@@ -479,6 +482,22 @@ mod tests {
         assert_eq!(
             render_item(&i).lines().nth(3).unwrap(),
             "Alex (written by the page): \"Make this a two-column layout and drop the third bullet.\""
+        );
+    }
+
+    #[test]
+    fn a_whole_artifact_comment_names_no_spot_and_no_clip() {
+        let mut i = item();
+        i.anchor = serde_json::from_value::<Anchor>(serde_json::json!({"kind": "artifact"}))
+            .unwrap()
+            .normalized();
+        i.clip_path = None;
+        let t = render_item(&i);
+        let lines: Vec<&str> = t.lines().collect();
+        assert_eq!(lines[1], "Anchored on: the whole artifact  (v3)");
+        assert_eq!(
+            lines[2],
+            "Clip: none (the comment is about the whole artifact)"
         );
     }
 

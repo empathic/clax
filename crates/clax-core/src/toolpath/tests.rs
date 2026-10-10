@@ -2569,3 +2569,60 @@ fn golden_tool_calls_match_the_live_builder() {
     }
     assert!(seen >= 2);
 }
+
+#[test]
+fn a_whole_artifact_thread_is_recorded_and_exported_under_every_redaction() {
+    use crate::store::test_util::{DAEMON, artifact, store};
+    let (_dir, st) = store();
+    let aid = artifact(&st, None);
+    let t = st
+        .create_thread(
+            DAEMON,
+            &aid,
+            crate::store::threads::NewThread {
+                author_public_id: None,
+                version_n: 1,
+                anchor: serde_json::from_value(json!({"kind": "artifact"})).unwrap(),
+                author_name: "Alex".into(),
+                body: "Make the colours warmer.".into(),
+                clip: None,
+                via_page: false,
+            },
+        )
+        .unwrap();
+    let h = history();
+    for redaction in [
+        Redaction::NONE,
+        Redaction {
+            no_text: true,
+            no_names: true,
+            no_paths: true,
+        },
+    ] {
+        let req = project::Export {
+            redaction,
+            ..Default::default()
+        };
+        let doc = parse(&store_export(&st, &h, &req).unwrap());
+        let open = doc["paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|p| p["steps"].as_array().unwrap())
+            .find(|s| s["meta"]["clax"]["kind"] == "thread.open")
+            .expect("a thread.open step");
+        assert_eq!(
+            open["meta"]["description"],
+            format!(
+                "Opened thread {} about the whole artifact on version 1 of artifact {aid}",
+                t.id
+            )
+        );
+        let change = open["change"].as_object().unwrap().values().next().unwrap();
+        assert_eq!(
+            change["structural"]["anchor"]["kind"], "artifact",
+            "{redaction:?}"
+        );
+        assert_eq!(change["structural"]["anchor"]["file"], "");
+    }
+}

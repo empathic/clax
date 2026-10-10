@@ -1337,6 +1337,56 @@ mod tests {
     }
 
     #[test]
+    fn a_whole_artifact_thread_is_stored_on_no_page_sent_and_rendered() {
+        let (_d, st) = store();
+        let owner = session(&st, "claude", "o");
+        let aid = artifact(&st, Some(&owner));
+        let before = st
+            .events_after(0, 1000)
+            .unwrap()
+            .last()
+            .map_or(0, |r| r.seq);
+        let whole: crate::Anchor =
+            serde_json::from_value(serde_json::json!({"kind": "artifact"})).unwrap();
+        let t = st
+            .create_thread(
+                DAEMON,
+                &aid,
+                NewThread {
+                    author_public_id: None,
+                    version_n: 1,
+                    anchor: whole,
+                    author_name: "Alex".into(),
+                    body: "Make the colours warmer.".into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(t.anchor.kind, crate::AnchorKind::Artifact);
+        assert_eq!(t.anchor.file, "", "an artifact anchor is on no page");
+        assert_eq!(st.get_thread(&t.id).unwrap().unwrap(), t);
+        let open = st
+            .events_after(before, 10)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.kind == "thread.open")
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_str(&open.body).unwrap();
+        assert_eq!(body["anchor"]["kind"], "artifact");
+        assert_eq!(body["anchor"]["file"], "");
+        st.send_to_agent(DAEMON, &t.id).unwrap();
+        let items = take(&st, &owner, Tier::Piggyback);
+        assert_eq!(items.len(), 1);
+        assert!(items[0].anchor.is_whole());
+        let text = crate::feedback::render_item(&items[0]);
+        assert!(
+            text.contains("\nAnchored on: the whole artifact  (v1)\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn piggyback_delivers_once_and_acknowledges() {
         let (_d, st) = store();
         let owner = session(&st, "claude", "o");

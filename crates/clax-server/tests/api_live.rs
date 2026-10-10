@@ -247,6 +247,25 @@ async fn the_daemons_own_origin_and_other_schemes_are_refused() {
     );
 }
 
+#[tokio::test]
+async fn a_comment_on_the_whole_artifact_is_not_made_on_a_live_page() {
+    let ts = TestServer::spawn().await;
+    let v = ts.viewer(Some("Alex")).await;
+    let form = reqwest::multipart::Form::new()
+        .text("url", "http://localhost:5173/settings")
+        .text("title", "Settings")
+        .text("anchor", json!({"kind": "artifact"}).to_string())
+        .text("body", "Warmer colours")
+        .text("pending", "[]")
+        .text("snapshot", "<p>");
+    let res = post_thread_form(&ts, &v.cookie, form).await;
+    assert_eq!(res.status(), 400);
+    assert_eq!(
+        res.json::<Value>().await.unwrap()["error"]["code"],
+        "invalid_anchor"
+    );
+}
+
 fn urlencode(s: &str) -> String {
     s.bytes()
         .map(|b| {

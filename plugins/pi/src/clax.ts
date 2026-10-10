@@ -456,12 +456,14 @@ const SUMMARY_QUOTE_CHARS = 120;
 const pct = (f: number) => { const p = Math.round(Math.min(1, Math.max(0, f)) * 100); return p === 0 && f > 0 ? "<1%" : `${p}%`; };
 
 /** An anchor's one-line summary, as `clax_core::anchor::Anchor::summary`
- * (the payload's "Anchored on" line): the file and ` › ` when it is not
+ * (the payload's "Anchored on" line): `the whole artifact` for an
+ * `artifact` anchor; otherwise the file and ` › ` when it is not
  * `index.html`, the selector (`custom:<name>`; `area in <selector> (<w>% ×
  * <h>%)` for a drawn area), then two spaces and the quote in «» when there
  * is one; null for an anchor without a kind. */
 function anchorSummary(a: Json): string | null {
   if (!a || typeof a.kind !== "string") return null;
+  if (a.kind === "artifact") return "the whole artifact";
   const sel = typeof a.selector === "string" ? a.selector : "";
   let target = sel;
   if (a.kind === "custom") target = `custom:${typeof a.custom_name === "string" ? a.custom_name : ""}`;

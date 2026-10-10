@@ -8,21 +8,23 @@ export const SEEN_AFTER_MS = 1000;
 
 export type SidebarSections = { open: Thread[]; detached: Thread[]; resolved: Thread[]; numbers: Map<string, number>; file: string | null };
 
-/** Open threads: those on the page shown and found (numbered like the pins),
- * then those on other pages the version holds; Detached: open threads on the
- * page shown and not found, then those on a page the version does not hold;
- * then resolved threads. `file` undefined means the index; null, a document
+/** Open threads: those about the whole artifact (no pin, no number), then
+ * those on the page shown and found (numbered like the pins), then those on
+ * other pages the version holds; Detached: open threads on the page shown
+ * and not found, then those on a page the version does not hold (never one
+ * about the whole artifact, which is on no page); then resolved threads. `file` undefined means the index; null, a document
  * that did not greet. */
 export function sidebarSections(threads: Thread[], resolved: Record<string, AnchorResult>, file: string | null | undefined, holds: (f: string) => boolean = () => true): SidebarSections {
   const page = file === undefined ? INDEX_FILE : file;
-  const open = threads.filter(t => t.status === "open");
+  const whole = threads.filter(t => t.status === "open" && t.anchor.kind === "artifact");
+  const open = threads.filter(t => t.status === "open" && !whole.includes(t));
   const here = open.filter(t => t.anchor.file === page);
   const gone = open.filter(t => !holds(t.anchor.file));
   const detached = [...here.filter(t => resolved[t.id] && !resolved[t.id].found), ...gone.filter(t => !here.includes(t))];
   const attached = here.filter(t => !detached.includes(t));
   const elsewhere = open.filter(t => t.anchor.file !== page && !gone.includes(t));
   return {
-    open: [...attached, ...elsewhere],
+    open: [...whole, ...attached, ...elsewhere],
     detached,
     resolved: threads.filter(t => t.status === "resolved"),
     numbers: new Map(attached.map((t, i) => [t.id, i + 1])),

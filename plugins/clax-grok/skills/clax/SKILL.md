@@ -228,7 +228,9 @@ anchored on any HTML page of the artifact, not only `index.html`; the anchor
 line then starts with that page's path (`about.html › main > h2`). A drawn
 area reads `area in <selector> (<w>% × <h>%)`: the rectangle covers that share
 of the element's width and height (`html` is the whole page), and its clip
-shows exactly the rectangle.
+shows exactly the rectangle. A comment about the whole artifact rather than
+a spot on it reads `Anchored on: the whole artifact` and has no clip; its
+anchor's `kind` is `artifact` and its `file` is empty.
 
 Sent comments reach you in one of these ways:
 

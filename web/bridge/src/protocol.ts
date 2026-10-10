@@ -1,7 +1,9 @@
 // Messages between the shell and the bridge in the content frame. The shell
 // imports these types from here.
 
-export type AnchorKind = "element" | "range" | "custom" | "area";
+/** `artifact`: the whole artifact, no spot on any page (its `file` is ""); the
+ * shell never sends one to the bridge. */
+export type AnchorKind = "element" | "range" | "custom" | "area" | "artifact";
 /** The page an anchor names when it names none, and the index's `file`. */
 export const INDEX_FILE = "index.html";
 export interface AnchorRect { x: number; y: number; w: number; h: number; scrollX: number; scrollY: number; viewportW: number }
@@ -24,7 +26,8 @@ export interface Anchor {
   rect: AnchorRect | null;
   custom_name: string | null;
   area?: AnchorArea;
-  /** The published path of the page the anchor is on (`index.html` for the index). */
+  /** The published path of the page the anchor is on (`index.html` for the
+   * index; "" for an `artifact` anchor, which is on no page). */
   file: string;
   /** A live page's route (`?query#/hash-route`), set by the daemon; absent on artifacts. */
   route?: string;

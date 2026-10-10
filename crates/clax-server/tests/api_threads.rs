@@ -1385,3 +1385,128 @@ async fn every_thread_of_every_artifact_needs_the_token() {
     assert_eq!(threads[0]["id"], first["id"], "oldest first");
     assert_eq!(threads[0]["status"], "resolved");
 }
+
+/// A comment on the whole artifact: created by the owner's browser and by a
+/// LAN viewer under the same rules as any thread, refused from the page
+/// and with a target, sent and delivered with its anchor, then answered and
+/// resolved by the agent.
+#[tokio::test]
+async fn whole_artifact_threads_follow_the_comment_loop() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let (sid, aid) = setup(&ts).await;
+    let form = |anchor: Value, via_page: bool| {
+        let f = reqwest::multipart::Form::new()
+            .text("anchor", anchor.to_string())
+            .text("body", "Make the colours warmer.")
+            .text("version", "1");
+        if via_page {
+            f.text("via_page", "true")
+        } else {
+            f
+        }
+    };
+    let url = format!("{}/api/artifacts/{aid}/threads", ts.base);
+    let whole = json!({"kind": "artifact"});
+    let res = ts
+        .client
+        .post(&url)
+        .header("cookie", ts.owner_cookie())
+        .multipart(form(whole.clone(), false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let t = res.json::<Value>().await.unwrap()["thread"].clone();
+    assert_eq!(t["anchor"]["kind"], "artifact");
+    assert_eq!(t["anchor"]["file"], "", "on no page");
+    assert_eq!(t["anchor"]["selector"], Value::Null);
+    assert_eq!(t["version_n"], 1);
+
+    let (lan, base) = ts.lan();
+    let res = lan
+        .post(format!("{base}/api/artifacts/{aid}/threads"))
+        .multipart(form(json!({"kind": "artifact", "file": ""}), false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201, "a LAN viewer");
+    let lt = res.json::<Value>().await.unwrap()["thread"].clone();
+    assert_eq!(lt["anchor"]["kind"], "artifact");
+    assert_eq!(lt["comments"][0]["author_kind"], "viewer");
+
+    let res = ts
+        .client
+        .post(&url)
+        .header("cookie", ts.owner_cookie())
+        .header("origin", "http://localhost:5173")
+        .multipart(form(whole.clone(), false))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403, "a foreign origin");
+    for (name, anchor, via_page) in [
+        ("from the page", whole.clone(), true),
+        (
+            "with a selector",
+            json!({"kind": "artifact", "selector": "h2"}),
+            false,
+        ),
+        (
+            "on a page",
+            json!({"kind": "artifact", "file": "about.html"}),
+            false,
+        ),
+    ] {
+        let res = ts
+            .client
+            .post(&url)
+            .multipart(form(anchor, via_page))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400, "{name}");
+        assert_eq!(
+            res.json::<Value>().await.unwrap()["error"]["code"],
+            "invalid_anchor",
+            "{name}"
+        );
+    }
+
+    let tid = t["id"].as_str().unwrap();
+    let sent = ts.send_thread(&aid, tid).await;
+    assert_eq!(sent["sent_to_agent"], true);
+    let res = ts
+        .authed(
+            ts.client
+                .get(format!("{}/api/sessions/{sid}/feedback", ts.base)),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let fb: Value = res.json().await.unwrap();
+    let item = &fb["feedback"][0];
+    assert_eq!(item["thread_id"], tid);
+    assert_eq!(item["anchor"]["kind"], "artifact");
+    assert_eq!(item["clip_path"], Value::Null);
+
+    let c = ts
+        .reply_as_agent(&sid, &aid, tid, "Warmed the palette in v2.")
+        .await;
+    assert_eq!(c["author_kind"], "agent");
+    let v: Value = ts
+        .authed(ts.client.post(format!(
+            "{}/api/artifacts/{aid}/threads/{tid}/resolve",
+            ts.base
+        )))
+        .header("x-clax-session", &sid)
+        .json(&json!({"as": "agent"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["thread"]["status"], "resolved");
+    assert_eq!(v["thread"]["resolved_by"], "agent:claude");
+}

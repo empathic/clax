@@ -1058,6 +1058,26 @@ labelled "on <file>", and opening one takes the frame to that page and scrolls
 to the thread. A thread detaches only when its anchor is not found on its own
 page.
 
+A comment can also be about the whole artifact ("make the colours warmer")
+rather than a spot on it. The threads panel opens with a **New comment** box
+for it: pressing it opens the usual composer in the panel, labelled "The
+whole artifact", with no screenshot. Its thread's anchor is `{"kind":
+"artifact"}`: every target field (`selector`, `quote`, `prefix`, `suffix`,
+`html_hash`, `rect`, `custom_name`, `area`, `route`) is null and `file` is
+empty, `""`, since it is on no page. A create may send the anchor without
+`file` (read as `index.html`) or with `file: ""`; the daemon stores `""`.
+An `artifact` anchor with any target field or another `file` is refused
+with `invalid_anchor`, as is one the page wrote (`via_page`, see "The
+`comments` capability") and one posted to `/api/live/threads`. It is
+accepted from the owner's browser and from LAN viewers under the same
+origin, token and name rules as any thread. The thread belongs to the
+version it was written on and carries forward to later versions like any
+other; it has no pin, is never sent to the page to resolve, is never
+Detached, and the sidebar lists it first under Open, without a number.
+Sending, delivery, replies and resolves are as for any thread. Its summary
+(the payload's "Anchored on" line, `comments_read`'s `summary`) is `the
+whole artifact`.
+
 A sent comment goes to one agent or to all of them. The person's Send names
 an agent (the one they last sent to on the artifact, else the most recently
 active live agent receiving its comments, and they can pick another), and
@@ -1300,7 +1320,9 @@ so `resolve(id, false)` and `delete(id)` follow the level rule above.
   `"via_page": true`); the sidebar shows "via the page" on them, `comments_read`
   returns the flag, and the feedback payload marks them. An `@agent` in page
   text is accepted and inert: only `sendToClaude` sends a page comment to the
-  agent.
+  agent. A page's anchor is an element or a range of its own page: the shell
+  refuses any other kind, and the daemon refuses a page-written thread on the
+  whole artifact (`kind: "artifact"` with `via_page`) with `invalid_anchor`.
 - **The viewer's gesture.** Two tiers, both judged by the shell from its own
   trusted events, never from anything the page or the bridge reports.
 
@@ -1669,7 +1691,9 @@ characters followed by `…`. Author names lose control characters, `"` and `:`,
 `comments` capability, as the viewer, has ` (written by the page)` after the
 author's name (`Alex (written by the page): "…"`). A resend says `Comment sent to you
 (resent)`. A thread without a clip says `Clip: none (no screenshot was captured
-for this comment)`. The payload starts with `[clax] N comments sent to
+for this comment)`. A comment on the whole artifact reads `Anchored on: the
+whole artifact  (v3)` and `Clip: none (the comment is about the whole
+artifact)`. The payload starts with `[clax] N comments sent to
 you:` (`1 comment` for one) on its own line, followed by the comments
 separated by blank lines. Tool results carry this text after `---` in a
 second text block; the Stop hook's `reason`, the prompt hook's
@@ -3783,7 +3807,8 @@ ID>`. An artifact URL whose `#` fragment is neither is the artifact.
   and text, cut to 100 characters), whether it is resolved, whether it is
   detached, whether it was sent to the agent and its delivery, and each agent
   working on it now with its message and for how long. Detached means its
-  anchor's page is not in the current version; whether an anchor's element is
+  anchor's page is not in the current version (never for a thread on the
+  whole artifact, which is on no page); whether an anchor's element is
   still found takes the page, which only the browser has. `--json` prints,
   for one artifact, the `comments_read` result shape for it (`artifact_id`,
   `url`, `threads`, `next_cursor` (always null), `note`) plus `title`; with
@@ -4032,7 +4057,7 @@ the body below.
 | `doc.write` | `collection, doc_id, version, op (set\|update\|delete\|str_replace\|acquire), sha256` (`null` for a delete; never content) | `db_*` writes |
 | `doc.move` | `from, to, collection, doc_id, version, sha256` | a private document following a viewer claimed for the owner |
 | `viewer.claim` | `from_public_id, to_public_id` | a claim that retires a public ID; a record naming `from_public_id` resolves to `to_public_id` |
-| `thread.open` | `version_n, anchor{kind, selector, quote, prefix, suffix, html_hash, file, route}, live_path, has_clip, first_comment_id` | a new thread, followed by its first `comment.add` |
+| `thread.open` | `version_n, anchor{kind, selector, quote, prefix, suffix, html_hash, file, route}, live_path, has_clip, first_comment_id` | a new thread, followed by its first `comment.add`; a thread on the whole artifact has `anchor.kind` `artifact` and `anchor.file` `""`, and its step's description reads `Opened thread <ID> about the whole artifact on version <n> of …` |
 | `comment.add` | `comment_id, body, author_kind, author_name, via_harness, via_page` | every comment; a viewer comment that reopens a resolved thread records `comment.add` then `thread.reopen` |
 | `thread.resolve` | `resolved_by, addressed_version (n\|null)` | a resolve of an open thread |
 | `thread.reopen` | none | a reopen of a resolved thread |

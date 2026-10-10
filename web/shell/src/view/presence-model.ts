@@ -1,4 +1,5 @@
 // Presence (spec §10, "Presence"): here or away, and where, if shared.
+import type { Anchor } from "../../../bridge/src/protocol";
 import type { Participants } from "../api";
 import { relativeTime } from "../format";
 import { anchorLabel } from "../threads";
@@ -8,11 +9,15 @@ export type PresenceView = { public_id: string; display_name: string | null; sta
 export const AWAY_AFTER_MS = 5 * 60_000;
 export const stateFor = (visible: boolean, idleMs: number): "here" | "away" => (visible && idleMs < AWAY_AFTER_MS ? "here" : "away");
 
+// A thread about the whole artifact (`whole-comment.ts`, which this module
+// does not import so that it stays in the threads panel's chunk).
+const labelOf = (a: Anchor): string => (a.kind === "artifact" ? "The whole artifact" : anchorLabel(a));
+
 /** Where this viewer is looking: the thread they selected, else the anchor they are writing on. */
 export function whereLabel(s: ViewState): string | null {
   const t = s.threads.find(x => x.id === s.selected);
-  if (t) return anchorLabel(t.anchor);
-  return s.draft?.anchor ? anchorLabel(s.draft.anchor) : null;
+  if (t) return labelOf(t.anchor);
+  return s.draft?.anchor ? labelOf(s.draft.anchor) : null;
 }
 
 export function personLine(p: PresenceView, now: Date): string {

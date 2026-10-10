@@ -87,6 +87,10 @@
      * mounted, dispatches `clax-questions-slot` from it (bubbling), for the
      * question module to fill. */
     questions?: Snippet;
+    /** The New comment box at the top: a comment on the whole artifact, on
+     * `version`, posted by `onPost`. Without it the panel has no box (the
+     * extension's side panel). */
+    compose?: { version: number; onPost(body: string): Promise<unknown> };
   };
   let p: Props = $props();
   // Each second while a waiting label counts; otherwise often enough for "N min ago".
@@ -187,6 +191,13 @@
 
 <aside class="sidebar" aria-label="Comment threads" bind:this={aside}>
   {#if p.questions}{@render p.questions()}{:else}<div class="questions-slot"></div>{/if}
+  <!-- Below the questions for the viewer, above every thread. -->
+  {#if p.compose}
+    {@const c = p.compose}
+    {#await import("./NewComment.svelte") then { default: NewComment }}
+      <NewComment version={c.version} onPost={c.onPost} />
+    {/await}
+  {/if}
   {#each newestFirst(p.working ?? []) as w (w.key)}
     {#await import("./WorkingStrip.svelte") then { default: WorkingStrip }}
       <WorkingStrip {w} text={stripText(w, agentsByHandle, s.numbers, new Set(p.mine ?? []))} commenting={p.commenting ?? false} />

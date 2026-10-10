@@ -266,7 +266,8 @@ pub(crate) fn announce_new_thread(
 /// optional `via_page` (`true` when the page wrote the comment through the
 /// `comments` capability: the comment is marked so, and an `@agent` mention in
 /// it sends nothing). A clip that fails `clip_problem` is dropped and reported
-/// as `clip_error`.
+/// as `clip_error`. An `artifact` anchor (the whole artifact) with `via_page`
+/// is refused (`invalid_anchor`): a page anchors on itself.
 /// A request with a foreign `Origin` is refused ([`SameOrigin`]).
 /// 409 `merged_away` for a live page a join merged into another (spec
 /// §7.2): its threads are the other page's now, so a new one goes there.
@@ -378,6 +379,12 @@ pub async fn create(
         ApiError::bad_request("invalid_anchor", "multipart field 'anchor' is required")
     })?)
     .map_err(|e| ApiError::bad_request("invalid_anchor", e.to_string()))?;
+    if via_page && anchor.is_whole() {
+        return Err(ApiError::bad_request(
+            "invalid_anchor",
+            "a page's comment points at the page; a comment on the whole artifact is the viewer's own",
+        ));
+    }
     let version_n: u32 = version
         .as_deref()
         .unwrap_or("")
