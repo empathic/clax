@@ -4,10 +4,13 @@ import type { Thread } from "../threads";
 import { ThreadSync } from "./thread-sync";
 
 let on: ((e: StreamEvent) => void) | null = null;
+/** The callers the module asked the page's stream to reopen as. */
+const reopens: (string | undefined)[] = [];
 vi.mock("../stream", () => ({
-  pageStream: () => ({ watch: (_t: string[], f: (e: StreamEvent) => void) => { on = f; return () => { on = null; }; }, reconnect: () => {} }),
+  pageStream: () => ({ watch: (_t: string[], f: (e: StreamEvent) => void) => { on = f; return () => { on = null; }; }, reconnect: (c?: string) => { reopens.push(c); } }),
 }));
 const { ArtifactStream } = await import("./artifact-stream");
+const { getToken } = await import("../api");
 
 const A = "7q3k9mzx2b4t";
 const comment = (id: string) => ({ id, thread_id: "t1", author_kind: "viewer", author_name: "V", via_harness: null, body: id, created_at: "x" });
@@ -17,8 +20,7 @@ const delta = (status: "open" | "resolved", count: number, last: string) =>
 let answers: ((t: unknown) => void)[] = [];
 beforeEach(() => {
   answers = [];
-  // The viewer lookup (the stream notes the caller it opens as) answers at
-  // once; each thread fetch waits for the test.
+  // The token and viewer lookups answer at once; each thread fetch waits for the test.
   vi.stubGlobal("fetch", vi.fn((url: string) => url === "/api/token" ? Promise.resolve(new Response(JSON.stringify({ token: "tk" })))
     : url === "/api/viewers/me" ? Promise.resolve(new Response(JSON.stringify({ viewer: { public_id: "u_1", display_name: null, created_at: "x" } })))
     : new Promise(resolve => {
@@ -28,6 +30,21 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("the artifact stream", () => {
+  it("asks for the owner's stream when a token request succeeds after a failed one", async () => {
+    reopens.length = 0;
+    let fail = true;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url !== "/api/token") throw new Error(`unexpected ${url}`);
+      return fail ? new Response("{}", { status: 500 }) : new Response(JSON.stringify({ token: "tk" }));
+    }));
+    expect(await getToken()).toBeNull();
+    expect(reopens).toEqual([]);
+    fail = false;
+    expect(await getToken()).toBe("tk");
+    expect(reopens).toEqual(["admin"]);
+  });
+
+
   it("a thread fetched whole never undoes a delta that arrived while it was in flight", async () => {
     let threads: Thread[] = [];
     const sync = new ThreadSync(f => { threads = f(threads); });
