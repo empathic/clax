@@ -100,7 +100,23 @@ pub fn token_form(display_name: &str) -> String {
     use icu_normalizer::DecomposingNormalizerBorrowed;
     use icu_properties::props::{DefaultIgnorableCodePoint, GeneralCategory};
     use icu_properties::{CodePointMapData, CodePointSetData};
-    let lower = display_name.to_lowercase();
+    // Spaces narrower than U+0020 read as no space at UI sizes (`Al ex`
+    // with a hair space reads "Alex"), so they are dropped, before NFKD
+    // turns them into ordinary spaces: the six-per-em (U+2006),
+    // punctuation (U+2008), thin (U+2009), hair (U+200A), narrow no-break
+    // (U+202F) and medium mathematical (U+205F) spaces. The four-per-em
+    // space (U+2005) and wider ones are about a space's width and stay
+    // spaces.
+    let lower: String = display_name
+        .to_lowercase()
+        .chars()
+        .filter(|c| {
+            !matches!(
+                c,
+                '\u{2006}' | '\u{2008}'..='\u{200A}' | '\u{202F}' | '\u{205F}'
+            )
+        })
+        .collect();
     let decomposed = DecomposingNormalizerBorrowed::new_nfkd().normalize(&lower);
     let gc = CodePointMapData::<GeneralCategory>::new();
     let ignorable = CodePointSetData::new::<DefaultIgnorableCodePoint>();
@@ -464,6 +480,12 @@ mod tests {
             "Alex\u{E0041}",
             "Al\u{034F}ex",
             "A\u{200F}lex",
+            "Al\u{200A}ex",
+            "Al\u{2009}ex",
+            "Al\u{202F}ex",
+            "A\u{2006}lex",
+            "Al\u{2008}ex",
+            "Al\u{205F}ex",
         ] {
             assert!(look_alike(same, "Alex"), "{same:?}");
         }
@@ -473,6 +495,11 @@ mod tests {
         );
         assert!(look_alike("\u{0405}\u{0430}m", "Sam"));
         assert!(look_alike("MIA  KOVAC", "Mia Kovač"));
+        assert!(!look_alike("Al ex", "Alex"), "an ordinary space is a space");
+        assert!(
+            look_alike("Mia\u{2005}Kovač", "Mia Kovač"),
+            "a four-per-em space is a space"
+        );
         for other in [
             "Alexa",
             "Alix",
