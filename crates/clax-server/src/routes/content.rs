@@ -118,11 +118,13 @@ pub async fn redirect_to_slash(
 
 pub async fn index(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    d: crate::agent::DeniedToGrants,
     origin: Option<Extension<OnArtifactOrigin>>,
     req: HeaderMap,
     p: Result<Path<(String, u32)>, PathRejection>,
 ) -> Result<Response, ApiError> {
+    // A version's page serves browsers (spec §7.5): agents read its files through the routes the filter covers.
+    d.refuse_agents()?;
     let (aid, n) = path(p)?;
     let id = parse_id(&aid)?;
     let own = own_host(&s);
@@ -203,11 +205,13 @@ async fn lookup(
 /// is not UTF-8, which is revalidated like every page.
 pub async fn file(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    d: crate::agent::DeniedToGrants,
     origin: Option<Extension<OnArtifactOrigin>>,
     req: HeaderMap,
     p: Result<Path<(String, u32, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
+    // A version's file serves browsers (spec §7.5): agents read it through the routes the filter covers.
+    d.refuse_agents()?;
     let (aid, n, rel) = path(p)?;
     let id = parse_id(&aid)?;
     if rel == INDEX {

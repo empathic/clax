@@ -28,7 +28,10 @@ pub struct Out {
     pub text: String,
 }
 
-/// The `clax` binary: `CLAX_TEST_BIN`, else built once per test process.
+/// The `clax` binary: `CLAX_TEST_BIN`, else a copy of this build's kept by
+/// content (`scripts/stable-bin.sh`), never `target/debug/clax` run in place
+/// (macOS assesses each new executable, and a build would replace it under
+/// a run).
 pub fn clax_bin() -> PathBuf {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {
@@ -45,7 +48,29 @@ pub fn clax_bin() -> PathBuf {
             .expect("run cargo build");
         assert!(status.success(), "cargo build -p clax-cli failed");
         let exe = std::env::current_exe().unwrap();
-        exe.parent().unwrap().parent().unwrap().join("clax")
+        let built = exe.parent().unwrap().parent().unwrap().join("clax");
+        let store = built
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("clax-bin/debug");
+        let out = std::process::Command::new(workspace.join("scripts/stable-bin.sh"))
+            .arg(&built)
+            .arg(&store)
+            .output()
+            .expect("run scripts/stable-bin.sh");
+        assert!(
+            out.status.success(),
+            "stable-bin.sh: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let kept = PathBuf::from(String::from_utf8(out.stdout).unwrap().trim());
+        if kept.is_absolute() {
+            kept
+        } else {
+            workspace.join(kept)
+        }
     })
     .clone()
 }
@@ -147,7 +172,8 @@ impl<'a> RealClients<'a> {
         self.run(self.command(&clax_bin(), args, env), "").await
     }
 
-    /// Every channel, each driven through its real client.
+    /// Every channel but Pi's ([`RealClients::pi`]), each driven through
+    /// its real client.
     pub async fn run_every_channel(&self) -> Vec<Out> {
         // The notices first: the hooks hand the feedback over after them.
         let mut out = vec![self.follow().await];
@@ -156,7 +182,6 @@ impl<'a> RealClients<'a> {
         out.push(self.mcp_http().await);
         out.extend(self.cli_under_harnesses().await);
         out.extend(self.slash_command_context().await);
-        out.push(self.pi().await);
         out
     }
 
@@ -284,12 +309,53 @@ impl<'a> RealClients<'a> {
     }
 
     /// The plain `clax` binary, no wrapper, under each harness's shell
-    /// variables: `clax list --json` and `clax comments`.
+    /// variables: every command that reads what an agent sees (the list,
+    /// comments, `read` of each file kind, versions, the page database,
+    /// status), and an asset upload, whose answer an agent reads too.
     pub async fn cli_under_harnesses(&self) -> Vec<Out> {
+        let aid = self.w.read.artifact.clone();
+        let scratch = self.w.scratch.artifact.clone();
+        let upload = self.scratch.path().join("upload.txt");
+        std::fs::write(&upload, "an upload").unwrap();
+        let upload = upload.to_str().unwrap().to_string();
+        let commands: Vec<Vec<String>> = [
+            vec!["--json", "list"],
+            vec!["comments", "--all"],
+            vec!["comments", &aid],
+            vec!["--json", "read", &aid],
+            vec![
+                "--json",
+                "read",
+                &aid,
+                "--version",
+                "1",
+                "--path",
+                "MIACANARYfilename.html",
+            ],
+            vec![
+                "--json",
+                "read",
+                &aid,
+                "--version",
+                "2",
+                "--path",
+                "MIACANARYcarried.css",
+            ],
+            vec!["--json", "versions", &aid],
+            vec!["--json", "db", "list", &aid, "notes"],
+            vec!["--json", "db", "get", &aid, "notes", "MIACANARYdocpath"],
+            vec!["--json", "db", "query", &aid, "notes"],
+            vec!["--json", "status"],
+            vec!["--json", "asset", "upload", &scratch, &upload],
+        ]
+        .into_iter()
+        .map(|c| c.into_iter().map(str::to_string).collect())
+        .collect();
         let mut out = Vec::new();
         for (k, v) in HARNESS_ENVS {
-            for args in [&["--json", "list"][..], &["comments", "--all"][..]] {
-                let (text, _) = self.clax(args, &[(k, v)]).await;
+            for args in &commands {
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                let (text, _) = self.clax(&args, &[(k, v)]).await;
                 out.push(Out {
                     channel: format!("{k}={v} clax {}", args.join(" ")),
                     text,

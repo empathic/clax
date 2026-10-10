@@ -118,10 +118,12 @@ pub async fn delete(
 /// may not see live pages ([`SeesLive`]), as a missing one does.
 pub async fn blob(
     State(s): State<AppState>,
-    _d: DeniedToGrants,
+    d: DeniedToGrants,
     sees: SeesLive,
     asset_id: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
+    // An asset's bytes serve browsers (spec §7.5): agents read through the routes the filter covers.
+    d.refuse_agents()?;
     let asset_id = path(asset_id)?;
     let (asset, path) = s
         .store_call(move |st| st.get_asset(&asset_id)?.ok_or(CoreError::NotFound))

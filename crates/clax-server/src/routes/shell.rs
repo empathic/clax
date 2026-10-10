@@ -178,11 +178,14 @@ pub async fn gallery_page(
 /// bytes sent, so a revalidation answers `304` only for the same bytes.
 pub async fn artifact_page(
     axum::extract::State(s): axum::extract::State<crate::state::AppState>,
-    _d: crate::agent::DeniedToGrants,
+    d: crate::agent::DeniedToGrants,
     uri: axum::http::Uri,
     extensions: axum::http::Extensions,
     req: HeaderMap,
 ) -> Result<Response, ApiError> {
+    // The page embeds the artifact, its versions and threads for the browser
+    // (spec §7.5): agents read them through the routes the filter covers.
+    d.refuse_agents()?;
     let route = crate::shell_route::parse_shell_path(uri.path());
     if matches!(route, crate::shell_route::ShellRoute::Gallery) {
         return entry(&req, "index.html");

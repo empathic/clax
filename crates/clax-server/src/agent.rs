@@ -557,6 +557,13 @@ impl<N: Need> Agent<N> {
         }
     }
 
+    /// The request carried the daemon token (the owner by hand or the
+    /// owner's agent): what the daemon shows only to them, such as session
+    /// IDs and clip paths. An owner browser's cookie alone does not count.
+    pub fn holds_token(&self) -> bool {
+        self.token
+    }
+
     /// The grant of a person's agent; `None` for every other caller.
     pub fn grant(&self) -> Option<&str> {
         match &self.caller {
