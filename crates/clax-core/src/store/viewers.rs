@@ -18,20 +18,23 @@ pub const MAX_NAME_CHARS: usize = 60;
 /// not found by that search.
 pub const MAX_SEARCH_SCAN: usize = 10_000;
 
-const VIEWER_SELECT: &str = "SELECT id, public_id, display_name, created_at FROM viewers";
+const VIEWER_SELECT: &str =
+    "SELECT id, public_id, display_name, created_at, person, person_revoked_at FROM viewers";
 
-fn row_to_viewer(r: &rusqlite::Row<'_>) -> rusqlite::Result<Viewer> {
+pub(super) fn row_to_viewer(r: &rusqlite::Row<'_>) -> rusqlite::Result<Viewer> {
     Ok(Viewer {
         id: r.get(0)?,
         public_id: r.get(1)?,
         display_name: r.get(2)?,
         created_at: r.get(3)?,
+        person: r.get(4)?,
+        person_revoked_at: r.get(5)?,
     })
 }
 
 /// Checks a display name: at most [`MAX_NAME_CHARS`] characters, no control
 /// characters. Returns it trimmed, `None` for an empty one.
-fn checked_name(name: &str) -> Result<Option<&str>> {
+pub(super) fn checked_name(name: &str) -> Result<Option<&str>> {
     let n = name.trim();
     if n.chars().any(char::is_control) || n.chars().count() > MAX_NAME_CHARS {
         return Err(CoreError::invalid(
@@ -136,9 +139,10 @@ pub enum Claim {
 
 fn owner_row(c: &rusqlite::Connection) -> rusqlite::Result<Option<(Viewer, bool)>> {
     c.query_row(
-        "SELECT id, public_id, display_name, created_at, claimed FROM viewers WHERE owner = 1",
+        "SELECT id, public_id, display_name, created_at, person, person_revoked_at, claimed
+         FROM viewers WHERE owner = 1",
         [],
-        |r| Ok((row_to_viewer(r)?, r.get::<_, bool>(4)?)),
+        |r| Ok((row_to_viewer(r)?, r.get::<_, bool>(6)?)),
     )
     .optional()
 }
@@ -146,9 +150,11 @@ fn owner_row(c: &rusqlite::Connection) -> rusqlite::Result<Option<(Viewer, bool)
 /// Moves `from`'s history to `into` and deletes `from`: its comments'
 /// author, its mentions, the threads it resolved, its seen marks (the higher
 /// of the two, pruned to [`crate::changelog::MAX_SEEN_PER_VIEWER`]), its
-/// looked-at marks (the later), and its private documents
+/// looked-at marks (the later), its private documents
 /// (`data/users/<from>/...` move under `data/users/<into>/` with a new
-/// version; one whose destination exists stays where it is).
+/// version; one whose destination exists stays where it is), its
+/// authorship as a person (`person` and `page_person` columns, which
+/// become NULL when `into` is the owner), and its invites and grants.
 fn fold(
     st: &Store,
     ctx: &AuditCtx,
@@ -157,6 +163,30 @@ fn fold(
     into: &Viewer,
 ) -> Result<()> {
     let (old, new) = (from.public_id.as_str(), into.public_id.as_str());
+    let into_owner: bool = tx.query_row(
+        "SELECT owner FROM viewers WHERE id = ?1",
+        params![into.id],
+        |r| r.get(0),
+    )?;
+    let person = (!into_owner).then_some(new);
+    for (table, column) in [
+        ("sessions", "person"),
+        ("artifacts", "person"),
+        ("versions", "person"),
+        ("versions", "page_person"),
+        ("assets", "person"),
+    ] {
+        tx.execute(
+            &format!("UPDATE {table} SET {column} = ?2 WHERE {column} = ?1"),
+            params![old, person],
+        )?;
+    }
+    for table in ["invites", "grants"] {
+        tx.execute(
+            &format!("UPDATE {table} SET viewer_id = ?2 WHERE viewer_id = ?1"),
+            params![from.id, into.id],
+        )?;
+    }
     tx.execute(
         "UPDATE comments SET author_public_id = ?2 WHERE author_public_id = ?1",
         params![old, new],
@@ -280,7 +310,7 @@ fn move_private_docs(
 
 /// Gives viewer row `id` a fresh private ID (its cookie value), so a cookie
 /// that named it before names nothing from now on; its seen and looked-at
-/// marks follow it. Returns the new ID.
+/// marks, invites and grants follow it. Returns the new ID.
 fn rotate_id(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<String> {
     let fresh = crate::new_ulid();
     // The marks reference the row; the checks run at commit, once all three moved.
@@ -297,6 +327,12 @@ fn rotate_id(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<String> {
         "UPDATE viewer_threads SET viewer_id = ?2 WHERE viewer_id = ?1",
         params![id, fresh],
     )?;
+    for table in ["invites", "grants"] {
+        tx.execute(
+            &format!("UPDATE {table} SET viewer_id = ?2 WHERE viewer_id = ?1"),
+            params![id, fresh],
+        )?;
+    }
     Ok(fresh)
 }
 
@@ -353,8 +389,9 @@ impl Store {
     /// Claims the viewer behind `cookie` for the owner, on the shell's token
     /// request (an owner credential, so the cookie's browser is the owner's).
     /// Only a viewer the daemon minted for a request from this machine
-    /// qualifies: a cookie another page planted, a LAN viewer's, or one from
-    /// before such origins were recorded claims nothing.
+    /// qualifies: a cookie another page planted, a LAN viewer's, one from
+    /// before such origins were recorded, or a connected person's (revoked
+    /// or not) claims nothing.
     ///
     /// With no owner yet, or one that holds no browser's identity (made for
     /// the CLI), the viewer becomes the owner, keeping its public ID, name
@@ -380,7 +417,9 @@ impl Store {
         self.with_tx(|tx| {
             let Some(legacy) = tx
                 .query_row(
-                    &format!("{VIEWER_SELECT} WHERE id = ?1 AND owner = 0 AND minted_local = 1"),
+                    &format!(
+                        "{VIEWER_SELECT} WHERE id = ?1 AND owner = 0 AND minted_local = 1 AND person = 0"
+                    ),
                     params![cookie],
                     row_to_viewer,
                 )

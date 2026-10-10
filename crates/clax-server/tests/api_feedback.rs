@@ -274,7 +274,7 @@ async fn long_poll_is_exempt_from_the_request_timeout() {
                 cwd: "/tmp/p".into(),
                 pid: None,
                 parent_pid: None,
-                transcript_path: None,
+                ..Default::default()
             },
         )
         .unwrap()

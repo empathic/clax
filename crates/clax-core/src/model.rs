@@ -86,6 +86,18 @@ pub struct Session {
     pub ended_at: Option<String>,
     /// The opaque name viewers see for this session; never its ID.
     pub agent_handle: String,
+    /// The grant it registered under; `None` for the daemon token's sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_id: Option<String>,
+    /// Its person's public ID; `None` for the owner's agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub person: Option<String>,
+    /// Its agent name (spec §11), unique among live sessions ignoring case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Who gave the name: `derived`, `agent` or `person`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_source: Option<String>,
 }
 
 pub const CONTRACT_VERSION: &str = "0.2.61";
@@ -149,6 +161,12 @@ pub struct Viewer {
     pub public_id: String,
     pub display_name: Option<String>,
     pub created_at: String,
+    /// A connected person (spec M1): a viewer with, or that had, a grant.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub person: bool,
+    /// When the person was revoked; they are a plain viewer from then on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub person_revoked_at: Option<String>,
 }
 
 /// One feedback row: a viewer comment addressed to one target session (or to

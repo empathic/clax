@@ -125,6 +125,19 @@ impl Store {
         content_type: &str,
         bytes: &[u8],
     ) -> Result<Asset> {
+        self.add_asset_by(ctx, id, content_type, bytes, None)
+    }
+
+    /// [`Store::add_asset`] for an uploader: `person` is their person's
+    /// public ID, `None` for the owner.
+    pub fn add_asset_by(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        content_type: &str,
+        bytes: &[u8],
+        person: Option<&str>,
+    ) -> Result<Asset> {
         if !is_supported(content_type) {
             return Err(CoreError::invalid(
                 "unsupported_type",
@@ -157,8 +170,8 @@ impl Store {
         }
         let rec = upload_record(&asset, Some(&sha256_hex(bytes)));
         let inserted = self.with_tx(|c| {
-            c.execute("INSERT INTO assets (id, artifact_id, content_type, size, ext, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![asset.id, asset.artifact_id, asset.content_type, asset.size as i64, asset.ext, asset.created_at])?;
+            c.execute("INSERT INTO assets (id, artifact_id, content_type, size, ext, created_at, person) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![asset.id, asset.artifact_id, asset.content_type, asset.size as i64, asset.ext, asset.created_at, person])?;
             self.record_audit(c, ctx, rec)?;
             Ok(())
         });

@@ -22,6 +22,7 @@ pub mod publish;
 pub mod questions;
 pub mod rights;
 pub mod room;
+pub mod secret;
 pub mod store;
 pub mod toolpath;
 pub mod working;
@@ -62,10 +63,11 @@ pub use ids::{
     ArtifactId, is_agent_handle, is_public_id, is_ulid, new_agent_handle, new_public_id, new_ulid,
 };
 pub use publish::html_title;
+pub use secret::Secret;
 pub use store::Store;
 pub use store::artifacts::{CorruptRow, MetaPatch};
 pub use store::attention::{AgentView, Attention, AttentionSummary, Participants, Person};
 pub use store::audit::AuditRow;
 pub use store::feedback::{SendTarget, TakeFeedback};
-pub use store::sessions::{EndedSession, Reaped, RegisterSession};
+pub use store::sessions::{EndReason, EndedSession, JoinSession, Reaped, RegisterSession};
 pub use store::threads::{NewComment, NewThread, ThreadExtras};
