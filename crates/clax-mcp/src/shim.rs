@@ -45,7 +45,9 @@ impl Harness {
 /// `CLAUDE_PROJECT_DIR` under Claude Code, else `current_dir`; under Codex it
 /// is `parent_cwd`, else empty, because Codex starts the shim in the plugin's
 /// own directory; under Grok it is `current_dir`, because Grok starts servers
-/// in its own working directory. Empty variables count as unset.
+/// in its own working directory. Empty variables count as unset. The
+/// repository and branch that working directory is in name the agent
+/// (spec 2026-10-08 §11), read from the files with no `git` process.
 pub fn registration(
     harness: Harness,
     env: impl Fn(&str) -> Option<String>,
@@ -66,6 +68,10 @@ pub fn registration(
         Harness::Codex => parent_cwd,
         Harness::Grok => current_dir,
     };
+    let (repo, branch) = dir
+        .as_deref()
+        .map(clax_core::names::repo_and_branch)
+        .unwrap_or_default();
     let cwd = dir
         .map(|d| d.to_string_lossy().into_owned())
         .unwrap_or_default();
@@ -75,6 +81,8 @@ pub fn registration(
         cwd,
         pid: Some(pid),
         parent_pid: Some(parent_pid),
+        repo,
+        branch,
         ..Default::default()
     }
 }
@@ -438,6 +446,29 @@ mod tests {
         assert_eq!(r.harness, "codex");
         assert_eq!(r.harness_session_id, None);
         assert_eq!(r.cwd, "/work");
+    }
+
+    #[test]
+    fn the_registration_names_the_repository_and_branch_of_the_working_directory() {
+        let d = tempfile::tempdir().unwrap();
+        let repo = d.path().join("web");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/fix/axis\n").unwrap();
+        let r = registration(
+            Harness::Claude,
+            env(&[("CLAUDE_PROJECT_DIR", repo.join("src").to_str().unwrap())]),
+            None,
+            None,
+            10,
+            9,
+        );
+        assert_eq!(
+            (r.repo.as_deref(), r.branch.as_deref()),
+            (Some("web"), Some("fix/axis"))
+        );
+        let none = registration(Harness::Codex, env(&[]), None, None, 10, 9);
+        assert_eq!((none.repo, none.branch), (None, None));
     }
 
     #[test]

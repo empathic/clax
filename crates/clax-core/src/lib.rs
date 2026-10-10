@@ -16,6 +16,7 @@ pub mod ids;
 pub mod live;
 pub mod mentions;
 pub mod model;
+pub mod names;
 pub mod perf;
 pub mod presence;
 pub mod publish;
@@ -71,5 +72,7 @@ pub use store::artifacts::{CorruptRow, MetaPatch};
 pub use store::attention::{AgentView, Attention, AttentionSummary, Participants, Person};
 pub use store::audit::AuditRow;
 pub use store::feedback::{SendTarget, TakeFeedback};
-pub use store::sessions::{EndReason, EndedSession, JoinSession, Reaped, RegisterSession};
+pub use store::sessions::{
+    EndReason, EndedSession, JoinSession, NameSource, Reaped, RegisterSession,
+};
 pub use store::threads::{NewComment, NewThread, ThreadExtras};

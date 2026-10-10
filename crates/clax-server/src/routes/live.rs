@@ -458,7 +458,21 @@ pub async fn thread(
                 }
                 (None, None) => return Err(CoreError::NotFound),
             };
-            let view = announce_new_thread(st, &ctx, &audit, thread, mention, with_path)?;
+            let named = thread
+                .comments
+                .first()
+                .map(|c| c.body.clone())
+                .unwrap_or_default();
+            let (view, _) = announce_new_thread(
+                st,
+                &ctx,
+                &audit,
+                thread,
+                mention,
+                Some(&named),
+                true,
+                with_path,
+            )?;
             let page = st.live_page_of(&id)?.ok_or(CoreError::NotFound)?;
             Ok(Answer {
                 made: true,

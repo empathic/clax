@@ -12,6 +12,7 @@ use super::sessions::EndReason;
 use super::viewers::{checked_name, row_to_viewer};
 use crate::audit::AuditCtx;
 use crate::model::Viewer;
+use crate::names::token_form;
 use crate::rights::Rights;
 use crate::secret::{self, Secret, constant_time_eq, sha256_hex};
 use crate::{CoreError, Result, new_public_id, new_ulid};
@@ -343,63 +344,15 @@ fn new_grant_id() -> String {
     out
 }
 
-/// A display name's token form (spec §11): lowercase, Latin diacritics
-/// removed, each run of whitespace as `-`.
-pub fn name_token(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    let mut space = false;
-    for c in name.trim().chars() {
-        if c.is_whitespace() {
-            space = true;
-            continue;
-        }
-        if space {
-            out.push('-');
-            space = false;
-        }
-        for l in c.to_lowercase() {
-            out.push(fold_diacritic(l));
-        }
-    }
-    out
-}
-
-fn fold_diacritic(c: char) -> char {
-    const FOLDS: &[(&str, char)] = &[
-        ("àáâãäåāăą", 'a'),
-        ("çćĉċč", 'c'),
-        ("ďđ", 'd'),
-        ("èéêëēĕėęě", 'e'),
-        ("ĝğġģ", 'g'),
-        ("ĥħ", 'h'),
-        ("ìíîïĩīĭįı", 'i'),
-        ("ĵ", 'j'),
-        ("ķ", 'k'),
-        ("ĺļľŀł", 'l'),
-        ("ñńņňŉ", 'n'),
-        ("òóôõöøōŏő", 'o'),
-        ("ŕŗř", 'r'),
-        ("śŝşšș", 's'),
-        ("ţťŧț", 't'),
-        ("ùúûüũūŭůűų", 'u'),
-        ("ŵ", 'w'),
-        ("ýÿŷ", 'y'),
-        ("źżž", 'z'),
-    ];
-    FOLDS
-        .iter()
-        .find(|(from, _)| from.contains(c))
-        .map_or(c, |&(_, to)| to)
-}
-
 /// Checks `name` for a person (spec §11): a valid, non-empty display name
-/// whose token form is neither the owner's nor another connected person's
-/// (other than viewer `except`) nor a live agent's name. Returns it trimmed.
+/// whose token form ([`crate::names::token_form`]) is neither the owner's
+/// nor another connected person's (other than viewer `except`) nor a live
+/// agent's name. Returns it trimmed.
 fn check_person_name(tx: &Transaction<'_>, name: &str, except: Option<&str>) -> Result<String> {
     let Some(name) = checked_name(name)? else {
         return Err(CoreError::invalid("invalid_name", "a person needs a name"));
     };
-    let form = name_token(name);
+    let form = token_form(name);
     let taken = || CoreError::invalid("name_taken", format!("the name '{name}' is taken"));
     let mut stmt = tx.prepare(
         "SELECT display_name FROM viewers WHERE display_name IS NOT NULL
@@ -407,7 +360,7 @@ fn check_person_name(tx: &Transaction<'_>, name: &str, except: Option<&str>) -> 
     )?;
     let names = stmt.query_map(params![except], |r| r.get::<_, String>(0))?;
     for other in names {
-        if name_token(&other?) == form {
+        if token_form(&other?) == form {
             return Err(taken());
         }
     }
@@ -2418,7 +2371,6 @@ pub(crate) mod tests {
 
     #[test]
     fn name_tokens_fold_case_diacritics_and_spaces() {
-        assert_eq!(name_token("  Zoë  Ångström "), "zoe-angstrom");
         let (_d, _c, st) = store();
         st.create_invite(InvitePerson::New("Zoë Ångström".into()), None)
             .unwrap();

@@ -407,3 +407,297 @@ async fn an_empty_harness_session_id_is_no_id() {
     assert_eq!(b["harness_session_id"], Value::Null);
     assert_ne!(a["id"], b["id"], "two harness processes are two sessions");
 }
+
+async fn patch(ts: &TestServer, id: &str, body: Value) -> (u16, Value) {
+    let res = ts
+        .authed(ts.client.patch(format!("{}/api/sessions/{id}", ts.base)))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    (res.status().as_u16(), res.json().await.unwrap())
+}
+
+/// `PUT /api/agents/<handle>` `{name}` with `with` adding the credential.
+async fn rename(
+    ts: &TestServer,
+    handle: &str,
+    name: &str,
+    with: impl FnOnce(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
+) -> (u16, Value) {
+    let res = with(ts.client.put(format!("{}/api/agents/{handle}", ts.base)))
+        .json(&json!({"name": name}))
+        .send()
+        .await
+        .unwrap();
+    let status = res.status().as_u16();
+    (status, res.json().await.unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn registration_returns_a_name() {
+    let ts = TestServer::spawn().await;
+    let s = register(
+        &ts,
+        json!({"harness": "claude", "harness_session_id": "h1", "cwd": "/w/web",
+               "repo": "web", "branch": "feature/Chart Axis"}),
+    )
+    .await;
+    assert_eq!(
+        (&s["name"], &s["name_source"]),
+        (&json!("web-chart-axis"), &json!("derived"))
+    );
+    let main = register(
+        &ts,
+        json!({"harness": "codex", "harness_session_id": "h2", "cwd": "/w", "repo": "web", "branch": "main"}),
+    )
+    .await;
+    assert_eq!(main["name"], "web");
+    let again = register(
+        &ts,
+        json!({"harness": "pi", "harness_session_id": "h3", "cwd": "/w", "repo": "web"}),
+    )
+    .await;
+    assert_eq!(again["name"], "web-pi");
+    let bare = register(
+        &ts,
+        json!({"harness": "grok", "harness_session_id": "h4", "cwd": "/w"}),
+    )
+    .await;
+    assert_eq!(bare["name"], "grok");
+    let listed: Value = ts
+        .get_authed("/api/sessions?live=true")
+        .await
+        .json()
+        .await
+        .unwrap();
+    let mut names: Vec<&str> = listed["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["grok", "web", "web-chart-axis", "web-pi"]);
+}
+
+#[tokio::test]
+async fn patch_sets_the_agents_own_name() {
+    // On the LAN, so a person can be invited.
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let a = ts.register_session("claude", "h1").await;
+    let b = ts.register_session("codex", "h2").await;
+    let (aid, bid) = (a["id"].as_str().unwrap(), b["id"].as_str().unwrap());
+    let (st, v) = patch(&ts, aid, json!({"name": "Fix-Chart-Axis"})).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(
+        (&v["session"]["name"], &v["session"]["name_source"]),
+        (&json!("fix-chart-axis"), &json!("agent"))
+    );
+    assert_eq!(
+        v["session"]["ended_at"],
+        Value::Null,
+        "naming does not end it"
+    );
+    let (st, v) = patch(&ts, bid, json!({"name": "FIX-chart-axis"})).await;
+    assert_eq!(
+        (st, v["error"]["code"].as_str()),
+        (409, Some("name_taken")),
+        "{v}"
+    );
+    for bad in [
+        "fix chart",
+        "-x",
+        "ünï",
+        "",
+        "agent",
+        "Everyone",
+        &"x".repeat(33),
+    ] {
+        let (st, v) = patch(&ts, bid, json!({"name": bad})).await;
+        assert_eq!(
+            (st, v["error"]["code"].as_str()),
+            (400, Some("invalid_name")),
+            "{bad:?}: {v}"
+        );
+    }
+    let (st, v) = patch(&ts, bid, json!({"name": 7})).await;
+    assert_eq!(st, 400, "{v}");
+    // Its person renames it: the agent can no longer.
+    let handle = a["agent_handle"].as_str().unwrap();
+    let (st, v) = rename(&ts, handle, "axis", |r| ts.authed(r)).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["agent"]["name"], "axis");
+    let (st, v) = patch(&ts, aid, json!({"name": "mine"})).await;
+    assert_eq!(
+        (st, v["error"]["code"].as_str()),
+        (409, Some("name_locked")),
+        "{v}"
+    );
+    // A name and an end in one request: named, then ended.
+    let (st, v) = patch(&ts, bid, json!({"name": "late", "ended": true})).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["session"]["name"], "late");
+    assert!(v["session"]["ended_at"].is_string());
+    let (st, v) = patch(&ts, bid, json!({"name": "later"})).await;
+    assert_eq!(
+        (st, v["error"]["code"].as_str()),
+        (400, Some("unknown_session")),
+        "{v}"
+    );
+    // Another credential's session is not the caller's to name.
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let s = sam.register("claude", "hs").await;
+    let res = sam
+        .agent(
+            "PATCH",
+            &format!("/api/sessions/{aid}"),
+            s["id"].as_str(),
+            Some(json!({"name": "stolen"})),
+        )
+        .await;
+    assert_eq!(res.status(), 403);
+    let res = sam
+        .agent(
+            "PATCH",
+            &format!("/api/sessions/{}", s["id"].as_str().unwrap()),
+            s["id"].as_str(),
+            Some(json!({"name": "sams-agent"})),
+        )
+        .await;
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["session"]["name"], "sams-agent", "{v}");
+    // Sam is a person: no agent takes Sam's name.
+    let c = ts.register_session("pi", "h3").await;
+    let (st, v) = patch(&ts, c["id"].as_str().unwrap(), json!({"name": "SAM"})).await;
+    assert_eq!(
+        (st, v["error"]["code"].as_str()),
+        (409, Some("name_taken")),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn renaming_an_agent_is_its_persons_or_the_owners_from_a_browser_or_the_cli() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let mine = ts.register_session("claude", "h1").await;
+    let handle = mine["agent_handle"].as_str().unwrap().to_string();
+    let code = |v: &Value| v["error"]["code"].as_str().map(str::to_string);
+    // The owner's browser and the CLI by hand.
+    let (st, v) = rename(&ts, &handle, "by-browser", |r| {
+        r.header("cookie", ts.owner_cookie())
+    })
+    .await;
+    assert_eq!(
+        (st, &v["agent"]["name"]),
+        (200, &json!("by-browser")),
+        "{v}"
+    );
+    let (st, v) = rename(&ts, &handle, "by-cli", |r| ts.authed(r)).await;
+    assert_eq!((st, &v["agent"]["name"]), (200, &json!("by-cli")), "{v}");
+    assert_eq!(v["agent"]["handle"], handle.as_str());
+    assert!(
+        v["agent"].get("cwd").is_none() && v["agent"].get("id").is_none(),
+        "{v}"
+    );
+    // The owner's agents, LAN viewers, nobody, another origin, a grant.
+    let (st, v) = rename(&ts, &handle, "x1", |r| {
+        ts.authed(r).header("x-clax-channel", "agent")
+    })
+    .await;
+    assert_eq!(
+        (st, code(&v).as_deref()),
+        (403, Some("not_for_agents")),
+        "{v}"
+    );
+    let sid = mine["id"].as_str().unwrap();
+    let (st, v) = rename(&ts, &handle, "x2", |r| {
+        ts.authed(r).header("x-clax-session", sid)
+    })
+    .await;
+    assert_eq!(
+        (st, code(&v).as_deref()),
+        (403, Some("not_for_agents")),
+        "{v}"
+    );
+    let lan = ts.viewer(Some("Lan")).await;
+    let (st, _) = rename(&ts, &handle, "x3", |r| {
+        r.header("cookie", format!("clax_viewer={}", lan.cookie))
+    })
+    .await;
+    assert_eq!(st, 403);
+    let (st, _) = rename(&ts, &handle, "x4", |r| r).await;
+    assert_eq!(st, 401);
+    let (st, v) = rename(&ts, &handle, "x5", |r| {
+        r.header("cookie", ts.owner_cookie())
+            .header("origin", "http://evil.example")
+    })
+    .await;
+    assert_eq!(
+        (st, code(&v).as_deref()),
+        (403, Some("forbidden_origin")),
+        "{v}"
+    );
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let theirs = sam.register("codex", "hs").await;
+    let res = sam
+        .agent(
+            "PUT",
+            &format!("/api/agents/{handle}"),
+            theirs["id"].as_str(),
+            Some(json!({"name": "x6"})),
+        )
+        .await;
+    assert_eq!(res.status(), 403);
+    assert_eq!(
+        ts.store.get_session(sid).unwrap().unwrap().name.as_deref(),
+        Some("by-cli"),
+        "no refused request renamed it"
+    );
+    // Sam's browser renames Sam's agent, never the owner's.
+    let sam_public = ts.store.grant(&sam.grant_id()).unwrap().person.unwrap();
+    let sam_cookie = ts
+        .store
+        .viewer_by_public_id(&sam_public)
+        .unwrap()
+        .unwrap()
+        .id;
+    let as_sam =
+        |r: reqwest::RequestBuilder| r.header("cookie", format!("clax_viewer={sam_cookie}"));
+    let th = theirs["agent_handle"].as_str().unwrap();
+    let (st, v) = rename(&ts, th, "sams-axis", as_sam).await;
+    assert_eq!((st, &v["agent"]["name"]), (200, &json!("sams-axis")), "{v}");
+    let (st, _) = rename(&ts, &handle, "taken-over", as_sam).await;
+    assert_eq!(st, 404, "another person's agent is not found");
+    // The owner renames any agent; names stay unique and reserved.
+    let (st, v) = rename(&ts, th, "by-cli", |r| ts.authed(r)).await;
+    assert_eq!((st, code(&v).as_deref()), (409, Some("name_taken")), "{v}");
+    let (st, v) = rename(&ts, th, "owner", |r| ts.authed(r)).await;
+    assert_eq!(
+        (st, code(&v).as_deref()),
+        (400, Some("invalid_name")),
+        "{v}"
+    );
+    let (st, v) = rename(&ts, th, "renamed", |r| ts.authed(r)).await;
+    assert_eq!((st, &v["agent"]["name"]), (200, &json!("renamed")), "{v}");
+    let res = sam
+        .agent(
+            "PATCH",
+            &format!("/api/sessions/{}", theirs["id"].as_str().unwrap()),
+            theirs["id"].as_str(),
+            Some(json!({"name": "back"})),
+        )
+        .await;
+    assert_eq!(
+        res.status(),
+        409,
+        "locked once its person or the owner named it"
+    );
+    let (st, _) = rename(&ts, "a_0000000000000000000000", "x", |r| ts.authed(r)).await;
+    assert_eq!(st, 404);
+    let (st, _) = rename(&ts, "not-a-handle", "x", |r| ts.authed(r)).await;
+    assert_eq!(st, 404);
+    ts.end_session(sid).await;
+    let (st, _) = rename(&ts, &handle, "ended", |r| ts.authed(r)).await;
+    assert_eq!(st, 404, "an ended agent is not renamed");
+}

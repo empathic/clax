@@ -152,3 +152,57 @@ async fn a_request_another_site_or_origin_made_without_an_origin_is_refused_and_
         assert!(res.headers().get("set-cookie").is_some(), "{site:?}");
     }
 }
+
+/// `PUT /api/viewers/me {display_name}` as the viewer whose cookie is `cookie`.
+async fn set_name(ts: &TestServer, cookie: &str, name: &str) -> (u16, Value) {
+    let res = ts
+        .client
+        .put(format!("{}/api/viewers/me", ts.base))
+        .header("cookie", format!("clax_viewer={cookie}"))
+        .json(&serde_json::json!({"display_name": name}))
+        .send()
+        .await
+        .unwrap();
+    (res.status().as_u16(), res.json().await.unwrap())
+}
+
+#[tokio::test]
+async fn a_lan_viewer_cannot_take_a_persons_or_the_owners_name() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let res = ts
+        .client
+        .put(format!("{}/api/viewers/me", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&serde_json::json!({"display_name": "Alex Novák"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    ts.connect_person("Mia", "clax:collaborator").await;
+    let lan = ts.viewer(Some("Lan")).await;
+    for taken in [
+        "alex novak",
+        "ALEX  NOVÁK",
+        "Ａｌｅｘ Ｎｏｖáｋ",
+        "mia",
+        "MÍA",
+        "Mi\u{200B}a",
+    ] {
+        let (st, v) = set_name(&ts, &lan.cookie, taken).await;
+        assert_eq!(
+            (st, v["error"]["code"].as_str()),
+            (409, Some("name_taken")),
+            "{taken:?}: {v}"
+        );
+    }
+    let (st, v) = set_name(&ts, &lan.cookie, "Mia R.").await;
+    assert_eq!(
+        (st, &v["viewer"]["display_name"]),
+        (200, &serde_json::json!("Mia R.")),
+        "{v}"
+    );
+    // A live agent's name is no person's: a LAN viewer may take it.
+    ts.register_session("claude", "h1").await;
+    let (st, _) = set_name(&ts, &lan.cookie, "claude").await;
+    assert_eq!(st, 200);
+}

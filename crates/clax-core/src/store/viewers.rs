@@ -47,6 +47,39 @@ pub(super) fn checked_name(name: &str) -> Result<Option<&str>> {
     Ok(Some(n).filter(|n| !n.is_empty()))
 }
 
+/// Refuses viewer `id` the display name `name` (spec §9.6) when its token
+/// form ([`crate::names::token_form`]) is the owner's or a connected
+/// person's other than its own, and, when `id` is a connected person's,
+/// a live agent's name (§11).
+///
+/// # Errors
+/// `name_taken` as above.
+fn check_viewer_name(tx: &rusqlite::Transaction<'_>, id: &str, name: &str) -> Result<()> {
+    let form = crate::names::token_form(name);
+    let taken = || CoreError::invalid("name_taken", format!("the name '{name}' is taken"));
+    let mut stmt = tx.prepare_cached(
+        "SELECT display_name FROM viewers WHERE display_name IS NOT NULL AND id != ?1
+           AND (owner = 1 OR (person = 1 AND person_revoked_at IS NULL))",
+    )?;
+    for other in stmt.query_map(params![id], |r| r.get::<_, String>(0))? {
+        if crate::names::token_form(&other?) == form {
+            return Err(taken());
+        }
+    }
+    let person: bool = tx
+        .query_row(
+            "SELECT person = 1 AND person_revoked_at IS NULL FROM viewers WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(false);
+    if person && super::sessions::live_name_taken(tx, &form, None)? {
+        return Err(taken());
+    }
+    Ok(())
+}
+
 impl Store {
     /// Creates viewer `id` when missing, with a new public ID
     /// ([`crate::new_public_id`]) that it keeps for good. `display_name`: `None` keeps the
@@ -57,7 +90,8 @@ impl Store {
     /// # Errors
     /// `invalid_viewer` when `id` is not a ULID or names the owner's row;
     /// `invalid_name` for a name with control characters or longer than
-    /// [`MAX_NAME_CHARS`].
+    /// [`MAX_NAME_CHARS`]; `name_taken` for the owner's or a connected
+    /// person's name ([`check_viewer_name`]).
     pub fn upsert_viewer(&self, id: &str, display_name: Option<&str>) -> Result<Viewer> {
         self.upsert_minted(id, display_name, None)
     }
@@ -81,6 +115,9 @@ impl Store {
         }
         let name = display_name.map(checked_name).transpose()?;
         self.with_tx(|tx| {
+            if let Some(Some(n)) = name {
+                check_viewer_name(tx, id, n)?;
+            }
             tx.execute(
                 "INSERT INTO viewers (id, public_id, display_name, created_at, minted_local) VALUES (?1, ?2, ?3, ?4, ?6)
                  ON CONFLICT(id) DO UPDATE SET display_name = CASE WHEN ?5 THEN excluded.display_name ELSE display_name END
@@ -90,6 +127,19 @@ impl Store {
             tx.query_row(&format!("{VIEWER_SELECT} WHERE id = ?1 AND owner = 0"), params![id], row_to_viewer)
                 .optional()?
                 .ok_or_else(|| CoreError::invalid("invalid_viewer", "that cookie names no viewer"))
+        })
+    }
+
+    /// Every display name viewers have, the owner's included, for telling
+    /// a person's `@` mention from an agent's (spec §11).
+    pub fn viewer_display_names(&self) -> Result<Vec<String>> {
+        self.with_read(|c| {
+            let mut stmt = c.prepare_cached(
+                "SELECT display_name FROM viewers WHERE display_name IS NOT NULL AND display_name != ''",
+            )?;
+            Ok(stmt
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?)
         })
     }
 
