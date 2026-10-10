@@ -296,6 +296,10 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("person.revoke", "person") => Safe,
         ("agent.name", "name" | "previous") => Name,
         ("agent.name", "source") => Safe,
+        (
+            "approval.grant" | "approval.revoke",
+            "approval_id" | "approver" | "author" | "scope" | "created_via",
+        ) => Safe,
         ("backfill.skip", "reason") => Text,
         ("backfill.skip", "table" | "row_id") => Safe,
         _ => Class::Unclassified,

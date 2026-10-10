@@ -95,6 +95,8 @@ kinds! {
     PersonRights = "person.rights",
     PersonRevoke = "person.revoke",
     AgentName = "agent.name",
+    ApprovalGrant = "approval.grant",
+    ApprovalRevoke = "approval.revoke",
     BackfillSkip = "backfill.skip",
 }
 
@@ -668,6 +670,8 @@ mod tests {
             "person.rights",
             "person.revoke",
             "agent.name",
+            "approval.grant",
+            "approval.revoke",
             "backfill.skip",
         ];
         let names: Vec<&str> = AuditKind::ALL.iter().map(|k| k.as_str()).collect();

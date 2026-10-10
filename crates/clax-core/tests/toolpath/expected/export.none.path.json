@@ -4461,13 +4461,83 @@
             ],
             "timestamp": "2026-10-06T14:08:31.073Z"
           }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/approval/01JBAP00000000000000000001": {
+              "structural": {
+                "approval_id": "01JBAP00000000000000000001",
+                "approver": null,
+                "author": "u_5am7q2",
+                "created_via": "shell",
+                "scope": "everywhere",
+                "type": "clax.approval.grant"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "approval.grant",
+              "seq": 74,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Let u_5am7q2's content reach the agents of the owner (everywhere)"
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000074",
+            "parents": [
+              "e000000000073"
+            ],
+            "timestamp": "2026-10-06T14:08:40.074Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/approval/01JBAP00000000000000000001": {
+              "structural": {
+                "approval_id": "01JBAP00000000000000000001",
+                "approver": null,
+                "author": "u_5am7q2",
+                "created_via": "shell",
+                "scope": "everywhere",
+                "type": "clax.approval.revoke"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "approval.revoke",
+              "seq": 75,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Revoked approval 01JBAP00000000000000000001 of u_5am7q2's content"
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000075",
+            "parents": [
+              "e000000000074"
+            ],
+            "timestamp": "2026-10-06T14:08:41.075Z"
+          }
         }
       ],
       "path": {
         "base": {
           "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697"
         },
-        "head": "e000000000073",
+        "head": "e000000000075",
         "id": "clax-install-6a1f0c3e"
       },
       "meta": {
@@ -4646,7 +4716,7 @@
       "clax_version": "0.3.1",
       "first_seq": 1,
       "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-      "last_seq": 73,
+      "last_seq": 75,
       "redaction": [],
       "selection": {
         "artifacts": [],

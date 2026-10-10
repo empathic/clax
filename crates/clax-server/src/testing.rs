@@ -215,6 +215,7 @@ impl TestServer {
             Arc::new(crate::extension::Credentials::load_with(&store, clock.clone()).unwrap());
         let started_at = store.now();
         let grant_auth = Arc::new(crate::grant_auth::GrantAuth::load(&store).unwrap());
+        let vis_gen = crate::state::VisGen::install(&store);
         let mut state = AppState {
             store,
             home: home.clone(),
@@ -265,6 +266,7 @@ impl TestServer {
             agent_gate: Arc::new(crate::agent::Gate::new(Arc::new(
                 crate::agent::TokioTimer::default(),
             ))),
+            vis_gen,
         };
         f(&mut state);
         state.audit_wake.install(&state.store);
