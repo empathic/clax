@@ -10,6 +10,8 @@ workspace = true
 [dependencies]
 base64.workspace = true
 getrandom = "0.3"
+icu_normalizer = "2"
+icu_properties = "2"
 chrono.workspace = true
 mime_guess.workspace = true
 nix = { workspace = true, features = ["fs"] }

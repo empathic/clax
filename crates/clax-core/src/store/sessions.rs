@@ -280,6 +280,84 @@ fn person_of_grant(tx: &Transaction<'_>, grant_id: Option<&str>) -> Result<Optio
     }
 }
 
+/// Who gave a session its name (spec §11): derived on registration, set
+/// by the agent, or given by its person or the owner (which the agent can
+/// no longer change).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NameSource {
+    Derived,
+    Agent,
+    Person,
+}
+
+impl NameSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NameSource::Derived => "derived",
+            NameSource::Agent => "agent",
+            NameSource::Person => "person",
+        }
+    }
+}
+
+/// The display names whose token form no agent's name may be (spec §11):
+/// the owner's and every connected person's.
+pub(super) fn people_names(c: &rusqlite::Connection) -> Result<Vec<String>> {
+    let mut stmt = c.prepare_cached(
+        "SELECT display_name FROM viewers WHERE display_name IS NOT NULL
+           AND (owner = 1 OR (person = 1 AND person_revoked_at IS NULL))",
+    )?;
+    Ok(stmt
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?)
+}
+
+/// Whether a live session other than `except` has `name`, ignoring case.
+pub(super) fn live_name_taken(
+    c: &rusqlite::Connection,
+    name: &str,
+    except: Option<&str>,
+) -> Result<bool> {
+    Ok(c.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sessions WHERE ended_at IS NULL AND name = ?1 COLLATE NOCASE
+           AND id IS NOT ?2)",
+        params![name, except],
+        |r| r.get(0),
+    )?)
+}
+
+/// The name a session of `harness` registering from `repo` and `branch`
+/// is given (spec §11, R3): the first of [`crate::names::candidates`] that
+/// is neither reserved nor a live session's other than `except`'s.
+fn derived_name(
+    c: &rusqlite::Connection,
+    repo: Option<&str>,
+    branch: Option<&str>,
+    harness: &str,
+    except: Option<&str>,
+) -> Result<String> {
+    let base = crate::names::derive(repo, branch, harness);
+    let people = people_names(c)?;
+    for name in crate::names::candidates(&base, harness) {
+        if !crate::names::is_reserved(&name, &people) && !live_name_taken(c, &name, except)? {
+            return Ok(name);
+        }
+    }
+    unreachable!("the numbered candidates never end")
+}
+
+/// `name_taken` when the unique index on live names refused a write.
+fn taken_on_conflict(e: rusqlite::Error) -> CoreError {
+    match e {
+        rusqlite::Error::SqliteFailure(f, _)
+            if f.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
+            CoreError::invalid("name_taken", "another live agent has that name")
+        }
+        e => e.into(),
+    }
+}
+
 impl Store {
     /// A session unseen for this long, with no live process, is ended by the reaper;
     /// registration without a harness session ID only adopts rows seen within it.
@@ -350,7 +428,8 @@ impl Store {
                 (None, None) => None,
             };
             if let Some(id) = existing {
-                let before = facts(tx, &id)?;
+                let before = fetch(tx, &id)?;
+                let facts_before = facts(tx, &id)?;
                 tx.execute(
                     "UPDATE sessions SET pid = COALESCE(?2, pid), parent_pid = COALESCE(?3, parent_pid),
                         harness_session_id = COALESCE(harness_session_id, ?4), last_seen_at = ?5,
@@ -359,17 +438,43 @@ impl Store {
                      WHERE id = ?1",
                     params![id, r.pid, r.parent_pid, r.harness_session_id, now, r.cwd, r.transcript_path],
                 )?;
-                if facts(tx, &id)? != before {
+                if facts(tx, &id)? != facts_before {
                     self.record_session(tx, ctx, AuditKind::SessionJoin, &id, &r.harness)?;
+                }
+                // A row without a name, or a hook's row (no process yet)
+                // named from its harness alone, takes the name its shim's
+                // repository gives.
+                let hook_row = before.pid.is_none()
+                    && before.name_source.as_deref() == Some(NameSource::Derived.as_str())
+                    && r.repo.is_some();
+                if before.name.is_none() || hook_row {
+                    let name = derived_name(
+                        tx,
+                        r.repo.as_deref(),
+                        r.branch.as_deref(),
+                        &r.harness,
+                        Some(&id),
+                    )?;
+                    tx.execute(
+                        "UPDATE sessions SET name = ?2, name_source = 'derived' WHERE id = ?1",
+                        params![id, name],
+                    )?;
                 }
                 return fetch(tx, &id);
             }
             let id = new_ulid();
+            let name = derived_name(
+                tx,
+                r.repo.as_deref(),
+                r.branch.as_deref(),
+                &r.harness,
+                None,
+            )?;
             tx.execute(
                 "INSERT INTO sessions (id, harness, harness_session_id, cwd, pid, parent_pid,
                     started_at, last_seen_at, agent_handle, transcript_path,
-                    grant_id, person)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9, ?10, ?11)",
+                    grant_id, person, name, name_source)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9, ?10, ?11, ?12, 'derived')",
                 params![
                     id,
                     r.harness,
@@ -381,7 +486,8 @@ impl Store {
                     crate::new_agent_handle(),
                     r.transcript_path,
                     grant,
-                    person
+                    person,
+                    name
                 ],
             )?;
             self.record_session(tx, ctx, AuditKind::SessionStart, &id, &r.harness)?;
@@ -474,10 +580,12 @@ impl Store {
                 }
                 None => {
                     let id = new_ulid();
+                    let name = derived_name(tx, None, None, harness, None)?;
                     tx.execute(
                         "INSERT INTO sessions (id, harness, harness_session_id, cwd, pid, parent_pid,
-                            started_at, last_seen_at, agent_handle, transcript_path, grant_id, person)
-                         VALUES (?1, ?2, ?3, ?6, NULL, ?4, ?5, ?5, ?7, ?8, ?9, ?10)",
+                            started_at, last_seen_at, agent_handle, transcript_path, grant_id, person,
+                            name, name_source)
+                         VALUES (?1, ?2, ?3, ?6, NULL, ?4, ?5, ?5, ?7, ?8, ?9, ?10, ?11, 'derived')",
                         params![
                             id,
                             harness,
@@ -488,7 +596,8 @@ impl Store {
                             crate::new_agent_handle(),
                             transcript_path,
                             grant_id,
-                            person
+                            person,
+                            name
                         ],
                     )?;
                     self.record_session(tx, ctx, AuditKind::SessionStart, &id, harness)?;
@@ -511,6 +620,88 @@ impl Store {
                 params![id, self.now()],
             )?;
             fetch(tx, id).map_err(not_found)
+        })
+    }
+
+    /// Names live session `sid` `name` (spec §11, M22), given by `source`:
+    /// the agent itself ([`NameSource::Agent`]) or its person or the owner
+    /// ([`NameSource::Person`], which the agent can no longer change).
+    /// `name` is compared and stored lowercase.
+    ///
+    /// # Errors
+    /// `NotFound` for no such session; `unknown_session` for an ended one;
+    /// `name_locked` when the agent renames a session its person named;
+    /// `invalid_name` for a name outside `[a-z0-9][a-z0-9._-]{0,31}` or a
+    /// reserved word; `name_taken` for another live session's name
+    /// (ignoring case) or the token form of the owner's or a connected
+    /// person's display name.
+    pub fn set_session_name(&self, sid: &str, name: &str, source: NameSource) -> Result<Session> {
+        let invalid = || {
+            CoreError::invalid(
+                "invalid_name",
+                "an agent name is 1 to 32 of a-z, 0-9, '.', '_' and '-', starting with a letter or digit, and not a reserved word",
+            )
+        };
+        if !name.is_ascii() {
+            return Err(invalid());
+        }
+        let name = name.to_ascii_lowercase();
+        if !crate::names::is_valid(&name) || crate::names::RESERVED.contains(&name.as_str()) {
+            return Err(invalid());
+        }
+        self.with_tx(|tx| {
+            let s = fetch(tx, sid).map_err(not_found)?;
+            if s.ended_at.is_some() {
+                return Err(CoreError::invalid(
+                    "unknown_session",
+                    format!("session {sid} has ended"),
+                ));
+            }
+            if source == NameSource::Agent
+                && s.name_source.as_deref() == Some(NameSource::Person.as_str())
+            {
+                return Err(CoreError::invalid(
+                    "name_locked",
+                    "this agent's person named it; only they can rename it",
+                ));
+            }
+            let taken = || CoreError::invalid("name_taken", format!("the name '{name}' is taken"));
+            if crate::names::is_reserved(&name, &people_names(tx)?)
+                || live_name_taken(tx, &name, Some(sid))?
+            {
+                return Err(taken());
+            }
+            tx.execute(
+                "UPDATE sessions SET name = ?2, name_source = ?3 WHERE id = ?1",
+                params![sid, name, source.as_str()],
+            )
+            .map_err(taken_on_conflict)?;
+            fetch(tx, sid)
+        })
+    }
+
+    /// The live session whose agent handle is `handle`.
+    pub fn live_session_by_handle(&self, handle: &str) -> Result<Option<Session>> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                &format!("{SELECT} WHERE agent_handle = ?1 AND ended_at IS NULL"),
+                params![handle],
+                row_to_session,
+            )
+            .optional()?)
+        })
+    }
+
+    /// Every live session's ID and name, for `@name` (spec §11).
+    pub fn live_agent_names(&self) -> Result<Vec<(String, String)>> {
+        self.with_read(|c| {
+            let mut stmt = c.prepare_cached(
+                "SELECT id, name FROM sessions WHERE ended_at IS NULL AND name IS NOT NULL
+                 ORDER BY started_at, id",
+            )?;
+            Ok(stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
         })
     }
 
@@ -1424,6 +1615,321 @@ mod tests {
             store.codex_home(&s.id).unwrap().as_deref(),
             Some("/tmp/cxh2")
         );
+    }
+
+    mod names {
+        use super::*;
+        use crate::store::people::InvitePerson;
+        use crate::store::people::tests::{KEY_A, approved, code, store};
+
+        fn reg_repo(harness: &str, repo: &str, branch: &str) -> RegisterSession {
+            RegisterSession {
+                harness: harness.into(),
+                cwd: "/w".into(),
+                repo: Some(repo.into()),
+                branch: Some(branch.into()),
+                ..Default::default()
+            }
+        }
+
+        fn assert_invalid(r: Result<Session>, want: &str) {
+            assert_eq!(code(r), want);
+        }
+
+        #[test]
+        fn collisions_suffix_derived_names_and_refuse_chosen_ones() {
+            let (_d, _c, st) = store();
+            let a = st
+                .register_session(DAEMON, reg_repo("claude", "web", "main"))
+                .unwrap();
+            let b = st
+                .register_session(DAEMON, reg_repo("codex", "web", "main"))
+                .unwrap();
+            let c = st
+                .register_session(DAEMON, reg_repo("codex", "web", "main"))
+                .unwrap();
+            assert_eq!(
+                (a.name.as_deref(), b.name.as_deref(), c.name.as_deref()),
+                (Some("web"), Some("web-codex"), Some("web-2"))
+            );
+            assert_eq!(a.name_source.as_deref(), Some("derived"));
+            assert_invalid(
+                st.set_session_name(&b.id, "WEB", NameSource::Agent),
+                "name_taken",
+            );
+            let renamed = st
+                .set_session_name(&b.id, "chart-axis", NameSource::Person)
+                .unwrap();
+            assert_eq!(
+                (renamed.name.as_deref(), renamed.name_source.as_deref()),
+                (Some("chart-axis"), Some("person"))
+            );
+            assert_invalid(
+                st.set_session_name(&b.id, "other", NameSource::Agent),
+                "name_locked",
+            );
+            st.set_session_name(&b.id, "other", NameSource::Person)
+                .unwrap();
+            st.end_session(DAEMON, &a.id).unwrap();
+            let c = st
+                .set_session_name(&c.id, "Web", NameSource::Agent)
+                .unwrap();
+            assert_eq!(
+                c.name.as_deref(),
+                Some("web"),
+                "stored lowercase; freed on end"
+            );
+            let d = st
+                .register_session(DAEMON, reg_repo("claude", "web", "main"))
+                .unwrap();
+            assert_eq!(d.name.as_deref(), Some("web-claude"));
+        }
+
+        #[test]
+        fn the_spec_reserves_clax_so_a_clax_repository_takes_the_harness_suffix() {
+            let (_d, _c, st) = store();
+            let a = st
+                .register_session(DAEMON, reg_repo("claude", "clax", "main"))
+                .unwrap();
+            let b = st
+                .register_session(DAEMON, reg_repo("codex", "clax", "main"))
+                .unwrap();
+            assert_eq!(
+                (a.name.as_deref(), b.name.as_deref()),
+                (Some("clax-claude"), Some("clax-codex"))
+            );
+            let m = st
+                .register_session(DAEMON, reg_repo("claude", "clax", "multi-person"))
+                .unwrap();
+            assert_eq!(m.name.as_deref(), Some("clax-multi-person"));
+            for word in crate::names::RESERVED {
+                assert_invalid(
+                    st.set_session_name(&a.id, word, NameSource::Agent),
+                    "invalid_name",
+                );
+                assert_invalid(
+                    st.set_session_name(&a.id, &word.to_uppercase(), NameSource::Person),
+                    "invalid_name",
+                );
+            }
+        }
+
+        #[test]
+        fn chosen_names_must_have_the_m22_form() {
+            let (_d, _c, st) = store();
+            let a = st
+                .register_session(DAEMON, reg_repo("claude", "web", "main"))
+                .unwrap();
+            for bad in [
+                "",
+                " web",
+                "web app",
+                "-web",
+                ".web",
+                "wéb",
+                "\u{212A}elvin",
+                "ｗｅｂ",
+                "wеb",
+                "web\u{200B}",
+                "web\n",
+                "a\u{0}",
+                "a/b",
+                "@web",
+                &"x".repeat(33),
+                &"x".repeat(100_000),
+            ] {
+                assert_invalid(
+                    st.set_session_name(&a.id, bad, NameSource::Agent),
+                    "invalid_name",
+                );
+            }
+            assert_eq!(
+                st.get_session(&a.id).unwrap().unwrap().name.as_deref(),
+                Some("web"),
+                "a refused name changes nothing"
+            );
+            let ok = st
+                .set_session_name(&a.id, &"x".repeat(32), NameSource::Agent)
+                .unwrap();
+            assert_eq!(ok.name_source.as_deref(), Some("agent"));
+            assert!(matches!(
+                st.set_session_name("nope", "x", NameSource::Agent),
+                Err(CoreError::NotFound)
+            ));
+            st.end_session(DAEMON, &a.id).unwrap();
+            assert_invalid(
+                st.set_session_name(&a.id, "y", NameSource::Agent),
+                "unknown_session",
+            );
+        }
+
+        #[test]
+        fn a_derived_name_skips_names_of_people() {
+            let (_d, _c, st) = store();
+            approved(&st, "Web", KEY_A);
+            st.set_owner_name("Clax Main", false).unwrap();
+            let a = st
+                .register_session(DAEMON, reg_repo("claude", "web", "main"))
+                .unwrap();
+            assert_eq!(a.name.as_deref(), Some("web-claude"));
+            let b = st
+                .register_session(DAEMON, reg_repo("pi", "clax", "main"))
+                .unwrap();
+            assert_eq!(b.name.as_deref(), Some("clax-pi"));
+        }
+
+        #[test]
+        fn names_without_a_repository_are_the_harness_and_re_registration_keeps_them() {
+            let (_d, _c, st) = store();
+            let a = st
+                .register_session(DAEMON, reg(Some("h1"), Some(10), Some(5)))
+                .unwrap();
+            let b = st
+                .register_session(DAEMON, reg(Some("h2"), Some(11), Some(6)))
+                .unwrap();
+            assert_eq!(
+                (a.name.as_deref(), b.name.as_deref()),
+                (Some("claude"), Some("claude-2"))
+            );
+            let again = st
+                .register_session(
+                    DAEMON,
+                    RegisterSession {
+                        repo: Some("web".into()),
+                        ..reg(Some("h1"), Some(10), Some(5))
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                (again.id.as_str(), again.name.as_deref()),
+                (a.id.as_str(), Some("claude"))
+            );
+        }
+
+        #[test]
+        fn a_hook_row_is_named_by_the_shim_that_adopts_it() {
+            let (_d, _c, st) = store();
+            let hook = st
+                .join_session(
+                    DAEMON,
+                    JoinSession {
+                        harness: "codex".into(),
+                        parent_pid: 5,
+                        harness_session_id: "cx".into(),
+                        cwd: None,
+                        ancestor_pids: vec![],
+                        transcript_path: None,
+                    },
+                    None,
+                )
+                .unwrap();
+            assert_eq!(hook.name.as_deref(), Some("codex"));
+            let shim = st
+                .register_session(
+                    DAEMON,
+                    RegisterSession {
+                        harness: "codex".into(),
+                        cwd: "/w".into(),
+                        pid: Some(10),
+                        parent_pid: Some(5),
+                        repo: Some("web".into()),
+                        branch: Some("fix/axis".into()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                (shim.id.as_str(), shim.name.as_deref()),
+                (hook.id.as_str(), Some("web-axis"))
+            );
+        }
+
+        #[test]
+        fn people_and_agents_cannot_shadow_each_other() {
+            let (_d, _c, st) = store();
+            // A live agent "sam": a new person "Sam" is name_taken.
+            let s = st
+                .register_session(DAEMON, reg_repo("claude", "sam", "main"))
+                .unwrap();
+            assert_eq!(s.name.as_deref(), Some("sam"));
+            assert_eq!(
+                code(st.create_invite(InvitePerson::New("Sam".into()), None)),
+                "name_taken"
+            );
+            assert_eq!(
+                code(st.create_invite(InvitePerson::New("  SÁM ".into()), None)),
+                "name_taken"
+            );
+            // Once it ends, the name is free for a person.
+            st.end_session(DAEMON, &s.id).unwrap();
+            let (sam_grant, _, _) = approved(&st, "Sam", KEY_A);
+            // A person "Mia Kovač": no agent takes "mia-kovac".
+            st.create_invite(InvitePerson::New("Mia Kovač".into()), None)
+                .unwrap();
+            let a = st
+                .register_session(DAEMON, reg_repo("claude", "web", "main"))
+                .unwrap();
+            assert_invalid(
+                st.set_session_name(&a.id, "mia-kovac", NameSource::Agent),
+                "name_taken",
+            );
+            assert_invalid(
+                st.set_session_name(&a.id, "SAM", NameSource::Person),
+                "name_taken",
+            );
+            let m = st
+                .register_session(DAEMON, reg_repo("claude", "Mia-Kovac", "main"))
+                .unwrap();
+            assert_eq!(m.name.as_deref(), Some("mia-kovac-claude"), "{m:?}");
+            // A LAN viewer cannot take a person's or the owner's name, in any
+            // case or with any diacritics.
+            let lan = crate::new_ulid();
+            st.upsert_viewer(&lan, Some("Lan")).unwrap();
+            for taken in [
+                "sam",
+                "Mia Kovač",
+                "MIA  KOVAC",
+                "mia kovac",
+                "Ｓａｍ",
+                "Sa\u{0301}m",
+            ] {
+                assert_eq!(
+                    code(st.upsert_viewer(&lan, Some(taken))),
+                    "name_taken",
+                    "{taken:?}"
+                );
+            }
+            st.set_owner_name("Alex", false).unwrap();
+            assert_eq!(code(st.upsert_viewer(&lan, Some("ALEX"))), "name_taken");
+            assert_eq!(
+                st.get_viewer(&lan)
+                    .unwrap()
+                    .unwrap()
+                    .display_name
+                    .as_deref(),
+                Some("Lan")
+            );
+            st.upsert_viewer(&lan, Some("Mia")).unwrap();
+            st.upsert_viewer(&lan, Some("")).unwrap();
+            // A connected person renaming themselves cannot take a live
+            // agent's name; a LAN viewer can.
+            let sam = st.grant(&sam_grant).unwrap().person.unwrap();
+            let sam_cookie: String = st
+                .with_read(|c| {
+                    Ok(
+                        c.query_row("SELECT id FROM viewers WHERE public_id = ?1", [&sam], |r| {
+                            r.get(0)
+                        })?,
+                    )
+                })
+                .unwrap();
+            assert_eq!(
+                code(st.upsert_viewer(&sam_cookie, Some("WEB"))),
+                "name_taken"
+            );
+            st.upsert_viewer(&sam_cookie, Some("Sam K")).unwrap();
+            st.upsert_viewer(&lan, Some("web")).unwrap();
+        }
     }
 
     mod binding {

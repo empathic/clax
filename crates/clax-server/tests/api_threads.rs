@@ -1510,3 +1510,245 @@ async fn whole_artifact_threads_follow_the_comment_loop() {
     assert_eq!(v["thread"]["status"], "resolved");
     assert_eq!(v["thread"]["resolved_by"], "agent:claude");
 }
+
+/// Registers a session of `harness` working in repository `repo` (on
+/// `main`); its ID and name.
+async fn agent_in(ts: &TestServer, harness: &str, hsid: &str, repo: &str) -> (String, String) {
+    let res = ts
+        .post_json(
+            "/api/sessions",
+            json!({"harness": harness, "harness_session_id": hsid, "cwd": "/w", "repo": repo, "branch": "main"}),
+        )
+        .await;
+    assert_eq!(res.status(), 201);
+    let s: Value = res.json().await.unwrap();
+    (
+        s["session"]["id"].as_str().unwrap().to_string(),
+        s["session"]["name"].as_str().unwrap().to_string(),
+    )
+}
+
+/// Each feedback row of thread `tid`: its target session.
+fn targets(ts: &TestServer, tid: &str) -> Vec<Option<String>> {
+    ts.store
+        .feedback_rows(tid)
+        .unwrap()
+        .into_iter()
+        .map(|f| f.target_session_id)
+        .collect()
+}
+
+fn watches(ts: &TestServer, sid: &str, aid: &str) -> bool {
+    ts.store
+        .list_watches(sid)
+        .unwrap()
+        .iter()
+        .any(|w| w.artifact_id == aid)
+}
+
+async fn comment(ts: &TestServer, aid: &str, tid: &str, body: Value) -> Value {
+    let res = ts
+        .client
+        .post(format!(
+            "{}/api/artifacts/{aid}/threads/{tid}/comments",
+            ts.base
+        ))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    res.json().await.unwrap()
+}
+
+#[tokio::test]
+async fn at_name_sends_to_exactly_that_agent_and_gives_it_a_watch() {
+    let ts = TestServer::spawn().await;
+    let (web, web_name) = agent_in(&ts, "claude", "h1", "web").await;
+    let (api, api_name) = agent_in(&ts, "codex", "h2", "api").await;
+    let (_, other) = agent_in(&ts, "pi", "h3", "docs").await;
+    assert_eq!(
+        (web_name.as_str(), api_name.as_str(), other.as_str()),
+        ("web", "api", "docs")
+    );
+    let a = ts.publish_as(&web, "Review", "<p>x</p>").await;
+    let aid = a["artifact"]["id"].as_str().unwrap();
+    assert!(!watches(&ts, &api, aid));
+    let res = ts
+        .create_thread(aid, 1, "@API could you check the numbers?", None)
+        .await;
+    assert_eq!(res.status(), 201);
+    let v: Value = res.json().await.unwrap();
+    assert!(v.get("unresolved_mentions").is_none(), "{v}");
+    let t = &v["thread"];
+    assert_eq!(t["sent_to_agent"], true);
+    let tid = t["id"].as_str().unwrap();
+    assert_eq!(
+        targets(&ts, tid),
+        [Some(api.clone())],
+        "only api, not the owner web"
+    );
+    assert!(watches(&ts, &api, aid), "api watches the artifact now");
+    // A later comment naming web sends that comment to web too.
+    let v = comment(&ts, aid, tid, json!({"body": "and @web, the layout."})).await;
+    assert!(v.get("unresolved_mentions").is_none(), "{v}");
+    let rows = targets(&ts, tid);
+    assert!(rows.contains(&Some(web.clone())), "{rows:?}");
+    let cid = v["comment"]["id"].as_str().unwrap();
+    let this: Vec<Option<String>> = ts
+        .store
+        .feedback_rows(tid)
+        .unwrap()
+        .into_iter()
+        .filter(|f| f.comment_id == cid)
+        .map(|f| f.target_session_id)
+        .collect();
+    assert_eq!(
+        this,
+        [Some(web.clone())],
+        "the named agent, not the thread's earlier one"
+    );
+    assert!(!rows.iter().any(|r| r.as_deref() == Some(other.as_str())));
+    // Two names in one comment reach both, and nothing else.
+    let t2 = ts.thread(aid, 1, "@docs and @api: one each").await;
+    let mut got = targets(&ts, t2["id"].as_str().unwrap());
+    got.sort();
+    let docs = ts
+        .store
+        .live_agent_names()
+        .unwrap()
+        .into_iter()
+        .find(|(_, n)| n == "docs")
+        .unwrap()
+        .0;
+    let mut want = vec![Some(api.clone()), Some(docs)];
+    want.sort();
+    assert_eq!(got, want);
+    // An address or a longer word is no mention.
+    let t3 = ts.thread(aid, 1, "mail me@api or ask @apis").await;
+    assert_eq!(t3["sent_to_agent"], false);
+}
+
+#[tokio::test]
+async fn unknown_at_name_sends_nothing_and_says_so() {
+    let ts = TestServer::spawn().await;
+    let (web, _) = agent_in(&ts, "claude", "h1", "web").await;
+    let a = ts.publish_as(&web, "Review", "<p>x</p>").await;
+    let aid = a["artifact"]["id"].as_str().unwrap();
+    let mia = ts.viewer(Some("Mia Kovač")).await;
+    let res = ts
+        .create_thread(aid, 1, "@nobody and @Mia Kovač, see @nobody.", None)
+        .await;
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["unresolved_mentions"], json!(["nobody"]), "{v}");
+    assert_eq!(v["thread"]["sent_to_agent"], false);
+    let tid = v["thread"]["id"].as_str().unwrap();
+    assert!(targets(&ts, tid).is_empty());
+    let v = comment(&ts, aid, tid, json!({"body": "@ghost-2 hello"})).await;
+    assert_eq!(v["unresolved_mentions"], json!(["ghost-2"]));
+    assert_eq!(v["thread"]["sent_to_agent"], false);
+    // An ended agent's name names no live agent.
+    let (old, _) = agent_in(&ts, "codex", "h2", "old").await;
+    ts.end_session(&old).await;
+    let v = comment(&ts, aid, tid, json!({"body": "@old ping"})).await;
+    assert_eq!(v["unresolved_mentions"], json!(["old"]));
+    assert!(targets(&ts, tid).is_empty());
+    let _ = mia;
+}
+
+#[tokio::test]
+async fn page_written_at_name_sends_nothing() {
+    let ts = TestServer::spawn().await;
+    let (web, _) = agent_in(&ts, "claude", "h1", "web").await;
+    let (api, _) = agent_in(&ts, "codex", "h2", "api").await;
+    let a = ts.publish_as(&web, "Review", "<p>x</p>").await;
+    let aid = a["artifact"]["id"].as_str().unwrap();
+    let t = page_thread(&ts, aid, "@api please look").await;
+    assert_eq!(t["sent_to_agent"], false);
+    let tid = t["id"].as_str().unwrap();
+    let v = comment(&ts, aid, tid, json!({"body": "@api go", "via_page": true})).await;
+    assert_eq!(v["thread"]["sent_to_agent"], false);
+    assert!(v.get("unresolved_mentions").is_none(), "{v}");
+    assert!(targets(&ts, tid).is_empty());
+    assert!(!watches(&ts, &api, aid), "a page gives no agent a watch");
+}
+
+#[tokio::test]
+async fn at_agent_keeps_its_meaning() {
+    let ts = TestServer::spawn().await;
+    let (web, _) = agent_in(&ts, "claude", "h1", "web").await;
+    let (api, _) = agent_in(&ts, "codex", "h2", "api").await;
+    let a = ts.publish_as(&web, "Review", "<p>x</p>").await;
+    let aid = a["artifact"]["id"].as_str().unwrap();
+    ts.authed(
+        ts.client
+            .put(format!("{}/api/sessions/{api}/watches/{aid}", ts.base)),
+    )
+    .json(&json!({"replies_armed": true}))
+    .send()
+    .await
+    .unwrap();
+    let res = ts.create_thread(aid, 1, "@agent please fix", None).await;
+    let v: Value = res.json().await.unwrap();
+    assert!(v.get("unresolved_mentions").is_none(), "{v}");
+    let mut got = targets(&ts, v["thread"]["id"].as_str().unwrap());
+    got.sort();
+    let mut want = vec![Some(web.clone()), Some(api.clone())];
+    want.sort();
+    assert_eq!(got, want, "every live owner and watcher, as before");
+    // No agent is ever named "agent".
+    let res = ts
+        .authed(ts.client.patch(format!("{}/api/sessions/{web}", ts.base)))
+        .json(&json!({"name": "agent"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+}
+
+#[tokio::test]
+async fn at_name_reaches_a_persons_agent_only_where_its_rights_allow() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let (web, _) = agent_in(&ts, "claude", "h1", "web").await;
+    let a = ts.publish_as(&web, "Review", "<p>x</p>").await;
+    let aid = a["artifact"]["id"].as_str().unwrap();
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let s = sam
+        .register_with(
+            json!({"harness": "codex", "harness_session_id": "hs", "cwd": "/w", "repo": "sams"}),
+        )
+        .await;
+    let sid = s["id"].as_str().unwrap().to_string();
+    let person = ts.store.grant(&sam.grant_id()).unwrap().person.unwrap();
+    // Sam may read only Sam's own artifacts.
+    let own_only = clax_core::rights::Rights::parse(&json!([
+        {"type": "clax-artifacts", "actions": ["read"], "locations": ["own"]},
+        {"type": "clax-comments", "actions": ["read", "watch"], "locations": ["own"]}
+    ]))
+    .unwrap();
+    ts.store.set_person_rights(&person, Some(own_only)).unwrap();
+    let res = ts.create_thread(aid, 1, "@sams have a look", None).await;
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["unresolved_mentions"], json!(["sams"]), "{v}");
+    assert_eq!(v["thread"]["sent_to_agent"], false);
+    assert!(!watches(&ts, &sid, aid), "no watch past its rights");
+    // With rights to read and watch it, the name reaches it.
+    ts.store
+        .set_person_rights(
+            &person,
+            Some(clax_core::rights::Rights::preset("clax:reader").unwrap()),
+        )
+        .unwrap();
+    let v: Value = ts
+        .create_thread(aid, 1, "@sams now", None)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert!(v.get("unresolved_mentions").is_none(), "{v}");
+    assert_eq!(
+        targets(&ts, v["thread"]["id"].as_str().unwrap()),
+        [Some(sid.clone())]
+    );
+    assert!(watches(&ts, &sid, aid));
+}

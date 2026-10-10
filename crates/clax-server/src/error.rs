@@ -111,8 +111,8 @@ impl From<CoreError> for ApiError {
             // The grant flow (spec §6.2–§6.4).
             CoreError::Invalid {
                 code:
-                    code @ ("name_taken" | "key_in_use" | "not_pending" | "already_issued"
-                    | "not_on_lan"),
+                    code @ ("name_taken" | "name_locked" | "key_in_use" | "not_pending"
+                    | "already_issued" | "not_on_lan"),
                 message,
             } => ApiError::new(StatusCode::CONFLICT, code, message),
             CoreError::Invalid {

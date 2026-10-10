@@ -24,13 +24,16 @@ pub struct MintBody {
 /// `POST /api/extension/credentials` (W) `{extension_id}`: a new credential
 /// for the extension with the ID in effect; 400 `unknown_extension` for any
 /// other ID. The extension counts as one of the owner's browsers, so this
-/// makes the owner viewer when there is none.
+/// makes the owner viewer when there is none. The owner's agents get 403
+/// `not_for_agents`: the credential acts as the owner's browser, which no
+/// filter covers (spec §7.5).
 pub async fn mint(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
+    d: crate::agent::DeniedToGrants,
     _t: RequireToken,
     b: Result<Json<MintBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
     let b = body(b)?;
     if b.extension_id != s.extension_id {
         return Err(ApiError::bad_request(

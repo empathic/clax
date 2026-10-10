@@ -249,41 +249,146 @@ pub async fn clip(
         .into_response())
 }
 
+/// Whether `@name` may send to and give a watch to live session `sid` on
+/// artifact `id` (spec §11): always for the owner's agents; for a person's
+/// agent only off live pages (`live_page`) and where its rights allow
+/// reading and watching the artifact. §10's routing request for another
+/// person's agent is not made here: such a name is reported unresolved.
+fn named_agent_reaches(
+    st: &Store,
+    sid: &str,
+    id: &ArtifactId,
+    live_page: bool,
+) -> clax_core::Result<bool> {
+    use clax_core::rights::RightType;
+    let Some(s) = st.get_session(sid)? else {
+        return Ok(false);
+    };
+    let Some(grant) = s.grant_id.as_deref() else {
+        return Ok(true);
+    };
+    if live_page {
+        return Ok(false);
+    }
+    let gc = match st.grant_caller(grant, Some(sid)) {
+        Ok(gc) => gc,
+        Err(CoreError::Invalid { .. }) => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    let own = |x: &str| {
+        st.artifact_created_by(x, gc.person.as_deref())
+            .unwrap_or(false)
+    };
+    Ok(gc
+        .rights
+        .allows(RightType::Artifacts, "read", Some(id.as_str()), &own)
+        && gc
+            .rights
+            .allows(RightType::Comments, "watch", Some(id.as_str()), &own))
+}
+
+/// The live agents a viewer comment's `body` names with `@name` on
+/// artifact `id` (spec §11), each given a direct watch when it has none,
+/// and the `@name`s that reached no live agent (`unresolved_mentions`):
+/// those naming none, and those of an agent [`named_agent_reaches`]
+/// refuses. A watch it makes is recorded under `audit`, the commenter's.
+pub(crate) fn resolve_named(
+    st: &Store,
+    audit: &AuditCtx,
+    id: &ArtifactId,
+    body: &str,
+    live_page: bool,
+) -> clax_core::Result<(Vec<String>, Vec<String>)> {
+    if !body.contains('@') {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let live = st.live_agent_names()?;
+    let names: Vec<String> = live.iter().map(|(_, n)| n.clone()).collect();
+    let (mut sids, mut unresolved) = (Vec::new(), Vec::new());
+    for name in clax_core::mentions::agent_mentions(body, &names) {
+        let Some((sid, _)) = live.iter().find(|(_, n)| *n == name) else {
+            continue;
+        };
+        if !named_agent_reaches(st, sid, id, live_page)? {
+            unresolved.push(name);
+            continue;
+        }
+        st.ensure_watch(audit, sid, id)?;
+        sids.push(sid.clone());
+    }
+    if !clax_core::mentions::unresolved_mentions(body, &names, &[]).is_empty() {
+        let viewers = st.viewer_display_names()?;
+        unresolved.extend(clax_core::mentions::unresolved_mentions(
+            body, &names, &viewers,
+        ));
+    }
+    Ok((sids, unresolved))
+}
+
 /// Creates the thread `t` on `id`, sends it when its body mentions
-/// `@agent` (unless the page wrote it), publishes the `thread` event, and
-/// returns the thread view (with `clip_path` when `with_path`). Both are
-/// recorded under `audit`.
+/// `@agent` or a live agent's `@name` (unless the page wrote it), publishes
+/// the `thread` event, and returns the thread view (with `clip_path` when
+/// `with_path`) and the `@name`s that reached no agent. Both are recorded under `audit`.
 pub(crate) fn create_thread_now(
     st: &Store,
     ctx: &crate::feedback::FeedbackCtx,
     audit: &AuditCtx,
     id: &ArtifactId,
     t: NewThread,
+    live_page: bool,
     with_path: bool,
-) -> clax_core::Result<Value> {
+) -> clax_core::Result<(Value, Vec<String>)> {
     let mention = !t.via_page && mentions_agent(&t.body);
+    let named = (!t.via_page).then(|| t.body.clone());
     let thread = st.create_thread(audit, id, t)?;
-    announce_new_thread(st, ctx, audit, thread, mention, with_path)
+    announce_new_thread(
+        st,
+        ctx,
+        audit,
+        thread,
+        mention,
+        named.as_deref(),
+        live_page,
+        with_path,
+    )
 }
 
 /// What follows writing a new thread: sends it to the agent when its first
-/// comment `mention`s one (recorded under `audit`), announces it, and
-/// answers its view.
+/// comment `mention`s one, and to each live agent `named` (the comment's
+/// body, `None` for a page's) names with `@name` ([`resolve_named`]),
+/// announces it, and answers its view and the `@name`s that reached no
+/// agent. Sends are recorded under `audit`.
 pub(crate) fn announce_new_thread(
     st: &Store,
     ctx: &crate::feedback::FeedbackCtx,
     audit: &AuditCtx,
     mut thread: Thread,
     mention: bool,
+    named: Option<&str>,
+    live_page: bool,
     with_path: bool,
-) -> clax_core::Result<Value> {
+) -> clax_core::Result<(Value, Vec<String>)> {
     if mention {
         let (sent, touched) = st.send_to_agent(audit, &thread.id)?;
         thread = sent;
         apply(ctx, st, &touched);
     }
+    let mut unresolved = Vec::new();
+    if let Some(body) = named {
+        let id = ArtifactId::parse(&thread.artifact_id)?;
+        let (sids, u) = resolve_named(st, audit, &id, body, live_page)?;
+        unresolved = u;
+        if !sids.is_empty() {
+            let (sent, touched) = st.send_to_named(&thread.id, &sids)?;
+            thread = sent;
+            apply(ctx, st, &touched);
+        }
+    }
     publish_thread(ctx, st, &thread)?;
-    thread_view(st, &thread, ctx.codex_push(), with_path)
+    Ok((
+        thread_view(st, &thread, ctx.codex_push(), with_path)?,
+        unresolved,
+    ))
 }
 
 /// Multipart fields: `anchor` (JSON), `body`, `version`, optional `clip` (PNG),
@@ -424,7 +529,8 @@ pub async fn create(
     let clip = if clip_error.is_some() { None } else { clip };
     let ctx = s.feedback_ctx();
     let with_path = a.holds_token();
-    let view = s
+    let live_page = s.live_ids.contains(id.as_str());
+    let (view, unresolved) = s
         .store_call(move |st| {
             let audit = audit.resolve(st)?;
             let (author_name, author_public_id) = author(st, &who)?;
@@ -442,6 +548,7 @@ pub async fn create(
                     clip,
                     via_page,
                 },
+                live_page,
                 with_path,
             )
         })
@@ -449,6 +556,9 @@ pub async fn create(
     let mut out = json!({"thread": view});
     if let Some(e) = clip_error {
         out["clip_error"] = json!(e);
+    }
+    if !unresolved.is_empty() {
+        out["unresolved_mentions"] = json!(unresolved);
     }
     Ok((StatusCode::CREATED, Json(out)))
 }
@@ -484,7 +594,8 @@ fn respond(o: Outcome, created: StatusCode) -> Response {
 /// (token and `X-Clax-Session` naming a live session, else 400
 /// `unknown_session`; only on sent threads, otherwise guidance). A viewer
 /// comment on a sent thread, or one mentioning `@agent`, is forwarded to the
-/// agent; `via_page: true` marks a viewer comment the page wrote through the
+/// agent; one naming live agents with `@name` goes to them (spec §11), and
+/// the answer's `unresolved_mentions` lists the `@name`s that reached none; `via_page: true` marks a viewer comment the page wrote through the
 /// `comments` capability, whose `@agent` mention sends nothing (400
 /// `invalid_via_page` on an agent reply). `addressed: true` on an agent reply
 /// to a live page's thread records a pending address, linked to the page's
@@ -543,10 +654,12 @@ pub async fn comment(
     let with_path = a.holds_token();
     let (session, grant) = acting(&a.caller);
     let ctx = s.feedback_ctx();
+    let live_page = s.live_ids.contains(id.as_str());
     let o = s
         .store_call(move |st| {
             let t = thread_of(st, &id, &tid)?;
             let mut touched = Touched::default();
+            let mut unresolved = Vec::new();
             let c = if agent {
                 let sess = agent_session(st, &session, grant.as_deref())?;
                 if !t.sent_to_agent {
@@ -587,8 +700,20 @@ pub async fn comment(
                         via_page: b.via_page,
                     },
                 )?;
-                if t.sent_to_agent || (!c.via_page && mentions_agent(&c.body)) {
+                let (named, u) = if c.via_page {
+                    (Vec::new(), Vec::new())
+                } else {
+                    resolve_named(st, &audit, &id, &c.body, live_page)?
+                };
+                unresolved = u;
+                // A comment naming agents goes to them, not to the thread's
+                // target; `@agent` keeps its meaning beside them.
+                let at_agent = !c.via_page && mentions_agent(&c.body);
+                if at_agent || (t.sent_to_agent && named.is_empty()) {
                     touched.merge(st.send_to_agent(&audit, &tid)?.1);
+                }
+                if !named.is_empty() {
+                    touched.merge(st.send_to_named(&tid, &named)?.1);
                 }
                 c
             };
@@ -604,6 +729,9 @@ pub async fn comment(
             let mut out = json!({"comment": c, "thread": view});
             if addressed {
                 out["addressed"] = json!("pending");
+            }
+            if !unresolved.is_empty() {
+                out["unresolved_mentions"] = json!(unresolved);
             }
             Ok(Outcome::Done(out))
         })
