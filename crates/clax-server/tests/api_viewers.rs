@@ -201,10 +201,10 @@ async fn a_lan_viewer_cannot_take_a_persons_or_the_owners_name() {
         (200, &serde_json::json!("Mia R.")),
         "{v}"
     );
-    // A live agent's name is no person's: a LAN viewer may take it.
+    // A live agent's name is protected too.
     ts.register_session("claude", "h1").await;
-    let (st, _) = set_name(&ts, &lan.cookie, "claude").await;
-    assert_eq!(st, 200);
+    let (st, _) = set_name(&ts, &lan.cookie, "Claude").await;
+    assert_eq!(st, 409);
 }
 
 #[tokio::test]
@@ -220,23 +220,27 @@ async fn names_that_render_as_a_persons_or_the_owners_are_refused() {
         .unwrap();
     assert_eq!(res.status(), 200);
     ts.connect_person("Sam", "clax:collaborator").await;
+    ts.connect_person("Coco", "clax:collaborator").await;
     let lan = ts.viewer(Some("Lan")).await;
     let probes: &[(&str, u16)] = &[
-        ("\u{202E}xelA", 400), // a bidi override: renders "Alex"
-        ("A\u{200F}lex", 400), // a right-to-left mark
-        ("\u{2066}Sam\u{2069}", 400),
-        ("Alex\u{3164}", 409), // Hangul fillers render blank
+        ("\u{202E}xelA", 400),        // a bidi override: renders "Alex"
+        ("\u{2066}Sam\u{2069}", 400), // bidi isolates
+        ("A\u{202A}lex", 400),        // a bidi embedding
+        ("A\u{200F}lex", 409),        // a right-to-left mark is allowed, and ignored
+        ("Alex\u{3164}", 409),        // Hangul fillers render blank
         ("Alex\u{FFA0}", 409),
         ("A\u{115F}lex", 409),
-        ("Alex\u{2800}", 400),      // the braille blank: a script of its own
-        ("\u{0410}lex", 400),       // Cyrillic А with Latin
-        ("\u{0405}\u{0430}m", 400), // Cyrillic Ѕа with Latin m
-        ("\u{0391}lex", 400),       // Greek Α with Latin
-        ("Ａｌｅｘ", 409),          // full-width
-        ("Al\u{200B}ex", 409),      // zero-width space
-        ("Al\u{FE0F}ex", 409),      // a variation selector
-        ("Alex\u{E0041}", 409),     // a tag character
-        ("Al\u{034F}ex", 409),      // the combining grapheme joiner
+        ("Alex\u{2800}", 409),                     // the braille blank
+        ("\u{0410}lex", 409),                      // Cyrillic А
+        ("\u{0405}\u{0430}m", 409),                // Cyrillic Ѕа with Latin m
+        ("\u{0391}lex", 409),                      // Greek Α
+        ("AIex", 409),                             // a capital I for the l
+        ("\u{0421}\u{043E}\u{0441}\u{043E}", 409), // all-Cyrillic Сосо for Coco
+        ("Ａｌｅｘ", 409),                         // full-width
+        ("Al\u{200B}ex", 409),                     // zero-width space
+        ("Al\u{FE0F}ex", 409),                     // a variation selector
+        ("Alex\u{E0041}", 409),                    // a tag character
+        ("Al\u{034F}ex", 409),                     // the combining grapheme joiner
         ("Al\u{0}ex", 400),
         ("Al\nex", 400),
     ];
@@ -255,8 +259,19 @@ async fn names_that_render_as_a_persons_or_the_owners_are_refused() {
         (res.status(), res.json::<Value>().await.unwrap())
     };
     assert_eq!(me["viewer"]["display_name"], "Lan", "no probe renamed it");
-    // One script, or the mixes a language writes, is fine.
-    for ok in ["Саша", "Αλέξης", "山田 Taro", "김 Kim"] {
+    // Any script, and any mix of scripts, is fine; so is a Hebrew name
+    // with a right-to-left mark.
+    for ok in [
+        "Dmitri Дмитрий",
+        "Ivan (Иван)",
+        "محمد Ali",
+        "\u{05D3}\u{05E0}\u{05D4}\u{200F} Dana",
+        "Саша",
+        "Αλέξης",
+        "山田 Taro",
+        "김 Kim",
+        "АЛЕХ",
+    ] {
         let (st, v) = set_name(&ts, &lan.cookie, ok).await;
         assert_eq!(st, 200, "{ok:?}: {v}");
     }

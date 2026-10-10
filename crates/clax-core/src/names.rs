@@ -134,48 +134,42 @@ pub fn token_form(display_name: &str) -> String {
     out
 }
 
-/// Whether `s` holds a bidirectional control (U+061C, U+200E/F,
-/// U+202A–E, U+2066–9), which can make a name render as another.
+/// Whether `s` holds a bidirectional embedding, override or isolate
+/// control (U+202A–U+202E, U+2066–U+2069), which can make a name render as
+/// another (`\u{202E}xelA` reads "Alex"). The marks (LRM, RLM, ALM) that
+/// right-to-left names need are not among them; [`token_form`] drops them.
 pub fn has_bidi_control(s: &str) -> bool {
-    use icu_properties::CodePointSetData;
-    use icu_properties::props::BidiControl;
-    let bidi = CodePointSetData::new::<BidiControl>();
-    s.chars().any(|c| bidi.contains(c))
+    s.chars()
+        .any(|c| matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'))
 }
 
-/// Whether `s` mixes scripts (Latin with Cyrillic or Greek, and so on), as
-/// a name made to look like another does. Common and inherited characters
-/// (digits, punctuation, marks) belong to every script, and the mixes a
-/// language writes are allowed: Latin with Han and Hiragana or Katakana,
-/// with Han and Bopomofo, or with Han and Hangul.
-pub fn is_mixed_script(s: &str) -> bool {
-    use icu_properties::CodePointMapData;
-    use icu_properties::props::Script;
-    let sc = CodePointMapData::<Script>::new();
-    let mut seen: Vec<Script> = Vec::new();
-    for c in s.chars() {
-        let x = sc.get(c);
-        if matches!(x, Script::Common | Script::Inherited | Script::Unknown) || seen.contains(&x) {
-            continue;
-        }
-        seen.push(x);
+/// The UTS #39 confusable skeletons a display name is compared by (spec
+/// §9.6): that of its [`token_form`] (case folded first, so `MIA` and
+/// `mia` meet), and that of the token form of the skeleton of the name as
+/// written (so a capital `I` meets an `l`, as in `AIex`). Two names look
+/// alike when they share a key ([`CollisionKeys::meets`]). Any script, and
+/// any mix of scripts, has keys: `Аlex` (Cyrillic А), `Ａｌｅｘ` and
+/// `Alex\u{3164}` meet `Alex`, and the all-Cyrillic `Сосо` meets `Coco`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CollisionKeys([String; 2]);
+
+impl CollisionKeys {
+    pub fn of(name: &str) -> CollisionKeys {
+        let folded: String = unicode_security::skeleton(&token_form(name)).collect();
+        let first: String = unicode_security::skeleton(name).collect();
+        let written: String = unicode_security::skeleton(&token_form(&first)).collect();
+        CollisionKeys([folded, written])
     }
-    if seen.len() < 2 {
-        return false;
+
+    /// Whether the two names look alike: they share a key.
+    pub fn meets(&self, other: &CollisionKeys) -> bool {
+        self.0.iter().any(|k| other.0.contains(k))
     }
-    let allowed: [&[Script]; 3] = [
-        &[
-            Script::Latin,
-            Script::Han,
-            Script::Hiragana,
-            Script::Katakana,
-        ],
-        &[Script::Latin, Script::Han, Script::Bopomofo],
-        &[Script::Latin, Script::Han, Script::Hangul],
-    ];
-    !allowed
-        .iter()
-        .any(|set| seen.iter().all(|x| set.contains(x)))
+}
+
+/// Whether display names `a` and `b` look alike ([`CollisionKeys`]).
+pub fn look_alike(a: &str, b: &str) -> bool {
+    CollisionKeys::of(a).meets(&CollisionKeys::of(b))
 }
 
 /// Letters whose diacritic is part of the letter (no decomposition), as
@@ -192,12 +186,13 @@ fn fold_letter(c: char) -> std::iter::Once<char> {
     })
 }
 
-/// Whether no agent may take `name` (§11): a reserved word, or the token
-/// form of one of `people`'s display names (the owner's and every
-/// connected person's), ignoring case.
+/// Whether no agent may take `name` (§11): a reserved word, or a name that
+/// looks like one of `people`'s display names (the owner's and every
+/// connected person's): see [`CollisionKeys`].
 pub fn is_reserved(name: &str, people: &[String]) -> bool {
     let n = name.to_ascii_lowercase();
-    RESERVED.contains(&n.as_str()) || people.iter().any(|p| token_form(p) == n)
+    let key = CollisionKeys::of(&n);
+    RESERVED.contains(&n.as_str()) || people.iter().any(|p| CollisionKeys::of(p).meets(&key))
 }
 
 /// The repository `cwd` is in and its branch (§11), read from the files
@@ -433,36 +428,60 @@ mod tests {
     }
 
     #[test]
-    fn bidi_controls_and_mixed_scripts_are_seen() {
+    fn bidi_controls_are_seen_and_marks_are_not() {
         for b in [
             "\u{202E}xelA",
-            "A\u{200F}lex",
             "\u{2066}Sam\u{2069}",
-            "Sam\u{061C}",
+            "a\u{202A}b",
+            "\u{2067}x",
         ] {
             assert!(has_bidi_control(b), "{b:?}");
         }
-        assert!(!has_bidi_control("Mia Kovač"));
-        for m in [
-            "\u{0410}lex",
-            "\u{0405}\u{0430}m",
-            "\u{0391}lex",
-            "Sam \u{0418}",
-        ] {
-            assert!(is_mixed_script(m), "{m:?}");
-        }
         for ok in [
-            "Alex",
             "Mia Kovač",
-            "Ѕаша",
-            "Αλέξης",
-            "山田 Taro",
-            "やまだ 山田 Taro",
-            "김 Kim 金",
-            "Sam 2",
-            "O'Brien-Smith",
+            "A\u{200F}lex",
+            "Sam\u{061C}",
+            "\u{05D3}\u{05E0}\u{05D4}\u{200F} Dana",
         ] {
-            assert!(!is_mixed_script(ok), "{ok:?}");
+            assert!(!has_bidi_control(ok), "{ok:?}");
+        }
+    }
+
+    #[test]
+    fn look_alike_names_meet() {
+        for same in [
+            "alex",
+            "ALEX",
+            "\u{0410}lex",
+            "AIex",
+            "Ａｌｅｘ",
+            "Alex\u{3164}",
+            "Alex\u{FFA0}",
+            "A\u{115F}lex",
+            "Alex\u{2800}",
+            "Al\u{200B}ex",
+            "Al\u{FE0F}ex",
+            "Alex\u{E0041}",
+            "Al\u{034F}ex",
+            "A\u{200F}lex",
+        ] {
+            assert!(look_alike(same, "Alex"), "{same:?}");
+        }
+        assert!(
+            look_alike("\u{0421}\u{043E}\u{0441}\u{043E}", "Coco"),
+            "all-Cyrillic Сосо"
+        );
+        assert!(look_alike("\u{0405}\u{0430}m", "Sam"));
+        assert!(look_alike("MIA  KOVAC", "Mia Kovač"));
+        for other in [
+            "Alexa",
+            "Alix",
+            "Dmitri Дмитрий",
+            "Ivan (Иван)",
+            "محمد Ali",
+            "АЛЕХ",
+        ] {
+            assert!(!look_alike(other, "Alex"), "{other:?}");
         }
     }
 

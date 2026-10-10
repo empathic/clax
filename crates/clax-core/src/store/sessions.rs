@@ -326,6 +326,22 @@ pub(super) fn live_name_taken(
     )?)
 }
 
+/// Whether a live session's name looks like the display name whose keys
+/// are `key` ([`crate::names::CollisionKeys`], spec §9.6, §11).
+pub(super) fn live_name_looks_like(
+    c: &rusqlite::Connection,
+    key: &crate::names::CollisionKeys,
+) -> Result<bool> {
+    let mut stmt =
+        c.prepare_cached("SELECT name FROM sessions WHERE ended_at IS NULL AND name IS NOT NULL")?;
+    for n in stmt.query_map([], |r| r.get::<_, String>(0))? {
+        if crate::names::CollisionKeys::of(&n?).meets(key) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// The name a session of `harness` registering from `repo` and `branch`
 /// is given (spec §11, R3): the first of [`crate::names::candidates`] that
 /// is neither reserved nor a live session's other than `except`'s.
@@ -1920,7 +1936,7 @@ mod tests {
             st.upsert_viewer(&lan, Some("Mia")).unwrap();
             st.upsert_viewer(&lan, Some("")).unwrap();
             // A connected person renaming themselves cannot take a live
-            // agent's name; a LAN viewer can.
+            // agent's name.
             let sam = st.grant(&sam_grant).unwrap().person.unwrap();
             let sam_cookie: String = st
                 .with_read(|c| {
@@ -1936,7 +1952,12 @@ mod tests {
                 "name_taken"
             );
             st.upsert_viewer(&sam_cookie, Some("Sam K")).unwrap();
-            st.upsert_viewer(&lan, Some("web")).unwrap();
+            // A live agent's name is protected from LAN viewers too.
+            assert_eq!(code(st.upsert_viewer(&lan, Some("web"))), "name_taken");
+            assert_eq!(
+                code(st.upsert_viewer(&lan, Some("W\u{0435}b"))),
+                "name_taken"
+            );
         }
 
         #[test]

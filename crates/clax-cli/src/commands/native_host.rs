@@ -144,6 +144,7 @@ fn mint_failed(e: anyhow::Error, probe: Option<u16>, daemon_version: &str) -> Ho
 /// replacing an older one or starting one), and mints a credential with the
 /// token, as the owner ([`Client::owner_channel`]): the mint route refuses
 /// agent channels.
+#[allow(clippy::disallowed_methods)] // the one owner_channel (clippy.toml)
 fn pair(cli: &crate::Cli, home: &Home) -> Result<Value, HostError> {
     let port = cli.port_for(home).map_err(|e| HostError {
         code: "daemon_unavailable",
