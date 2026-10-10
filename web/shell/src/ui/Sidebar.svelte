@@ -227,7 +227,7 @@
   {/if}
   <section class="section-open">
     <h2 class="gh you"><span class="sw" aria-hidden="true"></span><span class="t">Open</span> <span class="c">{open.length}</span></h2>
-    {#if open.length === 0}<p class="muted small empty-open">{group.length ? "Nothing else open." : "Nothing open. Press C and click anything to comment on it."}</p>{:else}{@render cards(open)}{/if}
+    {#if open.length === 0}<p class="muted small empty-open">{group.length ? "Nothing else open." : `Nothing open. Press C and click anything to comment on it${p.compose ? ", or use New comment for the whole artifact" : ""}.`}</p>{:else}{@render cards(open)}{/if}
   </section>
   <div class="tail">
     <details class="section-detached" aria-label={`Detached ${detached.length}`} bind:open={detachedOpen}>

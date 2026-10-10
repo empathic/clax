@@ -116,4 +116,14 @@ describe("NewComment", () => {
     expect(v.root.querySelectorAll(".section-detached .thread-card")).toHaveLength(0);
     v.unmount();
   });
+
+  it("names the box in the empty Open section only when the panel has it", () => {
+    const props = { versions: [], shown: 1, agent: "claude", threads: [] as Thread[], resolved: {}, selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() };
+    const plain = mount(Sidebar, props);
+    expect(plain.root.querySelector(".empty-open")!.textContent).toBe("Nothing open. Press C and click anything to comment on it.");
+    plain.unmount();
+    const v = mount(Sidebar, { ...props, compose: { version: 1, host: fakeHost().host } });
+    expect(v.root.querySelector(".empty-open")!.textContent).toBe("Nothing open. Press C and click anything to comment on it, or use New comment for the whole artifact.");
+    v.unmount();
+  });
 });
