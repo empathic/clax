@@ -175,7 +175,7 @@ pub struct Client {
     /// Every request carries the agent-channel marker
     /// ([`crate::channel::HEADER`]): under a harness
     /// ([`crate::channel::from_process`]), and always for the hooks and
-    /// `clax feedback follow` ([`Client::as_agent`]).
+    /// `clax feedback follow` ([`Client::agent_channel`]).
     pub agent: bool,
 }
 
@@ -646,7 +646,7 @@ impl Client {
 
     /// This client as an agent channel whatever the environment: the hooks
     /// and `clax feedback follow` serve an agent.
-    pub fn as_agent(mut self) -> Client {
+    pub fn agent_channel(mut self) -> Client {
         self.agent = true;
         self
     }
@@ -1240,7 +1240,7 @@ pub(crate) mod tests {
         let mut c = Client::from_info(info("0.1.0"));
         c.agent = false;
         assert_eq!(marker(&c), None);
-        let c = c.as_agent();
+        let c = c.agent_channel();
         assert_eq!(marker(&c).as_deref(), Some("agent"));
         let c = c.with_timeout(Duration::from_secs(1));
         assert_eq!(marker(&c).as_deref(), Some("agent"), "kept by a timeout");
