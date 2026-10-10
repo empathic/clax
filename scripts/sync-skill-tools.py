@@ -49,7 +49,7 @@ def block(manifest, prefix, source, tools):
 # spelled-out count; the prefix the list's tool names carry)
 DOC_LISTS = [
     ("docs/contract.md", r"^([A-Z][a-z-]+) tools: ", ""),
-    ("README.md", r"^Each harness gets the same ([a-z-]+) tools", ""),
+    ("docs/usage.md", r"^Each harness gets the same ([a-z-]+) tools", ""),
     ("plugins/claude-code/README.md", r"^- The `clax` MCP server [^\n]*?: ([a-z-]+) tools", ""),
     ("plugins/clax/README.md", r"^- The `clax` MCP server [^\n]*?: ([a-z-]+) tools", ""),
     ("plugins/pi/README.md", r"^- ([A-Z][a-z-]+) tools: ", "clax_"),
