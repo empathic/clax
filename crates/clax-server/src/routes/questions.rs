@@ -9,6 +9,7 @@ use super::artifacts::{body, body_within, path};
 use crate::agent::{DeniedToGrants, TokenOrAgent};
 use crate::audit::DeferredAudit;
 use crate::auth::Caller;
+#[cfg(debug_assertions)]
 use crate::auth::RequireToken;
 use crate::error::ApiError;
 use crate::identity::Identity;

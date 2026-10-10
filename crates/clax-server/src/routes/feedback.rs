@@ -5,6 +5,7 @@
 
 use super::artifacts::{body, path};
 use crate::agent::{FeedbackAck, FeedbackNotices, FeedbackPoll, TokenOrAgent};
+#[cfg(debug_assertions)]
 use crate::auth::RequireToken;
 use crate::error::ApiError;
 use crate::feedback::apply;
