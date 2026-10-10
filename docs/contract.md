@@ -3093,11 +3093,12 @@ response is `text/event-stream`, never compressed. Its first event has no
 
 ```
 event: ready
-data: {"stream": "<32 hex digits>", "seq": 41, "resumed": false, "topics": []}
+data: {"stream": "<32 hex digits>", "seq": 41, "resumed": false, "topics": [], "caller": {"level": "admin", "viewer": "<public ID>"}}
 ```
 
 `stream` names the stream in the calls below; `seq` is the daemon's event
-sequence when the stream opened.
+sequence when the stream opened; `caller` is the level and viewer public ID
+(null for none) the stream was opened for, which a resume keeps.
 
 **Subscribing.** `POST /api/stream/<stream>` with `{"subscribe": [<topic>,
 ...], "unsubscribe": [<topic>, ...]}` (either may be left out, each at most

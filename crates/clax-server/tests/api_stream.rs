@@ -414,7 +414,8 @@ async fn doc_events_follow_the_level_fixed_when_the_stream_opened() {
 async fn a_reconnect_with_last_event_id_resumes_the_same_stream() {
     let ts = TestServer::spawn().await;
     let a = aid_of(&ts.publish("A", &[("index.html", "a")]).await);
-    let (mut r, sid) = open(&ts).await;
+    let (mut r, first) = open_with(&ts, |b| b).await;
+    let sid = first["stream"].as_str().unwrap().to_string();
     subscribe(&ts, &sid, &[&format!("artifact:{a}")]).await;
     let url = format!("/api/artifacts/{a}/versions");
     let publish = |n: u32| {
@@ -432,6 +433,10 @@ async fn a_reconnect_with_last_event_id_resumes_the_same_stream() {
     assert_eq!(ready["stream"], sid.as_str());
     assert_eq!(ready["resumed"], true);
     assert_eq!(ready["topics"], json!([format!("artifact:{a}")]));
+    assert_eq!(
+        ready["caller"], first["caller"],
+        "a resume keeps the caller"
+    );
     let e = r.next().await;
     assert_eq!(
         (e.name.as_str(), e.data["n"].as_u64()),
@@ -449,6 +454,11 @@ async fn a_reconnect_with_last_event_id_resumes_the_same_stream() {
     .await;
     assert_ne!(ready["stream"], sid.as_str());
     assert_eq!(ready["resumed"], false);
+    assert_eq!(
+        ready["caller"],
+        json!({"level": "view", "viewer": other.public_id}),
+        "ready names the caller the stream was opened for"
+    );
 }
 
 #[tokio::test]
