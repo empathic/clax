@@ -135,7 +135,7 @@ pub fn run(_cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
     let mut missing_since: Option<Instant> = None;
     let mut stdout = std::io::stdout();
     loop {
-        let Some(client) = Client::discover(home).map(Client::as_agent) else {
+        let Some(client) = Client::discover(home).map(Client::agent_channel) else {
             // No daemon: wait for one; another client starts it.
             back_off(&mut backoff);
             continue;

@@ -391,12 +391,15 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
     ),
 ];
 
+/// A [`ROUTE_NEEDS`] entry: handler, right (type and action), class.
+pub type RouteNeed = (&'static str, Option<(RightType, &'static str)>, Class);
+
 /// Each handler an agent may reach, by `module::function`, with the right
 /// and class its `need!` declares: the spec's route table (§7.5) as the
 /// handlers declare it, for the contract and the canary sweep. A guard test
 /// in `routes` checks each handler's `Agent<N>` against its entry, and that
 /// every entry is a routed handler's.
-pub const ROUTE_NEEDS: &[(&str, Option<(RightType, &str)>, Class)] = &[
+pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("sessions::list", SessionsList),
     route_need!("sessions::register", SessionsRegister),
     route_need!("sessions::join", SessionsJoin),
@@ -1314,6 +1317,11 @@ async fn read_unverified(
     let mut buf = Vec::with_capacity(declared.unwrap_or(0));
     let mut stream = body.into_data_stream();
     loop {
+        // Past the deadline nothing more is taken, even a chunk that is
+        // ready (a wait below may have lasted to it).
+        if gate.timer.now() >= whole {
+            return Err(timeout());
+        }
         let allowed = Duration::from_secs_f64(buf.len() as f64 / MIN_RATE as f64);
         let deadline = gate
             .timer
@@ -1331,7 +1339,8 @@ async fn read_unverified(
             return Err(too_large(limit));
         }
         if declared.is_none() {
-            if let Some(more) = gate.reserve(chunk.len()).await? {
+            // Each wait ends at the deadline too.
+            if let Some(more) = by(gate, whole, gate.reserve(chunk.len())).await? {
                 match reserved.as_mut() {
                     Some(r) => r.merge(more),
                     None => reserved = Some(more),
@@ -1340,7 +1349,7 @@ async fn read_unverified(
             if buf.len() + chunk.len() > LARGE_BODY {
                 if permit.is_none() {
                     small = None;
-                    permit = Some(gate.key_permit(key).await?);
+                    permit = Some(by(gate, whole, gate.key_permit(key)).await?);
                 }
             } else if let Some(s) = small.as_mut() {
                 s.add(chunk.len())?;
@@ -1352,6 +1361,18 @@ async fn read_unverified(
     }
     drop((permit, reserved, small));
     Ok(Bytes::from(buf))
+}
+
+/// `wait`, or 408 `timeout` once the gate's clock reaches `deadline`.
+async fn by<T>(
+    gate: &Gate,
+    deadline: Duration,
+    wait: impl std::future::Future<Output = Result<T, ApiError>>,
+) -> Result<T, ApiError> {
+    tokio::select! {
+        r = wait => r,
+        () = gate.timer.sleep_until(deadline) => Err(timeout()),
+    }
 }
 
 /// Route layer: verifies a `Clax-Grant` request's signature before its
@@ -1556,6 +1577,89 @@ mod tests {
         assert_eq!(waiting.await.unwrap(), Some("busy"));
         drop((held, reserved));
         assert_eq!(gate.state(), GateState::default());
+    }
+
+    /// A body of `first` (sent at once), then nothing until `rest` fires,
+    /// then `then`.
+    fn trickle(first: Vec<u8>, rest: tokio::sync::oneshot::Receiver<()>, then: Vec<u8>) -> Body {
+        let s = futures::stream::once(async move { Ok::<_, std::io::Error>(Bytes::from(first)) })
+            .chain(futures::stream::once(async move {
+                let _ = rest.await;
+                Ok::<_, std::io::Error>(Bytes::from(then))
+            }));
+        Body::from_stream(s)
+    }
+
+    /// A chunked body that crosses 1 MiB waits for its key's permit at most
+    /// until its read's deadline, not the 30 s a queue allows.
+    #[tokio::test]
+    async fn the_waits_within_a_chunked_read_end_at_its_deadline() {
+        let timer = Arc::new(Stepped::default());
+        let gate = Arc::new(Gate::new(timer.clone()));
+        let key = [2u8; 32];
+        let held = gate.key_permit(key).await.unwrap();
+        let (_tx, rx) = tokio::sync::oneshot::channel();
+        let body = trickle(vec![0u8; LARGE_BODY + 1], rx, vec![]);
+        let limit = 2 * LARGE_BODY;
+        let g = gate.clone();
+        let read = tokio::spawn(async move {
+            read_unverified(&g, key, &HeaderMap::new(), body, limit)
+                .await
+                .err()
+                .map(|e| e.code)
+        });
+        gate.wait_until(|s| s.queued == 1, Duration::from_secs(5))
+            .await
+            .expect("queued for the key's permit");
+        timer.advance(read_deadline(limit) - Duration::from_secs(1));
+        tokio::task::yield_now().await;
+        assert!(!read.is_finished());
+        timer.advance(Duration::from_secs(1));
+        let got = tokio::time::timeout(Duration::from_secs(5), read)
+            .await
+            .expect("the read ends at its deadline, not after the queue's 30 s");
+        assert_eq!(got.unwrap(), Some("timeout"));
+        drop(held);
+        gate.wait_until(
+            |s| {
+                s == GateState {
+                    read: s.read,
+                    ..GateState::default()
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("everything released");
+    }
+
+    /// A clock that reads its start once, then far past any deadline; it
+    /// never wakes a sleep.
+    struct Leaps(std::sync::atomic::AtomicBool);
+
+    impl Timer for Leaps {
+        fn now(&self) -> Duration {
+            if self.0.swap(true, Ordering::SeqCst) {
+                Duration::from_secs(3600)
+            } else {
+                Duration::ZERO
+            }
+        }
+        fn sleep_until(&self, _: Duration) -> BoxFuture<'static, ()> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    /// Past the deadline a chunk that is ready is not taken.
+    #[tokio::test]
+    async fn a_ready_chunk_past_the_deadline_is_refused() {
+        let gate = Arc::new(Gate::new(Arc::new(Leaps(Default::default()))));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tx.send(()).unwrap();
+        let body = trickle(b"ready".to_vec(), rx, b"and more".to_vec());
+        let got = read_unverified(&gate, [3u8; 32], &HeaderMap::new(), body, 1024).await;
+        assert_eq!(got.err().map(|e| e.code), Some("timeout"));
+        assert_eq!(gate.state().read, 0);
     }
 
     #[test]
