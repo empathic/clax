@@ -396,28 +396,76 @@ impl Identity {
 }
 
 impl Identity {
+    /// The verified grant of an agent credential of another machine.
+    pub fn verified_grant(&self) -> Option<&str> {
+        self.grant
+            .as_ref()
+            .filter(|_| self.grant_header)
+            .map(|g| g.grant_id.as_str())
+    }
+
+    /// Whether the agent side's own headers (`x-clax-via`, `x-clax-git`,
+    /// `x-clax-call`) count: on a verified agent channel, the daemon token
+    /// or a verified grant, never a browser's.
+    pub fn agent_headers_count(&self) -> bool {
+        self.token || self.verified_grant().is_some()
+    }
+
     /// Who a request that acts is, as the audit journal records it (audit
-    /// spec §5.2). Only a token holder can be an agent: the session that
-    /// `session` names, when it exists (ended or not), else, on the `mcp`
-    /// channel, an agent with no session (the sessionless `/mcp` route). A
-    /// `hook` or `pi` request without a known session is the owner's.
-    /// Otherwise the owner or the viewer
-    /// [`Identity::viewer`] names, by public ID, its row made when missing as
-    /// [`Identity::ensure_viewer`] makes it; else anonymous.
+    /// spec §5.2), told apart as [`Identity::caller`] tells callers apart:
+    ///
+    /// - A verified grant's request is that grant's agent: the session
+    ///   `session` names when it is the grant's (its actor carries the
+    ///   grant and person), else an agent with no session naming the grant,
+    ///   its person and the channel. An unverified one is anonymous.
+    /// - The token is an agent when it names a known session (the token's,
+    ///   not a grant's), or with no known session when the request carries
+    ///   the agent-channel marker (`X-Clax-Channel: agent`: the shim, the
+    ///   hooks, Pi, and the CLI under a harness) or names the `mcp`
+    ///   channel. Such an agent records its channel unless it is `mcp`;
+    ///   a token request naming no channel is `cli`'s.
+    /// - Otherwise the owner, or the viewer (`person` for a connected
+    ///   person, as [`Caller::Person`] counts one)
+    ///   [`Identity::viewer`] names, by public ID, its row made when
+    ///   missing as [`Identity::ensure_viewer`] makes it; else anonymous.
     pub fn audit_actor(
         &self,
         st: &Store,
         session: Option<&str>,
         channel: Option<Via>,
     ) -> clax_core::Result<Actor> {
-        if self.token {
-            if let Some(sid) = session.filter(|s| clax_core::is_ulid(s))
-                && let Some(agent) = st.session_actor(sid)?
-            {
+        let known = |grant: Option<&str>| -> clax_core::Result<Option<AgentActor>> {
+            let Some(sid) = session.filter(|s| clax_core::is_ulid(s)) else {
+                return Ok(None);
+            };
+            Ok(st
+                .session_actor(sid)?
+                .filter(|a| a.grant_id.as_deref() == grant))
+        };
+        let sessionless = |channel: Option<Via>| AgentActor {
+            channel: Some(channel.unwrap_or(Via::Cli)).filter(|c| *c != Via::Mcp),
+            ..AgentActor::default()
+        };
+        if self.grant_header {
+            let Some(gid) = self.verified_grant() else {
+                return Ok(Actor::Anonymous);
+            };
+            if let Some(agent) = known(Some(gid))? {
                 return Ok(Actor::Agent(agent));
             }
-            if channel == Some(Via::Mcp) {
-                return Ok(Actor::Agent(AgentActor::default()));
+            let v = st.viewer_of_grant(gid)?;
+            return Ok(Actor::Agent(AgentActor {
+                grant_id: Some(gid.to_string()),
+                person: v.person.then_some(v.public_id),
+                ..sessionless(channel)
+            }));
+        }
+        if self.token {
+            if let Some(agent) = known(None)? {
+                return Ok(Actor::Agent(agent));
+            }
+            if self.agent_marker || channel == Some(Via::Mcp) {
+                return Ok(Actor::Agent(sessionless(channel)));
             }
         }
         let viewer = match self.viewer(st)? {
@@ -429,9 +477,9 @@ impl Identity {
                 public_id: v.public_id,
             },
             Some(v) => Actor::Viewer {
+                person: v.person && v.person_revoked_at.is_none(),
                 public_id: v.public_id,
                 display_name: v.display_name,
-                person: false,
             },
             None => Actor::Anonymous,
         })

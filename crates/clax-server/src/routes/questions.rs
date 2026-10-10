@@ -477,7 +477,7 @@ pub async fn terminal(
                 return Ok(None);
             }
             let answers = from_claude_answers(&q.questions, &b.answers);
-            let ctx = audit.owner_in_terminal(db)?;
+            let ctx = audit.answerer_in_terminal(db)?;
             close(&st, db, &ctx, &q.id, Close::Terminal { answers }).map(Some)
         })
         .await?;

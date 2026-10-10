@@ -6,8 +6,9 @@
 //! The context is built from what the daemon already trusts. The actor comes
 //! from [`Identity`] ([`Identity::audit_actor`]), never from a second check
 //! of credentials. The agent side's own claims (`x-clax-via`,
-//! `x-clax-session`, `x-clax-git`, `x-clax-call`) count only on a request
-//! that carries the token; a browser's are ignored. A header that does not
+//! `x-clax-session`, `x-clax-git`, `x-clax-call`) count only on a verified
+//! agent channel: the daemon token, or a grant whose signature
+//! [`crate::agent::verify_layer`] verified; a browser's are ignored. A header that does not
 //! decode never fails the request: a bad `x-clax-git` is the capture
 //! outcome `invalid`, a bad `x-clax-call` is no call, and a bad `x-clax-via`
 //! or `x-clax-session` is inferred as though absent. Header values are never
@@ -82,24 +83,26 @@ fn named_channel(headers: &HeaderMap) -> Option<Via> {
         .filter(|v| matches!(v, Via::Mcp | Via::Hook | Via::Pi | Via::Cli))
 }
 
-/// The channel of a request with credentials `id`: what the token holder
-/// names, else the extension, a browser of the owner's (the shell), the
-/// token (the MCP shim when it acts for a session, else the CLI), or a LAN
-/// viewer.
+/// The channel of a request with credentials `id`: what a verified agent
+/// channel (the token or a verified grant) names, else the extension, a
+/// browser of the owner's (the shell), a verified agent channel (the MCP
+/// shim when it acts for a session, else the CLI), or a LAN viewer.
 pub fn channel(id: &Identity, named: Option<Via>, agent_session: bool) -> Via {
+    let agent = id.agent_headers_count();
     match named {
-        Some(v) if id.token => v,
+        Some(v) if agent => v,
         _ if id.extension => Via::Extension,
         _ if id.owner_browser() => Via::Shell,
-        _ if id.token && agent_session => Via::Mcp,
-        _ if id.token => Via::Cli,
+        _ if agent && agent_session => Via::Mcp,
+        _ if agent => Via::Cli,
         _ => Via::Lan,
     }
 }
 
-/// The git half of the context: the decoded `x-clax-git` of a token holder.
+/// The git half of the context: the decoded `x-clax-git` of a verified
+/// agent channel.
 fn git_field(id: &Identity, headers: &HeaderMap) -> GitField {
-    if !id.token {
+    if !id.agent_headers_count() {
         return GitField::Absent;
     }
     match headers.get(GIT_HEADER) {
@@ -111,10 +114,11 @@ fn git_field(id: &Identity, headers: &HeaderMap) -> GitField {
     }
 }
 
-/// The decoded `x-clax-call` of a token holder; `None` without one, or when
-/// it does not decode (the reason, never the value, is logged).
+/// The decoded `x-clax-call` of a verified agent channel; `None` without
+/// one, or when it does not decode (the reason, never the value, is
+/// logged).
 fn call_field(id: &Identity, headers: &HeaderMap) -> Option<CallHeader> {
-    if !id.token {
+    if !id.agent_headers_count() {
         return None;
     }
     let value = headers.get(CALL_HEADER)?;
@@ -144,11 +148,12 @@ fn actor_and_channel(
     Ok((actor, channel(id, named, agent_session)))
 }
 
-/// The audit context of a token holder's `GET` poll that hands session
-/// `sid` its feedback: that session's agent, through the channel the
-/// request names (else `mcp`), with its git state and tool call. Unlike
-/// the [`AuditCtx`] extractor it writes no row, so a `GET` route may use
-/// it. Call it only behind the token.
+/// The audit context of a verified agent channel's `GET` poll that hands
+/// session `sid` its feedback: that session's agent (with its grant and
+/// person for a person's agent), through the channel the request names
+/// (else `mcp`), with its git state and tool call. Unlike the [`AuditCtx`]
+/// extractor it writes no row, so a `GET` route may use it. Call it only
+/// behind the token or a verified grant whose session `sid` is.
 pub fn session_ctx(
     st: &clax_core::Store,
     headers: &HeaderMap,
@@ -198,13 +203,15 @@ impl DeferredAudit {
         }
     }
 
-    /// The audit context of a token holder acting for session `sid`, as
-    /// the routes under `/api/sessions/<sid>` do: that session's agent
+    /// The audit context of a verified agent channel (the token, or a grant
+    /// whose session the route's extractor found `sid` to be) acting for
+    /// session `sid`, as the routes under `/api/sessions/<sid>` do: that
+    /// session's agent, with its grant and person for a person's agent
     /// (`session_id` alone when no such session exists), through the
     /// channel the request names, else `mcp`. It reads the session row and
-    /// writes nothing. Without the token it is [`DeferredAudit::resolve`].
+    /// writes nothing. Otherwise it is [`DeferredAudit::resolve`].
     pub fn for_session(self, st: &clax_core::Store, sid: &str) -> clax_core::Result<AuditCtx> {
-        if !self.id.token {
+        if !self.id.agent_headers_count() {
             return self.resolve(st);
         }
         let agent = st
@@ -221,32 +228,52 @@ impl DeferredAudit {
         })
     }
 
-    /// The audit context of an answer the owner gave in the terminal, which
-    /// a token holder (the hook) reports: the owner, by the owner's viewer
-    /// row (made when missing, as for the token alone), through the channel
-    /// the request names, else `hook`, with the request's git state and
-    /// tool call.
-    pub fn owner_in_terminal(self, st: &clax_core::Store) -> clax_core::Result<AuditCtx> {
-        let owner = st.owner_viewer(false)?;
-        Ok(AuditCtx {
-            actor: Actor::Owner {
-                public_id: owner.public_id,
+    /// The audit context of an answer given in the terminal, which the
+    /// asking agent's hook reports: the person at that terminal. For the
+    /// token that is the owner, by the owner's viewer row (made when
+    /// missing, as for the token alone); for a verified grant, the grant's
+    /// person (the owner for a grant of the owner's row). Through the
+    /// channel the request names, else `hook`, with the request's git state
+    /// and tool call.
+    pub fn answerer_in_terminal(self, st: &clax_core::Store) -> clax_core::Result<AuditCtx> {
+        let actor = match self.id.verified_grant() {
+            Some(gid) => {
+                let v = st.viewer_of_grant(gid)?;
+                if v.person {
+                    Actor::Viewer {
+                        public_id: v.public_id,
+                        display_name: v.display_name,
+                        person: true,
+                    }
+                } else {
+                    Actor::Owner {
+                        public_id: v.public_id,
+                    }
+                }
+            }
+            None => Actor::Owner {
+                public_id: st.owner_viewer(false)?.public_id,
             },
+        };
+        Ok(AuditCtx {
+            actor,
             via: self.named.unwrap_or(Via::Hook),
             git: self.git,
             call: self.call,
         })
     }
 
-    /// The context of a token holder registering or joining a session: the
-    /// channel it names (else `mcp`), its git state and its tool call. The
-    /// store records those events as the session's own agent, which it
-    /// names itself, so the actor here is the sessionless agent and no row
-    /// is read or written.
+    /// The context of a verified agent channel registering or joining a
+    /// session: the channel it names (else `mcp`), its git state and its
+    /// tool call. The store records those events as the session's own agent
+    /// (with its grant and person for a person's agent), which it names
+    /// itself, so the actor here is the sessionless agent and no row is
+    /// read or written.
     pub fn agent_side(self) -> AuditCtx {
+        let counts = self.id.agent_headers_count();
         AuditCtx {
             actor: Actor::Agent(clax_core::audit::AgentActor::default()),
-            via: self.named.filter(|_| self.id.token).unwrap_or(Via::Mcp),
+            via: self.named.filter(|_| counts).unwrap_or(Via::Mcp),
             git: self.git,
             call: self.call,
         }
