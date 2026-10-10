@@ -10,7 +10,7 @@
 use super::Store;
 use super::sessions::EndReason;
 use super::viewers::{checked_name, row_to_viewer};
-use crate::audit::AuditCtx;
+use crate::audit::{Actor, AuditCtx, AuditKind, AuditRecord, SystemReason};
 use crate::model::Viewer;
 use crate::names::CollisionKeys;
 use crate::rights::Rights;
@@ -486,9 +486,141 @@ fn issue(
     Ok(issued)
 }
 
+/// The context of a lapse: Clax itself, for reason `expiry`.
+const EXPIRY: AuditCtx = AuditCtx::system(SystemReason::Expiry);
+
+/// A grant event (spec 2026-10-08-multi-agent-multi-person §20.2) of
+/// `kind` for grant `gid` at `at`.
+fn grant_record(kind: AuditKind, at: &str, gid: &str) -> AuditRecord {
+    AuditRecord::new(kind, at).with("grant_id", gid)
+}
+
+/// `ctx` with `actor` in place of its own.
+fn acting(ctx: &AuditCtx, actor: Actor) -> AuditCtx {
+    AuditCtx {
+        actor,
+        ..ctx.clone()
+    }
+}
+
+/// The client asking for grant `gid`, as an audit actor: before anyone
+/// approved it, it is known only by its grant and the name it gave.
+fn client_actor(c: &rusqlite::Connection, gid: &str) -> Result<Actor> {
+    let client_name: String = c.query_row(
+        "SELECT client_name FROM grants WHERE id = ?1",
+        params![gid],
+        |r| r.get(0),
+    )?;
+    Ok(Actor::Client {
+        grant_id: gid.to_string(),
+        client_name,
+    })
+}
+
+/// The person grant `gid` is bound to, as an audit actor: a viewer marked
+/// `person`, or the owner for a grant of the owner's row.
+fn person_actor(c: &rusqlite::Connection, gid: &str) -> Result<Actor> {
+    let (public_id, display_name, owner): (String, Option<String>, bool) = c.query_row(
+        "SELECT v.public_id, v.display_name, v.owner FROM grants g
+         JOIN viewers v ON v.id = g.viewer_id WHERE g.id = ?1",
+        params![gid],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    Ok(if owner {
+        Actor::Owner { public_id }
+    } else {
+        Actor::Viewer {
+            public_id,
+            display_name,
+            person: true,
+        }
+    })
+}
+
+/// Records that grant `gid`, `was` before, lapsed: a request still pending
+/// is denied (`expired`), an approved grant ends (`by` `expiry`); both as
+/// `system:expiry`.
+fn record_lapse(
+    st: &Store,
+    tx: &Transaction<'_>,
+    gid: &str,
+    was: &str,
+    sessions_ended: &[String],
+    now: &str,
+) -> Result<()> {
+    let rec = if was == "pending" {
+        grant_record(AuditKind::GrantDeny, now, gid).with("reason", "expired")
+    } else {
+        grant_record(AuditKind::GrantRevoke, now, gid)
+            .with("by", EndedBy::Expiry.as_str())
+            .with("sessions_ended", sessions_ended.to_vec())
+    };
+    st.record_audit(tx, &EXPIRY, rec)?;
+    Ok(())
+}
+
+/// Who ends grant `gid` from its own machine: its person, or for a
+/// request no one approved, its client.
+fn requester_actor(c: &rusqlite::Connection, gid: &str) -> Result<Actor> {
+    let bound: bool = c.query_row(
+        "SELECT viewer_id IS NOT NULL FROM grants WHERE id = ?1",
+        params![gid],
+        |r| r.get(0),
+    )?;
+    if bound {
+        person_actor(c, gid)
+    } else {
+        client_actor(c, gid)
+    }
+}
+
+/// Records `grant.request` for grant `gid` that `g` asked for through
+/// `via` (`flow`: `invite` or `request`), under `ctx` (the client's).
+fn record_request(
+    st: &Store,
+    tx: &Transaction<'_>,
+    ctx: &AuditCtx,
+    gid: &str,
+    via: &str,
+    g: &NewGrant,
+    now: &str,
+) -> Result<()> {
+    let client_name: String = tx.query_row(
+        "SELECT client_name FROM grants WHERE id = ?1",
+        params![gid],
+        |r| r.get(0),
+    )?;
+    let rec = grant_record(AuditKind::GrantRequest, now, gid)
+        .with("flow", via)
+        .with("client_name", client_name)
+        .with("peer_ip", g.peer_ip.as_str())
+        .with("key_sha256", crate::audit::sha256_hex(&g.key))
+        .with("access", g.access.to_json());
+    st.record_audit(tx, ctx, rec)?;
+    Ok(())
+}
+
+/// Records `invite.revoke` of `invite` under `ctx`.
+fn record_invite_revoke(
+    st: &Store,
+    tx: &Transaction<'_>,
+    ctx: &AuditCtx,
+    invite: &Invite,
+    now: &str,
+) -> Result<()> {
+    let rec = AuditRecord::new(AuditKind::InviteRevoke, now)
+        .with("invite_id", invite.id.as_str())
+        .with("person", invite.person.as_str())
+        .with("expires_at", invite.expires_at.as_str());
+    st.record_audit(tx, ctx, rec)?;
+    Ok(())
+}
+
 /// Ends live grant `gid` (`by`, with status `expired` for an expiry, else
-/// `revoked`), revokes its tokens and ends its live sessions (`revoked`).
-/// A grant that has already ended ends nothing.
+/// `revoked`), revokes its tokens and ends its live sessions (`revoked`),
+/// recording under `ctx` `grant.revoke` after its sessions' ends (a lapse
+/// is recorded by [`record_lapse`]). A grant that has already ended ends
+/// nothing and records nothing.
 fn end_grant(
     st: &Store,
     tx: &Transaction<'_>,
@@ -506,6 +638,13 @@ fn end_grant(
     } else {
         "revoked"
     };
+    let was: Option<String> = tx
+        .query_row(
+            "SELECT status FROM grants WHERE id = ?1",
+            params![gid],
+            |r| r.get(0),
+        )
+        .optional()?;
     let n = tx.execute(
         "UPDATE grants SET status = ?2, ended_at = ?3, ended_by = ?4
          WHERE id = ?1 AND status IN ('pending', 'approved')",
@@ -535,6 +674,21 @@ fn end_grant(
             out.withdrawn_questions.extend(withdrawn);
             out.sessions_ended.push(sid);
         }
+    }
+    if by == EndedBy::Expiry {
+        record_lapse(
+            st,
+            tx,
+            gid,
+            was.as_deref().unwrap_or_default(),
+            &out.sessions_ended,
+            now,
+        )?;
+    } else {
+        let rec = grant_record(AuditKind::GrantRevoke, now, gid)
+            .with("by", by.as_str())
+            .with("sessions_ended", out.sessions_ended.clone());
+        st.record_audit(tx, ctx, rec)?;
     }
     Ok(out)
 }
@@ -636,7 +790,8 @@ impl Store {
         })?
     }
 
-    /// Makes an invite for `who` (spec §6.2): a new person row for `New`,
+    /// Makes an invite for `who` (spec §6.2), recording `invite.create`
+    /// under `ctx`: a new person row for `New`,
     /// the viewer marked a person for `Viewer`, the owner row (made when
     /// missing) for `Owner`. Returns it with its code, shown once: 12
     /// Crockford base32 characters in three groups. It expires in 24 hours.
@@ -654,6 +809,7 @@ impl Store {
     /// `unknown_viewer` for a public ID that names no viewer, or the owner.
     pub fn create_invite(
         &self,
+        ctx: &AuditCtx,
         who: InvitePerson,
         rights: Option<Rights>,
     ) -> Result<(Invite, Secret)> {
@@ -737,6 +893,14 @@ impl Store {
                 params![id],
                 row_to_invite,
             )?;
+            let mut rec = AuditRecord::new(AuditKind::InviteCreate, now.as_str())
+                .with("invite_id", invite.id.as_str())
+                .with("person", invite.person.as_str())
+                .with("expires_at", invite.expires_at.as_str());
+            if let (Some(r), false) = (&rights, who == InvitePerson::Owner) {
+                rec = rec.with("rights", r.to_json());
+            }
+            self.record_audit(tx, ctx, rec)?;
             Ok((invite, code.clone()))
         })
     }
@@ -753,16 +917,17 @@ impl Store {
         })
     }
 
-    /// Revokes invite `id` unless it was used or revoked already. A person
+    /// Revokes invite `id` unless it was used or revoked already, recording
+    /// `invite.revoke` under `ctx` when it did. A person
     /// it made who never held a grant and has no other live invite goes
     /// back to a plain viewer.
     ///
     /// # Errors
     /// `NotFound` when no such invite exists.
-    pub fn revoke_invite(&self, id: &str) -> Result<Invite> {
+    pub fn revoke_invite(&self, ctx: &AuditCtx, id: &str) -> Result<Invite> {
         self.with_tx(|tx| {
             let now = self.now();
-            tx.execute(
+            let n = tx.execute(
                 "UPDATE invites SET revoked_at = ?2
                  WHERE id = ?1 AND used_at IS NULL AND revoked_at IS NULL",
                 params![id, now],
@@ -777,17 +942,24 @@ impl Store {
             if let Some(v) = viewer {
                 release_unconnected(tx, Some(&v), &now)?;
             }
-            tx.query_row(
-                &format!("{INVITE_SELECT} WHERE i.id = ?1"),
-                params![id],
-                row_to_invite,
-            )
-            .optional()?
-            .ok_or(CoreError::NotFound)
+            let invite = tx
+                .query_row(
+                    &format!("{INVITE_SELECT} WHERE i.id = ?1"),
+                    params![id],
+                    row_to_invite,
+                )
+                .optional()?
+                .ok_or(CoreError::NotFound)?;
+            if n > 0 {
+                record_invite_revoke(self, tx, ctx, &invite, &now)?;
+            }
+            Ok(invite)
         })
     }
 
-    /// Takes a grant request (spec §6.3). With an invite code, a live,
+    /// Takes a grant request (spec §6.3), recording `grant.request` (and, for
+    /// an invite, `grant.approve` and `grant.token`) as the requesting
+    /// client, through `ctx`'s channel. With an invite code, a live,
     /// unused invite binds the grant at once to its person (its use binds
     /// this key; the access asked for can only narrow the person's rights).
     /// Without one, a pending grant waits for the owner, who approves it
@@ -801,7 +973,7 @@ impl Store {
     /// `key_in_use` when a live grant holds the key; `invalid_args` for a
     /// client name over [`MAX_CLIENT_NAME_CHARS`] characters or with control
     /// characters.
-    pub fn request_grant(&self, g: NewGrant) -> Result<GrantStart> {
+    pub fn request_grant(&self, ctx: &AuditCtx, g: NewGrant) -> Result<GrantStart> {
         let client_name = checked_client_name(&g.client_name)?;
         let key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(g.key);
         let invite_hash = g
@@ -810,14 +982,25 @@ impl Store {
             .map(|code| secret::canonical_invite(code.expose()).map(|c| sha256_hex(&c)));
         self.with_tx(|tx| {
             let now = self.now();
-            // Unfinished requests past their time free their keys now;
-            // `expire_grants` reports them (`ended_at` is set then).
-            tx.execute(
-                &format!(
-                    "UPDATE grants SET status = 'expired', ended_by = 'expiry' WHERE {UNFINISHED_STALE}"
-                ),
-                params![self.ago(PENDING_TTL_SECS)],
-            )?;
+            // Unfinished requests past their time free their keys now, and
+            // record their lapse; `expire_grants` reports them (`ended_at`
+            // is set then).
+            let stale: Vec<(String, String)> = {
+                let mut stmt = tx.prepare(&format!(
+                    "SELECT id, status FROM grants WHERE {UNFINISHED_STALE} ORDER BY id"
+                ))?;
+                stmt.query_map(params![self.ago(PENDING_TTL_SECS)], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })?
+                .collect::<rusqlite::Result<_>>()?
+            };
+            for (gid, was) in &stale {
+                tx.execute(
+                    "UPDATE grants SET status = 'expired', ended_by = 'expiry' WHERE id = ?1",
+                    params![gid],
+                )?;
+                record_lapse(self, tx, gid, was, &[], &now)?;
+            }
             let invite = match invite_hash {
                 None => None,
                 Some(hash) => {
@@ -887,8 +1070,18 @@ impl Store {
                         params![invite_id, now, gid],
                     )?;
                     let grant = grant_in(tx, &gid)?.expect("the grant was written");
+                    let access = grant_access(tx, &viewer_id, grant.narrow.as_ref())?;
+                    let client = acting(ctx, client_actor(tx, &gid)?);
+                    record_request(self, tx, &client, &gid, "invite", &g, &now)?;
+                    let rec = grant_record(AuditKind::GrantApprove, &now, &gid)
+                        .with("person", grant.person.clone())
+                        .with("access", access.to_json())
+                        .with("code_checked", false);
+                    self.record_audit(tx, &client, rec)?;
+                    let rec = grant_record(AuditKind::GrantToken, &now, &gid).with("op", "issue");
+                    self.record_audit(tx, &client, rec)?;
                     Ok(GrantStart::Approved {
-                        access: grant_access(tx, &viewer_id, grant.narrow.as_ref())?,
+                        access,
                         grant,
                         token: issued.token,
                         manage: issued.manage,
@@ -931,6 +1124,8 @@ impl Store {
                             now
                         ],
                     )?;
+                    let client = acting(ctx, client_actor(tx, &gid)?);
+                    record_request(self, tx, &client, &gid, "request", &g, &now)?;
                     Ok(GrantStart::Pending {
                         grant: grant_in(tx, &gid)?.expect("the grant was written"),
                         continue_token,
@@ -941,7 +1136,9 @@ impl Store {
         })
     }
 
-    /// Approves pending request `gid` as a new person named `name` with
+    /// Approves pending request `gid` under `ctx` (recording
+    /// `grant.approve`, or `grant.deny` for the wrong code that denies it)
+    /// as a new person named `name` with
     /// `rights` (`None`: the collaborator preset), when `user_code` is the
     /// request's (spec §6.3). A request never becomes an existing person or
     /// the owner. The tokens are issued to the client's next continuation
@@ -954,6 +1151,7 @@ impl Store {
     /// `name_taken` for the name (spec §11); `NotFound` for an unknown grant.
     pub fn approve_grant(
         &self,
+        ctx: &AuditCtx,
         gid: &str,
         user_code: &str,
         name: &str,
@@ -994,6 +1192,9 @@ impl Store {
                          WHERE id = ?1",
                         params![gid, now],
                     )?;
+                    let rec =
+                        grant_record(AuditKind::GrantDeny, &now, gid).with("reason", "wrong_code");
+                    self.record_audit(tx, ctx, rec)?;
                 }
                 return Ok(Err(CoreError::invalid(
                     "wrong_code",
@@ -1028,21 +1229,35 @@ impl Store {
                  WHERE id = ?1",
                 params![gid, viewer_id, now, narrow.as_ref().map(write_rights)],
             )?;
-            Ok(Ok(grant_in(tx, gid)?.expect("the grant exists")))
+            let grant = grant_in(tx, gid)?.expect("the grant exists");
+            let rec = grant_record(AuditKind::GrantApprove, &now, gid)
+                .with("person", grant.person.clone())
+                .with(
+                    "access",
+                    grant_access(tx, &viewer_id, grant.narrow.as_ref())?.to_json(),
+                )
+                .with("code_checked", true);
+            self.record_audit(tx, ctx, rec)?;
+            Ok(Ok(grant))
         })?
     }
 
-    /// Denies pending request `gid`.
+    /// Denies pending request `gid`, recording `grant.deny` under `ctx`.
     ///
     /// # Errors
     /// `not_pending` unless it is pending; `NotFound` for an unknown grant.
-    pub fn deny_grant(&self, gid: &str) -> Result<Grant> {
+    pub fn deny_grant(&self, ctx: &AuditCtx, gid: &str) -> Result<Grant> {
         self.with_tx(|tx| {
+            let now = self.now();
             let n = tx.execute(
                 "UPDATE grants SET status = 'denied', decided_at = ?2, user_code_sha256 = NULL
                  WHERE id = ?1 AND status = 'pending'",
-                params![gid, self.now()],
+                params![gid, now],
             )?;
+            if n > 0 {
+                let rec = grant_record(AuditKind::GrantDeny, &now, gid).with("reason", "owner");
+                self.record_audit(tx, ctx, rec)?;
+            }
             let g = grant_in(tx, gid)?.ok_or(CoreError::NotFound)?;
             if n == 0 {
                 return Err(CoreError::invalid(
@@ -1055,7 +1270,9 @@ impl Store {
     }
 
     /// A client's continuation poll of grant `gid` with `continue_token`
-    /// (spec §6.3). Pending: [`ContinueOutcome::Pending`], at most once per
+    /// (spec §6.3), through `ctx`'s channel: an issue records `grant.token`
+    /// as the client, a lapse `grant.deny` or `grant.revoke` as
+    /// `system:expiry`. Pending: [`ContinueOutcome::Pending`], at most once per
     /// [`CONTINUE_WAIT_SECS`]. Approved and not yet issued: the tokens and
     /// a new continuation token, once.
     ///
@@ -1070,6 +1287,7 @@ impl Store {
     /// grant.
     pub fn continue_grant(
         &self,
+        ctx: &AuditCtx,
         gid: &str,
         continue_token: &str,
         t: i64,
@@ -1102,6 +1320,7 @@ impl Store {
                             "UPDATE grants SET status = 'expired', ended_by = 'expiry' WHERE id = ?1",
                             params![gid],
                         )?;
+                        record_lapse(self, tx, gid, "pending", &[], &now)?;
                         return Ok(Err(denied()));
                     }
                     if last.unwrap_or(created_at) > self.ago(CONTINUE_WAIT_SECS) {
@@ -1125,6 +1344,7 @@ impl Store {
                         "UPDATE grants SET status = 'expired', ended_by = 'expiry' WHERE id = ?1",
                         params![gid],
                     )?;
+                    record_lapse(self, tx, gid, "approved", &[], &now)?;
                     Ok(Err(denied()))
                 }
                 "approved" if manage.is_none() => {
@@ -1135,6 +1355,8 @@ impl Store {
                         "UPDATE grants SET last_used_at = ?2 WHERE id = ?1",
                         params![gid, now],
                     )?;
+                    let rec = grant_record(AuditKind::GrantToken, &now, gid).with("op", "issue");
+                    self.record_audit(tx, &acting(ctx, client_actor(tx, gid)?), rec)?;
                     let grant = grant_in(tx, gid)?.expect("the grant exists");
                     let viewer_id: String = tx.query_row(
                         "SELECT viewer_id FROM grants WHERE id = ?1",
@@ -1161,12 +1383,17 @@ impl Store {
 
     /// Revokes grant `gid` through its manage token (spec §6.4): the access
     /// token goes, and with it the whole grant, as [`Store::revoke_grant`]
-    /// by the person.
+    /// by the person, recorded as the person through `ctx`'s channel.
     ///
     /// # Errors
     /// `invalid_token` unless `manage_token` is the grant's; `NotFound` for
     /// an unknown grant.
-    pub fn revoke_token(&self, gid: &str, manage_token: &str) -> Result<RevokedGrant> {
+    pub fn revoke_token(
+        &self,
+        ctx: &AuditCtx,
+        gid: &str,
+        manage_token: &str,
+    ) -> Result<RevokedGrant> {
         self.with_tx(|tx| {
             if !matches(
                 manage_token,
@@ -1174,20 +1401,15 @@ impl Store {
             ) {
                 return Err(invalid_token());
             }
-            end_grant(
-                self,
-                tx,
-                &AuditCtx::DAEMON,
-                gid,
-                EndedBy::Person,
-                &self.now(),
-            )
+            let by = acting(ctx, requester_actor(tx, gid)?);
+            end_grant(self, tx, &by, gid, EndedBy::Person, &self.now())
         })
     }
 
     /// Ends grant `gid` through its continuation (`DELETE <continue uri>`,
     /// the person's `clax connect --off`), pending or approved, as
-    /// [`Store::revoke_grant`] by the person.
+    /// [`Store::revoke_grant`] by the person, recorded as the person (the
+    /// client, for a request no one approved) through `ctx`'s channel.
     ///
     /// # Errors
     /// `invalid_token` unless `continue_token` is the grant's current one;
@@ -1196,6 +1418,7 @@ impl Store {
     /// `nonce`; `NotFound` for an unknown grant.
     pub fn disconnect_grant(
         &self,
+        ctx: &AuditCtx,
         gid: &str,
         continue_token: &str,
         t: i64,
@@ -1209,39 +1432,35 @@ impl Store {
                 return Err(invalid_token());
             }
             accept_t(tx, gid, t, nonce)?;
-            end_grant(
-                self,
-                tx,
-                &AuditCtx::DAEMON,
-                gid,
-                EndedBy::Person,
-                &self.now(),
-            )
+            let by = acting(ctx, requester_actor(tx, gid)?);
+            end_grant(self, tx, &by, gid, EndedBy::Person, &self.now())
         })
     }
 
     /// Ends grant `gid` (`by`): its tokens are revoked and its live sessions
     /// end (`revoked`), releasing their feedback and withdrawing their
-    /// questions; the key may connect again. A grant that has ended already
-    /// ends nothing more.
+    /// questions; the key may connect again. Recorded under `ctx`
+    /// (`grant.revoke`). A grant that has ended already ends nothing more.
     ///
     /// # Errors
     /// `NotFound` for an unknown grant.
-    pub fn revoke_grant(&self, gid: &str, by: EndedBy) -> Result<RevokedGrant> {
+    pub fn revoke_grant(&self, ctx: &AuditCtx, gid: &str, by: EndedBy) -> Result<RevokedGrant> {
         self.with_tx(|tx| {
             grant_in(tx, gid)?.ok_or(CoreError::NotFound)?;
-            end_grant(self, tx, &AuditCtx::DAEMON, gid, by, &self.now())
+            end_grant(self, tx, ctx, gid, by, &self.now())
         })
     }
 
     /// Revokes person `public_id` (spec §6.4): their live grants end (by the
     /// owner), their unused invites are revoked, and `person_revoked_at` is
-    /// set. Their viewer row and authorship stay.
+    /// set. Their viewer row and authorship stay. Recorded under `ctx`: each
+    /// grant's `grant.revoke`, each invite's `invite.revoke`, then
+    /// `person.revoke` (once).
     ///
     /// # Errors
     /// `not_a_person` for the owner or a viewer who is not a person;
     /// `NotFound` for an unknown public ID.
-    pub fn revoke_person(&self, public_id: &str) -> Result<RevokedPerson> {
+    pub fn revoke_person(&self, ctx: &AuditCtx, public_id: &str) -> Result<RevokedPerson> {
         self.with_tx(|tx| {
             let now = self.now();
             let (id, person, owner): (String, bool, bool) = tx
@@ -1268,7 +1487,8 @@ impl Store {
                     .collect::<rusqlite::Result<_>>()?
             };
             for gid in grants {
-                out.grants.push(end_grant(self, tx, &AuditCtx::DAEMON, &gid, EndedBy::Owner, &now)?);
+                out.grants
+                    .push(end_grant(self, tx, ctx, &gid, EndedBy::Owner, &now)?);
             }
             {
                 let mut stmt = tx.prepare(
@@ -1279,20 +1499,33 @@ impl Store {
                     .query_map(params![id, now], |r| r.get(0))?
                     .collect::<rusqlite::Result<_>>()?;
             }
-            tx.execute(
-                "UPDATE viewers SET person_revoked_at = COALESCE(person_revoked_at, ?2) WHERE id = ?1",
+            for invite in &out.invites {
+                let i = tx.query_row(
+                    &format!("{INVITE_SELECT} WHERE i.id = ?1"),
+                    params![invite],
+                    row_to_invite,
+                )?;
+                record_invite_revoke(self, tx, ctx, &i, &now)?;
+            }
+            let n = tx.execute(
+                "UPDATE viewers SET person_revoked_at = ?2 WHERE id = ?1 AND person_revoked_at IS NULL",
                 params![id, now],
             )?;
+            if n > 0 {
+                let rec = AuditRecord::new(AuditKind::PersonRevoke, now.as_str())
+                    .with("person", public_id);
+                self.record_audit(tx, ctx, rec)?;
+            }
             Ok(out)
         })
     }
 
     /// Sets (or with `None` clears) the narrowing of every agent of live
-    /// grant `gid`.
+    /// grant `gid`, recording `grant.narrow` under `ctx`.
     ///
     /// # Errors
     /// `NotFound` unless `gid` names a pending or approved grant.
-    pub fn narrow_grant(&self, gid: &str, narrow: Option<Rights>) -> Result<Grant> {
+    pub fn narrow_grant(&self, ctx: &AuditCtx, gid: &str, narrow: Option<Rights>) -> Result<Grant> {
         self.with_tx(|tx| {
             let n = tx.execute(
                 "UPDATE grants SET narrow_json = ?2 WHERE id = ?1 AND status IN ('pending', 'approved')",
@@ -1301,6 +1534,9 @@ impl Store {
             if n == 0 {
                 return Err(CoreError::NotFound);
             }
+            let rec = grant_record(AuditKind::GrantNarrow, &self.now(), gid)
+                .with("narrow", narrow.as_ref().map(Rights::to_json));
+            self.record_audit(tx, ctx, rec)?;
             Ok(grant_in(tx, gid)?.expect("the grant exists"))
         })
     }
@@ -1617,7 +1853,12 @@ impl Store {
     /// # Errors
     /// `not_a_person` for the owner or a viewer who is not a person;
     /// `NotFound` for an unknown public ID.
-    pub fn set_person_rights(&self, public_id: &str, rights: Option<Rights>) -> Result<()> {
+    pub fn set_person_rights(
+        &self,
+        ctx: &AuditCtx,
+        public_id: &str,
+        rights: Option<Rights>,
+    ) -> Result<()> {
         self.with_tx(|tx| {
             let (person, owner): (bool, bool) = tx
                 .query_row(
@@ -1637,6 +1878,10 @@ impl Store {
                 "UPDATE viewers SET rights_json = ?2 WHERE public_id = ?1",
                 params![public_id, rights.as_ref().map(write_rights)],
             )?;
+            let rec = AuditRecord::new(AuditKind::PersonRights, self.now())
+                .with("person", public_id)
+                .with("rights", rights.as_ref().map(Rights::to_json));
+            self.record_audit(tx, ctx, rec)?;
             Ok(())
         })
     }
@@ -1683,14 +1928,7 @@ impl Store {
                     .collect::<rusqlite::Result<_>>()?
             };
             for gid in &due {
-                out.push(end_grant(
-                    self,
-                    tx,
-                    &AuditCtx::DAEMON,
-                    gid,
-                    EndedBy::Expiry,
-                    &now,
-                )?);
+                out.push(end_grant(self, tx, &EXPIRY, gid, EndedBy::Expiry, &now)?);
             }
             out.sort_by(|a, b| a.grant_id.cmp(&b.grant_id));
             // Requests that never had tokens issued leave no trace in the
@@ -1799,9 +2037,12 @@ pub(crate) mod tests {
     /// manage token.
     pub(crate) fn approved(st: &Store, name: &str, key: [u8; 32]) -> (String, Secret, Secret) {
         let (_, c) = st
-            .create_invite(InvitePerson::New(name.into()), None)
+            .create_invite(DAEMON, InvitePerson::New(name.into()), None)
             .unwrap();
-        match st.request_grant(grant(key, Some(c.expose()))).unwrap() {
+        match st
+            .request_grant(DAEMON, grant(key, Some(c.expose())))
+            .unwrap()
+        {
             GrantStart::Approved {
                 grant,
                 token,
@@ -1812,8 +2053,8 @@ pub(crate) mod tests {
         }
     }
 
-    fn pending(st: &Store, key: [u8; 32]) -> (Grant, Secret, Secret) {
-        match st.request_grant(grant(key, None)).unwrap() {
+    pub(crate) fn pending(st: &Store, key: [u8; 32]) -> (Grant, Secret, Secret) {
+        match st.request_grant(DAEMON, grant(key, None)).unwrap() {
             GrantStart::Pending {
                 grant,
                 continue_token,
@@ -1836,7 +2077,7 @@ pub(crate) mod tests {
     fn invite_is_single_use_and_binds_the_first_key() {
         let (_d, _c, st) = store();
         let (inv, code_) = st
-            .create_invite(InvitePerson::New("Sam".into()), None)
+            .create_invite(DAEMON, InvitePerson::New("Sam".into()), None)
             .unwrap();
         assert_eq!(inv.person_name.as_deref(), Some("Sam"));
         let GrantStart::Approved {
@@ -1847,7 +2088,7 @@ pub(crate) mod tests {
             browser_code,
             ..
         } = st
-            .request_grant(grant(KEY_A, Some(code_.expose())))
+            .request_grant(DAEMON, grant(KEY_A, Some(code_.expose())))
             .unwrap()
         else {
             panic!()
@@ -1859,7 +2100,7 @@ pub(crate) mod tests {
         assert_eq!(g.person.as_deref(), Some(inv.person.as_str()));
         assert!(st.token_live(token.expose()).unwrap());
         assert_eq!(
-            code(st.request_grant(grant(KEY_B, Some(code_.expose())))),
+            code(st.request_grant(DAEMON, grant(KEY_B, Some(code_.expose())))),
             "invalid_invite"
         );
         let used = &st.list_invites().unwrap()[0];
@@ -1867,11 +2108,12 @@ pub(crate) mod tests {
         assert!(used.used_at.is_some());
         // The code is accepted however it is typed.
         let (_, c2) = st
-            .create_invite(InvitePerson::New("Mia".into()), None)
+            .create_invite(DAEMON, InvitePerson::New("Mia".into()), None)
             .unwrap();
         let typed = c2.expose().replace('-', "").to_lowercase();
         assert!(matches!(
-            st.request_grant(grant(KEY_B, Some(&typed))).unwrap(),
+            st.request_grant(DAEMON, grant(KEY_B, Some(&typed)))
+                .unwrap(),
             GrantStart::Approved { .. }
         ));
     }
@@ -1880,13 +2122,13 @@ pub(crate) mod tests {
     fn expired_revoked_and_unknown_invites_are_one_error() {
         let (_d, clock, st) = store();
         let (_, expired) = st
-            .create_invite(InvitePerson::New("Sam".into()), None)
+            .create_invite(DAEMON, InvitePerson::New("Sam".into()), None)
             .unwrap();
         clock.advance(INVITE_TTL_SECS + 1);
         let (inv, revoked) = st
-            .create_invite(InvitePerson::New("Mia".into()), None)
+            .create_invite(DAEMON, InvitePerson::New("Mia".into()), None)
             .unwrap();
-        st.revoke_invite(&inv.id).unwrap();
+        st.revoke_invite(DAEMON, &inv.id).unwrap();
         for c in [
             expired.expose(),
             revoked.expose(),
@@ -1894,7 +2136,7 @@ pub(crate) mod tests {
             "nonsense",
         ] {
             assert_eq!(
-                code(st.request_grant(grant(KEY_A, Some(c)))),
+                code(st.request_grant(DAEMON, grant(KEY_A, Some(c)))),
                 "invalid_invite",
                 "{c}"
             );
@@ -1906,26 +2148,26 @@ pub(crate) mod tests {
         let (_d, _c, st) = store();
         let lan = st.upsert_viewer(&crate::new_ulid(), Some("Lan")).unwrap();
         let (inv, _) = st
-            .create_invite(InvitePerson::Viewer(lan.public_id.clone()), None)
+            .create_invite(DAEMON, InvitePerson::Viewer(lan.public_id.clone()), None)
             .unwrap();
         assert_eq!(inv.person, lan.public_id);
         assert!(st.get_viewer(&lan.id).unwrap().unwrap().person);
-        let (me, _) = st.create_invite(InvitePerson::Owner, None).unwrap();
+        let (me, _) = st.create_invite(DAEMON, InvitePerson::Owner, None).unwrap();
         assert!(me.owner);
         assert_eq!(
-            code(st.create_invite(InvitePerson::Viewer(me.person.clone()), None)),
+            code(st.create_invite(DAEMON, InvitePerson::Viewer(me.person.clone()), None)),
             "unknown_viewer"
         );
         assert_eq!(
-            code(st.create_invite(InvitePerson::New("lan".into()), None)),
+            code(st.create_invite(DAEMON, InvitePerson::New("lan".into()), None)),
             "name_taken"
         );
         for i in 2..MAX_LIVE_INVITES {
-            st.create_invite(InvitePerson::New(format!("P{i}")), None)
+            st.create_invite(DAEMON, InvitePerson::New(format!("P{i}")), None)
                 .unwrap();
         }
         assert_eq!(
-            code(st.create_invite(InvitePerson::New("Late".into()), None)),
+            code(st.create_invite(DAEMON, InvitePerson::New("Late".into()), None)),
             "limit_reached"
         );
     }
@@ -1933,12 +2175,14 @@ pub(crate) mod tests {
     #[test]
     fn an_owner_invite_connects_the_owner_without_a_browser_link() {
         let (_d, _c, st) = store();
-        let (_, c) = st.create_invite(InvitePerson::Owner, None).unwrap();
+        let (_, c) = st.create_invite(DAEMON, InvitePerson::Owner, None).unwrap();
         let GrantStart::Approved {
             grant: g,
             browser_code,
             ..
-        } = st.request_grant(grant(KEY_A, Some(c.expose()))).unwrap()
+        } = st
+            .request_grant(DAEMON, grant(KEY_A, Some(c.expose())))
+            .unwrap()
         else {
             panic!()
         };
@@ -1960,7 +2204,7 @@ pub(crate) mod tests {
         let (g, cont, user_code) = pending(&st, KEY_A);
         assert_eq!((g.status.as_str(), g.person.as_ref()), ("pending", None));
         let approved = st
-            .approve_grant(&g.id, user_code.expose(), "Sam", None)
+            .approve_grant(DAEMON, &g.id, user_code.expose(), "Sam", None)
             .unwrap();
         let v = st.viewer_of_grant(&approved.id).unwrap();
         assert!(v.person && v.display_name.as_deref() == Some("Sam"));
@@ -1974,24 +2218,26 @@ pub(crate) mod tests {
             token,
             browser_code,
             ..
-        } = st.continue_grant(&g.id, cont.expose(), t(), &n()).unwrap()
+        } = st
+            .continue_grant(DAEMON, &g.id, cont.expose(), t(), &n())
+            .unwrap()
         else {
             panic!()
         };
         assert!(st.token_live(token.expose()).unwrap() && browser_code.is_some());
         assert_eq!(
-            code(st.continue_grant(&g.id, cont.expose(), t(), &n())),
+            code(st.continue_grant(DAEMON, &g.id, cont.expose(), t(), &n())),
             "invalid_token",
             "rotated"
         );
         // Name rules: another person's name, in any case, is taken.
         let (g2, _, code2) = pending(&st, KEY_B);
         assert_eq!(
-            code(st.approve_grant(&g2.id, code2.expose(), "sam", None)),
+            code(st.approve_grant(DAEMON, &g2.id, code2.expose(), "sam", None)),
             "name_taken"
         );
         assert_eq!(
-            code(st.approve_grant(&g2.id, code2.expose(), " ", None)),
+            code(st.approve_grant(DAEMON, &g2.id, code2.expose(), " ", None)),
             "invalid_name"
         );
         assert_eq!(st.grant(&g2.id).unwrap().status, "pending");
@@ -2008,57 +2254,219 @@ pub(crate) mod tests {
         };
         for _ in 0..2 {
             assert_eq!(
-                code(st.approve_grant(&g.id, wrong, "Sam", None)),
+                code(st.approve_grant(DAEMON, &g.id, wrong, "Sam", None)),
                 "wrong_code"
             );
             assert_eq!(st.grant(&g.id).unwrap().status, "pending");
         }
         assert_eq!(
-            code(st.approve_grant(&g.id, "not a code", "Sam", None)),
+            code(st.approve_grant(DAEMON, &g.id, "not a code", "Sam", None)),
             "wrong_code"
         );
         let g = st.grant(&g.id).unwrap();
         assert_eq!((g.status.as_str(), g.wrong_codes), ("denied", 3));
         assert_eq!(
-            code(st.approve_grant(&g.id, user_code.expose(), "Sam", None)),
+            code(st.approve_grant(DAEMON, &g.id, user_code.expose(), "Sam", None)),
             "not_pending"
         );
         clock.advance(CONTINUE_WAIT_SECS);
         assert_eq!(
-            code(st.continue_grant(&g.id, cont.expose(), t(), &n())),
+            code(st.continue_grant(DAEMON, &g.id, cont.expose(), t(), &n())),
             "denied"
         );
         // A lowercase code without the dash is the same code.
         let (g, _, user_code) = pending(&st, KEY_B);
         let typed = user_code.expose().replace('-', "").to_lowercase();
-        assert!(st.approve_grant(&g.id, &typed, "Sam", None).is_ok());
+        assert!(st.approve_grant(DAEMON, &g.id, &typed, "Sam", None).is_ok());
     }
 
     #[test]
     fn pending_limits_per_ip_and_overall() {
         let (_d, clock, st) = store();
         for i in 0..MAX_PENDING_PER_IP as u8 {
-            st.request_grant(from_ip([10 + i; 32], "10.0.0.1")).unwrap();
-        }
-        assert_eq!(
-            code(st.request_grant(from_ip([99; 32], "10.0.0.1"))),
-            "limit_reached"
-        );
-        for i in MAX_PENDING_PER_IP as u8..MAX_PENDING as u8 {
-            st.request_grant(from_ip([10 + i; 32], &format!("10.0.1.{i}")))
+            st.request_grant(DAEMON, from_ip([10 + i; 32], "10.0.0.1"))
                 .unwrap();
         }
         assert_eq!(
-            code(st.request_grant(from_ip([99; 32], "10.0.2.1"))),
+            code(st.request_grant(DAEMON, from_ip([99; 32], "10.0.0.1"))),
+            "limit_reached"
+        );
+        for i in MAX_PENDING_PER_IP as u8..MAX_PENDING as u8 {
+            st.request_grant(DAEMON, from_ip([10 + i; 32], &format!("10.0.1.{i}")))
+                .unwrap();
+        }
+        assert_eq!(
+            code(st.request_grant(DAEMON, from_ip([99; 32], "10.0.2.1"))),
             "limit_reached"
         );
         // A live key cannot ask again; pending requests expire after ten minutes.
         assert_eq!(
-            code(st.request_grant(from_ip([10; 32], "10.0.2.1"))),
+            code(st.request_grant(DAEMON, from_ip([10; 32], "10.0.2.1"))),
             "key_in_use"
         );
         clock.advance(PENDING_TTL_SECS + 1);
-        st.request_grant(from_ip([10; 32], "10.0.0.1")).unwrap();
+        st.request_grant(DAEMON, from_ip([10; 32], "10.0.0.1"))
+            .unwrap();
+    }
+
+    /// The events recorded after `seq`: kind, actor and body.
+    fn recorded(st: &Store, seq: i64) -> Vec<(String, serde_json::Value, serde_json::Value)> {
+        st.events_after(seq, 1000)
+            .unwrap()
+            .into_iter()
+            .map(|r| {
+                (
+                    r.kind,
+                    serde_json::from_str(&r.actor).unwrap(),
+                    serde_json::from_str(&r.body).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    fn owner_ctx(st: &Store) -> AuditCtx {
+        AuditCtx {
+            actor: Actor::Owner {
+                public_id: st.owner_viewer(false).unwrap().public_id,
+            },
+            via: crate::audit::Via::Shell,
+            git: crate::gitctx::GitField::Absent,
+            call: None,
+        }
+    }
+
+    #[test]
+    fn the_grant_flow_records_who_did_what_without_secrets() {
+        let (_d, clock, st) = store();
+        let owner = owner_ctx(&st);
+        // An invite, redeemed: the request, its approval and the tokens'
+        // issue are the client's.
+        let seq = st.newest_seq().unwrap();
+        let (invite, code) = st
+            .create_invite(&owner, InvitePerson::New("Sam".into()), None)
+            .unwrap();
+        let GrantStart::Approved { grant: sam, .. } = st
+            .request_grant(DAEMON, grant(KEY_A, Some(code.expose())))
+            .unwrap()
+        else {
+            panic!("an invite approves at once")
+        };
+        let ev = recorded(&st, seq);
+        let kinds: Vec<&str> = ev.iter().map(|e| e.0.as_str()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "invite.create",
+                "grant.request",
+                "grant.approve",
+                "grant.token"
+            ]
+        );
+        assert_eq!(ev[0].1["type"], "owner");
+        assert_eq!(ev[0].2["invite_id"], invite.id.as_str());
+        let client = serde_json::json!({"type": "client", "grant_id": sam.id,
+                                        "client_name": "sam-mbp"});
+        for e in &ev[1..] {
+            assert_eq!(e.1, client, "{}", e.0);
+            assert_eq!(e.2["grant_id"], sam.id.as_str());
+        }
+        assert_eq!(ev[1].2["flow"], "invite");
+        assert_eq!(ev[1].2["peer_ip"], "192.168.1.20");
+        assert_eq!(
+            ev[1].2["key_sha256"],
+            crate::audit::sha256_hex(&KEY_A).as_str()
+        );
+        assert_eq!(ev[2].2["person"], sam.person.clone().unwrap().as_str());
+        assert_eq!(ev[2].2["code_checked"], false);
+        assert_eq!(ev[3].2["op"], "issue");
+        let all = serde_json::to_string(&ev).unwrap();
+        assert!(
+            !all.contains(code.expose()),
+            "the invite code is never recorded"
+        );
+        // A request: the owner approves it with its code; the client
+        // collects the tokens.
+        let seq = st.newest_seq().unwrap();
+        let (g, cont, user_code) = pending(&st, KEY_B);
+        st.approve_grant(&owner, &g.id, user_code.expose(), "Mia", None)
+            .unwrap();
+        clock.advance(CONTINUE_WAIT_SECS);
+        let issued = st
+            .continue_grant(DAEMON, &g.id, cont.expose(), t(), &n())
+            .unwrap();
+        let ev = recorded(&st, seq);
+        let kinds: Vec<&str> = ev.iter().map(|e| e.0.as_str()).collect();
+        assert_eq!(kinds, ["grant.request", "grant.approve", "grant.token"]);
+        assert_eq!(ev[0].1["type"], "client");
+        assert_eq!(ev[0].2["flow"], "request");
+        assert_eq!(ev[1].1, serde_json::to_value(&owner.actor).unwrap());
+        assert_eq!(ev[1].2["code_checked"], true);
+        assert_eq!(ev[2].1["type"], "client");
+        let ContinueOutcome::Approved { token, manage, .. } = issued else {
+            panic!("approved")
+        };
+        let all = serde_json::to_string(&ev).unwrap();
+        for secret in [&user_code, &cont, &token, &manage] {
+            assert!(!all.contains(secret.expose()), "no secret is recorded");
+        }
+        // The person disconnects their machine: the person ended it.
+        let seq = st.newest_seq().unwrap();
+        st.revoke_token(DAEMON, &g.id, manage.expose()).unwrap();
+        let ev = recorded(&st, seq);
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0].0, "grant.revoke");
+        assert_eq!(ev[0].1["type"], "viewer");
+        assert_eq!(ev[0].1["person"], true);
+        assert_eq!(ev[0].1["display_name"], "Mia");
+        assert_eq!(ev[0].2["by"], "person");
+        // A request denied; another left to lapse.
+        let (denied, _, _) = pending(&st, [3; 32]);
+        let (lapsed, _, _) = pending(&st, [4; 32]);
+        let seq = st.newest_seq().unwrap();
+        st.deny_grant(&owner, &denied.id).unwrap();
+        clock.advance(PENDING_TTL_SECS + 1);
+        st.expire_grants().unwrap();
+        let ev = recorded(&st, seq);
+        assert_eq!(
+            ev.iter()
+                .map(|e| (
+                    e.0.as_str(),
+                    e.2["grant_id"].as_str().unwrap(),
+                    &e.2["reason"]
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "grant.deny",
+                    denied.id.as_str(),
+                    &serde_json::json!("owner")
+                ),
+                (
+                    "grant.deny",
+                    lapsed.id.as_str(),
+                    &serde_json::json!("expired")
+                ),
+            ]
+        );
+        assert_eq!(
+            ev[1].1,
+            serde_json::json!({"type": "system", "reason": "expiry"})
+        );
+        // Revoking Sam ends their grant and records the person's revocation.
+        let seq = st.newest_seq().unwrap();
+        let sam_id = sam.person.clone().unwrap();
+        st.revoke_person(&owner, &sam_id).unwrap();
+        let ev = recorded(&st, seq);
+        let kinds: Vec<&str> = ev.iter().map(|e| e.0.as_str()).collect();
+        assert_eq!(kinds, ["grant.revoke", "person.revoke"]);
+        assert_eq!(ev[0].2["by"], "owner");
+        assert_eq!(ev[1].2["person"], sam_id.as_str());
+        assert!(ev.iter().all(|e| e.1["type"] == "owner"));
+        // Nothing changes, nothing is recorded.
+        let seq = st.newest_seq().unwrap();
+        st.revoke_person(&owner, &sam_id).unwrap();
+        st.revoke_invite(&owner, &invite.id).unwrap();
+        assert!(recorded(&st, seq).is_empty());
     }
 
     #[test]
@@ -2066,26 +2474,27 @@ pub(crate) mod tests {
         let (_d, clock, st) = store();
         let (g, cont, _) = pending(&st, KEY_A);
         assert_eq!(
-            code(st.continue_grant(&g.id, cont.expose(), t(), &n())),
+            code(st.continue_grant(DAEMON, &g.id, cont.expose(), t(), &n())),
             "too_fast"
         );
         clock.advance(CONTINUE_WAIT_SECS);
         assert!(matches!(
-            st.continue_grant(&g.id, cont.expose(), t(), &n()).unwrap(),
+            st.continue_grant(DAEMON, &g.id, cont.expose(), t(), &n())
+                .unwrap(),
             ContinueOutcome::Pending { .. }
         ));
         clock.advance(CONTINUE_WAIT_SECS - 1);
         assert_eq!(
-            code(st.continue_grant(&g.id, cont.expose(), t(), &n())),
+            code(st.continue_grant(DAEMON, &g.id, cont.expose(), t(), &n())),
             "too_fast"
         );
         assert_eq!(
-            code(st.continue_grant(&g.id, "cxc_wrong", t(), &n())),
+            code(st.continue_grant(DAEMON, &g.id, "cxc_wrong", t(), &n())),
             "invalid_token"
         );
         clock.advance(PENDING_TTL_SECS);
         assert_eq!(
-            code(st.continue_grant(&g.id, cont.expose(), t(), &n())),
+            code(st.continue_grant(DAEMON, &g.id, cont.expose(), t(), &n())),
             "denied"
         );
         assert_eq!(st.grant(&g.id).unwrap().status, "expired");
@@ -2096,8 +2505,11 @@ pub(crate) mod tests {
         let (_d, _c, st) = store();
         let (gid, t1, manage) = approved(&st, "Sam", KEY_A);
         let s = st.register_session(DAEMON, reg(Some(&gid))).unwrap();
-        assert_eq!(code(st.revoke_token(&gid, t1.expose())), "invalid_token");
-        let r = st.revoke_token(&gid, manage.expose()).unwrap();
+        assert_eq!(
+            code(st.revoke_token(DAEMON, &gid, t1.expose())),
+            "invalid_token"
+        );
+        let r = st.revoke_token(DAEMON, &gid, manage.expose()).unwrap();
         assert!(!st.token_live(t1.expose()).unwrap());
         assert!(st.token_index().unwrap().is_empty());
         let g = st.grant(&gid).unwrap();
@@ -2121,7 +2533,7 @@ pub(crate) mod tests {
             "grant_revoked"
         );
         assert!(
-            st.request_grant(grant(KEY_A, None)).is_ok(),
+            st.request_grant(DAEMON, grant(KEY_A, None)).is_ok(),
             "the key may connect again"
         );
     }
@@ -2130,22 +2542,24 @@ pub(crate) mod tests {
     fn disconnecting_through_the_continuation_ends_the_grant() {
         let (_d, _c, st) = store();
         let (_, c) = st
-            .create_invite(InvitePerson::New("Sam".into()), None)
+            .create_invite(DAEMON, InvitePerson::New("Sam".into()), None)
             .unwrap();
         let GrantStart::Approved {
             grant: g,
             continue_token,
             token,
             ..
-        } = st.request_grant(grant(KEY_A, Some(c.expose()))).unwrap()
+        } = st
+            .request_grant(DAEMON, grant(KEY_A, Some(c.expose())))
+            .unwrap()
         else {
             panic!()
         };
         assert_eq!(
-            code(st.disconnect_grant(&g.id, token.expose(), t(), &n())),
+            code(st.disconnect_grant(DAEMON, &g.id, token.expose(), t(), &n())),
             "invalid_token"
         );
-        st.disconnect_grant(&g.id, continue_token.expose(), t(), &n())
+        st.disconnect_grant(DAEMON, &g.id, continue_token.expose(), t(), &n())
             .unwrap();
         assert!(!st.token_live(token.expose()).unwrap());
     }
@@ -2209,12 +2623,12 @@ pub(crate) mod tests {
         let (_d, _c, st) = store();
         let (g1, t1, _) = approved(&st, "Sam", KEY_A);
         let s1 = st.register_session(DAEMON, reg(Some(&g1))).unwrap();
-        let r = st.revoke_grant(&g1, EndedBy::Owner).unwrap();
+        let r = st.revoke_grant(DAEMON, &g1, EndedBy::Owner).unwrap();
         assert_eq!(r.sessions_ended, vec![s1.id.clone()]);
         assert!(st.get_session(&s1.id).unwrap().unwrap().ended_at.is_some());
         assert!(!st.token_live(t1.expose()).unwrap());
         assert!(
-            st.revoke_grant(&g1, EndedBy::Owner)
+            st.revoke_grant(DAEMON, &g1, EndedBy::Owner)
                 .unwrap()
                 .sessions_ended
                 .is_empty()
@@ -2224,9 +2638,9 @@ pub(crate) mod tests {
         let mia = st.grant(&g2).unwrap().person.unwrap();
         let s2 = st.register_session(DAEMON, reg(Some(&g2))).unwrap();
         let (left, _) = st
-            .create_invite(InvitePerson::Viewer(mia.clone()), None)
+            .create_invite(DAEMON, InvitePerson::Viewer(mia.clone()), None)
             .unwrap();
-        let r = st.revoke_person(&mia).unwrap();
+        let r = st.revoke_person(DAEMON, &mia).unwrap();
         assert_eq!(r.grants.len(), 1);
         assert_eq!(r.grants[0].sessions_ended, vec![s2.id.clone()]);
         assert_eq!(r.invites, vec![left.id]);
@@ -2237,10 +2651,13 @@ pub(crate) mod tests {
             "the row stays as history"
         );
         // A revoked person's name is free again.
-        st.create_invite(InvitePerson::New("Mia".into()), None)
+        st.create_invite(DAEMON, InvitePerson::New("Mia".into()), None)
             .unwrap();
         let owner = st.owner_viewer(false).unwrap();
-        assert_eq!(code(st.revoke_person(&owner.public_id)), "not_a_person");
+        assert_eq!(
+            code(st.revoke_person(DAEMON, &owner.public_id)),
+            "not_a_person"
+        );
     }
 
     #[test]
@@ -2256,23 +2673,29 @@ pub(crate) mod tests {
             "asking for all narrows nothing"
         );
         let reader = Rights::preset(crate::rights::PRESET_READER).unwrap();
-        st.set_person_rights(&sam, Some(reader.clone())).unwrap();
+        st.set_person_rights(DAEMON, &sam, Some(reader.clone()))
+            .unwrap();
         assert_eq!(st.person_rights(&sam).unwrap(), reader);
-        st.set_person_rights(&sam, None).unwrap();
+        st.set_person_rights(DAEMON, &sam, None).unwrap();
         assert_eq!(st.person_rights(&sam).unwrap(), collaborator);
         assert_eq!(
-            st.narrow_grant(&gid, Some(reader.clone())).unwrap().narrow,
+            st.narrow_grant(DAEMON, &gid, Some(reader.clone()))
+                .unwrap()
+                .narrow,
             Some(reader.clone())
         );
 
         let (_, c) = st
-            .create_invite(InvitePerson::New("Mia".into()), None)
+            .create_invite(DAEMON, InvitePerson::New("Mia".into()), None)
             .unwrap();
         let GrantStart::Approved { grant: g, .. } = st
-            .request_grant(NewGrant {
-                access: reader.clone(),
-                ..grant(KEY_B, Some(c.expose()))
-            })
+            .request_grant(
+                DAEMON,
+                NewGrant {
+                    access: reader.clone(),
+                    ..grant(KEY_B, Some(c.expose()))
+                },
+            )
             .unwrap()
         else {
             panic!()
@@ -2293,7 +2716,7 @@ pub(crate) mod tests {
         assert_eq!(c.rights, Rights::preset(PRESET_COLLABORATOR).unwrap());
         // The grant's narrowing applies.
         let reader = Rights::preset(PRESET_READER).unwrap();
-        st.narrow_grant(&gid, Some(reader.clone())).unwrap();
+        st.narrow_grant(DAEMON, &gid, Some(reader.clone())).unwrap();
         let c = st.grant_caller(&gid, None).unwrap();
         assert!(
             !c.rights
@@ -2332,13 +2755,14 @@ pub(crate) mod tests {
             assert_eq!(code(st.grant_caller(&gid, Some(sid))), "foreign_session");
         }
         // A revoked grant speaks for no one.
-        st.revoke_grant(&gid, EndedBy::Owner).unwrap();
+        st.revoke_grant(DAEMON, &gid, EndedBy::Owner).unwrap();
         assert_eq!(code(st.grant_caller(&gid, None)), "grant_revoked");
         assert_eq!(code(st.grant_caller("g_unknown", None)), "grant_revoked");
         // A grant of the owner's row is the owner's agents: no person.
-        let (_, c) = st.create_invite(InvitePerson::Owner, None).unwrap();
-        let GrantStart::Approved { grant: g, .. } =
-            st.request_grant(grant([3; 32], Some(c.expose()))).unwrap()
+        let (_, c) = st.create_invite(DAEMON, InvitePerson::Owner, None).unwrap();
+        let GrantStart::Approved { grant: g, .. } = st
+            .request_grant(DAEMON, grant([3; 32], Some(c.expose())))
+            .unwrap()
         else {
             panic!()
         };
@@ -2385,18 +2809,21 @@ pub(crate) mod tests {
     #[test]
     fn name_tokens_fold_case_diacritics_and_spaces() {
         let (_d, _c, st) = store();
-        st.create_invite(InvitePerson::New("Zoë Ångström".into()), None)
+        st.create_invite(DAEMON, InvitePerson::New("Zoë Ångström".into()), None)
             .unwrap();
         assert_eq!(
-            code(st.create_invite(InvitePerson::New("zoe   angstrom".into()), None)),
+            code(st.create_invite(DAEMON, InvitePerson::New("zoe   angstrom".into()), None)),
             "name_taken"
         );
         let long = "x".repeat(MAX_CLIENT_NAME_CHARS + 1);
         assert_eq!(
-            code(st.request_grant(NewGrant {
-                client_name: long,
-                ..grant(KEY_A, None)
-            })),
+            code(st.request_grant(
+                DAEMON,
+                NewGrant {
+                    client_name: long,
+                    ..grant(KEY_A, None)
+                }
+            )),
             "invalid_args"
         );
     }
@@ -2460,9 +2887,10 @@ pub(crate) mod tests {
     #[test]
     fn claiming_a_browser_for_the_owner_keeps_the_owners_grants_and_skips_people() {
         let (_d, _c, st) = store();
-        let (_, c) = st.create_invite(InvitePerson::Owner, None).unwrap();
-        let GrantStart::Approved { grant: g, .. } =
-            st.request_grant(grant(KEY_A, Some(c.expose()))).unwrap()
+        let (_, c) = st.create_invite(DAEMON, InvitePerson::Owner, None).unwrap();
+        let GrantStart::Approved { grant: g, .. } = st
+            .request_grant(DAEMON, grant(KEY_A, Some(c.expose())))
+            .unwrap()
         else {
             panic!()
         };
@@ -2482,7 +2910,7 @@ pub(crate) mod tests {
         // A person's locally minted browser is never claimed for the owner.
         let person = crate::new_ulid();
         let v = st.mint_viewer(&person, true).unwrap();
-        st.create_invite(InvitePerson::Viewer(v.public_id), None)
+        st.create_invite(DAEMON, InvitePerson::Viewer(v.public_id), None)
             .unwrap();
         assert_eq!(
             st.claim_for_owner(crate::audit::Via::Shell, &person)
@@ -2493,9 +2921,12 @@ pub(crate) mod tests {
 
     fn invited_with_link(st: &Store, name: &str, key: [u8; 32]) -> (Grant, Secret) {
         let (_, c) = st
-            .create_invite(InvitePerson::New(name.into()), None)
+            .create_invite(DAEMON, InvitePerson::New(name.into()), None)
             .unwrap();
-        match st.request_grant(grant(key, Some(c.expose()))).unwrap() {
+        match st
+            .request_grant(DAEMON, grant(key, Some(c.expose())))
+            .unwrap()
+        {
             GrantStart::Approved {
                 grant,
                 browser_code: Some(b),
@@ -2547,10 +2978,13 @@ pub(crate) mod tests {
         let link = {
             let st = Store::open_with_clock(&home, clock.clone()).unwrap();
             let (g, cont, user_code) = pending(&st, KEY_A);
-            st.approve_grant(&g.id, user_code.expose(), "Sam", None)
+            st.approve_grant(DAEMON, &g.id, user_code.expose(), "Sam", None)
                 .unwrap();
             clock.advance(CONTINUE_WAIT_SECS);
-            match st.continue_grant(&g.id, cont.expose(), t(), &n()).unwrap() {
+            match st
+                .continue_grant(DAEMON, &g.id, cont.expose(), t(), &n())
+                .unwrap()
+            {
                 ContinueOutcome::Approved {
                     browser_code: Some(b),
                     ..
@@ -2572,7 +3006,7 @@ pub(crate) mod tests {
     fn a_browser_link_dies_with_its_grant() {
         let (_d, _c, st) = store();
         let (g, link) = invited_with_link(&st, "Sam", KEY_A);
-        st.revoke_grant(&g.id, EndedBy::Owner).unwrap();
+        st.revoke_grant(DAEMON, &g.id, EndedBy::Owner).unwrap();
         assert!(matches!(
             st.redeem_browser_code(link.expose()),
             Err(CoreError::NotFound)
@@ -2620,21 +3054,23 @@ pub(crate) mod tests {
     fn the_rotated_continuation_token_cannot_issue_again() {
         let (_d, clock, st) = store();
         let (g, cont, user_code) = pending(&st, KEY_A);
-        st.approve_grant(&g.id, user_code.expose(), "Sam", None)
+        st.approve_grant(DAEMON, &g.id, user_code.expose(), "Sam", None)
             .unwrap();
         clock.advance(CONTINUE_WAIT_SECS);
         let ContinueOutcome::Approved {
             token,
             continue_token,
             ..
-        } = st.continue_grant(&g.id, cont.expose(), t(), &n()).unwrap()
+        } = st
+            .continue_grant(DAEMON, &g.id, cont.expose(), t(), &n())
+            .unwrap()
         else {
             panic!()
         };
         for _ in 0..2 {
             clock.advance(CONTINUE_WAIT_SECS);
             assert_eq!(
-                code(st.continue_grant(&g.id, continue_token.expose(), t(), &n())),
+                code(st.continue_grant(DAEMON, &g.id, continue_token.expose(), t(), &n())),
                 "already_issued"
             );
         }
@@ -2655,7 +3091,7 @@ pub(crate) mod tests {
         let before = viewers(&st);
         clock.advance(PENDING_TTL_SECS + 1);
         assert_eq!(
-            code(st.approve_grant(&g.id, user_code.expose(), "Sam", None)),
+            code(st.approve_grant(DAEMON, &g.id, user_code.expose(), "Sam", None)),
             "not_pending"
         );
         assert_ne!(st.grant(&g.id).unwrap().status, "approved");
@@ -2666,23 +3102,23 @@ pub(crate) mod tests {
     fn denying_ends_a_request_once_and_never_an_approved_grant() {
         let (_d, clock, st) = store();
         let (g, cont, user_code) = pending(&st, KEY_A);
-        assert_eq!(st.deny_grant(&g.id).unwrap().status, "denied");
+        assert_eq!(st.deny_grant(DAEMON, &g.id).unwrap().status, "denied");
         assert_eq!(st.grant(&g.id).unwrap().status, "denied");
         clock.advance(CONTINUE_WAIT_SECS);
         assert_eq!(
-            code(st.continue_grant(&g.id, cont.expose(), t(), &n())),
+            code(st.continue_grant(DAEMON, &g.id, cont.expose(), t(), &n())),
             "denied"
         );
         assert_eq!(
-            code(st.approve_grant(&g.id, user_code.expose(), "Sam", None)),
+            code(st.approve_grant(DAEMON, &g.id, user_code.expose(), "Sam", None)),
             "not_pending"
         );
-        assert_eq!(code(st.deny_grant(&g.id)), "not_pending");
+        assert_eq!(code(st.deny_grant(DAEMON, &g.id)), "not_pending");
         let (gid, token, _) = approved(&st, "Mia", KEY_B);
-        assert_eq!(code(st.deny_grant(&gid)), "not_pending");
+        assert_eq!(code(st.deny_grant(DAEMON, &gid)), "not_pending");
         assert!(st.token_live(token.expose()).unwrap());
         assert!(matches!(
-            st.deny_grant("g_unknown"),
+            st.deny_grant(DAEMON, "g_unknown"),
             Err(CoreError::NotFound)
         ));
     }
@@ -2695,7 +3131,7 @@ pub(crate) mod tests {
             st.token_index().unwrap(),
             vec![(secret::sha256(token.expose()), gid.clone())]
         );
-        st.revoke_token(&gid, manage.expose()).unwrap();
+        st.revoke_token(DAEMON, &gid, manage.expose()).unwrap();
         let unrevoked: i64 = st
             .with_read(|c| {
                 Ok(c.query_row(
@@ -2733,14 +3169,14 @@ pub(crate) mod tests {
                 .unwrap(),
             None
         );
-        st.approve_grant(&pending_grant.id, code.expose(), "Mia", None)
+        st.approve_grant(DAEMON, &pending_grant.id, code.expose(), "Mia", None)
             .unwrap();
         let ContinueOutcome::Approved {
             token: mia_token,
             continue_token: mia_cont,
             ..
         } = st
-            .continue_grant(&pending_grant.id, cont.expose(), t(), &n())
+            .continue_grant(DAEMON, &pending_grant.id, cont.expose(), t(), &n())
             .unwrap()
         else {
             panic!("approved")
@@ -2770,7 +3206,7 @@ pub(crate) mod tests {
             find(&st, manage.expose()).map(|c| (c.kind, c.grant_id, c.revoked)),
             Some((CredentialKind::Manage, gid.clone(), false))
         );
-        st.revoke_token(&gid, manage.expose()).unwrap();
+        st.revoke_token(DAEMON, &gid, manage.expose()).unwrap();
         for t in [&token, &manage] {
             assert_eq!(find(&st, t.expose()).map(|c| c.revoked), Some(true));
         }
@@ -2781,7 +3217,7 @@ pub(crate) mod tests {
         );
         // A denied request never enters the index; the store answers it.
         let (denied, dcont, _) = pending(&st, KEY_A);
-        st.deny_grant(&denied.id).unwrap();
+        st.deny_grant(DAEMON, &denied.id).unwrap();
         assert!(find(&st, dcont.expose()).is_none());
         assert_eq!(
             st.unissued_continuation(&denied.id, dcont.expose())
@@ -2798,30 +3234,33 @@ pub(crate) mod tests {
                 grant,
                 continue_token,
                 ..
-            } = st.request_grant(from_ip([10 + i; 32], "10.0.0.1")).unwrap()
+            } = st
+                .request_grant(DAEMON, from_ip([10 + i; 32], "10.0.0.1"))
+                .unwrap()
             else {
                 panic!("pending")
             };
             let ended = st
-                .disconnect_grant(&grant.id, continue_token.expose(), t(), &n())
+                .disconnect_grant(DAEMON, &grant.id, continue_token.expose(), t(), &n())
                 .unwrap();
             assert!(ended.ended);
         }
         assert_eq!(
-            code(st.request_grant(from_ip([99; 32], "10.0.0.1"))),
+            code(st.request_grant(DAEMON, from_ip([99; 32], "10.0.0.1"))),
             "limit_reached"
         );
         clock.advance(PENDING_TTL_SECS + 1);
-        st.request_grant(from_ip([99; 32], "10.0.0.1")).unwrap();
+        st.request_grant(DAEMON, from_ip([99; 32], "10.0.0.1"))
+            .unwrap();
     }
 
     #[test]
     fn requests_never_issued_are_deleted_after_their_retention() {
         let (_d, clock, st) = store();
         let (denied, _, _) = pending(&st, KEY_A);
-        st.deny_grant(&denied.id).unwrap();
+        st.deny_grant(DAEMON, &denied.id).unwrap();
         let (cancelled, cont, _) = pending(&st, KEY_B);
-        st.disconnect_grant(&cancelled.id, cont.expose(), t(), &n())
+        st.disconnect_grant(DAEMON, &cancelled.id, cont.expose(), t(), &n())
             .unwrap();
         let (_, _, _) = pending(&st, [3; 32]);
         let (sam, _, _) = approved(&st, "Sam", [4; 32]);
@@ -2846,36 +3285,39 @@ pub(crate) mod tests {
         let (_d, clock, st) = store();
         let (g, cont, code_) = pending(&st, KEY_A);
         clock.advance(CONTINUE_WAIT_SECS);
-        st.continue_grant(&g.id, cont.expose(), 100, "n1").unwrap();
-        st.approve_grant(&g.id, code_.expose(), "Sam", None)
+        st.continue_grant(DAEMON, &g.id, cont.expose(), 100, "n1")
+            .unwrap();
+        st.approve_grant(DAEMON, &g.id, code_.expose(), "Sam", None)
             .unwrap();
         // The pending poll, replayed after the approval, takes nothing; nor
         // does an older one.
         for (t, nonce) in [(100, "n1"), (99, "n0")] {
             assert_eq!(
-                code(st.continue_grant(&g.id, cont.expose(), t, nonce)),
+                code(st.continue_grant(DAEMON, &g.id, cont.expose(), t, nonce)),
                 "replayed_request"
             );
         }
         // Another call in the same second is accepted.
         assert!(matches!(
-            st.continue_grant(&g.id, cont.expose(), 100, "n2").unwrap(),
+            st.continue_grant(DAEMON, &g.id, cont.expose(), 100, "n2")
+                .unwrap(),
             ContinueOutcome::Approved { .. }
         ));
         let (d, dcont, _) = pending(&st, KEY_B);
         clock.advance(CONTINUE_WAIT_SECS);
-        st.continue_grant(&d.id, dcont.expose(), 50, "m1").unwrap();
+        st.continue_grant(DAEMON, &d.id, dcont.expose(), 50, "m1")
+            .unwrap();
         assert_eq!(
-            code(st.disconnect_grant(&d.id, dcont.expose(), 50, "m1")),
+            code(st.disconnect_grant(DAEMON, &d.id, dcont.expose(), 50, "m1")),
             "replayed_request"
         );
         assert_eq!(
-            code(st.disconnect_grant(&d.id, dcont.expose(), 49, "m9")),
+            code(st.disconnect_grant(DAEMON, &d.id, dcont.expose(), 49, "m9")),
             "replayed_request"
         );
         // A poll and a disconnect in one second.
         assert!(
-            st.disconnect_grant(&d.id, dcont.expose(), 50, "m2")
+            st.disconnect_grant(DAEMON, &d.id, dcont.expose(), 50, "m2")
                 .unwrap()
                 .ended
         );
@@ -2889,8 +3331,8 @@ pub(crate) mod tests {
     fn ending_an_ended_grant_ends_nothing() {
         let (_d, _c, st) = store();
         let (gid, _, _) = approved(&st, "Sam", KEY_A);
-        assert!(st.revoke_grant(&gid, EndedBy::Owner).unwrap().ended);
-        let again = st.revoke_grant(&gid, EndedBy::Owner).unwrap();
+        assert!(st.revoke_grant(DAEMON, &gid, EndedBy::Owner).unwrap().ended);
+        let again = st.revoke_grant(DAEMON, &gid, EndedBy::Owner).unwrap();
         assert!(!again.ended && again.sessions_ended.is_empty());
     }
 
@@ -2898,25 +3340,29 @@ pub(crate) mod tests {
     fn issued_tokens_carry_the_access_the_grant_holds() {
         let (_d, clock, st) = store();
         let (_, c) = st
-            .create_invite(InvitePerson::New("Sam".into()), None)
+            .create_invite(DAEMON, InvitePerson::New("Sam".into()), None)
             .unwrap();
         let reader = Rights::preset(crate::rights::PRESET_READER).unwrap();
         let GrantStart::Approved { access, .. } = st
-            .request_grant(NewGrant {
-                access: reader.clone(),
-                ..grant(KEY_A, Some(c.expose()))
-            })
+            .request_grant(
+                DAEMON,
+                NewGrant {
+                    access: reader.clone(),
+                    ..grant(KEY_A, Some(c.expose()))
+                },
+            )
             .unwrap()
         else {
             panic!("approved")
         };
         assert!(access.is_narrower_or_equal(&reader) && reader.is_narrower_or_equal(&access));
         let (g, cont, code_) = pending(&st, KEY_B);
-        st.approve_grant(&g.id, code_.expose(), "Mia", None)
+        st.approve_grant(DAEMON, &g.id, code_.expose(), "Mia", None)
             .unwrap();
         clock.advance(CONTINUE_WAIT_SECS);
-        let ContinueOutcome::Approved { access, .. } =
-            st.continue_grant(&g.id, cont.expose(), t(), &n()).unwrap()
+        let ContinueOutcome::Approved { access, .. } = st
+            .continue_grant(DAEMON, &g.id, cont.expose(), t(), &n())
+            .unwrap()
         else {
             panic!("approved")
         };
@@ -2942,10 +3388,16 @@ pub(crate) mod tests {
         let (_d, _c, st) = store();
         let reader = Rights::preset(crate::rights::PRESET_READER).unwrap();
         let (inv, _) = st
-            .create_invite(InvitePerson::New("Sam".into()), Some(reader.clone()))
+            .create_invite(
+                DAEMON,
+                InvitePerson::New("Sam".into()),
+                Some(reader.clone()),
+            )
             .unwrap();
         assert_eq!(st.person_rights(&inv.person).unwrap(), reader);
-        let (me, _) = st.create_invite(InvitePerson::Owner, Some(reader)).unwrap();
+        let (me, _) = st
+            .create_invite(DAEMON, InvitePerson::Owner, Some(reader))
+            .unwrap();
         assert_eq!(
             st.person_rights(&me.person).unwrap(),
             Rights::full(),
@@ -2958,23 +3410,23 @@ pub(crate) mod tests {
         let (_d, clock, st) = store();
         let lan = st.upsert_viewer(&crate::new_ulid(), Some("Lan")).unwrap();
         let (inv, _) = st
-            .create_invite(InvitePerson::Viewer(lan.public_id.clone()), None)
+            .create_invite(DAEMON, InvitePerson::Viewer(lan.public_id.clone()), None)
             .unwrap();
         assert!(st.get_viewer(&lan.id).unwrap().unwrap().person);
-        st.revoke_invite(&inv.id).unwrap();
+        st.revoke_invite(DAEMON, &inv.id).unwrap();
         assert!(!st.get_viewer(&lan.id).unwrap().unwrap().person);
         assert_eq!(code(st.person_rights(&lan.public_id)), "not_a_person");
         // A new person whose invite expires frees the name; a person with a
         // grant stays one.
-        st.create_invite(InvitePerson::New("Sam".into()), None)
+        st.create_invite(DAEMON, InvitePerson::New("Sam".into()), None)
             .unwrap();
         approved(&st, "Mia", KEY_A);
         clock.advance(INVITE_TTL_SECS + 1);
         st.expire_grants().unwrap();
-        st.create_invite(InvitePerson::New("Sam".into()), None)
+        st.create_invite(DAEMON, InvitePerson::New("Sam".into()), None)
             .unwrap();
         assert_eq!(
-            code(st.create_invite(InvitePerson::New("Mia".into()), None)),
+            code(st.create_invite(DAEMON, InvitePerson::New("Mia".into()), None)),
             "name_taken"
         );
     }
@@ -2983,9 +3435,9 @@ pub(crate) mod tests {
     fn a_person_revoked_before_connecting_stays_revoked_when_the_invite_lapses() {
         let (_d, clock, st) = store();
         let (inv, _) = st
-            .create_invite(InvitePerson::New("Ola".into()), None)
+            .create_invite(DAEMON, InvitePerson::New("Ola".into()), None)
             .unwrap();
-        let r = st.revoke_person(&inv.person).unwrap();
+        let r = st.revoke_person(DAEMON, &inv.person).unwrap();
         assert_eq!(r.invites, vec![inv.id]);
         clock.advance(INVITE_TTL_SECS + 1);
         st.expire_grants().unwrap();
@@ -3015,7 +3467,7 @@ pub(crate) mod tests {
         assert!(st.grant(&stale.id).unwrap().ended_at.is_some());
         assert!(st.expire_grants().unwrap().is_empty(), "reported once");
         // Approved, but the client never collects its tokens.
-        st.approve_grant(&fresh.id, user_code.expose(), "Sam", None)
+        st.approve_grant(DAEMON, &fresh.id, user_code.expose(), "Sam", None)
             .unwrap();
         clock.advance(PENDING_TTL_SECS + 1);
         let ended = st.expire_grants().unwrap();
@@ -3027,11 +3479,11 @@ pub(crate) mod tests {
             [fresh.id.as_str()]
         );
         assert_eq!(
-            code(st.continue_grant(&fresh.id, cont.expose(), t(), &n())),
+            code(st.continue_grant(DAEMON, &fresh.id, cont.expose(), t(), &n())),
             "denied"
         );
         assert!(matches!(
-            st.request_grant(grant(KEY_A, None)).unwrap(),
+            st.request_grant(DAEMON, grant(KEY_A, None)).unwrap(),
             GrantStart::Pending { .. }
         ));
     }
@@ -3040,15 +3492,15 @@ pub(crate) mod tests {
     fn a_lost_approval_polled_late_is_denied_and_frees_the_key() {
         let (_d, clock, st) = store();
         let (g, cont, user_code) = pending(&st, KEY_A);
-        st.approve_grant(&g.id, user_code.expose(), "Sam", None)
+        st.approve_grant(DAEMON, &g.id, user_code.expose(), "Sam", None)
             .unwrap();
         clock.advance(PENDING_TTL_SECS + 1);
         assert_eq!(
-            code(st.continue_grant(&g.id, cont.expose(), t(), &n())),
+            code(st.continue_grant(DAEMON, &g.id, cont.expose(), t(), &n())),
             "denied"
         );
         assert!(st.token_index().unwrap().is_empty());
-        assert!(st.request_grant(grant(KEY_A, None)).is_ok());
+        assert!(st.request_grant(DAEMON, grant(KEY_A, None)).is_ok());
         assert_eq!(
             st.expire_grants()
                 .unwrap()
