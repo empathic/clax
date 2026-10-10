@@ -3,6 +3,7 @@
 use super::artifacts::{body, parse_id, path};
 use crate::agent::TokenOrAgent;
 use crate::audit::DeferredAudit;
+#[cfg(debug_assertions)]
 use crate::auth::RequireToken;
 use crate::error::ApiError;
 use crate::state::AppState;
