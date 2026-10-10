@@ -2,6 +2,11 @@
 //! `tests/` (but for `tests/descriptors.rs`, a binary of its own): every test
 //! binary costs a link and, on macOS, an assessment of the new executable on
 //! its first run.
+//!
+//! The tests talk to their test daemons directly, as browsers and scripts
+//! do; the rule that commands reach the daemon only through the marked
+//! clients (`clippy.toml`) is for the crate's own code.
+#![allow(clippy::disallowed_methods, clippy::disallowed_types)]
 
 mod bin;
 mod clean_break;
