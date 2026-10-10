@@ -3523,5 +3523,456 @@
       ],
       "timestamp": "2026-10-06T14:07:14.062Z"
     }
+  },
+  {
+    "change": {
+      "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/invite/01JBA000000000000000000001": {
+        "structural": {
+          "expires_at": "2026-10-07T14:07:21.063Z",
+          "invite_id": "01JBA000000000000000000001",
+          "person": "u_5am7q2",
+          "rights": [
+            {
+              "actions": [
+                "read",
+                "create",
+                "update"
+              ],
+              "type": "artifacts"
+            },
+            {
+              "actions": [
+                "read",
+                "reply",
+                "resolve",
+                "watch"
+              ],
+              "type": "comments"
+            }
+          ],
+          "type": "clax.invite.create"
+        }
+      }
+    },
+    "meta": {
+      "clax": {
+        "backfilled": false,
+        "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+        "clax_version": "0.3.1",
+        "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+        "kind": "invite.create",
+        "seq": 63,
+        "v": 1,
+        "via": "shell"
+      },
+      "description": "Invited person u_5am7q2 until 2026-10-07T14:07:21.063Z"
+    },
+    "step": {
+      "actor": "human:clax-owner",
+      "id": "e000000000063",
+      "parents": [
+        "e000000000062"
+      ],
+      "timestamp": "2026-10-06T14:07:21.063Z"
+    }
+  },
+  {
+    "change": {
+      "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/invite/01JBA000000000000000000001": {
+        "structural": {
+          "expires_at": "2026-10-07T14:07:21.063Z",
+          "invite_id": "01JBA000000000000000000001",
+          "person": "u_5am7q2",
+          "type": "clax.invite.revoke"
+        }
+      }
+    },
+    "meta": {
+      "clax": {
+        "backfilled": false,
+        "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+        "clax_version": "0.3.1",
+        "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+        "kind": "invite.revoke",
+        "seq": 64,
+        "v": 1,
+        "via": "shell"
+      },
+      "description": "Revoked invite 01JBA000000000000000000001 of person u_5am7q2"
+    },
+    "step": {
+      "actor": "human:clax-owner",
+      "id": "e000000000064",
+      "parents": [
+        "e000000000063"
+      ],
+      "timestamp": "2026-10-06T14:07:28.064Z"
+    }
+  },
+  {
+    "change": {
+      "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/grant/g_7h2k9m4q8x1a5b3c6d0e2f": {
+        "structural": {
+          "access": [
+            {
+              "actions": [
+                "read",
+                "create",
+                "update"
+              ],
+              "type": "artifacts"
+            },
+            {
+              "actions": [
+                "read",
+                "reply",
+                "resolve",
+                "watch"
+              ],
+              "type": "comments"
+            }
+          ],
+          "client_name": "sam-mbp",
+          "flow": "request",
+          "grant_id": "g_7h2k9m4q8x1a5b3c6d0e2f",
+          "key_sha256": "6b1f6b1f6b1f6b1f6b1f6b1f6b1f6b1f6b1f6b1f6b1f6b1f6b1f6b1f6b1f6b1f",
+          "peer_ip": "192.168.1.23",
+          "type": "clax.grant.request"
+        }
+      }
+    },
+    "meta": {
+      "clax": {
+        "backfilled": false,
+        "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+        "clax_version": "0.3.1",
+        "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+        "kind": "grant.request",
+        "seq": 65,
+        "v": 1,
+        "via": "cli"
+      },
+      "description": "Asked for grant g_7h2k9m4q8x1a5b3c6d0e2f by request"
+    },
+    "step": {
+      "actor": "tool:clax-client/g_7h2k9m4q8x1a5b3c6d0e2f",
+      "id": "e000000000065",
+      "parents": [
+        "e000000000064"
+      ],
+      "timestamp": "2026-10-06T14:07:35.065Z"
+    }
+  },
+  {
+    "change": {
+      "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/grant/g_7h2k9m4q8x1a5b3c6d0e2f": {
+        "structural": {
+          "access": [
+            {
+              "actions": [
+                "read",
+                "create",
+                "update"
+              ],
+              "type": "artifacts"
+            },
+            {
+              "actions": [
+                "read",
+                "reply",
+                "resolve",
+                "watch"
+              ],
+              "type": "comments"
+            }
+          ],
+          "code_checked": true,
+          "grant_id": "g_7h2k9m4q8x1a5b3c6d0e2f",
+          "person": "u_5am7q2",
+          "type": "clax.grant.approve"
+        }
+      }
+    },
+    "meta": {
+      "clax": {
+        "backfilled": false,
+        "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+        "clax_version": "0.3.1",
+        "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+        "kind": "grant.approve",
+        "seq": 66,
+        "v": 1,
+        "via": "shell"
+      },
+      "description": "Approved grant g_7h2k9m4q8x1a5b3c6d0e2f for person u_5am7q2"
+    },
+    "step": {
+      "actor": "human:clax-owner",
+      "id": "e000000000066",
+      "parents": [
+        "e000000000065"
+      ],
+      "timestamp": "2026-10-06T14:07:42.066Z"
+    }
+  },
+  {
+    "change": {
+      "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/grant/g_7h2k9m4q8x1a5b3c6d0e2f": {
+        "structural": {
+          "grant_id": "g_7h2k9m4q8x1a5b3c6d0e2f",
+          "op": "issue",
+          "type": "clax.grant.token"
+        }
+      }
+    },
+    "meta": {
+      "clax": {
+        "backfilled": false,
+        "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+        "clax_version": "0.3.1",
+        "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+        "kind": "grant.token",
+        "seq": 67,
+        "v": 1,
+        "via": "cli"
+      },
+      "description": "Issued the tokens of grant g_7h2k9m4q8x1a5b3c6d0e2f"
+    },
+    "step": {
+      "actor": "tool:clax-client/g_7h2k9m4q8x1a5b3c6d0e2f",
+      "id": "e000000000067",
+      "parents": [
+        "e000000000066"
+      ],
+      "timestamp": "2026-10-06T14:07:49.067Z"
+    }
+  },
+  {
+    "change": {
+      "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/grant/g_7h2k9m4q8x1a5b3c6d0e2f": {
+        "structural": {
+          "grant_id": "g_7h2k9m4q8x1a5b3c6d0e2f",
+          "narrow": [
+            {
+              "actions": [
+                "read"
+              ],
+              "type": "artifacts"
+            }
+          ],
+          "type": "clax.grant.narrow"
+        }
+      }
+    },
+    "meta": {
+      "clax": {
+        "backfilled": false,
+        "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+        "clax_version": "0.3.1",
+        "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+        "kind": "grant.narrow",
+        "seq": 68,
+        "v": 1,
+        "via": "lan"
+      },
+      "description": "Narrowed grant g_7h2k9m4q8x1a5b3c6d0e2f"
+    },
+    "step": {
+      "actor": "human:clax-person/u_5am7q2",
+      "id": "e000000000068",
+      "parents": [
+        "e000000000067"
+      ],
+      "timestamp": "2026-10-06T14:07:56.068Z"
+    }
+  },
+  {
+    "change": {
+      "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/u/u_5am7q2": {
+        "structural": {
+          "person": "u_5am7q2",
+          "rights": [
+            {
+              "actions": [
+                "read",
+                "create",
+                "update"
+              ],
+              "type": "artifacts"
+            },
+            {
+              "actions": [
+                "read",
+                "reply",
+                "resolve",
+                "watch"
+              ],
+              "type": "comments"
+            }
+          ],
+          "type": "clax.person.rights"
+        }
+      }
+    },
+    "meta": {
+      "clax": {
+        "backfilled": false,
+        "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+        "clax_version": "0.3.1",
+        "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+        "kind": "person.rights",
+        "seq": 69,
+        "v": 1,
+        "via": "shell"
+      },
+      "description": "Set the rights of person u_5am7q2"
+    },
+    "step": {
+      "actor": "human:clax-owner",
+      "id": "e000000000069",
+      "parents": [
+        "e000000000068"
+      ],
+      "timestamp": "2026-10-06T14:08:03.069Z"
+    }
+  },
+  {
+    "change": {
+      "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000005": {
+        "structural": {
+          "name": "app-sam",
+          "previous": "app",
+          "source": "agent",
+          "type": "clax.agent.name"
+        }
+      }
+    },
+    "meta": {
+      "clax": {
+        "backfilled": false,
+        "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+        "clax_version": "0.3.1",
+        "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+        "kind": "agent.name",
+        "seq": 70,
+        "session_id": "01JB9S00000000000000000005",
+        "v": 1,
+        "via": "mcp"
+      },
+      "description": "Named the agent of session 01JB9S00000000000000000005 (agent)",
+      "refs": [
+        {
+          "href": "agent://codex/cx-sam-1",
+          "rel": "agent-session"
+        }
+      ]
+    },
+    "step": {
+      "actor": "agent:codex/cx-sam-1",
+      "id": "e000000000070",
+      "parents": [
+        "e000000000069"
+      ],
+      "timestamp": "2026-10-06T14:08:10.070Z"
+    }
+  },
+  {
+    "change": {
+      "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/grant/g_0d9c8b7a6f5e4d3c2b1a0z": {
+        "structural": {
+          "grant_id": "g_0d9c8b7a6f5e4d3c2b1a0z",
+          "reason": "expired",
+          "type": "clax.grant.deny"
+        }
+      }
+    },
+    "meta": {
+      "clax": {
+        "backfilled": false,
+        "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+        "clax_version": "0.3.1",
+        "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+        "kind": "grant.deny",
+        "seq": 71,
+        "system_reason": "expiry",
+        "v": 1,
+        "via": "daemon"
+      },
+      "description": "Denied grant g_0d9c8b7a6f5e4d3c2b1a0z (expired)"
+    },
+    "step": {
+      "actor": "tool:clax/0.3.1",
+      "id": "e000000000071",
+      "parents": [
+        "e000000000070"
+      ],
+      "timestamp": "2026-10-06T14:08:17.071Z"
+    }
+  },
+  {
+    "change": {
+      "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/grant/g_7h2k9m4q8x1a5b3c6d0e2f": {
+        "structural": {
+          "by": "person",
+          "grant_id": "g_7h2k9m4q8x1a5b3c6d0e2f",
+          "sessions_ended": [
+            "01JB9S00000000000000000005"
+          ],
+          "type": "clax.grant.revoke"
+        }
+      }
+    },
+    "meta": {
+      "clax": {
+        "backfilled": false,
+        "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+        "clax_version": "0.3.1",
+        "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+        "kind": "grant.revoke",
+        "seq": 72,
+        "v": 1,
+        "via": "cli"
+      },
+      "description": "Ended grant g_7h2k9m4q8x1a5b3c6d0e2f (by person)"
+    },
+    "step": {
+      "actor": "agent:clax-grant/g_7h2k9m4q8x1a5b3c6d0e2f",
+      "id": "e000000000072",
+      "parents": [
+        "e000000000071"
+      ],
+      "timestamp": "2026-10-06T14:08:24.072Z"
+    }
+  },
+  {
+    "change": {
+      "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/u/u_5am7q2": {
+        "structural": {
+          "person": "u_5am7q2",
+          "type": "clax.person.revoke"
+        }
+      }
+    },
+    "meta": {
+      "clax": {
+        "backfilled": false,
+        "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+        "clax_version": "0.3.1",
+        "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+        "kind": "person.revoke",
+        "seq": 73,
+        "v": 1,
+        "via": "shell"
+      },
+      "description": "Revoked person u_5am7q2"
+    },
+    "step": {
+      "actor": "human:clax-owner",
+      "id": "e000000000073",
+      "parents": [
+        "e000000000072"
+      ],
+      "timestamp": "2026-10-06T14:08:31.073Z"
+    }
   }
 ]

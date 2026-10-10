@@ -29,11 +29,17 @@ fn seg_path(day: &str, nnn: u32) -> PathBuf {
         .join(format!("clax-6a1f0c3e-{day}-{nnn:03}.path.jsonl"))
 }
 
-/// The golden history's rows, the first `on_first` of them on 2026-10-06
-/// and the rest moved to the days after, `per_day` to a day.
+/// How many of the golden history's rows the day-spreading tests lay out:
+/// the first 62, whose days and segments they count.
+const DAYS_ROWS: usize = 62;
+
+/// The golden history's first [`DAYS_ROWS`] rows, the first `on_first` of
+/// them on 2026-10-06 and the rest moved to the days after, `per_day` to a
+/// day.
 fn rows_over_days(h: &History, on_first: usize, per_day: usize) -> Vec<AuditRow> {
     h.rows
         .iter()
+        .take(DAYS_ROWS)
         .enumerate()
         .map(|(i, r)| {
             let mut r = r.clone();
@@ -549,7 +555,11 @@ fn a_segment_retention_cannot_remove_does_not_stop_the_journal() {
     clock.advance(3 * 86_400);
     fs.fail(&["remove"], 100, 13);
     w.append_batch(&rows[30..]).unwrap();
-    assert_eq!(w.cursor(), Some(rows[61].seq), "every event journalled");
+    assert_eq!(
+        w.cursor(),
+        Some(rows.last().unwrap().seq),
+        "every event journalled"
+    );
     assert!(
         w.warning().unwrap().contains("os error 13"),
         "{:?}",

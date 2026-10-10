@@ -960,14 +960,19 @@ mod tests {
 
     fn request(st: &Store, key: [u8; 32]) -> (String, String) {
         match st
-            .request_grant(clax_core::store::people::NewGrant {
-                key,
-                client_name: "sam-mbp".into(),
-                peer_ip: "192.168.1.20".into(),
-                access: clax_core::rights::Rights::preset(clax_core::rights::PRESET_COLLABORATOR)
+            .request_grant(
+                &clax_core::audit::AuditCtx::DAEMON,
+                clax_core::store::people::NewGrant {
+                    key,
+                    client_name: "sam-mbp".into(),
+                    peer_ip: "192.168.1.20".into(),
+                    access: clax_core::rights::Rights::preset(
+                        clax_core::rights::PRESET_COLLABORATOR,
+                    )
                     .unwrap(),
-                invite: None,
-            })
+                    invite: None,
+                },
+            )
             .unwrap()
         {
             clax_core::store::people::GrantStart::Pending {
@@ -984,11 +989,19 @@ mod tests {
         let index = GrantIndex::load(&st).unwrap();
         // A request approved, its tokens not yet collected.
         let (gid, code) = request(&st, [7; 32]);
-        st.approve_grant(&gid, &code, "Sam", None).unwrap();
+        st.approve_grant(
+            &clax_core::audit::AuditCtx::DAEMON,
+            &gid,
+            &code,
+            "Sam",
+            None,
+        )
+        .unwrap();
         // The sweep starts: at that moment the grant is live. Then the
         // revocation lands, before the sweep forgets anything.
         assert!(st.ended_grant_ids().unwrap().is_empty());
-        st.revoke_grant(&gid, EndedBy::Owner).unwrap();
+        st.revoke_grant(&clax_core::audit::AuditCtx::DAEMON, &gid, EndedBy::Owner)
+            .unwrap();
         index.ended(&gid).unwrap();
         assert!(!forget_purged(&index, &st), "its row is there: kept");
         // The poll that collects the tokens, racing the revocation, makes
@@ -1005,7 +1018,8 @@ mod tests {
         assert!(index.lookup(&secret::sha256("cxg_r")).unwrap().revoked);
         // A denied request's record goes once its row is purged.
         let (gone, _) = request(&st, [8; 32]);
-        st.deny_grant(&gone).unwrap();
+        st.deny_grant(&clax_core::audit::AuditCtx::DAEMON, &gone)
+            .unwrap();
         index.ended(&gone).unwrap();
         assert!(!forget_purged(&index, &st));
         clock.advance(clax_core::store::people::UNISSUED_RETENTION_SECS + 1);

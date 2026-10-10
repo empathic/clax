@@ -458,6 +458,10 @@ pub enum Obj<'a> {
     Site(&'a str),
     /// A recorded step, by `seq`.
     Step(i64),
+    /// A grant of another machine, by its ID.
+    Grant(&'a str),
+    /// An invite, by its ID.
+    Invite(&'a str),
     /// A history row the backfill skipped: table, row ID.
     BackfillRow(&'a str, &'a str),
 }
@@ -484,6 +488,8 @@ pub fn clax_uri(install: &str, obj: Obj<'_>) -> String {
         Obj::Rule(r) => format!("{base}/rule/{}", seg(r)),
         Obj::Site(o) => format!("{base}/site/{}", seg(o)),
         Obj::Step(seq) => format!("{base}/step/{}", step_id(seq)),
+        Obj::Grant(g) => format!("{base}/grant/{}", seg(g)),
+        Obj::Invite(i) => format!("{base}/invite/{}", seg(i)),
         Obj::BackfillRow(t, r) => format!("{base}/backfill/{}/{}", seg(t), seg(r)),
     }
 }
@@ -672,6 +678,17 @@ impl Event<'_> {
                 .str("table")
                 .zip(self.str("row_id"))
                 .map(|(t, r)| Obj::BackfillRow(t, r)),
+            Some(K::InviteCreate | K::InviteRevoke) => self.str("invite_id").map(Obj::Invite),
+            Some(
+                K::GrantRequest
+                | K::GrantApprove
+                | K::GrantDeny
+                | K::GrantRevoke
+                | K::GrantToken
+                | K::GrantNarrow,
+            ) => self.str("grant_id").map(Obj::Grant),
+            Some(K::PersonRights | K::PersonRevoke) => self.str("person").map(Obj::Person),
+            Some(K::AgentName) => s.map(Obj::Session),
             _ => None,
         };
         let generic = || match (a, t) {
@@ -1142,6 +1159,53 @@ impl Event<'_> {
                 "Ended session {} ({})",
                 self.row.ids.session.as_deref().unwrap_or("unknown"),
                 self.show("reason")
+            ),
+            Some(K::InviteCreate) => format!(
+                "Invited person {} until {}",
+                self.show("person"),
+                self.show("expires_at")
+            ),
+            Some(K::InviteRevoke) => format!(
+                "Revoked invite {} of person {}",
+                self.show("invite_id"),
+                self.show("person")
+            ),
+            Some(K::GrantRequest) => format!(
+                "Asked for grant {} by {}",
+                self.show("grant_id"),
+                self.show("flow")
+            ),
+            Some(K::GrantApprove) => format!(
+                "Approved grant {} for person {}",
+                self.show("grant_id"),
+                self.show("person")
+            ),
+            Some(K::GrantDeny) => format!(
+                "Denied grant {} ({})",
+                self.show("grant_id"),
+                self.show("reason")
+            ),
+            Some(K::GrantRevoke) => format!(
+                "Ended grant {} (by {})",
+                self.show("grant_id"),
+                self.show("by")
+            ),
+            Some(K::GrantToken) => format!(
+                "{} the tokens of grant {}",
+                if self.str("op") == Some("issue") {
+                    "Issued"
+                } else {
+                    "Revoked"
+                },
+                self.show("grant_id")
+            ),
+            Some(K::GrantNarrow) => format!("Narrowed grant {}", self.show("grant_id")),
+            Some(K::PersonRights) => format!("Set the rights of person {}", self.show("person")),
+            Some(K::PersonRevoke) => format!("Revoked person {}", self.show("person")),
+            Some(K::AgentName) => format!(
+                "Named the agent of session {} ({})",
+                self.row.ids.session.as_deref().unwrap_or("unknown"),
+                self.show("source")
             ),
             Some(K::BackfillSkip) => {
                 return format!(

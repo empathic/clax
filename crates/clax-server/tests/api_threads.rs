@@ -1726,7 +1726,9 @@ async fn at_name_reaches_a_persons_agent_only_where_its_rights_allow() {
         {"type": "clax-comments", "actions": ["read", "watch"], "locations": ["own"]}
     ]))
     .unwrap();
-    ts.store.set_person_rights(&person, Some(own_only)).unwrap();
+    ts.store
+        .set_person_rights(&clax_core::audit::AuditCtx::DAEMON, &person, Some(own_only))
+        .unwrap();
     let res = ts.create_thread(aid, 1, "@sams have a look", None).await;
     let v: Value = res.json().await.unwrap();
     assert_eq!(v["unresolved_mentions"], json!(["sams"]), "{v}");
@@ -1735,6 +1737,7 @@ async fn at_name_reaches_a_persons_agent_only_where_its_rights_allow() {
     // With rights to read and watch it, the name reaches it.
     ts.store
         .set_person_rights(
+            &clax_core::audit::AuditCtx::DAEMON,
             &person,
             Some(clax_core::rights::Rights::preset("clax:reader").unwrap()),
         )
@@ -1765,7 +1768,9 @@ async fn sams_agent(ts: &TestServer, rights: Value) -> String {
     assert_eq!(s["name"], "sams");
     let person = ts.store.grant(&sam.grant_id()).unwrap().person.unwrap();
     let rights = clax_core::rights::Rights::parse(&rights).unwrap();
-    ts.store.set_person_rights(&person, Some(rights)).unwrap();
+    ts.store
+        .set_person_rights(&clax_core::audit::AuditCtx::DAEMON, &person, Some(rights))
+        .unwrap();
     s["id"].as_str().unwrap().to_string()
 }
 

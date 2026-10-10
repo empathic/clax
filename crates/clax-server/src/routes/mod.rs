@@ -818,10 +818,6 @@ mod l10 {
         ("viewers::set_looked", "a viewer's read marks, not history"),
         ("viewers::set_me", "a viewer's own name, not history"),
         (
-            "people::rename_agent",
-            "an agent's display name, not history: the journal names agents by session and harness IDs",
-        ),
-        (
             "sample::sample",
             "a page's model request; changes no history",
         ),
@@ -854,48 +850,12 @@ mod l10 {
             "the owner's inbox read marks, not history (§6.11)",
         ),
         (
-            "grants::request",
-            "the grant flow; its events are not recorded yet",
-        ),
-        (
-            "grants::revoke",
-            "the grant flow; its events are not recorded yet",
-        ),
-        (
-            "grants::poll",
-            "the grant flow; its events are not recorded yet",
-        ),
-        (
-            "grants::disconnect",
-            "the grant flow; its events are not recorded yet",
-        ),
-        (
-            "grants::revoke_token",
-            "the grant flow; its events are not recorded yet",
-        ),
-        (
-            "grants::approve",
-            "the grant flow; its events are not recorded yet",
-        ),
-        (
-            "grants::deny",
-            "the grant flow; its events are not recorded yet",
-        ),
-        (
-            "grants::create_invite",
-            "the grant flow; its events are not recorded yet",
-        ),
-        (
-            "grants::revoke_invite",
-            "the grant flow; its events are not recorded yet",
-        ),
-        (
             "grants::test_fail_index",
             "debug builds only; makes the token index's next change fail",
         ),
         (
             "grants::test_sweep",
-            "debug builds only; expires grants as the daemon's sweep does",
+            "debug builds only; runs the daemon's grant sweep, which records its lapses as system:expiry",
         ),
     ];
 

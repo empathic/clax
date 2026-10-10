@@ -849,6 +849,7 @@ async fn session_less_grant_requests_use_person_and_grant_rights() {
     let gid = sam.grant_id();
     ts.store
         .narrow_grant(
+            &clax_core::audit::AuditCtx::DAEMON,
             &gid,
             Some(
                 clax_core::rights::Rights::parse(

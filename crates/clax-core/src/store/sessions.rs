@@ -643,7 +643,9 @@ impl Store {
         })
     }
 
-    /// Names live session `sid` `name` (spec §11, M22), given by `source`:
+    /// Names live session `sid` `name` (spec §11, M22), recording
+    /// `agent.name` under `ctx` when the name or its source changes, given
+    /// by `source`:
     /// the agent itself ([`NameSource::Agent`]) or its person or the owner
     /// ([`NameSource::Person`], which the agent can no longer change).
     /// `name` is compared and stored lowercase.
@@ -655,7 +657,13 @@ impl Store {
     /// ending in `.`, `_` or `-`, or a reserved word; `name_taken` for another live session's name
     /// (ignoring case) or the token form of the owner's or a connected
     /// person's display name.
-    pub fn set_session_name(&self, sid: &str, name: &str, source: NameSource) -> Result<Session> {
+    pub fn set_session_name(
+        &self,
+        ctx: &AuditCtx,
+        sid: &str,
+        name: &str,
+        source: NameSource,
+    ) -> Result<Session> {
         let invalid = || {
             CoreError::invalid(
                 "invalid_name",
@@ -701,6 +709,16 @@ impl Store {
                 params![sid, name, source.as_str()],
             )
             .map_err(taken_on_conflict)?;
+            if s.name.as_deref() != Some(name.as_str())
+                || s.name_source.as_deref() != Some(source.as_str())
+            {
+                let mut rec = AuditRecord::new(AuditKind::AgentName, self.now())
+                    .with("name", name.as_str())
+                    .with("source", source.as_str())
+                    .with("previous", s.name.clone());
+                rec.ids.session = Some(sid.to_string());
+                self.record_audit(tx, ctx, rec)?;
+            }
             fetch(tx, sid)
         })
     }
@@ -1681,25 +1699,25 @@ mod tests {
             );
             assert_eq!(a.name_source.as_deref(), Some("derived"));
             assert_invalid(
-                st.set_session_name(&b.id, "WEB", NameSource::Agent),
+                st.set_session_name(DAEMON, &b.id, "WEB", NameSource::Agent),
                 "name_taken",
             );
             let renamed = st
-                .set_session_name(&b.id, "chart-axis", NameSource::Person)
+                .set_session_name(DAEMON, &b.id, "chart-axis", NameSource::Person)
                 .unwrap();
             assert_eq!(
                 (renamed.name.as_deref(), renamed.name_source.as_deref()),
                 (Some("chart-axis"), Some("person"))
             );
             assert_invalid(
-                st.set_session_name(&b.id, "other", NameSource::Agent),
+                st.set_session_name(DAEMON, &b.id, "other", NameSource::Agent),
                 "name_locked",
             );
-            st.set_session_name(&b.id, "other", NameSource::Person)
+            st.set_session_name(DAEMON, &b.id, "other", NameSource::Person)
                 .unwrap();
             st.end_session(DAEMON, &a.id).unwrap();
             let c = st
-                .set_session_name(&c.id, "Web", NameSource::Agent)
+                .set_session_name(DAEMON, &c.id, "Web", NameSource::Agent)
                 .unwrap();
             assert_eq!(
                 c.name.as_deref(),
@@ -1731,11 +1749,11 @@ mod tests {
             assert_eq!(m.name.as_deref(), Some("clax-multi-person"));
             for word in crate::names::RESERVED {
                 assert_invalid(
-                    st.set_session_name(&a.id, word, NameSource::Agent),
+                    st.set_session_name(DAEMON, &a.id, word, NameSource::Agent),
                     "invalid_name",
                 );
                 assert_invalid(
-                    st.set_session_name(&a.id, &word.to_uppercase(), NameSource::Person),
+                    st.set_session_name(DAEMON, &a.id, &word.to_uppercase(), NameSource::Person),
                     "invalid_name",
                 );
             }
@@ -1769,7 +1787,7 @@ mod tests {
                 &"x".repeat(100_000),
             ] {
                 assert_invalid(
-                    st.set_session_name(&a.id, bad, NameSource::Agent),
+                    st.set_session_name(DAEMON, &a.id, bad, NameSource::Agent),
                     "invalid_name",
                 );
             }
@@ -1779,16 +1797,16 @@ mod tests {
                 "a refused name changes nothing"
             );
             let ok = st
-                .set_session_name(&a.id, &"x".repeat(32), NameSource::Agent)
+                .set_session_name(DAEMON, &a.id, &"x".repeat(32), NameSource::Agent)
                 .unwrap();
             assert_eq!(ok.name_source.as_deref(), Some("agent"));
             assert!(matches!(
-                st.set_session_name("nope", "x", NameSource::Agent),
+                st.set_session_name(DAEMON, "nope", "x", NameSource::Agent),
                 Err(CoreError::NotFound)
             ));
             st.end_session(DAEMON, &a.id).unwrap();
             assert_invalid(
-                st.set_session_name(&a.id, "y", NameSource::Agent),
+                st.set_session_name(DAEMON, &a.id, "y", NameSource::Agent),
                 "unknown_session",
             );
         }
@@ -1883,28 +1901,28 @@ mod tests {
                 .unwrap();
             assert_eq!(s.name.as_deref(), Some("sam"));
             assert_eq!(
-                code(st.create_invite(InvitePerson::New("Sam".into()), None)),
+                code(st.create_invite(DAEMON, InvitePerson::New("Sam".into()), None)),
                 "name_taken"
             );
             assert_eq!(
-                code(st.create_invite(InvitePerson::New("  SÁM ".into()), None)),
+                code(st.create_invite(DAEMON, InvitePerson::New("  SÁM ".into()), None)),
                 "name_taken"
             );
             // Once it ends, the name is free for a person.
             st.end_session(DAEMON, &s.id).unwrap();
             let (sam_grant, _, _) = approved(&st, "Sam", KEY_A);
             // A person "Mia Kovač": no agent takes "mia-kovac".
-            st.create_invite(InvitePerson::New("Mia Kovač".into()), None)
+            st.create_invite(DAEMON, InvitePerson::New("Mia Kovač".into()), None)
                 .unwrap();
             let a = st
                 .register_session(DAEMON, reg_repo("claude", "web", "main"))
                 .unwrap();
             assert_invalid(
-                st.set_session_name(&a.id, "mia-kovac", NameSource::Agent),
+                st.set_session_name(DAEMON, &a.id, "mia-kovac", NameSource::Agent),
                 "name_taken",
             );
             assert_invalid(
-                st.set_session_name(&a.id, "SAM", NameSource::Person),
+                st.set_session_name(DAEMON, &a.id, "SAM", NameSource::Person),
                 "name_taken",
             );
             let m = st
@@ -1995,29 +2013,29 @@ mod tests {
             let (_d, clock, st) = store();
             let jun = crate::new_ulid();
             st.upsert_viewer(&jun, Some("Jun")).unwrap();
-            let e = st.create_invite(InvitePerson::New("JUN".into()), None);
+            let e = st.create_invite(DAEMON, InvitePerson::New("JUN".into()), None);
             assert_eq!(code(e), "name_taken");
-            let msg = match st.create_invite(InvitePerson::New("jun".into()), None) {
+            let msg = match st.create_invite(DAEMON, InvitePerson::New("jun".into()), None) {
                 Err(CoreError::Invalid { message, .. }) => message,
                 other => panic!("{other:?}"),
             };
             assert!(msg.contains("invite that viewer instead"), "{msg}");
             // Inviting that viewer is the way.
             let public = st.get_viewer(&jun).unwrap().unwrap().public_id;
-            st.create_invite(InvitePerson::Viewer(public), None)
+            st.create_invite(DAEMON, InvitePerson::Viewer(public), None)
                 .unwrap();
             // A revoked person's name is free again.
             let (mia, _, _) = approved(&st, "Mia", KEY_A);
             let mia = st.grant(&mia).unwrap().person.unwrap();
-            st.revoke_person(&mia).unwrap();
-            st.create_invite(InvitePerson::New("Mia".into()), None)
+            st.revoke_person(DAEMON, &mia).unwrap();
+            st.create_invite(DAEMON, InvitePerson::New("Mia".into()), None)
                 .unwrap();
             // A lapsed invite's name is free again.
-            st.create_invite(InvitePerson::New("Ola".into()), None)
+            st.create_invite(DAEMON, InvitePerson::New("Ola".into()), None)
                 .unwrap();
             clock.advance(crate::store::people::INVITE_TTL_SECS + 1);
             st.expire_grants().unwrap();
-            st.create_invite(InvitePerson::New("Ola".into()), None)
+            st.create_invite(DAEMON, InvitePerson::New("Ola".into()), None)
                 .unwrap();
         }
     }
@@ -2151,7 +2169,7 @@ mod tests {
         fn a_revoked_grant_cannot_register_or_join() {
             let (_d, _c, st) = store();
             let (gid, _, _) = approved(&st, "Sam", KEY_A);
-            st.revoke_grant(&gid, crate::store::people::EndedBy::Owner)
+            st.revoke_grant(DAEMON, &gid, crate::store::people::EndedBy::Owner)
                 .unwrap();
             let refused = |r: Result<Session>| {
                 matches!(

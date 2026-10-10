@@ -263,6 +263,21 @@ impl DeferredAudit {
         })
     }
 
+    /// The context of a grant flow call (`clax connect` and its
+    /// continuation calls): the store records it as the client or the
+    /// person who made it, so the actor here is a placeholder, and the
+    /// channel is the CLI's. Grant flow calls are signed for the flow, not
+    /// as a verified agent channel, so their git and call headers do not
+    /// count.
+    pub fn grant_flow(self) -> AuditCtx {
+        AuditCtx {
+            actor: Actor::Anonymous,
+            via: Via::Cli,
+            git: GitField::Absent,
+            call: None,
+        }
+    }
+
     /// The context of a verified agent channel registering or joining a
     /// session: the channel it names (else `mcp`), its git state and its
     /// tool call. The store records those events as the session's own agent

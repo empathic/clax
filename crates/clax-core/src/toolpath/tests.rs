@@ -349,6 +349,9 @@ pub(super) fn segment(h: &History, closed: bool) -> String {
     out
 }
 
+/// The `seq` of the golden history's last row (`tests/toolpath/history.json`).
+const LAST_SEQ: i64 = 73;
+
 #[test]
 fn render_each_kind_matches_golden() {
     let h = history();
@@ -1661,6 +1664,27 @@ fn every_recorded_kind_is_classified_and_renders_conformant() {
     st.record_tool_call(&crate::audit::AuditCtx::DAEMON, &report)
         .unwrap()
         .expect("recorded");
+    // People, their grants and their agents' names (spec
+    // 2026-10-08-multi-agent-multi-person §20.2), from the live store.
+    {
+        use crate::store::people::InvitePerson;
+        use crate::store::people::tests::{KEY_B, approved, pending};
+        let ctx = &crate::audit::AuditCtx::DAEMON;
+        let (gid, _, manage) = approved(&st, "Sam", [1; 32]);
+        st.narrow_grant(ctx, &gid, None).unwrap();
+        let sam = st.viewer_of_grant(&gid).unwrap().public_id;
+        st.set_person_rights(ctx, &sam, None).unwrap();
+        st.revoke_token(ctx, &gid, manage.expose()).unwrap();
+        let (invite, _) = st
+            .create_invite(ctx, InvitePerson::New("Mia".into()), None)
+            .unwrap();
+        st.revoke_invite(ctx, &invite.id).unwrap();
+        let (request, _, _) = pending(&st, KEY_B);
+        st.deny_grant(ctx, &request.id).unwrap();
+        st.revoke_person(ctx, &sam).unwrap();
+        st.set_session_name(ctx, &sid, "named-one", crate::NameSource::Agent)
+            .unwrap();
+    }
     let live = st.events_after(0, 100_000).unwrap();
     let home = st.home().clone();
     st.with_write(|c| {
@@ -1674,7 +1698,16 @@ fn every_recorded_kind_is_classified_and_renders_conformant() {
     assert!(backfilled.iter().all(|r| r.backfilled) && !backfilled.is_empty());
     let install = st.install_id().unwrap();
 
-    const FIXTURE_TEXTS: [&str; 6] = ["one", "two", "on it", "Ana", "Claude", "working on it"];
+    const FIXTURE_TEXTS: [&str; 8] = [
+        "one",
+        "two",
+        "on it",
+        "Ana",
+        "Claude",
+        "working on it",
+        "sam-mbp",
+        "named-one",
+    ];
     let mut plain: BTreeMap<&str, usize> = BTreeMap::new();
     let mut kinds = BTreeSet::new();
     for rows in [&live, &backfilled] {
@@ -2053,7 +2086,7 @@ fn export_has_no_session_paths() {
         }
     }
     assert_eq!(doc["meta"]["clax"]["first_seq"], 1);
-    assert_eq!(doc["meta"]["clax"]["last_seq"], 62);
+    assert_eq!(doc["meta"]["clax"]["last_seq"], LAST_SEQ);
 }
 
 #[test]
@@ -2220,7 +2253,7 @@ fn selectors_union_within_and_intersect_across() {
         until: Some("2026-10-07".into()),
         ..Default::default()
     });
-    assert_eq!(all["meta"]["clax"]["last_seq"], 62);
+    assert_eq!(all["meta"]["clax"]["last_seq"], LAST_SEQ);
     // The graph ID follows the selection.
     assert_ne!(two["graph"]["id"], all["graph"]["id"]);
     assert_eq!(
@@ -2339,7 +2372,7 @@ fn jsonl_requires_single_path() {
             .unwrap()
             .starts_with("clax-export-")
     );
-    assert_eq!(seqs_of(p), (1..=62).collect::<Vec<_>>());
+    assert_eq!(seqs_of(p), (1..=LAST_SEQ).collect::<Vec<_>>());
     assert_eq!(p["meta"]["clax"]["redaction"], json!([]));
     // A JSONL path needs a step; indenting applies to JSON only.
     let later = project::Selection {
@@ -2516,7 +2549,7 @@ fn golden_journal_export_matches_and_conforms() {
     let doc = parse(&text);
     let p = &doc["paths"][0];
     assert_eq!(path_ids(&doc).len(), 1);
-    assert_eq!(seqs_of(p), (1..=62).collect::<Vec<_>>());
+    assert_eq!(seqs_of(p), (1..=LAST_SEQ).collect::<Vec<_>>());
     assert_eq!(p["meta"]["clax"]["projection"], "journal");
     golden("export.journal.path.json", &text);
 }
