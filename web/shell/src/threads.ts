@@ -59,7 +59,8 @@ export async function createThread(aid: string, input: { anchor: Anchor; body: s
   form.set("version", String(input.version));
   if (input.clip) form.set("clip", input.clip, "clip.png");
   if (input.viaPage) form.set("via_page", "true");
-  return ok(await fetch(`/api/artifacts/${aid}/threads`, { method: "POST", body: form }));
+  const headers: Record<string, string> = input.viaPage ? { "x-clax-via": "page" } : {};
+  return ok(await fetch(`/api/artifacts/${aid}/threads`, { method: "POST", headers, body: form }));
 }
 export async function addComment(aid: string, tid: string, body: string): Promise<Thread> {
   return (await ok<{ thread: Thread }>(await post(`/api/artifacts/${aid}/threads/${tid}/comments`, { body }))).thread;

@@ -33,10 +33,14 @@ pub(crate) fn multipart_error(status: StatusCode, message: String) -> ApiError {
 
 /// Stores the multipart field `file` as an asset of the artifact. A live
 /// page keeps no files besides its snapshots (spec 2026-10-05 §8.3): 400
-/// `live_page`.
+/// `live_page`. A page's upload (`x-clax-via: page`, which the shell's
+/// `assets` capability sends) also carries every author of the page (spec
+/// 2026-10-08-multi-agent-multi-person §8.2); the uploader is a person's
+/// agent's person, else the owner.
 pub async fn upload(
     State(s): State<AppState>,
-    _a: TokenOrAgent<AssetsUpload>,
+    a: TokenOrAgent<AssetsUpload>,
+    headers: axum::http::HeaderMap,
     audit: AuditCtx,
     aid: Result<Path<String>, PathRejection>,
     mp: Result<Multipart, MultipartRejection>,
@@ -67,8 +71,25 @@ pub async fn upload(
             .bytes()
             .await
             .map_err(|e| multipart_error(e.status(), e.body_text()))?;
+        let via_page = headers
+            .get(crate::routes::artifacts::VIA_HEADER)
+            .and_then(|v| v.to_str().ok())
+            == Some("page");
+        let person = match &a.0.caller {
+            crate::auth::Caller::PersonAgent { person, .. } => person.clone(),
+            _ => None,
+        };
         let asset = s
-            .store_call(move |st| st.add_asset(&audit, &id, &content_type, &bytes))
+            .store_call(move |st| {
+                st.add_asset_by(
+                    &audit,
+                    &id,
+                    &content_type,
+                    &bytes,
+                    person.as_deref(),
+                    via_page,
+                )
+            })
             .await?;
         let url = format!("/_blob/{}", asset.id);
         return Ok((

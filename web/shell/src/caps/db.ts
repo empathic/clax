@@ -167,7 +167,9 @@ export const dbHandler: HandlerFactory = env => {
 
   async function request<T>(method: string, url: string, body?: unknown, missingIsNull = false): Promise<T | null> {
     if (disposed) throw new CapError("unavailable", "this view has closed");
-    const headers: Record<string, string> = { "content-type": "application/json" };
+    // Every request here is the page's: its writes count every author of
+    // the page (multi-person spec §8.2).
+    const headers: Record<string, string> = { "content-type": "application/json", "x-clax-via": "page" };
     if (env.token) headers.authorization = `Bearer ${env.token}`;
     let res: Response;
     try {

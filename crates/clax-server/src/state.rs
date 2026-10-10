@@ -35,12 +35,23 @@ impl VisGen {
         self.counter.load(Ordering::Acquire)
     }
 
-    /// A future that completes at the next bump. A waiter makes it and
-    /// calls `enable()` on it (pinned) before reading [`VisGen::current`],
-    /// then awaits it: a bump between the read and the await still wakes
-    /// it.
-    pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
-        self.changed.notified()
+    /// Waits until the generation is past `seen` (one a waiter read with
+    /// [`VisGen::current`] before it last built its view), and returns the
+    /// new generation. Each round makes its wake-up before it reads the
+    /// generation, so a bump between the read and the wait still wakes it:
+    /// a waiter cannot get that order wrong. Returns at once when the
+    /// generation already moved.
+    pub async fn wait_after(&self, seen: u64) -> u64 {
+        loop {
+            // Made first: `notify_waiters` wakes every future that exists
+            // when it runs, polled or not.
+            let bump = self.changed.notified();
+            let now = self.current();
+            if now != seen {
+                return now;
+            }
+            bump.await;
+        }
     }
 }
 
@@ -144,29 +155,32 @@ mod tests {
     use clax_core::{Home, Store};
 
     #[tokio::test]
-    async fn the_generation_follows_the_stores_bumps() {
+    async fn waiting_after_a_generation_wakes_on_the_next_bump() {
         let dir = tempfile::tempdir().unwrap();
-        let st = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
+        let st = std::sync::Arc::new(Store::open(&Home::at(dir.path().join("ax"))).unwrap());
         let g = VisGen::install(&st);
-        let mut wait = std::pin::pin!(g.notified());
-        wait.as_mut().enable();
-        assert_eq!(g.current(), 0);
+        let seen = g.current();
+        assert_eq!(seen, 0);
+        // Already past: returns at once.
         let id = st.live_approvals(None).unwrap()[0].id.clone();
         st.revoke_approval(&AuditCtx::DAEMON, &id, None).unwrap();
-        // The bump came after the waiter was enabled: it is woken.
-        wait.await;
-        assert_eq!(g.current(), 1);
-        let mut wait = std::pin::pin!(g.notified());
-        wait.as_mut().enable();
-        st.approve(
-            &AuditCtx::DAEMON,
-            None,
-            UNCONNECTED,
-            Scope::Everywhere,
-            Via::Shell,
-        )
+        assert_eq!(g.wait_after(seen).await, 1);
+        // Not yet: a bump from elsewhere wakes it.
+        let (g2, st2) = (g.clone(), st.clone());
+        let waiter = tokio::spawn(async move { g2.wait_after(1).await });
+        tokio::task::yield_now().await;
+        tokio::task::spawn_blocking(move || {
+            st2.approve(
+                &AuditCtx::DAEMON,
+                None,
+                UNCONNECTED,
+                Scope::Everywhere,
+                Via::Shell,
+            )
+            .unwrap();
+        })
+        .await
         .unwrap();
-        wait.await;
-        assert_eq!(g.clone().current(), 2);
+        assert_eq!(waiter.await.unwrap(), 2);
     }
 }
