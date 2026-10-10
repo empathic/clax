@@ -21,13 +21,13 @@ use super::Store;
 use crate::audit::{AuditCtx, AuditKind, AuditRecord, sha256_hex};
 use crate::db::{Caller, Op, Rules, collection_path, doc_path, invalid_argument};
 use crate::store::approvals::OWNER;
-use crate::visibility::{Author, authors_of_doc};
+use crate::visibility::{Author, Visibility, authors_of_doc};
 use crate::{ArtifactId, CoreError, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Largest serialised document body.
 pub const MAX_DOC_BYTES: usize = 256 * 1024;
@@ -108,6 +108,21 @@ pub struct Written {
     pub created: bool,
     pub deleted: bool,
     pub change: Option<DocChange>,
+    /// The document's authors after the write, read in its transaction
+    /// (spec §8.2): every writer since it was created, the owner when none
+    /// is stored; empty after a delete.
+    pub authors: Vec<Author>,
+}
+
+/// A page of a query ([`Store::doc_query_visible`]): the documents, the
+/// cursor of the next page of an unordered query, and, for a reader that
+/// may not see every document, how many of the collection's documents it
+/// withholds (whatever the filter, cursor and limit).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocPage {
+    pub docs: Vec<Doc>,
+    pub next_cursor: Option<String>,
+    pub withheld: Option<usize>,
 }
 
 pub enum BatchOp {
@@ -630,6 +645,7 @@ fn write_in(
             )?;
             rc.record(id, &dp, Some(version), Some(&body.json), now)?;
             add_authors(c, id, &dp.path, caller, current.is_some())?;
+            let authors = authors_in(c, id, &dp.path)?;
             let doc = Doc {
                 id: dp.path.rsplit('/').next().unwrap_or_default().to_string(),
                 path: dp.path.clone(),
@@ -650,6 +666,7 @@ fn write_in(
                     read_level,
                     self_read,
                 }),
+                authors,
             })
         }
         None => {
@@ -678,6 +695,7 @@ fn write_in(
                     read_level,
                     self_read,
                 }),
+                authors: Vec::new(),
             })
         }
     }
@@ -730,6 +748,44 @@ fn add_authors(
     Ok(())
 }
 
+/// The authors of the document at `path` (see [`Store::doc_authors`]).
+fn authors_in(c: &Connection, id: &ArtifactId, path: &str) -> Result<Vec<Author>> {
+    let mut stmt = c.prepare_cached(
+        "SELECT author FROM doc_authors WHERE artifact_id = ?1 AND path = ?2 ORDER BY rowid",
+    )?;
+    let tokens = stmt
+        .query_map(params![id.as_str(), path], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(authors_of_doc(&tokens))
+}
+
+/// The stored authors of every document of `collection`, by path; a
+/// document with none is absent (the owner's).
+fn collection_authors(
+    c: &Connection,
+    id: &ArtifactId,
+    collection: &str,
+) -> Result<HashMap<String, Vec<String>>> {
+    let mut stmt = c.prepare_cached(
+        "SELECT a.path, a.author FROM doc_authors a
+         JOIN docs d ON d.artifact_id = a.artifact_id AND d.path = a.path
+         WHERE a.artifact_id = ?1 AND d.collection = ?2 ORDER BY a.rowid",
+    )?;
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    for row in stmt.query_map(params![id.as_str(), collection], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })? {
+        let (path, author) = row?;
+        out.entry(path).or_default().push(author);
+    }
+    Ok(out)
+}
+
+/// `vis` when it may withhold anything; `None` sees every document.
+fn filtering(vis: Option<&Visibility>) -> Option<&Visibility> {
+    vis.filter(|v| !v.is_all())
+}
+
 /// `patch` merged into the document at `path`; `invalid_argument` when it
 /// does not exist (an update never creates).
 fn update_body(path: &str, cur: Option<&Doc>, patch: Value) -> Result<Option<Value>> {
@@ -750,14 +806,26 @@ impl Store {
     /// none is stored (or the document does not exist).
     pub fn doc_authors(&self, id: &ArtifactId, path: &str) -> Result<Vec<Author>> {
         let dp = doc_path(path)?;
+        self.with_read(|c| authors_in(c, id, &dp.path))
+    }
+
+    /// [`Store::doc_get`] with the document's authors, read together.
+    pub fn doc_get_authored(
+        &self,
+        id: &ArtifactId,
+        path: &str,
+        caller: &Caller,
+    ) -> Result<Option<(Doc, Vec<Author>)>> {
+        let dp = doc_path(path)?;
         self.with_read(|c| {
-            let mut stmt = c.prepare_cached(
-                "SELECT author FROM doc_authors WHERE artifact_id = ?1 AND path = ?2 ORDER BY rowid",
-            )?;
-            let tokens = stmt
-                .query_map(params![id.as_str(), dp.path], |r| r.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(authors_of_doc(&tokens))
+            let rules = rules_in(c, id)?;
+            if !rules.allows(&dp.path, Op::Read, caller) {
+                return Ok(None);
+            }
+            match doc_in(c, id, &dp.path)? {
+                Some(d) => Ok(Some((d, authors_in(c, id, &dp.path)?))),
+                None => Ok(None),
+            }
         })
     }
 
@@ -867,12 +935,47 @@ impl Store {
         pin: Pin,
         caller: &Caller,
     ) -> Result<Written> {
-        doc_path(path)?;
+        self.doc_str_replace_visible(ctx, id, path, r, pin, caller, None)
+    }
+
+    /// [`Store::doc_str_replace`] for a caller whose reader sees what
+    /// `vis` lets through: on an existing document it may write but whose
+    /// authors `vis` withholds, [`CoreError::DocWithheld`] before the pin,
+    /// the field or `old_str` is looked at, so the answer never tells
+    /// whether the text would match (spec §7.5, §8.3).
+    ///
+    /// # Errors
+    /// As above, and [`Store::doc_str_replace`]'s.
+    #[allow(clippy::too_many_arguments)]
+    pub fn doc_str_replace_visible(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        path: &str,
+        r: StrReplace,
+        pin: Pin,
+        caller: &Caller,
+        vis: Option<&Visibility>,
+    ) -> Result<Written> {
+        let dp = doc_path(path)?;
         if r.old_str.is_empty() {
             return Err(invalid_argument("old_str must not be empty"));
         }
         self.with_tx(|tx| {
             let rules = rules_in(tx, id)?;
+            if let Some(vis) = filtering(vis)
+                && rules.allows(&dp.path, Op::Write, caller)
+                && doc_in(tx, id, &dp.path)?.is_some()
+            {
+                let withheld =
+                    vis.withheld_authors(&authors_in(tx, id, &dp.path)?, id.as_str(), None);
+                if !withheld.is_empty() {
+                    return Err(CoreError::DocWithheld {
+                        path: dp.path.clone(),
+                        authors: withheld,
+                    });
+                }
+            }
             let rc = Recorder { st: self, tx, ctx, op: "str_replace" };
             write_in(&rc, id, &rules, caller, path, pin, &self.now(), |cur| Body::of((|| {
                 let cur = cur.ok_or_else(|| CoreError::DocNotFound { path: path.to_string() })?;
@@ -908,6 +1011,27 @@ impl Store {
         q: &DocQuery,
         caller: &Caller,
     ) -> Result<(Vec<Doc>, Option<String>)> {
+        let page = self.doc_query_visible(id, q, caller, None)?;
+        Ok((page.docs, page.next_cursor))
+    }
+
+    /// [`Store::doc_query`] for a caller whose reader sees what `vis`
+    /// lets through (spec §8.3): a document whose authors `vis` withholds
+    /// is never matched, ordered, sized or paged over, as if absent; the
+    /// page counts the collection's documents the caller may read but
+    /// `vis` withholds, whatever the filter, cursor and limit. Without a
+    /// view that withholds anything, `withheld` is `None`.
+    ///
+    /// # Errors
+    /// [`Store::doc_query`]'s.
+    pub fn doc_query_visible(
+        &self,
+        id: &ArtifactId,
+        q: &DocQuery,
+        caller: &Caller,
+        vis: Option<&Visibility>,
+    ) -> Result<DocPage> {
+        let vis = filtering(vis);
         let collection = collection_path(&q.collection)?;
         let limit = match (q.limit, &q.order_by) {
             (Some(l), _) => l,
@@ -931,15 +1055,33 @@ impl Store {
         self.with_read(|c| {
             let rules = rules_in(c, id)?;
             let after = q.cursor.as_ref().map_or(String::new(), |cur| format!("{collection}/{cur}"));
+            // A reader that may be withheld documents counts them over the
+            // whole collection, so the scan starts at its first path.
+            let from = if vis.is_some() { "" } else { after.as_str() };
+            let authors = match vis {
+                Some(_) => collection_authors(c, id, &collection)?,
+                None => HashMap::new(),
+            };
             let mut stmt = c.prepare(&format!("{SELECT_DOC} WHERE artifact_id = ?1 AND collection = ?2 AND path > ?3 ORDER BY path"))?;
             let rows = stmt
-                .query_map(params![id.as_str(), collection, after], row_parts)?
+                .query_map(params![id.as_str(), collection, from], row_parts)?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             let mut docs = Vec::new();
             let mut bytes = 0;
+            let mut withheld = 0;
             for parts in rows {
                 if !rules.allows(&parts.0, Op::Read, caller) {
                     continue;
+                }
+                if let Some(vis) = vis {
+                    let tokens = authors.get(&parts.0).map_or(&[][..], Vec::as_slice);
+                    if !vis.sees(&authors_of_doc(tokens), id.as_str(), None) {
+                        withheld += 1;
+                        continue;
+                    }
+                    if parts.0 <= after {
+                        continue;
+                    }
                 }
                 let size = parts.2.len();
                 let d = to_doc(id, parts)?;
@@ -968,11 +1110,11 @@ impl Store {
                     o.then_with(|| a.id.cmp(&b.id))
                 });
                 docs.truncate(limit);
-                return Ok((docs, None));
+                return Ok(DocPage { docs, next_cursor: None, withheld: vis.map(|_| withheld) });
             }
-            let next = (docs.len() > limit).then(|| docs[limit - 1].id.clone());
+            let next_cursor = (docs.len() > limit).then(|| docs[limit - 1].id.clone());
             docs.truncate(limit);
-            Ok((docs, next))
+            Ok(DocPage { docs, next_cursor, withheld: vis.map(|_| withheld) })
         })
     }
 
@@ -2294,5 +2436,305 @@ mod tests {
             "lapsed leases do not count"
         );
         assert_eq!(doc_count(&st, "leases"), 2, "lapsed leases are pruned");
+    }
+
+    /// Documents per reader (spec §8.2, §8.3): Sam and Mia, two connected
+    /// people, on a store with a `db` artifact.
+    mod per_reader {
+        use super::*;
+        use crate::store::people::tests::{approved, store};
+        use crate::visibility::{Reader, Visibility};
+
+        struct Two {
+            _dir: tempfile::TempDir,
+            st: Store,
+            sam: String,
+            mia: String,
+            aid: ArtifactId,
+        }
+
+        fn two() -> Two {
+            let (dir, _clock, st) = store();
+            let (g, _, _) = approved(&st, "Sam", [1; 32]);
+            let sam = st.viewer_of_grant(&g).unwrap().public_id;
+            let (g, _, _) = approved(&st, "Mia", [2; 32]);
+            let mia = st.viewer_of_grant(&g).unwrap().public_id;
+            let aid = artifact_with_caps(&st, json!({"db": {}}));
+            Two {
+                _dir: dir,
+                st,
+                sam,
+                mia,
+                aid,
+            }
+        }
+
+        fn as_(p: &str) -> Caller {
+            Caller::new(Level::Admin, Some(p.to_string()))
+        }
+
+        impl Two {
+            fn set(&self, by: &str, path: &str, data: Value) -> Written {
+                self.st
+                    .doc_set(DAEMON, &self.aid, path, data, page(), &as_(by))
+                    .unwrap()
+            }
+            fn view(&self, p: &str) -> Visibility {
+                Visibility::for_reader(
+                    &self.st,
+                    &Reader::Person(p.to_string()),
+                    self.st.visibility_generation(),
+                )
+                .unwrap()
+            }
+            fn query(&self, reader: &str, q: DocQuery) -> DocPage {
+                self.st
+                    .doc_query_visible(&self.aid, &q, &as_(reader), Some(&self.view(reader)))
+                    .unwrap()
+            }
+        }
+
+        fn filters(w: Value) -> Vec<Filter> {
+            parse_where(&w).unwrap()
+        }
+
+        #[test]
+        fn where_runs_over_visible_documents_only() {
+            let t = two();
+            t.set(&t.mia, "c/1", json!({"secret": "aaa"}));
+            t.set(&t.mia, "c/2", json!({"secret": "zzz"}));
+            t.set(&t.sam, "c/3", json!({"secret": "mmm"}));
+            for w in [
+                json!([["secret", "<", "b"]]),
+                json!([["secret", ">", "y"]]),
+                json!([["secret", "==", "aaa"]]),
+                json!([["secret", "!=", "mmm"]]),
+                json!([]),
+            ] {
+                for order_by in [None, Some("secret".to_string())] {
+                    for descending in [false, true] {
+                        let page = t.query(
+                            &t.sam,
+                            DocQuery {
+                                collection: "c".into(),
+                                filters: filters(w.clone()),
+                                order_by: order_by.clone(),
+                                descending,
+                                ..DocQuery::default()
+                            },
+                        );
+                        assert!(
+                            page.docs.iter().all(|d| d.path == "c/3"),
+                            "{w}: the result never depends on Mia's values"
+                        );
+                        assert_eq!(page.withheld, Some(2), "{w}: counted whatever the filter");
+                        assert_eq!(page.next_cursor, None, "{w}");
+                    }
+                }
+            }
+            // Mia's own reader sees hers and counts Sam's.
+            let page = t.query(
+                &t.mia,
+                DocQuery {
+                    collection: "c".into(),
+                    ..DocQuery::default()
+                },
+            );
+            let paths: Vec<&str> = page.docs.iter().map(|d| d.path.as_str()).collect();
+            assert_eq!((paths, page.withheld), (vec!["c/1", "c/2"], Some(1)));
+            // Without a view (a person's browser), every document as before.
+            let page =
+                t.st.doc_query_visible(
+                    &t.aid,
+                    &DocQuery {
+                        collection: "c".into(),
+                        ..DocQuery::default()
+                    },
+                    &as_(&t.sam),
+                    None,
+                )
+                .unwrap();
+            assert_eq!((page.docs.len(), page.withheld), (3, None));
+        }
+
+        #[test]
+        fn the_count_leaves_out_what_the_rules_hide() {
+            let t = two();
+            // Mia's private subtree: the rules hide it from Sam, so the
+            // count never tells him it holds anything.
+            let mine = format!("data/users/{}/profile", t.mia);
+            t.set(&t.mia, &mine, json!({"pick": 3}));
+            let got = t.query(
+                &t.sam,
+                DocQuery {
+                    collection: format!("data/users/{}", t.mia),
+                    ..DocQuery::default()
+                },
+            );
+            assert_eq!((got.docs.len(), got.withheld), (0, Some(0)));
+            assert!(
+                matches!(
+                    t.st.doc_str_replace_visible(
+                        DAEMON,
+                        &t.aid,
+                        &mine,
+                        StrReplace {
+                            field: "pick".into(),
+                            old_str: "3".into(),
+                            new_str: "4".into(),
+                            replace_all: false
+                        },
+                        page(),
+                        &as_(&t.sam),
+                        Some(&t.view(&t.sam)),
+                    ),
+                    Err(CoreError::DocNotFound { .. })
+                ),
+                "a document the rules hide is missing, never withheld"
+            );
+        }
+
+        #[test]
+        fn pages_of_visible_documents_have_no_gaps() {
+            let t = two();
+            t.set(&t.sam, "c/a", json!({"n": 1}));
+            t.set(&t.mia, "c/b", json!({"n": 2}));
+            t.set(&t.mia, "c/c", json!({"n": 3}));
+            t.set(&t.sam, "c/d", json!({"n": 4}));
+            let page = |cursor: Option<&str>| {
+                t.query(
+                    &t.sam,
+                    DocQuery {
+                        collection: "c".into(),
+                        limit: Some(1),
+                        cursor: cursor.map(str::to_string),
+                        ..DocQuery::default()
+                    },
+                )
+            };
+            let first = page(None);
+            assert_eq!(first.docs[0].path, "c/a");
+            assert_eq!(first.next_cursor.as_deref(), Some("a"));
+            let second = page(Some("a"));
+            assert_eq!(second.docs[0].path, "c/d");
+            assert_eq!(second.next_cursor, None, "nothing withheld paginates");
+            assert_eq!((first.withheld, second.withheld), (Some(2), Some(2)));
+            // An ordered page of one: Sam's highest, never Mia's.
+            let top = t.query(
+                &t.sam,
+                DocQuery {
+                    collection: "c".into(),
+                    order_by: Some("n".into()),
+                    descending: true,
+                    limit: Some(1),
+                    ..DocQuery::default()
+                },
+            );
+            assert_eq!(top.docs[0].path, "c/d");
+        }
+
+        #[test]
+        fn str_replace_on_a_withheld_document_is_refused_before_it_is_evaluated() {
+            let t = two();
+            t.set(&t.mia, "c/1", json!({"text": "Mia's secret"}));
+            let before = t.st.doc_get(&t.aid, "c/1", &as_(&t.mia)).unwrap().unwrap();
+            let vis = t.view(&t.sam);
+            for (old, all) in [
+                ("secret", false),
+                ("absent", false),
+                ("s", false),
+                ("s", true),
+            ] {
+                for pin in [page(), pinned(before.version), pinned(999)] {
+                    let r = t.st.doc_str_replace_visible(
+                        DAEMON,
+                        &t.aid,
+                        "c/1",
+                        StrReplace {
+                            field: "text".into(),
+                            old_str: old.into(),
+                            new_str: "x".into(),
+                            replace_all: all,
+                        },
+                        pin,
+                        &as_(&t.sam),
+                        Some(&vis),
+                    );
+                    match r {
+                        Err(CoreError::DocWithheld { path, authors }) => {
+                            assert_eq!(path, "c/1");
+                            assert_eq!(authors, vec![Author::Person(t.mia.clone())]);
+                        }
+                        other => panic!("{old}: {other:?}"),
+                    }
+                }
+            }
+            // Nothing was written, and a missing document is missing.
+            assert_eq!(
+                t.st.doc_get(&t.aid, "c/1", &as_(&t.mia)).unwrap().unwrap(),
+                before
+            );
+            assert!(matches!(
+                t.st.doc_str_replace_visible(
+                    DAEMON,
+                    &t.aid,
+                    "c/none",
+                    StrReplace {
+                        field: "text".into(),
+                        old_str: "a".into(),
+                        new_str: "b".into(),
+                        replace_all: false
+                    },
+                    page(),
+                    &as_(&t.sam),
+                    Some(&vis),
+                ),
+                Err(CoreError::DocNotFound { .. })
+            ));
+            // Sam's own document is his to edit.
+            t.set(&t.sam, "c/2", json!({"text": "Sam's"}));
+            let w =
+                t.st.doc_str_replace_visible(
+                    DAEMON,
+                    &t.aid,
+                    "c/2",
+                    StrReplace {
+                        field: "text".into(),
+                        old_str: "Sam".into(),
+                        new_str: "S".into(),
+                        replace_all: false,
+                    },
+                    page(),
+                    &as_(&t.sam),
+                    Some(&vis),
+                )
+                .unwrap();
+            assert_eq!(w.doc.unwrap().data, json!({"text": "S's"}));
+        }
+
+        #[test]
+        fn a_write_answers_with_the_authors_it_leaves() {
+            let t = two();
+            let w = t.set(&t.mia, "c/1", json!({"a": 1}));
+            assert_eq!(w.authors, vec![Author::Person(t.mia.clone())]);
+            // Sam's blind write over Mia's document joins her; it never
+            // makes it his.
+            let w = t.set(&t.sam, "c/1", json!({"b": 2}));
+            assert_eq!(
+                w.authors,
+                vec![Author::Person(t.mia.clone()), Author::Person(t.sam.clone())]
+            );
+            let (doc, authors) =
+                t.st.doc_get_authored(&t.aid, "c/1", &as_(&t.sam))
+                    .unwrap()
+                    .unwrap();
+            assert_eq!((doc.data, authors), (json!({"b": 2}), w.authors.clone()));
+            let w =
+                t.st.doc_delete(DAEMON, &t.aid, "c/1", page(), &as_(&t.sam))
+                    .unwrap();
+            assert!(w.deleted && w.authors.is_empty());
+            let w = t.set(&t.sam, "c/1", json!({"c": 3}));
+            assert_eq!(w.authors, vec![Author::Person(t.sam.clone())]);
+        }
     }
 }
