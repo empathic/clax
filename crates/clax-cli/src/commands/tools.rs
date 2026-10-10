@@ -18,7 +18,7 @@ where
     let c = Client::connect(home, cli.port_for(home)?)?;
     let tools = ClaxTools::new(
         // The owner, through the CLI (spec §6.9).
-        DaemonClient::new(c.base.clone(), c.token.clone(), None).with_via("cli"),
+        DaemonClient::with_channel(c.base.clone(), c.token.clone(), None, c.agent).with_via("cli"),
         c.browser_url(""),
         None,
         home.log_path(),

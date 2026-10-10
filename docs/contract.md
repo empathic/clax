@@ -910,6 +910,57 @@ until an agent session watches it` when neither the new version nor the
 artifact has a session; `--json` reports it as `"session": null`, or the
 session's ID (the version's, else the artifact owner's) when there is one.
 
+### Agent channels
+
+Every request an agent's client sends carries `X-Clax-Channel: agent`: the
+MCP shim (from its first request, before its registration completes),
+`/mcp`'s internal client, every `clax hook` command, `clax feedback follow`
+and the Pi extension. The marker counts only with the daemon's token: with
+it, the request is the owner's agent, not the owner (who is the CLI used by
+hand, scripts, and the owner's browsers). A token request that names a
+session (`/api/sessions/<id>/…` or `X-Clax-Session`) is the owner's agent
+too.
+
+The `clax` CLI sends the marker when it runs under a harness. It decides
+from its environment, first match wins:
+
+| Variable | Set by | The CLI is |
+|---|---|---|
+| `CLAX_CHANNEL=owner` | the owner, explicitly | the owner |
+| `CLAX_CHANNEL=agent` | the plugins' wrapper (`ensure-clax.sh exec`, every command but `serve`, `stop`, `doctor` and `init`); the Pi extension, in Pi's process (its bash tool inherits it) and for its direct `serve --json` and `status --json` | an agent channel |
+| `CLAUDECODE=1` | Claude Code, in its Bash tool's shell | an agent channel |
+| `CODEX_THREAD_ID`, `CODEX_CI`, `CODEX_SANDBOX` (any value but empty) | Codex, in its shell tool's environment | an agent channel |
+| `PI_CODING_AGENT=true` | Pi, in its own process, which its bash tool inherits | an agent channel |
+
+Otherwise it is the owner. A command under a harness that reaches a route
+that serves people (403 `not_for_agents`: `clax inbox`, and anything reading
+`/api/events` or `/api/stream`) prints one line, such as `The inbox is for
+people: open http://localhost:7480/inbox in a browser.`, and exits 2.
+
+**Harness shell environments.** `scripts/probe-harness-env.sh` prints the
+environment a harness's shell tool gives a command; the table above lists
+exactly the variables it observed (2026-10-09):
+
+- **Claude Code 2.1.294** (`claude -p`, its Bash tool, with `CLAUDECODE`
+  unset in the parent): `CLAUDECODE=1`, beside `CLAUDE_CODE_ENTRYPOINT`,
+  `CLAUDE_CODE_SESSION_ID`, `CLAUDE_PID` and others the CLI does not read.
+- **Codex 0.162.0** (`codex exec`, its shell tool): `CODEX_THREAD_ID` and
+  `CODEX_CI=1` with and without the sandbox; `CODEX_SANDBOX=seatbelt` (and
+  `CODEX_SANDBOX_NETWORK_DISABLED`) only inside it; also `CODEX_SESSION_ID`
+  and `CODEX_VERSION`, which the CLI does not read. The interactive TUI was
+  not probed.
+- **Pi 0.73.1** (`pi --mode rpc`, its `bash` command, which runs with the
+  environment its bash tool uses): `PI_CODING_AGENT=true` and
+  `PI_SKIP_VERSION_CHECK`, set by Pi itself; with the Clax extension
+  loaded, also `CLAX_CHANNEL=agent`. Pi's model-driven bash tool was not
+  run (no provider key where the probe ran); Pi builds its environment
+  with the same function for both.
+- **Grok Build**: not installed where the probe ran, so it was not probed
+  and `GROK_SESSION_ID` (which Grok passes to its MCP servers and hooks) is
+  not read. Grok's hooks and MCP server run through the wrapper or send the
+  marker themselves; a `clax` command Grok's agent runs in its own shell is
+  the owner's until a probe confirms a variable.
+
 ## Comments and feedback
 
 People comment on a page in the browser: comment mode outlines the element

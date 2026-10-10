@@ -9,6 +9,9 @@
 #   ensure-clax.sh exec <args>       run any other clax command
 #   ensure-clax.sh pinned-version    print PINNED_VERSION (empty when none)
 #
+# Every `exec` but of serve, stop, doctor and init exports
+# CLAX_CHANNEL=agent: the command serves an agent (spec §16).
+#
 # The binary, in this order (PATH is never consulted):
 #   1. $CLAX_BIN, when set. It must then be a usable clax (an executable
 #      file whose --version names clax); otherwise that is the error, with
@@ -103,6 +106,25 @@ case "${1:-}" in
             mcp) MODE=mcp ;;
             hook) MODE=hook ;;
             *) MODE=cli ;;
+        esac
+        # Every command a plugin runs serves an agent (spec §16): its
+        # requests carry the agent-channel marker. The daemon's own
+        # lifecycle and setup commands (serve, stop, doctor, init) are the
+        # exceptions. The command is the first word after `exec` that is not
+        # an option (`--port` takes a value).
+        CLAX_CMD=""
+        skip=""
+        for a in "${@:2}"; do
+            if [ -n "$skip" ]; then skip=""; continue; fi
+            case "$a" in
+                --port) skip=1 ;;
+                -*) ;;
+                *) CLAX_CMD="$a"; break ;;
+            esac
+        done
+        case "$CLAX_CMD" in
+            serve|stop|doctor|init) ;;
+            *) export CLAX_CHANNEL=agent ;;
         esac
         ;;
     *) echo "usage: ensure-clax.sh [exec <clax arguments...> | pinned-version]" >&2; exit 2 ;;

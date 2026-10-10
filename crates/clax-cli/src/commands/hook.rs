@@ -603,6 +603,7 @@ fn handle(
     }
     let client = Client::discover(home)
         .ok_or_else(|| anyhow::anyhow!("no clax daemon is running"))?
+        .as_agent()
         .with_timeout(budget(agent, event).1)
         .with_via(VIA);
     let client = HookDaemon::new(&client, event, &input);
@@ -760,7 +761,10 @@ fn ask_worker(agent: Agent, home: &Home, tx: mpsc::Sender<AskMsg>) -> AskMsg {
     let Some(client) = Client::discover(home) else {
         return AskMsg::Failed("no clax daemon is running".to_string());
     };
-    let client = client.with_timeout(ASK_REQUEST_TIMEOUT).with_via(VIA);
+    let client = client
+        .as_agent()
+        .with_timeout(ASK_REQUEST_TIMEOUT)
+        .with_via(VIA);
     let client = HookDaemon::new(&client, Event::Ask, &input);
     let daemon = Reporting {
         client: &client,
