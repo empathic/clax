@@ -365,6 +365,26 @@ impl Store {
         })
     }
 
+    /// The artifact of session `session_id`: of the live artifacts it watches
+    /// (publishing watches), the one it last published a version of or
+    /// started watching, whichever is later; None when it watches none.
+    /// A mirrored question that names no artifact is about this page, and
+    /// without one it is asked in the terminal.
+    pub fn session_artifact(&self, session_id: &str) -> Result<Option<String>> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT w.artifact_id FROM watches w JOIN artifacts a ON a.id = w.artifact_id
+                 WHERE w.session_id = ?1 AND a.deleted_at IS NULL
+                 ORDER BY MAX(w.created_at, COALESCE((SELECT MAX(v.created_at) FROM versions v
+                     WHERE v.artifact_id = w.artifact_id AND v.session_id = ?1), '')) DESC, w.artifact_id
+                 LIMIT 1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+        })
+    }
+
     /// Watches on `id` held by sessions that have not ended, oldest first.
     pub fn watchers(&self, id: &ArtifactId) -> Result<Vec<Watch>> {
         self.with_read(|c| {
@@ -402,6 +422,51 @@ mod tests {
             st.ensure_watch(DAEMON, &s, &aid).unwrap().replies_armed,
             "a new watch is armed"
         );
+    }
+
+    #[test]
+    fn a_sessions_artifact_is_its_latest_watched_or_published_live_one() {
+        let (_d, st) = store();
+        let s = session(&st, "claude", "h1");
+        let other = session(&st, "claude", "h2");
+        assert_eq!(st.session_artifact(&s).unwrap(), None);
+        let (a, b) = (artifact(&st, Some(&s)), artifact(&st, None));
+        // Owning an artifact is not watching it; another session's watch is not its own.
+        st.ensure_watch(DAEMON, &other, &a).unwrap();
+        assert_eq!(st.session_artifact(&s).unwrap(), None);
+        // Times set by hand, so the order does not depend on the clock.
+        let at = |sql: &str, p: &[&str]| {
+            st.with_tx(|tx| Ok(tx.execute(sql, rusqlite::params_from_iter(p))?))
+                .unwrap();
+        };
+        st.ensure_watch(DAEMON, &s, &a).unwrap();
+        st.watch(DAEMON, &s, &b, true).unwrap();
+        let watched =
+            "UPDATE watches SET created_at = ?1 WHERE session_id = ?2 AND artifact_id = ?3";
+        at(watched, &["2026-10-01T10:00:00.000Z", &s, a.as_str()]);
+        at(watched, &["2026-10-01T11:00:00.000Z", &s, b.as_str()]);
+        at("UPDATE versions SET session_id = NULL", &[]);
+        assert_eq!(
+            st.session_artifact(&s).unwrap().as_deref(),
+            Some(b.as_str())
+        );
+        // A version the session published later makes `a` its artifact again.
+        at(
+            "UPDATE versions SET session_id = ?1, created_at = '2026-10-01T12:00:00.000Z' WHERE artifact_id = ?2",
+            &[&s, a.as_str()],
+        );
+        assert_eq!(
+            st.session_artifact(&s).unwrap().as_deref(),
+            Some(a.as_str())
+        );
+        // A deleted artifact, or one no longer watched, is not its artifact.
+        st.delete_artifact(DAEMON, &a).unwrap();
+        assert_eq!(
+            st.session_artifact(&s).unwrap().as_deref(),
+            Some(b.as_str())
+        );
+        st.unwatch(DAEMON, &s, &b).unwrap();
+        assert_eq!(st.session_artifact(&s).unwrap(), None);
     }
 
     #[test]

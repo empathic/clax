@@ -509,13 +509,14 @@ async fn the_extension_may_list_read_and_follow_the_inbox() {
 #[tokio::test]
 async fn the_hooks_timer_leaves_a_question_unread_and_the_owner_moving_it_reads_it() {
     let ts = TestServer::spawn().await;
-    // An owner surface is open, so hook questions wait rather than go to
-    // the terminal at once.
+    // An owner surface is open and the session has a page, so hook
+    // questions wait rather than go to the terminal at once.
     let _surface = ts.stream_as_owner(&["questions"]).await;
     let sid = ts.register_session("claude", "h1").await["id"]
         .as_str()
         .unwrap()
         .to_string();
+    ts.publish_as(&sid, "Board", "<p>b").await;
     let hook = |t: &str| {
         json!({"source": "hook", "tool_use_id": t, "questions": [{"question": "Which?",
             "header": "Pick", "multiSelect": false, "options": [{"label": "A", "description": "a"},

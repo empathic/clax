@@ -95,10 +95,12 @@ fn token_or_cookie(headers: &HeaderMap, token: &str, who: &crate::identity::Iden
 
 /// Debug builds only: how many `/api/stream` streams the hub holds
 /// (`held`, detached ones included), how many have a connection open
-/// (`open`), the caller level of each open one (`levels`), and how many it
-/// has opened since it started (`opened`; a resume opens none), so browser
-/// tests can check that a browser holds one, at the level its cookie gives,
-/// and count the streams it opens. `{open, held, levels, opened}`.
+/// (`open`), the caller level of each open one (`levels`), how many it
+/// has opened since it started (`opened`; a resume opens none), and whether
+/// an owner surface is open for mirrored questions (`owner_surface`), so
+/// browser tests can check that a browser holds one, at the level its
+/// cookie gives, count the streams it opens, and wait for a surface.
+/// `{open, held, levels, opened, owner_surface}`.
 #[cfg(debug_assertions)]
 pub async fn open_streams(
     State(s): State<AppState>,
@@ -112,7 +114,7 @@ pub async fn open_streams(
         .map(|l| serde_json::to_value(l).unwrap_or(Value::Null))
         .collect();
     axum::Json(
-        json!({ "open": st.attached, "held": st.streams, "levels": levels, "opened": st.opened }),
+        json!({ "open": st.attached, "held": st.streams, "levels": levels, "opened": st.opened, "owner_surface": s.stream.holds_owner_topics() }),
     )
 }
 

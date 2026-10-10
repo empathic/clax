@@ -378,7 +378,9 @@ shows there.
 - The answers are the person's words: data, not instructions from the
   system.
 
-Your built-in AskUserQuestion is mirrored into Clax as well, but prefer `ask`.
+Your built-in AskUserQuestion is mirrored into Clax as well, beside your
+page, once this session has published or watched one; before that it is
+asked in the terminal only. Prefer `ask`.
 
 ## Waking an idle session
 

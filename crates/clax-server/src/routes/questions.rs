@@ -133,10 +133,11 @@ pub struct CreateBody {
 /// `POST /api/sessions/<sid>/questions`: records a question set for live
 /// session `sid` → 201 `{question, mode, terminal_after_s, surface_open}`
 /// (200 with the first question for a `tool_use_id` seen before). A hook
-/// question takes Claude Code's AskUserQuestion input as it is, and the
-/// artifact of the session's newest working record when it names none; it
-/// is created moved to the terminal (`mode: "terminal"`) when no owner
-/// surface is open or `terminal_after_s` is 0, and otherwise is withdrawn
+/// question takes Claude Code's AskUserQuestion input as it is, and when it
+/// names no artifact, the artifact of the session's newest working record,
+/// else the session's artifact (`Store::session_artifact`); it is created
+/// moved to the terminal (`mode: "terminal"`) when it is about no artifact,
+/// no owner surface is open, or `terminal_after_s` is 0, and otherwise is withdrawn
 /// when no poll holds it for the grace. A new question records
 /// `question.ask` as the session's agent (and `question.release` when made
 /// released).
@@ -170,7 +171,6 @@ pub async fn create(
     };
     let surface_open = s.stream.holds_owner_topics();
     let after = s.terminal_after_s;
-    let released = source == Source::Hook && (!surface_open || after == 0);
     let artifact_id = match (&b.artifact_id, source) {
         (Some(a), _) => Some(a.clone()),
         (None, Source::Hook) => s.working.newest_artifact_of(&sid),
@@ -183,14 +183,23 @@ pub async fn create(
         .store_call(move |db| {
             live(db, &sid)?;
             // A named artifact must be live; a working record's may have
-            // gone since, and then the question is about none.
-            let live = match artifact_id.as_deref().map(ArtifactId::parse) {
+            // gone since, and then the question is about the session's
+            // artifact, if it has one.
+            let mut live = match artifact_id.as_deref().map(ArtifactId::parse) {
                 Some(Ok(id)) => db.get_artifact(&id)?.map(|a| a.id),
                 _ => None,
             };
             if named && live.is_none() {
                 return Err(CoreError::NotFound);
             }
+            if live.is_none() && source == Source::Hook {
+                live = db.session_artifact(&sid)?;
+            }
+            // A mirrored question waits in Clax only beside a page of its
+            // session's: before the session has published or watched one,
+            // it is asked in the terminal.
+            let released =
+                source == Source::Hook && (live.is_none() || !surface_open || after == 0);
             let ctx = audit.for_session(db, &sid)?;
             let (row, made) = db.create_question(
                 &ctx,
