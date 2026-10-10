@@ -431,6 +431,7 @@ impl Identity {
             Some(v) => Actor::Viewer {
                 public_id: v.public_id,
                 display_name: v.display_name,
+                person: false,
             },
             None => Actor::Anonymous,
         })

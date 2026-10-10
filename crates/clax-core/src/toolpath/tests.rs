@@ -7,7 +7,7 @@
 
 use super::seal::seal;
 use super::*;
-use crate::audit::{AuditIds, SystemReason};
+use crate::audit::{AuditIds, SystemReason, Via};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -495,6 +495,7 @@ fn actor_strings_match_schema_pattern() {
         Actor::Viewer {
             public_id: "u_x/y z".into(),
             display_name: None,
+            person: false,
         },
         Actor::Owner {
             public_id: String::new(),
@@ -533,6 +534,83 @@ fn actor_strings_match_schema_pattern() {
         actor_def(&odd[0], "i", "c", &Redaction::NONE)["identities"][1],
         json!({"system": "my harness/2-session", "id": "a b/c:d\u{e9}\u{1F600}"})
     );
+}
+
+#[test]
+fn people_and_their_agents_render_with_grant_and_person() {
+    let agent = Actor::Agent(AgentActor {
+        session_id: Some("01JB9S00000000000000000010".into()),
+        harness: Some("codex".into()),
+        harness_session_id: Some("cx-1".into()),
+        agent_handle: Some("a_1".into()),
+        grant_id: Some("g_7".into()),
+        person: Some("u_sam".into()),
+        ..Default::default()
+    });
+    assert_eq!(actor_string(&agent, "0.3.1"), "agent:codex/cx-1");
+    let ids = actor_def(&agent, "i", "c", &Redaction::NONE)["identities"].clone();
+    assert_eq!(
+        ids,
+        json!([
+            {"system": "clax-session", "id": "01JB9S00000000000000000010"},
+            {"system": "codex-session", "id": "cx-1"},
+            {"system": "clax-agent", "id": "a_1"},
+            {"system": "clax-person", "id": "i/u_sam"},
+            {"system": "clax-grant", "id": "g_7"},
+        ])
+    );
+    let sessionless = Actor::Agent(AgentActor {
+        grant_id: Some("g_7".into()),
+        person: Some("u_sam".into()),
+        channel: Some(Via::Cli),
+        ..Default::default()
+    });
+    assert_eq!(actor_string(&sessionless, "0.3.1"), "agent:clax-grant/g_7");
+    assert_eq!(
+        actor_def(&sessionless, "i", "c", &Redaction::NONE),
+        json!({"name": "Agent of another machine (no session)",
+               "identities": [{"system": "clax-person", "id": "i/u_sam"},
+                              {"system": "clax-grant", "id": "g_7"}]})
+    );
+    let cli = Actor::Agent(AgentActor {
+        channel: Some(Via::Cli),
+        ..Default::default()
+    });
+    assert_eq!(actor_string(&cli, "0.3.1"), "agent:clax-cli");
+    assert_eq!(
+        actor_def(&cli, "i", "c", &Redaction::NONE),
+        json!({"name": "Agent through cli (no session)"})
+    );
+    let person = Actor::Viewer {
+        public_id: "u_sam".into(),
+        display_name: Some("Sam".into()),
+        person: true,
+    };
+    assert_eq!(actor_string(&person, "0.3.1"), "human:clax-person/u_sam");
+    assert_eq!(
+        actor_def(&person, "i", "c", &Redaction::NONE),
+        json!({"name": "Sam", "identities": [{"system": "clax", "id": "i/u_sam"}]})
+    );
+    assert_eq!(
+        actor_def(&person, "i", "c", &Redaction::ALL),
+        json!({"identities": [{"system": "clax", "id": "i/u_sam"}]})
+    );
+    let client = Actor::Client {
+        grant_id: "g_7".into(),
+        client_name: "sam-mbp".into(),
+    };
+    assert_eq!(actor_string(&client, "0.3.1"), "tool:clax-client/g_7");
+    assert_eq!(
+        actor_def(&client, "i", "c", &Redaction::NONE),
+        json!({"name": "sam-mbp", "identities": [{"system": "clax-grant", "id": "g_7"}]})
+    );
+    assert_eq!(
+        actor_def(&client, "i", "c", &Redaction::ALL),
+        json!({"identities": [{"system": "clax-grant", "id": "g_7"}]})
+    );
+    for a in [&agent, &sessionless, &cli, &person, &client] {
+        assert!(is_actor_ref(&actor_string(a, "0.3.1")));
+    }
 }
 
 /// A row of `kind` by `actor` with `ids` and the kind's `body` fields (the

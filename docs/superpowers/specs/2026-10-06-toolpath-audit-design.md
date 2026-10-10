@@ -294,8 +294,30 @@ Properties of the table:
 {"type":"owner","public_id":"u_4be1…"}
 {"type":"viewer","public_id":"u_77c0…","display_name":"Sam"}
 {"type":"anonymous"}
-{"type":"system","reason":"ttl|rule|backfill|daemon"}
+{"type":"system","reason":"ttl|rule|backfill|daemon|expiry"}
 ```
+
+People and their agents (amendment, 2026-10-10, for the multi-person
+design `2026-10-08-multi-agent-multi-person-design.md`, which landed after
+this one):
+
+- An agent of a connected person, or of the owner's other machine, acts
+  under a grant (that design §6.4). Its agent actor adds `grant_id` and,
+  for a person's agent, `person` (the person's public ID; absent for the
+  owner's agents, a grant of the owner's row included):
+  `{"type":"agent","session_id":"01JB…","harness":"codex",…,"grant_id":"g_…","person":"u_77c0…"}`.
+  A session made under a grant carries both, so every event its session
+  makes names them, `for_actor` included.
+- An agent channel that names no session records
+  `{"type":"agent","session_id":null}`, with `grant_id` and `person` for
+  a grant's, and `channel` (`cli`, `hook`, `pi`) when its channel is not
+  `mcp`.
+- A connected person's browser (that design's `Caller::Person`) is a
+  `viewer` with `"person":true`.
+- The client of another machine asking for a grant, before anyone
+  approved it, is `{"type":"client","grant_id":"g_…","client_name":"sam-mbp"}`.
+- A grant or a request for one that lapses is `system` with reason
+  `expiry`.
 
 A system actor's event about someone names them in `body.for_actor`, an
 actor object as above: an agent for TTL ends and the like, and, under
@@ -1357,10 +1379,15 @@ outside it become `-`, and the original value is kept in the `ActorDef`.
 | agent with a harness session ID | `agent:claude-code/<harness session ID>` | `name` "Claude Code" (Codex, Pi, Grok; "Agent" when the harness is unknown); `provider`: anthropic for claude, openai for codex, xai for grok, absent for pi. `identities`: `{system:"clax-session", id:<ULID>}`, `{system:"claude-code-session", id:<harness session ID>}`, `{system:"clax-agent", id:<agent handle>}`, and `{system:"claude-code-transcript", id:<transcript path>}` when known |
 | agent without one | `agent:claude-code/clax-<session ULID>` (`agent:unknown/…` when the history no longer names the harness, or names it empty) | the same, minus the harness identities |
 | sessionless `/mcp` | `agent:clax-mcp` | `name` "MCP client (no session)" |
+| another agent channel naming no session (amendment, 2026-10-10) | `agent:clax-<channel>` (`agent:clax-cli`, `agent:clax-hook`, `agent:clax-pi`) | `name` "Agent through <channel> (no session)" |
+| a grant's agent naming no session (amendment, 2026-10-10) | `agent:clax-grant/<grant ID>` | `name` "Agent of another machine (no session)"; `identities`: as for a grant's agent below |
+| a grant's agent with a session (amendment, 2026-10-10) | as for any agent with a session | as for any agent, plus `{system:"clax-person", id:"<install ID>/<person public ID>"}` for a person's agent and `{system:"clax-grant", id:<grant ID>}` |
 | owner | `human:clax-owner` | `name` "Clax owner"; `identities`: `{system:"clax", id:"<install ID>/<owner public ID>"}` (opaque) |
 | LAN viewer | `human:clax-viewer/<public ID>` | `name`: the display name (left out under `--no-names`). `identities`: `{system:"clax", id:"<install ID>/<public ID>"}` |
+| connected person's browser (amendment, 2026-10-10) | `human:clax-person/<public ID>` | as for a LAN viewer |
+| grant-requesting client (amendment, 2026-10-10) | `tool:clax-client/<grant ID>` | `name`: the client's name (left out under `--no-names`); `identities`: `{system:"clax-grant", id:<grant ID>}` |
 | anonymous viewer | `human:clax-anonymous` | `name` "Anonymous viewer" |
-| Clax itself (any system actor) | `tool:clax/<version>`, the version that recorded the event | `name` "Clax"; `identities`: `{system:"clax-build", id:<commit that recorded it>}`. The reason (`ttl`, `rule`, `backfill`, `daemon`) is `meta.clax.system_reason` |
+| Clax itself (any system actor) | `tool:clax/<version>`, the version that recorded the event | `name` "Clax"; `identities`: `{system:"clax-build", id:<commit that recorded it>}`. The reason (`ttl`, `rule`, `backfill`, `daemon`, `expiry`) is `meta.clax.system_reason` |
 
 `agent:<provider>/<session>` is the base RFC's own example. The harness
 session is who acted, not where the step lives (O7). Clax does not know the

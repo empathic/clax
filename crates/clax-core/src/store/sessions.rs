@@ -103,10 +103,11 @@ fn fetch(tx: &Transaction<'_>, id: &str) -> Result<Session> {
 }
 
 /// Session `id` as the agent actor of the events it makes (audit spec
-/// §5.2), read on `c`; `None` when no session has that ID.
+/// §5.2), read on `c`, with its grant and person when it is a person's
+/// agent; `None` when no session has that ID.
 pub(super) fn agent_of(c: &Connection, id: &str) -> Result<Option<AgentActor>> {
     Ok(c.prepare_cached(
-        "SELECT harness, harness_session_id, agent_handle, transcript_path
+        "SELECT harness, harness_session_id, agent_handle, transcript_path, grant_id, person
          FROM sessions WHERE id = ?1",
     )?
     .query_row(params![id], |r| {
@@ -116,6 +117,9 @@ pub(super) fn agent_of(c: &Connection, id: &str) -> Result<Option<AgentActor>> {
             harness_session_id: r.get(1)?,
             agent_handle: Some(r.get(2)?),
             transcript_path: r.get(3)?,
+            grant_id: r.get(4)?,
+            person: r.get(5)?,
+            channel: None,
         })
     })
     .optional()?)
@@ -826,7 +830,8 @@ impl Store {
 
     /// Session `id` as the agent actor of the events it makes (audit spec
     /// §5.2): its harness, harness session ID, agent handle and transcript
-    /// path. Ended sessions count: the agent still acted. `None` when no
+    /// path, and the grant and person of a person's agent. Ended sessions
+    /// count: the agent still acted. `None` when no
     /// session has that ID.
     pub fn session_actor(&self, id: &str) -> Result<Option<AgentActor>> {
         self.with_read(|c| agent_of(c, id))
@@ -1093,6 +1098,7 @@ mod tests {
                 harness_session_id: Some("hs-1".into()),
                 agent_handle: Some(s.agent_handle.clone()),
                 transcript_path: Some("/t/hs-1.jsonl".into()),
+                ..Default::default()
             })
         );
         assert_eq!(st.session_actor(&crate::new_ulid()).unwrap(), None);
