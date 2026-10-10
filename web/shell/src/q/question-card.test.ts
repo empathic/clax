@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { flush, mount } from "../test/svelte";
 import { guardedAction, keyboardTrail } from "../view/trail";
@@ -16,23 +16,157 @@ const type = (el: HTMLInputElement | HTMLTextAreaElement, text: string) => flush
 describe("QuestionCard", () => {
   // As in the artifact view, whose trail the cards follow there.
   beforeAll(() => useTrail({ keyboardTrail, guardedAction }));
-  it("answers every kind and enables Answer only when complete", async () => {
+  it("answers every kind, saying how many are left until every question has an answer", async () => {
     const onAnswer = vi.fn(async () => {});
     const m = mount(QuestionCard, { q: view(), onAnswer, onDecline: vi.fn(async () => {}) });
-    const answer = () => buttons(m.root, "Answer claude")[0] as HTMLButtonElement;
-    expect(answer().disabled).toBe(true);
+    const primary = () => m.root.querySelector<HTMLButtonElement>("button.primary")!;
+    expect(primary().textContent).toBe("Answer 3 more");
+    expect(primary().disabled).toBe(false);
     click(m.root.querySelector<HTMLInputElement>('input[value="Two"]')!);
+    expect(primary().textContent).toBe("Answer 2 more");
     click(m.root.querySelectorAll<HTMLElement>(".chip")[1]);
     click(m.root.querySelector<HTMLInputElement>('input[value="Right"]')!);
     click(m.root.querySelectorAll<HTMLElement>(".chip")[2]);
     const ta = m.root.querySelector("textarea")!; ta.value = "ok"; ta.dispatchEvent(new Event("input"));
     flush();
-    expect(answer().disabled).toBe(false);
+    expect(primary().textContent).toBe("Answer claude");
+    expect(primary().hasAttribute("data-left")).toBe(false);
     expect([...m.root.querySelectorAll(".chip[data-done]")]).toHaveLength(3);
-    click(answer());
+    click(primary());
     await flush();
     expect(onAnswer).toHaveBeenCalledWith({ answers: [{ selected: ["Two"], text: null }, { selected: ["Right"], text: null }, { selected: [], text: "ok" }] });
     m.unmount();
+    // One question: Answer stays disabled until it has an answer.
+    const one = mount(QuestionCard, { q: view({ questions: [view().questions[0]] }), onAnswer, onDecline: vi.fn() });
+    expect(buttons(one.root, "Answer claude")[0]).toHaveProperty("disabled", true);
+    expect(one.root.querySelector(".steps")).toBeNull();
+    one.unmount();
+  });
+
+  describe("with several questions", () => {
+    beforeEach(() => { vi.useFakeTimers(); });
+    afterEach(() => { vi.useRealTimers(); });
+    const four = () => view({ questions: [
+      ...view().questions.slice(0, 2),
+      { question: "Which classifier?", header: "Classifier", multi_select: false, other: true, options: [{ label: "Rules" }, { label: "Model" }] },
+      view().questions[2],
+    ] });
+    const selected = (root: Element) => [...root.querySelectorAll('[role="tab"]')].findIndex(t => t.getAttribute("aria-selected") === "true");
+    // Lets the card's focus move (after the DOM update) run.
+    const settle = async () => { flush(); await Promise.resolve(); await Promise.resolve(); flush(); };
+
+    it("moves on to the next unanswered question after a single choice is picked, and not after a multi choice or Other", async () => {
+      const m = mount(QuestionCard, { q: four(), onAnswer: vi.fn(), onDecline: vi.fn() });
+      const two = m.root.querySelector<HTMLInputElement>('input[value="Two"]')!;
+      two.focus();
+      click(two);
+      // The pick shows for a moment first.
+      expect(selected(m.root)).toBe(0);
+      flush(() => vi.advanceTimersByTime(250));
+      await settle();
+      expect(selected(m.root)).toBe(1);
+      expect(document.activeElement).toBe(m.root.querySelector('input[value="Left"]'));
+      // A multi choice waits for the person.
+      click(m.root.querySelector('input[value="Left"]')!);
+      flush(() => vi.advanceTimersByTime(1000));
+      expect(selected(m.root)).toBe(1);
+      // Typing Other waits too; Next moves.
+      click(buttons(m.root, "Next")[0]);
+      expect(selected(m.root)).toBe(2);
+      type(m.root.querySelector<HTMLInputElement>(".other input")!, "Hybrid");
+      flush(() => vi.advanceTimersByTime(1000));
+      expect(selected(m.root)).toBe(2);
+      // A pick moves on to the next unanswered, wrapping past answered ones;
+      // a tab chosen in the meantime cancels the move.
+      click(m.root.querySelector('input[value="Rules"]')!);
+      click(m.root.querySelectorAll<HTMLElement>(".chip")[0]);
+      flush(() => vi.advanceTimersByTime(250));
+      expect(selected(m.root)).toBe(0);
+      click(m.root.querySelector('input[value="One"]')!);
+      flush(() => vi.advanceTimersByTime(250));
+      expect(selected(m.root)).toBe(3);
+      // With nothing left unanswered, a pick stays.
+      type(m.root.querySelector("textarea")!, "ok");
+      click(m.root.querySelectorAll<HTMLElement>(".chip")[2]);
+      click(m.root.querySelector('input[value="Model"]')!);
+      flush(() => vi.advanceTimersByTime(250));
+      expect(selected(m.root)).toBe(2);
+      m.unmount();
+    });
+
+    it("marks each tab answered with its answer, or not answered", () => {
+      const m = mount(QuestionCard, { q: four(), onAnswer: vi.fn(), onDecline: vi.fn() });
+      const ans = () => [...m.root.querySelectorAll(".chip .ans")].map(a => a.textContent);
+      expect(ans()).toEqual(["Not answered", "Not answered", "Not answered", "Not answered"]);
+      click(m.root.querySelector('input[value="Two"]')!);
+      click(buttons(m.root, "Next")[0]);
+      click(m.root.querySelector('input[value="Left"]')!);
+      click(m.root.querySelector('input[value="Right"]')!);
+      click(buttons(m.root, "Next")[0]);
+      type(m.root.querySelector<HTMLInputElement>(".other input")!, " Hybrid ");
+      expect(ans()).toEqual(["Two", "Left, Right", "Other: Hybrid", "Not answered"]);
+      expect([...m.root.querySelectorAll(".chip")].map(c => c.hasAttribute("data-done"))).toEqual([true, true, true, false]);
+      expect(m.root.querySelectorAll('[role="tab"]')[1].getAttribute("aria-label")).toBe("Sidebars, answered: Left, Right");
+      expect(m.root.querySelectorAll('[role="tab"]')[3].getAttribute("aria-label")).toBe("Notes, not answered");
+      m.unmount();
+    });
+
+    it("moves either way with Back and Next and with B and N, and an early Answer or Enter goes to the first unanswered", async () => {
+      const onAnswer = vi.fn(async () => {});
+      const m = mount(QuestionCard, { q: four(), onAnswer, onDecline: vi.fn() });
+      const back = buttons(m.root, "Back")[0], next = buttons(m.root, "Next")[0];
+      const pos = () => m.root.querySelector(".steps .pos")!.textContent;
+      expect(pos()).toBe("1 of 4");
+      expect(back.getAttribute("aria-disabled")).toBe("true");
+      click(back);
+      expect(selected(m.root)).toBe(0);
+      click(next); click(next); click(next);
+      expect(pos()).toBe("4 of 4");
+      expect(next.getAttribute("aria-disabled")).toBe("true");
+      click(next);
+      expect(selected(m.root)).toBe(3);
+      click(back);
+      expect(selected(m.root)).toBe(2);
+      // B and N from an option take focus to the question shown.
+      const rules = m.root.querySelector<HTMLInputElement>('input[value="Rules"]')!;
+      rules.focus();
+      key(rules, "b");
+      await settle();
+      expect(selected(m.root)).toBe(1);
+      expect(document.activeElement).toBe(m.root.querySelector('input[value="Left"]'));
+      key(document.activeElement!, "N");
+      await settle();
+      expect(selected(m.root)).toBe(2);
+      // From a tab, they move the selection and focus follows it.
+      const tab = m.root.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')!;
+      tab.focus();
+      key(tab, "n");
+      await settle();
+      expect(document.activeElement).toBe(m.root.querySelectorAll('[role="tab"]')[3]);
+      // Pressed early, the primary action goes to the first unanswered question.
+      click(back);
+      click(m.root.querySelector('input[value="Model"]')!);
+      flush(() => vi.advanceTimersByTime(250));
+      expect(m.root.querySelector("button.primary")!.textContent).toBe("Answer 3 more");
+      click(m.root.querySelector("button.primary")!);
+      await settle();
+      expect(selected(m.root)).toBe(0);
+      expect(document.activeElement).toBe(m.root.querySelector('input[value="Two"]'));
+      expect(onAnswer).not.toHaveBeenCalled();
+      // And so does Enter.
+      key(document.activeElement!, "1");
+      flush(() => vi.advanceTimersByTime(250));
+      await settle();
+      expect(selected(m.root)).toBe(1);
+      click(buttons(m.root, "Next")[0]); click(buttons(m.root, "Next")[0]);
+      const ta = m.root.querySelector("textarea")!;
+      ta.focus();
+      key(ta, "Enter");
+      await settle();
+      expect(selected(m.root)).toBe(1);
+      expect(onAnswer).not.toHaveBeenCalled();
+      m.unmount();
+    });
   });
 
   it("renders hostile strings as text", () => {
@@ -293,14 +427,14 @@ describe("QuestionCard", () => {
     const q = view({ questions: [{ ...view().questions[0], header: long }, { ...view().questions[1], header: `${long} 2` }] });
     const m = mount(QuestionCard, { q, onAnswer: vi.fn(), onDecline: vi.fn() });
     const tabs = [...m.root.querySelectorAll('[role="tab"]')];
-    expect(tabs.map(t => t.getAttribute("aria-label"))).toEqual([long, `${long} 2`]);
+    expect(tabs.map(t => t.getAttribute("aria-label"))).toEqual([`${long}, not answered`, `${long} 2, not answered`]);
     expect(tabs[0].getAttribute("title")).toBe(long);
     click(m.root.querySelector('input[value="One"]')!);
-    expect(m.root.querySelector('[role="tab"]')!.getAttribute("aria-label")).toBe(`${long}, answered`);
+    expect(m.root.querySelector('[role="tab"]')!.getAttribute("aria-label")).toBe(`${long}, answered: One`);
     const two = m.root.querySelector<HTMLInputElement>('input[value="Two"]')!;
     flush(() => { two.focus(); });
     expect(m.root.querySelector("pre")!.textContent).toBe("|a|b|");
-    const answer = buttons(m.root, "Answer claude")[0];
+    const answer = m.root.querySelector<HTMLButtonElement>("button.primary")!;
     // As the browser does when Tab moves on (jsdom's focus() fires no focusout).
     flush(() => { answer.focus(); two.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: answer })); });
     expect(m.root.querySelector("pre")!.textContent).toBe("|ab|");

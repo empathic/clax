@@ -18,7 +18,6 @@ import { followBadge, followDot } from "./wire";
 
 export { default as GallerySummary } from "./GallerySummary.svelte";
 export { default as InboxLink } from "./InboxLink.svelte";
-export { default as InboxPage } from "./InboxPage.svelte";
 
 /** Where a notification's click leads: in this tab on the gallery and the
  * inbox, which hold nothing unsaved; from an artifact view, in a new tab. */

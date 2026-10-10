@@ -37,18 +37,21 @@
   let sync: import("./card-sync").CardSync | null = null;
   const inbox = location.pathname === "/inbox";
   let Q = $state<typeof import("../q") | null>(null);
+  let Page = $state<typeof import("../q/InboxPage.svelte").default | null>(null);
   // Whether this is the owner's inbox: null until known.
   let owner = $state<boolean | null>(null);
   const lazy = () => import("./gallery-working");
   // `q` comes through the lazy module, which also hands it the page's stream.
   // A gallery destroyed meanwhile asks no more and imports nothing: a late
   // import would load the question module after the page (or a test) moved on.
-  const loadQ = (m: typeof import("./gallery-working")) => m.ownerBrowser(life.signal).then(o => (o && !destroyed ? m.q() : null)).then(async q => {
+  // `/inbox` loads its page's own chunk beside the module.
+  const loadQ = (m: typeof import("./gallery-working")) => m.ownerBrowser(life.signal).then(o => (o && !destroyed ? Promise.all([m.q(), inbox ? m.inboxPage() : null]) : null)).then(async r => {
     if (destroyed) return;
-    if (!q) { owner = false; return; }
-    Q = q;
-    q.start(m.pageStream());
+    if (!r) { owner = false; return; }
+    Q = r[0];
+    Q.start(m.pageStream());
     owner = true;
+    Page = r[1]?.default ?? null;
   }, () => {});
   const describe = (e: unknown) => (e instanceof Error ? e.message : String(e));
   // Each list seeds the working feed; the first one, once rendered, starts its stream.
@@ -90,7 +93,7 @@
   <ThemeSwitch />
 </header>
 <main class="gal">
-  {#if inbox}{#if owner && Q}<Q.InboxPage />{:else if owner === false}<p class="empty">The inbox is its owner's: open it at http://localhost:{location.port}/inbox on the computer Clax runs on.</p>{/if}{:else}
+  {#if inbox}{#if owner && Page}<Page />{:else if owner === false}<p class="empty">The inbox is its owner's: open it at http://localhost:{location.port}/inbox on the computer Clax runs on.</p>{/if}{:else}
   {#if Q}<Q.GallerySummary />{/if}
   {#if error}<p class="empty">Could not load artifacts: {error}</p>{/if}
   {#if artifacts && artifacts.length === 0}

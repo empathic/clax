@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { view } from "./fixtures";
-import { agentLabel, closedLabel, complete, cutHeader, emptyDraft, pick, previewOf, shownLabel, toBody, typeOther } from "./model";
+import { agentLabel, answerLine, closedLabel, complete, cutHeader, emptyDraft, nextOpen, pick, previewOf, shownLabel, toBody, typeOther } from "./model";
 
 describe("question model", () => {
   it("tracks completeness per kind and builds the body", () => {
@@ -26,6 +26,21 @@ describe("question model", () => {
     expect(previewOf(s, null, { selected: ["One"], text: "" })).toBe("|ab|");
     expect(previewOf(s, "Two", { selected: ["One"], text: "" })).toBe("|a|b|");
     expect(previewOf(view().questions[1], null, { selected: [], text: "" })).toBeNull();
+  });
+  it("finds the next unanswered question, wrapping round", () => {
+    expect(nextOpen([false, false, false], -1)).toBe(0);
+    expect(nextOpen([true, false, false], 0)).toBe(1);
+    expect(nextOpen([false, true, true], 1)).toBe(0);
+    expect(nextOpen([true, true, false], 2)).toBe(2);
+    expect(nextOpen([true, true, true], 0)).toBe(-1);
+  });
+  it("reads an answer as the person gave it", () => {
+    const [single, multi, free] = view().questions;
+    expect(answerLine(single, { selected: ["Two"], text: null })).toBe("Two");
+    expect(answerLine(single, { selected: [], text: "Three" })).toBe("Other: Three");
+    expect(answerLine(multi, { selected: ["Left", "Right"], text: "" })).toBe("Left, Right");
+    expect(answerLine(free, { selected: [], text: "ok" })).toBe("ok");
+    expect(answerLine(free, undefined)).toBe("");
   });
   it("names agents and closed states", () => {
     const a = view(); const b = view({ id: "x", agent: { handle: "a_9c2b00", harness: "claude", project: "p" } });
