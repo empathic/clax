@@ -240,7 +240,11 @@ async fn names_that_render_as_a_persons_or_the_owners_are_refused() {
         ("Al\u{200B}ex", 409),                     // zero-width space
         ("Al\u{FE0F}ex", 409),                     // a variation selector
         ("Alex\u{E0041}", 409),                    // a tag character
-        ("Al\u{034F}ex", 409),                     // the combining grapheme joiner
+        ("Al\u{034F}ex", 409),
+        ("Al\u{200A}ex", 409), // a hair space
+        ("Al\u{2009}ex", 409), // a thin space
+        ("Al\u{202F}ex", 409), // a narrow no-break space
+        ("A\u{2006}lex", 409), // a six-per-em space                     // the combining grapheme joiner
         ("Al\u{0}ex", 400),
         ("Al\nex", 400),
     ];
