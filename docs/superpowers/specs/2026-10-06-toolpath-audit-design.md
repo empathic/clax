@@ -145,7 +145,7 @@ The journal is on by default (`[toolpath] journal = true`). The owner finds
 files like this one in `~/.clax/toolpath/journal/2026/10/`:
 
 ```
-clax-01JB8Q2W-20261006-001.path.jsonl
+clax-3f9a0c7e-20261006-001.path.jsonl
 ```
 
 Each file, once sealed (JSONL RFC, "Reading JSONL"), is a `Graph` that
@@ -268,7 +268,9 @@ CREATE INDEX audit_events_call      ON audit_events(call_id) WHERE call_id IS NO
 CREATE INDEX audit_events_at        ON audit_events(at);
 
 CREATE TABLE install (k TEXT PRIMARY KEY, v TEXT NOT NULL);
--- ('id', <ULID>) minted once by this migration: the opaque install ID
+-- ('id', <32 lowercase hex>) minted once by this migration's Rust step:
+-- the opaque install ID, 128 random bits (no timestamp, so a reference
+-- does not date the install)
 
 ALTER TABLE versions ADD COLUMN content_sha256 TEXT;     -- §5.3; NULL before the backfill, or when a file is missing
 ALTER TABLE sessions ADD COLUMN transcript_path TEXT;    -- L16
@@ -327,9 +329,11 @@ content_sha256 = "sha256:" + hex(SHA-256(manifest))
 ```
 
 `write_version_then` already holds every file's bytes, and hashes them while
-staging. A carried-forward file reuses the previous version's file hash from
-that version's `version.publish` body. The per-file hashes are kept in the
-event body (§6.1).
+staging. Each file's hash is kept in its `FileMeta.sha256` (the version's
+`files_json`), so a carried-forward file reuses the previous version's
+`FileMeta` with no event lookup; a carried file written before content
+hashes has none, and is hashed from its stored bytes. The per-file hashes
+are also in the event body (§6.1).
 
 ### 5.4 Sessions
 
@@ -780,14 +784,14 @@ and `clax toolpath status` and `clax doctor` say why.
 ### 7.2 Segment shape
 
 ```
-{"PathOpen":{"version":"1","id":"clax-journal-01JB8Q2W-20261006-001",
-  "base":{"uri":"clax://01JB8Q2WXYZ…"},
-  "graph_ref":"toolpath://clax/01JB8Q2WXYZ…",
+{"PathOpen":{"version":"1","id":"clax-journal-3f9a0c7e-20261006-001",
+  "base":{"uri":"clax://3f9a0c7e5b21d4e8…"},
+  "graph_ref":"toolpath://clax/3f9a0c7e5b21d4e8…",
   "meta":{"title":"Clax audit trail 2026-10-06 #1",
           "kind":"https://toolpath.net/kinds/clax-audit/v1.0.0",
-          "source":"clax://01JB8Q2WXYZ…",
-          "refs":[{"rel":"continues","href":"clax-01JB8Q2W-20261005-001.path.jsonl"}],
-          "clax":{"projection":"journal","install":"01JB8Q2WXYZ…","segment":"20261006-001",
+          "source":"clax://3f9a0c7e5b21d4e8…",
+          "refs":[{"rel":"continues","href":"clax-3f9a0c7e-20261005-001.path.jsonl"}],
+          "clax":{"projection":"journal","install":"3f9a0c7e5b21d4e8…","segment":"20261006-001",
                   "first_seq":4812,"clax_version":"0.3.0","clax_commit":"abc1234…"}}}}
 {"ActorDef":{"actor":"agent:claude-code/3f2c9a1e-…","definition":{…}}}
 {"Step":{…}}
@@ -1007,27 +1011,27 @@ clax toolpath status [--json]
 
 ```json
 {
-  "graph": {"id": "clax-01JB8Q2W-<digest12>"},
+  "graph": {"id": "clax-3f9a0c7e-<digest12>"},
   "paths": [
     {"path": {"id": "clax-artifact-k3m9q2w8x1ab",
-              "base": {"uri": "clax://01JB…/a/k3m9q2w8x1ab"},
+              "base": {"uri": "clax://3f9a0c7e5b21d4e8…/a/k3m9q2w8x1ab"},
               "head": "e000000000311"},
      "steps": ["…artifact.create, version.publish, thread.open, comment.add, tool.call, …"],
      "meta": {"title": "Settings page",
               "kind": "https://toolpath.net/kinds/clax-audit/v1.0.0",
-              "source": "clax://01JB…/a/k3m9q2w8x1ab",
+              "source": "clax://3f9a0c7e5b21d4e8…/a/k3m9q2w8x1ab",
               "actors": {"agent:claude-code/3f2c9a1e-…": {"…": "…"}, "human:clax-owner": {"…": "…"}},
               "refs": [{"rel": "view", "href": "http://localhost:7777/a/k3m9q2w8x1ab"}],
               "clax": {"projection": "artifact", "artifact_id": "k3m9q2w8x1ab", "artifact_kind": "live",
                        "origin": "http://localhost:5173", "path": "/settings"}}},
-    {"path": {"id": "clax-install-01JB8Q2W", "base": {"uri": "clax://01JB…"}, "head": "…"},
+    {"path": {"id": "clax-install-3f9a0c7e", "base": {"uri": "clax://3f9a0c7e5b21d4e8…"}, "head": "…"},
      "steps": ["…session.start, live.rule, watch.start (scope), tool.call (no artifact), …"],
      "meta": {"title": "Clax install audit trail", "kind": "…clax-audit/v1.0.0",
               "clax": {"projection": "install"}}}
   ],
   "meta": {"title": "Clax export",
-           "refs": [{"rel": "source", "href": "clax://01JB…"}],
-           "clax": {"install": "01JB…", "clax_version": "0.3.0", "clax_commit": "abc1234…",
+           "refs": [{"rel": "source", "href": "clax://3f9a0c7e5b21d4e8…"}],
+           "clax": {"install": "3f9a0c7e5b21d4e8…", "clax_version": "0.3.0", "clax_commit": "abc1234…",
                     "selection": {"artifacts": ["k3m9q2w8x1ab"], "since": null, "until": null},
                     "first_seq": 1, "last_seq": 5930, "redaction": []}}
 }
@@ -1417,7 +1421,7 @@ destination artifact's.
            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
            "timestamp": "2026-10-06T14:03:11.731Z"},
   "change": {
-    "clax://01JB8Q2WXYZ/a/k3m9q2w8x1ab/v/4": {"structural": {
+    "clax://3f9a0c7e5b21d4e8/a/k3m9q2w8x1ab/v/4": {"structural": {
       "type": "clax.version.publish", "n": 4, "label": "Tighter spacing",
       "note": "Addresses #2 and #3", "title": "Settings page",
       "files": {"index.html": {"sha256": "sha256:9b…", "size": 18342, "content_type": "text/html"}},
@@ -1426,17 +1430,17 @@ destination artifact's.
   "meta": {
     "description": "Published version 4 of Settings page",
     "refs": [
-      {"rel": "artifact", "href": "clax://01JB8Q2WXYZ/a/k3m9q2w8x1ab"},
-      {"rel": "addresses", "href": "clax://01JB8Q2WXYZ/a/k3m9q2w8x1ab/t/01JB9Z…"},
-      {"rel": "addresses", "href": "clax://01JB8Q2WXYZ/a/k3m9q2w8x1ab/t/01JBA0…"},
+      {"rel": "artifact", "href": "clax://3f9a0c7e5b21d4e8/a/k3m9q2w8x1ab"},
+      {"rel": "addresses", "href": "clax://3f9a0c7e5b21d4e8/a/k3m9q2w8x1ab/t/01JB9Z…"},
+      {"rel": "addresses", "href": "clax://3f9a0c7e5b21d4e8/a/k3m9q2w8x1ab/t/01JBA0…"},
       {"rel": "agent-session", "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44"},
       {"rel": "transcript", "href": "file:///Users/alex/.claude/projects/-Users-alex-work-app/3f2c9a1e-….jsonl"},
-      {"rel": "tool-call", "href": "clax://01JB8Q2WXYZ/s/01JB9…/call/01JBC…"},
+      {"rel": "tool-call", "href": "clax://3f9a0c7e5b21d4e8/s/01JB9…/call/01JBC…"},
       {"rel": "at-revision", "href": "git:github:empathic/app@9c1e5d2b…"},
       {"rel": "view", "href": "http://localhost:7777/a/k3m9q2w8x1ab/v/4"}
     ],
     "clax": {
-      "seq": 311, "kind": "version.publish", "install": "01JB8Q2WXYZ",
+      "seq": 311, "kind": "version.publish", "install": "3f9a0c7e5b21d4e8",
       "clax_version": "0.3.0", "clax_commit": "abc1234…", "via": "mcp", "backfilled": false,
       "call": {"call_id": "01JBC…", "tool": "publish", "harness_tool": null,
                "args_sha256": "sha256:c6e6f4…", "started_at": "2026-10-06T14:03:11.402Z"},

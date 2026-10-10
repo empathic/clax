@@ -1072,6 +1072,189 @@ inbox alone    GET /api/inbox/summary          21       1.7            ok
   hook waits were not driven in the real `claude`; they are covered by the
   hook's tests against a fake and a real daemon (Task 6).
 
+## 10. Toolpath audit
+
+Spec `docs/superpowers/specs/2026-10-06-toolpath-audit-design.md`, branch
+`toolpath-audit`; the contract is "Toolpath journal and export" in
+`docs/contract.md`. Build under test: `d436b13`, the commit before this
+record (`clax version --verbose`: `clax 0.4.0`, `commit
+d436b131bd2763381dfd6bac6b45166cf751c2d5`). Run on 2026-10-09, macOS 26.6.2,
+arm64, Node v26.8.2, Claude Code 2.1.294. The machine was shared with other
+runs.
+
+### 10.1 Manual check: a Claude Code publish, a LAN reply, an export
+
+What ran, exactly:
+
+- **Claude Code:** the real `claude` 2.1.294, non-interactive (`claude -p`),
+  with this branch's plugin (`--plugin-dir plugins/claude-code`), so the
+  plugin wrapper, the MCP shim and every hook ran. Its model was a scripted
+  Messages API on 127.0.0.1, a variant of `scripts/fake-anthropic.py` whose
+  first turn calls the publish tool Claude Code offers
+  (`mcp__plugin_clax_clax__publish`) with a fixed `html`, `title` and
+  `note`. No model was called, and no login was used: `CLAUDE_CONFIG_DIR`
+  was a scratch directory with the first-run settings `smoke-claude-ask.sh`
+  writes, and every `CLAUDE*` variable of the calling session was unset.
+- **Clax:** `CLAX_BIN` was this branch's debug build, through
+  `scripts/stable-bin.sh target/debug/clax target/clax-bin/debug`. Its
+  daemon ran in a scratch `CLAX_HOME` on a free port the kernel picked
+  (`config.toml` `[serve] port`), and was stopped by `clax stop` and checked
+  gone by its recorded PID. `~/.clax`, `~/.clax-dev` and `~/.claude` were
+  not touched.
+- **The repository:** a scratch git repository with one commit, the remote
+  `origin` = `https://github.com/empathic/toolpath-check.git`, a modified
+  tracked file and one untracked file (`git status --porcelain`:
+  ` M README.md`, `?? untracked.txt`).
+- **The LAN viewer:** the HTTP sequence of `TestServer::viewer`,
+  `thread_as` and `reply_as` (`crates/clax-server/src/testing.rs`), with
+  curl: the `clax_viewer` cookie alone, no token and no owner cookie.
+
+The commands, in order (`$R` is the scratch run directory, `$BIN` the
+stable copy of the debug build):
+
+```
+clax serve                                   # CLAX_HOME=$R/home, CLAX_NO_OPEN=1
+cd $R/repo && env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SESSION_ID … \
+    CLAUDE_CONFIG_DIR=$R/claude ANTHROPIC_BASE_URL=$FAKE ANTHROPIC_API_KEY=sk-ant-fake-… \
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 CLAX_BIN=$BIN \
+    claude -p "PUBLISH-T16: publish the page." --max-turns 3 \
+      --plugin-dir plugins/claude-code --allowedTools mcp__plugin_clax_clax__publish </dev/null
+curl -D - $BASE/api/viewers/me                                   # -> clax_viewer cookie
+curl -X PUT -H "cookie: clax_viewer=$CK" -d '{"display_name":"Sam"}' $BASE/api/viewers/me
+curl -H "cookie: clax_viewer=$CK" -F "anchor=<element_anchor()>" \
+     -F "body=Could the heading say Q4?" -F version=1 $BASE/api/artifacts/$AID/threads
+curl -H "cookie: clax_viewer=$CK" -d '{"body":"Also: a second paragraph, please."}' \
+     $BASE/api/artifacts/$AID/threads/$TID/comments
+clax toolpath export --artifact $AID -o $R/a.path.json
+clax toolpath status
+cd web && node validate.mjs $R/a.path.json   # Ajv2020 {strict, strictRequired: false} + ajv-formats,
+                                             # the settings of web/scripts/toolpath-schema.test.ts,
+                                             # against crates/clax-core/tests/toolpath/schema/
+```
+
+The export went to the scratch directory rather than `/tmp/a.path.json`.
+Output (scratch paths abbreviated to `$R`):
+
+```
++ repo $R/repo: head 354700201c5ea9b7861bbc7f3934ba0935972a9c, status:  M README.md ?? untracked.txt
++ claude exit=0 output: Tool result: { … "artifact_id": "gzatefywjgw0", … "title": "Toolpath check",
+  "url": "http://localhost:50787/a/gzatefywjgw0", "version": 1 }
++ LAN viewer u_c401a33d59ac62e78c3979 Sam
++ viewer thread 01M4HPCWTV4VZ2S5F3CHKP04ZE
++ viewer reply HTTP 201
+wrote $R/a.path.json (16381 bytes)
+  exit=0
+journal     on
+directory   $R/home/toolpath/journal
+segment     clax-87c34aff-20261010-001.path.jsonl
+cursor      11 of newest event 11
+lag         0 ms
+last error  -
+schema valid: true
+path clax-artifact-gzatefywjgw0 head e000000000011 steps 8
+  e000000000003 artifact.create agent:claude-code/443beecd-5074-46d6-8f20-599d6451dadd refs: session,agent-session,transcript,tool-call,at-revision,view
+  e000000000004 version.publish agent:claude-code/443beecd-5074-46d6-8f20-599d6451dadd refs: artifact,session,agent-session,transcript,tool-call,at-revision,view
+  e000000000005 watch.start agent:claude-code/443beecd-5074-46d6-8f20-599d6451dadd refs: artifact,agent-session,transcript,tool-call,at-revision,view
+  e000000000006 tool.call agent:claude-code/443beecd-5074-46d6-8f20-599d6451dadd refs: artifact,session,produced,produced,produced,agent-session,transcript,view
+  e000000000007 tool.call_id agent:claude-code/443beecd-5074-46d6-8f20-599d6451dadd refs: artifact,session,agent-session,tool-use,transcript,view
+  e000000000009 thread.open human:clax-viewer/u_c401a33d59ac62e78c3979 refs: artifact,version,view
+  e000000000010 comment.add human:clax-viewer/u_c401a33d59ac62e78c3979 refs: artifact,thread,replies-to,view
+  e000000000011 comment.add human:clax-viewer/u_c401a33d59ac62e78c3979 refs: artifact,thread,replies-to,view
+```
+
+The publish's refs, as exported (install `87c34afffb4f8d8a495d53851aab54dd`
+shortened to `<i>`):
+
+```
+e000000000004 version.publish
+  at-revision   git:github:empathic/toolpath-check@354700201c5ea9b7861bbc7f3934ba0935972a9c
+  agent-session agent://claude-code/443beecd-5074-46d6-8f20-599d6451dadd
+  transcript    file://$R/claude/projects/<cwd>/443beecd-5074-46d6-8f20-599d6451dadd.jsonl
+  tool-call     clax://<i>/s/01M4HPCVPTEN5PPMAY6PA9V286/call/01M4HPCVVFMRCKQ4XE3R7FBR7X
+  git           {"branch":"main","dirty":true,"diff_bytes":203,"diff_sha256":"sha256:c1a24709…",
+                 "head":"354700201c5e…","remote":"origin",
+                 "remote_url":"https://github.com/empathic/toolpath-check.git","untracked":1, …}
+  call          {"tool":"publish","call_id":"01M4HPCVVFMRCKQ4XE3R7FBR7X",
+                 "args_sha256":"sha256:2a6839ba2aeb3e0d7475f3928f44c4ef58567ca46d087c05cde068ef50084b08"}
+e000000000006 tool.call     produced [3, 4, 5], outcome ok
+e000000000007 tool.call_id  call_id 01M4HPCVVFMRCKQ4XE3R7FBR7X, harness_call_id toolu_t16publish1,
+                            harness_tool mcp__plugin_clax_clax__publish
+  tool-use      agent://claude-code/443beecd-5074-46d6-8f20-599d6451dadd/tool/toolu_t16publish1
+```
+
+All five refs are there for the publish. Four of them (`at-revision`,
+`agent-session`, `transcript`, `tool-call`) are on the `version.publish`
+step. `tool-use` is on the call's `tool.call_id` step, which the PostToolUse
+hook recorded and matched to the call: by the spec (§10.4), `tool-use` goes
+only on `tool.call` and `tool.call_id` steps that carry a harness call ID.
+The transcript file exists, and its `tool_use` block
+(`toolu_t16publish1`, `mcp__plugin_clax_clax__publish`) hashes, by §12.2,
+to the recorded `args_sha256`. So a reader can join this step to its
+transcript call by exact ID and also by hash. `hooks.log` shows the hooks
+that ran: `session-start` 107 ms, `prompt`, `call-id` 5 ms, `tool`, `stop`
+89 ms, `session-end`, each `exit=0`.
+
+### 10.2 Performance against main
+
+`just perf`'s three stages, for main at `527db6c` (a detached worktree
+with its own web build and release build) and for this branch at
+`d436b13`, each with its own scripts and its unchanged budget files. The
+runs were interleaved stage by stage (daemon main, daemon branch, clients
+main, clients branch, time to usable main, time to usable branch) between
+21:21 and 21:27 on 2026-10-09, under a load average of 7 to 26 from other
+work. Every stage passed on both.
+
+| Measure | main `527db6c` | branch `d436b13` |
+|---|---|---|
+| `perf-daemon.sh`: verdict | every probe within budget | every probe within budget |
+| idle p95 `/healthz`, `/a/<id>` (ms) | 0.6, 1.9 | 1.9, 3.8 |
+| 10 galleries p95 `/healthz`, `/a/<id>` (ms) | 2.9, 5.2 | 4.6, 8.6 |
+| big publish p95 `/healthz`, `/a/<id>`; slowest publish per round (ms) | 0.5, 1.5; 91, 67, 854 | 2.5, 5.3; 264, 141, 82 |
+| gallery alone `/api/artifacts` ratio (budget) | x2.11 (x3.57) | x2.86 (x3.67) |
+| inbox alone p95 unread, search, summary (ms) | 1.5, 1.8, 0.6 | 3.7, 5.6, 2.0 |
+| session probes join refresh, heartbeat, join change p50/p99 (ms) | (not on main) | 0.9/6.1, 0.6/1.2, 1.0/3.8 |
+| `perf-clients.sh`: delivery p95 / max (ms) | 5.9 / 25.3 | 6.7 / 14.2 |
+| cheap p95 (ms), RSS per client (KB), idle CPU | 1.6, 31.5, 0.1 % | 1.3, 30.9, 0.1 % |
+| time to usable, subdomain: first paint, comment ready (ms; limits 81, 86) | 60, 81 | 60, 86 |
+| time to usable, sandbox: first paint, comment ready (ms) | 60, 80 (limits 82, 94) | 60, 86 (limits 89, 102) |
+
+The branch's daemon run met a load average of 14 to 26 against main's 7 to
+14, and its idle quiet check read p95 2.8 ms against main's 1.3 ms, so its daemon numbers
+are higher across the board, the idle rows included. Its subdomain comment
+ready (86 ms) sat exactly on the limit, which the gate allows. The
+branch's perf scripts are the ones it was rebased with: main has since
+changed `scripts/perf-daemon.py` and `scripts/perf-clients.py` (the
+calibration read inside the daemon, `527db6c`; the delivery p95 over at
+least 40 writes, `e6d06cd`), so main's run reports calibrations inside
+the daemon and an "enough writes for p95" line that the branch's does not.
+
+### 10.3 Gates
+
+`just check` (`cargo fmt --all`, then `scripts/quality_gates.sh`) on the
+branch with this record's documentation changes, in the background under
+`caffeinate -i`, 21:27 to 21:32, total 294.9 s of wall clock. Every lane
+passed but **time to usable** (`CLAX_PERF_QUICK=1 npm run perf`): its
+subdomain sample's comment ready read 101, 98 and 100 ms against a limit
+of 94 ms (scale 1.09) on the first try and both retries, under a load
+average near 29. The sandbox sample passed.
+
+That lane runs code this record did not touch, so it ran again alone,
+three times, interleaved with main's build of the same lane
+(`CLAX_TEST_BIN` the stable copy of each debug build), 21:32 to 21:33,
+load average 16 to 30:
+
+| Run | branch subdomain comment ready (limit 86) | main subdomain comment ready (limit 86) |
+|---|---|---|
+| 1 | 81 ms, passed | 83 ms, passed |
+| 2 | 97 ms, then 81 ms on its retry: passed | 82 ms, passed |
+| 3 | 83 ms, passed | 80 ms, passed |
+
+Every rerun passed on both builds. The branch's subdomain comment ready
+went over its limit in four of its eight samples in this record (the
+gate run's three and rerun 2's first try; the others read 86, 81, 81 and
+83 ms), and main's in none of its four (81, 83, 82 and 80 ms). The record for this
+is a qualifier concern on spec §13.
+
 ## Appendix A: the browser-and-shim loop script
 
 The script behind section 2.2, kept here so the run can be repeated. Save it
