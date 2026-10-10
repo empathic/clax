@@ -17,6 +17,14 @@ pub enum CoreError {
     /// missing artifact is [`CoreError::NotFound`] instead.
     #[error("document {path} not found")]
     DocNotFound { path: String },
+    /// A write whose outcome depends on the content of a document the
+    /// caller's reader may not see (`str_replace`): refused before
+    /// anything is evaluated, naming the `authors` withheld (spec §8.3).
+    #[error("document {path} is withheld until your person approves its authors")]
+    DocWithheld {
+        path: String,
+        authors: Vec<crate::visibility::Author>,
+    },
     /// A write to an existing document without `if_version` and without `lww`.
     #[error("document {path} exists at version {current}; read it and pass if_version")]
     DocPinRequired { path: String, current: u64 },
