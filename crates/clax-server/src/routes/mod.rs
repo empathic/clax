@@ -11,6 +11,7 @@ pub mod health;
 pub mod inbox;
 pub mod live;
 pub mod mcp;
+pub mod people;
 pub mod perf;
 pub mod questions;
 pub mod room;
@@ -260,7 +261,11 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             "/api/people/invites",
             get(grants::list_invites).post(grants::create_invite),
         )
-        .route("/api/people/invites/{id}", delete(grants::revoke_invite));
+        .route("/api/people/invites/{id}", delete(grants::revoke_invite))
+        .route(
+            "/api/agents/{handle}",
+            axum::routing::put(people::rename_agent),
+        );
     #[cfg(feature = "test-routes")]
     let api_fast = api_fast
         .route("/api/_test/sleep/{ms}", get(test_sleep))
@@ -623,6 +628,7 @@ mod l10 {
         ("grants::test_index", Token),
         ("grants::test_fail_index", Token),
         ("connect::browser_link", NoArtifact),
+        ("people::rename_agent", NoArtifact),
         ("agent::test_gate", Token),
         ("agent::test_caller", NoArtifact),
     ];
@@ -678,6 +684,7 @@ mod l10 {
             "working" => include_str!("working.rs"),
             "agent" => include_str!("../agent.rs"),
             "mcp" => include_str!("mcp.rs"),
+            "people" => include_str!("people.rs"),
             _ => return None,
         })
     }
@@ -810,6 +817,10 @@ mod l10 {
         ("viewers::set_seen", "a viewer's read marks, not history"),
         ("viewers::set_looked", "a viewer's read marks, not history"),
         ("viewers::set_me", "a viewer's own name, not history"),
+        (
+            "people::rename_agent",
+            "an agent's display name, not history: the journal names agents by session and harness IDs",
+        ),
         (
             "sample::sample",
             "a page's model request; changes no history",
@@ -1588,6 +1599,8 @@ mod agents {
         "content::index",
         "content::file",
         "shell::artifact_page",
+        "people::rename_agent",
+        "extension::mint",
     ];
 
     /// Routes whose handler is not a module function: each, and the text

@@ -398,6 +398,66 @@ impl Store {
         Ok((thread, touched))
     }
 
+    /// Sends the thread to each of the live sessions `sids` (`@name`, spec
+    /// §11), each of which must own or watch the artifact: the first
+    /// becomes the thread's target, the thread's undelivered untargeted
+    /// rows become the first's, and each gets a row for every viewer
+    /// comment it has none for, so a named agent receives the thread even
+    /// when another agent was sent its comments before.
+    ///
+    /// # Errors
+    /// As [`Store::send_to`]; `unknown_agent` when a session is not a live
+    /// owner or watcher of the artifact. Nothing is written then.
+    pub fn send_to_named(&self, thread_id: &str, sids: &[String]) -> Result<(Thread, Touched)> {
+        let mut touched = Touched::default();
+        self.with_tx(|tx| {
+            let Some(first) = sids.first() else {
+                return Ok(());
+            };
+            let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
+            if t.status == "resolved" {
+                return Err(CoreError::invalid(
+                    "thread_resolved",
+                    "a resolved thread cannot be sent; add a comment to reopen it",
+                ));
+            }
+            let live = live_targets_of(tx, &t.artifact_id)?;
+            if let Some(sid) = sids.iter().find(|s| !live.contains(s)) {
+                return Err(CoreError::invalid(
+                    "unknown_agent",
+                    format!("session {sid} neither owns nor watches this artifact"),
+                ));
+            }
+            tx.execute(
+                "UPDATE threads SET sent_to_agent = 1, target_session_id = ?2 WHERE id = ?1",
+                params![thread_id, first],
+            )?;
+            tx.execute(
+                "UPDATE feedback SET target_session_id = ?2, untargeted_at = NULL
+                 WHERE thread_id = ?1 AND target_session_id IS NULL AND delivered_at IS NULL",
+                params![thread_id, first],
+            )?;
+            let now = self.now();
+            for c in t.comments.iter().filter(|c| c.author_kind == AUTHOR_VIEWER) {
+                for sid in sids {
+                    tx.execute(
+                        "INSERT INTO feedback (id, thread_id, comment_id, target_session_id, created_at)
+                         SELECT ?1, ?2, ?3, ?4, ?5 WHERE NOT EXISTS (
+                             SELECT 1 FROM feedback WHERE comment_id = ?3 AND target_session_id = ?4)",
+                        params![new_ulid(), thread_id, c.id, sid, now],
+                    )?;
+                }
+            }
+            touched.targets.extend(sids.iter().cloned());
+            touched
+                .threads
+                .insert((t.artifact_id.clone(), thread_id.to_string()));
+            Ok(())
+        })?;
+        let thread = self.get_thread(thread_id)?.ok_or(CoreError::NotFound)?;
+        Ok((thread, touched))
+    }
+
     /// Hands over rows for `q` and records the hand-over in the same
     /// transaction, so two concurrent callers never receive the same row.
     /// Undelivered rows are marked delivered by `q.tier`; resend-eligible rows
@@ -1037,6 +1097,69 @@ mod tests {
             include_resends: true,
         };
         st.take_feedback(DAEMON, &q, BASE).unwrap().0
+    }
+
+    fn sorted_targets(st: &Store, tid: &str) -> Vec<Option<String>> {
+        let mut t = targets(st, tid);
+        t.sort();
+        t
+    }
+
+    #[test]
+    fn a_named_send_reaches_each_named_agent_even_after_another_was_sent_the_thread() {
+        let (_d, st) = store();
+        let web = session(&st, "claude", "w");
+        let api = session(&st, "codex", "a");
+        let docs = session(&st, "pi", "d");
+        let aid = artifact(&st, Some(&web));
+        for s in [&api, &docs] {
+            st.ensure_watch(DAEMON, s, &aid).unwrap();
+        }
+        let tid = thread(&st, &aid, "first");
+        st.send_to(DAEMON, &tid, SendTarget::Agent(&api)).unwrap();
+        assert_eq!(sorted_targets(&st, &tid), [Some(api.clone())]);
+        let (t, touched) = st
+            .send_to_named(&tid, &[web.clone(), docs.clone()])
+            .unwrap();
+        let mut want = vec![Some(api.clone()), Some(web.clone()), Some(docs.clone())];
+        want.sort();
+        assert_eq!(
+            sorted_targets(&st, &tid),
+            want,
+            "one row each, the earlier kept"
+        );
+        assert!(t.sent_to_agent);
+        assert!(touched.targets.contains(&web) && touched.targets.contains(&docs));
+        let target: Option<String> = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT target_session_id FROM threads WHERE id = ?1",
+                    [&tid],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(target, Some(web.clone()), "the first named is the target");
+        st.send_to_named(&tid, std::slice::from_ref(&web)).unwrap();
+        assert_eq!(sorted_targets(&st, &tid).len(), 3, "idempotent");
+        // A session that neither owns nor watches the artifact: nothing.
+        let stranger = session(&st, "grok", "s");
+        assert!(matches!(
+            st.send_to_named(&tid, &[web.clone(), stranger]),
+            Err(CoreError::Invalid {
+                code: "unknown_agent",
+                ..
+            })
+        ));
+        assert_eq!(sorted_targets(&st, &tid).len(), 3);
+        // Untargeted rows become the first named agent's.
+        let lone = artifact(&st, None);
+        let t2 = thread(&st, &lone, "nobody watches");
+        st.send_to_agent(DAEMON, &t2).unwrap();
+        assert_eq!(sorted_targets(&st, &t2), [None]);
+        st.ensure_watch(DAEMON, &api, &lone).unwrap();
+        st.send_to_named(&t2, std::slice::from_ref(&api)).unwrap();
+        assert_eq!(sorted_targets(&st, &t2), [Some(api.clone())]);
     }
 
     #[test]

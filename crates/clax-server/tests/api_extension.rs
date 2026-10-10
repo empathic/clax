@@ -102,3 +102,40 @@ async fn minting_refuses_unknown_fields() {
         .await;
     assert_eq!(res.status(), 400);
 }
+
+#[tokio::test]
+async fn the_owners_agents_cannot_mint_an_extension_credential() {
+    let ts = TestServer::spawn().await;
+    let url = format!("{}/api/extension/credentials", ts.base);
+    let body = json!({"extension_id": ts.extension_id()});
+    let sid = ts.register_session("claude", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for (k, v) in [
+        ("x-clax-channel", "agent"),
+        ("x-clax-session", sid.as_str()),
+    ] {
+        let res = ts
+            .authed(ts.client.post(&url))
+            .header(k, v)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 403, "{k}");
+        let v: Value = res.json().await.unwrap();
+        assert_eq!(v["error"]["code"], "not_for_agents");
+        assert!(v.get("credential").is_none());
+    }
+    let status: Value = ts.get_authed("/api/extension").await.json().await.unwrap();
+    assert_eq!(status["live_credentials"], 0, "{status}");
+    // The CLI by hand (the native host, run by Chrome) still pairs.
+    let res = ts
+        .authed(ts.client.post(&url))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+}

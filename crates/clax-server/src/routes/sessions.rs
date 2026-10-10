@@ -14,7 +14,7 @@ use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use clax_core::model::Session;
-use clax_core::{CoreError, JoinSession, RegisterSession};
+use clax_core::{CoreError, JoinSession, NameSource, RegisterSession};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -161,13 +161,18 @@ pub struct PatchBody {
     heartbeat: bool,
     #[serde(default)]
     ended: bool,
+    /// The agent's own name for itself (spec §11).
+    #[serde(default)]
+    name: Option<String>,
 }
 
-/// Heartbeats or ends one of the caller's sessions (the extractor checks
-/// the session is the caller's):
-/// `{"heartbeat": true}` renews the session (records nothing);
-/// `{"ended": true}` ends it, recording `session.end` as its agent and the
-/// ends of its working records.
+/// Names, heartbeats or ends one of the caller's sessions (the extractor
+/// checks the session is the caller's). `{"name": …}` is the agent naming
+/// itself (spec §11: 409 `name_taken`, 409 `name_locked` once its person
+/// named it, 400 `invalid_name`), done before a heartbeat or an end in the
+/// same request. `{"heartbeat": true}` renews the session (records
+/// nothing); `{"ended": true}` ends it, recording `session.end` as its
+/// agent and the ends of its working records.
 pub async fn patch(
     State(s): State<AppState>,
     _a: TokenOrAgent<SessionsPatch>,
@@ -177,16 +182,20 @@ pub async fn patch(
 ) -> Result<Json<Value>, ApiError> {
     let id = path(id)?;
     let b = body(req)?;
-    if !b.heartbeat && !b.ended {
+    if !b.heartbeat && !b.ended && b.name.is_none() {
         return Err(ApiError::bad_request(
             "invalid_session_patch",
-            "send {\"heartbeat\": true} or {\"ended\": true}",
+            "send {\"heartbeat\": true}, {\"ended\": true} or {\"name\": \"…\"}",
         ));
     }
     let ctx = s.feedback_ctx();
     let state = s.clone();
     let session = s
         .store_call(move |st| {
+            let named = match &b.name {
+                Some(n) => Some(st.set_session_name(&id, n, NameSource::Agent)?),
+                None => None,
+            };
             if b.ended {
                 let audit = audit.for_session(st, &id)?;
                 let ended = st.end_session_touched(&audit, &id)?;
@@ -199,8 +208,10 @@ pub async fn patch(
                 crate::working::settle(st, &audit, &ctx.events, &ctx.working, &stopped);
                 ctx.followers.forget(&id);
                 Ok(ended.session)
-            } else {
+            } else if b.heartbeat {
                 st.heartbeat(&id)
+            } else {
+                Ok(named.expect("a name was set"))
             }
         })
         .await?;
