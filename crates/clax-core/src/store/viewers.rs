@@ -204,12 +204,11 @@ fn owner_row(c: &rusqlite::Connection) -> rusqlite::Result<Option<(Viewer, bool)
 /// looked-at marks (the later), its private documents
 /// (`data/users/<from>/...` move under `data/users/<into>/` with a new
 /// version, their authors with them; one whose destination exists stays
-/// where it is), its authorship as a person (`person` and `page_person`
-/// columns, which become NULL when `into` is the owner; documents'
-/// authors, page comments' publisher and versions' file authors, which
-/// become `*owner`), its approvals given and received and its approval
-/// requests (a live one that would repeat one of `into`'s is revoked, or
-/// withdrawn), and its invites and grants.
+/// where it is), its authorship as a person (`person` columns, which
+/// become NULL when `into` is the owner; documents' and pages' authors,
+/// batch senders, versions' file authors and artifacts' text authors,
+/// which become `*owner`), its approvals given and received and its
+/// approval requests (see `fold_authorship`), and its invites and grants.
 fn fold(
     st: &Store,
     ctx: &AuditCtx,
@@ -228,7 +227,6 @@ fn fold(
         ("sessions", "person"),
         ("artifacts", "person"),
         ("versions", "person"),
-        ("versions", "page_person"),
         ("assets", "person"),
     ] {
         tx.execute(
@@ -242,7 +240,7 @@ fn fold(
             params![from.id, into.id],
         )?;
     }
-    fold_authorship(st, tx, old, new, into_owner)?;
+    fold_authorship(st, ctx, tx, old, new, into_owner)?;
     tx.execute(
         "UPDATE comments SET author_public_id = ?2 WHERE author_public_id = ?1",
         params![old, new],
@@ -287,86 +285,112 @@ fn fold(
     Ok(())
 }
 
-/// Moves the authorship columns of migration 25 and `file_authors_json`
-/// from public ID `old` to `new` (to `*owner`, or NULL for an approver,
-/// when `into_owner`).
+/// `json` (a map of author lists) with `old` as `token`, each author once
+/// per list; `None` when it does not parse.
+fn rewrite_authors(json: &str, old: &str, token: &str) -> Option<String> {
+    let mut map: std::collections::BTreeMap<String, Vec<Option<String>>> =
+        serde_json::from_str(json).ok()?;
+    for authors in map.values_mut() {
+        let mut out: Vec<Option<String>> = Vec::with_capacity(authors.len());
+        for a in authors.drain(..) {
+            let a = if a.as_deref() == Some(old) {
+                Some(token.to_string())
+            } else {
+                a
+            };
+            if !out.contains(&a) {
+                out.push(a);
+            }
+        }
+        *authors = out;
+    }
+    Some(serde_json::to_string(&map).expect("serialisable map"))
+}
+
+/// Moves the authorship of migration 25 (document and page authors, batch
+/// senders, artifact text authors, approvals and their requests) and
+/// `file_authors_json` from public ID `old` to `new` (to `*owner`, or NULL
+/// for an approver, when `into_owner`).
+///
+/// Approvals and requests: one that would repeat a live one ends first,
+/// so the unique indexes hold; and folding into the owner ends every live
+/// approval and open request whose author is `old`, since another
+/// person's approval of a LAN viewer must not become one of all the
+/// owner's content. Each approval ended is recorded as `approval.revoke`
+/// under `ctx`.
 fn fold_authorship(
     st: &Store,
+    ctx: &AuditCtx,
     tx: &rusqlite::Transaction<'_>,
     old: &str,
     new: &str,
     into_owner: bool,
 ) -> Result<()> {
     let token = if into_owner { OWNER } else { new };
-    tx.execute(
-        "UPDATE OR IGNORE doc_authors SET author = ?2 WHERE author = ?1",
-        params![old, token],
-    )?;
-    tx.execute("DELETE FROM doc_authors WHERE author = ?1", params![old])?;
-    tx.execute(
-        "UPDATE comments SET page_person = ?2 WHERE page_person = ?1",
-        params![old, token],
-    )?;
-    let versions: Vec<(String, i64, String)> = {
-        let mut stmt = tx.prepare(
-            "SELECT artifact_id, n, file_authors_json FROM versions
-             WHERE file_authors_json IS NOT NULL AND instr(file_authors_json, ?1) > 0",
-        )?;
-        stmt.query_map(params![old], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-            .collect::<rusqlite::Result<_>>()?
-    };
-    for (aid, n, json) in versions {
-        let Ok(mut files) =
-            serde_json::from_str::<std::collections::BTreeMap<String, Vec<Option<String>>>>(&json)
-        else {
-            continue;
-        };
-        for authors in files.values_mut() {
-            let mut out: Vec<Option<String>> = Vec::with_capacity(authors.len());
-            for a in authors.drain(..) {
-                let a = if a.as_deref() == Some(old) {
-                    Some(token.to_string())
-                } else {
-                    a
-                };
-                if !out.contains(&a) {
-                    out.push(a);
-                }
-            }
-            *authors = out;
-        }
+    for (table, key) in [("doc_authors", "author"), ("page_authors", "author")] {
         tx.execute(
-            "UPDATE versions SET file_authors_json = ?3 WHERE artifact_id = ?1 AND n = ?2",
-            params![
-                aid,
-                n,
-                serde_json::to_string(&files).expect("serialisable map")
-            ],
+            &format!("UPDATE OR IGNORE {table} SET {key} = ?2 WHERE {key} = ?1"),
+            params![old, token],
+        )?;
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE {key} = ?1"),
+            params![old],
         )?;
     }
-    // Approvals and requests: a live one that would repeat one `new`
-    // already has ends first, so the unique indexes hold.
+    tx.execute(
+        "UPDATE send_batches SET sender = ?2 WHERE sender = ?1",
+        params![old, token],
+    )?;
+    for (table, column) in [
+        ("versions", "file_authors_json"),
+        ("artifacts", "text_authors_json"),
+    ] {
+        let rows: Vec<(i64, String)> = {
+            let mut stmt = tx.prepare(&format!(
+                "SELECT rowid, {column} FROM {table} WHERE {column} IS NOT NULL AND instr({column}, ?1) > 0"
+            ))?;
+            stmt.query_map(params![old], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        for (rowid, json) in rows {
+            if let Some(json) = rewrite_authors(&json, old, token) {
+                tx.execute(
+                    &format!("UPDATE {table} SET {column} = ?2 WHERE rowid = ?1"),
+                    params![rowid, json],
+                )?;
+            }
+        }
+    }
     let approver = (!into_owner).then_some(new);
     let now = st.now();
-    tx.execute(
-        "UPDATE approvals SET revoked_at = ?3 WHERE revoked_at IS NULL AND (approver = ?1 OR author = ?1)
-           AND EXISTS (SELECT 1 FROM approvals b WHERE b.revoked_at IS NULL AND b.id <> approvals.id
-             AND COALESCE(b.approver, '') = COALESCE(CASE WHEN approvals.approver = ?1 THEN ?2 ELSE approvals.approver END, '')
-             AND b.author = CASE WHEN approvals.author = ?1 THEN ?4 ELSE approvals.author END
-             AND b.scope = approvals.scope
-             AND COALESCE(b.artifact_id, '') = COALESCE(approvals.artifact_id, '')
-             AND COALESCE(b.thread_id, '') = COALESCE(approvals.thread_id, ''))",
-        params![old, approver, now, new],
-    )?;
+    let ending: Vec<String> = {
+        let mut stmt = tx.prepare(
+            "SELECT id FROM approvals WHERE revoked_at IS NULL AND (approver = ?1 OR author = ?1)
+               AND ((?4 AND author = ?1)
+                 OR EXISTS (SELECT 1 FROM approvals b WHERE b.revoked_at IS NULL AND b.id <> approvals.id
+                   AND COALESCE(b.approver, '') = COALESCE(CASE WHEN approvals.approver = ?1 THEN ?2 ELSE approvals.approver END, '')
+                   AND b.author = CASE WHEN approvals.author = ?1 THEN ?3 ELSE approvals.author END
+                   AND b.scope = approvals.scope
+                   AND COALESCE(b.artifact_id, '') = COALESCE(approvals.artifact_id, '')
+                   AND COALESCE(b.thread_id, '') = COALESCE(approvals.thread_id, '')))
+             ORDER BY created_at, id",
+        )?;
+        stmt.query_map(params![old, approver, new, into_owner], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    for id in ending {
+        super::approvals::revoke_in(st, tx, ctx, &id, &now)?;
+    }
     tx.execute(
         "UPDATE approval_requests SET status = 'withdrawn', updated_at = ?3
          WHERE status = 'open' AND (approver = ?1 OR author = ?1)
-           AND EXISTS (SELECT 1 FROM approval_requests b WHERE b.status = 'open' AND b.id <> approval_requests.id
-             AND COALESCE(b.approver, '') = COALESCE(CASE WHEN approval_requests.approver = ?1 THEN ?2 ELSE approval_requests.approver END, '')
-             AND b.author = CASE WHEN approval_requests.author = ?1 THEN ?4 ELSE approval_requests.author END
-             AND b.artifact_id = approval_requests.artifact_id
-             AND COALESCE(b.thread_id, '') = COALESCE(approval_requests.thread_id, ''))",
-        params![old, approver, now, new],
+           AND ((?5 AND author = ?1)
+             OR EXISTS (SELECT 1 FROM approval_requests b WHERE b.status = 'open' AND b.id <> approval_requests.id
+               AND COALESCE(b.approver, '') = COALESCE(CASE WHEN approval_requests.approver = ?1 THEN ?2 ELSE approval_requests.approver END, '')
+               AND b.author = CASE WHEN approval_requests.author = ?1 THEN ?4 ELSE approval_requests.author END
+               AND b.artifact_id = approval_requests.artifact_id
+               AND COALESCE(b.thread_id, '') = COALESCE(approval_requests.thread_id, '')))",
+        params![old, approver, now, new, into_owner],
     )?;
     for table in ["approvals", "approval_requests"] {
         tx.execute(

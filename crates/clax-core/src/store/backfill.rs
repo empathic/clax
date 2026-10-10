@@ -964,6 +964,7 @@ fn asset_upload(
                 ext: r.get(3)?,
                 created_at: r.get(4)?,
                 person: None,
+                page_authors: Vec::new(),
             })
         })
         .optional()?;
@@ -1234,7 +1235,7 @@ fn comment_add(c: &Connection, at: &str, cid: &str) -> Result<Option<AuditRecord
                     via_page: r.get(7)?,
                     body: r.get(8)?,
                     created_at: at.to_string(),
-                    page_person: None,
+                    page_authors: Vec::new(),
                     agent_person: None,
                 },
                 r.get::<_, Option<String>>(5)?,
@@ -1766,8 +1767,15 @@ pub(crate) mod tests {
         .unwrap();
     }
 
+    /// The recorded events but migration 25's approval of `*unconnected`,
+    /// which the store records as it opens, after the backfill: not
+    /// history.
     fn events(st: &Store) -> Vec<AuditRow> {
-        st.events_after(0, 100_000).unwrap()
+        st.events_after(0, 100_000)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind != "approval.grant" || e.backfilled)
+            .collect()
     }
 
     fn body(e: &AuditRow) -> Value {
@@ -1974,7 +1982,7 @@ pub(crate) mod tests {
         );
         assert!(body(&rows[1]).get("for_actor").is_none());
         // A change made afterwards is live, and follows the history.
-        let newest = rows.last().unwrap().seq;
+        let newest = st.newest_seq().unwrap();
         st.set_pinned(DAEMON, &aid, true).unwrap();
         let live = st.events_after(newest, 10).unwrap();
         assert_eq!(kinds(&live), ["artifact.update"]);
@@ -2400,7 +2408,8 @@ pub(crate) mod tests {
         eprintln!("backfill of the perf seed: {n} events, {cpu:?} CPU, {wall:?} wall");
         // 50 sessions, 303 artifacts and versions, 300 watches, 2400
         // threads, 9600 comments, 1200 sends and deliveries, 600 resolves.
-        assert_eq!(n, 50 + 303 * 2 + 300 + 2400 + 9600 + 1200 * 2 + 600);
+        // And migration 25's approval, recorded as the store opens.
+        assert_eq!(n, 50 + 303 * 2 + 300 + 2400 + 9600 + 1200 * 2 + 600 + 1);
         assert!(cpu < std::time::Duration::from_secs(3), "{cpu:?}");
     }
 

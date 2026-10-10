@@ -137,6 +137,71 @@ fn approval_record(kind: AuditKind, at: &str, a: &Approval) -> AuditRecord {
     rec
 }
 
+/// Revokes live approval `id` at `now` in `tx`, recording `approval.revoke`
+/// under `ctx` and marking the visibility change.
+pub(super) fn revoke_in(
+    st: &Store,
+    tx: &rusqlite::Transaction<'_>,
+    ctx: &AuditCtx,
+    id: &str,
+    now: &str,
+) -> Result<Approval> {
+    let a = tx
+        .query_row(
+            &format!(
+                "UPDATE approvals SET revoked_at = ?2 WHERE id = ?1 AND revoked_at IS NULL
+                 RETURNING {COLUMNS}"
+            ),
+            params![id, now],
+            row_to_approval,
+        )
+        .optional()?
+        .ok_or(CoreError::NotFound)?;
+    st.record_audit(tx, ctx, approval_record(AuditKind::ApprovalRevoke, now, &a))?;
+    st.visibility_changed();
+    Ok(a)
+}
+
+/// Records, once per home, `approval.grant` for migration 25's approval of
+/// `*unconnected` (made by the migration, so outside any request), as Clax
+/// itself (`system:daemon`), at the time the migration made it. Runs as the
+/// store opens, after the audit backfill, so the journal grants what a
+/// later switch-off revokes.
+pub(super) fn record_migration_approval(conn: &mut rusqlite::Connection) -> Result<()> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let done: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM install WHERE k = 'migration_approval')",
+        [],
+        |r| r.get(0),
+    )?;
+    if done {
+        return Ok(());
+    }
+    let a = tx
+        .query_row(
+            &format!(
+                "SELECT {COLUMNS} FROM approvals WHERE created_via = 'migration'
+                 ORDER BY created_at, id LIMIT 1"
+            ),
+            [],
+            row_to_approval,
+        )
+        .optional()?;
+    if let Some(a) = a {
+        super::audit::insert_at_open(
+            &tx,
+            &AuditCtx::DAEMON,
+            approval_record(AuditKind::ApprovalGrant, &a.created_at, &a),
+        )?;
+    }
+    tx.execute(
+        "INSERT INTO install (k, v) VALUES ('migration_approval', '1')",
+        [],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// The installed generation listener, cloned out of its lock to be called.
 type Listener = Arc<dyn Fn(u64) + Send + Sync>;
 
@@ -273,7 +338,8 @@ impl Store {
     /// `approval.grant` under `ctx` and bumps the visibility generation.
     ///
     /// # Errors
-    /// `not_a_person` when `approver` names no person; `invalid_author` for
+    /// `not_a_person` when `approver` names no connected person (a revoked
+    /// one approves nothing); `invalid_author` for
     /// an author that is not a known viewer's public ID, that is the
     /// approver, or that is [`UNCONNECTED`] for anyone but the owner (§9.6);
     /// `unknown_thread` or `unknown_artifact` for a scope naming none.
@@ -288,7 +354,8 @@ impl Store {
         self.with_tx(|tx| {
             if let Some(p) = approver {
                 let person: bool = tx.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM viewers WHERE public_id = ?1 AND person = 1 AND owner = 0)",
+                    "SELECT EXISTS (SELECT 1 FROM viewers WHERE public_id = ?1 AND person = 1
+                       AND person_revoked_at IS NULL AND owner = 0)",
                     params![p],
                     |r| r.get(0),
                 )?;
@@ -415,21 +482,16 @@ impl Store {
     ) -> Result<Approval> {
         self.with_tx(|tx| {
             let now = self.now();
-            let a = tx
-                .query_row(
-                    &format!(
-                        "UPDATE approvals SET revoked_at = ?3
-                         WHERE id = ?1 AND COALESCE(approver, '') = COALESCE(?2, '') AND revoked_at IS NULL
-                         RETURNING {COLUMNS}"
-                    ),
-                    params![id, approver, now],
-                    row_to_approval,
-                )
-                .optional()?
-                .ok_or(CoreError::NotFound)?;
-            self.record_audit(tx, ctx, approval_record(AuditKind::ApprovalRevoke, &now, &a))?;
-            self.visibility_changed();
-            Ok(a)
+            let mine: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM approvals WHERE id = ?1
+                   AND COALESCE(approver, '') = COALESCE(?2, '') AND revoked_at IS NULL)",
+                params![id, approver],
+                |r| r.get(0),
+            )?;
+            if !mine {
+                return Err(CoreError::NotFound);
+            }
+            revoke_in(self, tx, ctx, id, &now)
         })
     }
 
@@ -713,10 +775,25 @@ mod tests {
         st.revoke_approval(DAEMON, &a.id, Some(&sam)).unwrap();
         bumps(&st, "an approval revoked", 1);
         // Rights and narrowing.
+        let reader = crate::rights::Rights::preset("clax:reader").unwrap();
         st.set_person_rights(DAEMON, &sam, None).unwrap();
+        bumps(&st, "a person's rights set to what they were", 0);
+        st.set_person_rights(DAEMON, &sam, Some(reader.clone()))
+            .unwrap();
         bumps(&st, "a person's rights", 1);
+        st.set_person_rights(DAEMON, &sam, Some(reader.clone()))
+            .unwrap();
+        bumps(&st, "a person's rights set again", 0);
         st.narrow_grant(DAEMON, &gid, None).unwrap();
+        bumps(&st, "a grant's narrowing set to what it was", 0);
+        st.narrow_grant(DAEMON, &gid, Some(reader.clone())).unwrap();
         bumps(&st, "a grant's narrowing", 1);
+        st.narrow_grant(DAEMON, &gid, Some(reader)).unwrap();
+        bumps(&st, "a grant's narrowing set again", 0);
+        // A second invite for someone already a person changes nothing.
+        st.create_invite(DAEMON, InvitePerson::Viewer(sam.clone()), None)
+            .unwrap();
+        bumps(&st, "a second invite for a person", 0);
         // Grants ending, each way.
         st.revoke_token(DAEMON, &gid, manage.expose()).unwrap();
         bumps(&st, "a grant's token revoked", 1);

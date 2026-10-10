@@ -20,6 +20,10 @@ pub struct SendBatch {
     pub note: Option<String>,
     /// The sender's display name, as a viewer comment's author.
     pub sent_by: String,
+    /// The sender as an author token (spec 2026-10-08-multi-agent-multi-person
+    /// §8.2): `*owner`, a public ID, or `*unconnected` for an anonymous
+    /// browser.
+    pub sender: String,
     /// The one agent to send to (a session ID): it becomes each thread's
     /// target. `None` sends to every live owner and watcher and clears each
     /// thread's target.
@@ -43,6 +47,10 @@ pub struct ThreadSend {
     pub note: Option<String>,
     pub sent_by: String,
     pub sent_at: String,
+    /// The sender as an author token; `None` before it was recorded. For
+    /// the visibility filter; never served.
+    #[serde(skip)]
+    pub sender: Option<String>,
 }
 
 impl Store {
@@ -145,8 +153,8 @@ impl Store {
                 return Err(CoreError::invalid("nothing_to_send", "every thread was already sent with nothing new"));
             }
             tx.execute(
-                "INSERT INTO send_batches (id, artifact_id, note, sent_by, size, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![batch_id, aid.as_str(), note, b.sent_by, sent.len() as u32, self.now()],
+                "INSERT INTO send_batches (id, artifact_id, note, sent_by, size, created_at, sender) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![batch_id, aid.as_str(), note, b.sent_by, sent.len() as u32, self.now(), b.sender],
             )?;
             for t in &sent {
                 tx.execute("INSERT INTO batch_threads (batch_id, thread_id) VALUES (?1, ?2)", params![batch_id, t])?;
@@ -161,7 +169,7 @@ impl Store {
                 sent.clone(),
             );
             self.record_audit(tx, ctx, rec)?;
-            let batch = FeedbackBatch { id: batch_id, size: sent.len() as u32, note, sent_by: b.sent_by };
+            let batch = FeedbackBatch { id: batch_id, size: sent.len() as u32, note, sent_by: b.sent_by, sender: Some(b.sender) };
             Ok(BatchResult { batch, sent, unchanged, touched })
         })
     }
@@ -170,12 +178,12 @@ impl Store {
     pub fn thread_sends(&self, thread_id: &str) -> Result<Vec<ThreadSend>> {
         self.with_read(|c| {
             let mut stmt = c.prepare(
-                "SELECT b.id, b.size, b.note, b.sent_by, b.created_at FROM batch_threads t JOIN send_batches b ON b.id = t.batch_id
+                "SELECT b.id, b.size, b.note, b.sent_by, b.created_at, b.sender FROM batch_threads t JOIN send_batches b ON b.id = t.batch_id
                  WHERE t.thread_id = ?1 ORDER BY b.created_at, b.id",
             )?;
             Ok(stmt
                 .query_map(params![thread_id], |r| {
-                    Ok(ThreadSend { batch_id: r.get(0)?, size: r.get(1)?, note: r.get(2)?, sent_by: r.get(3)?, sent_at: r.get(4)? })
+                    Ok(ThreadSend { batch_id: r.get(0)?, size: r.get(1)?, note: r.get(2)?, sent_by: r.get(3)?, sent_at: r.get(4)?, sender: r.get(5)? })
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?)
         })
@@ -211,6 +219,7 @@ mod tests {
             thread_ids: ids.iter().map(|s| s.to_string()).collect(),
             note: note.map(String::from),
             sent_by: "Alex".into(),
+            sender: "*owner".into(),
             to: None,
         }
     }

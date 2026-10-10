@@ -831,11 +831,6 @@ impl Store {
                     format!("at most {MAX_LIVE_INVITES} invites are live at once"),
                 ));
             }
-            if who != InvitePerson::Owner {
-                // A new person, or a viewer made one: no longer
-                // `*unconnected` (M14, M17).
-                self.visibility_changed();
-            }
             let viewer_id = match &who {
                 InvitePerson::New(name) => {
                     let name = check_person_name(tx, name, None)?;
@@ -845,6 +840,8 @@ impl Store {
                          VALUES (?1, ?2, ?3, ?4, 1)",
                         params![id, new_public_id(), name, now],
                     )?;
+                    // A new person: not `*unconnected` (M14, M17).
+                    self.visibility_changed();
                     id
                 }
                 InvitePerson::Viewer(public_id) => {
@@ -864,7 +861,14 @@ impl Store {
                     if let Some(name) = name {
                         check_person_name(tx, &name, Some(&id))?;
                     }
-                    tx.execute("UPDATE viewers SET person = 1 WHERE id = ?1", params![id])?;
+                    if tx.execute(
+                        "UPDATE viewers SET person = 1 WHERE id = ?1 AND person = 0",
+                        params![id],
+                    )? > 0
+                    {
+                        // A viewer made a person: no longer `*unconnected`.
+                        self.visibility_changed();
+                    }
                     id
                 }
                 InvitePerson::Owner => {
@@ -877,11 +881,13 @@ impl Store {
                     tx.query_row("SELECT id FROM viewers WHERE owner = 1", [], |r| r.get(0))?
                 }
             };
-            if let (Some(r), false) = (&rights, who == InvitePerson::Owner) {
-                tx.execute(
-                    "UPDATE viewers SET rights_json = ?2 WHERE id = ?1",
+            if let (Some(r), false) = (&rights, who == InvitePerson::Owner)
+                && tx.execute(
+                    "UPDATE viewers SET rights_json = ?2 WHERE id = ?1 AND rights_json IS NOT ?2",
                     params![viewer_id, write_rights(r)],
-                )?;
+                )? > 0
+            {
+                self.visibility_changed();
             }
             let id = new_ulid();
             tx.execute(
@@ -1053,11 +1059,15 @@ impl Store {
                         params![viewer_id],
                         |r| r.get(0),
                     )?;
-                    if !owner {
-                        tx.execute(
-                            "UPDATE viewers SET person = 1, person_revoked_at = NULL WHERE id = ?1",
+                    if !owner
+                        && tx.execute(
+                            "UPDATE viewers SET person = 1, person_revoked_at = NULL
+                             WHERE id = ?1 AND (person = 0 OR person_revoked_at IS NOT NULL)",
                             params![viewer_id],
-                        )?;
+                        )? > 0
+                    {
+                        // Connected again (M17).
+                        self.visibility_changed();
                     }
                     let narrow = narrowing(&rights_of_row(tx, &viewer_id)?, &g.access);
                     tx.execute(
@@ -1539,17 +1549,27 @@ impl Store {
     /// `NotFound` unless `gid` names a pending or approved grant.
     pub fn narrow_grant(&self, ctx: &AuditCtx, gid: &str, narrow: Option<Rights>) -> Result<Grant> {
         self.with_tx(|tx| {
-            let n = tx.execute(
-                "UPDATE grants SET narrow_json = ?2 WHERE id = ?1 AND status IN ('pending', 'approved')",
-                params![gid, narrow.as_ref().map(write_rights)],
-            )?;
-            if n == 0 {
+            let json = narrow.as_ref().map(write_rights);
+            let was: Option<Option<String>> = tx
+                .query_row(
+                    "SELECT narrow_json FROM grants WHERE id = ?1 AND status IN ('pending', 'approved')",
+                    params![gid],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(was) = was else {
                 return Err(CoreError::NotFound);
-            }
+            };
+            tx.execute(
+                "UPDATE grants SET narrow_json = ?2 WHERE id = ?1",
+                params![gid, json],
+            )?;
             let rec = grant_record(AuditKind::GrantNarrow, &self.now(), gid)
                 .with("narrow", narrow.as_ref().map(Rights::to_json));
             self.record_audit(tx, ctx, rec)?;
-            self.visibility_changed();
+            if was != json {
+                self.visibility_changed();
+            }
             Ok(grant_in(tx, gid)?.expect("the grant exists"))
         })
     }
@@ -1887,15 +1907,17 @@ impl Store {
                     "only a connected person has rights to set",
                 ));
             }
-            tx.execute(
-                "UPDATE viewers SET rights_json = ?2 WHERE public_id = ?1",
+            let changed = tx.execute(
+                "UPDATE viewers SET rights_json = ?2 WHERE public_id = ?1 AND rights_json IS NOT ?2",
                 params![public_id, rights.as_ref().map(write_rights)],
-            )?;
+            )? > 0;
             let rec = AuditRecord::new(AuditKind::PersonRights, self.now())
                 .with("person", public_id)
                 .with("rights", rights.as_ref().map(Rights::to_json));
             self.record_audit(tx, ctx, rec)?;
-            self.visibility_changed();
+            if changed {
+                self.visibility_changed();
+            }
             Ok(())
         })
     }
@@ -2868,20 +2890,25 @@ pub(crate) mod tests {
         st.publish_version(DAEMON, &aid, validate(req(Some(2))).unwrap(), None)
             .unwrap();
         let asset = st
-            .add_asset_by(DAEMON, &aid, "image/png", &[1], Some(&sam))
+            .add_asset_by(DAEMON, &aid, "image/png", &[1], Some(&sam), false)
             .unwrap();
         let rows = st
             .with_read(|c| {
                 let artifact: Option<String> =
-                    c.query_row("SELECT person FROM artifacts WHERE id = ?1", [&a.id], |r| r.get(0))?;
-                let asset: Option<String> =
-                    c.query_row("SELECT person FROM assets WHERE id = ?1", [&asset.id], |r| r.get(0))?;
+                    c.query_row("SELECT person FROM artifacts WHERE id = ?1", [&a.id], |r| {
+                        r.get(0)
+                    })?;
+                let asset: Option<String> = c.query_row(
+                    "SELECT person FROM assets WHERE id = ?1",
+                    [&asset.id],
+                    |r| r.get(0),
+                )?;
                 let mut stmt = c.prepare(
-                    "SELECT person, by_page, page_person FROM versions WHERE artifact_id = ?1 ORDER BY n",
+                    "SELECT person, by_page FROM versions WHERE artifact_id = ?1 ORDER BY n",
                 )?;
                 let versions = stmt
                     .query_map([&a.id], |r| {
-                        Ok((r.get::<_, Option<String>>(0)?, r.get::<_, bool>(1)?, r.get::<_, Option<String>>(2)?))
+                        Ok((r.get::<_, Option<String>>(0)?, r.get::<_, bool>(1)?))
                     })?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 Ok((artifact, asset, versions))
@@ -2892,10 +2919,16 @@ pub(crate) mod tests {
         assert_eq!(rows.1, sam);
         assert_eq!(
             rows.2,
+            vec![(sam.clone(), false), (None, true), (None, false)]
+        );
+        // The page's own version keeps its page's author, Sam.
+        let aid = crate::ArtifactId::parse(&a.id).unwrap();
+        let v2 = st.get_version(&aid, 2).unwrap().unwrap();
+        assert_eq!(
+            crate::visibility::authors_of_version(&v2),
             vec![
-                (sam.clone(), false, None),
-                (None, true, sam.clone()),
-                (None, false, None)
+                crate::visibility::Author::Owner,
+                crate::visibility::Author::Person(sam.clone().unwrap())
             ]
         );
     }

@@ -111,7 +111,7 @@ reason.
 | M8 | **One `Caller`, and every agent channel is an agent.** Every handler learns who it serves from one `Caller` (§6.1); no handler reads `Authorization` or checks the token itself. A token request is an owner agent when it names a session (path or `X-Clax-Session`) or carries the agent-channel marker `X-Clax-Channel: agent`, which every agent-side client sends (the shim, `/mcp`'s internal client, the hooks, `clax feedback follow`, Pi), and the CLI whenever it runs under a harness: through the plugins' wrapper (which exports `CLAX_CHANNEL=agent`: slash commands, hooks), or in a harness's shell (an agent's shell tool, Claude Code's `!` commands), detected from the variables each harness sets (§16); only the CLI run outside any harness, or with `CLAX_CHANNEL=owner`, is the owner. | About twenty handlers decide agent-ness with an inline token check today; with a grant they would misfile an agent's reply as an anonymous comment. |
 | M9 | **Visibility is separate from rights.** Rights say what an agent may do; visibility (approvals) says whose words may reach it. Approvals are given by the agent's person (R2). | O3: B's person decides what reaches B. |
 | M10 | **One filter, field by field.** `Visibility` (in `clax-core`) answers, for one field, "may an agent of reader R see this field, whose effective authors are A₁…Aₙ, at artifact Y (thread T)?" Every field of every item an agent channel returns that has authors of its own (a comment's body, a thread's anchor, a clip, an artifact's title, a version's note and files, a document, a working message…) is checked on its own and replaced by its placeholder when withheld, in reads, write responses and every delivery tier alike. | A visible comment on a page someone else wrote still carries that page's quote and title; filtering whole rows would leak them. |
-| M11 | **Effective authors** (§8.2): content carries the set of people whose words it holds. A comment or document a page wrote, and a page's self-published version, also count the page's publisher, fixed at write time. A version's file carried forward keeps the authors it had; a document's author set only grows until the document is deleted. | Page-written content is the confused-deputy path: a page running in the owner's browser writes "as the owner"; carrying a file forward or rewriting a document must not move its words to a new author. |
+| M11 | **Effective authors** (§8.2): content carries the set of people whose words it holds. A comment, document or upload a page wrote, a page's self-published version and a page's metadata change also count every author of the page: the authors of every file of its current version, fixed at write time (a script carried forward from another person runs in the page as much as its `index.html`). A version's file carried forward keeps the authors it had; an artifact's text field keeps the authors of what last set it; a document's author set only grows until the document is deleted. | Page-written content is the confused-deputy path: a page running in the owner's browser writes "as the owner"; carrying a file forward or rewriting a document must not move its words to a new author. |
 | M12 | **An agent's own person's content is always visible.** | The filter guards against other people's words, not one's own. |
 | M13 | **Approvals are per author, at three scopes**: one thread (including later replies, R1), one artifact, or everywhere. An author is a person; their agents' words count as theirs. | O3's wording. |
 | M14 | **`*unconnected`.** Migration 25 gives the owner one approval for the author class `*unconnected` (every viewer who is not the owner and not a connected person, and anonymous callers) everywhere (O6). Connected people are never covered by it as themselves; their unsigned browsers and scripts are, which People states beside the switch (§9.6). | Today's reach for LAN viewers on every install, with its consequence shown. |
@@ -376,10 +376,11 @@ CREATE UNIQUE INDEX sessions_harness_id ON sessions(harness, harness_session_id,
 ALTER TABLE artifacts ADD COLUMN person TEXT;          -- the creator's person; NULL: the owner
 ALTER TABLE versions ADD COLUMN person TEXT;           -- the publisher's person; NULL: the owner
 ALTER TABLE versions ADD COLUMN by_page INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE versions ADD COLUMN page_person TEXT;      -- by_page: the previous version's publisher, fixed at write
 -- Each file's authors, fixed at publish: a written file's are the publisher's
--- (and page_person's); a carried file keeps the previous version's authors.
--- {"index.html": ["*owner"], "app.css": ["u_…"]}; NULL: every file the owner's.
+-- (for a by_page version, with every author of the previous version's files:
+-- the page that published it); a carried file keeps the previous version's
+-- authors. {"index.html": ["*owner"], "app.css": ["u_…"]}; NULL: every file
+-- the publisher's (the owner's, for every version from before this migration).
 ALTER TABLE versions ADD COLUMN file_authors_json TEXT;
 ALTER TABLE assets ADD COLUMN person TEXT;             -- the uploader's person; NULL: the owner
 ```
@@ -437,18 +438,37 @@ CREATE TABLE doc_authors (
     author TEXT NOT NULL,                        -- a public ID, '*owner', or '*unconnected'
     PRIMARY KEY (artifact_id, path, author)
 );
+-- What a page's write carries (§8.2, M11): every author of the page (of
+-- every file of its current version) at the write, for a via_page comment
+-- or a page's upload. Same shape as doc_authors.
+CREATE TABLE page_authors (
+    kind TEXT NOT NULL CHECK (kind IN ('comment', 'asset')),
+    id TEXT NOT NULL,                            -- the comment's or asset's ID
+    author TEXT NOT NULL,                        -- a public ID or '*owner'
+    PRIMARY KEY (kind, id, author)
+);
 ALTER TABLE feedback ADD COLUMN placeholder_at TEXT;
-ALTER TABLE comments ADD COLUMN page_person TEXT;   -- via_page: the page's publisher at write ('*owner' for the owner)
-
-INSERT INTO approvals (id, approver, author, scope, created_at, created_via)
-VALUES ('a' || lower(hex(randomblob(12))), NULL, '*unconnected', 'everywhere',
-        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'migration');
+-- The authors of each of title, description, icon and capabilities, set by
+-- the publish or metadata change that last set it (a page's: with every
+-- author of the page): {"title": ["u_…"], …}; NULL (and a field it does
+-- not list): the creator's.
+ALTER TABLE artifacts ADD COLUMN text_authors_json TEXT;
+-- The batch's sender as an author: '*owner', a public ID, or '*unconnected'
+-- (an anonymous browser). sent_by stays the display name.
+ALTER TABLE send_batches ADD COLUMN sender TEXT;
 ```
 
+The migration's Rust step then makes the owner's approval of
+`*unconnected` everywhere (`created_via` `migration`, a ULID), and the store
+records its `approval.grant` (as `system:daemon`) once, as it opens, after
+the audit backfill.
+
 Existing documents get no `doc_authors` rows: a document without rows is
-the owner's (zero change). Existing `via_page` comments get `page_person`
-NULL, read as the owner (every version before this migration is the
-owner's).
+the owner's (zero change). Existing `via_page` comments get no
+`page_authors` rows, read as the owner (every version before this
+migration is the owner's), and existing artifacts no text authors (their
+creator's: the owner). Existing batches get no sender, read as
+`*unconnected` (a LAN viewer may have sent one).
 
 ### 5.3 Migration 26: the per-person inbox
 
@@ -903,15 +923,15 @@ artifact Y (thread T)?" Yes when, for every Aᵢ:
 | Field | Effective authors |
 |---|---|
 | A viewer comment's body | its writer (`author_public_id`; anonymous and pre-migration-12 unattributed comments count as `*unconnected`) |
-| A page-written comment's body (`via_page`) | its writer and `comments.page_person` (the page's publisher at write time) |
+| A page-written comment's body (`via_page`) | its writer and every author of the page at write time (`page_authors`: the authors of every file of its current version; none recorded: the owner) |
 | An agent comment's body | the person of its session |
 | A thread's anchor (quote, prefix, suffix, selector) | the authors of the anchored file in the thread's version (`versions.file_authors_json`; the version's publisher when the file is unknown) |
-| A thread's `resolved_by` text; its batch note | the resolver; the batch's sender |
+| A thread's `resolved_by` text; its batch note | the resolver; the batch's sender (`send_batches.sender`; none recorded: `*unconnected`) |
 | A clip | the thread's first commenter and the anchor's authors |
-| A version's file (name and bytes) | that file's authors in `versions.file_authors_json`: the publisher (and `page_person` for a `by_page` version) for a file the version wrote; the previous version's authors of that file for a file it carried forward |
-| A version's label and note | its publisher (`versions.person`; and `page_person` for a `by_page` version) |
-| An artifact's title, description, icon and `capabilities` | its creator (`artifacts.person`) and its current version's publisher |
-| An asset's name and bytes | its uploader (`assets.person`) |
+| A version's file (name and bytes) | that file's authors in `versions.file_authors_json`: for a file the version wrote, the publisher, and for a `by_page` version every author of the previous version's files; for a file it carried forward, the previous version's authors of that file |
+| A version's label and note | its publisher (`versions.person`); for a `by_page` version also every author of its files |
+| An artifact's title, description, icon and `capabilities` | each field's own authors (`artifacts.text_authors_json`): those of the publish or metadata change (`PATCH`) that last set it, a page's with every author of the page; a field never set since is its creator's (`artifacts.person`). A publish or change that leaves a field keeps its authors |
+| An asset's name and bytes | its uploader (`assets.person`), and for a page's upload every author of the page at the upload (`page_authors`) |
 | A document's fields | every `doc_authors` row for it (none: the owner) |
 | A working record's message | its session's person |
 | A question's text and answers | the asking agent's person (always R) |
@@ -924,7 +944,8 @@ A live page's snapshots and anchors (owner-only, L10) count as the owner's.
 `str_replace`, `acquire` with data, batch writes) adds the writer to the
 document's author set; the set only grows until the document is deleted,
 which removes its rows. A page's write adds both the browser's viewer and
-the page's publisher (the current version's `person` at write time).
+every author of the page (of every file of its current version, at write
+time).
 Touching, or rewriting, someone else's document never makes it yours.
 Deleting it and writing a new one at the same path does (a visible,
 destructive act that needs the delete right on it); §21.7 lists it.
@@ -1570,8 +1591,8 @@ agents not to.
    - *Of a person by an unconnected viewer:* unconnected names are marked
      `(not connected)` and cannot equal a connected person's (§9.6).
 3. **Confused deputy.**
-   - *Page-written content* carries its publisher, fixed at write time
-     (M11).
+   - *Page-written content* carries every author of the page, fixed at
+     write time (M11).
    - *Approvals and rights* need a browser (M20): no Clax tool, no CLI
      command and no remote agent can approve content, change rights,
      elevate, narrow, invite or approve grants. An owner agent with shell
@@ -1859,3 +1880,19 @@ agents not to.
     `X-Clax-Channel`, `x-clax-via`, `x-clax-git` and `x-clax-call` (an
     absent header distinct from an empty one; a repeated one refused).
     `v1` is dropped, not kept as a fallback: no client shipped it.
+- **Amendment** (2026-10-10, plan Task 8 review C1, I1, I2, ae90d3cc):
+  - M11, §8.2, §21: a page's writes (comments, documents, uploads, its own
+    publish, a metadata change) count every author of the page, the
+    authors of every file of its current version, not only the current
+    publisher: a script carried forward from another person runs in the
+    page as much as its `index.html`. A chain of page publishes so keeps
+    every earlier author.
+  - §5.1: `versions.page_person` is dropped; a `by_page` version's written
+    files record the page's authors in `file_authors_json`.
+  - §5.2: `comments.page_person` gives way to `page_authors` (a set, in
+    `doc_authors`'s shape, for comments and uploads);
+    `artifacts.text_authors_json` gives each text field its own authors,
+    set by publish and `PATCH`, carried otherwise; `send_batches.sender`
+    holds a batch's sender as an author (none: `*unconnected`). The
+    `*unconnected` approval is made by the migration's Rust step with a
+    ULID, and its `approval.grant` recorded as the store opens.

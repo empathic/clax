@@ -26,14 +26,16 @@ pub struct Artifact {
     pub authors: ArtifactAuthors,
 }
 
-/// Who wrote an artifact's own text: its creator and its current
-/// version's publisher.
+/// Who wrote an artifact's own text.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ArtifactAuthors {
     /// `artifacts.person`: the creator's person; `None`: the owner.
     pub creator: Option<String>,
-    /// The current version's publisher (its `files` unset).
-    pub current: VersionAuthors,
+    /// `artifacts.text_authors_json`: the authors of each of `title`,
+    /// `description`, `icon` and `capabilities`, set by the publish or
+    /// metadata change that last set it; `None` (and a field it does not
+    /// list): the creator's.
+    pub text: Option<BTreeMap<String, Vec<Option<String>>>>,
 }
 
 /// Who wrote a version (spec 2026-10-08-multi-agent-multi-person §5.1,
@@ -42,10 +44,9 @@ pub struct ArtifactAuthors {
 pub struct VersionAuthors {
     /// `versions.person`: the publisher's person.
     pub person: Option<String>,
-    /// A page published it.
+    /// A page published it: the files it wrote also hold the previous
+    /// version's page authors (every author of its files).
     pub by_page: bool,
-    /// For `by_page`, the previous version's publisher, fixed at write.
-    pub page_person: Option<String>,
     /// `versions.file_authors_json`: each file's authors, fixed at
     /// publish; `None` (and a file it does not list): the publisher's.
     pub files: Option<BTreeMap<String, Vec<Option<String>>>>,
@@ -107,6 +108,10 @@ pub struct Asset {
     /// visibility filter; never served.
     #[serde(skip)]
     pub person: Option<String>,
+    /// For a page's upload, the page's authors at the upload
+    /// (`page_authors`); empty otherwise. Never served.
+    #[serde(skip)]
+    pub page_authors: Vec<String>,
 }
 
 /// One harness conversation (Claude Code, Codex, Pi) that publishes artifacts.
@@ -175,11 +180,11 @@ pub struct Comment {
     pub via_page: bool,
     pub body: String,
     pub created_at: String,
-    /// For `via_page`, the page's publisher at write (`comments.page_person`:
-    /// a public ID or `*owner`; `None`: the owner). For the visibility
-    /// filter; never served.
+    /// For `via_page`, the page's authors at the write (`page_authors`:
+    /// public IDs or `*owner`; none recorded: the owner). For the
+    /// visibility filter; never served.
     #[serde(skip)]
-    pub page_person: Option<String>,
+    pub page_authors: Vec<String>,
     /// For an agent comment, its session's person (`None`: the owner's
     /// agent). For the visibility filter; never served.
     #[serde(skip)]

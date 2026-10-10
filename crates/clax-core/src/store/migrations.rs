@@ -598,16 +598,19 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE artifacts ADD COLUMN person TEXT;
     ALTER TABLE versions ADD COLUMN person TEXT;
     ALTER TABLE versions ADD COLUMN by_page INTEGER NOT NULL DEFAULT 0;
-    ALTER TABLE versions ADD COLUMN page_person TEXT;
     ALTER TABLE versions ADD COLUMN file_authors_json TEXT;
     ALTER TABLE assets ADD COLUMN person TEXT;",
     // 25: visibility (spec 2026-10-08-multi-agent-multi-person §5.2): who
     // approved whose words reaching their agents, the requests for such
-    // approvals, and each document's authors. A document without
-    // `doc_authors` rows is the owner's, and a `via_page` comment without
-    // `page_person` was written on an owner's page, so existing rows stay
-    // the owner's. The owner's one approval, of `*unconnected` everywhere,
-    // keeps LAN viewers' words reaching the owner's agents (O6, M14).
+    // approvals, each document's authors, the authors a page's writes
+    // carry, an artifact's text's authors and a batch's sender. A document
+    // without `doc_authors` rows is the owner's, a `via_page` comment
+    // without `page_authors` rows was written on an owner's page, and an
+    // artifact without text authors is its creator's, so existing rows stay
+    // the owner's; a batch without a sender is `*unconnected`. The owner's
+    // one approval, of `*unconnected` everywhere, keeps LAN viewers' words
+    // reaching the owner's agents (O6, M14): the migration's Rust step
+    // makes it, with a ULID.
     "CREATE TABLE approvals (
         id TEXT PRIMARY KEY,
         approver TEXT,
@@ -652,12 +655,15 @@ pub const MIGRATIONS: &[&str] = &[
         author TEXT NOT NULL,
         PRIMARY KEY (artifact_id, path, author)
     );
+    CREATE TABLE page_authors (
+        kind TEXT NOT NULL CHECK (kind IN ('comment', 'asset')),
+        id TEXT NOT NULL,
+        author TEXT NOT NULL,
+        PRIMARY KEY (kind, id, author)
+    );
     ALTER TABLE feedback ADD COLUMN placeholder_at TEXT;
-    ALTER TABLE comments ADD COLUMN page_person TEXT;
-
-    INSERT INTO approvals (id, approver, author, scope, created_at, created_via)
-    VALUES ('a' || lower(hex(randomblob(12))), NULL, '*unconnected', 'everywhere',
-            strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'migration');",
+    ALTER TABLE artifacts ADD COLUMN text_authors_json TEXT;
+    ALTER TABLE send_batches ADD COLUMN sender TEXT;",
 ];
 
 /// The audit journal's migration, as a schema version (the
@@ -678,6 +684,17 @@ pub const VISIBILITY_MIGRATION: u32 = 25;
 pub(super) fn rust_step(tx: &rusqlite::Transaction<'_>, version: u32) -> crate::Result<()> {
     if version == AUDIT_MIGRATION {
         install_id(tx)?;
+    }
+    if version == VISIBILITY_MIGRATION {
+        tx.execute(
+            "INSERT INTO approvals (id, approver, author, scope, created_at, created_via)
+             VALUES (?1, NULL, ?2, 'everywhere', ?3, 'migration')",
+            rusqlite::params![
+                crate::new_ulid(),
+                super::approvals::UNCONNECTED,
+                super::stamp_now()
+            ],
+        )?;
     }
     Ok(())
 }
@@ -814,7 +831,7 @@ mod tests {
                 let old: (Option<String>, Option<String>, i64) = c.query_row(
                     "SELECT (SELECT content_sha256 FROM versions WHERE artifact_id = 'a1'),
                             (SELECT transcript_path FROM sessions WHERE id = 's1'),
-                            (SELECT COUNT(*) FROM audit_events)",
+                            (SELECT COUNT(*) FROM audit_events WHERE backfilled = 1)",
                     [],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )?;
@@ -1414,7 +1431,7 @@ mod tests {
             .with_read(|c| {
                 let mut stmt = c.prepare(
                     "SELECT person FROM artifacts UNION ALL SELECT person FROM versions
-                     UNION ALL SELECT page_person FROM versions UNION ALL SELECT file_authors_json FROM versions
+                     UNION ALL SELECT file_authors_json FROM versions
                      UNION ALL SELECT person FROM assets",
                 )?;
                 Ok(stmt
@@ -1422,7 +1439,7 @@ mod tests {
                     .collect::<rusqlite::Result<Vec<_>>>()?)
             })
             .unwrap();
-        assert_eq!(people.len(), 8);
+        assert_eq!(people.len(), 6);
         assert!(people.iter().all(Option::is_none));
         let v = st.get_viewer(COOKIE).unwrap().unwrap();
         assert!(!v.person && v.person_revoked_at.is_none());
@@ -1470,9 +1487,9 @@ mod tests {
         }
         let st = Store::open(&home).unwrap();
         type Live = Vec<(Option<String>, String, String, String)>;
-        let (page_person, doc_authors, approvals): (Option<String>, i64, Live) = st
+        let (page_authors, doc_authors, approvals): (i64, i64, Live) = st
             .with_read(|c| {
-                let pp = c.query_row("SELECT page_person FROM comments WHERE id = 'c1'", [], |r| r.get(0))?;
+                let pp = c.query_row("SELECT COUNT(*) FROM page_authors", [], |r| r.get(0))?;
                 let da = c.query_row("SELECT COUNT(*) FROM doc_authors", [], |r| r.get(0))?;
                 let mut stmt = c.prepare("SELECT approver, author, scope, created_via FROM approvals WHERE revoked_at IS NULL")?;
                 let a = stmt
@@ -1482,8 +1499,26 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            page_person, None,
+            page_authors, 0,
             "an existing page comment was written on the owner's page"
+        );
+        let a = &st.live_approvals(None).unwrap()[0];
+        assert!(crate::is_ulid(&a.id), "{}", a.id);
+        let (text, sender): (Option<String>, Option<String>) = st
+            .with_read(|c| {
+                Ok((
+                    c.query_row("SELECT text_authors_json FROM artifacts", [], |r| r.get(0))?,
+                    c.query_row("SELECT COUNT(sender) FROM send_batches", [], |r| {
+                        r.get::<_, i64>(0)
+                    })
+                    .map(|n| (n > 0).then(|| "some".to_string()))?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(
+            (text, sender),
+            (None, None),
+            "an artifact's text is its creator's; batches have no sender"
         );
         assert_eq!(doc_authors, 0, "an existing document is the owner's");
         assert_eq!(

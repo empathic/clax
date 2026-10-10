@@ -552,13 +552,23 @@ pub async fn presence(
 
 pub async fn patch(
     State(s): State<AppState>,
-    _a: TokenOrAgent<crate::agent::ArtifactsPatch>,
+    a: TokenOrAgent<crate::agent::ArtifactsPatch>,
+    headers: HeaderMap,
     audit: AuditCtx,
     aid: Result<Path<String>, PathRejection>,
     req: Result<Json<PatchBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
     let b = body(req)?;
+    // Who sets the text fields (spec §8.2): a person's agent's person, else
+    // the owner; a page's patch also carries its page's authors.
+    let by = match &a.0.caller {
+        crate::auth::Caller::PersonAgent { person, .. } => {
+            clax_core::visibility::Author::of_token(person.as_deref())
+        }
+        _ => clax_core::visibility::Author::Owner,
+    };
+    let via_page = headers.get(VIA_HEADER).and_then(|v| v.to_str().ok()) == Some("page");
     if let Some(c) = &b.capabilities {
         clax_core::capabilities::validate(c)?;
     }
@@ -573,6 +583,8 @@ pub async fn patch(
                     icon: b.icon,
                     pinned: b.pinned,
                     capabilities: b.capabilities,
+                    by: Some(by),
+                    via_page,
                 },
             )
         })

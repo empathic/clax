@@ -21,6 +21,7 @@ use axum::response::{IntoResponse, Response};
 use clax_core::audit::AuditCtx;
 use clax_core::feedback::Touched;
 use clax_core::model::{Session, Thread};
+use clax_core::store::approvals::{OWNER, UNCONNECTED};
 use clax_core::store::batches::SendBatch;
 use clax_core::store::threads::{
     AUTHOR_AGENT, AUTHOR_VIEWER, DEFAULT_THREAD_PAGE, NewComment, NewThread, clip_problem,
@@ -836,13 +837,23 @@ pub async fn send_batch(
     let b = body(req)?;
     let ctx = s.feedback_ctx();
     let with_path = a.holds_token();
+    let agent_person = match &a.caller {
+        crate::auth::Caller::PersonAgent { person, .. } => Some(person.clone()),
+        _ => None,
+    };
     let v = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
             let to = send_target(st, &id, b.to.as_deref())?;
             let audit = audit.resolve(st)?;
-            let sent_by = author(st, &who)?.0;
-            let r = st.send_batch(&audit, &id, SendBatch { thread_ids: b.thread_ids, note: b.note, sent_by, to })?;
+            let (sent_by, viewer) = author(st, &who)?;
+            // The sender as an author of the note (spec §8.2).
+            let sender = match agent_person {
+                Some(person) => person.unwrap_or_else(|| OWNER.to_string()),
+                None if who.is_owner() => OWNER.to_string(),
+                None => viewer.unwrap_or_else(|| UNCONNECTED.to_string()),
+            };
+            let r = st.send_batch(&audit, &id, SendBatch { thread_ids: b.thread_ids, note: b.note, sent_by, sender, to })?;
             apply(&ctx, st, &r.touched);
             let sent = r
                 .sent
