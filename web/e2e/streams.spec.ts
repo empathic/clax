@@ -10,7 +10,9 @@ test.use({ channel: "chromium", launchOptions: { ignoreDefaultArgs: ["--disable-
 let d: Daemon;
 test.beforeEach(({ freshDaemon }) => { d = freshDaemon; });
 
-type Streams = { open: number; held: number; levels: string[] };
+/** The daemon's streams: open (with a connection), held (detached ones too),
+ * the caller level of each open one, and how many it has opened in all. */
+type Streams = { open: number; held: number; levels: string[]; opened: number };
 /** The daemon's own count of `/api/stream` connections (a debug build's). */
 async function streams(daemon = d): Promise<Streams> {
   const r = await fetch(`${daemon.base}/api/_test/stream/open`, { headers: { authorization: `Bearer ${daemon.token}` } });
@@ -49,13 +51,12 @@ async function workerRequests(browser: Browser) {
 }
 
 /** The daemon still holds the one stream it held at `then`: one open, at
- * the same level, and none opened since (a stream the browser left stays
- * held, detached, for a while). */
+ * the same level, and none opened since. */
 async function sameStream(then: Streams, why: string) {
   const now = await streams();
   expect(now.open, why).toBe(1);
   expect(now.levels, why).toEqual(then.levels);
-  expect(now.held, why).toBeLessThanOrEqual(then.held);
+  expect(now.opened, `${why}: streams opened since`).toBe(then.opened);
 }
 
 /** A page's count of `live` messages: its topics went live that many times. */
@@ -154,30 +155,35 @@ test("one tab moving between the gallery and two artifacts holds at most one str
   expect(restored, "Back lands in the back/forward cache").toBeGreaterThan(0);
 });
 
-test("the stream carries no token in its URL, and the events cookie gives it the owner's level", async ({ browser }) => {
+test("the stream carries no token in its URL, and a token that arrives late gives it the owner's level", async ({ browser }) => {
   const a = (await publish(d.base, d.token, "Cookie", { "index.html": "<h1>C</h1>" })).artifact.id;
   const reqs = await workerRequests(browser);
   const ctx = await browser.newContext();
+  // The page's token requests fail until the test lets them through: the
+  // stream opens without the events cookie, as an unnamed viewer's.
+  let failToken = true;
+  await ctx.route("**/api/token", r => (failToken ? r.fulfill({ status: 500, body: "{}" }) : r.continue()));
   const page = await ctx.newPage();
   await page.goto(`${d.base}/a/${a}`);
   await expect.poll(() => live(page)).toBeGreaterThan(0);
-  // The worker may have opened its stream before its network events were on:
-  // naming the viewer (the daemon's caller is then a named viewer) reopens
-  // every tab's stream, now in view, once.
+  await expect.poll(async () => (await streams()).levels).toEqual(["view"]);
+  // A token request that answers after a failed one makes this browser the
+  // owner's: the stream reopens, in view of the worker's network events
+  // (which may have missed the first stream). Naming the viewer makes the
+  // view ask for the token again.
   await reqs.enabled;
   const opens = () => reqs.urls.filter(u => u.startsWith("GET ") && new URL(u.slice(4)).pathname === "/api/stream").length;
   const before = opens();
+  const opened = (await streams()).opened;
+  failToken = false;
   await setName(page, "Wren");
   await expect.poll(opens).toBeGreaterThan(before);
   expect(reqs.urls.join(" ")).not.toContain(d.token);
   expect(reqs.urls.join(" ")).not.toContain("token=");
   // A worker sends no Authorization header: the cookie made this stream the
-  // owner's browser's (`admin`, with its viewer cookie).
+  // owner's browser's (`admin`, named or not).
   await expect.poll(async () => (await streams()).levels).toEqual(["admin"]);
-  // One rename, announced by its request and by the presence event it causes,
-  // reopens the stream once: a stream aborted before it answers stays open
-  // on the daemon while Chrome drains it (up to 5 s).
-  expect(opens(), "streams opened for the rename").toBe(before + 1);
+  expect((await streams()).opened - opened, "streams opened for the token").toBe(1);
   const ev = (await ctx.cookies()).filter(c => c.name === `clax_events_${new URL(d.base).port}`);
   expect(ev.map(c => c.path).sort()).toEqual(["/api/events", "/api/stream"]);
   for (const c of ev) {
@@ -188,6 +194,43 @@ test("the stream carries no token in its URL, and the events cookie gives it the
   await reqs.close();
   await ctx.close();
 });
+
+// One rename, with one to three tabs on the artifact. Every tab hears it
+// (the rename's request in the tab that made it, the presence event it
+// causes in each), and each asks the shared hub for a stream opened as the
+// new caller: the hub reopens once per caller. The owner's browser is at
+// `admin` named or not, so its rename reopens nothing; a LAN viewer's first
+// name moves it from `view` to `interact`, a new caller, reopened once.
+for (const who of ["owner", "LAN viewer"] as const) {
+  for (const n of [1, 2, 3]) {
+    const want = who === "owner" ? 0 : 1;
+    test(`a ${who}'s rename with ${n} tab${n > 1 ? "s" : ""} on the artifact opens ${want} stream${want === 1 ? "" : "s"}`, async ({ browser }) => {
+      const a = (await publish(d.base, d.token, "Rename", { "index.html": "<h1>R</h1>" })).artifact.id;
+      const ctx = await browser.newContext();
+      if (who !== "owner") await ctx.route("**/api/token", r => r.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: { code: "forbidden" } }) }));
+      const tabs = await openTabs(ctx, Array.from({ length: n }, () => `${d.base}/a/${a}`), async p => {
+        await expect(p.locator(".topbar h1")).toHaveText("Rename", { timeout: 20_000 });
+        await expect.poll(() => live(p), { timeout: 20_000 }).toBeGreaterThan(0);
+      });
+      await expect.poll(async () => (await streams()).open).toBe(1);
+      const start = await streams();
+      const heard0 = await Promise.all(tabs.map(heard));
+      const live0 = await Promise.all(tabs.map(live));
+      await setName(tabs[0], "Wren");
+      // Every tab has handled the presence event the rename causes, and with
+      // a reopen, gone live on the new stream; then each tab's asks are sent.
+      await expect.poll(async () => (await Promise.all(tabs.map(heard))).every((h, i) => h > heard0[i])).toBe(true);
+      if (want) await expect.poll(async () => (await Promise.all(tabs.map(live))).every((l, i) => l > live0[i])).toBe(true);
+      for (const p of tabs) await settle(p);
+      const end = await streams();
+      console.log(`${who}, ${n} tab(s): one rename opened ${end.opened - start.opened} stream(s); levels ${start.levels} -> ${end.levels}`);
+      expect(end.opened - start.opened, "streams opened for the rename").toBe(want);
+      await expect.poll(async () => (await streams()).open).toBe(1);
+      expect((await streams()).levels).toEqual([who === "owner" ? "admin" : "interact"]);
+      await ctx.close();
+    });
+  }
+}
 
 test("thirty tabs share one stream; a new tab joins it, and a publish reaches every tab that wants it and no other", async ({ browser }) => {
   test.setTimeout(60_000);
@@ -203,6 +246,7 @@ test("thirty tabs share one stream; a new tab joins it, and a publish reaches ev
   expect(tabs).toHaveLength(30);
   await expect.poll(async () => (await streams()).open, { timeout: 5000 }).toBe(1);
   const thirty = await streams();
+  // A reopen would make every tab go live again, the tabs of other artifacts too.
 
   // A new tab of each kind comes up and goes live on the same stream: the
   // daemon opens no stream for it. How long that takes is logged, not judged
@@ -229,13 +273,16 @@ test("thirty tabs share one stream; a new tab joins it, and a publish reaches ev
   }
   const others = tabs.filter(p => !relevant.includes(p));
   const before = await Promise.all(others.map(heard));
+  const othersLive = await Promise.all(others.map(live));
   const t0 = Date.now();
   await publish(d.base, d.token, "Tab 3", { "index.html": "<h1>Tab 3, again</h1>" }, 1, ids[3]);
-  await expect.poll(async () => (await Promise.all(relevant.map(seenAt))).every(t => t !== null), { timeout: 5000 }).toBe(true);
+  // Judged by arrival in every tab within expect's timeout; how fast is logged.
+  await expect.poll(async () => (await Promise.all(relevant.map(seenAt))).every(t => t !== null)).toBe(true);
   const lat = (await Promise.all(relevant.map(seenAt))).map(t => t! - t0);
   const after = await Promise.all(others.map(heard));
   console.log(`32 tabs: ${thirty.open} stream open at 30 (${thirty.held} held); new tabs ready in ${times.join(", ")} ms; the publish reached ${relevant.length} tabs in ${Math.min(...lat)}–${Math.max(...lat)} ms`);
   await sameStream(thirty, "the publish went over the one stream");
+  expect(await Promise.all(others.map(live)), "no other tab went live again").toEqual(othersLive);
   expect(after, "tabs of other artifacts hear none of it").toEqual(before);
   await ctx.close();
   await expect.poll(async () => (await streams()).open, { timeout: 10_000 }).toBe(0);
