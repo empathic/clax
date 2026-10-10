@@ -1,12 +1,16 @@
 //! Fan-out of feedback changes (`feedback_state` events and long-poll
-//! wake-ups) and the JSON view of a thread.
+//! wake-ups), the JSON view of a thread, and what an agent channel may see
+//! of it ([`Vis`]).
 
 use crate::state::AppState;
 #[cfg(debug_assertions)]
 use clax_core::feedback::Tier;
 use clax_core::feedback::Touched;
-use clax_core::model::Thread;
+use clax_core::model::{Artifact, Comment, Thread, Version};
+use clax_core::store::approvals::UNCONNECTED;
 use clax_core::store::live::LivePage;
+use clax_core::visibility::placeholder::{self, ApprovalState, WithheldAuthor};
+use clax_core::visibility::{self, Author, Reader, Visibility};
 use clax_core::{ArtifactId, Event, EventBus, Store};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -380,7 +384,25 @@ pub fn thread_views(
     codex_push: bool,
     with_path: bool,
 ) -> clax_core::Result<Vec<Value>> {
+    Ok(views_and_senders(st, threads, codex_push, with_path)?.0)
+}
+
+/// Each thread view's batch senders, in `sends` order
+/// ([`clax_core::store::batches::ThreadSend::sender`], never served).
+type Senders = Vec<Vec<Option<String>>>;
+
+/// [`thread_views`], with each view's batch senders.
+fn views_and_senders(
+    st: &Store,
+    threads: &[Thread],
+    codex_push: bool,
+    with_path: bool,
+) -> clax_core::Result<(Vec<Value>, Senders)> {
     let extras = st.thread_extras(threads, codex_push)?;
+    let senders: Senders = extras
+        .iter()
+        .map(|x| x.sends.iter().map(|b| b.sender.clone()).collect())
+        .collect();
     let mut live: HashMap<&str, Option<LivePage>> = HashMap::new();
     for t in threads {
         if !live.contains_key(t.artifact_id.as_str()) {
@@ -439,7 +461,333 @@ pub fn thread_views(
             }
             Ok(v)
         })
-        .collect()
+        .collect::<clax_core::Result<Vec<Value>>>()
+        .map(|views| (views, senders))
+}
+
+/// The visibility an agent channel's response goes through (spec §8):
+/// the caller's reader and the visibility generation read when the
+/// request began, before the store reads that build the view (M17).
+#[derive(Clone, Debug)]
+pub struct VisFor {
+    pub reader: Option<Reader>,
+    pub generation: u64,
+}
+
+impl VisFor {
+    /// What `caller` may see: agent channels are filtered for their
+    /// reader; people are not (§8.5).
+    pub fn of(caller: &crate::auth::Caller, s: &AppState) -> VisFor {
+        VisFor {
+            reader: caller.reader(),
+            generation: s.vis_gen.current(),
+        }
+    }
+
+    /// The view, read from `st`.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn build(&self, st: &Store) -> clax_core::Result<Vis> {
+        Ok(Vis(match &self.reader {
+            Some(r) => Some(Visibility::for_reader(st, r, self.generation)?),
+            None => None,
+        }))
+    }
+}
+
+/// What an agent channel may see of the threads a route returns, field by
+/// field (spec §8.2, §8.3, M10); for people ([`VisFor`] without a reader)
+/// and for a view that sees everything, the views as they are.
+pub struct Vis(Option<Visibility>);
+
+impl Vis {
+    /// The filtering view, unless everything is visible.
+    fn filtering(&self) -> Option<&Visibility> {
+        self.0.as_ref().filter(|v| !v.is_all())
+    }
+
+    /// [`thread_views`] of `threads`, each field the reader may not see
+    /// replaced by its placeholder ([`Withhold::thread`]).
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn filter_threads(
+        &self,
+        st: &Store,
+        threads: &[Thread],
+        codex_push: bool,
+        with_path: bool,
+    ) -> clax_core::Result<Vec<Value>> {
+        let (mut views, senders) = views_and_senders(st, threads, codex_push, with_path)?;
+        if let Some(vis) = self.filtering() {
+            let mut w = Withhold::new(st, vis);
+            for ((t, view), senders) in threads.iter().zip(&mut views).zip(&senders) {
+                w.thread(t, view, senders)?;
+            }
+        }
+        Ok(views)
+    }
+
+    /// [`Vis::filter_threads`] of one thread.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn filter_thread(
+        &self,
+        st: &Store,
+        t: &Thread,
+        codex_push: bool,
+        with_path: bool,
+    ) -> clax_core::Result<Value> {
+        Ok(self
+            .filter_threads(st, std::slice::from_ref(t), codex_push, with_path)?
+            .pop()
+            .expect("one view per thread"))
+    }
+
+    /// Comment `c` of a thread of artifact `aid`, its body withheld as in
+    /// its thread's view.
+    pub fn filter_comment(&self, aid: &str, c: &Comment) -> Value {
+        let mut v = json!(c);
+        if let Some(vis) = self.filtering()
+            && !vis.sees(&visibility::authors_of_comment(c), aid, Some(&c.thread_id))
+        {
+            placeholder::comment(&mut v);
+        }
+        v
+    }
+
+    /// The authors withholding thread `t`'s clip from the reader, `None`
+    /// when it may see it (or the thread has none).
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn filter_clip(
+        &self,
+        st: &Store,
+        t: &Thread,
+    ) -> clax_core::Result<Option<Vec<WithheldAuthor>>> {
+        let Some(vis) = self.filtering() else {
+            return Ok(None);
+        };
+        if !t.has_clip {
+            return Ok(None);
+        }
+        let mut w = Withhold::new(st, vis);
+        let withheld = match w.version(&t.artifact_id, t.version_n)? {
+            Some(v) => vis.withheld_authors(
+                &visibility::authors_of_clip(t, &v),
+                &t.artifact_id,
+                Some(&t.id),
+            ),
+            None => Vec::new(),
+        };
+        let unknown = w.version(&t.artifact_id, t.version_n)?.is_none();
+        if withheld.is_empty() && !unknown {
+            return Ok(None);
+        }
+        Ok(Some(w.named(&withheld)?))
+    }
+
+    /// An entry of the all-threads listing for artifact `a`, whose
+    /// `files` are `version`'s: its `title` null with `withheld: {authors}`
+    /// when the artifact's text is withheld, and each file the reader may
+    /// not see left out of `files`, counted in `files_withheld`.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn filter_listing_entry(
+        &self,
+        st: &Store,
+        a: &Artifact,
+        version: Option<&Version>,
+        entry: &mut Value,
+    ) -> clax_core::Result<()> {
+        let Some(vis) = self.filtering() else {
+            return Ok(());
+        };
+        let mut w = Withhold::new(st, vis);
+        let text = vis.withheld_authors(&visibility::authors_of_artifact_text(a), &a.id, None);
+        if !text.is_empty() {
+            entry["title"] = Value::Null;
+            entry["withheld"] = json!({"authors": w.named(&text)?});
+        }
+        let mut hidden = Vec::new();
+        if let Some(v) = version {
+            for path in v.files.keys() {
+                if !vis.sees(&visibility::authors_of_file(v, path), &a.id, None) {
+                    hidden.push(path.clone());
+                }
+            }
+        }
+        if let Some(files) = entry.get_mut("files").and_then(Value::as_array_mut) {
+            files.retain(|f| !hidden.iter().any(|h| f.as_str() == Some(h)));
+        }
+        entry["files_withheld"] = json!(hidden.len());
+        Ok(())
+    }
+}
+
+/// Applies one reader's view to thread views, reading what it needs once:
+/// the versions anchors are on, the names of withheld authors.
+struct Withhold<'a> {
+    st: &'a Store,
+    vis: &'a Visibility,
+    versions: HashMap<(String, u32), Option<Version>>,
+    names: HashMap<Author, WithheldAuthor>,
+}
+
+impl<'a> Withhold<'a> {
+    fn new(st: &'a Store, vis: &'a Visibility) -> Withhold<'a> {
+        Withhold {
+            st,
+            vis,
+            versions: HashMap::new(),
+            names: HashMap::new(),
+        }
+    }
+
+    fn version(&mut self, aid: &str, n: u32) -> clax_core::Result<Option<Version>> {
+        let key = (aid.to_string(), n);
+        if !self.versions.contains_key(&key) {
+            let v = self.st.get_version(&ArtifactId::parse(aid)?, n)?;
+            self.versions.insert(key.clone(), v);
+        }
+        Ok(self.versions[&key].clone())
+    }
+
+    /// `authors` as views list them: public ID (none for anonymous
+    /// viewers) and current display name.
+    fn named(&mut self, authors: &[Author]) -> clax_core::Result<Vec<WithheldAuthor>> {
+        let mut out = Vec::with_capacity(authors.len());
+        for a in authors {
+            if !self.names.contains_key(a) {
+                let viewer = match a {
+                    Author::Owner => self.st.owner()?,
+                    Author::Person(p) => self.st.viewer_by_public_id(p)?,
+                    Author::Unconnected | Author::System => None,
+                };
+                let named = WithheldAuthor {
+                    public_id: match a {
+                        Author::Person(p) => Some(p.clone()),
+                        _ => viewer.as_ref().map(|v| v.public_id.clone()),
+                    },
+                    name: clax_core::feedback::display_name(
+                        viewer
+                            .as_ref()
+                            .and_then(|v| v.display_name.as_deref())
+                            .unwrap_or(""),
+                    ),
+                };
+                self.names.insert(a.clone(), named);
+            }
+            out.push(self.names[a].clone());
+        }
+        Ok(out)
+    }
+
+    /// Where the reader's approval of `authors` stands at thread `tid` of
+    /// artifact `aid`: an open request for any of them (at the thread or
+    /// the whole artifact) is `requested`, else a declined one `declined`.
+    fn approval(
+        &mut self,
+        aid: &str,
+        tid: &str,
+        authors: &[Author],
+    ) -> clax_core::Result<ApprovalState> {
+        let approver = match self.vis.reader() {
+            Some(Reader::Person(p)) => Some(p.clone()),
+            _ => None,
+        };
+        let mut keys = Vec::new();
+        for a in authors {
+            match a {
+                Author::Owner => {
+                    if let Some(o) = self.st.owner()? {
+                        keys.push(o.public_id);
+                    }
+                }
+                Author::Person(p) => keys.push(p.clone()),
+                Author::Unconnected => keys.push(UNCONNECTED.to_string()),
+                Author::System => {}
+            }
+        }
+        self.st.request_state(approver.as_deref(), aid, tid, &keys)
+    }
+
+    /// Thread `t`'s view, `senders` its batches' senders in `sends` order:
+    /// each comment body, the anchor, the clip, `resolved_by` and each
+    /// batch note the reader may not see is replaced by its placeholder
+    /// (§8.3), and when any is, the thread gains `withheld: {count (its
+    /// comments withheld), authors, approval}`.
+    fn thread(
+        &mut self,
+        t: &Thread,
+        view: &mut Value,
+        senders: &[Option<String>],
+    ) -> clax_core::Result<()> {
+        let vis = self.vis;
+        let (aid, tid) = (t.artifact_id.as_str(), Some(t.id.as_str()));
+        let mut withheld: Vec<Author> = Vec::new();
+        let mut any = false;
+        let mut hides = |authors: &[Author]| {
+            let w = vis.withheld_authors(authors, aid, tid);
+            for a in &w {
+                if !withheld.contains(a) {
+                    withheld.push(a.clone());
+                }
+            }
+            !w.is_empty()
+        };
+        let mut count = 0;
+        for (i, c) in t.comments.iter().enumerate() {
+            if hides(&visibility::authors_of_comment(c)) {
+                placeholder::comment(&mut view["comments"][i]);
+                count += 1;
+                any = true;
+            }
+        }
+        // A version that is gone names no authors: withhold what it held.
+        let version = self.version(aid, t.version_n)?;
+        let (anchor, clip) = match &version {
+            Some(v) => (
+                hides(&visibility::authors_of_anchor(t, v)),
+                t.has_clip && hides(&visibility::authors_of_clip(t, v)),
+            ),
+            None => (!t.anchor.is_whole(), t.has_clip),
+        };
+        if anchor {
+            placeholder::anchor(view);
+            any = true;
+        }
+        if clip {
+            placeholder::clip(view);
+            any = true;
+        }
+        if let Some(by) = &t.resolved_by
+            && hides(&visibility::authors_of_resolved_by(
+                by,
+                t.resolved_by_person.as_deref(),
+            ))
+        {
+            placeholder::resolved_by(view);
+            any = true;
+        }
+        for (i, sender) in senders.iter().enumerate() {
+            let note = &view["sends"][i]["note"];
+            if !note.is_null() && hides(&visibility::authors_of_batch_note(sender.as_deref())) {
+                placeholder::batch_note(&mut view["sends"][i]);
+                any = true;
+            }
+        }
+        if any {
+            let authors = self.named(&withheld)?;
+            let approval = self.approval(aid, &t.id, &withheld)?;
+            placeholder::thread_summary(view, count, &authors, approval);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

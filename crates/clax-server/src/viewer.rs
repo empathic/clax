@@ -103,17 +103,32 @@ pub fn set_cookie(id: &str) -> HeaderValue {
     .expect("ULIDs are header-safe")
 }
 
+/// The viewer a request acts as when it writes as a viewer (a comment, a
+/// resolve): for an agent of another machine, its grant's person (the
+/// owner's row for a grant of the owner's), whose words its writes are
+/// (spec §8.2); else [`crate::identity::Identity::ensure_viewer`]'s.
+pub fn acting_viewer(
+    st: &Store,
+    who: &crate::identity::Identity,
+) -> clax_core::Result<Option<clax_core::model::Viewer>> {
+    match who.verified_grant() {
+        Some(g) => st.viewer_of_grant(g).map(Some),
+        None => who.ensure_viewer(st),
+    }
+}
+
 /// The comment author for the request: its viewer's display name
 /// ([`crate::identity::Identity::viewer`]: the owner's for an owner
-/// credential), sanitised, else `Viewer`; and that viewer's public ID.
+/// credential; [`acting_viewer`]'s person for an agent of another
+/// machine), sanitised, else `Viewer`; and that viewer's public ID.
 pub fn author(
     st: &Store,
     who: &crate::identity::Identity,
 ) -> clax_core::Result<(String, Option<String>)> {
     // The owner always has a row to author with (made for the CLI acting
     // before any browser); a cookie with no row stays anonymous.
-    let v = if who.is_owner() {
-        who.ensure_viewer(st)?
+    let v = if who.is_owner() || who.verified_grant().is_some() {
+        acting_viewer(st, who)?
     } else {
         who.viewer(st)?
     };
