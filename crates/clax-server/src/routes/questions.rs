@@ -225,6 +225,18 @@ pub async fn create(
         },
         None => None,
     };
+    // The session's artifact, which a hook question about no live artifact
+    // falls back to, goes through the same gate as a named one: a person's
+    // agent's watches never hand it a live page, or one it may not read.
+    let fallback = if source == Source::Hook && !named {
+        let id = sid.clone();
+        match s.store_call(move |db| db.session_artifact(&id)).await? {
+            Some(raw) => a.named_artifact(&s, &raw).await.ok(),
+            None => None,
+        }
+    } else {
+        None
+    };
     let tool_use_id = b.tool_use_id;
     let st = s.clone();
     let (row, made, v) = s
@@ -240,8 +252,10 @@ pub async fn create(
             if named && live.is_none() {
                 return Err(CoreError::NotFound);
             }
-            if live.is_none() && source == Source::Hook {
-                live = db.session_artifact(&sid)?;
+            if live.is_none()
+                && let Some(id) = &fallback
+            {
+                live = db.get_artifact(id)?.map(|a| a.id);
             }
             // A mirrored question waits in Clax only beside a page of its
             // session's: before the session has published or watched one,

@@ -4,6 +4,7 @@
 //! state, both the owner's alone; and the agent side's tool-call records
 //! (§6.7), `POST /api/sessions/<sid>/tool-calls` and `POST /api/tool-calls`.
 
+use crate::agent::TokenOrAgent;
 use crate::audit::DeferredAudit;
 use crate::auth::RequireToken;
 use crate::error::ApiError;
@@ -370,16 +371,17 @@ fn tool_call_response(seq: Option<i64>) -> (StatusCode, axum::Json<serde_json::V
     }
 }
 
-/// `POST /api/sessions/<sid>/tool-calls` (token): records `tool.call` for
-/// a call session `sid`'s agent side made, once the result has gone back
-/// (spec §6.7), as that session's agent, listing in `produced` the events
-/// recorded under the call. A call already recorded records nothing; a
+/// `POST /api/sessions/<sid>/tool-calls` (token, or an agent of another
+/// machine for its own session): records `tool.call` for a call session
+/// `sid`'s agent side made, once the result has gone back (spec §6.7), as
+/// that session's agent, listing in `produced` the events recorded under
+/// the call for that session. A call already recorded records nothing; a
 /// session that never existed is 404 `unknown_session`, and nothing is
-/// recorded (an ended session's late reports are kept).
+/// recorded (an ended session's late reports are kept). A person's agent
+/// naming an artifact it may not read reports a call about none.
 pub async fn session_tool_call(
     State(s): State<AppState>,
-    _d: crate::agent::DeniedToGrants,
-    _t: RequireToken,
+    TokenOrAgent(a): TokenOrAgent<crate::agent::ToolCallReport>,
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
     req: Result<axum::Json<ToolCallReport>, JsonRejection>,
@@ -391,7 +393,16 @@ pub async fn session_tool_call(
             "the session ID is not a ULID",
         ));
     }
-    let report = tool_call_report(req)?;
+    let mut report = tool_call_report(req)?;
+    if a.grant().is_some()
+        && let Some(raw) = report.artifact_id.take()
+    {
+        report.artifact_id = a
+            .named_artifact(&s, &raw)
+            .await
+            .ok()
+            .map(|id| id.as_str().to_string());
+    }
     let id = sid.clone();
     let recorded = s
         .store_call(move |st| {

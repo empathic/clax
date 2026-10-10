@@ -674,3 +674,125 @@ async fn a_withheld_threads_approval_state_is_the_readers_request() {
     .unwrap();
     assert_eq!(state().await, "requested");
 }
+
+#[tokio::test]
+async fn a_persons_agent_reports_its_own_tool_calls() {
+    let w = World::two_people().await;
+    let sid = &w.sam_session;
+    let call = |path: String, session: Option<String>, body: Value| {
+        let sam = &w.sam;
+        async move {
+            let mut headers = Vec::new();
+            if let Some(s) = session {
+                headers.push(("x-clax-session", s));
+            }
+            sam.call(Call {
+                method: "POST",
+                path: &path,
+                authorization: Some(format!("Clax-Grant {}", sam.access())),
+                body: Some(serde_json::to_vec(&body).unwrap()),
+                headers,
+                ..Default::default()
+            })
+            .await
+        }
+    };
+    // A call of Sam's agent that wrote a comment.
+    let call_id = "01JBC0000000000000000000K1";
+    let header = clax_core::audit::encode_call_header(&clax_core::audit::CallHeader {
+        call_id: call_id.into(),
+        tool: "comments_reply".into(),
+        harness_tool: None,
+        args_sha256: format!("sha256:{}", "ab".repeat(32)),
+        started_at: "2026-10-10T10:00:00.000Z".into(),
+        harness_call_id: None,
+    })
+    .unwrap();
+    let r = w
+        .sam
+        .call(Call {
+            method: "POST",
+            path: &format!(
+                "/api/artifacts/{}/threads/{}/comments",
+                w.scratch.artifact, w.scratch.thread
+            ),
+            authorization: Some(format!("Clax-Grant {}", w.sam.access())),
+            body: Some(
+                serde_json::to_vec(&json!({"body": "done", "author_kind": "agent"})).unwrap(),
+            ),
+            headers: vec![("x-clax-session", sid.clone()), ("x-clax-call", header)],
+            ..Default::default()
+        })
+        .await;
+    assert_eq!(r.status(), 201, "{}", r.text().await.unwrap());
+    let report = json!({"call_id": call_id, "tool": "comments_reply",
+        "args_sha256": format!("sha256:{}", "ab".repeat(32)),
+        "started_at": "2026-10-10T10:00:00.000Z", "ended_at": "2026-10-10T10:00:00.400Z",
+        "outcome": "ok"});
+    let r = call(
+        format!("/api/sessions/{sid}/tool-calls"),
+        Some(sid.clone()),
+        report.clone(),
+    )
+    .await;
+    let (status, v) = json_of(r).await;
+    assert_eq!(status, 201, "{v}");
+    let seq = v["seq"].as_i64().unwrap();
+    let row = w.ts.store.events_after(seq - 1, 1).unwrap().remove(0);
+    assert_eq!(row.kind, "tool.call");
+    let body: Value = serde_json::from_str(&row.body).unwrap();
+    assert_eq!(body["produced"].as_array().unwrap().len(), 1, "{body}");
+    assert!(row.actor.contains(&w.sam.grant_id()), "{}", row.actor);
+    // Another credential's session is not its to report for.
+    let r = call(
+        format!("/api/sessions/{}/tool-calls", w.owner_session),
+        Some(sid.clone()),
+        report.clone(),
+    )
+    .await;
+    assert_eq!(json_of(r).await.1["error"]["code"], "foreign_session");
+    // The sessionless report is the daemon's own `/mcp`'s.
+    let r = call("/api/tool-calls".into(), Some(sid.clone()), report.clone()).await;
+    assert_eq!(r.status(), 403);
+    // Its harness's call ID too.
+    let r = call(
+        format!("/api/sessions/{sid}/tool-call-ids"),
+        Some(sid.clone()),
+        json!({"tool_use_id": "toolu_01", "tool_name": "mcp__clax__comments_reply",
+               "args_sha256": format!("sha256:{}", "ab".repeat(32))}),
+    )
+    .await;
+    let (status, v) = json_of(r).await;
+    assert_eq!(status, 201, "{v}");
+}
+
+#[tokio::test]
+async fn a_hook_question_never_falls_back_to_a_page_a_persons_agent_may_not_read() {
+    let w = World::two_people().await;
+    let sid = &w.sam_session;
+    // Sam's session holds a watch on the live page (written directly: no
+    // route gives a person's agent one).
+    let db = rusqlite::Connection::open(w.ts.home.db_path()).unwrap();
+    db.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
+    db.execute(
+        "INSERT INTO watches (session_id, artifact_id, replies_armed, created_at) VALUES (?1, ?2, 0, 'z')",
+        rusqlite::params![sid, w.live],
+    )
+    .unwrap();
+    drop(db);
+    let r = w
+        .sam
+        .agent(
+            "POST",
+            &format!("/api/sessions/{sid}/questions"),
+            Some(sid),
+            Some(json!({"source": "hook", "tool_use_id": "toolu_q1", "questions": [{"question": "Which?",
+                "header": "Pick", "multiSelect": false, "options": [{"label": "A", "description": "a"},
+                {"label": "B", "description": "b"}]}]})),
+        )
+        .await;
+    let (status, v) = json_of(r).await;
+    assert!(status == 200 || status == 201, "{status}: {v}");
+    assert!(!v.to_string().contains(&w.live), "{v}");
+    assert!(v["question"]["artifact"].is_null(), "{v}");
+}
