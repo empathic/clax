@@ -202,18 +202,19 @@ invite for themselves (**Invite → Me**).
 
 ### 3.5 Several agents of one person
 
-- The owner has `clax-main` (Claude Code in `clax`) and
+- The owner has `clax-claude` (Claude Code in `clax` on `main`; `clax`
+  is reserved, so the harness is added) and
   `clax-multi-person` (Codex in a worktree). The Send button names one of
   them; its menu lists both by name with their state. A comment
   `@clax-multi-person can you take this?` sends the thread to that agent.
-- `clax-main` takes a thread; `clax-multi-person`'s `comments_read` shows
-  it as `taken by clax-main`; its reply is refused with `thread_taken`.
-  `clax-main` calls `comments_handoff` with `to: "clax-multi-person"`.
-- The inbox's agent strip reads "clax-main · waiting on you 12 min (1
+- `clax-claude` takes a thread; `clax-multi-person`'s `comments_read` shows
+  it as `taken by clax-claude`; its reply is refused with `thread_taken`.
+  `clax-claude` calls `comments_handoff` with `to: "clax-multi-person"`.
+- The inbox's agent strip reads "clax-claude · waiting on you 12 min (1
   question)", "clax-multi-person · working on Quarterly Review".
-- `clax-main`'s session ends: its open question is withdrawn, its two
+- `clax-claude`'s session ends: its open question is withdrawn, its two
   threads are released, it leaves the Send menu, and the inbox gets one
-  note: "clax-main ended · released 2 threads · withdrew 1 question".
+  note: "clax-claude ended · released 2 threads · withdrew 1 question".
 
 ## 4. The GNAP model
 
@@ -1129,7 +1130,12 @@ shown again beside the first invite. In every payload and view an agent
 gets, author lines for unconnected viewers read `<name> (not connected)`.
 A LAN viewer cannot take a display name equal (ignoring case and
 diacritics) to a connected person's or the owner's (409 `name_taken`), and a
-new person cannot be named after an existing viewer's or agent's name.
+new person cannot be named after a live agent or after a viewer who was
+never invited and is not revoked (409 `name_taken`, saying to invite that
+viewer instead); a revoked person's or a lapsed invite's name is free
+again. A display name with a bidirectional control, or mixing scripts
+(Latin with Cyrillic or Greek, and so on), is 400 `invalid_name`, and
+invisible characters do not count when names are compared.
 
 ## 10. Routing to another person's agent
 
@@ -1147,18 +1153,22 @@ new person cannot be named after an existing viewer's or agent's name.
 
 ## 11. Agent names
 
-- **Derivation.** On registration the agent side sends `repo` (the
-  basename of the nearest directory above `cwd` holding `.git`, a directory
-  or a worktree's file) and `branch` (read from that repository's `HEAD`;
-  detached is none), with no `git` process. The daemon names the session
+- **Derivation.** On registration the agent side sends `repo` (the name
+  of the repository's common git directory, as `git rev-parse
+  --git-common-dir` gives it: the directory holding that `.git`, found
+  from the nearest directory above `cwd` holding `.git`, a directory or a
+  worktree's file; a worktree is named after its repository, not its own
+  directory) and `branch` (read from that checkout's `HEAD`; detached is
+  none), with no `git` process. The daemon names the session
   `<repo>` when the branch is none, `main` or `master`, else
   `<repo>-<last path segment of the branch>`; lowercased, every character
   other than `[a-z0-9._-]` made `-`, runs of `-` collapsed, cut to 32.
   Taken: `<base>-<harness>`, then `<base>-2`, `-3`, … (R3). No repository:
   the harness.
 - **Task.** The agent sets a name with `status {"name": "fix-chart-axis"}`
-  (409 `name_taken`; 400 `invalid_name`), again later unless its person
-  renamed it (409 `name_locked`).
+  (409 `name_taken`; 400 `invalid_name`, which includes a chosen name
+  ending in `.`, `_` or `-`), again later unless its person renamed it
+  (409 `name_locked`).
 - **Rename.** The agent's person (and the owner, for any agent) renames it
   in the roster or People, or `clax agents rename`; `PUT
   /api/agents/<handle> {name}` (a browser, or the token from the CLI;
@@ -1168,10 +1178,12 @@ new person cannot be named after an existing viewer's or agent's name.
   `agent`, `owner`, `clax`, `me`, `everyone`, and every connected person's
   and the owner's display name in token form (lowercased, diacritics
   removed, spaces as `-`). Naming or renaming a person to a name whose
-  token form is a live agent's name is 409 `name_taken`.
+  token form is a live agent's name is 409 `name_taken`; so is the owner
+  taking a live agent's or a connected person's name.
 - **`@name`.** `@` followed by a live agent's name as a whole token (start
   or a non-alphanumeric before; end, whitespace or punctuation other than
-  `.`, `_`, `-` after) sends the thread to that agent (a send with `to`),
+  `.`, `_`, `-` after, where a sentence's closing full stops are not part
+  of the name: `@web.` mentions `web`, `@web.dev` does not) sends the thread to that agent (a send with `to`),
   giving it a direct watch when it has none. A name that names no live
   agent sends nothing; the response carries `unresolved_mentions`. `@agent`
   keeps its meaning.
@@ -1214,13 +1226,13 @@ new person cannot be named after an existing viewer's or agent's name.
   only to the agent's person and the owner.
 - **The `agents` stream topic** (person-scoped) announces changes.
 - **Inbox grouping.** `/inbox` opens with an agent strip, one chip per
-  agent with unread items or a block, blocked-longest first: "clax-main ·
+  agent with unread items or a block, blocked-longest first: "clax-claude ·
   waiting on you 12 min". A chip filters the inbox (`agent=<handle>`).
   `GET /api/inbox?group=agent` returns the strip's data.
 - **Roster.** The gallery's roster, the artifact view's agent list and
   `clax status` show the same states and block times.
 - **Notifications** title an approval request "Mia wants to reach
-  clax-main".
+  clax-claude".
 
 ## 14. Lifecycle cleanup
 
@@ -1237,7 +1249,7 @@ owner ended it). An `idle` end also saves its direct watches to
 4. `narrow_json` and `elevate_json` are cleared; the name is freed.
 5. Watches and working records end (as today).
 6. When it owned threads or had open questions or `ask` requests, one
-   `ended` inbox item for its person (M25): "clax-main ended · released 2
+   `ended` inbox item for its person (M25): "clax-claude ended · released 2
    threads · withdrew 1 question".
 7. Send menus and pickers drop it; the agent strip keeps it as `ended` for
    an hour.
@@ -1376,8 +1388,8 @@ After migrations 24–26, with no person ever connected, these change and
 nothing else:
 
 1. **Agent names.** New sessions get derived names, shown where the shell
-   showed the harness ("Send to clax-main"), in reply author lines
-   (`clax-main (agent, via claude)`), and in `taken_by`.
+   showed the harness ("Send to clax-claude"), in reply author lines
+   (`clax-claude (agent, via claude)`), and in `taken_by`.
 2. **`@<name>`.** A comment with `@` followed by a live agent's name (for
    example `@web`, when an agent works in a repository named `web`) now
    sends the thread to that agent and gives it a watch.
@@ -1392,7 +1404,8 @@ nothing else:
    agent gets, an unconnected LAN viewer's name reads `<name> (not
    connected)`.
 8. **Reserved display names** (§9.6): a LAN viewer cannot take the owner's
-   display name (409 `name_taken`).
+   display name (409 `name_taken`), and the owner cannot take a live
+   agent's name (409 `name_taken`).
 
 §19 covers agent-facing output and existing behaviour. New UI (the People
 link and page, the agent strip, owner chips, the Send menu's grouping) is
@@ -1771,3 +1784,16 @@ agents not to.
   - §7.5: `/_blob`, `/c/…` and the artifact's shell page carry the
     artifact's content, so they refuse the owner's agents with
     `not_for_agents` as the other Denied views do.
+- **Amendment** (2026-10-10, plan Task 7, owner decisions):
+  - §11: a worktree's agent is named after its repository (the common
+    git directory), not the worktree's directory; the examples name the
+    owner's main-checkout agent `clax-claude`, as `clax` is reserved.
+  - §11: a sentence's closing full stops after `@name` are not part of
+    the name; chosen names end in a letter or digit.
+  - §11, §19 item 8: the owner cannot take a live agent's or a connected
+    person's name.
+  - §9.6: a new person cannot take the name of a viewer who was never
+    invited and is not revoked; the refusal says to invite that viewer.
+    A revoked person's or a lapsed invite's name is free again. Display
+    names refuse bidirectional controls and mixed scripts, and
+    comparisons ignore invisible characters (review I1).
