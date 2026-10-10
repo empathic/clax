@@ -12,7 +12,7 @@
 
 use crate::common::TestServer;
 use crate::common::clients::{HARNESS_ENVS, RealClients};
-use crate::common::people::{AgentOf, World};
+use crate::common::people::{AgentOf, Call, World};
 use serde_json::{Value, json};
 
 async fn status_code(res: reqwest::Response) -> (u16, String) {
@@ -221,13 +221,21 @@ async fn the_owners_question_list_holds_only_the_owners_agents_questions() {
     assert_eq!(r.status().as_u16(), 404);
 }
 
-/// Every call of the sweep as `agent`: no response byte carries a canary.
-async fn sweep(w: &World, agent: &AgentOf<'_>) {
-    let calls = w.every_agent_call(agent);
-    assert!(calls.len() > 150, "{}", calls.len());
+/// Every call of the sweep as `agent` that `which` keeps: no response
+/// byte carries a canary, unless the route refuses it `not_for_agents`.
+async fn sweep(w: &World, agent: &AgentOf<'_>, which: impl Fn(&Call) -> bool) {
+    let calls: Vec<Call> = w
+        .every_agent_call(agent)
+        .into_iter()
+        .filter(|c| which(c))
+        .collect();
+    assert!(calls.len() > 40, "{}", calls.len());
     let mut leaks = Vec::new();
     for call in &calls {
         let body = call.run(w, agent).await;
+        if body.starts_with("403 ") && body.contains("\"not_for_agents\"") {
+            continue;
+        }
         for c in w.canaries() {
             if body.contains(c) {
                 leaks.push(format!(
@@ -245,14 +253,22 @@ async fn sweep(w: &World, agent: &AgentOf<'_>) {
 #[tokio::test]
 async fn no_canary_reaches_an_unapproved_agent() {
     let w = World::two_people().await;
-    sweep(&w, &w.sam_agent()).await;
+    sweep(&w, &w.sam_agent(), |_| true).await;
+}
+
+/// The routes a person's agent is refused (Denied) need no filter: as the
+/// owner's agent, each answers `not_for_agents` or carries no canary.
+#[tokio::test]
+async fn no_canary_reaches_the_owners_agent_through_a_denied_route() {
+    let w = World::two_people().await;
+    sweep(&w, &w.owner_agent(), |c| c.denied).await;
 }
 
 #[tokio::test]
 #[ignore = "lifted by Task 12: the owner's agents get unfiltered content until Tasks 9-12 filter each route"]
 async fn no_canary_reaches_an_unapproved_owner_agent() {
     let w = World::two_people().await;
-    sweep(&w, &w.owner_agent()).await;
+    sweep(&w, &w.owner_agent(), |c| !c.denied).await;
 }
 
 /// The world's seed puts each canary where the sweeps look for it: the
@@ -293,19 +309,34 @@ async fn the_owner_by_hand_sees_every_canary() {
     }
 }
 
-#[tokio::test]
-#[ignore = "lifted by Task 12 (the Pi extension's part by Task 19): every agent channel is filtered then"]
-async fn no_canary_reaches_an_agent_through_a_real_client() {
-    let w = World::two_people().await;
-    let clients = RealClients::new(&w);
+/// `outs`' leaks of `w`'s canaries.
+fn leaks(w: &World, outs: &[crate::common::clients::Out]) -> Vec<String> {
     let mut leaks = Vec::new();
-    for out in clients.run_every_channel().await {
+    for out in outs {
         for c in w.canaries() {
             if out.text.contains(c) {
                 leaks.push(format!("{} leaked {c}", out.channel));
             }
         }
     }
+    leaks
+}
+
+#[tokio::test]
+#[ignore = "lifted by Task 12: every agent channel but Pi's is filtered then"]
+async fn no_canary_reaches_an_agent_through_a_real_client() {
+    let w = World::two_people().await;
+    let outs = RealClients::new(&w).run_every_channel().await;
+    let leaks = leaks(&w, &outs);
+    assert!(leaks.is_empty(), "{}", leaks.join("\n"));
+}
+
+#[tokio::test]
+#[ignore = "lifted by Task 19: the Pi extension is filtered then"]
+async fn no_canary_reaches_an_agent_through_pi() {
+    let w = World::two_people().await;
+    let outs = vec![RealClients::new(&w).pi().await];
+    let leaks = leaks(&w, &outs);
     assert!(leaks.is_empty(), "{}", leaks.join("\n"));
 }
 
@@ -315,7 +346,8 @@ async fn no_canary_reaches_an_agent_through_a_real_client() {
 async fn every_real_client_runs_against_the_test_daemon() {
     let w = World::two_people().await;
     let clients = RealClients::new(&w);
-    let outs = clients.run_every_channel().await;
+    let mut outs = clients.run_every_channel().await;
+    outs.push(clients.pi().await);
     let channels: Vec<&str> = outs.iter().map(|o| o.channel.as_str()).collect();
     for want in [
         "clax hook --agent claude stop",
@@ -398,18 +430,12 @@ async fn cli_under_a_harness_environment_is_an_agent_channel() {
 }
 
 #[tokio::test]
-#[ignore = "lifted by Task 12: clax list and clax comments are filtered for the owner's agents then"]
+#[ignore = "lifted by Task 12: every reading command is filtered for the owner's agents then"]
 async fn cli_under_a_harness_environment_carries_no_canary() {
     let w = World::two_people().await;
-    let clients = RealClients::new(&w);
-    let mut leaks = Vec::new();
-    for out in clients.cli_under_harnesses().await {
-        for c in w.canaries() {
-            if out.text.contains(c) {
-                leaks.push(format!("{} leaked {c}", out.channel));
-            }
-        }
-    }
+    let outs = RealClients::new(&w).cli_under_harnesses().await;
+    assert!(outs.len() >= 12 * HARNESS_ENVS.len(), "{}", outs.len());
+    let leaks = leaks(&w, &outs);
     assert!(leaks.is_empty(), "{}", leaks.join("\n"));
 }
 
@@ -443,4 +469,58 @@ async fn all_threads_listing_is_filtered_for_owner_agents() {
     }
     let r = w.sam.get(Some(&w.sam_session), "/api/threads").await;
     assert_eq!(status_code(r).await, (403, "forbidden".into()));
+}
+
+/// The owner's browser without the token (the owner cookie alone) is no
+/// token: no session IDs, and a name to reopen or delete a thread, as for
+/// any viewer (`crate::identity`: the owner cookie alone grants no more
+/// than a viewer cookie does).
+#[tokio::test]
+async fn the_owners_cookie_alone_is_not_the_token() {
+    let ts = TestServer::spawn().await;
+    let sid = ts.register_session("claude", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let aid = ts.publish_as(&sid, "Doc", "<h2>Quarterly goals</h2>").await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let tid = ts.thread(&aid, 1, "a thread").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let browser = ts.owner_browser();
+    for path in [
+        format!("/api/artifacts/{aid}"),
+        format!("/api/artifacts/{aid}/versions"),
+        format!("/api/artifacts/{aid}/versions/1"),
+        format!("/api/artifacts?artifact={aid}"),
+    ] {
+        let by_cookie = browser.get(&path).await.text().await.unwrap();
+        assert!(!by_cookie.contains(&sid), "{path}: {by_cookie}");
+        let by_token = ts.get_authed(&path).await.text().await.unwrap();
+        assert!(by_token.contains(&sid), "{path}: {by_token}");
+    }
+    let r = browser
+        .post(
+            &format!("/api/artifacts/{aid}/threads/{tid}/reopen"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status_code(r).await, (403, "forbidden".into()));
+    let r = browser
+        .delete(&format!("/api/artifacts/{aid}/threads/{tid}"))
+        .await;
+    assert_eq!(status_code(r).await, (403, "forbidden".into()));
+    // The token needs no name.
+    let r = ts
+        .authed(ts.client.post(format!(
+            "{}/api/artifacts/{aid}/threads/{tid}/reopen",
+            ts.base
+        )))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
 }

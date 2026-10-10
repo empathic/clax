@@ -1,7 +1,6 @@
 //! REST routes for artifacts and versions.
 
 use crate::agent::{Agent, ArtifactsList, TokenOrAgent};
-use crate::auth::Caller;
 use crate::error::ApiError;
 use crate::state::AppState;
 use axum::Json;
@@ -257,13 +256,6 @@ pub(crate) fn live_part(st: &Store, a: &Artifact) -> clax_core::Result<Option<Li
     }))
 }
 
-/// Whether `c` sees session IDs: the owner and the owner's agents. Anyone
-/// else (a viewer, a person's agent) gets the artifact without them
-/// ([`strip_sessions`]).
-pub(crate) fn sees_sessions(c: &Caller) -> bool {
-    matches!(c, Caller::Owner { .. } | Caller::OwnerAgent { .. })
-}
-
 /// Leaves out the session IDs a token-less caller must not see (spec §14):
 /// the artifact's `owner_session_id` and each version's `session_id`.
 pub(crate) fn strip_sessions(v: &mut Value) {
@@ -418,7 +410,7 @@ pub async fn list(
         }
     };
     let mut v = json!({"artifacts": artifacts});
-    if !sees_sessions(&a.caller) {
+    if !a.holds_token() {
         strip_sessions(&mut v);
     }
     Ok(Json(v))
@@ -511,7 +503,7 @@ pub async fn get(
             Ok(v)
         })
         .await?;
-    if !sees_sessions(&a.caller) {
+    if !a.holds_token() {
         strip_sessions(&mut v);
     }
     if has_viewer {
@@ -630,7 +622,7 @@ pub async fn list_versions(
         })
         .await?;
     let mut v = json!({"versions": versions});
-    if !sees_sessions(&a.caller) {
+    if !a.holds_token() {
         strip_sessions(&mut v);
     }
     Ok(Json(v))
@@ -723,7 +715,7 @@ pub async fn get_version(
         })
         .await?;
     let mut v = json!({"version": v});
-    if !sees_sessions(&a.caller) {
+    if !a.holds_token() {
         strip_sessions(&mut v);
     }
     Ok(Json(v))

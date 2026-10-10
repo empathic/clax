@@ -368,6 +368,11 @@ impl DaemonClient {
         f(&mut self.inner.state.write().unwrap_or_else(|e| e.into_inner()));
     }
 
+    /// Whether every request carries `X-Clax-Channel: agent`.
+    pub fn agent_channel(&self) -> bool {
+        self.inner.agent
+    }
+
     /// The base URL requests are sent to, once known.
     pub fn base(&self) -> Option<String> {
         self.state().endpoint.map(|e| e.base)

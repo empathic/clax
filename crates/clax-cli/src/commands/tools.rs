@@ -7,6 +7,13 @@ use clax_mcp::{ClaxTools, DaemonClient};
 use rmcp::model::CallToolResult;
 use std::future::Future;
 
+/// The tools' client for the daemon `c` reaches: an agent channel exactly
+/// when the CLI is one ([`Client::agent`]), naming the CLI as its channel
+/// (audit spec §6.9).
+fn daemon_client(c: &Client) -> DaemonClient {
+    DaemonClient::with_channel(c.base.clone(), c.token.clone(), None, c.agent).with_via("cli")
+}
+
 /// Runs `f` with the tool set for the daemon (started if needed) and returns
 /// the tool's result object. An error result becomes an error naming its
 /// `code` and `message`.
@@ -16,13 +23,7 @@ where
     Fut: Future<Output = Result<CallToolResult, rmcp::ErrorData>>,
 {
     let c = Client::connect(home, cli.port_for(home)?)?;
-    let tools = ClaxTools::new(
-        // The owner, through the CLI (spec §6.9).
-        DaemonClient::with_channel(c.base.clone(), c.token.clone(), None, c.agent).with_via("cli"),
-        c.browser_url(""),
-        None,
-        home.log_path(),
-    );
+    let tools = ClaxTools::new(daemon_client(&c), c.browser_url(""), None, home.log_path());
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -45,4 +46,65 @@ where
         );
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The commands that run a tool (`read`, `db`, `asset`) mark their
+    /// requests as the CLI does: an agent channel under a harness, the
+    /// owner by hand.
+    #[test]
+    fn the_tool_commands_follow_the_clis_channel() {
+        let mut c = crate::client::tests::client_for_test();
+        c.agent = true;
+        assert!(daemon_client(&c).agent_channel());
+        c.agent = false;
+        assert!(!daemon_client(&c).agent_channel());
+    }
+
+    /// Every command reaches the daemon through [`Client`] or
+    /// [`daemon_client`]: no other HTTP client, so none skips the marker.
+    #[test]
+    fn every_command_reaches_the_daemon_through_the_marked_clients() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = vec![];
+        for dir in [src.clone(), src.join("commands")] {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.extension().is_some_and(|x| x == "rs") {
+                    files.push(p);
+                }
+            }
+        }
+        assert!(files.len() > 20, "{}", files.len());
+        for p in files {
+            let name = p.file_name().unwrap().to_str().unwrap().to_string();
+            let text = std::fs::read_to_string(&p).unwrap();
+            // The code, not its tests (this one names what it looks for).
+            let text = text.split("#[cfg(test)]").next().unwrap();
+            if name != "client.rs" {
+                for made in [
+                    "reqwest::blocking::Client::",
+                    "reqwest::Client::",
+                    "ClientBuilder",
+                ] {
+                    assert!(
+                        !text.contains(made),
+                        "{name} makes its own HTTP client ({made})"
+                    );
+                }
+            }
+            if name != "tools.rs" {
+                for made in [
+                    "DaemonClient::new(",
+                    "DaemonClient::with_channel(",
+                    "DaemonClient::managed(",
+                ] {
+                    assert!(!text.contains(made), "{name} makes a DaemonClient ({made})");
+                }
+            }
+        }
+    }
 }
