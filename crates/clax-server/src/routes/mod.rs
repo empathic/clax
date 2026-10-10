@@ -1187,3 +1187,731 @@ mod l10 {
         assert_eq!(routes(mcp).len(), 0, "a new MCP route: check it here");
     }
 }
+
+/// Every route's class for agents (spec §7.5, §8.6, M7, M8): each handler
+/// declares it in its signature, as `Agent<N>` (with `N`'s `need!`),
+/// `DeniedToGrants` or `GrantFlow`; the declarations match the spec's route
+/// table; no handler reads credentials itself; every Denied handler that
+/// builds a view of others' content or streams events refuses the owner's
+/// agents; and every plugin runs `clax` through its wrapper.
+#[cfg(test)]
+mod agents {
+    use super::l10::{
+        function, handlers, method_handlers, module_source, module_source_opt, routes,
+    };
+    use crate::agent::Class;
+    use clax_core::rights::RightType;
+
+    /// The route table of spec §7.5 for the routes an agent reaches, copied
+    /// here as data: method, path, class, right (type and action).
+    const EXPECTED: &[(&str, &str, Class, Option<(RightType, &str)>)] = {
+        use Class::*;
+        use RightType::*;
+        &[
+            ("GET", "/api/artifacts", Filtered, Some((Artifacts, "read"))),
+            (
+                "POST",
+                "/api/artifacts",
+                Filtered,
+                Some((Artifacts, "create")),
+            ),
+            (
+                "GET",
+                "/api/artifacts/{aid}",
+                Filtered,
+                Some((Artifacts, "read")),
+            ),
+            (
+                "PATCH",
+                "/api/artifacts/{aid}",
+                Filtered,
+                Some((Artifacts, "update")),
+            ),
+            (
+                "DELETE",
+                "/api/artifacts/{aid}",
+                Own,
+                Some((Artifacts, "delete")),
+            ),
+            (
+                "GET",
+                "/api/artifacts/{aid}/versions",
+                Filtered,
+                Some((Artifacts, "read")),
+            ),
+            (
+                "GET",
+                "/api/artifacts/{aid}/versions/{n}",
+                Filtered,
+                Some((Artifacts, "read")),
+            ),
+            (
+                "POST",
+                "/api/artifacts/{aid}/versions",
+                Filtered,
+                Some((Artifacts, "update")),
+            ),
+            (
+                "GET",
+                "/api/artifacts/{aid}/files",
+                Filtered,
+                Some((Artifacts, "read")),
+            ),
+            (
+                "GET",
+                "/api/artifacts/{aid}/versions/{n}/files/{*path}",
+                Filtered,
+                Some((Artifacts, "read")),
+            ),
+            (
+                "GET",
+                "/api/artifacts/{aid}/assets",
+                Filtered,
+                Some((Artifacts, "read")),
+            ),
+            (
+                "POST",
+                "/api/artifacts/{aid}/assets",
+                Filtered,
+                Some((Artifacts, "update")),
+            ),
+            (
+                "DELETE",
+                "/api/artifacts/{aid}/assets/{asset_id}",
+                Own,
+                Some((Artifacts, "delete")),
+            ),
+            (
+                "GET",
+                "/api/artifacts/{aid}/presence",
+                Own,
+                Some((Artifacts, "read")),
+            ),
+            (
+                "GET",
+                "/api/artifacts/{aid}/working",
+                Filtered,
+                Some((Comments, "watch")),
+            ),
+            ("GET", "/api/working", Filtered, Some((Comments, "watch"))),
+            ("GET", "/api/threads", Filtered, Some((Comments, "read"))),
+            (
+                "GET",
+                "/api/artifacts/{aid}/threads",
+                Filtered,
+                Some((Comments, "read")),
+            ),
+            (
+                "GET",
+                "/api/artifacts/{aid}/threads/{tid}",
+                Filtered,
+                Some((Comments, "read")),
+            ),
+            (
+                "GET",
+                "/api/artifacts/{aid}/threads/{tid}/clip",
+                Filtered,
+                Some((Comments, "read")),
+            ),
+            (
+                "POST",
+                "/api/artifacts/{aid}/threads",
+                Filtered,
+                Some((Comments, "write")),
+            ),
+            // An agent reply needs `reply`; any other comment also `write`.
+            (
+                "POST",
+                "/api/artifacts/{aid}/threads/{tid}/comments",
+                Filtered,
+                Some((Comments, "reply")),
+            ),
+            (
+                "POST",
+                "/api/artifacts/{aid}/threads/{tid}/resolve",
+                Filtered,
+                Some((Comments, "resolve")),
+            ),
+            (
+                "POST",
+                "/api/artifacts/{aid}/threads/{tid}/reopen",
+                Filtered,
+                Some((Comments, "resolve")),
+            ),
+            (
+                "DELETE",
+                "/api/artifacts/{aid}/threads/{tid}",
+                Own,
+                Some((Comments, "resolve")),
+            ),
+            (
+                "POST",
+                "/api/artifacts/{aid}/threads/{tid}/send",
+                Filtered,
+                Some((Comments, "send")),
+            ),
+            (
+                "POST",
+                "/api/artifacts/{aid}/threads:send",
+                Filtered,
+                Some((Comments, "send")),
+            ),
+            (
+                "GET",
+                "/api/artifacts/{aid}/docs/{*path}",
+                Filtered,
+                Some((Db, "read")),
+            ),
+            (
+                "PUT",
+                "/api/artifacts/{aid}/docs/{*path}",
+                Filtered,
+                Some((Db, "write")),
+            ),
+            (
+                "PATCH",
+                "/api/artifacts/{aid}/docs/{*path}",
+                Filtered,
+                Some((Db, "write")),
+            ),
+            (
+                "DELETE",
+                "/api/artifacts/{aid}/docs/{*path}",
+                Filtered,
+                Some((Db, "write")),
+            ),
+            (
+                "GET",
+                "/api/artifacts/{aid}/docs",
+                Filtered,
+                Some((Db, "read")),
+            ),
+            (
+                "POST",
+                "/api/artifacts/{aid}/docs:batch",
+                Filtered,
+                Some((Db, "write")),
+            ),
+            (
+                "POST",
+                "/api/artifacts/{aid}/docs:str_replace",
+                Filtered,
+                Some((Db, "write")),
+            ),
+            (
+                "POST",
+                "/api/artifacts/{aid}/docs:acquire",
+                Filtered,
+                Some((Db, "write")),
+            ),
+            ("POST", "/api/sessions", Own, None),
+            ("POST", "/api/sessions/join", Own, None),
+            ("GET", "/api/sessions", Own, None),
+            ("GET", "/api/sessions/{id}", Own, None),
+            ("PATCH", "/api/sessions/{id}", Own, None),
+            (
+                "GET",
+                "/api/sessions/{id}/watches",
+                Own,
+                Some((Comments, "watch")),
+            ),
+            (
+                "PUT",
+                "/api/sessions/{id}/watches/{aid}",
+                Own,
+                Some((Comments, "watch")),
+            ),
+            (
+                "DELETE",
+                "/api/sessions/{id}/watches/{aid}",
+                Own,
+                Some((Comments, "watch")),
+            ),
+            (
+                "GET",
+                "/api/sessions/{id}/feedback",
+                Filtered,
+                Some((Comments, "watch")),
+            ),
+            (
+                "GET",
+                "/api/sessions/{id}/notices",
+                Filtered,
+                Some((Comments, "watch")),
+            ),
+            (
+                "POST",
+                "/api/sessions/{id}/feedback/ack",
+                Own,
+                Some((Comments, "watch")),
+            ),
+            (
+                "GET",
+                "/api/sessions/{id}/working",
+                Own,
+                Some((Comments, "watch")),
+            ),
+            (
+                "POST",
+                "/api/sessions/{id}/working/renew",
+                Own,
+                Some((Comments, "watch")),
+            ),
+            (
+                "POST",
+                "/api/sessions/{id}/working/end",
+                Own,
+                Some((Comments, "watch")),
+            ),
+            (
+                "PUT",
+                "/api/sessions/{id}/working/{aid}",
+                Own,
+                Some((Comments, "watch")),
+            ),
+            (
+                "DELETE",
+                "/api/sessions/{id}/working/{aid}",
+                Own,
+                Some((Comments, "watch")),
+            ),
+            (
+                "POST",
+                "/api/sessions/{id}/questions",
+                Own,
+                Some((Ask, "ask")),
+            ),
+            (
+                "GET",
+                "/api/sessions/{id}/questions/{qid}",
+                Own,
+                Some((Ask, "ask")),
+            ),
+            (
+                "POST",
+                "/api/sessions/{id}/questions/{qid}/withdraw",
+                Own,
+                Some((Ask, "ask")),
+            ),
+            (
+                "POST",
+                "/api/sessions/{id}/questions/{qid}/release",
+                Own,
+                Some((Ask, "ask")),
+            ),
+            (
+                "POST",
+                "/api/sessions/{id}/questions:terminal",
+                Own,
+                Some((Ask, "ask")),
+            ),
+        ]
+    };
+
+    /// The routes that are Filtered for the owner's agents and Denied to a
+    /// person's (spec §7.5: `GET /api/threads`).
+    const OWNER_AGENTS_ONLY: &[(&str, &str)] = &[("GET", "/api/threads")];
+
+    /// The grant flow's handlers (spec §7.5 `Grant`).
+    const GRANT_FLOW: &[&str] = &[
+        "grants::request",
+        "grants::poll",
+        "grants::disconnect",
+        "grants::revoke_token",
+    ];
+
+    /// What builds a thread, comment, artifact, version, document or
+    /// working view in a handler's source (the `Own` rule).
+    const CONTENT_VIEWS: &[&str] = &[
+        "thread_view(",
+        "thread_views(",
+        "comment_view(",
+        "artifact_view(",
+        "with_owner(",
+        "version_view(",
+        "list_versions(",
+        "doc_view(",
+        "doc_get(",
+        "doc_query(",
+        "working_view(",
+        "working.for_artifact(",
+        "w.for_artifact(",
+        "working.roster(",
+        "working.all(",
+    ];
+
+    /// What else builds a view of others' content (question, inbox item,
+    /// person) or streams events (the `not_for_agents` rule).
+    const PEOPLE_VIEWS: &[&str] = &[
+        "question_view(",
+        "questions::view(",
+        "inbox_view(",
+        "inbox_views(",
+        "grant_view(",
+        "invite_view(",
+        "Sse::new(",
+        "WebSocketUpgrade",
+        "stream_response(",
+    ];
+
+    /// Denied handlers the spec names as refusing the owner's agents
+    /// whatever their source shows (spec §7.5).
+    const MUST_REFUSE: &[&str] = &[
+        "inbox::list",
+        "inbox::summary",
+        "inbox::get_one",
+        "inbox::read_one",
+        "inbox::unread_one",
+        "inbox::read_many",
+        "questions::list",
+        "questions::get_one",
+        "questions::answer",
+        "questions::decline",
+        "questions::release_owner",
+        "live::site",
+        "events::events",
+        "stream::open",
+        "stream::update",
+        "grants::list",
+        "grants::list_invites",
+        "grants::create_invite",
+        "grants::revoke_invite",
+    ];
+
+    /// Routes whose handler is not a module function: each, and the text
+    /// that declares its class.
+    fn inline() -> Vec<(&'static str, &'static str)> {
+        let src = include_str!("mod.rs");
+        let mcp = include_str!("mcp.rs");
+        vec![
+            ("/api/admin/shutdown", {
+                let at = &src[src.find("\"/api/admin/shutdown\"").unwrap()..];
+                &at[..at.find("async move").unwrap()]
+            }),
+            ("/api/_test/sleep/{ms}", function_any(src, "test_sleep")),
+            (
+                "/api/_test/slow_publish/{ms}",
+                function_any(src, "test_slow_publish"),
+            ),
+            ("/mcp", function_any(mcp, "require_token")),
+        ]
+    }
+
+    /// The signature (to the first `{`) of `fn name` in `src`, public or not.
+    fn function_any<'a>(src: &'a str, name: &str) -> &'a str {
+        let start = src
+            .find(&format!("async fn {name}("))
+            .unwrap_or_else(|| panic!("no fn {name}"));
+        let rest = &src[start..];
+        &rest[..rest.find('{').unwrap()]
+    }
+
+    /// One routed handler: method, path, `module::function`, signature and
+    /// whole source.
+    struct Handler {
+        method: String,
+        path: String,
+        name: String,
+        sig: &'static str,
+        src: &'static str,
+    }
+
+    /// Every handler routed in this module.
+    fn every_handler() -> Vec<Handler> {
+        let src = include_str!("mod.rs");
+        let src = &src[..src.find("mod l10 {").unwrap()];
+        let mut out = Vec::new();
+        for (path, text) in routes(src) {
+            for (method, m, f) in method_handlers(&text) {
+                let Some(module) = module_source_opt(&m) else {
+                    continue;
+                };
+                let fsrc = function(module, &f);
+                out.push(Handler {
+                    method,
+                    path: path.clone(),
+                    name: format!("{m}::{f}"),
+                    sig: &fsrc[..fsrc.find('{').unwrap()],
+                    src: fsrc,
+                });
+            }
+        }
+        out
+    }
+
+    /// The need an `Agent<…>` or `TokenOrAgent<…>` in `sig` names.
+    fn agent_need(sig: &str) -> Option<&str> {
+        let at = sig.find("Agent<")? + "Agent<".len();
+        let rest = &sig[at..];
+        rest[..rest.find('>')?].rsplit("::").next()
+    }
+
+    fn class_count(sig: &str) -> usize {
+        sig.matches("Agent<").count()
+            + sig.matches("DeniedToGrants").count()
+            + sig.matches("GrantFlow").count()
+    }
+
+    #[test]
+    fn every_route_is_classified_for_agents() {
+        let mut used = std::collections::HashSet::new();
+        let mut expected_seen = std::collections::HashSet::new();
+        for h in every_handler() {
+            let (method, path, name) = (&h.method, &h.path, &h.name);
+            assert_eq!(
+                class_count(h.sig),
+                1,
+                "{method} {path}: {name} must take exactly one of Agent<N>, DeniedToGrants, GrantFlow"
+            );
+            let expected = EXPECTED
+                .iter()
+                .find(|(m, p, _, _)| m == method && p == path);
+            if let Some(n) = agent_need(h.sig) {
+                let (_, _, class, right) =
+                    expected.unwrap_or_else(|| panic!("{method} {path}: {name} takes Agent<{n}>, but spec §7.5 gives agents no such route"));
+                expected_seen.insert((method.clone(), path.clone()));
+                let info = crate::agent::need_of(&method.parse().unwrap(), path)
+                    .unwrap_or_else(|| panic!("{method} {path}: agent::ROUTES lacks it"));
+                assert_eq!(info.name, n, "{method} {path}: {name}");
+                assert_eq!(
+                    (info.class, info.right),
+                    (*class, *right),
+                    "{method} {path}: {name} vs spec §7.5"
+                );
+                assert_eq!(
+                    !info.grants,
+                    OWNER_AGENTS_ONLY.contains(&(method.as_str(), path.as_str())),
+                    "{method} {path}: whether a person's agent may use it"
+                );
+                let entry = crate::agent::ROUTE_NEEDS
+                    .iter()
+                    .find(|(hn, _, _)| hn == name)
+                    .unwrap_or_else(|| panic!("ROUTE_NEEDS lacks {name}"));
+                assert_eq!((entry.1, entry.2), (*right, *class), "ROUTE_NEEDS {name}");
+                used.insert(name.clone());
+                if info.class == Class::Filtered && crate::agent::FILTERED_LIVE.contains(&info.name)
+                {
+                    assert!(
+                        h.src.contains("vis.filter_"),
+                        "{name}: a Filtered route open to agents must pass its response through vis.filter_"
+                    );
+                }
+                if info.class == Class::Own {
+                    for v in CONTENT_VIEWS {
+                        assert!(!h.src.contains(v), "{name} is Own but builds a view ({v})");
+                    }
+                }
+            } else {
+                assert!(
+                    expected.is_none(),
+                    "{method} {path}: {name} takes no Agent<N>, but spec §7.5 opens it to agents"
+                );
+                if h.sig.contains("GrantFlow") {
+                    assert!(
+                        GRANT_FLOW.contains(&name.as_str()),
+                        "{name} is no grant-flow route"
+                    );
+                } else {
+                    assert!(
+                        !GRANT_FLOW.contains(&name.as_str()),
+                        "{name} must take GrantFlow"
+                    );
+                }
+            }
+        }
+        for (m, p, _, _) in EXPECTED {
+            assert!(
+                expected_seen.contains(&(m.to_string(), p.to_string())),
+                "spec §7.5 opens {m} {p} to agents, but no handler there takes Agent<N>"
+            );
+        }
+        for (h, _, _) in crate::agent::ROUTE_NEEDS {
+            assert!(
+                used.contains(*h),
+                "ROUTE_NEEDS lists {h}, which no route uses"
+            );
+        }
+        for (path, text) in inline() {
+            assert!(
+                class_count(text) == 1 && text.contains("DeniedToGrants"),
+                "{path}: its handler must take DeniedToGrants"
+            );
+        }
+    }
+
+    #[test]
+    fn every_denied_view_refuses_owner_agents() {
+        let mut checked = 0;
+        for h in every_handler() {
+            if !h.sig.contains("DeniedToGrants") {
+                continue;
+            }
+            let builds = CONTENT_VIEWS
+                .iter()
+                .chain(PEOPLE_VIEWS)
+                .find(|v| h.src.contains(**v));
+            let named = MUST_REFUSE.contains(&h.name.as_str());
+            if builds.is_some() || named {
+                assert!(
+                    h.src.contains(".refuse_agents()?"),
+                    "{}: a Denied handler that {} must call refuse_agents()? (403 not_for_agents to the owner's agents)",
+                    h.name,
+                    builds.map_or("the spec names".to_string(), |v| format!(
+                        "builds a view ({v})"
+                    ))
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked >= MUST_REFUSE.len(), "{checked}");
+    }
+
+    #[test]
+    fn no_handler_reads_credentials_itself() {
+        let src = include_str!("mod.rs");
+        let src = &src[..src.find("mod l10 {").unwrap()];
+        let mut modules: Vec<(String, &str)> = routes(src)
+            .iter()
+            .flat_map(|(_, t)| handlers(t))
+            .map(|(m, _)| m)
+            .filter_map(|m| module_source_opt(&m).map(|s| (m, s)))
+            .collect();
+        modules.push(("mod".into(), src));
+        modules.push(("mcp".into(), include_str!("mcp.rs")));
+        modules.push(("db_caller".into(), include_str!("../db_caller.rs")));
+        modules.dedup_by(|a, b| a.0 == b.0);
+        assert!(modules.len() > 20, "{}", modules.len());
+        for (m, s) in modules {
+            if m == "agent" {
+                continue;
+            }
+            assert!(!s.contains("has_token("), "{m} calls has_token: use Caller");
+            assert!(
+                !s.contains("AUTHORIZATION"),
+                "{m} reads Authorization: use Caller"
+            );
+            assert!(
+                !s.to_lowercase().contains("get(\"authorization\")"),
+                "{m} reads Authorization: use Caller"
+            );
+        }
+        let _ = module_source("artifacts");
+    }
+
+    /// The text from `start` to the end of its line.
+    fn line_at(s: &str, start: usize) -> &str {
+        let end = s[start..].find('\n').map_or(s.len(), |e| start + e);
+        &s[start..end]
+    }
+
+    #[test]
+    fn every_plugin_invocation_goes_through_the_wrapper() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let read =
+            |p: &str| std::fs::read_to_string(root.join(p)).unwrap_or_else(|e| panic!("{p}: {e}"));
+        // Every copy of the wrapper is the same file.
+        let wrapper = read("scripts/ensure-clax.sh");
+        for p in ["claude-code", "clax", "clax-grok", "pi"] {
+            assert_eq!(
+                read(&format!("plugins/{p}/scripts/ensure-clax.sh")),
+                wrapper,
+                "plugins/{p}/scripts/ensure-clax.sh differs from scripts/ensure-clax.sh"
+            );
+        }
+        // `exec` exports CLAX_CHANNEL=agent but for serve, stop, doctor, init.
+        let exec = &wrapper[wrapper.find("    exec)\n").expect("an exec mode")..];
+        let exec = &exec[..exec.find("\n        ;;\n").unwrap()];
+        assert!(
+            exec.contains("serve|stop|doctor|init) ;;")
+                && exec.contains("*) export CLAX_CHANNEL=agent ;;"),
+            "ensure-clax.sh exec must export CLAX_CHANNEL=agent for every mode but serve, stop, doctor and init"
+        );
+        let tool_hook = read("scripts/tool-hook.sh");
+        assert!(
+            tool_hook.contains("ensure-clax.sh\" exec hook"),
+            "tool-hook.sh must run ensure-clax.sh exec hook"
+        );
+        for p in ["claude-code", "clax"] {
+            assert_eq!(
+                read(&format!("plugins/{p}/scripts/tool-hook.sh")),
+                tool_hook,
+                "plugins/{p}/scripts/tool-hook.sh"
+            );
+        }
+        let runs_through_wrapper = |cmd: &str| {
+            cmd.contains("/scripts/ensure-clax.sh\" exec ")
+                || cmd.contains("/scripts/tool-hook.sh\"")
+        };
+        // Claude Code's slash commands: every `!` line.
+        let mut lines = 0;
+        for e in std::fs::read_dir(root.join("plugins/claude-code/commands")).unwrap() {
+            let path = e.unwrap().path();
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (i, _) in text.match_indices("!`") {
+                let cmd = line_at(&text, i);
+                lines += 1;
+                if cmd.contains("ensure-clax.sh\"`") {
+                    continue; // the wrapper alone, printing the binary's path
+                }
+                assert!(runs_through_wrapper(cmd), "{}: {cmd}", path.display());
+            }
+        }
+        assert!(lines >= 8, "{lines}");
+        // Every plugin's hooks.
+        for p in ["claude-code", "clax", "clax-grok"] {
+            let hooks: serde_json::Value =
+                serde_json::from_str(&read(&format!("plugins/{p}/hooks/hooks.json"))).unwrap();
+            let mut n = 0;
+            for groups in hooks["hooks"].as_object().unwrap().values() {
+                for g in groups.as_array().unwrap() {
+                    for h in g["hooks"].as_array().unwrap() {
+                        let cmd = h["command"].as_str().unwrap();
+                        assert!(
+                            runs_through_wrapper(cmd),
+                            "plugins/{p}/hooks/hooks.json: {cmd}"
+                        );
+                        n += 1;
+                    }
+                }
+            }
+            assert!(n > 0, "{p}");
+        }
+        // Pi: it resolves the binary through the wrapper (no arguments: the
+        // path), then runs it directly only for `--version`, `status --json`
+        // and `serve --json`, the last two with CLAX_CHANNEL=agent.
+        let daemon = read("plugins/pi/src/daemon.ts");
+        let clax = read("plugins/pi/src/clax.ts");
+        let client = read("plugins/pi/src/client.ts");
+        for (file, text) in [
+            ("daemon.ts", &daemon),
+            ("clax.ts", &clax),
+            ("client.ts", &client),
+        ] {
+            for (i, _) in text
+                .match_indices("execFile(")
+                .chain(text.match_indices("spawn("))
+            {
+                let call = line_at(text, i);
+                if call.starts_with("spawn(opener") {
+                    continue; // the browser opener, not clax
+                }
+                let ok = call.contains("[wrapper]")
+                    || call.contains("[\"--version\"]")
+                    || (call.contains("[\"status\", \"--json\"]")
+                        && call.contains("CLAX_CHANNEL: \"agent\""))
+                    || (call.contains("execFile(bin, args,")
+                        && call.contains("CLAX_CHANNEL: \"agent\"")
+                        && daemon.contains("const args = [\"serve\", \"--json\""));
+                assert!(ok, "plugins/pi/src/{file}: {call}");
+            }
+        }
+        assert!(
+            clax.contains("process.env.CLAX_CHANNEL = \"agent\""),
+            "the Pi extension must set CLAX_CHANNEL=agent in Pi's process"
+        );
+        assert!(
+            client.matches("\"x-clax-channel\": \"agent\"").count() >= 2,
+            "Pi's DaemonClient must send the marker on every request"
+        );
+    }
+}
