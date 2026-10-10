@@ -3,6 +3,7 @@
 
 use super::artifacts::{body, path};
 use crate::agent::DeniedToGrants;
+use crate::audit::DeferredAudit;
 use crate::auth::Caller;
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -24,7 +25,8 @@ pub struct RenameBody {
 /// person}}`: the agent's person (from their browser) or the owner (a
 /// browser, or the token from the CLI) names a live agent (spec §11). The
 /// agent can no longer rename itself afterwards (`name_locked`). Renaming
-/// is not a right and changes nothing else. The owner's agents get 403
+/// is not a right and changes nothing else; it records `agent.name` as
+/// the namer. The owner's agents get 403
 /// `not_for_agents`: an agent names only itself (`PATCH
 /// /api/sessions/<id>`). 404 for a handle that names no live agent of the
 /// caller's person; 409 `name_taken`; 400 `invalid_name`.
@@ -32,6 +34,7 @@ pub async fn rename_agent(
     State(s): State<AppState>,
     d: DeniedToGrants,
     _o: SameOrigin,
+    audit: DeferredAudit,
     handle: Result<Path<String>, PathRejection>,
     req: Result<Json<RenameBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -55,7 +58,8 @@ pub async fn rename_agent(
                 .live_session_by_handle(&handle)?
                 .filter(|a| person.is_none() || a.person == person)
                 .ok_or(CoreError::NotFound)?;
-            st.set_session_name(&session.id, &b.name, NameSource::Person)
+            let audit = audit.resolve(st)?;
+            st.set_session_name(&audit, &session.id, &b.name, NameSource::Person)
         })
         .await?;
     Ok(Json(json!({"agent": {

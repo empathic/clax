@@ -691,7 +691,7 @@ carry no `harness_tool`; the exact IDs below come from the harness side.
 |---|---|
 | `session.start` | `harness, harness_session_id, cwd, transcript_path, pid` (+ `git`) |
 | `session.join` | the same, when a hook join or a re-registration changes the session's harness session ID, `cwd`, transcript path or `pid` |
-| `session.end` | `reason (explicit\|ttl)` (+ `for_actor` under a system actor) |
+| `session.end` | `reason (explicit\|ttl\|revoked\|person)` (+ `for_actor` under a system actor); `revoked` and `person` (amendment, 2026-10-10) are a session its grant's end, or its person, ended (multi-person design §14) |
 
 These are steps in the install path, with the session in the `session_id`
 column and no artifact. A session is an actor, never a path (O7).
@@ -785,6 +785,35 @@ Not reconstructed, because the history keeps no trace of them: earlier
 resolve and reopen cycles, rows since hard-deleted, `feedback.release`,
 rules, splits (apart from the answers they left), working records, document
 writes and tool calls.
+
+### 6.13 People, grants and agent names (amendment, 2026-10-10)
+
+The multi-person design (`2026-10-08-multi-agent-multi-person-design.md`,
+§20.2) adds these kinds, recorded in their change's transaction like every
+other. None carries a secret: invite codes, user codes and tokens are never
+recorded, only a hash of the client's public key.
+
+| Kind | Body | Actor |
+|---|---|---|
+| `invite.create` | `invite_id, person, expires_at, rights?` | the owner |
+| `invite.revoke` | `invite_id, person, expires_at` | the owner (also for each invite a person's revocation ends) |
+| `grant.request` | `grant_id, flow (invite\|request), client_name, peer_ip, key_sha256, access` | the client (`client`) |
+| `grant.approve` | `grant_id, person, access, code_checked` | the owner, who checked the request's user code (`code_checked: true`); for an invite, the client, at once (`false`) |
+| `grant.deny` | `grant_id, reason (owner\|wrong_code\|expired)` | the owner, or `system:expiry` for a request that lapsed |
+| `grant.revoke` | `grant_id, by (owner\|person\|expiry), sessions_ended[]` | the owner; the person (a viewer with `person`, or the owner for the owner's machines) through the grant's continuation or manage token, or the client for a request no one approved; `system:expiry`. Recorded after the `session.end` of each session it ends |
+| `grant.token` | `grant_id, op (issue)` | the client, as it collects its tokens |
+| `grant.narrow` | `grant_id, narrow` | whoever narrows it |
+| `person.rights` | `person, rights` | the owner |
+| `person.revoke` | `person` | the owner, after the `grant.revoke` and `invite.revoke` of what it ended |
+| `agent.name` | `name, source (agent\|person), previous` | the namer: the agent itself, its person or the owner; `session_id` the named agent's |
+
+Each is keyed by its object: `clax://<install>/invite/<invite ID>`,
+`clax://<install>/grant/<grant ID>`, the person's `/u/<public ID>`, or the
+named agent's session. They belong to the install path. `client_name`,
+`peer_ip`, and an agent's `name` and `previous` are classed as names
+(§11); the rest is safe. People and grants arrive with the multi-person
+migration, after the audit migration, so their whole history is recorded
+live: the backfill (§6.12) has nothing of theirs to record.
 
 ## 7. The journal
 
@@ -1564,7 +1593,7 @@ This is the owner's archive (O3). It lives under `~/.clax` (0700, files
 | Option | Replaces | With |
 |---|---|---|
 | `--no-text` | comment `body`, version `note` and `label`, artifact `title` and `description`, question and answer text, working `message`, an anchor's quoted page text (`quote`, `prefix`, `suffix`), an artifact's declared `capabilities` (open-ended configuration), and free-form reasons (`backfill.skip`, `feedback.release`; a question's release or withdrawal `reason` is one of §6.6's fixed phrases, classed safe) | `{"redacted":"text","sha256":"sha256:<hex of the UTF-8 original>"}`; a structured value (questions, answers) hashes its JCS form (§12.2) |
-| `--no-names` | viewer `display_name`, `author_name` | `{"redacted":"name"}` (public IDs stay) |
+| `--no-names` | viewer `display_name`, `author_name`, a grant client's `client_name` and `peer_ip`, an agent's chosen `name` and `previous` (§6.13) | `{"redacted":"name"}` (public IDs stay) |
 | `--no-paths` | `cwd`, `repo_root`, `transcript_path`, URLs that can carry a query or fragment (an anchor's `route`, a `thread.move`'s `from_url` and `to_url`; a query can hold a token or a search), a git `remote_url` that is a local path (anything without a non-`file` scheme or the scp form `[user@]host:path`), `file://` refs, the transcript identity | `{"redacted":"path","sha256":…}`; `file://` refs, and an `at-revision` naming a local path, are dropped; the transcript identity becomes `{system:"<provider>-transcript-sha256", id:"sha256:…"}`, the only form the schema's identity (`{system, id}` strings) allows |
 | any option | a field with no class: one this build does not know, or any field of a kind it does not know | `{"redacted":"unclassified","sha256":…}` |
 

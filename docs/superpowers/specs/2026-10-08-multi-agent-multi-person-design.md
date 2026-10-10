@@ -1483,12 +1483,12 @@ another machine, so no `remote` channel is added.
 
 | Kind | Body | Actor |
 |---|---|---|
-| `invite.create`, `invite.revoke` | `invite_id, person, expires_at` | owner |
-| `grant.request` | `grant_id, via, client_name, peer_ip, key_sha256, access` | client |
-| `grant.approve` | `grant_id, person, access, code_checked` | owner (invite: the client, `for_actor` the person) |
+| `invite.create`, `invite.revoke` | `invite_id, person, expires_at` (`rights` on a create that sets them) | owner |
+| `grant.request` | `grant_id, flow (invite\|request), client_name, peer_ip, key_sha256, access` | client |
+| `grant.approve` | `grant_id, person, access, code_checked` | owner (invite: the client, at once; the body names the person) |
 | `grant.deny` | `grant_id, reason (owner\|wrong_code\|expired)` | owner or system |
 | `grant.revoke` | `grant_id, by (owner\|person\|expiry), sessions_ended[]` | owner, person or system |
-| `grant.token` | `grant_id, op (issue\|revoke)` | client |
+| `grant.token` | `grant_id, op (issue)` (a revoked token ends its grant: `grant.revoke`) | client |
 | `grant.narrow` | `grant_id, narrow` | person |
 | `person.rights`, `person.revoke` | `person, rights` / `person` | owner |
 | `agent.name` | `name, source, previous` | the namer |
@@ -1501,6 +1501,13 @@ another machine, so no `remote` channel is added.
 | `thread.release` | `thread_id, session, reason (explicit\|session_end\|grant_revoked)` | agent or system |
 
 `thread.send` gains `approval_request_ids[]`. Reads remain unrecorded.
+
+Recorded since the rebase onto the audit journal (2026-10-10; audit spec
+§6.13): `invite.*`, `grant.*`, `person.rights`, `person.revoke` and
+`agent.name`. A grant request's flow is `flow`, since `via` is the event
+envelope's channel. The other kinds arrive with the tasks that add their
+changes. People, invites and grants need no backfill: they arrive after
+the audit migration, so the journal records them from their first row.
 
 ## 21. Security
 

@@ -1255,3 +1255,69 @@ async fn a_poll_and_a_disconnect_in_one_second_both_succeed() {
     assert_eq!(c.disconnect().await.status(), 204);
     assert_eq!(ts.store.grant(&gid).unwrap().status, "revoked");
 }
+
+/// The kind, actor and body of each audit event recorded after `seq`.
+fn events_since(ts: &TestServer, seq: i64) -> Vec<(String, Value, Value)> {
+    ts.store
+        .events_after(seq, 1000)
+        .unwrap()
+        .into_iter()
+        .map(|r| {
+            (
+                r.kind,
+                serde_json::from_str(&r.actor).unwrap(),
+                serde_json::from_str(&r.body).unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// The grant routes record who did what (spec §20.2): the owner's browser
+/// through the shell, the client of the grant flow through the CLI, and
+/// the person disconnecting their machine.
+#[tokio::test]
+async fn the_grant_routes_record_their_events() {
+    let ts = lan_server().await;
+    let owner_id = ts.owner_public_id().await;
+    let owner = json!({"type": "owner", "public_id": owner_id});
+    let seq = ts.store.newest_seq().unwrap();
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let ev = events_since(&ts, seq);
+    let kinds: Vec<&str> = ev.iter().map(|e| e.0.as_str()).collect();
+    assert_eq!(
+        kinds,
+        [
+            "invite.create",
+            "grant.request",
+            "grant.approve",
+            "grant.token"
+        ]
+    );
+    assert_eq!((&ev[0].1, ev[0].2["via"].as_str()), (&owner, Some("shell")));
+    for e in &ev[1..] {
+        assert_eq!(e.1["type"], "client", "{}", e.0);
+        assert_eq!(e.1["grant_id"], sam.grant_id().as_str());
+        assert_eq!(e.2["via"], "cli");
+    }
+    let (_c, gid, _) = pending(&ts, "clax:reader").await;
+    let seq = ts.store.newest_seq().unwrap();
+    let res = ts
+        .owner_browser()
+        .post(&format!("/api/grants/{gid}/deny"), json!({}))
+        .await;
+    assert_eq!(res.status(), 200);
+    let ev = events_since(&ts, seq);
+    assert_eq!(ev.len(), 1);
+    assert_eq!(
+        (ev[0].0.as_str(), &ev[0].1, &ev[0].2["reason"]),
+        ("grant.deny", &owner, &json!("owner"))
+    );
+    let seq = ts.store.newest_seq().unwrap();
+    assert_eq!(sam.disconnect().await.status(), 204);
+    let ev = events_since(&ts, seq);
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0].0, "grant.revoke");
+    assert_eq!(ev[0].1["display_name"], "Sam");
+    assert_eq!(ev[0].1["person"], true);
+    assert_eq!(ev[0].2["by"], "person");
+}

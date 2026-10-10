@@ -192,12 +192,12 @@ pub async fn patch(
     let state = s.clone();
     let session = s
         .store_call(move |st| {
+            let audit = audit.for_session(st, &id)?;
             let named = match &b.name {
-                Some(n) => Some(st.set_session_name(&id, n, NameSource::Agent)?),
+                Some(n) => Some(st.set_session_name(&audit, &id, n, NameSource::Agent)?),
                 None => None,
             };
             if b.ended {
-                let audit = audit.for_session(st, &id)?;
                 let ended = st.end_session_touched(&audit, &id)?;
                 crate::feedback::apply(&ctx, st, &ended.touched);
                 crate::questions::announce_ids(&state, st, &ended.withdrawn_questions);

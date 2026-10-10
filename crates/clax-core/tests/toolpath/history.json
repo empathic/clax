@@ -2274,6 +2274,406 @@
     "reason": "explicit"
    },
    "backfilled": false
+  },
+  {
+   "seq": 63,
+   "at": "2026-10-06T14:07:21.063Z",
+   "kind": "invite.create",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "via": "shell",
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "invite_id": "01JBA000000000000000000001",
+    "person": "u_5am7q2",
+    "expires_at": "2026-10-07T14:07:21.063Z",
+    "rights": [
+     {
+      "type": "artifacts",
+      "actions": [
+       "read",
+       "create",
+       "update"
+      ]
+     },
+     {
+      "type": "comments",
+      "actions": [
+       "read",
+       "reply",
+       "resolve",
+       "watch"
+      ]
+     }
+    ]
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 64,
+   "at": "2026-10-06T14:07:28.064Z",
+   "kind": "invite.revoke",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "via": "shell",
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "invite_id": "01JBA000000000000000000001",
+    "person": "u_5am7q2",
+    "expires_at": "2026-10-07T14:07:21.063Z"
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 65,
+   "at": "2026-10-06T14:07:35.065Z",
+   "kind": "grant.request",
+   "actor": {
+    "type": "client",
+    "grant_id": "g_7h2k9m4q8x1a5b3c6d0e2f",
+    "client_name": "sam-mbp"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "via": "cli",
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "grant_id": "g_7h2k9m4q8x1a5b3c6d0e2f",
+    "flow": "request",
+    "client_name": "sam-mbp",
+    "peer_ip": "192.168.1.23",
+    "key_sha256": "6b1f6b1f6b1f6b1f6b1f6b1f6b1f6b1f6b1f6b1f6b1f6b1f6b1f6b1f6b1f6b1f",
+    "access": [
+     {
+      "type": "artifacts",
+      "actions": [
+       "read",
+       "create",
+       "update"
+      ]
+     },
+     {
+      "type": "comments",
+      "actions": [
+       "read",
+       "reply",
+       "resolve",
+       "watch"
+      ]
+     }
+    ]
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 66,
+   "at": "2026-10-06T14:07:42.066Z",
+   "kind": "grant.approve",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "via": "shell",
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "grant_id": "g_7h2k9m4q8x1a5b3c6d0e2f",
+    "person": "u_5am7q2",
+    "access": [
+     {
+      "type": "artifacts",
+      "actions": [
+       "read",
+       "create",
+       "update"
+      ]
+     },
+     {
+      "type": "comments",
+      "actions": [
+       "read",
+       "reply",
+       "resolve",
+       "watch"
+      ]
+     }
+    ],
+    "code_checked": true
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 67,
+   "at": "2026-10-06T14:07:49.067Z",
+   "kind": "grant.token",
+   "actor": {
+    "type": "client",
+    "grant_id": "g_7h2k9m4q8x1a5b3c6d0e2f",
+    "client_name": "sam-mbp"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "via": "cli",
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "grant_id": "g_7h2k9m4q8x1a5b3c6d0e2f",
+    "op": "issue"
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 68,
+   "at": "2026-10-06T14:07:56.068Z",
+   "kind": "grant.narrow",
+   "actor": {
+    "type": "viewer",
+    "public_id": "u_5am7q2",
+    "display_name": "Sam",
+    "person": true
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "via": "lan",
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "grant_id": "g_7h2k9m4q8x1a5b3c6d0e2f",
+    "narrow": [
+     {
+      "type": "artifacts",
+      "actions": [
+       "read"
+      ]
+     }
+    ]
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 69,
+   "at": "2026-10-06T14:08:03.069Z",
+   "kind": "person.rights",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "via": "shell",
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "person": "u_5am7q2",
+    "rights": [
+     {
+      "type": "artifacts",
+      "actions": [
+       "read",
+       "create",
+       "update"
+      ]
+     },
+     {
+      "type": "comments",
+      "actions": [
+       "read",
+       "reply",
+       "resolve",
+       "watch"
+      ]
+     }
+    ]
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 70,
+   "at": "2026-10-06T14:08:10.070Z",
+   "kind": "agent.name",
+   "actor": {
+    "type": "agent",
+    "session_id": "01JB9S00000000000000000005",
+    "harness": "codex",
+    "harness_session_id": "cx-sam-1",
+    "agent_handle": "a_5am1x9",
+    "grant_id": "g_7h2k9m4q8x1a5b3c6d0e2f",
+    "person": "u_5am7q2"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": "01JB9S00000000000000000005",
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "via": "mcp",
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "name": "app-sam",
+    "source": "agent",
+    "previous": "app"
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 71,
+   "at": "2026-10-06T14:08:17.071Z",
+   "kind": "grant.deny",
+   "actor": {
+    "type": "system",
+    "reason": "expiry"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "via": "daemon",
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "grant_id": "g_0d9c8b7a6f5e4d3c2b1a0z",
+    "reason": "expired"
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 72,
+   "at": "2026-10-06T14:08:24.072Z",
+   "kind": "grant.revoke",
+   "actor": {
+    "type": "agent",
+    "session_id": null,
+    "grant_id": "g_7h2k9m4q8x1a5b3c6d0e2f",
+    "person": "u_5am7q2",
+    "channel": "cli"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "via": "cli",
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "grant_id": "g_7h2k9m4q8x1a5b3c6d0e2f",
+    "by": "person",
+    "sessions_ended": [
+     "01JB9S00000000000000000005"
+    ]
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 73,
+   "at": "2026-10-06T14:08:31.073Z",
+   "kind": "person.revoke",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "via": "shell",
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "person": "u_5am7q2"
+   },
+   "backfilled": false
   }
  ]
 }

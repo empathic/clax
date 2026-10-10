@@ -11,6 +11,7 @@
 //! an error.
 
 use super::artifacts::{body, path};
+use crate::audit::DeferredAudit;
 use crate::auth::Caller;
 use crate::error::ApiError;
 use crate::grant_auth::{self, Refusal, Signed};
@@ -254,6 +255,7 @@ pub async fn create_invite(
     d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     caller: Caller,
+    audit: DeferredAudit,
     req: Result<Json<InviteBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     d.refuse_agents()?;
@@ -279,7 +281,7 @@ pub async fn create_invite(
     let state = s.clone();
     let (invite, code) = s
         .store_call(move |st| {
-            let made = st.create_invite(target, rights)?;
+            let made = st.create_invite(&audit.resolve(st)?, target, rights)?;
             announce(
                 &state,
                 json!({"what": "invite_created", "invite": invite_view(&made.0)}),
@@ -323,6 +325,7 @@ pub async fn revoke_invite(
     d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     caller: Caller,
+    audit: DeferredAudit,
     id: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
@@ -331,7 +334,7 @@ pub async fn revoke_invite(
     let state = s.clone();
     let invite = s
         .store_call(move |st| {
-            let i = st.revoke_invite(&id)?;
+            let i = st.revoke_invite(&audit.resolve(st)?, &id)?;
             announce(
                 &state,
                 json!({"what": "invite_revoked", "invite": invite_view(&i)}),
@@ -469,6 +472,7 @@ fn issued_response(
 pub async fn request(
     State(s): State<AppState>,
     _g: crate::agent::GrantFlow,
+    audit: DeferredAudit,
     req: axum::extract::Request,
 ) -> Result<Response, Refusal> {
     let (
@@ -510,7 +514,7 @@ pub async fn request(
     };
     let state = s.clone();
     let (status, v) = s
-        .store_call(move |st| match st.request_grant(g)? {
+        .store_call(move |st| match st.request_grant(&audit.grant_flow(), g)? {
             GrantStart::Approved {
                 grant,
                 access,
@@ -568,6 +572,7 @@ pub async fn request(
 pub async fn poll(
     State(s): State<AppState>,
     _g: crate::agent::GrantFlow,
+    audit: DeferredAudit,
     gid: Result<Path<String>, PathRejection>,
     req: axum::extract::Request,
 ) -> Result<Response, Refusal> {
@@ -583,8 +588,8 @@ pub async fn poll(
     let token = token.expect("a continuation call carries its token");
     let state = s.clone();
     let v = s
-        .store_call(
-            move |st| match st.continue_grant(&gid, token.expose(), t, &nonce)? {
+        .store_call(move |st| {
+            match st.continue_grant(&audit.grant_flow(), &gid, token.expose(), t, &nonce)? {
                 ContinueOutcome::Pending { grant } => Ok(json!({
                     "continue": {
                         "access_token": {"value": token.expose()},
@@ -619,8 +624,8 @@ pub async fn poll(
                     );
                     Ok(v)
                 }
-            },
-        )
+            }
+        })
         .await?;
     Ok(no_store(Json(v).into_response()))
 }
@@ -631,6 +636,7 @@ pub async fn poll(
 pub async fn disconnect(
     State(s): State<AppState>,
     _g: crate::agent::GrantFlow,
+    audit: DeferredAudit,
     gid: Result<Path<String>, PathRejection>,
     req: axum::extract::Request,
 ) -> Result<Response, Refusal> {
@@ -641,7 +647,7 @@ pub async fn disconnect(
     let token = token.expect("a continuation call carries its token");
     let (state, ctx) = (s.clone(), s.feedback_ctx());
     s.store_call(move |st| {
-        let ended = st.disconnect_grant(&gid, token.expose(), t, &nonce)?;
+        let ended = st.disconnect_grant(&audit.grant_flow(), &gid, token.expose(), t, &nonce)?;
         announce_ended(&state, &ctx, st, &[ended], "person");
         Ok(())
     })
@@ -654,6 +660,7 @@ pub async fn disconnect(
 pub async fn revoke_token(
     State(s): State<AppState>,
     _g: crate::agent::GrantFlow,
+    audit: DeferredAudit,
     gid: Result<Path<String>, PathRejection>,
     req: axum::extract::Request,
 ) -> Result<Response, Refusal> {
@@ -662,7 +669,7 @@ pub async fn revoke_token(
     let token = token.expect("a manage call carries its token");
     let (state, ctx) = (s.clone(), s.feedback_ctx());
     s.store_call(move |st| {
-        let ended = st.revoke_token(&gid, token.expose())?;
+        let ended = st.revoke_token(&audit.grant_flow(), &gid, token.expose())?;
         announce_ended(&state, &ctx, st, &[ended], "person");
         Ok(())
     })
@@ -725,6 +732,7 @@ pub async fn approve(
     d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     caller: Caller,
+    audit: DeferredAudit,
     gid: Result<Path<String>, PathRejection>,
     req: Result<Json<ApproveBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -743,8 +751,8 @@ pub async fn approve(
     let rights = b.rights.as_ref().map(Rights::parse).transpose()?;
     let state = s.clone();
     let grant = s
-        .store_call(
-            move |st| match st.approve_grant(&gid, &code, &name, rights) {
+        .store_call(move |st| {
+            match st.approve_grant(&audit.resolve(st)?, &gid, &code, &name, rights) {
                 Ok(g) => {
                     announce(
                         &state,
@@ -768,8 +776,8 @@ pub async fn approve(
                     Err(e)
                 }
                 Err(e) => Err(e),
-            },
-        )
+            }
+        })
         .await?;
     Ok(Json(json!({"grant": grant_view(&grant)})))
 }
@@ -781,6 +789,7 @@ pub async fn deny(
     d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     caller: Caller,
+    audit: DeferredAudit,
     gid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
@@ -789,7 +798,7 @@ pub async fn deny(
     let state = s.clone();
     let grant = s
         .store_call(move |st| {
-            let g = st.deny_grant(&gid)?;
+            let g = st.deny_grant(&audit.resolve(st)?, &gid)?;
             announce(
                 &state,
                 json!({"what": "grant_denied", "grant": grant_view(&g)}),
@@ -808,6 +817,7 @@ pub async fn revoke(
     d: crate::agent::DeniedToGrants,
     _o: SameOrigin,
     caller: Caller,
+    audit: DeferredAudit,
     gid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
@@ -816,7 +826,7 @@ pub async fn revoke(
     let (state, ctx) = (s.clone(), s.feedback_ctx());
     let grant = s
         .store_call(move |st| {
-            let ended = st.revoke_grant(&gid, EndedBy::Owner)?;
+            let ended = st.revoke_grant(&audit.resolve(st)?, &gid, EndedBy::Owner)?;
             announce_ended(&state, &ctx, st, &[ended], "owner");
             st.grant(&gid)
         })
