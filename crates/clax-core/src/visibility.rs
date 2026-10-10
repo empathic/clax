@@ -144,10 +144,15 @@ pub fn file_authors(a: &VersionAuthors, path: &str) -> Vec<Author> {
     }
 }
 
-/// A thread's anchor (quote, prefix, suffix, selector): the authors of the
-/// anchored file in the thread's version, `version` (the version's
-/// publisher when it has no such file).
+/// A thread's anchor (quote, prefix, suffix, selector, and the other
+/// fields the anchored page gave it): the authors of the anchored file in
+/// the thread's version, `version` (the version's publisher when it has no
+/// such file). An anchor on the whole artifact is on no page and holds no
+/// one's words: it has no authors.
 pub fn authors_of_anchor(thread: &Thread, version: &Version) -> Vec<Author> {
+    if thread.anchor.is_whole() {
+        return Vec::new();
+    }
     authors_of_file(version, &thread.anchor.file)
 }
 
@@ -164,12 +169,20 @@ pub fn authors_of_clip(thread: &Thread, version: &Version) -> Vec<Author> {
     out
 }
 
-/// A thread's `resolved_by` text: `viewer:<public ID>` is that viewer;
-/// `viewer:anonymous`, and `agent:<harness>` (which names no person), are
-/// [`Author::Unconnected`].
-pub fn authors_of_resolved_by(resolved_by: &str) -> Vec<Author> {
-    match resolved_by.strip_prefix("viewer:") {
-        Some(p) if crate::is_public_id(p) => vec![Author::Person(p.to_string())],
+/// A thread's `resolved_by` text: `viewer:<public ID>` is that viewer,
+/// and `viewer:anonymous` [`Author::Unconnected`]; `agent:<harness>` is the
+/// person of the resolving agent, `person` (`threads.resolved_by_person`:
+/// `*owner` or a public ID), or [`Author::Unconnected`] for a resolve from
+/// before it was recorded.
+pub fn authors_of_resolved_by(resolved_by: &str, person: Option<&str>) -> Vec<Author> {
+    if let Some(p) = resolved_by.strip_prefix("viewer:") {
+        if crate::is_public_id(p) {
+            return vec![Author::Person(p.to_string())];
+        }
+        return vec![Author::Unconnected];
+    }
+    match person {
+        Some(t) if resolved_by.starts_with("agent:") => vec![Author::of_token(Some(t))],
         _ => vec![Author::Unconnected],
     }
 }
@@ -499,27 +512,55 @@ pub mod placeholder {
     }
 
     /// A thread's anchor: `quote`, `prefix`, `suffix` and `selector` null
-    /// in its `anchor`, and the thread marked `anchor_withheld: true`.
+    /// in its `anchor`, and the other words the anchored page gave it with
+    /// them (its `custom_name`, the anchored `file`'s name, and its drawn
+    /// area's `tag` and `text` fingerprint, which is left out); the thread
+    /// marked `anchor_withheld: true`.
     pub fn anchor(thread: &mut Value) {
         if let Some(anchor) = thread.get_mut("anchor").and_then(Value::as_object_mut) {
-            for k in ["quote", "prefix", "suffix", "selector"] {
+            for k in [
+                "quote",
+                "prefix",
+                "suffix",
+                "selector",
+                "custom_name",
+                "file",
+            ] {
                 anchor.insert(k.into(), Value::Null);
+            }
+            if let Some(area) = anchor.get_mut("area").and_then(Value::as_object_mut) {
+                area.remove("tag");
+                area.remove("text");
             }
         }
         thread["anchor_withheld"] = json!(true);
     }
 
-    /// A thread's clip: no `clip`, and `clip_withheld: true`.
+    /// A thread's clip: no `clip`, its `clip_url` and `clip_path` (where a
+    /// view has them) null and `has_clip` false, so nothing names a clip to
+    /// fetch; and `clip_withheld: true`.
     pub fn clip(thread: &mut Value) {
         if let Some(t) = thread.as_object_mut() {
             t.remove("clip");
+            for k in ["clip_url", "clip_path"] {
+                if let Some(v) = t.get_mut(k) {
+                    *v = Value::Null;
+                }
+            }
+            if let Some(v) = t.get_mut("has_clip") {
+                *v = json!(false);
+            }
         }
         thread["clip_withheld"] = json!(true);
     }
 
-    /// A thread's `resolved_by`: null.
+    /// A thread's `resolved_by`: null, with the name a view derives from it
+    /// (`resolved_by_name`, where it has one).
     pub fn resolved_by(thread: &mut Value) {
         thread["resolved_by"] = Value::Null;
+        if let Some(v) = thread.get_mut("resolved_by_name") {
+            *v = Value::Null;
+        }
     }
 
     /// A batch's note: null.
@@ -1163,6 +1204,130 @@ mod tests {
     }
 
     #[test]
+    fn an_agents_resolve_keeps_its_person_until_the_thread_reopens() {
+        let w = two_people();
+        let aid = w.publish_as(None, &[("index.html", "<p>o</p>")]);
+        let t = w.thread_by(&aid, Some(&w.owner), false);
+        let resolve = |person: Option<&str>| {
+            w.st.resolve_thread_addressed(
+                DAEMON,
+                &aid,
+                &t.id,
+                "agent:claude",
+                "claude",
+                false,
+                person,
+            )
+            .unwrap()
+            .0
+        };
+        let r = resolve(Some(&w.sam));
+        assert_eq!(r.resolved_by.as_deref(), Some("agent:claude"));
+        assert_eq!(r.resolved_by_person.as_deref(), Some(w.sam.as_str()));
+        assert_eq!(
+            authors_of_resolved_by(
+                r.resolved_by.as_deref().unwrap(),
+                r.resolved_by_person.as_deref()
+            ),
+            vec![p(&w.sam)]
+        );
+        // Resolving again keeps the first resolver, and its person.
+        let again = resolve(Some(OWNER));
+        assert_eq!(again.resolved_by_person.as_deref(), Some(w.sam.as_str()));
+        assert!(
+            !serde_json::to_string(&again)
+                .unwrap()
+                .contains("resolved_by_person"),
+            "never served"
+        );
+        // Reopening clears it; so does a viewer's comment, which reopens.
+        let reopened = w.st.reopen_thread(DAEMON, &t.id).unwrap();
+        assert_eq!(reopened.resolved_by_person, None);
+        assert_eq!(
+            resolve(Some(OWNER)).resolved_by_person.as_deref(),
+            Some(OWNER)
+        );
+        w.st.add_comment(
+            DAEMON,
+            &t.id,
+            crate::NewComment {
+                author_kind: crate::store::threads::AUTHOR_VIEWER,
+                author_name: "Alex".into(),
+                author_public_id: Some(w.owner.clone()),
+                via_session_id: None,
+                body: "not yet".into(),
+                via_page: false,
+            },
+        )
+        .unwrap();
+        let open = w.st.get_thread(&t.id).unwrap().unwrap();
+        assert_eq!(
+            (open.status.as_str(), open.resolved_by_person),
+            ("open", None)
+        );
+        // A viewer's resolve records no person beside its viewer.
+        let by_viewer =
+            w.st.resolve_thread(DAEMON, &t.id, &format!("viewer:{}", w.sam))
+                .unwrap();
+        assert_eq!(by_viewer.resolved_by_person, None);
+    }
+
+    #[test]
+    fn a_whole_artifact_anchor_has_no_authors_so_is_never_withheld() {
+        let w = two_people();
+        let aid = w.publish_as(Some(&w.mia), &[("index.html", "<p>m</p>")]);
+        let t =
+            w.st.create_thread(
+                DAEMON,
+                &aid,
+                NewThread {
+                    version_n: 1,
+                    anchor: crate::Anchor {
+                        kind: crate::anchor::AnchorKind::Artifact,
+                        selector: None,
+                        quote: None,
+                        prefix: None,
+                        suffix: None,
+                        html_hash: None,
+                        rect: None,
+                        custom_name: None,
+                        area: None,
+                        file: crate::anchor::WHOLE_FILE.into(),
+                        route: None,
+                    },
+                    author_name: "Sam".into(),
+                    author_public_id: Some(w.sam.clone()),
+                    body: "overall".into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap();
+        assert!(t.anchor.is_whole());
+        let v1 = w.version(&aid, 1);
+        assert_eq!(authors_of_anchor(&t, &v1), Vec::<Author>::new());
+        // Its clip is its first commenter's alone.
+        assert_eq!(authors_of_clip(&t, &v1), vec![p(&w.sam)]);
+        // No reader is withheld an anchor that holds no one's words, though
+        // none of them sees the version's publisher.
+        for r in [
+            Reader::Owner,
+            Reader::Person(w.sam.clone()),
+            Reader::Person(w.lan.clone()),
+        ] {
+            let vis = w.reader(&r);
+            assert!(!vis.sees(&[p(&w.mia)], aid.as_str(), Some(&t.id)), "{r:?}");
+            assert!(
+                vis.sees(&authors_of_anchor(&t, &v1), aid.as_str(), Some(&t.id)),
+                "{r:?}"
+            );
+        }
+        // A page anchor on the same version is the publisher's.
+        let paged = w.thread_by(&aid, Some(&w.sam), false);
+        assert_eq!(authors_of_anchor(&paged, &v1), vec![p(&w.mia)]);
+    }
+
+    #[test]
     fn anchors_clips_and_the_rest_take_their_authors_from_their_rows() {
         let w = two_people();
         let aid = w.publish_as(Some(&w.mia), &[("index.html", "<p>m</p>")]);
@@ -1171,16 +1336,31 @@ mod tests {
         assert_eq!(authors_of_anchor(&t, &v1), vec![p(&w.mia)]);
         assert_eq!(authors_of_clip(&t, &v1), vec![p(&w.lan), p(&w.mia)]);
         assert_eq!(
-            authors_of_resolved_by(&format!("viewer:{}", w.sam)),
+            authors_of_resolved_by(&format!("viewer:{}", w.sam), None),
             vec![p(&w.sam)]
         );
         assert_eq!(
-            authors_of_resolved_by("viewer:anonymous"),
+            authors_of_resolved_by("viewer:anonymous", None),
+            vec![Author::Unconnected]
+        );
+        // An agent's resolve is its person's: as recorded, else (resolves
+        // from before the person was recorded) `*unconnected`.
+        assert_eq!(
+            authors_of_resolved_by("agent:claude", None),
             vec![Author::Unconnected]
         );
         assert_eq!(
-            authors_of_resolved_by("agent:claude"),
-            vec![Author::Unconnected]
+            authors_of_resolved_by("agent:claude", Some(&w.sam)),
+            vec![p(&w.sam)]
+        );
+        assert_eq!(
+            authors_of_resolved_by("agent:claude", Some(OWNER)),
+            vec![Author::Owner]
+        );
+        // A viewer's resolve names its viewer whatever is recorded beside it.
+        assert_eq!(
+            authors_of_resolved_by(&format!("viewer:{}", w.sam), Some(&w.mia)),
+            vec![p(&w.sam)]
         );
         assert_eq!(authors_of_batch_note(Some(&w.sam)), vec![p(&w.sam)]);
         assert_eq!(authors_of_batch_note(None), vec![Author::Unconnected]);
@@ -1289,6 +1469,11 @@ mod tests {
                 rusqlite::params![aid.as_str(), me],
             )?;
             c.execute(
+                "UPDATE threads SET status = 'resolved', resolved_at = 'x', resolved_by = 'agent:claude',
+                    resolved_by_person = ?1 WHERE id = ?2",
+                rusqlite::params![me, t.id],
+            )?;
+            c.execute(
                 "UPDATE versions SET file_authors_json = ?1 WHERE artifact_id = ?2",
                 rusqlite::params![json!({"index.html": [me, w.mia]}).to_string(), aid.as_str()],
             )?;
@@ -1322,6 +1507,8 @@ mod tests {
             })
             .unwrap();
         assert_eq!(sender, OWNER);
+        let thread = w.st.get_thread(&t.id).unwrap().unwrap();
+        assert_eq!(thread.resolved_by_person.as_deref(), Some(OWNER));
         assert_eq!(
             authors_of_file(&w.version(&aid, 1), "index.html"),
             vec![Author::Owner, p(&w.mia)]
@@ -1842,17 +2029,33 @@ mod tests {
             c,
             json!({"id": "c1", "author_name": "Mia", "body": null, "withheld": true, "created_at": "t"})
         );
-        let mut t = json!({"id": "t1", "anchor": {"kind": "element", "quote": "q", "prefix": "p", "suffix": "s", "selector": "#x", "file": "index.html"},
-                           "clip": "/c.png", "resolved_by": "viewer:u_1"});
+        let mut t = json!({"id": "t1", "anchor": {"kind": "element", "quote": "q", "prefix": "p", "suffix": "s", "selector": "#x",
+                               "custom_name": "c", "file": "MIA.html", "html_hash": "sha256:00",
+                               "area": {"x": 0.1, "y": 0.1, "w": 0.5, "h": 0.5, "tag": "h2", "text": "Mia's words"}},
+                           "has_clip": true, "clip_url": "/c.png", "clip_path": "/home/c.png",
+                           "resolved_by": "viewer:u_1", "resolved_by_name": "Mia"});
         anchor(&mut t);
         clip(&mut t);
         resolved_by(&mut t);
         thread_summary(&mut t, 2, &authors, ApprovalState::Requested);
         assert_eq!(
             t,
-            json!({"id": "t1", "anchor": {"kind": "element", "quote": null, "prefix": null, "suffix": null, "selector": null, "file": "index.html"},
-                   "anchor_withheld": true, "clip_withheld": true, "resolved_by": null,
+            json!({"id": "t1", "anchor": {"kind": "element", "quote": null, "prefix": null, "suffix": null, "selector": null,
+                       "custom_name": null, "file": null, "html_hash": "sha256:00",
+                       "area": {"x": 0.1, "y": 0.1, "w": 0.5, "h": 0.5}},
+                   "anchor_withheld": true, "has_clip": false, "clip_url": null, "clip_path": null, "clip_withheld": true,
+                   "resolved_by": null, "resolved_by_name": null,
                    "withheld": {"count": 2, "authors": [{"public_id": "u_1", "name": "Mia"}], "approval": "requested"}})
+        );
+        // A view without the optional keys gains none but the markers.
+        let mut bare = json!({"id": "t2", "anchor": {"kind": "element"}});
+        anchor(&mut bare);
+        clip(&mut bare);
+        assert_eq!(
+            bare,
+            json!({"id": "t2", "anchor": {"kind": "element", "quote": null, "prefix": null, "suffix": null, "selector": null,
+                       "custom_name": null, "file": null},
+                   "anchor_withheld": true, "clip_withheld": true})
         );
         let mut b = json!({"id": "b1", "note": "n"});
         batch_note(&mut b);

@@ -603,11 +603,13 @@ pub const MIGRATIONS: &[&str] = &[
     // 25: visibility (spec 2026-10-08-multi-agent-multi-person §5.2): who
     // approved whose words reaching their agents, the requests for such
     // approvals, each document's authors, the authors a page's writes
-    // carry, an artifact's text's authors and a batch's sender. A document
+    // carry, an artifact's text's authors, a batch's sender and the person
+    // of the agent that resolved a thread. A document
     // without `doc_authors` rows is the owner's, a `via_page` comment
     // without `page_authors` rows was written on an owner's page, and an
     // artifact without text authors is its creator's, so existing rows stay
-    // the owner's; a batch without a sender is `*unconnected`. The owner's
+    // the owner's; a batch without a sender, and an agent's resolve without
+    // a person, are `*unconnected`. The owner's
     // one approval, of `*unconnected` everywhere, keeps LAN viewers' words
     // reaching the owner's agents (O6, M14): the migration's Rust step
     // makes it, with a ULID.
@@ -663,7 +665,8 @@ pub const MIGRATIONS: &[&str] = &[
     );
     ALTER TABLE feedback ADD COLUMN placeholder_at TEXT;
     ALTER TABLE artifacts ADD COLUMN text_authors_json TEXT;
-    ALTER TABLE send_batches ADD COLUMN sender TEXT;",
+    ALTER TABLE send_batches ADD COLUMN sender TEXT;
+    ALTER TABLE threads ADD COLUMN resolved_by_person TEXT;",
 ];
 
 /// The audit journal's migration, as a schema version (the

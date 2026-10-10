@@ -456,6 +456,10 @@ ALTER TABLE artifacts ADD COLUMN text_authors_json TEXT;
 -- The batch's sender as an author: '*owner', a public ID, or '*unconnected'
 -- (an anonymous browser). sent_by stays the display name.
 ALTER TABLE send_batches ADD COLUMN sender TEXT;
+-- Whose agent resolved the thread, for resolved_by 'agent:<harness>':
+-- '*owner' or a person's public ID; NULL for a viewer's resolve. Kept with
+-- the first resolve, cleared on reopen.
+ALTER TABLE threads ADD COLUMN resolved_by_person TEXT;
 ```
 
 The migration's Rust step then makes the owner's approval of
@@ -468,7 +472,8 @@ the owner's (zero change). Existing `via_page` comments get no
 `page_authors` rows, read as the owner (every version before this
 migration is the owner's), and existing artifacts no text authors (their
 creator's: the owner). Existing batches get no sender, read as
-`*unconnected` (a LAN viewer may have sent one).
+`*unconnected` (a LAN viewer may have sent one), and existing agents'
+resolves no person, read as `*unconnected` too.
 
 ### 5.3 Migration 26: the per-person inbox
 
@@ -925,8 +930,8 @@ artifact Y (thread T)?" Yes when, for every Aᵢ:
 | A viewer comment's body | its writer (`author_public_id`; anonymous and pre-migration-12 unattributed comments count as `*unconnected`) |
 | A page-written comment's body (`via_page`) | its writer and every author of the page at write time (`page_authors`: the authors of every file of its current version; none recorded: the owner) |
 | An agent comment's body | the person of its session |
-| A thread's anchor (quote, prefix, suffix, selector) | the authors of the anchored file in the thread's version (`versions.file_authors_json`; the version's publisher when the file is unknown) |
-| A thread's `resolved_by` text; its batch note | the resolver; the batch's sender (`send_batches.sender`; none recorded: `*unconnected`) |
+| A thread's anchor (quote, prefix, suffix, selector, custom name, file name, an area's fingerprint) | the authors of the anchored file in the thread's version (`versions.file_authors_json`; the version's publisher when the file is unknown); none for an anchor on the whole artifact, which is on no page |
+| A thread's `resolved_by` text; its batch note | the resolver (a viewer's public ID; for an agent's resolve the agent's person, `threads.resolved_by_person`; none recorded: `*unconnected`); the batch's sender (`send_batches.sender`; none recorded: `*unconnected`) |
 | A clip | the thread's first commenter and the anchor's authors |
 | A version's file (name and bytes) | that file's authors in `versions.file_authors_json`: for a file the version wrote, the publisher, and for a `by_page` version every author of the previous version's files; for a file it carried forward, the previous version's authors of that file |
 | A version's label and note | its publisher (`versions.person`); for a `by_page` version also every author of its files |
@@ -956,9 +961,12 @@ Withheld fields are replaced, never dropped:
 
 - **Comment body:** `"body": null, "withheld": true` (the comment's ID,
   author name and person, and time stay).
-- **Thread:** a withheld anchor has `quote`, `prefix`, `suffix`, `selector`
-  null and `"anchor_withheld": true`; a withheld clip has no `clip` and
-  `"clip_withheld": true`; a withheld `resolved_by` or batch note is null.
+- **Thread:** a withheld anchor has `quote`, `prefix`, `suffix`, `selector`,
+  `custom_name` and `file` null, its `area` without `tag` and `text`, and
+  `"anchor_withheld": true`; a withheld clip has no `clip`, `clip_url` and
+  `clip_path` null, `has_clip` false and `"clip_withheld": true`, and its
+  route answers 403 `withheld` with the authors; a withheld `resolved_by`
+  (with `resolved_by_name`) or batch note is null.
   The thread gains `"withheld": {"count", "authors": [{"public_id",
   "name"}], "approval": "none" | "requested" | "declined"}` whenever any
   field of it is withheld.
