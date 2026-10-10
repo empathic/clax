@@ -656,6 +656,15 @@ impl Client {
         self
     }
 
+    /// This client as the owner's whatever the environment: the extension's
+    /// native host, which Chrome starts only for the extension's own
+    /// origin, so it serves the owner's browser even when Chrome inherited
+    /// a harness's environment or runs through the plugins' wrapper.
+    pub fn owner_channel(mut self) -> Client {
+        self.agent = false;
+        self
+    }
+
     /// A `method` request for `path` with the bearer token, the
     /// agent-channel marker when this client is an agent channel, and the
     /// channel it names (`x-clax-via`) when one is set.
