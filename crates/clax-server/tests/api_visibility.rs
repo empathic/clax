@@ -1793,3 +1793,416 @@ async fn creating_a_thread_never_tells_whether_a_withheld_file_exists() {
     assert_eq!(status, 201, "{v}");
     assert_eq!(v["thread"]["anchor_withheld"], true);
 }
+
+// Documents (spec §7.5 docs row, §8.2 document authors, §8.3 document).
+
+/// Mia's document in the world's artifacts, and its ID.
+const MIA_DOC: &str = "notes/MIACANARYdocpath";
+const MIA_DOC_ID: &str = "MIACANARYdocpath";
+
+fn doc_url(aid: &str, path: &str) -> String {
+    format!("/api/artifacts/{aid}/docs/{path}")
+}
+
+fn no_doc_field(what: &str, text: &str) {
+    assert!(
+        !text.contains(crate::common::people::DOC_FIELD),
+        "{what} leaked Mia's field: {text}"
+    );
+}
+
+/// The document at `path` of `aid` as stored: its data and version, and
+/// its authors' tokens.
+fn stored_doc(w: &World, aid: &str, path: &str) -> (Option<(Value, u64)>, Vec<String>) {
+    let id = clax_core::ArtifactId::parse(aid).unwrap();
+    let doc =
+        w.ts.store
+            .doc_get(
+                &id,
+                path,
+                &clax_core::db::Caller::new(clax_core::db::Level::Owner, None),
+            )
+            .unwrap()
+            .map(|d| (d.data, d.version));
+    let authors =
+        w.ts.store
+            .doc_authors(&id, path)
+            .unwrap()
+            .iter()
+            .map(|a| a.token().unwrap().to_string())
+            .collect();
+    (doc, authors)
+}
+
+/// The placeholder of a withheld document read by its path (§8.3).
+fn assert_doc_withheld(what: &str, doc: &Value, id: &str, by: &[&str]) {
+    let names: Vec<&str> = doc["withheld"]["authors"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{what}: not withheld: {doc}"))
+        .iter()
+        .map(|a| a["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, by, "{what}: {doc}");
+    assert_eq!(doc["doc_id"], json!(id), "{what}: {doc}");
+    assert!(doc["version"].is_u64(), "{what}: {doc}");
+    assert!(doc.get("data").is_none(), "{what}: {doc}");
+    no_doc_field(what, &doc.to_string());
+}
+
+#[tokio::test]
+async fn a_withheld_document_read_by_its_path_is_a_placeholder() {
+    let w = World::two_people().await;
+    let aid = &w.read.artifact;
+    let (_, version) = stored_doc(&w, aid, MIA_DOC).0.unwrap();
+    let (status, v) = sam(&w, "GET", &doc_url(aid, MIA_DOC), None).await;
+    assert_eq!(status, 200, "{v}");
+    assert_doc_withheld("Sam's agent", &v["doc"], MIA_DOC_ID, &["Mia"]);
+    assert_eq!(v["doc"]["version"], json!(version));
+    assert_eq!(
+        v["doc"]["withheld"]["authors"][0]["public_id"],
+        json!(w.mia_public)
+    );
+    let (status, v) = owner_agent(&w, "GET", &doc_url(aid, MIA_DOC), None).await;
+    assert_eq!(status, 200, "{v}");
+    assert_doc_withheld("the owner's agent", &v["doc"], MIA_DOC_ID, &["Mia"]);
+    // A missing document is missing.
+    let (status, v) = sam(&w, "GET", &doc_url(aid, "notes/none"), None).await;
+    assert_eq!(
+        (status, v["error"]["code"].clone()),
+        (404, json!("not_found"))
+    );
+    // The owner by hand and, once Sam approves Mia, Sam's agent read it.
+    let r = w.ts.get_authed(&doc_url(aid, MIA_DOC)).await;
+    assert!(
+        r.text()
+            .await
+            .unwrap()
+            .contains(crate::common::people::DOC_FIELD)
+    );
+    approve(&w.ts, Some(&sam_public(&w)), &w.mia_public);
+    let (_, v) = sam(&w, "GET", &doc_url(aid, MIA_DOC), None).await;
+    assert_eq!(
+        v["doc"]["data"]["text"],
+        json!(crate::common::people::DOC_FIELD),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn withheld_documents_are_counted_not_listed() {
+    let w = World::two_people().await;
+    let aid = &w.read.artifact;
+    let (status, v) = sam(
+        &w,
+        "PUT",
+        &doc_url(aid, "notes/sam1"),
+        Some(json!({"data": {"text": "zzz"}})),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    let list = |q: &str| format!("/api/artifacts/{aid}/docs?collection=notes{q}");
+    let enc = |s: &str| {
+        s.replace('%', "%25")
+            .replace(' ', "%20")
+            .replace('"', "%22")
+            .replace('[', "%5B")
+            .replace(']', "%5D")
+            .replace(',', "%2C")
+            .replace('<', "%3C")
+            .replace('>', "%3E")
+            .replace('=', "%3D")
+            .replace('!', "%21")
+    };
+    let queries = [
+        String::new(),
+        format!("&where={}", enc(r#"[["text",">","A"]]"#)),
+        format!("&where={}", enc(r#"[["text","<","N"]]"#)),
+        format!(
+            "&where={}",
+            enc(&format!(
+                r#"[["text","==","{}"]]"#,
+                crate::common::people::DOC_FIELD
+            ))
+        ),
+        "&order_by=text".into(),
+        "&order_by=text&direction=desc&limit=1".into(),
+        "&limit=1".into(),
+    ];
+    for q in &queries {
+        let (status, v) = sam(&w, "GET", &list(q), None).await;
+        assert_eq!(status, 200, "{q}: {v}");
+        let paths: Vec<&str> = v["docs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["path"].as_str().unwrap())
+            .collect();
+        assert!(paths.iter().all(|p| *p == "notes/sam1"), "{q}: {v}");
+        assert_eq!(v["withheld_count"], json!(1), "{q}: {v}");
+        assert_eq!(v["next_cursor"], Value::Null, "{q}: {v}");
+        assert!(!v.to_string().contains("MIACANARY"), "{q}: {v}");
+    }
+    // The owner's agent has approved neither person.
+    for q in &queries {
+        let (status, v) = owner_agent(&w, "GET", &list(q), None).await;
+        assert_eq!(status, 200, "{q}: {v}");
+        assert_eq!(
+            (v["docs"].clone(), v["withheld_count"].clone()),
+            (json!([]), json!(2)),
+            "{q}: {v}"
+        );
+    }
+    // The owner by hand lists both, with no count.
+    let v: Value = w.ts.get_authed(&list("")).await.json().await.unwrap();
+    assert_eq!(v["docs"].as_array().unwrap().len(), 2, "{v}");
+    assert!(v.get("withheld_count").is_none(), "{v}");
+}
+
+#[tokio::test]
+async fn content_dependent_writes_on_withheld_documents_are_refused() {
+    let w = World::two_people().await;
+    let aid = &w.scratch.artifact;
+    let before = stored_doc(&w, aid, MIA_DOC);
+    let version = before.0.as_ref().unwrap().1;
+    let url = format!("/api/artifacts/{aid}/docs:str_replace");
+    let mut answers = Vec::new();
+    for old in ["MIACANARY", "not in it", "M"] {
+        for extra in [
+            json!({}),
+            json!({"replace_all": true}),
+            json!({"if_version": version}),
+            json!({"if_version": version + 100}),
+            json!({"lww": true}),
+        ] {
+            let mut body =
+                json!({"path": MIA_DOC, "field": "text", "old_str": old, "new_str": "x"});
+            body.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            for who in ["sam", "owner"] {
+                let (status, v) = if who == "sam" {
+                    sam(&w, "POST", &url, Some(body.clone())).await
+                } else {
+                    owner_agent(&w, "POST", &url, Some(body.clone())).await
+                };
+                assert_eq!(
+                    (status, v["error"]["code"].clone()),
+                    (403, json!("withheld")),
+                    "{who} {body}: {v}"
+                );
+                assert_eq!(v["error"]["authors"][0]["name"], json!("Mia"), "{v}");
+                no_doc_field(who, &v.to_string());
+                answers.push((who, v));
+            }
+        }
+    }
+    // Whether or not the text would match, the answer is the same.
+    for (who, v) in &answers {
+        let first = &answers.iter().find(|(w, _)| w == who).unwrap().1;
+        assert_eq!(v, first, "{who}");
+    }
+    assert_eq!(stored_doc(&w, aid, MIA_DOC), before, "nothing was written");
+    // A missing document is missing; Sam's own is his to edit.
+    let missing = json!({"path": "notes/none", "field": "text", "old_str": "a", "new_str": "b"});
+    let (status, v) = sam(&w, "POST", &url, Some(missing)).await;
+    assert_eq!(
+        (status, v["error"]["code"].clone()),
+        (404, json!("not_found")),
+        "{v}"
+    );
+    sam(
+        &w,
+        "PUT",
+        &doc_url(aid, "notes/sam"),
+        Some(json!({"data": {"text": "Sam's"}})),
+    )
+    .await;
+    let mine = json!({"path": "notes/sam", "field": "text", "old_str": "Sam", "new_str": "S", "lww": true});
+    let (status, v) = sam(&w, "POST", &url, Some(mine)).await;
+    assert_eq!(
+        (status, v["doc"]["data"]["text"].clone()),
+        (200, json!("S's")),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn patch_returns_filtered_documents() {
+    let w = World::two_people().await;
+    let aid = &w.scratch.artifact;
+    let url = doc_url(aid, MIA_DOC);
+    // Blind writes on Mia's document are allowed; each answer is its
+    // placeholder, and Sam joins her as an author.
+    let (status, v) = sam(
+        &w,
+        "PATCH",
+        &url,
+        Some(json!({"data": {"sam": "hi"}, "lww": true})),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    assert_doc_withheld("PATCH", &v["doc"], MIA_DOC_ID, &["Mia"]);
+    let (status, v) = sam(
+        &w,
+        "PUT",
+        &url,
+        Some(json!({"data": {"sam": "all mine"}, "lww": true})),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    assert_doc_withheld("PUT", &v["doc"], MIA_DOC_ID, &["Mia"]);
+    assert_eq!(v["created"], json!(false));
+    let sam_id = sam_public(&w);
+    assert_eq!(
+        stored_doc(&w, aid, MIA_DOC).1,
+        vec![w.mia_public.clone(), sam_id.clone()]
+    );
+    // Rewriting it never made it Sam's: still withheld from him, and now
+    // from Mia's agent too until she approves Sam.
+    let (_, v) = sam(&w, "GET", &url, None).await;
+    assert_doc_withheld("Sam's read", &v["doc"], MIA_DOC_ID, &["Mia"]);
+    let (_, v) = json_of(w.mia.agent("GET", &url, None, None).await).await;
+    assert_doc_withheld("Mia's read", &v["doc"], MIA_DOC_ID, &["Sam"]);
+    approve(&w.ts, Some(&w.mia_public), &sam_id);
+    let (_, v) = json_of(w.mia.agent("GET", &url, None, None).await).await;
+    assert_eq!(v["doc"]["data"], json!({"sam": "all mine"}), "{v}");
+    // The owner's agent's PATCH answers its placeholder too.
+    let (status, v) = owner_agent(
+        &w,
+        "PATCH",
+        &url,
+        Some(json!({"data": {"o": 1}, "lww": true})),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    assert_doc_withheld("the owner's PATCH", &v["doc"], MIA_DOC_ID, &["Mia", "Sam"]);
+    // Deleting it and writing anew starts Sam's own document.
+    let (status, v) = sam(&w, "DELETE", &format!("{url}?lww=true"), None).await;
+    assert_eq!((status, v), (200, json!({"deleted": true})));
+    let (status, v) = sam(&w, "PUT", &url, Some(json!({"data": {"n": 1}}))).await;
+    assert_eq!(
+        (status, v["doc"]["data"].clone(), v["created"].clone()),
+        (200, json!({"n": 1}), json!(true)),
+        "{v}"
+    );
+    let (_, v) = sam(
+        &w,
+        "PATCH",
+        &url,
+        Some(json!({"data": {"m": 2}, "lww": true})),
+    )
+    .await;
+    assert_eq!(v["doc"]["data"], json!({"n": 1, "m": 2}), "{v}");
+}
+
+#[tokio::test]
+async fn batch_results_are_filtered() {
+    let w = World::two_people().await;
+    let aid = &w.scratch.artifact;
+    let url = format!("/api/artifacts/{aid}/docs:batch");
+    let body = json!({"lww": true, "writes": [
+        {"op": "set", "path": "notes/sam2", "data": {"a": 1}},
+        {"op": "update", "path": MIA_DOC, "data": {"b": 2}},
+        {"op": "delete", "path": "notes/none"},
+    ]});
+    for (who, (status, v)) in [
+        ("sam", sam(&w, "POST", &url, Some(body.clone())).await),
+        (
+            "owner",
+            owner_agent(&w, "POST", &url, Some(body.clone())).await,
+        ),
+    ] {
+        assert_eq!(status, 200, "{who}: {v}");
+        no_doc_field(who, &v.to_string());
+        let results = v["results"].as_array().unwrap();
+        assert_eq!(results.len(), 3, "{v}");
+        for r in results {
+            let keys: Vec<&String> = r.as_object().unwrap().keys().collect();
+            assert_eq!(keys, ["deleted", "op", "path", "version"], "{who}: {r}");
+        }
+    }
+    let (_, authors) = stored_doc(&w, aid, MIA_DOC);
+    assert_eq!(
+        authors,
+        vec![w.mia_public.clone(), sam_public(&w), "*owner".to_string()]
+    );
+    // A failing batch names the caller's own operation and path only.
+    let bad = json!({"writes": [
+        {"op": "update", "path": MIA_DOC, "data": {"c": 3}, "if_version": 1},
+    ]});
+    let (status, v) = sam(&w, "POST", &url, Some(bad)).await;
+    assert_eq!(
+        (status, v["error"]["code"].clone()),
+        (409, json!("conflict")),
+        "{v}"
+    );
+    no_doc_field("conflict", &v.to_string());
+}
+
+#[tokio::test]
+async fn a_persons_agent_never_writes_documents_as_a_page() {
+    let w = World::two_people().await;
+    let aid = &w.scratch.artifact;
+    let before = stored_doc(&w, aid, MIA_DOC);
+    let writes: Vec<(&str, String, Value)> = vec![
+        ("PUT", doc_url(aid, "notes/page"), json!({"data": {"a": 1}})),
+        (
+            "PATCH",
+            doc_url(aid, MIA_DOC),
+            json!({"data": {"a": 1}, "lww": true}),
+        ),
+        (
+            "DELETE",
+            format!("{}?lww=true", doc_url(aid, MIA_DOC)),
+            Value::Null,
+        ),
+        (
+            "POST",
+            format!("/api/artifacts/{aid}/docs:batch"),
+            json!({"writes": [{"op": "set", "path": "notes/page", "data": {"a": 1}}]}),
+        ),
+        (
+            "POST",
+            format!("/api/artifacts/{aid}/docs:str_replace"),
+            json!({"path": "notes/page", "field": "a", "old_str": "x", "new_str": "y"}),
+        ),
+        (
+            "POST",
+            format!("/api/artifacts/{aid}/docs:acquire"),
+            json!({"path": "notes/page", "holder": "h", "data": {"a": 1}}),
+        ),
+    ];
+    for session in [Some(w.sam_session.clone()), None] {
+        for (m, path, body) in &writes {
+            let mut headers = vec![("x-clax-via", "page".to_string())];
+            if let Some(s) = &session {
+                headers.push(("x-clax-session", s.clone()));
+            }
+            let r = w
+                .sam
+                .call(Call {
+                    method: m,
+                    path,
+                    authorization: Some(format!("Clax-Grant {}", w.sam.access())),
+                    body: (!body.is_null()).then(|| serde_json::to_vec(body).unwrap()),
+                    headers,
+                    ..Default::default()
+                })
+                .await;
+            let (status, v) = json_of(r).await;
+            assert_eq!(
+                (status, v["error"]["code"].clone()),
+                (400, json!("invalid_via_page")),
+                "{m} {path} ({session:?}): {v}"
+            );
+        }
+    }
+    // Nothing was written: no document, no lease, Mia's untouched.
+    assert_eq!(stored_doc(&w, aid, MIA_DOC), before);
+    assert_eq!(stored_doc(&w, aid, "notes/page").0, None);
+    let leases: i64 = rusqlite::Connection::open(w.ts.home.db_path())
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM leases", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(leases, 0);
+}

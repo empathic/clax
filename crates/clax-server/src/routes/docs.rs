@@ -7,10 +7,20 @@
 //! write the rules refuse answers 404 too. Those 404s name the document's
 //! `path` in the error; a missing artifact's 404 does not. Each change publishes the `doc`
 //! SSE event, which carries the path and version but never the body.
+//!
+//! Agent channels (spec §7.5 docs row, §8.2, §8.3) get every document
+//! through [`crate::feedback::Vis`]: one whose authors their reader may not
+//! see is its placeholder (`{doc_id, version, withheld: {authors}}`) when
+//! read or written by its path, and in a listing is never matched,
+//! ordered or listed, only counted in `withheld_count`. `str_replace` on
+//! one is 403 `withheld` before anything is evaluated; blind writes (`PUT`,
+//! `PATCH`, `DELETE`, batch writes, `acquire`) stay allowed and add the
+//! writer to its authors, so they never make it the writer's.
 
 use super::artifacts::{JsonBytes, body, parse_body, parse_id, path};
 use crate::db_caller::CallerParts;
 use crate::error::ApiError;
+use crate::feedback::VisFor;
 use crate::state::AppState;
 use crate::viewer::SameOrigin;
 use axum::Json;
@@ -21,7 +31,7 @@ use clax_core::db::invalid_argument;
 use clax_core::store::docs::{
     Acquire, BatchOp, BatchWrite, DocChange, DocQuery, Pin, StrReplace, parse_where,
 };
-use clax_core::{Event, EventBus};
+use clax_core::{CoreError, Event, EventBus};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -54,31 +64,41 @@ pub struct WriteBody {
     lww: bool,
 }
 
-/// The document: `{doc: {path, collection, id, data, version, updated_at}}`;
-/// 404 with `path` when it is missing or the caller may not read it.
+/// The document: `{doc: {path, collection, id, data, version, updated_at}}`,
+/// or for an agent whose reader may not see it its placeholder; 404 with
+/// `path` when it is missing or the caller may not read it.
 pub async fn get(
     State(s): State<AppState>,
-    _a: crate::agent::Agent<crate::agent::DocsGet>,
+    a: crate::agent::Agent<crate::agent::DocsGet>,
     _o: SameOrigin,
     who: CallerParts,
     p: DocParams,
 ) -> Result<Json<Value>, ApiError> {
     let (aid, doc) = path(p)?;
     let id = parse_id(&aid)?;
+    let vf = VisFor::of(&a.caller, &s);
     let d = s
         .store_call({
             let doc = doc.clone();
-            move |st| st.doc_get(&id, &doc, &who.resolve_for(st, &id)?)
+            move |st| {
+                let vis = vf.build(st)?;
+                match st.doc_get_authored(&id, &doc, &who.resolve_for(st, &id)?)? {
+                    Some((d, authors)) => {
+                        Ok(Some(vis.filter_doc(st, id.as_str(), &d, &authors)?))
+                    }
+                    None => Ok(None),
+                }
+            }
         })
         .await?;
     d.map(|d| Json(json!({"doc": d})))
-        .ok_or_else(|| clax_core::CoreError::DocNotFound { path: doc }.into())
+        .ok_or_else(|| CoreError::DocNotFound { path: doc }.into())
 }
 
 /// Replaces or creates the document: `{doc, created}`.
 pub async fn put(
     State(s): State<AppState>,
-    _a: crate::agent::Agent<crate::agent::DocsPut>,
+    a: crate::agent::Agent<crate::agent::DocsPut>,
     _o: SameOrigin,
     who: CallerParts,
     audit: AuditCtx,
@@ -89,7 +109,8 @@ pub async fn put(
     let id = parse_id(&aid)?;
     let b = body(req)?;
     let events = s.events.clone();
-    let w = s
+    let vf = VisFor::of(&a.caller, &s);
+    let (doc, created) = s
         .store_call(move |st| {
             let w = st.doc_set(
                 &audit,
@@ -103,16 +124,17 @@ pub async fn put(
                 &who.resolve_for(st, &id)?,
             )?;
             announce(&events, id.as_str(), w.change.clone());
-            Ok(w)
+            let vis = vf.build(st)?;
+            Ok((vis.filter_written(st, id.as_str(), &w)?, w.created))
         })
         .await?;
-    Ok(Json(json!({"doc": w.doc, "created": w.created})))
+    Ok(Json(json!({"doc": doc, "created": created})))
 }
 
 /// Merges into the existing document: `{doc}`.
 pub async fn patch(
     State(s): State<AppState>,
-    _a: crate::agent::Agent<crate::agent::DocsPatch>,
+    a: crate::agent::Agent<crate::agent::DocsPatch>,
     _o: SameOrigin,
     who: CallerParts,
     audit: AuditCtx,
@@ -123,7 +145,8 @@ pub async fn patch(
     let id = parse_id(&aid)?;
     let b = body(req)?;
     let events = s.events.clone();
-    let w = s
+    let vf = VisFor::of(&a.caller, &s);
+    let doc = s
         .store_call(move |st| {
             let w = st.doc_update(
                 &audit,
@@ -137,10 +160,11 @@ pub async fn patch(
                 &who.resolve_for(st, &id)?,
             )?;
             announce(&events, id.as_str(), w.change.clone());
-            Ok(w)
+            let vis = vf.build(st)?;
+            vis.filter_written(st, id.as_str(), &w)
         })
         .await?;
-    Ok(Json(json!({"doc": w.doc})))
+    Ok(Json(json!({"doc": doc})))
 }
 
 #[derive(Deserialize)]
@@ -153,7 +177,7 @@ pub struct DeleteQuery {
 /// Deletes the document: `{deleted}` (`false` when there was none).
 pub async fn delete(
     State(s): State<AppState>,
-    _a: crate::agent::Agent<crate::agent::DocsDelete>,
+    a: crate::agent::Agent<crate::agent::DocsDelete>,
     _o: SameOrigin,
     who: CallerParts,
     audit: AuditCtx,
@@ -164,6 +188,7 @@ pub async fn delete(
     let id = parse_id(&aid)?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_argument", e.body_text()))?;
     let events = s.events.clone();
+    let vf = VisFor::of(&a.caller, &s);
     let w = s
         .store_call(move |st| {
             let w = st.doc_delete(
@@ -177,6 +202,10 @@ pub async fn delete(
                 &who.resolve_for(st, &id)?,
             )?;
             announce(&events, id.as_str(), w.change.clone());
+            // A delete leaves no document to show.
+            let vis = vf.build(st)?;
+            let left = vis.filter_written(st, id.as_str(), &w)?;
+            debug_assert!(left.is_none());
             Ok(w)
         })
         .await?;
@@ -195,10 +224,12 @@ pub struct ListQuery {
 }
 
 /// One collection's documents: `{docs, next_cursor}`. `where` is a JSON array
-/// of `[field, operator, value]` triples.
+/// of `[field, operator, value]` triples. For an agent whose reader may not
+/// see every document, only those it may see are matched, ordered and
+/// paged, and `withheld_count` counts the collection's others.
 pub async fn list(
     State(s): State<AppState>,
-    _a: crate::agent::Agent<crate::agent::DocsList>,
+    a: crate::agent::Agent<crate::agent::DocsList>,
     _o: SameOrigin,
     who: CallerParts,
     aid: Result<Path<String>, PathRejection>,
@@ -230,10 +261,15 @@ pub async fn list(
         limit: q.limit,
         cursor: q.cursor,
     };
-    let (docs, next) = s
-        .store_call(move |st| st.doc_query(&id, &query, &who.resolve_for(st, &id)?))
+    let vf = VisFor::of(&a.caller, &s);
+    let page = s
+        .store_call(move |st| {
+            let vis = vf.build(st)?;
+            let page = st.doc_query_visible(&id, &query, &who.resolve_for(st, &id)?, vis.view())?;
+            Ok(vis.filter_doc_page(page))
+        })
         .await?;
-    Ok(Json(json!({"docs": docs, "next_cursor": next})))
+    Ok(Json(page))
 }
 
 #[derive(Deserialize)]
@@ -258,7 +294,7 @@ pub struct BatchBody {
 /// Applies up to 50 writes atomically: `{results: [{op, path, version, deleted}]}`.
 pub async fn batch(
     State(s): State<AppState>,
-    _a: crate::agent::Agent<crate::agent::DocsBatch>,
+    a: crate::agent::Agent<crate::agent::DocsBatch>,
     _o: SameOrigin,
     who: CallerParts,
     audit: AuditCtx,
@@ -294,7 +330,8 @@ pub async fn batch(
     })
     .await?;
     let events = s.events.clone();
-    let written = s
+    let vf = VisFor::of(&a.caller, &s);
+    let results = s
         .store_call(move |st| {
             let ws = st.doc_batch(&audit, &id, writes, lww, &who.resolve_for(st, &id)?)?;
             announce(
@@ -302,14 +339,10 @@ pub async fn batch(
                 id.as_str(),
                 ws.iter().filter_map(|w| w.change.clone()),
             );
-            Ok(ws)
+            let vis = vf.build(st)?;
+            Ok(vis.filter_batch(&ws, ops))
         })
         .await?;
-    let results: Vec<Value> = written
-        .iter()
-        .zip(ops)
-        .map(|(w, op)| json!({"op": op, "path": w.path, "version": w.doc.as_ref().map(|d| d.version), "deleted": w.deleted}))
-        .collect();
     Ok(Json(json!({"results": results})))
 }
 
@@ -330,10 +363,12 @@ pub struct StrReplaceBody {
 
 /// Replaces `old_str` with `new_str` in the string field `field` (every
 /// occurrence with `replace_all`, else exactly one): `{doc}`, the updated
-/// document.
+/// document. For an agent whose reader may not see the document, 403
+/// `withheld` with its withheld `authors`, before the pin or the text is
+/// looked at.
 pub async fn str_replace(
     State(s): State<AppState>,
-    _a: crate::agent::Agent<crate::agent::DocsStrReplace>,
+    a: crate::agent::Agent<crate::agent::DocsStrReplace>,
     _o: SameOrigin,
     who: CallerParts,
     audit: AuditCtx,
@@ -343,15 +378,17 @@ pub async fn str_replace(
     let id = parse_id(&path(aid)?)?;
     let b = body(req)?;
     let events = s.events.clone();
-    let w = s
+    let vf = VisFor::of(&a.caller, &s);
+    let done = s
         .store_call(move |st| {
+            let vis = vf.build(st)?;
             let r = StrReplace {
                 field: b.field,
                 old_str: b.old_str,
                 new_str: b.new_str,
                 replace_all: b.replace_all,
             };
-            let w = st.doc_str_replace(
+            let w = match st.doc_str_replace_visible(
                 &audit,
                 &id,
                 &b.path,
@@ -361,12 +398,28 @@ pub async fn str_replace(
                     lww: b.lww,
                 },
                 &who.resolve_for(st, &id)?,
-            )?;
+                vis.view(),
+            ) {
+                Err(CoreError::DocWithheld { authors, .. }) => {
+                    return Ok(Err(vis.filter_authors(st, &authors)?));
+                }
+                w => w?,
+            };
             announce(&events, id.as_str(), w.change.clone());
-            Ok(w)
+            Ok(Ok(vis.filter_written(st, id.as_str(), &w)?))
         })
         .await?;
-    Ok(Json(json!({"doc": w.doc})))
+    match done {
+        Ok(doc) => Ok(Json(json!({"doc": doc}))),
+        Err(authors) => {
+            let mut e = ApiError::forbidden(
+                "withheld",
+                "this document is withheld until your person approves its authors",
+            );
+            e.extra.insert("authors".into(), json!(authors));
+            Err(e)
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -383,7 +436,7 @@ pub struct AcquireBody {
 /// `{acquired, version, expires_at, holder}`.
 pub async fn acquire(
     State(s): State<AppState>,
-    _a: crate::agent::Agent<crate::agent::DocsAcquire>,
+    a: crate::agent::Agent<crate::agent::DocsAcquire>,
     _o: SameOrigin,
     who: CallerParts,
     audit: AuditCtx,
@@ -393,7 +446,8 @@ pub async fn acquire(
     let id = parse_id(&path(aid)?)?;
     let b = body(req)?;
     let events = s.events.clone();
-    let a = s
+    let vf = VisFor::of(&a.caller, &s);
+    let got = s
         .store_call(move |st| {
             let (a, change) = st.doc_acquire(
                 &audit,
@@ -407,8 +461,9 @@ pub async fn acquire(
                 &who.resolve_for(st, &id)?,
             )?;
             announce(&events, id.as_str(), change);
-            Ok(a)
+            let vis = vf.build(st)?;
+            Ok(vis.filter_acquired(&a))
         })
         .await?;
-    Ok(Json(json!(a)))
+    Ok(Json(got))
 }

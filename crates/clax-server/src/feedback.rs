@@ -8,6 +8,7 @@ use clax_core::feedback::Tier;
 use clax_core::feedback::Touched;
 use clax_core::model::{Artifact, Asset, Comment, Thread, Version};
 use clax_core::store::approvals::UNCONNECTED;
+use clax_core::store::docs::{Acquired, Doc, DocPage, Written};
 use clax_core::store::live::LivePage;
 use clax_core::visibility::placeholder::{self, ApprovalState, WithheldAuthor};
 use clax_core::visibility::{self, Author, Reader, Visibility};
@@ -821,6 +822,99 @@ impl Vis {
         file != clax_core::publish::INDEX
             && v.files.contains_key(file)
             && !vis.sees(&visibility::authors_of_file(v, file), &v.artifact_id, None)
+    }
+
+    /// The view a store read evaluates with, when anything may be
+    /// withheld: a query matches and orders only what it lets through
+    /// ([`Store::doc_query_visible`]).
+    pub fn view(&self) -> Option<&Visibility> {
+        self.filtering()
+    }
+
+    /// Document `doc` of artifact `aid`, whose authors are `authors`: its
+    /// view, or when the reader may not see it the placeholder of a
+    /// document read by its path, `{doc_id, version, withheld: {authors}}`
+    /// without its data (spec §8.3).
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn filter_doc(
+        &self,
+        st: &Store,
+        aid: &str,
+        doc: &Doc,
+        authors: &[Author],
+    ) -> clax_core::Result<Value> {
+        if let Some(vis) = self.filtering() {
+            let withheld = vis.withheld_authors(authors, aid, None);
+            if !withheld.is_empty() {
+                let named = Withhold::new(st, vis).named(&withheld)?;
+                return Ok(placeholder::document(&doc.id, doc.version, &named));
+            }
+        }
+        Ok(json!(doc))
+    }
+
+    /// The document a write of artifact `aid` left, as
+    /// [`Vis::filter_doc`] shows it; `None` after a delete.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn filter_written(
+        &self,
+        st: &Store,
+        aid: &str,
+        w: &Written,
+    ) -> clax_core::Result<Option<Value>> {
+        w.doc
+            .as_ref()
+            .map(|d| self.filter_doc(st, aid, d, &w.authors))
+            .transpose()
+    }
+
+    /// A query's page as the list route answers it: `{docs, next_cursor}`,
+    /// with `withheld_count` (the collection's documents left out,
+    /// whatever the filter) when the reader may not see every document.
+    /// The store matched, ordered and paged only what the reader may see.
+    pub fn filter_doc_page(&self, page: DocPage) -> Value {
+        let mut v = json!({"docs": page.docs, "next_cursor": page.next_cursor});
+        if let Some(n) = page.withheld {
+            v["withheld_count"] = json!(n);
+        }
+        v
+    }
+
+    /// A batch's results, `ops` its operations' names in order: `{op,
+    /// path, version, deleted}` each, which hold no document field (the
+    /// path is the caller's own), so nothing is withheld.
+    pub fn filter_batch(&self, written: &[Written], ops: Vec<String>) -> Vec<Value> {
+        written
+            .iter()
+            .zip(ops)
+            .map(|(w, op)| json!({"op": op, "path": w.path, "version": w.doc.as_ref().map(|d| d.version), "deleted": w.deleted}))
+            .collect()
+    }
+
+    /// A lease's answer: whether it was granted, the document's version,
+    /// the lease's expiry and, on a grant, the caller's own holder. It
+    /// holds no document field, so nothing is withheld.
+    pub fn filter_acquired(&self, a: &Acquired) -> Value {
+        json!(a)
+    }
+
+    /// `authors`, withheld from the reader, as views name them.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn filter_authors(
+        &self,
+        st: &Store,
+        authors: &[Author],
+    ) -> clax_core::Result<Vec<WithheldAuthor>> {
+        match self.filtering() {
+            Some(vis) => Withhold::new(st, vis).named(authors),
+            None => Ok(Vec::new()),
+        }
     }
 
     /// `assets` as views list them, each the reader may not see with its
