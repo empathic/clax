@@ -482,7 +482,7 @@ async fn the_db_tools_answer_withheld_documents_as_withheld() {
         serde_json::from_str(v["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(
         (r["docs"].clone(), r["withheld_count"].clone()),
-        (json!([]), json!(1)),
+        (json!([]), json!(2)),
         "{r}"
     );
 }

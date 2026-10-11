@@ -38,6 +38,7 @@ pub const CANARIES: &[&str] = &[
     CARRIED_BYTES,
     ASSET_BYTES,
     DOC_PATH,
+    DOC_UNNAMED,
     DOC_FIELD,
     COMMENT,
     QUOTE,
@@ -66,6 +67,9 @@ pub const CARRIED_NAME: &str = "MIACANARYcarried.css";
 pub const CARRIED_BYTES: &str = "MIACANARYcarriedbytes";
 pub const ASSET_BYTES: &str = "MIACANARYassetbytes";
 pub const DOC_PATH: &str = "MIACANARYdocpath";
+/// A second document of Mia's, at a path no call or command names: its
+/// path is never exempt from the sweeps.
+pub const DOC_UNNAMED: &str = "MIACANARYunnamed";
 pub const DOC_FIELD: &str = "MIACANARYdocfield";
 pub const COMMENT: &str = "MIACANARYcomment";
 pub const QUOTE: &str = "MIACANARYquote";
@@ -331,6 +335,16 @@ impl World {
             .await
             .unwrap();
         assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+        let r = ts
+            .authed(ts.client.put(format!(
+                "{}/api/artifacts/{aid}/docs/notes/{DOC_UNNAMED}",
+                ts.base
+            )))
+            .json(&json!({"data": {"text": DOC_FIELD}}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
         // The person columns, as Mia's own publish will write them.
         let mia = self.mia_public.clone();
         let authors = json!({
@@ -367,6 +381,11 @@ impl World {
         db.execute(
             "INSERT INTO doc_authors (artifact_id, path, author) VALUES (?1, ?2, ?3)",
             rusqlite::params![aid, format!("notes/{DOC_PATH}"), mia],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO doc_authors (artifact_id, path, author) VALUES (?1, ?2, ?3)",
+            rusqlite::params![aid, format!("notes/{DOC_UNNAMED}"), mia],
         )
         .unwrap();
         drop(db);
@@ -549,6 +568,14 @@ impl World {
             if path.contains("/threads/{tid}") {
                 calls.push(Call::new(&method, &concrete(&s.resolved), body.clone()));
             }
+            // A blind replace that lands, so the sweep reads its answer.
+            if method == "PUT" && path.contains("/docs/") {
+                calls.push(Call::new(
+                    &method,
+                    &concrete(&s.thread),
+                    Some(json!({"data": {"a": 1}, "lww": true})),
+                ));
+            }
             if method == "DELETE" {
                 deletes.extend(calls);
             } else {
@@ -698,13 +725,19 @@ impl Call {
         }
     }
 
-    /// Whether the call's own path or body carries `text`.
-    pub fn sends(&self, text: &str) -> bool {
-        self.path.contains(text)
+    /// The document path (`notes/<id>`) this call names, when it reads or
+    /// writes one by its path: the docs routes but the listing.
+    pub fn named_doc(&self) -> Option<String> {
+        if !self.path.contains("/docs") || self.path.contains("/docs?") {
+            return None;
+        }
+        let path = format!("notes/{DOC_PATH}");
+        let sent = self.path.contains(&path)
             || self
                 .body
                 .as_ref()
-                .is_some_and(|b| String::from_utf8_lossy(b).contains(text))
+                .is_some_and(|b| String::from_utf8_lossy(b).contains(&path));
+        sent.then_some(path)
     }
 
     /// Sends the call as `agent` against `w`: the status and every byte of
@@ -889,4 +922,29 @@ pub fn every_route() -> Vec<(String, String)> {
     out.sort();
     out.dedup();
     out
+}
+
+/// `v` without the fields that echo document `path`, which the request
+/// named (spec §8.3, §21.9): a placeholder's or a tool's document ID, a
+/// tool's top-level `path`, and an error naming that path (its `path` and
+/// `message`). Nothing else is removed, and a listing is never passed here.
+pub fn without_named_doc(mut v: Value, path: &str) -> Value {
+    let id = path.rsplit('/').next().unwrap_or_default();
+    if v["path"] == json!(path) {
+        v.as_object_mut().unwrap().remove("path");
+    }
+    if let Some(d) = v.get_mut("doc").and_then(Value::as_object_mut) {
+        for k in ["doc_id", "id"] {
+            if d.get(k) == Some(&json!(id)) {
+                d.remove(k);
+            }
+        }
+    }
+    if let Some(e) = v.get_mut("error").and_then(Value::as_object_mut)
+        && e.get("path") == Some(&json!(path))
+    {
+        e.remove("path");
+        e.remove("message");
+    }
+    v
 }

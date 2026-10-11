@@ -15,7 +15,7 @@
 
 use crate::common::TestServer;
 use crate::common::clients::{HARNESS_ENVS, RealClients};
-use crate::common::people::{AgentOf, As, Call, DOC_PATH, World};
+use crate::common::people::{AgentOf, As, Call, DOC_PATH, World, without_named_doc};
 use serde_json::{Value, json};
 
 async fn status_code(res: reqwest::Response) -> (u16, String) {
@@ -225,10 +225,11 @@ async fn the_owners_question_list_holds_only_the_owners_agents_questions() {
 }
 
 /// Every call of the sweep as `agent` that `which` keeps: no response
-/// byte carries a canary, unless the route refuses it `not_for_agents`,
-/// or it is the document path and the call itself sent it (a document
-/// path the agent names comes back in its placeholder and errors, spec
-/// §8.3, §21.9; a listing, which names none, never holds a withheld one).
+/// byte carries a canary, unless the route refuses it `not_for_agents`.
+/// A docs call that names Mia's document by its path gets that path back
+/// in its placeholder's `doc_id` and in an error naming it (spec §8.3,
+/// §21.9): those fields alone are left out of the check. A listing is
+/// never exempt, and neither is the document no call names.
 async fn sweep(w: &World, agent: &AgentOf<'_>, which: impl Fn(&Call) -> bool) {
     let calls: Vec<Call> = w
         .every_agent_call(agent)
@@ -238,12 +239,18 @@ async fn sweep(w: &World, agent: &AgentOf<'_>, which: impl Fn(&Call) -> bool) {
     assert!(calls.len() > 40, "{}", calls.len());
     let mut leaks = Vec::new();
     for call in &calls {
-        let body = call.run(w, agent).await;
+        let mut body = call.run(w, agent).await;
+        if let Some(path) = call.named_doc() {
+            let (head, rest) = body.split_once('\n').unwrap_or((&body, ""));
+            if let Ok(v) = serde_json::from_str::<Value>(rest) {
+                body = format!("{head}\n{}", without_named_doc(v, &path));
+            }
+        }
         if body.starts_with("403 ") && body.contains("\"not_for_agents\"") {
             continue;
         }
         for c in w.canaries() {
-            if body.contains(c) && !(c == DOC_PATH && call.sends(c)) {
+            if body.contains(c) {
                 leaks.push(format!(
                     "{} leaked {c} to {}: {}",
                     call.name,
@@ -336,14 +343,19 @@ async fn the_owner_by_hand_sees_every_canary() {
     }
 }
 
-/// `outs`' leaks of `w`'s canaries: each one a channel prints, but the
-/// document path where its own command line named it (`clax db get …
-/// <doc ID>` prints the path it was asked for, spec §21.9).
+/// `outs`' leaks of `w`'s canaries. `clax db get … <doc ID>` prints the
+/// document it was asked for by path and ID (spec §21.9): for a command
+/// line that names Mia's document, those fields alone are left out.
 fn leaks(w: &World, outs: &[crate::common::clients::Out]) -> Vec<String> {
     let mut leaks = Vec::new();
     for out in outs {
+        let named = out.channel.contains(" db get ") && out.channel.contains(DOC_PATH);
+        let text = match serde_json::from_str::<Value>(&out.text) {
+            Ok(v) if named => without_named_doc(v, &format!("notes/{DOC_PATH}")).to_string(),
+            _ => out.text.clone(),
+        };
         for c in w.canaries() {
-            if out.text.contains(c) && !(c == DOC_PATH && out.channel.contains(c)) {
+            if text.contains(c) {
                 leaks.push(format!("{} leaked {c}", out.channel));
             }
         }

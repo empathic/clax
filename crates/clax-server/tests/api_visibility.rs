@@ -1938,23 +1938,23 @@ async fn withheld_documents_are_counted_not_listed() {
             .map(|d| d["path"].as_str().unwrap())
             .collect();
         assert!(paths.iter().all(|p| *p == "notes/sam1"), "{q}: {v}");
-        assert_eq!(v["withheld_count"], json!(1), "{q}: {v}");
+        assert_eq!(v["withheld_count"], json!(2), "{q}: {v}");
         assert_eq!(v["next_cursor"], Value::Null, "{q}: {v}");
         assert!(!v.to_string().contains("MIACANARY"), "{q}: {v}");
     }
-    // The owner's agent has approved neither person.
+    // The owner's agent has approved neither person: Mia's two and Sam's.
     for q in &queries {
         let (status, v) = owner_agent(&w, "GET", &list(q), None).await;
         assert_eq!(status, 200, "{q}: {v}");
         assert_eq!(
             (v["docs"].clone(), v["withheld_count"].clone()),
-            (json!([]), json!(2)),
+            (json!([]), json!(3)),
             "{q}: {v}"
         );
     }
-    // The owner by hand lists both, with no count.
+    // The owner by hand lists all three, with no count.
     let v: Value = w.ts.get_authed(&list("")).await.json().await.unwrap();
-    assert_eq!(v["docs"].as_array().unwrap().len(), 2, "{v}");
+    assert_eq!(v["docs"].as_array().unwrap().len(), 3, "{v}");
     assert!(v.get("withheld_count").is_none(), "{v}");
 }
 
