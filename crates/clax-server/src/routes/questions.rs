@@ -578,7 +578,7 @@ pub async fn list(
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let out = s
         .store_call(move |db| {
-            let (rows, open) = db.list_questions(which, limit)?;
+            let (rows, open) = db.list_questions(None, which, limit)?;
             let views = rows
                 .iter()
                 .map(|r| question_view(db, r))

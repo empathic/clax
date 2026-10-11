@@ -1100,6 +1100,15 @@ impl Store {
                     self.record_audit(tx, &client, rec)?;
                     let rec = grant_record(AuditKind::GrantToken, &now, &gid).with("op", "issue");
                     self.record_audit(tx, &client, rec)?;
+                    // The owner hears that a machine connected (spec §3.1).
+                    super::inbox::note_connection(
+                        tx,
+                        &gid,
+                        &client_name,
+                        &g.peer_ip,
+                        grant.person_name.as_deref(),
+                        &now,
+                    )?;
                     Ok(GrantStart::Approved {
                         access,
                         grant,
@@ -1146,6 +1155,8 @@ impl Store {
                     )?;
                     let client = acting(ctx, client_actor(tx, &gid)?);
                     record_request(self, tx, &client, &gid, "request", &g, &now)?;
+                    // A request waits for the owner in their inbox (spec §6.3).
+                    super::inbox::note_connection(tx, &gid, &client_name, &g.peer_ip, None, &now)?;
                     Ok(GrantStart::Pending {
                         grant: grant_in(tx, &gid)?.expect("the grant was written"),
                         continue_token,
@@ -1215,6 +1226,7 @@ impl Store {
                     let rec =
                         grant_record(AuditKind::GrantDeny, &now, gid).with("reason", "wrong_code");
                     self.record_audit(tx, ctx, rec)?;
+                    super::inbox::connection_decided(tx, gid, &now)?;
                 }
                 return Ok(Err(CoreError::invalid(
                     "wrong_code",
@@ -1259,6 +1271,7 @@ impl Store {
                 )
                 .with("code_checked", true);
             self.record_audit(tx, ctx, rec)?;
+            super::inbox::connection_decided(tx, gid, &now)?;
             Ok(Ok(grant))
         })?
     }
@@ -1278,6 +1291,7 @@ impl Store {
             if n > 0 {
                 let rec = grant_record(AuditKind::GrantDeny, &now, gid).with("reason", "owner");
                 self.record_audit(tx, ctx, rec)?;
+                super::inbox::connection_decided(tx, gid, &now)?;
             }
             let g = grant_in(tx, gid)?.ok_or(CoreError::NotFound)?;
             if n == 0 {

@@ -337,44 +337,49 @@ macro_rules! late {
 pub(crate) const BY_ID: &str = concat!(select!(), "WHERE id = ?1");
 pub(crate) const BY_TOOL_USE: &str =
     concat!(select!(), "WHERE session_id = ?1 AND tool_use_id = ?2");
-/// The owner's lists hold the questions of the owner's agents only (spec
-/// §7.5, §18: person-scoped): never one a person's agent asked.
-macro_rules! owners {
+/// A person's lists hold the questions of their own agents only (spec
+/// §7.5, §18: person-scoped): the recipient `?1` (`COALESCE` of the asking
+/// session's person: empty for the owner, else a public ID). A question
+/// whose session row is missing is the owner's.
+macro_rules! of_person {
     () => {
-        " AND session_id NOT IN (SELECT id FROM sessions WHERE person IS NOT NULL)"
+        " AND COALESCE((SELECT s.person FROM sessions s WHERE s.id = questions.session_id), '') = ?1"
     };
 }
+/// Recipient `?1`'s open questions.
 pub(crate) const OPEN_COUNT: &str = concat!(
     "SELECT COUNT(*) FROM questions WHERE status = 'open'",
-    owners!()
+    of_person!()
 );
+/// Every open question, whoever's agent asked it ([`MAX_OPEN`]).
+pub(crate) const OPEN_ALL: &str = "SELECT COUNT(*) FROM questions WHERE status = 'open'";
 pub(crate) const OPEN_COUNT_OF_SESSION: &str =
     "SELECT COUNT(*) FROM questions WHERE session_id = ?1 AND status = 'open'";
 pub(crate) const OPEN_OLDEST: &str = concat!(
     select!(),
     "WHERE status = 'open'",
-    owners!(),
-    " ORDER BY created_at, id LIMIT ?1"
+    of_person!(),
+    " ORDER BY created_at, id LIMIT ?2"
 );
 pub(crate) const OPEN_NEWEST: &str = concat!(
     select!(),
     "WHERE status = 'open'",
-    owners!(),
-    " ORDER BY created_at DESC, id DESC LIMIT ?1"
+    of_person!(),
+    " ORDER BY created_at DESC, id DESC LIMIT ?2"
 );
 /// Closed questions use the partial index `questions_closed`, whose
 /// condition (`status <> 'open'`) each query repeats word for word.
 pub(crate) const CLOSED_NEWEST: &str = concat!(
     select!(),
     "WHERE status <> 'open'",
-    owners!(),
-    " ORDER BY closed_at DESC, id DESC LIMIT ?1"
+    of_person!(),
+    " ORDER BY closed_at DESC, id DESC LIMIT ?2"
 );
 pub(crate) const CLOSED_BEFORE: &str = concat!(
     select!(),
-    "WHERE status <> 'open' AND (closed_at, id) < (?1, ?2)",
-    owners!(),
-    " ORDER BY closed_at DESC, id DESC LIMIT ?3"
+    "WHERE status <> 'open' AND (closed_at, id) < (?2, ?3)",
+    of_person!(),
+    " ORDER BY closed_at DESC, id DESC LIMIT ?4"
 );
 pub(crate) const LATE_ANSWERS: &str = concat!(select!(), late!());
 pub(crate) const OPEN_OF_SESSION: &str = "SELECT id, session_id, artifact_id FROM questions
@@ -588,7 +593,7 @@ impl Store {
             if !n.released {
                 let mine: u32 =
                     tx.query_row(OPEN_COUNT_OF_SESSION, params![n.session_id], |r| r.get(0))?;
-                let all: u32 = tx.query_row(OPEN_COUNT, [], |r| r.get(0))?;
+                let all: u32 = tx.query_row(OPEN_ALL, [], |r| r.get(0))?;
                 if mine >= MAX_OPEN_PER_SESSION || all >= MAX_OPEN {
                     return Err(CoreError::invalid(
                         "limit_reached",
@@ -663,6 +668,27 @@ impl Store {
     /// Question `id`, if it exists.
     pub fn question(&self, id: &str) -> Result<Option<QuestionRow>> {
         self.with_read(|c| fetch(c, id))
+    }
+
+    /// Question `id` when one of `recipient`'s agents asked it (`None`: the
+    /// owner's agents; spec §18): the asking session's person.
+    ///
+    /// # Errors
+    /// `NotFound` when it does not exist or another person's agent asked it.
+    pub fn question_of(&self, id: &str, recipient: Option<&str>) -> Result<QuestionRow> {
+        self.with_read(|c| {
+            let q = fetch(c, id)?.ok_or(CoreError::NotFound)?;
+            if super::inbox::person_of_session(c, &q.session_id)?.as_deref() != recipient {
+                return Err(CoreError::NotFound);
+            }
+            Ok(q)
+        })
+    }
+
+    /// The person whose agent asked `q` (`None`: the owner's agents): who
+    /// its changes are announced to.
+    pub fn question_recipient(&self, q: &QuestionRow) -> Result<Option<String>> {
+        self.with_read(|c| super::inbox::person_of_session(c, &q.session_id))
     }
 
     /// Question `qid` as session `sid` sees it.
@@ -802,20 +828,27 @@ impl Store {
         })
     }
 
-    /// At most `limit` questions with the number open: open ones oldest
+    /// At most `limit` of `recipient`'s questions (those its agents asked;
+    /// `None`: the owner's) with the number of them open: open ones oldest
     /// first; closed ones most recently closed first; or all, open ones
     /// newest first followed by closed ones most recently closed first.
-    pub fn list_questions(&self, which: ListStatus, limit: u32) -> Result<(Vec<QuestionRow>, u32)> {
+    pub fn list_questions(
+        &self,
+        recipient: Option<&str>,
+        which: ListStatus,
+        limit: u32,
+    ) -> Result<(Vec<QuestionRow>, u32)> {
+        let r = super::inbox::recipient_key(recipient);
         self.with_read(|c| {
-            let open: u32 = c.query_row(OPEN_COUNT, [], |r| r.get(0))?;
+            let open: u32 = c.query_row(OPEN_COUNT, params![r], |x| x.get(0))?;
             let out = match which {
-                ListStatus::Open => rows(c, OPEN_OLDEST, params![limit])?,
-                ListStatus::Closed => rows(c, CLOSED_NEWEST, params![limit])?,
+                ListStatus::Open => rows(c, OPEN_OLDEST, params![r, limit])?,
+                ListStatus::Closed => rows(c, CLOSED_NEWEST, params![r, limit])?,
                 ListStatus::All => {
-                    let mut out = rows(c, OPEN_NEWEST, params![limit])?;
+                    let mut out = rows(c, OPEN_NEWEST, params![r, limit])?;
                     let left = limit.saturating_sub(out.len() as u32);
                     if left > 0 {
-                        out.extend(rows(c, CLOSED_NEWEST, params![left])?);
+                        out.extend(rows(c, CLOSED_NEWEST, params![r, left])?);
                     }
                     out
                 }
@@ -824,16 +857,18 @@ impl Store {
         })
     }
 
-    /// At most `limit` closed questions, most recently closed first,
-    /// continuing after `cursor` when given.
+    /// At most `limit` of `recipient`'s closed questions, most recently
+    /// closed first, continuing after `cursor` when given.
     pub fn list_closed_questions(
         &self,
+        recipient: Option<&str>,
         cursor: Option<&ClosedCursor>,
         limit: u32,
     ) -> Result<Vec<QuestionRow>> {
+        let r = super::inbox::recipient_key(recipient);
         self.with_read(|c| match cursor {
-            None => rows(c, CLOSED_NEWEST, params![limit]),
-            Some(k) => rows(c, CLOSED_BEFORE, params![k.closed_at, k.id, limit]),
+            None => rows(c, CLOSED_NEWEST, params![r, limit]),
+            Some(k) => rows(c, CLOSED_BEFORE, params![r, k.closed_at, k.id, limit]),
         })
     }
 
@@ -885,6 +920,57 @@ mod tests {
             selected: vec!["A".into()],
             text: None,
         }]
+    }
+
+    #[test]
+    fn a_persons_agents_questions_are_theirs_alone() {
+        use crate::store::people::tests::approved;
+        let (_d, _c, st) = crate::store::people::tests::store();
+        let (g, _, _) = approved(&st, "Sam", [7; 32]);
+        let sam = st.viewer_of_grant(&g).unwrap().public_id;
+        let sams = st
+            .register_session(
+                DAEMON,
+                crate::RegisterSession {
+                    harness: "claude".into(),
+                    harness_session_id: Some("sam-h1".into()),
+                    cwd: "/w".into(),
+                    grant_id: Some(g),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .id;
+        let owners = session(&st, "claude", "h1");
+        let mine = st
+            .create_question(DAEMON, new(&sams, Source::Ask, None))
+            .unwrap()
+            .0;
+        let theirs = st
+            .create_question(DAEMON, new(&owners, Source::Ask, None))
+            .unwrap()
+            .0;
+        let ids = |r: Option<&str>| -> (Vec<String>, u32) {
+            let (rows, open) = st.list_questions(r, ListStatus::All, 50).unwrap();
+            (rows.into_iter().map(|q| q.id).collect(), open)
+        };
+        assert_eq!(ids(Some(&sam)), (vec![mine.id.clone()], 1));
+        assert_eq!(ids(None), (vec![theirs.id.clone()], 1));
+        assert!(st.question_of(&mine.id, Some(&sam)).is_ok());
+        assert!(matches!(
+            st.question_of(&mine.id, None),
+            Err(CoreError::NotFound)
+        ));
+        assert!(matches!(
+            st.question_of(&theirs.id, Some(&sam)),
+            Err(CoreError::NotFound)
+        ));
+        assert_eq!(st.question_recipient(&mine).unwrap(), Some(sam.clone()));
+        assert_eq!(st.question_recipient(&theirs).unwrap(), None);
+        st.close_question(DAEMON, &mine.id, Close::Decline).unwrap();
+        let closed = st.list_closed_questions(Some(&sam), None, 10).unwrap();
+        assert_eq!(closed.len(), 1);
+        assert!(st.list_closed_questions(None, None, 10).unwrap().is_empty());
     }
 
     #[test]
@@ -1027,13 +1113,13 @@ mod tests {
         assert_eq!(q.status, Status::Released);
         assert!(q.closed_at.is_some());
         // About no artifact, it was never offered in Clax: its item is read.
-        assert_eq!(st.inbox_unread().unwrap(), 0);
+        assert_eq!(st.inbox_unread(None).unwrap(), 0);
         // About one, it was (Clax only mirrors it): its item is unread.
         let mut n = new(&s, Source::Hook, Some("t2"));
         n.released = true;
         n.artifact_id = Some(crate::store::test_util::artifact(&st, None).as_str().into());
         st.create_question(DAEMON, n).unwrap();
-        assert_eq!(st.inbox_unread().unwrap(), 1);
+        assert_eq!(st.inbox_unread(None).unwrap(), 1);
     }
 
     #[test]
@@ -1285,12 +1371,12 @@ mod tests {
             ids.push(q.id);
         }
         ids.reverse();
-        let first = st.list_closed_questions(None, 2).unwrap();
+        let first = st.list_closed_questions(None, None, 2).unwrap();
         let got: Vec<_> = first.iter().map(|q| q.id.clone()).collect();
         assert_eq!(got, ids[..2]);
         let cursor = ClosedCursor::after(first.last().unwrap()).unwrap();
         let rest: Vec<_> = st
-            .list_closed_questions(Some(&cursor), 10)
+            .list_closed_questions(None, Some(&cursor), 10)
             .unwrap()
             .into_iter()
             .map(|q| q.id)
@@ -1312,19 +1398,19 @@ mod tests {
             .create_question(DAEMON, new(&s, Source::Ask, None))
             .unwrap();
         st.close_question(DAEMON, &q1.id, Close::Decline).unwrap();
-        let (open, n) = st.list_questions(ListStatus::Open, 50).unwrap();
+        let (open, n) = st.list_questions(None, ListStatus::Open, 50).unwrap();
         let ids: Vec<_> = open.iter().map(|q| q.id.clone()).collect();
         assert_eq!((ids, n), (vec![q2.id.clone(), q3.id.clone()], 2));
-        let (closed, _) = st.list_questions(ListStatus::Closed, 50).unwrap();
+        let (closed, _) = st.list_questions(None, ListStatus::Closed, 50).unwrap();
         assert_eq!(closed.len(), 1);
         assert_eq!(closed[0].id, q1.id);
-        let (all, n) = st.list_questions(ListStatus::All, 50).unwrap();
+        let (all, n) = st.list_questions(None, ListStatus::All, 50).unwrap();
         let ids: Vec<_> = all.iter().map(|q| q.id.clone()).collect();
         assert_eq!(ids, vec![q3.id.clone(), q2.id.clone(), q1.id.clone()]);
         assert_eq!(n, 2);
-        let (two, _) = st.list_questions(ListStatus::All, 2).unwrap();
+        let (two, _) = st.list_questions(None, ListStatus::All, 2).unwrap();
         assert_eq!(two.len(), 2, "the open page fills the limit");
-        let (one, n) = st.list_questions(ListStatus::Open, 1).unwrap();
+        let (one, n) = st.list_questions(None, ListStatus::Open, 1).unwrap();
         assert_eq!((one.len(), n), (1, 2));
     }
 

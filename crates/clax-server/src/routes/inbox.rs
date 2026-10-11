@@ -209,7 +209,7 @@ pub async fn list(
     let job = move |db: &clax_core::Store| {
         let (rows, next) = db.inbox_list(&iq)?;
         let items = inbox_views(db, &rows)?;
-        let unread = db.inbox_unread()?;
+        let unread = db.inbox_unread(None)?;
         let mut out = json!({
             "items": items,
             "next_cursor": next.map(|n| n.to_string()),
@@ -247,7 +247,7 @@ pub async fn summary(
     d.refuse_agents()?;
     let out = s
         .store_call(move |db| {
-            let (open, _) = db.list_questions(ListStatus::Open, SUMMARY_QUESTIONS)?;
+            let (open, _) = db.list_questions(None, ListStatus::Open, SUMMARY_QUESTIONS)?;
             let questions = open
                 .iter()
                 .map(|q| crate::questions::view(db, q))
@@ -259,7 +259,7 @@ pub async fn summary(
                 ..InboxQuery::default()
             })?;
             Ok(json!({
-                "unread": db.inbox_unread()?,
+                "unread": db.inbox_unread(None)?,
                 "questions": questions,
                 "latest": inbox_views(db, &rows)?,
             }))
@@ -291,7 +291,7 @@ pub async fn get_one(
     let id = item_id(p)?;
     let item = s
         .store_call(move |db| {
-            let i = db.inbox_item(&id)?.ok_or(CoreError::NotFound)?;
+            let i = db.inbox_item(&id, None)?.ok_or(CoreError::NotFound)?;
             inbox_view(db, &i)
         })
         .await?;
@@ -302,10 +302,10 @@ pub async fn get_one(
 async fn mark_one(s: AppState, id: String, read: bool) -> Result<Json<Value>, ApiError> {
     let out = s
         .store_call(move |db| {
-            db.inbox_item(&id)?.ok_or(CoreError::NotFound)?;
-            db.inbox_mark(std::slice::from_ref(&id), read)?;
-            let i = db.inbox_item(&id)?.ok_or(CoreError::NotFound)?;
-            Ok(json!({"item": inbox_view(db, &i)?, "unread": db.inbox_unread()?}))
+            db.inbox_item(&id, None)?.ok_or(CoreError::NotFound)?;
+            db.inbox_mark(std::slice::from_ref(&id), read, None)?;
+            let i = db.inbox_item(&id, None)?.ok_or(CoreError::NotFound)?;
+            Ok(json!({"item": inbox_view(db, &i)?, "unread": db.inbox_unread(None)?}))
         })
         .await?;
     Ok(Json(out))
@@ -395,10 +395,10 @@ pub async fn read_many(
     let out = s
         .store_call(move |db| {
             let marked = match &mark {
-                Mark::Ids(ids) => db.inbox_mark(ids, true)?,
+                Mark::Ids(ids) => db.inbox_mark(ids, true, None)?,
                 Mark::All(q) => db.inbox_mark_all(q)?,
             };
-            Ok(json!({"marked": marked, "unread": db.inbox_unread()?}))
+            Ok(json!({"marked": marked, "unread": db.inbox_unread(None)?}))
         })
         .await?;
     Ok(Json(out))
