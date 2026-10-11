@@ -123,7 +123,7 @@ reason.
 | M20 | **Approving, rights, elevation, narrowing and connecting need a browser.** Deciding a request, approving directly, revoking an approval, setting rights, elevating, narrowing, making or revoking invites, and approving, denying or revoking grants take a browser credential (the owner cookie, the extension, or a connected person's cookie) on a same-origin request (`SameOrigin`); the daemon token alone is refused (403 `browser_required`). The CLI prints the People link for these. | Approvals then cannot be made through the Clax tools, the CLI, or by any remote agent, which holds no token and no browser cookie. An owner agent with shell access is not stopped: it runs as the owner's user and can fetch the owner's browser credential (`/api/token`), so it is trusted at the owner's level (§21.3); no mechanism can hold against a process of the same user. |
 | M21 | **The inbox gains a recipient.** `inbox_items.recipient` is the person it is for (NULL for the owner). | Questions, approvals and attention are per person; the owner's inbox stays as it is. |
 | M22 | **Agent names are live-unique tokens.** `[a-z0-9][a-z0-9._-]{0,31}`, unique (ignoring case) among live sessions, never a reserved word or a person's name in token form; derived from repo and branch, set by the agent (`status {name}`), renamed by its person or the owner (§11). | `@name` must reach exactly one agent and never be confused with a person's mention. |
-| M23 | **The thread's owner agent is its target session.** `threads.target_session_id` is the owner: set by a send with `to`, `@name`, handoff, or by the first session to take a delivery of an untargeted send (O8), which deletes the other sessions' undelivered rows for it. Released on the owning session's end, its grant's revocation, or by the agent. | The existing column already means "where this thread goes". |
+| M23 | **The thread's owner agent is its target session.** `threads.target_session_id` is the owner: set by a send with `to`, `@name`, handoff, or by an implicit take: the first session to take a delivery of an untargeted send, or the first reply, by an agent of the person who sent the comment taken (O8 decides first take among one person's agents), which deletes that person's other agents' undelivered rows for it. Another person's agent becomes the owner only by a send naming it or a handoff. Released on the owning session's end, its grant's revocation, or by the agent. | The existing column already means "where this thread goes". |
 | M24 | **Handoff is a tool** (`comments_handoff`); taken threads refuse other agents' replies and resolves (409 `thread_taken`). | Explicit, and two agents never answer one thread. |
 | M25 | **Session end cleans up** and makes one `ended` inbox note when the session owned threads or had open questions or approval requests. This reads O4's "one inbox note" as one note per ended session that had something to clean up; a session that ends with nothing open makes none. | O4, interpreted so idle sessions make no noise. |
 | M26 | **Another machine is a remote, not a second daemon.** `clax connect` writes `<home>/remote.json` and the key; while it exists, the shim, hooks, CLI and Pi extension talk to that daemon (signed) instead of starting one. | One switch in the client keeps every harness working unchanged. |
@@ -908,7 +908,7 @@ of the owner's agents only, a person their agents' (§18).
 | `POST /api/sessions/{id}/questions`, `GET …/questions/{qid}`, `…/withdraw`, `…/release`, `…/questions:terminal` | Own (questions and answers are the agent's person's) | ask |
 | `POST /api/sessions/{id}/approvals`, `GET …/approvals/{rid}` | Own (the poll answers 404 for a request about an artifact the agent may not read) | ask |
 | `POST /api/sessions/{id}/tool-calls`, `POST /api/sessions/{id}/tool-call-ids` | Own (the session's own calls; `produced` lists only that session's events, and an artifact the agent may not read is reported as none) | none |
-| `POST /api/sessions/{id}/threads/{tid}/handoff` | Filtered (returns the thread) | comments reply |
+| `POST /api/sessions/{id}/threads/{tid}/handoff` | Filtered (returns the thread; `owner.handle` only of the reader's own person's agents) | comments reply; with `to`, also comments send |
 | `GET /api/agents` | Own (the caller's person's agents; other people's agents by name and state only) | none |
 | `GET /api/approvals`, `GET /api/approvals/requests` | Own (the person's own approvals and requests; request views carry author, thread, count and state, never the withheld content; a person's agent's lists leave out those about an artifact its rights exclude) | none |
 | `POST /api/grants`, `POST/DELETE /api/grants/{gid}/continue`, `DELETE /api/grants/{gid}/token` | Grant | — |
@@ -1299,30 +1299,45 @@ again.
 ## 12. Thread ownership and handoff
 
 - **Owner.** `threads.target_session_id` (M23). Set by a send with `to`,
-  `@name`, a handoff, or, for an untargeted send, by the first
-  `take_feedback` (or in-band acknowledgement) that delivers one of the
-  thread's rows to a session: in
-  that transaction the session becomes the owner and every other session's
-  undelivered rows for the thread are deleted. A placeholder take does not
-  make an owner.
-- **Views.** Thread views carry `owner: {handle, name, person, live}`; an
-  agent reading a thread owned by another live agent sees `"taken_by":
-  "<name>"`.
+  `@name` or a handoff (explicit: they route, §10), or by an implicit
+  take. O8 decides first take among one person's agents, so an implicit
+  take competes only among the agents of the person who sent the comment
+  taken: the writer of a viewer comment when the writer is a connected
+  person, else the owner (the owner, LAN viewers who are not connected
+  and anonymous viewers reach the owner's agents, O6). An implicit take is
+  the first `take_feedback` (or in-band acknowledgement) that delivers one
+  of the thread's rows to such an agent, or the first reply by such an
+  agent that sees one of those comments: in that transaction the session
+  becomes the owner, the undelivered rows of that person's other agents
+  for the thread are deleted, and those agents' open `ask` requests for the
+  thread are withdrawn (`approval.withdraw`, reason `thread_taken`). Other
+  people's agents' rows stay. A placeholder take, a delivery to another
+  person's agent, and a reply by another person's agent or by an agent
+  that sees none of the thread's comments make no owner.
+- **Views.** Thread views carry `owner: {handle, name, person, live}`,
+  with `handle` only for the owner (by hand or in a browser) and for
+  readers of the owning agent's own person (§13: other people's agents by
+  name and state only); an agent reading a thread owned by another live
+  agent sees `"taken_by": "<name>"`.
 - **Refusals (M24).** An agent reply or resolve on a thread whose owner is
   another live session: 409 `thread_taken` with the owner's name (in the
   message and in `taken_by`). Threads with no owner, or an ended owner,
-  accept any agent with the rights (and the first such reply makes it the
-  owner).
+  accept any agent with the rights; the first reply takes the thread only
+  as an implicit take above.
 - **Handoff.** `comments_handoff {url_or_id, thread_id, to}` by the owner
-  agent (or any agent of its person when the owner has ended; any agent
-  when the thread has no owner): `to` names, by name or handle, a live
-  agent that may read the artifact, which is given a watch when it has none
-  (as `@name` gives); the thread is sent to it (§10, including the routing
-  request): it becomes the owner, other sessions' undelivered rows of the
-  thread are deleted, and it gets a row for every viewer comment it has
-  none for; the result is the filtered thread with its new owner. Without
-  `to`, the thread is released (owner cleared, undelivered rows untargeted,
-  one per comment). A non-owner: 409 `thread_taken`.
+  agent; while the thread has no live owner, by an agent of its ended
+  owner's person or by an agent that could take it implicitly (above). A
+  handoff with `to` also needs `comments send`. `to` names, by name or
+  handle, a live agent that may read and watch the artifact, which is
+  given a watch when it has none (as `@name` gives), only once nothing
+  refuses the handoff; the thread is sent to it (§10, including the
+  routing request): it becomes the owner, other sessions' undelivered rows
+  of the thread are deleted (their sessions' open `ask` requests for it
+  withdrawn, reason `thread_taken`), and it gets a row for every viewer
+  comment it has none for; the result is the filtered thread with its new
+  owner. Without `to`, the live owner releases the thread (owner cleared,
+  undelivered rows untargeted, one per comment); a release of a thread
+  with no live owner changes nothing. Anyone else: 409 `thread_taken`.
 - **People** take over by sending again.
 
 ## 13. Agent-aware attention
@@ -1602,7 +1617,7 @@ another machine, so no `remote` channel is added.
 | `agent.narrow`, `agent.elevate` | `session, access` | person, owner |
 | `approval.request` | `request_id, approver, author, artifact_id, thread_id, cause, count`; recorded when a request is made and when new withheld content raises its `count` | asking agent or router |
 | `approval.decide` | `request_id, scope` (`thread`, `artifact`, `everywhere` or `decline`); one per request an approval closes | approver |
-| `approval.withdraw` | `request_id, reason (thread_resolved\|thread_deleted\|artifact_deleted\|session_end\|person_revoked)` | whoever made the change that withdrew it |
+| `approval.withdraw` | `request_id, reason (thread_resolved\|thread_deleted\|artifact_deleted\|session_end\|person_revoked\|thread_taken)` | whoever made the change that withdrew it |
 | `approval.grant`, `approval.revoke` | `approval_id, approver, author, scope, created_via` (the artifact and thread in the event's IDs) | approver |
 | `content.withheld` | `feedback_ids[], author, thread_id, session` | system `daemon`, `for_actor` the agent (once per placeholder) |
 | `thread.take` | `thread_id, session, cause (send\|mention\|first_delivery\|reply\|handoff)` | sender, the taking agent, or the agent handing off |

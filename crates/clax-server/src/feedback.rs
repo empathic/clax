@@ -536,8 +536,9 @@ fn views_and_senders(
                 Some((harness, at)) => json!({"harness": harness, "at": at}),
                 None => Value::Null,
             };
+            // The owner's handle only through [`Vis`], to those it may name.
             if let Some(o) = &x.owner {
-                v["owner"] = json!(o);
+                v["owner"] = json!({"name": o.name, "person": o.person, "live": o.live});
             }
             if let Some(Some(p)) = live.get(t.artifact_id.as_str()) {
                 let path = x.live_path.as_deref().unwrap_or(&p.path);
@@ -577,6 +578,42 @@ pub struct VisFor {
     /// For an agent channel, its session (`None` when it names none):
     /// thread views say `taken_by` when another live agent owns one.
     pub agent: Option<Option<String>>,
+    /// Whose agents' handles thread views name in `owner`.
+    pub handles: Handles,
+}
+
+/// Whose agents' handles a caller's thread views name (spec §13: other
+/// people's agents by name and state only).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Handles {
+    /// Every agent's: the owner by hand or in a browser.
+    All,
+    /// The agents of this person (`None`: the owner's agents).
+    Of(Option<String>),
+    /// No agent's: LAN viewers and anonymous callers.
+    None,
+}
+
+impl Handles {
+    /// The handles `caller` may be shown.
+    pub fn of(caller: &crate::auth::Caller) -> Handles {
+        use crate::auth::Caller;
+        match caller {
+            Caller::Owner { .. } => Handles::All,
+            Caller::OwnerAgent { .. } => Handles::Of(None),
+            Caller::PersonAgent { person, .. } => Handles::Of(person.clone()),
+            Caller::Person { viewer } => Handles::Of(Some(viewer.public_id.clone())),
+            Caller::Viewer { .. } | Caller::Anonymous => Handles::None,
+        }
+    }
+
+    fn shows(&self, person: &Option<String>) -> bool {
+        match self {
+            Handles::All => true,
+            Handles::Of(p) => p == person,
+            Handles::None => false,
+        }
+    }
 }
 
 impl VisFor {
@@ -589,6 +626,7 @@ impl VisFor {
             agent: caller
                 .is_agent()
                 .then(|| caller.session().map(str::to_string)),
+            handles: Handles::of(caller),
         }
     }
 
@@ -603,6 +641,7 @@ impl VisFor {
                 None => None,
             },
             agent: self.agent.clone(),
+            handles: self.handles.clone(),
         })
     }
 }
@@ -614,6 +653,7 @@ pub struct Vis {
     vis: Option<Visibility>,
     /// For an agent channel, its session, if it names one.
     agent: Option<Option<String>>,
+    handles: Handles,
 }
 
 impl Vis {
@@ -642,6 +682,13 @@ impl Vis {
         with_path: bool,
     ) -> clax_core::Result<Vec<Value>> {
         let (mut views, senders, owners) = views_and_senders(st, threads, codex_push, with_path)?;
+        for (view, owner) in views.iter_mut().zip(&owners) {
+            if let Some(o) = owner
+                && self.handles.shows(&o.person)
+            {
+                view["owner"]["handle"] = json!(o.handle);
+            }
+        }
         if let Some(me) = &self.agent {
             for (view, owner) in views.iter_mut().zip(&owners) {
                 if let Some(o) = owner

@@ -1007,13 +1007,12 @@ struct HandoffBody {
 }
 
 /// The live session a handoff's `to` names on artifact `id`: an agent's
-/// name (ignoring case) or handle; given a direct watch when it has none,
-/// as `@name` gives (recorded under `audit`). 400 `unknown_agent` when it
-/// names no live agent, or one that may not watch the artifact; 400
+/// name (ignoring case) or handle. 400 `unknown_agent` when it names no
+/// live agent, or one that may not watch the artifact; 400
 /// `agent_cannot_read` when it names one that may not read it (spec §10).
+/// [`Store::handoff`] gives it its watch, once nothing refuses the handoff.
 fn handoff_target(
     st: &Store,
-    audit: &AuditCtx,
     id: &ArtifactId,
     to: &str,
     live_page: bool,
@@ -1039,22 +1038,23 @@ fn handoff_target(
         Reach::CannotRead => return Err(cannot_read(&name)),
         Reach::No => return Err(unknown()),
     }
-    st.ensure_watch(audit, &sid, id)?;
     Ok(sid)
 }
 
 /// `POST /api/sessions/<sid>/threads/<tid>/handoff {to?}` (spec §12,
 /// `comments_handoff`): session `sid` hands thread `tid` to the live agent
 /// `to` names (its name or handle), or, without `to`, releases it. `sid`
-/// must own the thread, or, when its owner has ended, be an agent of the
-/// same person (409 `thread_taken` otherwise, naming the owner); a thread
-/// with no owner may be handed off by any agent. A handoff sends the thread
-/// to `to` ([`Store::handoff`]), making a routing request when `to`'s
-/// person has not approved an author of its comments (M18); `to` must be
-/// an agent that may read and watch the artifact (400 `agent_cannot_read`,
-/// `unknown_agent`). A release clears the owner and untargets the thread's
-/// undelivered rows. Answers `{thread}`, filtered for the caller, with its
-/// new `owner`.
+/// must own the thread; or, while it has no live owner, be an agent of its
+/// ended owner's person or one whose person sent a comment of the thread
+/// it sees (O8); 409 `thread_taken` otherwise. A handoff needs `comments
+/// send` as well as `comments reply`, and sends the thread to `to`
+/// ([`Store::handoff`]), giving it a watch when it has none and making a
+/// routing request when `to`'s person has not approved an author of its
+/// comments (M18); `to` must be an agent that may read and watch the
+/// artifact (400 `agent_cannot_read`, `unknown_agent`). A release by the
+/// owner clears the owner and untargets the thread's undelivered rows; a
+/// release of a thread with no live owner changes nothing. Answers
+/// `{thread}`, filtered for the caller, with its new `owner`.
 pub async fn handoff(
     State(s): State<AppState>,
     TokenOrAgent(a): TokenOrAgent<crate::agent::ThreadHandoff>,
@@ -1077,6 +1077,10 @@ pub async fn handoff(
     let id = a.named_artifact(&s, &aid).await?;
     a.also_needs(&s, (clax_core::rights::RightType::Comments, "reply"), &id)
         .await?;
+    if b.to.is_some() {
+        a.also_needs(&s, (clax_core::rights::RightType::Comments, "send"), &id)
+            .await?;
+    }
     sees_threads(&a, &s, &id).await?;
     let ctx = s.feedback_ctx();
     let with_path = a.holds_token();
@@ -1099,7 +1103,7 @@ pub async fn handoff(
             st.check_may_hand_off(&tid, &sid)?;
             let audit = audit.for_session(st, &sid)?;
             let to = match b.to.as_deref() {
-                Some(to) => Some(handoff_target(st, &audit, &id, to, live_page)?),
+                Some(to) => Some(handoff_target(st, &id, to, live_page)?),
                 None => None,
             };
             let (t, touched, _) = st.handoff(&audit, &tid, &sid, to.as_deref())?;
