@@ -464,6 +464,8 @@ pub enum Obj<'a> {
     Invite(&'a str),
     /// An approval, by its ID.
     Approval(&'a str),
+    /// A request for an approval, by its ID.
+    ApprovalRequest(&'a str),
     /// A history row the backfill skipped: table, row ID.
     BackfillRow(&'a str, &'a str),
 }
@@ -493,6 +495,7 @@ pub fn clax_uri(install: &str, obj: Obj<'_>) -> String {
         Obj::Grant(g) => format!("{base}/grant/{}", seg(g)),
         Obj::Invite(i) => format!("{base}/invite/{}", seg(i)),
         Obj::Approval(i) => format!("{base}/approval/{}", seg(i)),
+        Obj::ApprovalRequest(i) => format!("{base}/approval_request/{}", seg(i)),
         Obj::BackfillRow(t, r) => format!("{base}/backfill/{}/{}", seg(t), seg(r)),
     }
 }
@@ -694,6 +697,9 @@ impl Event<'_> {
             Some(K::AgentName) => s.map(Obj::Session),
             Some(K::ApprovalGrant | K::ApprovalRevoke) => {
                 self.str("approval_id").map(Obj::Approval)
+            }
+            Some(K::ApprovalRequest | K::ApprovalDecide | K::ApprovalWithdraw) => {
+                self.str("request_id").map(Obj::ApprovalRequest)
             }
             _ => None,
         };
@@ -1208,6 +1214,23 @@ impl Event<'_> {
             Some(K::GrantNarrow) => format!("Narrowed grant {}", self.show("grant_id")),
             Some(K::PersonRights) => format!("Set the rights of person {}", self.show("person")),
             Some(K::PersonRevoke) => format!("Revoked person {}", self.show("person")),
+            Some(K::ApprovalRequest) => format!(
+                "Asked {} to let {}'s content reach their agents ({}, {})",
+                self.str("approver").unwrap_or("the owner"),
+                self.show("author"),
+                self.show("cause"),
+                self.show("count")
+            ),
+            Some(K::ApprovalDecide) => format!(
+                "Decided approval request {} ({})",
+                self.show("request_id"),
+                self.show("scope")
+            ),
+            Some(K::ApprovalWithdraw) => format!(
+                "Withdrew approval request {} ({})",
+                self.show("request_id"),
+                self.show("reason")
+            ),
             Some(K::ApprovalGrant) => format!(
                 "Let {}'s content reach the agents of {} ({})",
                 self.show("author"),

@@ -1547,6 +1547,7 @@ impl Store {
                 params![id, now],
             )?;
             if n > 0 {
+                super::approvals::withdraw_person_in(self, tx, ctx, public_id, &now)?;
                 let rec = AuditRecord::new(AuditKind::PersonRevoke, now.as_str())
                     .with("person", public_id);
                 self.record_audit(tx, ctx, rec)?;

@@ -140,8 +140,21 @@ impl Store {
             let mut touched = Touched::default();
             let (mut sent, mut unchanged) = (Vec::new(), Vec::new());
             let mut feedback_ids = Vec::new();
+            let mut requests = Vec::new();
             for t in &ids {
-                let rows = send_in(tx, t, Some(&batch_id), target, &mut touched, &self.now())?.feedback_ids;
+                let made = send_in(tx, t, Some(&batch_id), target, &mut touched, &self.now())?;
+                // A batch routes each thread to the agents it reaches (M18).
+                requests.extend(super::approvals::route_in(
+                    self,
+                    tx,
+                    ctx,
+                    t,
+                    &made.targets,
+                    super::approvals::Route::Send,
+                    false,
+                    &self.now(),
+                )?);
+                let rows = made.feedback_ids;
                 if rows.is_empty() {
                     unchanged.push(t.clone());
                 } else {
@@ -159,7 +172,7 @@ impl Store {
             for t in &sent {
                 tx.execute("INSERT INTO batch_threads (batch_id, thread_id) VALUES (?1, ?2)", params![batch_id, t])?;
             }
-            let rec = super::feedback::send_record(
+            let mut rec = super::feedback::send_record(
                 &self.now(),
                 aid.as_str(),
                 None,
@@ -168,6 +181,9 @@ impl Store {
                 Some(&batch_id),
                 sent.clone(),
             );
+            if !requests.is_empty() {
+                rec = rec.with("approval_request_ids", requests);
+            }
             self.record_audit(tx, ctx, rec)?;
             let batch = FeedbackBatch { id: batch_id, size: sent.len() as u32, note, sent_by: b.sent_by, sender: Some(b.sender) };
             Ok(BatchResult { batch, sent, unchanged, touched })

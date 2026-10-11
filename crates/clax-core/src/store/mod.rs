@@ -88,6 +88,9 @@ pub const OPTIMIZE_INTERVAL: std::time::Duration = std::time::Duration::from_sec
 /// The installed inbox listener, cloned out of its lock to be called.
 type SharedListener = Arc<dyn Fn(Vec<InboxChange>) + Send + Sync>;
 
+/// The installed approval request listener, cloned out of its lock.
+type RequestListener = Arc<dyn Fn(Vec<i64>) + Send + Sync>;
+
 pub struct Store {
     home: Home,
     writer: Writer,
@@ -99,6 +102,11 @@ pub struct Store {
     /// by the write connection's update hook and dropped by its rollback hook.
     inbox_changes: Arc<Mutex<Vec<InboxChange>>>,
     inbox_listener: RwLock<Option<SharedListener>>,
+    /// The rows of `approval_requests` made or changed in the write
+    /// transaction under way, recorded by the update hook as `inbox_changes`
+    /// are, and the listener told of them after it commits.
+    request_changes: Arc<Mutex<Vec<i64>>>,
+    request_listener: RwLock<Option<RequestListener>>,
     /// Audit recording state: the nudge and the install ID.
     audit: audit::AuditState,
     /// The visibility generation and its listener (spec
@@ -165,7 +173,9 @@ impl Store {
         ))?;
         // Installed after the migrations, so migration 21's history is not announced.
         let inbox_changes = Arc::new(Mutex::new(Vec::new()));
+        let request_changes = Arc::new(Mutex::new(Vec::new()));
         let made = inbox_changes.clone();
+        let requested = request_changes.clone();
         conn.update_hook(Some(
             move |action: rusqlite::hooks::Action, _db: &str, table: &str, rowid: i64| {
                 if table == "inbox_items" {
@@ -173,11 +183,20 @@ impl Store {
                         seq: rowid,
                         made: action == rusqlite::hooks::Action::SQLITE_INSERT,
                     });
+                } else if table == "approval_requests" {
+                    let mut r = requested.lock().unwrap();
+                    if !r.contains(&rowid) {
+                        r.push(rowid);
+                    }
                 }
             },
         ));
         let dropped = inbox_changes.clone();
-        conn.rollback_hook(Some(move || dropped.lock().unwrap().clear()));
+        let dropped_requests = request_changes.clone();
+        conn.rollback_hook(Some(move || {
+            dropped.lock().unwrap().clear();
+            dropped_requests.lock().unwrap().clear();
+        }));
         Ok(Store {
             home: home.clone(),
             writer: Writer::new(conn),
@@ -186,6 +205,8 @@ impl Store {
             shut_down: AtomicBool::new(false),
             inbox_changes,
             inbox_listener: RwLock::new(None),
+            request_changes,
+            request_listener: RwLock::new(None),
             audit: audit::AuditState::default(),
             visibility: approvals::VisState::default(),
             clock,
@@ -267,8 +288,9 @@ impl Store {
         &self,
         f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        let (out, changes, recorded) = self.writer.run(|conn| {
+        let (out, changes, requests, recorded) = self.writer.run(|conn| {
             self.inbox_changes.lock().unwrap().clear();
+            self.request_changes.lock().unwrap().clear();
             let _job = self.audit.begin();
             self.visibility.begin();
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -280,6 +302,7 @@ impl Store {
             Ok((
                 out,
                 std::mem::take(&mut *self.inbox_changes.lock().unwrap()),
+                std::mem::take(&mut *self.request_changes.lock().unwrap()),
                 self.audit.take_recorded(),
             ))
         })?;
@@ -293,7 +316,21 @@ impl Store {
                 listen(changes);
             }
         }
+        if !requests.is_empty() {
+            let listen = self.request_listener.read().unwrap().clone();
+            if let Some(listen) = listen {
+                listen(requests);
+            }
+        }
         Ok(out)
+    }
+
+    /// Installs `f`, called with the rows (`rowid`s) of `approval_requests`
+    /// made or changed by each committed write transaction that changed
+    /// any, outside the write turn and after the inbox listener. Replaces
+    /// any earlier listener.
+    pub fn set_request_listener(&self, f: impl Fn(Vec<i64>) + Send + Sync + 'static) {
+        *self.request_listener.write().unwrap() = Some(Arc::new(f));
     }
 
     /// Runs `f` on the write connection outside a transaction, for

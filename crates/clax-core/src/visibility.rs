@@ -334,58 +334,26 @@ impl Visibility {
                 view: View::All,
             });
         }
-        let approver = match &reader {
-            Some(Reader::Person(p)) => p.as_str(),
-            _ => "",
-        };
-        let approved = st.with_read(|c| {
-            let mut a = Approved {
-                owner: c
-                    .prepare_cached("SELECT public_id FROM viewers WHERE owner = 1")?
-                    .query_row([], |r| r.get(0))
-                    .optional()?,
-                ..Approved::default()
-            };
-            let mut stmt = c.prepare_cached(APPROVALS_OF)?;
-            let rows = stmt.query_map(params![approver], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, Option<String>>(2)?,
-                    r.get::<_, Option<String>>(3)?,
-                ))
-            })?;
-            let mut unconnected = false;
-            for row in rows {
-                let (author, scope, artifact, thread) = row?;
-                let key = if a.owner.as_deref() == Some(author.as_str()) {
-                    OWNER.to_string()
-                } else {
-                    author
-                };
-                unconnected |= key == UNCONNECTED;
-                match (scope.as_str(), artifact, thread) {
-                    ("everywhere", _, _) => {
-                        a.everywhere.insert(key);
-                    }
-                    ("artifact", Some(aid), _) => {
-                        a.artifacts.insert((key, aid));
-                    }
-                    ("thread", _, Some(tid)) => {
-                        a.threads.insert((key, tid));
-                    }
-                    _ => {}
-                }
-            }
-            if unconnected {
-                let mut stmt =
-                    c.prepare_cached("SELECT public_id FROM viewers WHERE person = 1")?;
-                for p in stmt.query_map([], |r| r.get::<_, String>(0))? {
-                    a.people.insert(p?);
-                }
-            }
-            Ok(a)
-        })?;
+        let approved = st.with_read(|c| approved_in(c, reader.as_ref()))?;
+        Ok(Visibility {
+            generation,
+            reader,
+            view: View::Filtered(Box::new(approved)),
+        })
+    }
+
+    /// What agents of `reader` may see, read on connection `c` (a write
+    /// transaction's, so its own uncommitted changes count): always the
+    /// filtered view, without [`Visibility::for_reader`]'s cached fast
+    /// path, which follows committed generations only. Its generation is
+    /// `generation`.
+    pub fn for_reader_in(
+        c: &rusqlite::Connection,
+        reader: &Reader,
+        generation: u64,
+    ) -> Result<Visibility> {
+        let reader = Some(reader.clone());
+        let approved = approved_in(c, reader.as_ref())?;
         Ok(Visibility {
             generation,
             reader,
@@ -487,6 +455,59 @@ impl Visibility {
             Author::Unconnected => a.covers(UNCONNECTED, artifact, thread),
         }
     }
+}
+
+/// What `reader`'s live approvals let through, read on `c`.
+fn approved_in(c: &rusqlite::Connection, reader: Option<&Reader>) -> Result<Approved> {
+    let approver = match reader {
+        Some(Reader::Person(p)) => p.as_str(),
+        _ => "",
+    };
+    let mut a = Approved {
+        owner: c
+            .prepare_cached("SELECT public_id FROM viewers WHERE owner = 1")?
+            .query_row([], |r| r.get(0))
+            .optional()?,
+        ..Approved::default()
+    };
+    let mut stmt = c.prepare_cached(APPROVALS_OF)?;
+    let rows = stmt.query_map(params![approver], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, Option<String>>(2)?,
+            r.get::<_, Option<String>>(3)?,
+        ))
+    })?;
+    let mut unconnected = false;
+    for row in rows {
+        let (author, scope, artifact, thread) = row?;
+        let key = if a.owner.as_deref() == Some(author.as_str()) {
+            OWNER.to_string()
+        } else {
+            author
+        };
+        unconnected |= key == UNCONNECTED;
+        match (scope.as_str(), artifact, thread) {
+            ("everywhere", _, _) => {
+                a.everywhere.insert(key);
+            }
+            ("artifact", Some(aid), _) => {
+                a.artifacts.insert((key, aid));
+            }
+            ("thread", _, Some(tid)) => {
+                a.threads.insert((key, tid));
+            }
+            _ => {}
+        }
+    }
+    if unconnected {
+        let mut stmt = c.prepare_cached("SELECT public_id FROM viewers WHERE person = 1")?;
+        for p in stmt.query_map([], |r| r.get::<_, String>(0))? {
+            a.people.insert(p?);
+        }
+    }
+    Ok(a)
 }
 
 /// A reader's live approvals (`?1`: the approver's public ID, `''` for the

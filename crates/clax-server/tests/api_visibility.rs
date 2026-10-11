@@ -653,13 +653,17 @@ async fn a_withheld_threads_approval_state_is_the_readers_request() {
     assert_eq!(state().await, "none");
     let db = rusqlite::Connection::open(w.ts.home.db_path()).unwrap();
     db.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
-    // Another approver's request is not Sam's.
-    db.execute(
-        "INSERT INTO approval_requests (id, approver, author, artifact_id, thread_id, cause, status, created_at, updated_at)
-         VALUES ('r0', NULL, ?1, ?2, ?3, 'routing', 'open', 'x', 'x')",
-        rusqlite::params![w.mia_public, aid, tid],
-    )
-    .unwrap();
+    // Another approver's request is not Sam's: Mia's batch reached the
+    // owner's agent, which asked the owner (spec §9.2, M18).
+    let owners: u32 = db
+        .query_row(
+            "SELECT count(*) FROM approval_requests
+             WHERE approver IS NULL AND author = ?1 AND thread_id = ?2 AND status = 'open'",
+            rusqlite::params![w.mia_public, tid],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(owners, 1);
     assert_eq!(state().await, "none");
     db.execute(
         "INSERT INTO approval_requests (id, approver, author, artifact_id, thread_id, cause, status, created_at, updated_at)
