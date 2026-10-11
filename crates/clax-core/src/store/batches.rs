@@ -141,8 +141,12 @@ impl Store {
             let (mut sent, mut unchanged) = (Vec::new(), Vec::new());
             let mut feedback_ids = Vec::new();
             let mut requests = Vec::new();
+            let mut took = Vec::new();
             for t in &ids {
                 let made = send_in(tx, t, Some(&batch_id), target, &mut touched, &self.now())?;
+                if made.took {
+                    took.push(t.clone());
+                }
                 // A batch naming an agent asks its person for each thread
                 // (M18); one naming none counts into open requests.
                 requests.extend(super::approvals::route_in(
@@ -190,6 +194,12 @@ impl Store {
                 rec = rec.with("approval_request_ids", requests);
             }
             self.record_audit(tx, ctx, rec)?;
+            if let Some(sid) = to.as_deref() {
+                for t in &took {
+                    let rec = super::feedback::take_record(&self.now(), aid.as_str(), t, sid, "send");
+                    self.record_audit(tx, ctx, rec)?;
+                }
+            }
             let batch = FeedbackBatch { id: batch_id, size: sent.len() as u32, note, sent_by: b.sent_by, sender: Some(b.sender) };
             Ok(BatchResult { batch, sent, unchanged, touched })
         })

@@ -161,6 +161,185 @@ pub(crate) fn thread_record(kind: AuditKind, at: &str, aid: &str, tid: &str) -> 
     r
 }
 
+/// A sent thread's owner agent (spec 2026-10-08 §12, M23): the session
+/// in its `target_session_id`, set by a send naming an agent, `@name`, a
+/// handoff, or the first session to take one of its rows.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct ThreadOwner {
+    /// Its session; never served (views name the handle).
+    #[serde(skip)]
+    pub session_id: String,
+    pub handle: String,
+    /// Its agent name (spec §11), when it has one.
+    pub name: Option<String>,
+    /// Its person's public ID; `None` for the owner's agents.
+    pub person: Option<String>,
+    /// Whether its session is live; an ended owner owns nothing.
+    pub live: bool,
+    #[serde(skip)]
+    pub harness: String,
+}
+
+impl ThreadOwner {
+    /// The name `taken_by` and `thread_taken` give: its agent name, else
+    /// its harness.
+    pub fn display(&self) -> &str {
+        self.name.as_deref().unwrap_or(&self.harness)
+    }
+}
+
+/// The owner session of each thread of `?1` (a JSON array).
+const OWNERS_OF_MANY: &str = "SELECT t.id, s.id, s.agent_handle, s.name, s.person,
+    s.ended_at IS NULL, s.harness FROM json_each(?1) j
+    CROSS JOIN threads t ON t.id = j.value
+    JOIN sessions s ON s.id = t.target_session_id";
+
+fn row_to_owner(r: &Row<'_>, at: usize) -> rusqlite::Result<ThreadOwner> {
+    Ok(ThreadOwner {
+        session_id: r.get(at)?,
+        handle: r.get(at + 1)?,
+        name: r.get(at + 2)?,
+        person: r.get(at + 3)?,
+        live: r.get(at + 4)?,
+        harness: r.get(at + 5)?,
+    })
+}
+
+/// Thread `tid`'s owner, live or ended, when it has one.
+pub(crate) fn owner_in(c: &Connection, tid: &str) -> Result<Option<ThreadOwner>> {
+    Ok(c.query_row(
+        "SELECT s.id, s.agent_handle, s.name, s.person, s.ended_at IS NULL, s.harness
+         FROM threads t JOIN sessions s ON s.id = t.target_session_id WHERE t.id = ?1",
+        params![tid],
+        |r| row_to_owner(r, 0),
+    )
+    .optional()?)
+}
+
+/// `Ok` when session `sid` may reply to or resolve thread `tid`: the
+/// thread has no owner, an ended owner, or `sid` as its owner (M24).
+///
+/// # Errors
+/// [`CoreError::ThreadTaken`] naming the owner when another live session
+/// owns it.
+pub(crate) fn check_not_taken_in(c: &Connection, tid: &str, sid: &str) -> Result<()> {
+    match owner_in(c, tid)? {
+        Some(o) if o.live && o.session_id != sid => Err(CoreError::ThreadTaken {
+            name: o.display().to_string(),
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// Thread `tid`'s owner, when session `from` may hand the thread off or
+/// release it (spec 2026-10-08 §12): `from` owns it; its owner has ended
+/// and `from` is an agent of the same person; or it has no owner.
+///
+/// # Errors
+/// [`CoreError::ThreadTaken`] naming the owner otherwise.
+pub(crate) fn check_may_hand_off_in(
+    c: &Connection,
+    tid: &str,
+    from: &str,
+) -> Result<Option<ThreadOwner>> {
+    let owner = owner_in(c, tid)?;
+    if let Some(o) = &owner {
+        let allowed = if o.live {
+            o.session_id == from
+        } else {
+            let person: Option<Option<String>> = c
+                .query_row(
+                    "SELECT person FROM sessions WHERE id = ?1",
+                    params![from],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            person.is_some_and(|p| p == o.person)
+        };
+        if !allowed {
+            return Err(CoreError::ThreadTaken {
+                name: o.display().to_string(),
+            });
+        }
+    }
+    Ok(owner)
+}
+
+/// Makes session `sid` the owner of thread `tid` when it has no live owner
+/// (M23), and answers whether it did: every other session's undelivered
+/// rows of the thread are deleted (those sessions are added to
+/// `touched.targets`, so their waits learn the rows are gone), and its
+/// untargeted undelivered rows become `sid`'s (or are deleted, for a
+/// comment `sid` has a row for already). Recorded as `thread.take {thread_id,
+/// session, cause}` under `ctx`. A thread with a live owner, `sid` or
+/// another, is left as it is.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn take_in(
+    st: &Store,
+    tx: &rusqlite::Transaction<'_>,
+    ctx: &AuditCtx,
+    tid: &str,
+    sid: &str,
+    cause: &str,
+    now: &str,
+    touched: &mut crate::feedback::Touched,
+) -> Result<bool> {
+    if owner_in(tx, tid)?.is_some_and(|o| o.live) {
+        return Ok(false);
+    }
+    let Some(aid) = tx
+        .query_row(
+            "SELECT artifact_id FROM threads WHERE id = ?1",
+            params![tid],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+    else {
+        return Err(CoreError::NotFound);
+    };
+    tx.execute(
+        "UPDATE threads SET target_session_id = ?2 WHERE id = ?1",
+        params![tid, sid],
+    )?;
+    let others: Vec<String> = {
+        let mut stmt = tx.prepare_cached(
+            "SELECT DISTINCT target_session_id FROM feedback
+             WHERE thread_id = ?1 AND delivered_at IS NULL
+               AND target_session_id IS NOT NULL AND target_session_id <> ?2",
+        )?;
+        stmt.query_map(params![tid, sid], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    tx.execute(
+        "DELETE FROM feedback WHERE thread_id = ?1 AND delivered_at IS NULL
+           AND target_session_id IS NOT NULL AND target_session_id <> ?2",
+        params![tid, sid],
+    )?;
+    tx.execute(
+        "DELETE FROM feedback WHERE thread_id = ?1 AND delivered_at IS NULL
+           AND target_session_id IS NULL
+           AND comment_id IN (SELECT comment_id FROM feedback WHERE thread_id = ?1 AND target_session_id = ?2)",
+        params![tid, sid],
+    )?;
+    let given = tx.execute(
+        "UPDATE feedback SET target_session_id = ?2, untargeted_at = NULL, push_failed_at = NULL,
+            notified_at = NULL
+         WHERE thread_id = ?1 AND delivered_at IS NULL AND target_session_id IS NULL",
+        params![tid, sid],
+    )?;
+    if given > 0 {
+        touched.targets.insert(sid.to_string());
+    }
+    touched.targets.extend(others);
+    touched.threads.insert((aid.clone(), tid.to_string()));
+    st.record_audit(
+        tx,
+        ctx,
+        super::feedback::take_record(now, &aid, tid, sid, cause),
+    )?;
+    Ok(true)
+}
+
 /// Threads of live artifacts; callers append `AND ...` conditions.
 pub(crate) const THREAD_SELECT: &str =
     "SELECT t.id, t.artifact_id, t.version_n, t.anchor_json, t.status,
@@ -248,6 +427,8 @@ pub struct ThreadExtras {
     pub live_path: Option<String>,
     /// The thread's moves between live pages, oldest first.
     pub moves: Vec<ThreadMove>,
+    /// Its owner agent, live or ended, when it has one (M23).
+    pub owner: Option<ThreadOwner>,
 }
 
 struct ThreadRow {
@@ -728,6 +909,73 @@ impl Store {
         })
     }
 
+    /// Thread `tid`'s owner agent, live or ended, when it has one (spec
+    /// 2026-10-08 §12).
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn thread_owner(&self, tid: &str) -> Result<Option<ThreadOwner>> {
+        self.with_read(|c| owner_in(c, tid))
+    }
+
+    /// `Ok` when session `sid` may reply to or resolve thread `tid` (M24):
+    /// it has no owner, an ended one, or `sid`.
+    ///
+    /// # Errors
+    /// [`CoreError::ThreadTaken`] naming the owner otherwise.
+    pub fn check_not_taken(&self, tid: &str, sid: &str) -> Result<()> {
+        self.with_read(|c| check_not_taken_in(c, tid, sid))
+    }
+
+    /// `Ok` when session `from` may hand thread `tid` off or release it
+    /// ([`Store::handoff`]).
+    ///
+    /// # Errors
+    /// [`CoreError::ThreadTaken`] naming the owner otherwise.
+    pub fn check_may_hand_off(&self, tid: &str, from: &str) -> Result<()> {
+        self.with_read(|c| check_may_hand_off_in(c, tid, from).map(|_| ()))
+    }
+
+    /// An agent reply `c` on thread `tid` from the session `c` names
+    /// (`via_session_id`), in one transaction with the ownership rules
+    /// (M23, M24): refused with [`CoreError::ThreadTaken`] when another
+    /// live session owns the thread; on a thread with no live owner the
+    /// replying session becomes its owner (`thread.take`, cause `reply`).
+    /// With `addressed` (the live page and the harness), it also records the
+    /// thread's pending address as [`Store::add_addressed_reply`] does.
+    /// Returns the comment and the sessions whose rows the take removed.
+    ///
+    /// # Errors
+    /// As [`Store::add_comment`]; `unknown_session` without a session;
+    /// `NotFound` when `addressed` names another artifact.
+    pub fn add_agent_reply(
+        &self,
+        ctx: &AuditCtx,
+        tid: &str,
+        c: NewComment,
+        addressed: Option<(&ArtifactId, &str)>,
+    ) -> Result<(Comment, crate::feedback::Touched)> {
+        let Some(sid) = c.via_session_id.clone() else {
+            return Err(CoreError::invalid(
+                "unknown_session",
+                "an agent reply comes from a session",
+            ));
+        };
+        let mut touched = crate::feedback::Touched::default();
+        let comment = self.add_comment_then(ctx, tid, c, |tx, t| {
+            check_not_taken_in(tx, tid, &sid)?;
+            if let Some((id, harness)) = addressed {
+                if t.artifact_id != id.as_str() {
+                    return Err(CoreError::NotFound);
+                }
+                super::live::mark_pending_in(tx, id, tid, "explicit", harness, &self.now())?;
+            }
+            take_in(self, tx, ctx, tid, &sid, "reply", &self.now(), &mut touched)?;
+            Ok(())
+        })?;
+        Ok((comment, touched))
+    }
+
     /// [`Store::add_comment`], running `then` with the thread in the
     /// comment's transaction; an error from `then` writes nothing.
     fn add_comment_then(
@@ -996,6 +1244,13 @@ impl Store {
                 pending.insert(r.get(0)?, (r.get(1)?, r.get(2)?));
             }
             drop(rows);
+            let mut owners: HashMap<String, ThreadOwner> = HashMap::new();
+            let mut stmt = c.prepare_cached(OWNERS_OF_MANY)?;
+            let mut rows = stmt.query(params![arr])?;
+            while let Some(r) = rows.next()? {
+                owners.insert(r.get(0)?, row_to_owner(r, 1)?);
+            }
+            drop(rows);
             let mut names: HashMap<String, Option<String>> = HashMap::new();
             if !resolvers.is_empty() {
                 let mut stmt = c.prepare_cached(NAMES_OF_MANY)?;
@@ -1016,6 +1271,7 @@ impl Store {
                         .and_then(|by| by.strip_prefix("viewer:"))
                         .and_then(|p| names.get(p).cloned().flatten()),
                     addressed_pending: pending.remove(&t.id),
+                    owner: owners.remove(&t.id),
                     live_path: live_paths.remove(&t.id),
                     moves: moves
                         .remove(&t.id)
@@ -1100,6 +1356,38 @@ impl Store {
             }
             if live {
                 super::live::mark_pending_in(tx, id, tid, "resolve", harness, &self.now())?;
+                Ok(None)
+            } else {
+                super::changelog::link_on_resolve_in(tx, tid, &self.now())
+            }
+        })
+    }
+
+    /// The resolve of thread `tid` of artifact `id` by agent session `sess`
+    /// ([`Store::resolve_thread_addressed`], by `agent:<harness>`, its
+    /// person the resolver's), refused with [`CoreError::ThreadTaken`] in
+    /// the resolve's transaction when another live session owns the
+    /// thread (M24).
+    ///
+    /// # Errors
+    /// As [`Store::resolve_thread_addressed`], and `thread_taken`.
+    pub fn resolve_thread_as(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        tid: &str,
+        sess: &crate::model::Session,
+        live: bool,
+    ) -> Result<(Thread, crate::feedback::Touched)> {
+        let by = format!("agent:{}", sess.harness);
+        let person = sess.person.as_deref().unwrap_or(super::approvals::OWNER);
+        self.resolve_thread_then(ctx, tid, &by, Some(person), |tx, t| {
+            check_not_taken_in(tx, tid, &sess.id)?;
+            if t.artifact_id != id.as_str() {
+                return Err(CoreError::NotFound);
+            }
+            if live {
+                super::live::mark_pending_in(tx, id, tid, "resolve", &sess.harness, &self.now())?;
                 Ok(None)
             } else {
                 super::changelog::link_on_resolve_in(tx, tid, &self.now())

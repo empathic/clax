@@ -429,10 +429,21 @@ async fn once_the_target_ends_later_comments_go_to_everyone_and_a_send_without_t
         .unwrap();
     assert_eq!(res.status(), 200, "a send without to");
     reply(&ts, &aid, &tids[1], "for everyone").await;
+    let mut to: Vec<Option<String>> = ts
+        .store
+        .feedback_rows(&tids[1])
+        .unwrap()
+        .into_iter()
+        .filter(|f| f.delivered_at.is_none())
+        .map(|f| f.target_session_id)
+        .collect();
+    to.sort();
+    let mut want = vec![Some(owner.clone()), Some(second.clone())];
+    want.sort();
+    assert_eq!(to, want, "no target: the owner and every live watcher");
     assert_eq!(taken(&ts, &owner).await, ["for everyone"]);
-    assert_eq!(
-        taken(&ts, &second).await,
-        ["for everyone"],
-        "no target: the owner and every live watcher"
+    assert!(
+        taken(&ts, &second).await.is_empty(),
+        "the first take owns the thread (M23)"
     );
 }

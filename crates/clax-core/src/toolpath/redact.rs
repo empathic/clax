@@ -309,6 +309,8 @@ fn body_class(kind: &str, field: &str) -> Class {
         ) => Safe,
         ("approval.decide", "request_id" | "scope") => Safe,
         ("approval.withdraw", "request_id" | "reason") => Safe,
+        ("thread.take", "thread_id" | "session" | "cause") => Safe,
+        ("thread.release", "thread_id" | "session" | "reason") => Safe,
         ("backfill.skip", "reason") => Text,
         ("backfill.skip", "table" | "row_id") => Safe,
         _ => Class::Unclassified,

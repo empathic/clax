@@ -4,7 +4,7 @@
 use super::Store;
 use super::approvals::Route;
 use super::artifacts::{SELECT_VERSION, live_artifact_in, row_to_version};
-use super::threads::{AUTHOR_VIEWER, thread_in, thread_record};
+use super::threads::{AUTHOR_VIEWER, take_in, thread_in, thread_record};
 use crate::anchor::Anchor;
 use crate::audit::{AuditCtx, AuditKind, AuditRecord};
 use crate::feedback::{
@@ -165,6 +165,9 @@ pub(crate) struct Sent {
     pub changed: bool,
     /// The live sessions the send reached.
     pub targets: Vec<String>,
+    /// The send named one agent that did not own the thread before: it
+    /// is the new owner (M23), for a `thread.take` record.
+    pub took: bool,
 }
 
 /// The stored target session of thread `thread_id`.
@@ -276,6 +279,7 @@ pub(crate) fn send_in(
         .insert((t.artifact_id.clone(), thread_id.to_string()));
     Ok(Sent {
         changed: !t.sent_to_agent || retargeted || !inserted.is_empty(),
+        took: retargeted && matches!(target, SendTarget::Agent(_)),
         feedback_ids: inserted,
         to,
         targets,
@@ -303,6 +307,17 @@ pub(super) fn send_record(
     r = r.with("thread_ids", thread_ids);
     r.ids.artifact = Some(aid.to_string());
     r.ids.thread = tid.map(str::to_string);
+    r
+}
+
+/// The `thread.take` record of a send that named `sid` (cause `send`), when
+/// it made `sid` the owner of thread `tid` of artifact `aid`.
+pub(super) fn take_record(at: &str, aid: &str, tid: &str, sid: &str, cause: &str) -> AuditRecord {
+    let mut r = thread_record(AuditKind::ThreadTake, at, aid, tid)
+        .with("thread_id", tid)
+        .with("session", sid)
+        .with("cause", cause);
+    r.ids.session = Some(sid.to_string());
     r
 }
 
@@ -762,6 +777,11 @@ impl Store {
                 rec = rec.with("approval_request_ids", requests.clone());
             }
             self.record_audit(tx, ctx, rec)?;
+            if sent.took
+                && let Some(sid) = sent.to.as_deref()
+            {
+                self.record_audit(tx, ctx, take_record(&now, &aid, thread_id, sid, "send"))?;
+            }
             Ok(requests)
         })?;
         let thread = self.get_thread(thread_id)?.ok_or(CoreError::NotFound)?;
@@ -805,6 +825,7 @@ impl Store {
                     format!("session {sid} neither owns nor watches this artifact"),
                 ));
             }
+            let took = stored_target(tx, thread_id)?.as_deref() != Some(first.as_str());
             tx.execute(
                 "UPDATE threads SET sent_to_agent = 1, target_session_id = ?2 WHERE id = ?1",
                 params![thread_id, first],
@@ -826,6 +847,10 @@ impl Store {
                 }
             }
             super::approvals::route_in(self, tx, ctx, thread_id, sids, Route::Send, false, &now)?;
+            if took {
+                let rec = take_record(&now, &t.artifact_id, thread_id, first, "mention");
+                self.record_audit(tx, ctx, rec)?;
+            }
             touched.targets.extend(sids.iter().cloned());
             touched
                 .threads
@@ -834,6 +859,168 @@ impl Store {
         })?;
         let thread = self.get_thread(thread_id)?.ok_or(CoreError::NotFound)?;
         Ok((thread, touched))
+    }
+
+    /// Hands thread `tid` from session `from` to session `to`, or, with no
+    /// `to`, releases it (spec 2026-10-08 §12, `comments_handoff`), in one
+    /// transaction. `from` must own it, or, when its owner has ended, be
+    /// an agent of the same person; a thread with no owner may be handed
+    /// off by any agent.
+    ///
+    /// A handoff sends the thread to `to`, a live owner or watcher of the
+    /// artifact (§10): `to` becomes the owner (`thread.take`, cause
+    /// `handoff`), every other session's undelivered rows of the thread are
+    /// deleted and its untargeted ones become `to`'s, and `to` gets a row
+    /// for every viewer comment it has none for, so it receives the whole
+    /// thread. It routes as a send naming `to` (M18): when `to`'s person
+    /// has not approved an author of the thread's comments, a request is
+    /// made or joined; their IDs are returned. Recorded as `thread.send`
+    /// (with `approval_request_ids` when there are any).
+    ///
+    /// A release clears the owner and untargets the thread's undelivered
+    /// rows (one per comment), for the next session that publishes or
+    /// watches the artifact; recorded as `thread.release {thread_id,
+    /// session, reason: explicit}`, `session` the owner released (`from`
+    /// when there was none).
+    ///
+    /// # Errors
+    /// `NotFound` when the thread or its artifact is gone;
+    /// [`CoreError::ThreadTaken`] for a caller that may not hand it off;
+    /// `thread_resolved` for a handoff of a resolved thread; `unknown_agent`
+    /// when `to` is not a live owner or watcher of the artifact. Nothing is
+    /// written then.
+    pub fn handoff(
+        &self,
+        ctx: &AuditCtx,
+        tid: &str,
+        from: &str,
+        to: Option<&str>,
+    ) -> Result<(Thread, Touched, Vec<String>)> {
+        let mut touched = Touched::default();
+        let requests = self.with_tx(|tx| {
+            let t = thread_in(tx, tid)?.ok_or(CoreError::NotFound)?;
+            let aid = t.artifact_id.clone();
+            let now = self.now();
+            let owner = super::threads::check_may_hand_off_in(tx, tid, from)?;
+            // The sessions whose undelivered rows change learn of it.
+            let holders: Vec<String> = {
+                let mut stmt = tx.prepare_cached(
+                    "SELECT DISTINCT target_session_id FROM feedback
+                     WHERE thread_id = ?1 AND delivered_at IS NULL AND target_session_id IS NOT NULL",
+                )?;
+                stmt.query_map(params![tid], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            touched.threads.insert((aid.clone(), tid.to_string()));
+            let Some(to) = to else {
+                tx.execute(
+                    "UPDATE threads SET target_session_id = NULL WHERE id = ?1",
+                    params![tid],
+                )?;
+                tx.execute(
+                    "UPDATE feedback SET target_session_id = NULL, untargeted_at = ?2,
+                        notified_at = NULL, push_failed_at = NULL
+                     WHERE thread_id = ?1 AND delivered_at IS NULL AND target_session_id IS NOT NULL",
+                    params![tid, now],
+                )?;
+                // One untargeted row per comment: the next session to
+                // publish or watch takes each once.
+                tx.execute(
+                    "DELETE FROM feedback WHERE thread_id = ?1 AND delivered_at IS NULL
+                       AND target_session_id IS NULL
+                       AND id NOT IN (SELECT MIN(id) FROM feedback WHERE thread_id = ?1
+                         AND delivered_at IS NULL AND target_session_id IS NULL GROUP BY comment_id)",
+                    params![tid],
+                )?;
+                touched.targets.extend(holders);
+                let released = owner.as_ref().map_or(from, |o| o.session_id.as_str());
+                let mut rec = thread_record(AuditKind::ThreadRelease, &now, &aid, tid)
+                    .with("thread_id", tid)
+                    .with("session", released)
+                    .with("reason", "explicit");
+                rec.ids.session = Some(released.to_string());
+                self.record_audit(tx, ctx, rec)?;
+                return Ok(Vec::new());
+            };
+            if t.status == "resolved" {
+                return Err(CoreError::invalid(
+                    "thread_resolved",
+                    "a resolved thread cannot be handed off; add a comment to reopen it",
+                ));
+            }
+            if !live_targets_of(tx, &aid)?.iter().any(|s| s == to) {
+                return Err(CoreError::invalid(
+                    "unknown_agent",
+                    "no live agent on this artifact has that handle",
+                ));
+            }
+            tx.execute(
+                "UPDATE threads SET sent_to_agent = 1, target_session_id = ?2 WHERE id = ?1",
+                params![tid, to],
+            )?;
+            tx.execute(
+                "DELETE FROM feedback WHERE thread_id = ?1 AND delivered_at IS NULL
+                   AND target_session_id IS NOT NULL AND target_session_id <> ?2",
+                params![tid, to],
+            )?;
+            tx.execute(
+                "DELETE FROM feedback WHERE thread_id = ?1 AND delivered_at IS NULL
+                   AND target_session_id IS NULL
+                   AND comment_id IN (SELECT comment_id FROM feedback WHERE thread_id = ?1 AND target_session_id = ?2)",
+                params![tid, to],
+            )?;
+            tx.execute(
+                "UPDATE feedback SET target_session_id = ?2, untargeted_at = NULL,
+                    push_failed_at = NULL, notified_at = NULL
+                 WHERE thread_id = ?1 AND delivered_at IS NULL AND target_session_id IS NULL",
+                params![tid, to],
+            )?;
+            let mut inserted = Vec::new();
+            for c in t.comments.iter().filter(|c| c.author_kind == AUTHOR_VIEWER) {
+                let fid = new_ulid();
+                let n = tx.execute(
+                    "INSERT INTO feedback (id, thread_id, comment_id, target_session_id, created_at)
+                     SELECT ?1, ?2, ?3, ?4, ?5 WHERE NOT EXISTS (
+                         SELECT 1 FROM feedback WHERE comment_id = ?3 AND target_session_id = ?4)",
+                    params![fid, tid, c.id, to, now],
+                )?;
+                if n > 0 {
+                    inserted.push(fid);
+                }
+            }
+            let sessions = vec![to.to_string()];
+            let requests = super::approvals::route_in(
+                self,
+                tx,
+                ctx,
+                tid,
+                &sessions,
+                Route::Send,
+                false,
+                &now,
+            )?;
+            let mut rec = send_record(
+                &now,
+                &aid,
+                Some(tid),
+                send_target_value(tx, Some(to))?,
+                inserted,
+                None,
+                vec![tid.to_string()],
+            );
+            if !requests.is_empty() {
+                rec = rec.with("approval_request_ids", requests.clone());
+            }
+            self.record_audit(tx, ctx, rec)?;
+            if owner.as_ref().is_none_or(|o| o.session_id != to) {
+                self.record_audit(tx, ctx, take_record(&now, &aid, tid, to, "handoff"))?;
+            }
+            touched.targets.extend(holders);
+            touched.targets.insert(to.to_string());
+            Ok(requests)
+        })?;
+        let thread = self.get_thread(tid)?.ok_or(CoreError::NotFound)?;
+        Ok((thread, touched, requests))
     }
 
     /// Hands over rows for `q`, as `vis` lets its reader see them (spec
@@ -1040,16 +1227,28 @@ impl Store {
                     self.record_audit(tx, ctx, rec)?;
                 }
             }
+            // The first delivery of an unowned thread's row makes the
+            // session its owner (M23); a held row makes none.
+            let mut took = Touched::default();
+            let mut first: Vec<&str> = Vec::new();
+            for (p, _, _, _, _) in &good {
+                if !p.delivered && !first.contains(&p.thread_id.as_str()) {
+                    first.push(&p.thread_id);
+                }
+            }
+            for tid in first {
+                take_in(self, tx, ctx, tid, &q.session_id, "first_delivery", &now, &mut took)?;
+            }
             let placeholders = held.finish(&mut sight, vis, &now)?;
-            Ok(Some((good, placeholders)))
+            Ok(Some((good, placeholders, took)))
         })?;
-        let Some((pending, placeholders)) = taken else {
+        let Some((pending, placeholders, took)) = taken else {
             return Ok(Taken {
                 stale: true,
                 ..Taken::default()
             });
         };
-        let mut touched = Touched::default();
+        let mut touched = took;
         for p in &placeholders {
             touched
                 .threads
@@ -1237,6 +1436,9 @@ impl Store {
                          WHERE id = ?1",
                         params![fid, now],
                     )?;
+                    if undelivered {
+                        take_in(self, tx, ctx, &tid, session_id, "first_delivery", &now, &mut touched)?;
+                    }
                     touched.threads.insert((aid, tid));
                 }
             }
@@ -2075,12 +2277,15 @@ mod tests {
         st.ensure_watch(DAEMON, &second, &aid).unwrap();
         st.send_to(DAEMON, &tid, SendTarget::Agent(&second))
             .unwrap();
+        // The send to `second` gave it every comment it had no row for.
+        assert_eq!(bodies(&second), ["first", "second", "third"]);
         st.send_to(DAEMON, &tid, SendTarget::Everyone).unwrap();
         viewer_says(&st, &tid, "fourth");
         st.send_to_agent(DAEMON, &tid).unwrap();
         assert_eq!(bodies(&owner), ["fourth"], "Everyone cleared the target");
-        // The send to `second` gave it every comment it had no row for.
-        assert_eq!(bodies(&second), ["first", "second", "third", "fourth"]);
+        // The first take of the untargeted send owns the thread (M23):
+        // `second`'s row of it is gone.
+        assert!(bodies(&second).is_empty());
     }
 
     #[test]
@@ -2870,6 +3075,26 @@ mod delivery {
     }
 
     #[test]
+    fn a_placeholder_take_makes_no_owner() {
+        let w = two_people();
+        let tid = mia_sends_to_sams_agent(&w, 1);
+        let vis = w.sam_vis();
+        let r = w.take(Tier::Piggyback, &vis);
+        assert!(r.items.is_empty());
+        assert_eq!(r.placeholders.len(), 1);
+        assert_eq!(w.st.thread_owner(&tid).unwrap(), None);
+        // Reading the thread (an acknowledgement) delivers nothing held.
+        w.st.acknowledge(DAEMON, &w.sid, std::slice::from_ref(&tid), &vis, None)
+            .unwrap();
+        assert_eq!(w.st.thread_owner(&tid).unwrap(), None);
+        // Once Sam approves Mia, the first delivery takes it.
+        w.approve(&w.mia, Scope::Everywhere);
+        let r = w.take(Tier::Piggyback, &w.sam_vis());
+        assert_eq!(r.items.len(), 1);
+        assert_eq!(w.st.thread_owner(&tid).unwrap().unwrap().session_id, w.sid);
+    }
+
+    #[test]
     fn withheld_bodies_stay_undelivered_and_get_one_placeholder() {
         let w = two_people();
         let tid = mia_sends_to_sams_agent(&w, 2);
@@ -3189,5 +3414,279 @@ mod delivery {
             "{line}"
         );
         assert!(line.contains(&tid));
+    }
+}
+
+#[cfg(test)]
+mod ownership {
+    use super::*;
+    use crate::store::test_util::{DAEMON, anchor, artifact, session, store};
+    use crate::store::threads::{AUTHOR_AGENT, NewComment, NewThread};
+
+    fn thread(st: &Store, aid: &ArtifactId, body: &str) -> String {
+        st.create_thread(
+            DAEMON,
+            aid,
+            NewThread {
+                author_public_id: None,
+                version_n: 1,
+                anchor: anchor(),
+                author_name: "Alex".into(),
+                body: body.into(),
+                clip: None,
+                via_page: false,
+            },
+        )
+        .unwrap()
+        .id
+    }
+
+    fn take(st: &Store, sid: &str) -> Taken {
+        st.take_feedback(
+            DAEMON,
+            &TakeFeedback {
+                session_id: sid.into(),
+                tier: Tier::Piggyback,
+                artifact_id: None,
+                include_resends: false,
+            },
+            "http://h",
+            &Visibility::all(),
+        )
+        .unwrap()
+    }
+
+    fn reply(sid: &str, body: &str) -> NewComment {
+        NewComment {
+            author_kind: AUTHOR_AGENT,
+            author_name: "claude".into(),
+            author_public_id: None,
+            via_session_id: Some(sid.to_string()),
+            body: body.into(),
+            via_page: false,
+        }
+    }
+
+    /// The bodies of the thread.take and thread.release records, oldest first.
+    fn ownership_records(st: &Store) -> Vec<(String, serde_json::Value)> {
+        st.with_read(|c| {
+            let mut stmt = c.prepare(
+                "SELECT kind, body FROM audit_events
+                 WHERE kind IN ('thread.take', 'thread.release') ORDER BY seq",
+            )?;
+            Ok(stmt
+                .query_map([], |r| {
+                    let body: String = r.get(1)?;
+                    Ok((r.get(0)?, serde_json::from_str(&body).unwrap()))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .unwrap()
+    }
+
+    /// Two agents watching one artifact, a thread sent to neither by name.
+    fn two_watchers() -> (tempfile::TempDir, Store, String, String, String) {
+        let (d, st) = store();
+        let a = session(&st, "claude", "a");
+        let b = session(&st, "codex", "b");
+        let aid = artifact(&st, None);
+        for s in [&a, &b] {
+            st.ensure_watch(DAEMON, s, &aid).unwrap();
+        }
+        let tid = thread(&st, &aid, "fix the chart");
+        st.send_to(DAEMON, &tid, SendTarget::Everyone).unwrap();
+        (d, st, a, b, tid)
+    }
+
+    #[test]
+    fn first_take_has_one_winner() {
+        let (_d, st, a, b, tid) = two_watchers();
+        let start = std::sync::Barrier::new(2);
+        let (ta, tb) = std::thread::scope(|s| {
+            let ha = s.spawn(|| {
+                start.wait();
+                take(&st, &a)
+            });
+            let hb = s.spawn(|| {
+                start.wait();
+                take(&st, &b)
+            });
+            (ha.join().unwrap(), hb.join().unwrap())
+        });
+        let got: Vec<&str> = [(&a, &ta), (&b, &tb)]
+            .iter()
+            .filter(|(_, t)| !t.items.is_empty())
+            .map(|(s, _)| s.as_str())
+            .collect();
+        assert_eq!(got.len(), 1, "exactly one take gets the comment");
+        let winner = got[0].to_string();
+        let loser = if winner == a { &b } else { &a };
+        let owner = st.thread_owner(&tid).unwrap().unwrap();
+        assert_eq!(owner.session_id, winner);
+        assert!(owner.live);
+        assert!(
+            st.feedback_rows(&tid)
+                .unwrap()
+                .iter()
+                .all(|f| f.target_session_id.as_deref() == Some(winner.as_str())),
+            "the loser's undelivered row is gone"
+        );
+        assert!(take(&st, loser).items.is_empty());
+        let recs = ownership_records(&st);
+        assert_eq!(recs.len(), 1, "{recs:?}");
+        assert_eq!(recs[0].0, "thread.take");
+        assert_eq!(recs[0].1["cause"], "first_delivery");
+        assert_eq!(recs[0].1["session"], winner.as_str());
+        // A later comment goes to the owner alone.
+        st.add_comment(
+            DAEMON,
+            &tid,
+            NewComment {
+                author_kind: crate::store::threads::AUTHOR_VIEWER,
+                author_name: "Alex".into(),
+                author_public_id: None,
+                via_session_id: None,
+                body: "and the axis".into(),
+                via_page: false,
+            },
+        )
+        .unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
+        assert!(take(&st, loser).items.is_empty());
+        assert_eq!(take(&st, &winner).items.len(), 1);
+    }
+
+    #[test]
+    fn non_owner_reply_and_resolve_are_thread_taken() {
+        let (_d, st, a, b, tid) = two_watchers();
+        st.set_session_name(DAEMON, &a, "web-fix", crate::NameSource::Agent)
+            .unwrap();
+        assert_eq!(take(&st, &a).items.len(), 1);
+        let err = st.add_agent_reply(DAEMON, &tid, reply(&b, "mine"), None);
+        assert!(
+            matches!(&err, Err(CoreError::ThreadTaken { name }) if name == "web-fix"),
+            "{err:?}"
+        );
+        let t = st.get_thread(&tid).unwrap().unwrap();
+        assert_eq!(t.comments.len(), 1, "nothing was written");
+        let aid = ArtifactId::parse(&t.artifact_id).unwrap();
+        let sess_b = st.get_session(&b).unwrap().unwrap();
+        assert!(matches!(
+            st.resolve_thread_as(DAEMON, &aid, &tid, &sess_b, false),
+            Err(CoreError::ThreadTaken { .. })
+        ));
+        assert_eq!(st.get_thread(&tid).unwrap().unwrap().status, "open");
+        // The owner replies and resolves.
+        st.add_agent_reply(DAEMON, &tid, reply(&a, "done"), None)
+            .unwrap();
+        let sess_a = st.get_session(&a).unwrap().unwrap();
+        let (t, _) = st
+            .resolve_thread_as(DAEMON, &aid, &tid, &sess_a, false)
+            .unwrap();
+        assert_eq!(t.status, "resolved");
+    }
+
+    #[test]
+    fn owner_ended_threads_accept_any_agent() {
+        let (_d, st, a, b, tid) = two_watchers();
+        assert_eq!(take(&st, &a).items.len(), 1);
+        st.end_session(DAEMON, &a).unwrap();
+        let owner = st.thread_owner(&tid).unwrap().unwrap();
+        assert!(!owner.live, "the ended owner is shown, and owns nothing");
+        st.check_not_taken(&tid, &b).unwrap();
+        st.add_agent_reply(DAEMON, &tid, reply(&b, "picking it up"), None)
+            .unwrap();
+        let owner = st.thread_owner(&tid).unwrap().unwrap();
+        assert_eq!(owner.session_id, b, "the first reply makes it the owner");
+        let recs = ownership_records(&st);
+        assert_eq!(recs.last().unwrap().1["cause"], "reply");
+        // A thread with no owner accepts any agent too.
+        let c = session(&st, "pi", "c");
+        let aid = artifact(&st, None);
+        let t2 = thread(&st, &aid, "plain");
+        st.send_to(DAEMON, &t2, SendTarget::Everyone).unwrap();
+        st.add_agent_reply(DAEMON, &t2, reply(&c, "on it"), None)
+            .unwrap();
+        assert_eq!(st.thread_owner(&t2).unwrap().unwrap().session_id, c);
+    }
+
+    #[test]
+    fn handoff_resends_and_release_untargets() {
+        let (_d, st, a, b, tid) = two_watchers();
+        assert_eq!(take(&st, &a).items.len(), 1);
+        // A non-owner may not hand it off.
+        assert!(matches!(
+            st.handoff(DAEMON, &tid, &b, Some(&a)),
+            Err(CoreError::ThreadTaken { .. })
+        ));
+        let (t, touched, requests) = st.handoff(DAEMON, &tid, &a, Some(&b)).unwrap();
+        assert!(requests.is_empty(), "the owner's own agent asks no one");
+        assert!(touched.targets.contains(&b));
+        assert!(t.sent_to_agent);
+        assert_eq!(st.thread_owner(&tid).unwrap().unwrap().session_id, b);
+        let got = take(&st, &b);
+        assert_eq!(got.items.len(), 1, "the whole thread is resent");
+        assert_eq!(got.items[0].body, "fix the chart");
+        st.check_not_taken(&tid, &b).unwrap();
+        assert!(st.check_not_taken(&tid, &a).is_err());
+        // The new owner releases it: no owner, its new rows untargeted.
+        st.add_comment(
+            DAEMON,
+            &tid,
+            NewComment {
+                author_kind: crate::store::threads::AUTHOR_VIEWER,
+                author_name: "Alex".into(),
+                author_public_id: None,
+                via_session_id: None,
+                body: "one more".into(),
+                via_page: false,
+            },
+        )
+        .unwrap();
+        st.send_to_agent(DAEMON, &tid).unwrap();
+        st.handoff(DAEMON, &tid, &b, None).unwrap();
+        assert_eq!(st.thread_owner(&tid).unwrap(), None);
+        let pending: Vec<_> = st
+            .feedback_rows(&tid)
+            .unwrap()
+            .into_iter()
+            .filter(|f| f.delivered_at.is_none())
+            .collect();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].target_session_id, None, "untargeted");
+        let kinds: Vec<(String, String)> = ownership_records(&st)
+            .into_iter()
+            .map(|(k, b)| {
+                let why = b
+                    .get("cause")
+                    .or_else(|| b.get("reason"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                (k, why)
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("thread.take".to_string(), "first_delivery".to_string()),
+                ("thread.take".to_string(), "handoff".to_string()),
+                ("thread.release".to_string(), "explicit".to_string()),
+            ]
+        );
+        // Released, any agent may take it again.
+        st.check_not_taken(&tid, &a).unwrap();
+    }
+
+    #[test]
+    fn a_send_naming_an_agent_takes_the_thread() {
+        let (_d, st, a, b, tid) = two_watchers();
+        st.send_to(DAEMON, &tid, SendTarget::Agent(&b)).unwrap();
+        assert_eq!(st.thread_owner(&tid).unwrap().unwrap().session_id, b);
+        st.send_to(DAEMON, &tid, SendTarget::Agent(&b)).unwrap();
+        let recs = ownership_records(&st);
+        assert_eq!(recs.len(), 1, "a send to the owner takes nothing: {recs:?}");
+        assert_eq!(recs[0].1["cause"], "send");
+        assert!(st.check_not_taken(&tid, &a).is_err());
     }
 }
