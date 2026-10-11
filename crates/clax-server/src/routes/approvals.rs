@@ -39,6 +39,24 @@ use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::time::Instant;
 
+/// Whether a person's agent, whose read rights are `reads`, may read
+/// artifact `aid` (gone artifacts are no one's); every other caller may.
+/// An agent's lists leave out requests and approvals about artifacts its
+/// rights exclude (§7.5).
+fn may_read(
+    st: &Store,
+    reads: &crate::agent::ReadRights,
+    aid: Option<&str>,
+) -> clax_core::Result<bool> {
+    let Some(aid) = aid.filter(|_| reads.is_person_agent()) else {
+        return Ok(true);
+    };
+    let Ok(id) = clax_core::ArtifactId::parse(aid) else {
+        return Ok(false);
+    };
+    Ok(st.get_artifact(&id)?.is_some_and(|a| reads.allows(&a)))
+}
+
 /// Whose approvals a read is about (§7.5 Own): the owner's (`None`) for
 /// the owner's browsers, the CLI and the owner's agents (a grant of the
 /// owner's row included); a connected person's for their browser and
@@ -62,12 +80,16 @@ fn whose(c: &Caller) -> Result<Option<String>, ApiError> {
 /// owner's browser, a connected person from theirs.
 ///
 /// # Errors
-/// 403 `browser_required` for every other caller: the token alone, the
-/// CLI, an agent of anyone's.
+/// 404 for a caller who approves nothing (a LAN viewer, a revoked person,
+/// no credential); 403 `browser_required` for every other caller: the
+/// token alone, the CLI, an agent of anyone's.
 fn browser_approver(c: &Caller, what: &str) -> Result<Option<String>, ApiError> {
     match c {
         Caller::Owner { browser: true } => Ok(None),
         Caller::Person { viewer } => Ok(Some(viewer.public_id.clone())),
+        // No approver at all (a LAN viewer, a revoked person, no
+        // credential): nothing of theirs to change (§9.3).
+        Caller::Viewer { .. } | Caller::Anonymous => Err(ApiError::not_found()),
         _ => Err(ApiError::forbidden(
             "browser_required",
             format!("{what} is your person's, in their browser: open People in Clax"),
@@ -76,20 +98,23 @@ fn browser_approver(c: &Caller, what: &str) -> Result<Option<String>, ApiError> 
 }
 
 /// `GET /api/approvals` → `{approvals}`: the caller's person's live
-/// approvals, oldest first.
+/// approvals, oldest first; a person's agent's leaves out those about an
+/// artifact its rights exclude.
 pub async fn list(
     State(s): State<AppState>,
     a: Agent<crate::agent::ApprovalsList>,
     _o: SameOrigin,
 ) -> Result<Json<Value>, ApiError> {
     let me = whose(&a.caller)?;
+    let reads = a.read_rights();
     let v = s
         .store_call(move |st| {
-            let views = st
-                .live_approvals(me.as_deref())?
-                .iter()
-                .map(|x| approval_view(st, x))
-                .collect::<clax_core::Result<Vec<_>>>()?;
+            let mut views = Vec::new();
+            for x in st.live_approvals(me.as_deref())? {
+                if may_read(st, &reads, x.artifact_id.as_deref())? {
+                    views.push(approval_view(st, &x)?);
+                }
+            }
             Ok(json!({"approvals": views}))
         })
         .await?;
@@ -106,7 +131,8 @@ pub struct RequestsQuery {
 
 /// `GET /api/approvals/requests?status=open|all&limit=<1..200>` →
 /// `{requests, open, banner}`: the caller's person's requests, newest
-/// first (the open ones only by default; 50, at most 200), how many are
+/// first (the open ones only by default; 50, at most 200; a person's
+/// agent's leaving out those about an artifact its rights exclude), how many are
 /// open, and People's banner (spec §9.2) while routed content waits beyond
 /// the open-request limit without a request, else `null`. 400
 /// `invalid_query` for another status.
@@ -117,6 +143,7 @@ pub async fn requests(
     q: Result<Query<RequestsQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let me = whose(&a.caller)?;
+    let reads = a.read_rights();
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let open = match q.status.as_deref() {
         None | Some("open") => true,
@@ -132,10 +159,12 @@ pub async fn requests(
     let v = s
         .store_call(move |st| {
             let (rows, n, overflow) = st.approval_requests(me.as_deref(), open, limit)?;
-            let views = rows
-                .iter()
-                .map(|r| request_view(st, r))
-                .collect::<clax_core::Result<Vec<_>>>()?;
+            let mut views = Vec::new();
+            for r in &rows {
+                if may_read(st, &reads, Some(&r.artifact_id))? {
+                    views.push(request_view(st, r)?);
+                }
+            }
             Ok(json!({"requests": views, "open": n,
                       "banner": overflow.then_some(OVERFLOW_BANNER)}))
         })
@@ -408,11 +437,11 @@ pub struct WaitQuery {
 /// → `{approval_id, status, scope, request, waited_s}` as soon as the
 /// request is not open, or after `wait` seconds (at most an hour, as a
 /// question's poll), or when the daemon shuts down. 404 unless it is a
-/// request of the session's person; 429 `limit_reached` when four polls
+/// request of the session's person about an artifact the agent may read; 429 `limit_reached` when four polls
 /// hold it already.
 pub async fn poll(
     State(s): State<AppState>,
-    TokenOrAgent(_a): TokenOrAgent<crate::agent::ApprovalsPoll>,
+    TokenOrAgent(a): TokenOrAgent<crate::agent::ApprovalsPoll>,
     p: Result<Path<(String, String)>, PathRejection>,
     q: Result<Query<WaitQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -421,10 +450,16 @@ pub async fn poll(
     let started = Instant::now();
     let wait = Duration::from_secs(q.wait.min(crate::routes::questions::MAX_WAIT_SECS));
     let (sid1, rid1) = (sid.clone(), rid.clone());
+    let reads = a.read_rights();
     let approver = s
         .store_call(move |db| {
             let me = live_person(db, &sid1)?;
-            db.approval_request(&rid1, me.as_deref())?;
+            let r = db.approval_request(&rid1, me.as_deref())?;
+            // A request about an artifact the agent may not read is none of
+            // its business (§7.5).
+            if !may_read(db, &reads, Some(&r.artifact_id))? {
+                return Err(CoreError::NotFound);
+            }
             Ok(me)
         })
         .await?;

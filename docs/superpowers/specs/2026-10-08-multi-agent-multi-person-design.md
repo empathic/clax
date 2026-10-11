@@ -118,7 +118,7 @@ reason.
 | M15 | **Connecting asks the connecting person about the owner.** `clax connect` asks "Let <owner>'s comments and pages reach your agents everywhere? [Y/n]" and records the answer as that person's approval. | A person who connects to someone's Clax is there to work on that person's pages. |
 | M16 | **Withheld bodies stay undelivered.** A feedback row whose comment body is withheld is not handed over; its session gets one placeholder per (author, thread) (`placeholder_at`), and the row is delivered once approved. A row whose body is visible is delivered with every other withheld field placeholdered. | Delivery semantics (once, acknowledged, resent) stay as they are for visible bodies. |
 | M17 | **Visibility and rights are current at every take.** Each take (and each wake of a long-poll) reads a generation counter and rebuilds `Visibility` and the rights when it changed. Every approval, approval revocation, rights or narrowing or elevation change, grant or person revocation, and viewer claim or fold (which moves authorship) bumps it and wakes the affected sessions' waiters. A waiter registers before it takes, so a bump between its take and its wait is never missed. | A long-poll may wait ten minutes; a revocation must apply to its next take. |
-| M18 | **Routing is an approval request.** A send (button, `to`, `@name`, handoff, or a page's `sendToClaude`) that reaches an agent whose person has not approved the thread's authors makes an approval request to that person at once. | O3's "routing approval". |
+| M18 | **Routing is an approval request.** A send that names an agent (the picker, `to`, `@name`, handoff, a batch naming one, or a page's `sendToClaude` naming one) whose person has not approved the thread's authors makes an approval request to that person at once. A send naming no agent asks no one: other people's watching agents get the placeholder and may `ask`. | O3's "routing approval"; owner decision 2026-10-11, "Only named sends ask". |
 | M19 | **Approval requests batch per (approver, author, artifact, thread).** | O3's batching. |
 | M20 | **Approving, rights, elevation, narrowing and connecting need a browser.** Deciding a request, approving directly, revoking an approval, setting rights, elevating, narrowing, making or revoking invites, and approving, denying or revoking grants take a browser credential (the owner cookie, the extension, or a connected person's cookie) on a same-origin request (`SameOrigin`); the daemon token alone is refused (403 `browser_required`). The CLI prints the People link for these. | Approvals then cannot be made through the Clax tools, the CLI, or by any remote agent, which holds no token and no browser cookie. An owner agent with shell access is not stopped: it runs as the owner's user and can fetch the owner's browser credential (`/api/token`), so it is trusted at the owner's level (§21.3); no mechanism can hold against a process of the same user. |
 | M21 | **The inbox gains a recipient.** `inbox_items.recipient` is the person it is for (NULL for the owner). | Questions, approvals and attention are per person; the owner's inbox stays as it is. |
@@ -906,11 +906,11 @@ of the owner's agents only, a person their agents' (§18).
 | `POST /api/sessions/{id}/feedback/ack` | Own | comments watch |
 | `GET /api/sessions/{id}/working`, `POST …/working/renew`, `…/working/end`, `PUT/DELETE …/working/{aid}` | Own | comments watch |
 | `POST /api/sessions/{id}/questions`, `GET …/questions/{qid}`, `…/withdraw`, `…/release`, `…/questions:terminal` | Own (questions and answers are the agent's person's) | ask |
-| `POST /api/sessions/{id}/approvals`, `GET …/approvals/{rid}` | Own | ask |
+| `POST /api/sessions/{id}/approvals`, `GET …/approvals/{rid}` | Own (the poll answers 404 for a request about an artifact the agent may not read) | ask |
 | `POST /api/sessions/{id}/tool-calls`, `POST /api/sessions/{id}/tool-call-ids` | Own (the session's own calls; `produced` lists only that session's events, and an artifact the agent may not read is reported as none) | none |
 | `POST /api/sessions/{id}/threads/{tid}/handoff` | Filtered (returns the thread) | comments reply |
 | `GET /api/agents` | Own (the caller's person's agents; other people's agents by name and state only) | none |
-| `GET /api/approvals`, `GET /api/approvals/requests` | Own (the person's own approvals and requests; request views carry author, thread, count and state, never the withheld content) | none |
+| `GET /api/approvals`, `GET /api/approvals/requests` | Own (the person's own approvals and requests; request views carry author, thread, count and state, never the withheld content; a person's agent's lists leave out those about an artifact its rights exclude) | none |
 | `POST /api/grants`, `POST/DELETE /api/grants/{gid}/continue`, `DELETE /api/grants/{gid}/token` | Grant | — |
 | `/mcp` (sessionless HTTP MCP, a `route_service`) | Denied to grants; for the owner's token its internal client sends `X-Clax-Channel: agent`, so its tools reach the handlers above as `OwnerAgent` without a session and are filtered for the owner | — |
 | Everything else: `/api/token`, `/api/events`, `/api/stream*`, `/api/live/*`, `/api/sample*`, `/api/artifacts/{aid}/sample*`, `/api/artifacts/{aid}/room`, `/api/push`, `/api/extension*`, `/api/viewers*`, `/api/questions*`, `/api/inbox*`, `/api/people*`, `PUT /api/agents*`, changes to `/api/approvals*`, `GET /api/grants`, `/api/grants/{gid}/approve|deny`, `DELETE /api/grants/{gid}`, `/api/admin/shutdown`, `/connect/b/*`, the shell pages, `/healthz` | Denied | — |
@@ -1153,10 +1153,12 @@ An approval says "agents of `approver` may see `author`'s content at
 
 ### 9.2 Requests
 
-- **Routing (M18):** a send, `@name`, handoff, or a page's `sendToClaude`
-  that targets an agent whose person has not approved some author of the
-  thread's current content makes (or joins) a request per such author,
-  `cause: routing`. A page's send shows on the card as "<publisher>'s
+- **Routing (M18):** a send naming an agent (the picker, `to`, `@name`,
+  handoff, a batch naming one, or a page's `sendToClaude` naming one)
+  whose person has not approved some author of the thread's comments
+  makes (or joins) a request per such author, `cause: routing`. A send
+  naming no agent (Send with no agent chosen, `@agent`) and a later
+  comment on a sent thread only join open requests there. A page's send shows on the card as "<publisher>'s
   page, via <viewer>'s browser", and its authors include the publisher.
 - **Asking:** `ask` with `approval: {url_or_id?, thread_id?, author?}`
   makes (or joins) a request for each author withheld from the session
@@ -1167,10 +1169,13 @@ An approval says "agents of `approver` may see `author`'s content at
 - **Batching (M19):** one open request per (approver, author, artifact,
   thread); new withheld content there raises `count` and re-announces the
   one inbox item.
-- **Limit:** 100 open requests per approver; beyond, `ask` is 429
-  `limit_reached`, routing holds the content without a request, and People
-  shows one banner: "More is waiting for your approval than the inbox
-  lists: review People".
+- **Limit:** 100 open requests per approver, and 20 per (approver,
+  author), so no one author spends an approver's requests on everyone
+  else; beyond either, `ask` is 429 `limit_reached`, routing holds the
+  content without a request, and People shows one banner: "More is
+  waiting for your approval than the inbox lists: review People". The
+  banner stays until no routed content it counted is held without a
+  request (each later decision rechecks).
 - An open request is withdrawn when its thread is resolved or deleted, its
   artifact deleted, (for `cause: ask`) the asking session ends, or its
   approver or author is revoked as a person.

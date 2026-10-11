@@ -685,6 +685,12 @@ impl Store {
 /// `limit_reached` and routing holds the content without a request.
 pub const MAX_OPEN_REQUESTS: u32 = 100;
 
+/// Most open requests one author holds with one approver (§9.2): past
+/// it, that author's further routed content is held without a request
+/// (and counts toward People's banner), so no one author spends an
+/// approver's [`MAX_OPEN_REQUESTS`] on everyone else.
+pub const MAX_OPEN_PER_AUTHOR: u32 = 20;
+
 /// How long after a decline a request there is not made again (§9.3).
 pub const DECLINE_QUIET_SECS: i64 = 600;
 
@@ -832,12 +838,13 @@ pub struct Decided {
 /// How a send asks the people of the agents it reaches (§9.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Route {
-    /// A send (button, `to`, `@name`, `@agent`, batch, a page's
-    /// `sendToClaude`, handoff): makes or joins a request per author
-    /// withheld from each agent's person (M18).
+    /// A send naming an agent (the picker, `to`, `@name`, a batch or a
+    /// page's `sendToClaude` naming one, handoff): makes or joins a request
+    /// per author withheld from that agent's person (M18).
     Send,
-    /// A later comment on a sent thread: joins (counts into) the open
-    /// requests there only; the agent's placeholder says how to ask.
+    /// A send naming no agent, or a later comment on a sent thread: joins
+    /// (counts into) the open requests there only; the agent's
+    /// placeholder says how to ask.
     Join,
 }
 
@@ -858,15 +865,104 @@ enum Requested {
     Joined(String),
     /// Declined there within [`DECLINE_QUIET_SECS`].
     Declined,
-    /// The approver holds [`MAX_OPEN_REQUESTS`] open requests.
+    /// The approver holds [`MAX_OPEN_REQUESTS`] open requests, or
+    /// [`MAX_OPEN_PER_AUTHOR`] of this author's.
     Full,
     /// [`Route::Join`] with no open request there.
     None,
 }
 
-/// The overflow marker's `install` key for `approver`.
+/// The overflow marker's `install` key for `approver`. Its value is the
+/// JSON array of the `[author, artifact, thread]` places whose routed
+/// content was held without a request.
 fn overflow_key(approver: Option<&str>) -> String {
     format!("approval_overflow:{}", approver.unwrap_or(""))
+}
+
+/// The places `approver`'s overflow marker holds, read on `c`.
+fn overflow_places(
+    c: &rusqlite::Connection,
+    approver: Option<&str>,
+) -> Result<Vec<(String, String, Option<String>)>> {
+    let v: Option<String> = c
+        .query_row(
+            "SELECT v FROM install WHERE k = ?1",
+            params![overflow_key(approver)],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(v.and_then(|v| serde_json::from_str(&v).ok())
+        .unwrap_or_default())
+}
+
+/// Writes `places` as `approver`'s overflow marker, or removes it when
+/// there are none.
+fn set_overflow(
+    tx: &Transaction<'_>,
+    approver: Option<&str>,
+    places: &[(String, String, Option<String>)],
+) -> Result<()> {
+    if places.is_empty() {
+        tx.execute(
+            "DELETE FROM install WHERE k = ?1",
+            params![overflow_key(approver)],
+        )?;
+    } else {
+        tx.execute(
+            "INSERT INTO install (k, v) VALUES (?1, ?2) ON CONFLICT (k) DO UPDATE SET v = excluded.v",
+            params![
+                overflow_key(approver),
+                serde_json::to_string(places).expect("strings serialise")
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Whether `author`'s content at thread `tid` of `aid` is still held from
+/// `approver`'s agents without a request: no request of theirs there is
+/// open or was declined (a decline is the approver's answer), an
+/// undelivered row of a session of theirs is there, and its author is
+/// still withheld.
+fn held_without_request(
+    tx: &Transaction<'_>,
+    approver: Option<&str>,
+    author: &str,
+    aid: &str,
+    tid: Option<&str>,
+) -> Result<bool> {
+    let Some(tid) = tid else {
+        return Ok(false);
+    };
+    let answered: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM approval_requests
+           WHERE COALESCE(approver, '') = COALESCE(?1, '') AND author = ?2
+             AND artifact_id = ?3 AND thread_id = ?4 AND status IN ('open', 'declined'))",
+        params![approver, author, aid, tid],
+        |r| r.get(0),
+    )?;
+    let waiting: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM feedback f JOIN sessions s ON s.id = f.target_session_id
+           WHERE f.thread_id = ?2 AND f.delivered_at IS NULL
+             AND COALESCE(s.person, '') = COALESCE(?1, ''))",
+        params![approver, tid],
+        |r| r.get(0),
+    )?;
+    if answered || !waiting {
+        return Ok(false);
+    }
+    let Some(t) = thread_in(tx, tid)? else {
+        return Ok(false);
+    };
+    let reader = match approver {
+        Some(p) => Reader::Person(p.to_string()),
+        None => Reader::Owner,
+    };
+    let vis = Visibility::for_reader_in(tx, &reader, 0)?;
+    let owner = owner_pid(tx)?;
+    Ok(withheld_in_thread(&vis, &t, owner.as_deref())
+        .iter()
+        .any(|(a, _)| a == author))
 }
 
 /// The `approval.request` record of request `rid` (§20.2).
@@ -928,7 +1024,9 @@ fn name_of(c: &rusqlite::Connection, pid: &str) -> Result<String> {
 /// Otherwise ([`Route::Send`]) a new one is made, recorded and announced
 /// in the approver's inbox, unless one was declined there within
 /// [`DECLINE_QUIET_SECS`], or the approver holds [`MAX_OPEN_REQUESTS`]
-/// (then the overflow marker is set for People's banner).
+/// open requests or [`MAX_OPEN_PER_AUTHOR`] of this author's (then, for
+/// routed content, the place joins the overflow marker behind People's
+/// banner).
 #[allow(clippy::too_many_arguments)]
 fn request_in(
     st: &Store,
@@ -998,11 +1096,22 @@ fn request_in(
         params![approver],
         |r| r.get(0),
     )?;
-    if held >= MAX_OPEN_REQUESTS {
-        tx.execute(
-            "INSERT INTO install (k, v) VALUES (?1, ?2) ON CONFLICT (k) DO UPDATE SET v = excluded.v",
-            params![overflow_key(approver), now],
-        )?;
+    let theirs: u32 = tx.query_row(
+        "SELECT count(*) FROM approval_requests INDEXED BY approval_requests_open
+         WHERE COALESCE(approver, '') = COALESCE(?1, '') AND author = ?2 AND status = 'open'",
+        params![approver, author],
+        |r| r.get(0),
+    )?;
+    if held >= MAX_OPEN_REQUESTS || theirs >= MAX_OPEN_PER_AUTHOR {
+        // Routed content waits without a request: People's banner says so.
+        if cause == Cause::Routing {
+            let mut places = overflow_places(tx, approver)?;
+            let place = (author.to_string(), aid.to_string(), tid.map(str::to_string));
+            if !places.contains(&place) {
+                places.push(place);
+                set_overflow(tx, approver, &places)?;
+            }
+        }
         return Ok(Requested::Full);
     }
     let r = ApprovalRequest {
@@ -1509,7 +1618,7 @@ impl Store {
                     CoreError::invalid(
                         "limit_reached",
                         format!(
-                            "your person has {MAX_OPEN_REQUESTS} requests waiting; ask again once they decide some"
+                            "your person has as many requests waiting as they may hold ({MAX_OPEN_REQUESTS}, or {MAX_OPEN_PER_AUTHOR} for one author); ask again once they decide some"
                         ),
                     )
                 } else {
@@ -1523,6 +1632,75 @@ impl Store {
             ids.iter()
                 .map(|id| request_by_id(tx, id)?.ok_or(CoreError::NotFound))
                 .collect()
+        })
+    }
+
+    /// What author `author` (a public ID; the owner's stands for the owner)
+    /// holds at artifact `aid` outside its threads, for an approval card
+    /// (§9.5): the current version's files they wrote, the documents they
+    /// hold fields of (by path; a document without recorded authors is the
+    /// owner's), and their uploads (`[asset ID, content type, size]`).
+    ///
+    /// # Errors
+    /// `NotFound` for an artifact that is gone.
+    #[allow(clippy::type_complexity)]
+    pub fn authored_outside_threads(
+        &self,
+        aid: &str,
+        author: &str,
+    ) -> Result<(Vec<String>, Vec<String>, Vec<(String, String, i64)>)> {
+        self.with_read(|c| {
+            let a = super::artifacts::live_artifact_in(c, aid)?.ok_or(CoreError::NotFound)?;
+            let owner = owner_pid(c)?;
+            let is_owner = owner.as_deref() == Some(author);
+            let who = if is_owner {
+                Author::Owner
+            } else {
+                Author::Person(author.to_string())
+            };
+            let mut files = Vec::new();
+            if let Some(v) = c
+                .query_row(
+                    &format!(
+                        "{} WHERE artifact_id = ?1 AND n = ?2",
+                        super::artifacts::SELECT_VERSION
+                    ),
+                    params![aid, a.current_version],
+                    super::artifacts::row_to_version,
+                )
+                .optional()?
+                .transpose()?
+            {
+                for path in v.files.keys() {
+                    let by =
+                        visibility::normalise(&visibility::authors_of_file(&v, path), owner.as_deref());
+                    if by.contains(&who) {
+                        files.push(path.clone());
+                    }
+                }
+            }
+            let docs: Vec<String> = c
+                .prepare(
+                    "SELECT d.path FROM docs d WHERE d.artifact_id = ?1
+                       AND (EXISTS (SELECT 1 FROM doc_authors x WHERE x.artifact_id = d.artifact_id
+                                      AND x.path = d.path AND (x.author = ?2 OR (?3 AND x.author = '*owner')))
+                            OR (?3 AND NOT EXISTS (SELECT 1 FROM doc_authors x
+                                      WHERE x.artifact_id = d.artifact_id AND x.path = d.path)))
+                     ORDER BY d.path",
+                )?
+                .query_map(params![aid, author, is_owner], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            let assets: Vec<(String, String, i64)> = c
+                .prepare(
+                    "SELECT id, content_type, size FROM assets WHERE artifact_id = ?1
+                       AND (person = ?2 OR (?3 AND (person IS NULL OR person = '*owner')))
+                     ORDER BY created_at, id",
+                )?
+                .query_map(params![aid, author, is_owner], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            Ok((files, docs, assets))
         })
     }
 
@@ -1662,17 +1840,17 @@ impl Store {
             // Every decision bumps the generation (M17): a decline changes
             // what the withheld rows' placeholders say.
             self.visibility_changed();
-            let held: u32 = tx.query_row(
-                "SELECT count(*) FROM approval_requests INDEXED BY approval_requests_open
-                 WHERE COALESCE(approver, '') = COALESCE(?1, '') AND status = 'open'",
-                params![approver],
-                |r| r.get(0),
-            )?;
-            if held < MAX_OPEN_REQUESTS {
-                tx.execute(
-                    "DELETE FROM install WHERE k = ?1",
-                    params![overflow_key(approver)],
-                )?;
+            // The banner stays while routed content it counted is still
+            // held without a request.
+            let places = overflow_places(tx, approver)?;
+            if !places.is_empty() {
+                let mut left = Vec::new();
+                for p in places {
+                    if held_without_request(tx, approver, &p.0, &p.1, p.2.as_deref())? {
+                        left.push(p);
+                    }
+                }
+                set_overflow(tx, approver, &left)?;
             }
             let request = request_by_id(tx, rid)?.ok_or(CoreError::NotFound)?;
             Ok(Decided {
@@ -2525,14 +2703,31 @@ mod tests {
         ));
     }
 
+    /// `n` LAN viewers who are not connected, by public ID.
+    fn lans(st: &Store, n: usize) -> Vec<String> {
+        (0..n)
+            .map(|i| {
+                lan(
+                    st,
+                    &format!("01ARZ3NDEKTSV4RRFFQ69G5F{:02}", i + 10),
+                    &format!("Lan{i}"),
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn the_hundred_and_first_request_is_refused_per_approver() {
         let w = req_world();
+        // Five authors, each at their own share of Sam's requests.
+        let authors = lans(&w.st, (MAX_OPEN_REQUESTS / MAX_OPEN_PER_AUTHOR) as usize);
         let mut tids = Vec::new();
-        for i in 0..MAX_OPEN_REQUESTS {
-            let t = w.thread_by(&w.mia, &format!("t{i}"));
-            assert_eq!(w.send_to_sam(&t).len(), 1);
-            tids.push(t);
+        for a in &authors {
+            for i in 0..MAX_OPEN_PER_AUTHOR {
+                let t = w.thread_by(a, &format!("t{i}"));
+                assert_eq!(w.send_to_sam(&t).len(), 1);
+                tids.push(t);
+            }
         }
         assert_eq!(
             w.st.approval_requests(Some(&w.sam), true, 1).unwrap().1,
@@ -2551,7 +2746,7 @@ mod tests {
         };
         assert_eq!(code(w.st.ask_approval(DAEMON, &ask)), "limit_reached");
         // A request already open is still joined.
-        w.comment_by(&tids[0], &w.mia, "more");
+        w.comment_by(&tids[0], &authors[0], "more");
         w.st.send_to_agent(DAEMON, &tids[0]).unwrap();
         // The owner's own limit is the owner's.
         w.st.ensure_watch(DAEMON, &w.owner_sid, &w.aid).unwrap();
@@ -2567,11 +2762,119 @@ mod tests {
             .2;
         assert_eq!(made.len(), 1, "another approver is not full");
         assert_eq!(w.open(None)[0].approver, None);
-        // Deciding brings Sam under the limit and clears the banner.
+        // A decision frees a place, but Mia's held thread still has no
+        // request: the banner stays.
+        let rid = w.open(Some(&w.sam))[0].id.clone();
+        w.st.decide_request(DAEMON, &rid, Some(&w.sam), Decision::Decline, Via::Shell)
+            .unwrap();
+        assert!(w.st.approval_requests(Some(&w.sam), true, 1).unwrap().2);
+        // Once Mia's content is no longer held without a request (Sam
+        // allows her), the next decision clears it.
+        w.st.approve(
+            DAEMON,
+            Some(&w.sam),
+            &w.mia,
+            Scope::Thread(t.clone()),
+            Via::Shell,
+        )
+        .unwrap();
         let rid = w.open(Some(&w.sam))[0].id.clone();
         w.st.decide_request(DAEMON, &rid, Some(&w.sam), Decision::Decline, Via::Shell)
             .unwrap();
         assert!(!w.st.approval_requests(Some(&w.sam), true, 1).unwrap().2);
+    }
+
+    #[test]
+    fn one_author_cannot_spend_an_approvers_requests() {
+        let w = req_world();
+        for i in 0..MAX_OPEN_PER_AUTHOR {
+            let t = w.thread_by(&w.mia, &format!("t{i}"));
+            assert_eq!(w.send_to_sam(&t).len(), 1);
+        }
+        // Mia's twenty-first is held silently; it counts toward the banner.
+        let held = w.thread_by(&w.mia, "one more of Mia's");
+        assert!(w.send_to_sam(&held).is_empty());
+        let (_, n, overflow) = w.st.approval_requests(Some(&w.sam), true, 1).unwrap();
+        assert_eq!((n, overflow), (MAX_OPEN_PER_AUTHOR, true));
+        // Another author is still asked for.
+        let lans = w.thread_by(&w.lan, "Lan's");
+        assert_eq!(w.send_to_sam(&lans).len(), 1);
+        // A decision on one of Mia's leaves her held thread without a
+        // request: the banner stays.
+        let rid = w
+            .open(Some(&w.sam))
+            .into_iter()
+            .find(|r| r.author == w.mia)
+            .unwrap()
+            .id;
+        w.st.decide_request(DAEMON, &rid, Some(&w.sam), Decision::Decline, Via::Shell)
+            .unwrap();
+        assert!(w.st.approval_requests(Some(&w.sam), true, 1).unwrap().2);
+    }
+
+    #[test]
+    fn only_a_send_naming_an_agent_asks() {
+        let w = req_world();
+        let t = w.thread_by(&w.mia, "untargeted");
+        let (_, _, made) =
+            w.st.send_routed(DAEMON, &t, crate::SendTarget::Everyone, Route::Send, false)
+                .unwrap();
+        assert!(made.is_empty() && w.open(Some(&w.sam)).is_empty());
+        // A batch naming no agent asks no one either; one naming Sam's does.
+        let t2 = w.thread_by(&w.mia, "batched");
+        let batch = |to: Option<String>, tid: &str| {
+            w.st.send_batch(
+                DAEMON,
+                &w.aid,
+                crate::store::batches::SendBatch {
+                    thread_ids: vec![tid.to_string()],
+                    note: None,
+                    sent_by: "Mia".into(),
+                    sender: w.mia.clone(),
+                    to,
+                },
+            )
+            .unwrap()
+        };
+        batch(None, &t2);
+        assert!(w.open(Some(&w.sam)).is_empty());
+        let t3 = w.thread_by(&w.mia, "batched to Sam's");
+        batch(Some(w.sid.clone()), &t3);
+        assert_eq!(w.open(Some(&w.sam)).len(), 1);
+        // A send naming Sam's agent asks.
+        assert_eq!(w.send_to_sam(&t).len(), 1);
+    }
+
+    #[test]
+    fn an_owner_page_comment_reads_withheld_while_its_request_is_open() {
+        let w = req_world();
+        let owner = w.st.owner_viewer(true).unwrap().public_id;
+        // Sam allows Mia; the owner's page wrote her comment.
+        w.st.approve(DAEMON, Some(&w.sam), &w.mia, Scope::Everywhere, Via::Shell)
+            .unwrap();
+        let tid = w.thread_by(&w.mia, "the owner's page asks");
+        w.st.with_tx(|tx| {
+            tx.execute(
+                "UPDATE comments SET via_page = 1 WHERE thread_id = ?1",
+                params![tid],
+            )?;
+            let cid: String = tx.query_row(
+                "SELECT id FROM comments WHERE thread_id = ?1",
+                params![tid],
+                |r| r.get(0),
+            )?;
+            tx.execute(
+                "INSERT INTO page_authors (kind, id, author) VALUES ('comment', ?1, '*owner')",
+                params![cid],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let made = w.send_to_sam(&tid);
+        assert_eq!(made.len(), 1);
+        assert_eq!(w.open(Some(&w.sam))[0].author, owner);
+        let s = w.st.feedback_state(&tid, false).unwrap().unwrap();
+        assert_eq!(s.state, crate::FeedbackPhase::Withheld);
     }
 
     #[test]
