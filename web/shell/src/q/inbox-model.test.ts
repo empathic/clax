@@ -13,6 +13,17 @@ describe("inbox model", () => {
     expect(itemTitle(item("finished"))).toBe("claude finished on Quarterly Review");
   });
 
+  it("titles a connection, an approval request and an ended agent", () => {
+    expect(itemTitle(item("connection"))).toBe("Connection request from sam-mbp (192.168.1.40)");
+    expect(itemText(item("connection"))).toBe("Key SHA256:9f2c");
+    const joined = item("connection", { connection: { ...item("connection").connection!, status: "approved", via: "invite", person: { public_id: "u_1", display_name: "Sam" } } });
+    expect(itemTitle(joined)).toBe("Sam connected from sam-mbp");
+    expect(itemTitle(item("connection", { connection: null, gone: true }))).toBe("A connection request");
+    expect(itemText(item("connection", { connection: null, gone: true }))).toBe("");
+    expect(itemTitle(item("approval"))).toBe("An agent waits for your approval");
+    expect(itemTitle(item("ended"))).toBe("claude ended");
+  });
+
   it("names a second agent of a harness, and a deleted page", () => {
     const other = item("reply", { agent: { handle: "a_9c2b00", harness: "claude", project: "p" } });
     expect(itemTitle(item("reply"), [item("reply"), other])).toBe("claude 1f3a replied on Quarterly Review");

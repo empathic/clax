@@ -177,7 +177,14 @@ export type QuestionView = {
   created_at: string; closed_at: string | null;
 };
 
-export type InboxKind = "reply" | "version" | "published" | "question" | "finished";
+export type InboxKind = "reply" | "version" | "published" | "question" | "finished" | "approval" | "connection" | "ended";
+/** A `connection` item's grant: a request waiting for the owner, or a
+ * machine that connected with an invite (`person` once it has one). */
+export type InboxConnection = {
+  id: string; status: string; via: "invite" | "request";
+  client: { name: string; key: string | null; peer_ip: string };
+  person: { public_id: string; display_name: string | null } | null;
+};
 /** A thread an item names; `summary` and `status` are null when it is gone. */
 export type InboxThread = { id: string; summary: string | null; status?: string | null };
 /** The inbox item view. Each kind fills its own field (`reply` also fills
@@ -194,6 +201,11 @@ export type InboxItem = {
   published: { description: string | null } | null;
   question: QuestionView | null;
   work: { message: string | null; threads: InboxThread[] } | null;
+  /** `connection`, `approval` and `ended` items only. */
+  /** `connection`: null once the request is gone. */
+  connection?: InboxConnection | null;
+  approval?: { request_id: string | null };
+  ended?: unknown;
   gone: boolean;
   /** Where opening the item leads (a path on the daemon). */
   url: string;

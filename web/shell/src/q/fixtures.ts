@@ -75,6 +75,18 @@ export function item(kind: InboxKind, over: Partial<InboxItem> = {}): InboxItem 
     case "finished":
       Object.assign(base, { work: { message: "Charts are in.", threads: [] } });
       break;
+    case "connection":
+      Object.assign(base, {
+        agent: null, artifact: null, url: "/people",
+        connection: { id: "g_abc", status: "pending", via: "request", client: { name: "sam-mbp", key: "SHA256:9f2c", peer_ip: "192.168.1.40" }, person: null },
+      });
+      break;
+    case "approval":
+      Object.assign(base, { approval: { request_id: "01J9R0000000000000000000AA" }, url: "/inbox?approval=01J9R0000000000000000000AA" });
+      break;
+    case "ended":
+      Object.assign(base, { ended: {} });
+      break;
   }
   return { ...base, ...over };
 }

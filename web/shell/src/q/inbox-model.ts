@@ -4,6 +4,7 @@
 import type { InboxFilter, InboxItem, InboxKind } from "../api";
 import { agentLabel, answerText, cutHeader } from "./model";
 
+/** The kinds the inbox page filters by. */
 export const INBOX_KINDS: readonly InboxKind[] = ["reply", "version", "published", "question", "finished"];
 
 /** The longest notification body, in characters, "…" included. */
@@ -33,6 +34,15 @@ export function itemTitle(i: InboxItem, others: InboxItem[] = []): string {
       return headers ? `${who} asks: ${headers}` : `${who} asked a question`;
     }
     case "finished": return `${who} finished on ${pageOf(i)}`;
+    case "connection": {
+      const c = i.connection;
+      if (!c) return "A connection request";
+      return c.via === "invite" && c.person
+        ? `${c.person.display_name ?? "Someone"} connected from ${c.client.name}`
+        : `Connection request from ${c.client.name} (${c.client.peer_ip})`;
+    }
+    case "approval": return "An agent waits for your approval";
+    case "ended": return `${who} ended`;
   }
 }
 
@@ -48,7 +58,9 @@ export function itemText(i: InboxItem): string {
     : i.kind === "version" ? i.version?.note
     : i.kind === "published" ? i.published?.description
     : i.kind === "question" ? (i.question && answersText(i.question)) ?? i.question?.questions[0]?.question
-    : i.work?.message;
+    : i.kind === "connection" ? (i.connection?.client.key ? `Key ${i.connection.client.key}` : null)
+    : i.kind === "finished" ? i.work?.message
+    : null;
   return (t ?? "").replace(/\s+/g, " ").trim();
 }
 
