@@ -246,7 +246,15 @@ async fn routing_to_another_persons_agent_makes_a_request() {
     let tid = t.mia_thread("please fix the chart").await;
     let (status, v) = t.mia_sends_to_sam(&tid).await;
     assert_eq!(status, 200, "{v}");
-    let item = sam_inbox.next_named("inbox_item").await;
+    // The two listeners publish from their own tasks: either may come first.
+    let mut got = std::collections::HashMap::new();
+    while !(got.contains_key("inbox_item") && got.contains_key("approval_request")) {
+        let (name, v) = sam_inbox.next().await;
+        if name == "inbox_item" || name == "approval_request" {
+            got.entry(name).or_insert(v);
+        }
+    }
+    let item = got["inbox_item"].clone();
     assert_eq!(item["item"]["kind"], "approval", "{item}");
     // The card: the author, the agent, the thread and the withheld content
     // itself (people are not filtered), and the count.
@@ -263,7 +271,7 @@ async fn routing_to_another_persons_agent_makes_a_request() {
     assert_eq!(item["item"]["thread"]["id"], json!(tid));
     assert_eq!(item["item"]["read"], false);
     // The approval_request event on the same topic.
-    let ev = sam_inbox.next_named("approval_request").await;
+    let ev = got["approval_request"].clone();
     assert_eq!(ev["request"]["status"], "open", "{ev}");
     assert!(
         !ev.to_string().contains("please fix the chart"),
@@ -300,6 +308,7 @@ async fn approval_changes_need_a_browser() {
     t.mia_sends_to_sam(&tid).await;
     // The owner's own request (Mia → the owner's agent), and an approval
     // of the owner's that names no request.
+    mia_sends_to_the_owners_agent(&t, &tid).await;
     let mine = t.w.ts.store.approval_requests(None, true, 10).unwrap().0;
     let rid = mine[0].id.clone();
     let unconnected = t.w.ts.store.live_approvals(None).unwrap()[0].id.clone();
@@ -375,6 +384,7 @@ async fn a_page_cannot_decide_an_approval() {
     t.mia_sends_to_sam(&tid).await;
     let sams = t.sams_requests().await;
     let rid = sams[0]["id"].as_str().unwrap().to_string();
+    mia_sends_to_the_owners_agent(&t, &tid).await;
     let owners = t.w.ts.store.approval_requests(None, true, 10).unwrap().0;
     let owner_rid = owners[0].id.clone();
     let ts = &t.w.ts;
@@ -448,7 +458,7 @@ async fn only_the_approver_decides() {
     }
     .call("POST", &path, Some(body.clone()))
     .await;
-    assert_eq!(status, 403);
+    assert_eq!(status, 404, "nothing of a LAN viewer's to decide (§9.3)");
     let (status, v) = t.sam_decides(&rid, "bogus").await;
     assert_eq!(
         (status, v["error"]["code"].clone()),
@@ -556,6 +566,8 @@ async fn ask_for_approval_waits_for_the_decision() {
         (400, json!("nothing_withheld"))
     );
     // Another person's request, or another session's, is not the agent's.
+    let other = t.mia_thread("for the owner").await;
+    mia_sends_to_the_owners_agent(&t, &other).await;
     let mine = t.w.ts.store.approval_requests(None, false, 10).unwrap().0;
     let (status, _) = t
         .sam_agent(
@@ -900,8 +912,23 @@ async fn a_page_send_routes_with_the_publisher_as_author() {
 async fn the_hundred_and_first_request_is_refused_with_a_banner() {
     use clax_core::store::approvals::MAX_OPEN_REQUESTS;
     let t = Two::new().await;
+    use clax_core::store::approvals::MAX_OPEN_PER_AUTHOR;
     let id = clax_core::ArtifactId::parse(&t.aid).unwrap();
+    // Five LAN viewers, each at their own share of Sam's requests.
+    let authors: Vec<String> = (0..MAX_OPEN_REQUESTS / MAX_OPEN_PER_AUTHOR)
+        .map(|i| {
+            t.w.ts
+                .store
+                .upsert_viewer(
+                    &format!("01ARZ3NDEKTSV4RRFFQ69G5F{:02}", i + 10),
+                    Some(&format!("Lan{i}")),
+                )
+                .unwrap()
+                .public_id
+        })
+        .collect();
     for i in 0..MAX_OPEN_REQUESTS {
+        let author = &authors[(i / MAX_OPEN_PER_AUTHOR) as usize];
         let th = t
             .w
             .ts
@@ -912,8 +939,8 @@ async fn the_hundred_and_first_request_is_refused_with_a_banner() {
                 clax_core::store::threads::NewThread {
                     version_n: 1,
                     anchor: serde_json::from_value(clax_server::testing::element_anchor()).unwrap(),
-                    author_name: "Mia".into(),
-                    author_public_id: Some(t.w.mia_public.clone()),
+                    author_name: "Lan".into(),
+                    author_public_id: Some(author.clone()),
                     body: format!("t{i}"),
                     clip: None,
                     via_page: false,
@@ -1207,4 +1234,286 @@ async fn requests_are_recorded_as_approval_events() {
     for r in rows.iter().filter(|r| r.kind.starts_with("approval.")) {
         assert!(!r.body.contains("please"), "{}", r.body);
     }
+}
+
+/// The owner's agent, watching the artifact; its handle.
+async fn owner_agent_watches(t: &Two) -> String {
+    let r =
+        t.w.ts
+            .authed(t.w.ts.client.put(format!(
+                "{}/api/sessions/{}/watches/{}",
+                t.w.ts.base, t.w.owner_session, t.aid
+            )))
+            .header("x-clax-session", &t.w.owner_session)
+            .send()
+            .await
+            .unwrap();
+    assert_eq!(r.status(), 200);
+    t.w.ts
+        .store
+        .get_session(&t.w.owner_session)
+        .unwrap()
+        .unwrap()
+        .agent_handle
+}
+
+#[tokio::test]
+async fn one_persons_sends_cannot_block_anothers_request() {
+    use clax_core::store::approvals::MAX_OPEN_REQUESTS;
+    let t = Two::new().await;
+    let owner_handle = owner_agent_watches(&t).await;
+    let sam = t.sam_browser();
+    let sam_cookie =
+        t.w.ts
+            .store
+            .viewer_of_grant(&t.w.sam.grant_id())
+            .unwrap()
+            .id;
+    // Sam's browser sends a hundred threads to the owner's agent.
+    for i in 0..MAX_OPEN_REQUESTS {
+        let tid =
+            t.w.ts
+                .thread_as(&t.aid, &sam_cookie, &format!("spam {i}"))
+                .await["id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+        let (s, v) = sam
+            .call(
+                "POST",
+                &format!("/api/artifacts/{}/threads/{tid}/send", t.aid),
+                Some(json!({"to": owner_handle})),
+            )
+            .await;
+        assert_eq!(s, 200, "{v}");
+    }
+    let (_, owners) = t
+        .owner_browser()
+        .call("GET", "/api/approvals/requests?limit=1", None)
+        .await;
+    assert_eq!(owners["open"], 20, "Sam's share: {owners}");
+    assert!(owners["banner"].is_string(), "the rest wait: {owners}");
+    // Mia's send to the owner's agent is still a request.
+    let mia_tid = t.mia_thread("Mia needs the owner").await;
+    let (s, _) = t
+        .mia_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{mia_tid}/send", t.aid),
+            Some(json!({"to": owner_handle})),
+        )
+        .await;
+    assert_eq!(s, 200);
+    assert!(
+        t.w.ts
+            .store
+            .approval_requests(None, true, 500)
+            .unwrap()
+            .0
+            .iter()
+            .any(|r| r.thread_id.as_deref() == Some(mia_tid.as_str())),
+        "Mia's send was held without a request"
+    );
+    // One decision leaves Sam's held threads without a request: the
+    // banner stays.
+    let rid = t.w.ts.store.approval_requests(None, true, 1).unwrap().0[0]
+        .id
+        .clone();
+    let (s, _) = t
+        .owner_browser()
+        .call(
+            "POST",
+            &format!("/api/approvals/requests/{rid}/decide"),
+            Some(json!({"scope": "decline"})),
+        )
+        .await;
+    assert_eq!(s, 200);
+    let (_, owners) = t
+        .owner_browser()
+        .call("GET", "/api/approvals/requests?limit=1", None)
+        .await;
+    assert!(owners["banner"].is_string(), "{owners}");
+}
+
+#[tokio::test]
+async fn the_card_shows_exactly_what_an_approval_releases() {
+    let t = Two::new().await;
+    let tid = t.mia_thread("Mia's own words").await;
+    // Mia's agent replies on her thread, sent to it first.
+    let r =
+        t.w.mia
+            .agent(
+                "PUT",
+                &format!("/api/sessions/{}/watches/{}", t.w.mia_session, t.aid),
+                Some(&t.w.mia_session),
+                None,
+            )
+            .await;
+    assert_eq!(r.status(), 200);
+    let mh =
+        t.w.ts
+            .store
+            .get_session(&t.w.mia_session)
+            .unwrap()
+            .unwrap()
+            .agent_handle;
+    let (s, v) = t
+        .mia_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/send", t.aid),
+            Some(json!({"to": mh})),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let r =
+        t.w.mia
+            .agent(
+                "POST",
+                &format!("/api/artifacts/{}/threads/{tid}/comments", t.aid),
+                Some(&t.w.mia_session),
+                Some(json!({"body": "MIA AGENT WORDS", "author_kind": "agent"})),
+            )
+            .await;
+    assert_eq!(r.status(), 201, "{}", r.text().await.unwrap());
+    t.mia_sends_to_sam(&tid).await;
+    let (_, inbox) = t
+        .sam_browser()
+        .call("GET", "/api/inbox?kind=approval", None)
+        .await;
+    let card = &inbox["items"][0]["approval"];
+    let bodies: Vec<&str> = card["content"]["comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["body"].as_str().unwrap())
+        .collect();
+    assert_eq!(bodies, ["Mia's own words", "MIA AGENT WORDS"], "{card}");
+    assert_eq!(card["count"], json!(bodies.len()), "{card}");
+    // Approved at the thread: Sam's agent reads exactly those.
+    let rid = card["id"].as_str().unwrap().to_string();
+    let (s, _) = t.sam_decides(&rid, "thread").await;
+    assert_eq!(s, 200);
+    let (_, v) = t
+        .sam_agent(
+            "GET",
+            &format!("/api/artifacts/{}/threads/{tid}", t.aid),
+            None,
+        )
+        .await;
+    let read: Vec<&str> = v["thread"]["comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["body"].as_str())
+        .collect();
+    assert_eq!(read, bodies, "{v}");
+}
+
+#[tokio::test]
+async fn a_send_naming_no_agent_asks_no_one() {
+    let t = Two::new().await;
+    // Mia's thread, sent without naming an agent: Sam's watching agent
+    // gets the placeholder, and Sam no card.
+    let tid = t.mia_thread("for whoever watches").await;
+    let (s, v) = t
+        .mia_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/send", t.aid),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert!(t.sams_requests().await.is_empty());
+    let fb = t.sam_feedback("tier=piggyback").await;
+    let text = fb["text"].as_str().unwrap();
+    assert!(text.contains("To ask your person, call ask"), "{text}");
+    // The owner's own untargeted send, where Mia replied, asks Sam nothing.
+    let own = t.w.ts.thread_as_owner(&t.aid, "the owner's").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    t.w.ts
+        .reply_as(&t.aid, &own, &t.w.mia_cookie, "Mia replies")
+        .await;
+    let (s, _) = t
+        .owner_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{own}/send", t.aid),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200);
+    assert!(t.sams_requests().await.is_empty());
+}
+
+#[tokio::test]
+async fn an_agents_lists_leave_out_artifacts_it_may_not_read() {
+    let t = Two::new().await;
+    let tid = t.mia_thread("please").await;
+    t.mia_sends_to_sam(&tid).await;
+    let rid = t.sams_requests().await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let rights = clax_core::rights::Rights::parse(&json!([
+        {"type": "clax-artifacts", "actions": ["read"], "locations": [t.w.scratch.artifact]},
+        {"type": "clax-comments", "actions": ["read", "watch"], "locations": ["*"]},
+        {"type": "clax-ask", "actions": ["ask"], "locations": ["*"]}
+    ]))
+    .unwrap();
+    t.w.ts
+        .store
+        .set_person_rights(&AuditCtx::DAEMON, &t.sam_public(), Some(rights))
+        .unwrap();
+    let (status, v) = t.sam_agent("GET", "/api/approvals/requests", None).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["requests"], json!([]), "{v}");
+    assert!(!v.to_string().contains(&t.aid), "{v}");
+    let sid = t.w.sam_session.clone();
+    let (status, _) = t
+        .sam_agent("GET", &format!("/api/sessions/{sid}/approvals/{rid}"), None)
+        .await;
+    assert_eq!(status, 404);
+    // His browser still lists it.
+    assert_eq!(t.sams_requests().await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_card_outside_threads_shows_what_the_author_holds_there() {
+    let t = Two::new().await;
+    // Sam's agent asks for the owner's artifact outside its threads.
+    let sid = t.w.sam_session.clone();
+    let (status, v) = t
+        .sam_agent(
+            "POST",
+            &format!("/api/sessions/{sid}/approvals"),
+            Some(json!({"artifact_id": t.aid})),
+        )
+        .await;
+    assert_eq!(status, 201, "{v}");
+    let (_, inbox) = t
+        .sam_browser()
+        .call("GET", "/api/inbox?kind=approval", None)
+        .await;
+    let content = &inbox["items"][0]["approval"]["content"];
+    assert_eq!(content["title"], "Quarterly Review", "{content}");
+    assert_eq!(content["files"], json!(["index.html"]), "{content}");
+}
+
+/// Mia's browser sends `tid` to the owner's agent by name: a request in
+/// the owner's inbox.
+async fn mia_sends_to_the_owners_agent(t: &Two, tid: &str) {
+    let handle = owner_agent_watches(t).await;
+    let (s, v) = t
+        .mia_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/send", t.aid),
+            Some(json!({"to": handle})),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
 }

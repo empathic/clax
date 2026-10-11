@@ -700,11 +700,13 @@ impl Store {
     }
 
     /// [`Store::send_to`], asking the people of the agents it reaches
-    /// (spec 2026-10-08 §9.2) in its transaction: for [`Route::Send`],
-    /// each live target's person who may not see some author of the
-    /// thread's comments gets a request per such author, made or joined;
-    /// for [`Route::Join`] (a later comment on a sent thread), only open
-    /// requests there count the new content. A page's send (`page`) names
+    /// (spec 2026-10-08 §9.2) in its transaction: for [`Route::Send`] to
+    /// one agent ([`SendTarget::Agent`]: only a send naming an agent asks),
+    /// that agent's person, when they may not see some author of the
+    /// thread's comments, gets a request per such author, made or joined;
+    /// otherwise (a send naming no agent, a later comment on a sent
+    /// thread, [`Route::Join`]) only open requests there count the new
+    /// content. A page's send (`page`) names
     /// the page and its viewer on the request's item. The `thread.send`
     /// record names the requests (`approval_request_ids`) when there are
     /// any; their IDs are returned too.
@@ -720,6 +722,12 @@ impl Store {
         page: bool,
     ) -> Result<(Thread, Touched, Vec<String>)> {
         let mut touched = Touched::default();
+        // Only a send naming an agent asks its person (§9.2); any other
+        // send counts into the requests open there.
+        let route = match target {
+            SendTarget::Agent(_) => route,
+            SendTarget::Everyone | SendTarget::Thread => Route::Join,
+        };
         let requests = self.with_tx(|tx| {
             let now = self.now();
             let sent = send_in(tx, thread_id, None, target, &mut touched, &now)?;
@@ -1495,7 +1503,10 @@ pub(crate) const FEEDBACK_STATES: &str =
                    AND r.artifact_id = t.artifact_id AND COALESCE(r.thread_id, '') = f.thread_id
                    AND r.author IN (SELECT c.author_public_id FROM comments c WHERE c.id = f.comment_id
                                     UNION ALL
-                                    SELECT pa.author FROM page_authors pa
+                                    SELECT CASE pa.author WHEN '*owner'
+                                             THEN (SELECT public_id FROM viewers WHERE owner = 1)
+                                             ELSE pa.author END
+                                      FROM page_authors pa
                                      WHERE pa.kind = 'comment' AND pa.id = f.comment_id))
        FROM json_each(?1) j
       CROSS JOIN feedback f ON f.thread_id = j.value
