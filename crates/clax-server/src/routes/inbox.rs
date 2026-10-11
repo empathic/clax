@@ -146,13 +146,64 @@ pub struct ListQuery {
     before: Option<String>,
     #[serde(default)]
     limit: Option<String>,
+    /// `agent`: the agent strip instead of items.
+    #[serde(default)]
+    group: Option<String>,
+}
+
+impl ListQuery {
+    /// Whether any parameter but `group` is given.
+    fn filters(&self) -> bool {
+        [
+            &self.q,
+            &self.kind,
+            &self.artifact,
+            &self.agent,
+            &self.since,
+            &self.until,
+            &self.read,
+            &self.before,
+            &self.limit,
+        ]
+        .iter()
+        .any(|p| p.is_some())
+    }
+}
+
+/// `strip`, the agent strip, as `GET /api/inbox?group=agent` answers it.
+fn strip_view(strip: &[clax_core::store::inbox::AgentGroup]) -> Value {
+    json!(
+        strip
+            .iter()
+            .map(|g| json!({
+                "handle": g.handle,
+                "name": g.name,
+                "harness": g.harness,
+                "live": g.live,
+                "unread": g.unread,
+                "blocked": g.blocked_since.as_ref().map(|since| json!({
+                    "since": since,
+                    "questions": g.questions,
+                    "approvals": g.approvals,
+                })),
+            }))
+            .collect::<Vec<_>>()
+    )
 }
 
 fn query_of<T>(q: Result<Query<T>, QueryRejection>) -> Result<T, ApiError> {
     q.map(|Query(q)| q).map_err(|e| invalid(e.body_text()))
 }
 
-/// `GET /api/inbox?q=&kind=<k,…>&artifact=<aid>&agent=<harness|handle>&since=&until=&read=unread|read|all&before=<cursor>&limit=`
+/// `GET /api/inbox?q=&kind=<k,…>&artifact=<aid>&agent=<harness|handle>&since=&until=&read=unread|read|all&before=<cursor>&limit=`,
+/// or `GET /api/inbox?group=agent` (no other parameter; spec
+/// 2026-10-08-multi-agent-multi-person §13) → `{agents, unread}`: the agent
+/// strip, one entry per agent with unread items for the caller or an open
+/// question or approval request waiting on them (`{handle, name, harness,
+/// live, unread, blocked: {since, questions, approvals} | null}`), blocked
+/// ones first, longest blocked first, then by newest unread item; another
+/// `group` is 400 `invalid_query`.
+///
 /// (the owner, or a connected person: their own items) → `{items,
 /// next_cursor, unread, total?}`: items newest first,
 /// `limit` (default 50, at most 200) a page, `next_cursor` the `before` of
@@ -173,6 +224,25 @@ pub async fn list(
     d.refuse_agents()?;
     let me = recipient_of(&s, &who).await?;
     let q = query_of(q)?;
+    match q.group.as_deref() {
+        None => {}
+        Some("agent") => {
+            if q.filters() {
+                return Err(invalid("group=agent takes no other parameter"));
+            }
+            let out = s
+                .store_call(move |db| {
+                    let strip = db.inbox_agents(me.as_deref())?;
+                    Ok(json!({
+                        "agents": strip_view(&strip),
+                        "unread": db.inbox_unread(me.as_deref())?,
+                    }))
+                })
+                .await?;
+            return Ok(Json(out));
+        }
+        Some(g) => return Err(invalid(format!("'{g}' is not a grouping: agent"))),
+    }
     let mut iq = Filter {
         q: q.q,
         kind: q.kind.map(Kinds::Comma),
@@ -244,7 +314,8 @@ pub async fn list(
 /// `GET /api/inbox/summary` (the owner, or a connected person: their own)
 /// → `{unread, questions, latest}`: the unread count, the open questions'
 /// views oldest first, and the five newest unread items other than
-/// questions, for the gallery and the top bar. Each part is read on its
+/// questions (connection requests among them), for the gallery and the
+/// top bar. Each part is read on its
 /// own, one just after another.
 pub async fn summary(
     State(s): State<AppState>,
@@ -264,7 +335,15 @@ pub async fn summary(
                 .collect::<clax_core::Result<Vec<_>>>()?;
             let (rows, _) = db.inbox_list(&InboxQuery {
                 recipient: me.clone(),
-                kinds: vec![Kind::Reply, Kind::Version, Kind::Published, Kind::Finished],
+                kinds: vec![
+                    Kind::Reply,
+                    Kind::Version,
+                    Kind::Published,
+                    Kind::Finished,
+                    Kind::Connection,
+                    Kind::Approval,
+                    Kind::Ended,
+                ],
                 read: ReadFilter::Unread,
                 limit: SUMMARY_LATEST,
                 ..InboxQuery::default()

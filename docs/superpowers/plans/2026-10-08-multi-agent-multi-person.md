@@ -1104,9 +1104,9 @@ Spec §17 (People), §9.6, §3.1, §3.4. **Before starting, ask the owner the UI
 
 Spec §9.5, §3.2, §3.3.
 
-**Files:** Create `web/shell/src/people/ApprovalCard.svelte`, `ConnectionCard.svelte`; modify `web/shell/src/q/` (inbox renders `approval`, `connection`, `ended`; the card above a thread).
+**Files:** Create `web/shell/src/people/ApprovalCard.svelte`, `ConnectionCard.svelte`; modify `web/shell/src/q/` (inbox renders `approval`, `connection`, `ended`; the card above a thread) and `web/shell/src/ui/Gallery.svelte` (a connected person's browser gets the inbox page, question cards and the `questions` and `inbox` topics: gate them on "owner or connected person", a 200 from `/api/inbox`, rather than `ownerBrowser()`, so a person's agents' questions wait in Clax and can be answered there).
 
-- [ ] **Steps:** failing tests (`ApprovalCard` shows author, agent, thread and content as text, the thread button says "including later replies", each button decides its scope; `ConnectionCard` enables **Approve** only with a typed code and a new name, links to **Invite** for existing people); implement; verify in a real browser with screenshots; commit — `"Add approval and connection cards to the inbox"`
+- [ ] **Steps:** failing tests (`ApprovalCard` shows author, agent, thread and content as text, the thread button says "including later replies", each button decides its scope; `ConnectionCard` enables **Approve** only with a typed code and a new name, links to **Invite** for existing people; a connected person's browser shows their inbox and answers their agents' question cards); implement; verify in a real browser, as the owner and as a connected person, with screenshots; commit — `"Add approval and connection cards to the inbox"`
 
 ---
 

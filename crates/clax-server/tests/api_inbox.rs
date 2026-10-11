@@ -911,3 +911,134 @@ async fn a_revoked_person_loses_the_inbox() {
         "the owner's inbox stays"
     );
 }
+
+#[tokio::test]
+async fn another_persons_agents_project_never_reaches_a_persons_inbox() {
+    let w = with_sam().await;
+    let mut sams = w.stream(&["inbox"]).await;
+    // The owner's agent works in /home/alex/secret-project and replies in
+    // Sam's thread.
+    let res = w
+        .ts
+        .post_json(
+            "/api/sessions",
+            json!({"harness": "claude", "harness_session_id": "own2", "cwd": "/home/alex/secret-project"}),
+        )
+        .await;
+    let sid = res.json::<Value>().await.unwrap()["session"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let a = w.ts.publish_as(&sid, "Board", "<h1>Board</h1>").await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let t = w.ts.thread_as(&aid, &w.cookie, "Sam asks").await;
+    let tid = t["id"].as_str().unwrap().to_string();
+    w.ts.send_thread(&aid, &tid).await;
+    w.ts.reply_as_agent(&sid, &aid, &tid, "done").await;
+    let e = sams.next_named("inbox_item").await;
+    assert_eq!(e["item"]["kind"], "reply");
+    assert!(!e.to_string().contains("secret-project"), "{e}");
+    let (_, inbox) = w.get_as(&w.cookie, "/api/inbox").await;
+    assert!(!inbox.to_string().contains("secret-project"), "{inbox}");
+    assert!(inbox["items"][0]["agent"]["project"].is_null());
+    // The owner's inbox names it; Sam's own agent's project reaches Sam.
+    let owners = get(&w.ts, "/api/inbox?kind=published").await;
+    assert_eq!(owners["items"][0]["agent"]["project"], "secret-project");
+    w.ask("Teal or amber?", None).await;
+    let (_, inbox) = w.get_as(&w.cookie, "/api/inbox?kind=question").await;
+    assert_eq!(inbox["items"][0]["agent"]["project"], "w");
+}
+
+#[tokio::test]
+async fn a_persons_agents_have_their_own_question_cap() {
+    let w = with_sam().await;
+    let ask = json!({"source": "ask", "questions": [{"question": "q", "header": "H",
+        "options": [{"label": "A"}, {"label": "B"}]}]});
+    let mut n = 0;
+    'outer: for s in 0..20 {
+        let sid = w.sam.register("claude", &format!("sam-f{s}")).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        for _ in 0..8 {
+            let r = w
+                .sam
+                .agent(
+                    "POST",
+                    &format!("/api/sessions/{sid}/questions"),
+                    Some(&sid),
+                    Some(ask.clone()),
+                )
+                .await;
+            if r.status() != 201 {
+                assert_eq!(r.status(), 429);
+                break 'outer;
+            }
+            n += 1;
+        }
+    }
+    assert_eq!(n, 100, "Sam's agents reach their own cap");
+    let sid = w.ts.register_session("claude", "own-cap").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r =
+        w.ts.post_json(&format!("/api/sessions/{sid}/questions"), ask)
+            .await;
+    assert_eq!(r.status(), 201, "the owner's agents keep theirs");
+}
+
+#[tokio::test]
+async fn the_agent_strip_groups_the_callers_inbox_by_agent() {
+    let w = with_sam().await;
+    let qid = w.ask("Teal or amber?", None).await;
+    let (status, strip) = w.get_as(&w.cookie, "/api/inbox?group=agent").await;
+    assert_eq!(status, 200, "{strip}");
+    let agents = strip["agents"].as_array().unwrap();
+    assert_eq!(agents.len(), 1, "{strip}");
+    let a = &agents[0];
+    assert_eq!(
+        (
+            a["harness"].as_str(),
+            a["live"].as_bool(),
+            a["unread"].as_u64()
+        ),
+        (Some("claude"), Some(true), Some(1))
+    );
+    assert_eq!(a["blocked"]["questions"], 1);
+    assert_eq!(a["blocked"]["approvals"], 0);
+    assert!(a["blocked"]["since"].is_string());
+    assert!(a["handle"].as_str().unwrap().starts_with("a_"));
+    assert_eq!(strip["unread"], 1);
+    // The chip filters the inbox by the agent's handle.
+    let (_, items) = w
+        .get_as(
+            &w.cookie,
+            &format!("/api/inbox?agent={}", a["handle"].as_str().unwrap()),
+        )
+        .await;
+    assert_eq!(items["items"][0]["question"]["id"], qid.as_str());
+    // The owner's strip holds none of Sam's agents.
+    assert_eq!(
+        get(&w.ts, "/api/inbox?group=agent").await["agents"],
+        json!([])
+    );
+    // Another grouping, or other parameters beside it, are refused.
+    for q in ["group=thread", "group=agent&read=unread", "group="] {
+        let (status, body) = w.get_as(&w.cookie, &format!("/api/inbox?{q}")).await;
+        assert_eq!(
+            (status, body["error"]["code"].as_str()),
+            (400, Some("invalid_query")),
+            "{q}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_summary_lists_a_waiting_connection_request() {
+    let w = with_sam().await;
+    let summary = get(&w.ts, "/api/inbox/summary").await;
+    let latest = summary["latest"].as_array().unwrap();
+    assert_eq!(latest.len(), 1, "{summary}");
+    assert_eq!(latest[0]["kind"], "connection");
+}

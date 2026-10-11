@@ -81,21 +81,38 @@ fn project(cwd: &str) -> &str {
 /// `i`'s view from its sources `s`. A missing source makes the item `gone`;
 /// the view then keeps what the item holds (kind, time, agent, IDs).
 fn render(st: &Store, i: &ItemRow, s: Sources) -> clax_core::Result<Value> {
-    let agent = s
-        .agent
-        .as_ref()
-        .map(|a| json!({"handle": a.handle, "harness": a.harness, "project": project(&a.cwd)}));
-    // A live page is the owner's alone (L10): a person's view names none.
-    let mut s = s;
+    // An agent's project goes to the owner and to the agent's own person
+    // alone (spec §13).
+    let agent = s.agent.as_ref().map(|a| {
+        let shown = i.recipient.is_none() || i.recipient == a.person;
+        json!({"handle": a.handle, "harness": a.harness,
+               "project": shown.then(|| project(&a.cwd))})
+    });
+    // A live page is the owner's alone (L10): a person, whose browser may
+    // not see live pages, gets an item about one with nothing of it, its
+    // ID, link and payload left out, and gone.
     if i.recipient.is_some()
         && s.artifact
             .as_ref()
             .is_some_and(|a| a.kind == clax_core::live::KIND_LIVE)
     {
-        s = Sources {
-            agent: s.agent,
-            ..Sources::default()
-        };
+        return Ok(json!({
+            "id": i.id,
+            "seq": i.seq,
+            "kind": i.kind.as_str(),
+            "read": i.read_at.is_some(),
+            "created_at": i.created_at,
+            "agent": agent,
+            "artifact": null,
+            "thread": null,
+            "reply": null,
+            "version": null,
+            "published": null,
+            "question": null,
+            "work": null,
+            "gone": true,
+            "url": "/inbox",
+        }));
     }
     let artifact = match (&s.artifact, &i.artifact_id) {
         (Some(a), _) => {
@@ -338,4 +355,90 @@ pub fn listen(s: &AppState) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clax_core::store::inbox::AgentRef;
+
+    fn item(kind: Kind, recipient: Option<&str>) -> ItemRow {
+        ItemRow {
+            seq: 7,
+            id: "01ARZ3NDEKTSV4RRFFQ69G5FB1".into(),
+            kind,
+            artifact_id: Some("7q3k9mzx2b4t".into()),
+            thread_id: None,
+            comment_id: None,
+            version_n: None,
+            question_id: None,
+            session_id: Some("s1".into()),
+            harness: Some("claude".into()),
+            detail: Some(json!({"message": "LIVECANARYmessage", "thread_ids": []})),
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            read_at: None,
+            recipient: recipient.map(Into::into),
+            request_id: None,
+            grant_id: None,
+        }
+    }
+
+    fn sources(kind: &str, person: Option<&str>) -> Sources {
+        let artifact: clax_core::model::Artifact = serde_json::from_value(json!({
+            "id": "7q3k9mzx2b4t", "title": "LIVECANARYtitle", "description": null, "icon": null,
+            "created_at": "x", "updated_at": "x", "current_version": 1, "pinned": false,
+            "capabilities": {}, "contract_version": "1", "owner_session_id": null, "kind": kind,
+        }))
+        .unwrap();
+        Sources {
+            agent: Some(AgentRef {
+                handle: "a_1".into(),
+                harness: "claude".into(),
+                cwd: "/home/alex/secret-project".into(),
+                person: person.map(Into::into),
+            }),
+            artifact: Some(artifact),
+            page_url: Some("http://localhost:5173/LIVECANARYpath".into()),
+            ..Sources::default()
+        }
+    }
+
+    #[test]
+    fn a_persons_view_names_no_live_page_and_no_other_persons_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = Store::open(&clax_core::Home::at(dir.path().join("ax"))).unwrap();
+        // A person's item about a live page carries nothing of the page.
+        let v = render(
+            &st,
+            &item(Kind::Finished, Some("u_sam")),
+            sources("live", None),
+        )
+        .unwrap();
+        let text = v.to_string();
+        assert!(
+            !text.contains("LIVECANARY") && !text.contains("7q3k9mzx2b4t"),
+            "{text}"
+        );
+        assert_eq!(
+            (v["gone"].as_bool(), v["url"].as_str()),
+            (Some(true), Some("/inbox"))
+        );
+        // The owner's keeps it.
+        let v = render(&st, &item(Kind::Finished, None), sources("live", None)).unwrap();
+        assert_eq!(v["work"]["message"], "LIVECANARYmessage");
+        // An agent's project: the owner's view and its own person's only.
+        let project = |recipient: Option<&str>, person: Option<&str>| {
+            render(
+                &st,
+                &item(Kind::Finished, recipient),
+                sources("html", person),
+            )
+            .unwrap()["agent"]["project"]
+                .clone()
+        };
+        assert_eq!(project(None, Some("u_sam")), "secret-project");
+        assert_eq!(project(Some("u_sam"), Some("u_sam")), "secret-project");
+        assert_eq!(project(Some("u_sam"), None), Value::Null);
+        assert_eq!(project(Some("u_sam"), Some("u_mia")), Value::Null);
+    }
 }
