@@ -1242,6 +1242,18 @@ impl Event<'_> {
                 self.show("approval_id"),
                 self.show("author")
             ),
+            Some(K::ThreadTake) => format!(
+                "Gave thread {} to session {} ({})",
+                thread(),
+                self.show("session"),
+                self.show("cause")
+            ),
+            Some(K::ThreadRelease) => format!(
+                "Released thread {} from session {} ({})",
+                thread(),
+                self.show("session"),
+                self.show("reason")
+            ),
             Some(K::AgentName) => format!(
                 "Named the agent of session {} ({})",
                 self.row.ids.session.as_deref().unwrap_or("unknown"),

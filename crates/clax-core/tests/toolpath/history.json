@@ -2824,6 +2824,70 @@
     "reason": "thread_resolved"
    },
    "backfilled": false
+  },
+  {
+   "seq": 79,
+   "at": "2026-10-06T14:08:45.079Z",
+   "kind": "thread.take",
+   "actor": {
+    "type": "agent",
+    "session_id": "01JB9S00000000000000000001",
+    "harness": "claude",
+    "harness_session_id": "3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+    "agent_handle": "a_9f3k2m",
+    "transcript_path": "/Users/alex/.claude/projects/-Users-alex-work-app/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44.jsonl"
+   },
+   "ids": {
+    "artifact": "k3m9q2w8x1ab",
+    "artifact2": null,
+    "thread": "01JB9T00000000000000000001",
+    "session": "01JB9S00000000000000000001",
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "mcp",
+    "thread_id": "01JB9T00000000000000000001",
+    "session": "01JB9S00000000000000000001",
+    "cause": "first_delivery"
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 80,
+   "at": "2026-10-06T14:08:46.080Z",
+   "kind": "thread.release",
+   "actor": {
+    "type": "agent",
+    "session_id": "01JB9S00000000000000000001",
+    "harness": "claude",
+    "harness_session_id": "3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+    "agent_handle": "a_9f3k2m",
+    "transcript_path": "/Users/alex/.claude/projects/-Users-alex-work-app/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44.jsonl"
+   },
+   "ids": {
+    "artifact": "k3m9q2w8x1ab",
+    "artifact2": null,
+    "thread": "01JB9T00000000000000000001",
+    "session": "01JB9S00000000000000000001",
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "mcp",
+    "thread_id": "01JB9T00000000000000000001",
+    "session": "01JB9S00000000000000000001",
+    "reason": "explicit"
+   },
+   "backfilled": false
   }
  ]
 }

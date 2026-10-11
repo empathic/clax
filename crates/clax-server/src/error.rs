@@ -130,6 +130,12 @@ impl From<CoreError> for ApiError {
                 message,
             } => ApiError::new(StatusCode::FORBIDDEN, code, message),
             CoreError::Invalid { code, message } => ApiError::bad_request(code, message),
+            CoreError::ThreadTaken { name } => {
+                let message = CoreError::ThreadTaken { name: name.clone() }.to_string();
+                let mut err = ApiError::new(StatusCode::CONFLICT, "thread_taken", message);
+                err.extra.insert("taken_by".into(), json!(name));
+                err
+            }
             e @ CoreError::NotDeclared { .. } => ApiError::forbidden("not_declared", e.to_string()),
             e @ CoreError::Corrupt { .. } => {
                 tracing::error!(error = %e, "corrupt row");

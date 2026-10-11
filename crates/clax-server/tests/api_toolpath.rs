@@ -691,7 +691,7 @@ async fn every_mutation_records_one_event() {
         (
             "send to one agent",
             owner(ts.client.post(t(&t2, "/send"))).json(&json!({"to": handle})),
-            vec!["thread.send"],
+            vec!["thread.send", "thread.take"],
             "owner",
             false,
         ),
@@ -713,7 +713,7 @@ async fn every_mutation_records_one_event() {
         (
             "acknowledge",
             agent(ts.client.post(format!("{feedback}/ack"))).json(&json!({"thread_ids": [t1]})),
-            vec!["feedback.delivered"],
+            vec!["feedback.delivered", "thread.take"],
             "agent",
             true,
         ),
@@ -1882,8 +1882,12 @@ async fn agent_reply_records_session_git_and_call() {
     let (code, v) = status(reply(&tid, "Tightened the copy")).await;
     assert_eq!(code, 201, "{v}");
     let recs = events_since(&ts, seq);
-    // The reply, then the first delivery of the comment it answers.
-    assert_eq!(kinds(&recs), ["comment.add", "feedback.delivered"]);
+    // The reply, which takes the unowned thread (M23), then the first
+    // delivery of the comment it answers.
+    assert_eq!(
+        kinds(&recs),
+        ["comment.add", "thread.take", "feedback.delivered"]
+    );
     for r in &recs {
         assert_eq!(r.actor["type"], "agent");
         assert_eq!(r.actor["session_id"], sid.as_str());
@@ -1903,7 +1907,8 @@ async fn agent_reply_records_session_git_and_call() {
         (&c["author_kind"], &c["author_name"], &c["via_harness"]),
         (&json!("agent"), &json!("claude"), &json!("claude"))
     );
-    assert_eq!(recs[1].body["tier"], "piggyback");
+    assert_eq!(recs[1].body["cause"], "reply");
+    assert_eq!(recs[2].body["tier"], "piggyback");
     let fid: String = db(&ts)
         .query_row(
             "SELECT id FROM feedback WHERE thread_id = ?1",
@@ -1911,7 +1916,7 @@ async fn agent_reply_records_session_git_and_call() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(recs[1].body["feedback_id"], fid.as_str());
+    assert_eq!(recs[2].body["feedback_id"], fid.as_str());
 }
 
 #[tokio::test]
@@ -1937,7 +1942,12 @@ async fn batch_send_is_one_event_listing_threads() {
     assert_eq!(code, 200, "{v}");
     assert_eq!(v["unchanged"], json!([sent]));
     let recs = events_since(&ts, seq);
-    assert_eq!(kinds(&recs), ["thread.send"], "one event for the batch");
+    // One send for the batch; each thread it gives the agent is taken.
+    assert_eq!(
+        kinds(&recs),
+        ["thread.send", "thread.take", "thread.take", "thread.take"],
+        "one send event for the batch"
+    );
     let r = &recs[0];
     assert_eq!(r.artifact_id.as_deref(), Some(aid.as_str()));
     assert_eq!(r.body["batch_id"], v["batch"]["id"]);
@@ -2016,10 +2026,14 @@ async fn delivery_retry_is_not_recorded() {
     let first = take().await;
     assert_eq!(first.as_array().map(Vec::len), Some(1), "{first}");
     let recs = events_since(&ts, seq);
-    // The feedback marks the session working on the artifact.
-    assert_eq!(kinds(&recs), ["feedback.delivered", "working.start"]);
-    assert_eq!(recs[1].body["via"], "hook");
-    assert_eq!(recs[1].session_id.as_deref(), Some(sid.as_str()));
+    // The first delivery takes the thread; the feedback marks the session
+    // working on the artifact.
+    assert_eq!(
+        kinds(&recs),
+        ["feedback.delivered", "thread.take", "working.start"]
+    );
+    assert_eq!(recs[2].body["via"], "hook");
+    assert_eq!(recs[2].session_id.as_deref(), Some(sid.as_str()));
     assert_eq!(recs[0].body["tier"], "stop_hook");
     assert_eq!(recs[0].body["via"], "hook");
     assert_eq!(recs[0].actor["session_id"], sid.as_str());
@@ -2066,16 +2080,20 @@ async fn resolve_addressed_links_version() {
     assert_eq!(status(resolve(&aid, &tid)).await.0, 200);
     let recs = events_since(&ts, seq);
     // The link rides in the resolve: no separate `thread.addressed`.
-    assert_eq!(kinds(&recs), ["feedback.delivered", "thread.resolve"]);
+    // The first delivery takes the thread (M23).
+    assert_eq!(
+        kinds(&recs),
+        ["feedback.delivered", "thread.take", "thread.resolve"]
+    );
     assert_eq!(
         (
-            &recs[1].body["resolved_by"],
-            &recs[1].body["addressed_version"]
+            &recs[2].body["resolved_by"],
+            &recs[2].body["addressed_version"]
         ),
         (&json!("agent:claude"), &json!(2))
     );
-    assert_eq!(recs[1].artifact_id.as_deref(), Some(aid.as_str()));
-    assert_eq!(recs[1].actor["session_id"], sid.as_str());
+    assert_eq!(recs[2].artifact_id.as_deref(), Some(aid.as_str()));
+    assert_eq!(recs[2].actor["session_id"], sid.as_str());
     // A thread a viewer already resolved, then resolved by the agent: the
     // link is the only change, recorded alone.
     let second = ts.thread(&aid, 2, "@agent and this").await["id"]
@@ -2169,8 +2187,11 @@ async fn resolve_addressed_links_version() {
     let seq = last_seq(&ts);
     assert_eq!(status(resolve(&page, &live)).await.0, 200);
     let recs = events_since(&ts, seq);
-    assert_eq!(kinds(&recs), ["feedback.delivered", "thread.resolve"]);
-    assert_eq!(recs[1].body["addressed_version"], Value::Null);
+    assert_eq!(
+        kinds(&recs),
+        ["feedback.delivered", "thread.take", "thread.resolve"]
+    );
+    assert_eq!(recs[2].body["addressed_version"], Value::Null);
     let form = reqwest::multipart::Form::new()
         .text("url", "http://localhost:5173/settings")
         .text("title", "Settings")
