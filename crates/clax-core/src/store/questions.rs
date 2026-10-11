@@ -17,7 +17,8 @@ use serde_json::Value;
 
 /// Open questions one session may have at once.
 pub const MAX_OPEN_PER_SESSION: u32 = 8;
-/// Open questions across all sessions.
+/// Open questions of one person's agents (the owner's, or one connected
+/// person's): each person's agents share their own cap.
 pub const MAX_OPEN: u32 = 100;
 
 /// Where a question is in its life. `Open` moves to any other status;
@@ -338,32 +339,31 @@ pub(crate) const BY_ID: &str = concat!(select!(), "WHERE id = ?1");
 pub(crate) const BY_TOOL_USE: &str =
     concat!(select!(), "WHERE session_id = ?1 AND tool_use_id = ?2");
 /// A person's lists hold the questions of their own agents only (spec
-/// §7.5, §18: person-scoped): the recipient `?1` (`COALESCE` of the asking
-/// session's person: empty for the owner, else a public ID). A question
-/// whose session row is missing is the owner's.
+/// §7.5, §18: person-scoped): the recipient `?1` (`questions.person`,
+/// the asking session's person: empty for the owner, else a public ID),
+/// walked through `questions_open_by_person` or `questions_closed_by_person`,
+/// whose conditions each query repeats word for word.
 macro_rules! of_person {
     () => {
-        " AND COALESCE((SELECT s.person FROM sessions s WHERE s.id = questions.session_id), '') = ?1"
+        " AND COALESCE(person, '') = ?1"
     };
 }
-/// Recipient `?1`'s open questions.
+/// Recipient `?1`'s open questions: what [`MAX_OPEN`] caps.
 pub(crate) const OPEN_COUNT: &str = concat!(
-    "SELECT COUNT(*) FROM questions WHERE status = 'open'",
+    "SELECT COUNT(*) FROM questions INDEXED BY questions_open_by_person WHERE status = 'open'",
     of_person!()
 );
-/// Every open question, whoever's agent asked it ([`MAX_OPEN`]).
-pub(crate) const OPEN_ALL: &str = "SELECT COUNT(*) FROM questions WHERE status = 'open'";
 pub(crate) const OPEN_COUNT_OF_SESSION: &str =
     "SELECT COUNT(*) FROM questions WHERE session_id = ?1 AND status = 'open'";
 pub(crate) const OPEN_OLDEST: &str = concat!(
     select!(),
-    "WHERE status = 'open'",
+    "INDEXED BY questions_open_by_person WHERE status = 'open'",
     of_person!(),
     " ORDER BY created_at, id LIMIT ?2"
 );
 pub(crate) const OPEN_NEWEST: &str = concat!(
     select!(),
-    "WHERE status = 'open'",
+    "INDEXED BY questions_open_by_person WHERE status = 'open'",
     of_person!(),
     " ORDER BY created_at DESC, id DESC LIMIT ?2"
 );
@@ -371,13 +371,13 @@ pub(crate) const OPEN_NEWEST: &str = concat!(
 /// condition (`status <> 'open'`) each query repeats word for word.
 pub(crate) const CLOSED_NEWEST: &str = concat!(
     select!(),
-    "WHERE status <> 'open'",
+    "INDEXED BY questions_closed_by_person WHERE status <> 'open'",
     of_person!(),
     " ORDER BY closed_at DESC, id DESC LIMIT ?2"
 );
 pub(crate) const CLOSED_BEFORE: &str = concat!(
     select!(),
-    "WHERE status <> 'open' AND (closed_at, id) < (?2, ?3)",
+    "INDEXED BY questions_closed_by_person WHERE status <> 'open' AND (closed_at, id) < (?2, ?3)",
     of_person!(),
     " ORDER BY closed_at DESC, id DESC LIMIT ?4"
 );
@@ -593,7 +593,12 @@ impl Store {
             if !n.released {
                 let mine: u32 =
                     tx.query_row(OPEN_COUNT_OF_SESSION, params![n.session_id], |r| r.get(0))?;
-                let all: u32 = tx.query_row(OPEN_ALL, [], |r| r.get(0))?;
+                let person = super::inbox::person_of_session(tx, &n.session_id)?;
+                let all: u32 = tx.query_row(
+                    OPEN_COUNT,
+                    params![super::inbox::recipient_key(person.as_deref())],
+                    |r| r.get(0),
+                )?;
                 if mine >= MAX_OPEN_PER_SESSION || all >= MAX_OPEN {
                     return Err(CoreError::invalid(
                         "limit_reached",
@@ -613,8 +618,9 @@ impl Store {
             };
             tx.execute(
                 "INSERT INTO questions (id, session_id, artifact_id, source, tool_use_id,
-                    questions_json, status, created_at, closed_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    questions_json, status, created_at, closed_at, person)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                         (SELECT person FROM sessions WHERE id = ?2))",
                 params![
                     id,
                     n.session_id,

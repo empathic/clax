@@ -522,10 +522,10 @@ pub(super) const BY_SEQS: &str = concat!(
     columns!(),
     " FROM json_each(?1) j CROSS JOIN inbox_items i ON i.seq = j.value ORDER BY i.seq DESC"
 );
-/// Marks recipient `?3`'s items `?1` (a JSON array of IDs) read at `?2`.
 /// The recipients of the items with the `seq`s `?1` (a JSON array).
 pub(super) const RECIPIENTS_OF: &str = "SELECT DISTINCT i.recipient
     FROM json_each(?1) j CROSS JOIN inbox_items i ON i.seq = j.value";
+/// Marks recipient `?3`'s items `?1` (a JSON array of IDs) read at `?2`.
 pub(super) const MARK_READ: &str = "UPDATE inbox_items SET read_at = ?2
     WHERE id IN (SELECT value FROM json_each(?1)) AND +COALESCE(recipient, '') = ?3
       AND read_at IS NULL";
@@ -563,6 +563,24 @@ pub(super) const ADDRESSED_QUOTES: &str = "SELECT group_concat(CASE WHEN json_va
       WHERE vt.artifact_id = ?1 AND vt.version_n = ?2";
 pub(super) const THREAD_MOVED: &str =
     "UPDATE inbox_items SET artifact_id = ?2 WHERE thread_id = ?1";
+/// Recipient `?1`'s unread items by agent session: the count and the
+/// newest `seq` of each (the agent strip, spec §13).
+pub(super) const UNREAD_BY_SESSION: &str = "SELECT session_id, count(*), max(seq)
+    FROM inbox_items INDEXED BY inbox_unread
+    WHERE COALESCE(recipient, '') = ?1 AND read_at IS NULL AND session_id IS NOT NULL
+    GROUP BY session_id";
+/// The open questions of person `?1`'s agents by session: the count and
+/// the oldest one's time.
+pub(super) const QUESTIONS_BY_SESSION: &str = "SELECT session_id, count(*), min(created_at)
+    FROM questions INDEXED BY questions_open_by_person
+    WHERE status = 'open' AND COALESCE(person, '') = ?1
+    GROUP BY session_id";
+/// The open approval requests approver `?1` holds about an agent, by
+/// session: the count and the oldest one's time.
+pub(super) const APPROVALS_BY_SESSION: &str = "SELECT session_id, count(*), min(created_at)
+    FROM approval_requests INDEXED BY approval_requests_open
+    WHERE COALESCE(approver, '') = ?1 AND status = 'open' AND session_id IS NOT NULL
+    GROUP BY session_id";
 /// The connected people (not revoked) an item may go to, by public ID.
 pub(super) const CONNECTED_PEOPLE: &str = "SELECT public_id FROM viewers INDEXED BY viewers_people
     WHERE person = 1 AND person_revoked_at IS NULL ORDER BY public_id";
@@ -1412,6 +1430,112 @@ impl Store {
     }
 }
 
+/// One agent of the inbox's agent strip (spec §13): an agent session with
+/// unread items for the recipient, or one that waits on them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentGroup {
+    pub session_id: String,
+    pub handle: String,
+    pub name: Option<String>,
+    pub harness: String,
+    /// The session has not ended.
+    pub live: bool,
+    pub unread: u32,
+    /// The newest unread item's `seq` (0 with none).
+    pub newest: i64,
+    /// When the oldest open question or approval request it waits on was
+    /// made; `None` when it waits on nothing.
+    pub blocked_since: Option<String>,
+    pub questions: u32,
+    pub approvals: u32,
+}
+
+impl Store {
+    /// The agent strip of `recipient`'s inbox (spec §13): each agent with
+    /// unread items for them or an open question or approval request for
+    /// them, blocked ones first, longest blocked first, then by newest
+    /// unread item. Reads the recipient's unread items, open questions and
+    /// open requests through their indexes, and each agent's session.
+    pub fn inbox_agents(&self, recipient: Option<&str>) -> Result<Vec<AgentGroup>> {
+        use std::collections::BTreeMap;
+        let r = recipient_key(recipient);
+        self.with_read(|c| {
+            let mut by: BTreeMap<String, AgentGroup> = BTreeMap::new();
+            let blank = |sid: &str| AgentGroup {
+                session_id: sid.to_string(),
+                handle: String::new(),
+                name: None,
+                harness: String::new(),
+                live: false,
+                unread: 0,
+                newest: 0,
+                blocked_since: None,
+                questions: 0,
+                approvals: 0,
+            };
+            let mut st = c.prepare_cached(UNREAD_BY_SESSION)?;
+            for row in st.query_map(params![r], |x| {
+                Ok((
+                    x.get::<_, String>(0)?,
+                    x.get::<_, u32>(1)?,
+                    x.get::<_, i64>(2)?,
+                ))
+            })? {
+                let (sid, n, newest) = row?;
+                let g = by.entry(sid.clone()).or_insert_with(|| blank(&sid));
+                g.unread = n;
+                g.newest = newest;
+            }
+            for (sql, approvals) in [(QUESTIONS_BY_SESSION, false), (APPROVALS_BY_SESSION, true)] {
+                let mut st = c.prepare_cached(sql)?;
+                for row in st.query_map(params![r], |x| {
+                    Ok((
+                        x.get::<_, String>(0)?,
+                        x.get::<_, u32>(1)?,
+                        x.get::<_, String>(2)?,
+                    ))
+                })? {
+                    let (sid, n, since) = row?;
+                    let g = by.entry(sid.clone()).or_insert_with(|| blank(&sid));
+                    if approvals {
+                        g.approvals = n;
+                    } else {
+                        g.questions = n;
+                    }
+                    if g.blocked_since.as_ref().is_none_or(|b| since < *b) {
+                        g.blocked_since = Some(since);
+                    }
+                }
+            }
+            let mut out = Vec::with_capacity(by.len());
+            for (sid, mut g) in by {
+                let row: Option<(String, Option<String>, String, Option<String>)> = c
+                    .query_row(
+                        "SELECT agent_handle, name, harness, ended_at FROM sessions WHERE id = ?1",
+                        params![sid],
+                        |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?, x.get(3)?)),
+                    )
+                    .optional()?;
+                let Some((handle, name, harness, ended)) = row else {
+                    continue;
+                };
+                g.handle = handle;
+                g.name = name;
+                g.harness = harness;
+                g.live = ended.is_none();
+                out.push(g);
+            }
+            out.sort_by(|a, b| match (&a.blocked_since, &b.blocked_since) {
+                (Some(x), Some(y)) => x.cmp(y).then(a.session_id.cmp(&b.session_id)),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => b.newest.cmp(&a.newest),
+            });
+            Ok(out)
+        })
+    }
+}
+
 /// Whether `s` is an item ID: a ULID, or `b` and 24 lowercase hex digits
 /// (an item migration 21 filled in from the history).
 pub fn is_item_id(s: &str) -> bool {
@@ -1447,6 +1571,8 @@ pub struct AgentRef {
     pub harness: String,
     /// The session's working directory.
     pub cwd: String,
+    /// The session's person (a public ID); `None`: the owner's agent.
+    pub person: Option<String>,
 }
 
 /// A thread an item names, while it exists on a live artifact.
@@ -1494,7 +1620,7 @@ pub struct Sources {
     pub threads: Vec<ThreadRef>,
 }
 
-const SESSION_REF: &str = "SELECT agent_handle, harness, cwd FROM sessions WHERE id = ?1";
+const SESSION_REF: &str = "SELECT agent_handle, harness, cwd, person FROM sessions WHERE id = ?1";
 const PAGE_URL: &str = "SELECT origin || path FROM live_pages WHERE artifact_id = ?1";
 const THREAD_REF: &str = "SELECT t.id, t.status, t.anchor_json FROM threads t
     JOIN artifacts a ON a.id = t.artifact_id WHERE a.deleted_at IS NULL AND t.id = ?1";
@@ -1553,6 +1679,7 @@ impl Store {
                                     handle: r.get(0)?,
                                     harness: r.get(1)?,
                                     cwd: r.get(2)?,
+                                    person: r.get(3)?,
                                 })
                             })
                             .optional()?;
@@ -2076,8 +2203,32 @@ mod tests {
             .unwrap();
         st.inbox_mark_all(&InboxQuery::default()).unwrap();
         assert_eq!(st.inbox_unread(Some(&sam.public_id)).unwrap(), 1);
-        // Sam's agent's finished work is Sam's.
+        // Sam viewing a version reads his own items about it, never the
+        // owner's.
         let mine = agent_of(&st, Some(&sam_grant), "sam-h1");
+        let published = artifact(&st, Some(&mine));
+        let unread_published = |r: Option<&str>| {
+            inbox_of(&st, r)
+                .iter()
+                .filter(|i| i.kind == Kind::Published && i.read_at.is_none())
+                .count()
+        };
+        assert_eq!(
+            (
+                unread_published(Some(&sam.public_id)),
+                unread_published(None)
+            ),
+            (1, 1)
+        );
+        st.mark_seen(&sam.id, &published, 1).unwrap();
+        assert_eq!(
+            (
+                unread_published(Some(&sam.public_id)),
+                unread_published(None)
+            ),
+            (0, 1)
+        );
+        // Sam's agent's finished work is Sam's.
         st.note_finished(
             &crate::working::Ended {
                 key: "k1".into(),
@@ -2168,6 +2319,61 @@ mod tests {
         let tid = thread_on(&other, 1);
         agent_reply(&st, &tid, &agent, "after");
         assert!(inbox_of(&st, Some(&sam)).is_empty());
+    }
+
+    #[test]
+    fn the_agent_strip_puts_blocked_agents_first_and_counts_unread() {
+        use crate::store::people::tests::approved;
+        let (_d, _c, st) = crate::store::people::tests::store();
+        let (sam_grant, _, _) = approved(&st, "Sam", [7; 32]);
+        let sam = st.viewer_of_grant(&sam_grant).unwrap().public_id;
+        let asker = agent_of(&st, Some(&sam_grant), "sam-h1");
+        let replier = agent_of(&st, Some(&sam_grant), "sam-h2");
+        let owners = agent_of(&st, None, "own-h1");
+        let aid = artifact(&st, None);
+        let t = st
+            .create_thread(
+                DAEMON,
+                &aid,
+                NewThread {
+                    author_public_id: Some(sam.clone()),
+                    version_n: 1,
+                    anchor: anchor(),
+                    body: "Sam asks".into(),
+                    author_name: "Sam".into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap();
+        agent_reply(&st, &t.id, &replier, "one");
+        agent_reply(&st, &t.id, &replier, "two");
+        ask(&st, &asker, None);
+        ask(&st, &owners, None);
+        let strip = st.inbox_agents(Some(&sam)).unwrap();
+        let rows: Vec<(&str, u32, u32, bool)> = strip
+            .iter()
+            .map(|g| {
+                (
+                    g.session_id.as_str(),
+                    g.unread,
+                    g.questions,
+                    g.blocked_since.is_some(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (asker.as_str(), 1, 1, true),
+                (replier.as_str(), 2, 0, false)
+            ],
+            "the asker waits on Sam; the owner's agent is not Sam's"
+        );
+        assert!(strip.iter().all(|g| g.live && g.harness == "claude"));
+        let owner_strip = st.inbox_agents(None).unwrap();
+        assert_eq!(owner_strip.len(), 1);
+        assert_eq!(owner_strip[0].session_id, owners);
     }
 
     #[test]
