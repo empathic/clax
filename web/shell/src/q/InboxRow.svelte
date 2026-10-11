@@ -24,7 +24,7 @@
   const title = $derived(itemTitle(p.item, p.others ?? []));
   const text = $derived(p.item.gone ? "(deleted)" : itemText(p.item));
   const mark = $derived(p.item.read ? "Mark unread" : "Mark read");
-  const KIND_NAMES = { reply: "Reply", version: "Version", published: "Published", question: "Question", finished: "Finished" } as const;
+  const KIND_NAMES = { reply: "Reply", version: "Version", published: "Published", question: "Question", finished: "Finished", approval: "Approval", connection: "Connection", ended: "Ended" } as const;
   // One path per kind (an SVG fragment would need the runtime's SVG templates).
   const ICONS = {
     reply: "M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z",
@@ -32,6 +32,9 @@
     published: "M4 2.5h5l3 3v8H4zM8 7v4.5M5.75 9.25h4.5",
     question: "M2.5 8a5.5 5.5 0 1 0 11 0a5.5 5.5 0 1 0-11 0M6.4 6.4a1.7 1.7 0 1 1 2.3 1.6c-.5.2-.7.6-.7 1.1v.4M8 11.4v.1",
     finished: "M2.5 8a5.5 5.5 0 1 0 11 0a5.5 5.5 0 1 0-11 0M5.5 8.2l1.8 1.8 3.3-3.6",
+    approval: "M8 2.5l5 2v3.5c0 3-2.2 5-5 5.5c-2.8-.5-5-2.5-5-5.5V4.5z",
+    connection: "M3 5.5h10v6H3zM6 13.5h4M8 11.5v2",
+    ended: "M2.5 8a5.5 5.5 0 1 0 11 0a5.5 5.5 0 1 0-11 0M5.5 8h5",
   } as const;
 </script>
 
