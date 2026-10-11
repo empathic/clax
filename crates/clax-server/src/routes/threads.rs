@@ -676,6 +676,7 @@ pub async fn comment(
     req: Result<Json<CommentBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let (aid, tid) = path(p)?;
+    let reads = a.read_rights();
     let id = parse_id(&aid)?;
     let b = body(req)?;
     let agent = match b.author_kind.as_deref() {
@@ -748,11 +749,15 @@ pub async fn comment(
                     st.add_comment(&audit, &tid, reply)?
                 };
                 let seen = clax_core::visibility::Visibility::for_session(st, &sess.id)?;
+                let may = |x: &clax_core::model::Artifact| reads.allows(x);
+                let readable: Option<&(dyn Fn(&clax_core::model::Artifact) -> bool + Sync)> =
+                    reads.is_person_agent().then_some(&may);
                 touched.merge(st.acknowledge(
                     &audit,
                     &sess.id,
                     std::slice::from_ref(&tid),
                     &seen,
+                    readable,
                 )?);
                 let changed =
                     ctx.working
@@ -982,6 +987,7 @@ pub async fn resolve(
     raw: Bytes,
 ) -> Result<Response, ApiError> {
     let (aid, tid) = path(p)?;
+    let reads = a.read_rights();
     let id = parse_id(&aid)?;
     let agent = acting_as(&raw)?;
     if agent && !may_act_as_agent(&a) {
@@ -1016,11 +1022,15 @@ pub async fn resolve(
             let audit = audit.resolve(st)?;
             if let Some(sess) = &resolver {
                 let seen = clax_core::visibility::Visibility::for_session(st, &sess.id)?;
+                let may = |x: &clax_core::model::Artifact| reads.allows(x);
+                let readable: Option<&(dyn Fn(&clax_core::model::Artifact) -> bool + Sync)> =
+                    reads.is_person_agent().then_some(&may);
                 touched.merge(st.acknowledge(
                     &audit,
                     &sess.id,
                     std::slice::from_ref(&tid),
                     &seen,
+                    readable,
                 )?);
             }
             let (t, withdrawn) = match &resolver {

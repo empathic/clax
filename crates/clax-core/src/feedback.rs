@@ -811,10 +811,12 @@ mod tests {
         assert_eq!(both.matches("are withheld until").count(), 2);
     }
 
-    /// Every `FeedbackItem` and `Notice` an agent is handed is built under
-    /// a `Visibility` (spec 2026-10-08 §8.6, delivery guard): outside test
-    /// code, in `clax-core` and `clax-server`, each is built only inside a
-    /// function whose signature takes one.
+    /// Every `FeedbackItem`, `Notice` and `Placeholder` an agent is handed
+    /// is built under a `Visibility` (spec 2026-10-08 §8.6, delivery
+    /// guard): outside test code, in `clax-core` and `clax-server`, each is
+    /// built only inside a function whose signature takes one, and no such
+    /// code hands a take the view that sees everything
+    /// (`Visibility::all()`).
     #[test]
     fn feedback_items_are_built_only_under_visibility() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -838,14 +840,25 @@ mod tests {
             let text = std::fs::read_to_string(f).unwrap();
             // Test code: everything from the first test module on, and
             // files that are test modules themselves.
-            let end = text.find("#[cfg(test)]\nmod ").unwrap_or(text.len());
+            let end = text
+                .match_indices("#[cfg(test)]\n")
+                .find(|(i, m)| {
+                    let next = &text[i + m.len()..];
+                    ["mod ", "pub mod ", "pub(crate) mod "]
+                        .iter()
+                        .any(|p| next.starts_with(p))
+                })
+                .map_or(text.len(), |(i, _)| i);
             if f.file_name()
                 .is_some_and(|n| n.to_string_lossy().ends_with("_tests.rs"))
             {
                 continue;
             }
             let code = &text[..end];
-            for ty in ["FeedbackItem {", "Notice {"] {
+            if code.contains("Visibility::all()") {
+                bad.push(format!("{}: Visibility::all()", f.display()));
+            }
+            for ty in ["FeedbackItem {", "Notice {", "Placeholder {"] {
                 for (at, _) in code.match_indices(ty) {
                     let before = &code[..at];
                     let line = &before[before.rfind('\n').map_or(0, |i| i + 1)..];
@@ -868,7 +881,7 @@ mod tests {
                 }
             }
         }
-        assert!(built >= 2, "the take and the notices build them: {built}");
+        assert!(built >= 3, "the take and the notices build them: {built}");
         assert!(bad.is_empty(), "built outside a Visibility: {bad:#?}");
     }
 

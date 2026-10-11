@@ -330,6 +330,25 @@ pub struct Taken {
     pub items: Vec<FeedbackItem>,
     pub placeholders: Vec<Placeholder>,
     pub touched: Touched,
+    /// The view was older than the store's visibility generation when
+    /// the take's transaction began: nothing was taken; refresh it and
+    /// take again.
+    pub stale: bool,
+}
+
+/// What [`Store::take_notices`] announced, or `stale` (nothing announced)
+/// when the view was older than the store's visibility generation.
+#[derive(Clone, Debug, Default)]
+pub struct Announced {
+    pub notices: Vec<Notice>,
+    pub stale: bool,
+}
+
+/// Whether `vis`, a reader's view, is older than the store's generation
+/// as read inside a write transaction: exact, since the generation is
+/// bumped on the writer after each commit that changes visibility.
+fn stale_view(st: &Store, vis: &Visibility) -> bool {
+    vis.reader().is_some() && vis.generation() != st.visibility_generation()
 }
 
 /// What a take's reader may see of one row: its body withheld (by these
@@ -529,10 +548,16 @@ impl Held {
     }
 
     /// Stamps `placeholder_at` on each counted row at `now`, and the
-    /// placeholders: each with its artifact's title as the reader may see
-    /// it, and whether the reader's person has been asked there.
-    fn finish(self, sight: &mut Sight<'_>, now: &str) -> Result<Vec<Placeholder>> {
-        let approver = match sight.vis.reader() {
+    /// placeholders: each with its artifact's title as `vis` (the take's
+    /// view) lets its reader see it, and whether the reader's person has
+    /// been asked there.
+    fn finish(
+        self,
+        sight: &mut Sight<'_>,
+        vis: &Visibility,
+        now: &str,
+    ) -> Result<Vec<Placeholder>> {
+        let approver = match vis.reader() {
             Some(Reader::Person(p)) => Some(p.clone()),
             _ => None,
         };
@@ -751,7 +776,10 @@ impl Store {
     /// thread) and gets `placeholder_at`, so the session is told once;
     /// `queue` hands over visible rows only and tells of none. Rows of
     /// deleted artifacts and resolved threads are never handed over. Items
-    /// are oldest first.
+    /// are oldest first. When `vis` is older than the visibility generation
+    /// as its transaction reads it (an approval or revocation committed
+    /// since the view was built), nothing is taken and the result is
+    /// `stale`: the caller refreshes the view and takes again (M17).
     ///
     /// Each row handed over while undelivered is recorded as
     /// `feedback.delivered` (its ID and `q.tier`, the session in the
@@ -783,7 +811,10 @@ impl Store {
         let resends = q.include_resends && q.tier.resends();
         let now = self.now();
         let base = browser_base.trim_end_matches('/').to_string();
-        let (pending, placeholders) = self.with_tx(|tx| {
+        let taken = self.with_tx(|tx| {
+            if stale_view(self, vis) {
+                return Ok(None);
+            }
             let mut stmt = tx.prepare_cached(TAKE_FEEDBACK)?;
             let rows = stmt
                 .query_map(
@@ -935,9 +966,15 @@ impl Store {
                     self.record_audit(tx, ctx, rec)?;
                 }
             }
-            let placeholders = held.finish(&mut sight, &now)?;
-            Ok((good, placeholders))
+            let placeholders = held.finish(&mut sight, vis, &now)?;
+            Ok(Some((good, placeholders)))
         })?;
+        let Some((pending, placeholders)) = taken else {
+            return Ok(Taken {
+                stale: true,
+                ..Taken::default()
+            });
+        };
         let mut touched = Touched::default();
         for p in &placeholders {
             touched
@@ -973,6 +1010,7 @@ impl Store {
             items,
             placeholders,
             touched,
+            stale: false,
         })
     }
 
@@ -1023,17 +1061,21 @@ impl Store {
     /// Records that `session_id` has seen the threads (it read, replied to, or
     /// resolved them). Rows not yet delivered are marked delivered by
     /// `piggyback`, the in-band tool path, each recorded as
-    /// `feedback.delivered` under `ctx`. A row whose comment body `vis`
-    /// withholds from the session's reader was not seen: it stays held
-    /// (spec 2026-10-08 M16).
+    /// `feedback.delivered` under `ctx`. An undelivered row whose comment
+    /// body `vis` withholds from the session's reader was not seen: it
+    /// stays held (spec 2026-10-08 M16); a row delivered before its body
+    /// became withheld was seen, and is acknowledged (§9.4: what was
+    /// delivered stays delivered). Rows on an artifact `readable` says the
+    /// session may not read (`None`: every one) are left as they are.
     pub fn acknowledge(
         &self,
         ctx: &AuditCtx,
         session_id: &str,
         thread_ids: &[String],
         vis: &Visibility,
+        readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)>,
     ) -> Result<Touched> {
-        self.acknowledge_where(ctx, "thread_id", session_id, thread_ids, vis)
+        self.acknowledge_where(ctx, "thread_id", session_id, thread_ids, vis, readable)
     }
 
     /// Like [`Store::acknowledge`], for `session_id`'s rows on exactly the
@@ -1045,14 +1087,16 @@ impl Store {
         session_id: &str,
         comment_ids: &[String],
         vis: &Visibility,
+        readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)>,
     ) -> Result<Touched> {
-        self.acknowledge_where(ctx, "comment_id", session_id, comment_ids, vis)
+        self.acknowledge_where(ctx, "comment_id", session_id, comment_ids, vis, readable)
     }
 
     /// Acknowledges `session_id`'s unacknowledged rows whose `column`
-    /// (`thread_id` or `comment_id`) is one of `ids` and whose comment body
-    /// `vis` lets the session see, recording the first delivery of each
-    /// that was undelivered.
+    /// (`thread_id` or `comment_id`) is one of `ids`, on artifacts
+    /// `readable` lets it read, but for undelivered rows whose comment body
+    /// `vis` withholds, recording the first delivery of each that was
+    /// undelivered.
     fn acknowledge_where(
         &self,
         ctx: &AuditCtx,
@@ -1060,6 +1104,7 @@ impl Store {
         session_id: &str,
         ids: &[String],
         vis: &Visibility,
+        readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)>,
     ) -> Result<Touched> {
         debug_assert!(matches!(column, "thread_id" | "comment_id"));
         let now = self.now();
@@ -1081,7 +1126,12 @@ impl Store {
                     .collect::<rusqlite::Result<Vec<_>>>()?
                 };
                 for (fid, tid, aid, cid, undelivered) in found {
-                    if !vis.is_all() {
+                    if let Some(may) = readable
+                        && !sight.artifact(&aid)?.is_some_and(|a| may(&a))
+                    {
+                        continue;
+                    }
+                    if undelivered && !vis.is_all() {
                         let seen = sight.thread(&tid)?.is_some_and(|t| {
                             t.comments.iter().any(|c| {
                                 c.id == cid
@@ -1170,17 +1220,25 @@ impl Store {
     /// announced, on artifacts `readable` lets the session read (`None`:
     /// every one); a held row stays unannounced until it may be seen. A
     /// notice's title is `an artifact by <name>` when the reader may not see
-    /// it (spec 2026-10-08 §8.4).
+    /// it (spec 2026-10-08 §8.4). A view older than the visibility
+    /// generation announces nothing and answers `stale`, as
+    /// [`Store::take_feedback`] does.
     pub fn take_notices(
         &self,
         session_id: &str,
         browser_base: &str,
         vis: &Visibility,
         readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)>,
-    ) -> Result<Vec<Notice>> {
+    ) -> Result<Announced> {
         let base = browser_base.trim_end_matches('/').to_string();
         let now = self.now();
         self.with_tx(|tx| {
+            if stale_view(self, vis) {
+                return Ok(Announced {
+                    notices: Vec::new(),
+                    stale: true,
+                });
+            }
             let rows = {
                 let mut stmt = tx.prepare(
                     "SELECT f.id, f.comment_id, f.thread_id, t.artifact_id, a.title
@@ -1255,7 +1313,10 @@ impl Store {
                     });
                 }
             }
-            Ok(out)
+            Ok(Announced {
+                notices: out,
+                stale: false,
+            })
         })
     }
 
@@ -1612,19 +1673,22 @@ mod tests {
         assert!(
             st.take_notices(&grok, "http://h:1", &Visibility::all(), None)
                 .unwrap()
+                .notices
                 .is_empty(),
             "unarmed: no notice"
         );
         st.ensure_watch(DAEMON, &grok, &aid).unwrap();
         let n = st
             .take_notices(&grok, "http://h:1", &Visibility::all(), None)
-            .unwrap();
+            .unwrap()
+            .notices;
         assert_eq!(n.len(), 1);
         assert_eq!(n[0].thread_id, tid);
         assert_eq!(n[0].url, format!("http://h:1/a/{}", aid.as_str()));
         assert!(
             st.take_notices(&grok, "http://h:1", &Visibility::all(), None)
                 .unwrap()
+                .notices
                 .is_empty(),
             "announced once"
         );
@@ -1645,6 +1709,7 @@ mod tests {
         assert!(
             st.take_notices(&grok, "http://h:1", &Visibility::all(), None)
                 .unwrap()
+                .notices
                 .is_empty()
         );
     }
@@ -1660,6 +1725,7 @@ mod tests {
         assert_eq!(
             st.take_notices(&first, "http://h:1", &Visibility::all(), None)
                 .unwrap()
+                .notices
                 .len(),
             1
         );
@@ -1670,6 +1736,7 @@ mod tests {
         assert_eq!(
             st.take_notices(&next, "http://h:1", &Visibility::all(), None)
                 .unwrap()
+                .notices
                 .len(),
             1
         );
@@ -2094,6 +2161,7 @@ mod tests {
                 &owner,
                 std::slice::from_ref(&tid),
                 &Visibility::all(),
+                None,
             )
             .unwrap();
         assert!(
@@ -2140,7 +2208,8 @@ mod tests {
                 DAEMON,
                 &other,
                 std::slice::from_ref(&first),
-                &Visibility::all()
+                &Visibility::all(),
+                None,
             )
             .unwrap()
             .is_empty(),
@@ -2152,6 +2221,7 @@ mod tests {
                 &owner,
                 std::slice::from_ref(&first),
                 &Visibility::all(),
+                None,
             )
             .unwrap();
         assert!(
@@ -2314,6 +2384,7 @@ mod tests {
             &claude,
             std::slice::from_ref(&tid),
             &Visibility::all(),
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -2741,7 +2812,7 @@ mod delivery {
             (FeedbackPhase::Withheld, Some("Sam"), None)
         );
         // Reading the thread acknowledges nothing it withholds.
-        w.st.acknowledge(DAEMON, &w.sid, std::slice::from_ref(&tid), &vis)
+        w.st.acknowledge(DAEMON, &w.sid, std::slice::from_ref(&tid), &vis, None)
             .unwrap();
         assert!(w.rows(&tid).iter().all(|f| f.acknowledged_at.is_none()));
         // Approved: delivered at the next take, with the view refreshed.
@@ -2838,6 +2909,91 @@ mod delivery {
     }
 
     #[test]
+    fn a_row_delivered_before_its_body_was_withheld_is_still_acknowledged() {
+        let w = two_people();
+        let tid = mia_sends_to_sams_agent(&w, 1);
+        let id = w.approve(&w.mia, Scope::Thread(tid.clone()));
+        // Delivered, not acknowledged: the prompt hook is not in-band.
+        assert_eq!(w.take(Tier::PromptHook, &w.sam_vis()).items.len(), 1);
+        w.st.revoke_approval(DAEMON, &id, Some(&w.sam)).unwrap();
+        let vis = w.sam_vis();
+        w.st.acknowledge(DAEMON, &w.sid, std::slice::from_ref(&tid), &vis, None)
+            .unwrap();
+        assert!(w.rows(&tid)[0].acknowledged_at.is_some());
+        assert_eq!(
+            w.st.feedback_state(&tid, false).unwrap().unwrap().state,
+            FeedbackPhase::Acknowledged
+        );
+    }
+
+    #[test]
+    fn an_acknowledgement_on_an_artifact_the_session_may_not_read_changes_nothing() {
+        let w = two_people();
+        let aid = w.publish(&w.sam, "Sam's plan", "Sam's words");
+        let tid = w.thread(&aid, &w.sam, "Sam's own note", "Sam's words", 1);
+        let vis = w.sam_vis();
+        let none = |_: &Artifact| false;
+        let touched =
+            w.st.acknowledge(
+                DAEMON,
+                &w.sid,
+                std::slice::from_ref(&tid),
+                &vis,
+                Some(&none),
+            )
+            .unwrap();
+        assert!(touched.threads.is_empty());
+        let row = &w.rows(&tid)[0];
+        assert!(row.delivered_at.is_none() && row.acknowledged_at.is_none());
+        w.st.acknowledge(DAEMON, &w.sid, std::slice::from_ref(&tid), &vis, None)
+            .unwrap();
+        assert!(w.rows(&tid)[0].acknowledged_at.is_some());
+    }
+
+    #[test]
+    fn revoking_another_authors_approval_retells_nothing() {
+        let w = two_people();
+        let tid = mia_sends_to_sams_agent(&w, 2);
+        assert_eq!(w.take(Tier::Piggyback, &w.sam_vis()).placeholders.len(), 1);
+        let id = w.approve(&w.owner, Scope::Everywhere);
+        w.st.revoke_approval(DAEMON, &id, Some(&w.sam)).unwrap();
+        let r = w.take(Tier::Piggyback, &w.sam_vis());
+        assert!(r.placeholders.is_empty(), "{:?}", r.placeholders);
+        assert_eq!(
+            w.st.feedback_state(&tid, false).unwrap().unwrap().state,
+            FeedbackPhase::Withheld
+        );
+    }
+
+    #[test]
+    fn a_view_older_than_the_generation_takes_nothing() {
+        let w = two_people();
+        let tid = mia_sends_to_sams_agent(&w, 1);
+        let old = w.sam_vis();
+        // An approval and its revocation after the view was built, with a
+        // comment between: the take must not judge it by the old view.
+        let id = w.approve(&w.mia, Scope::Everywhere);
+        w.st.revoke_approval(DAEMON, &id, Some(&w.sam)).unwrap();
+        let r = w.take(Tier::Piggyback, &old);
+        assert!(r.stale && r.items.is_empty() && r.placeholders.is_empty());
+        let told: Option<String> =
+            w.st.with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT placeholder_at FROM feedback WHERE thread_id = ?1",
+                    [&tid],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert!(told.is_none(), "nothing written");
+        let n = w.st.take_notices(&w.sid, BASE, &old, None).unwrap();
+        assert!(n.stale && n.notices.is_empty());
+        let r = w.take(Tier::Piggyback, &w.sam_vis());
+        assert!(!r.stale);
+        assert_eq!(r.placeholders.len(), 1);
+    }
+
+    #[test]
     fn a_resend_carries_only_bodies_still_visible() {
         let w = two_people();
         let aid = w.publish(&w.sam, "Sam's plan", "Sam's words");
@@ -2865,11 +3021,12 @@ mod delivery {
         assert!(
             w.st.take_notices(&w.sid, BASE, &vis, None)
                 .unwrap()
+                .notices
                 .is_empty()
         );
         w.approve(&w.mia, Scope::Thread(tid.clone()));
         let vis = w.sam_vis();
-        let n = w.st.take_notices(&w.sid, BASE, &vis, None).unwrap();
+        let n = w.st.take_notices(&w.sid, BASE, &vis, None).unwrap().notices;
         assert_eq!(n.len(), 1);
         assert_eq!(
             n[0].title, "an artifact by Mia",
@@ -2898,6 +3055,7 @@ mod delivery {
         assert!(
             w.st.take_notices(&w.sid, BASE, &vis, Some(&none))
                 .unwrap()
+                .notices
                 .is_empty()
         );
         assert!(w.rows(&tid)[0].delivered_at.is_none());
