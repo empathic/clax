@@ -152,6 +152,16 @@ pub enum Event {
         #[serde(skip)]
         recipient: Option<String>,
     },
+    /// An approval request was made, joined, decided or withdrawn (spec
+    /// 2026-10-08-multi-agent-multi-person §9.2–§9.3): `request` is its
+    /// view, never the withheld content. Only the `inbox` stream topic of
+    /// its approver carries it; `/api/events` never does.
+    ApprovalRequest {
+        request: serde_json::Value,
+        /// The approver (`None`: the owner); never serialised.
+        #[serde(skip)]
+        recipient: Option<String>,
+    },
     /// People, invites or grants changed (spec 2026-10-08-multi-agent-
     /// multi-person §6.2–§6.4): `change` names what (`what`) with the
     /// invite's or grant's view, never a code or token. Only the owner-only
@@ -180,6 +190,7 @@ impl Event {
             Event::Question { .. }
             | Event::InboxItem { .. }
             | Event::InboxRead { .. }
+            | Event::ApprovalRequest { .. }
             | Event::People { .. } => "",
         }
     }
@@ -202,6 +213,7 @@ impl Event {
             Event::Question { .. } => "question",
             Event::InboxItem { .. } => "inbox_item",
             Event::InboxRead { .. } => "inbox_read",
+            Event::ApprovalRequest { .. } => "approval_request",
             Event::People { .. } => "people",
         }
     }
@@ -470,6 +482,10 @@ mod tests {
                 ids: None,
                 read: true,
                 unread: 0,
+                recipient: None,
+            },
+            Event::ApprovalRequest {
+                request: serde_json::json!({"id": "r"}),
                 recipient: None,
             },
             Event::People {

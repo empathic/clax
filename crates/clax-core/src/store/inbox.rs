@@ -1834,11 +1834,13 @@ impl Store {
                             }
                         }
                     }
-                    Kind::Published
-                    | Kind::Question
-                    | Kind::Approval
-                    | Kind::Connection
-                    | Kind::Ended => {}
+                    // An approval request's thread, for its card.
+                    Kind::Approval => {
+                        if let (Some(tid), true) = (&i.thread_id, live) {
+                            s.thread = thread_ref(c, tid)?;
+                        }
+                    }
+                    Kind::Published | Kind::Question | Kind::Connection | Kind::Ended => {}
                 }
                 out.push(s);
             }

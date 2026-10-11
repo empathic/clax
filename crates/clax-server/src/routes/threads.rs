@@ -306,42 +306,102 @@ pub async fn clip(
         .into_response())
 }
 
-/// Whether `@name` may send to and give a watch to live session `sid` on
-/// artifact `id` (spec §11): always for the owner's agents; for a person's
-/// agent only off live pages (`live_page`) and where its rights allow
-/// reading and watching the artifact. §10's routing request for another
-/// person's agent is not made here: such a name is reported unresolved.
+/// Whether a send or `@name` reaches live session `sid` on artifact `id`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reach {
+    /// It may read and watch the artifact.
+    Yes,
+    /// Its rights do not let it read the artifact (spec §10: 400
+    /// `agent_cannot_read`).
+    CannotRead,
+    /// It may read it but not watch it, or it is a person's agent and the
+    /// artifact is a live page (which no person's agent sees, L10), or its
+    /// grant has ended: an `@name` is reported unresolved.
+    No,
+}
+
+/// Whether a send or `@name` reaches live session `sid` on artifact `id`
+/// (spec §10, §11): always for the owner's agents; for a person's agent
+/// only off live pages (`live_page`) and where its rights allow reading
+/// and watching the artifact. Reaching another person's agent makes a
+/// routing request (M18), which the store's send does.
 fn named_agent_reaches(
     st: &Store,
     sid: &str,
     id: &ArtifactId,
     live_page: bool,
-) -> clax_core::Result<bool> {
+) -> clax_core::Result<Reach> {
     use clax_core::rights::RightType;
     let Some(s) = st.get_session(sid)? else {
-        return Ok(false);
+        return Ok(Reach::No);
     };
     let Some(grant) = s.grant_id.as_deref() else {
-        return Ok(true);
+        return Ok(Reach::Yes);
     };
     if live_page {
-        return Ok(false);
+        return Ok(Reach::No);
     }
     let gc = match st.grant_caller(grant, Some(sid)) {
         Ok(gc) => gc,
-        Err(CoreError::Invalid { .. }) => return Ok(false),
+        Err(CoreError::Invalid { .. }) => return Ok(Reach::No),
         Err(e) => return Err(e),
     };
     let own = |x: &str| {
         st.artifact_created_by(x, gc.person.as_deref())
             .unwrap_or(false)
     };
-    Ok(gc
+    if !gc
         .rights
         .allows(RightType::Artifacts, "read", Some(id.as_str()), &own)
-        && gc
+    {
+        return Ok(Reach::CannotRead);
+    }
+    Ok(
+        if gc
             .rights
-            .allows(RightType::Comments, "watch", Some(id.as_str()), &own))
+            .allows(RightType::Comments, "watch", Some(id.as_str()), &own)
+        {
+            Reach::Yes
+        } else {
+            Reach::No
+        },
+    )
+}
+
+/// 400 `agent_cannot_read`: a send to an agent that may not read the
+/// artifact (spec §10).
+fn cannot_read(name: &str) -> CoreError {
+    CoreError::invalid(
+        "agent_cannot_read",
+        format!(
+            "{} may not read this artifact; nothing was sent",
+            clax_core::feedback::display_name(name)
+        ),
+    )
+}
+
+/// 400 `agent_cannot_read` when a viewer comment's `body` names with
+/// `@name` a live agent that may not read artifact `id`: checked before
+/// the comment is written, so a refused send writes nothing.
+pub(crate) fn check_named_reads(
+    st: &Store,
+    id: &ArtifactId,
+    body: &str,
+    live_page: bool,
+) -> clax_core::Result<()> {
+    if !body.contains('@') {
+        return Ok(());
+    }
+    let live = st.live_agent_names()?;
+    let names: Vec<String> = live.iter().map(|(_, n)| n.clone()).collect();
+    for name in clax_core::mentions::agent_mentions(body, &names) {
+        if let Some((sid, _)) = live.iter().find(|(_, n)| *n == name)
+            && named_agent_reaches(st, sid, id, live_page)? == Reach::CannotRead
+        {
+            return Err(cannot_read(&name));
+        }
+    }
+    Ok(())
 }
 
 /// The live agents a viewer comment's `body` names with `@name` on
@@ -366,7 +426,7 @@ pub(crate) fn resolve_named(
         let Some((sid, _)) = live.iter().find(|(_, n)| *n == name) else {
             continue;
         };
-        if !named_agent_reaches(st, sid, id, live_page)? {
+        if named_agent_reaches(st, sid, id, live_page)? != Reach::Yes {
             unresolved.push(name);
             continue;
         }
@@ -416,7 +476,14 @@ pub(crate) fn announce_new_thread(
     live_page: bool,
 ) -> clax_core::Result<(Thread, Vec<String>)> {
     if mention {
-        let (sent, touched) = st.send_to_agent(audit, &thread.id)?;
+        // `@agent` routes to every agent it reaches (M18).
+        let (sent, touched, _) = st.send_routed(
+            audit,
+            &thread.id,
+            SendTarget::Thread,
+            clax_core::store::approvals::Route::Send,
+            false,
+        )?;
         thread = sent;
         apply(ctx, st, &touched);
     }
@@ -596,6 +663,9 @@ pub async fn create(
                     .collect(),
                 None => Vec::new(),
             };
+            if !via_page {
+                check_named_reads(st, &id, text.as_deref().unwrap_or_default(), live_page)?;
+            }
             let (thread, unresolved) = create_thread_now(
                 st,
                 &ctx,
@@ -765,6 +835,9 @@ pub async fn comment(
                 crate::working::settle(st, &audit, &ctx.events, &ctx.working, &changed);
                 c
             } else {
+                if !b.via_page {
+                    check_named_reads(st, &id, &b.body, live_page)?;
+                }
                 let audit = audit.resolve(st)?;
                 let (name, author_public_id) = author(st, &who)?;
                 let c = st.add_comment(
@@ -789,7 +862,16 @@ pub async fn comment(
                 // target; `@agent` keeps its meaning beside them.
                 let at_agent = !c.via_page && mentions_agent(&c.body);
                 if at_agent || (t.sent_to_agent && named.is_empty()) {
-                    touched.merge(st.send_to_agent(&audit, &tid)?.1);
+                    // `@agent` routes (M18); a later comment on a sent
+                    // thread counts into the requests open there.
+                    let route = if at_agent {
+                        clax_core::store::approvals::Route::Send
+                    } else {
+                        clax_core::store::approvals::Route::Join
+                    };
+                    let (_, t, _) =
+                        st.send_routed(&audit, &tid, SendTarget::Thread, route, false)?;
+                    touched.merge(t);
                 }
                 if !named.is_empty() {
                     touched.merge(st.send_to_named(&audit, &tid, &named)?.1);
@@ -826,16 +908,31 @@ struct SendBody {
 }
 
 /// The live owner or watcher session of artifact `id` that agent handle `to`
-/// names; 400 `unknown_agent` when it names none.
-fn send_target(st: &Store, id: &ArtifactId, to: Option<&str>) -> clax_core::Result<Option<String>> {
+/// names; 400 `unknown_agent` when it names none, and 400
+/// `agent_cannot_read` when it names an agent that may not read the
+/// artifact (spec §10).
+fn send_target(
+    st: &Store,
+    id: &ArtifactId,
+    to: Option<&str>,
+    live_page: bool,
+) -> clax_core::Result<Option<String>> {
     match to {
         Some(h) if clax_core::is_agent_handle(h) => {
-            Ok(Some(st.live_agent(id, h)?.ok_or_else(|| {
+            let sid = st.live_agent(id, h)?.ok_or_else(|| {
                 CoreError::invalid(
                     "unknown_agent",
                     "no live agent on this artifact has that handle",
                 )
-            })?))
+            })?;
+            if named_agent_reaches(st, &sid, id, live_page)? == Reach::CannotRead {
+                let name = st
+                    .get_session(&sid)?
+                    .map(|s| s.name.unwrap_or_else(|| h.to_string()))
+                    .unwrap_or_default();
+                return Err(cannot_read(&name));
+            }
+            Ok(Some(sid))
         }
         Some(_) => Err(CoreError::invalid("unknown_agent", "not an agent handle")),
         None => Ok(None),
@@ -845,19 +942,27 @@ fn send_target(st: &Store, id: &ArtifactId, to: Option<&str>) -> clax_core::Resu
 /// Sets `sent_to_agent` and creates feedback rows; idempotent. An optional
 /// body `{"to": <agent handle>}` sends to that live agent only, and it becomes
 /// the thread's target (400 `unknown_agent` when it names no live owner or
-/// watcher). Without `to` the send goes to every live owner and watcher and
-/// clears the thread's target. A request with a foreign `Origin` is refused
+/// watcher, 400 `agent_cannot_read` when it names one that may not read the
+/// artifact). Without `to` the send goes to every live owner and watcher and
+/// clears the thread's target. The send routes (spec §9.2, M18): each
+/// agent it reaches whose person has not approved an author of the
+/// thread's comments makes or joins a request to that person; a page's
+/// send (`x-clax-via: page`, a page's `sendToClaude`) names the page and
+/// its viewer on the request. A request with a foreign `Origin` is refused
 /// ([`SameOrigin`]).
 pub async fn send(
     State(s): State<AppState>,
     a: Agent<crate::agent::ThreadSend>,
     _o: SameOrigin,
     audit: DeferredAudit,
+    headers: axum::http::HeaderMap,
     p: Result<Path<(String, String)>, PathRejection>,
     raw: Bytes,
 ) -> Result<Json<Value>, ApiError> {
     let (aid, tid) = path(p)?;
     let id = parse_id(&aid)?;
+    let page = crate::agent::page_marker(&a.caller, &headers)?;
+    let live_page = s.live_ids.contains(id.as_str());
     let b: SendBody = if raw.is_empty() {
         SendBody::default()
     } else {
@@ -872,13 +977,15 @@ pub async fn send(
         .store_call(move |st| {
             let vis = vf.build(st)?;
             thread_of(st, &id, &tid)?;
-            let to = send_target(st, &id, b.to.as_deref())?;
+            let to = send_target(st, &id, b.to.as_deref(), live_page)?;
             let audit = audit.resolve(st)?;
-            let (t, touched) = st.send_to(
+            let (t, touched, _) = st.send_routed(
                 &audit,
                 &tid,
                 to.as_deref()
                     .map_or(SendTarget::Everyone, SendTarget::Agent),
+                clax_core::store::approvals::Route::Send,
+                page,
             )?;
             apply(&ctx, st, &touched);
             publish_thread(&ctx, st, &t)?;
@@ -920,6 +1027,7 @@ pub async fn send_batch(
     let ctx = s.feedback_ctx();
     let with_path = a.holds_token();
     let vf = VisFor::of(&a.caller, &s);
+    let live_page = s.live_ids.contains(id.as_str());
     let agent_person = match &a.caller {
         crate::auth::Caller::PersonAgent { person, .. } => Some(person.clone()),
         _ => None,
@@ -928,7 +1036,7 @@ pub async fn send_batch(
         .store_call(move |st| {
             let vis = vf.build(st)?;
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            let to = send_target(st, &id, b.to.as_deref())?;
+            let to = send_target(st, &id, b.to.as_deref(), live_page)?;
             let audit = audit.resolve(st)?;
             let (sent_by, viewer) = author(st, &who)?;
             // The sender as an author of the note (spec §8.2).

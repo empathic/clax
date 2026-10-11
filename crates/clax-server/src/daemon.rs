@@ -617,6 +617,7 @@ pub async fn serve(
     });
     state.stream.listen(&state.events);
     crate::inbox::listen(&state);
+    crate::approvals::listen(&state);
     tracing::info!(codex = ?state.codex.bin, source = ?state.codex.source, "codex push");
     tracing::info!(provider = ?state.sample.provider_name(), "sample provider");
     let fctx = state.feedback_ctx();

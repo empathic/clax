@@ -3,6 +3,7 @@
 //! a link and, on macOS, an assessment of the new executable on its first run.
 
 mod api_agent_auth;
+mod api_approvals;
 mod api_artifacts;
 mod api_assets;
 mod api_attention;

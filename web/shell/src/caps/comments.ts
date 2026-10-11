@@ -432,7 +432,7 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
           writing();
           const r = await post({ ...target, text: body });
           if (!r.thread.sent_to_agent) {
-            const sentThread = await request(() => sendToAgent(env.aid, r.thread.id));
+            const sentThread = await request(() => sendToAgent(env.aid, r.thread.id, null, true));
             env.comments?.upsert(sentThread);
           }
           return { threadId: r.handle, commentId: r.commentId };
