@@ -252,8 +252,8 @@ pub struct RemoteProbe {
     /// Seconds the daemon's clock is ahead of this machine's; `None` when
     /// it sent no readable `Date`.
     pub offset_s: Option<i64>,
-    /// This machine's live sessions there.
-    pub sessions: Vec<serde_json::Value>,
+    /// The person's live agents there (`GET /api/agents`, spec §6.7).
+    pub agents: Vec<serde_json::Value>,
 }
 
 /// A refusal of a route that serves people, not agents (403
@@ -815,7 +815,7 @@ impl Client {
     /// # Errors
     /// The daemon cannot be reached, or refuses the grant.
     pub fn probe_remote(&self) -> anyhow::Result<RemoteProbe> {
-        let path = "/api/sessions?live=true";
+        let path = "/api/agents";
         let res = self.exec(self.request(reqwest::Method::GET, path))?;
         let local = chrono::Utc::now().timestamp();
         let offset_s = res
@@ -826,7 +826,7 @@ impl Client {
         let v = self.finish(path, res)?;
         Ok(RemoteProbe {
             offset_s,
-            sessions: v["sessions"].as_array().cloned().unwrap_or_default(),
+            agents: crate::commands::people::own_live(&v),
         })
     }
 
