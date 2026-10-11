@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { artifactRef, claxExtension, htmlTitle, INJECT_RETRY_MS, isText, RENEW_EVERY_MS, START_BUDGET_MS, target, textPrefix, ToolError } from "../src/clax.ts";
+import { artifactRef, claxExtension, handedOver, handoverOf, htmlTitle, INJECT_RETRY_MS, isText, RENEW_EVERY_MS, START_BUDGET_MS, target, textPrefix, ToolError } from "../src/clax.ts";
 import { DaemonClient, END_TIMEOUT_MS } from "../src/client.ts";
 import { discover, endpointOf, ensure } from "../src/daemon.ts";
 import { api, claxBin, startDaemon, type TestDaemon } from "./daemon-fixture.ts";
@@ -1451,6 +1451,16 @@ async function mcpTools(d: { base: string; token: string }): Promise<Map<string,
   const list = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list" });
   return new Map(list.result.tools.map((t: any) => [t.name, t.inputSchema]));
 }
+
+describe("handover", () => {
+  it("a note alone counts as handed over", () => {
+    const note = "[clax] Your session ended after 30 minutes without contact";
+    const h = handoverOf({ feedback: [], answers: [], notes: [note], text: note });
+    expect(h.notes).toEqual([note]);
+    expect(handedOver(h)).toBe(true);
+    expect(handedOver(handoverOf({ feedback: [], answers: [], text: null }))).toBe(false);
+  });
+});
 
 describe("helpers match the shared contract fixture", () => {
   it("artifactRef", () => {
