@@ -38,6 +38,13 @@ pub enum CoreError {
     },
     #[error("{message}")]
     Invalid { code: &'static str, message: String },
+    /// An agent's reply, resolve or handoff on a thread another live agent
+    /// owns (spec 2026-10-08 §12, M24): `name` is the owner's agent name
+    /// (its harness when it has none).
+    #[error(
+        "this thread is taken by {name}; only its owner agent may reply to, resolve or hand it off"
+    )]
+    ThreadTaken { name: String },
     /// The artifact's current declaration does not include `capability`, which
     /// the request needs.
     #[error("this artifact does not declare the {capability} capability")]

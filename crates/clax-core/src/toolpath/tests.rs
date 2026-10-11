@@ -350,7 +350,7 @@ pub(super) fn segment(h: &History, closed: bool) -> String {
 }
 
 /// The `seq` of the golden history's last row (`tests/toolpath/history.json`).
-const LAST_SEQ: i64 = 78;
+const LAST_SEQ: i64 = 80;
 
 #[test]
 fn render_each_kind_matches_golden() {
@@ -1738,6 +1738,30 @@ fn every_recorded_kind_is_classified_and_renders_conformant() {
         ask(&withdrawn);
         st.resolve_thread(ctx, &withdrawn, "viewer:anonymous")
             .unwrap();
+        // A thread handed off and released (§12).
+        let other = session(&st, "codex", "h10");
+        let owned = crate::store::test_util::artifact(&st, Some(&sid));
+        st.ensure_watch(ctx, &other, &owned).unwrap();
+        let handed = st
+            .create_thread(
+                ctx,
+                &owned,
+                crate::store::threads::NewThread {
+                    version_n: 1,
+                    anchor: crate::store::test_util::anchor(),
+                    author_name: "Alex".into(),
+                    author_public_id: None,
+                    body: "one".into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap()
+            .id;
+        st.send_to(ctx, &handed, crate::SendTarget::Agent(&sid))
+            .unwrap();
+        st.handoff(ctx, &handed, &sid, Some(&other)).unwrap();
+        st.handoff(ctx, &handed, &other, None).unwrap();
         st.revoke_person(ctx, &sam).unwrap();
         st.set_session_name(ctx, &sid, "named-one", crate::NameSource::Agent)
             .unwrap();

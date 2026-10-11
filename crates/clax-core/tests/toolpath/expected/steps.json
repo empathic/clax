@@ -4209,5 +4209,123 @@
       ],
       "timestamp": "2026-10-06T14:08:44.078Z"
     }
+  },
+  {
+    "change": {
+      "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001": {
+        "structural": {
+          "cause": "first_delivery",
+          "session": "01JB9S00000000000000000001",
+          "thread_id": "01JB9T00000000000000000001",
+          "type": "clax.thread.take"
+        }
+      }
+    },
+    "meta": {
+      "clax": {
+        "artifact_id": "k3m9q2w8x1ab",
+        "backfilled": false,
+        "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+        "clax_version": "0.3.1",
+        "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+        "kind": "thread.take",
+        "seq": 79,
+        "session_id": "01JB9S00000000000000000001",
+        "thread_id": "01JB9T00000000000000000001",
+        "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+        "v": 1,
+        "via": "mcp"
+      },
+      "description": "Gave thread 01JB9T00000000000000000001 to session 01JB9S00000000000000000001 (first_delivery)",
+      "refs": [
+        {
+          "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+          "rel": "artifact"
+        },
+        {
+          "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+          "rel": "session"
+        },
+        {
+          "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+          "rel": "agent-session"
+        },
+        {
+          "href": "file:///Users/alex/.claude/projects/-Users-alex-work-app/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44.jsonl",
+          "rel": "transcript"
+        },
+        {
+          "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+          "rel": "view"
+        }
+      ]
+    },
+    "step": {
+      "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+      "id": "e000000000079",
+      "parents": [
+        "e000000000078"
+      ],
+      "timestamp": "2026-10-06T14:08:45.079Z"
+    }
+  },
+  {
+    "change": {
+      "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001": {
+        "structural": {
+          "reason": "explicit",
+          "session": "01JB9S00000000000000000001",
+          "thread_id": "01JB9T00000000000000000001",
+          "type": "clax.thread.release"
+        }
+      }
+    },
+    "meta": {
+      "clax": {
+        "artifact_id": "k3m9q2w8x1ab",
+        "backfilled": false,
+        "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+        "clax_version": "0.3.1",
+        "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+        "kind": "thread.release",
+        "seq": 80,
+        "session_id": "01JB9S00000000000000000001",
+        "thread_id": "01JB9T00000000000000000001",
+        "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+        "v": 1,
+        "via": "mcp"
+      },
+      "description": "Released thread 01JB9T00000000000000000001 from session 01JB9S00000000000000000001 (explicit)",
+      "refs": [
+        {
+          "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+          "rel": "artifact"
+        },
+        {
+          "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+          "rel": "session"
+        },
+        {
+          "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+          "rel": "agent-session"
+        },
+        {
+          "href": "file:///Users/alex/.claude/projects/-Users-alex-work-app/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44.jsonl",
+          "rel": "transcript"
+        },
+        {
+          "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+          "rel": "view"
+        }
+      ]
+    },
+    "step": {
+      "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+      "id": "e000000000080",
+      "parents": [
+        "e000000000079"
+      ],
+      "timestamp": "2026-10-06T14:08:46.080Z"
+    }
   }
 ]

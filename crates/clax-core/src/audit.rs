@@ -100,6 +100,8 @@ kinds! {
     ApprovalWithdraw = "approval.withdraw",
     ApprovalGrant = "approval.grant",
     ApprovalRevoke = "approval.revoke",
+    ThreadTake = "thread.take",
+    ThreadRelease = "thread.release",
     BackfillSkip = "backfill.skip",
 }
 
@@ -678,6 +680,8 @@ mod tests {
             "approval.withdraw",
             "approval.grant",
             "approval.revoke",
+            "thread.take",
+            "thread.release",
             "backfill.skip",
         ];
         let names: Vec<&str> = AuditKind::ALL.iter().map(|k| k.as_str()).collect();
