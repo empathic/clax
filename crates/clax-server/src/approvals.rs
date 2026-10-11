@@ -7,6 +7,7 @@
 
 use crate::state::AppState;
 use clax_core::store::approvals::{Approval, ApprovalRequest};
+use clax_core::visibility::{self, Author};
 use clax_core::{Event, Store};
 use serde_json::{Value, json};
 
@@ -86,6 +87,16 @@ pub fn card(
         Err(e) => return Err(e),
     };
     let mut v = request_view(st, &r)?;
+    // Exactly what an approval of this request would let through: the
+    // comments whose authors include the request's (as the count reads
+    // them, an agent's words its person's and a page's its authors'), or,
+    // outside threads, what the author holds at the artifact.
+    let owner = st.owner_viewer(true)?.public_id;
+    let who = if r.author == owner {
+        Author::Owner
+    } else {
+        Author::Person(r.author.clone())
+    };
     v["content"] = match &r.thread_id {
         Some(tid) => match st.get_thread(tid)? {
             Some(t) => {
@@ -93,10 +104,13 @@ pub fn card(
                     .comments
                     .iter()
                     .filter(|c| {
-                        c.author_public_id.as_deref() == Some(r.author.as_str())
-                            || (c.via_page && c.page_authors.contains(&r.author))
+                        visibility::normalise(&visibility::authors_of_comment(c), Some(&owner))
+                            .contains(&who)
                     })
-                    .map(|c| json!({"id": c.id, "body": c.body, "created_at": c.created_at}))
+                    .map(|c| {
+                        json!({"id": c.id, "body": c.body, "created_at": c.created_at,
+                               "author_name": c.author_name, "by_agent": c.author_kind == clax_core::store::threads::AUTHOR_AGENT})
+                    })
                     .collect();
                 json!({"thread": {"id": t.id, "status": t.status}, "comments": comments})
             }
@@ -104,8 +118,19 @@ pub fn card(
         },
         None => {
             let a = st.get_artifact(&clax_core::ArtifactId::parse(&r.artifact_id)?)?;
+            let (files, docs, assets) = match st.authored_outside_threads(&r.artifact_id, &r.author)
+            {
+                Ok(x) => x,
+                Err(clax_core::CoreError::NotFound) => Default::default(),
+                Err(e) => return Err(e),
+            };
+            let assets: Vec<Value> = assets
+                .into_iter()
+                .map(|(id, content_type, size)| json!({"id": id, "content_type": content_type, "size": size}))
+                .collect();
             json!({"title": a.as_ref().map(|a| a.title.clone()),
-                   "description": a.and_then(|a| a.description)})
+                   "description": a.and_then(|a| a.description),
+                   "files": files, "docs": docs, "assets": assets})
         }
     };
     v["via_page"] = match detail.and_then(|d| d.get("page")) {

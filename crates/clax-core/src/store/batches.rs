@@ -143,14 +143,19 @@ impl Store {
             let mut requests = Vec::new();
             for t in &ids {
                 let made = send_in(tx, t, Some(&batch_id), target, &mut touched, &self.now())?;
-                // A batch routes each thread to the agents it reaches (M18).
+                // A batch naming an agent asks its person for each thread
+                // (M18); one naming none counts into open requests.
                 requests.extend(super::approvals::route_in(
                     self,
                     tx,
                     ctx,
                     t,
                     &made.targets,
-                    super::approvals::Route::Send,
+                    if to.is_some() {
+                        super::approvals::Route::Send
+                    } else {
+                        super::approvals::Route::Join
+                    },
                     false,
                     &self.now(),
                 )?);
