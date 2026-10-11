@@ -2140,6 +2140,17 @@ results carry late answers as they carry tier 1 feedback: the JSON block's
 `answers` means late answers on every tool result; `ask` returns its own
 question's answers under `reply`.
 
+A session registered (or joined) within 24 hours of its harness session's
+end for 30 minutes without contact, with the same harness session ID and
+credential, gets that session's direct watches back, and its first
+feedback poll (every tier but `queue`) answers at once with the note in
+`notes` and at the head of `text`: `[clax] Your session ended after 30
+minutes without contact (<time>): 2 threads were released (<thread IDs>)
+and your questions withdrawn; your watches were restored.` Tool results
+carry it as they carry late answers (`notes`, and the trailing `---`
+text). Another end, another credential, or a later registration gets
+nothing; the note is kept in the daemon's memory until that poll.
+
 ### `ask`
 
 | Argument | Meaning |
@@ -2257,9 +2268,12 @@ An item is made in the same transaction as its source:
 - **`connection`**: for the owner, a connection request waiting for them,
   or a machine that connected with an invite. It is read once the owner
   approves or denies the request.
-- **`approval`** (an approval request, for the approver) and **`ended`**
-  (an agent's session ended with something to clean up, for its person)
-  are kinds a later change makes.
+- **`approval`**: an approval request, for the approver.
+- **`ended`**: for its person, an agent's session ended (its exit, 30
+  minutes without contact for another machine's agent, 5 for this
+  machine's, or its grant revoked) while it owned open threads or had open
+  questions or `ask` approval requests: one item per such end, none for
+  an end with nothing to clean up.
 
 No connected person gets an item about a live page, and a revoked person
 gets none.
@@ -2318,7 +2332,12 @@ Each kind fills its own fields:
 - **`connection`** adds `connection`, the grant's view as `GET
   /api/grants` lists it (`{id, status, via, client: {name, key, peer_ip},
   person, …}`), null once the request is gone; `url` is `/people`.
-- **`approval`** adds `approval: {request_id}`; **`ended`** adds `ended`.
+- **`approval`** adds `approval: {request_id}`; **`ended`** adds `ended:
+  {name, reason (exit|idle|revoked|person), text, questions, requests,
+  threads: [{id, artifact_id, title, url}]}`: the note's line ("clax-claude
+  ended · released 2 threads · withdrew 1 question"), the counts withdrawn
+  and the open threads released (a person's view leaves out a live page's);
+  `url` is `/inbox`.
 
 The older kinds' views have exactly the fields shown above. When the
 source no longer exists, `gone` is true. The view still keeps the
@@ -2370,6 +2389,19 @@ cursor or body) and 404 `not_found`.
   first, then by newest unread item. A chip filters the inbox with
   `agent=<handle>`. Another `group`, or another parameter beside it, is
   400 `invalid_query`.
+- **`GET /api/agents`** → `{agents: [{handle, name, person, harness,
+  project, live, state, since, blocked, threads_owned, working: [{artifact_id,
+  title, message}], unread}]}`: every live agent and every one that ended
+  within the hour, live ones first, newest first. `state` is `waiting` (an
+  open question or `ask` approval request; `since` the oldest), `working`
+  (`since` its oldest working record's start), `idle` (`since` the
+  session's start) or `ended` (`since` its end); `blocked` is the agent
+  strip's for it. The owner (by hand or in a browser) sees every agent in
+  full. A connected person, and an agent, see their person's agents in full
+  and every other agent by `name`, `person`, `live`, `state` and `since`
+  alone, the rest null. An agent's `working` carries no titles and leaves
+  out artifacts its rights exclude, and its `unread` is null. A LAN viewer
+  or no credential: 403.
 - **`GET /api/inbox/summary`** → `{unread, questions, latest}`: the
   unread count, the open questions' views oldest first, and the five newest
   unread items other than questions (connection requests among them).
@@ -3292,10 +3324,11 @@ except as noted:
 | Topic | Carries |
 |---|---|
 | `gallery` | `version`, `thread` (summary), `thread_deleted`, `thread_moved`, `artifact_deleted` and `working` (summary) for every artifact. |
-| `artifact:<aid>` | That artifact's `version`, `thread`, `thread_deleted`, `thread_moved`, `feedback_state` and `artifact_deleted`. |
+| `artifact:<aid>` | That artifact's `version`, `thread`, `thread_deleted`, `thread_moved`, `feedback_state` and `artifact_deleted`, and `agents` (`{topic}`, naming nothing) when an agent that watched it started, ended or was renamed: refetch its agents. |
 | `presence:<aid>` | Its `presence` changes, and `artifact_deleted`. |
 | `working:<aid>` | Its `working` list, and `artifact_deleted`. |
 | `docs:<aid>` | Its `doc` events the caller may see, and `artifact_deleted`; needs `db` declared, or the token. |
+| `agents` | `agents` (`{topic}`, naming nothing) whenever the agents roster may have changed: an agent started, ended or was renamed, or a working record, question or approval request changed. Refetch `GET /api/agents`. Only the owner's and connected people's streams take it (403 `forbidden` otherwise). |
 | `site:<origin>` | What `artifact:<aid>` carries, for every live page of the origin's site (every origin joined to it, those joined later too: see "Joined sites"), those made later included, and `site` when an origin joins the site or is split off. `<origin>` is written as the daemon normalizes it (`http://localhost:5173`: scheme, lowercased host, port unless the scheme's default, no path), else 400 `invalid_topic`. Only a stream that may see live pages takes it (404 `not_found` otherwise, as for a live page's topic), and only an owner's (403 `forbidden` otherwise). The `thread_deleted` a move sends for older clients is not on it. |
 
 **Events.** Every event but `ready` and `resync` carries `id:

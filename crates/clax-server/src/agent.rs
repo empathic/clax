@@ -243,6 +243,7 @@ need!(ApprovalsAsk, Ask, "ask", Own, DEFAULT_LIMIT);
 need!(ApprovalsPoll, Ask, "ask", Own, DEFAULT_LIMIT);
 need!(ApprovalsList, None, Own, DEFAULT_LIMIT);
 need!(ApprovalRequestsList, None, Own, DEFAULT_LIMIT);
+need!(AgentsList, None, Own, DEFAULT_LIMIT);
 need!(ToolCallReport, None, Own, DEFAULT_LIMIT);
 need!(ToolCallIdReport, None, Own, DEFAULT_LIMIT);
 
@@ -409,6 +410,7 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
     ),
     ("GET", "/api/approvals", ApprovalsList::INFO),
     ("GET", "/api/approvals/requests", ApprovalRequestsList::INFO),
+    ("GET", "/api/agents", AgentsList::INFO),
     (
         "POST",
         "/api/sessions/{id}/tool-calls",
@@ -491,6 +493,7 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("approvals::poll", ApprovalsPoll),
     route_need!("approvals::list", ApprovalsList),
     route_need!("approvals::requests", ApprovalRequestsList),
+    route_need!("people::list_agents", AgentsList),
     route_need!("toolpath::session_tool_call", ToolCallReport),
     route_need!("sessions::tool_call_ids", ToolCallIdReport),
 ];

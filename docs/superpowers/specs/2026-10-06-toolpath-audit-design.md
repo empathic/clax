@@ -806,6 +806,7 @@ recorded, only a hash of the client's public key.
 | `person.rights` | `person, rights` | the owner |
 | `person.revoke` | `person` | the owner, after the `grant.revoke` and `invite.revoke` of what it ended |
 | `agent.name` | `name, source (agent\|person), previous` | the namer: the agent itself, its person or the owner; `session_id` the named agent's |
+| `agent.narrow`, `agent.elevate` | `session, access` (`null`: cleared), and `reason: session_end` when its end cleared it; the agent's session in the event's IDs | the person (narrow) or the owner (elevate); whoever ended the session for a clear at its end |
 | `approval.grant` | `approval_id, approver (null: the owner), author (a public ID or `*unconnected`), scope (thread\|artifact\|everywhere), created_via`; the scope's artifact and thread in the event's IDs | the approver |
 | `approval.revoke` | as `approval.grant`, of the approval revoked | the approver |
 | `approval.request` | `request_id, approver, author, artifact_id, thread_id, cause (ask\|routing), count`; the artifact, thread and agent's session in the event's IDs | the asking agent, or whoever's send routed it |
@@ -818,7 +819,7 @@ recorded, only a hash of the client's public key.
 Each is keyed by its object: `clax://<install>/invite/<invite ID>`,
 `clax://<install>/grant/<grant ID>`, the person's `/u/<public ID>`,
 `clax://<install>/approval/<approval ID>`,
-`clax://<install>/approval_request/<request ID>`, or the named agent's session; `thread.take` and `thread.release` by their thread. They belong to the install path. `client_name`,
+`clax://<install>/approval_request/<request ID>`, or the named, narrowed or elevated agent's session; `thread.take` and `thread.release` by their thread. They belong to the install path. `client_name`,
 `peer_ip`, and an agent's `name` and `previous` are classed as names
 (§11); the rest is safe. People and grants arrive with the multi-person
 migration, after the audit migration, so their whole history is recorded

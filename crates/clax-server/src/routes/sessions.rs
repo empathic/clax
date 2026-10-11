@@ -56,10 +56,19 @@ pub async fn register(
     }
     r.transcript_path = transcript(r.transcript_path)?;
     let audit = audit.agent_side();
-    let session = s
-        .store_call(move |st| st.register_session(&audit, r))
+    let (session, restored) = s
+        .store_call(move |st| st.register_session_restoring(&audit, r))
         .await?;
+    restored_note(&s, &session, restored);
     Ok((StatusCode::CREATED, Json(json!({"session": session}))))
+}
+
+/// Keeps a restored session's note for its first feedback poll (spec
+/// 2026-10-08 §6.7).
+fn restored_note(s: &AppState, session: &Session, restored: Option<clax_core::Restored>) {
+    if let Some(r) = restored {
+        s.feedback_waiters.set_note(&session.id, r.note);
+    }
 }
 
 /// The longest `transcript_path` a registration or join may give, in bytes.
@@ -126,9 +135,9 @@ pub async fn join(
     }
     let transcript = transcript(b.transcript_path.clone())?;
     let audit = audit.agent_side();
-    let session = s
+    let (session, restored) = s
         .store_call(move |st| {
-            let session = st.join_session(
+            let (session, restored) = st.join_session_restoring(
                 &audit,
                 JoinSession {
                     harness: b.harness.clone(),
@@ -147,9 +156,10 @@ pub async fn join(
             {
                 st.set_codex_home(&session.id, h)?;
             }
-            Ok(session)
+            Ok((session, restored))
         })
         .await?;
+    restored_note(&s, &session, restored);
     Ok(Json(json!({"session": session})))
 }
 

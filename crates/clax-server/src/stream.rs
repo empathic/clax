@@ -58,8 +58,10 @@ pub const MAX_DETACHED: usize = 4096;
 /// the questions the stream's person's agents asked; spec
 /// 2026-10-06-agent-questions-and-inbox-design §6.3), and `inbox` (the
 /// stream's person's inbox items and read marks, §8.2; per person: spec
-/// 2026-10-08-multi-agent-multi-person §5.3, §15), and `people` (people,
-/// invites and grants, for the owner alone; §6.2–§6.4).
+/// 2026-10-08-multi-agent-multi-person §5.3, §15), `people` (people,
+/// invites and grants, for the owner alone; §6.2–§6.4), and `agents` (a
+/// bare `agents` ping whenever the agents roster may have changed, for the
+/// owner and connected people; §13).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Topic {
     Gallery,
@@ -71,6 +73,7 @@ pub enum Topic {
     Questions,
     Inbox,
     People,
+    Agents,
 }
 
 impl Topic {
@@ -92,6 +95,9 @@ impl Topic {
         }
         if s == "people" {
             return Ok(Topic::People);
+        }
+        if s == "agents" {
+            return Ok(Topic::Agents);
         }
         if let Some(origin) = s.strip_prefix("site:") {
             let normal = clax_core::live::parse_page_url(origin)
@@ -130,6 +136,7 @@ impl Topic {
             Topic::Questions => "questions".into(),
             Topic::Inbox => "inbox".into(),
             Topic::People => "people".into(),
+            Topic::Agents => "agents".into(),
         }
     }
 
@@ -137,9 +144,12 @@ impl Topic {
     /// `questions`, `inbox` and `people`.
     pub fn artifact(&self) -> Option<&str> {
         match self {
-            Topic::Gallery | Topic::Site(_) | Topic::Questions | Topic::Inbox | Topic::People => {
-                None
-            }
+            Topic::Gallery
+            | Topic::Site(_)
+            | Topic::Questions
+            | Topic::Inbox
+            | Topic::People
+            | Topic::Agents => None,
             Topic::Artifact(a) | Topic::Presence(a) | Topic::Working(a) | Topic::Docs(a) => Some(a),
         }
     }
@@ -166,6 +176,8 @@ impl Topic {
                 .into_iter()
                 .collect(),
             Topic::People => vec![Chan::People],
+            // Every person sees every agent's name and state (§13, §18).
+            Topic::Agents => person.map(|_| Chan::Agents).into_iter().collect(),
             Topic::Docs(a) => {
                 let mut v: Vec<Chan> = [Level::View, Level::Interact, Level::Admin, Level::Owner]
                     .into_iter()
@@ -202,6 +214,9 @@ enum Chan {
     Inbox(String),
     /// People, invites and grants; only owner streams subscribe.
     People,
+    /// The agents roster changed; the streams of the owner and connected
+    /// people subscribe. Every event on it is a bare `agents` ping.
+    Agents,
 }
 
 impl Chan {
@@ -212,6 +227,7 @@ impl Chan {
             Chan::Questions(_) => "questions".into(),
             Chan::Inbox(_) => "inbox".into(),
             Chan::People => "people".into(),
+            Chan::Agents => "agents".into(),
             Chan::Artifact(a) => format!("artifact:{a}"),
             Chan::Presence(a) => format!("presence:{a}"),
             Chan::Working(a) => format!("working:{a}"),
@@ -341,7 +357,7 @@ pub enum SubError {
 /// not show.
 pub fn live_only_admits(live: &crate::live::LiveIds, t: &Topic) -> bool {
     match t {
-        Topic::Gallery | Topic::Docs(_) | Topic::People => false,
+        Topic::Gallery | Topic::Docs(_) | Topic::People | Topic::Agents => false,
         Topic::Site(_) | Topic::Questions | Topic::Inbox => true,
         Topic::Artifact(a) | Topic::Presence(a) | Topic::Working(a) => live.contains(a),
     }
@@ -475,7 +491,11 @@ fn routes(ev: &Event) -> Vec<(Chan, Gate)> {
             (Chan::DocsAt(a, Level::View), Gate::Any),
         ],
         Event::FeedbackState { .. } => vec![(Chan::Artifact(a), Gate::Any)],
-        Event::Working { .. } => vec![(Chan::Gallery, Gate::Any), (Chan::Working(a), Gate::Any)],
+        Event::Working { .. } => vec![
+            (Chan::Gallery, Gate::Any),
+            (Chan::Working(a), Gate::Any),
+            (Chan::Agents, Gate::Any),
+        ],
         Event::Presence { .. } => vec![(Chan::Presence(a), Gate::Any)],
         // Only owners' streams on this machine follow a site (L10).
         // The gallery hears it too: a site's pages may be keyed elsewhere,
@@ -490,17 +510,32 @@ fn routes(ev: &Event) -> Vec<(Chan, Gate)> {
         Event::Comment { .. } | Event::ThreadResolved { .. } => vec![],
         // Only the recipient's streams hold its channel (checked at
         // subscribe time).
-        Event::Question { recipient, .. } => vec![(
-            Chan::Questions(recipient.clone().unwrap_or_default()),
-            Gate::Any,
-        )],
-        Event::InboxItem { recipient, .. }
-        | Event::InboxRead { recipient, .. }
-        | Event::ApprovalRequest { recipient, .. } => vec![(
+        Event::Question { recipient, .. } => vec![
+            (
+                Chan::Questions(recipient.clone().unwrap_or_default()),
+                Gate::Any,
+            ),
+            (Chan::Agents, Gate::Any),
+        ],
+        Event::InboxItem { recipient, .. } | Event::InboxRead { recipient, .. } => vec![(
             Chan::Inbox(recipient.clone().unwrap_or_default()),
             Gate::Any,
         )],
+        Event::ApprovalRequest { recipient, .. } => vec![
+            (
+                Chan::Inbox(recipient.clone().unwrap_or_default()),
+                Gate::Any,
+            ),
+            (Chan::Agents, Gate::Any),
+        ],
         Event::People { .. } => vec![(Chan::People, Gate::Any)],
+        // An agent started, ended or was renamed: the roster, and the Send
+        // menus of the artifacts it watched.
+        Event::Agents { artifacts } => artifacts
+            .iter()
+            .map(|a| (Chan::Artifact(a.clone()), Gate::Any))
+            .chain([(Chan::Agents, Gate::Any)])
+            .collect(),
         Event::Doc {
             private_to,
             read_level,
@@ -537,6 +572,11 @@ fn project(
     topic: &str,
     ch: &mut Channel,
 ) -> Option<(&'static str, Value)> {
+    // The roster's channel names nothing: clients refetch `GET /api/agents`
+    // (a question, request or working record is its person's alone).
+    if matches!(chan, Chan::Agents) {
+        return Some(("agents", json!({"topic": topic})));
+    }
     let data = match (ev, chan) {
         (
             Event::Version {
@@ -1890,6 +1930,50 @@ mod tests {
             got[0].1
         );
         assert!(drain(&mut q).is_empty(), "no other topic carries people");
+    }
+
+    #[test]
+    fn the_agents_topic_pings_every_person_and_names_nothing() {
+        assert_eq!(Topic::parse("agents"), Ok(Topic::Agents));
+        assert_eq!(Topic::Agents.name(), "agents");
+        assert_eq!(Topic::Agents.artifact(), None);
+        assert!(!live_only_admits(
+            &crate::live::LiveIds::default(),
+            &Topic::Agents
+        ));
+        let hub = Hub::new(Default::default());
+        let owner = viewer(Level::Owner, Some("u_o"));
+        let sam = viewer(Level::Interact, Some("u_sam"));
+        let mut o = hub.open_for(owner.clone(), true, None, None, Some(String::new()));
+        let mut s = hub.open_for(sam.clone(), true, None, None, Some("u_sam".into()));
+        let mut lan = hub.open_for(sam.clone(), true, None, None, None);
+        hub.update(&o.id, &owner, &[Topic::Agents], &[]).unwrap();
+        hub.update(&s.id, &sam, &[Topic::Agents], &[]).unwrap();
+        hub.update(&lan.id, &sam, &[Topic::Agents], &[]).unwrap();
+        // A question of the owner's agent: its text stays on its topic.
+        hub.dispatch(&Event::Question {
+            question: json!({"id": "q1", "questions": [{"question": "SECRETQ"}]}),
+            recipient: None,
+        });
+        hub.dispatch(&Event::Agents {
+            artifacts: vec!["a1".into()],
+        });
+        for q in [&mut o, &mut s] {
+            let got = drain(q);
+            assert_eq!(got.len(), 2, "{got:?}");
+            for (_, frame) in &got {
+                assert!(frame.starts_with("event: agents\n"), "{frame}");
+                assert!(frame.contains(r#"{"topic":"agents"}"#), "{frame}");
+                assert!(
+                    !frame.contains("SECRETQ") && !frame.contains("a1"),
+                    "{frame}"
+                );
+            }
+        }
+        assert!(
+            drain(&mut lan).is_empty(),
+            "a stream of no person holds no roster"
+        );
     }
 
     #[test]

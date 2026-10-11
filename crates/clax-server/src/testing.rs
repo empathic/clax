@@ -273,6 +273,7 @@ impl TestServer {
         state.stream.listen(&state.events);
         crate::inbox::listen(&state);
         crate::approvals::listen(&state);
+        crate::routes::people::listen(&state);
         let events = state.events.clone();
         let store = state.store.clone();
         let working = state.working.clone();

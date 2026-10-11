@@ -672,11 +672,9 @@ fn end_grant(
             .collect::<rusqlite::Result<_>>()?
     };
     for sid in live {
-        if let Some((touched, withdrawn)) =
-            st.end_in(tx, ctx, &sid, now, EndReason::Revoked, None)?
-        {
-            out.touched.merge(touched);
-            out.withdrawn_questions.extend(withdrawn);
+        if let Some(c) = st.end_in(tx, ctx, &sid, now, EndReason::Revoked, None)? {
+            out.touched.merge(c.touched);
+            out.withdrawn_questions.extend(c.withdrawn_questions);
             out.sessions_ended.push(sid);
         }
     }

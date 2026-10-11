@@ -234,13 +234,58 @@ fn render(st: &Store, i: &ItemRow, s: Sources) -> clax_core::Result<Value> {
                 }
             }
         }
+        // The note of spec §14 (M25): what the agent's end cleaned up, its
+        // released threads with their pages (none on a live page for a
+        // person, L10).
         Kind::Ended => {
-            v["ended"] = i.detail.clone().unwrap_or(Value::Null);
+            v["url"] = json!("/inbox");
+            v["ended"] = ended_view(st, i)?;
             false
         }
     };
     v["gone"] = json!(gone);
     Ok(v)
+}
+
+/// An `ended` item's `ended`: `{name, reason, text, questions, requests,
+/// threads: [{id, artifact_id, title, url}]}`, each released thread with
+/// its page's title as it is now (`null` once the page is gone); a
+/// person's view leaves out threads on a live page.
+fn ended_view(st: &Store, i: &ItemRow) -> clax_core::Result<Value> {
+    let Some(d) = &i.detail else {
+        return Ok(Value::Null);
+    };
+    let mut threads = Vec::new();
+    for t in d["threads"].as_array().into_iter().flatten() {
+        let (Some(aid), Some(tid)) = (t["artifact_id"].as_str(), t["thread_id"].as_str()) else {
+            continue;
+        };
+        let art = match clax_core::ArtifactId::parse(aid) {
+            Ok(id) => st.get_artifact(&id)?,
+            Err(_) => None,
+        };
+        if i.recipient.is_some()
+            && art
+                .as_ref()
+                .is_some_and(|a| a.kind == clax_core::live::KIND_LIVE)
+        {
+            continue;
+        }
+        threads.push(json!({
+            "id": tid,
+            "artifact_id": aid,
+            "title": art.map(|a| a.title),
+            "url": format!("/a/{aid}?thread={tid}"),
+        }));
+    }
+    Ok(json!({
+        "name": d["name"],
+        "reason": d["reason"],
+        "text": d["text"],
+        "questions": d["questions"],
+        "requests": d["requests"],
+        "threads": threads,
+    }))
 }
 
 /// What one batch of committed changes comes to for one recipient

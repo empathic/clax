@@ -336,13 +336,24 @@ pub async fn poll(
         #[cfg(not(debug_assertions))]
         let expired = false;
         let (items, placeholders) = (taken.items, taken.placeholders);
+        // A restored session's note (spec 2026-10-08 §6.7) goes with its
+        // first poll that a harness reads.
+        let note = (take.tier != Tier::Queue)
+            .then(|| s.feedback_waiters.take_note(&take.session_id))
+            .flatten();
         if !items.is_empty()
             || !placeholders.is_empty()
             || !answers.is_empty()
+            || note.is_some()
             || expired
             || Instant::now() >= deadline
         {
             let text = poll_text(&items, &placeholders, &late);
+            let text = match (&note, text) {
+                (Some(n), Some(t)) => Some(format!("{n}\n\n{t}")),
+                (Some(n), None) => Some(n.clone()),
+                (None, t) => t,
+            };
             let mut out = json!({
                 "feedback": items,
                 "answers": answers,
@@ -351,6 +362,9 @@ pub async fn poll(
             });
             if !placeholders.is_empty() {
                 out["withheld"] = json!(placeholders);
+            }
+            if let Some(n) = note {
+                out["notes"] = json!([n]);
             }
             return Ok(Json(out));
         }
