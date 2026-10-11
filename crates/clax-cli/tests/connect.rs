@@ -870,13 +870,24 @@ async fn remote_cli_commands_work_as_listed() {
     );
     // Agents and approvals are Sam's own.
     let agents: Value = serde_json::from_str(&out("--json agents")).unwrap();
-    let ids: Vec<&str> = agents["agents"]
+    let handles: Vec<&str> = agents["agents"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|a| a["id"].as_str().unwrap())
+        .map(|a| a["handle"].as_str().unwrap())
         .collect();
-    assert_eq!(ids, [w.sam_session.as_str()]);
+    let sams = w.ts.store.get_session(&w.sam_session).unwrap().unwrap();
+    assert_eq!(handles, [sams.agent_handle.as_str()]);
+    // Other people's agents are not listed, even by name.
+    for other in [&w.owner_session, &w.mia_session] {
+        let s = w.ts.store.get_session(other).unwrap().unwrap();
+        assert!(!out("agents").contains(&s.agent_handle));
+    }
+    assert!(
+        out("agents").contains("waiting on you since"),
+        "{}",
+        out("agents")
+    );
     let approvals: Value = serde_json::from_str(&out("--json approvals")).unwrap();
     assert!(approvals["approvals"].is_array() && approvals["requests"].is_array());
     // Status prints the connection and the agents.

@@ -1,4 +1,4 @@
-//! `clax agents` and `clax approvals` (spec §16): the caller's own agents,
+//! `clax agents` and `clax approvals` (spec §16): the caller's person's agents,
 //! and the approvals and approval requests of the caller's person: the
 //! owner's on this machine's daemon, a connected person's on a remote one
 //! (spec §6.7). Approving and revoking are the person's, in their browser
@@ -9,44 +9,55 @@ use crate::term;
 use clax_core::Home;
 use serde_json::{Value, json};
 
-/// The agents of this credential: the daemon token's sessions here, or,
-/// remotely, this machine's grant's (`GET /api/sessions?live=true`, which
-/// answers each credential with its own sessions, spec §6.7).
+/// The caller's person's live agents (`GET /api/agents`, spec §6.7, §13):
+/// every agent for the owner by hand, a connected person's own remotely.
 pub fn agents_of(c: &Client) -> anyhow::Result<Vec<Value>> {
-    let v = c.get("/api/sessions?live=true")?;
-    Ok(v["sessions"]
+    Ok(own_live(&c.get("/api/agents")?))
+}
+
+/// The live agents of a `GET /api/agents` answer that are the caller's
+/// person's own (those it names by handle), as the listing shows them.
+pub fn own_live(v: &Value) -> Vec<Value> {
+    v["agents"]
         .as_array()
         .map(Vec::as_slice)
         .unwrap_or_default()
         .iter()
-        .map(agent_json)
-        .collect())
+        .filter(|a| a["live"] == true && a["handle"].is_string())
+        .map(|a| {
+            json!({
+                "name": a["name"],
+                "handle": a["handle"],
+                "person": a["person"],
+                "harness": a["harness"],
+                "project": a["project"],
+                "state": a["state"],
+                "since": a["since"],
+                "blocked": a["blocked"],
+            })
+        })
+        .collect()
 }
 
-/// A session as the listing shows it.
-fn agent_json(s: &Value) -> Value {
-    json!({
-        "id": s["id"],
-        "name": s["name"],
-        "handle": s["agent_handle"],
-        "harness": s["harness"],
-        "cwd": s["cwd"],
-        "started_at": s["started_at"],
-        "last_seen_at": s["last_seen_at"],
-    })
-}
-
-/// One line for an agent of [`agents_of`].
+/// One line for an agent of [`agents_of`]: its name, harness, project and
+/// state.
 pub fn agent_line(a: &Value) -> String {
     let name = a["name"]
         .as_str()
         .or_else(|| a["handle"].as_str())
         .map(term::clean_line)
         .unwrap_or_default();
+    let state = match (a["state"].as_str(), a["blocked"]["since"].as_str()) {
+        (Some("waiting"), Some(since)) => {
+            format!("waiting on you since {}", term::clean_line(since))
+        }
+        (Some(s), _) => term::clean_line(s),
+        (None, _) => "?".to_string(),
+    };
     format!(
-        "  {name} ({}) in {}",
+        "  {name} ({}) in {}, {state}",
         term::clean_line(a["harness"].as_str().unwrap_or("agent")),
-        term::clean_line(a["cwd"].as_str().unwrap_or("?"))
+        term::clean_line(a["project"].as_str().unwrap_or("?"))
     )
 }
 
