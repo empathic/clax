@@ -1240,7 +1240,7 @@ async fn ask_keeps_its_reply_apart_from_late_answers_to_other_questions() {
     clock.wait_for(Duration::from_secs(60), 1).await;
     let q2 = ts
         .store
-        .list_questions(clax_core::store::questions::ListStatus::Open, 10)
+        .list_questions(None, clax_core::store::questions::ListStatus::Open, 10)
         .unwrap()
         .0
         .into_iter()

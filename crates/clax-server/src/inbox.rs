@@ -131,6 +131,35 @@ fn render(st: &Store, i: &ItemRow, s: Sources) -> clax_core::Result<Value> {
             });
             !live
         }
+        // The kinds of spec 2026-10-08-multi-agent-multi-person §5.3 carry
+        // their own reference; the older kinds' views are unchanged.
+        Kind::Connection => {
+            let gid = i.grant_id.as_deref().unwrap_or_default();
+            v["url"] = json!("/people");
+            match st.grant(gid) {
+                Ok(g) => {
+                    v["connection"] = crate::routes::grants::grant_view(&g);
+                    false
+                }
+                Err(clax_core::CoreError::NotFound) => {
+                    v["connection"] = json!({"id": gid});
+                    true
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Kind::Approval => {
+            v["approval"] = json!({"request_id": i.request_id});
+            v["url"] = json!(format!(
+                "/inbox?approval={}",
+                i.request_id.as_deref().unwrap_or_default()
+            ));
+            false
+        }
+        Kind::Ended => {
+            v["ended"] = i.detail.clone().unwrap_or(Value::Null);
+            false
+        }
     };
     v["gone"] = json!(gone);
     Ok(v)
@@ -145,7 +174,7 @@ enum Announce {
 /// The events for `changes`: one view per changed item, or a refetch when
 /// more than [`MAX_ITEM_EVENTS`] changed.
 fn announcement(db: &Store, changes: &[InboxChange]) -> clax_core::Result<Announce> {
-    let unread = db.inbox_unread()?;
+    let unread = db.inbox_unread(None)?;
     if changes.len() > MAX_ITEM_EVENTS {
         return Ok(Announce::Refetch(unread));
     }

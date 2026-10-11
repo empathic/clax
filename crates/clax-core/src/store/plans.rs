@@ -2,7 +2,8 @@
 //! seeded database, with and without planner statistics, and must use its
 //! expected indexes and never scan `comments`, `threads` or `audit_events`
 //! in full. The question queries also never sort in a temporary B-tree, and
-//! no inbox query scans `inbox_items` in full.
+//! no inbox query scans `inbox_items` in full, for the owner's inbox or a
+//! connected person's.
 
 use super::Store;
 use super::attention::{
@@ -212,23 +213,36 @@ const ITEMS: usize = 6000;
 
 /// Inbox history: replies, versions and published items across 40
 /// artifacts and two harnesses, a quarter unread, each with an index entry
-/// (one word common to all, one to a tenth of them).
+/// (one word common to all, one to a tenth of them); every fifth item is a
+/// connected person's ([`ib::SAM`]), and a few connection requests the
+/// owner's.
 fn seed_inbox(c: &Connection, ts: &dyn Fn(usize) -> String) {
+    c.execute(
+        "INSERT INTO viewers (id, display_name, created_at, public_id, person) VALUES
+         ('v3', 'Sam', ?1, ?2, 1)",
+        params![ts(0), ib::SAM],
+    )
+    .unwrap();
     let kinds = ["reply", "reply", "version", "published"];
     for i in 0..ITEMS {
         let kind = kinds[i % 4];
         let aid = format!("art{:04}", i % 40);
         let tid = (kind == "reply").then(|| format!("{aid}t{}", i % THREADS));
         let sid = format!("s{}", i % 20);
+        let sam = i % 5 == 0;
         c.execute(
             "INSERT INTO inbox_items (seq, id, kind, key, artifact_id, thread_id, comment_id, version_n,
-                session_id, harness, created_at, read_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                session_id, harness, created_at, read_at, recipient)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 i as i64 + 1,
                 format!("I{i:05}"),
                 kind,
-                format!("{kind}:{i}"),
+                if sam {
+                    format!("{kind}:{i}@{}", ib::SAM)
+                } else {
+                    format!("{kind}:{i}")
+                },
                 aid,
                 tid,
                 (kind == "reply").then(|| format!("c{i}")),
@@ -237,6 +251,7 @@ fn seed_inbox(c: &Connection, ts: &dyn Fn(usize) -> String) {
                 if i % 2 == 0 { "claude" } else { "pi" },
                 ts(i),
                 (i % 4 != 0).then(|| ts(i + 1)),
+                sam.then_some(ib::SAM),
             ],
         )
         .unwrap();
@@ -263,6 +278,19 @@ fn seed_inbox(c: &Connection, ts: &dyn Fn(usize) -> String) {
         )
         .unwrap();
     }
+    for g in 0..5 {
+        c.execute(
+            "INSERT INTO inbox_items (id, kind, key, grant_id, created_at)
+             VALUES (?1, 'connection', ?2, ?3, ?4)",
+            params![
+                format!("G{g:05}"),
+                format!("connection:g_{g}"),
+                format!("g_{g}"),
+                ts(ITEMS + QUESTIONS + g)
+            ],
+        )
+        .unwrap();
+    }
 }
 
 /// Each fixed inbox statement, its parameters, and the indexes its plan must name.
@@ -273,13 +301,19 @@ fn inbox_queries() -> Vec<Hot> {
         (
             "inbox unread count",
             ib::UNREAD_COUNT.into(),
-            vec![],
+            vec![t("")],
+            &["inbox_unread"],
+        ),
+        (
+            "inbox unread count of a person",
+            ib::UNREAD_COUNT.into(),
+            vec![t(ib::SAM)],
             &["inbox_unread"],
         ),
         (
             "inbox item by ID",
             ib::BY_ID.into(),
-            vec![t("I00040")],
+            vec![t("I00040"), t(ib::SAM)],
             &["sqlite_autoindex_inbox_items_1"],
         ),
         (
@@ -291,25 +325,30 @@ fn inbox_queries() -> Vec<Hot> {
         (
             "inbox mark read",
             ib::MARK_READ.into(),
-            vec![t("[\"I00040\"]"), t("x")],
+            vec![t("[\"I00040\"]"), t("x"), t("")],
             &["sqlite_autoindex_inbox_items_1"],
         ),
         (
             "inbox mark unread",
             ib::MARK_UNREAD.into(),
-            vec![t("[\"I00040\"]")],
+            vec![t("[\"I00040\"]"), t(ib::SAM)],
             &["sqlite_autoindex_inbox_items_1"],
         ),
         (
             "inbox read by look",
             ib::READ_BY_LOOK.into(),
-            vec![t("art0001t1"), t("art0001"), t("2026-01-01T00:00:00.000Z")],
+            vec![
+                t("art0001t1"),
+                t("art0001"),
+                t("2026-01-01T00:00:00.000Z"),
+                t(ib::SAM),
+            ],
             &["inbox_by_thread"],
         ),
         (
             "inbox read by seen",
             ib::READ_BY_SEEN.into(),
-            vec![t("art0001"), i(3), t("2026-01-01T00:00:00.000Z")],
+            vec![t("art0001"), i(3), t("2026-01-01T00:00:00.000Z"), t("")],
             &["inbox_by_artifact"],
         ),
         (
@@ -330,6 +369,18 @@ fn inbox_queries() -> Vec<Hot> {
             vec![t("art0001t1"), t("art0002")],
             &["inbox_by_thread"],
         ),
+        (
+            "inbox connection decided",
+            ib::READ_BY_KEY.into(),
+            vec![t("connection:g_1"), t("x")],
+            &["sqlite_autoindex_inbox_items_2"],
+        ),
+        (
+            "inbox connected people",
+            ib::CONNECTED_PEOPLE.into(),
+            vec![],
+            &["viewers_people"],
+        ),
     ]
 }
 
@@ -340,13 +391,13 @@ fn inbox_participation() -> Vec<Hot> {
     vec![
         (
             "inbox owner in a thread",
-            ib::OWNER_IN.into(),
+            ib::IN_THREAD.into(),
             vec![t("u_00000000000000000000001"), t("art0001t1")],
             &["comments_by_thread"],
         ),
         (
             "inbox owner commented on an artifact",
-            ib::OWNER_COMMENTED.into(),
+            ib::COMMENTED_ON.into(),
             vec![t("art0001"), t("u_00000000000000000000001")],
             &["threads_by_artifact", "comments_by_thread"],
         ),
@@ -361,6 +412,7 @@ fn inbox_participation() -> Vec<Hot> {
 
 const INBOX_INDEXES: &[&str] = &[
     "inbox_unread",
+    "inbox_by_recipient",
     "inbox_by_artifact",
     "inbox_by_kind",
     "inbox_by_harness",
@@ -403,16 +455,26 @@ fn check_inbox(c: &Connection, stats: &str) {
                 text.contains(d.plan_word()),
                 "{name} ({stats}) is not driven by {d:?}:\n{text}"
             );
+            // A date range's `seq` bounds come from `inbox_by_created`.
+            let bounds = *d == ib::Driver::Dates;
             for ix in INBOX_INDEXES {
                 assert!(
-                    *ix == d.plan_word() || !text.contains(ix),
+                    *ix == d.plan_word()
+                        || (bounds && *ix == "inbox_by_created")
+                        || !text.contains(ix),
                     "{name} ({stats}) uses {ix}, not {d:?}:\n{text}"
                 );
             }
             assert!(
-                *d != ib::Driver::Dates
-                    || text.contains("SEARCH i USING INTEGER PRIMARY KEY (rowid"),
+                !bounds
+                    || text.contains("SEARCH i USING INDEX inbox_by_recipient (<expr>=? AND seq"),
                 "{name} ({stats}) does not walk the dates' seq range:\n{text}"
+            );
+            // Every list, count and mark-all is one recipient's: its index
+            // is led by the recipient, or it searches the text.
+            assert!(
+                *d == ib::Driver::Text || text.contains("(<expr>=?"),
+                "{name} ({stats}) is not led by the recipient:\n{text}"
             );
         }
         for d in &plan {
@@ -425,7 +487,10 @@ fn check_inbox(c: &Connection, stats: &str) {
                 !["i", "inbox_items"].contains(&target) || rest.ends_with("INDEX inbox_unread"),
                 "{name} ({stats}) scans inbox_items:\n{text}"
             );
-            if ["i", "inbox_items"].contains(&target) {
+            // The partial index holds only the connected people.
+            if ["i", "inbox_items"].contains(&target)
+                || rest == "viewers USING INDEX viewers_people"
+            {
                 continue;
             }
             // A table function, the FTS index, or a capped count's own subquery.
@@ -488,6 +553,12 @@ fn question_queries() -> Vec<Hot> {
         (
             "open count",
             q::OPEN_COUNT.into(),
+            vec![t("")],
+            &["questions_by_status"],
+        ),
+        (
+            "open count of every person",
+            q::OPEN_ALL.into(),
             vec![],
             &["questions_by_status"],
         ),
@@ -500,25 +571,25 @@ fn question_queries() -> Vec<Hot> {
         (
             "open, oldest first",
             q::OPEN_OLDEST.into(),
-            vec![i(50)],
+            vec![t(""), i(50)],
             &["questions_by_status"],
         ),
         (
             "open, newest first",
             q::OPEN_NEWEST.into(),
-            vec![i(50)],
+            vec![t(ib::SAM), i(50)],
             &["questions_by_status"],
         ),
         (
             "closed, newest first",
             q::CLOSED_NEWEST.into(),
-            vec![i(50)],
+            vec![t(""), i(50)],
             &["questions_closed"],
         ),
         (
             "closed before a cursor",
             q::CLOSED_BEFORE.into(),
-            vec![t("2026-01-01T00:00:01.000Z"), t("Q01000"), i(50)],
+            vec![t(""), t("2026-01-01T00:00:01.000Z"), t("Q01000"), i(50)],
             &["questions_closed"],
         ),
         (
@@ -970,11 +1041,9 @@ fn hot_queries_use_their_indexes_with_and_without_statistics() {
         }
         check_all(c, "no statistics");
         check_questions(c, "no statistics");
-        check_inbox(c, "no statistics");
         c.execute_batch("ANALYZE")?;
         check_all(c, "after ANALYZE");
         check_questions(c, "after ANALYZE");
-        check_inbox(c, "after ANALYZE");
         // A home upgraded by migration 22: its tables have statistics, the
         // indexes it rebuilt or added have none yet.
         let stat4: bool = c.query_row(
@@ -993,7 +1062,43 @@ fn hot_queries_use_their_indexes_with_and_without_statistics() {
         }
         check_all(c, "rebuilt indexes without statistics");
         check_questions(c, "rebuilt indexes without statistics");
-        check_inbox(c, "rebuilt indexes without statistics");
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn every_inbox_query_still_uses_an_index() {
+    let (_d, st): (_, Store) = store();
+    st.with_write(|c| {
+        seed(c);
+        let has_stat1: bool = c.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'sqlite_stat1')",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_stat1 {
+            c.execute_batch("DELETE FROM sqlite_stat1; ANALYZE sqlite_schema;")?;
+        }
+        check_inbox(c, "no statistics");
+        c.execute_batch("ANALYZE")?;
+        check_inbox(c, "after ANALYZE");
+        // A home upgraded by migration 26: its other tables have statistics,
+        // the inbox's rebuilt indexes have none yet.
+        let stat4: bool = c.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'sqlite_stat4')",
+            [],
+            |r| r.get(0),
+        )?;
+        for t in ["sqlite_stat1", "sqlite_stat4"] {
+            if t == "sqlite_stat1" || stat4 {
+                c.execute_batch(&format!(
+                    "DELETE FROM {t} WHERE tbl = 'inbox_items' OR idx = 'viewers_people';
+                     ANALYZE sqlite_schema;"
+                ))?;
+            }
+        }
+        check_inbox(c, "rebuilt inbox indexes without statistics");
         Ok(())
     })
     .unwrap();
