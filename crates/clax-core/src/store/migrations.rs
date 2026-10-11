@@ -680,6 +680,9 @@ pub const MIGRATIONS: &[&str] = &[
     // every recipient as stamps follow `seq`), `inbox_by_thread` and
     // `inbox_by_question` serve their sources, whatever the recipient.
     // `viewers_people` lists the connected people an item may go to.
+    // Each question names the person whose agent asked it (the asking
+    // session's, NULL: the owner's), filled in from its session, so a
+    // person's question lists walk their own questions by index.
     "CREATE TABLE inbox_items_26 (
         seq INTEGER PRIMARY KEY,
         id TEXT NOT NULL UNIQUE,
@@ -716,7 +719,13 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX inbox_by_thread ON inbox_items(thread_id) WHERE thread_id IS NOT NULL;
     CREATE INDEX inbox_by_question ON inbox_items(question_id) WHERE question_id IS NOT NULL;
     CREATE INDEX inbox_by_request ON inbox_items(request_id) WHERE request_id IS NOT NULL;
-    CREATE INDEX viewers_people ON viewers(public_id) WHERE person = 1;",
+    CREATE INDEX viewers_people ON viewers(public_id) WHERE person = 1;
+    ALTER TABLE questions ADD COLUMN person TEXT;
+    UPDATE questions SET person = (SELECT s.person FROM sessions s WHERE s.id = questions.session_id);
+    CREATE INDEX questions_open_by_person ON questions(COALESCE(person, ''), created_at, id)
+        WHERE status = 'open';
+    CREATE INDEX questions_closed_by_person ON questions(COALESCE(person, ''), closed_at, id)
+        WHERE status <> 'open';",
 ];
 
 /// The audit journal's migration, as a schema version (the
@@ -1001,6 +1010,9 @@ mod tests {
                 "questions_by_status",
                 "questions_by_tool_use",
                 "questions_closed",
+                // Migration 26's.
+                "questions_closed_by_person",
+                "questions_open_by_person",
             ]
         );
     }
@@ -1665,7 +1677,11 @@ mod tests {
                  INSERT INTO inbox_fts (rowid, text) VALUES (3, 'Quarterly make it bluer');
                  INSERT INTO inbox_fts (rowid, text) VALUES (7, 'Quarterly claude chart');
                  INSERT INTO inbox_fts (rowid, text) VALUES (8, 'Quarterly pi done');
-                 INSERT INTO inbox_fts (rowid, text) VALUES (12, 'which layout');",
+                 INSERT INTO inbox_fts (rowid, text) VALUES (12, 'which layout');
+                 INSERT INTO sessions (id, harness, cwd, started_at, last_seen_at, person)
+                    VALUES ('s1', 'claude', '/w', 'x', 'x', NULL), ('s2', 'claude', '/w', 'x', 'x', 'u_sam');
+                 INSERT INTO questions (id, session_id, source, questions_json, status, created_at)
+                    VALUES ('q1', 's1', 'ask', '[]', 'open', 'x'), ('q2', 's2', 'ask', '[]', 'open', 'x');",
             )
             .unwrap();
             rows(&c)
@@ -1712,6 +1728,18 @@ mod tests {
             .unwrap()
         };
         assert_eq!(kinds(12), "question");
+        // Each question names its asking session's person.
+        let people: Vec<(String, Option<String>)> = st
+            .with_read(|c| {
+                let mut q = c.prepare("SELECT id, person FROM questions ORDER BY id")?;
+                Ok(q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<rusqlite::Result<_>>()?)
+            })
+            .unwrap();
+        assert_eq!(
+            people,
+            vec![("q1".into(), None), ("q2".into(), Some("u_sam".into()))]
+        );
         // The new kinds are accepted, each with its own reference (the
         // transaction is rolled back).
         let r = st.with_tx(|tx| {

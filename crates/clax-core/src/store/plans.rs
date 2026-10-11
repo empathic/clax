@@ -382,6 +382,24 @@ fn inbox_queries() -> Vec<Hot> {
             &[],
         ),
         (
+            "inbox unread by agent",
+            ib::UNREAD_BY_SESSION.into(),
+            vec![t(ib::SAM)],
+            &["inbox_unread"],
+        ),
+        (
+            "inbox open questions by agent",
+            ib::QUESTIONS_BY_SESSION.into(),
+            vec![t("")],
+            &["questions_open_by_person"],
+        ),
+        (
+            "inbox open approval requests by agent",
+            ib::APPROVALS_BY_SESSION.into(),
+            vec![t("")],
+            &["approval_requests_open"],
+        ),
+        (
             "inbox connected people",
             ib::CONNECTED_PEOPLE.into(),
             vec![],
@@ -519,8 +537,8 @@ fn seed_questions(c: &Connection, ts: &dyn Fn(usize) -> String) {
         let hook = i % 3 == 0;
         c.execute(
             "INSERT INTO questions (id, session_id, artifact_id, source, tool_use_id,
-                questions_json, status, created_at, closed_at, taken_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, '[]', ?6, ?7, ?8, ?9)",
+                questions_json, status, created_at, closed_at, taken_at, person)
+             VALUES (?1, ?2, ?3, ?4, ?5, '[]', ?6, ?7, ?8, ?9, ?10)",
             params![
                 format!("Q{i:05}"),
                 format!("s{}", i % 20),
@@ -531,6 +549,7 @@ fn seed_questions(c: &Connection, ts: &dyn Fn(usize) -> String) {
                 ts(i),
                 (!open).then(|| ts(i + 1)),
                 (i % 4 != 0 && !open).then(|| ts(i + 2)),
+                (i % 7 == 0).then_some(ib::SAM),
             ],
         )
         .unwrap();
@@ -560,13 +579,19 @@ fn question_queries() -> Vec<Hot> {
             "open count",
             q::OPEN_COUNT.into(),
             vec![t("")],
-            &["questions_by_status"],
+            &["questions_open_by_person"],
         ),
         (
-            "open count of every person",
-            q::OPEN_ALL.into(),
-            vec![],
-            &["questions_by_status"],
+            "open count of a person",
+            q::OPEN_COUNT.into(),
+            vec![t(ib::SAM)],
+            &["questions_open_by_person"],
+        ),
+        (
+            "closed of a person, newest first",
+            q::CLOSED_NEWEST.into(),
+            vec![t(ib::SAM), i(50)],
+            &["questions_closed_by_person"],
         ),
         (
             "open count of a session",
@@ -578,25 +603,25 @@ fn question_queries() -> Vec<Hot> {
             "open, oldest first",
             q::OPEN_OLDEST.into(),
             vec![t(""), i(50)],
-            &["questions_by_status"],
+            &["questions_open_by_person"],
         ),
         (
             "open, newest first",
             q::OPEN_NEWEST.into(),
             vec![t(ib::SAM), i(50)],
-            &["questions_by_status"],
+            &["questions_open_by_person"],
         ),
         (
             "closed, newest first",
             q::CLOSED_NEWEST.into(),
             vec![t(""), i(50)],
-            &["questions_closed"],
+            &["questions_closed_by_person"],
         ),
         (
             "closed before a cursor",
             q::CLOSED_BEFORE.into(),
             vec![t(""), t("2026-01-01T00:00:01.000Z"), t("Q01000"), i(50)],
-            &["questions_closed"],
+            &["questions_closed_by_person"],
         ),
         (
             "late answers",
