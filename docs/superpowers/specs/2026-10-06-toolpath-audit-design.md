@@ -810,7 +810,7 @@ recorded, only a hash of the client's public key.
 | `approval.revoke` | as `approval.grant`, of the approval revoked | the approver |
 | `approval.request` | `request_id, approver, author, artifact_id, thread_id, cause (ask\|routing), count`; the artifact, thread and agent's session in the event's IDs | the asking agent, or whoever's send routed it |
 | `approval.decide` | `request_id, scope (thread\|artifact\|everywhere\|decline)` | the approver |
-| `approval.withdraw` | `request_id, reason (thread_resolved\|thread_deleted\|artifact_deleted\|session_end\|person_revoked)` | whoever made the change that withdrew it |
+| `approval.withdraw` | `request_id, reason (thread_resolved\|thread_deleted\|artifact_deleted\|session_end\|person_revoked\|thread_taken)` | whoever made the change that withdrew it |
 | `thread.take` | `thread_id, session, cause (send\|mention\|first_delivery\|reply\|handoff)`; the artifact, thread and new owner's session in the event's IDs | the sender, the taking agent, or the agent handing off |
 | `thread.release` | `thread_id, session, reason (explicit\|session_end\|grant_revoked)`; the released owner's session in the event's IDs | the releasing agent, or whoever ended the session |
 | `approval.grant` of migration 25's `*unconnected` approval | as above, `created_via` `migration` | `system:daemon`, recorded once as the store first opens after the migration (after the backfill), at the approval's time |

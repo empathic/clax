@@ -743,8 +743,9 @@ async fn a_persons_agent_reports_its_own_tool_calls() {
     let row = w.ts.store.events_after(seq - 1, 1).unwrap().remove(0);
     assert_eq!(row.kind, "tool.call");
     let body: Value = serde_json::from_str(&row.body).unwrap();
-    // The reply and its take of the unowned thread (M23).
-    assert_eq!(body["produced"].as_array().unwrap().len(), 2, "{body}");
+    // The reply alone: a person's agent's reply on the owner's thread
+    // takes nothing (O8).
+    assert_eq!(body["produced"].as_array().unwrap().len(), 1, "{body}");
     assert!(row.actor.contains(&w.sam.grant_id()), "{}", row.actor);
     // Another credential's session is not its to report for.
     let r = call(
