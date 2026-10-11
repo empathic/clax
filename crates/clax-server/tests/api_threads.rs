@@ -1853,3 +1853,235 @@ async fn at_name_needs_comments_watch_as_well_as_artifacts_read() {
     assert!(!watches(&ts, &sams, aid));
     assert!(targets(&ts, v["thread"]["id"].as_str().unwrap()).is_empty());
 }
+
+// --- Thread ownership and handoff (spec 2026-10-08 §12, M23, M24) ---------
+
+/// Two of the owner's agents, `web` and `api`, both watching an artifact
+/// `web` published, and a thread on it sent to neither by name.
+async fn two_agents_one_thread(ts: &TestServer) -> (String, String, String, String) {
+    let (web, _) = agent_in(ts, "claude", "h1", "web").await;
+    let (api, _) = agent_in(ts, "codex", "h2", "api").await;
+    let a = ts.publish_as(&web, "Review", "<p>x</p>").await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let r = ts
+        .authed(
+            ts.client
+                .put(format!("{}/api/sessions/{api}/watches/{aid}", ts.base)),
+        )
+        .header("x-clax-session", &api)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let t = ts.thread(&aid, 1, "fix the chart").await;
+    let tid = t["id"].as_str().unwrap().to_string();
+    ts.send_thread(&aid, &tid).await;
+    (web, api, aid, tid)
+}
+
+/// What session `sid`'s piggyback take hands over: its feedback items.
+async fn take(ts: &TestServer, sid: &str) -> Vec<Value> {
+    let v: Value = ts
+        .authed(ts.client.get(format!(
+            "{}/api/sessions/{sid}/feedback?tier=piggyback",
+            ts.base
+        )))
+        .header("x-clax-session", sid)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    v["feedback"].as_array().cloned().unwrap_or_default()
+}
+
+/// Session `sid`'s agent call: `method path` with `body`.
+async fn as_agent(
+    ts: &TestServer,
+    sid: &str,
+    method: &str,
+    path: &str,
+    body: Value,
+) -> (u16, Value) {
+    let r = ts
+        .authed(
+            ts.client
+                .request(method.parse().unwrap(), format!("{}{path}", ts.base)),
+        )
+        .header("x-clax-session", sid)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let status = r.status().as_u16();
+    (status, r.json().await.unwrap_or(Value::Null))
+}
+
+async fn agent_reply(ts: &TestServer, sid: &str, aid: &str, tid: &str, body: &str) -> (u16, Value) {
+    as_agent(
+        ts,
+        sid,
+        "POST",
+        &format!("/api/artifacts/{aid}/threads/{tid}/comments"),
+        json!({"body": body, "author_kind": "agent"}),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn non_owner_reply_is_thread_taken() {
+    let ts = TestServer::spawn().await;
+    let (web, api, aid, tid) = two_agents_one_thread(&ts).await;
+    assert_eq!(take(&ts, &api).await.len(), 1, "api takes it first");
+    assert!(take(&ts, &web).await.is_empty(), "web's row went with it");
+    let (status, v) = agent_reply(&ts, &web, &aid, &tid, "mine").await;
+    assert_eq!(status, 409, "{v}");
+    assert_eq!(v["error"]["code"], "thread_taken");
+    assert_eq!(v["error"]["taken_by"], "api");
+    let (status, v) = as_agent(
+        &ts,
+        &web,
+        "POST",
+        &format!("/api/artifacts/{aid}/threads/{tid}/resolve"),
+        json!({"as": "agent"}),
+    )
+    .await;
+    assert_eq!((status, &v["error"]["code"]), (409, &json!("thread_taken")));
+    let t: Value = ts
+        .get(&format!("/api/artifacts/{aid}/threads/{tid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(t["thread"]["status"], "open");
+    assert_eq!(t["thread"]["comments"].as_array().unwrap().len(), 1);
+    let (status, _) = agent_reply(&ts, &api, &aid, &tid, "on it").await;
+    assert_eq!(status, 201, "the owner replies");
+}
+
+#[tokio::test]
+async fn owner_ended_threads_accept_any_agent() {
+    let ts = TestServer::spawn().await;
+    let (web, api, aid, tid) = two_agents_one_thread(&ts).await;
+    assert_eq!(take(&ts, &api).await.len(), 1);
+    ts.end_session(&api).await;
+    let (status, v) = agent_reply(&ts, &web, &aid, &tid, "taking over").await;
+    assert_eq!(status, 201, "{v}");
+    assert_eq!(v["thread"]["owner"]["name"], "web", "{v}");
+    assert_eq!(v["thread"]["owner"]["live"], true);
+    assert!(v["thread"].get("taken_by").is_none(), "{v}");
+}
+
+#[tokio::test]
+async fn views_show_owner_and_taken_by() {
+    let ts = TestServer::spawn().await;
+    let (web, api, aid, tid) = two_agents_one_thread(&ts).await;
+    let path = format!("/api/artifacts/{aid}/threads/{tid}");
+    let unowned: Value = ts.get_authed(&path).await.json().await.unwrap();
+    assert!(unowned["thread"].get("owner").is_none(), "{unowned}");
+    assert_eq!(take(&ts, &web).await.len(), 1);
+    let api_handle = ts.store.get_session(&api).unwrap().unwrap().agent_handle;
+    let web_handle = ts.store.get_session(&web).unwrap().unwrap().agent_handle;
+    // The other agent sees it taken.
+    let (status, v) = as_agent(&ts, &api, "GET", &path, Value::Null).await;
+    assert_eq!(status, 200);
+    let t = &v["thread"];
+    assert_eq!(
+        t["owner"],
+        json!({"handle": web_handle, "name": "web", "person": null, "live": true})
+    );
+    assert_eq!(t["taken_by"], "web");
+    assert!(
+        !v.to_string().contains(&web),
+        "never the owner's session ID"
+    );
+    // The owner does not, nor do people.
+    let (_, v) = as_agent(&ts, &web, "GET", &path, Value::Null).await;
+    assert!(v["thread"].get("taken_by").is_none(), "{v}");
+    let v: Value = ts.get_authed(&path).await.json().await.unwrap();
+    assert_eq!(v["thread"]["owner"]["name"], "web");
+    assert!(v["thread"].get("taken_by").is_none(), "{v}");
+    // The listing says the same to the other agent.
+    let (_, v) = as_agent(
+        &ts,
+        &api,
+        "GET",
+        &format!("/api/artifacts/{aid}/threads"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(v["threads"][0]["taken_by"], "web", "{v}");
+    let _ = api_handle;
+}
+
+#[tokio::test]
+async fn handoff_resends_and_release_untargets() {
+    let ts = TestServer::spawn().await;
+    let (web, api, aid, tid) = two_agents_one_thread(&ts).await;
+    assert_eq!(take(&ts, &web).await.len(), 1);
+    let handoff = |sid: &str| format!("/api/sessions/{sid}/threads/{tid}/handoff");
+    // A non-owner may not hand it off.
+    let (status, v) = as_agent(&ts, &api, "POST", &handoff(&api), json!({"to": "api"})).await;
+    assert_eq!(
+        (status, &v["error"]["code"]),
+        (409, &json!("thread_taken")),
+        "{v}"
+    );
+    // Unknown names are refused, and nothing changes.
+    let (status, v) = as_agent(&ts, &web, "POST", &handoff(&web), json!({"to": "nobody"})).await;
+    assert_eq!(
+        (status, &v["error"]["code"]),
+        (400, &json!("unknown_agent")),
+        "{v}"
+    );
+    // The owner hands it to api by name: api gets the whole thread again.
+    let (status, v) = as_agent(&ts, &web, "POST", &handoff(&web), json!({"to": "api"})).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["thread"]["owner"]["name"], "api");
+    assert_eq!(v["thread"]["taken_by"], "api", "web sees it taken now");
+    let got = take(&ts, &api).await;
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0]["body"], "fix the chart");
+    let (status, _) = agent_reply(&ts, &web, &aid, &tid, "still mine?").await;
+    assert_eq!(status, 409);
+    // api releases it: no owner, its new comment's row untargeted.
+    comment(&ts, &aid, &tid, json!({"body": "and the axis"})).await;
+    let (status, v) = as_agent(&ts, &api, "POST", &handoff(&api), json!({})).await;
+    assert_eq!(status, 200, "{v}");
+    assert!(v["thread"].get("owner").is_none(), "{v}");
+    let pending: Vec<Option<String>> = ts
+        .store
+        .feedback_rows(&tid)
+        .unwrap()
+        .into_iter()
+        .filter(|f| f.delivered_at.is_none())
+        .map(|f| f.target_session_id)
+        .collect();
+    assert_eq!(pending, [None], "untargeted");
+    // Released: any agent replies, and the first reply owns it.
+    let (status, v) = agent_reply(&ts, &web, &aid, &tid, "back to me").await;
+    assert_eq!(status, 201);
+    assert_eq!(v["thread"]["owner"]["name"], "web");
+    // Both were recorded.
+    let db = rusqlite::Connection::open(ts.home.db_path()).unwrap();
+    let kinds: Vec<String> = db
+        .prepare(
+            "SELECT kind || ':' || COALESCE(json_extract(body, '$.cause'), json_extract(body, '$.reason'))
+             FROM audit_events WHERE kind IN ('thread.take', 'thread.release') ORDER BY seq",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        kinds,
+        [
+            "thread.take:first_delivery",
+            "thread.take:handoff",
+            "thread.release:explicit",
+            "thread.take:reply"
+        ]
+    );
+}

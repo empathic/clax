@@ -202,6 +202,7 @@ need!(ThreadReopen, Comments, "resolve", Filtered, DEFAULT_LIMIT);
 need!(ThreadDelete, Comments, "resolve", Own, DEFAULT_LIMIT);
 need!(ThreadSend, Comments, "send", Filtered, DEFAULT_LIMIT);
 need!(ThreadsSendBatch, Comments, "send", Filtered, DEFAULT_LIMIT);
+need!(ThreadHandoff, Comments, "reply", Filtered, DEFAULT_LIMIT);
 need!(DocsGet, Db, "read", Filtered, DEFAULT_LIMIT);
 need!(DocsList, Db, "read", Filtered, DEFAULT_LIMIT);
 need!(DocsPut, Db, "write", Filtered, DEFAULT_LIMIT);
@@ -401,6 +402,11 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
         "/api/sessions/{id}/approvals/{rid}",
         ApprovalsPoll::INFO,
     ),
+    (
+        "POST",
+        "/api/sessions/{id}/threads/{tid}/handoff",
+        ThreadHandoff::INFO,
+    ),
     ("GET", "/api/approvals", ApprovalsList::INFO),
     ("GET", "/api/approvals/requests", ApprovalRequestsList::INFO),
     (
@@ -456,6 +462,7 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("threads::reopen", ThreadReopen),
     route_need!("threads::send", ThreadSend),
     route_need!("threads::send_batch", ThreadsSendBatch),
+    route_need!("threads::handoff", ThreadHandoff),
     route_need!("docs::list", DocsList),
     route_need!("docs::get", DocsGet),
     route_need!("docs::put", DocsPut),
@@ -502,6 +509,8 @@ pub const FILTERED_LIVE: &[&str] = &[
     "ThreadReopen",
     "ThreadSend",
     "ThreadsSendBatch",
+    // Thread handoff (Task 15).
+    "ThreadHandoff",
     // Artifacts, versions, files, assets and working records (Task 10).
     "ArtifactsList",
     "ArtifactsCreate",

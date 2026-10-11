@@ -1300,7 +1300,8 @@ again.
 
 - **Owner.** `threads.target_session_id` (M23). Set by a send with `to`,
   `@name`, a handoff, or, for an untargeted send, by the first
-  `take_feedback` that delivers one of the thread's rows to a session: in
+  `take_feedback` (or in-band acknowledgement) that delivers one of the
+  thread's rows to a session: in
   that transaction the session becomes the owner and every other session's
   undelivered rows for the thread are deleted. A placeholder take does not
   make an owner.
@@ -1308,15 +1309,20 @@ again.
   agent reading a thread owned by another live agent sees `"taken_by":
   "<name>"`.
 - **Refusals (M24).** An agent reply or resolve on a thread whose owner is
-  another live session: 409 `thread_taken` with the owner's name. Threads
-  with no owner, or an ended owner, accept any agent with the rights (and
-  the first such reply makes it the owner).
+  another live session: 409 `thread_taken` with the owner's name (in the
+  message and in `taken_by`). Threads with no owner, or an ended owner,
+  accept any agent with the rights (and the first such reply makes it the
+  owner).
 - **Handoff.** `comments_handoff {url_or_id, thread_id, to}` by the owner
-  agent (or any agent of its person when the owner has ended): `to` names a
-  live agent that may read the artifact; the thread is sent to it (§10,
-  including the routing request); the result is the filtered thread with
-  its new owner. Without `to`, the thread is released (owner cleared,
-  undelivered rows untargeted). A non-owner: 409 `thread_taken`.
+  agent (or any agent of its person when the owner has ended; any agent
+  when the thread has no owner): `to` names, by name or handle, a live
+  agent that may read the artifact, which is given a watch when it has none
+  (as `@name` gives); the thread is sent to it (§10, including the routing
+  request): it becomes the owner, other sessions' undelivered rows of the
+  thread are deleted, and it gets a row for every viewer comment it has
+  none for; the result is the filtered thread with its new owner. Without
+  `to`, the thread is released (owner cleared, undelivered rows untargeted,
+  one per comment). A non-owner: 409 `thread_taken`.
 - **People** take over by sending again.
 
 ## 13. Agent-aware attention
@@ -1599,7 +1605,7 @@ another machine, so no `remote` channel is added.
 | `approval.withdraw` | `request_id, reason (thread_resolved\|thread_deleted\|artifact_deleted\|session_end\|person_revoked)` | whoever made the change that withdrew it |
 | `approval.grant`, `approval.revoke` | `approval_id, approver, author, scope, created_via` (the artifact and thread in the event's IDs) | approver |
 | `content.withheld` | `feedback_ids[], author, thread_id, session` | system `daemon`, `for_actor` the agent (once per placeholder) |
-| `thread.take` | `thread_id, session, cause (send\|mention\|first_delivery\|handoff)` | sender, or system |
+| `thread.take` | `thread_id, session, cause (send\|mention\|first_delivery\|reply\|handoff)` | sender, the taking agent, or the agent handing off |
 | `thread.release` | `thread_id, session, reason (explicit\|session_end\|grant_revoked)` | agent or system |
 
 `thread.send` gains `approval_request_ids[]`, present when the send made or
