@@ -1517,3 +1517,84 @@ async fn mia_sends_to_the_owners_agent(t: &Two, tid: &str) {
         .await;
     assert_eq!(s, 200, "{v}");
 }
+
+/// A handoff names an agent (spec §12, M18): handing a thread to another
+/// person's agent asks that person, as a send naming it does.
+#[tokio::test]
+async fn handoff_to_another_persons_agent_makes_a_routing_request() {
+    let t = Two::new().await;
+    let owner_handle = owner_agent_watches(&t).await;
+    // The owner lets Mia's words reach the owner's agents; Sam has not.
+    t.w.ts
+        .store
+        .approve(
+            &AuditCtx::DAEMON,
+            None,
+            &t.w.mia_public,
+            clax_core::store::approvals::Scope::Everywhere,
+            clax_core::store::approvals::Via::Shell,
+        )
+        .unwrap();
+    let tid = t.mia_thread("please fix the chart").await;
+    let (status, v) = t
+        .mia_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/send", t.aid),
+            Some(json!({"to": owner_handle})),
+        )
+        .await;
+    assert_eq!(status, 200, "{v}");
+    assert!(t.sams_requests().await.is_empty());
+    let sam_name =
+        t.w.ts
+            .store
+            .get_session(&t.w.sam_session)
+            .unwrap()
+            .unwrap()
+            .name
+            .unwrap();
+    let owner = &t.w.owner_session;
+    let handoff = format!("/api/sessions/{owner}/threads/{tid}/handoff");
+    let (status, v) = json_of(
+        t.w.ts
+            .authed(t.w.ts.client.post(format!("{}{handoff}", t.w.ts.base)))
+            .header("x-clax-session", owner)
+            .json(&json!({"to": sam_name}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["thread"]["owner"]["handle"], json!(t.sam_handle), "{v}");
+    assert_eq!(v["thread"]["owner"]["person"], json!(t.sam_public()));
+    assert_eq!(v["thread"]["taken_by"], json!(sam_name));
+    let rs = t.sams_requests().await;
+    assert_eq!(rs.len(), 1, "{rs:?}");
+    assert_eq!(rs[0]["thread_id"], json!(tid));
+    assert_eq!(rs[0]["cause"], "routing");
+    let fb = t.sam_feedback("tier=piggyback").await;
+    let text = fb["text"].as_str().unwrap();
+    assert!(text.contains("Your person has been asked."), "{text}");
+    assert!(!text.contains("please fix the chart"), "{text}");
+    // The thread is Sam's agent's now: the owner's agent may not reply.
+    let (status, v) = json_of(
+        t.w.ts
+            .authed(t.w.ts.client.post(format!(
+                "{}/api/artifacts/{}/threads/{tid}/comments",
+                t.w.ts.base, t.aid
+            )))
+            .header("x-clax-session", owner)
+            .json(&json!({"body": "mine", "author_kind": "agent"}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        (status, &v["error"]["code"]),
+        (409, &json!("thread_taken")),
+        "{v}"
+    );
+}

@@ -813,11 +813,15 @@ pub async fn comment(
                     body: b.body,
                     via_page: false,
                 };
-                let c = if addressed {
-                    st.add_addressed_reply(&audit, &id, &tid, reply, &sess.harness)?
-                } else {
-                    st.add_comment(&audit, &tid, reply)?
-                };
+                // Another live agent's thread refuses the reply (409
+                // `thread_taken`); an unowned one becomes this agent's.
+                let (c, took) = st.add_agent_reply(
+                    &audit,
+                    &tid,
+                    reply,
+                    addressed.then_some((&id, sess.harness.as_str())),
+                )?;
+                touched.merge(took);
                 let seen = clax_core::visibility::Visibility::for_session(st, &sess.id)?;
                 let may = |x: &clax_core::model::Artifact| reads.allows(x);
                 let readable: Option<&(dyn Fn(&clax_core::model::Artifact) -> bool + Sync)> =
@@ -995,6 +999,118 @@ pub async fn send(
     Ok(Json(json!({"thread": view})))
 }
 
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct HandoffBody {
+    #[serde(default)]
+    to: Option<String>,
+}
+
+/// The live session a handoff's `to` names on artifact `id`: an agent's
+/// name (ignoring case) or handle; given a direct watch when it has none,
+/// as `@name` gives (recorded under `audit`). 400 `unknown_agent` when it
+/// names no live agent, or one that may not watch the artifact; 400
+/// `agent_cannot_read` when it names one that may not read it (spec §10).
+fn handoff_target(
+    st: &Store,
+    audit: &AuditCtx,
+    id: &ArtifactId,
+    to: &str,
+    live_page: bool,
+) -> clax_core::Result<String> {
+    let unknown = || {
+        CoreError::invalid(
+            "unknown_agent",
+            "no live agent that may watch this artifact has that name or handle",
+        )
+    };
+    let found = if clax_core::is_agent_handle(to) {
+        st.live_session_by_handle(to)?
+            .map(|s| (s.id.clone(), s.name.unwrap_or_else(|| to.to_string())))
+    } else {
+        let want = to.to_lowercase();
+        st.live_agent_names()?
+            .into_iter()
+            .find(|(_, n)| n.to_lowercase() == want)
+    };
+    let (sid, name) = found.ok_or_else(unknown)?;
+    match named_agent_reaches(st, &sid, id, live_page)? {
+        Reach::Yes => {}
+        Reach::CannotRead => return Err(cannot_read(&name)),
+        Reach::No => return Err(unknown()),
+    }
+    st.ensure_watch(audit, &sid, id)?;
+    Ok(sid)
+}
+
+/// `POST /api/sessions/<sid>/threads/<tid>/handoff {to?}` (spec §12,
+/// `comments_handoff`): session `sid` hands thread `tid` to the live agent
+/// `to` names (its name or handle), or, without `to`, releases it. `sid`
+/// must own the thread, or, when its owner has ended, be an agent of the
+/// same person (409 `thread_taken` otherwise, naming the owner); a thread
+/// with no owner may be handed off by any agent. A handoff sends the thread
+/// to `to` ([`Store::handoff`]), making a routing request when `to`'s
+/// person has not approved an author of its comments (M18); `to` must be
+/// an agent that may read and watch the artifact (400 `agent_cannot_read`,
+/// `unknown_agent`). A release clears the owner and untargets the thread's
+/// undelivered rows. Answers `{thread}`, filtered for the caller, with its
+/// new `owner`.
+pub async fn handoff(
+    State(s): State<AppState>,
+    TokenOrAgent(a): TokenOrAgent<crate::agent::ThreadHandoff>,
+    audit: DeferredAudit,
+    p: Result<Path<(String, String)>, PathRejection>,
+    raw: Bytes,
+) -> Result<Json<Value>, ApiError> {
+    let (sid, tid) = path(p)?;
+    let b: HandoffBody = if raw.is_empty() {
+        HandoffBody::default()
+    } else {
+        serde_json::from_slice(&raw)
+            .map_err(|e| ApiError::bad_request("invalid_json", e.to_string()))?
+    };
+    let t1 = tid.clone();
+    let aid = s
+        .store_call(move |st| Ok(st.get_thread(&t1)?.map(|t| t.artifact_id)))
+        .await?
+        .ok_or_else(ApiError::not_found)?;
+    let id = a.named_artifact(&s, &aid).await?;
+    a.also_needs(&s, (clax_core::rights::RightType::Comments, "reply"), &id)
+        .await?;
+    sees_threads(&a, &s, &id).await?;
+    let ctx = s.feedback_ctx();
+    let with_path = a.holds_token();
+    let live_page = s.live_ids.contains(id.as_str());
+    let vf = VisFor::of(&a.caller, &s);
+    let view = s
+        .store_call(move |st| {
+            let vis = vf.build(st)?;
+            match st.get_session(&sid)? {
+                Some(x) if x.ended_at.is_none() => {}
+                Some(_) => {
+                    return Err(CoreError::invalid(
+                        "unknown_session",
+                        "no live session has this ID",
+                    ));
+                }
+                None => return Err(CoreError::NotFound),
+            }
+            thread_of(st, &id, &tid)?;
+            st.check_may_hand_off(&tid, &sid)?;
+            let audit = audit.for_session(st, &sid)?;
+            let to = match b.to.as_deref() {
+                Some(to) => Some(handoff_target(st, &audit, &id, to, live_page)?),
+                None => None,
+            };
+            let (t, touched, _) = st.handoff(&audit, &tid, &sid, to.as_deref())?;
+            apply(&ctx, st, &touched);
+            publish_thread(&ctx, st, &t)?;
+            vis.filter_thread(st, &t, ctx.codex_push(), with_path)
+        })
+        .await?;
+    Ok(Json(json!({"thread": view})))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BatchBody {
@@ -1118,6 +1234,7 @@ pub async fn resolve(
                 if !t.sent_to_agent {
                     return Ok(Outcome::Guidance(GUIDANCE_RESOLVE));
                 }
+                st.check_not_taken(&tid, &sess.id)?;
                 let by = format!("agent:{}", sess.harness);
                 resolver = Some(sess);
                 by
@@ -1142,19 +1259,9 @@ pub async fn resolve(
                 )?);
             }
             let (t, withdrawn) = match &resolver {
-                Some(sess) => {
-                    // Whose agent resolved it: its session's person.
-                    let person = sess.person.as_deref().unwrap_or(OWNER);
-                    st.resolve_thread_addressed(
-                        &audit,
-                        &id,
-                        &tid,
-                        &by,
-                        &sess.harness,
-                        live,
-                        Some(person),
-                    )?
-                }
+                // Whose agent resolved it: its session's person; refused
+                // when another live agent owns the thread.
+                Some(sess) => st.resolve_thread_as(&audit, &id, &tid, sess, live)?,
                 None => st.resolve_thread_touched(&audit, &tid, &by)?,
             };
             touched.merge(withdrawn);

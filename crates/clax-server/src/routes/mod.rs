@@ -216,6 +216,10 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         )
         .route("/api/sessions/{id}/approvals", post(approvals::ask))
         .route(
+            "/api/sessions/{id}/threads/{tid}/handoff",
+            post(threads::handoff),
+        )
+        .route(
             "/api/approvals",
             get(approvals::list).post(approvals::create),
         )
@@ -630,6 +634,7 @@ mod l10 {
         ("feedback::expire", Token),
         ("feedback::hold", Token),
         ("approvals::ask", AgentPath),
+        ("threads::handoff", AgentPath),
         ("approvals::poll", AgentPath),
         ("approvals::list", NoArtifact),
         ("approvals::requests", NoArtifact),
@@ -1576,6 +1581,12 @@ mod agents {
                 "/api/sessions/{id}/approvals/{rid}",
                 Own,
                 Some((Ask, "ask")),
+            ),
+            (
+                "POST",
+                "/api/sessions/{id}/threads/{tid}/handoff",
+                Filtered,
+                Some((Comments, "reply")),
             ),
             ("GET", "/api/approvals", Own, None),
             ("GET", "/api/approvals/requests", Own, None),
