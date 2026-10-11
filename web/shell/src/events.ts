@@ -17,6 +17,9 @@ export type ArtifactEvent =
   | { type: "doc"; artifact_id: string; path: string; version: number | null }
   /** Who is working on the artifact now: its whole list, newest first. */
   | { type: "working"; artifact_id: string; working: Working[] }
+  /** An agent that watched the artifact started, ended or was renamed:
+   * refetch its agents (the Send menu lists live ones only). Names nothing. */
+  | { type: "agents"; artifact_id?: undefined }
   /** Who has the artifact open, here or away, or was here lately: its whole list. */
   | { type: "presence"; artifact_id: string; people: PresenceView[] }
   /** The watcher's topics went live: on first subscribing, after the page

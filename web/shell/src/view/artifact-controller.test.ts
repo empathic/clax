@@ -416,6 +416,28 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     });
   }
 
+  it("an agents event refetches the agents, so an ended agent leaves the Send menu", async () => {
+    const agent = { handle: "a_3333cccc", harness: "claude", live: true };
+    const { ctl, frame } = await started();
+    await streamOf(frame);
+    await vi.waitFor(() => expect(ctl.state.get().data).not.toBeNull());
+    const base = fetch as unknown as (u: string, i?: RequestInit) => Promise<Response>;
+    let live = true;
+    vi.stubGlobal("fetch", vi.fn((u: string, i?: RequestInit) => {
+      if (u !== `/api/artifacts/${ID}`) return base(u, i);
+      const body = JSON.stringify({ ...loaded, artifact: { ...loaded.artifact, participants: { people: [], agents: [{ ...agent, live }] } } });
+      return Promise.resolve(new Response(body));
+    }));
+    FakeES.last!.emit("ready", {});
+    await vi.waitFor(() => expect(ctl.state.get().sendTo).toBe(agent.handle));
+    // The agent ends: its artifacts' topics hear `agents`, naming nothing.
+    live = false;
+    FakeES.last!.emit("agents", { type: "agents" });
+    await vi.waitFor(() => expect(ctl.state.get().sendTo).toBeNull());
+    expect(ctl.state.get().agents.filter(a => a.live)).toEqual([]);
+    ctl.dispose();
+  });
+
   it("reports presence with where this viewer looks, takes presence events, and keeps the location private when sharing is off", async () => {
     const quoted = thread("t1", { anchor: { ...thread("t1").anchor, quote: "Quarterly goals" } });
     const { ctl, frame } = await started({ threads: [quoted], routes: url => (url === "/api/viewers/me/presence" ? { people: [] } : undefined) });
