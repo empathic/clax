@@ -37,6 +37,16 @@ pub const FILE_VERSION: u32 = 1;
 /// seconds, before jitter: three retries.
 pub const BACKOFF_S: [u64; 3] = [1, 2, 4];
 
+/// The largest clock offset a [`Signer`] learns from a daemon's `Date`, in
+/// seconds. A `Date` further off is refused, and nothing is signed for that
+/// time: an on-path peer that forged it could keep the request it made the
+/// client sign and replay it then (§21 items 4 and 6).
+pub const MAX_OFFSET_S: i64 = 600;
+
+/// The most bytes a client reads of one answer of a remote daemon: above
+/// the largest publish (96 MiB), far below what would fill memory.
+pub const MAX_RESPONSE_BYTES: u64 = 128 << 20;
+
 /// Why remote mode cannot be used though `remote.json` exists. Every
 /// command fails with it; nothing falls back to a local daemon (spec §22).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -522,16 +532,20 @@ impl Signer {
     }
 
     /// Learns the offset from a response's `Date` header (an HTTP date):
-    /// the daemon's time less this machine's. `false` when `date` does not
-    /// parse.
-    pub fn learn_offset(&self, date: &str) -> bool {
-        match daemon_offset(date, (self.clock)()) {
-            Some(o) => {
-                self.offset.store(o, Ordering::Relaxed);
-                true
-            }
-            None => false,
+    /// the daemon's time less this machine's, when it is at most
+    /// [`MAX_OFFSET_S`].
+    ///
+    /// # Errors
+    /// [`Learned::Unreadable`] when `date` does not parse;
+    /// [`Learned::TooFar`] with the offset when it is beyond
+    /// [`MAX_OFFSET_S`], which is then not learned.
+    pub fn learn_offset(&self, date: &str) -> Result<i64, Learned> {
+        let o = daemon_offset(date, (self.clock)()).ok_or(Learned::Unreadable)?;
+        if o.abs() > MAX_OFFSET_S {
+            return Err(Learned::TooFar(o));
         }
+        self.offset.store(o, Ordering::Relaxed);
+        Ok(o)
     }
 
     /// The `Clax-Signature` value for a request: `method`, `path_and_query`
@@ -562,6 +576,113 @@ impl Signer {
             agent_headers_sha256: sig::agent_headers_sha256(&sig::signable_agent_headers(agent)),
         };
         self.key.sign(&input).map(|h| h.to_string())
+    }
+}
+
+/// Why [`Signer::learn_offset`] learned nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Learned {
+    /// The `Date` does not parse.
+    Unreadable,
+    /// The `Date` is this many seconds off, beyond [`MAX_OFFSET_S`].
+    TooFar(i64),
+}
+
+/// The refusal of a daemon whose clock is `offset` seconds from this
+/// machine's: `clock_skew: …`, telling the person to set the clock.
+pub fn clock_skew_message(offset: i64) -> String {
+    format!(
+        "the daemon's clock is {offset:+} s from this machine's, more than the {MAX_OFFSET_S} s a signed request may be moved by: set this machine's clock (nothing was signed for that time)"
+    )
+}
+
+/// The path and query of `url` as a request sends them: what a signature
+/// covers.
+pub fn path_and_query(url: &url::Url) -> String {
+    match url.query() {
+        Some(q) => format!("{}?{q}", url.path()),
+        None => url.path().to_string(),
+    }
+}
+
+/// Readies `headers` of a request to the daemon `signer` signs for, as
+/// `cred`: any `Authorization` is replaced by `cred`'s, `Host` names the
+/// signer's host, and each of [`sig::AGENT_HEADERS`] is trimmed of
+/// surrounding spaces and tabs ([`sig::trim_header_value`]), so what is
+/// sent is what [`sign_headers`] signs.
+///
+/// # Errors
+/// A value that cannot be a header.
+pub fn prepare_headers(
+    signer: &Signer,
+    headers: &mut http::HeaderMap,
+    cred: Credential<'_>,
+) -> Result<(), String> {
+    let value = |v: &str| {
+        http::HeaderValue::from_str(v).map_err(|_| "a header that cannot be sent".to_string())
+    };
+    headers.remove(http::header::AUTHORIZATION);
+    headers.insert(http::header::HOST, value(signer.host())?);
+    for name in sig::AGENT_HEADERS {
+        let trimmed: Vec<http::HeaderValue> = headers
+            .get_all(name)
+            .iter()
+            .map(|v| http::HeaderValue::from_bytes(sig::trim_header_value(v.as_bytes())))
+            .collect::<Result<_, _>>()
+            .map_err(|_| "a header that cannot be sent".to_string())?;
+        if !trimmed.is_empty() {
+            headers.remove(name);
+            for v in trimmed {
+                headers.append(name, v);
+            }
+        }
+    }
+    if let Some(a) = cred.authorization() {
+        headers.insert(http::header::AUTHORIZATION, value(&a)?);
+    }
+    Ok(())
+}
+
+/// Signs one attempt of a request [`prepare_headers`] readied: sets
+/// `Clax-Signature` over `method`, `path_and_query`, `body`, `cred`'s token
+/// and the agent headers `headers` carries, signed now.
+///
+/// # Errors
+/// An agent header given twice, or an input [`KeyPair::sign`] refuses.
+pub fn sign_headers(
+    signer: &Signer,
+    method: &str,
+    path_and_query: &str,
+    body: &[u8],
+    cred: Credential<'_>,
+    headers: &mut http::HeaderMap,
+) -> Result<(), String> {
+    let signature = {
+        let values =
+            sig::agent_header_values(headers.iter().map(|(k, v)| (k.as_str(), v.as_bytes())))
+                .map_err(|_| "an agent header appears more than once".to_string())?;
+        signer
+            .sign(method, path_and_query, body, cred, &values)
+            .map_err(|e| format!("signing the request: {e}"))?
+    };
+    headers.insert(
+        "clax-signature",
+        http::HeaderValue::from_str(&signature).map_err(|e| e.to_string())?,
+    );
+    Ok(())
+}
+
+/// The message of a refusal a client gave up on: the daemon's, but for
+/// `grant_revoked`, which says the machine was disconnected from the
+/// signer's daemon and what to do.
+pub fn refusal_message(code: &str, message: &str, signer: &Signer) -> String {
+    if code == "grant_revoked" {
+        format!(
+            "this machine was disconnected from {}: run `clax connect --off`, then connect again with a new invite",
+            signer.base()
+        )
+    } else {
+        message.to_string()
     }
 }
 
@@ -653,6 +774,9 @@ pub enum Next {
     Resign,
     /// Wait this long, then sign again and send.
     After(Duration),
+    /// The daemon's `Date` is this many seconds off, beyond
+    /// [`MAX_OFFSET_S`]: give up with [`clock_skew_message`].
+    ClockSkew(i64),
 }
 
 /// The retry rule every signing client follows (spec §6.6): one retry on
@@ -680,8 +804,9 @@ impl Retry {
         match (status, code) {
             (401, "stale_request") if !self.stale_retried => {
                 self.stale_retried = true;
-                match date {
-                    Some(d) if signer.learn_offset(d) => Next::Resign,
+                match date.map(|d| signer.learn_offset(d)) {
+                    Some(Ok(_)) => Next::Resign,
+                    Some(Err(Learned::TooFar(o))) => Next::ClockSkew(o),
                     _ => Next::GiveUp,
                 }
             }
@@ -894,6 +1019,29 @@ mod tests {
         );
         let mut r = Retry::default();
         assert_eq!(r.next(401, "stale_request", None, &s, 0.0), Next::GiveUp);
+        // A forged Date a year ahead is not learned: nothing is signed for
+        // that time.
+        let s = signer_at(1_760_000_000);
+        let year = chrono::DateTime::from_timestamp(1_760_000_000 + 365 * 86_400, 0)
+            .unwrap()
+            .to_rfc2822();
+        let mut r = Retry::default();
+        assert_eq!(
+            r.next(401, "stale_request", Some(&year), &s, 0.0),
+            Next::ClockSkew(365 * 86_400)
+        );
+        assert_eq!((s.offset(), s.now()), (0, 1_760_000_000));
+        let edge = chrono::DateTime::from_timestamp(1_760_000_000 - MAX_OFFSET_S, 0)
+            .unwrap()
+            .to_rfc2822();
+        assert_eq!(s.learn_offset(&edge), Ok(-MAX_OFFSET_S));
+        let past = chrono::DateTime::from_timestamp(1_760_000_000 - MAX_OFFSET_S - 1, 0)
+            .unwrap()
+            .to_rfc2822();
+        assert_eq!(
+            s.learn_offset(&past),
+            Err(Learned::TooFar(-MAX_OFFSET_S - 1))
+        );
         let mut r = Retry::default();
         assert_eq!(
             r.next(401, "invalid_signature", Some(&date), &s, 0.0),

@@ -2052,6 +2052,11 @@ fn open_wait() -> std::time::Duration {
 /// openers hand off and linger; it is reaped in the background); false when it
 /// cannot start or exits unsuccessfully. Blocks the calling thread.
 pub fn open_in_browser(url: &str) -> bool {
+    // A value the opener would read as one of its options is never handed
+    // to it.
+    if url.starts_with('-') {
+        return false;
+    }
     run_opener(Path::new(platform_opener()), url, open_wait())
 }
 

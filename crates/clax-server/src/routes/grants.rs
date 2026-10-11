@@ -609,7 +609,10 @@ pub async fn request(
 /// question about the owner (spec §3.1, M15): the person approves the
 /// owner's content everywhere, and the answer is 200 `{"clax":
 /// {"owner_approval": {id, scope} | null}}` (null for the owner's own
-/// machine); 409 `not_issued` for a grant without live tokens.
+/// machine); 409 `not_issued` for a grant without live tokens, 409
+/// `answer_closed` past ten minutes of the tokens' issue, 409
+/// `owner_answered` once the person has made or revoked any approval of
+/// the owner (it is answered once, at connect, §21 item 3).
 pub async fn poll(
     State(s): State<AppState>,
     _g: crate::agent::GrantFlow,

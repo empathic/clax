@@ -532,6 +532,176 @@ async fn a_lost_adhoc_connect_resumes_or_is_cancelled() {
     assert!(!m.home().join("remote-pending.json").exists());
 }
 
+/// Left behind, then connecting with an invite instead: the waiting
+/// request is cancelled on its daemon, not only forgotten here. (A daemon
+/// of its own: a peer may make three requests in ten minutes.)
+#[tokio::test(flavor = "multi_thread")]
+async fn connecting_elsewhere_cancels_a_waiting_request() {
+    let (ts, _clock) = clocked_server().await;
+    let m = Machine::new();
+    let url = loopback(&ts);
+    let args = [
+        "connect",
+        url.as_str(),
+        "--no-browser",
+        "--poll-interval-ms",
+        "20",
+    ];
+    let mut w = Waiting::start(&m, &args);
+    w.line_with("approve request").await;
+    let gid = pending_grant(&ts);
+    w.child.kill().unwrap();
+    w.wait().await;
+    let url = invite_url(&ts, &ts.invite_command("Sam").await);
+    m.ok(&["connect", &url, "--no-browser"]).await;
+    assert_ne!(ts.store.grant(&gid).unwrap().status, "pending");
+    assert_ne!(m.remote_json()["grant_id"], gid.as_str());
+}
+
+/// Connecting is the person's: on an agent channel `clax connect` refuses,
+/// as a route for people does, and answers nothing for them; it may still
+/// show the connection.
+#[tokio::test(flavor = "multi_thread")]
+async fn connect_refuses_on_an_agent_channel() {
+    let ts = lan_server().await;
+    let m = Machine::new();
+    let url = invite_url(&ts, &ts.invite_command("Sam").await);
+    for args in [
+        vec!["connect", url.as_str(), "--yes", "--json"],
+        vec!["connect", "--off"],
+        vec!["connect", "--url", "http://127.0.0.1:7480"],
+    ] {
+        let out = m.cmd(&args).env("CLAX_CHANNEL", "agent").output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {}", text(&out));
+        assert!(
+            text(&out).contains("for people, not agents"),
+            "{args:?}: {}",
+            text(&out)
+        );
+    }
+    assert!(!m.home().join("remote.json").exists());
+    assert!(
+        ts.store
+            .list_grants()
+            .unwrap()
+            .iter()
+            .all(|g| g.status != "approved"),
+        "nothing connected"
+    );
+    let out = m
+        .cmd(&["connect", "--status"])
+        .env("CLAX_CHANNEL", "agent")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out));
+}
+
+/// `clax connect`'s own subcommands read remote.json whatever
+/// `CLAX_REMOTE` says.
+#[tokio::test(flavor = "multi_thread")]
+async fn connect_subcommands_see_the_connection_under_clax_remote_0() {
+    let ts = lan_server().await;
+    let m = connected(&ts, "Sam").await;
+    let out = m
+        .cmd(&["connect", "--status"])
+        .env("CLAX_REMOTE", "0")
+        .output()
+        .unwrap();
+    assert!(text(&out).contains("connected to"), "{}", text(&out));
+    let out = m
+        .cmd(&["connect", "--url", &loopback(&ts)])
+        .env("CLAX_REMOTE", "0")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains("now connecting to"), "{}", text(&out));
+}
+
+/// A daemon that answers a grant request with `answer` and records nothing
+/// else: a stranger playing the owner's Clax.
+fn fake_grant_daemon(answer: (u16, Value)) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        while let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            // The head, then the body its content-length names.
+            loop {
+                let n = stream.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                let text = String::from_utf8_lossy(&buf).to_string();
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let len = text[..end]
+                        .lines()
+                        .find_map(|l| {
+                            l.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                        })
+                        .unwrap_or(0);
+                    if buf.len() >= end + 4 + len {
+                        break;
+                    }
+                }
+            }
+            let body = answer.1.to_string();
+            let out = format!(
+                "HTTP/1.1 {} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                answer.0,
+                body.len()
+            );
+            let _ = stream.write_all(out.as_bytes());
+        }
+    });
+    base
+}
+
+/// What a stranger's daemon sends is never opened or printed raw: a
+/// browser link that is not the connected daemon's own, a user code
+/// carrying terminal escapes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_strangers_answers_are_not_opened_or_printed_raw() {
+    let issued = json!({
+        "access_token": {"value": "cxg_x", "manage": {"access_token": {"value": "cxm_x"}}},
+        "continue": {"access_token": {"value": "cxc_x"}, "uri": "/api/grants/g1/continue"},
+        "clax": {"person": {"display_name": "Sam"}, "owner": {"display_name": "Alex"},
+                 "browser_link": "file:///Applications/Evil.app"},
+    });
+    let base = fake_grant_daemon((200, issued));
+    let m = Machine::new();
+    let out = m
+        .run(&[
+            "connect",
+            &format!("{base}/i/K7QF-M2XD-9PLA"),
+            "--no-browser",
+        ])
+        .await;
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(!text(&out).contains("Evil.app"), "{}", text(&out));
+    assert!(
+        text(&out).contains("no usable browser link"),
+        "{}",
+        text(&out)
+    );
+    let pending = json!({
+        "continue": {"access_token": {"value": "cxc_x"}, "uri": "/api/grants/g1/continue", "wait": 5},
+        "interact": {"user_code": "\u{1b}]0;owned\u{7}\u{1b}[31mWXYZ-4821"},
+    });
+    let base = fake_grant_daemon((201, pending));
+    let m = Machine::new();
+    let out = m.run(&["connect", &base, "--no-browser"]).await;
+    assert!(!out.status.success());
+    assert!(!text(&out).contains('\u{1b}'), "{:?}", text(&out));
+    assert!(text(&out).contains("no usable user code"), "{}", text(&out));
+    assert!(!m.home().join("remote-pending.json").exists());
+    assert!(!m.home().join("remote.key").exists());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn connect_off_revokes_and_removes_the_files() {
     let ts = lan_server().await;

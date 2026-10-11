@@ -1,16 +1,23 @@
-//! The CLI's side of remote mode (spec §16, M26): [`SignedClient`] signs
-//! each request [`crate::client::Client`] sends to a remote daemon with
-//! `clax-ed25519 v2` (spec §6.6) and retries it by [`Retry`]'s rule: once
-//! on `stale_request` with the offset the daemon's `Date` gives, and on
-//! `limit_reached` and `busy` after 1, 2 and 4 seconds with jitter, signing
-//! every attempt anew.
+//! The CLI's side of remote mode (spec §16, M26): [`SignedClient`] sends
+//! each request [`crate::client::Client`] built to a remote daemon, signed
+//! with `clax-ed25519 v2` (spec §6.6) by `clax_core::remote`'s shared
+//! helpers, and retries it by [`Retry`]'s rule: once on `stale_request`
+//! with the offset the daemon's `Date` gives (never more than
+//! `MAX_OFFSET_S`), and on `limit_reached` and `busy` after 1, 2 and 4
+//! seconds with jitter, signing every attempt anew. It reads at most
+//! [`MAX_RESPONSE_BYTES`] of an answer, and the client it sends with
+//! follows no redirect.
 //!
 //! It sends only requests `Client` built (with the agent-channel marker
 //! when the CLI is an agent channel); it makes no HTTP client of its own.
 
+use crate::term::clean_line;
 use anyhow::anyhow;
-use clax_core::remote::{Credential, Next, Retry, Signer};
-use clax_core::sig;
+use clax_core::remote::{
+    Credential, MAX_RESPONSE_BYTES, Next, Retry, Signer, clock_skew_message, path_and_query,
+    prepare_headers, refusal_message, sign_headers,
+};
+use std::io::Read;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -32,7 +39,7 @@ impl std::fmt::Display for Unreachable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "daemon_unreachable: the Clax at {} does not answer ({}); this machine is connected to it (`clax connect --status`, `clax connect --url <new address>`)",
+            "daemon_unreachable: the Clax at {} does not answer ({})",
             self.url, self.why
         )
     }
@@ -41,8 +48,9 @@ impl std::fmt::Display for Unreachable {
 impl std::error::Error for Unreachable {}
 
 /// A refusal [`SignedClient::send`] gave up on (`stale_request`,
-/// `limit_reached`, `busy`, or another 401, 429 or 503), worded as
-/// `Client` words every refusal: `<code>: <message>`.
+/// `limit_reached`, `busy`, `clock_skew`, or another 401, 429 or 503),
+/// worded as `Client` words every refusal, `<code>: <message>`, with the
+/// daemon's words made safe to print.
 #[derive(Debug)]
 pub struct Refused {
     pub code: String,
@@ -56,6 +64,23 @@ impl std::fmt::Display for Refused {
 }
 
 impl std::error::Error for Refused {}
+
+/// Reads at most [`MAX_RESPONSE_BYTES`] of `res`'s body.
+///
+/// # Errors
+/// A body declared or found larger, or a read that fails.
+fn capped_body(res: &mut reqwest::blocking::Response) -> anyhow::Result<Vec<u8>> {
+    let too_big = || anyhow!("the daemon's answer is larger than {MAX_RESPONSE_BYTES} bytes");
+    if res.content_length().is_some_and(|n| n > MAX_RESPONSE_BYTES) {
+        return Err(too_big());
+    }
+    let mut body = Vec::new();
+    res.take(MAX_RESPONSE_BYTES + 1).read_to_end(&mut body)?;
+    if body.len() as u64 > MAX_RESPONSE_BYTES {
+        return Err(too_big());
+    }
+    Ok(body)
+}
 
 /// Signs and sends requests to one remote daemon.
 #[derive(Clone)]
@@ -94,19 +119,21 @@ impl SignedClient {
     }
 
     /// Sends the request `req` builds, as `cred`: each attempt names the
-    /// signer's host, carries the [`sig::AGENT_HEADERS`] it has trimmed of
+    /// signer's host, carries the agent headers it has trimmed of
     /// surrounding spaces and tabs, and is signed now. A refusal that
-    /// [`Retry`] gives up on is an error naming its code and message, as
-    /// `Client` words every refusal; any other answer is returned as it
-    /// came.
+    /// [`Retry`] gives up on is a [`Refused`]; any other answer is returned
+    /// with its body read whole, at most [`MAX_RESPONSE_BYTES`] (`stream`:
+    /// returned unread, for a reader that takes it a line at a time).
     ///
     /// # Errors
     /// A body that streams (it cannot be hashed), duplicate agent headers,
-    /// [`Unreachable`] when no connection is made, a refusal given up on.
+    /// [`Unreachable`] when no connection is made, a refusal given up on,
+    /// an answer too large.
     pub fn send(
         &self,
         req: reqwest::blocking::RequestBuilder,
         cred: Credential<'_>,
+        stream: bool,
     ) -> anyhow::Result<reqwest::blocking::Response> {
         let (client, built) = req.build_split();
         let mut built = built?;
@@ -117,58 +144,24 @@ impl SignedClient {
                 .ok_or_else(|| anyhow!("a streamed body cannot be signed"))?
                 .to_vec(),
         };
-        let url = built.url();
-        let path_and_query = match url.query() {
-            Some(q) => format!("{}?{q}", url.path()),
-            None => url.path().to_string(),
-        };
+        let pq = path_and_query(built.url());
         let method = built.method().as_str().to_string();
-        let headers = built.headers_mut();
-        headers.remove(reqwest::header::AUTHORIZATION);
-        headers.insert(
-            reqwest::header::HOST,
-            reqwest::header::HeaderValue::from_str(self.signer.host())?,
-        );
-        for name in sig::AGENT_HEADERS {
-            let trimmed: Vec<reqwest::header::HeaderValue> = headers
-                .get_all(name)
-                .iter()
-                .map(|v| {
-                    reqwest::header::HeaderValue::from_bytes(sig::trim_header_value(v.as_bytes()))
-                })
-                .collect::<Result<_, _>>()?;
-            if !trimmed.is_empty() {
-                headers.remove(name);
-                for v in trimmed {
-                    headers.append(name, v);
-                }
-            }
-        }
-        if let Some(a) = cred.authorization() {
-            headers.insert(
-                reqwest::header::AUTHORIZATION,
-                reqwest::header::HeaderValue::from_str(&a)?,
-            );
-        }
+        prepare_headers(&self.signer, built.headers_mut(), cred).map_err(|e| anyhow!(e))?;
         let mut retry = Retry::default();
         loop {
             let mut attempt = built
                 .try_clone()
                 .ok_or_else(|| anyhow!("a streamed body cannot be signed"))?;
-            let signature = {
-                let h = attempt.headers();
-                let values =
-                    sig::agent_header_values(h.iter().map(|(k, v)| (k.as_str(), v.as_bytes())))
-                        .map_err(|_| anyhow!("an agent header appears more than once"))?;
-                self.signer
-                    .sign(&method, &path_and_query, &body, cred, &values)
-                    .map_err(|e| anyhow!("signing the request: {e}"))?
-            };
-            attempt.headers_mut().insert(
-                "clax-signature",
-                reqwest::header::HeaderValue::from_str(&signature)?,
-            );
-            let res = client.execute(attempt).map_err(|e| {
+            sign_headers(
+                &self.signer,
+                &method,
+                &pq,
+                &body,
+                cred,
+                attempt.headers_mut(),
+            )
+            .map_err(|e| anyhow!(e))?;
+            let mut res = client.execute(attempt).map_err(|e| {
                 if e.is_connect() {
                     anyhow::Error::new(Unreachable {
                         url: self.signer.base().to_string(),
@@ -180,14 +173,25 @@ impl SignedClient {
             })?;
             let status = res.status().as_u16();
             if !matches!(status, 401 | 429 | 503) {
-                return Ok(res);
+                if stream {
+                    return Ok(res);
+                }
+                let bytes = capped_body(&mut res)?;
+                let mut whole = http::Response::builder().status(res.status());
+                if let Some(h) = whole.headers_mut() {
+                    *h = res.headers().clone();
+                }
+                return Ok(whole.body(bytes)?.into());
             }
             let date = res
                 .headers()
                 .get(reqwest::header::DATE)
                 .and_then(|d| d.to_str().ok())
                 .map(str::to_string);
-            let body: serde_json::Value = res.json().unwrap_or_default();
+            let body: serde_json::Value = capped_body(&mut res)
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or_default();
             let code = body["error"]["code"]
                 .as_str()
                 .unwrap_or("error")
@@ -201,19 +205,22 @@ impl SignedClient {
             ) {
                 Next::Resign => {}
                 Next::After(d) => (self.sleep)(d),
+                Next::ClockSkew(o) => {
+                    return Err(Refused {
+                        code: "clock_skew".into(),
+                        message: clock_skew_message(o),
+                    }
+                    .into());
+                }
                 Next::GiveUp => {
-                    let message = if code == "grant_revoked" {
-                        format!(
-                            "this machine was disconnected from {}: run `clax connect --off`, then connect again with a new invite",
-                            self.signer.base()
-                        )
-                    } else {
-                        body["error"]["message"]
-                            .as_str()
-                            .unwrap_or("request failed")
-                            .to_string()
-                    };
-                    return Err(Refused { code, message }.into());
+                    let message = body["error"]["message"]
+                        .as_str()
+                        .unwrap_or("request failed");
+                    return Err(Refused {
+                        message: clean_line(&refusal_message(&code, message, &self.signer)),
+                        code: clean_line(&code),
+                    }
+                    .into());
                 }
             }
         }
@@ -225,6 +232,7 @@ impl SignedClient {
 pub(crate) mod tests {
     use super::*;
     use clax_core::secret::Secret;
+    use clax_core::sig;
     use sha2::Digest;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::sync::Mutex;
@@ -298,10 +306,17 @@ pub(crate) mod tests {
                         body: body_in,
                     });
                     let text = body.to_string();
+                    // An answer's own content-length stands in for the
+                    // body's real one (a daemon that lies about it).
+                    let declared = extra
+                        .iter()
+                        .any(|(k, _)| k.eq_ignore_ascii_case("content-length"));
                     let mut out = format!(
-                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n",
-                        text.len()
+                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\nconnection: close\r\n"
                     );
+                    if !declared {
+                        out.push_str(&format!("content-length: {}\r\n", text.len()));
+                    }
                     for (k, v) in extra {
                         out.push_str(&format!("{k}: {v}\r\n"));
                     }
@@ -365,7 +380,7 @@ pub(crate) mod tests {
             .post(format!("{base}/api/artifacts/k3m9x2a7b8c4/assets"))
             .header("x-clax-channel", "agent ")
             .body(b"the asset's bytes".to_vec());
-        c.send(req, Credential::Grant(token))
+        c.send(req, Credential::Grant(token), false)
             .map(|r| r.status().as_u16())
     }
 
@@ -441,6 +456,7 @@ pub(crate) mod tests {
             .send(
                 http.get(format!("{}/api/artifacts", d.base)),
                 Credential::Grant(&token),
+                false,
             )
             .unwrap();
         assert_eq!(res.status(), 200);
@@ -469,10 +485,76 @@ pub(crate) mod tests {
             .send(
                 http.get(format!("{}/api/artifacts", d.base)),
                 Credential::Grant(&token),
+                false,
             )
             .unwrap_err()
             .to_string();
         assert!(e.starts_with("stale_request:"), "{e}");
+    }
+
+    /// A forged `Date` far ahead (an on-path peer answering for the
+    /// daemon) teaches no offset: nothing is signed for that time.
+    #[test]
+    fn a_date_a_year_ahead_signs_nothing_for_it() {
+        let token = Secret::new("cxg_t".into());
+        let year = chrono::DateTime::from_timestamp(1_760_000_000 + 365 * 86_400, 0)
+            .unwrap()
+            .to_rfc2822();
+        let d = FakeDaemon::start(vec![
+            (401, vec![("date".into(), year)], refusal("stale_request")),
+            (200, vec![], serde_json::json!({"artifacts": []})),
+        ]);
+        let (c, _) = client(&d, 1_760_000_000);
+        let http = reqwest::blocking::Client::new();
+        let e = c
+            .send(
+                http.get(format!("{}/api/artifacts", d.base)),
+                Credential::Grant(&token),
+                false,
+            )
+            .unwrap_err();
+        let r = e.downcast_ref::<Refused>().expect("a refusal");
+        assert_eq!(r.code, "clock_skew");
+        assert!(
+            r.message.contains("set this machine's clock"),
+            "{}",
+            r.message
+        );
+        assert_eq!(d.seen().len(), 1, "no second signature");
+        assert_eq!(c.signer().offset(), 0);
+    }
+
+    /// An answer larger than the cap is refused unread, and daemon words
+    /// are made safe to print.
+    #[test]
+    fn answers_are_capped_and_refusals_cleaned() {
+        let token = Secret::new("cxg_t".into());
+        let huge = (clax_core::remote::MAX_RESPONSE_BYTES + 1).to_string();
+        let d = FakeDaemon::start(vec![
+            (
+                200,
+                vec![("content-length".into(), huge)],
+                serde_json::json!({}),
+            ),
+            (
+                503,
+                vec![],
+                serde_json::json!({"error": {"code": "\u{1b}]0;x\u{7}", "message": "\u{1b}[31mred"}}),
+            ),
+        ]);
+        let (c, _) = client(&d, 1_760_000_000);
+        let http = reqwest::blocking::Client::new();
+        let get = || http.get(format!("{}/api/artifacts", d.base));
+        let e = c
+            .send(get(), Credential::Grant(&token), false)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("larger than"), "{e}");
+        let e = c
+            .send(get(), Credential::Grant(&token), false)
+            .unwrap_err()
+            .to_string();
+        assert!(!e.contains('\u{1b}') && !e.contains('\u{7}'), "{e:?}");
     }
 
     #[test]
@@ -488,6 +570,7 @@ pub(crate) mod tests {
             .send(
                 http.get(format!("{base}/api/artifacts")),
                 Credential::Grant(&token),
+                false,
             )
             .unwrap_err();
         assert!(e.downcast_ref::<Unreachable>().is_some(), "{e}");

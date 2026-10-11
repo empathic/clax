@@ -377,6 +377,10 @@ fn main() {
             println!("{}", n.line());
             std::process::exit(2);
         }
+        if let Some(n) = e.downcast_ref::<client::ForPeople>() {
+            println!("{n}");
+            std::process::exit(2);
+        }
         if let Some(n) = e.downcast_ref::<client::NotRemote>() {
             eprintln!("{n}");
             std::process::exit(2);

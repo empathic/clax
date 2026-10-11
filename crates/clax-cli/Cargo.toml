@@ -20,6 +20,7 @@ clax-server = { path = "../clax-server" }
 clax-mcp = { path = "../clax-mcp" }
 clax-hooks = { path = "../clax-hooks" }
 anyhow.workspace = true
+http = "1"
 chrono.workspace = true
 clap.workspace = true
 reqwest.workspace = true
