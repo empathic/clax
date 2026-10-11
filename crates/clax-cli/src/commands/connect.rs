@@ -639,7 +639,7 @@ pub fn remote_status(home: &Home, honour_env: bool) -> anyhow::Result<Option<(Va
         Ok(p) => {
             v["reachable"] = json!(true);
             v["clock_offset_s"] = json!(p.offset_s);
-            p.sessions
+            p.agents
         }
         Err(e) => {
             v["reachable"] = json!(false);
