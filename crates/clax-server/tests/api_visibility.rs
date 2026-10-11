@@ -2369,3 +2369,540 @@ async fn a_lease_on_a_withheld_document_never_confirms_its_holder() {
         "{hit}"
     );
 }
+
+// Feedback: every tier, notices and long-polls (spec §8.3, §8.4, M16, M17).
+
+/// Every canary of Mia's.
+fn no_canary_at_all(what: &str, text: &str) {
+    for c in crate::common::people::CANARIES {
+        assert!(!text.contains(c), "{what} leaked {c}: {text}");
+    }
+}
+
+/// The placeholder of Mia's thread `tid` on her artifact, whose title the
+/// reader may not see either.
+fn mias_placeholder(tid: &str) -> String {
+    format!(
+        "comments from Mia on \"an artifact by Mia\" (thread {tid}) are withheld until your person approves them."
+    )
+}
+
+/// `text` with JSON's escaped quotes as quotes: a client's output that
+/// carries the feedback text inside a JSON string.
+fn unescaped(text: &str) -> String {
+    text.replace("\\\"", "\"")
+}
+
+/// The owner approves Mia everywhere; the approval's ID.
+fn owner_approves_mia(w: &World) -> String {
+    w.ts.store
+        .approve(
+            &AuditCtx::DAEMON,
+            None,
+            &w.mia_public,
+            Scope::Everywhere,
+            Via::Shell,
+        )
+        .unwrap()
+        .id
+}
+
+/// The owner's agent's feedback poll: `query` after `?`.
+async fn owner_poll(w: &World, query: &str) -> Value {
+    let (status, v) = owner_agent(
+        w,
+        "GET",
+        &format!("/api/sessions/{}/feedback?{query}", w.owner_session),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    v
+}
+
+#[tokio::test]
+async fn hook_tiers_are_filtered_for_owner_agents() {
+    use crate::common::clients::RealClients;
+    use crate::common::people::OWNER_ASKS;
+    let w = World::two_people().await;
+    let tid = w.owner_thread_on_mias_page().await;
+    let clients = RealClients::new(&w);
+    let follow = clients.follow().await;
+    no_canary_at_all("clax feedback follow", &follow.text);
+    assert!(
+        follow
+            .text
+            .contains("New comment on \"an artifact by Mia\" (http://"),
+        "{}",
+        follow.text
+    );
+    assert!(follow.text.contains(&tid), "{}", follow.text);
+    let hooks = clients.hooks().await;
+    let mut all = String::new();
+    for h in &hooks {
+        no_canary_at_all(&h.channel, &h.text);
+        all.push_str(&h.text);
+    }
+    // The owner's comment, each field of Mia's withheld; Mia's comments
+    // held, told once.
+    let all = unescaped(&all);
+    assert_eq!(all.matches(OWNER_ASKS).count(), 1, "{all}");
+    for want in [
+        "on \"an artifact by Mia\"",
+        "Anchored on: (withheld: page by Mia)",
+        "Clip: withheld",
+    ] {
+        assert!(all.contains(want), "{want}: {all}");
+    }
+    assert_eq!(
+        all.matches(&mias_placeholder(&w.read.thread)).count(),
+        1,
+        "{all}"
+    );
+}
+
+#[tokio::test]
+async fn mcp_tools_are_filtered_for_the_owner() {
+    use crate::common::clients::RealClients;
+    let w = World::two_people().await;
+    let clients = RealClients::new(&w);
+    let mcp = clients.mcp_http().await;
+    no_canary_at_all("/mcp", &mcp.text);
+    for want in ["anchor_withheld", "clip_withheld"] {
+        assert!(mcp.text.contains(want), "{want}: {}", mcp.text);
+    }
+    // The shim of the owner's agent's session: its first tool call hands
+    // over the placeholder of Mia's held comments, once.
+    let shim = clients.shim().await;
+    no_canary_at_all("the MCP shim", &shim.text);
+    assert_eq!(
+        unescaped(&shim.text)
+            .matches(&mias_placeholder(&w.read.thread))
+            .count(),
+        1,
+        "{}",
+        shim.text
+    );
+}
+
+#[tokio::test]
+async fn plugin_command_context_is_filtered_for_the_owner() {
+    use crate::common::clients::RealClients;
+    let w = World::two_people().await;
+    let outs = RealClients::new(&w).slash_command_context().await;
+    assert!(outs.len() >= 8, "{}", outs.len());
+    let mut withheld = false;
+    for o in &outs {
+        no_canary_at_all(&o.channel, &o.text);
+        withheld |= o.text.contains("withheld");
+    }
+    assert!(withheld, "{outs:?}");
+}
+
+#[tokio::test]
+async fn a_bump_between_take_and_wait_is_not_missed() {
+    let w = World::two_people().await;
+    // Told once already (Mia's thread on each seeded artifact): a take
+    // finds nothing more to hand over.
+    let v = owner_poll(&w, "tier=piggyback").await;
+    assert_eq!(v["withheld"].as_array().map(Vec::len), Some(2), "{v}");
+    let sid = w.owner_session.clone();
+    w.ts.hold_feedback(&sid, true).await;
+    let poll = owner_poll(&w, "tier=wait&wait=600");
+    let control = async {
+        // The poll took (nothing) and stops before it waits: the
+        // approval lands in that gap.
+        w.ts.wait_held_feedback_polls(&sid, 1).await;
+        owner_approves_mia(&w);
+        w.ts.hold_feedback(&sid, false).await;
+        // A poll that missed the bump would park until its deadline.
+        let v: Value =
+            w.ts.get_authed(&format!(
+                "/api/_test/feedback/{sid}/waiters?parked=wait&until=0"
+            ))
+            .await
+            .json()
+            .await
+            .unwrap();
+        if v["count"] != 0 {
+            w.ts.expire_feedback(&sid).await;
+        }
+        v["count"].clone()
+    };
+    let (v, parked) = tokio::join!(poll, control);
+    assert_eq!(parked, 0, "the poll missed the approval: {v}");
+    let text = v["text"].as_str().unwrap_or_default();
+    assert!(text.contains(COMMENT) && text.contains(REPLY), "{v}");
+}
+
+#[tokio::test]
+async fn approval_wakes_a_waiting_poll() {
+    let w = World::two_people().await;
+    let v = owner_poll(&w, "tier=piggyback").await;
+    assert!(v["feedback"].as_array().unwrap().is_empty(), "{v}");
+    let sid = w.owner_session.clone();
+    let poll = owner_poll(&w, "tier=wait&wait=600");
+    let control = async {
+        w.ts.wait_parked_feedback_polls(&sid, "wait", 1).await;
+        owner_approves_mia(&w);
+    };
+    let (v, ()) = tokio::join!(poll, control);
+    let bodies: Vec<&str> = v["feedback"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["body"].as_str().unwrap())
+        .collect();
+    assert_eq!(bodies, [COMMENT, REPLY, COMMENT, REPLY], "{v}");
+    assert!(v.get("withheld").is_none(), "{v}");
+}
+
+#[tokio::test]
+async fn revocation_during_wait_for_feedback_holds_rows() {
+    let w = World::two_people().await;
+    let id = owner_approves_mia(&w);
+    // Approved: Mia's comments on both seeded artifacts are delivered.
+    let v = owner_poll(&w, "tier=piggyback").await;
+    assert_eq!(v["feedback"].as_array().unwrap().len(), 4, "{v}");
+    let sid = w.owner_session.clone();
+    let late = "Mia's late words";
+    let poll = owner_poll(&w, "tier=wait&wait=600");
+    let control = async {
+        w.ts.wait_parked_feedback_polls(&sid, "wait", 1).await;
+        w.ts.store
+            .revoke_approval(&AuditCtx::DAEMON, &id, None)
+            .unwrap();
+        // The revocation woke the poll; it took nothing and waits again.
+        w.ts.wait_parked_feedback_polls(&sid, "wait", 1).await;
+        w.mia_comments(&w.read.artifact, &w.read.thread, late).await;
+    };
+    let (v, ()) = tokio::join!(poll, control);
+    assert!(v["feedback"].as_array().unwrap().is_empty(), "{v}");
+    let text = v["text"].as_str().unwrap();
+    assert!(!text.contains(late), "{text}");
+    assert!(
+        text.contains("[clax] 1 comments from Mia on \"an artifact by Mia\""),
+        "{text}"
+    );
+    assert_eq!(v["withheld"][0]["count"], 1, "{v}");
+    // Held, not dropped: the thread waits on the owner's approval.
+    let state =
+        w.ts.store
+            .feedback_state(&w.read.thread, false)
+            .unwrap()
+            .unwrap();
+    assert_eq!(state.state, clax_core::FeedbackPhase::Withheld);
+}
+
+#[tokio::test]
+async fn withheld_matrix_tiers() {
+    use crate::common::clients::RealClients;
+    use crate::common::people::OWNER_ASKS;
+    // Each in-band tier, through its real client: no canary before the
+    // approval and Mia's placeholder exactly once; her words after it.
+    for tier in ["piggyback", "stop", "prompt", "wait", "inject"] {
+        let w = World::two_people().await;
+        let first = unescaped(&tier_output(&w, tier).await);
+        no_canary_at_all(tier, &first);
+        assert_eq!(
+            first.matches(&mias_placeholder(&w.read.thread)).count(),
+            1,
+            "{tier}: {first}"
+        );
+        let second = unescaped(&tier_output(&w, tier).await);
+        no_canary_at_all(tier, &second);
+        assert!(!second.contains("are withheld until"), "{tier}: {second}");
+        owner_approves_mia(&w);
+        w.mia_comments(&w.read.artifact, &w.read.thread, "Mia, approved")
+            .await;
+        let after = tier_output(&w, tier).await;
+        assert!(after.contains("Mia, approved"), "{tier}: {after}");
+        assert!(after.contains(COMMENT), "{tier}: {after}");
+    }
+    // Notices through `clax feedback follow`: Mia's comment is announced
+    // only once approved; the owner's is announced under a withheld title.
+    let w = World::two_people().await;
+    w.owner_thread_on_mias_page().await;
+    let clients = RealClients::new(&w);
+    let n = clients.follow().await.text;
+    no_canary_at_all("follow", &n);
+    assert!(!n.contains(&w.read.thread), "{n}");
+    owner_approves_mia(&w);
+    w.mia_comments(&w.read.artifact, &w.read.thread, "Mia, approved")
+        .await;
+    let n = clients.follow().await.text;
+    assert!(n.contains(&w.read.thread) && n.contains(TITLE), "{n}");
+    assert!(!n.contains(OWNER_ASKS), "a notice carries no comment: {n}");
+}
+
+/// What the owner's agent is handed through `tier`'s client: the MCP
+/// shim's tool calls (`piggyback`), the hook binary (`stop`, `prompt`), or
+/// the poll `wait_for_feedback` and Pi's injection loop make (`wait`,
+/// `inject`).
+async fn tier_output(w: &World, tier: &str) -> String {
+    use crate::common::clients::RealClients;
+    match tier {
+        "piggyback" => RealClients::new(w).shim().await.text,
+        "stop" | "prompt" => RealClients::new(w).hook(tier).await.text,
+        _ => owner_poll(w, &format!("tier={tier}&wait=0"))
+            .await
+            .to_string(),
+    }
+}
+
+#[tokio::test]
+async fn the_codex_queue_sends_only_filtered_visible_rows() {
+    use crate::common::people::OWNER_ASKS;
+    let dir = tempfile::tempdir().unwrap();
+    // Each run writes its arguments into a FIFO, which the test reads:
+    // reading waits for a run, with no clock.
+    let fifo = dir.path().join("args.fifo");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let bin = clax_fake_exe::install(
+        &dir.path().join("codex"),
+        "#!/bin/sh\nd=\"$(dirname \"$0\")\"\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > \"$d/args.fifo\"\nexit 0\n",
+    );
+    let w = World::two_people_with(move |s| {
+        s.codex = std::sync::Arc::new(clax_server::push::CodexPush {
+            bin: Some(bin),
+            timeout: std::time::Duration::from_secs(10),
+            source: clax_server::push::CodexSource::Env,
+            ..Default::default()
+        })
+    })
+    .await;
+    let ts = &w.ts;
+    let res = ts
+        .post_json(
+            "/api/sessions/join",
+            json!({"harness": "codex", "parent_pid": 4242, "harness_session_id": "cx-1", "cwd": "/w"}),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let cx = res.json::<Value>().await.unwrap()["session"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let aid = &w.read.artifact;
+    let r = ts
+        .authed(
+            ts.client
+                .put(format!("{}/api/sessions/{cx}/watches/{aid}", ts.base)),
+        )
+        .header("x-clax-session", &cx)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    let queued = || {
+        let fifo = fifo.clone();
+        async move {
+            let read = tokio::task::spawn_blocking(move || std::fs::read_to_string(fifo));
+            tokio::time::timeout(std::time::Duration::from_secs(60), read)
+                .await
+                .expect("codex queue ran")
+                .unwrap()
+                .unwrap()
+        }
+    };
+    // Mia's comment is held: nothing queued. The owner's comment on her
+    // page is queued, each field of hers withheld.
+    w.mia_comments(aid, &w.read.thread, "Mia, unapproved").await;
+    w.owner_thread_on_mias_page().await;
+    let text = queued().await;
+    no_canary_at_all("codex queue", &text);
+    assert!(!text.contains("Mia, unapproved"), "{text}");
+    assert!(text.contains(OWNER_ASKS), "{text}");
+    assert!(
+        text.contains("Anchored on: (withheld: page by Mia)"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("are withheld until"),
+        "queue tells of none: {text}"
+    );
+    owner_approves_mia(&w);
+    w.mia_comments(aid, &w.read.thread, "Mia, approved").await;
+    let text = queued().await;
+    assert!(
+        text.contains("Mia, approved") && text.contains("Mia, unapproved"),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn a_persons_agent_gets_placeholders_and_never_takes_untargeted_feedback_by_watching() {
+    let w = World::two_people().await;
+    sam_rights(&w, "clax:full");
+    let aid = w.read.artifact.clone();
+    let (status, v) = sam(
+        &w,
+        "PUT",
+        &format!("/api/sessions/{}/watches/{aid}", w.sam_session),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    w.mia_comments(&aid, &w.read.thread, "Mia to Sam").await;
+    let (status, v) = sam(
+        &w,
+        "GET",
+        &format!("/api/sessions/{}/feedback?tier=piggyback", w.sam_session),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    let text = v.to_string();
+    no_canary_at_all("Sam's poll", &text);
+    assert!(!text.contains("Mia to Sam"), "{text}");
+    assert_eq!(v["withheld"][0]["count"], 1, "{v}");
+    assert_eq!(v["withheld"][0]["title"], "an artifact by Mia", "{v}");
+    let (status, v) = sam(
+        &w,
+        "GET",
+        &format!("/api/sessions/{}/notices", w.sam_session),
+        None,
+    )
+    .await;
+    assert_eq!((status, v["notices"].clone()), (200, json!([])), "{v}");
+    // The owner's untargeted feedback stays where it is when Sam's agent
+    // watches, as when it publishes.
+    let other = w.ts.any_artifact().await;
+    let tid = w.ts.thread(&other, 1, "for any agent").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    w.ts.send_thread(&other, &tid).await;
+    let untargeted = || -> i64 {
+        let db = rusqlite::Connection::open(w.ts.home.db_path()).unwrap();
+        db.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
+        db.query_row(
+            "SELECT COUNT(*) FROM feedback WHERE thread_id = ?1 AND target_session_id IS NULL",
+            [&tid],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(untargeted(), 1);
+    let (status, v) = sam(
+        &w,
+        "PUT",
+        &format!("/api/sessions/{}/watches/{other}", w.sam_session),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(
+        untargeted(),
+        1,
+        "Sam's agent took the owner's agents' feedback"
+    );
+    let (status, v) = owner_agent(
+        &w,
+        "PUT",
+        &format!("/api/sessions/{}/watches/{other}", w.owner_session),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(untargeted(), 0);
+}
+
+#[tokio::test]
+async fn no_doc_event_reaches_a_waiting_agent() {
+    use crate::common::people::DOC_FIELD;
+    let w = World::two_people().await;
+    // Mia's held comments told; the wait finds nothing more.
+    owner_poll(&w, "tier=piggyback").await;
+    let sid = w.owner_session.clone();
+    let poll = owner_poll(&w, "tier=wait&wait=600");
+    let control = async {
+        w.ts.wait_parked_feedback_polls(&sid, "wait", 1).await;
+        let r = w
+            .mia
+            .agent(
+                "PUT",
+                &format!(
+                    "/api/artifacts/{}/docs/notes/MIACANARYwhilewaiting",
+                    w.read.artifact
+                ),
+                Some(&w.mia_session),
+                Some(json!({"data": {"text": DOC_FIELD}})),
+            )
+            .await;
+        assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+        w.ts.expire_feedback(&sid).await;
+    };
+    let (v, ()) = tokio::join!(poll, control);
+    let text = v.to_string();
+    no_canary_at_all("the wait", &text);
+    assert!(!text.contains("MIACANARYwhilewaiting"), "{text}");
+    // The event channels refuse agents outright.
+    for path in ["/api/events", "/api/stream"] {
+        let (status, v) = owner_agent(&w, "GET", path, None).await;
+        assert_eq!(
+            (status, v["error"]["code"].clone()),
+            (403, json!("not_for_agents")),
+            "{path}"
+        );
+        let r = w.sam.get(Some(&w.sam_session), path).await;
+        assert_eq!(r.status(), 403, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn rights_narrowed_during_a_wait_hold_rows_on_artifacts_no_longer_readable() {
+    let w = World::two_people().await;
+    sam_rights(&w, "clax:full");
+    // Sam approved the owner: the owner's words reach Sam's agent.
+    approve(&w.ts, Some(&sam_public(&w)), &owner_public(&w.ts));
+    let aid = w.ts.any_artifact().await;
+    let (status, v) = sam(
+        &w,
+        "PUT",
+        &format!("/api/sessions/{}/watches/{aid}", w.sam_session),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    let sid = w.sam_session.clone();
+    let (status, v) = sam(
+        &w,
+        "GET",
+        &format!("/api/sessions/{sid}/feedback?tier=wait&wait=0"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    let path = format!("/api/sessions/{sid}/feedback?tier=wait&wait=600");
+    let poll = sam(&w, "GET", &path, None);
+    let control = async {
+        w.ts.wait_parked_feedback_polls(&sid, "wait", 1).await;
+        // Sam may read another artifact only: the generation moves.
+        narrow_sam(&w, Some(&w.read.artifact));
+        w.ts.wait_parked_feedback_polls(&sid, "wait", 1).await;
+        let tid = owner_thread(&w.ts, &aid, 1, "index.html", "the owner, to Sam's agent").await;
+        w.ts.send_thread(&aid, &tid).await;
+        // The send woke the poll; it held the row and waits again.
+        w.ts.wait_parked_feedback_polls(&sid, "wait", 1).await;
+        w.ts.expire_feedback(&sid).await;
+    };
+    let ((status, v), ()) = tokio::join!(poll, control);
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["feedback"], json!([]), "{v}");
+    assert!(v.get("withheld").is_none(), "held untold: {v}");
+    // Readable again: the row is delivered.
+    narrow_sam(&w, None);
+    let (_, v) = sam(
+        &w,
+        "GET",
+        &format!("/api/sessions/{sid}/feedback?tier=piggyback"),
+        None,
+    )
+    .await;
+    assert_eq!(v["feedback"][0]["body"], "the owner, to Sam's agent", "{v}");
+}

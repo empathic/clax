@@ -72,6 +72,9 @@ pub enum Event {
         since: String,
         resends: u32,
         exhausted: bool,
+        /// For `withheld`: whose approval the comment waits for.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approver: Option<String>,
     },
     /// The artifact's working list changed; `working` is the whole list
     /// (spec §10 "Working"), never naming a session.
@@ -201,6 +204,7 @@ impl Event {
             since: s.since,
             resends: s.resends,
             exhausted: s.exhausted,
+            approver: s.approver,
         }
     }
 }
@@ -402,6 +406,7 @@ mod tests {
             since: "s".into(),
             resends: 0,
             exhausted: false,
+            approver: None,
         };
         for ev in [
             Event::Thread {

@@ -747,7 +747,13 @@ pub async fn comment(
                 } else {
                     st.add_comment(&audit, &tid, reply)?
                 };
-                touched.merge(st.acknowledge(&audit, &sess.id, std::slice::from_ref(&tid))?);
+                let seen = clax_core::visibility::Visibility::for_session(st, &sess.id)?;
+                touched.merge(st.acknowledge(
+                    &audit,
+                    &sess.id,
+                    std::slice::from_ref(&tid),
+                    &seen,
+                )?);
                 let changed =
                     ctx.working
                         .thread_done(&sess.id, id.as_str(), &tid, StopReason::Explicit);
@@ -1009,7 +1015,13 @@ pub async fn resolve(
             };
             let audit = audit.resolve(st)?;
             if let Some(sess) = &resolver {
-                touched.merge(st.acknowledge(&audit, &sess.id, std::slice::from_ref(&tid))?);
+                let seen = clax_core::visibility::Visibility::for_session(st, &sess.id)?;
+                touched.merge(st.acknowledge(
+                    &audit,
+                    &sess.id,
+                    std::slice::from_ref(&tid),
+                    &seen,
+                )?);
             }
             let (t, withdrawn) = match &resolver {
                 Some(sess) => {

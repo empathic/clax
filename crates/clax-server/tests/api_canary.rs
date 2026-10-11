@@ -5,13 +5,9 @@
 //! agents' only; and the owner's question list holds the owner's agents'
 //! questions only.
 //!
-//! The filter is live for threads, comments and clips, for artifacts,
-//! versions, files, assets and working records, and for documents; the
-//! feedback routes answer a person's agent 503 `not_yet`, and the owner's
-//! agents still get today's content there. So the sweeps as the owner's
-//! agent over every route, and through the real clients, are ignored
-//! until the tasks that filter them lift them; the owner's agent's sweep
-//! over the routes filtered so far is not.
+//! The filter is live for every route and every agent channel but the Pi
+//! extension's, whose sweep is ignored until the task that filters it
+//! lifts it.
 
 use crate::common::TestServer;
 use crate::common::clients::{HARNESS_ENVS, RealClients};
@@ -286,20 +282,7 @@ async fn no_canary_reaches_the_owners_agent_through_a_denied_route() {
     sweep(&w, &w.owner_agent(), |c| c.denied).await;
 }
 
-/// Whether `c` reaches a route whose filter is still to come: feedback
-/// (Task 12).
-fn filtered_later(c: &Call) -> bool {
-    c.path.contains("/feedback") || c.path.contains("/notices")
-}
-
 #[tokio::test]
-async fn no_canary_reaches_an_unapproved_owner_agent_through_filtered_routes() {
-    let w = World::two_people().await;
-    sweep(&w, &w.owner_agent(), |c| !c.denied && !filtered_later(c)).await;
-}
-
-#[tokio::test]
-#[ignore = "lifted by Task 12: the owner's agents get unfiltered feedback until Task 12 filters it"]
 async fn no_canary_reaches_an_unapproved_owner_agent() {
     let w = World::two_people().await;
     sweep(&w, &w.owner_agent(), |c| !c.denied).await;
@@ -343,7 +326,8 @@ async fn the_owner_by_hand_sees_every_canary() {
     }
 }
 
-/// `outs`' leaks of `w`'s canaries. `clax db get … <doc ID>` prints the
+/// `outs`' leaks of `w`'s canaries, one per line of output that carries
+/// one. `clax db get … <doc ID>` prints the
 /// document it was asked for by path and ID (spec §21.9): for a command
 /// line that names Mia's document, those fields alone are left out.
 fn leaks(w: &World, outs: &[crate::common::clients::Out]) -> Vec<String> {
@@ -355,8 +339,9 @@ fn leaks(w: &World, outs: &[crate::common::clients::Out]) -> Vec<String> {
             _ => out.text.clone(),
         };
         for c in w.canaries() {
-            if text.contains(c) {
-                leaks.push(format!("{} leaked {c}", out.channel));
+            for line in text.lines().filter(|l| l.contains(c)) {
+                let line: String = line.trim().chars().take(240).collect();
+                leaks.push(format!("{} leaked {c} in: {line}", out.channel));
             }
         }
     }
@@ -364,7 +349,6 @@ fn leaks(w: &World, outs: &[crate::common::clients::Out]) -> Vec<String> {
 }
 
 #[tokio::test]
-#[ignore = "lifted by Task 12: every agent channel but Pi's is filtered then"]
 async fn no_canary_reaches_an_agent_through_a_real_client() {
     let w = World::two_people().await;
     let outs = RealClients::new(&w).run_every_channel().await;

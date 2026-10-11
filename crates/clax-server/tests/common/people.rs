@@ -81,6 +81,8 @@ pub const BATCH_NOTE: &str = "MIACANARYbatchnote";
 pub const WORKING: &str = "MIACANARYworking";
 pub const QUESTION: &str = "MIACANARYquestion";
 pub const REPLY: &str = "MIACANARYreply";
+/// The body of the owner's comment on Mia's page.
+pub const OWNER_ASKS: &str = "The owner asks for a bigger chart";
 /// An anchor's hash of the anchored element's markup.
 pub const HTML_HASH: &str = "sha256:MIACANARYhtmlhash";
 /// A drawn area's fingerprint: its element's tag, text and child count
@@ -144,7 +146,12 @@ impl World {
     /// canaries in every author field; Sam's agent and an owner's agent,
     /// each with a session and a question.
     pub async fn two_people() -> World {
-        let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+        World::two_people_with(|_| {}).await
+    }
+
+    /// [`World::two_people`] on a daemon whose state `f` configures first.
+    pub async fn two_people_with(f: impl FnOnce(&mut clax_server::state::AppState)) -> World {
+        let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), f).await;
         let sam = ts.connect_person("Sam", "clax:collaborator").await;
         let mia = ts.connect_person("Mia", "clax:collaborator").await;
         let mia_viewer = ts.store.viewer_of_grant(&mia.grant_id()).unwrap();
@@ -487,6 +494,71 @@ impl World {
         let v: Value = r.json().await.unwrap();
         assert!(v.get("clip_error").is_none(), "{v}");
         v["thread"]["id"].as_str().unwrap().to_string()
+    }
+
+    /// A comment Mia's browser adds to thread `tid` of `aid` (sent on to
+    /// the agents, as the thread was).
+    pub async fn mia_comments(&self, aid: &str, tid: &str, body: &str) {
+        let r = self
+            .mia_browser(self.ts.client.post(format!(
+                "{}/api/artifacts/{aid}/threads/{tid}/comments",
+                self.ts.base
+            )))
+            .json(&json!({"body": body}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 201, "{}", r.text().await.unwrap());
+    }
+
+    /// The owner's comment that the owner's agents may read, on Mia's
+    /// page (anchored on her words, with a clip of them), sent to the
+    /// agents: what the feedback channels deliver to the owner's agent,
+    /// each field of Mia's withheld (spec §8.3, M16). Its thread's ID.
+    pub async fn owner_thread_on_mias_page(&self) -> String {
+        let ts = &self.ts;
+        let aid = &self.read.artifact;
+        let anchor = json!({"kind": "element", "selector": format!("#{SELECTOR}"), "quote": QUOTE,
+            "prefix": PREFIX, "suffix": SUFFIX, "html_hash": HTML_HASH, "rect": null,
+            "custom_name": null});
+        let mut png = FAKE_PNG.to_vec();
+        png.extend_from_slice(CLIP.as_bytes());
+        let form = reqwest::multipart::Form::new()
+            .text("anchor", anchor.to_string())
+            .text("body", OWNER_ASKS)
+            .text("version", "1")
+            .part(
+                "clip",
+                reqwest::multipart::Part::bytes(png)
+                    .file_name("clip.png")
+                    .mime_str("image/png")
+                    .unwrap(),
+            );
+        let r = ts
+            .authed(
+                ts.client
+                    .post(format!("{}/api/artifacts/{aid}/threads", ts.base)),
+            )
+            .multipart(form)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 201, "{}", r.text().await.unwrap());
+        let tid = r.json::<Value>().await.unwrap()["thread"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let r = ts
+            .authed(ts.client.post(format!(
+                "{}/api/artifacts/{aid}/threads/{tid}/send",
+                ts.base
+            )))
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+        tid
     }
 
     /// A live page with a thread, as the owner's browser makes it.

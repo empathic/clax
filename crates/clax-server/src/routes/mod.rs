@@ -289,6 +289,15 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             "/api/_test/sessions/{id}/feedback/expire",
             post(feedback::expire),
         )
+        .route(
+            "/api/_test/sessions/{id}/feedback/hold",
+            post(feedback::hold),
+        )
+        // The same, at paths that name no session for the caller, so a
+        // test reaches a grant's session with the token.
+        .route("/api/_test/feedback/{id}/waiters", get(feedback::waiters))
+        .route("/api/_test/feedback/{id}/expire", post(feedback::expire))
+        .route("/api/_test/feedback/{id}/hold", post(feedback::hold))
         .route("/api/_test/grants/sweep", post(grants::test_sweep))
         .route("/api/_test/agent/gate", get(crate::agent::test_gate))
         .route("/api/_test/caller", get(crate::agent::test_caller))
@@ -599,6 +608,7 @@ mod l10 {
         ("feedback::waiters", Token),
         ("questions::expire", Token),
         ("feedback::expire", Token),
+        ("feedback::hold", Token),
         ("questions::list", Owner),
         ("questions::get_one", Owner),
         ("questions::answer", Owner),
@@ -840,6 +850,10 @@ mod l10 {
         (
             "feedback::expire",
             "debug builds only; ends a session's feedback polls, changing no history",
+        ),
+        (
+            "feedback::hold",
+            "debug builds only; stops a session's feedback polls after their take, changing no history",
         ),
         (
             "inbox::read_many",
@@ -1686,10 +1700,17 @@ mod agents {
                     .unwrap_or_else(|| panic!("ROUTE_NEEDS lacks {name}"));
                 assert_eq!((entry.1, entry.2), (*right, *class), "ROUTE_NEEDS {name}");
                 used.insert(name.clone());
+                // The feedback routes hand over what a take filtered under
+                // the session's `Visibility` (clax-core's delivery guard
+                // checks that every feedback item and notice is built
+                // under one).
                 if info.class == Class::Filtered && crate::agent::FILTERED_LIVE.contains(&info.name)
                 {
                     assert!(
-                        h.src.contains("vis.filter_"),
+                        h.src.contains("vis.filter_")
+                            || ["st.take_feedback_readable(", "st.take_notices("]
+                                .iter()
+                                .any(|t| h.src.contains(t)),
                         "{name}: a Filtered route open to agents must pass its response through vis.filter_"
                     );
                 }

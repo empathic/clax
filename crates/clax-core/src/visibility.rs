@@ -393,6 +393,24 @@ impl Visibility {
         })
     }
 
+    /// What session `sid`'s agent may see: the reader is the session's
+    /// person (the owner for the owner's agents, and for a session that is
+    /// gone), as of the store's current generation, read first.
+    pub fn for_session(st: &Store, sid: &str) -> Result<Visibility> {
+        let generation = st.visibility_generation();
+        let reader = Visibility::reader_of_session(st, sid)?;
+        Visibility::for_reader(st, &reader, generation)
+    }
+
+    /// The reader session `sid`'s agent reads for: its person, or the
+    /// owner.
+    pub fn reader_of_session(st: &Store, sid: &str) -> Result<Reader> {
+        Ok(match st.get_session(sid)?.and_then(|s| s.person) {
+            Some(p) => Reader::Person(p),
+            None => Reader::Owner,
+        })
+    }
+
     /// Rebuilds this view for its reader when `current` is not the
     /// generation it was built at. A view from [`Visibility::all`] stays.
     pub fn refresh_if_stale(&mut self, st: &Store, current: u64) -> Result<()> {
@@ -655,21 +673,18 @@ pub mod placeholder {
     }
 
     /// The feedback line for `n` withheld comments by `author` in thread
-    /// `thread_id` of the artifact titled `title` (`None` when its title is
-    /// withheld: [`title_by`] `title_author`), saying whether the reader's
-    /// person has been asked.
+    /// `thread_id` of the artifact titled `title` (as the reader may see
+    /// it: [`title_by`] when it is withheld), saying whether the reader's
+    /// person has been asked. The title is quoted as a JSON string and the
+    /// name made safe ([`crate::feedback::display_name`]), so neither can
+    /// break the line.
     pub fn withheld_comments_line(
         n: usize,
         author: &str,
-        title: Option<&str>,
-        title_author: &str,
+        title: &str,
         thread_id: &str,
         asked: bool,
     ) -> String {
-        let title = match title {
-            Some(t) => t.to_string(),
-            None => title_by(title_author),
-        };
         let then = if asked {
             "Your person has been asked.".to_string()
         } else {
@@ -678,7 +693,9 @@ pub mod placeholder {
             )
         };
         format!(
-            "[clax] {n} comments from {author} on \"{title}\" (thread {thread_id}) are withheld until your person approves them. {then}"
+            "[clax] {n} comments from {author} on {title} (thread {thread_id}) are withheld until your person approves them. {then}",
+            author = crate::feedback::display_name(author),
+            title = crate::feedback::quoted(title),
         )
     }
 
@@ -2131,11 +2148,11 @@ mod tests {
                    "size": null, "created_at": "t", "withheld": true})
         );
         assert_eq!(
-            withheld_comments_line(2, "Mia", Some("Plan"), "Mia", "t1", false),
+            withheld_comments_line(2, "Mia", "Plan", "t1", false),
             "[clax] 2 comments from Mia on \"Plan\" (thread t1) are withheld until your person approves them. To ask your person, call ask with {\"approval\": {\"thread_id\": \"t1\"}}."
         );
         assert_eq!(
-            withheld_comments_line(1, "Mia", None, "Sam", "t1", true),
+            withheld_comments_line(1, "Mia", &title_by("Sam"), "t1", true),
             "[clax] 1 comments from Mia on \"an artifact by Sam\" (thread t1) are withheld until your person approves them. Your person has been asked."
         );
         assert_eq!(anchored_on("Mia"), "Anchored on: (withheld: page by Mia)");
