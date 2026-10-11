@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 clax-core = { path = "../clax-core" }
 anyhow.workspace = true
+http = "1"
 base64.workspace = true
 bytes.workspace = true
 reqwest.workspace = true

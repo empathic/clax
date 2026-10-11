@@ -7,8 +7,10 @@ use crate::git::GitCapture;
 use clax_core::RegisterSession;
 use clax_core::audit::ToolCallReport;
 use clax_core::model::Session;
-use clax_core::remote::{Next, Remote, Retry};
-use clax_core::sig;
+use clax_core::remote::{
+    MAX_RESPONSE_BYTES, Next, Remote, Retry, clock_skew_message, path_and_query, prepare_headers,
+    refusal_message, sign_headers,
+};
 use serde_json::{Value, json};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -224,9 +226,12 @@ struct Failure {
     refreshable: bool,
 }
 
+/// The client every request goes out on. It follows no redirect: a
+/// signed request and its body never go to a URL a daemon names.
 fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         .build()
@@ -1232,10 +1237,11 @@ fn multipart_bytes(filename: &str, content_type: &str, bytes: &[u8]) -> (String,
 }
 
 /// Sends `req` to the remote daemon `remote` names, signed with its grant
-/// (spec §6.6): each attempt names the daemon's host, carries its agent
-/// headers trimmed of surrounding spaces and tabs, and is signed anew.
-/// [`Retry`] decides on `stale_request`, `limit_reached` and `busy`; every
-/// other answer is [`check`]ed as a local one is.
+/// (spec §6.6) by `clax_core::remote`'s shared helpers: each attempt names
+/// the daemon's host, carries its agent headers trimmed of surrounding
+/// spaces and tabs, and is signed anew. [`Retry`] decides on
+/// `stale_request`, `limit_reached` and `busy`; every other answer is read
+/// whole, at most [`MAX_RESPONSE_BYTES`], and [`check`]ed as a local one is.
 async fn attempt_signed(
     remote: &Remote,
     req: reqwest::RequestBuilder,
@@ -1253,56 +1259,18 @@ async fn attempt_signed(
             .ok_or_else(|| bad("a streamed body cannot be signed"))?
             .to_vec(),
     };
-    let url = built.url();
-    let path_and_query = match url.query() {
-        Some(q) => format!("{}?{q}", url.path()),
-        None => url.path().to_string(),
-    };
+    let pq = path_and_query(built.url());
     let method = built.method().as_str().to_string();
     let signer = &remote.signer;
-    let headers = built.headers_mut();
-    let value = |v: &str| {
-        reqwest::header::HeaderValue::from_str(v).map_err(|_| bad("a header that cannot be sent"))
-    };
-    headers.insert(reqwest::header::HOST, value(signer.host())?);
-    for name in sig::AGENT_HEADERS {
-        let trimmed: Vec<reqwest::header::HeaderValue> = headers
-            .get_all(name)
-            .iter()
-            .map(|v| reqwest::header::HeaderValue::from_bytes(sig::trim_header_value(v.as_bytes())))
-            .collect::<std::result::Result<_, _>>()
-            .map_err(|_| bad("a header that cannot be sent"))?;
-        if !trimmed.is_empty() {
-            headers.remove(name);
-            for v in trimmed {
-                headers.append(name, v);
-            }
-        }
-    }
     let cred = remote.grant();
-    if let Some(a) = cred.authorization() {
-        headers.insert(reqwest::header::AUTHORIZATION, value(&a)?);
-    }
+    prepare_headers(signer, built.headers_mut(), cred).map_err(|e| bad(&e))?;
     let mut retry = Retry::default();
     loop {
         let mut attempt = built
             .try_clone()
             .ok_or_else(|| bad("a streamed body cannot be signed"))?;
-        let signature = {
-            let values = sig::agent_header_values(
-                attempt
-                    .headers()
-                    .iter()
-                    .map(|(k, v)| (k.as_str(), v.as_bytes())),
-            )
-            .map_err(|_| bad("an agent header appears more than once"))?;
-            signer
-                .sign(&method, &path_and_query, &body, cred, &values)
-                .map_err(|e| bad(&format!("signing the request: {e}")))?
-        };
-        attempt
-            .headers_mut()
-            .insert("clax-signature", value(&signature)?);
+        sign_headers(signer, &method, &pq, &body, cred, attempt.headers_mut())
+            .map_err(|e| bad(&e))?;
         let res = client.execute(attempt).await.map_err(|e| {
             let mut f = transport_error(e);
             if let ClientError::Unreachable(m) = &f.error {
@@ -1313,26 +1281,42 @@ async fn attempt_signed(
             }
             f
         })?;
-        let status = res.status().as_u16();
-        if !matches!(status, 401 | 429 | 503) {
-            return check(res).await;
+        let status = res.status();
+        let headers = res.headers().clone();
+        let bytes = capped_body(res).await?;
+        let whole = {
+            let mut b = http::Response::builder().status(status);
+            if let Some(h) = b.headers_mut() {
+                *h = headers.clone();
+            }
+            reqwest::Response::from(b.body(bytes).map_err(|e| bad(&e.to_string()))?)
+        };
+        if !matches!(status.as_u16(), 401 | 429 | 503) {
+            return check(whole).await;
         }
-        let date = res
-            .headers()
+        let date = headers
             .get(reqwest::header::DATE)
             .and_then(|d| d.to_str().ok())
             .map(str::to_string);
-        let Err(failure) = check(res).await else {
+        let Err(failure) = check(whole).await else {
             unreachable!("a refusal is a failure");
         };
-        let code = match &failure.error {
-            ClientError::Api { error, .. } => {
-                error["code"].as_str().unwrap_or_default().to_string()
-            }
-            _ => String::new(),
+        let (code, message) = match &failure.error {
+            ClientError::Api { error, .. } => (
+                error["code"].as_str().unwrap_or_default().to_string(),
+                error["message"].as_str().unwrap_or_default().to_string(),
+            ),
+            _ => (String::new(), String::new()),
+        };
+        let given_up = |code: &str, message: String| Failure {
+            error: ClientError::Api {
+                status: status.as_u16(),
+                error: json!({"code": code, "message": message}),
+            },
+            refreshable: false,
         };
         match retry.next(
-            status,
+            status.as_u16(),
             &code,
             date.as_deref(),
             signer,
@@ -1340,26 +1324,33 @@ async fn attempt_signed(
         ) {
             Next::Resign => {}
             Next::After(d) => tokio::time::sleep(d).await,
+            Next::ClockSkew(o) => return Err(given_up("clock_skew", clock_skew_message(o))),
             Next::GiveUp => {
-                if code == "grant_revoked" {
-                    return Err(Failure {
-                        error: ClientError::Api {
-                            status,
-                            error: json!({"code": "grant_revoked", "message": format!(
-                                "this machine was disconnected from {}: run `clax connect --off`, then connect again with a new invite",
-                                signer.base()
-                            )}),
-                        },
-                        refreshable: false,
-                    });
-                }
-                return Err(Failure {
-                    refreshable: false,
-                    ..failure
-                });
+                return Err(given_up(&code, refusal_message(&code, &message, signer)));
             }
         }
     }
+}
+
+/// The body of `res`, at most [`MAX_RESPONSE_BYTES`].
+async fn capped_body(mut res: reqwest::Response) -> std::result::Result<bytes::Bytes, Failure> {
+    let too_big = || Failure {
+        error: ClientError::BadResponse(format!(
+            "the daemon's answer is larger than {MAX_RESPONSE_BYTES} bytes"
+        )),
+        refreshable: false,
+    };
+    if res.content_length().is_some_and(|n| n > MAX_RESPONSE_BYTES) {
+        return Err(too_big());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = res.chunk().await.map_err(transport_error)? {
+        if (body.len() + chunk.len()) as u64 > MAX_RESPONSE_BYTES {
+            return Err(too_big());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(bytes::Bytes::from(body))
 }
 
 /// Sends `req`; a non-success status becomes `ClientError::Api` with the body's

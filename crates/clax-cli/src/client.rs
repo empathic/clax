@@ -194,6 +194,21 @@ pub struct Client {
     signed: Option<crate::remote::SignedClient>,
 }
 
+/// A command that is the person's own act, run on an agent channel: worded
+/// as a `not_for_agents` refusal is. `main` prints it alone and exits 2.
+#[derive(Debug)]
+pub struct ForPeople {
+    pub line: String,
+}
+
+impl std::fmt::Display for ForPeople {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.line)
+    }
+}
+
+impl std::error::Error for ForPeople {}
+
 /// A command that does not run while this home is connected to another
 /// machine's Clax (spec §6.7). `main` prints it and exits 2.
 #[derive(Debug)]
@@ -288,9 +303,12 @@ fn probe_client() -> Option<reqwest::blocking::Client> {
         .ok()
 }
 
+/// The client every request goes out on. It follows no redirect: a
+/// signed request and its body never go to a URL a daemon names.
 fn http() -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
         .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30))
         .build()
         .expect("client")
@@ -771,8 +789,18 @@ impl Client {
         &self,
         req: reqwest::blocking::RequestBuilder,
     ) -> anyhow::Result<reqwest::blocking::Response> {
+        self.exec_with(req, false)
+    }
+
+    /// [`Client::exec`]; `stream`: a remote answer is returned unread, for
+    /// a reader that takes it a line at a time.
+    fn exec_with(
+        &self,
+        req: reqwest::blocking::RequestBuilder,
+        stream: bool,
+    ) -> anyhow::Result<reqwest::blocking::Response> {
         match (&self.signed, &self.remote) {
-            (Some(s), Some(r)) => s.send(req, r.grant()),
+            (Some(s), Some(r)) => s.send(req, r.grant(), stream),
             (Some(_), None) => bail!("this client holds no grant: connect first"),
             (None, _) => Ok(req.send()?),
         }
@@ -827,7 +855,7 @@ impl Client {
         if self.agent {
             req = req.header(crate::channel::HEADER, crate::channel::AGENT);
         }
-        let res = s.send(req, cred)?;
+        let res = s.send(req, cred, false)?;
         let status = res.status().as_u16();
         let text = res.text().unwrap_or_default();
         let v = if text.trim().is_empty() {
@@ -910,7 +938,11 @@ impl Client {
             let msg = body["error"]["message"]
                 .as_str()
                 .unwrap_or("request failed");
-            return Err(anyhow!("{code}: {msg}"));
+            return Err(anyhow!(
+                "{}: {}",
+                crate::term::clean_line(code),
+                crate::term::clean_line(msg)
+            ));
         }
         Self::check(res)
     }
@@ -944,6 +976,7 @@ impl Client {
     pub fn with_timeout(mut self, timeout: Duration) -> Client {
         self.http = reqwest::blocking::Client::builder()
             .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(timeout)
             .build()
             .expect("client");
@@ -1343,7 +1376,11 @@ impl Client {
             let msg = body["error"]["message"]
                 .as_str()
                 .unwrap_or("request failed");
-            Err(anyhow!("{code}: {msg}"))
+            Err(anyhow!(
+                "{}: {}",
+                crate::term::clean_line(code),
+                crate::term::clean_line(msg)
+            ))
         }
     }
 
@@ -1379,12 +1416,14 @@ impl Client {
     ) -> anyhow::Result<reqwest::blocking::Response> {
         let http = reqwest::blocking::Client::builder()
             .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(None)
             .connect_timeout(Duration::from_secs(5))
             .build()?;
-        let res = self.exec(
+        let res = self.exec_with(
             self.authed(http.get(format!("{}{path}", self.base)))
                 .query(query),
+            true,
         )?;
         if res.status().is_success() {
             Ok(res)
@@ -1436,6 +1475,34 @@ impl Client {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// A remote daemon's redirect is an answer, never followed: a signed
+    /// request and its body go nowhere else.
+    #[test]
+    fn remote_requests_follow_no_redirect() {
+        use crate::remote::tests::FakeDaemon;
+        let elsewhere = FakeDaemon::start(vec![(200, vec![], serde_json::json!({}))]);
+        let d = FakeDaemon::start(vec![(
+            307,
+            vec![("location".into(), format!("{}/api/x", elsewhere.base))],
+            serde_json::json!({}),
+        )]);
+        let signer =
+            clax_core::remote::Signer::new(clax_core::sig::KeyPair::generate(), &d.base).unwrap();
+        let c = Client::for_signer(Arc::new(signer));
+        let token = clax_core::secret::Secret::new("cxg_t".into());
+        let (status, _) = c
+            .signed_call(
+                reqwest::Method::PUT,
+                "/api/artifacts/k3m9x2a7b8c4/docs/notes/d1",
+                Some(&serde_json::json!({"data": {}})),
+                Credential::Grant(&token),
+            )
+            .unwrap();
+        assert_eq!(status, 307);
+        assert_eq!(d.seen().len(), 1);
+        assert!(elsewhere.seen().is_empty(), "the redirect was followed");
+    }
 
     /// Records, as a rolled-back upgrade does, that upgrading to `version`
     /// from `exe` failed with `reason` just now.

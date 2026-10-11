@@ -614,7 +614,11 @@ The request is signed with the presented key (§6.6) and carries no token.
   question about the owner (M15): the person approves the owner's content
   everywhere (`created_via` `connect`, recorded as the person), 200
   `{"clax": {"owner_approval": {id, scope} | null}}` (null for the owner's
-  own machine); 409 `not_issued` for a grant without live tokens. Only the
+  own machine); 409 `not_issued` for a grant without live tokens. It is
+  answered once, at connect: 409 `answer_closed` later than ten minutes
+  after the tokens' issue, 409 `owner_answered` once the person has made or
+  revoked any approval of the owner (so a revocation in People stands).
+  `clax connect` refuses to run on an agent channel. Only the
   continuation token says it, never the access token an agent signs with.
 
 ### 6.4 Tokens, grants and people ending
@@ -1699,7 +1703,13 @@ agents not to.
      command and no remote agent can approve content, change rights,
      elevate, narrow, invite or approve grants. An owner agent with shell
      access can (it can fetch the owner's browser credential); it is
-     trusted at the owner's level.
+     trusted at the owner's level. The single exception is M15's
+     connect-time answer (§6.3): the connecting person's yes to "Let
+     <owner>'s comments and pages reach your agents everywhere?", which the
+     grant's continuation token records once, within ten minutes of the
+     tokens' issue, and never after the person has made or revoked an
+     approval of the owner; `clax connect` refuses to run on an agent
+     channel, so no agent answers it for the person.
    - *Carried files and documents* keep their authors (§8.2): carrying a
      file forward or rewriting a document does not move its words to a
      new author.

@@ -27,6 +27,9 @@ pub const INVITE_TTL_SECS: i64 = 24 * 3600;
 pub const MAX_LIVE_INVITES: usize = 20;
 /// How long a request waits for the owner before it expires.
 pub const PENDING_TTL_SECS: i64 = 10 * 60;
+/// Seconds after a grant's tokens are issued within which `clax connect`
+/// may record the person's answer about the owner (M15).
+pub const OWNER_ANSWER_SECS: i64 = 10 * 60;
 /// Most requests from one peer address within [`PENDING_TTL_SECS`],
 /// whatever became of them.
 pub const MAX_PENDING_PER_IP: usize = 3;
@@ -1476,14 +1479,20 @@ impl Store {
     /// through the grant's current continuation token (spec §3.1, M15):
     /// "Let <owner>'s comments and pages reach your agents everywhere?". The
     /// person approves the owner's content everywhere (`created_via`
-    /// `connect`), recorded as the person through `ctx`'s channel, or the
-    /// live approval that already says so is found. `None` for a grant of
-    /// the owner's own row, whose agents are the owner's.
+    /// `connect`), recorded as the person through `ctx`'s channel. It is the
+    /// one approval made without a browser (§21 item 3), so it is bounded
+    /// to the connect: once per grant, within [`OWNER_ANSWER_SECS`] of the
+    /// tokens' issue, and never once the person has made or revoked any
+    /// approval of the owner. `None` for a grant of the owner's own row,
+    /// whose agents are the owner's.
     ///
     /// # Errors
     /// `invalid_token` unless `continue_token` is the grant's current one;
     /// `not_issued` unless the grant is approved and its tokens issued;
-    /// `replayed_request` as [`Store::disconnect_grant`]; `NotFound` for an
+    /// `replayed_request` as [`Store::disconnect_grant`] (tested before the
+    /// rest, so a replay is told as one); `answer_closed` past
+    /// [`OWNER_ANSWER_SECS`] of the issue; `owner_answered` when the person
+    /// has an approval of the owner, live or revoked; `NotFound` for an
     /// unknown grant; [`Store::approve`]'s errors.
     pub fn approve_owner_on_connect(
         &self,
@@ -1493,6 +1502,8 @@ impl Store {
         t: i64,
         nonce: &str,
     ) -> Result<Option<(super::approvals::Approval, crate::feedback::Touched)>> {
+        let owner = self.owner_viewer(false)?;
+        let owner_pid = owner.public_id.clone();
         let found = self.with_tx(|tx| {
             if !matches(
                 continue_token,
@@ -1518,12 +1529,36 @@ impl Store {
                 params![gid],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )?;
-            Ok((!owner).then_some((person, person_actor(tx, gid)?)))
+            if owner {
+                return Ok(None);
+            }
+            let issued_at: Option<String> = tx.query_row(
+                "SELECT MIN(created_at) FROM grant_tokens WHERE grant_id = ?1",
+                params![gid],
+                |r| r.get(0),
+            )?;
+            if issued_at.is_none_or(|at| at < self.ago(OWNER_ANSWER_SECS)) {
+                return Err(CoreError::invalid(
+                    "answer_closed",
+                    "the question about the owner is answered while connecting: allow the owner's content in People",
+                ));
+            }
+            let answered: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM approvals WHERE approver = ?1 AND author = ?2)",
+                params![person, owner_pid],
+                |r| r.get(0),
+            )?;
+            if answered {
+                return Err(CoreError::invalid(
+                    "owner_answered",
+                    "this person has already decided about the owner's content: change it in People",
+                ));
+            }
+            Ok(Some((person, person_actor(tx, gid)?)))
         })?;
         let Some((person, actor)) = found else {
             return Ok(None);
         };
-        let owner = self.owner_viewer(false)?;
         self.approve_touched(
             &acting(ctx, actor),
             Some(&person),
@@ -2335,10 +2370,20 @@ pub(crate) mod tests {
             code(st.approve_owner_on_connect(DAEMON, &g.id, "cxc_wrong", t(), &n())),
             "invalid_token"
         );
+        let (ta, na) = (t(), n());
         let (a, _) = st
-            .approve_owner_on_connect(DAEMON, &g.id, continue_token.expose(), t(), &n())
+            .approve_owner_on_connect(DAEMON, &g.id, continue_token.expose(), ta, &na)
             .unwrap()
             .unwrap();
+        // The same call again is a replay, told as one before anything else.
+        assert_eq!(
+            code(st.approve_owner_on_connect(DAEMON, &g.id, continue_token.expose(), ta, &na)),
+            "replayed_request"
+        );
+        assert_eq!(
+            code(st.approve_owner_on_connect(DAEMON, &g.id, continue_token.expose(), ta - 1, &n())),
+            "replayed_request"
+        );
         assert_eq!(
             (
                 a.approver.as_deref(),
@@ -2348,12 +2393,12 @@ pub(crate) mod tests {
             (Some(sam.as_str()), owner.public_id.as_str(), "connect")
         );
         assert_eq!(a.scope, super::super::approvals::ScopeKind::Everywhere);
-        // Asked again: the same approval.
-        let (again, _) = st
-            .approve_owner_on_connect(DAEMON, &g.id, continue_token.expose(), t(), &n())
-            .unwrap()
-            .unwrap();
-        assert_eq!(again.id, a.id);
+        // Asked again: answered once already.
+        let (t1, n1) = (t(), n());
+        assert_eq!(
+            code(st.approve_owner_on_connect(DAEMON, &g.id, continue_token.expose(), t1, &n1)),
+            "owner_answered"
+        );
         assert_eq!(st.live_approvals(Some(&sam)).unwrap().len(), 1);
         // The owner's own machine needs none.
         let (_, mine) = st.create_invite(DAEMON, InvitePerson::Owner, None).unwrap();
@@ -2384,6 +2429,59 @@ pub(crate) mod tests {
             code(st.approve_owner_on_connect(DAEMON, &g.id, continue_token.expose(), t(), &n())),
             "not_issued"
         );
+    }
+
+    /// The connect-time answer is the one approval made without a browser
+    /// (§21 item 3): never after the person decided about the owner in
+    /// People, never later than ten minutes after the tokens' issue.
+    #[test]
+    fn the_answer_about_the_owner_never_overrides_the_person() {
+        use super::super::approvals::{Scope, Via};
+        let (_d, clock, st) = store();
+        let owner = st.owner_viewer(true).unwrap();
+        let connect = |key: [u8; 32], name: &str| {
+            let (_, c) = st
+                .create_invite(DAEMON, InvitePerson::New(name.into()), None)
+                .unwrap();
+            match st
+                .request_grant(DAEMON, grant(key, Some(c.expose())))
+                .unwrap()
+            {
+                GrantStart::Approved {
+                    grant,
+                    continue_token,
+                    ..
+                } => (grant, continue_token),
+                other => panic!("{other:?}"),
+            }
+        };
+        // Sam allowed the owner in People, then revoked it: the revocation
+        // stands.
+        let (g, cont) = connect(KEY_A, "Sam");
+        let sam = g.person.clone().unwrap();
+        let a = st
+            .approve(
+                DAEMON,
+                Some(&sam),
+                &owner.public_id,
+                Scope::Everywhere,
+                Via::Shell,
+            )
+            .unwrap();
+        st.revoke_approval(DAEMON, &a.id, Some(&sam)).unwrap();
+        assert_eq!(
+            code(st.approve_owner_on_connect(DAEMON, &g.id, cont.expose(), t(), &n())),
+            "owner_answered"
+        );
+        assert!(st.live_approvals(Some(&sam)).unwrap().is_empty());
+        // Mia answers eleven minutes after connecting: too late.
+        let (g, cont) = connect(KEY_B, "Mia");
+        clock.advance(OWNER_ANSWER_SECS + 1);
+        assert_eq!(
+            code(st.approve_owner_on_connect(DAEMON, &g.id, cont.expose(), t(), &n())),
+            "answer_closed"
+        );
+        assert!(st.live_approvals(g.person.as_deref()).unwrap().is_empty());
     }
 
     #[test]

@@ -19,6 +19,7 @@
 
 use crate::client::Client;
 use crate::remote::{Refused, Unreachable};
+use crate::term::clean_line;
 use clax_core::Home;
 use clax_core::remote::{
     Credential, DaemonUrl, Mode, PendingConnect, RemoteConfig, Signer, load_key, save_key,
@@ -75,6 +76,15 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     if a.status {
         return status(cli, home);
     }
+    // Connecting a machine, moving or ending its connection, and answering
+    // for the person about the owner are the person's acts (M15, M20):
+    // never an agent's.
+    if crate::channel::from_process() {
+        return Err(crate::client::ForPeople {
+            line: "This is for people, not agents: connecting this machine to a Clax is yours to do; run `clax connect` in your own terminal.".into(),
+        }
+        .into());
+    }
     if a.off {
         return off(cli, home);
     }
@@ -118,16 +128,29 @@ fn request_body(key: &KeyPair, name: &str, invite: Option<&str>) -> Value {
     body
 }
 
-/// `code: message` of a refusal's body, for the person.
+/// `code: message` of a refusal's body, for the person, made safe to
+/// print.
 fn refusal(status: u16, v: &Value) -> anyhow::Error {
     anyhow::anyhow!(
         "{}: {}",
-        v["error"]["code"].as_str().unwrap_or("error"),
-        v["error"]["message"].as_str().map_or_else(
+        clean_line(v["error"]["code"].as_str().unwrap_or("error")),
+        clean_line(&v["error"]["message"].as_str().map_or_else(
             || format!("the daemon answered HTTP {status}"),
             str::to_string
-        )
+        ))
     )
+}
+
+/// `link` when it is the browser link of the daemon at `base` (spec §6.5):
+/// exactly `<base>/connect/b/<code>`, the code in base64url. Anything else
+/// a daemon sends is neither opened nor printed.
+fn browser_link(base: &str, link: &str) -> Option<String> {
+    let code = link.strip_prefix(base)?.strip_prefix("/connect/b/")?;
+    let ok = (1..=128).contains(&code.len())
+        && code
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    ok.then(|| link.to_string())
 }
 
 /// Removes the files of an unfinished connect: the pending request and
@@ -207,10 +230,16 @@ fn connect(cli: &crate::Cli, home: &Home, a: &Args, target: &str) -> anyhow::Res
                         .unwrap_or_default()
                         .to_string(),
                 ),
-                user_code: v["interact"]["user_code"]
+                user_code: match v["interact"]["user_code"]
                     .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
+                    .and_then(clax_core::secret::canonical_user_code)
+                {
+                    Some(c) => format!("{}-{}", &c[..4], &c[4..]),
+                    None => {
+                        forget_pending(home);
+                        anyhow::bail!("the daemon sent no usable user code: it is not a Clax");
+                    }
+                },
                 client_name: name,
                 requested_at: chrono::Utc::now().to_rfc3339(),
             };
@@ -269,9 +298,11 @@ fn resume(cli: &crate::Cli, home: &Home, a: &Args, p: PendingConnect) -> anyhow:
     wait(cli, home, a, &c, p)
 }
 
-/// Listens for Ctrl-C from now on: the flag is set when it comes. The
-/// listener is in place when this returns.
-fn interrupt_flag() -> Arc<AtomicBool> {
+/// Listens for Ctrl-C from now on: while `waiting` holds, Ctrl-C sets the
+/// returned flag (the wait cancels the request); once it is cleared,
+/// Ctrl-C ends the process as it would without a listener. The listener
+/// is in place when this returns.
+fn interrupt_flag(waiting: Arc<AtomicBool>) -> Arc<AtomicBool> {
     let flag = Arc::new(AtomicBool::new(false));
     let f = flag.clone();
     let (ready, listening) = std::sync::mpsc::channel();
@@ -288,9 +319,13 @@ fn interrupt_flag() -> Arc<AtomicBool> {
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
         };
         let _ = ready.send(());
-        if let Ok(mut s) = signal
-            && rt.block_on(s.recv()).is_some()
-        {
+        let Ok(mut s) = signal else {
+            return;
+        };
+        while rt.block_on(s.recv()).is_some() {
+            if !waiting.load(Ordering::SeqCst) {
+                std::process::exit(130);
+            }
             f.store(true, Ordering::SeqCst);
         }
     });
@@ -309,7 +344,25 @@ fn wait(
     c: &Client,
     p: PendingConnect,
 ) -> anyhow::Result<()> {
-    let interrupted = interrupt_flag();
+    let waiting = Arc::new(AtomicBool::new(true));
+    let interrupted = interrupt_flag(waiting.clone());
+    let (url, name) = (p.url.clone(), p.client_name.clone());
+    let issued = wait_for(cli, home, a, c, p, &interrupted);
+    // From here Ctrl-C ends the process, at the question about the owner too.
+    waiting.store(false, Ordering::SeqCst);
+    finish(cli, home, a, c, &url, &name, &issued?)
+}
+
+/// [`wait`]'s polling, until the owner answers (the answer that issues the
+/// tokens), `interrupted` is set or the time is up.
+fn wait_for(
+    cli: &crate::Cli,
+    home: &Home,
+    a: &Args,
+    c: &Client,
+    p: PendingConnect,
+    interrupted: &AtomicBool,
+) -> anyhow::Result<Value> {
     let signer = c.signer().expect("a signing client").clone();
     say(cli, &format!("key {}", signer.fingerprint()));
     say(
@@ -366,8 +419,9 @@ fn wait(
             Credential::Gnap(&p.continue_token),
         ) {
             Ok((200, v)) if v.get("access_token").is_some() => {
-                let _ = std::fs::remove_file(home.remote_pending());
-                return finish(cli, home, a, c, &p.url, &p.client_name, &v);
+                // `finish` removes remote-pending.json once remote.json is
+                // saved, so the tokens are never only in memory.
+                return Ok(v);
             }
             Ok((200, _)) => {}
             Ok((400, v)) if v["error"]["code"] == "too_fast" => {}
@@ -446,7 +500,14 @@ fn finish(
     } else {
         Some(ask_about_owner(cli, a, c, &cfg, &owner)?)
     };
-    let link = s("/clax/browser_link");
+    let sent = s("/clax/browser_link");
+    let link = sent.as_deref().and_then(|l| browser_link(base, l));
+    if sent.is_some() && link.is_none() {
+        say(
+            cli,
+            "The daemon sent no usable browser link: open People in your browser on the owner's Clax to use it as yourself.",
+        );
+    }
     if let Some(link) = &link {
         let opened = !a.no_browser && !cli.json && clax_mcp::tools::open_in_browser(link);
         if opened {
@@ -548,12 +609,16 @@ fn ask_about_owner(
 
 /// The connection as `clax connect --status` and `clax status` show it:
 /// `None` when this machine is connected to no remote daemon (a request
-/// still waiting is named in `pending`).
+/// still waiting is named in `pending`). `honour_env`: `CLAX_REMOTE=0`
+/// counts (`clax status`); `clax connect`'s own subcommands read
+/// `remote.json` whatever it says.
 ///
 /// # Errors
 /// `remote.json` or the key cannot be used.
-pub fn remote_status(home: &Home) -> anyhow::Result<Option<(Value, Vec<Value>)>> {
-    let r = match Mode::of(home) {
+pub fn remote_status(home: &Home, honour_env: bool) -> anyhow::Result<Option<(Value, Vec<Value>)>> {
+    let env = std::env::var(clax_core::remote::REMOTE_ENV).ok();
+    let mode = Mode::with_env(home, env.as_deref().filter(|_| honour_env));
+    let r = match mode {
         Mode::Local => return Ok(None),
         Mode::Broken(e) => anyhow::bail!("{e}"),
         Mode::Remote(r) => r,
@@ -624,7 +689,7 @@ pub fn status_lines(v: &Value) -> Vec<String> {
 }
 
 fn status(cli: &crate::Cli, home: &Home) -> anyhow::Result<()> {
-    match remote_status(home)? {
+    match remote_status(home, false)? {
         Some((v, _)) => super::print(cli, json!({"remote": v}), |j| {
             status_lines(&j["remote"]).join("\n")
         }),
@@ -686,10 +751,16 @@ fn off(cli: &crate::Cli, home: &Home) -> anyhow::Result<()> {
                     "Disconnected from {}: its grant had already ended",
                     cfg.url
                 ),
-                Err(e) if e.downcast_ref::<Refused>().is_some() => format!(
+                Err(e)
+                    if e.downcast_ref::<Refused>().is_some_and(|r| {
+                        matches!(r.code.as_str(), "invalid_token" | "grant_revoked")
+                    }) =>
+                {
+                    format!(
                     "Disconnected from {}: its grant had already ended",
                     cfg.url
-                ),
+                    )
+                }
                 Ok((status, v)) => format!(
                     "Disconnected here; the daemon at {} answered {}: without the key the grant signs nothing, and the owner can revoke it in People",
                     cfg.url,
@@ -727,7 +798,8 @@ fn set_url(cli: &crate::Cli, home: &Home, raw: &str) -> anyhow::Result<()> {
         })?;
     let old = std::mem::replace(&mut cfg.url, u.base);
     cfg.save(home)?;
-    let (v, _) = remote_status(home)?.expect("connected");
+    let (v, _) = remote_status(home, false)?
+        .ok_or_else(|| anyhow::anyhow!("remote.json was removed while it was rewritten"))?;
     super::print(cli, json!({"remote": v, "previous_url": old}), |j| {
         let mut lines = vec![format!(
             "now connecting to {} (was {old}); the grant and key are kept",
@@ -737,4 +809,30 @@ fn set_url(cli: &crate::Cli, home: &Home, raw: &str) -> anyhow::Result<()> {
         lines.join("\n")
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::browser_link;
+
+    #[test]
+    fn only_the_connected_daemons_browser_link_is_opened() {
+        let base = "http://192.168.1.5:7480";
+        let good = format!("{base}/connect/b/aZ09_-");
+        assert_eq!(browser_link(base, &good), Some(good.clone()));
+        for bad in [
+            "file:///Applications/Evil.app".to_string(),
+            "-a Calculator".to_string(),
+            format!("{base}/connect/b/"),
+            format!("{base}/connect/b/a/b"),
+            format!("{base}/connect/b/a?x=1"),
+            format!("{base}/connect/b/a b"),
+            format!("{base}/people"),
+            "http://192.168.1.6:7480/connect/b/abc".to_string(),
+            format!("{base}.evil/connect/b/abc"),
+            format!("{base}/connect/b/{}", "a".repeat(129)),
+        ] {
+            assert_eq!(browser_link(base, &bad), None, "{bad}");
+        }
+    }
 }
