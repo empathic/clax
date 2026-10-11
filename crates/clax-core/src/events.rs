@@ -118,18 +118,26 @@ pub enum Event {
         self_read: Option<(String, crate::db::Level)>,
     },
     /// An agent question changed (spec 2026-10-06-agent-questions-and-inbox
-    /// §6.3); `question` is its owner view. Only the owner-only `questions`
-    /// stream topic carries it; `/api/events` never does.
+    /// §6.3); `question` is its view for its person. Only the `questions`
+    /// stream topic of `recipient` carries it; `/api/events` never does.
     Question {
         question: serde_json::Value,
+        /// The person whose agent asked it (`None`: the owner); never
+        /// serialised.
+        #[serde(skip)]
+        recipient: Option<String>,
     },
     /// An inbox item was made, or its read state or its source changed
     /// (spec 2026-10-06-agent-questions-and-inbox §8.2); `item` is its view
-    /// and `unread` the unread count after the change. Only the owner-only
-    /// `inbox` stream topic carries it; `/api/events` never does.
+    /// and `unread` its recipient's unread count after the change. Only the
+    /// `inbox` stream topic of `recipient` carries it; `/api/events` never
+    /// does.
     InboxItem {
         item: serde_json::Value,
         unread: u32,
+        /// The item's recipient (`None`: the owner); never serialised.
+        #[serde(skip)]
+        recipient: Option<String>,
     },
     /// Many items' read state changed at once (a transaction that changed
     /// more items than the inbox listener announces one by one): clients
@@ -140,6 +148,9 @@ pub enum Event {
         ids: Option<Vec<String>>,
         read: bool,
         unread: u32,
+        /// Whose items changed (`None`: the owner's); never serialised.
+        #[serde(skip)]
+        recipient: Option<String>,
     },
     /// People, invites or grants changed (spec 2026-10-08-multi-agent-
     /// multi-person §6.2–§6.4): `change` names what (`what`) with the
@@ -448,15 +459,18 @@ mod tests {
             },
             Event::Question {
                 question: serde_json::json!({"id": "q"}),
+                recipient: None,
             },
             Event::InboxItem {
                 item: serde_json::json!({"id": "i"}),
                 unread: 1,
+                recipient: None,
             },
             Event::InboxRead {
                 ids: None,
                 read: true,
                 unread: 0,
+                recipient: None,
             },
             Event::People {
                 change: serde_json::json!({"what": "grant_requested"}),

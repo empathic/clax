@@ -1,7 +1,7 @@
 //! Agent questions in the daemon (spec 2026-10-06-agent-questions-and-inbox):
 //! which polls wait on each question, the grace after which a mirrored
-//! (hook) question nobody waits on is withdrawn, the owner view, and
-//! announcing changes.
+//! (hook) question nobody waits on is withdrawn, the view its person
+//! sees, and announcing changes to that person.
 
 use crate::state::AppState;
 use clax_core::store::questions::{Close, QuestionRow, Source, Status};
@@ -254,11 +254,19 @@ pub fn view(st: &Store, q: &QuestionRow) -> clax_core::Result<Value> {
     }))
 }
 
-/// Publishes `view` (the view of `q`) as a `question` event and wakes the
-/// polls of `q`; an answered or declined `ask` question also wakes its
-/// session's feedback polls, which carry late answers (spec §6.4).
-pub fn announce(s: &AppState, q: &QuestionRow, view: Value) {
-    s.events.publish(Event::Question { question: view });
+/// Publishes `view` (the view of `q`) as a `question` event to the
+/// `questions` topic of the person whose agent asked it (read from `st`)
+/// and wakes the polls of `q`; an answered or declined `ask` question also
+/// wakes its session's feedback polls, which carry late answers (spec
+/// §6.4).
+pub fn announce(s: &AppState, st: &Store, q: &QuestionRow, view: Value) {
+    match st.question_recipient(q) {
+        Ok(recipient) => s.events.publish(Event::Question {
+            question: view,
+            recipient,
+        }),
+        Err(e) => tracing::warn!(error = %e, "a question's change not announced"),
+    }
     s.questions.wake(&q.id);
     if q.source == Source::Ask && matches!(q.status, Status::Answered | Status::Declined) {
         s.feedback_waiters.wake(std::iter::once(&q.session_id));
@@ -273,7 +281,7 @@ pub fn announce_ids(s: &AppState, st: &Store, ids: &[String]) {
             .question(id)
             .and_then(|q| q.map(|q| view(st, &q).map(|v| (q, v))).transpose());
         match r {
-            Ok(Some((q, v))) => announce(s, &q, v),
+            Ok(Some((q, v))) => announce(s, st, &q, v),
             Ok(None) => {}
             Err(e) => tracing::warn!(error = %e, "could not announce a withdrawn question"),
         }
@@ -299,7 +307,7 @@ pub fn start_grace(s: AppState, qid: String) {
                 let q =
                     db.close_question(&clax_core::audit::AuditCtx::DAEMON, &qid, Close::Unwaited)?;
                 let v = view(db, &q)?;
-                announce(&st, &q, v);
+                announce(&st, db, &q, v);
                 Ok(())
             })
             .await;

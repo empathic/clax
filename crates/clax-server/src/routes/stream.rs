@@ -33,6 +33,9 @@ use std::convert::Infallible;
 /// request that may not see live pages ([`crate::live::sees_live_pages`])
 /// receives no gallery event of a live page and cannot subscribe to a live
 /// page's topics; it resumes only from a request of the same kind. A stream
+/// is opened for the person the request speaks for (the owner, or a
+/// connected person's browser), whose `questions` and `inbox` topics alone
+/// it may hold; a person's stream ends once the person is revoked. A stream
 /// opened through the extension gateway is live-only
 /// ([`crate::stream::live_only_admits`]); only requests with the credential
 /// it was opened with change or resume it, and it ends, delivering nothing
@@ -52,14 +55,19 @@ pub async fn open(
         .get::<crate::extension::ExtensionCredential>()
         .map(|c| c.hash().to_string());
     let token = token_or_cookie(&who);
-    let caller = s
-        .store_call(move |st| crate::db_caller::caller_of(st, token, &who))
+    let (caller, person) = s
+        .store_call(move |st| {
+            let caller = crate::db_caller::caller_of(st, token, &who)?;
+            Ok((caller, person_key(st, &who)))
+        })
         .await?;
     let resume = headers
         .get("last-event-id")
         .and_then(|v| v.to_str().ok())
         .and_then(parse_last_event_id);
-    let opened = s.stream.open(caller, local, credential.clone(), resume);
+    let opened = s
+        .stream
+        .open_for(caller, local, credential.clone(), resume, person);
     let mut conn = Conn::new(
         s.stream.clone(),
         opened,
@@ -82,6 +90,17 @@ pub async fn open(
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     h.insert("x-accel-buffering", HeaderValue::from_static("no"));
     Ok(res)
+}
+
+/// The recipient key of the person `who` speaks for, whose `questions` and
+/// `inbox` topics a stream may hold: empty for the owner, a connected
+/// person's public ID for their browser, `None` for anyone else.
+fn person_key(st: &clax_core::Store, who: &crate::identity::Identity) -> Option<String> {
+    match who.person(st) {
+        Ok(crate::auth::Person::Owner) => Some(String::new()),
+        Ok(crate::auth::Person::Viewer(pid)) => Some(pid),
+        _ => None,
+    }
 }
 
 /// Whether the request holds the token: in `Authorization`, or as the events
@@ -146,8 +165,9 @@ fn topics(names: &[String]) -> Result<Vec<Topic>, ApiError> {
 /// Checked once, here: every subscribed artifact exists, and is not a live
 /// page the stream may not see (404 otherwise), a `site:<origin>` topic
 /// needs a stream that may see live pages (404 otherwise) and an owner
-/// credential (403 `forbidden` otherwise), `questions` and `inbox` need an
-/// owner credential (403 `forbidden` otherwise, and the whole change is refused),
+/// credential (403 `forbidden` otherwise), `questions` and `inbox` need the
+/// owner or a connected person, the person the stream was opened for (403
+/// `forbidden` otherwise, and the whole change is refused),
 /// and a `docs` topic needs the artifact to declare `db` unless the caller holds
 /// the token, in `Authorization` or as the events cookie (403 `not_declared`). 404 `unknown_stream` when no stream has
 /// that ID for this caller (a stream opened through the extension gateway
@@ -200,11 +220,17 @@ pub async fn update(
             ));
         }
     }
-    if (add.contains(&Topic::Questions) || add.contains(&Topic::Inbox)) && !who.is_owner() {
-        return Err(ApiError::forbidden(
-            "forbidden",
-            "only the owner follows questions and the inbox",
-        ));
+    if add.contains(&Topic::Questions) || add.contains(&Topic::Inbox) {
+        let w = who.clone();
+        if s.store_call(move |st| Ok(person_key(st, &w)))
+            .await?
+            .is_none()
+        {
+            return Err(ApiError::forbidden(
+                "forbidden",
+                "only the owner or a connected person follows questions and an inbox",
+            ));
+        }
     }
     if add.contains(&Topic::People) && !who.is_owner() {
         return Err(ApiError::forbidden(

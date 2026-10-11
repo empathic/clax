@@ -549,6 +549,13 @@ mod l10 {
         /// owner credential sees live pages (the extension's is
         /// loopback-only).
         Owner,
+        /// It serves one person's own items, the owner's or a connected
+        /// person's (`recipient_of(&s, &who)`, which reads `who.person(`),
+        /// and hands that recipient to every store read and mark, never an
+        /// unscoped lookup: no item about a live page is made for a person
+        /// (clax-core's inbox), and a person's view names none
+        /// ([`crate::inbox`]), so a LAN browser never learns of one.
+        Person,
     }
     use Guard::*;
 
@@ -609,17 +616,17 @@ mod l10 {
         ("questions::expire", Token),
         ("feedback::expire", Token),
         ("feedback::hold", Token),
-        ("questions::list", Owner),
-        ("questions::get_one", Owner),
-        ("questions::answer", Owner),
-        ("questions::decline", Owner),
-        ("questions::release_owner", Owner),
-        ("inbox::list", Owner),
-        ("inbox::summary", Owner),
-        ("inbox::read_many", Owner),
-        ("inbox::get_one", Owner),
-        ("inbox::read_one", Owner),
-        ("inbox::unread_one", Owner),
+        ("questions::list", Person),
+        ("questions::get_one", Person),
+        ("questions::answer", Person),
+        ("questions::decline", Person),
+        ("questions::release_owner", Person),
+        ("inbox::list", Person),
+        ("inbox::summary", Person),
+        ("inbox::read_many", Person),
+        ("inbox::get_one", Person),
+        ("inbox::read_one", Person),
+        ("inbox::unread_one", Person),
         ("shell::gallery_page", NoArtifact),
         ("shell::static_file", NoArtifact),
         ("health::healthz", NoArtifact),
@@ -1151,6 +1158,35 @@ mod l10 {
                         !src.contains("ArtifactId") && !src.contains("parse_id"),
                         "{name} names an artifact"
                     ),
+                    Person => {
+                        assert!(
+                            sig.contains("who: Identity")
+                                && src.contains("let me = recipient_of(&s, &who).await?;")
+                                && !src.contains("require_owner("),
+                            "{name} does not scope itself to the caller's person"
+                        );
+                        // Every read and mark is the recipient's.
+                        for unscoped in [
+                            "db.question(",
+                            "inbox_unread(None",
+                            ", None)?",
+                            "list_questions(None",
+                        ] {
+                            assert!(
+                                !src.contains(unscoped),
+                                "{name} reads past the caller's person ({unscoped})"
+                            );
+                        }
+                        assert!(
+                            !src.contains("InboxQuery {") || src.contains("recipient: me"),
+                            "{name} builds a query of no one's inbox"
+                        );
+                        let inbox = include_str!("../inbox.rs");
+                        assert!(
+                            function(inbox, "recipient_of").contains("who.person(st)"),
+                            "recipient_of no longer reads who.person"
+                        );
+                    }
                 }
                 used.insert(name);
             }
@@ -1718,6 +1754,15 @@ mod agents {
                     for v in CONTENT_VIEWS {
                         assert!(!h.src.contains(v), "{name} is Own but builds a view ({v})");
                     }
+                    // A question's view carries its artifact's title, an
+                    // author field: an agent gets it through its
+                    // Visibility (`for_asker`, `Vis::filter_question`).
+                    assert!(
+                        !h.src.contains("question_view(")
+                            || h.src.contains("for_asker(")
+                            || h.src.contains("session_close("),
+                        "{name} hands an agent a question view outside its Visibility"
+                    );
                 }
             } else {
                 assert!(

@@ -376,6 +376,12 @@ fn inbox_queries() -> Vec<Hot> {
             &["sqlite_autoindex_inbox_items_2"],
         ),
         (
+            "inbox recipients of items",
+            ib::RECIPIENTS_OF.into(),
+            vec![t("[1, 40, 7000]")],
+            &[],
+        ),
+        (
             "inbox connected people",
             ib::CONNECTED_PEOPLE.into(),
             vec![],

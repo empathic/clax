@@ -2054,8 +2054,9 @@ is 404, an ended one 400 `unknown_session`, and another session's question
   artifact of the session's newest working record, else about the session's
   page: of the live artifacts it watches (publishing watches), the one it
   last published a version of or started watching. `surface_open`
-  is whether any owner stream holds the `questions` or `inbox` topic
-  (attached, or detached within its 60 s grace). `mode` is `terminal`, and
+  is whether a stream of the asking agent's person (the owner for the
+  owner's agents) holds the `questions` or `inbox` topic (attached, or
+  detached within its 60 s grace). `mode` is `terminal`, and
   the question is created `released`, only for a `hook` question about no
   artifact (the session has not published or watched one), or when no
   surface is open or `terminal_after_s` is 0.
@@ -2075,33 +2076,44 @@ is 404, an ended one 400 `unknown_session`, and another session's question
   answers: {<question>: <string>}}` → `{question}`, or 204 when the session
   has no released question for that `tool_use_id`.
 
-### Owner routes
+### Person routes
 
-Only the owner (the token, the owner's browsers, and the paired extension,
-which acts as the owner) may call these: anyone else is 403 `forbidden`.
-They keep the viewer routes' `Origin` and `Sec-Fetch-Site` rules (403
+Each person sees and answers the questions of their own agents: the owner
+(the token, the owner's browsers, and the paired extension, which acts as
+the owner) those of the owner's agents, a connected person's browser those
+of that person's agents. Another person's agent's question is 404; anyone
+else (a LAN viewer, a revoked person) is 403 `forbidden`. They keep the
+viewer routes' `Origin` and `Sec-Fetch-Site` rules (403
 `forbidden_origin`).
 
 - **`GET /api/questions?status=open|closed|all&limit=<n>`** →
   `{questions, open}`: open questions oldest first, closed ones most
   recently closed first (default `open`, 50; `limit` clamped to 1..200);
-  `open` counts every open question. Another `status` is 400
-  `invalid_query`.
+  `open` counts every open question of the caller's. Another `status` is
+  400 `invalid_query`.
 - **`GET /api/questions/<qid>`** → `{question}`.
 - **`POST /api/questions/<qid>/answer`**, body `{answers}` → `{question}`;
   400 `invalid_answer`; 409 `question_closed` with the question's view
   beside the error (`{error, question}`). `answered_via` is `extension`
-  through the extension, `cli` for the token from no browser, else `shell`.
+  through the extension, `cli` for the token from no browser, else `shell`
+  (a connected person's browser too).
 - **`POST /api/questions/<qid>/decline`** → `{question}`; 409 as above.
 - **`POST /api/questions/<qid>/release`** (mirrored questions only, 400
   `not_mirrored` otherwise) → `{question}`; 409 as above.
 
 ### The `questions` topic
 
-`questions` is a topic of `GET /api/stream`; only an owner's stream may
-subscribe to it (403 `forbidden` otherwise; the extension's live-only stream
-may). Its event `question`, `{topic: "questions", question: <view>}`, is
-sent on every change; clients upsert by ID. `/api/events` never carries it.
+`questions` is a topic of `GET /api/stream`; a stream of the owner's or of
+a connected person's browser may subscribe to it (403 `forbidden`
+otherwise; the extension's live-only stream may), and carries the questions
+of its own person's agents. Its event `question`, `{topic: "questions",
+question: <view>}`, is sent on every change; clients upsert by ID.
+`/api/events` never carries it.
+
+An agent's own question views (the session routes above) carry the
+artifact's title only when the agent may see it (the title is its
+authors'): otherwise `artifact.title` is null and `artifact.withheld:
+{authors}` names whose it is.
 
 ### Late answers
 
@@ -2220,37 +2232,52 @@ range, or not an integer, is logged).
 
 ## The inbox
 
-The owner's inbox holds everything agents send back, with a read mark per
-item and full-text search over all of it. Items are never deleted.
+Each person has an inbox: the owner, and every connected person. It holds
+what agents send back, with a read mark per item and full-text search over
+all of it. Items are never deleted, and each is one person's: one source
+makes one item per person it is for.
 
 ### Items
 
 An item is made in the same transaction as its source:
 
-- **`reply`**: an agent comment on a thread the owner is in. The owner is
-  in a thread when they wrote in it, were mentioned in it, or resolved it.
-- **`version`**: an agent's version, other than the first, of an artifact
-  the owner commented on.
-- **`published`**: an agent session's new artifact.
-- **`question`**: an agent question.
-- **`finished`**: a working record its agent ended. Either the agent
-  cleared it (`DELETE …/working/<aid>`), or its turn ended
-  (`POST …/working/end`). A lapsed record makes no item, and neither does
-  one cleared by a publish, a reply or the session's end.
+- **`reply`**: an agent comment on a thread, for each person in the
+  thread. A person is in a thread when they wrote in it, were mentioned in
+  it, or resolved it.
+- **`version`**: an agent's version, other than the first, of an artifact,
+  for each person who commented on the artifact.
+- **`published`**: an agent session's new artifact, for the owner and,
+  for a connected person's agent, for that person.
+- **`question`**: an agent question, for the asking agent's person.
+- **`finished`**: a working record its agent ended, for the agent's
+  person. Either the agent cleared it (`DELETE …/working/<aid>`), or its
+  turn ended (`POST …/working/end`). A lapsed record makes no item, and
+  neither does one cleared by a publish, a reply or the session's end.
+- **`connection`**: for the owner, a connection request waiting for them,
+  or a machine that connected with an invite. It is read once the owner
+  approves or denies the request.
+- **`approval`** (an approval request, for the approver) and **`ended`**
+  (an agent's session ended with something to clean up, for its person)
+  are kinds a later change makes.
+
+No connected person gets an item about a live page, and a revoked person
+gets none.
 
 An item becomes read in any of these ways:
 
-- the owner opens it;
-- for a `reply`, the owner looks at its thread;
-- for `version`, `published` and `finished`, the owner views the
+- its person opens it;
+- for a `reply`, its person looks at its thread;
+- for `version`, `published` and `finished`, its person views the
   artifact's version;
-- for a `question`, the owner answers, skips or moves it, or it is answered
-  in the terminal. The hook's own timer release and a withdrawal leave it
-  unread. A mirrored question asked in the terminal because its session
-  has no page is read from the start;
+- for a `question`, its person answers, skips or moves it, or it is
+  answered in the terminal. The hook's own timer release and a withdrawal
+  leave it unread. A mirrored question asked in the terminal because its
+  session has no page is read from the start;
+- for a `connection`, the owner decides the request;
 - a bulk mark.
 
-Only owner credentials' writes mark items read.
+Only a person's own writes (the owner's credentials, a connected person's
+browser) mark their items read.
 
 The item view:
 
@@ -2283,8 +2310,13 @@ Each kind fills its own fields:
 - **`published`** fills `published: {description}`.
 - **`question`** fills `question` with the question's view.
 - **`finished`** fills `work: {message, threads: [{id, summary}]}`.
+- **`connection`** adds `connection`, the grant's view as `GET
+  /api/grants` lists it (`{id, status, via, client: {name, key, peer_ip},
+  person, …}`), null once the request is gone; `url` is `/people`.
+- **`approval`** adds `approval: {request_id}`; **`ended`** adds `ended`.
 
-When the source no longer exists, `gone` is true. The view still keeps the
+The older kinds' views have exactly the fields shown above. When the
+source no longer exists, `gone` is true. The view still keeps the
 item's own fields (kind, time, agent, IDs), and the source's text fields
 are null. `url` is where opening the item leads: the thread, `/a/<aid>/v/<n>`,
 the artifact, or `/inbox?q=<question>`. `seq` orders items, with higher
@@ -2295,10 +2327,13 @@ has `b` and 24 hex digits instead.
 
 ### Routes
 
-Only the owner may call these: the token, the owner's browsers, and the
-paired extension. Anyone else gets 403 `forbidden`. The routes keep the
-viewer routes' `Origin` rules. Their errors are 400 `invalid_query` (a bad
-filter, date, cursor or body) and 404 `not_found`.
+Each route serves the caller's own inbox: the owner's to the token, the
+owner's browsers and the paired extension, a connected person's to their
+browser. Another person's item is 404 `not_found`, and a mark of it marks
+nothing. Anyone else (a LAN viewer, a revoked person) gets 403
+`forbidden`, and agents are refused. The routes keep the viewer routes'
+`Origin` rules. Their errors are 400 `invalid_query` (a bad filter, date,
+cursor or body) and 404 `not_found`.
 
 - **`GET /api/inbox`** → `{items, next_cursor, unread, total?}`. Its query
   parameters:
@@ -2339,11 +2374,14 @@ filter, date, cursor or body) and 404 `not_found`.
 
 ### The `inbox` topic
 
-`inbox` is a topic of `GET /api/stream`. Only an owner's stream may
-subscribe to it; anyone else gets 403 `forbidden`, which refuses the whole
-change. The extension's live-only stream may subscribe to it. A stream
-holding `inbox` or `questions` counts as an owner surface for mirrored
-questions. `/api/events` never carries either event.
+`inbox` is a topic of `GET /api/stream`. A stream carries the `inbox` and
+`questions` events of the person it was opened for: the owner's, or a
+connected person's to their browser. Anyone else gets 403 `forbidden`,
+which refuses the whole change. The extension's live-only stream may
+subscribe to it. A stream holding `inbox` or `questions` counts as its
+person's surface for their agents' mirrored questions. A person's streams
+end when the person is revoked. `/api/events` never carries either
+event.
 
 - **`inbox_item`**, `{topic: "inbox", item: <view>, unread}`, is sent when
   an item is made, or its read state or its source changes. `unread` is the
@@ -2356,7 +2394,7 @@ questions. `/api/events` never carries either event.
 
 The changes of transactions that commit concurrently may be announced out
 of commit order. Clients order items by `seq` and upsert by `id`. While no
-stream holds `inbox`, nothing is announced, so a client subscribes to
+stream of a person holds `inbox`, nothing of theirs is announced, so a client subscribes to
 `inbox` first and then fetches what it shows: no change falls between the
 fetch and the subscription.
 

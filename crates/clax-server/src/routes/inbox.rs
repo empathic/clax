@@ -1,15 +1,19 @@
-//! The owner's inbox (spec 2026-10-06-agent-questions-and-inbox §8.1): list
-//! and search items, the unread summary, one item, and read marks. Every
-//! route answers 403 `forbidden` to callers other than the owner and keeps
-//! the viewer routes' origin rules. The changes the marks make reach
-//! clients through the inbox listener ([`crate::inbox::listen`]); the
-//! responses carry the unread count after them.
+//! The inbox (spec 2026-10-06-agent-questions-and-inbox §8.1), one per
+//! person (spec 2026-10-08-multi-agent-multi-person §5.3, §18): list and
+//! search items, the unread summary, one item, and read marks, each over
+//! the caller's own items ([`crate::inbox::recipient_of`]): the owner's
+//! for the owner, a connected person's for their browser. Another
+//! person's item is 404. Every route answers 403 `forbidden` to anyone
+//! else (a LAN viewer, a revoked person), refuses agents, and keeps the
+//! viewer routes' origin rules. The changes the marks make reach clients
+//! through the inbox listener ([`crate::inbox::listen`]); the responses
+//! carry the unread count after them.
 
 use super::artifacts::{body, path};
 use crate::agent::DeniedToGrants;
 use crate::error::ApiError;
 use crate::identity::Identity;
-use crate::inbox::{view as inbox_view, views as inbox_views};
+use crate::inbox::{recipient_of, view as inbox_view, views as inbox_views};
 use crate::state::AppState;
 use crate::viewer::SameOrigin;
 use axum::Json;
@@ -63,10 +67,11 @@ pub enum Kinds {
 }
 
 impl Filter {
-    /// The query these filters make. 400 `invalid_query` for an unknown
-    /// kind, an artifact that is not an artifact ID, or a date or time that
-    /// is not RFC 3339 (`since`/`until` are normalised to the stored form).
-    fn query(self) -> Result<InboxQuery, ApiError> {
+    /// The query these filters make over `recipient`'s items. 400
+    /// `invalid_query` for an unknown kind, an artifact that is not an
+    /// artifact ID, or a date or time that is not RFC 3339 (`since`/`until`
+    /// are normalised to the stored form).
+    fn query(self, recipient: Option<String>) -> Result<InboxQuery, ApiError> {
         let names: Vec<String> = match self.kind {
             None => Vec::new(),
             Some(Kinds::Comma(s)) => s.split(',').map(str::to_string).collect(),
@@ -76,7 +81,8 @@ impl Filter {
         for k in names.iter().map(|k| k.trim()).filter(|k| !k.is_empty()) {
             kinds.push(Kind::parse(k).ok_or_else(|| {
                 invalid(format!(
-                    "'{k}' is not a kind: reply, version, published, question or finished"
+                    "'{k}' is not a kind: reply, version, published, question, finished, \
+                     approval, connection or ended"
                 ))
             })?);
         }
@@ -107,6 +113,7 @@ impl Filter {
             }
         };
         Ok(InboxQuery {
+            recipient,
             text: self.q.filter(|q| !q.trim().is_empty()),
             kinds,
             artifact,
@@ -146,7 +153,8 @@ fn query_of<T>(q: Result<Query<T>, QueryRejection>) -> Result<T, ApiError> {
 }
 
 /// `GET /api/inbox?q=&kind=<k,…>&artifact=<aid>&agent=<harness|handle>&since=&until=&read=unread|read|all&before=<cursor>&limit=`
-/// (owner) → `{items, next_cursor, unread, total?}`: items newest first,
+/// (the owner, or a connected person: their own items) → `{items,
+/// next_cursor, unread, total?}`: items newest first,
 /// `limit` (default 50, at most 200) a page, `next_cursor` the `before` of
 /// the next page (a decimal string) or null. `total`, the number matching,
 /// is there when the query has text or a filter (`read` other than `all`
@@ -162,8 +170,8 @@ pub async fn list(
     who: Identity,
     q: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    who.require_owner("reads the inbox")?;
     d.refuse_agents()?;
+    let me = recipient_of(&s, &who).await?;
     let q = query_of(q)?;
     let mut iq = Filter {
         q: q.q,
@@ -173,7 +181,7 @@ pub async fn list(
         since: q.since,
         until: q.until,
     }
-    .query()?;
+    .query(me.clone())?;
     iq.read = match q.read.as_deref() {
         None | Some("" | "all") => ReadFilter::All,
         Some("unread") => ReadFilter::Unread,
@@ -209,7 +217,7 @@ pub async fn list(
     let job = move |db: &clax_core::Store| {
         let (rows, next) = db.inbox_list(&iq)?;
         let items = inbox_views(db, &rows)?;
-        let unread = db.inbox_unread(None)?;
+        let unread = db.inbox_unread(me.as_deref())?;
         let mut out = json!({
             "items": items,
             "next_cursor": next.map(|n| n.to_string()),
@@ -233,33 +241,36 @@ pub async fn list(
     Ok(Json(out))
 }
 
-/// `GET /api/inbox/summary` (owner) → `{unread, questions, latest}`: the
-/// unread count, the open questions' views oldest first, and the five
-/// newest unread items other than questions, for the gallery and the top
-/// bar. Each part is read on its own, one just after another.
+/// `GET /api/inbox/summary` (the owner, or a connected person: their own)
+/// → `{unread, questions, latest}`: the unread count, the open questions'
+/// views oldest first, and the five newest unread items other than
+/// questions, for the gallery and the top bar. Each part is read on its
+/// own, one just after another.
 pub async fn summary(
     State(s): State<AppState>,
     d: DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
 ) -> Result<Json<Value>, ApiError> {
-    who.require_owner("reads the inbox")?;
     d.refuse_agents()?;
+    let me = recipient_of(&s, &who).await?;
     let out = s
         .store_call(move |db| {
-            let (open, _) = db.list_questions(None, ListStatus::Open, SUMMARY_QUESTIONS)?;
+            let (open, _) =
+                db.list_questions(me.as_deref(), ListStatus::Open, SUMMARY_QUESTIONS)?;
             let questions = open
                 .iter()
                 .map(|q| crate::questions::view(db, q))
                 .collect::<clax_core::Result<Vec<_>>>()?;
             let (rows, _) = db.inbox_list(&InboxQuery {
+                recipient: me.clone(),
                 kinds: vec![Kind::Reply, Kind::Version, Kind::Published, Kind::Finished],
                 read: ReadFilter::Unread,
                 limit: SUMMARY_LATEST,
                 ..InboxQuery::default()
             })?;
             Ok(json!({
-                "unread": db.inbox_unread(None)?,
+                "unread": db.inbox_unread(me.as_deref())?,
                 "questions": questions,
                 "latest": inbox_views(db, &rows)?,
             }))
@@ -278,7 +289,8 @@ fn item_id(p: Result<Path<String>, PathRejection>) -> Result<String, ApiError> {
     }
 }
 
-/// `GET /api/inbox/<id>` (owner) → `{item}`; 404 when there is none.
+/// `GET /api/inbox/<id>` (the owner, or a connected person) → `{item}`;
+/// 404 when the caller has none with that ID.
 pub async fn get_one(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -286,33 +298,42 @@ pub async fn get_one(
     who: Identity,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    who.require_owner("reads the inbox")?;
     d.refuse_agents()?;
+    let me = recipient_of(&s, &who).await?;
     let id = item_id(p)?;
     let item = s
         .store_call(move |db| {
-            let i = db.inbox_item(&id, None)?.ok_or(CoreError::NotFound)?;
+            let i = db
+                .inbox_item(&id, me.as_deref())?
+                .ok_or(CoreError::NotFound)?;
             inbox_view(db, &i)
         })
         .await?;
     Ok(Json(json!({"item": item})))
 }
 
-/// Marks item `id` read or unread → `{item, unread}`.
-async fn mark_one(s: AppState, id: String, read: bool) -> Result<Json<Value>, ApiError> {
+/// Marks `me`'s item `id` read or unread → `{item, unread}`.
+async fn mark_one(
+    s: AppState,
+    me: Option<String>,
+    id: String,
+    read: bool,
+) -> Result<Json<Value>, ApiError> {
     let out = s
         .store_call(move |db| {
-            db.inbox_item(&id, None)?.ok_or(CoreError::NotFound)?;
-            db.inbox_mark(std::slice::from_ref(&id), read, None)?;
-            let i = db.inbox_item(&id, None)?.ok_or(CoreError::NotFound)?;
-            Ok(json!({"item": inbox_view(db, &i)?, "unread": db.inbox_unread(None)?}))
+            let me = me.as_deref();
+            db.inbox_item(&id, me)?.ok_or(CoreError::NotFound)?;
+            db.inbox_mark(std::slice::from_ref(&id), read, me)?;
+            let i = db.inbox_item(&id, me)?.ok_or(CoreError::NotFound)?;
+            Ok(json!({"item": inbox_view(db, &i)?, "unread": db.inbox_unread(me)?}))
         })
         .await?;
     Ok(Json(out))
 }
 
-/// `POST /api/inbox/<id>/read` (owner): the owner opened the item →
-/// `{item, unread}`; 404 when there is none. Idempotent.
+/// `POST /api/inbox/<id>/read` (the owner, or a connected person): its
+/// person opened the item → `{item, unread}`; 404 when the caller has none
+/// with that ID. Idempotent.
 pub async fn read_one(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -320,13 +341,13 @@ pub async fn read_one(
     who: Identity,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    who.require_owner("reads the inbox")?;
     d.refuse_agents()?;
-    mark_one(s, item_id(p)?, true).await
+    let me = recipient_of(&s, &who).await?;
+    mark_one(s, me, item_id(p)?, true).await
 }
 
-/// `POST /api/inbox/<id>/unread` (owner) → `{item, unread}`; 404 when
-/// there is none.
+/// `POST /api/inbox/<id>/unread` (the owner, or a connected person) →
+/// `{item, unread}`; 404 when the caller has none with that ID.
 pub async fn unread_one(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -334,9 +355,9 @@ pub async fn unread_one(
     who: Identity,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    who.require_owner("reads the inbox")?;
     d.refuse_agents()?;
-    mark_one(s, item_id(p)?, false).await
+    let me = recipient_of(&s, &who).await?;
+    mark_one(s, me, item_id(p)?, false).await
 }
 
 #[derive(Deserialize)]
@@ -353,7 +374,8 @@ pub struct ReadBody {
     upto: Option<i64>,
 }
 
-/// `POST /api/inbox/read` (owner), body `{ids}` (at most 500 item IDs) or
+/// `POST /api/inbox/read` (the owner, or a connected person: their own
+/// items; another's IDs mark nothing), body `{ids}` (at most 500 item IDs) or
 /// `{all: true, filter?: {q, kind, artifact, agent, since, until}, upto?}`
 /// (every unread item matching the filter, up to item `seq` `upto`, the
 /// newest the client showed) → `{marked, unread}`. 400 `invalid_query` for
@@ -365,8 +387,8 @@ pub async fn read_many(
     who: Identity,
     req: Result<Json<ReadBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    who.require_owner("reads the inbox")?;
     d.refuse_agents()?;
+    let me = recipient_of(&s, &who).await?;
     let b = body(req)?;
     enum Mark {
         Ids(Vec<String>),
@@ -386,7 +408,7 @@ pub async fn read_many(
             Mark::Ids(ids)
         }
         (None, true) => {
-            let mut q = b.filter.unwrap_or_default().query()?;
+            let mut q = b.filter.unwrap_or_default().query(me.clone())?;
             q.upto = b.upto;
             Mark::All(q)
         }
@@ -395,10 +417,10 @@ pub async fn read_many(
     let out = s
         .store_call(move |db| {
             let marked = match &mark {
-                Mark::Ids(ids) => db.inbox_mark(ids, true, None)?,
+                Mark::Ids(ids) => db.inbox_mark(ids, true, me.as_deref())?,
                 Mark::All(q) => db.inbox_mark_all(q)?,
             };
-            Ok(json!({"marked": marked, "unread": db.inbox_unread(None)?}))
+            Ok(json!({"marked": marked, "unread": db.inbox_unread(me.as_deref())?}))
         })
         .await?;
     Ok(Json(out))
