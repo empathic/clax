@@ -260,11 +260,14 @@ function render(obj: Json, feedback: unknown[] = [], answers: unknown[] = []): s
 }
 
 /** What a feedback poll handed over: comments (`feedback`), late answers to
- * the session's questions (`answers`), and the daemon's prose for both
- * (`text`). The poll marks both taken, so a caller that drops either loses it. */
+ * the session's questions (`answers`), notes from Clax itself (`notes`, such
+ * as what a restored session's end released), and the daemon's prose for
+ * them all (`text`). The poll marks them taken, so a caller that drops one
+ * loses it. */
 export interface Handover {
   feedback: unknown[];
   answers: unknown[];
+  notes: unknown[];
   text: string | null;
 }
 
@@ -273,9 +276,13 @@ export function handoverOf(r: any): Handover {
   return {
     feedback: Array.isArray(r?.feedback) ? r.feedback : [],
     answers: Array.isArray(r?.answers) ? r.answers : [],
+    notes: Array.isArray(r?.notes) ? r.notes : [],
     text: typeof r?.text === "string" ? r.text : null,
   };
 }
+
+/** Whether `h` carries anything for the agent to read. */
+export const handedOver = (h: Handover): boolean => h.feedback.length > 0 || h.answers.length > 0 || h.notes.length > 0;
 
 function toolError(code: string, message: string, extra: Json = {}): ToolError {
   return new ToolError({ code, message, ...extra });
@@ -1623,7 +1630,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
           if (--waits === 0) wakeLoop();
         }
         const content: { type: "text"; text: string }[] = [{ type: "text", text: render(out.result, out.feedback, out.answers) }];
-        if ((out.feedback.length || out.answers.length) && out.text !== null) content.push({ type: "text", text: `---\n${out.text}` });
+        if (handedOver(out) && out.text !== null) content.push({ type: "text", text: `---\n${out.text}` });
         return { content, details: {} };
       },
     });
@@ -1654,7 +1661,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       }
       const h = handoverOf(res);
       tools.forgetAnswered(h.answers);
-      if (!h.feedback.length && !h.answers.length) return;
+      if (!handedOver(h)) return;
       const content: (typeof event.content)[number][] = [{ type: "text", text: render(obj, h.feedback, h.answers) }, ...event.content.slice(1)];
       if (h.text !== null) content.push({ type: "text", text: `---\n${h.text}` });
       return { content };

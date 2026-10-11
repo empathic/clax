@@ -24,6 +24,9 @@ pub struct Handover {
     pub feedback: Vec<Value>,
     pub answers: Vec<Value>,
     pub withheld: Vec<Value>,
+    /// Notes from Clax itself, such as what a restored session's end
+    /// released (spec 2026-10-08 §6.7).
+    pub notes: Vec<Value>,
     pub text: Option<String>,
 }
 
@@ -35,13 +38,17 @@ impl Handover {
             feedback: list("feedback"),
             answers: list("answers"),
             withheld: list("withheld"),
+            notes: list("notes"),
             text: res["text"].as_str().map(str::to_string),
         }
     }
 
     /// Whether nothing was handed over.
     pub fn is_empty(&self) -> bool {
-        self.feedback.is_empty() && self.answers.is_empty() && self.withheld.is_empty()
+        self.feedback.is_empty()
+            && self.answers.is_empty()
+            && self.withheld.is_empty()
+            && self.notes.is_empty()
     }
 }
 
@@ -52,8 +59,8 @@ pub fn success(value: Value) -> CallToolResult {
 }
 
 /// A success result for `value` (a JSON object) whose `feedback` array is
-/// `h.feedback`, with `answers` (the late answers) and `withheld` (the
-/// placeholders) when there are any. When
+/// `h.feedback`, with `answers` (the late answers), `withheld` (the
+/// placeholders) and `notes` when there are any. When
 /// something was handed over and `h.text` is given, a second text block
 /// `---\n<text>` follows: the trailing block agents read as prose.
 pub fn success_with(value: Value, h: Handover) -> CallToolResult {
@@ -71,6 +78,9 @@ pub fn success_with(value: Value, h: Handover) -> CallToolResult {
     }
     if !h.withheld.is_empty() {
         obj.insert("withheld".into(), Value::Array(h.withheld));
+    }
+    if !h.notes.is_empty() {
+        obj.insert("notes".into(), Value::Array(h.notes));
     }
     let mut blocks = vec![ContentBlock::text(
         serde_json::to_string_pretty(&Value::Object(obj)).expect("JSON values serialise"),
@@ -132,5 +142,41 @@ pub fn client_error_with(e: ClientError, log: &Path, extra: Value) -> CallToolRe
             add(json!({})),
         ),
         ClientError::Api { error, .. } => error_object(add(error)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn texts(r: &CallToolResult) -> Vec<String> {
+        r.content
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn a_note_alone_is_handed_over_with_its_text() {
+        let note = "[clax] Your session ended after 30 minutes without contact";
+        let h =
+            Handover::of(&json!({"feedback": [], "answers": [], "notes": [note], "text": note}));
+        assert!(!h.is_empty());
+        let r = success_with(json!({"ok": true}), h);
+        let t = texts(&r);
+        assert_eq!(t.len(), 2, "{t:?}");
+        let first: Value = serde_json::from_str(&t[0]).unwrap();
+        assert_eq!(first["notes"], json!([note]));
+        assert_eq!(t[1], format!("---\n{note}"));
+        // Without one, nothing is added.
+        let r = success_with(json!({"ok": true}), Handover::of(&json!({"text": null})));
+        let t = texts(&r);
+        assert_eq!(t.len(), 1);
+        assert!(
+            serde_json::from_str::<Value>(&t[0])
+                .unwrap()
+                .get("notes")
+                .is_none()
+        );
     }
 }

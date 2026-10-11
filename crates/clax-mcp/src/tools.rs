@@ -2019,7 +2019,9 @@ impl ClaxTools {
             Ok(res) => {
                 let h = render::Handover::of(&res);
                 self.forget_answered(&h);
-                let call_again = h.is_empty();
+                // A note alone is no feedback: the agent still calls again.
+                let call_again =
+                    h.feedback.is_empty() && h.answers.is_empty() && h.withheld.is_empty();
                 render::success_with(
                     json!({"waited_s": res["waited_s"], "call_again": call_again}),
                     h,
