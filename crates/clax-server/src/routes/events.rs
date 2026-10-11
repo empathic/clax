@@ -150,6 +150,7 @@ pub async fn events(
                 | Event::InboxRead { .. }
                 | Event::ApprovalRequest { .. }
                 | Event::People { .. }
+                | Event::Agents { .. }
         ) {
             return false;
         }

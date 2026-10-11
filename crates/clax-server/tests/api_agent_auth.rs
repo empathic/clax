@@ -1009,6 +1009,7 @@ fn every_route() -> Vec<(String, String, bool)> {
             "health" => include_str!("../src/routes/health.rs"),
             "inbox" => include_str!("../src/routes/inbox.rs"),
             "live" => include_str!("../src/routes/live.rs"),
+            "people" => include_str!("../src/routes/people.rs"),
             "approvals" => include_str!("../src/routes/approvals.rs"),
             "questions" => include_str!("../src/routes/questions.rs"),
             "room" => include_str!("../src/routes/room.rs"),
@@ -1265,15 +1266,21 @@ async fn a_remote_session_is_ended_when_idle_whatever_pid_it_reports() {
         .await
         .unwrap();
     let lid = local["session"]["id"].as_str().unwrap();
-    clock.advance(clax_core::Store::SESSION_IDLE_SECS as i64 + 1);
     let alive = |p: u32| p == me;
-    let reaped = ts
-        .store
-        .reap_sessions(
-            Duration::from_secs(clax_core::Store::SESSION_IDLE_SECS),
-            &alive,
-        )
-        .unwrap();
+    let reap = || {
+        ts.store
+            .reap_sessions(
+                Duration::from_secs(clax_core::Store::SESSION_IDLE_SECS),
+                &alive,
+            )
+            .unwrap()
+    };
+    // Past the local idle window, a remote session stays (spec 2026-10-08
+    // §14: 30 minutes for them, so a brief sleep keeps it).
+    clock.advance(clax_core::Store::SESSION_IDLE_SECS as i64 + 1);
+    assert!(reap().ended.is_empty());
+    clock.advance(clax_core::Store::REMOTE_SESSION_IDLE_SECS as i64);
+    let reaped = reap();
     assert!(reaped.ended.iter().any(|s| s == rid), "{:?}", reaped.ended);
     assert!(
         !reaped.ended.iter().any(|s| s == lid),

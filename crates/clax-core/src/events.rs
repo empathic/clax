@@ -169,6 +169,17 @@ pub enum Event {
     People {
         change: serde_json::Value,
     },
+    /// An agent session started, ended or was renamed (spec 2026-10-08-
+    /// multi-agent-multi-person §13): clients refetch `GET /api/agents`.
+    /// It names no agent. Only the `agents` stream topic carries it (with
+    /// the roster's other changes: working records, questions and approval
+    /// requests), and artifact topics, whose Send menus follow live agents;
+    /// `/api/events` never does.
+    Agents {
+        /// The artifacts the agent watched; never serialised.
+        #[serde(skip)]
+        artifacts: Vec<String>,
+    },
 }
 
 impl Event {
@@ -191,7 +202,8 @@ impl Event {
             | Event::InboxItem { .. }
             | Event::InboxRead { .. }
             | Event::ApprovalRequest { .. }
-            | Event::People { .. } => "",
+            | Event::People { .. }
+            | Event::Agents { .. } => "",
         }
     }
 
@@ -215,6 +227,7 @@ impl Event {
             Event::InboxRead { .. } => "inbox_read",
             Event::ApprovalRequest { .. } => "approval_request",
             Event::People { .. } => "people",
+            Event::Agents { .. } => "agents",
         }
     }
 

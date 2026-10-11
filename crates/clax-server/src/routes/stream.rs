@@ -220,7 +220,10 @@ pub async fn update(
             ));
         }
     }
-    if add.contains(&Topic::Questions) || add.contains(&Topic::Inbox) {
+    if add.contains(&Topic::Questions)
+        || add.contains(&Topic::Inbox)
+        || add.contains(&Topic::Agents)
+    {
         let w = who.clone();
         if s.store_call(move |st| Ok(person_key(st, &w)))
             .await?
@@ -228,7 +231,7 @@ pub async fn update(
         {
             return Err(ApiError::forbidden(
                 "forbidden",
-                "only the owner or a connected person follows questions and an inbox",
+                "only the owner or a connected person follows questions, an inbox and the agents",
             ));
         }
     }

@@ -31,6 +31,10 @@ use tokio::sync::Notify;
 #[derive(Default)]
 pub struct FeedbackWaiters {
     notifies: Mutex<HashMap<String, Arc<Notify>>>,
+    /// The note each restored session's first poll hands over (spec
+    /// 2026-10-08 §6.7), by session; kept in memory, so a daemon restart
+    /// before that poll drops it.
+    notes: Mutex<HashMap<String, String>>,
     active: Mutex<HashMap<String, usize>>,
     /// Notified whenever a `wait_for_feedback` long-poll starts or ends.
     changed: Notify,
@@ -65,9 +69,24 @@ impl FeedbackWaiters {
     /// empty at its deadline or on its next take) and drops its entry, so the
     /// map holds only sessions that may still poll.
     pub fn forget(&self, session_id: &str) {
+        self.notes.lock().unwrap().remove(session_id);
         if let Some(n) = self.notifies.lock().unwrap().remove(session_id) {
             n.notify_waiters();
         }
+    }
+
+    /// Keeps `note` for session `session_id`'s next feedback poll (one a
+    /// harness reads: every tier but `queue`), replacing any earlier one.
+    pub fn set_note(&self, session_id: &str, note: String) {
+        self.notes
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string(), note);
+    }
+
+    /// The note kept for session `session_id`, taken: it is handed over once.
+    pub fn take_note(&self, session_id: &str) -> Option<String> {
+        self.notes.lock().unwrap().remove(session_id)
     }
 
     /// Wakes every long-poll currently waiting for one of `sessions`.
