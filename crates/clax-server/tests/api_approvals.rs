@@ -1142,11 +1142,14 @@ async fn a_decision_pushes_to_the_approvers_codex_session() {
         )
         .await;
     assert_eq!(status, 200, "{v}");
-    let text = tokio::time::timeout(std::time::Duration::from_secs(60), reading)
-        .await
-        .expect("codex queue ran")
-        .unwrap()
-        .unwrap();
+    let text = match tokio::time::timeout(std::time::Duration::from_secs(60), reading).await {
+        Ok(read) => read.unwrap().unwrap(),
+        Err(_) => {
+            // Release the blocked reader, so the test fails rather than hangs.
+            drop(std::fs::OpenOptions::new().write(true).open(&fifo));
+            panic!("the decision queued nothing to the owner's Codex session");
+        }
+    };
     assert!(text.contains("Mia, held"), "{text}");
 }
 
