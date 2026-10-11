@@ -12,15 +12,18 @@
 //! through [`crate::feedback::Vis`]: one whose authors their reader may not
 //! see is its placeholder (`{doc_id, version, withheld: {authors}}`) when
 //! read or written by its path, and in a listing is never matched,
-//! ordered or listed, only counted in `withheld_count`. `str_replace` on
-//! one is 403 `withheld` before anything is evaluated; blind writes (`PUT`,
-//! `PATCH`, `DELETE`, batch writes, `acquire`) stay allowed and add the
-//! writer to its authors, so they never make it the writer's.
+//! ordered or listed, only counted in `withheld_count`. A write whose
+//! outcome depends on its content (`str_replace`, and a merge: `PATCH`, a
+//! batch `update`, `acquire` with data) is 403 `withheld` before anything
+//! is evaluated; blind writes (`PUT`, `DELETE`, a batch `set` or `delete`,
+//! `acquire` without data) stay allowed and add the writer to its
+//! authors, so they never make it the writer's. A lease in force on it is
+//! busy whatever its holder.
 
 use super::artifacts::{JsonBytes, body, parse_body, parse_id, path};
 use crate::db_caller::CallerParts;
 use crate::error::ApiError;
-use crate::feedback::VisFor;
+use crate::feedback::{Vis, VisFor};
 use crate::state::AppState;
 use crate::viewer::SameOrigin;
 use axum::Json;
@@ -31,7 +34,7 @@ use clax_core::db::invalid_argument;
 use clax_core::store::docs::{
     Acquire, BatchOp, BatchWrite, DocChange, DocQuery, Pin, StrReplace, parse_where,
 };
-use clax_core::{CoreError, Event, EventBus};
+use clax_core::{CoreError, Event, EventBus, Store};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -53,6 +56,44 @@ fn announce(events: &EventBus, aid: &str, changes: impl IntoIterator<Item = DocC
 }
 
 type DocParams = Result<Path<(String, String)>, PathRejection>;
+
+/// A write's answer, or its refusal: 403 `withheld` for a content-dependent
+/// write (`str_replace`, a merge) on a document the caller's reader may not
+/// see, naming its withheld authors (in a batch, with the operation's
+/// index and path, the caller's own).
+type Answer<T> = Result<T, ApiError>;
+
+/// `e` as [`Answer`]'s refusal when it is a withheld document's, else as
+/// the error it is.
+fn refusal<T>(vis: &Vis, st: &Store, e: CoreError) -> clax_core::Result<Answer<T>> {
+    let withheld = |authors: &[clax_core::visibility::Author]| -> clax_core::Result<ApiError> {
+        let mut e = ApiError::forbidden(
+            "withheld",
+            "this document is withheld until your person approves its authors",
+        );
+        e.extra
+            .insert("authors".into(), json!(vis.filter_authors(st, authors)?));
+        Ok(e)
+    };
+    match e {
+        CoreError::DocWithheld { authors, .. } => Ok(Err(withheld(&authors)?)),
+        CoreError::InBatch { op, path, error } => match *error {
+            CoreError::DocWithheld { authors, .. } => {
+                let mut e = withheld(&authors)?;
+                e.message = format!("batch write {op} ({path}): {}", e.message);
+                e.extra.insert("op".into(), json!(op));
+                e.extra.insert("path".into(), json!(path));
+                Ok(Err(e))
+            }
+            error => Err(CoreError::InBatch {
+                op,
+                path,
+                error: Box::new(error),
+            }),
+        },
+        e => Err(e),
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -131,7 +172,8 @@ pub async fn put(
     Ok(Json(json!({"doc": doc, "created": created})))
 }
 
-/// Merges into the existing document: `{doc}`.
+/// Merges into the existing document: `{doc}`. For an agent whose reader
+/// may not see the document, 403 `withheld` before the pin or the merge.
 pub async fn patch(
     State(s): State<AppState>,
     a: crate::agent::Agent<crate::agent::DocsPatch>,
@@ -148,7 +190,8 @@ pub async fn patch(
     let vf = VisFor::of(&a.caller, &s);
     let doc = s
         .store_call(move |st| {
-            let w = st.doc_update(
+            let vis = vf.build(st)?;
+            let w = match st.doc_update_visible(
                 &audit,
                 &id,
                 &doc,
@@ -158,12 +201,15 @@ pub async fn patch(
                     lww: b.lww,
                 },
                 &who.resolve_for(st, &id)?,
-            )?;
+                vis.view(),
+            ) {
+                Ok(w) => w,
+                Err(e) => return refusal(&vis, st, e),
+            };
             announce(&events, id.as_str(), w.change.clone());
-            let vis = vf.build(st)?;
-            vis.filter_written(st, id.as_str(), &w)
+            Ok(Ok(vis.filter_written(st, id.as_str(), &w)?))
         })
-        .await?;
+        .await??;
     Ok(Json(json!({"doc": doc})))
 }
 
@@ -292,6 +338,8 @@ pub struct BatchBody {
 }
 
 /// Applies up to 50 writes atomically: `{results: [{op, path, version, deleted}]}`.
+/// An `update` of a document the agent's reader may not see fails the
+/// batch with 403 `withheld`, naming its index and path.
 pub async fn batch(
     State(s): State<AppState>,
     a: crate::agent::Agent<crate::agent::DocsBatch>,
@@ -333,16 +381,20 @@ pub async fn batch(
     let vf = VisFor::of(&a.caller, &s);
     let results = s
         .store_call(move |st| {
-            let ws = st.doc_batch(&audit, &id, writes, lww, &who.resolve_for(st, &id)?)?;
+            let vis = vf.build(st)?;
+            let caller = who.resolve_for(st, &id)?;
+            let ws = match st.doc_batch_visible(&audit, &id, writes, lww, &caller, vis.view()) {
+                Ok(ws) => ws,
+                Err(e) => return refusal(&vis, st, e),
+            };
             announce(
                 &events,
                 id.as_str(),
                 ws.iter().filter_map(|w| w.change.clone()),
             );
-            let vis = vf.build(st)?;
-            Ok(vis.filter_batch(&ws, ops))
+            Ok(Ok(vis.filter_batch(&ws, ops)))
         })
-        .await?;
+        .await??;
     Ok(Json(json!({"results": results})))
 }
 
@@ -400,26 +452,14 @@ pub async fn str_replace(
                 &who.resolve_for(st, &id)?,
                 vis.view(),
             ) {
-                Err(CoreError::DocWithheld { authors, .. }) => {
-                    return Ok(Err(vis.filter_authors(st, &authors)?));
-                }
-                w => w?,
+                Ok(w) => w,
+                Err(e) => return refusal(&vis, st, e),
             };
             announce(&events, id.as_str(), w.change.clone());
             Ok(Ok(vis.filter_written(st, id.as_str(), &w)?))
         })
-        .await?;
-    match done {
-        Ok(doc) => Ok(Json(json!({"doc": doc}))),
-        Err(authors) => {
-            let mut e = ApiError::forbidden(
-                "withheld",
-                "this document is withheld until your person approves its authors",
-            );
-            e.extra.insert("authors".into(), json!(authors));
-            Err(e)
-        }
-    }
+        .await??;
+    Ok(Json(json!({"doc": done})))
 }
 
 #[derive(Deserialize)]
@@ -433,7 +473,9 @@ pub struct AcquireBody {
     data: Option<Value>,
 }
 
-/// `{acquired, version, expires_at, holder}`.
+/// `{acquired, version, expires_at, holder}`. On a document the agent's
+/// reader may not see, `data` is 403 `withheld`, and a lease in force is
+/// busy whatever its holder.
 pub async fn acquire(
     State(s): State<AppState>,
     a: crate::agent::Agent<crate::agent::DocsAcquire>,
@@ -449,7 +491,8 @@ pub async fn acquire(
     let vf = VisFor::of(&a.caller, &s);
     let got = s
         .store_call(move |st| {
-            let (a, change) = st.doc_acquire(
+            let vis = vf.build(st)?;
+            let got = st.doc_acquire_visible(
                 &audit,
                 &id,
                 &b.path,
@@ -459,11 +502,15 @@ pub async fn acquire(
                     data: b.data,
                 },
                 &who.resolve_for(st, &id)?,
-            )?;
+                vis.view(),
+            );
+            let (a, change) = match got {
+                Ok(got) => got,
+                Err(e) => return refusal(&vis, st, e),
+            };
             announce(&events, id.as_str(), change);
-            let vis = vf.build(st)?;
-            Ok(vis.filter_acquired(&a))
+            Ok(Ok(vis.filter_acquired(&a)))
         })
-        .await?;
+        .await??;
     Ok(Json(got))
 }

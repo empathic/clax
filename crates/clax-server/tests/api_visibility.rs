@@ -2031,8 +2031,9 @@ async fn patch_returns_filtered_documents() {
     let w = World::two_people().await;
     let aid = &w.scratch.artifact;
     let url = doc_url(aid, MIA_DOC);
-    // Blind writes on Mia's document are allowed; each answer is its
-    // placeholder, and Sam joins her as an author.
+    // A merge into Mia's document depends on what it holds: refused. A
+    // blind replace is allowed, answers its placeholder, and Sam joins her
+    // as an author.
     let (status, v) = sam(
         &w,
         "PATCH",
@@ -2040,8 +2041,12 @@ async fn patch_returns_filtered_documents() {
         Some(json!({"data": {"sam": "hi"}, "lww": true})),
     )
     .await;
-    assert_eq!(status, 200, "{v}");
-    assert_doc_withheld("PATCH", &v["doc"], MIA_DOC_ID, &["Mia"]);
+    assert_eq!(
+        (status, v["error"]["code"].clone()),
+        (403, json!("withheld")),
+        "{v}"
+    );
+    assert_eq!(stored_doc(&w, aid, MIA_DOC).1, vec![w.mia_public.clone()]);
     let (status, v) = sam(
         &w,
         "PUT",
@@ -2066,7 +2071,8 @@ async fn patch_returns_filtered_documents() {
     approve(&w.ts, Some(&w.mia_public), &sam_id);
     let (_, v) = json_of(w.mia.agent("GET", &url, None, None).await).await;
     assert_eq!(v["doc"]["data"], json!({"sam": "all mine"}), "{v}");
-    // The owner's agent's PATCH answers its placeholder too.
+    // The owner's agent's PUT answers its placeholder too; its PATCH is
+    // refused.
     let (status, v) = owner_agent(
         &w,
         "PATCH",
@@ -2074,9 +2080,22 @@ async fn patch_returns_filtered_documents() {
         Some(json!({"data": {"o": 1}, "lww": true})),
     )
     .await;
+    assert_eq!(
+        (status, v["error"]["code"].clone()),
+        (403, json!("withheld")),
+        "{v}"
+    );
+    let (status, v) = owner_agent(
+        &w,
+        "PUT",
+        &url,
+        Some(json!({"data": {"o": 1}, "lww": true})),
+    )
+    .await;
     assert_eq!(status, 200, "{v}");
-    assert_doc_withheld("the owner's PATCH", &v["doc"], MIA_DOC_ID, &["Mia", "Sam"]);
-    // Deleting it and writing anew starts Sam's own document.
+    assert_doc_withheld("the owner's PUT", &v["doc"], MIA_DOC_ID, &["Mia", "Sam"]);
+    // Deleting it and writing anew starts Sam's own document, which he
+    // merges into.
     let (status, v) = sam(&w, "DELETE", &format!("{url}?lww=true"), None).await;
     assert_eq!((status, v), (200, json!({"deleted": true})));
     let (status, v) = sam(&w, "PUT", &url, Some(json!({"data": {"n": 1}}))).await;
@@ -2102,7 +2121,7 @@ async fn batch_results_are_filtered() {
     let url = format!("/api/artifacts/{aid}/docs:batch");
     let body = json!({"lww": true, "writes": [
         {"op": "set", "path": "notes/sam2", "data": {"a": 1}},
-        {"op": "update", "path": MIA_DOC, "data": {"b": 2}},
+        {"op": "set", "path": MIA_DOC, "data": {"b": 2}},
         {"op": "delete", "path": "notes/none"},
     ]});
     for (who, (status, v)) in [
@@ -2128,7 +2147,7 @@ async fn batch_results_are_filtered() {
     );
     // A failing batch names the caller's own operation and path only.
     let bad = json!({"writes": [
-        {"op": "update", "path": MIA_DOC, "data": {"c": 3}, "if_version": 1},
+        {"op": "set", "path": MIA_DOC, "data": {"c": 3}, "if_version": 1},
     ]});
     let (status, v) = sam(&w, "POST", &url, Some(bad)).await;
     assert_eq!(
@@ -2137,6 +2156,25 @@ async fn batch_results_are_filtered() {
         "{v}"
     );
     no_doc_field("conflict", &v.to_string());
+    // A merge into it is refused at its place, before its pin, and nothing
+    // in the batch lands.
+    let merge = json!({"lww": true, "writes": [
+        {"op": "set", "path": "notes/sam3", "data": {"a": 1}},
+        {"op": "update", "path": MIA_DOC, "data": {"c": 3}, "if_version": 1},
+    ]});
+    let (status, v) = sam(&w, "POST", &url, Some(merge)).await;
+    assert_eq!(
+        (
+            status,
+            v["error"]["code"].clone(),
+            v["error"]["op"].clone(),
+            v["error"]["path"].clone()
+        ),
+        (403, json!("withheld"), json!(1), json!(MIA_DOC)),
+        "{v}"
+    );
+    assert_eq!(v["error"]["authors"][0]["name"], "Mia", "{v}");
+    assert_eq!(stored_doc(&w, aid, "notes/sam3").0, None);
 }
 
 #[tokio::test]
@@ -2205,4 +2243,129 @@ async fn a_persons_agent_never_writes_documents_as_a_page() {
         .query_row("SELECT COUNT(*) FROM leases", [], |r| r.get(0))
         .unwrap();
     assert_eq!(leases, 0);
+}
+
+/// A merge's outcome depends on the stored body (its 256 KiB check, which
+/// fields a delete marker removes), so on a withheld document every merge
+/// is refused before it is evaluated: the same request answers the same
+/// whatever the document holds, and writes nothing.
+#[tokio::test]
+async fn a_merge_never_tells_what_a_withheld_document_holds() {
+    let w = World::two_people().await;
+    let aid = &w.scratch.artifact;
+    for (p, flag) in [("notes/t", true), ("notes/f", false)] {
+        let (s, v) = json_of(
+            w.mia
+                .agent(
+                    "PUT",
+                    &doc_url(aid, p),
+                    None,
+                    Some(json!({"data": {"flag": flag, "text": "hello"}})),
+                )
+                .await,
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+    }
+    // A pad that fits beside {flag: true} and not beside {flag: false}.
+    let base = serde_json::to_vec(&json!({"flag": true, "text": "hello", "pad": ""}))
+        .unwrap()
+        .len();
+    let pad = "a".repeat(clax_core::store::docs::MAX_DOC_BYTES - base);
+    let before: Vec<_> = ["notes/t", "notes/f"]
+        .iter()
+        .map(|p| stored_doc(&w, aid, p))
+        .collect();
+    let requests: Vec<(&str, String, Value)> = vec![
+        (
+            "PATCH",
+            String::new(),
+            json!({"data": {"pad": pad}, "lww": true}),
+        ),
+        (
+            "PATCH",
+            String::new(),
+            json!({"data": {"flag": {"__delete__": true}, "pad": pad}, "lww": true}),
+        ),
+        (
+            "POST",
+            format!("/api/artifacts/{aid}/docs:batch"),
+            json!({"lww": true, "writes": [{"op": "update", "path": "{p}", "data": {"pad": pad}}]}),
+        ),
+        (
+            "POST",
+            format!("/api/artifacts/{aid}/docs:acquire"),
+            json!({"path": "{p}", "holder": "h", "data": {"pad": pad}}),
+        ),
+    ];
+    for (m, url, body) in &requests {
+        let mut answers = Vec::new();
+        for p in ["notes/t", "notes/f"] {
+            let url = if url.is_empty() {
+                doc_url(aid, p)
+            } else {
+                url.clone()
+            };
+            let body: Value = serde_json::from_str(&body.to_string().replace("{p}", p)).unwrap();
+            let (status, mut v) = sam(&w, m, &url, Some(body)).await;
+            assert_eq!(
+                (status, v["error"]["code"].clone()),
+                (403, json!("withheld")),
+                "{m} {url}: {v}"
+            );
+            // The batch's error names the caller's own path.
+            if let Some(e) = v["error"].as_object_mut() {
+                e.remove("path");
+                e.remove("message");
+            }
+            answers.push(v);
+        }
+        assert_eq!(answers[0], answers[1], "{m} {url}");
+    }
+    let after: Vec<_> = ["notes/t", "notes/f"]
+        .iter()
+        .map(|p| stored_doc(&w, aid, p))
+        .collect();
+    assert_eq!(after, before, "nothing was written");
+}
+
+/// A lease on a withheld document is busy whatever holder a person's
+/// agent guesses: it never confirms Mia's holder or takes her lease over.
+#[tokio::test]
+async fn a_lease_on_a_withheld_document_never_confirms_its_holder() {
+    let w = World::two_people().await;
+    let aid = &w.scratch.artifact;
+    let url = format!("/api/artifacts/{aid}/docs:acquire");
+    let (s, mine) = json_of(
+        w.mia
+            .agent(
+                "POST",
+                &url,
+                None,
+                Some(json!({"path": MIA_DOC, "holder": "mia-laptop", "ttl_ms": 600000})),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!((s, mine["acquired"].clone()), (200, json!(true)), "{mine}");
+    let (_, miss) = sam(
+        &w,
+        "POST",
+        &url,
+        Some(json!({"path": MIA_DOC, "holder": "guess"})),
+    )
+    .await;
+    let (_, hit) = sam(
+        &w,
+        "POST",
+        &url,
+        Some(json!({"path": MIA_DOC, "holder": "mia-laptop"})),
+    )
+    .await;
+    assert_eq!(miss, hit);
+    assert_eq!(
+        (hit["acquired"].clone(), hit["expires_at"].clone()),
+        (json!(false), mine["expires_at"].clone()),
+        "{hit}"
+    );
 }
