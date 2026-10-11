@@ -562,3 +562,352 @@ async fn the_hooks_timer_leaves_a_question_unread_and_the_owner_moving_it_reads_
         "the owner moving it to the terminal"
     );
 }
+
+/// A daemon on the LAN with Sam connected (`clax:collaborator`): Sam's
+/// machine, his viewer cookie and public ID, and his agent's session.
+struct Sam {
+    ts: TestServer,
+    sam: clax_server::testing::TestClient,
+    cookie: String,
+    public_id: String,
+    session: String,
+}
+
+async fn with_sam() -> Sam {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let v = ts.store.viewer_of_grant(&sam.grant_id()).unwrap();
+    let session = sam.register("claude", "sam-h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    Sam {
+        ts,
+        sam,
+        cookie: v.id,
+        public_id: v.public_id,
+        session,
+    }
+}
+
+impl Sam {
+    /// `req` from the browser whose viewer cookie is `cookie`.
+    fn browser(cookie: &str, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        req.header("cookie", format!("clax_viewer={cookie}"))
+    }
+
+    /// `GET path` from the browser of `cookie`: (status, body).
+    async fn get_as(&self, cookie: &str, path: &str) -> (u16, Value) {
+        let r = Sam::browser(
+            cookie,
+            self.ts.client.get(format!("{}{path}", self.ts.base)),
+        )
+        .send()
+        .await
+        .unwrap();
+        let status = r.status().as_u16();
+        (status, r.json().await.unwrap_or(Value::Null))
+    }
+
+    /// `POST path` with `body` from the browser of `cookie`: (status, body).
+    async fn post_as(&self, cookie: &str, path: &str, body: Value) -> (u16, Value) {
+        let r = Sam::browser(
+            cookie,
+            self.ts.client.post(format!("{}{path}", self.ts.base)),
+        )
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+        let status = r.status().as_u16();
+        (status, r.json().await.unwrap_or(Value::Null))
+    }
+
+    /// Sam's agent asks one question (about `artifact`, when given); its ID.
+    async fn ask(&self, text: &str, artifact: Option<&str>) -> String {
+        let mut body = json!({"source": "ask", "questions": [{"question": text, "header": "Colour",
+            "options": [{"label": "Teal"}, {"label": "Amber"}]}]});
+        if let Some(a) = artifact {
+            body["artifact_id"] = json!(a);
+        }
+        let r = self
+            .sam
+            .agent(
+                "POST",
+                &format!("/api/sessions/{}/questions", self.session),
+                Some(&self.session),
+                Some(body),
+            )
+            .await;
+        assert_eq!(r.status(), 201);
+        r.json::<Value>().await.unwrap()["question"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// Sam's browser opens `/api/stream` and follows `topics`.
+    async fn stream(&self, topics: &[&str]) -> clax_server::testing::EventReader {
+        let res = Sam::browser(
+            &self.cookie,
+            self.ts.client.get(format!("{}/api/stream", self.ts.base)),
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(res.status(), 200);
+        let mut ev = clax_server::testing::EventReader::from_response(res);
+        let id = ev.next_named("ready").await["stream"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let (status, body) = self
+            .post_as(
+                &self.cookie,
+                &format!("/api/stream/{id}"),
+                json!({"subscribe": topics}),
+            )
+            .await;
+        assert_eq!(status, 200, "{body}");
+        ev
+    }
+}
+
+/// The IDs of `v`'s items.
+fn item_ids(v: &Value) -> Vec<String> {
+    v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_person_sees_only_their_inbox() {
+    let w = with_sam().await;
+    let mia = w.ts.connect_person("Mia", "clax:collaborator").await;
+    let mia_cookie = w.ts.store.viewer_of_grant(&mia.grant_id()).unwrap().id;
+    let qid = w.ask("Teal or amber?", None).await;
+
+    let (status, sams) = w.get_as(&w.cookie, "/api/inbox").await;
+    assert_eq!(status, 200, "{sams}");
+    let items = sams["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{sams}");
+    assert_eq!(items[0]["kind"], "question");
+    assert_eq!(items[0]["question"]["id"], qid.as_str());
+    assert_eq!(sams["unread"], 1);
+    let item = items[0]["id"].as_str().unwrap().to_string();
+
+    // Mia's inbox and the owner's hold none of it.
+    let (status, mias) = w.get_as(&mia_cookie, "/api/inbox").await;
+    assert_eq!((status, item_ids(&mias).len()), (200, 0), "{mias}");
+    let owners = get(&w.ts, "/api/inbox").await;
+    assert!(
+        owners["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["kind"] == "connection"),
+        "the owner hears of the machines that connected alone: {owners}"
+    );
+    let path = format!("/api/inbox/{item}");
+    assert_eq!(w.ts.get_authed(&path).await.status(), 404);
+    assert_eq!(w.get_as(&mia_cookie, &path).await.0, 404);
+    let (status, one) = w.get_as(&w.cookie, &path).await;
+    assert_eq!(
+        (status, one["item"]["id"].as_str()),
+        (200, Some(item.as_str()))
+    );
+
+    // The summary and the questions are Sam's own.
+    let (_, summary) = w.get_as(&w.cookie, "/api/inbox/summary").await;
+    assert_eq!(summary["unread"], 1);
+    assert_eq!(summary["questions"][0]["id"], qid.as_str());
+    let (_, qs) = w.get_as(&w.cookie, "/api/questions").await;
+    assert_eq!(
+        (qs["open"].as_u64(), qs["questions"][0]["id"].as_str()),
+        (Some(1), Some(qid.as_str()))
+    );
+    let owners_qs = get(&w.ts, "/api/questions?status=all").await;
+    assert_eq!(owners_qs["questions"], json!([]));
+
+    // Marks reach the caller's own items only.
+    let r =
+        w.ts.authed(w.ts.client.post(format!("{}{path}/read", w.ts.base)))
+            .send()
+            .await
+            .unwrap();
+    assert_eq!(r.status(), 404);
+    let marked =
+        w.ts.post_json("/api/inbox/read", json!({"ids": [item]}))
+            .await
+            .json::<Value>()
+            .await
+            .unwrap();
+    assert_eq!(marked["marked"], 0, "{marked}");
+    let (status, mine) = w
+        .post_as(&w.cookie, &format!("{path}/read"), json!({}))
+        .await;
+    assert_eq!((status, mine["unread"].as_u64()), (200, Some(0)), "{mine}");
+    let (status, all) = w
+        .post_as(&w.cookie, "/api/inbox/read", json!({"all": true}))
+        .await;
+    assert_eq!((status, all["unread"].as_u64()), (200, Some(0)), "{all}");
+    assert_eq!(
+        get(&w.ts, "/api/inbox/summary").await["unread"],
+        2,
+        "the owner's stay unread"
+    );
+
+    // Sam answers his agent's question; the owner cannot.
+    let answer = json!({"answers": [{"selected": ["Teal"]}]});
+    let r =
+        w.ts.post_json(&format!("/api/questions/{qid}/answer"), answer.clone())
+            .await;
+    assert_eq!(r.status(), 404);
+    let (status, q) = w
+        .post_as(&w.cookie, &format!("/api/questions/{qid}/answer"), answer)
+        .await;
+    assert_eq!(status, 200, "{q}");
+    assert_eq!(
+        (
+            q["question"]["status"].as_str(),
+            q["question"]["answered_via"].as_str()
+        ),
+        (Some("answered"), Some("shell"))
+    );
+}
+
+#[tokio::test]
+async fn the_owner_inbox_is_unchanged() {
+    let w = with_sam().await;
+    let ts = &w.ts;
+    // The owner's agent publishes and replies in the owner's thread; Sam's
+    // agent asks.
+    let (sid, aid, tid) = owner_thread(ts).await;
+    ts.reply_as_agent(&sid, &aid, &tid, "Done: blue").await;
+    w.ask("Teal or amber?", None).await;
+    let owners = get(ts, "/api/inbox").await;
+    let kinds: Vec<&str> = owners["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, vec!["reply", "published", "connection"]);
+    let reply = &owners["items"][0];
+    let mut keys: Vec<&str> = reply
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec![
+            "agent",
+            "artifact",
+            "created_at",
+            "gone",
+            "id",
+            "kind",
+            "published",
+            "question",
+            "read",
+            "reply",
+            "seq",
+            "thread",
+            "url",
+            "version",
+            "work"
+        ],
+        "an item's view keeps its fields"
+    );
+    assert_eq!(reply["reply"]["body"], "Done: blue");
+    assert_eq!(owners["unread"], 3);
+    // The connection item names the machine and its person.
+    let c = &owners["items"][2];
+    assert_eq!(c["connection"]["client"]["name"], "test-machine", "{c}");
+    assert_eq!(c["connection"]["person"]["display_name"], "Sam");
+    assert_eq!(c["url"], "/people");
+    // The owner's look reads the owner's reply alone.
+    ts.look_as_owner(&aid, &[&tid]).await;
+    assert_eq!(get(ts, "/api/inbox/summary").await["unread"], 2);
+    let (_, sams) = w.get_as(&w.cookie, "/api/inbox/summary").await;
+    assert_eq!(sams["unread"], 1);
+}
+
+#[tokio::test]
+async fn a_persons_stream_carries_their_own_items() {
+    let w = with_sam().await;
+    let mut sams = w.stream(&["inbox", "questions"]).await;
+    let mut owners = w.ts.stream_as_owner(&["inbox", "questions"]).await;
+    let qid = w.ask("Teal or amber?", None).await;
+    // The question's event and its item's arrive in either order.
+    let (mut question, mut item) = (None, None);
+    while question.is_none() || item.is_none() {
+        match sams.next().await {
+            (n, e) if n == "question" => question = Some(e),
+            (n, e) if n == "inbox_item" => item = Some(e),
+            _ => {}
+        }
+    }
+    assert_eq!(question.unwrap()["question"]["id"], qid.as_str());
+    let e = item.unwrap();
+    assert_eq!(
+        (e["item"]["question"]["id"].as_str(), e["unread"].as_u64()),
+        (Some(qid.as_str()), Some(1))
+    );
+    // The owner's stream hears its own next item, never Sam's.
+    let (sid, aid, tid) = owner_thread(&w.ts).await;
+    w.ts.reply_as_agent(&sid, &aid, &tid, "Done").await;
+    let e = owners.next_named("inbox_item").await;
+    assert_eq!(e["item"]["kind"], "published", "{e}");
+    // A person's browser follows only their own topics; a LAN viewer none.
+    let lan = w.ts.viewer(Some("Lan")).await;
+    let (status, _) = w.get_as(&lan.cookie, "/api/inbox").await;
+    assert_eq!(status, 403);
+}
+
+#[tokio::test]
+async fn a_revoked_person_loses_the_inbox() {
+    let w = with_sam().await;
+    w.ask("Teal or amber?", None).await;
+    let mut sams = w.stream(&["inbox", "questions"]).await;
+    assert_eq!(w.get_as(&w.cookie, "/api/inbox").await.0, 200);
+    w.ts.store
+        .revoke_person(&clax_core::audit::AuditCtx::DAEMON, &w.public_id)
+        .unwrap();
+    // The stream ends, and the routes refuse the browser.
+    sams.rest().await;
+    for path in ["/api/inbox", "/api/inbox/summary", "/api/questions"] {
+        assert_eq!(w.get_as(&w.cookie, path).await.0, 403, "{path}");
+    }
+    let res = Sam::browser(
+        &w.cookie,
+        w.ts.client.get(format!("{}/api/stream", w.ts.base)),
+    )
+    .send()
+    .await
+    .unwrap();
+    let mut ev = clax_server::testing::EventReader::from_response(res);
+    let id = ev.next_named("ready").await["stream"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _) = w
+        .post_as(
+            &w.cookie,
+            &format!("/api/stream/{id}"),
+            json!({"subscribe": ["inbox"]}),
+        )
+        .await;
+    assert_eq!(status, 403);
+    assert_eq!(
+        get(&w.ts, "/api/inbox").await["unread"],
+        1,
+        "the owner's inbox stays"
+    );
+}

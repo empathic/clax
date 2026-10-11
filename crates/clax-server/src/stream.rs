@@ -54,12 +54,12 @@ pub const MAX_DETACHED: usize = 4096;
 /// A topic a client subscribes to, by name: `gallery`, `artifact:<id>`,
 /// `presence:<id>`, `working:<id>`, `docs:<id>`, `site:<origin>` (the
 /// `artifact` events of every live page of a site; spec
-/// 2026-10-05-chrome-overlay-design §9.5), and `questions` (every agent
-/// question's changes, for the owner alone; spec
+/// 2026-10-05-chrome-overlay-design §9.5), and `questions` (the changes of
+/// the questions the stream's person's agents asked; spec
 /// 2026-10-06-agent-questions-and-inbox-design §6.3), and `inbox` (the
-/// owner's inbox items and read marks, §8.2), and `people` (people,
-/// invites and grants, for the owner alone; spec
-/// 2026-10-08-multi-agent-multi-person §6.2–§6.4).
+/// stream's person's inbox items and read marks, §8.2; per person: spec
+/// 2026-10-08-multi-agent-multi-person §5.3, §15), and `people` (people,
+/// invites and grants, for the owner alone; §6.2–§6.4).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Topic {
     Gallery,
@@ -146,16 +146,25 @@ impl Topic {
 
     /// The channels a subscriber at `caller` joins. A `docs` topic joins
     /// one channel per level up to the caller's, and the caller's own
-    /// viewer channel, which carries its private documents.
-    fn chans(&self, caller: &Caller) -> Vec<Chan> {
+    /// viewer channel, which carries its private documents; `questions`
+    /// and `inbox` the channel of `person` (the recipient key of the
+    /// person the stream was opened for: empty for the owner), and none
+    /// for a stream opened for no person.
+    fn chans(&self, caller: &Caller, person: Option<&str>) -> Vec<Chan> {
         match self {
             Topic::Gallery => vec![Chan::Gallery],
             Topic::Artifact(a) => vec![Chan::Artifact(a.clone())],
             Topic::Presence(a) => vec![Chan::Presence(a.clone())],
             Topic::Working(a) => vec![Chan::Working(a.clone())],
             Topic::Site(o) => vec![Chan::Site(o.clone())],
-            Topic::Questions => vec![Chan::Questions],
-            Topic::Inbox => vec![Chan::Inbox],
+            Topic::Questions => person
+                .map(|p| Chan::Questions(p.to_string()))
+                .into_iter()
+                .collect(),
+            Topic::Inbox => person
+                .map(|p| Chan::Inbox(p.to_string()))
+                .into_iter()
+                .collect(),
             Topic::People => vec![Chan::People],
             Topic::Docs(a) => {
                 let mut v: Vec<Chan> = [Level::View, Level::Interact, Level::Admin, Level::Owner]
@@ -185,10 +194,12 @@ enum Chan {
     DocsOf(String, String),
     /// The `artifact` channel's events of every live page of an origin.
     Site(String),
-    /// Every question's changes; only owner streams subscribe.
-    Questions,
-    /// The owner's inbox; only owner streams subscribe.
-    Inbox,
+    /// The changes of one person's agents' questions, by recipient key
+    /// (empty: the owner's); only that person's streams subscribe.
+    Questions(String),
+    /// One person's inbox, by recipient key; only that person's streams
+    /// subscribe.
+    Inbox(String),
     /// People, invites and grants; only owner streams subscribe.
     People,
 }
@@ -198,8 +209,8 @@ impl Chan {
         match self {
             Chan::Gallery => "gallery".into(),
             Chan::Site(o) => format!("site:{o}"),
-            Chan::Questions => "questions".into(),
-            Chan::Inbox => "inbox".into(),
+            Chan::Questions(_) => "questions".into(),
+            Chan::Inbox(_) => "inbox".into(),
             Chan::People => "people".into(),
             Chan::Artifact(a) => format!("artifact:{a}"),
             Chan::Presence(a) => format!("presence:{a}"),
@@ -285,6 +296,11 @@ struct StreamEntry {
     /// credential change or resume it, and it ends when the credential
     /// stops being live ([`Hub::end_streams_where`], [`Conn::checking`]).
     credential: Option<String>,
+    /// The person whose `questions` and `inbox` topics the stream may hold
+    /// (the recipient key: empty for the owner, else a connected person's
+    /// public ID); `None` for anyone else. A person's streams end when the
+    /// person is revoked ([`Hub::end_streams_of`]).
+    person: Option<String>,
     /// Each topic with the sequence current when it was subscribed.
     topics: BTreeMap<Topic, u64>,
     tx: Option<mpsc::Sender<Arc<Item>>>,
@@ -472,9 +488,16 @@ fn routes(ev: &Event) -> Vec<(Chan, Gate)> {
             .collect(),
         // The thread delta carries the newest comment and the resolve.
         Event::Comment { .. } | Event::ThreadResolved { .. } => vec![],
-        // Only owner streams hold the topic (checked at subscribe time).
-        Event::Question { .. } => vec![(Chan::Questions, Gate::Any)],
-        Event::InboxItem { .. } | Event::InboxRead { .. } => vec![(Chan::Inbox, Gate::Any)],
+        // Only the recipient's streams hold its channel (checked at
+        // subscribe time).
+        Event::Question { recipient, .. } => vec![(
+            Chan::Questions(recipient.clone().unwrap_or_default()),
+            Gate::Any,
+        )],
+        Event::InboxItem { recipient, .. } | Event::InboxRead { recipient, .. } => vec![(
+            Chan::Inbox(recipient.clone().unwrap_or_default()),
+            Gate::Any,
+        )],
         Event::People { .. } => vec![(Chan::People, Gate::Any)],
         Event::Doc {
             private_to,
@@ -671,12 +694,9 @@ impl Hub {
         }
     }
 
-    /// Opens a stream for `caller`, or reattaches the one `resume` names
-    /// (its ID and the last sequence the client saw) when that stream is
-    /// still held and belongs to the same caller with the same `local`
-    /// (whether it may see live pages) and `credential` (the hash of the
-    /// extension credential of a request through the extension gateway,
-    /// which makes the stream live-only; see [`live_only_admits`]).
+    /// [`Hub::open_for`] a stream of no person's, which holds no
+    /// `questions` or `inbox` channel.
+    #[cfg(test)]
     pub fn open(
         &self,
         caller: Caller,
@@ -684,13 +704,35 @@ impl Hub {
         credential: Option<String>,
         resume: Option<(&str, u64)>,
     ) -> Opened {
+        self.open_for(caller, local, credential, resume, None)
+    }
+
+    /// Opens a stream for `caller`, or reattaches the one `resume` names
+    /// (its ID and the last sequence the client saw) when that stream is
+    /// still held and belongs to the same caller with the same `local`
+    /// (whether it may see live pages), `credential` (the hash of the
+    /// extension credential of a request through the extension gateway,
+    /// which makes the stream live-only; see [`live_only_admits`]) and
+    /// `person` (whose `questions` and `inbox` it may hold: the recipient
+    /// key, empty for the owner; `None` for anyone else).
+    pub fn open_for(
+        &self,
+        caller: Caller,
+        local: bool,
+        credential: Option<String>,
+        resume: Option<(&str, u64)>,
+        person: Option<String>,
+    ) -> Opened {
         let (tx, rx) = mpsc::channel(QUEUE);
         let mut g = self.lock();
         sweep_locked(&mut g, Instant::now());
         let seq = g.seq;
         if let Some((id, last)) = resume
             && g.streams.get(id).is_some_and(|s| {
-                s.caller == caller && s.local == local && s.credential == credential
+                s.caller == caller
+                    && s.local == local
+                    && s.credential == credential
+                    && s.person == person
             })
         {
             let Inner {
@@ -710,7 +752,7 @@ impl Hub {
             let mut replay: Vec<Arc<Item>> = Vec::new();
             for (topic, since) in &s.topics {
                 let from = last.max(*since);
-                let tchans = topic.chans(&s.caller);
+                let tchans = topic.chans(&s.caller, s.person.as_deref());
                 let gap = tchans
                     .iter()
                     .filter_map(|c| chans.get(c))
@@ -761,6 +803,7 @@ impl Hub {
             caller: caller.clone(),
             local,
             credential,
+            person,
             topics: BTreeMap::new(),
             tx: Some(tx),
             shared: shared.clone(),
@@ -841,7 +884,7 @@ impl Hub {
         }
         for t in remove {
             if s.topics.remove(t).is_some() {
-                leave(chans, s.key, &t.chans(&s.caller));
+                leave(chans, s.key, &t.chans(&s.caller, s.person.as_deref()));
             }
         }
         for t in add {
@@ -849,7 +892,7 @@ impl Hub {
                 continue;
             }
             s.topics.insert(t.clone(), seq);
-            for c in t.chans(&s.caller) {
+            for c in t.chans(&s.caller, s.person.as_deref()) {
                 chans.entry(c).or_default().subs.insert(
                     s.key,
                     Sub {
@@ -873,7 +916,7 @@ impl Hub {
             return;
         };
         for t in s.topics.keys().filter(|t| t.name() == topic) {
-            for c in t.chans(&s.caller) {
+            for c in t.chans(&s.caller, s.person.as_deref()) {
                 if let Some(sub) = chans.get_mut(&c).and_then(|ch| ch.subs.get_mut(&s.key)) {
                     sub.lagged = false;
                 }
@@ -902,7 +945,7 @@ impl Hub {
         s.detached_at = Some(now);
         detached.insert((now, s.key), id.to_string());
         for t in s.topics.keys() {
-            for c in t.chans(&s.caller) {
+            for c in t.chans(&s.caller, s.person.as_deref()) {
                 if let Some(sub) = chans.get_mut(&c).and_then(|ch| ch.subs.get_mut(&s.key)) {
                     sub.tx = None;
                 }
@@ -940,28 +983,70 @@ impl Hub {
         }
     }
 
-    /// Whether an owner surface is open: a stream, attached or detached
-    /// within [`GRACE`], holds the `questions` or the `inbox` topic (spec
-    /// 2026-10-06-agent-questions-and-inbox-design §4.4, §6.3). Only owner
-    /// streams may hold them. Reads the topics' channels, which a stream
-    /// leaves only when it unsubscribes or is dropped (a detached one at the
-    /// sweep, done here first), so no stream is scanned.
+    /// Whether an owner surface is open: [`Hub::holds_surface`] of the
+    /// owner.
     pub fn holds_owner_topics(&self) -> bool {
-        let mut g = self.lock();
-        sweep_locked(&mut g, Instant::now());
-        [Chan::Questions, Chan::Inbox]
-            .iter()
-            .any(|c| g.chans.get(c).is_some_and(|ch| !ch.subs.is_empty()))
+        self.holds_surface("")
     }
 
-    /// Whether a stream, attached or detached within [`GRACE`], holds the
-    /// `inbox` topic: whether inbox events have anyone to reach.
-    pub fn holds_inbox(&self) -> bool {
+    /// Whether a surface of the person with recipient key `person` (empty:
+    /// the owner) is open: a stream of theirs, attached or detached within
+    /// [`GRACE`], holds the `questions` or the `inbox` topic (spec
+    /// 2026-10-06-agent-questions-and-inbox-design §4.4, §6.3). Reads the
+    /// topics' channels, which a stream leaves only when it unsubscribes or
+    /// is dropped (a detached one at the sweep, done here first), so no
+    /// stream is scanned.
+    pub fn holds_surface(&self, person: &str) -> bool {
+        let mut g = self.lock();
+        sweep_locked(&mut g, Instant::now());
+        [
+            Chan::Questions(person.to_string()),
+            Chan::Inbox(person.to_string()),
+        ]
+        .iter()
+        .any(|c| g.chans.get(c).is_some_and(|ch| !ch.subs.is_empty()))
+    }
+
+    /// The recipient keys whose `inbox` topic a stream, attached or
+    /// detached within [`GRACE`], holds: whom inbox events can reach.
+    pub fn inbox_holders(&self) -> std::collections::HashSet<String> {
         let mut g = self.lock();
         sweep_locked(&mut g, Instant::now());
         g.chans
-            .get(&Chan::Inbox)
-            .is_some_and(|ch| !ch.subs.is_empty())
+            .iter()
+            .filter_map(|(c, ch)| match c {
+                Chan::Inbox(p) if !ch.subs.is_empty() => Some(p.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The connected people (by public ID) a stream is held for.
+    pub fn people_streaming(&self) -> std::collections::HashSet<String> {
+        self.lock()
+            .streams
+            .values()
+            .filter_map(|s| s.person.clone().filter(|p| !p.is_empty()))
+            .collect()
+    }
+
+    /// Ends every stream held for one of `people` (public IDs of people no
+    /// longer connected): each receives nothing more, its connection's body
+    /// ends, and it cannot be resumed.
+    pub fn end_streams_of(&self, people: &std::collections::HashSet<String>) {
+        if people.is_empty() {
+            return;
+        }
+        let mut g = self.lock();
+        let gone: Vec<String> = g
+            .streams
+            .iter()
+            .filter(|(_, s)| s.person.as_ref().is_some_and(|p| people.contains(p)))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in gone {
+            drop_stream(&mut g, &id);
+        }
     }
 
     /// Drops streams detached for longer than [`GRACE`].
@@ -1015,7 +1100,11 @@ fn drop_stream(g: &mut Inner, id: &str) {
             g.detached.remove(&(at, s.key));
         }
         for t in s.topics.keys() {
-            leave(&mut g.chans, s.key, &t.chans(&s.caller));
+            leave(
+                &mut g.chans,
+                s.key,
+                &t.chans(&s.caller, s.person.as_deref()),
+            );
         }
     }
 }
@@ -1675,13 +1764,14 @@ mod tests {
         assert!(live_only_admits(&live, &Topic::Questions));
         let hub = Hub::new(Default::default());
         let c = viewer(Level::Owner, Some("u_o"));
-        let mut q = hub.open(c.clone(), true, None, None);
+        let mut q = hub.open_for(c.clone(), true, None, None, Some(String::new()));
         hub.update(&q.id, &c, &[Topic::Questions], &[]).unwrap();
-        let mut g = hub.open(c.clone(), true, None, None);
+        let mut g = hub.open_for(c.clone(), true, None, None, Some(String::new()));
         hub.update(&g.id, &c, &[Topic::Gallery, Topic::Artifact(A.into())], &[])
             .unwrap();
         hub.dispatch(&Event::Question {
             question: json!({"id": "Q1", "status": "open"}),
+            recipient: None,
         });
         let got = drain(&mut q);
         assert_eq!(got.len(), 1);
@@ -1702,7 +1792,7 @@ mod tests {
         let hub = Hub::new(Default::default());
         let c = viewer(Level::Owner, Some("u_o"));
         assert!(!hub.holds_owner_topics());
-        let o = hub.open(c.clone(), true, None, None);
+        let o = hub.open_for(c.clone(), true, None, None, Some(String::new()));
         hub.update(&o.id, &c, &[Topic::Gallery], &[]).unwrap();
         assert!(!hub.holds_owner_topics(), "gallery is no owner topic");
         hub.update(&o.id, &c, &[Topic::Questions], &[]).unwrap();
@@ -1713,7 +1803,7 @@ mod tests {
         assert!(hub.holds_owner_topics(), "detached within the grace");
         sweep_locked(&mut hub.lock(), now + GRACE + Duration::from_secs(1));
         assert!(!hub.holds_owner_topics());
-        let o = hub.open(c.clone(), true, None, None);
+        let o = hub.open_for(c.clone(), true, None, None, Some(String::new()));
         hub.update(&o.id, &c, &[Topic::Questions], &[]).unwrap();
         hub.update(&o.id, &c, &[], &[Topic::Questions]).unwrap();
         assert!(!hub.holds_owner_topics(), "unsubscribed");
@@ -1732,21 +1822,23 @@ mod tests {
         let hub = Hub::new(Default::default());
         let c = viewer(Level::Owner, Some("u_o"));
         assert!(!hub.holds_owner_topics());
-        assert!(!hub.holds_inbox());
-        let mut i = hub.open(c.clone(), true, None, None);
+        assert!(hub.inbox_holders().is_empty());
+        let mut i = hub.open_for(c.clone(), true, None, None, Some(String::new()));
         hub.update(&i.id, &c, &[Topic::Inbox], &[]).unwrap();
-        assert!(hub.holds_owner_topics() && hub.holds_inbox());
-        let mut q = hub.open(c.clone(), true, None, None);
+        assert!(hub.holds_owner_topics() && hub.inbox_holders().contains(""));
+        let mut q = hub.open_for(c.clone(), true, None, None, Some(String::new()));
         hub.update(&q.id, &c, &[Topic::Questions, Topic::Gallery], &[])
             .unwrap();
         hub.dispatch(&Event::InboxItem {
             item: json!({"id": "I1"}),
             unread: 3,
+            recipient: None,
         });
         hub.dispatch(&Event::InboxRead {
             ids: None,
             read: true,
             unread: 0,
+            recipient: None,
         });
         let got = drain(&mut i);
         assert_eq!(got.len(), 2);
@@ -1773,10 +1865,10 @@ mod tests {
         ));
         let hub = Hub::new(Default::default());
         let c = viewer(Level::Owner, Some("u_o"));
-        let mut p = hub.open(c.clone(), true, None, None);
+        let mut p = hub.open_for(c.clone(), true, None, None, Some(String::new()));
         hub.update(&p.id, &c, &[Topic::People], &[]).unwrap();
         assert!(!hub.holds_owner_topics(), "people opens no owner surface");
-        let mut q = hub.open(c.clone(), true, None, None);
+        let mut q = hub.open_for(c.clone(), true, None, None, Some(String::new()));
         hub.update(
             &q.id,
             &c,
@@ -1796,6 +1888,62 @@ mod tests {
             got[0].1
         );
         assert!(drain(&mut q).is_empty(), "no other topic carries people");
+    }
+
+    #[test]
+    fn each_persons_topics_carry_their_own_events_and_end_with_the_person() {
+        let hub = Hub::new(Default::default());
+        let owner = viewer(Level::Owner, Some("u_o"));
+        let sam = viewer(Level::Interact, Some("u_sam"));
+        let mut o = hub.open_for(owner.clone(), true, None, None, Some(String::new()));
+        hub.update(&o.id, &owner, &[Topic::Questions, Topic::Inbox], &[])
+            .unwrap();
+        let mut s = hub.open_for(sam.clone(), false, None, None, Some("u_sam".into()));
+        hub.update(&s.id, &sam, &[Topic::Questions, Topic::Inbox], &[])
+            .unwrap();
+        // A LAN viewer's stream holds no one's personal channel.
+        let lan = viewer(Level::Interact, Some("u_lan"));
+        let mut l = hub.open(lan.clone(), false, None, None);
+        hub.update(&l.id, &lan, &[Topic::Questions, Topic::Inbox], &[])
+            .unwrap();
+        assert!(hub.holds_surface("") && hub.holds_surface("u_sam"));
+        assert!(!hub.holds_surface("u_lan"));
+        assert_eq!(
+            hub.inbox_holders(),
+            ["".to_string(), "u_sam".to_string()].into_iter().collect()
+        );
+        hub.dispatch(&Event::Question {
+            question: json!({"id": "QS"}),
+            recipient: Some("u_sam".into()),
+        });
+        hub.dispatch(&Event::InboxItem {
+            item: json!({"id": "IO"}),
+            unread: 1,
+            recipient: None,
+        });
+        let sams = drain(&mut s);
+        assert_eq!(sams.len(), 1);
+        assert!(sams[0].1.contains(r#""id":"QS""#), "{}", sams[0].1);
+        let owners = drain(&mut o);
+        assert_eq!(owners.len(), 1);
+        assert!(owners[0].1.contains(r#""id":"IO""#), "{}", owners[0].1);
+        assert!(drain(&mut l).is_empty());
+        // Resumed only for the same person.
+        assert!(
+            !hub.open_for(sam.clone(), false, None, Some((&s.id, 0)), None)
+                .resumed
+        );
+        assert_eq!(
+            hub.people_streaming(),
+            ["u_sam".to_string()].into_iter().collect()
+        );
+        hub.end_streams_of(&["u_sam".to_string()].into_iter().collect());
+        assert!(!hub.holds_surface("u_sam") && hub.holds_surface(""));
+        assert!(hub.people_streaming().is_empty());
+        assert_eq!(
+            hub.update(&s.id, &sam, &[], &[]),
+            Err(SubError::UnknownStream)
+        );
     }
 
     #[test]

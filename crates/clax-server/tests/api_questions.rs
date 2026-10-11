@@ -1764,3 +1764,186 @@ async fn the_grace_records_its_withdrawal_as_the_daemon() {
         "names the agent"
     );
 }
+
+/// A daemon on the LAN with Sam connected: Sam's machine, his browser's
+/// viewer cookie, and his agent's session.
+async fn with_sam() -> (TestServer, clax_server::testing::TestClient, String, String) {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let cookie = ts.store.viewer_of_grant(&sam.grant_id()).unwrap().id;
+    let sid = sam.register("claude", "sam-h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    (ts, sam, cookie, sid)
+}
+
+/// `req` from the browser of viewer cookie `cookie`.
+fn browser(cookie: &str, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    req.header("cookie", format!("clax_viewer={cookie}"))
+}
+
+#[tokio::test]
+async fn a_persons_agent_asks_its_person() {
+    let (ts, sam, cookie, sid) = with_sam().await;
+    let r = sam
+        .agent(
+            "POST",
+            &format!("/api/sessions/{sid}/questions"),
+            Some(&sid),
+            Some(body()),
+        )
+        .await;
+    assert_eq!(r.status(), 201);
+    let qid = r.json::<Value>().await.unwrap()["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // Not the owner's to see or answer.
+    assert_eq!(
+        ts.get_authed(&format!("/api/questions/{qid}"))
+            .await
+            .status(),
+        404
+    );
+    let answer = json!({"answers": [{"selected": ["A"]}]});
+    for verb in ["answer", "decline", "release"] {
+        let r = post(&ts, &format!("/api/questions/{qid}/{verb}"), answer.clone()).await;
+        assert_eq!(r.status(), 404, "{verb}");
+    }
+    // Sam sees it and answers it from his browser; his agent's poll gets it.
+    let r = browser(
+        &cookie,
+        ts.client.get(format!("{}/api/questions/{qid}", ts.base)),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(r.status(), 200);
+    let r = browser(
+        &cookie,
+        ts.client
+            .post(format!("{}/api/questions/{qid}/answer", ts.base))
+            .json(&answer),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    let r = sam
+        .get(
+            Some(&sid),
+            &format!("/api/sessions/{sid}/questions/{qid}?wait=0"),
+        )
+        .await;
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(v["question"]["status"], "answered", "{v}");
+    assert_eq!(v["question"]["answers"][0]["selected"], json!(["A"]));
+}
+
+#[tokio::test]
+async fn a_persons_hook_question_waits_only_while_its_person_has_clax_open() {
+    let (ts, sam, cookie, sid) = with_sam().await;
+    // Sam's agent has a page of its own.
+    let r = sam
+        .agent(
+            "POST",
+            "/api/artifacts",
+            Some(&sid),
+            Some(json!({"title": "Sam's", "files": {"index.html": {"content": "<p>", "encoding": "utf8"}}})),
+        )
+        .await;
+    assert_eq!(r.status(), 201, "{}", r.text().await.unwrap());
+    let ask = |t: &'static str| {
+        let (sam, sid) = (&sam, sid.clone());
+        async move {
+            let r = sam
+                .agent(
+                    "POST",
+                    &format!("/api/sessions/{sid}/questions"),
+                    Some(&sid),
+                    Some(hook(t)),
+                )
+                .await;
+            assert_eq!(r.status(), 201);
+            r.json::<Value>().await.unwrap()
+        }
+    };
+    // The owner's Clax is open, Sam's is not: the terminal asks Sam.
+    let _owner = ts.stream_as_owner(&["questions"]).await;
+    let v = ask("toolu_1").await;
+    assert_eq!(
+        (v["mode"].as_str(), v["surface_open"].as_bool()),
+        (Some("terminal"), Some(false))
+    );
+    // Sam opens Clax: the next waits there.
+    let res = browser(&cookie, ts.client.get(format!("{}/api/stream", ts.base)))
+        .send()
+        .await
+        .unwrap();
+    let mut ev = clax_server::testing::EventReader::from_response(res);
+    let id = ev.next_named("ready").await["stream"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = browser(
+        &cookie,
+        ts.client
+            .post(format!("{}/api/stream/{id}", ts.base))
+            .json(&json!({"subscribe": ["questions"]})),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(r.status(), 200);
+    let v = ask("toolu_2").await;
+    assert_eq!(
+        (v["mode"].as_str(), v["surface_open"].as_bool()),
+        (Some("wait"), Some(true))
+    );
+    let e = ev.next_named("question").await;
+    assert_eq!(e["question"]["id"], v["question"]["id"]);
+}
+
+#[tokio::test]
+async fn a_persons_agent_sees_its_questions_title_once_its_person_approves_the_author() {
+    use crate::common::people::{TITLE, World};
+    let w = World::two_people().await;
+    let ask = || async {
+        let r = w
+            .sam
+            .agent(
+                "POST",
+                &format!("/api/sessions/{}/questions", w.sam_session),
+                Some(&w.sam_session),
+                Some(json!({"source": "ask", "artifact_id": w.read.artifact, "questions": [{"question": "Which?",
+                    "header": "Pick", "options": [{"label": "A"}, {"label": "B"}]}]})),
+            )
+            .await;
+        assert_eq!(r.status(), 201);
+        r.json::<Value>().await.unwrap()
+    };
+    let v = ask().await;
+    assert_eq!(v["question"]["artifact"]["title"], Value::Null, "{v}");
+    assert_eq!(
+        v["question"]["artifact"]["withheld"]["authors"][0]["public_id"],
+        w.mia_public.as_str()
+    );
+    let sam =
+        w.ts.store
+            .viewer_of_grant(&w.sam.grant_id())
+            .unwrap()
+            .public_id;
+    w.ts.store
+        .approve(
+            &clax_core::audit::AuditCtx::DAEMON,
+            Some(&sam),
+            &w.mia_public,
+            clax_core::store::approvals::Scope::Everywhere,
+            clax_core::store::approvals::Via::Shell,
+        )
+        .unwrap();
+    let v = ask().await;
+    assert_eq!(v["question"]["artifact"]["title"], TITLE, "{v}");
+    assert!(v["question"]["artifact"].get("withheld").is_none());
+}
