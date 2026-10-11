@@ -1,12 +1,19 @@
-//! The owner's inbox (spec 2026-10-06-agent-questions-and-inbox-design §7):
-//! items that reference what agents sent back, made inside their sources'
-//! transactions; read marks; and search through a contentless FTS5 index.
-//! Items are never deleted.
+//! The inbox (spec 2026-10-06-agent-questions-and-inbox-design §7), one per
+//! person (spec 2026-10-08-multi-agent-multi-person §5.3, M21): items that
+//! reference what agents sent back, connection requests and the like, made
+//! inside their sources' transactions, each for one recipient (the owner,
+//! or a connected person); read marks; and search through a contentless
+//! FTS5 index. Items are never deleted.
 //!
-//! Every list is newest first by `seq` and always bounded by a `seq` cursor
-//! (`i64::MAX` on the first page), so each page is an index range: the
-//! unread list walks `inbox_unread`, a filter its `inbox_by_*` index, a
-//! search the FTS index in rowid order, and the rest the rowid itself.
+//! An item for the owner keeps the key its source gives (`reply:<comment>`);
+//! one for a connected person appends `@<public ID>`, so one source makes
+//! one item per recipient.
+//!
+//! Every list is one recipient's, newest first by `seq` and always bounded
+//! by a `seq` cursor (`i64::MAX` on the first page), so each page is an
+//! index range led by the recipient: the unread list walks `inbox_unread`,
+//! a filter its `inbox_by_*` index, a search the FTS index in rowid order,
+//! and the rest `inbox_by_recipient`.
 
 use super::Store;
 use super::questions::{QuestionRow, Status};
@@ -24,7 +31,8 @@ pub const MAX_PAGE: u32 = 200;
 /// Most search terms a query uses; later ones are ignored.
 pub const MAX_TERMS: usize = 16;
 
-/// What an item is about (spec §7.1).
+/// What an item is about (spec §7.1; `approval`, `connection` and
+/// `ended`: spec 2026-10-08-multi-agent-multi-person §5.3, §6.3, §9.5, §14).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
@@ -33,15 +41,26 @@ pub enum Kind {
     Published,
     Question,
     Finished,
+    /// An approval request for the approver (`request_id`).
+    Approval,
+    /// A grant request waiting for the owner, or a machine that connected
+    /// with an invite (`grant_id`).
+    Connection,
+    /// An agent's session ended with something to clean up
+    /// (`detail_json`).
+    Ended,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 5] = [
+    pub const ALL: [Kind; 8] = [
         Kind::Reply,
         Kind::Version,
         Kind::Published,
         Kind::Question,
         Kind::Finished,
+        Kind::Approval,
+        Kind::Connection,
+        Kind::Ended,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -51,6 +70,9 @@ impl Kind {
             Kind::Published => "published",
             Kind::Question => "question",
             Kind::Finished => "finished",
+            Kind::Approval => "approval",
+            Kind::Connection => "connection",
+            Kind::Ended => "ended",
         }
     }
 
@@ -76,10 +98,22 @@ pub struct ItemRow {
     pub question_id: Option<String>,
     pub session_id: Option<String>,
     pub harness: Option<String>,
-    /// `finished` only: `{message, thread_ids}`.
+    /// `finished`: `{message, thread_ids}`; `ended`: what the end cleaned up.
     pub detail: Option<Value>,
     pub created_at: String,
     pub read_at: Option<String>,
+    /// The connected person it is for (a public ID); `None`: the owner.
+    pub recipient: Option<String>,
+    /// `approval`: the approval request.
+    pub request_id: Option<String>,
+    /// `connection`: the grant.
+    pub grant_id: Option<String>,
+}
+
+/// The key of recipient `r` in the indexes (`COALESCE(recipient, '')`):
+/// empty for the owner, else the person's public ID.
+pub fn recipient_key(r: Option<&str>) -> &str {
+    r.unwrap_or("")
 }
 
 /// Which agent's items a query keeps.
@@ -99,9 +133,12 @@ pub enum ReadFilter {
     All,
 }
 
-/// A list, count or mark-all query. Every filter given must hold.
+/// A list, count or mark-all query over one recipient's items. Every
+/// filter given must hold.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct InboxQuery {
+    /// Whose inbox: a connected person's public ID; `None`: the owner's.
+    pub recipient: Option<String>,
     /// Search text: each term (separated by whitespace or control
     /// characters) must prefix a word of the item's index entry
     /// ([`fts_query`]). No terms: no text filter.
@@ -155,7 +192,8 @@ pub fn fts_query(text: &str) -> Option<String> {
 macro_rules! columns {
     () => {
         "i.seq, i.id, i.kind, i.artifact_id, i.thread_id, i.comment_id, i.version_n,
-         i.question_id, i.session_id, i.harness, i.detail_json, i.created_at, i.read_at"
+         i.question_id, i.session_id, i.harness, i.detail_json, i.created_at, i.read_at,
+         i.recipient, i.request_id, i.grant_id"
     };
 }
 const COLUMNS: &str = columns!();
@@ -187,6 +225,9 @@ fn row(r: &Row<'_>) -> rusqlite::Result<ItemRow> {
             .map_err(|_| corrupt("detail_json"))?,
         created_at: r.get(11)?,
         read_at: r.get(12)?,
+        recipient: r.get(13)?,
+        request_id: r.get(14)?,
+        grant_id: r.get(15)?,
     })
 }
 
@@ -212,9 +253,10 @@ enum Shape {
     MarkAll,
 }
 
-/// The index that drives a statement: the one filter it walks, in `seq`
-/// order; every other filter is a residual term (`+`), so the plan never
-/// depends on the planner's statistics.
+/// The index that drives a statement: the one filter it walks, after the
+/// recipient, in `seq` order, named with `INDEXED BY`; every other filter
+/// is a residual term (`+`), so the plan never depends on the planner's
+/// statistics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Driver {
     /// The FTS index, in rowid order.
@@ -225,26 +267,31 @@ pub(super) enum Driver {
     Handle,
     Kind,
     Harness,
-    /// The rowid between the `seq` bounds `inbox_by_created` gives the dates.
+    /// The recipient's items between the `seq` bounds `inbox_by_created`
+    /// gives the dates.
     Dates,
-    /// The rowid, newest first.
+    /// The recipient's items, newest first.
     Seq,
 }
 
 impl Driver {
+    /// The index it walks; `None` for the FTS index.
+    fn index(self) -> Option<&'static str> {
+        match self {
+            Driver::Text => None,
+            Driver::Unread => Some("inbox_unread"),
+            Driver::Artifact => Some("inbox_by_artifact"),
+            Driver::Handle => Some("inbox_by_session"),
+            Driver::Kind => Some("inbox_by_kind"),
+            Driver::Harness => Some("inbox_by_harness"),
+            Driver::Dates | Driver::Seq => Some("inbox_by_recipient"),
+        }
+    }
+
     /// The index name (or plan words) a plan driven by it names.
     #[cfg(test)]
     pub(super) fn plan_word(self) -> &'static str {
-        match self {
-            Driver::Text => "VIRTUAL TABLE INDEX",
-            Driver::Unread => "inbox_unread",
-            Driver::Artifact => "inbox_by_artifact",
-            Driver::Handle => "inbox_by_session",
-            Driver::Kind => "inbox_by_kind",
-            Driver::Harness => "inbox_by_harness",
-            Driver::Dates => "inbox_by_created",
-            Driver::Seq => "INTEGER PRIMARY KEY (rowid<?)",
-        }
+        self.index().unwrap_or("VIRTUAL TABLE INDEX")
     }
 }
 
@@ -307,11 +354,24 @@ fn build(q: &InboxQuery, shape: Shape, now: &str) -> Built {
     let on = |d: Driver| if drive == d { "" } else { "+" };
     let mut sql = String::new();
     let mut wh: Vec<String> = Vec::new();
+    // A search reaches items by rowid from the FTS index: the recipient is
+    // then a residual term.
+    let rcp = if drive == Driver::Text { "+" } else { "" };
+    let indexed = |d: Driver| {
+        d.index()
+            .map_or(String::new(), |ix| format!(" INDEXED BY {ix}"))
+    };
     match shape {
         Shape::MarkAll => {
             let p = arg(Sql::Text(now.into()), &mut args);
+            let r = arg(
+                Sql::Text(recipient_key(q.recipient.as_deref()).into()),
+                &mut args,
+            );
             sql.push_str(&format!(
-                "UPDATE inbox_items AS i SET read_at = {p} WHERE {}i.read_at IS NULL",
+                "UPDATE inbox_items AS i{} SET read_at = {p}
+                 WHERE {rcp}COALESCE(i.recipient, '') = {r} AND {}i.read_at IS NULL",
+                indexed(drive),
                 on(Driver::Unread)
             ));
             if let Some(t) = &text {
@@ -331,17 +391,22 @@ fn build(q: &InboxQuery, shape: Shape, now: &str) -> Built {
                 Shape::Page => q.before.unwrap_or(i64::MAX),
                 _ => i64::MAX,
             };
+            let r = arg(
+                Sql::Text(recipient_key(q.recipient.as_deref()).into()),
+                &mut args,
+            );
             if let Some(t) = &text {
                 let m = arg(Sql::Text(t.clone()), &mut args);
                 let b = arg(Sql::Integer(before), &mut args);
                 sql.push_str(&format!(
                     "SELECT {what} FROM inbox_fts f CROSS JOIN inbox_items i ON i.seq = f.rowid
-                     WHERE inbox_fts MATCH {m} AND f.rowid < {b}"
+                     WHERE inbox_fts MATCH {m} AND f.rowid < {b} AND {rcp}COALESCE(i.recipient, '') = {r}"
                 ));
             } else {
                 let b = arg(Sql::Integer(before), &mut args);
                 sql.push_str(&format!(
-                    "SELECT {what} FROM inbox_items i WHERE i.seq < {b}"
+                    "SELECT {what} FROM inbox_items i{} WHERE COALESCE(i.recipient, '') = {r} AND i.seq < {b}",
+                    indexed(drive)
                 ));
             }
             match q.read {
@@ -443,23 +508,33 @@ fn search_error(e: CoreError, searched: bool) -> CoreError {
     }
 }
 
-/// The unread count.
-pub(super) const UNREAD_COUNT: &str = "SELECT count(*) FROM inbox_items WHERE read_at IS NULL";
-pub(super) const BY_ID: &str =
-    concat!("SELECT ", columns!(), " FROM inbox_items i WHERE i.id = ?1");
+/// Recipient `?1`'s unread count.
+pub(super) const UNREAD_COUNT: &str = "SELECT count(*) FROM inbox_items INDEXED BY inbox_unread
+     WHERE COALESCE(recipient, '') = ?1 AND read_at IS NULL";
+/// Item `?1`, when it is recipient `?2`'s.
+pub(super) const BY_ID: &str = concat!(
+    "SELECT ",
+    columns!(),
+    " FROM inbox_items i WHERE i.id = ?1 AND +COALESCE(i.recipient, '') = ?2"
+);
 pub(super) const BY_SEQS: &str = concat!(
     "SELECT ",
     columns!(),
     " FROM json_each(?1) j CROSS JOIN inbox_items i ON i.seq = j.value ORDER BY i.seq DESC"
 );
+/// Marks recipient `?3`'s items `?1` (a JSON array of IDs) read at `?2`.
 pub(super) const MARK_READ: &str = "UPDATE inbox_items SET read_at = ?2
-    WHERE id IN (SELECT value FROM json_each(?1)) AND read_at IS NULL";
+    WHERE id IN (SELECT value FROM json_each(?1)) AND +COALESCE(recipient, '') = ?3
+      AND read_at IS NULL";
+/// Marks recipient `?2`'s items `?1` unread.
 pub(super) const MARK_UNREAD: &str = "UPDATE inbox_items SET read_at = NULL
-    WHERE id IN (SELECT value FROM json_each(?1)) AND read_at IS NOT NULL";
+    WHERE id IN (SELECT value FROM json_each(?1)) AND +COALESCE(recipient, '') = ?2
+      AND read_at IS NOT NULL";
 pub(super) const READ_BY_LOOK: &str = "UPDATE inbox_items SET read_at = ?3
-    WHERE thread_id = ?1 AND artifact_id = ?2 AND kind = 'reply' AND read_at IS NULL AND created_at <= ?3";
+    WHERE thread_id = ?1 AND artifact_id = ?2 AND kind = 'reply' AND read_at IS NULL AND created_at <= ?3
+      AND +COALESCE(recipient, '') = ?4";
 pub(super) const READ_BY_SEEN: &str = "UPDATE inbox_items SET read_at = ?3
-    WHERE artifact_id = ?1 AND read_at IS NULL AND
+    WHERE COALESCE(recipient, '') = ?4 AND artifact_id = ?1 AND read_at IS NULL AND
       ((kind = 'version' AND version_n <= ?2) OR (kind IN ('published', 'finished') AND created_at <= ?3))";
 /// Touches item `?1`, marking it read at `?2` when `?3` (keeping an earlier read time).
 pub(super) const QUESTION_TOUCH: &str = "UPDATE inbox_items
@@ -467,14 +542,15 @@ pub(super) const QUESTION_TOUCH: &str = "UPDATE inbox_items
 /// The newest item's time (`inbox_by_created`, its last entry).
 pub(super) const NEWEST_STAMP: &str = "SELECT max(created_at) FROM inbox_items";
 pub(super) const OF_QUESTION: &str = "SELECT seq FROM inbox_items WHERE question_id = ?1";
-/// Whether the owner (`?1`, a public ID) is in thread `?2`.
-pub(super) const OWNER_IN: &str =
+/// Whether the person `?1` (a public ID: the owner's or a connected
+/// person's) is in thread `?2`.
+pub(super) const IN_THREAD: &str =
     "SELECT EXISTS (SELECT 1 FROM comments c WHERE c.thread_id = ?2 AND +c.author_public_id = ?1)
          OR EXISTS (SELECT 1 FROM comments c CROSS JOIN mentions m ON m.comment_id = c.id
                      WHERE c.thread_id = ?2 AND +m.public_id = ?1)
          OR EXISTS (SELECT 1 FROM threads t WHERE t.id = ?2 AND t.resolved_by = 'viewer:' || ?1)";
-/// Whether the owner (`?2`) wrote a comment on artifact `?1`.
-pub(super) const OWNER_COMMENTED: &str =
+/// Whether the person `?2` wrote a comment on artifact `?1`.
+pub(super) const COMMENTED_ON: &str =
     "SELECT EXISTS (SELECT 1 FROM threads t CROSS JOIN comments m ON m.thread_id = t.id
                      WHERE t.artifact_id = ?1 AND +m.author_public_id = ?2)";
 /// The anchor quotes of the threads version `?2` of `?1` addressed.
@@ -484,10 +560,22 @@ pub(super) const ADDRESSED_QUOTES: &str = "SELECT group_concat(CASE WHEN json_va
       WHERE vt.artifact_id = ?1 AND vt.version_n = ?2";
 pub(super) const THREAD_MOVED: &str =
     "UPDATE inbox_items SET artifact_id = ?2 WHERE thread_id = ?1";
+/// The connected people (not revoked) an item may go to, by public ID.
+pub(super) const CONNECTED_PEOPLE: &str = "SELECT public_id FROM viewers INDEXED BY viewers_people
+    WHERE person = 1 AND person_revoked_at IS NULL ORDER BY public_id";
+/// Item `?1` (by key) read at `?2` unless read before; always written, so
+/// the listener hears its source changed.
+pub(super) const READ_BY_KEY: &str =
+    "UPDATE inbox_items SET read_at = coalesce(read_at, ?2) WHERE key = ?1";
+
+/// The connected person the query-plan checks' person items are for.
+#[cfg(test)]
+pub(super) const SAM: &str = "u_0000000000000000000000s";
 
 /// Each list, count and mark-all shape with representative parameters,
 /// built as [`Store::inbox_list`], [`Store::inbox_count`] and
-/// [`Store::inbox_mark_all`] build them, for the query-plan checks.
+/// [`Store::inbox_mark_all`] build them, for the query-plan checks: the
+/// owner's, and a connected person's.
 #[cfg(test)]
 pub(super) fn shapes() -> Vec<(String, Built)> {
     let now = "2026-01-01T00:00:00.000Z";
@@ -601,6 +689,45 @@ pub(super) fn shapes() -> Vec<(String, Built)> {
                 ..base.clone()
             },
         ),
+        (
+            "PERSON_PAGE",
+            InboxQuery {
+                recipient: Some(SAM.into()),
+                ..base.clone()
+            },
+        ),
+        (
+            "PERSON_UNREAD_PAGE",
+            InboxQuery {
+                recipient: Some(SAM.into()),
+                read: ReadFilter::Unread,
+                ..base.clone()
+            },
+        ),
+        (
+            "PERSON_KIND_PAGE",
+            InboxQuery {
+                recipient: Some(SAM.into()),
+                kinds: vec![Kind::Question],
+                ..base.clone()
+            },
+        ),
+        (
+            "PERSON_DATES_PAGE",
+            InboxQuery {
+                recipient: Some(SAM.into()),
+                since: Some("2026-01-01T00:00:10.000Z".into()),
+                ..base.clone()
+            },
+        ),
+        (
+            "PERSON_TEXT_PAGE",
+            InboxQuery {
+                recipient: Some(SAM.into()),
+                text: Some("blue".into()),
+                ..base.clone()
+            },
+        ),
     ];
     let mut out = Vec::new();
     for (name, q) in named {
@@ -625,28 +752,99 @@ fn owner_pid(c: &Connection) -> Result<Option<String>> {
     )
 }
 
-/// Whether viewer `viewer_id` (its cookie ID) is the owner.
-fn is_owner_row(c: &Connection, viewer_id: &str) -> Result<bool> {
+/// One who may receive items: their recipient (`None`: the owner) and
+/// their public ID.
+struct To {
+    recipient: Option<String>,
+    pid: String,
+}
+
+/// Everyone who may receive items: the owner, when there is one, then
+/// every connected person who is not revoked, by public ID.
+fn everyone(c: &Connection) -> Result<Vec<To>> {
+    let mut out: Vec<To> = owner_pid(c)?
+        .map(|pid| To {
+            recipient: None,
+            pid,
+        })
+        .into_iter()
+        .collect();
+    let mut st = c.prepare_cached(CONNECTED_PEOPLE)?;
+    for pid in st.query_map([], |r| r.get::<_, String>(0))? {
+        let pid = pid?;
+        out.push(To {
+            recipient: Some(pid.clone()),
+            pid,
+        });
+    }
+    Ok(out)
+}
+
+/// The recipient whose items viewer `viewer_id` (its cookie ID) reads:
+/// `Some(None)` for the owner, `Some(Some(public ID))` for a connected
+/// person who is not revoked, `None` for anyone else.
+fn recipient_of_viewer(c: &Connection, viewer_id: &str) -> Result<Option<Option<String>>> {
+    let row: Option<(bool, bool, Option<String>, String)> = c
+        .query_row(
+            "SELECT owner, person, person_revoked_at, public_id FROM viewers WHERE id = ?1",
+            params![viewer_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    Ok(match row {
+        Some((true, _, _, _)) => Some(None),
+        Some((false, true, None, pid)) => Some(Some(pid)),
+        _ => None,
+    })
+}
+
+/// The recipient of the items session `sid` makes for its own person: the
+/// session's person (`None`: the owner's agents, and a session that is gone).
+pub(super) fn person_of_session(c: &Connection, sid: &str) -> Result<Option<String>> {
     Ok(c.query_row(
-        "SELECT owner FROM viewers WHERE id = ?1",
-        params![viewer_id],
+        "SELECT person FROM sessions WHERE id = ?1",
+        params![sid],
+        |r| r.get::<_, Option<String>>(0),
+    )
+    .optional()?
+    .flatten())
+}
+
+/// `key` for `recipient`: the owner's keeps it, a person's appends
+/// `@<public ID>`.
+fn keyed(key: &str, recipient: Option<&str>) -> String {
+    match recipient {
+        None => key.to_string(),
+        Some(p) => format!("{key}@{p}"),
+    }
+}
+
+/// Whether `aid` is a live page, which only the owner's browsers on this
+/// machine see (L10): no connected person gets an item about one.
+fn is_live_page(c: &Connection, aid: &str) -> Result<bool> {
+    Ok(c.query_row(
+        "SELECT kind = ?2 FROM artifacts WHERE id = ?1",
+        params![aid, crate::live::KIND_LIVE],
         |r| r.get::<_, bool>(0),
     )
     .optional()?
     .unwrap_or(false))
 }
 
-/// Whether the owner (`pid`) is in thread `tid` (main spec §10
+/// Whether the person `pid` is in thread `tid` (main spec §10
 /// "Participants"): wrote a comment in it, is mentioned in it, or resolved
 /// it. The unary `+` keeps the per-thread lookups on `comments_by_thread`,
 /// as the attention query does.
-fn owner_in(c: &Connection, pid: &str, tid: &str) -> Result<bool> {
-    Ok(c.query_row(OWNER_IN, params![pid, tid], |r| r.get(0))?)
+fn in_thread(c: &Connection, pid: &str, tid: &str) -> Result<bool> {
+    Ok(c.query_row(IN_THREAD, params![pid, tid], |r| r.get(0))?)
 }
 
 struct New<'a> {
     kind: Kind,
+    /// The source's key: the item's key for the owner (see [`keyed`]).
     key: String,
+    /// The connected person it is for; `None`: the owner.
+    recipient: Option<&'a str>,
     artifact_id: Option<&'a str>,
     thread_id: Option<&'a str>,
     comment_id: Option<&'a str>,
@@ -655,9 +853,33 @@ struct New<'a> {
     session_id: Option<&'a str>,
     /// The harness, when the caller knows it; else read from the session.
     harness: Option<&'a str>,
+    request_id: Option<&'a str>,
+    grant_id: Option<&'a str>,
     detail: Option<Value>,
     /// The kind's own search text (§7.4).
     text: String,
+}
+
+impl<'a> New<'a> {
+    /// An item of `kind` keyed `key` for the owner, naming nothing yet.
+    fn of(kind: Kind, key: String) -> New<'a> {
+        New {
+            kind,
+            key,
+            recipient: None,
+            artifact_id: None,
+            thread_id: None,
+            comment_id: None,
+            version_n: None,
+            question_id: None,
+            session_id: None,
+            harness: None,
+            request_id: None,
+            grant_id: None,
+            detail: None,
+            text: String::new(),
+        }
+    }
 }
 
 fn harness_of(c: &Connection, sid: Option<&str>) -> Result<Option<String>> {
@@ -708,8 +930,8 @@ fn stamp(c: &Connection, now: &str) -> Result<String> {
     })
 }
 
-/// Inserts the item and its index entry unless its key exists, stamped
-/// `now` (see [`stamp`]); its `seq`.
+/// Inserts the item and its index entry unless its key (for its recipient,
+/// [`keyed`]) exists, stamped `now` (see [`stamp`]); its `seq`.
 fn insert_at(c: &Connection, n: New<'_>, now: &str) -> Result<Option<i64>> {
     let created_at = stamp(c, now)?;
     let harness = match n.harness {
@@ -717,13 +939,14 @@ fn insert_at(c: &Connection, n: New<'_>, now: &str) -> Result<Option<i64>> {
         None => harness_of(c, n.session_id)?,
     };
     let changed = c.execute(
-        "INSERT OR IGNORE INTO inbox_items (id, kind, key, artifact_id, thread_id, comment_id, version_n,
-            question_id, session_id, harness, detail_json, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        "INSERT OR IGNORE INTO inbox_items (id, kind, key, recipient, artifact_id, thread_id, comment_id,
+            version_n, question_id, session_id, harness, request_id, grant_id, detail_json, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         params![
             new_ulid(),
             n.kind.as_str(),
-            n.key,
+            keyed(&n.key, n.recipient),
+            n.recipient,
             n.artifact_id,
             n.thread_id,
             n.comment_id,
@@ -731,6 +954,8 @@ fn insert_at(c: &Connection, n: New<'_>, now: &str) -> Result<Option<i64>> {
             n.question_id,
             n.session_id,
             harness,
+            n.request_id,
+            n.grant_id,
             n.detail.map(|d| d.to_string()),
             created_at
         ],
@@ -748,7 +973,8 @@ fn insert_at(c: &Connection, n: New<'_>, now: &str) -> Result<Option<i64>> {
 }
 
 /// An agent comment `cid` on thread `tid` of artifact `aid`: a `reply`
-/// item when the owner is in the thread.
+/// item for each person in the thread ([`in_thread`]): the owner, and every
+/// connected person (never about a live page). The `seq`s made.
 pub(crate) fn note_reply(
     c: &Connection,
     cid: &str,
@@ -757,37 +983,38 @@ pub(crate) fn note_reply(
     sid: Option<&str>,
     body: &str,
     now: &str,
-) -> Result<Option<i64>> {
-    let Some(pid) = owner_pid(c)? else {
-        return Ok(None);
-    };
-    if !owner_in(c, &pid, tid)? {
-        return Ok(None);
-    }
-    insert_at(
-        c,
-        New {
-            kind: Kind::Reply,
-            key: format!("reply:{cid}"),
+) -> Result<Vec<i64>> {
+    let mut made = Vec::new();
+    let to = everyone(c)?;
+    let live = to.iter().any(|t| t.recipient.is_some()) && is_live_page(c, aid)?;
+    for to in to {
+        if to.recipient.is_some() && live {
+            continue;
+        }
+        if !in_thread(c, &to.pid, tid)? {
+            continue;
+        }
+        let n = New {
+            recipient: to.recipient.as_deref(),
             artifact_id: Some(aid),
             thread_id: Some(tid),
             comment_id: Some(cid),
-            version_n: None,
-            question_id: None,
             session_id: sid,
-            harness: None,
-            detail: None,
             text: body.into(),
-        },
-        now,
-    )
+            ..New::of(Kind::Reply, format!("reply:{cid}"))
+        };
+        made.extend(insert_at(c, n, now)?);
+    }
+    Ok(made)
 }
 
 /// Version `n` of `aid` by session `sid`: `published` for the first version
-/// of an artifact (not a live page) a session created; for a later one,
-/// `version` when the owner has written a comment on `aid`, indexed by its
-/// note and the quotes of the threads it addressed. Call after the version,
-/// its links and the artifact's new title are written.
+/// of an artifact (not a live page) a session created, for the owner and,
+/// when the session is a connected person's agent, for that person; for a
+/// later one, `version` for each person (the owner, and every connected
+/// person) who has written a comment on `aid`, indexed by its note and the
+/// quotes of the threads it addressed. Call after the version, its links
+/// and the artifact's new title are written. The `seq`s made.
 pub(crate) fn note_version(
     c: &Connection,
     aid: &str,
@@ -795,8 +1022,11 @@ pub(crate) fn note_version(
     sid: Option<&str>,
     note: Option<&str>,
     now: &str,
-) -> Result<Option<i64>> {
-    let Some(sid) = sid else { return Ok(None) };
+) -> Result<Vec<i64>> {
+    let Some(sid) = sid else {
+        return Ok(Vec::new());
+    };
+    let mut made = Vec::new();
     if n == 1 {
         let (kind, description): (String, Option<String>) = c.query_row(
             "SELECT kind, description FROM artifacts WHERE id = ?1",
@@ -804,56 +1034,55 @@ pub(crate) fn note_version(
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
         if kind != "html" {
-            return Ok(None);
+            return Ok(made);
         }
-        return insert_at(
-            c,
-            New {
-                kind: Kind::Published,
-                key: format!("published:{aid}"),
+        let person = person_of_session(c, sid)?;
+        for recipient in std::iter::once(None).chain(person.as_deref().map(Some)) {
+            let item = New {
+                recipient,
                 artifact_id: Some(aid),
-                thread_id: None,
-                comment_id: None,
                 version_n: Some(1),
-                question_id: None,
                 session_id: Some(sid),
-                harness: None,
-                detail: None,
-                text: description.unwrap_or_default(),
-            },
-            now,
-        );
+                text: description.clone().unwrap_or_default(),
+                ..New::of(Kind::Published, format!("published:{aid}"))
+            };
+            made.extend(insert_at(c, item, now)?);
+        }
+        return Ok(made);
     }
-    let Some(pid) = owner_pid(c)? else {
-        return Ok(None);
-    };
-    let commented: bool = c.query_row(OWNER_COMMENTED, params![aid, pid], |r| r.get(0))?;
-    if !commented {
-        return Ok(None);
-    }
-    let quotes: Option<String> = c.query_row(ADDRESSED_QUOTES, params![aid, n], |r| r.get(0))?;
-    let text = [
-        note.unwrap_or_default(),
-        quotes.as_deref().unwrap_or_default(),
-    ]
-    .join(" ");
-    insert_at(
-        c,
-        New {
-            kind: Kind::Version,
-            key: format!("version:{aid}:{n}"),
+    let mut text = None;
+    let to = everyone(c)?;
+    let live = to.iter().any(|t| t.recipient.is_some()) && is_live_page(c, aid)?;
+    for to in to {
+        if to.recipient.is_some() && live {
+            continue;
+        }
+        let commented: bool = c.query_row(COMMENTED_ON, params![aid, to.pid], |r| r.get(0))?;
+        if !commented {
+            continue;
+        }
+        if text.is_none() {
+            let quotes: Option<String> =
+                c.query_row(ADDRESSED_QUOTES, params![aid, n], |r| r.get(0))?;
+            text = Some(
+                [
+                    note.unwrap_or_default(),
+                    quotes.as_deref().unwrap_or_default(),
+                ]
+                .join(" "),
+            );
+        }
+        let item = New {
+            recipient: to.recipient.as_deref(),
             artifact_id: Some(aid),
-            thread_id: None,
-            comment_id: None,
             version_n: Some(n),
-            question_id: None,
             session_id: Some(sid),
-            harness: None,
-            detail: None,
-            text,
-        },
-        now,
-    )
+            text: text.clone().unwrap_or_default(),
+            ..New::of(Kind::Version, format!("version:{aid}:{n}"))
+        };
+        made.extend(insert_at(c, item, now)?);
+    }
+    Ok(made)
 }
 
 /// The questions' text, headers and option labels, for the index.
@@ -883,30 +1112,27 @@ fn answered_text(q: &QuestionRow) -> String {
     text
 }
 
-/// A question was created: one `question` item, indexed by its questions,
+/// A question was created: one `question` item for the asking session's
+/// person (the owner for the owner's agents), indexed by its questions,
 /// headers and labels.
 pub(crate) fn note_question(c: &Connection, q: &QuestionRow, now: &str) -> Result<Option<i64>> {
+    let person = person_of_session(c, &q.session_id)?;
     insert_at(
         c,
         New {
-            kind: Kind::Question,
-            key: format!("question:{}", q.id),
+            recipient: person.as_deref(),
             artifact_id: q.artifact_id.as_deref(),
-            thread_id: None,
-            comment_id: None,
-            version_n: None,
             question_id: Some(&q.id),
             session_id: Some(&q.session_id),
-            harness: None,
-            detail: None,
             text: question_text(q),
+            ..New::of(Kind::Question, format!("question:{}", q.id))
         },
         now,
     )
 }
 
 /// A question closed: its index entry gains the answers, and the item is
-/// updated (so the listener hears of it); when `seen` (the owner answered,
+/// updated (so the listener hears of it); when `seen` (its person answered,
 /// skipped or moved it, or it was answered in the terminal) it is also read.
 pub(crate) fn question_changed(
     c: &Connection,
@@ -941,8 +1167,43 @@ pub(crate) fn question_changed(
     Ok(())
 }
 
+/// A grant request `gid` from `client_name` at `peer_ip` (spec §6.3): one
+/// `connection` item for the owner, a request waiting for them or, with an
+/// invite, a machine that connected, indexed by the client's name and
+/// address and, for an invite, the person's name.
+pub(crate) fn note_connection(
+    c: &Connection,
+    gid: &str,
+    client_name: &str,
+    peer_ip: &str,
+    person_name: Option<&str>,
+    now: &str,
+) -> Result<Option<i64>> {
+    let text = [Some(client_name), Some(peer_ip), person_name]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+    insert_at(
+        c,
+        New {
+            grant_id: Some(gid),
+            text,
+            ..New::of(Kind::Connection, format!("connection:{gid}"))
+        },
+        now,
+    )
+}
+
+/// The owner decided grant request `gid` (approved or denied it): its
+/// `connection` item is read, and the listener hears that it changed.
+pub(crate) fn connection_decided(c: &Connection, gid: &str, now: &str) -> Result<()> {
+    c.execute(READ_BY_KEY, params![format!("connection:{gid}"), now])?;
+    Ok(())
+}
+
 /// Viewer `viewer_id` looked at `tids` of `aid` at `at`: when it is the
-/// owner, their `reply` items made by then are read.
+/// owner or a connected person, their `reply` items made by then are read.
 pub(crate) fn read_by_look(
     c: &Connection,
     viewer_id: &str,
@@ -950,18 +1211,19 @@ pub(crate) fn read_by_look(
     tids: &[String],
     at: &str,
 ) -> Result<()> {
-    if !is_owner_row(c, viewer_id)? {
+    let Some(recipient) = recipient_of_viewer(c, viewer_id)? else {
         return Ok(());
-    }
+    };
+    let r = recipient_key(recipient.as_deref());
     for t in tids {
-        c.execute(READ_BY_LOOK, params![t, aid, at])?;
+        c.execute(READ_BY_LOOK, params![t, aid, at, r])?;
     }
     Ok(())
 }
 
 /// Viewer `viewer_id` viewed version `n` of `aid` at `at`: when it is the
-/// owner, the artifact's `version` items up to `n`, and its `published` and
-/// `finished` items made by then, are read.
+/// owner or a connected person, the artifact's `version` items up to `n`,
+/// and its `published` and `finished` items made by then, are read.
 pub(crate) fn read_by_seen(
     c: &Connection,
     viewer_id: &str,
@@ -969,10 +1231,13 @@ pub(crate) fn read_by_seen(
     n: u32,
     at: &str,
 ) -> Result<()> {
-    if !is_owner_row(c, viewer_id)? {
+    let Some(recipient) = recipient_of_viewer(c, viewer_id)? else {
         return Ok(());
-    }
-    c.execute(READ_BY_SEEN, params![aid, n, at])?;
+    };
+    c.execute(
+        READ_BY_SEEN,
+        params![aid, n, at, recipient_key(recipient.as_deref())],
+    )?;
     Ok(())
 }
 
@@ -1026,17 +1291,29 @@ impl Store {
             .map_err(|e| search_error(e, b.searched))
     }
 
-    /// The number of unread items.
-    pub fn inbox_unread(&self) -> Result<u32> {
-        self.with_read(|c| Ok(c.query_row(UNREAD_COUNT, [], |r| r.get(0))?))
+    /// The number of `recipient`'s unread items (`None`: the owner's).
+    pub fn inbox_unread(&self, recipient: Option<&str>) -> Result<u32> {
+        self.with_read(|c| {
+            Ok(
+                c.query_row(UNREAD_COUNT, params![recipient_key(recipient)], |r| {
+                    r.get(0)
+                })?,
+            )
+        })
     }
 
-    /// Item `id`, if it exists.
-    pub fn inbox_item(&self, id: &str) -> Result<Option<ItemRow>> {
-        self.with_read(|c| Ok(c.query_row(BY_ID, params![id], row).optional()?))
+    /// Item `id`, if it exists and is `recipient`'s.
+    pub fn inbox_item(&self, id: &str, recipient: Option<&str>) -> Result<Option<ItemRow>> {
+        self.with_read(|c| {
+            Ok(
+                c.query_row(BY_ID, params![id, recipient_key(recipient)], row)
+                    .optional()?,
+            )
+        })
     }
 
-    /// The items with these `seq`s that exist, newest first.
+    /// The items with these `seq`s that exist, newest first, whoever they
+    /// are for (the listener's read).
     pub fn inbox_items_by_seq(&self, seqs: &[i64]) -> Result<Vec<ItemRow>> {
         if seqs.is_empty() {
             return Ok(Vec::new());
@@ -1051,19 +1328,21 @@ impl Store {
         })
     }
 
-    /// Marks the items `ids` read (keeping an earlier read time) or unread;
-    /// how many changed.
-    pub fn inbox_mark(&self, ids: &[String], read: bool) -> Result<usize> {
+    /// Marks `recipient`'s items `ids` read (keeping an earlier read time)
+    /// or unread; how many changed. Another recipient's items are left as
+    /// they are.
+    pub fn inbox_mark(&self, ids: &[String], read: bool, recipient: Option<&str>) -> Result<usize> {
         if ids.is_empty() {
             return Ok(0);
         }
         let json = super::feedback::id_array(ids);
         let now = self.now();
+        let r = recipient_key(recipient);
         self.with_tx(|tx| {
             Ok(if read {
-                tx.execute(MARK_READ, params![json, now])?
+                tx.execute(MARK_READ, params![json, now, r])?
             } else {
-                tx.execute(MARK_UNREAD, params![json])?
+                tx.execute(MARK_UNREAD, params![json, r])?
             })
         })
     }
@@ -1080,25 +1359,23 @@ impl Store {
     }
 
     /// A working record that ended as finished work (the agent said it was
-    /// done, or its turn ended): a `finished` item keeping its message and
-    /// threads, keyed by the record's key. `None` when it already has one.
+    /// done, or its turn ended): a `finished` item for its session's person
+    /// (the owner for the owner's agents) keeping its message and threads,
+    /// keyed by the record's key. `None` when it already has one.
     pub fn note_finished(&self, e: &Ended, harness: &str) -> Result<Option<i64>> {
         let detail = serde_json::json!({"message": e.message, "thread_ids": e.thread_ids});
         self.with_tx(|tx| {
+            let person = person_of_session(tx, &e.session_id)?;
             insert_at(
                 tx,
                 New {
-                    kind: Kind::Finished,
-                    key: format!("finished:{}", e.key),
+                    recipient: person.as_deref(),
                     artifact_id: Some(&e.artifact_id),
-                    thread_id: None,
-                    comment_id: None,
-                    version_n: None,
-                    question_id: None,
                     session_id: Some(&e.session_id),
                     harness: Some(harness),
                     detail: Some(detail),
                     text: e.message.clone().unwrap_or_default(),
+                    ..New::of(Kind::Finished, format!("finished:{}", e.key))
                 },
                 &self.now(),
             )
@@ -1230,9 +1507,8 @@ impl Store {
     /// (a question item's view reads its question separately).
     pub fn inbox_sources(&self, items: &[ItemRow]) -> Result<Vec<Sources>> {
         use std::collections::HashMap;
-        let owner = |c: &Connection| owner_pid(c);
         self.with_read(|c| {
-            let pid = owner(c)?;
+            let owner = owner_pid(c)?;
             let mut agents: HashMap<String, Option<AgentRef>> = HashMap::new();
             let mut artifacts: HashMap<String, (Option<crate::model::Artifact>, Option<String>)> =
                 HashMap::new();
@@ -1312,10 +1588,15 @@ impl Store {
                                     .prepare_cached(VERSION_THREADS)?
                                     .query_map(params![aid, n], |r| r.get(0))?
                                     .collect::<rusqlite::Result<_>>()?;
+                                // The item's recipient's threads.
+                                let pid = match &i.recipient {
+                                    Some(p) => Some(p),
+                                    None => owner.as_ref(),
+                                };
                                 let mut addressed = Vec::new();
                                 for t in tids {
-                                    let mine = match &pid {
-                                        Some(p) => owner_in(c, p, &t)?,
+                                    let mine = match pid {
+                                        Some(p) => in_thread(c, p, &t)?,
                                         None => false,
                                     };
                                     if mine && let Some(r) = thread_ref(c, &t)? {
@@ -1339,7 +1620,11 @@ impl Store {
                             }
                         }
                     }
-                    Kind::Published | Kind::Question => {}
+                    Kind::Published
+                    | Kind::Question
+                    | Kind::Approval
+                    | Kind::Connection
+                    | Kind::Ended => {}
                 }
                 out.push(s);
             }
@@ -1494,6 +1779,368 @@ mod tests {
         .len()
     }
 
+    /// `recipient`'s items, newest first.
+    fn inbox_of(st: &Store, recipient: Option<&str>) -> Vec<ItemRow> {
+        st.inbox_list(&InboxQuery {
+            recipient: recipient.map(Into::into),
+            limit: 200,
+            ..Default::default()
+        })
+        .unwrap()
+        .0
+    }
+
+    /// The stored key of `i`.
+    fn key_of(i: &ItemRow) -> String {
+        KEYS.with(|k| k.borrow().get(&i.id).cloned())
+            .unwrap_or_default()
+    }
+
+    thread_local! {
+        static KEYS: std::cell::RefCell<std::collections::HashMap<String, String>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+
+    /// Reads every item's key into [`KEYS`].
+    fn load_keys(st: &Store) {
+        let rows: Vec<(String, String)> = st
+            .with_read(|c| {
+                let mut q = c.prepare("SELECT id, key FROM inbox_items")?;
+                Ok(q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<rusqlite::Result<_>>()?)
+            })
+            .unwrap();
+        KEYS.with(|k| k.borrow_mut().extend(rows));
+    }
+
+    /// A session registered under `grant` (`None`: the daemon token's).
+    fn agent_of(st: &Store, grant: Option<&str>, hsid: &str) -> String {
+        st.register_session(
+            DAEMON,
+            crate::RegisterSession {
+                harness: "claude".into(),
+                harness_session_id: Some(hsid.into()),
+                cwd: "/w".into(),
+                grant_id: grant.map(Into::into),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .id
+    }
+
+    #[test]
+    fn items_go_to_their_recipient() {
+        use crate::store::people::tests::{KEY_A, approved, pending};
+        let (_d, _c, st) = crate::store::people::tests::store();
+        let owner = st.owner_viewer(true).unwrap().public_id;
+        // A pending grant: a connection request for the owner.
+        let (req, _, _) = pending(&st, KEY_A);
+        // Sam and Mia connect by invite: the owner hears of each.
+        let (sam_grant, _, _) = approved(&st, "Sam", [7; 32]);
+        let sam = st.viewer_of_grant(&sam_grant).unwrap().public_id;
+        let (mia_grant, _, _) = approved(&st, "Mia", [8; 32]);
+        let sam_agent = agent_of(&st, Some(&sam_grant), "sam-h1");
+        let mia_agent = agent_of(&st, Some(&mia_grant), "mia-h1");
+        load_keys(&st);
+        let connections: Vec<Option<String>> = inbox_of(&st, None)
+            .iter()
+            .filter(|i| i.kind == Kind::Connection)
+            .map(|i| i.grant_id.clone())
+            .collect();
+        assert_eq!(
+            connections,
+            vec![
+                Some(mia_grant.clone()),
+                Some(sam_grant.clone()),
+                Some(req.id.clone())
+            ],
+            "the request and both machines that connected, newest first"
+        );
+        assert!(
+            inbox_of(&st, Some(&sam)).is_empty(),
+            "Sam hears of no grant"
+        );
+
+        // Sam's agent asks: Sam's question, never the owner's.
+        let qid = ask(&st, &sam_agent, None);
+        let sams = inbox_of(&st, Some(&sam));
+        assert_eq!(sams.len(), 1);
+        assert_eq!(
+            (
+                sams[0].kind,
+                sams[0].question_id.as_deref(),
+                sams[0].recipient.as_deref()
+            ),
+            (Kind::Question, Some(qid.as_str()), Some(sam.as_str()))
+        );
+        assert!(inbox_of(&st, None).iter().all(|i| i.kind != Kind::Question));
+
+        // Mia's agent replies in a thread Sam is in: Sam's reply; the owner
+        // is not in it.
+        let aid = artifact(&st, None);
+        let t = st
+            .create_thread(
+                DAEMON,
+                &aid,
+                NewThread {
+                    author_public_id: Some(sam.clone()),
+                    version_n: 1,
+                    anchor: anchor(),
+                    body: "Sam asks for teal".into(),
+                    author_name: "Sam".into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap();
+        agent_reply(&st, &t.id, &mia_agent, "teal it is");
+        let replies = |r: Option<&str>| -> Vec<ItemRow> {
+            inbox_of(&st, r)
+                .into_iter()
+                .filter(|i| i.kind == Kind::Reply)
+                .collect()
+        };
+        assert_eq!(replies(Some(&sam)).len(), 1);
+        assert!(replies(None).is_empty(), "the owner is not in the thread");
+        // The owner joins the thread: the next reply reaches both.
+        st.add_comment(
+            DAEMON,
+            &t.id,
+            NewComment {
+                author_kind: crate::store::threads::AUTHOR_VIEWER,
+                author_name: "Alex".into(),
+                author_public_id: Some(owner.clone()),
+                via_session_id: None,
+                body: "and bolder".into(),
+                via_page: false,
+            },
+        )
+        .unwrap();
+        agent_reply(&st, &t.id, &mia_agent, "bolder too");
+        assert_eq!(replies(Some(&sam)).len(), 2);
+        assert_eq!(replies(None).len(), 1);
+        load_keys(&st);
+        let (sam_reply, owner_reply) = (&replies(Some(&sam))[0], &replies(None)[0]);
+        assert_eq!(sam_reply.comment_id, owner_reply.comment_id);
+        assert_eq!(
+            key_of(sam_reply),
+            format!("{}@{sam}", key_of(owner_reply)),
+            "one source, one item per recipient"
+        );
+        assert!(key_of(owner_reply).starts_with("reply:"));
+
+        // Sam's agent publishes: Sam and the owner hear of it.
+        let mine = artifact(&st, Some(&sam_agent));
+        let published = |r: Option<&str>| -> Vec<Option<String>> {
+            inbox_of(&st, r)
+                .into_iter()
+                .filter(|i| i.kind == Kind::Published)
+                .map(|i| i.artifact_id)
+                .collect()
+        };
+        assert_eq!(published(Some(&sam)), vec![Some(mine.as_str().to_string())]);
+        assert_eq!(published(None), vec![Some(mine.as_str().to_string())]);
+        // Mia's inbox holds nothing of it all but what she was in: nothing.
+        let mia = st.viewer_of_grant(&mia_grant).unwrap().public_id;
+        assert!(inbox_of(&st, Some(&mia)).is_empty());
+        assert_eq!(st.inbox_unread(Some(&sam)).unwrap(), 4);
+    }
+
+    #[test]
+    fn a_connection_request_is_read_once_the_owner_decides_it() {
+        use crate::store::people::tests::{KEY_A, KEY_B, pending};
+        let (_d, _c, st) = crate::store::people::tests::store();
+        let (a, _, code_a) = pending(&st, KEY_A);
+        let (b, _, _) = pending(&st, KEY_B);
+        let unread = |gid: &str| -> bool {
+            inbox_of(&st, None)
+                .iter()
+                .find(|i| i.grant_id.as_deref() == Some(gid))
+                .map(|i| i.read_at.is_none())
+                .unwrap()
+        };
+        assert!(unread(&a.id) && unread(&b.id));
+        let r = st.approve_grant(DAEMON, &a.id, "ZZZZ-0000", "Sam", None);
+        assert!(r.is_err());
+        assert!(unread(&a.id), "a wrong code decides nothing");
+        st.approve_grant(DAEMON, &a.id, code_a.expose(), "Sam", None)
+            .unwrap();
+        assert!(!unread(&a.id), "approved");
+        st.deny_grant(DAEMON, &b.id).unwrap();
+        assert!(!unread(&b.id), "denied");
+        assert_eq!(st.inbox_unread(None).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_persons_marks_reach_their_items_alone() {
+        use crate::store::people::tests::approved;
+        let (_d, _c, st) = crate::store::people::tests::store();
+        let owner = st.owner_viewer(true).unwrap();
+        let (sam_grant, _, _) = approved(&st, "Sam", [7; 32]);
+        let sam = st.viewer_of_grant(&sam_grant).unwrap();
+        let agent = session(&st, "claude", "h1");
+        let aid = artifact(&st, None);
+        let t = st
+            .create_thread(
+                DAEMON,
+                &aid,
+                NewThread {
+                    author_public_id: Some(sam.public_id.clone()),
+                    version_n: 1,
+                    anchor: anchor(),
+                    body: "Sam asks".into(),
+                    author_name: "Sam".into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap();
+        st.add_comment(
+            DAEMON,
+            &t.id,
+            NewComment {
+                author_kind: crate::store::threads::AUTHOR_VIEWER,
+                author_name: "Alex".into(),
+                author_public_id: Some(owner.public_id.clone()),
+                via_session_id: None,
+                body: "me too".into(),
+                via_page: false,
+            },
+        )
+        .unwrap();
+        // The owner's connection item for Sam is read.
+        st.inbox_mark_all(&InboxQuery::default()).unwrap();
+        agent_reply(&st, &t.id, &agent, "done");
+        let sams = inbox_of(&st, Some(&sam.public_id));
+        let owners: Vec<ItemRow> = inbox_of(&st, None)
+            .into_iter()
+            .filter(|i| i.kind == Kind::Reply)
+            .collect();
+        assert_eq!((sams.len(), owners.len()), (1, 1));
+        // Marks by ID never cross recipients.
+        assert_eq!(
+            st.inbox_mark(&[owners[0].id.clone()], true, Some(&sam.public_id))
+                .unwrap(),
+            0
+        );
+        assert!(
+            st.inbox_item(&owners[0].id, Some(&sam.public_id))
+                .unwrap()
+                .is_none()
+        );
+        assert!(st.inbox_item(&sams[0].id, None).unwrap().is_none());
+        assert!(
+            st.inbox_item(&sams[0].id, Some(&sam.public_id))
+                .unwrap()
+                .is_some()
+        );
+        // Sam looking at the thread reads his item only.
+        st.mark_looked(&sam.id, &aid, std::slice::from_ref(&t.id))
+            .unwrap();
+        assert_eq!(st.inbox_unread(Some(&sam.public_id)).unwrap(), 0);
+        assert_eq!(st.inbox_unread(None).unwrap(), 1);
+        // A mark-all is one recipient's.
+        st.inbox_mark_all(&InboxQuery::default()).unwrap();
+        assert_eq!(st.inbox_unread(None).unwrap(), 0);
+        st.inbox_mark(&[sams[0].id.clone()], false, Some(&sam.public_id))
+            .unwrap();
+        st.inbox_mark_all(&InboxQuery::default()).unwrap();
+        assert_eq!(st.inbox_unread(Some(&sam.public_id)).unwrap(), 1);
+        // Sam's agent's finished work is Sam's.
+        let mine = agent_of(&st, Some(&sam_grant), "sam-h1");
+        st.note_finished(
+            &crate::working::Ended {
+                key: "k1".into(),
+                session_id: mine.clone(),
+                artifact_id: aid.as_str().into(),
+                message: Some("all done".into()),
+                thread_ids: vec![],
+            },
+            "claude",
+        )
+        .unwrap();
+        let finished = |r: Option<&str>| {
+            inbox_of(&st, r)
+                .iter()
+                .filter(|i| i.kind == Kind::Finished)
+                .count()
+        };
+        assert_eq!((finished(Some(&sam.public_id)), finished(None)), (1, 0));
+    }
+
+    #[test]
+    fn no_person_hears_of_a_live_page_or_after_being_revoked() {
+        use crate::store::people::tests::approved;
+        let (_d, _c, st) = crate::store::people::tests::store();
+        let owner = st.owner_viewer(true).unwrap();
+        let (sam_grant, _, _) = approved(&st, "Sam", [7; 32]);
+        let sam = st.viewer_of_grant(&sam_grant).unwrap().public_id;
+        let agent = session(&st, "claude", "h1");
+        let page = st
+            .ensure_live_page(
+                DAEMON,
+                &crate::live::PageKey {
+                    origin: "http://localhost:5173".into(),
+                    path: "/".into(),
+                },
+                "App",
+                None,
+            )
+            .unwrap();
+        let aid = crate::ArtifactId::parse(&page.artifact.id).unwrap();
+        let thread_on = |aid: &crate::ArtifactId, n: u32| {
+            let t = st
+                .create_thread(
+                    DAEMON,
+                    aid,
+                    NewThread {
+                        author_public_id: Some(owner.public_id.clone()),
+                        version_n: n,
+                        anchor: anchor(),
+                        body: format!("hi @Sam {n}"),
+                        author_name: "Alex".into(),
+                        clip: None,
+                        via_page: false,
+                    },
+                )
+                .unwrap();
+            st.add_comment(
+                DAEMON,
+                &t.id,
+                NewComment {
+                    author_kind: crate::store::threads::AUTHOR_VIEWER,
+                    author_name: "Sam".into(),
+                    author_public_id: Some(sam.clone()),
+                    via_session_id: None,
+                    body: "here".into(),
+                    via_page: false,
+                },
+            )
+            .unwrap();
+            t.id
+        };
+        let tid = thread_on(&aid, page.version.n);
+        agent_reply(&st, &tid, &agent, "on the live page");
+        assert_eq!(
+            inbox_of(&st, None)
+                .iter()
+                .filter(|i| i.kind == Kind::Reply)
+                .count(),
+            1
+        );
+        assert!(
+            inbox_of(&st, Some(&sam)).is_empty(),
+            "a live page is the owner's alone"
+        );
+        // Revoked, Sam is no longer anyone's recipient.
+        st.revoke_person(DAEMON, &sam).unwrap();
+        let other = artifact(&st, None);
+        let tid = thread_on(&other, 1);
+        agent_reply(&st, &tid, &agent, "after");
+        assert!(inbox_of(&st, Some(&sam)).is_empty());
+    }
+
     #[test]
     fn item_ids_and_stored_times() {
         assert!(is_item_id(MIA));
@@ -1644,8 +2291,8 @@ mod tests {
         assert_eq!(i.thread_id.as_deref(), Some(tid.as_str()));
         assert_eq!(i.session_id.as_deref(), Some(sid.as_str()));
         assert!(crate::is_ulid(&i.id));
-        assert_eq!(st.inbox_unread().unwrap(), 1);
-        assert_eq!(st.inbox_item(&i.id).unwrap().as_ref(), Some(i));
+        assert_eq!(st.inbox_unread(None).unwrap(), 1);
+        assert_eq!(st.inbox_item(&i.id, None).unwrap().as_ref(), Some(i));
         assert_eq!(
             st.inbox_items_by_seq(&[i.seq, 999]).unwrap(),
             vec![i.clone()]
@@ -1800,7 +2447,7 @@ mod tests {
         let sid = session(&st, "claude", "h1");
         let answered = ask(&st, &sid, None);
         let withdrawn = ask(&st, &sid, None);
-        assert_eq!(st.inbox_unread().unwrap(), 2);
+        assert_eq!(st.inbox_unread(None).unwrap(), 2);
         st.close_question(
             DAEMON,
             &answered,
@@ -1815,7 +2462,7 @@ mod tests {
         .unwrap();
         st.close_question(DAEMON, &withdrawn, Close::Withdraw)
             .unwrap();
-        assert_eq!(st.inbox_unread().unwrap(), 1);
+        assert_eq!(st.inbox_unread(None).unwrap(), 1);
         assert_eq!(find(&st, "darker"), 1, "the answer's text");
         assert_eq!(find(&st, "palette"), 2, "the question's text is kept");
         let unread = st
@@ -1838,7 +2485,7 @@ mod tests {
         st.mark_looked(&mia.id, &aid, std::slice::from_ref(&tid))
             .unwrap();
         assert_eq!(
-            st.inbox_unread().unwrap(),
+            st.inbox_unread(None).unwrap(),
             1,
             "a LAN viewer's look marks nothing"
         );
@@ -1847,22 +2494,26 @@ mod tests {
         st.mark_looked(&owner.id, &other, std::slice::from_ref(&tid))
             .unwrap();
         assert_eq!(
-            st.inbox_unread().unwrap(),
+            st.inbox_unread(None).unwrap(),
             1,
             "a look at another page marks nothing"
         );
         st.mark_looked(&owner.id, &aid, std::slice::from_ref(&tid))
             .unwrap();
-        assert_eq!(st.inbox_unread().unwrap(), 0);
+        assert_eq!(st.inbox_unread(None).unwrap(), 0);
         publish_next_as(&st, &aid, &sid, None);
         publish_next_as(&st, &aid, &sid, None);
-        assert_eq!(st.inbox_unread().unwrap(), 2);
+        assert_eq!(st.inbox_unread(None).unwrap(), 2);
         st.mark_seen(&mia.id, &aid, 3).unwrap();
-        assert_eq!(st.inbox_unread().unwrap(), 2);
+        assert_eq!(st.inbox_unread(None).unwrap(), 2);
         st.mark_seen(&owner.id, &aid, 2).unwrap();
-        assert_eq!(st.inbox_unread().unwrap(), 1, "version 3 is not seen yet");
+        assert_eq!(
+            st.inbox_unread(None).unwrap(),
+            1,
+            "version 3 is not seen yet"
+        );
         st.mark_seen(&owner.id, &aid, 3).unwrap();
-        assert_eq!(st.inbox_unread().unwrap(), 0);
+        assert_eq!(st.inbox_unread(None).unwrap(), 0);
     }
 
     #[test]
@@ -1873,22 +2524,28 @@ mod tests {
         agent_reply(&st, &tid, &sid, "blue header");
         agent_reply(&st, &tid, &sid, "green footer");
         let items = all(&st);
-        assert_eq!(st.inbox_mark(&[items[0].id.clone()], true).unwrap(), 1);
         assert_eq!(
-            st.inbox_mark(&[items[0].id.clone()], true).unwrap(),
+            st.inbox_mark(&[items[0].id.clone()], true, None).unwrap(),
+            1
+        );
+        assert_eq!(
+            st.inbox_mark(&[items[0].id.clone()], true, None).unwrap(),
             0,
             "idempotent"
         );
-        assert_eq!(st.inbox_mark(&[items[0].id.clone()], false).unwrap(), 1);
+        assert_eq!(
+            st.inbox_mark(&[items[0].id.clone()], false, None).unwrap(),
+            1
+        );
         let q = InboxQuery {
             text: Some("green".into()),
             ..Default::default()
         };
         assert_eq!(st.inbox_count(&q, 100).unwrap(), 1);
         assert_eq!(st.inbox_mark_all(&q).unwrap(), 1);
-        assert_eq!(st.inbox_unread().unwrap(), 1);
+        assert_eq!(st.inbox_unread(None).unwrap(), 1);
         assert_eq!(st.inbox_mark_all(&InboxQuery::default()).unwrap(), 1);
-        assert_eq!(st.inbox_unread().unwrap(), 0);
+        assert_eq!(st.inbox_unread(None).unwrap(), 0);
         assert_eq!(all(&st).len(), 2, "marking never removes");
         assert_eq!(
             st.inbox_count(&InboxQuery::default(), 1).unwrap(),
@@ -2017,7 +2674,7 @@ mod tests {
             ..Default::default()
         };
         assert!(page(q).0.is_empty());
-        st.inbox_mark(&[first[0].id.clone()], true).unwrap();
+        st.inbox_mark(&[first[0].id.clone()], true, None).unwrap();
         let q = InboxQuery {
             read: ReadFilter::Read,
             ..Default::default()
@@ -2063,7 +2720,7 @@ mod tests {
             "a rolled-back change is not heard"
         );
         let id = all(&st)[0].id.clone();
-        st.inbox_mark(&[id], true).unwrap();
+        st.inbox_mark(&[id], true, None).unwrap();
         let h = heard.lock().unwrap();
         assert_eq!(h.len(), 2);
         assert_eq!(
@@ -2124,8 +2781,9 @@ mod tests {
             .into_iter()
             .find(|i| i.question_id.as_deref() == Some(answered.as_str()))
             .unwrap();
-        st.inbox_mark(std::slice::from_ref(&item.id), true).unwrap();
-        let read_at = st.inbox_item(&item.id).unwrap().unwrap().read_at;
+        st.inbox_mark(std::slice::from_ref(&item.id), true, None)
+            .unwrap();
+        let read_at = st.inbox_item(&item.id, None).unwrap().unwrap().read_at;
         st.close_question(DAEMON, &answered, Close::Decline)
             .unwrap();
         let h = heard.lock().unwrap().clone();
@@ -2138,7 +2796,7 @@ mod tests {
             }
         );
         assert_eq!(
-            st.inbox_item(&item.id).unwrap().unwrap().read_at,
+            st.inbox_item(&item.id, None).unwrap().unwrap().read_at,
             read_at,
             "an earlier read time is kept"
         );
@@ -2171,7 +2829,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(st.inbox_mark_all(&q).unwrap(), 1);
-        assert_eq!(st.inbox_unread().unwrap(), 1);
+        assert_eq!(st.inbox_unread(None).unwrap(), 1);
     }
 
     #[test]
@@ -2377,17 +3035,8 @@ mod tests {
                 insert_at(
                     tx,
                     New {
-                        kind: Kind::Finished,
-                        key: key.into(),
-                        artifact_id: None,
-                        thread_id: None,
-                        comment_id: None,
-                        version_n: None,
-                        question_id: None,
                         session_id: Some(&sid),
-                        harness: None,
-                        detail: None,
-                        text: String::new(),
+                        ..New::of(Kind::Finished, key.into())
                     },
                     now,
                 )

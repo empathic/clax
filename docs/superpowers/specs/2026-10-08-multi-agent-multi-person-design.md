@@ -503,11 +503,19 @@ INSERT INTO inbox_items_26 (seq, id, kind, key, artifact_id, thread_id, comment_
            question_id, session_id, harness, detail_json, created_at, read_at FROM inbox_items;
 DROP TABLE inbox_items;
 ALTER TABLE inbox_items_26 RENAME TO inbox_items;
--- every index of migration 21, each led by COALESCE(recipient, ''):
+-- every index a list or read mark walks, led by COALESCE(recipient, ''):
 CREATE INDEX inbox_unread ON inbox_items(COALESCE(recipient, ''), seq) WHERE read_at IS NULL;
 CREATE INDEX inbox_by_recipient ON inbox_items(COALESCE(recipient, ''), seq);
--- … inbox_by_artifact, _kind, _harness, _session, _created, _thread, _question likewise …
+-- … inbox_by_artifact, _kind, _harness, _session likewise …
+-- by source, whatever the recipient: the newest stamp and a date range's
+-- seq bounds (stamps follow seq for every recipient), a thread's items
+-- (a move updates every recipient's), a question's item:
+CREATE INDEX inbox_by_created ON inbox_items(created_at, seq);
+CREATE INDEX inbox_by_thread ON inbox_items(thread_id) WHERE thread_id IS NOT NULL;
+CREATE INDEX inbox_by_question ON inbox_items(question_id) WHERE question_id IS NOT NULL;
 CREATE INDEX inbox_by_request ON inbox_items(request_id) WHERE request_id IS NOT NULL;
+-- the connected people an item may go to:
+CREATE INDEX viewers_people ON viewers(public_id) WHERE person = 1;
 ```
 
 Keys of items for the owner are unchanged (`reply:<comment_id>`); an item

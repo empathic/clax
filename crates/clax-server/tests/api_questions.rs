@@ -86,7 +86,7 @@ async fn a_hook_question_waits_in_clax_only_once_its_session_has_a_page() {
     );
     assert!(r["question"]["artifact"].is_null());
     assert_eq!(
-        ts.store.inbox_unread().unwrap(),
+        ts.store.inbox_unread(None).unwrap(),
         0,
         "nothing in Clax asks for attention"
     );

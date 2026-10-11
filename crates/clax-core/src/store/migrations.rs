@@ -667,6 +667,56 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE artifacts ADD COLUMN text_authors_json TEXT;
     ALTER TABLE send_batches ADD COLUMN sender TEXT;
     ALTER TABLE threads ADD COLUMN resolved_by_person TEXT;",
+    // 26: the per-person inbox (spec 2026-10-08-multi-agent-multi-person
+    // §5.3, M21): each item names its recipient, the connected person it is
+    // for (NULL: the owner, so every existing item stays the owner's), and
+    // three kinds join: `approval` (a request, by `request_id`),
+    // `connection` (a grant, by `grant_id`) and `ended` (in `detail_json`).
+    // The `kind` CHECK cannot be altered, so the table is rebuilt as
+    // migration 19 rebuilt `thread_moves`, keeping every `seq`, so the
+    // contentless `inbox_fts` keeps naming its items. Each index a list or
+    // a read mark walks is led by the recipient; `inbox_by_created` (the
+    // newest stamp, and the `seq` bounds a date range gives, which hold for
+    // every recipient as stamps follow `seq`), `inbox_by_thread` and
+    // `inbox_by_question` serve their sources, whatever the recipient.
+    // `viewers_people` lists the connected people an item may go to.
+    "CREATE TABLE inbox_items_26 (
+        seq INTEGER PRIMARY KEY,
+        id TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL CHECK (kind IN ('reply', 'version', 'published', 'question', 'finished',
+                                           'approval', 'connection', 'ended')),
+        key TEXT NOT NULL UNIQUE,
+        recipient TEXT,
+        artifact_id TEXT,
+        thread_id TEXT,
+        comment_id TEXT,
+        version_n INTEGER,
+        question_id TEXT,
+        session_id TEXT,
+        harness TEXT,
+        request_id TEXT,
+        grant_id TEXT,
+        detail_json TEXT,
+        created_at TEXT NOT NULL,
+        read_at TEXT
+    );
+    INSERT INTO inbox_items_26 (seq, id, kind, key, artifact_id, thread_id, comment_id, version_n,
+        question_id, session_id, harness, detail_json, created_at, read_at)
+        SELECT seq, id, kind, key, artifact_id, thread_id, comment_id, version_n,
+               question_id, session_id, harness, detail_json, created_at, read_at FROM inbox_items;
+    DROP TABLE inbox_items;
+    ALTER TABLE inbox_items_26 RENAME TO inbox_items;
+    CREATE INDEX inbox_unread ON inbox_items(COALESCE(recipient, ''), seq) WHERE read_at IS NULL;
+    CREATE INDEX inbox_by_recipient ON inbox_items(COALESCE(recipient, ''), seq);
+    CREATE INDEX inbox_by_artifact ON inbox_items(COALESCE(recipient, ''), artifact_id, seq);
+    CREATE INDEX inbox_by_kind ON inbox_items(COALESCE(recipient, ''), kind, seq);
+    CREATE INDEX inbox_by_harness ON inbox_items(COALESCE(recipient, ''), harness, seq);
+    CREATE INDEX inbox_by_session ON inbox_items(COALESCE(recipient, ''), session_id, seq);
+    CREATE INDEX inbox_by_created ON inbox_items(created_at, seq);
+    CREATE INDEX inbox_by_thread ON inbox_items(thread_id) WHERE thread_id IS NOT NULL;
+    CREATE INDEX inbox_by_question ON inbox_items(question_id) WHERE question_id IS NOT NULL;
+    CREATE INDEX inbox_by_request ON inbox_items(request_id) WHERE request_id IS NOT NULL;
+    CREATE INDEX viewers_people ON viewers(public_id) WHERE person = 1;",
 ];
 
 /// The audit journal's migration, as a schema version (the
@@ -681,6 +731,10 @@ pub const PEOPLE_MIGRATION: u32 = 24;
 /// authors, as a schema version (spec 2026-10-08-multi-agent-multi-person
 /// §5.2).
 pub const VISIBILITY_MIGRATION: u32 = 25;
+
+/// The migration that gives every inbox item a recipient, as a schema
+/// version (spec 2026-10-08-multi-agent-multi-person §5.3).
+pub const INBOX_MIGRATION: u32 = 26;
 
 /// Runs the Rust part of the migration that brings the schema to
 /// `version`, in that migration's transaction, after its SQL.
@@ -718,7 +772,9 @@ fn install_id(tx: &rusqlite::Transaction<'_>) -> crate::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AUDIT_MIGRATION, MIGRATIONS, PEOPLE_MIGRATION, VISIBILITY_MIGRATION};
+    use super::{
+        AUDIT_MIGRATION, INBOX_MIGRATION, MIGRATIONS, PEOPLE_MIGRATION, VISIBILITY_MIGRATION,
+    };
     use crate::store::test_util::DAEMON;
     use crate::{Home, Store, is_public_id};
     use rusqlite::{Connection, params};
@@ -1078,7 +1134,7 @@ mod tests {
         assert_eq!(found("deleted"), Vec::<String>::new(), "a deleted artifact");
         assert_eq!(found("roadmap"), ["published"]);
         assert_eq!(found("footer"), Vec::<String>::new(), "a stranger's thread");
-        assert_eq!(st.inbox_unread().unwrap(), 0);
+        assert_eq!(st.inbox_unread(None).unwrap(), 0);
         assert_eq!(st.inbox_list(&Default::default()).unwrap().0.len(), 5);
     }
 
@@ -1537,5 +1593,138 @@ mod tests {
             st.owner_sees_all().unwrap(),
             "a single-owner install takes the fast path"
         );
+    }
+
+    #[test]
+    fn migration_26_keeps_seq_ids_keys_read_state_and_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        let before = INBOX_MIGRATION as usize - 1;
+        assert!(MIGRATIONS[before].contains("CREATE TABLE inbox_items_26"));
+        type Row = (
+            i64,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+        );
+        let rows = |c: &Connection| -> Vec<Row> {
+            let mut st = c
+                .prepare(
+                    "SELECT seq, id, kind, key, artifact_id, detail_json, created_at, read_at
+                     FROM inbox_items ORDER BY seq",
+                )
+                .unwrap();
+            st.query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+        };
+        let old = {
+            let c = Connection::open(home.db_path()).unwrap();
+            for sql in &MIGRATIONS[..before] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.execute(
+                "INSERT INTO install (k, v) VALUES ('id', ?1)",
+                ["0".repeat(32)],
+            )
+            .unwrap();
+            c.pragma_update(None, "user_version", before as u32)
+                .unwrap();
+            // Gaps in `seq` (as items made and rolled back leave), every
+            // kind, read and unread, an item filled in from the history.
+            c.execute_batch(
+                "INSERT INTO inbox_items (seq, id, kind, key, artifact_id, thread_id, comment_id, created_at, read_at)
+                    VALUES (3, 'b0123456789abcdef01234567', 'reply', 'reply:c1', '7q3k9mzx2b4t', 't1', 'c1',
+                            '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:01.000Z');
+                 INSERT INTO inbox_items (seq, id, kind, key, artifact_id, version_n, session_id, harness, created_at)
+                    VALUES (7, '01ARZ3NDEKTSV4RRFFQ69G5FB1', 'published', 'published:7q3k9mzx2b4t', '7q3k9mzx2b4t', 1,
+                            's1', 'claude', '2026-01-01T00:00:02.000Z');
+                 INSERT INTO inbox_items (seq, id, kind, key, artifact_id, session_id, harness, detail_json, created_at)
+                    VALUES (8, '01ARZ3NDEKTSV4RRFFQ69G5FB2', 'finished', 'finished:k', '7q3k9mzx2b4t', 's1', 'pi',
+                            '{\"message\":\"done\",\"thread_ids\":[]}', '2026-01-01T00:00:03.000Z');
+                 INSERT INTO inbox_items (seq, id, kind, key, question_id, session_id, created_at)
+                    VALUES (12, '01ARZ3NDEKTSV4RRFFQ69G5FB3', 'question', 'question:q1', 'q1', 's1',
+                            '2026-01-01T00:00:04.000Z');
+                 INSERT INTO inbox_fts (rowid, text) VALUES (3, 'Quarterly make it bluer');
+                 INSERT INTO inbox_fts (rowid, text) VALUES (7, 'Quarterly claude chart');
+                 INSERT INTO inbox_fts (rowid, text) VALUES (8, 'Quarterly pi done');
+                 INSERT INTO inbox_fts (rowid, text) VALUES (12, 'which layout');",
+            )
+            .unwrap();
+            rows(&c)
+        };
+        let st = Store::open(&home).unwrap();
+        let new = st.with_read(|c| Ok(rows(c))).unwrap();
+        assert_eq!(
+            new, old,
+            "every item keeps its seq, ID, kind, key, detail and read state"
+        );
+        let recipients: i64 = st
+            .with_read(|c| {
+                Ok(c.query_row("SELECT COUNT(recipient) FROM inbox_items", [], |r| r.get(0))?)
+            })
+            .unwrap();
+        assert_eq!(recipients, 0, "every existing item is the owner's");
+        let q = |text: &str| crate::store::inbox::InboxQuery {
+            text: Some(text.into()),
+            ..Default::default()
+        };
+        let seqs = |text: &str| -> Vec<i64> {
+            st.inbox_list(&q(text))
+                .unwrap()
+                .0
+                .iter()
+                .map(|i| i.seq)
+                .collect()
+        };
+        assert_eq!(
+            seqs("bluer"),
+            vec![3],
+            "the index still names each item's seq"
+        );
+        assert_eq!(seqs("quarterly"), vec![8, 7, 3]);
+        assert_eq!(st.inbox_unread(None).unwrap(), 3);
+        let kinds = |seq: i64| {
+            st.with_read(|c| {
+                Ok(
+                    c.query_row("SELECT kind FROM inbox_items WHERE seq = ?1", [seq], |r| {
+                        r.get::<_, String>(0)
+                    })?,
+                )
+            })
+            .unwrap()
+        };
+        assert_eq!(kinds(12), "question");
+        // The new kinds are accepted, each with its own reference (the
+        // transaction is rolled back).
+        let r = st.with_tx(|tx| {
+            tx.execute_batch(
+                "INSERT INTO inbox_items (id, kind, key, request_id, recipient, created_at)
+                    VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FB4', 'approval', 'approval:r1@u_1', 'r1', 'u_1', 'x');
+                 INSERT INTO inbox_items (id, kind, key, grant_id, created_at)
+                    VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FB5', 'connection', 'connection:g_1', 'g_1', 'x');
+                 INSERT INTO inbox_items (id, kind, key, detail_json, created_at)
+                    VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FB6', 'ended', 'ended:s1', '{}', 'x');",
+            )?;
+            Err::<(), _>(crate::CoreError::NotFound)
+        });
+        assert!(matches!(r, Err(crate::CoreError::NotFound)), "{r:?}");
     }
 }
