@@ -4333,13 +4333,104 @@
             ],
             "timestamp": "2026-10-06T14:08:46.080Z"
           }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000005": {
+              "structural": {
+                "access": [
+                  {
+                    "actions": [
+                      "read"
+                    ],
+                    "type": "artifacts"
+                  }
+                ],
+                "session": "01JB9S00000000000000000005",
+                "type": "clax.agent.narrow"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "agent.narrow",
+              "seq": 81,
+              "session_id": "01JB9S00000000000000000005",
+              "v": 1,
+              "via": "lan"
+            },
+            "description": "Narrowed the agent of session 01JB9S00000000000000000005"
+          },
+          "step": {
+            "actor": "human:clax-person/u_5am7q2",
+            "id": "e000000000081",
+            "parents": [
+              "e000000000080"
+            ],
+            "timestamp": "2026-10-06T14:08:47.081Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000005": {
+              "structural": {
+                "access": null,
+                "for_actor": {
+                  "agent_handle": "a_5am1x9",
+                  "grant_id": "g_7h2k9m4q8x1a5b3c6d0e2f",
+                  "harness": "codex",
+                  "harness_session_id": "cx-sam-1",
+                  "person": "u_5am7q2",
+                  "session_id": "01JB9S00000000000000000005",
+                  "type": "agent"
+                },
+                "reason": "session_end",
+                "session": "01JB9S00000000000000000005",
+                "type": "clax.agent.elevate"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "for_actor": "agent:codex/cx-sam-1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "agent.elevate",
+              "seq": 82,
+              "session_id": "01JB9S00000000000000000005",
+              "system_reason": "ttl",
+              "v": 1,
+              "via": "daemon"
+            },
+            "description": "Cleared the elevation of the agent of session 01JB9S00000000000000000005",
+            "refs": [
+              {
+                "href": "agent://codex/cx-sam-1",
+                "rel": "agent-session"
+              }
+            ]
+          },
+          "step": {
+            "actor": "tool:clax/0.3.1",
+            "id": "e000000000082",
+            "parents": [
+              "e000000000081"
+            ],
+            "timestamp": "2026-10-06T14:08:48.082Z"
+          }
         }
       ],
       "path": {
         "base": {
           "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697"
         },
-        "head": "e000000000080",
+        "head": "e000000000082",
         "id": "clax-export-a375109d6c47"
       },
       "meta": {
@@ -4530,7 +4621,7 @@
       "clax_version": "0.3.1",
       "first_seq": 1,
       "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-      "last_seq": 80,
+      "last_seq": 82,
       "redaction": [],
       "selection": {
         "artifacts": [],

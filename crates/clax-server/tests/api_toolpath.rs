@@ -2739,9 +2739,23 @@ async fn working_ends_name_their_cause() {
     .await;
     assert_eq!(code, 200, "{v}");
     let recs = events_since(&ts, seq);
-    assert_eq!(kinds(&recs), ["session.end", "working.stop"]);
-    assert_eq!(recs[1].body["reason"], "session_end");
-    assert_eq!(recs[1].actor["session_id"], sid.as_str());
+    // The threads it owned are released in the end's transaction (spec
+    // 2026-10-08 §14).
+    assert_eq!(
+        kinds(&recs),
+        [
+            "session.end",
+            "thread.release",
+            "thread.release",
+            "working.stop"
+        ]
+    );
+    for r in &recs[1..3] {
+        assert_eq!(r.body["reason"], "session_end");
+    }
+    let recs = &recs[3..];
+    assert_eq!(recs[0].body["reason"], "session_end");
+    assert_eq!(recs[0].actor["session_id"], sid.as_str());
 
     // The reaper ends an idle session's records as Clax's, for the agent.
     let idle = ts.register_session("claude", "hs-idle").await["id"]

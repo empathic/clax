@@ -1363,7 +1363,7 @@ fn withdraw_where(
     args: &[&dyn rusqlite::ToSql],
     reason: &str,
     now: &str,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let ids: Vec<ApprovalRequest> = {
         let mut stmt = tx.prepare(&format!(
             "SELECT {REQUEST_COLUMNS} FROM approval_requests WHERE status = 'open' AND ({filter})"
@@ -1371,7 +1371,7 @@ fn withdraw_where(
         stmt.query_map(args, row_to_request)?
             .collect::<rusqlite::Result<_>>()?
     };
-    for r in ids {
+    for r in &ids {
         tx.execute(
             "UPDATE approval_requests SET status = 'withdrawn', decided_at = ?2, updated_at = ?2
              WHERE id = ?1",
@@ -1385,7 +1385,7 @@ fn withdraw_where(
         rec.ids.thread = r.thread_id.clone();
         st.record_audit(tx, ctx, rec)?;
     }
-    Ok(())
+    Ok(ids.into_iter().map(|r| r.id).collect())
 }
 
 /// Withdraws the open requests about thread `tid` (§9.2: it was resolved
@@ -1398,7 +1398,7 @@ pub(crate) fn withdraw_thread_in(
     reason: &str,
     now: &str,
 ) -> Result<()> {
-    withdraw_where(st, tx, ctx, "thread_id = ?1", &[&tid], reason, now)
+    withdraw_where(st, tx, ctx, "thread_id = ?1", &[&tid], reason, now).map(drop)
 }
 
 /// Withdraws the open requests about artifact `aid` (§9.2: it was deleted).
@@ -1418,17 +1418,18 @@ pub(crate) fn withdraw_artifact_in(
         "artifact_deleted",
         now,
     )
+    .map(drop)
 }
 
 /// Withdraws the open requests session `sid` asked for (§9.2, §14: its
-/// agent ended); routing requests stay.
+/// agent ended), returning their IDs; routing requests stay.
 pub(crate) fn withdraw_session_in(
     st: &Store,
     tx: &Transaction<'_>,
     ctx: &AuditCtx,
     sid: &str,
     now: &str,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     withdraw_where(
         st,
         tx,
@@ -1460,6 +1461,7 @@ pub(crate) fn withdraw_taken_in(
         "thread_taken",
         now,
     )
+    .map(drop)
 }
 
 /// Withdraws the open requests of person `pid`, asked of them or about
@@ -1481,6 +1483,7 @@ pub(crate) fn withdraw_person_in(
         "person_revoked",
         now,
     )
+    .map(drop)
 }
 
 /// The authors withheld from `vis` at artifact `aid` outside its threads

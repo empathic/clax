@@ -52,6 +52,21 @@ pub struct JoinSession {
     pub ancestor_pids: Vec<u32>,
 }
 
+/// What a new session got back from its harness session's last end, an
+/// `idle` one (spec 2026-10-08 §6.7).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Restored {
+    /// The ended session it follows.
+    pub from: String,
+    pub ended_at: String,
+    /// The artifacts whose watches are back.
+    pub artifacts: Vec<String>,
+    /// The open threads that end released.
+    pub threads: Vec<String>,
+    /// The note the session's first tool result carries.
+    pub note: String,
+}
+
 /// What a reaper pass ended, which feedback it released, and which open
 /// questions of the ended sessions it withdrew.
 #[derive(Debug, Default)]
@@ -70,6 +85,10 @@ pub struct EndedSession {
     /// IDs of the session's open questions, now withdrawn. Empty when the
     /// session had already ended.
     pub withdrawn_questions: Vec<String>,
+    /// IDs of its open `ask` approval requests, now withdrawn.
+    pub withdrawn_requests: Vec<String>,
+    /// IDs of the threads it owned, now released.
+    pub released_threads: Vec<String>,
 }
 
 const SELECT: &str = "SELECT id, harness, harness_session_id, cwd, pid, parent_pid, started_at,
@@ -195,6 +214,9 @@ impl Store {
         };
         let rec = session_record(kind, &self.now(), id, harness, f);
         self.record_audit(tx, &ctx, rec)?;
+        if kind == AuditKind::SessionStart {
+            self.agents_changed(tx, id)?;
+        }
         Ok(())
     }
 
@@ -382,6 +404,13 @@ impl Store {
     /// A session unseen for this long, with no live process, is ended by the reaper;
     /// registration without a harness session ID only adopts rows seen within it.
     pub const SESSION_IDLE_SECS: u64 = 300;
+    /// A remote session (one with a `grant_id`) unseen for this long is
+    /// ended by the reaper; its process is never probed (spec 2026-10-08
+    /// §14), so a laptop that sleeps briefly keeps its sessions.
+    pub const REMOTE_SESSION_IDLE_SECS: u64 = 1800;
+    /// How long after an `idle` end a registration with the same harness
+    /// session ID and credential gets the session's watches back (§6.7).
+    pub const RESTORE_WINDOW_SECS: u64 = 24 * 3600;
 
     /// Registers a session, reusing a live row where one already stands for it.
     /// An empty `harness_session_id` counts as none. Every match is among
@@ -408,7 +437,20 @@ impl Store {
     ///
     /// # Errors
     /// `grant_revoked` when `r.grant_id` names no approved grant.
-    pub fn register_session(&self, ctx: &AuditCtx, mut r: RegisterSession) -> Result<Session> {
+    pub fn register_session(&self, ctx: &AuditCtx, r: RegisterSession) -> Result<Session> {
+        self.register_session_restoring(ctx, r).map(|(s, _)| s)
+    }
+
+    /// [`Store::register_session`], also answering what a new row got back
+    /// from an earlier `idle` end ([`Restored`], spec 2026-10-08 §6.7).
+    ///
+    /// # Errors
+    /// As [`Store::register_session`].
+    pub fn register_session_restoring(
+        &self,
+        ctx: &AuditCtx,
+        mut r: RegisterSession,
+    ) -> Result<(Session, Option<Restored>)> {
         if r.harness_session_id.as_deref() == Some("") {
             r.harness_session_id = None;
         }
@@ -480,7 +522,7 @@ impl Store {
                         params![id, name],
                     )?;
                 }
-                return fetch(tx, &id);
+                return Ok((fetch(tx, &id)?, None));
             }
             let id = new_ulid();
             let name = derived_name(
@@ -511,7 +553,8 @@ impl Store {
                 ],
             )?;
             self.record_session(tx, ctx, AuditKind::SessionStart, &id, &r.harness)?;
-            fetch(tx, &id)
+            let restored = self.restore_in(tx, ctx, &id)?;
+            Ok((fetch(tx, &id)?, restored))
         })
     }
 
@@ -542,6 +585,21 @@ impl Store {
         j: JoinSession,
         grant_id: Option<&str>,
     ) -> Result<Session> {
+        self.join_session_restoring(ctx, j, grant_id)
+            .map(|(s, _)| s)
+    }
+
+    /// [`Store::join_session`], also answering what a new row got back from
+    /// an earlier `idle` end ([`Restored`], spec 2026-10-08 §6.7).
+    ///
+    /// # Errors
+    /// As [`Store::join_session`].
+    pub fn join_session_restoring(
+        &self,
+        ctx: &AuditCtx,
+        j: JoinSession,
+        grant_id: Option<&str>,
+    ) -> Result<(Session, Option<Restored>)> {
         let JoinSession {
             harness,
             parent_pid,
@@ -582,6 +640,7 @@ impl Store {
                     found
                 }
             };
+            let mut restored = None;
             let id = match existing {
                 Some(id) => {
                     let before = facts(tx, &id)?;
@@ -621,10 +680,11 @@ impl Store {
                         ],
                     )?;
                     self.record_session(tx, ctx, AuditKind::SessionStart, &id, harness)?;
+                    restored = self.restore_in(tx, ctx, &id)?;
                     id
                 }
             };
-            fetch(tx, &id)
+            Ok((fetch(tx, &id)?, restored))
         })
     }
 
@@ -718,6 +778,7 @@ impl Store {
                     .with("previous", s.name.clone());
                 rec.ids.session = Some(sid.to_string());
                 self.record_audit(tx, ctx, rec)?;
+                self.agents_changed(tx, sid)?;
             }
             fetch(tx, sid)
         })
@@ -769,13 +830,15 @@ impl Store {
     pub fn end_session_touched(&self, ctx: &AuditCtx, id: &str) -> Result<EndedSession> {
         self.with_tx(|tx| {
             let now = self.now();
-            let (touched, withdrawn_questions) = self
+            let c = self
                 .end_in(tx, ctx, id, &now, EndReason::Exit, None)?
                 .unwrap_or_default();
             Ok(EndedSession {
                 session: fetch(tx, id).map_err(not_found)?,
-                touched,
-                withdrawn_questions,
+                touched: c.touched,
+                withdrawn_questions: c.withdrawn_questions,
+                withdrawn_requests: c.withdrawn_requests,
+                released_threads: c.released_threads,
             })
         })
     }
@@ -909,33 +972,43 @@ impl Store {
         })
     }
 
-    /// Ends live sessions not seen for `idle` whose `pid` is unknown or no
-    /// longer alive, releasing their watches and undelivered feedback as
-    /// [`Store::end_session_touched`] does, and withdrawing their open
-    /// questions. Returns the sessions ended, the feedback released, and the
-    /// questions withdrawn. Each ends `idle`, its direct watches saved in
-    /// `ended_watches_json` first, and records `session.end` (reason `ttl`)
-    /// as `system:ttl`, naming the session's agent in `for_actor`, then
-    /// `question.withdraw` (reason `session_end`) for each of its questions
-    /// withdrawn, likewise.
+    /// Ends live sessions not seen for long enough (spec 2026-10-08 §14):
+    /// a local one (no `grant_id`) unseen for `idle` whose `pid` is unknown
+    /// or no longer alive; a remote one (with a `grant_id`) unseen for
+    /// [`Store::REMOTE_SESSION_IDLE_SECS`], whose process is never probed:
+    /// it runs on another machine. Each ends as
+    /// [`Store::end_session_touched`] ends one, for `idle`: its direct
+    /// watches saved in `ended_watches_json` first, `session.end` (reason
+    /// `ttl`) recorded as `system:ttl`, naming the session's agent in
+    /// `for_actor`, and the rest of the cleanup likewise. Returns the
+    /// sessions ended, the feedback and threads released, and the questions
+    /// withdrawn.
     pub fn reap_sessions(&self, idle: Duration, pid_alive: &dyn Fn(u32) -> bool) -> Result<Reaped> {
-        let cutoff = super::stamp(self.now_utc() - idle);
+        let now = self.now_utc();
+        let local = super::stamp(now - idle);
+        let remote = super::stamp(now - Duration::from_secs(Self::REMOTE_SESSION_IDLE_SECS));
         let stale = self.with_read(|c| {
             let mut stmt = c.prepare(
-                "SELECT id, pid FROM sessions WHERE ended_at IS NULL AND last_seen_at < ?1",
+                "SELECT id, pid, grant_id IS NOT NULL FROM sessions WHERE ended_at IS NULL
+                   AND ((grant_id IS NULL AND last_seen_at < ?1)
+                     OR (grant_id IS NOT NULL AND last_seen_at < ?2))",
             )?;
             Ok(stmt
-                .query_map(params![cutoff], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, Option<u32>>(1)?))
+                .query_map(params![local, remote], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<u32>>(1)?,
+                        r.get::<_, bool>(2)?,
+                    ))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?)
         })?;
         // Checked outside the transaction; the update below re-checks that
         // each session is still live and idle.
-        let dead: Vec<String> = stale
+        let dead: Vec<(String, bool)> = stale
             .into_iter()
-            .filter(|(_, pid)| !pid.is_some_and(pid_alive))
-            .map(|(id, _)| id)
+            .filter(|(_, pid, remote)| *remote || !pid.is_some_and(pid_alive))
+            .map(|(id, _, remote)| (id, remote))
             .collect();
         if dead.is_empty() {
             return Ok(Reaped::default());
@@ -944,17 +1017,220 @@ impl Store {
             let now = self.now();
             let mut reaped = Reaped::default();
             let ttl = AuditCtx::system(SystemReason::Ttl);
-            for id in dead {
-                let Some((touched, withdrawn)) =
-                    self.end_in(tx, &ttl, &id, &now, EndReason::Idle, Some(&cutoff))?
+            for (id, is_remote) in dead {
+                let cutoff = if is_remote { &remote } else { &local };
+                let Some(c) = self.end_in(tx, &ttl, &id, &now, EndReason::Idle, Some(cutoff))?
                 else {
                     continue;
                 };
-                reaped.touched.merge(touched);
-                reaped.withdrawn_questions.extend(withdrawn);
+                reaped.touched.merge(c.touched);
+                reaped.withdrawn_questions.extend(c.withdrawn_questions);
                 reaped.ended.push(id);
             }
             Ok(reaped)
+        })
+    }
+}
+
+impl Store {
+    /// Gives new session `id` back what its harness session's last end
+    /// saved (spec 2026-10-08 §6.7): when the newest ended row with the
+    /// same harness, harness session ID and credential (`grant_id`, `NULL`
+    /// for the token) ended `idle` within [`Store::RESTORE_WINDOW_SECS`],
+    /// the direct watches in its `ended_watches_json` on artifacts still
+    /// there are made again (each `watch.start` under `ctx`); any other end
+    /// restores nothing. Rights and visibility still apply at every take.
+    fn restore_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        id: &str,
+    ) -> Result<Option<Restored>> {
+        let prev: Option<(String, Option<String>, String, Option<String>)> = tx
+            .query_row(
+                "SELECT o.id, o.ended_reason, o.ended_at, o.ended_watches_json
+                 FROM sessions me JOIN sessions o
+                   ON o.harness = me.harness AND o.harness_session_id = me.harness_session_id
+                  AND o.grant_id IS me.grant_id AND o.id <> me.id AND o.ended_at IS NOT NULL
+                 WHERE me.id = ?1
+                 ORDER BY o.ended_at DESC, o.id DESC LIMIT 1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()?;
+        let Some((from, reason, ended_at, saved)) = prev else {
+            return Ok(None);
+        };
+        let window = super::stamp(self.now_utc() - Duration::from_secs(Self::RESTORE_WINDOW_SECS));
+        if reason.as_deref() != Some(EndReason::Idle.as_str()) || ended_at < window {
+            return Ok(None);
+        }
+        #[derive(Deserialize)]
+        struct Saved {
+            artifact_id: String,
+            replies_armed: bool,
+        }
+        // Written by the end above; a value that does not parse restores
+        // nothing rather than failing the registration.
+        let saved: Vec<Saved> = saved
+            .as_deref()
+            .and_then(|j| serde_json::from_str(j).ok())
+            .unwrap_or_default();
+        let now = self.now();
+        let mut artifacts = Vec::new();
+        for w in saved {
+            if !super::threads::artifact_live(tx, &w.artifact_id)? {
+                continue;
+            }
+            let n = tx.execute(
+                "INSERT OR IGNORE INTO watches (session_id, artifact_id, replies_armed, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![id, w.artifact_id, w.replies_armed, now],
+            )?;
+            if n > 0 {
+                let rec = super::watches::artifact_watch_record(
+                    tx,
+                    AuditKind::WatchStart,
+                    &now,
+                    id,
+                    &w.artifact_id,
+                    w.replies_armed,
+                    "direct",
+                )?;
+                self.record_audit(tx, ctx, rec)?;
+                artifacts.push(w.artifact_id);
+            }
+        }
+        let detail: Option<String> = tx
+            .query_row(
+                "SELECT detail_json FROM inbox_items WHERE kind = 'ended' AND session_id = ?1 LIMIT 1",
+                params![from],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        let threads: Vec<String> = detail
+            .as_deref()
+            .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+            .and_then(|d| {
+                d["threads"].as_array().map(|ts| {
+                    ts.iter()
+                        .filter_map(|t| t["thread_id"].as_str().map(str::to_string))
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
+        let note = restore_note(&ended_at, &threads);
+        Ok(Some(Restored {
+            from,
+            ended_at,
+            artifacts,
+            threads,
+            note,
+        }))
+    }
+}
+
+/// The note a restored session's first tool result carries (spec
+/// 2026-10-08 §6.7), naming the threads its end released.
+pub fn restore_note(ended_at: &str, threads: &[String]) -> String {
+    let released = match threads.len() {
+        0 => "no threads were released".to_string(),
+        1 => format!("1 thread was released ({})", threads[0]),
+        n => format!("{n} threads were released ({})", threads.join(", ")),
+    };
+    format!(
+        "[clax] Your session ended after 30 minutes without contact ({ended_at}): {released} and your questions withdrawn; your watches were restored."
+    )
+}
+
+/// One agent of the agents roster (spec 2026-10-08-multi-agent-multi-person
+/// §13): a live session, or one that ended within
+/// [`Store::ROSTER_ENDED_SECS`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct RosterAgent {
+    pub session: Session,
+    /// What it waits on: its open questions and open approval requests
+    /// (counted as the inbox's agent strip counts them), and when the
+    /// oldest was made; `None` when it waits on nothing.
+    pub blocked_since: Option<String>,
+    pub questions: u32,
+    pub approvals: u32,
+    /// Whether it waits on its person: an open question or an open `ask`
+    /// request (`state: waiting`).
+    pub asking: bool,
+    /// When the oldest open question or `ask` request was made.
+    pub asking_since: Option<String>,
+    /// The open threads it owns.
+    pub threads_owned: u32,
+}
+
+impl Store {
+    /// How long an ended agent stays in the roster (spec §13, §14 item 7).
+    pub const ROSTER_ENDED_SECS: u64 = 3600;
+
+    /// The agents roster (spec 2026-10-08 §13): every live session and
+    /// every one that ended within [`Store::ROSTER_ENDED_SECS`], live ones
+    /// first, newest first, each with what it waits on and the open
+    /// threads it owns. Callers scope it to a reader.
+    pub fn roster(&self) -> Result<Vec<RosterAgent>> {
+        use std::collections::HashMap;
+        let since = super::stamp(self.now_utc() - Duration::from_secs(Self::ROSTER_ENDED_SECS));
+        self.with_read(|c| {
+            let sessions: Vec<Session> = {
+                let mut stmt = c.prepare_cached(&format!(
+                    "{SELECT} WHERE ended_at IS NULL OR ended_at >= ?1
+                     ORDER BY ended_at IS NOT NULL, started_at DESC, id DESC"
+                ))?;
+                stmt.query_map(params![since], row_to_session)?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            let mut owned: HashMap<String, u32> = HashMap::new();
+            {
+                let mut stmt = c.prepare_cached(
+                    "SELECT target_session_id, count(*) FROM threads
+                     WHERE target_session_id IS NOT NULL AND status = 'open'
+                     GROUP BY target_session_id",
+                )?;
+                for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get(1)?)))? {
+                    let (sid, n) = row?;
+                    owned.insert(sid, n);
+                }
+            }
+            let mut out = Vec::with_capacity(sessions.len());
+            for s in sessions {
+                let q: (u32, Option<String>) = c
+                    .prepare_cached(
+                        "SELECT count(*), min(created_at) FROM questions INDEXED BY questions_by_session
+                         WHERE session_id = ?1 AND status = 'open'",
+                    )?
+                    .query_row(params![s.id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                let a: (u32, Option<String>, u32, Option<String>) = c
+                    .prepare_cached(
+                        "SELECT count(*), min(created_at),
+                                count(*) FILTER (WHERE cause = 'ask'),
+                                min(created_at) FILTER (WHERE cause = 'ask')
+                         FROM approval_requests INDEXED BY approval_requests_by_session
+                         WHERE session_id = ?1 AND status = 'open'",
+                    )?
+                    .query_row(params![s.id], |r| {
+                        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                    })?;
+                let earliest = |x: Option<String>, y: Option<String>| match (x, y) {
+                    (Some(x), Some(y)) => Some(x.min(y)),
+                    (x, y) => x.or(y),
+                };
+                out.push(RosterAgent {
+                    threads_owned: owned.get(&s.id).copied().unwrap_or(0),
+                    blocked_since: earliest(q.1.clone(), a.1),
+                    questions: q.0,
+                    approvals: a.0,
+                    asking: q.0 > 0 || a.2 > 0,
+                    asking_since: earliest(q.1, a.3),
+                    session: s,
+                });
+            }
+            Ok(out)
         })
     }
 }
@@ -995,16 +1271,34 @@ impl EndReason {
     }
 }
 
+/// What ending one session cleaned up (spec 2026-10-08-multi-agent-multi-
+/// person §14).
+#[derive(Debug, Default)]
+pub(crate) struct Cleanup {
+    /// Feedback released, and every thread released (in `threads`).
+    pub touched: crate::feedback::Touched,
+    pub withdrawn_questions: Vec<String>,
+    pub withdrawn_requests: Vec<String>,
+    /// Every thread it owned, now released.
+    pub released_threads: Vec<String>,
+}
+
 impl Store {
-    /// Ends live session `id` for `reason` in `tx` under `ctx`: records
-    /// `ended_at` and the reason, releases its watches and undelivered
-    /// feedback, and withdraws its open questions. An `idle` end first
-    /// saves the session's direct watches to `ended_watches_json`. With
-    /// `unseen_before`, ends it only when it was last seen before then.
-    /// `None` when it was not ended here. An end records `session.end`
-    /// ([`EndReason::audit_reason`]), then `question.withdraw` (reason
-    /// `session_end`) for each question withdrawn, under `ctx`; a system
-    /// actor names the session's agent in `for_actor`.
+    /// Ends live session `id` for `reason` in `tx` under `ctx` (spec
+    /// 2026-10-08-multi-agent-multi-person §14), all in `tx`: records
+    /// `ended_at` and the reason (an `idle` end first saves the session's
+    /// direct watches to `ended_watches_json`); withdraws its open `ask`
+    /// approval requests (routed ones stay); releases every thread it owns
+    /// (`thread.release`, reason `grant_revoked` for a revoked end, else
+    /// `session_end`); clears its narrowing and elevation (`agent.narrow`,
+    /// `agent.elevate` with `access` null, bumping the visibility
+    /// generation); ends its watches and releases its undelivered feedback;
+    /// withdraws its open questions; and, when it owned open threads or had
+    /// open questions or `ask` requests, makes one `ended` inbox item for its
+    /// person (M25). With `unseen_before`, ends it only when it was last
+    /// seen before then. `None` when it was not ended here. Everything is
+    /// recorded under `ctx`, `session.end` ([`EndReason::audit_reason`])
+    /// first; a system actor names the session's agent in `for_actor`.
     pub(super) fn end_in(
         &self,
         tx: &Transaction<'_>,
@@ -1013,7 +1307,7 @@ impl Store {
         now: &str,
         reason: EndReason,
         unseen_before: Option<&str>,
-    ) -> Result<Option<(crate::feedback::Touched, Vec<String>)>> {
+    ) -> Result<Option<Cleanup>> {
         let n = tx.execute(
             "UPDATE sessions SET ended_at = ?2, ended_reason = ?3
              WHERE id = ?1 AND ended_at IS NULL AND (?4 IS NULL OR last_seen_at < ?4)",
@@ -1022,6 +1316,8 @@ impl Store {
         if n == 0 {
             return Ok(None);
         }
+        // Before its watches go: their artifacts' Send menus drop it.
+        self.agents_changed(tx, id)?;
         if reason == EndReason::Idle {
             tx.execute(
                 "UPDATE sessions SET ended_watches_json = (
@@ -1034,13 +1330,116 @@ impl Store {
             )?;
         }
         self.record_session_end(tx, ctx, id, reason.audit_reason())?;
-        // What it asked its person for goes with it; routed requests stay
-        // (spec 2026-10-08 §14).
-        super::approvals::withdraw_session_in(self, tx, ctx, id, now)?;
-        Ok(Some((
-            super::feedback::release_session(tx, id, now)?,
-            self.withdraw_session_questions(tx, ctx, id, now)?,
-        )))
+        // What it asked its person for goes with it; routed requests stay.
+        let withdrawn_requests = super::approvals::withdraw_session_in(self, tx, ctx, id, now)?;
+        let released = self.release_owned_in(tx, ctx, id, reason)?;
+        self.clear_rights_in(tx, ctx, id)?;
+        let mut touched = super::feedback::release_session(tx, id, now)?;
+        let withdrawn_questions = self.withdraw_session_questions(tx, ctx, id, now)?;
+        let mut note = super::inbox::EndedNote {
+            threads: Vec::new(),
+            questions: withdrawn_questions.len(),
+            requests: withdrawn_requests.len(),
+        };
+        for (aid, tid, open) in &released {
+            touched.threads.insert((aid.clone(), tid.clone()));
+            if *open {
+                note.threads.push((aid.clone(), tid.clone()));
+            }
+        }
+        let (name, harness): (Option<String>, String) = tx.query_row(
+            "SELECT name, harness FROM sessions WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let name = name.unwrap_or(harness);
+        super::inbox::note_ended(tx, id, &name, reason.as_str(), &note, now)?;
+        Ok(Some(Cleanup {
+            touched,
+            withdrawn_questions,
+            withdrawn_requests,
+            released_threads: released.into_iter().map(|(_, t, _)| t).collect(),
+        }))
+    }
+
+    /// Releases every thread session `id` owns, as its end (`reason`) does:
+    /// the owner is cleared and `thread.release {thread_id, session,
+    /// reason}` recorded for each (`grant_revoked` for a revoked end, else
+    /// `session_end`). Returns `(artifact ID, thread ID, open)` of each.
+    fn release_owned_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        id: &str,
+        reason: EndReason,
+    ) -> Result<Vec<(String, String, bool)>> {
+        let owned: Vec<(String, String, bool)> = {
+            let mut stmt = tx.prepare_cached(
+                "SELECT artifact_id, id, status = 'open' FROM threads
+                 WHERE target_session_id = ?1 ORDER BY created_at, id",
+            )?;
+            stmt.query_map(params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        if owned.is_empty() {
+            return Ok(owned);
+        }
+        tx.execute(
+            "UPDATE threads SET target_session_id = NULL WHERE target_session_id = ?1",
+            params![id],
+        )?;
+        let why = match reason {
+            EndReason::Revoked => "grant_revoked",
+            _ => "session_end",
+        };
+        let now = self.now();
+        for (aid, tid, _) in &owned {
+            let rec = super::threads::thread_record(AuditKind::ThreadRelease, &now, aid, tid)
+                .with("thread_id", tid.as_str())
+                .with("session", id)
+                .with("reason", why);
+            let mut rec = with_for_actor(tx, ctx, rec, id, AgentActor::default)?;
+            rec.ids.session = Some(id.to_string());
+            self.record_audit(tx, ctx, rec)?;
+        }
+        Ok(owned)
+    }
+
+    /// Clears session `id`'s narrowing and elevation, as its end does: each
+    /// one set is cleared, recorded (`agent.narrow` or `agent.elevate`
+    /// `{session, access: null}`) and marks the write as changing what
+    /// agents may see (M17).
+    fn clear_rights_in(&self, tx: &Transaction<'_>, ctx: &AuditCtx, id: &str) -> Result<()> {
+        let (narrow, elevate): (Option<String>, Option<String>) = tx.query_row(
+            "SELECT narrow_json, elevate_json FROM sessions WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if narrow.is_none() && elevate.is_none() {
+            return Ok(());
+        }
+        tx.execute(
+            "UPDATE sessions SET narrow_json = NULL, elevate_json = NULL WHERE id = ?1",
+            params![id],
+        )?;
+        self.visibility_changed();
+        let now = self.now();
+        for (kind, was) in [
+            (AuditKind::AgentNarrow, narrow),
+            (AuditKind::AgentElevate, elevate),
+        ] {
+            if was.is_none() {
+                continue;
+            }
+            let rec = AuditRecord::new(kind, &now)
+                .with("session", id)
+                .with("access", serde_json::Value::Null)
+                .with("reason", "session_end");
+            let mut rec = with_for_actor(tx, ctx, rec, id, AgentActor::default)?;
+            rec.ids.session = Some(id.to_string());
+            self.record_audit(tx, ctx, rec)?;
+        }
+        Ok(())
     }
 }
 
@@ -2235,6 +2634,475 @@ mod tests {
                 watches,
                 serde_json::json!([{"artifact_id": aid.as_str(), "replies_armed": false}])
             );
+        }
+    }
+
+    /// Ending a session (spec 2026-10-08-multi-agent-multi-person §14, M25).
+    mod cleanup {
+        use super::*;
+        use crate::store::approvals::{AskApproval, Route};
+        use crate::store::inbox::{InboxQuery, Kind};
+        use crate::store::people::EndedBy;
+        use crate::store::people::tests::{KEY_A, KEY_B, approved, store};
+        use crate::store::questions::{NewQuestion, Source};
+        use crate::store::test_util::{anchor, artifact};
+        use crate::store::threads::NewThread;
+        use crate::working::ManualClock;
+        use std::sync::Arc;
+
+        /// Sam's agent, holding everything an end cleans up: a thread it
+        /// owns, one of Mia's it asked Sam about, an open question and an
+        /// elevation.
+        struct World {
+            _d: tempfile::TempDir,
+            clock: Arc<ManualClock>,
+            st: Store,
+            grant: String,
+            sam: String,
+            sid: String,
+            aid: crate::ArtifactId,
+            owned: String,
+            asked: String,
+        }
+
+        fn thread_by(st: &Store, aid: &crate::ArtifactId, by: &str) -> String {
+            st.create_thread(
+                DAEMON,
+                aid,
+                NewThread {
+                    version_n: 1,
+                    anchor: anchor(),
+                    author_name: "x".into(),
+                    author_public_id: Some(by.to_string()),
+                    body: "b".into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap()
+            .id
+        }
+
+        fn reg_in(grant: &str, hsid: &str) -> RegisterSession {
+            RegisterSession {
+                harness: "claude".into(),
+                harness_session_id: Some(hsid.into()),
+                cwd: "/w".into(),
+                grant_id: Some(grant.into()),
+                ..Default::default()
+            }
+        }
+
+        /// Sam's agent with nothing to clean up yet.
+        fn bare() -> World {
+            let (d, clock, st) = store();
+            st.owner_viewer(true).unwrap();
+            let (grant, _, _) = approved(&st, "Sam", KEY_A);
+            let sam = st.viewer_of_grant(&grant).unwrap().public_id;
+            let sid = st
+                .register_session(DAEMON, reg_in(&grant, "hs-1"))
+                .unwrap()
+                .id;
+            let aid = artifact(&st, None);
+            st.ensure_watch(DAEMON, &sid, &aid).unwrap();
+            World {
+                _d: d,
+                clock,
+                st,
+                grant,
+                sam,
+                sid,
+                aid,
+                owned: String::new(),
+                asked: String::new(),
+            }
+        }
+
+        fn world() -> World {
+            let mut w = bare();
+            let (mia_grant, _, _) = approved(&w.st, "Mia", KEY_B);
+            let mia = w.st.viewer_of_grant(&mia_grant).unwrap().public_id;
+            w.owned = thread_by(&w.st, &w.aid, &w.sam);
+            w.st.send_routed(
+                DAEMON,
+                &w.owned,
+                crate::SendTarget::Agent(&w.sid),
+                Route::Send,
+                false,
+            )
+            .unwrap();
+            w.asked = thread_by(&w.st, &w.aid, &mia);
+            w.st.ask_approval(
+                DAEMON,
+                &AskApproval {
+                    session_id: w.sid.clone(),
+                    artifact_id: None,
+                    thread_id: Some(w.asked.clone()),
+                    author: None,
+                },
+            )
+            .unwrap();
+            w.st.create_question(
+                DAEMON,
+                NewQuestion {
+                    session_id: w.sid.clone(),
+                    artifact_id: None,
+                    source: Source::Ask,
+                    tool_use_id: None,
+                    questions: serde_json::from_value(serde_json::json!([{
+                        "question": "Which?", "header": "Pick",
+                        "options": [{"label": "A"}, {"label": "B"}]}]))
+                    .unwrap(),
+                    released: false,
+                },
+            )
+            .unwrap();
+            w.st.with_tx(|tx| {
+                tx.execute(
+                    "UPDATE sessions SET elevate_json = '[]' WHERE id = ?1",
+                    params![w.sid],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+            w
+        }
+
+        impl World {
+            fn ended_items(&self) -> Vec<crate::store::inbox::ItemRow> {
+                self.st
+                    .inbox_list(&InboxQuery {
+                        recipient: Some(self.sam.clone()),
+                        kinds: vec![Kind::Ended],
+                        ..Default::default()
+                    })
+                    .unwrap()
+                    .0
+            }
+
+            fn kinds_since(&self, seq: i64) -> Vec<(String, serde_json::Value)> {
+                self.st
+                    .events_after(seq, 10_000)
+                    .unwrap()
+                    .into_iter()
+                    .map(|r| (r.kind, serde_json::from_str(&r.body).unwrap()))
+                    .collect()
+            }
+
+            fn last_seq(&self) -> i64 {
+                self.st
+                    .events_after(0, 100_000)
+                    .unwrap()
+                    .last()
+                    .map_or(0, |r| r.seq)
+            }
+
+            fn owner_of(&self, tid: &str) -> Option<String> {
+                self.st
+                    .with_read(|c| {
+                        Ok(c.query_row(
+                            "SELECT target_session_id FROM threads WHERE id = ?1",
+                            [tid],
+                            |r| r.get(0),
+                        )?)
+                    })
+                    .unwrap()
+            }
+
+            fn open_requests(&self) -> usize {
+                self.st
+                    .approval_requests(Some(&self.sam), true, 500)
+                    .unwrap()
+                    .0
+                    .len()
+            }
+        }
+
+        #[test]
+        fn ending_a_session_cleans_up_and_leaves_one_note() {
+            let w = world();
+            assert_eq!(w.owner_of(&w.owned).as_deref(), Some(w.sid.as_str()));
+            assert_eq!(w.open_requests(), 1);
+            let (seq, generation) = (w.last_seq(), w.st.visibility_generation());
+            let e = w.st.end_session_touched(DAEMON, &w.sid).unwrap();
+            assert_eq!(e.released_threads, vec![w.owned.clone()]);
+            assert_eq!(e.withdrawn_requests.len(), 1);
+            assert_eq!(e.withdrawn_questions.len(), 1);
+            assert!(
+                e.touched
+                    .threads
+                    .contains(&(w.aid.to_string(), w.owned.clone()))
+            );
+            assert_eq!(w.owner_of(&w.owned), None, "the thread is released");
+            assert_eq!(w.open_requests(), 0, "the ask request is withdrawn");
+            let (narrow, elevate): (Option<String>, Option<String>) =
+                w.st.with_read(|c| {
+                    Ok(c.query_row(
+                        "SELECT narrow_json, elevate_json FROM sessions WHERE id = ?1",
+                        [&w.sid],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )?)
+                })
+                .unwrap();
+            assert_eq!((narrow, elevate), (None, None), "its rights are cleared");
+            assert!(
+                w.st.visibility_generation() > generation,
+                "clearing an elevation changes what agents may see"
+            );
+            // Every effect is recorded, in the end's transaction.
+            let recs = w.kinds_since(seq);
+            let kinds: Vec<&str> = recs.iter().map(|(k, _)| k.as_str()).collect();
+            for k in [
+                "session.end",
+                "approval.withdraw",
+                "thread.release",
+                "agent.elevate",
+                "question.withdraw",
+            ] {
+                assert_eq!(
+                    kinds.iter().filter(|x| **x == k).count(),
+                    1,
+                    "{k} in {kinds:?}"
+                );
+            }
+            let get = |k: &str| &recs.iter().find(|(x, _)| x == k).unwrap().1;
+            assert_eq!(get("approval.withdraw")["reason"], "session_end");
+            assert_eq!(get("thread.release")["reason"], "session_end");
+            assert_eq!(get("thread.release")["thread_id"], w.owned.as_str());
+            assert_eq!(get("thread.release")["session"], w.sid.as_str());
+            assert_eq!(get("agent.elevate")["access"], serde_json::Value::Null);
+            // One note, for Sam, saying what it cleaned up.
+            let items = w.ended_items();
+            assert_eq!(items.len(), 1);
+            let d = items[0].detail.clone().unwrap();
+            assert_eq!(items[0].session_id.as_deref(), Some(w.sid.as_str()));
+            assert_eq!(d["reason"], "exit");
+            assert_eq!(d["questions"], 1);
+            assert_eq!(d["requests"], 1);
+            assert_eq!(d["threads"][0]["thread_id"], w.owned.as_str());
+            assert_eq!(
+                d["text"],
+                "claude ended · released 1 thread · withdrew 1 question and 1 approval request"
+            );
+            // Ending it again changes and notes nothing.
+            let seq = w.last_seq();
+            let again = w.st.end_session_touched(DAEMON, &w.sid).unwrap();
+            assert!(again.released_threads.is_empty() && again.withdrawn_requests.is_empty());
+            assert!(w.kinds_since(seq).is_empty());
+            assert_eq!(w.ended_items().len(), 1);
+        }
+
+        #[test]
+        fn an_idle_session_ends_without_a_note() {
+            let w = bare();
+            w.clock.advance(Store::REMOTE_SESSION_IDLE_SECS as i64 + 1);
+            let r =
+                w.st.reap_sessions(Duration::from_secs(Store::SESSION_IDLE_SECS), &|_| false)
+                    .unwrap();
+            assert_eq!(r.ended, vec![w.sid.clone()]);
+            assert!(w.ended_items().is_empty(), "nothing to clean up, no note");
+            // A resolved thread it owned is released, but tells nothing.
+            let w = bare();
+            let t = thread_by(&w.st, &w.aid, &w.sam);
+            w.st.send_routed(
+                DAEMON,
+                &t,
+                crate::SendTarget::Agent(&w.sid),
+                Route::Send,
+                false,
+            )
+            .unwrap();
+            w.st.resolve_thread(DAEMON, &t, "owner").unwrap();
+            let e = w.st.end_session_touched(DAEMON, &w.sid).unwrap();
+            assert_eq!(e.released_threads, vec![t.clone()]);
+            assert_eq!(w.owner_of(&t), None);
+            assert!(w.ended_items().is_empty());
+        }
+
+        #[test]
+        fn remote_sessions_are_never_pid_probed_and_idle_thirty_minutes() {
+            let w = bare();
+            let local =
+                w.st.register_session(
+                    DAEMON,
+                    RegisterSession {
+                        harness: "claude".into(),
+                        cwd: "/w".into(),
+                        pid: Some(4242),
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+                .id;
+            // A remote row that holds a process ID (the daemon drops one
+            // from a grant's registration; this one is written directly).
+            w.st.with_tx(|tx| {
+                tx.execute("UPDATE sessions SET pid = 777 WHERE id = ?1", params![w.sid])?;
+                Ok(())
+            })
+            .unwrap();
+            let probed = std::sync::Mutex::new(Vec::new());
+            let alive = |p: u32| {
+                probed.lock().unwrap().push(p);
+                true
+            };
+            let idle = Duration::from_secs(Store::SESSION_IDLE_SECS);
+            w.clock.advance(29 * 60);
+            let r = w.st.reap_sessions(idle, &alive).unwrap();
+            assert!(r.ended.is_empty(), "29 minutes: still live, {:?}", r.ended);
+            assert_eq!(
+                *probed.lock().unwrap(),
+                vec![4242],
+                "only the local process is probed"
+            );
+            w.clock.advance(2 * 60);
+            // Its process "alive" changes nothing: it is never probed.
+            let dead = |p: u32| {
+                probed.lock().unwrap().push(p);
+                p == 777
+            };
+            probed.lock().unwrap().clear();
+            let r = w.st.reap_sessions(idle, &dead).unwrap();
+            assert!(r.ended.contains(&w.sid), "31 minutes: ended");
+            assert!(r.ended.contains(&local));
+            assert_eq!(
+                *probed.lock().unwrap(),
+                vec![4242],
+                "a grant's session is never probed"
+            );
+            let reason: String =
+                w.st.with_read(|c| {
+                    Ok(c.query_row(
+                        "SELECT ended_reason FROM sessions WHERE id = ?1",
+                        [&w.sid],
+                        |r| r.get(0),
+                    )?)
+                })
+                .unwrap();
+            assert_eq!(reason, "idle");
+        }
+
+        #[test]
+        fn revoking_a_grant_ends_its_sessions_with_their_notes() {
+            let w = world();
+            let quiet =
+                w.st.register_session(DAEMON, reg_in(&w.grant, "hs-2"))
+                    .unwrap()
+                    .id;
+            let seq = w.last_seq();
+            let r = w.st.revoke_grant(DAEMON, &w.grant, EndedBy::Owner).unwrap();
+            assert_eq!(r.sessions_ended.len(), 2);
+            assert!(r.sessions_ended.contains(&quiet));
+            assert_eq!(w.owner_of(&w.owned), None);
+            let recs = w.kinds_since(seq);
+            let release = recs.iter().find(|(k, _)| k == "thread.release").unwrap();
+            assert_eq!(release.1["reason"], "grant_revoked");
+            let items = w.ended_items();
+            assert_eq!(items.len(), 1, "the quiet session makes no note");
+            assert_eq!(items[0].session_id.as_deref(), Some(w.sid.as_str()));
+            assert_eq!(items[0].detail.as_ref().unwrap()["reason"], "revoked");
+        }
+
+        #[test]
+        fn reregistering_after_an_idle_end_restores_watches_and_says_what_ended() {
+            let w = world();
+            let other = artifact(&w.st, None);
+            w.st.watch(DAEMON, &w.sid, &other, false).unwrap();
+            w.clock.advance(Store::REMOTE_SESSION_IDLE_SECS as i64 + 1);
+            let r =
+                w.st.reap_sessions(Duration::from_secs(Store::SESSION_IDLE_SECS), &|_| false)
+                    .unwrap();
+            assert_eq!(r.ended, vec![w.sid.clone()]);
+            // Another grant with the same harness session ID gets nothing.
+            let (mia_grant, _, _) = approved(&w.st, "Ola", [9; 32]);
+            let (_, none) =
+                w.st.register_session_restoring(DAEMON, reg_in(&mia_grant, "hs-1"))
+                    .unwrap();
+            assert_eq!(none, None);
+            // The same grant and ID within a day gets its watches back, armed
+            // as they were, and a note naming the released thread.
+            w.clock.advance(3600);
+            let (s, restored) =
+                w.st.register_session_restoring(DAEMON, reg_in(&w.grant, "hs-1"))
+                    .unwrap();
+            assert_ne!(s.id, w.sid);
+            let restored = restored.expect("restored");
+            assert_eq!(restored.from, w.sid);
+            assert_eq!(restored.threads, vec![w.owned.clone()]);
+            let mut back: Vec<(String, bool)> =
+                w.st.list_watches(&s.id)
+                    .unwrap()
+                    .into_iter()
+                    .map(|x| (x.artifact_id, x.replies_armed))
+                    .collect();
+            back.sort();
+            let mut want = vec![(w.aid.to_string(), true), (other.to_string(), false)];
+            want.sort();
+            assert_eq!(back, want);
+            assert!(
+                restored
+                    .note
+                    .starts_with("[clax] Your session ended after 30 minutes without contact (")
+            );
+            assert!(
+                restored
+                    .note
+                    .contains(&format!("1 thread was released ({})", w.owned)),
+                "{}",
+                restored.note
+            );
+            assert!(restored.note.ends_with("your watches were restored."));
+        }
+
+        #[test]
+        fn only_a_recent_idle_end_restores_anything() {
+            // exit, revoked and person ends restore nothing.
+            for reason in [EndReason::Exit, EndReason::Revoked, EndReason::Person] {
+                let w = bare();
+                w.st.with_tx(|tx| {
+                    w.st.end_in(tx, DAEMON, &w.sid, &w.st.now(), reason, None)?;
+                    Ok(())
+                })
+                .unwrap();
+                let (_, r) =
+                    w.st.register_session_restoring(DAEMON, reg_in(&w.grant, "hs-1"))
+                        .unwrap();
+                assert_eq!(r, None, "{reason:?}");
+            }
+            // An idle end more than a day old restores nothing.
+            let w = bare();
+            w.clock.advance(Store::REMOTE_SESSION_IDLE_SECS as i64 + 1);
+            w.st.reap_sessions(Duration::from_secs(Store::SESSION_IDLE_SECS), &|_| false)
+                .unwrap();
+            w.clock.advance(Store::RESTORE_WINDOW_SECS as i64 + 1);
+            let (s, r) =
+                w.st.register_session_restoring(DAEMON, reg_in(&w.grant, "hs-1"))
+                    .unwrap();
+            assert_eq!(r, None);
+            assert!(w.st.list_watches(&s.id).unwrap().is_empty());
+            // Within the day, a hook's join that makes the row restores too.
+            let w = bare();
+            w.clock.advance(Store::REMOTE_SESSION_IDLE_SECS as i64 + 1);
+            w.st.reap_sessions(Duration::from_secs(Store::SESSION_IDLE_SECS), &|_| false)
+                .unwrap();
+            let (s, r) =
+                w.st.join_session_restoring(
+                    DAEMON,
+                    JoinSession {
+                        harness: "claude".into(),
+                        parent_pid: 1,
+                        harness_session_id: "hs-1".into(),
+                        cwd: None,
+                        transcript_path: None,
+                        ancestor_pids: vec![],
+                    },
+                    Some(&w.grant),
+                )
+                .unwrap();
+            let r = r.expect("restored");
+            assert_eq!(r.artifacts, vec![w.aid.to_string()]);
+            assert!(r.note.contains("no threads were released"), "{}", r.note);
+            assert_eq!(w.st.list_watches(&s.id).unwrap().len(), 1);
         }
     }
 }

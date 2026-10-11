@@ -1246,6 +1246,92 @@ pub(crate) fn approval_closed(c: &Connection, rid: &str, now: &str) -> Result<()
     Ok(())
 }
 
+/// What an agent's end cleaned up (spec 2026-10-08-multi-agent-multi-person
+/// §14, M25): the open threads it owned, now released, and how many open
+/// questions and `ask` approval requests were withdrawn.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EndedNote {
+    /// `(artifact ID, thread ID)` of each open thread released.
+    pub threads: Vec<(String, String)>,
+    pub questions: usize,
+    pub requests: usize,
+}
+
+impl EndedNote {
+    /// Whether the end cleaned nothing up (M25: no note then).
+    pub fn is_empty(&self) -> bool {
+        self.threads.is_empty() && self.questions == 0 && self.requests == 0
+    }
+
+    /// The note's line: "clax-claude ended · released 2 threads · withdrew
+    /// 1 question" (each part only when it counts something).
+    pub fn text(&self, name: &str) -> String {
+        let n =
+            |k: usize, one: &str, many: &str| format!("{k} {}", if k == 1 { one } else { many });
+        let mut parts = vec![format!("{name} ended")];
+        if !self.threads.is_empty() {
+            parts.push(format!(
+                "released {}",
+                n(self.threads.len(), "thread", "threads")
+            ));
+        }
+        let mut withdrew = Vec::new();
+        if self.questions > 0 {
+            withdrew.push(n(self.questions, "question", "questions"));
+        }
+        if self.requests > 0 {
+            withdrew.push(n(self.requests, "approval request", "approval requests"));
+        }
+        if !withdrew.is_empty() {
+            parts.push(format!("withdrew {}", withdrew.join(" and ")));
+        }
+        parts.join(" · ")
+    }
+}
+
+/// Agent session `sid` (named `name`) ended for `reason` with `note` to
+/// tell: one `ended` item for its person (the owner for the owner's
+/// agents), keyed by the session, its detail `{name, reason, threads:
+/// [{artifact_id, thread_id}], questions, requests, text}` and indexed by
+/// its text. Nothing when `note` is empty (M25) or the session has one.
+pub(crate) fn note_ended(
+    c: &Connection,
+    sid: &str,
+    name: &str,
+    reason: &str,
+    note: &EndedNote,
+    now: &str,
+) -> Result<Option<i64>> {
+    if note.is_empty() {
+        return Ok(None);
+    }
+    let person = person_of_session(c, sid)?;
+    let text = note.text(name);
+    let threads: Vec<Value> = note
+        .threads
+        .iter()
+        .map(|(a, t)| serde_json::json!({"artifact_id": a, "thread_id": t}))
+        .collect();
+    insert_at(
+        c,
+        New {
+            recipient: person.as_deref(),
+            session_id: Some(sid),
+            detail: Some(serde_json::json!({
+                "name": name,
+                "reason": reason,
+                "threads": threads,
+                "questions": note.questions,
+                "requests": note.requests,
+                "text": text,
+            })),
+            text,
+            ..New::of(Kind::Ended, format!("ended:{sid}"))
+        },
+        now,
+    )
+}
+
 /// A grant request `gid` from `client_name` at `peer_ip` (spec §6.3): one
 /// `connection` item for the owner, a request waiting for them or, with an
 /// invite, a machine that connected, indexed by the client's name and

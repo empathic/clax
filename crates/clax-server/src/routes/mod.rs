@@ -278,6 +278,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             get(grants::list_invites).post(grants::create_invite),
         )
         .route("/api/people/invites/{id}", delete(grants::revoke_invite))
+        .route("/api/agents", get(people::list_agents))
         .route(
             "/api/agents/{handle}",
             axum::routing::put(people::rename_agent),
@@ -675,6 +676,7 @@ mod l10 {
         ("grants::test_fail_index", Token),
         ("connect::browser_link", NoArtifact),
         ("people::rename_agent", NoArtifact),
+        ("people::list_agents", Filtered),
         ("agent::test_gate", Token),
         ("agent::test_caller", NoArtifact),
     ];
@@ -1590,6 +1592,7 @@ mod agents {
             ),
             ("GET", "/api/approvals", Own, None),
             ("GET", "/api/approvals/requests", Own, None),
+            ("GET", "/api/agents", Own, None),
             ("POST", "/api/sessions/{id}/tool-calls", Own, None),
             ("POST", "/api/sessions/{id}/tool-call-ids", Own, None),
         ]

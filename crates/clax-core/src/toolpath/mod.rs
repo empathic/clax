@@ -694,7 +694,7 @@ impl Event<'_> {
                 | K::GrantNarrow,
             ) => self.str("grant_id").map(Obj::Grant),
             Some(K::PersonRights | K::PersonRevoke) => self.str("person").map(Obj::Person),
-            Some(K::AgentName) => s.map(Obj::Session),
+            Some(K::AgentName | K::AgentNarrow | K::AgentElevate) => s.map(Obj::Session),
             Some(K::ApprovalGrant | K::ApprovalRevoke) => {
                 self.str("approval_id").map(Obj::Approval)
             }
@@ -1258,6 +1258,24 @@ impl Event<'_> {
                 "Named the agent of session {} ({})",
                 self.row.ids.session.as_deref().unwrap_or("unknown"),
                 self.show("source")
+            ),
+            Some(K::AgentNarrow) => format!(
+                "{} the agent of session {}",
+                if self.body.get("access").is_none_or(Value::is_null) {
+                    "Cleared the narrowing of"
+                } else {
+                    "Narrowed"
+                },
+                self.row.ids.session.as_deref().unwrap_or("unknown")
+            ),
+            Some(K::AgentElevate) => format!(
+                "{} the agent of session {}",
+                if self.body.get("access").is_none_or(Value::is_null) {
+                    "Cleared the elevation of"
+                } else {
+                    "Elevated"
+                },
+                self.row.ids.session.as_deref().unwrap_or("unknown")
             ),
             Some(K::BackfillSkip) => {
                 return format!(

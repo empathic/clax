@@ -3232,8 +3232,12 @@ mod delivery {
             w.st.handoff(DAEMON, &tid, &w.sid, Some(&w.sid)),
             Err(CoreError::ThreadTaken { .. })
         ));
-        assert!(w.st.thread_owner(&tid).unwrap().is_some_and(|o| !o.live));
-        // Another of the owner's agents may.
+        assert_eq!(
+            w.st.thread_owner(&tid).unwrap(),
+            None,
+            "the end released the thread (spec 2026-10-08 §14)"
+        );
+        // Another of the owner's agents may: the owner sent its comments.
         let second = crate::store::test_util::session(&w.st, "codex", "owner-h2");
         w.st.handoff(DAEMON, &tid, &second, Some(&w.sid)).unwrap();
         assert_eq!(w.st.thread_owner(&tid).unwrap().unwrap().session_id, w.sid);
@@ -3811,8 +3815,11 @@ mod ownership {
         let (_d, st, a, b, tid) = two_watchers();
         assert_eq!(take(&st, &a).items.len(), 1);
         st.end_session(DAEMON, &a).unwrap();
-        let owner = st.thread_owner(&tid).unwrap().unwrap();
-        assert!(!owner.live, "the ended owner is shown, and owns nothing");
+        assert_eq!(
+            st.thread_owner(&tid).unwrap(),
+            None,
+            "the end released the thread (spec 2026-10-08 §14)"
+        );
         st.check_not_taken(&tid, &b).unwrap();
         st.add_agent_reply(DAEMON, &tid, reply(&b, "picking it up"), None)
             .unwrap();

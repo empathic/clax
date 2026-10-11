@@ -91,6 +91,9 @@ type SharedListener = Arc<dyn Fn(Vec<InboxChange>) + Send + Sync>;
 /// The installed approval request listener, cloned out of its lock.
 type RequestListener = Arc<dyn Fn(Vec<i64>) + Send + Sync>;
 
+/// The installed agents listener, cloned out of its lock.
+type AgentsListener = Arc<dyn Fn(Vec<String>) + Send + Sync>;
+
 pub struct Store {
     home: Home,
     writer: Writer,
@@ -112,6 +115,11 @@ pub struct Store {
     /// The visibility generation and its listener (spec
     /// 2026-10-08-multi-agent-multi-person M17).
     visibility: approvals::VisState,
+    /// Set by [`Store::agents_changed`] in the write under way, with the
+    /// artifacts the changed agents watched; the agents listener hears of
+    /// it once the write commits.
+    agents_changed: Mutex<Option<std::collections::BTreeSet<String>>>,
+    agents_listener: RwLock<Option<AgentsListener>>,
     /// Where every time the store writes or compares is read
     /// ([`Store::now`]). IDs are minted from the system clock.
     clock: Arc<dyn Clock>,
@@ -209,6 +217,8 @@ impl Store {
             request_listener: RwLock::new(None),
             audit: audit::AuditState::default(),
             visibility: approvals::VisState::default(),
+            agents_changed: Mutex::new(None),
+            agents_listener: RwLock::new(None),
             clock,
         })
     }
@@ -288,11 +298,12 @@ impl Store {
         &self,
         f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        let (out, changes, requests, recorded) = self.writer.run(|conn| {
+        let (out, changes, requests, recorded, agents) = self.writer.run(|conn| {
             self.inbox_changes.lock().unwrap().clear();
             self.request_changes.lock().unwrap().clear();
             let _job = self.audit.begin();
             self.visibility.begin();
+            *self.agents_changed.lock().unwrap() = None;
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let out = f(&tx)?;
             tx.commit()?;
@@ -304,6 +315,7 @@ impl Store {
                 std::mem::take(&mut *self.inbox_changes.lock().unwrap()),
                 std::mem::take(&mut *self.request_changes.lock().unwrap()),
                 self.audit.take_recorded(),
+                self.agents_changed.lock().unwrap().take(),
             ))
         })?;
         if recorded {
@@ -322,7 +334,37 @@ impl Store {
                 listen(requests);
             }
         }
+        if let Some(artifacts) = agents {
+            let listen = self.agents_listener.read().unwrap().clone();
+            if let Some(listen) = listen {
+                listen(artifacts.into_iter().collect());
+            }
+        }
         Ok(out)
+    }
+
+    /// Marks the write under way (in [`Store::with_tx`]) as changing the
+    /// agents roster (a session started, ended or was renamed), read on
+    /// `c` before the change: the artifacts session `sid` watches.
+    pub(crate) fn agents_changed(&self, c: &Connection, sid: &str) -> Result<()> {
+        let watched: Vec<String> = c
+            .prepare_cached("SELECT artifact_id FROM watches WHERE session_id = ?1")?
+            .query_map(rusqlite::params![sid], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        self.agents_changed
+            .lock()
+            .unwrap()
+            .get_or_insert_default()
+            .extend(watched);
+        Ok(())
+    }
+
+    /// Installs `f`, called after each committed write that started, ended
+    /// or renamed an agent session, with the artifacts those agents
+    /// watched, outside the write turn and after the other listeners.
+    /// Replaces any earlier listener.
+    pub fn set_agents_listener(&self, f: impl Fn(Vec<String>) + Send + Sync + 'static) {
+        *self.agents_listener.write().unwrap() = Some(Arc::new(f));
     }
 
     /// Installs `f`, called with the rows (`rowid`s) of `approval_requests`
