@@ -1172,7 +1172,8 @@ An approval says "agents of `approver` may see `author`'s content at
   shows one banner: "More is waiting for your approval than the inbox
   lists: review People".
 - An open request is withdrawn when its thread is resolved or deleted, its
-  artifact deleted, or (for `cause: ask`) the asking session ends.
+  artifact deleted, (for `cause: ask`) the asking session ends, or its
+  approver or author is revoked as a person.
 
 ### 9.3 Deciding
 
@@ -1588,14 +1589,16 @@ another machine, so no `remote` channel is added.
 | `person.rights`, `person.revoke` | `person, rights` / `person` | owner |
 | `agent.name` | `name, source, previous` | the namer |
 | `agent.narrow`, `agent.elevate` | `session, access` | person, owner |
-| `approval.request` | `request_id, approver, author, artifact_id, thread_id, cause, count` | asking agent or router |
-| `approval.decide` | `request_id, scope` | approver |
+| `approval.request` | `request_id, approver, author, artifact_id, thread_id, cause, count`; recorded when a request is made and when new withheld content raises its `count` | asking agent or router |
+| `approval.decide` | `request_id, scope` (`thread`, `artifact`, `everywhere` or `decline`); one per request an approval closes | approver |
+| `approval.withdraw` | `request_id, reason (thread_resolved\|thread_deleted\|artifact_deleted\|session_end\|person_revoked)` | whoever made the change that withdrew it |
 | `approval.grant`, `approval.revoke` | `approval_id, approver, author, scope, created_via` (the artifact and thread in the event's IDs) | approver |
 | `content.withheld` | `feedback_ids[], author, thread_id, session` | system `daemon`, `for_actor` the agent (once per placeholder) |
 | `thread.take` | `thread_id, session, cause (send\|mention\|first_delivery\|handoff)` | sender, or system |
 | `thread.release` | `thread_id, session, reason (explicit\|session_end\|grant_revoked)` | agent or system |
 
-`thread.send` gains `approval_request_ids[]`. Reads remain unrecorded.
+`thread.send` gains `approval_request_ids[]`, present when the send made or
+joined a request. Reads remain unrecorded.
 
 Recorded since the rebase onto the audit journal (2026-10-10; audit spec
 §6.13): `invite.*`, `grant.*`, `person.rights`, `person.revoke` and

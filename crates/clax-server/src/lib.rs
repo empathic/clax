@@ -1,6 +1,7 @@
 //! HTTP server for Clax: REST API, content serving, SSE, embedded UI.
 
 pub mod agent;
+pub mod approvals;
 pub mod audit;
 pub mod auth;
 pub mod blocking;

@@ -238,6 +238,10 @@ need!(QuestionsPoll, Ask, "ask", Own, DEFAULT_LIMIT);
 need!(QuestionsWithdraw, Ask, "ask", Own, DEFAULT_LIMIT);
 need!(QuestionsRelease, Ask, "ask", Own, DEFAULT_LIMIT);
 need!(QuestionsTerminal, Ask, "ask", Own, DEFAULT_LIMIT);
+need!(ApprovalsAsk, Ask, "ask", Own, DEFAULT_LIMIT);
+need!(ApprovalsPoll, Ask, "ask", Own, DEFAULT_LIMIT);
+need!(ApprovalsList, None, Own, DEFAULT_LIMIT);
+need!(ApprovalRequestsList, None, Own, DEFAULT_LIMIT);
 need!(ToolCallReport, None, Own, DEFAULT_LIMIT);
 need!(ToolCallIdReport, None, Own, DEFAULT_LIMIT);
 
@@ -391,6 +395,14 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
         "/api/sessions/{id}/questions:terminal",
         QuestionsTerminal::INFO,
     ),
+    ("POST", "/api/sessions/{id}/approvals", ApprovalsAsk::INFO),
+    (
+        "GET",
+        "/api/sessions/{id}/approvals/{rid}",
+        ApprovalsPoll::INFO,
+    ),
+    ("GET", "/api/approvals", ApprovalsList::INFO),
+    ("GET", "/api/approvals/requests", ApprovalRequestsList::INFO),
     (
         "POST",
         "/api/sessions/{id}/tool-calls",
@@ -468,6 +480,10 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("questions::withdraw", QuestionsWithdraw),
     route_need!("questions::release", QuestionsRelease),
     route_need!("questions::terminal", QuestionsTerminal),
+    route_need!("approvals::ask", ApprovalsAsk),
+    route_need!("approvals::poll", ApprovalsPoll),
+    route_need!("approvals::list", ApprovalsList),
+    route_need!("approvals::requests", ApprovalRequestsList),
     route_need!("toolpath::session_tool_call", ToolCallReport),
     route_need!("sessions::tool_call_ids", ToolCallIdReport),
 ];

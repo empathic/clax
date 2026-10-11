@@ -1,3 +1,4 @@
+pub mod approvals;
 pub mod artifacts;
 pub mod assets;
 pub mod connect;
@@ -213,6 +214,17 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             "/api/questions/{qid}/release",
             post(questions::release_owner),
         )
+        .route("/api/sessions/{id}/approvals", post(approvals::ask))
+        .route(
+            "/api/approvals",
+            get(approvals::list).post(approvals::create),
+        )
+        .route("/api/approvals/{id}", delete(approvals::revoke))
+        .route("/api/approvals/requests", get(approvals::requests))
+        .route(
+            "/api/approvals/requests/{rid}/decide",
+            post(approvals::decide),
+        )
         .route("/api/inbox", get(inbox::list))
         .route("/api/inbox/summary", get(inbox::summary))
         .route("/api/inbox/read", post(inbox::read_many))
@@ -383,6 +395,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route("/api/sessions/{id}/notices", get(feedback::notices))
         // A long-poll: outside the request timeout, as the feedback poll.
         .route("/api/sessions/{id}/questions/{qid}", get(questions::poll))
+        .route("/api/sessions/{id}/approvals/{rid}", get(approvals::poll))
         .merge(api_fast)
         .merge(api_slow)
         .merge(shell_routes)
@@ -616,6 +629,13 @@ mod l10 {
         ("questions::expire", Token),
         ("feedback::expire", Token),
         ("feedback::hold", Token),
+        ("approvals::ask", AgentPath),
+        ("approvals::poll", AgentPath),
+        ("approvals::list", NoArtifact),
+        ("approvals::requests", NoArtifact),
+        ("approvals::create", NoArtifact),
+        ("approvals::revoke", NoArtifact),
+        ("approvals::decide", NoArtifact),
         ("questions::list", Person),
         ("questions::get_one", Person),
         ("questions::answer", Person),
@@ -677,6 +697,7 @@ mod l10 {
 
     pub(super) fn module_source_opt(m: &str) -> Option<&'static str> {
         Some(match m {
+            "approvals" => include_str!("approvals.rs"),
             "artifacts" => include_str!("artifacts.rs"),
             "assets" => include_str!("assets.rs"),
             "connect" => include_str!("connect.rs"),
@@ -1544,6 +1565,20 @@ mod agents {
                 Own,
                 Some((Ask, "ask")),
             ),
+            (
+                "POST",
+                "/api/sessions/{id}/approvals",
+                Own,
+                Some((Ask, "ask")),
+            ),
+            (
+                "GET",
+                "/api/sessions/{id}/approvals/{rid}",
+                Own,
+                Some((Ask, "ask")),
+            ),
+            ("GET", "/api/approvals", Own, None),
+            ("GET", "/api/approvals/requests", Own, None),
             ("POST", "/api/sessions/{id}/tool-calls", Own, None),
             ("POST", "/api/sessions/{id}/tool-call-ids", Own, None),
         ]

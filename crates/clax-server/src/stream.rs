@@ -494,7 +494,9 @@ fn routes(ev: &Event) -> Vec<(Chan, Gate)> {
             Chan::Questions(recipient.clone().unwrap_or_default()),
             Gate::Any,
         )],
-        Event::InboxItem { recipient, .. } | Event::InboxRead { recipient, .. } => vec![(
+        Event::InboxItem { recipient, .. }
+        | Event::InboxRead { recipient, .. }
+        | Event::ApprovalRequest { recipient, .. } => vec![(
             Chan::Inbox(recipient.clone().unwrap_or_default()),
             Gate::Any,
         )],
