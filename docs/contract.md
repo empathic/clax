@@ -2036,8 +2036,9 @@ changes the first wins and the other is 409 `question_closed`):
 | `open` | `withdrawn` | the asking session (`ask` with `cancel`, or the session's end); a mirrored question no poll has held for 5 s; a daemon start (mirrored questions only) |
 | `released` | `answered` | the terminal dialog's answer, recorded by the `PostToolUse` hook (`answered_via: "terminal"`) |
 
-A session has at most 8 open questions and the daemon at most 100 (429
-`limit_reached`).
+A session has at most 8 open questions, and one person's agents at most
+100 between them (the owner's agents, and each connected person's, have
+their own 100; 429 `limit_reached`).
 
 ### Session routes
 
@@ -2309,6 +2310,10 @@ Each kind fills its own fields:
   `addressed` lists only the owner's threads.
 - **`published`** fills `published: {description}`.
 - **`question`** fills `question` with the question's view.
+- `agent.project` is null in a connected person's view of another
+  person's agent (spec 2026-10-08-multi-agent-multi-person §13); a
+  person's item about a live page is gone, with `artifact` and every
+  payload null and `url` `/inbox`.
 - **`finished`** fills `work: {message, threads: [{id, summary}]}`.
 - **`connection`** adds `connection`, the grant's view as `GET
   /api/grants` lists it (`{id, status, via, client: {name, key, peer_ip},
@@ -2357,9 +2362,17 @@ cursor or body) and 404 `not_found`.
   - `unread` and `total` are read just after the page, so under concurrent
     writes they may differ from it by the changes the `inbox` topic then
     announces.
+- **`GET /api/inbox?group=agent`**, with no other parameter, → `{agents,
+  unread}`: the agent strip. One entry per agent with unread items for the
+  caller or an open question or approval request waiting on them:
+  `{handle, name, harness, live, unread, blocked: {since, questions,
+  approvals} | null}`. Blocked agents come first, the longest blocked
+  first, then by newest unread item. A chip filters the inbox with
+  `agent=<handle>`. Another `group`, or another parameter beside it, is
+  400 `invalid_query`.
 - **`GET /api/inbox/summary`** → `{unread, questions, latest}`: the
   unread count, the open questions' views oldest first, and the five newest
-  unread items other than questions.
+  unread items other than questions (connection requests among them).
 - **`GET /api/inbox/<id>`** → `{item}`.
 - **`POST /api/inbox/<id>/read`** → `{item, unread}`.
 - **`POST /api/inbox/<id>/unread`** → `{item, unread}`.
