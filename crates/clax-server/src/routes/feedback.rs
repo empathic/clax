@@ -256,6 +256,12 @@ pub async fn poll(
     };
     let mut vis: Option<Visibility> = None;
     loop {
+        #[cfg(debug_assertions)]
+        if vis.is_none() {
+            s.feedback_waiters
+                .stop_at(&take.session_id, crate::feedback::Stop::FirstTake)
+                .await;
+        }
         // Registered before the take, and the generation read before it:
         // a row or a bump after the take wakes the wait below.
         let notified = notify.notified();
@@ -267,40 +273,64 @@ pub async fn poll(
                 json!({"feedback": [], "answers": [], "text": null, "waited_s": 0}),
             ));
         }
+        // The view and a person's agent's rights as of `seen`: read again
+        // for the first take and whenever the generation moved (M17).
+        let (prior_rights, grant) = (rights.clone(), grant.clone());
+        let prior = vis.take();
+        let sid = take.session_id.clone();
+        let (view, rights_now) = s
+            .store_call(move |st| {
+                let stale = prior.as_ref().is_none_or(|v| v.generation() != seen);
+                let view = view_at(st, &sid, prior, seen)?;
+                let rights = if stale {
+                    prior_rights.current(st, grant.as_deref(), &sid)?
+                } else {
+                    prior_rights
+                };
+                Ok((view, rights))
+            })
+            .await?;
+        #[cfg(debug_assertions)]
+        s.feedback_waiters
+            .stop_at(&take.session_id, crate::feedback::Stop::BeforeTake)
+            .await;
         let ctx = s.feedback_ctx();
         let t = take.clone();
         let (held, clock) = (s.questions.clone(), s.question_clock.clone());
         let audit = audit.clone();
-        let (prior_rights, grant) = (rights.clone(), grant.clone());
-        let prior = vis.take();
-        let (view, rights_now, taken, (answers, late)) = s
+        let (view_now, readable_rights) = (view.clone(), rights_now.clone());
+        let (taken, (answers, late)) = s
             .store_call(move |st| {
-                let stale = prior.as_ref().is_some_and(|v| v.generation() != seen);
-                let view = view_at(st, &t.session_id, prior, seen)?;
-                let rights = if stale {
-                    prior_rights.current(st, grant.as_deref(), &t.session_id)?
-                } else {
-                    prior_rights
-                };
+                let rights = readable_rights;
                 let readable = |a: &Artifact| rights.allows(a);
                 let readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)> =
                     rights.is_person_agent().then_some(&readable);
                 let taken =
-                    st.take_feedback_readable(&audit, &t, &ctx.browser_base, &view, readable)?;
+                    st.take_feedback_readable(&audit, &t, &ctx.browser_base, &view_now, readable)?;
+                if taken.stale {
+                    return Ok((taken, Default::default()));
+                }
                 apply(&ctx, st, &taken.touched);
                 crate::working::renew_for_tier(&ctx, &t.session_id, t.tier);
                 if t.tier == Tier::Queue {
-                    return Ok((view, rights, taken, Default::default()));
+                    return Ok((taken, Default::default()));
                 }
                 crate::working::mark_items(&ctx, &audit, st, &t.session_id, &taken.items)?;
                 let late = late_answers(st, &t.session_id, &held, &*clock)?;
-                Ok((view, rights, taken, late))
+                Ok((taken, late))
             })
             .await?;
         vis = Some(view);
         rights = rights_now;
+        if taken.stale {
+            // An approval or revocation committed after the view was
+            // built: refresh it and take again.
+            continue;
+        }
         #[cfg(debug_assertions)]
-        s.feedback_waiters.stop_after_take(&take.session_id).await;
+        s.feedback_waiters
+            .stop_at(&take.session_id, crate::feedback::Stop::AfterTake)
+            .await;
         #[cfg(debug_assertions)]
         let expired = _waiting.is_some() && s.feedback_waiters.take_expired(&take.session_id);
         #[cfg(not(debug_assertions))]
@@ -402,10 +432,10 @@ pub async fn notices(
         let who = sid.clone();
         let prior = vis.take();
         let (prior_rights, grant) = (rights.clone(), grant.clone());
-        let (view, rights_now, notices) = s
+        let (view, rights_now, announced) = s
             .store_call(move |st| {
                 live_session(st, &who)?;
-                let stale = prior.as_ref().is_some_and(|v| v.generation() != seen);
+                let stale = prior.as_ref().is_none_or(|v| v.generation() != seen);
                 let view = view_at(st, &who, prior, seen)?;
                 let rights = if stale {
                     prior_rights.current(st, grant.as_deref(), &who)?
@@ -415,12 +445,16 @@ pub async fn notices(
                 let readable = |a: &Artifact| rights.allows(a);
                 let readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)> =
                     rights.is_person_agent().then_some(&readable);
-                let notices = st.take_notices(&who, &base, &view, readable)?;
-                Ok((view, rights, notices))
+                let announced = st.take_notices(&who, &base, &view, readable)?;
+                Ok((view, rights, announced))
             })
             .await?;
         vis = Some(view);
         rights = rights_now;
+        if announced.stale {
+            continue;
+        }
+        let notices = announced.notices;
         if !notices.is_empty() || Instant::now() >= deadline {
             let lines: Vec<String> = notices.iter().map(render_notice).collect();
             return Ok(Json(
@@ -452,13 +486,14 @@ pub struct AckBody {
 
 /// Acknowledges the session's rows on `thread_ids` (every row on those
 /// threads) and on `comment_ids` (only rows for those comments, so a comment
-/// the caller has not seen stays pending), leaving held every row whose
-/// body the session's person's agents may not see; either or both, and a body with
+/// the caller has not seen stays pending), leaving held every undelivered
+/// row whose body the session's person's agents may not see, and every
+/// row on an artifact a person's agent may not read; either or both, and a body with
 /// neither is 400 `invalid_json`. `{acknowledged: <threads touched>}`.
 /// Unknown session: 404; ended session: 400 `unknown_session`.
 pub async fn ack(
     State(s): State<AppState>,
-    _a: TokenOrAgent<FeedbackAck>,
+    TokenOrAgent(a): TokenOrAgent<FeedbackAck>,
     audit: AuditCtx,
     sid: Result<Path<String>, PathRejection>,
     req: Result<Json<AckBody>, JsonRejection>,
@@ -472,21 +507,27 @@ pub async fn ack(
         ));
     }
     let ctx = s.feedback_ctx();
+    let reads = a.read_rights();
     let n = s
         .store_call(move |st| {
             live_session(st, &sid)?;
             let vis = Visibility::for_session(st, &sid)?;
+            let may = |x: &Artifact| reads.allows(x);
+            let readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)> =
+                reads.is_person_agent().then_some(&may);
             let mut touched = st.acknowledge(
                 &audit,
                 &sid,
                 b.thread_ids.as_deref().unwrap_or_default(),
                 &vis,
+                readable,
             )?;
             touched.merge(st.acknowledge_comments(
                 &audit,
                 &sid,
                 b.comment_ids.as_deref().unwrap_or_default(),
                 &vis,
+                readable,
             )?);
             apply(&ctx, st, &touched);
             Ok(touched.threads.len())
@@ -514,13 +555,17 @@ pub async fn expire(
 #[derive(Deserialize)]
 pub struct HoldBody {
     hold: bool,
+    at: Option<String>,
 }
 
-/// `POST /api/_test/sessions/<sid>/feedback/hold {hold}` (debug builds):
-/// with `hold: true`, each feedback poll of session `sid` stops after its
-/// take, before it answers or waits, until a `hold: false` lets them all
-/// go on (`FeedbackWaiters::hold`) → `{}`. Tests change what the session
-/// may see in that gap.
+/// `POST /api/_test/sessions/<sid>/feedback/hold {hold, at}` (debug
+/// builds): with `hold: true`, each feedback poll of session `sid` stops at
+/// `at` (`after_take`, the default: after a take, before it answers or
+/// waits; `before_take`: after it built its view, before the take;
+/// `first_take`: before its first take reads the visibility generation),
+/// until a `hold: false` lets them all go on (`FeedbackWaiters::hold`) →
+/// `{}`; 400 `invalid_json` for another `at`. Tests change what the
+/// session may see in that gap.
 #[cfg(debug_assertions)]
 pub async fn hold(
     State(s): State<AppState>,
@@ -530,8 +575,11 @@ pub async fn hold(
     b: Result<Json<HoldBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let sid = path(sid)?;
-    if body(b)?.hold {
-        s.feedback_waiters.hold(&sid);
+    let b = body(b)?;
+    if b.hold {
+        let at = crate::feedback::Stop::parse(b.at.as_deref().unwrap_or("after_take"))
+            .ok_or_else(|| ApiError::bad_request("invalid_json", "at names no stop"))?;
+        s.feedback_waiters.hold(&sid, at);
     } else {
         s.feedback_waiters.release(&sid);
     }

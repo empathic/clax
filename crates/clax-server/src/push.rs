@@ -230,14 +230,20 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
         // The view of the session's person (the owner's, for a session of
         // the daemon's token): only visible bodies are queued, each field
         // filtered (spec 2026-10-08 §8.4).
-        let taken = clax_core::visibility::Visibility::for_session(st, sid).and_then(|vis| {
-            st.take_feedback(
+        // A view an approval or revocation overtook takes nothing: build
+        // it again.
+        let taken = (|| loop {
+            let vis = clax_core::visibility::Visibility::for_session(st, sid)?;
+            let t = st.take_feedback(
                 &clax_core::audit::AuditCtx::DAEMON,
                 &q,
                 &ctx.browser_base,
                 &vis,
-            )
-        });
+            )?;
+            if !t.stale {
+                return Ok::<_, clax_core::CoreError>(t);
+            }
+        })();
         let items = match taken {
             Ok(t) if !t.items.is_empty() => {
                 // Announced now: a dispatch triggered without a `thread` event

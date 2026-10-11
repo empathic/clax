@@ -929,10 +929,16 @@ impl TestServer {
     /// Stops each feedback poll of session `sid` after its take (`hold`),
     /// or lets them go on.
     pub async fn hold_feedback(&self, sid: &str, hold: bool) {
+        self.hold_feedback_at(sid, hold, "after_take").await;
+    }
+
+    /// Stops each feedback poll of session `sid` at `at` (`first_take`,
+    /// `before_take`, `after_take`), or lets them go on.
+    pub async fn hold_feedback_at(&self, sid: &str, hold: bool, at: &str) {
         let res = self
             .post_json(
                 &format!("/api/_test/feedback/{sid}/hold"),
-                serde_json::json!({"hold": hold}),
+                serde_json::json!({"hold": hold, "at": at}),
             )
             .await;
         assert_eq!(res.status(), 200, "{}", res.text().await.unwrap());
