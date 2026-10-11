@@ -1921,9 +1921,15 @@ mod tests {
             unread: 1,
             recipient: None,
         });
+        hub.dispatch(&Event::InboxItem {
+            item: json!({"id": "IS"}),
+            unread: 1,
+            recipient: Some("u_sam".into()),
+        });
         let sams = drain(&mut s);
-        assert_eq!(sams.len(), 1);
+        assert_eq!(sams.len(), 2);
         assert!(sams[0].1.contains(r#""id":"QS""#), "{}", sams[0].1);
+        assert!(sams[1].1.contains(r#""id":"IS""#), "{}", sams[1].1);
         let owners = drain(&mut o);
         assert_eq!(owners.len(), 1);
         assert!(owners[0].1.contains(r#""id":"IO""#), "{}", owners[0].1);
