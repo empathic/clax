@@ -299,6 +299,29 @@ pub fn no_agent_headers_sha256() -> [u8; 32] {
     agent_headers_sha256(&[None; AGENT_HEADERS.len()])
 }
 
+/// `value` without its leading and trailing spaces and tabs.
+///
+/// A header value has no surrounding spaces or tabs: HTTP parsers drop
+/// them (RFC 9110 §5.5), so the daemon reads, and hashes, a value sent as
+/// `" agent\t"` as `"agent"`. A signer therefore sends and signs each of
+/// [`AGENT_HEADERS`] trimmed by this function ([`signable_agent_headers`]),
+/// so the value it signs is the one the daemon verifies.
+pub fn trim_header_value(value: &[u8]) -> &[u8] {
+    let blank = |b: &u8| *b == b' ' || *b == b'\t';
+    let start = value.iter().position(|b| !blank(b)).unwrap_or(value.len());
+    let end = value
+        .iter()
+        .rposition(|b| !blank(b))
+        .map_or(start, |i| i + 1);
+    &value[start..end]
+}
+
+/// `values` with each present value trimmed by [`trim_header_value`]: what
+/// a signer sends and signs.
+pub fn signable_agent_headers<'a>(values: &AgentHeaderValues<'a>) -> AgentHeaderValues<'a> {
+    values.map(|v| v.map(trim_header_value))
+}
+
 /// A parsed `Clax-Signature` header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SigHeader {
@@ -783,6 +806,23 @@ mod tests {
             "\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\n\n\
              0200b59637463a41412fc63797d0699f6daaab4bed5d838ac1a4c264398d66b5"
         ));
+    }
+
+    #[test]
+    fn signers_send_header_values_without_surrounding_spaces_or_tabs() {
+        // HTTP parsers drop a value's leading and trailing spaces and tabs,
+        // so the daemon hashes "agent" for a header sent as " agent\t ".
+        assert_eq!(trim_header_value(b" agent\t "), b"agent");
+        assert_eq!(trim_header_value(b"\t\t"), b"");
+        assert_eq!(trim_header_value(b"a b"), b"a b");
+        assert_eq!(trim_header_value(b""), b"");
+        let sent = [None, Some(b"agent ".as_slice()), None, None, None];
+        let received = [None, Some(b"agent".as_slice()), None, None, None];
+        assert_ne!(agent_headers_sha256(&sent), agent_headers_sha256(&received));
+        assert_eq!(
+            agent_headers_sha256(&signable_agent_headers(&sent)),
+            agent_headers_sha256(&received)
+        );
     }
 
     #[test]

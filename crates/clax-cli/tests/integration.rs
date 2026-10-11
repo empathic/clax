@@ -13,6 +13,7 @@ mod clean_break;
 mod cli;
 mod comments;
 mod common;
+mod connect;
 mod extension;
 mod first_start;
 mod follow;

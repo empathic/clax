@@ -1130,7 +1130,7 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
 /// so its cache forgets them, else in the store directly. The count of live
 /// credentials revoked, `"revoked"` through the daemon, or the failure.
 fn revoke_extension_credentials(home: &Home) -> Value {
-    if let Some(c) = crate::client::Client::discover(home) {
+    if let Some(c) = crate::client::Client::discover_local(home) {
         return match c.delete("/api/extension/credentials") {
             Ok(()) => json!("revoked"),
             Err(e) => json!(format!("failed: {e:#}")),

@@ -195,7 +195,19 @@ pub async fn run(
     );
     // Found once; each capture runs git afresh (spec §9.3).
     let git = crate::git::GitCapture::from_env();
-    let client = DaemonClient::managed(refresh, discover, reg).with_git(git.clone());
+    // Remote mode (spec §16, M26): the daemon `remote.json` names, signed;
+    // none is started or found here. A `remote.json` that cannot be used
+    // fails every call with why (spec §22), never falling back.
+    let client = match clax_core::remote::Mode::of(home) {
+        clax_core::remote::Mode::Local => DaemonClient::managed(refresh, discover, reg),
+        clax_core::remote::Mode::Remote(r) => DaemonClient::managed_remote(r, reg),
+        clax_core::remote::Mode::Broken(e) => {
+            let why = e.to_string();
+            let fail: Refresh = std::sync::Arc::new(move || Err(anyhow::anyhow!("{why}")));
+            DaemonClient::managed(fail.clone(), fail, reg)
+        }
+    }
+    .with_git(git.clone());
     match client.ensure_session().await {
         Ok(()) => tracing::info!(
             session = client.session().map(|s| s.id),

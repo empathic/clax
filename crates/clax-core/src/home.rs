@@ -80,6 +80,29 @@ impl Home {
         self.clips_dir(id).join(format!("{thread_id}.png"))
     }
 
+    /// `remote.json` (0600): the daemon this home connects to as another
+    /// machine (spec §16, M26), its grant and tokens. While it exists (and
+    /// `CLAX_REMOTE` is not `0`) every client talks to that daemon, signed,
+    /// and none starts one here.
+    pub fn remote_json(&self) -> PathBuf {
+        self.root.join("remote.json")
+    }
+    /// `remote.key` (0600): the Ed25519 key, PKCS#8, that signs every
+    /// request to the remote daemon.
+    pub fn remote_key(&self) -> PathBuf {
+        self.root.join("remote.key")
+    }
+    /// `remote-pending.json` (0600): an ad-hoc `clax connect` still waiting
+    /// for the owner's approval, so a later run resumes or cancels it.
+    pub fn remote_pending(&self) -> PathBuf {
+        self.root.join("remote-pending.json")
+    }
+    /// `remote-cache/`: what the agent side fetched from the remote daemon
+    /// (clips).
+    pub fn remote_cache(&self) -> PathBuf {
+        self.root.join("remote-cache")
+    }
+
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
         {
             use std::os::unix::fs::DirBuilderExt;
@@ -106,6 +129,13 @@ mod tests {
         assert_eq!(home.db_path(), PathBuf::from("/tmp/ax/clax.db"));
         assert_eq!(home.daemon_json(), PathBuf::from("/tmp/ax/daemon.json"));
         assert_eq!(home.daemon_lock(), PathBuf::from("/tmp/ax/daemon.lock"));
+        assert_eq!(home.remote_json(), PathBuf::from("/tmp/ax/remote.json"));
+        assert_eq!(home.remote_key(), PathBuf::from("/tmp/ax/remote.key"));
+        assert_eq!(
+            home.remote_pending(),
+            PathBuf::from("/tmp/ax/remote-pending.json")
+        );
+        assert_eq!(home.remote_cache(), PathBuf::from("/tmp/ax/remote-cache"));
         assert_eq!(home.log_path(), PathBuf::from("/tmp/ax/logs/daemon.log"));
         assert_eq!(
             home.hooks_log_path(),

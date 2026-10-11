@@ -1472,6 +1472,68 @@ impl Store {
         })
     }
 
+    /// Records the answer `clax connect` gives for grant `gid`'s person,
+    /// through the grant's current continuation token (spec §3.1, M15):
+    /// "Let <owner>'s comments and pages reach your agents everywhere?". The
+    /// person approves the owner's content everywhere (`created_via`
+    /// `connect`), recorded as the person through `ctx`'s channel, or the
+    /// live approval that already says so is found. `None` for a grant of
+    /// the owner's own row, whose agents are the owner's.
+    ///
+    /// # Errors
+    /// `invalid_token` unless `continue_token` is the grant's current one;
+    /// `not_issued` unless the grant is approved and its tokens issued;
+    /// `replayed_request` as [`Store::disconnect_grant`]; `NotFound` for an
+    /// unknown grant; [`Store::approve`]'s errors.
+    pub fn approve_owner_on_connect(
+        &self,
+        ctx: &AuditCtx,
+        gid: &str,
+        continue_token: &str,
+        t: i64,
+        nonce: &str,
+    ) -> Result<Option<(super::approvals::Approval, crate::feedback::Touched)>> {
+        let found = self.with_tx(|tx| {
+            if !matches(
+                continue_token,
+                stored_hash(tx, gid, "continue_sha256")?.as_deref(),
+            ) {
+                return Err(invalid_token());
+            }
+            let issued: bool = tx.query_row(
+                "SELECT status = 'approved' AND manage_sha256 IS NOT NULL FROM grants WHERE id = ?1",
+                params![gid],
+                |r| r.get(0),
+            )?;
+            if !issued {
+                return Err(CoreError::invalid(
+                    "not_issued",
+                    "this grant has no live tokens: connect first",
+                ));
+            }
+            accept_t(tx, gid, t, nonce)?;
+            let (person, owner): (String, bool) = tx.query_row(
+                "SELECT v.public_id, v.owner FROM grants g
+                 JOIN viewers v ON v.id = g.viewer_id WHERE g.id = ?1",
+                params![gid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            Ok((!owner).then_some((person, person_actor(tx, gid)?)))
+        })?;
+        let Some((person, actor)) = found else {
+            return Ok(None);
+        };
+        let owner = self.owner_viewer(false)?;
+        self.approve_touched(
+            &acting(ctx, actor),
+            Some(&person),
+            &owner.public_id,
+            super::approvals::Scope::Everywhere,
+            super::approvals::Via::Connect,
+        )
+        .map(Some)
+    }
+
     /// Ends grant `gid` (`by`): its tokens are revoked and its live sessions
     /// end (`revoked`), releasing their feedback and withdrawing their
     /// questions; the key may connect again. Recorded under `ctx`
@@ -2248,6 +2310,79 @@ pub(crate) mod tests {
         assert_eq!(
             (s.grant_id.as_deref(), s.person),
             (Some(g.id.as_str()), None)
+        );
+    }
+
+    #[test]
+    fn connecting_records_the_persons_approval_of_the_owner_once() {
+        let (_d, _c, st) = store();
+        let owner = st.owner_viewer(true).unwrap();
+        let (_, c) = st
+            .create_invite(DAEMON, InvitePerson::New("Sam".into()), None)
+            .unwrap();
+        let GrantStart::Approved {
+            grant: g,
+            continue_token,
+            ..
+        } = st
+            .request_grant(DAEMON, grant(KEY_A, Some(c.expose())))
+            .unwrap()
+        else {
+            panic!()
+        };
+        let sam = g.person.clone().unwrap();
+        assert_eq!(
+            code(st.approve_owner_on_connect(DAEMON, &g.id, "cxc_wrong", t(), &n())),
+            "invalid_token"
+        );
+        let (a, _) = st
+            .approve_owner_on_connect(DAEMON, &g.id, continue_token.expose(), t(), &n())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (
+                a.approver.as_deref(),
+                a.author.as_str(),
+                a.created_via.as_str()
+            ),
+            (Some(sam.as_str()), owner.public_id.as_str(), "connect")
+        );
+        assert_eq!(a.scope, super::super::approvals::ScopeKind::Everywhere);
+        // Asked again: the same approval.
+        let (again, _) = st
+            .approve_owner_on_connect(DAEMON, &g.id, continue_token.expose(), t(), &n())
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.id, a.id);
+        assert_eq!(st.live_approvals(Some(&sam)).unwrap().len(), 1);
+        // The owner's own machine needs none.
+        let (_, mine) = st.create_invite(DAEMON, InvitePerson::Owner, None).unwrap();
+        let GrantStart::Approved {
+            grant: og,
+            continue_token: oc,
+            ..
+        } = st
+            .request_grant(DAEMON, grant(KEY_B, Some(mine.expose())))
+            .unwrap()
+        else {
+            panic!()
+        };
+        assert!(
+            st.approve_owner_on_connect(DAEMON, &og.id, oc.expose(), t(), &n())
+                .unwrap()
+                .is_none()
+        );
+        // A request no one approved yet, and an ended grant, have nothing to answer for.
+        let (p, pc, _) = pending(&st, [3; 32]);
+        assert_eq!(
+            code(st.approve_owner_on_connect(DAEMON, &p.id, pc.expose(), t(), &n())),
+            "not_issued"
+        );
+        st.disconnect_grant(DAEMON, &g.id, continue_token.expose(), t(), &n())
+            .unwrap();
+        assert_eq!(
+            code(st.approve_owner_on_connect(DAEMON, &g.id, continue_token.expose(), t(), &n())),
+            "not_issued"
         );
     }
 

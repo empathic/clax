@@ -1,6 +1,7 @@
 pub mod asset;
 pub mod bin;
 pub mod comments;
+pub mod connect;
 pub mod db;
 pub mod delete;
 pub mod doctor;
@@ -15,6 +16,7 @@ pub mod list;
 pub mod mcp;
 pub mod native_host;
 pub mod open;
+pub mod people;
 pub mod pin;
 pub mod publish;
 pub mod read;

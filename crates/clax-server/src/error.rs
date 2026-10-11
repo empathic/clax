@@ -118,7 +118,7 @@ impl From<CoreError> for ApiError {
             CoreError::Invalid {
                 code:
                     code @ ("name_taken" | "name_locked" | "key_in_use" | "not_pending"
-                    | "already_issued" | "not_on_lan" | "request_closed"),
+                    | "already_issued" | "not_issued" | "not_on_lan" | "request_closed"),
                 message,
             } => ApiError::new(StatusCode::CONFLICT, code, message),
             CoreError::Invalid {

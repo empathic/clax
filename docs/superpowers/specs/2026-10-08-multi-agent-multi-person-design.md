@@ -606,8 +606,16 @@ The request is signed with the presented key (§6.6) and carries no token.
 - The client polls `POST /api/grants/<gid>/continue` (signed, `GNAP`
   continuation token). Pending: 200 with `continue` (sooner than `wait`:
   400 `too_fast`). Approved: 200 with the access token, `subject`,
-  `clax.browser_link` and a new continuation token. Denied or expired: 403
-  `denied`.
+  `clax.person`, `clax.owner.display_name`, `clax.own_machine`,
+  `clax.browser_link` and a new continuation token (an invite's 200
+  carries the same). Denied or expired: 403 `denied`.
+- On a grant whose tokens were issued, a continuation call with the body
+  `{"clax": {"approve_owner": true}}` is `clax connect`'s yes to its
+  question about the owner (M15): the person approves the owner's content
+  everywhere (`created_via` `connect`, recorded as the person), 200
+  `{"clax": {"owner_approval": {id, scope} | null}}` (null for the owner's
+  own machine); 409 `not_issued` for a grant without live tokens. Only the
+  continuation token says it, never the access token an agent signs with.
 
 ### 6.4 Tokens, grants and people ending
 
@@ -669,7 +677,10 @@ a grant acts as (and so its rights) and fill the audit journal (§20):
 `x-clax-call`, in that order. Each contributes one record ending in `\n`:
 `-` when the request does not carry it, else `+`, the value's length in
 bytes in decimal, `:` and the value's bytes as sent. An absent header and
-an empty one therefore differ (`-` and `+0:`). A request that carries one
+an empty one therefore differ (`-` and `+0:`). A value has no leading or
+trailing spaces or tabs: HTTP parsers drop them, so the daemon hashes each
+value as it reads it, without them, and every signer trims them from the
+values it sends and signs. A request that carries one
 of them more than once is 401 `invalid_signature`, whatever the values. So
 `X-Clax-Session: 01J9ZK3M4N5P6Q7R8S9T0V1W2X`, `X-Clax-Channel: agent`,
 `x-clax-via: mcp`, no `x-clax-git` and an empty `x-clax-call` hash
@@ -788,8 +799,11 @@ costs about 20 µs and verifying about 50 µs.
   connection, as `clax connect --status`, and the person's agents) and
   `connect`. `comments reply` without a session is 400 `no_session`: a
   remote person's comments are written in their browser, and agent replies
-  come from agent sessions. Every other command says "not available on a
-  remote Clax" (exit 2).
+  come from agent sessions. The agent sides that run over the remote
+  client (`mcp`, `hook`, `feedback`) and the commands about this machine
+  itself (`serve` and `stop` for a local daemon, `init`, `uninit`, `bin`,
+  `doctor` with its remote checks, `version`, `haiku`) run as usual.
+  Every other command says "not available on a remote Clax" (exit 2).
 - **Re-registration after an idle end** (§14): a registration with the
   same `harness_session_id` within the same grant, within 24 hours of that
   session's end with `ended_reason = 'idle'`, restores the direct watches
@@ -1427,7 +1441,16 @@ The route table (§7.5) is the agents' contract. New routes:
 - **`clax connect`**: `<invite URL>`, `<daemon URL>`, `--status`, `--off`,
   `--url <new daemon URL>`, `--name <client name>`,
   `--no-browser`, `--yes`. Writes `remote.json` (0600) and `remote.key`
-  (0600).
+  (0600). URLs name the daemon by IP literal. An ad-hoc request waiting
+  for the owner is kept in `remote-pending.json` (0600): a connect that
+  dies resumes it on the next run against the same daemon, and connecting
+  elsewhere or `--off` cancels it (`DELETE <continue uri>`); Ctrl-C and the
+  ten-minute limit cancel it at once, so a lost connect never holds its
+  key or its peer's request slot until the request lapses. A request whose
+  tokens were issued to an answer that never arrived cannot be finished:
+  the command says so and asks the person to have the owner revoke it.
+  Off a terminal, without `--yes`, the question about the owner goes
+  unanswered and nothing is approved.
 - **Remote mode** (M26): the clients of `clax-cli`, `clax-mcp` and Pi read
   `remote.json` when present (and `CLAX_REMOTE` is not `0`): no daemon
   discovery or auto-start, every request signed and marked

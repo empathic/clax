@@ -1321,3 +1321,84 @@ async fn the_grant_routes_record_their_events() {
     assert_eq!(ev[0].1["person"], true);
     assert_eq!(ev[0].2["by"], "person");
 }
+
+/// `clax connect`'s question about the owner (M15): the issued response
+/// names the owner, and the person's yes travels on the grant's
+/// continuation, never on the access token.
+#[tokio::test]
+async fn a_connected_machine_approves_the_owner_through_its_continuation() {
+    let ts = lan_server().await;
+    let r = ts
+        .authed(ts.client.put(format!("{}/api/viewers/me", ts.base)))
+        .json(&json!({"display_name": "Alex"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let cmd = ts.invite_command("Sam").await;
+    let c = TestClient::new(&ts);
+    let r = c
+        .grant_request(json!({"clax": {"invite": code_of(&cmd)}}))
+        .await;
+    assert_eq!(r["clax"]["owner"]["display_name"], "Alex");
+    let cont = c.held().continue_token.unwrap();
+    let path = format!("/api/grants/{}/continue", c.grant_id());
+    let yes = serde_json::to_vec(&json!({"clax": {"approve_owner": true}})).unwrap();
+    // The access token cannot say it.
+    let res = c
+        .call(Call {
+            method: "POST",
+            path: &path,
+            authorization: Some(format!("GNAP {}", c.access())),
+            body: Some(yes.clone()),
+            ..Default::default()
+        })
+        .await;
+    assert_eq!(status_code(res).await, (401, "invalid_token".into()));
+    let res = c
+        .call(Call {
+            method: "POST",
+            path: &path,
+            authorization: Some(format!("GNAP {cont}")),
+            body: Some(yes.clone()),
+            ..Default::default()
+        })
+        .await;
+    assert_eq!(res.status(), 200);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["clax"]["owner_approval"]["scope"], "everywhere");
+    let sam = ts.store.viewer_of_grant(&c.grant_id()).unwrap();
+    let owner = ts.store.owner().unwrap().unwrap();
+    let live = ts.store.live_approvals(Some(&sam.public_id)).unwrap();
+    assert_eq!(live.len(), 1);
+    assert_eq!(
+        (live[0].author.as_str(), live[0].created_via.as_str()),
+        (owner.public_id.as_str(), "connect")
+    );
+    // Without the body, an issued grant's continuation is still spent.
+    let (status, _) = c.poll().await;
+    assert_eq!(status, 409);
+}
+
+/// An agent header's value has no surrounding spaces or tabs (spec §6.6):
+/// the daemon reads `agent ` as `agent`, so a signer that signs the value
+/// as it would send it, untrimmed, is refused, and one that trims first is
+/// not.
+#[tokio::test]
+async fn agent_header_values_are_signed_without_surrounding_whitespace() {
+    let ts = lan_server().await;
+    let c = ts.connect_person("Sam", "clax:collaborator").await;
+    let sent = Some(vec![("x-clax-channel", "agent ".to_string())]);
+    let call = |signed: &str| Call {
+        method: "GET",
+        path: "/api/artifacts",
+        authorization: Some(format!("Clax-Grant {}", c.access())),
+        headers: vec![("x-clax-channel", signed.to_string())],
+        sent_headers: sent.clone(),
+        ..Default::default()
+    };
+    let res = c.call(call("agent ")).await;
+    assert_eq!(status_code(res).await, (401, "invalid_signature".into()));
+    let res = c.call(call("agent")).await;
+    assert_eq!(res.status(), 200);
+}
