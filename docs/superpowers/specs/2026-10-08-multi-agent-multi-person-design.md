@@ -1476,6 +1476,11 @@ The route table (§7.5) is the agents' contract. New routes:
 | People, approvals | everyone; changes in the browser | none | self; changes in the browser | none | none |
 | Agents roster | every agent | own (`status`) | own agents; others' names and states | own (`status`) | names on threads |
 
+A person's inbox and question views are not filtered by Visibility; they
+carry only what that person's browser could read elsewhere (never a live
+page), and an agent's `project` only for the person's own agents and the
+owner's view (§13).
+
 The owner using the CLI by hand outside any harness (the token, no
 session, no marker) is not filtered: it is the owner, not an agent
 channel. The same CLI run by a harness through the plugins' wrapper is.
@@ -1952,3 +1957,18 @@ agents not to.
     holds a batch's sender as an author (none: `*unconnected`). The
     `*unconnected` approval is made by the migration's Rust step with a
     ULID, and its `approval.grant` recorded as the store opens.
+- **Amendment** (2026-10-10, plan Task 12 review): §8.6's guard and delivery
+  text names the filtered takes (`Store::take_feedback_readable`,
+  `Store::take_notices`) as standing in for `vis.filter_` on the feedback
+  and notices polls.
+- **Amendment** (2026-10-11, plan Task 13 and its review):
+  - §5.3: the indexes a list or read mark walks are led by the recipient;
+    `inbox_by_created`, `inbox_by_thread`, `inbox_by_question` and
+    `inbox_by_request` stay keyed by their source (the newest stamp and a
+    date range's seq bounds hold for every recipient; a thread move
+    updates every recipient's items); `viewers_people` lists the connected
+    people. Each question names its person (`questions.person`, indexed
+    for each person's open and closed lists), and the open-question cap is
+    per person.
+  - §18: a person's inbox and question views are not filtered, never name
+    a live page, and show `project` only as §13 allows.
