@@ -52,7 +52,8 @@ const answersText = (q: NonNullable<InboxItem["question"]>): string | null =>
 
 /** An item's text on one line: the reply's body, the version's note, the
  * new artifact's description, the answers to a question (else its first
- * question), or the finished work's message; "" when it has none. */
+ * question), the finished work's message, or what an ended agent's end
+ * cleaned up; "" when it has none. */
 export function itemText(i: InboxItem): string {
   const t = i.kind === "reply" ? i.reply?.body
     : i.kind === "version" ? i.version?.note
@@ -60,6 +61,8 @@ export function itemText(i: InboxItem): string {
     : i.kind === "question" ? (i.question && answersText(i.question)) ?? i.question?.questions[0]?.question
     : i.kind === "connection" ? (i.connection?.client.key ? `Key ${i.connection.client.key}` : null)
     : i.kind === "finished" ? i.work?.message
+    // What the end cleaned up: the note's line after "<name> ended".
+    : i.kind === "ended" ? i.ended?.text.split(" · ").slice(1).join(" · ")
     : null;
   return (t ?? "").replace(/\s+/g, " ").trim();
 }

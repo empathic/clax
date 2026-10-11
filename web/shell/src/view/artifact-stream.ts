@@ -149,7 +149,7 @@ export function onArtifactEvent(c: ArtifactController, e: ArtifactEvent): void {
   // the CLI) arrives in presence.
   if (e.type === "presence") { c.set({ presence: e.people }); adoptName(e.people); }
   // An agent may have started or ended: the Send target and the roster follow.
-  if (e.type === "working" || e.type === "version") c.refreshAgents();
+  if (e.type === "working" || e.type === "version" || e.type === "agents") c.refreshAgents();
   if (e.type === "thread") c.changeThreads(ts => upsert(ts, e.thread));
   if (e.type === "thread_deleted") { c.changeThreads(ts => ts.filter(t => t.id !== e.thread_id)); c.set(s => ({ selected: s.selected === e.thread_id ? null : s.selected })); }
   if (e.type === "feedback_state") c.changeThreads(ts => ts.map(t => t.id === e.thread_id ? { ...t, feedback_state: { thread_id: e.thread_id, state: e.state, tier: e.tier, since: e.since, resends: e.resends, exhausted: e.exhausted } } : t));
