@@ -1,17 +1,22 @@
-//! Approvals (spec 2026-10-08-multi-agent-multi-person §9.1): "agents of
-//! `approver` may see `author`'s content at `scope`", and the visibility
-//! generation (M17), which every change to what an agent may see bumps.
-//!
-//! Requests for approvals, deciding them and their limits are separate
-//! (§9.2–§9.3); this module makes, revokes and lists the approvals
-//! themselves.
+//! Approvals (spec 2026-10-08-multi-agent-multi-person §9): "agents of
+//! `approver` may see `author`'s content at `scope`"; the requests that
+//! ask an approver for one (made by routing a thread to their agent, M18,
+//! or by an agent's `ask`), batched per (approver, author, artifact,
+//! thread) (M19), decided or withdrawn; and the visibility generation
+//! (M17), which every change to what an agent may see bumps.
 
 use super::Store;
+use super::threads::{AUTHOR_VIEWER, thread_in};
 use crate::audit::{AuditCtx, AuditKind, AuditRecord};
+use crate::feedback::Touched;
+use crate::model::Thread;
 use crate::visibility::placeholder::ApprovalState;
+use crate::visibility::{self, Author, Reader, Visibility};
 use crate::{CoreError, Result, is_public_id, new_ulid};
-use rusqlite::{OptionalExtension, Row, params};
+use rusqlite::{OptionalExtension, Row, Transaction, params};
 use serde::Serialize;
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
@@ -167,36 +172,79 @@ pub(crate) fn request_state_in(
     })
 }
 
-/// Clears `placeholder_at` on the undelivered rows `a` (an approval made
-/// or revoked) bears on: rows of its approver's sessions in its scope
-/// whose comment its author wrote (or a page wrote, or anyone when it is
-/// of `*unconnected`). A revoked approval's rows are held again and told
-/// once more (spec §9.4), and rows withheld for other authors are not told
-/// again; an approved author's rows read `sent` until a take delivers
-/// them.
-pub(super) fn reset_placeholders(tx: &rusqlite::Transaction<'_>, a: &Approval) -> Result<()> {
-    tx.execute(
-        "UPDATE feedback SET placeholder_at = NULL
-         WHERE delivered_at IS NULL AND placeholder_at IS NOT NULL
-           AND target_session_id IN (SELECT id FROM sessions WHERE COALESCE(person, '') = COALESCE(?1, ''))
-           AND (?2 = 'everywhere'
-                OR (?2 = 'artifact' AND thread_id IN (SELECT id FROM threads WHERE artifact_id = ?3))
-                OR (?2 = 'thread' AND thread_id = ?4))
-           AND (?5 = '*unconnected' OR comment_id IN (
-                SELECT id FROM comments WHERE author_public_id = ?5 OR via_page = 1))",
-        params![
-            a.approver,
-            a.scope.as_str(),
-            a.artifact_id,
-            a.thread_id,
-            a.author
-        ],
-    )?;
+/// After approval `a` was made in `tx`: clears `placeholder_at` on each
+/// undelivered row of its approver's sessions in its scope whose comment
+/// body the approver's agents may now see, every author of it weighed
+/// (spec §8.4, M16), so the row reads `sent` until a take delivers it; a
+/// row another author still withholds keeps it, and is not told again.
+/// Each such row's live session and thread go in `touched`, so their
+/// waits, pushes and states learn of it.
+fn release_told(tx: &Transaction<'_>, a: &Approval, touched: &mut Touched) -> Result<()> {
+    let reader = match &a.approver {
+        Some(p) => Reader::Person(p.clone()),
+        None => Reader::Owner,
+    };
+    let vis = Visibility::for_reader_in(tx, &reader, 0)?;
+    let rows: Vec<(String, String, String, String, String, bool, bool)> = {
+        let mut stmt = tx.prepare_cached(
+            "SELECT f.id, f.comment_id, f.thread_id, t.artifact_id, f.target_session_id,
+                    f.placeholder_at IS NOT NULL, s.ended_at IS NULL
+             FROM feedback f
+             JOIN sessions s ON s.id = f.target_session_id
+             JOIN threads t ON t.id = f.thread_id
+             WHERE f.delivered_at IS NULL AND COALESCE(s.person, '') = COALESCE(?1, '')
+               AND (?2 = 'everywhere'
+                    OR (?2 = 'artifact' AND t.artifact_id = ?3)
+                    OR (?2 = 'thread' AND f.thread_id = ?4))",
+        )?;
+        stmt.query_map(
+            params![a.approver, a.scope.as_str(), a.artifact_id, a.thread_id],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            },
+        )?
+        .collect::<rusqlite::Result<_>>()?
+    };
+    let mut threads: HashMap<String, Option<Thread>> = HashMap::new();
+    for (fid, cid, tid, aid, sid, told, live) in rows {
+        if !threads.contains_key(&tid) {
+            threads.insert(tid.clone(), thread_in(tx, &tid)?);
+        }
+        let seen = threads[&tid].as_ref().is_some_and(|t| {
+            t.comments.iter().any(|c| {
+                c.id == cid && vis.sees(&visibility::authors_of_comment(c), &aid, Some(&tid))
+            })
+        });
+        if !seen {
+            continue;
+        }
+        if told {
+            tx.execute(
+                "UPDATE feedback SET placeholder_at = NULL WHERE id = ?1",
+                params![fid],
+            )?;
+        }
+        if live {
+            touched.targets.insert(sid);
+        }
+        touched.threads.insert((aid, tid));
+    }
     Ok(())
 }
 
 /// Revokes live approval `id` at `now` in `tx`, recording `approval.revoke`
-/// under `ctx` and marking the visibility change.
+/// under `ctx` and marking the visibility change. Undelivered rows it let
+/// through are held again by the next take, which tells their sessions of
+/// them once (spec §9.4): they were never told while visible, and rows
+/// another author withheld all along keep the telling they had.
 pub(super) fn revoke_in(
     st: &Store,
     tx: &rusqlite::Transaction<'_>,
@@ -216,7 +264,6 @@ pub(super) fn revoke_in(
         .optional()?
         .ok_or(CoreError::NotFound)?;
     st.record_audit(tx, ctx, approval_record(AuditKind::ApprovalRevoke, now, &a))?;
-    reset_placeholders(tx, &a)?;
     st.visibility_changed();
     Ok(a)
 }
@@ -395,6 +442,8 @@ impl Store {
     /// person's public ID; `None`: the owner) at `scope`, or finds the live
     /// approval that already does. A new approval is recorded as
     /// `approval.grant` under `ctx` and bumps the visibility generation.
+    /// Either way, the approver's open requests for `author` that it covers
+    /// are closed as approved ([`Store::decide_request`]).
     ///
     /// # Errors
     /// `not_a_person` when `approver` names no connected person (a revoked
@@ -410,122 +459,169 @@ impl Store {
         scope: Scope,
         via: Via,
     ) -> Result<Approval> {
+        self.approve_touched(ctx, approver, author, scope, via)
+            .map(|(a, _)| a)
+    }
+
+    /// [`Store::approve`], also returning what it let through: each live
+    /// session of the approver holding an undelivered row whose body it
+    /// may now see, and that row's thread, for their waits, pushes and
+    /// states.
+    ///
+    /// # Errors
+    /// As [`Store::approve`].
+    pub fn approve_touched(
+        &self,
+        ctx: &AuditCtx,
+        approver: Option<&str>,
+        author: &str,
+        scope: Scope,
+        via: Via,
+    ) -> Result<(Approval, Touched)> {
         self.with_tx(|tx| {
-            if let Some(p) = approver {
-                let person: bool = tx.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM viewers WHERE public_id = ?1 AND person = 1
-                       AND person_revoked_at IS NULL AND owner = 0)",
-                    params![p],
+            let mut touched = Touched::default();
+            let a = self.approve_in(tx, ctx, approver, author, scope, via, None, &mut touched)?;
+            Ok((a, touched))
+        })
+    }
+
+    /// [`Store::approve_touched`] in `tx`, made for request `request` when
+    /// it decides one.
+    #[allow(clippy::too_many_arguments)]
+    fn approve_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        approver: Option<&str>,
+        author: &str,
+        scope: Scope,
+        via: Via,
+        request: Option<&str>,
+        touched: &mut Touched,
+    ) -> Result<Approval> {
+        if let Some(p) = approver {
+            let person: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM viewers WHERE public_id = ?1 AND person = 1
+                   AND person_revoked_at IS NULL AND owner = 0)",
+                params![p],
+                |r| r.get(0),
+            )?;
+            if !person {
+                return Err(CoreError::invalid(
+                    "not_a_person",
+                    "only the owner or a connected person approves",
+                ));
+            }
+        }
+        let owner: Option<String> = tx
+            .query_row("SELECT public_id FROM viewers WHERE owner = 1", [], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if author == UNCONNECTED {
+            if approver.is_some() {
+                return Err(CoreError::invalid(
+                    "invalid_author",
+                    "only the owner approves viewers who are not connected",
+                ));
+            }
+        } else {
+            let known: bool = is_public_id(author)
+                && tx.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM viewers WHERE public_id = ?1)",
+                    params![author],
                     |r| r.get(0),
                 )?;
-                if !person {
-                    return Err(CoreError::invalid(
-                        "not_a_person",
-                        "only the owner or a connected person approves",
-                    ));
-                }
+            let own = match approver {
+                Some(p) => p == author,
+                None => owner.as_deref() == Some(author),
+            };
+            if !known || own {
+                return Err(CoreError::invalid(
+                    "invalid_author",
+                    "the author is another viewer's public ID",
+                ));
             }
-            let owner: Option<String> = tx
-                .query_row("SELECT public_id FROM viewers WHERE owner = 1", [], |r| {
-                    r.get(0)
-                })
-                .optional()?;
-            if author == UNCONNECTED {
-                if approver.is_some() {
+        }
+        let (kind, artifact_id, thread_id) = match scope {
+            Scope::Everywhere => (ScopeKind::Everywhere, None, None),
+            Scope::Artifact(aid) => {
+                let live: bool = tx.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM artifacts WHERE id = ?1 AND deleted_at IS NULL)",
+                    params![aid],
+                    |r| r.get(0),
+                )?;
+                if !live {
                     return Err(CoreError::invalid(
-                        "invalid_author",
-                        "only the owner approves viewers who are not connected",
+                        "unknown_artifact",
+                        "the scope names no artifact",
                     ));
                 }
-            } else {
-                let known: bool = is_public_id(author)
-                    && tx.query_row(
-                        "SELECT EXISTS (SELECT 1 FROM viewers WHERE public_id = ?1)",
-                        params![author],
+                (ScopeKind::Artifact, Some(aid), None)
+            }
+            Scope::Thread(tid) => {
+                let aid: Option<String> = tx
+                    .query_row(
+                        "SELECT artifact_id FROM threads WHERE id = ?1",
+                        params![tid],
                         |r| r.get(0),
-                    )?;
-                let own = match approver {
-                    Some(p) => p == author,
-                    None => owner.as_deref() == Some(author),
+                    )
+                    .optional()?;
+                let Some(aid) = aid else {
+                    return Err(CoreError::invalid(
+                        "unknown_thread",
+                        "the scope names no thread",
+                    ));
                 };
-                if !known || own {
-                    return Err(CoreError::invalid(
-                        "invalid_author",
-                        "the author is another viewer's public ID",
-                    ));
-                }
+                (ScopeKind::Thread, Some(aid), Some(tid))
             }
-            let (kind, artifact_id, thread_id) = match scope {
-                Scope::Everywhere => (ScopeKind::Everywhere, None, None),
-                Scope::Artifact(aid) => {
-                    let live: bool = tx.query_row(
-                        "SELECT EXISTS (SELECT 1 FROM artifacts WHERE id = ?1 AND deleted_at IS NULL)",
-                        params![aid],
-                        |r| r.get(0),
-                    )?;
-                    if !live {
-                        return Err(CoreError::invalid(
-                            "unknown_artifact",
-                            "the scope names no artifact",
-                        ));
-                    }
-                    (ScopeKind::Artifact, Some(aid), None)
-                }
-                Scope::Thread(tid) => {
-                    let aid: Option<String> = tx
-                        .query_row(
-                            "SELECT artifact_id FROM threads WHERE id = ?1",
-                            params![tid],
-                            |r| r.get(0),
-                        )
-                        .optional()?;
-                    let Some(aid) = aid else {
-                        return Err(CoreError::invalid(
-                            "unknown_thread",
-                            "the scope names no thread",
-                        ));
-                    };
-                    (ScopeKind::Thread, Some(aid), Some(tid))
-                }
-            };
-            // A thread approval is matched by its thread alone.
-            let existing = tx
-                .query_row(
-                    &format!(
-                        "SELECT {COLUMNS} FROM approvals
-                         WHERE COALESCE(approver, '') = COALESCE(?1, '') AND author = ?2
-                           AND scope = ?3 AND COALESCE(artifact_id, '') = COALESCE(?4, '')
-                           AND COALESCE(thread_id, '') = COALESCE(?5, '') AND revoked_at IS NULL"
-                    ),
-                    params![approver, author, kind.as_str(), artifact_id, thread_id],
-                    row_to_approval,
-                )
-                .optional()?;
-            if let Some(a) = existing {
-                return Ok(a);
+        };
+        // A thread approval is matched by its thread alone.
+        let existing = tx
+            .query_row(
+                &format!(
+                    "SELECT {COLUMNS} FROM approvals
+                     WHERE COALESCE(approver, '') = COALESCE(?1, '') AND author = ?2
+                       AND scope = ?3 AND COALESCE(artifact_id, '') = COALESCE(?4, '')
+                       AND COALESCE(thread_id, '') = COALESCE(?5, '') AND revoked_at IS NULL"
+                ),
+                params![approver, author, kind.as_str(), artifact_id, thread_id],
+                row_to_approval,
+            )
+            .optional()?;
+        let now = self.now();
+        let a = match existing {
+            Some(a) => a,
+            None => {
+                let a = Approval {
+                    id: new_ulid(),
+                    approver: approver.map(str::to_string),
+                    author: author.to_string(),
+                    scope: kind,
+                    artifact_id,
+                    thread_id,
+                    created_at: now.clone(),
+                    created_via: via.as_str().to_string(),
+                    request_id: request.map(str::to_string),
+                    revoked_at: None,
+                };
+                tx.execute(
+                    "INSERT INTO approvals (id, approver, author, scope, artifact_id, thread_id, created_at, created_via, request_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![a.id, a.approver, a.author, a.scope.as_str(), a.artifact_id, a.thread_id, a.created_at, a.created_via, a.request_id],
+                )?;
+                self.record_audit(
+                    tx,
+                    ctx,
+                    approval_record(AuditKind::ApprovalGrant, &a.created_at, &a),
+                )?;
+                release_told(tx, &a, touched)?;
+                self.visibility_changed();
+                a
             }
-            let a = Approval {
-                id: new_ulid(),
-                approver: approver.map(str::to_string),
-                author: author.to_string(),
-                scope: kind,
-                artifact_id,
-                thread_id,
-                created_at: self.now(),
-                created_via: via.as_str().to_string(),
-                request_id: None,
-                revoked_at: None,
-            };
-            tx.execute(
-                "INSERT INTO approvals (id, approver, author, scope, artifact_id, thread_id, created_at, created_via)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![a.id, a.approver, a.author, a.scope.as_str(), a.artifact_id, a.thread_id, a.created_at, a.created_via],
-            )?;
-            self.record_audit(tx, ctx, approval_record(AuditKind::ApprovalGrant, &a.created_at, &a))?;
-            reset_placeholders(tx, &a)?;
-            self.visibility_changed();
-            Ok(a)
-        })
+        };
+        close_covered(self, tx, ctx, &a, &now)?;
+        Ok(a)
     }
 
     /// Revokes the live approval `id` of `approver` (`None`: the owner's),
@@ -582,6 +678,1064 @@ impl Store {
         authors: &[String],
     ) -> Result<ApprovalState> {
         self.with_read(|c| request_state_in(c, approver, artifact, thread, authors))
+    }
+}
+
+/// Most open requests one approver holds (spec §9.2): beyond, `ask` is 429
+/// `limit_reached` and routing holds the content without a request.
+pub const MAX_OPEN_REQUESTS: u32 = 100;
+
+/// How long after a decline a request there is not made again (§9.3).
+pub const DECLINE_QUIET_SECS: i64 = 600;
+
+/// What People shows an approver whose routed content waits without a
+/// request (§9.2).
+pub const OVERFLOW_BANNER: &str =
+    "More is waiting for your approval than the inbox lists: review People";
+
+/// Why a request was made (`approval_requests.cause`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Cause {
+    /// An agent's `ask`.
+    Ask,
+    /// A send that reached the approver's agent (M18).
+    Routing,
+}
+
+impl Cause {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Cause::Ask => "ask",
+            Cause::Routing => "routing",
+        }
+    }
+}
+
+/// Where a request stands (`approval_requests.status`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RequestStatus {
+    Open,
+    Approved,
+    Declined,
+    Withdrawn,
+}
+
+impl RequestStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RequestStatus::Open => "open",
+            RequestStatus::Approved => "approved",
+            RequestStatus::Declined => "declined",
+            RequestStatus::Withdrawn => "withdrawn",
+        }
+    }
+
+    fn parse(s: &str) -> RequestStatus {
+        match s {
+            "approved" => RequestStatus::Approved,
+            "declined" => RequestStatus::Declined,
+            "withdrawn" => RequestStatus::Withdrawn,
+            _ => RequestStatus::Open,
+        }
+    }
+}
+
+/// A request for an approval (§9.2). It names the withheld content's
+/// author, artifact and thread, never the content.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ApprovalRequest {
+    pub id: String,
+    /// The person asked; `None`: the owner.
+    pub approver: Option<String>,
+    /// The withheld content's author, a public ID.
+    pub author: String,
+    pub artifact_id: String,
+    /// `None`: content outside threads (a version, a document).
+    pub thread_id: Option<String>,
+    /// The agent it is about.
+    pub session_id: Option<String>,
+    pub cause: Cause,
+    /// How many withheld comments (or, outside threads, fields) it covers.
+    pub count: u32,
+    pub status: RequestStatus,
+    /// The scope it was approved at.
+    pub decided_scope: Option<ScopeKind>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub decided_at: Option<String>,
+}
+
+const REQUEST_COLUMNS: &str = "id, approver, author, artifact_id, thread_id, session_id, cause,
+    count, status, decided_scope, created_at, updated_at, decided_at";
+
+fn row_to_request(r: &Row<'_>) -> rusqlite::Result<ApprovalRequest> {
+    let cause: String = r.get(6)?;
+    let status: String = r.get(8)?;
+    let scope: Option<String> = r.get(9)?;
+    Ok(ApprovalRequest {
+        id: r.get(0)?,
+        approver: r.get(1)?,
+        author: r.get(2)?,
+        artifact_id: r.get(3)?,
+        thread_id: r.get(4)?,
+        session_id: r.get(5)?,
+        cause: if cause == "ask" {
+            Cause::Ask
+        } else {
+            Cause::Routing
+        },
+        count: r.get(7)?,
+        status: RequestStatus::parse(&status),
+        decided_scope: scope.as_deref().and_then(ScopeKind::parse),
+        created_at: r.get(10)?,
+        updated_at: r.get(11)?,
+        decided_at: r.get(12)?,
+    })
+}
+
+/// What a person decides about a request (§9.3, R1): approve at a scope,
+/// or decline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Decision {
+    Approve(ScopeKind),
+    Decline,
+}
+
+impl Decision {
+    /// `thread`, `artifact`, `everywhere` or `decline`.
+    pub fn parse(s: &str) -> Option<Decision> {
+        match s {
+            "decline" => Some(Decision::Decline),
+            s => ScopeKind::parse(s).map(Decision::Approve),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Decision::Approve(k) => k.as_str(),
+            Decision::Decline => "decline",
+        }
+    }
+}
+
+/// What deciding a request did: the request as decided, the approval made
+/// or found, and what that let through (as [`Store::approve_touched`]).
+#[derive(Clone, Debug)]
+pub struct Decided {
+    pub request: ApprovalRequest,
+    pub approval: Option<Approval>,
+    pub touched: Touched,
+}
+
+/// How a send asks the people of the agents it reaches (§9.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Route {
+    /// A send (button, `to`, `@name`, `@agent`, batch, a page's
+    /// `sendToClaude`, handoff): makes or joins a request per author
+    /// withheld from each agent's person (M18).
+    Send,
+    /// A later comment on a sent thread: joins (counts into) the open
+    /// requests there only; the agent's placeholder says how to ask.
+    Join,
+}
+
+/// What [`Store::ask_approval`] asks for: the withheld content of the
+/// session's reader at an artifact, or a thread, optionally of one author.
+#[derive(Clone, Debug, Default)]
+pub struct AskApproval {
+    pub session_id: String,
+    pub artifact_id: Option<String>,
+    pub thread_id: Option<String>,
+    /// A public ID.
+    pub author: Option<String>,
+}
+
+/// What [`request_in`] did for one author.
+enum Requested {
+    Made(String),
+    Joined(String),
+    /// Declined there within [`DECLINE_QUIET_SECS`].
+    Declined,
+    /// The approver holds [`MAX_OPEN_REQUESTS`] open requests.
+    Full,
+    /// [`Route::Join`] with no open request there.
+    None,
+}
+
+/// The overflow marker's `install` key for `approver`.
+fn overflow_key(approver: Option<&str>) -> String {
+    format!("approval_overflow:{}", approver.unwrap_or(""))
+}
+
+/// The `approval.request` record of request `rid` (§20.2).
+fn request_record(at: &str, r: &ApprovalRequest) -> AuditRecord {
+    let mut rec = AuditRecord::new(AuditKind::ApprovalRequest, at)
+        .with("request_id", r.id.as_str())
+        .with("approver", r.approver.as_deref())
+        .with("author", r.author.as_str())
+        .with("artifact_id", r.artifact_id.as_str())
+        .with("thread_id", r.thread_id.as_deref())
+        .with("cause", r.cause.as_str())
+        .with("count", r.count);
+    rec.ids.artifact = Some(r.artifact_id.clone());
+    rec.ids.thread = r.thread_id.clone();
+    rec.ids.session = r.session_id.clone();
+    rec
+}
+
+/// The `approval.decide` record of request `r` decided as `scope`.
+fn decide_record(at: &str, r: &ApprovalRequest, scope: &str) -> AuditRecord {
+    let mut rec = AuditRecord::new(AuditKind::ApprovalDecide, at)
+        .with("request_id", r.id.as_str())
+        .with("scope", scope);
+    rec.ids.artifact = Some(r.artifact_id.clone());
+    rec.ids.thread = r.thread_id.clone();
+    rec
+}
+
+/// Request `rid`, read on `c`.
+fn request_by_id(c: &rusqlite::Connection, rid: &str) -> Result<Option<ApprovalRequest>> {
+    Ok(c.query_row(
+        &format!("SELECT {REQUEST_COLUMNS} FROM approval_requests WHERE id = ?1"),
+        params![rid],
+        row_to_request,
+    )
+    .optional()?)
+}
+
+/// The display name of viewer `pid`, for an item's index entry.
+fn name_of(c: &rusqlite::Connection, pid: &str) -> Result<String> {
+    let raw: Option<String> = c
+        .query_row(
+            "SELECT display_name FROM viewers WHERE public_id = ?1",
+            params![pid],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(crate::feedback::display_name(raw.as_deref().unwrap_or("")))
+}
+
+/// Makes or joins the request of `approver` for `author`'s withheld
+/// content at artifact `aid`, thread `tid` (one per (approver, author,
+/// artifact, thread), M19), about session `sid`, covering `count`
+/// withheld items. An open one there is joined: when `count` grew, it
+/// takes the new count, its item is unread again (re-announced) and an
+/// `approval.request` records it; a routing send turns an asking request
+/// into a routing one, so the asking session's end does not withdraw it.
+/// Otherwise ([`Route::Send`]) a new one is made, recorded and announced
+/// in the approver's inbox, unless one was declined there within
+/// [`DECLINE_QUIET_SECS`], or the approver holds [`MAX_OPEN_REQUESTS`]
+/// (then the overflow marker is set for People's banner).
+#[allow(clippy::too_many_arguments)]
+fn request_in(
+    st: &Store,
+    tx: &Transaction<'_>,
+    ctx: &AuditCtx,
+    approver: Option<&str>,
+    author: &str,
+    aid: &str,
+    tid: Option<&str>,
+    sid: Option<&str>,
+    cause: Cause,
+    route: Route,
+    count: u32,
+    detail: Option<&Value>,
+    now: &str,
+) -> Result<Requested> {
+    let open = tx
+        .query_row(
+            &format!(
+                "SELECT {REQUEST_COLUMNS} FROM approval_requests
+                 WHERE COALESCE(approver, '') = COALESCE(?1, '') AND author = ?2
+                   AND artifact_id = ?3 AND COALESCE(thread_id, '') = COALESCE(?4, '')
+                   AND status = 'open'"
+            ),
+            params![approver, author, aid, tid],
+            row_to_request,
+        )
+        .optional()?;
+    if let Some(mut r) = open {
+        let grew = count > r.count;
+        let routed = cause == Cause::Routing && r.cause == Cause::Ask;
+        if grew || routed {
+            r.count = r.count.max(count);
+            if routed {
+                r.cause = Cause::Routing;
+            }
+            r.updated_at = now.to_string();
+            tx.execute(
+                "UPDATE approval_requests SET count = ?2, cause = ?3, updated_at = ?4 WHERE id = ?1",
+                params![r.id, r.count, r.cause.as_str(), now],
+            )?;
+            if grew {
+                super::inbox::approval_reannounced(tx, &r.id, detail)?;
+                st.record_audit(tx, ctx, request_record(now, &r))?;
+            }
+        }
+        return Ok(Requested::Joined(r.id));
+    }
+    if route == Route::Join {
+        return Ok(Requested::None);
+    }
+    let quiet = super::stamp(st.now_utc() - chrono::Duration::seconds(DECLINE_QUIET_SECS));
+    let declined: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM approval_requests
+           WHERE COALESCE(approver, '') = COALESCE(?1, '') AND author = ?2
+             AND artifact_id = ?3 AND COALESCE(thread_id, '') = COALESCE(?4, '')
+             AND status = 'declined' AND decided_at > ?5)",
+        params![approver, author, aid, tid, quiet],
+        |r| r.get(0),
+    )?;
+    if declined {
+        return Ok(Requested::Declined);
+    }
+    let held: u32 = tx.query_row(
+        "SELECT count(*) FROM approval_requests INDEXED BY approval_requests_open
+         WHERE COALESCE(approver, '') = COALESCE(?1, '') AND status = 'open'",
+        params![approver],
+        |r| r.get(0),
+    )?;
+    if held >= MAX_OPEN_REQUESTS {
+        tx.execute(
+            "INSERT INTO install (k, v) VALUES (?1, ?2) ON CONFLICT (k) DO UPDATE SET v = excluded.v",
+            params![overflow_key(approver), now],
+        )?;
+        return Ok(Requested::Full);
+    }
+    let r = ApprovalRequest {
+        id: new_ulid(),
+        approver: approver.map(str::to_string),
+        author: author.to_string(),
+        artifact_id: aid.to_string(),
+        thread_id: tid.map(str::to_string),
+        session_id: sid.map(str::to_string),
+        cause,
+        count,
+        status: RequestStatus::Open,
+        decided_scope: None,
+        created_at: now.to_string(),
+        updated_at: now.to_string(),
+        decided_at: None,
+    };
+    tx.execute(
+        "INSERT INTO approval_requests (id, approver, author, artifact_id, thread_id, session_id,
+            cause, count, status, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'open', ?9, ?9)",
+        params![
+            r.id,
+            r.approver,
+            r.author,
+            r.artifact_id,
+            r.thread_id,
+            r.session_id,
+            r.cause.as_str(),
+            r.count,
+            now
+        ],
+    )?;
+    let name = name_of(tx, author)?;
+    super::inbox::note_approval(
+        tx,
+        &r.id,
+        approver,
+        aid,
+        tid,
+        sid,
+        &name,
+        detail.cloned(),
+        now,
+    )?;
+    st.record_audit(tx, ctx, request_record(now, &r))?;
+    Ok(Requested::Made(r.id))
+}
+
+/// Closes, as approved at its scope, every open request of `a`'s approver
+/// for `a`'s author that `a` covers, each recorded as `approval.decide`
+/// under `ctx` and its item read.
+fn close_covered(
+    st: &Store,
+    tx: &Transaction<'_>,
+    ctx: &AuditCtx,
+    a: &Approval,
+    now: &str,
+) -> Result<()> {
+    let closed: Vec<ApprovalRequest> = {
+        let mut stmt = tx.prepare_cached(&format!(
+            "UPDATE approval_requests SET status = 'approved', decided_scope = ?3, decided_at = ?6,
+                    updated_at = ?6
+             WHERE status = 'open' AND COALESCE(approver, '') = COALESCE(?1, '') AND author = ?2
+               AND (?3 = 'everywhere'
+                    OR (?3 = 'artifact' AND artifact_id = ?4)
+                    OR (?3 = 'thread' AND thread_id = ?5))
+             RETURNING {REQUEST_COLUMNS}"
+        ))?;
+        stmt.query_map(
+            params![
+                a.approver,
+                a.author,
+                a.scope.as_str(),
+                a.artifact_id,
+                a.thread_id,
+                now
+            ],
+            row_to_request,
+        )?
+        .collect::<rusqlite::Result<_>>()?
+    };
+    for r in &closed {
+        super::inbox::approval_closed(tx, &r.id, now)?;
+        st.record_audit(tx, ctx, decide_record(now, r, a.scope.as_str()))?;
+    }
+    Ok(())
+}
+
+/// The key a request names `author` by: a public ID (the owner's for
+/// [`Author::Owner`]); `None` for authors no request can name (anonymous
+/// viewers, whom only the owner's switch covers, and Clax itself).
+fn request_key(a: &Author, owner: Option<&str>) -> Option<String> {
+    match a {
+        Author::Owner => owner.map(str::to_string),
+        Author::Person(p) => Some(p.clone()),
+        Author::Unconnected | Author::System => None,
+    }
+}
+
+/// The owner's public ID, read on `c`.
+fn owner_pid(c: &rusqlite::Connection) -> Result<Option<String>> {
+    Ok(
+        c.query_row("SELECT public_id FROM viewers WHERE owner = 1", [], |r| {
+            r.get(0)
+        })
+        .optional()?,
+    )
+}
+
+/// The reader whose agents session `sid` is, read on `c`; `None` for a
+/// session that does not exist.
+fn reader_in(c: &rusqlite::Connection, sid: &str) -> Result<Option<(Reader, bool)>> {
+    let row: Option<(Option<String>, bool)> = c
+        .query_row(
+            "SELECT person, ended_at IS NULL FROM sessions WHERE id = ?1",
+            params![sid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    Ok(row.map(|(p, live)| {
+        (
+            match p {
+                Some(p) => Reader::Person(p),
+                None => Reader::Owner,
+            },
+            live,
+        )
+    }))
+}
+
+/// The approver a reader's requests go to.
+fn approver_of(r: &Reader) -> Option<&str> {
+    match r {
+        Reader::Owner => None,
+        Reader::Person(p) => Some(p),
+    }
+}
+
+/// The withheld authors of thread `t`'s comment bodies for `vis`, each
+/// with how many of its comments they withhold, in first-seen order.
+fn withheld_in_thread(vis: &Visibility, t: &Thread, owner: Option<&str>) -> Vec<(String, u32)> {
+    let mut out: Vec<(String, u32)> = Vec::new();
+    for c in &t.comments {
+        for a in vis.withheld_authors(
+            &visibility::authors_of_comment(c),
+            &t.artifact_id,
+            Some(&t.id),
+        ) {
+            let Some(key) = request_key(&a, owner) else {
+                continue;
+            };
+            match out.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, n)) => *n += 1,
+                None => out.push((key, 1)),
+            }
+        }
+    }
+    out
+}
+
+/// The detail of a page's send of thread `t` (§9.2: "<publisher>'s page,
+/// via <viewer>'s browser"): the newest comment a page wrote, its page's
+/// authors and its viewer.
+fn page_detail(t: &Thread) -> Option<Value> {
+    let c = t.comments.iter().rev().find(|c| c.via_page)?;
+    Some(json!({"page": {
+        "authors": if c.page_authors.is_empty() { vec![OWNER.to_string()] } else { c.page_authors.clone() },
+        "viewer": c.author_public_id,
+    }}))
+}
+
+/// The requests a send of thread `thread_id` to `sessions` makes or joins
+/// (M18, §9.2): for each session's person (`None`: the owner), once per
+/// person, one per author whose comments in the thread that person's
+/// agents may not see, counting them; a page's send (`page`) names the
+/// page and viewer on the item. A [`Route::Join`] only counts into open
+/// requests. Content of an author at a full approver is held without a
+/// request. The IDs of the requests made or joined.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn route_in(
+    st: &Store,
+    tx: &Transaction<'_>,
+    ctx: &AuditCtx,
+    thread_id: &str,
+    sessions: &[String],
+    route: Route,
+    page: bool,
+    now: &str,
+) -> Result<Vec<String>> {
+    if sessions.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(t) = thread_in(tx, thread_id)? else {
+        return Ok(Vec::new());
+    };
+    if !t.comments.iter().any(|c| c.author_kind == AUTHOR_VIEWER) {
+        return Ok(Vec::new());
+    }
+    let owner = owner_pid(tx)?;
+    let detail = if page { page_detail(&t) } else { None };
+    let mut by_reader: BTreeMap<Option<String>, String> = BTreeMap::new();
+    for sid in sessions {
+        if let Some((r, true)) = reader_in(tx, sid)? {
+            by_reader
+                .entry(approver_of(&r).map(str::to_string))
+                .or_insert_with(|| sid.clone());
+        }
+    }
+    let mut ids = Vec::new();
+    for (approver, sid) in by_reader {
+        let reader = match &approver {
+            Some(p) => Reader::Person(p.clone()),
+            None => Reader::Owner,
+        };
+        let vis = Visibility::for_reader_in(tx, &reader, 0)?;
+        for (author, count) in withheld_in_thread(&vis, &t, owner.as_deref()) {
+            match request_in(
+                st,
+                tx,
+                ctx,
+                approver.as_deref(),
+                &author,
+                &t.artifact_id,
+                Some(&t.id),
+                Some(&sid),
+                Cause::Routing,
+                route,
+                count,
+                detail.as_ref(),
+                now,
+            )? {
+                Requested::Made(id) | Requested::Joined(id) => ids.push(id),
+                Requested::Declined | Requested::Full | Requested::None => {}
+            }
+        }
+    }
+    Ok(ids)
+}
+
+/// Withdraws, at `now`, the open requests `filter` (a `WHERE` condition
+/// on `approval_requests` over `args`) selects, each recorded as
+/// `approval.withdraw {request_id, reason}` under `ctx` and its item read.
+fn withdraw_where(
+    st: &Store,
+    tx: &Transaction<'_>,
+    ctx: &AuditCtx,
+    filter: &str,
+    args: &[&dyn rusqlite::ToSql],
+    reason: &str,
+    now: &str,
+) -> Result<()> {
+    let ids: Vec<ApprovalRequest> = {
+        let mut stmt = tx.prepare(&format!(
+            "SELECT {REQUEST_COLUMNS} FROM approval_requests WHERE status = 'open' AND ({filter})"
+        ))?;
+        stmt.query_map(args, row_to_request)?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    for r in ids {
+        tx.execute(
+            "UPDATE approval_requests SET status = 'withdrawn', decided_at = ?2, updated_at = ?2
+             WHERE id = ?1",
+            params![r.id, now],
+        )?;
+        super::inbox::approval_closed(tx, &r.id, now)?;
+        let mut rec = AuditRecord::new(AuditKind::ApprovalWithdraw, now)
+            .with("request_id", r.id.as_str())
+            .with("reason", reason);
+        rec.ids.artifact = Some(r.artifact_id.clone());
+        rec.ids.thread = r.thread_id.clone();
+        st.record_audit(tx, ctx, rec)?;
+    }
+    Ok(())
+}
+
+/// Withdraws the open requests about thread `tid` (§9.2: it was resolved
+/// or deleted), for `reason`.
+pub(crate) fn withdraw_thread_in(
+    st: &Store,
+    tx: &Transaction<'_>,
+    ctx: &AuditCtx,
+    tid: &str,
+    reason: &str,
+    now: &str,
+) -> Result<()> {
+    withdraw_where(st, tx, ctx, "thread_id = ?1", &[&tid], reason, now)
+}
+
+/// Withdraws the open requests about artifact `aid` (§9.2: it was deleted).
+pub(crate) fn withdraw_artifact_in(
+    st: &Store,
+    tx: &Transaction<'_>,
+    ctx: &AuditCtx,
+    aid: &str,
+    now: &str,
+) -> Result<()> {
+    withdraw_where(
+        st,
+        tx,
+        ctx,
+        "artifact_id = ?1",
+        &[&aid],
+        "artifact_deleted",
+        now,
+    )
+}
+
+/// Withdraws the open requests session `sid` asked for (§9.2, §14: its
+/// agent ended); routing requests stay.
+pub(crate) fn withdraw_session_in(
+    st: &Store,
+    tx: &Transaction<'_>,
+    ctx: &AuditCtx,
+    sid: &str,
+    now: &str,
+) -> Result<()> {
+    withdraw_where(
+        st,
+        tx,
+        ctx,
+        "session_id = ?1 AND cause = 'ask'",
+        &[&sid],
+        "session_end",
+        now,
+    )
+}
+
+/// Withdraws the open requests of person `pid`, asked of them or about
+/// their content, once they are revoked: a revoked person approves
+/// nothing, and their content stays withheld (§6.4).
+pub(crate) fn withdraw_person_in(
+    st: &Store,
+    tx: &Transaction<'_>,
+    ctx: &AuditCtx,
+    pid: &str,
+    now: &str,
+) -> Result<()> {
+    withdraw_where(
+        st,
+        tx,
+        ctx,
+        "approver = ?1 OR author = ?1",
+        &[&pid],
+        "person_revoked",
+        now,
+    )
+}
+
+/// The authors withheld from `vis` at artifact `aid` outside its threads
+/// (§9.2's `thread_id` NULL): its text fields, its current version's
+/// label, note and files, its documents and its assets, each counted once
+/// per field that holds them.
+fn withheld_outside_threads(
+    tx: &Transaction<'_>,
+    vis: &Visibility,
+    aid: &str,
+    owner: Option<&str>,
+) -> Result<Vec<(String, u32)>> {
+    let Some(a) = super::artifacts::live_artifact_in(tx, aid)? else {
+        return Err(CoreError::NotFound);
+    };
+    let mut fields: Vec<Vec<Author>> = vec![visibility::authors_of_artifact_text(&a)];
+    if let Some(v) = tx
+        .query_row(
+            &format!(
+                "{} WHERE artifact_id = ?1 AND n = ?2",
+                super::artifacts::SELECT_VERSION
+            ),
+            params![aid, a.current_version],
+            super::artifacts::row_to_version,
+        )
+        .optional()?
+        .transpose()?
+    {
+        fields.push(visibility::authors_of_version(&v));
+        for path in v.files.keys() {
+            fields.push(visibility::authors_of_file(&v, path));
+        }
+    }
+    let docs: Vec<String> = {
+        let mut stmt = tx.prepare_cached(
+            "SELECT DISTINCT author FROM doc_authors WHERE artifact_id = ?1 ORDER BY author",
+        )?;
+        stmt.query_map(params![aid], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    for d in docs {
+        fields.push(vec![Author::of_token(Some(&d))]);
+    }
+    let uploaders: Vec<Option<String>> = {
+        let mut stmt = tx.prepare_cached(
+            "SELECT DISTINCT person FROM assets WHERE artifact_id = ?1 ORDER BY person",
+        )?;
+        stmt.query_map(params![aid], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    for u in uploaders {
+        fields.push(vec![Author::of_token(u.as_deref())]);
+    }
+    let mut out: Vec<(String, u32)> = Vec::new();
+    for f in fields {
+        for x in vis.withheld_authors(&f, aid, None) {
+            let Some(key) = request_key(&x, owner) else {
+                continue;
+            };
+            match out.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, n)) => *n += 1,
+                None => out.push((key, 1)),
+            }
+        }
+    }
+    Ok(out)
+}
+
+impl Store {
+    /// Asks session `q.session_id`'s person for the content withheld from
+    /// its agent at `q.thread_id` (its comments' bodies), or else at
+    /// `q.artifact_id` outside threads, of `q.author` alone when given
+    /// (§9.2 "Asking"): makes or joins one request per such author
+    /// (`cause: ask`), recorded as `approval.request` under `ctx`.
+    /// Returns the requests, oldest author first.
+    ///
+    /// # Errors
+    /// `NotFound` for a session, thread or artifact that does not exist
+    /// (or a thread of another artifact than the one named);
+    /// `unknown_session` for an ended session; `invalid_args` naming
+    /// neither; `nothing_withheld` when nothing there is withheld from the
+    /// agent (of that author); `recently_declined` when every request
+    /// there was declined within [`DECLINE_QUIET_SECS`]; `limit_reached`
+    /// when the person holds [`MAX_OPEN_REQUESTS`] open requests.
+    pub fn ask_approval(&self, ctx: &AuditCtx, q: &AskApproval) -> Result<Vec<ApprovalRequest>> {
+        self.with_tx(|tx| {
+            let Some((reader, live)) = reader_in(tx, &q.session_id)? else {
+                return Err(CoreError::NotFound);
+            };
+            if !live {
+                return Err(CoreError::invalid(
+                    "unknown_session",
+                    "no live session has this ID",
+                ));
+            }
+            let now = self.now();
+            let owner = owner_pid(tx)?;
+            let vis = Visibility::for_reader_in(tx, &reader, 0)?;
+            let (aid, tid, withheld) = match (&q.thread_id, &q.artifact_id) {
+                (Some(tid), named) => {
+                    let t = thread_in(tx, tid)?.ok_or(CoreError::NotFound)?;
+                    if named.as_ref().is_some_and(|a| *a != t.artifact_id)
+                        || super::artifacts::live_artifact_in(tx, &t.artifact_id)?.is_none()
+                    {
+                        return Err(CoreError::NotFound);
+                    }
+                    let w = withheld_in_thread(&vis, &t, owner.as_deref());
+                    (t.artifact_id.clone(), Some(t.id.clone()), w)
+                }
+                (None, Some(aid)) => {
+                    let w = withheld_outside_threads(tx, &vis, aid, owner.as_deref())?;
+                    (aid.clone(), None, w)
+                }
+                (None, None) => {
+                    return Err(CoreError::invalid(
+                        "invalid_args",
+                        "name a thread_id or an artifact",
+                    ));
+                }
+            };
+            let withheld: Vec<(String, u32)> = withheld
+                .into_iter()
+                .filter(|(a, _)| q.author.as_ref().is_none_or(|w| w == a))
+                .collect();
+            if withheld.is_empty() {
+                return Err(CoreError::invalid(
+                    "nothing_withheld",
+                    "nothing there is withheld from you",
+                ));
+            }
+            let approver = approver_of(&reader);
+            let (mut ids, mut declined, mut full) = (Vec::new(), false, false);
+            for (author, count) in withheld {
+                match request_in(
+                    self,
+                    tx,
+                    ctx,
+                    approver,
+                    &author,
+                    &aid,
+                    tid.as_deref(),
+                    Some(&q.session_id),
+                    Cause::Ask,
+                    Route::Send,
+                    count,
+                    None,
+                    &now,
+                )? {
+                    Requested::Made(id) | Requested::Joined(id) => ids.push(id),
+                    Requested::Declined => declined = true,
+                    Requested::Full => full = true,
+                    Requested::None => {}
+                }
+            }
+            if ids.is_empty() {
+                return Err(if full {
+                    CoreError::invalid(
+                        "limit_reached",
+                        format!(
+                            "your person has {MAX_OPEN_REQUESTS} requests waiting; ask again once they decide some"
+                        ),
+                    )
+                } else {
+                    debug_assert!(declined);
+                    CoreError::invalid(
+                        "recently_declined",
+                        "your person declined this less than ten minutes ago",
+                    )
+                });
+            }
+            ids.iter()
+                .map(|id| request_by_id(tx, id)?.ok_or(CoreError::NotFound))
+                .collect()
+        })
+    }
+
+    /// Request `rid` of `approver` (`None`: the owner).
+    ///
+    /// # Errors
+    /// `NotFound` unless `rid` is a request of `approver`.
+    pub fn approval_request(&self, rid: &str, approver: Option<&str>) -> Result<ApprovalRequest> {
+        self.with_read(|c| match request_by_id(c, rid)? {
+            Some(r) if r.approver.as_deref() == approver => Ok(r),
+            _ => Err(CoreError::NotFound),
+        })
+    }
+
+    /// The requests whose rows are `rowids` (as the request listener hears
+    /// of them), oldest first.
+    pub fn approval_requests_by_rowid(&self, rowids: &[i64]) -> Result<Vec<ApprovalRequest>> {
+        let ids = serde_json::to_string(rowids).expect("integers serialise");
+        self.with_read(|c| {
+            let mut stmt = c.prepare(&format!(
+                "SELECT {REQUEST_COLUMNS} FROM approval_requests
+                 WHERE rowid IN (SELECT value FROM json_each(?1)) ORDER BY rowid"
+            ))?;
+            Ok(stmt
+                .query_map(params![ids], row_to_request)?
+                .collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// The requests of `approver` (`None`: the owner): the open ones only
+    /// when `open`, newest first, at most `limit`; the number open; and
+    /// whether routed content waits beyond [`MAX_OPEN_REQUESTS`] without a
+    /// request (People's banner, [`OVERFLOW_BANNER`]).
+    pub fn approval_requests(
+        &self,
+        approver: Option<&str>,
+        open: bool,
+        limit: u32,
+    ) -> Result<(Vec<ApprovalRequest>, u32, bool)> {
+        self.with_read(|c| {
+            let mut stmt = c.prepare(&format!(
+                "SELECT {REQUEST_COLUMNS} FROM approval_requests
+                 WHERE COALESCE(approver, '') = COALESCE(?1, '') AND (NOT ?2 OR status = 'open')
+                 ORDER BY created_at DESC, id DESC LIMIT ?3"
+            ))?;
+            let rows = stmt
+                .query_map(params![approver, open, limit], row_to_request)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let n: u32 = c.query_row(
+                "SELECT count(*) FROM approval_requests INDEXED BY approval_requests_open
+                 WHERE COALESCE(approver, '') = COALESCE(?1, '') AND status = 'open'",
+                params![approver],
+                |r| r.get(0),
+            )?;
+            let overflow: bool = c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM install WHERE k = ?1)",
+                params![overflow_key(approver)],
+                |r| r.get(0),
+            )?;
+            Ok((rows, n, overflow))
+        })
+    }
+
+    /// `approver` (`None`: the owner) decides open request `rid` (§9.3):
+    /// approving makes the approval at the scope (or finds the live one;
+    /// [`Store::approve_touched`]), which closes it and the approver's
+    /// other open requests for that author the scope covers, each as
+    /// `approval.decide`, and bumps the visibility generation; declining
+    /// marks it declined (`approval.decide` with scope `decline`), keeps
+    /// its rows held and bumps the generation too. Either way its item is
+    /// read. Once the approver holds fewer than [`MAX_OPEN_REQUESTS`],
+    /// the overflow marker is cleared.
+    ///
+    /// # Errors
+    /// `NotFound` unless `rid` is a request of `approver`;
+    /// `request_closed` unless it is open; `invalid_scope` for a thread
+    /// scope on a request outside threads; [`Store::approve`]'s.
+    pub fn decide_request(
+        &self,
+        ctx: &AuditCtx,
+        rid: &str,
+        approver: Option<&str>,
+        decision: Decision,
+        via: Via,
+    ) -> Result<Decided> {
+        self.with_tx(|tx| {
+            let r = match request_by_id(tx, rid)? {
+                Some(r) if r.approver.as_deref() == approver => r,
+                _ => return Err(CoreError::NotFound),
+            };
+            if r.status != RequestStatus::Open {
+                return Err(CoreError::invalid(
+                    "request_closed",
+                    format!("the request is {} already", r.status.as_str()),
+                ));
+            }
+            let now = self.now();
+            let mut touched = Touched::default();
+            let approval = match decision {
+                Decision::Approve(kind) => {
+                    let scope = match kind {
+                        ScopeKind::Everywhere => Scope::Everywhere,
+                        ScopeKind::Artifact => Scope::Artifact(r.artifact_id.clone()),
+                        ScopeKind::Thread => match &r.thread_id {
+                            Some(t) => Scope::Thread(t.clone()),
+                            None => {
+                                return Err(CoreError::invalid(
+                                    "invalid_scope",
+                                    "the request is about no thread: allow the page or everywhere",
+                                ));
+                            }
+                        },
+                    };
+                    let a = self.approve_in(
+                        tx,
+                        ctx,
+                        approver,
+                        &r.author,
+                        scope,
+                        via,
+                        Some(rid),
+                        &mut touched,
+                    )?;
+                    Some(a)
+                }
+                Decision::Decline => {
+                    tx.execute(
+                        "UPDATE approval_requests SET status = 'declined', decided_at = ?2, updated_at = ?2
+                         WHERE id = ?1",
+                        params![rid, now],
+                    )?;
+                    super::inbox::approval_closed(tx, rid, &now)?;
+                    self.record_audit(tx, ctx, decide_record(&now, &r, decision.as_str()))?;
+                    None
+                }
+            };
+            // Every decision bumps the generation (M17): a decline changes
+            // what the withheld rows' placeholders say.
+            self.visibility_changed();
+            let held: u32 = tx.query_row(
+                "SELECT count(*) FROM approval_requests INDEXED BY approval_requests_open
+                 WHERE COALESCE(approver, '') = COALESCE(?1, '') AND status = 'open'",
+                params![approver],
+                |r| r.get(0),
+            )?;
+            if held < MAX_OPEN_REQUESTS {
+                tx.execute(
+                    "DELETE FROM install WHERE k = ?1",
+                    params![overflow_key(approver)],
+                )?;
+            }
+            let request = request_by_id(tx, rid)?.ok_or(CoreError::NotFound)?;
+            Ok(Decided {
+                request,
+                approval,
+                touched,
+            })
+        })
+    }
+
+    /// Revokes the live approval `id` of `approver` and returns it with
+    /// the live sessions of the approver holding undelivered rows in its
+    /// scope, whose waits learn of it. As [`Store::revoke_approval`].
+    ///
+    /// # Errors
+    /// As [`Store::revoke_approval`].
+    pub fn revoke_approval_touched(
+        &self,
+        ctx: &AuditCtx,
+        id: &str,
+        approver: Option<&str>,
+    ) -> Result<(Approval, Touched)> {
+        let a = self.revoke_approval(ctx, id, approver)?;
+        let mut touched = Touched::default();
+        self.with_read(|c| {
+            let mut stmt = c.prepare_cached(
+                "SELECT DISTINCT f.target_session_id FROM feedback f
+                 JOIN sessions s ON s.id = f.target_session_id
+                 JOIN threads t ON t.id = f.thread_id
+                 WHERE f.delivered_at IS NULL AND s.ended_at IS NULL
+                   AND COALESCE(s.person, '') = COALESCE(?1, '')
+                   AND (?2 = 'everywhere'
+                        OR (?2 = 'artifact' AND t.artifact_id = ?3)
+                        OR (?2 = 'thread' AND f.thread_id = ?4))",
+            )?;
+            for sid in stmt.query_map(
+                params![a.approver, a.scope.as_str(), a.artifact_id, a.thread_id],
+                |r| r.get::<_, String>(0),
+            )? {
+                touched.targets.insert(sid?);
+            }
+            Ok(())
+        })?;
+        Ok((a, touched))
+    }
+
+    /// The live approval `id` of `approver` (`None`: the owner).
+    ///
+    /// # Errors
+    /// `NotFound` unless it is a live approval of `approver`.
+    pub fn live_approval(&self, id: &str, approver: Option<&str>) -> Result<Approval> {
+        self.with_read(|c| {
+            c.query_row(
+                &format!(
+                    "SELECT {COLUMNS} FROM approvals WHERE id = ?1
+                       AND COALESCE(approver, '') = COALESCE(?2, '') AND revoked_at IS NULL"
+                ),
+                params![id, approver],
+                row_to_approval,
+            )
+            .optional()?
+            .ok_or(CoreError::NotFound)
+        })
     }
 }
 
@@ -918,5 +2072,674 @@ mod tests {
         st.approve(DAEMON, None, UNCONNECTED, Scope::Everywhere, Via::Shell)
             .unwrap();
         assert!(st.owner_sees_all().unwrap(), "the switch is on again");
+    }
+
+    /// Sam and Mia connected; Sam's agent's session watching an artifact
+    /// the owner published, where Mia comments.
+    struct Req {
+        _dir: tempfile::TempDir,
+        clock: Arc<crate::working::ManualClock>,
+        st: Store,
+        sam: String,
+        mia: String,
+        lan: String,
+        aid: crate::ArtifactId,
+        /// Sam's agent's session.
+        sid: String,
+        /// The owner's agent's session.
+        owner_sid: String,
+    }
+
+    fn req_world() -> Req {
+        let (dir, clock, st) = store();
+        st.owner_viewer(true).unwrap();
+        let (sam_grant, _, _) = approved(&st, "Sam", [1; 32]);
+        let sam = st.viewer_of_grant(&sam_grant).unwrap().public_id;
+        let (mia_grant, _, _) = approved(&st, "Mia", [2; 32]);
+        let mia = st.viewer_of_grant(&mia_grant).unwrap().public_id;
+        let lan = lan(&st, "01ARZ3NDEKTSV4RRFFQ69G5FAV", "Lan");
+        let register = |grant: Option<String>, h: &str| {
+            st.register_session(
+                DAEMON,
+                crate::RegisterSession {
+                    harness: "claude".into(),
+                    harness_session_id: Some(h.into()),
+                    cwd: "/w".into(),
+                    grant_id: grant,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .id
+        };
+        let sid = register(Some(sam_grant), "sam-h1");
+        let owner_sid = register(None, "owner-h1");
+        let aid = artifact(&st, None);
+        st.ensure_watch(DAEMON, &sid, &aid).unwrap();
+        Req {
+            _dir: dir,
+            clock,
+            st,
+            sam,
+            mia,
+            lan,
+            aid,
+            sid,
+            owner_sid,
+        }
+    }
+
+    impl Req {
+        /// A thread `by` (a viewer's public ID) starts on the artifact.
+        fn thread_by(&self, by: &str, body: &str) -> String {
+            self.st
+                .create_thread(
+                    DAEMON,
+                    &self.aid,
+                    NewThread {
+                        version_n: 1,
+                        anchor: anchor(),
+                        author_name: "x".into(),
+                        author_public_id: Some(by.to_string()),
+                        body: body.into(),
+                        clip: None,
+                        via_page: false,
+                    },
+                )
+                .unwrap()
+                .id
+        }
+
+        fn comment_by(&self, tid: &str, by: &str, body: &str) {
+            self.st
+                .add_comment(
+                    DAEMON,
+                    tid,
+                    crate::store::threads::NewComment {
+                        author_public_id: Some(by.to_string()),
+                        author_kind: crate::store::threads::AUTHOR_VIEWER,
+                        author_name: "x".into(),
+                        via_session_id: None,
+                        body: body.into(),
+                        via_page: false,
+                    },
+                )
+                .unwrap();
+        }
+
+        /// Sends `tid` to Sam's agent alone.
+        fn send_to_sam(&self, tid: &str) -> Vec<String> {
+            self.st
+                .send_routed(
+                    DAEMON,
+                    tid,
+                    crate::SendTarget::Agent(&self.sid),
+                    Route::Send,
+                    false,
+                )
+                .unwrap()
+                .2
+        }
+
+        fn open(&self, approver: Option<&str>) -> Vec<ApprovalRequest> {
+            self.st.approval_requests(approver, true, 500).unwrap().0
+        }
+
+        fn unread_approvals(&self, approver: Option<&str>) -> usize {
+            let q = crate::store::inbox::InboxQuery {
+                recipient: approver.map(str::to_string),
+                kinds: vec![crate::store::inbox::Kind::Approval],
+                read: crate::store::inbox::ReadFilter::Unread,
+                ..Default::default()
+            };
+            self.st.inbox_count(&q, 1000).unwrap() as usize
+        }
+
+        fn kinds_since(&self, seq: i64) -> Vec<String> {
+            self.st
+                .events_after(seq, 10_000)
+                .unwrap()
+                .into_iter()
+                .map(|r| r.kind)
+                .filter(|k| k.starts_with("approval."))
+                .collect()
+        }
+
+        fn last_seq(&self) -> i64 {
+            self.st
+                .events_after(0, 100_000)
+                .unwrap()
+                .last()
+                .unwrap()
+                .seq
+        }
+    }
+
+    #[test]
+    fn routing_makes_one_request_per_author_and_joins_it_after() {
+        let w = req_world();
+        let tid = w.thread_by(&w.mia, "please fix the chart");
+        w.comment_by(&tid, &w.lan, "and the colours");
+        let before = w.last_seq();
+        let made = w.send_to_sam(&tid);
+        assert_eq!(made.len(), 2, "Mia and Lan: {made:?}");
+        let open = w.open(Some(&w.sam));
+        let mia = open.iter().find(|r| r.author == w.mia).unwrap();
+        assert_eq!(
+            (
+                mia.thread_id.as_deref(),
+                mia.artifact_id.as_str(),
+                mia.cause,
+                mia.count,
+                mia.session_id.as_deref()
+            ),
+            (
+                Some(tid.as_str()),
+                w.aid.as_str(),
+                Cause::Routing,
+                1,
+                Some(w.sid.as_str())
+            )
+        );
+        assert_eq!(w.unread_approvals(Some(&w.sam)), 2);
+        assert!(
+            w.open(None).is_empty(),
+            "the owner's agents were not sent it"
+        );
+        // Sending again joins: nothing new, nothing re-announced.
+        let again = w.send_to_sam(&tid);
+        assert_eq!(again.len(), 2);
+        assert_eq!(w.open(Some(&w.sam)).len(), 2);
+        // Mia's later reply on the sent thread counts into her request and
+        // re-announces its item.
+        let q = crate::store::inbox::InboxQuery {
+            recipient: Some(w.sam.clone()),
+            ..Default::default()
+        };
+        w.st.inbox_mark_all(&q).unwrap();
+        assert_eq!(w.unread_approvals(Some(&w.sam)), 0);
+        w.comment_by(&tid, &w.mia, "and the axis");
+        w.st.send_to_agent(DAEMON, &tid).unwrap();
+        let open = w.open(Some(&w.sam));
+        assert_eq!(open.len(), 2);
+        assert_eq!(open.iter().find(|r| r.author == w.mia).unwrap().count, 2);
+        assert_eq!(w.unread_approvals(Some(&w.sam)), 1, "Mia's re-announced");
+        assert_eq!(
+            w.kinds_since(before),
+            ["approval.request", "approval.request", "approval.request"],
+            "made twice, joined with more once"
+        );
+        let rows = w.st.events_after(before, 10_000).unwrap();
+        let send = rows.iter().find(|r| r.kind == "thread.send").unwrap();
+        let body: serde_json::Value = serde_json::from_str(&send.body).unwrap();
+        assert_eq!(body["approval_request_ids"].as_array().unwrap().len(), 2);
+        // Another thread of Mia's is a request of its own.
+        let t2 = w.thread_by(&w.mia, "another");
+        w.send_to_sam(&t2);
+        assert_eq!(w.open(Some(&w.sam)).len(), 3);
+    }
+
+    #[test]
+    fn a_later_comment_alone_never_makes_a_request() {
+        let w = req_world();
+        let tid = w.thread_by(&w.sam, "Sam's own");
+        assert!(w.send_to_sam(&tid).is_empty(), "nothing withheld");
+        w.comment_by(&tid, &w.mia, "Mia joins in");
+        let (_, _, made) =
+            w.st.send_routed(DAEMON, &tid, crate::SendTarget::Thread, Route::Join, false)
+                .unwrap();
+        assert!(made.is_empty() && w.open(Some(&w.sam)).is_empty());
+    }
+
+    #[test]
+    fn a_routed_row_reads_withheld_before_any_take() {
+        let w = req_world();
+        let tid = w.thread_by(&w.mia, "please");
+        w.send_to_sam(&tid);
+        let s = w.st.feedback_state(&tid, false).unwrap().unwrap();
+        assert_eq!(s.state, crate::FeedbackPhase::Withheld);
+        assert_eq!(s.approver.as_deref(), Some("Sam"));
+        // Declined: still held, no longer waiting on a request.
+        let rid = w.open(Some(&w.sam))[0].id.clone();
+        w.st.decide_request(DAEMON, &rid, Some(&w.sam), Decision::Decline, Via::Shell)
+            .unwrap();
+        let s = w.st.feedback_state(&tid, false).unwrap().unwrap();
+        assert_eq!(s.state, crate::FeedbackPhase::Sent);
+    }
+
+    #[test]
+    fn only_the_approver_decides_and_only_once() {
+        let w = req_world();
+        let tid = w.thread_by(&w.mia, "please");
+        w.send_to_sam(&tid);
+        let rid = w.open(Some(&w.sam))[0].id.clone();
+        let decide = |approver: Option<&str>, d: Decision| {
+            w.st.decide_request(DAEMON, &rid, approver, d, Via::Shell)
+        };
+        let everywhere = Decision::Approve(ScopeKind::Everywhere);
+        assert!(matches!(decide(None, everywhere), Err(CoreError::NotFound)));
+        assert!(matches!(
+            decide(Some(&w.mia), everywhere),
+            Err(CoreError::NotFound)
+        ));
+        let d = decide(Some(&w.sam), Decision::Approve(ScopeKind::Thread)).unwrap();
+        assert_eq!(d.request.status, RequestStatus::Approved);
+        assert_eq!(d.request.decided_scope, Some(ScopeKind::Thread));
+        let a = d.approval.unwrap();
+        assert_eq!(
+            (a.scope, a.thread_id.as_deref(), a.request_id.as_deref()),
+            (ScopeKind::Thread, Some(tid.as_str()), Some(rid.as_str()))
+        );
+        assert_eq!(
+            code(decide(Some(&w.sam), Decision::Decline)),
+            "request_closed"
+        );
+        assert_eq!(w.unread_approvals(Some(&w.sam)), 0, "decided: read");
+    }
+
+    #[test]
+    fn approving_everywhere_closes_the_authors_other_requests() {
+        let w = req_world();
+        let t1 = w.thread_by(&w.mia, "one");
+        let t2 = w.thread_by(&w.mia, "two");
+        let t3 = w.thread_by(&w.lan, "three");
+        for t in [&t1, &t2, &t3] {
+            w.send_to_sam(t);
+        }
+        let other = w.st.create_thread(
+            DAEMON,
+            &artifact(&w.st, None),
+            NewThread {
+                version_n: 1,
+                anchor: anchor(),
+                author_name: "x".into(),
+                author_public_id: Some(w.mia.clone()),
+                body: "elsewhere".into(),
+                clip: None,
+                via_page: false,
+            },
+        );
+        let other = other.unwrap();
+        w.st.ensure_watch(
+            DAEMON,
+            &w.sid,
+            &crate::ArtifactId::parse(&other.artifact_id).unwrap(),
+        )
+        .unwrap();
+        w.send_to_sam(&other.id);
+        let rid = |tid: &str| {
+            w.open(Some(&w.sam))
+                .into_iter()
+                .find(|r| r.thread_id.as_deref() == Some(tid))
+                .unwrap()
+                .id
+        };
+        // A thread approval closes that thread's request alone.
+        let r1 = rid(&t1);
+        w.st.decide_request(
+            DAEMON,
+            &r1,
+            Some(&w.sam),
+            Decision::Approve(ScopeKind::Artifact),
+            Via::Shell,
+        )
+        .unwrap();
+        let open: Vec<_> = w
+            .open(Some(&w.sam))
+            .into_iter()
+            .map(|r| r.thread_id.unwrap())
+            .collect();
+        assert!(
+            !open.contains(&t1) && !open.contains(&t2),
+            "the artifact covers both: {open:?}"
+        );
+        assert!(open.contains(&t3) && open.contains(&other.id), "{open:?}");
+        let before = w.last_seq();
+        let r = rid(&other.id);
+        w.st.decide_request(
+            DAEMON,
+            &r,
+            Some(&w.sam),
+            Decision::Approve(ScopeKind::Everywhere),
+            Via::Shell,
+        )
+        .unwrap();
+        let open: Vec<_> = w.open(Some(&w.sam)).into_iter().map(|r| r.author).collect();
+        assert_eq!(open, std::slice::from_ref(&w.lan), "Lan's stays open");
+        assert_eq!(
+            w.kinds_since(before),
+            ["approval.grant", "approval.decide"],
+            "{:?}",
+            w.kinds_since(before)
+        );
+        // An approval made directly closes what it covers too.
+        w.st.approve(
+            DAEMON,
+            Some(&w.sam),
+            &w.lan,
+            Scope::Thread(t3.clone()),
+            Via::Shell,
+        )
+        .unwrap();
+        assert!(w.open(Some(&w.sam)).is_empty());
+        assert_eq!(w.unread_approvals(Some(&w.sam)), 0);
+    }
+
+    #[test]
+    fn decline_keeps_rows_held_and_asks_again_only_after_ten_minutes() {
+        let w = req_world();
+        let tid = w.thread_by(&w.mia, "please");
+        w.send_to_sam(&tid);
+        let rid = w.open(Some(&w.sam))[0].id.clone();
+        let g = w.st.visibility_generation();
+        let before = w.last_seq();
+        let d =
+            w.st.decide_request(DAEMON, &rid, Some(&w.sam), Decision::Decline, Via::Shell)
+                .unwrap();
+        assert_eq!(d.request.status, RequestStatus::Declined);
+        assert!(d.approval.is_none() && d.touched.is_empty());
+        assert_eq!(w.st.visibility_generation(), g + 1, "a decision bumps");
+        assert_eq!(w.kinds_since(before), ["approval.decide"]);
+        let body: serde_json::Value =
+            serde_json::from_str(&w.st.events_after(before, 10).unwrap()[0].body).unwrap();
+        assert_eq!(body["scope"], "decline");
+        // Held: a take hands nothing over.
+        let vis = Visibility::for_session(&w.st, &w.sid).unwrap();
+        let q = crate::store::feedback::TakeFeedback {
+            session_id: w.sid.clone(),
+            tier: crate::feedback::Tier::Piggyback,
+            artifact_id: None,
+            include_resends: false,
+        };
+        let t = w.st.take_feedback(DAEMON, &q, "http://h", &vis).unwrap();
+        assert!(t.items.is_empty());
+        assert!(!t.placeholders[0].asked, "declined: not asked");
+        let ask = AskApproval {
+            session_id: w.sid.clone(),
+            thread_id: Some(tid.clone()),
+            ..Default::default()
+        };
+        // Within ten minutes: neither ask nor routing asks again.
+        w.clock.advance(DECLINE_QUIET_SECS - 1);
+        assert_eq!(code(w.st.ask_approval(DAEMON, &ask)), "recently_declined");
+        assert!(w.send_to_sam(&tid).is_empty());
+        assert!(w.open(Some(&w.sam)).is_empty());
+        w.clock.advance(2);
+        let asked = w.st.ask_approval(DAEMON, &ask).unwrap();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(
+            (asked[0].cause, asked[0].status),
+            (Cause::Ask, RequestStatus::Open)
+        );
+        assert_ne!(asked[0].id, rid);
+    }
+
+    #[test]
+    fn ask_requests_what_is_withheld_there() {
+        let w = req_world();
+        let tid = w.thread_by(&w.sam, "Sam's own");
+        let ask = |thread: Option<&str>, artifact: Option<&str>, author: Option<&str>| {
+            w.st.ask_approval(
+                DAEMON,
+                &AskApproval {
+                    session_id: w.sid.clone(),
+                    artifact_id: artifact.map(str::to_string),
+                    thread_id: thread.map(str::to_string),
+                    author: author.map(str::to_string),
+                },
+            )
+        };
+        assert_eq!(code(ask(Some(&tid), None, None)), "nothing_withheld");
+        assert_eq!(code(ask(None, None, None)), "invalid_args");
+        assert!(matches!(
+            ask(Some("01ARZ3NDEKTSV4RRFFQ69G5FAZ"), None, None),
+            Err(CoreError::NotFound)
+        ));
+        w.comment_by(&tid, &w.mia, "Mia");
+        w.comment_by(&tid, &w.lan, "Lan");
+        assert_eq!(
+            code(ask(Some(&tid), None, Some(&w.sam))),
+            "nothing_withheld"
+        );
+        let only = ask(Some(&tid), Some(w.aid.as_str()), Some(&w.mia)).unwrap();
+        assert_eq!(only.len(), 1);
+        assert_eq!(
+            (only[0].author.as_str(), only[0].count),
+            (w.mia.as_str(), 1)
+        );
+        let both = ask(Some(&tid), None, None).unwrap();
+        assert_eq!(both.len(), 2);
+        assert_eq!(both[0].id, only[0].id, "joined");
+        // Outside threads: the owner's artifact holds nothing withheld from
+        // Sam... until he has not approved the owner.
+        let outside = ask(None, Some(w.aid.as_str()), None).unwrap();
+        assert_eq!(outside[0].thread_id, None);
+        assert_eq!(
+            outside[0].author,
+            w.st.owner_viewer(true).unwrap().public_id
+        );
+        // A thread of another artifact than the one named is no thread.
+        assert!(matches!(
+            ask(Some(&tid), Some(artifact(&w.st, None).as_str()), None),
+            Err(CoreError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn the_hundred_and_first_request_is_refused_per_approver() {
+        let w = req_world();
+        let mut tids = Vec::new();
+        for i in 0..MAX_OPEN_REQUESTS {
+            let t = w.thread_by(&w.mia, &format!("t{i}"));
+            assert_eq!(w.send_to_sam(&t).len(), 1);
+            tids.push(t);
+        }
+        assert_eq!(
+            w.st.approval_requests(Some(&w.sam), true, 1).unwrap().1,
+            MAX_OPEN_REQUESTS
+        );
+        assert!(!w.st.approval_requests(Some(&w.sam), true, 1).unwrap().2);
+        // Routing holds without a request, and says so.
+        let t = w.thread_by(&w.mia, "one more");
+        assert!(w.send_to_sam(&t).is_empty());
+        let (_, n, overflow) = w.st.approval_requests(Some(&w.sam), true, 1).unwrap();
+        assert_eq!((n, overflow), (MAX_OPEN_REQUESTS, true));
+        let ask = AskApproval {
+            session_id: w.sid.clone(),
+            thread_id: Some(t.clone()),
+            ..Default::default()
+        };
+        assert_eq!(code(w.st.ask_approval(DAEMON, &ask)), "limit_reached");
+        // A request already open is still joined.
+        w.comment_by(&tids[0], &w.mia, "more");
+        w.st.send_to_agent(DAEMON, &tids[0]).unwrap();
+        // The owner's own limit is the owner's.
+        w.st.ensure_watch(DAEMON, &w.owner_sid, &w.aid).unwrap();
+        let made =
+            w.st.send_routed(
+                DAEMON,
+                &t,
+                crate::SendTarget::Agent(&w.owner_sid),
+                Route::Send,
+                false,
+            )
+            .unwrap()
+            .2;
+        assert_eq!(made.len(), 1, "another approver is not full");
+        assert_eq!(w.open(None)[0].approver, None);
+        // Deciding brings Sam under the limit and clears the banner.
+        let rid = w.open(Some(&w.sam))[0].id.clone();
+        w.st.decide_request(DAEMON, &rid, Some(&w.sam), Decision::Decline, Via::Shell)
+            .unwrap();
+        assert!(!w.st.approval_requests(Some(&w.sam), true, 1).unwrap().2);
+    }
+
+    #[test]
+    fn requests_are_withdrawn_when_their_cause_goes_away() {
+        let w = req_world();
+        let status = |rid: &str| w.st.approval_request(rid, Some(&w.sam)).unwrap().status;
+        let routed = |body: &str| {
+            let t = w.thread_by(&w.mia, body);
+            w.send_to_sam(&t);
+            let r = w
+                .open(Some(&w.sam))
+                .into_iter()
+                .find(|r| r.thread_id.as_deref() == Some(t.as_str()))
+                .unwrap();
+            (t, r.id)
+        };
+        let before = w.last_seq();
+        let (t1, r1) = routed("resolved");
+        w.st.resolve_thread(DAEMON, &t1, "viewer:x").unwrap();
+        assert_eq!(status(&r1), RequestStatus::Withdrawn);
+        let (t2, r2) = routed("deleted");
+        w.st.delete_thread(DAEMON, &t2).unwrap();
+        assert_eq!(status(&r2), RequestStatus::Withdrawn);
+        // The asking session's end withdraws what it asked, not what was routed.
+        let (_, r3) = routed("routed");
+        let t4 = w.thread_by(&w.sam, "Sam's");
+        w.comment_by(&t4, &w.mia, "Mia");
+        let r4 =
+            w.st.ask_approval(
+                DAEMON,
+                &AskApproval {
+                    session_id: w.sid.clone(),
+                    thread_id: Some(t4.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()[0]
+                .id
+                .clone();
+        w.st.end_session(DAEMON, &w.sid).unwrap();
+        assert_eq!(status(&r4), RequestStatus::Withdrawn);
+        assert_eq!(status(&r3), RequestStatus::Open);
+        // The author revoked: nothing is left to ask.
+        w.st.revoke_person(DAEMON, &w.mia).unwrap();
+        assert_eq!(status(&r3), RequestStatus::Withdrawn);
+        assert_eq!(w.unread_approvals(Some(&w.sam)), 0);
+        let rows = w.st.events_after(before, 10_000).unwrap();
+        let reasons: Vec<String> = rows
+            .iter()
+            .filter(|r| r.kind == "approval.withdraw")
+            .map(|r| {
+                serde_json::from_str::<serde_json::Value>(&r.body).unwrap()["reason"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            reasons,
+            [
+                "thread_resolved",
+                "thread_deleted",
+                "session_end",
+                "person_revoked"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_deleted_artifact_withdraws_its_requests() {
+        let w = req_world();
+        let t = w.thread_by(&w.mia, "x");
+        w.send_to_sam(&t);
+        let rid = w.open(Some(&w.sam))[0].id.clone();
+        w.st.delete_artifact(DAEMON, &w.aid).unwrap();
+        assert_eq!(
+            w.st.approval_request(&rid, Some(&w.sam)).unwrap().status,
+            RequestStatus::Withdrawn
+        );
+    }
+
+    #[test]
+    fn an_approval_releases_exactly_the_rows_it_lets_through() {
+        let w = req_world();
+        // A page of Mia's: a comment its page wrote in the owner's browser
+        // is the owner's and Mia's.
+        let owner = w.st.owner_viewer(true).unwrap().public_id;
+        let tid = w.thread_by(&w.mia, "Mia's");
+        w.st.with_tx(|tx| {
+            tx.execute(
+                "UPDATE comments SET author_public_id = ?2, via_page = 1 WHERE thread_id = ?1",
+                params![tid, owner],
+            )?;
+            let cid: String = tx.query_row(
+                "SELECT id FROM comments WHERE thread_id = ?1",
+                params![tid],
+                |r| r.get(0),
+            )?;
+            tx.execute(
+                "INSERT INTO page_authors (kind, id, author) VALUES ('comment', ?1, ?2)",
+                params![cid, w.mia],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        w.send_to_sam(&tid);
+        let vis = || Visibility::for_session(&w.st, &w.sid).unwrap();
+        let q = crate::store::feedback::TakeFeedback {
+            session_id: w.sid.clone(),
+            tier: crate::feedback::Tier::Piggyback,
+            artifact_id: None,
+            include_resends: false,
+        };
+        let told = || {
+            w.st.with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT placeholder_at IS NOT NULL FROM feedback WHERE thread_id = ?1",
+                    params![tid],
+                    |r| r.get::<_, bool>(0),
+                )?)
+            })
+            .unwrap()
+        };
+        let t = w.st.take_feedback(DAEMON, &q, "http://h", &vis()).unwrap();
+        assert_eq!(t.placeholders.len(), 1);
+        assert!(told());
+        // Approving the owner alone leaves the row held by Mia: still told.
+        let (_, touched) =
+            w.st.approve_touched(DAEMON, Some(&w.sam), &owner, Scope::Everywhere, Via::Shell)
+                .unwrap();
+        assert!(told(), "Mia still withholds it");
+        assert!(touched.is_empty(), "nothing let through: {touched:?}");
+        let t = w.st.take_feedback(DAEMON, &q, "http://h", &vis()).unwrap();
+        assert!(t.placeholders.is_empty() && t.items.is_empty(), "told once");
+        // Approving Mia lets it through.
+        let (_, touched) =
+            w.st.approve_touched(
+                DAEMON,
+                Some(&w.sam),
+                &w.mia,
+                Scope::Thread(tid.clone()),
+                Via::Shell,
+            )
+            .unwrap();
+        assert!(!told());
+        assert!(touched.targets.contains(&w.sid), "{touched:?}");
+        let t = w.st.take_feedback(DAEMON, &q, "http://h", &vis()).unwrap();
+        assert_eq!(t.items.len(), 1);
+    }
+
+    #[test]
+    fn a_revoked_approval_tells_its_rows_once_more() {
+        let w = req_world();
+        let a =
+            w.st.approve(DAEMON, Some(&w.sam), &w.mia, Scope::Everywhere, Via::Shell)
+                .unwrap();
+        let tid = w.thread_by(&w.mia, "visible");
+        w.send_to_sam(&tid);
+        w.st.revoke_approval(DAEMON, &a.id, Some(&w.sam)).unwrap();
+        let vis = Visibility::for_session(&w.st, &w.sid).unwrap();
+        let q = crate::store::feedback::TakeFeedback {
+            session_id: w.sid.clone(),
+            tier: crate::feedback::Tier::Piggyback,
+            artifact_id: None,
+            include_resends: false,
+        };
+        let t = w.st.take_feedback(DAEMON, &q, "http://h", &vis).unwrap();
+        assert!(t.items.is_empty());
+        assert_eq!(t.placeholders.len(), 1, "held again and told");
     }
 }

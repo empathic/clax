@@ -1138,6 +1138,9 @@ impl Store {
                 let rec = resolve_record(&now, &t.artifact_id, thread_id, Some(by), linked);
                 self.record_audit(tx, ctx, rec)?;
             }
+            // Its open approval requests go with its held rows (spec
+            // 2026-10-08 §9.2).
+            super::approvals::withdraw_thread_in(self, tx, ctx, thread_id, "thread_resolved", &now)?;
             if let Some(n) = linked.filter(|_| t.status == "resolved") {
                 let rec = addressed_record(&now, &t.artifact_id, thread_id, n);
                 self.record_audit(tx, ctx, rec)?;
@@ -1232,9 +1235,11 @@ impl Store {
             )?;
             tx.execute("DELETE FROM comments WHERE thread_id = ?1", params![thread_id])?;
             tx.execute("DELETE FROM threads WHERE id = ?1", params![thread_id])?;
-            let rec = thread_record(AuditKind::ThreadDelete, &self.now(), &t.artifact_id, thread_id)
+            let now = self.now();
+            let rec = thread_record(AuditKind::ThreadDelete, &now, &t.artifact_id, thread_id)
                 .with("moved", false);
             self.record_audit(tx, ctx, rec)?;
+            super::approvals::withdraw_thread_in(self, tx, ctx, thread_id, "thread_deleted", &now)?;
             Ok((t, targets))
         })?;
         if t.has_clip {

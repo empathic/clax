@@ -350,7 +350,7 @@ pub(super) fn segment(h: &History, closed: bool) -> String {
 }
 
 /// The `seq` of the golden history's last row (`tests/toolpath/history.json`).
-const LAST_SEQ: i64 = 75;
+const LAST_SEQ: i64 = 78;
 
 #[test]
 fn render_each_kind_matches_golden() {
@@ -1693,6 +1693,51 @@ fn every_recorded_kind_is_classified_and_renders_conformant() {
             )
             .unwrap();
         st.revoke_approval(ctx, &a.id, None).unwrap();
+        // Requests asked, decided and withdrawn (§9.2–§9.3).
+        let page = crate::store::test_util::artifact(&st, None);
+        let sams = |body: &str| {
+            st.create_thread(
+                ctx,
+                &page,
+                crate::store::threads::NewThread {
+                    version_n: 1,
+                    anchor: crate::store::test_util::anchor(),
+                    author_name: "Sam".into(),
+                    author_public_id: Some(sam.clone()),
+                    body: body.into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap()
+            .id
+        };
+        let ask = |tid: &str| {
+            st.ask_approval(
+                ctx,
+                &crate::store::approvals::AskApproval {
+                    session_id: sid.clone(),
+                    thread_id: Some(tid.to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()[0]
+                .id
+                .clone()
+        };
+        let declined = ask(&sams("one"));
+        st.decide_request(
+            ctx,
+            &declined,
+            None,
+            crate::store::approvals::Decision::Decline,
+            crate::store::approvals::Via::Shell,
+        )
+        .unwrap();
+        let withdrawn = sams("two");
+        ask(&withdrawn);
+        st.resolve_thread(ctx, &withdrawn, "viewer:anonymous")
+            .unwrap();
         st.revoke_person(ctx, &sam).unwrap();
         st.set_session_name(ctx, &sid, "named-one", crate::NameSource::Agent)
             .unwrap();

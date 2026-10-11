@@ -1034,6 +1034,9 @@ impl Store {
             )?;
         }
         self.record_session_end(tx, ctx, id, reason.audit_reason())?;
+        // What it asked its person for goes with it; routed requests stay
+        // (spec 2026-10-08 §14).
+        super::approvals::withdraw_session_in(self, tx, ctx, id, now)?;
         Ok(Some((
             super::feedback::release_session(tx, id, now)?,
             self.withdraw_session_questions(tx, ctx, id, now)?,
