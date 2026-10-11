@@ -13,7 +13,7 @@ pub struct Args {
 pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     // Connected to another machine's Clax: the connection, as `clax
     // connect --status` shows it, and this machine's agents there.
-    if let Some((remote, sessions)) = super::connect::remote_status(home)? {
+    if let Some((remote, sessions)) = super::connect::remote_status(home, true)? {
         let agents: Vec<Value> = sessions
             .iter()
             .map(|s| {

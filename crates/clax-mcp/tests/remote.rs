@@ -83,6 +83,18 @@ async fn the_shim_registers_and_uploads_signed_on_a_remote_daemon() {
     assert!(client.list().await.unwrap()["artifacts"].is_array());
 }
 
+/// The shim signs the agent header values it sends trimmed, as the daemon
+/// reads them: a padded value still verifies.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_shim_signs_agent_headers_as_the_daemon_reads_them() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let client = DaemonClient::with_channel(String::new(), String::new(), None, true)
+        .with_remote(remote_of(&ts, &sam, None))
+        .with_via(" cli\t");
+    assert!(client.list().await.unwrap()["artifacts"].is_array());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_remote_client_retries_a_stale_request_with_the_daemons_time() {
     let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
