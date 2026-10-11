@@ -509,6 +509,9 @@ pub const FILTERED_LIVE: &[&str] = &[
     "DocsBatch",
     "DocsStrReplace",
     "DocsAcquire",
+    // Feedback and notices (Task 12).
+    "FeedbackPoll",
+    "FeedbackNotices",
 ];
 
 /// The need of the route `matched` serves for `method` (`HEAD` as `GET`).
@@ -703,6 +706,27 @@ impl ReadRights {
     /// Whether it is a person's agent's.
     pub fn is_person_agent(&self) -> bool {
         self.0.is_some()
+    }
+
+    /// A person's agent's rights as the store holds them now, for grant
+    /// `grant`'s session `session` (rights follow the visibility generation,
+    /// M17); every other caller's as they are.
+    ///
+    /// # Errors
+    /// `grant_revoked` once the grant has ended; the store's.
+    pub fn current(
+        &self,
+        st: &clax_core::Store,
+        grant: Option<&str>,
+        session: &str,
+    ) -> clax_core::Result<ReadRights> {
+        match grant {
+            Some(g) if self.is_person_agent() => {
+                let gc = st.grant_caller(g, Some(session))?;
+                Ok(ReadRights(Some((Arc::new(gc.rights), gc.person))))
+            }
+            _ => Ok(self.clone()),
+        }
     }
 }
 

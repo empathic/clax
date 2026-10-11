@@ -253,7 +253,7 @@ mod tests {
             assert!(st.get_thread(t).unwrap().unwrap().sent_to_agent);
             assert_eq!(st.thread_sends(t).unwrap()[0].size, 3);
         }
-        let (items, _) = st
+        let items = st
             .take_feedback(
                 DAEMON,
                 &TakeFeedback {
@@ -263,8 +263,10 @@ mod tests {
                     include_resends: true,
                 },
                 "http://h",
+                &crate::visibility::Visibility::all(),
             )
-            .unwrap();
+            .unwrap()
+            .items;
         assert_eq!(items.len(), 3);
         assert!(
             items

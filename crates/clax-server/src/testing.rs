@@ -891,7 +891,7 @@ impl TestServer {
     /// How many `wait_for_feedback` polls of session `sid` are in progress.
     pub async fn feedback_waiters(&self, sid: &str) -> u64 {
         let v: serde_json::Value = self
-            .get_authed(&format!("/api/_test/sessions/{sid}/feedback/waiters"))
+            .get_authed(&format!("/api/_test/feedback/{sid}/waiters"))
             .await
             .json()
             .await
@@ -903,9 +903,7 @@ impl TestServer {
     /// progress; panics when the daemon gives up waiting (5 s).
     pub async fn wait_feedback_waiters(&self, sid: &str, n: u64) {
         let v: serde_json::Value = self
-            .get_authed(&format!(
-                "/api/_test/sessions/{sid}/feedback/waiters?until={n}"
-            ))
+            .get_authed(&format!("/api/_test/feedback/{sid}/waiters?until={n}"))
             .await
             .json()
             .await
@@ -919,13 +917,51 @@ impl TestServer {
     pub async fn wait_parked_feedback_polls(&self, sid: &str, tier: &str, n: u64) {
         let v: serde_json::Value = self
             .get_authed(&format!(
-                "/api/_test/sessions/{sid}/feedback/waiters?parked={tier}&until={n}"
+                "/api/_test/feedback/{sid}/waiters?parked={tier}&until={n}"
             ))
             .await
             .json()
             .await
             .unwrap();
         assert_eq!(v["count"], n, "{n} parked {tier} polls of {sid} within 5 s");
+    }
+
+    /// Stops each feedback poll of session `sid` after its take (`hold`),
+    /// or lets them go on.
+    pub async fn hold_feedback(&self, sid: &str, hold: bool) {
+        let res = self
+            .post_json(
+                &format!("/api/_test/feedback/{sid}/hold"),
+                serde_json::json!({"hold": hold}),
+            )
+            .await;
+        assert_eq!(res.status(), 200, "{}", res.text().await.unwrap());
+    }
+
+    /// Returns once `n` feedback polls of session `sid` are stopped after
+    /// their take; panics when the daemon gives up waiting (5 s).
+    pub async fn wait_held_feedback_polls(&self, sid: &str, n: u64) {
+        let v: serde_json::Value = self
+            .get_authed(&format!(
+                "/api/_test/feedback/{sid}/waiters?held=true&until={n}"
+            ))
+            .await
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(v["count"], n, "{n} held polls of {sid} within 5 s");
+    }
+
+    /// Ends every `wait_for_feedback` poll of session `sid` now, as if its
+    /// wait had run out.
+    pub async fn expire_feedback(&self, sid: &str) {
+        let res = self
+            .post_json(
+                &format!("/api/_test/feedback/{sid}/expire"),
+                serde_json::json!({}),
+            )
+            .await;
+        assert_eq!(res.status(), 200, "{}", res.text().await.unwrap());
     }
 
     /// A paired extension: a fresh credential for this server's extension

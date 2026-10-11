@@ -176,9 +176,11 @@ pub async fn run_queue(
     }
 }
 
-/// For each target that is a live Codex session with a known Codex session ID,
-/// claims its undelivered rows on watches with replies armed (tier `queue`)
-/// and runs `codex queue` in the background, never blocking the caller.
+/// For each target that is a live Codex session of the daemon's token with a
+/// known Codex session ID, claims its undelivered rows on watches with
+/// replies armed (tier `queue`) whose bodies its person's agents may see,
+/// each other field filtered (spec 2026-10-08 §8.4), and runs `codex queue`
+/// in the background with their text, never blocking the caller.
 ///
 /// A target with a `wait_for_feedback` long-poll (`tier=wait`) in progress is
 /// skipped ([`crate::feedback::FeedbackWaiters::is_waiting`]): the woken poll
@@ -207,7 +209,13 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
         let Ok(Some(session)) = st.get_session(sid) else {
             continue;
         };
-        if session.harness != "codex" || session.ended_at.is_some() || ctx.waiters.is_waiting(sid) {
+        // A grant's session runs on another machine: the daemon's own
+        // `codex` never queues to it.
+        if session.harness != "codex"
+            || session.ended_at.is_some()
+            || session.grant_id.is_some()
+            || ctx.waiters.is_waiting(sid)
+        {
             continue;
         }
         let Some(thread) = session.harness_session_id.clone() else {
@@ -219,16 +227,23 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
             artifact_id: None,
             include_resends: false,
         };
-        let items = match st.take_feedback(
-            &clax_core::audit::AuditCtx::DAEMON,
-            &q,
-            &ctx.browser_base,
-        ) {
-            Ok((items, claimed)) if !items.is_empty() => {
+        // The view of the session's person (the owner's, for a session of
+        // the daemon's token): only visible bodies are queued, each field
+        // filtered (spec 2026-10-08 §8.4).
+        let taken = clax_core::visibility::Visibility::for_session(st, sid).and_then(|vis| {
+            st.take_feedback(
+                &clax_core::audit::AuditCtx::DAEMON,
+                &q,
+                &ctx.browser_base,
+                &vis,
+            )
+        });
+        let items = match taken {
+            Ok(t) if !t.items.is_empty() => {
                 // Announced now: a dispatch triggered without a `thread` event
                 // (a watch or publish retargeting rows) has nothing else to.
-                publish_states(ctx, st, &claimed);
-                items
+                publish_states(ctx, st, &t.touched);
+                t.items
             }
             Ok(_) => continue,
             Err(e) => {

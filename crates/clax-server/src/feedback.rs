@@ -41,6 +41,13 @@ pub struct FeedbackWaiters {
     /// are parked, waiting to be woken ([`FeedbackWaiters::park`]).
     #[cfg(debug_assertions)]
     parked: Mutex<HashMap<(String, Tier), usize>>,
+    /// Debug builds: sessions whose feedback polls stop after their take
+    /// until released ([`FeedbackWaiters::hold`]), and how many of each
+    /// session's polls are stopped there.
+    #[cfg(debug_assertions)]
+    holds: Mutex<HashMap<String, Arc<tokio::sync::Semaphore>>>,
+    #[cfg(debug_assertions)]
+    held: Mutex<HashMap<String, usize>>,
 }
 
 impl FeedbackWaiters {
@@ -113,6 +120,61 @@ impl FeedbackWaiters {
             .lock()
             .unwrap()
             .get(&(session_id.to_string(), tier))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Debug builds: from now on, each feedback poll of `session_id`
+    /// stops after its take, before it decides to answer or wait, until
+    /// [`FeedbackWaiters::release`]: tests change what the session may see
+    /// in that gap.
+    #[cfg(debug_assertions)]
+    pub fn hold(&self, session_id: &str) {
+        self.holds
+            .lock()
+            .unwrap()
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(0)));
+    }
+
+    /// Debug builds: lets every poll of `session_id` stopped by
+    /// [`FeedbackWaiters::hold`] go on, and stops no more.
+    #[cfg(debug_assertions)]
+    pub fn release(&self, session_id: &str) {
+        if let Some(s) = self.holds.lock().unwrap().remove(session_id) {
+            s.close();
+        }
+    }
+
+    /// Debug builds: stops here while `session_id` is held.
+    #[cfg(debug_assertions)]
+    pub async fn stop_after_take(&self, session_id: &str) {
+        let Some(s) = self.holds.lock().unwrap().get(session_id).cloned() else {
+            return;
+        };
+        *self
+            .held
+            .lock()
+            .unwrap()
+            .entry(session_id.to_string())
+            .or_default() += 1;
+        self.changed.notify_waiters();
+        // Closed on release; nothing ever adds a permit.
+        let _ = s.acquire().await;
+        if let Some(n) = self.held.lock().unwrap().get_mut(session_id) {
+            *n -= 1;
+        }
+        self.changed.notify_waiters();
+    }
+
+    /// Debug builds: how many feedback polls of `session_id` are stopped
+    /// after their take.
+    #[cfg(debug_assertions)]
+    pub fn held(&self, session_id: &str) -> usize {
+        self.held
+            .lock()
+            .unwrap()
+            .get(session_id)
             .copied()
             .unwrap_or(0)
     }

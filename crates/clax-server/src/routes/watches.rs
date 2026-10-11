@@ -26,7 +26,10 @@ struct WatchBody {
 }
 
 /// Watches the artifact (replies armed unless `replies_armed: false`) and
-/// hands the session any feedback on it that had no live target. A new
+/// hands the session any feedback on it that had no live target, unless it
+/// is a person's agent's: the owner's agents' untargeted feedback stays
+/// where it is, as a person's agent's publish leaves it (a person's agent
+/// receives a thread when it is sent to it, spec 2026-10-08 §10). A new
 /// watch, or a change of its arming, records `watch.start` as the session's
 /// agent (audit spec §6.4).
 pub async fn put(
@@ -38,6 +41,7 @@ pub async fn put(
 ) -> Result<Json<Value>, ApiError> {
     let (sid, _) = path(p)?;
     let id = a.artifact()?;
+    let retarget = a.grant().is_none();
     let b: WatchBody = if raw.is_empty() {
         WatchBody::default()
     } else {
@@ -49,8 +53,10 @@ pub async fn put(
         .store_call(move |st| {
             let audit = audit.for_session(st, &sid)?;
             let w = st.watch(&audit, &sid, &id, b.replies_armed.unwrap_or(true))?;
-            let touched = st.retarget_untargeted(&id, &sid)?;
-            apply(&ctx, st, &touched);
+            if retarget {
+                let touched = st.retarget_untargeted(&id, &sid)?;
+                apply(&ctx, st, &touched);
+            }
             Ok(w)
         })
         .await?;
