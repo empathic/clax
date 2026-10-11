@@ -1,10 +1,14 @@
-//! Async HTTP client for the daemon's REST API.
+//! Async HTTP client for the daemon's REST API: the local daemon's, with
+//! its bearer token, or in remote mode (spec §16, M26) a remote daemon's,
+//! every request signed with the grant's key ([`DaemonClient::with_remote`]).
 
 use crate::calls::CallScope;
 use crate::git::GitCapture;
 use clax_core::RegisterSession;
 use clax_core::audit::ToolCallReport;
 use clax_core::model::Session;
+use clax_core::remote::{Next, Remote, Retry};
+use clax_core::sig;
 use serde_json::{Value, json};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -106,6 +110,9 @@ struct Inner {
     /// the shim and `/mcp`'s internal client; the CLI's tool commands set it
     /// as the CLI decides ([`DaemonClient::with_channel`]).
     agent: bool,
+    /// Remote mode: every request is signed with this grant's key and
+    /// retried by [`Retry`]'s rule; no bearer token is sent.
+    remote: Option<Arc<Remote>>,
 }
 
 /// Whether finding the daemon may start one.
@@ -155,14 +162,19 @@ struct Conn<'a> {
     call: Option<Arc<CallScope>>,
     via: Option<&'static str>,
     agent: bool,
+    /// A remote daemon's: requests carry the grant, added as they are
+    /// signed.
+    remote: bool,
 }
 
 impl Conn<'_> {
     fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
         let mut req = self
             .http
-            .request(method, format!("{}{path}", self.endpoint.base))
-            .bearer_auth(&self.endpoint.token);
+            .request(method, format!("{}{path}", self.endpoint.base));
+        if !self.remote {
+            req = req.bearer_auth(&self.endpoint.token);
+        }
         if let Some(v) = self.via {
             req = req.header("x-clax-via", v);
         }
@@ -253,10 +265,44 @@ impl DaemonClient {
                 }),
                 managed: None,
                 agent,
+                remote: None,
             }),
             call: None,
             via: None,
         }
+    }
+
+    /// This client, talking to the remote daemon `remote` names instead of
+    /// its endpoint: every request signed with the grant's key (spec §6.6),
+    /// retried once on `stale_request` and with backoff on `limit_reached`
+    /// and `busy`. A managed client's finding of the daemon then names
+    /// that daemon and never starts one ([`DaemonClient::managed_remote`]).
+    /// Call it on a client just made.
+    ///
+    /// # Panics
+    /// When the client has been cloned already.
+    pub fn with_remote(mut self, remote: Arc<Remote>) -> DaemonClient {
+        let inner = Arc::get_mut(&mut self.inner).expect("with_remote on a client just made");
+        let st = inner.state.get_mut().unwrap_or_else(|e| e.into_inner());
+        if st.endpoint.is_some() {
+            st.endpoint = Some(remote_endpoint(&remote));
+        }
+        inner.remote = Some(remote);
+        self
+    }
+
+    /// A managed client (the shim's) of the remote daemon `remote` names:
+    /// it registers `registration` there, as a grant's session, and finds
+    /// no other daemon.
+    pub fn managed_remote(remote: Arc<Remote>, registration: RegisterSession) -> DaemonClient {
+        let endpoint = remote_endpoint(&remote);
+        let find: Refresh = Arc::new(move || Ok(endpoint.clone()));
+        DaemonClient::managed(find.clone(), find, registration).with_remote(remote)
+    }
+
+    /// Whether this client talks to a remote daemon.
+    pub fn is_remote(&self) -> bool {
+        self.inner.remote.is_some()
     }
 
     /// This client naming channel `via` (`mcp`, `cli`, …) on every request.
@@ -285,6 +331,7 @@ impl DaemonClient {
                     lock: tokio::sync::Mutex::new(()),
                 }),
                 agent: true,
+                remote: None,
             }),
             call: None,
             via: Some(VIA),
@@ -443,6 +490,7 @@ impl DaemonClient {
             call: self.call.clone(),
             via: self.via,
             agent: self.inner.agent,
+            remote: self.inner.remote.is_some(),
         };
         let mut req = conn
             .request(reqwest::Method::POST, "/api/sessions")
@@ -480,6 +528,7 @@ impl DaemonClient {
             call: self.call.clone(),
             via: self.via,
             agent: self.inner.agent,
+            remote: self.inner.remote.is_some(),
         })
     }
 
@@ -491,7 +540,7 @@ impl DaemonClient {
         req: reqwest::RequestBuilder,
     ) -> std::result::Result<reqwest::Response, Failure> {
         let Some(call) = self.call.as_ref().filter(|c| c.has_git()) else {
-            return attempt(req).await;
+            return self.attempt(req).await;
         };
         let (client, built) = req.build_split();
         let mut built = built.map_err(transport_error)?;
@@ -505,7 +554,20 @@ impl DaemonClient {
                 built.headers_mut().insert("x-clax-git", v);
             }
         }
-        attempt(reqwest::RequestBuilder::from_parts(client, built)).await
+        self.attempt(reqwest::RequestBuilder::from_parts(client, built))
+            .await
+    }
+
+    /// Sends `req`: as it is, or for a remote daemon signed
+    /// ([`DaemonClient::attempt_signed`]).
+    async fn attempt(
+        &self,
+        req: reqwest::RequestBuilder,
+    ) -> std::result::Result<reqwest::Response, Failure> {
+        match &self.inner.remote {
+            Some(r) => attempt_signed(r, req).await,
+            None => attempt(req).await,
+        }
     }
 
     /// Registers the session again (a new row when the old one ended) unless
@@ -648,17 +710,30 @@ impl DaemonClient {
                 status: 400,
                 error: json!({"code": "invalid_content_type", "message": e.to_string()}),
             })?;
+        // A remote daemon's request is signed over its body, which must
+        // be whole bytes: the form is written out rather than streamed.
+        let whole = self
+            .is_remote()
+            .then(|| multipart_bytes(filename, content_type, &bytes));
         self.json(|c| {
-            let part = reqwest::multipart::Part::stream_with_length(bytes.clone(), len)
-                .file_name(filename.to_string())
-                .mime_str(content_type)
-                .expect("content type validated above");
-            c.request(
-                reqwest::Method::POST,
-                &format!("/api/artifacts/{id}/assets"),
-            )
-            .timeout(PUBLISH_TIMEOUT)
-            .multipart(reqwest::multipart::Form::new().part("file", part))
+            let req = c
+                .request(
+                    reqwest::Method::POST,
+                    &format!("/api/artifacts/{id}/assets"),
+                )
+                .timeout(PUBLISH_TIMEOUT);
+            match &whole {
+                Some((ct, body)) => req
+                    .header(reqwest::header::CONTENT_TYPE, ct)
+                    .body(body.clone()),
+                None => {
+                    let part = reqwest::multipart::Part::stream_with_length(bytes.clone(), len)
+                        .file_name(filename.to_string())
+                        .mime_str(content_type)
+                        .expect("content type validated above");
+                    req.multipart(reqwest::multipart::Form::new().part("file", part))
+                }
+            }
         })
         .await
     }
@@ -1123,10 +1198,179 @@ fn refresh_failed(original: ClientError, refresh: ClientError) -> ClientError {
     }
 }
 
+/// The endpoint of the remote daemon `remote` names: its URL for API calls
+/// and for the person's browser; the grant goes on each request as it is
+/// signed.
+fn remote_endpoint(remote: &Remote) -> Endpoint {
+    Endpoint {
+        base: remote.config.url.clone(),
+        browser_base: remote.config.url.clone(),
+        token: String::new(),
+    }
+}
+
+/// A `multipart/form-data` body with one part, `file`, holding `bytes` as
+/// `filename` of `content_type`: the content type (with its boundary) and
+/// the body. The file name is written as browsers write it, with `"`, CR
+/// and LF percent-encoded.
+fn multipart_bytes(filename: &str, content_type: &str, bytes: &[u8]) -> (String, bytes::Bytes) {
+    let boundary = format!("clax-{}", clax_core::sig::new_nonce());
+    let name = filename
+        .replace('"', "%22")
+        .replace('\r', "%0D")
+        .replace('\n', "%0A");
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\nContent-Type: {content_type}\r\n\r\n"
+    )
+    .into_bytes();
+    body.extend_from_slice(bytes);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    (
+        format!("multipart/form-data; boundary={boundary}"),
+        bytes::Bytes::from(body),
+    )
+}
+
+/// Sends `req` to the remote daemon `remote` names, signed with its grant
+/// (spec §6.6): each attempt names the daemon's host, carries its agent
+/// headers trimmed of surrounding spaces and tabs, and is signed anew.
+/// [`Retry`] decides on `stale_request`, `limit_reached` and `busy`; every
+/// other answer is [`check`]ed as a local one is.
+async fn attempt_signed(
+    remote: &Remote,
+    req: reqwest::RequestBuilder,
+) -> std::result::Result<reqwest::Response, Failure> {
+    let bad = |m: &str| Failure {
+        error: ClientError::BadResponse(m.to_string()),
+        refreshable: false,
+    };
+    let (client, built) = req.build_split();
+    let mut built = built.map_err(transport_error)?;
+    let body = match built.body() {
+        None => Vec::new(),
+        Some(b) => b
+            .as_bytes()
+            .ok_or_else(|| bad("a streamed body cannot be signed"))?
+            .to_vec(),
+    };
+    let url = built.url();
+    let path_and_query = match url.query() {
+        Some(q) => format!("{}?{q}", url.path()),
+        None => url.path().to_string(),
+    };
+    let method = built.method().as_str().to_string();
+    let signer = &remote.signer;
+    let headers = built.headers_mut();
+    let value = |v: &str| {
+        reqwest::header::HeaderValue::from_str(v).map_err(|_| bad("a header that cannot be sent"))
+    };
+    headers.insert(reqwest::header::HOST, value(signer.host())?);
+    for name in sig::AGENT_HEADERS {
+        let trimmed: Vec<reqwest::header::HeaderValue> = headers
+            .get_all(name)
+            .iter()
+            .map(|v| reqwest::header::HeaderValue::from_bytes(sig::trim_header_value(v.as_bytes())))
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|_| bad("a header that cannot be sent"))?;
+        if !trimmed.is_empty() {
+            headers.remove(name);
+            for v in trimmed {
+                headers.append(name, v);
+            }
+        }
+    }
+    let cred = remote.grant();
+    if let Some(a) = cred.authorization() {
+        headers.insert(reqwest::header::AUTHORIZATION, value(&a)?);
+    }
+    let mut retry = Retry::default();
+    loop {
+        let mut attempt = built
+            .try_clone()
+            .ok_or_else(|| bad("a streamed body cannot be signed"))?;
+        let signature = {
+            let values = sig::agent_header_values(
+                attempt
+                    .headers()
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_bytes())),
+            )
+            .map_err(|_| bad("an agent header appears more than once"))?;
+            signer
+                .sign(&method, &path_and_query, &body, cred, &values)
+                .map_err(|e| bad(&format!("signing the request: {e}")))?
+        };
+        attempt
+            .headers_mut()
+            .insert("clax-signature", value(&signature)?);
+        let res = client.execute(attempt).await.map_err(|e| {
+            let mut f = transport_error(e);
+            if let ClientError::Unreachable(m) = &f.error {
+                f.error = ClientError::Unreachable(format!(
+                    "the remote Clax at {} (connected with `clax connect`): {m}",
+                    signer.base()
+                ));
+            }
+            f
+        })?;
+        let status = res.status().as_u16();
+        if !matches!(status, 401 | 429 | 503) {
+            return check(res).await;
+        }
+        let date = res
+            .headers()
+            .get(reqwest::header::DATE)
+            .and_then(|d| d.to_str().ok())
+            .map(str::to_string);
+        let Err(failure) = check(res).await else {
+            unreachable!("a refusal is a failure");
+        };
+        let code = match &failure.error {
+            ClientError::Api { error, .. } => {
+                error["code"].as_str().unwrap_or_default().to_string()
+            }
+            _ => String::new(),
+        };
+        match retry.next(
+            status,
+            &code,
+            date.as_deref(),
+            signer,
+            clax_core::remote::jitter(),
+        ) {
+            Next::Resign => {}
+            Next::After(d) => tokio::time::sleep(d).await,
+            Next::GiveUp => {
+                if code == "grant_revoked" {
+                    return Err(Failure {
+                        error: ClientError::Api {
+                            status,
+                            error: json!({"code": "grant_revoked", "message": format!(
+                                "this machine was disconnected from {}: run `clax connect --off`, then connect again with a new invite",
+                                signer.base()
+                            )}),
+                        },
+                        refreshable: false,
+                    });
+                }
+                return Err(Failure {
+                    refreshable: false,
+                    ..failure
+                });
+            }
+        }
+    }
+}
+
 /// Sends `req`; a non-success status becomes `ClientError::Api` with the body's
 /// `error` object.
 async fn attempt(req: reqwest::RequestBuilder) -> std::result::Result<reqwest::Response, Failure> {
-    let res = req.send().await.map_err(transport_error)?;
+    check(req.send().await.map_err(transport_error)?).await
+}
+
+/// `res` when its status is a success; else `ClientError::Api` with the
+/// body's `error` object.
+async fn check(res: reqwest::Response) -> std::result::Result<reqwest::Response, Failure> {
     let status = res.status();
     if status.is_success() {
         return Ok(res);

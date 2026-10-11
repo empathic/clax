@@ -141,8 +141,28 @@ fn artifact_id(raw: &str) -> anyhow::Result<String> {
         })
 }
 
-/// Every thread of every artifact that has any.
+/// Every thread of every artifact that has any. On a remote daemon
+/// (spec §6.7), each readable artifact's threads, through `GET
+/// /api/artifacts` and each artifact's thread listing.
 fn load_all(c: &Client) -> anyhow::Result<Vec<Group>> {
+    if c.remote().is_some() {
+        let list = c.get("/api/artifacts")?;
+        let mut groups = Vec::new();
+        for a in list["artifacts"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            let Some(id) = a["id"].as_str() else {
+                continue;
+            };
+            let g = load_one(c, id)?;
+            if !g.threads.is_empty() {
+                groups.push(g);
+            }
+        }
+        return Ok(groups);
+    }
     let v = c.get("/api/threads?include_resolved=true")?;
     Ok(v["artifacts"]
         .as_array()
@@ -673,7 +693,13 @@ fn reply(cli: &crate::Cli, home: &Home, r: &ReplyArgs) -> anyhow::Result<()> {
     }
     let c = Client::connect(home, cli.port_for(home)?)?;
     let (g, i) = locate_raw(&c, &r.thread)?;
-    let me = owner(&c)?;
+    // A remote person writes in their browser; their replies here are
+    // refused for want of a session (spec §6.7), and they have no owner
+    // identity to read.
+    let me = match c.remote() {
+        Some(_) => json!({"display_name": "remote"}),
+        None => owner(&c)?,
+    };
     let tid = g.threads[i]["id"].as_str().unwrap_or_default();
     let res = c.send(
         Method::POST,
@@ -783,6 +809,20 @@ fn send(cli: &crate::Cli, home: &Home, a: &SendArgs) -> anyhow::Result<()> {
 
 fn name(cli: &crate::Cli, home: &Home, a: &NameArgs) -> anyhow::Result<()> {
     let c = Client::connect(home, cli.port_for(home)?)?;
+    if let Some(r) = c.remote() {
+        // Remotely, the person's name, as `remote.json` holds it; names are
+        // set in the person's browser.
+        if a.name.is_some() {
+            return Err(crate::client::NotRemote::new(home, "comments name <name>").into());
+        }
+        let out = json!({"display_name": r.config.person_name, "public_id": r.config.person_id});
+        super::print(cli, out, |j| {
+            j["display_name"]
+                .as_str()
+                .map_or_else(|| "no name".to_string(), term::clean_line)
+        });
+        return Ok(());
+    }
     let me = match &a.name {
         Some(n) => c.send(
             Method::PUT,

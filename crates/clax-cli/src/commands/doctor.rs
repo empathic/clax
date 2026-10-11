@@ -564,6 +564,106 @@ fn config_check(home: &Home, env: Option<std::ffi::OsString>) -> serde_json::Val
     }
 }
 
+/// The mode bits of `path`, when it exists.
+fn file_mode(path: &Path) -> Option<u32> {
+    std::fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o777)
+        .ok()
+}
+
+/// The checks of a home connected to another machine's Clax (spec §16,
+/// §22): `remote.json` readable, private and naming an IP literal; the key
+/// readable and private; the daemon reachable with this grant; and its
+/// clock within the window signed requests allow.
+fn remote_checks(home: &Home, client: Option<&Client>) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    let json_mode = file_mode(&home.remote_json());
+    let key_mode = file_mode(&home.remote_key());
+    let config = clax_core::remote::RemoteConfig::load(home);
+    out.push(match &config {
+        Ok(Some(c)) => check(
+            "remote_json",
+            json_mode == Some(0o600),
+            format!(
+                "{} (mode {:o}), grant {}",
+                c.url,
+                json_mode.unwrap_or_default(),
+                c.grant_id
+            ),
+        ),
+        Ok(None) => check("remote_json", false, "absent"),
+        Err(e) => check("remote_json", false, e.to_string()),
+    });
+    out.push(match clax_core::remote::load_key(home) {
+        Ok(k) => check(
+            "remote_key",
+            key_mode == Some(0o600),
+            format!(
+                "{} (mode {:o})",
+                clax_core::sig::fingerprint(&k.public()),
+                key_mode.unwrap_or_default()
+            ),
+        ),
+        Err(e) => check("remote_key", false, e.to_string()),
+    });
+    let raw_url = std::fs::read(home.remote_json())
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| v["url"].as_str().map(str::to_string));
+    out.push(match raw_url {
+        Some(u) if clax_core::remote::DaemonUrl::is_ip_literal(&u) => {
+            check("remote_ip_literal", true, u)
+        }
+        Some(u) => check(
+            "remote_ip_literal",
+            false,
+            format!(
+                "{u} does not name the daemon by IP address: run `clax connect --url http://<IP>:<port>`"
+            ),
+        ),
+        None => check("remote_ip_literal", false, "remote.json names no URL"),
+    });
+    let probe = client.map(Client::probe_remote);
+    match probe {
+        Some(Ok(p)) => {
+            out.push(check(
+                "remote_reachable",
+                true,
+                "answers this machine's grant",
+            ));
+            out.push(match p.offset_s {
+                Some(o) if o.abs() > clax_core::sig::MAX_SKEW_S => check(
+                    "remote_clock",
+                    false,
+                    format!(
+                        "the daemon's clock is {o:+} s from this machine's; signed requests allow {} s: set this machine's clock",
+                        clax_core::sig::MAX_SKEW_S
+                    ),
+                ),
+                Some(o) if o.abs() > clax_core::sig::MAX_SKEW_S / 2 => warn(
+                    "remote_clock",
+                    format!("offset {o:+} s, near the {} s signed requests allow", clax_core::sig::MAX_SKEW_S),
+                ),
+                Some(o) => check("remote_clock", true, format!("offset {o:+} s")),
+                None => warn("remote_clock", "the daemon sent no Date"),
+            });
+        }
+        Some(Err(e)) => {
+            out.push(check("remote_reachable", false, format!("{e:#}")));
+            out.push(check("remote_clock", false, "not reachable"));
+        }
+        None => {
+            out.push(check(
+                "remote_reachable",
+                false,
+                "remote.json or the key cannot be used",
+            ));
+            out.push(check("remote_clock", false, "not reachable"));
+        }
+    }
+    out
+}
+
 pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
     let mut checks = vec![];
     let mut fixed = vec![];
@@ -581,6 +681,23 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
         ),
     ));
     checks.push(check("home", writable, home.root().display().to_string()));
+    // Connected to another machine's Clax: this machine's daemon and store
+    // are not used, so the checks are the connection's.
+    let mode = clax_core::remote::Mode::of(home);
+    if mode.is_remote() {
+        if args.fix {
+            anyhow::bail!("doctor --fix repairs a local store; this machine uses a remote Clax");
+        }
+        let client = match mode {
+            clax_core::remote::Mode::Remote(r) => Some(Client::for_remote(r)),
+            _ => None,
+        };
+        checks.extend(remote_checks(home, client.as_ref()));
+        if let Some(agent) = args.agent {
+            checks.extend(doctor_agent::checks(agent, home, client.as_ref()));
+        }
+        return report(cli, checks, vec![]);
+    }
     checks.push(config_check(home, std::env::var_os(crate::PORT_ENV)));
     // Held until the process exits, so an auto-start cannot race the repairs.
     // Taken before discovery: a daemon that is still starting holds it.
@@ -589,7 +706,7 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
     } else {
         None
     };
-    let client = Client::discover(home);
+    let client = Client::discover_local(home);
     if args.fix && client.is_some() {
         eprintln!("error: doctor --fix needs the daemon stopped; run `clax stop` first");
         std::process::exit(1);
@@ -674,6 +791,15 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
     if let Some(DoctorAgent::Codex) = args.agent {
         checks.extend(codex_checks(client.as_ref()));
     }
+    report(cli, checks, fixed)
+}
+
+/// Prints `checks` and `fixed`, and exits 1 when a check failed.
+fn report(
+    cli: &crate::Cli,
+    checks: Vec<serde_json::Value>,
+    fixed: Vec<String>,
+) -> anyhow::Result<()> {
     let ok = checks.iter().all(|c| c["ok"].as_bool().unwrap());
     super::print(
         cli,

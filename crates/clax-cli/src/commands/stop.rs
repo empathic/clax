@@ -2,7 +2,7 @@ use crate::client::Client;
 use clax_core::Home;
 
 pub fn run(cli: &crate::Cli, home: &Home) -> anyhow::Result<()> {
-    match Client::discover(home) {
+    match Client::discover_local(home) {
         Some(c) => {
             c.shutdown()?;
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);

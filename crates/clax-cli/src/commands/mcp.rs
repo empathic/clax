@@ -36,6 +36,12 @@ pub struct Args {
 
 pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     if a.preflight {
+        // A remote daemon serves this home: no local port matters.
+        match clax_core::remote::Mode::of(home) {
+            clax_core::remote::Mode::Remote(_) => return Ok(()),
+            clax_core::remote::Mode::Broken(e) => anyhow::bail!("{e}"),
+            clax_core::remote::Mode::Local => {}
+        }
         return cli
             .port_for(home)
             .and_then(|port| match port_clash(cli, home, port) {

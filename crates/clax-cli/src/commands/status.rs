@@ -11,6 +11,38 @@ pub struct Args {
 }
 
 pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
+    // Connected to another machine's Clax: the connection, as `clax
+    // connect --status` shows it, and this machine's agents there.
+    if let Some((remote, sessions)) = super::connect::remote_status(home)? {
+        let agents: Vec<Value> = sessions
+            .iter()
+            .map(|s| {
+                json!({"id": s["id"], "name": s["name"], "handle": s["agent_handle"],
+                       "harness": s["harness"], "cwd": s["cwd"]})
+            })
+            .collect();
+        return {
+            super::print(
+                cli,
+                json!({"running": false, "remote": remote, "agents": agents}),
+                |j| {
+                    let mut lines = super::connect::status_lines(&j["remote"]);
+                    let agents = j["agents"]
+                        .as_array()
+                        .map(Vec::as_slice)
+                        .unwrap_or_default();
+                    if agents.is_empty() {
+                        lines.push("no agents of this machine are running there".into());
+                    } else {
+                        lines.push("agents of this machine:".into());
+                        lines.extend(agents.iter().map(super::people::agent_line));
+                    }
+                    lines.join("\n")
+                },
+            );
+            Ok(())
+        };
+    }
     let c = if a.start {
         Some(Client::connect(home, cli.port_for(home)?)?)
     } else {

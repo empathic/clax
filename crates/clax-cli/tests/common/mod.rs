@@ -62,3 +62,11 @@ impl Drop for Env {
         }
     }
 }
+
+pub use clax_server::testing::TestServer;
+
+/// The canary world of the daemon's tests (two people beside the owner,
+/// Mia's words in every author field), for running the CLI against it.
+#[path = "../../../clax-server/tests/common/people.rs"]
+#[allow(dead_code)]
+pub mod people;

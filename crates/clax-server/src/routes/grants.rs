@@ -429,9 +429,11 @@ fn browser_link(host: &str, code: Option<&Secret>) -> Option<String> {
 }
 
 /// A grant response with issued tokens: the access token, its manage URI
-/// and token, the access the grant holds, the continuation, the subject
-/// and the browser link. Builds from values only, so nothing fails once the
-/// store has issued the tokens.
+/// and token, the access the grant holds, the continuation, the subject,
+/// the person, whether it is the owner's own machine, the owner's name
+/// (`clax connect` asks about the owner by it, M15) and the browser link.
+/// Builds from values only, so nothing fails once the store has issued the
+/// tokens.
 fn issued_response(
     grant: &Grant,
     access: &Rights,
@@ -439,9 +441,11 @@ fn issued_response(
     manage: &Secret,
     continue_token: &Secret,
     browser: Option<String>,
+    owner_name: Option<String>,
 ) -> Value {
     let person = grant.person.clone().unwrap_or_default();
-    let mut clax = json!({"person": {"public_id": person, "display_name": grant.person_name}});
+    let mut clax = json!({"person": {"public_id": person, "display_name": grant.person_name},
+                          "owner": {"display_name": owner_name}, "own_machine": grant.owner});
     if let Some(link) = browser {
         clax["browser_link"] = json!(link);
     }
@@ -461,6 +465,27 @@ fn issued_response(
         "subject": {"sub_ids": [{"format": "opaque", "id": person}]},
         "clax": clax,
     })
+}
+
+/// The owner's name, as they set it; `None` when unset or unreadable (a
+/// response that issues tokens never fails over it).
+fn owner_name(st: &Store) -> Option<String> {
+    st.owner().ok().flatten().and_then(|o| o.display_name)
+}
+
+/// The body a continuation call may carry: `{"clax": {"approve_owner":
+/// true}}`, `clax connect`'s yes to "Let <owner>'s comments and pages reach
+/// your agents everywhere?" (M15).
+#[derive(Deserialize, Default)]
+struct ContinueBody {
+    #[serde(default)]
+    clax: Option<ContinueClax>,
+}
+
+#[derive(Deserialize, Default)]
+struct ContinueClax {
+    #[serde(default)]
+    approve_owner: bool,
 }
 
 /// `POST /api/grants` (signed with the presented key, no token): a GNAP
@@ -531,7 +556,16 @@ pub async fn request(
                     "tokens issued",
                 );
                 let link = browser_link(&host, browser_code.as_ref());
-                let v = issued_response(&grant, &access, &token, &manage, &continue_token, link);
+                let owner = owner_name(st);
+                let v = issued_response(
+                    &grant,
+                    &access,
+                    &token,
+                    &manage,
+                    &continue_token,
+                    link,
+                    owner,
+                );
                 announce(
                     &state,
                     json!({"what": "grant_connected", "grant": grant_view(&grant)}),
@@ -569,6 +603,13 @@ pub async fn request(
 /// than `wait` after the last). Approved: 200 with the access token,
 /// `subject`, `clax.browser_link` and a new continuation token, once.
 /// Denied or expired: 403 `denied`.
+///
+/// With the body `{"clax": {"approve_owner": true}}`, on a grant whose
+/// tokens were issued, the call is instead `clax connect`'s answer to its
+/// question about the owner (spec §3.1, M15): the person approves the
+/// owner's content everywhere, and the answer is 200 `{"clax":
+/// {"owner_approval": {id, scope} | null}}` (null for the owner's own
+/// machine); 409 `not_issued` for a grant without live tokens.
 pub async fn poll(
     State(s): State<AppState>,
     _g: crate::agent::GrantFlow,
@@ -583,9 +624,38 @@ pub async fn poll(
         key,
         t,
         nonce,
+        body,
         ..
     } = grant_auth::gnap(&s, req, &gid, CredentialKind::Continue).await?;
     let token = token.expect("a continuation call carries its token");
+    let asked: ContinueBody = if body.is_empty() {
+        ContinueBody::default()
+    } else {
+        serde_json::from_slice(&body)
+            .map_err(|e| ApiError::bad_request("invalid_json", e.to_string()))?
+    };
+    if asked.clax.is_some_and(|c| c.approve_owner) {
+        let ctx = s.feedback_ctx();
+        let v = s
+            .store_call(move |st| {
+                let made = st.approve_owner_on_connect(
+                    &audit.grant_flow(),
+                    &gid,
+                    token.expose(),
+                    t,
+                    &nonce,
+                )?;
+                Ok(match made {
+                    Some((a, touched)) => {
+                        crate::feedback::apply(&ctx, st, &touched);
+                        json!({"clax": {"owner_approval": {"id": a.id, "scope": a.scope}}})
+                    }
+                    None => json!({"clax": {"owner_approval": null}}),
+                })
+            })
+            .await?;
+        return Ok(Json(v).into_response());
+    }
     let state = s.clone();
     let v = s
         .store_call(move |st| {
@@ -616,8 +686,16 @@ pub async fn poll(
                         "tokens issued",
                     );
                     let link = browser_link(&host, browser_code.as_ref());
-                    let v =
-                        issued_response(&grant, &access, &issued, &manage, &continue_token, link);
+                    let owner = owner_name(st);
+                    let v = issued_response(
+                        &grant,
+                        &access,
+                        &issued,
+                        &manage,
+                        &continue_token,
+                        link,
+                        owner,
+                    );
                     announce(
                         &state,
                         json!({"what": "grant_connected", "grant": grant_view(&grant)}),
