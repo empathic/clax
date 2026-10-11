@@ -1,12 +1,16 @@
-//! HTTP client for the daemon, with discovery and auto-start.
+//! HTTP client for the daemon, with discovery and auto-start, or, in remote
+//! mode (spec §16, M26), for the remote daemon `remote.json` names.
 //!
 //! One of the two places the crate may make an HTTP client
 //! (`crates/clax-cli/clippy.toml`): every request it sends carries the
-//! agent-channel marker when the CLI is an agent channel.
+//! agent-channel marker when the CLI is an agent channel. In remote mode
+//! every request is signed ([`crate::remote::SignedClient`]) and nothing
+//! starts a local daemon.
 #![allow(clippy::disallowed_methods, clippy::disallowed_types)]
 
 use anyhow::{Context, anyhow, bail};
 use clax_core::Home;
+use clax_core::remote::{Credential, Mode, Remote, Signer};
 use clax_server::daemon::{
     DaemonInfo, DaemonLock, StartingInfo, browser_host, pid_alive, probe_host, read_daemon_info,
     read_starting_info,
@@ -14,6 +18,7 @@ use clax_server::daemon::{
 use nix::sys::signal::Signal;
 use std::net::{IpAddr, Ipv4Addr};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// How long a daemon this client starts may take: `start` to answer when it
@@ -182,6 +187,58 @@ pub struct Client {
     /// ([`crate::channel::from_process`]), and always for the hooks and
     /// `clax feedback follow` ([`Client::agent_channel`]).
     pub agent: bool,
+    /// Remote mode: the remote daemon's grant, when this client is
+    /// connected to one.
+    remote: Option<Arc<Remote>>,
+    /// Signs every request; set for a remote daemon and for `clax connect`.
+    signed: Option<crate::remote::SignedClient>,
+}
+
+/// A command that does not run while this home is connected to another
+/// machine's Clax (spec §6.7). `main` prints it and exits 2.
+#[derive(Debug)]
+pub struct NotRemote {
+    pub line: String,
+}
+
+impl NotRemote {
+    /// The refusal of `what` (a command's name) for `home`, naming the
+    /// remote daemon when `remote.json` can be read.
+    pub fn line_for(home: &Home, what: &str) -> String {
+        let at = clax_core::remote::RemoteConfig::load(home)
+            .ok()
+            .flatten()
+            .map(|c| format!(" (this machine is connected to {})", c.url))
+            .unwrap_or_default();
+        format!(
+            "`clax {what}` is not available on a remote Clax{at}: do it on the owner's machine, or in your browser; `CLAX_REMOTE=0 clax {what}` uses this machine's own Clax"
+        )
+    }
+
+    /// [`NotRemote::line_for`] as an error.
+    pub fn new(home: &Home, what: &str) -> NotRemote {
+        NotRemote {
+            line: NotRemote::line_for(home, what),
+        }
+    }
+}
+
+impl std::fmt::Display for NotRemote {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.line)
+    }
+}
+
+impl std::error::Error for NotRemote {}
+
+/// What [`Client::probe_remote`] learned of the remote daemon.
+#[derive(Debug, Clone)]
+pub struct RemoteProbe {
+    /// Seconds the daemon's clock is ahead of this machine's; `None` when
+    /// it sent no readable `Date`.
+    pub offset_s: Option<i64>,
+    /// This machine's live sessions there.
+    pub sessions: Vec<serde_json::Value>,
 }
 
 /// A refusal of a route that serves people, not agents (403
@@ -639,7 +696,146 @@ impl Client {
             http: http(),
             via: None,
             agent: crate::channel::from_process(),
+            remote: None,
+            signed: None,
         }
+    }
+
+    /// A client of the daemon `signer` signs for, which holds no grant yet
+    /// (`clax connect`): it sends only [`Client::signed_call`]s.
+    pub fn for_signer(signer: Arc<Signer>) -> Client {
+        let base = signer.base().to_string();
+        let url = reqwest::Url::parse(&base).ok();
+        let port = url.as_ref().and_then(|u| u.port_or_known_default());
+        let host = url.as_ref().and_then(|u| u.host_str()).unwrap_or_default();
+        Client {
+            base,
+            token: String::new(),
+            info: DaemonInfo {
+                port: port.unwrap_or(80),
+                pid: 0,
+                token: String::new(),
+                started_at: String::new(),
+                bind: host
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .to_string(),
+                version: "remote".into(),
+                exe: None,
+                commit: None,
+            },
+            http: http(),
+            via: None,
+            agent: crate::channel::from_process(),
+            remote: None,
+            signed: Some(crate::remote::SignedClient::new(signer)),
+        }
+    }
+
+    /// A client of the remote daemon `remote` names, signing every request
+    /// with its grant.
+    pub fn for_remote(remote: Arc<Remote>) -> Client {
+        let mut c = Client::for_signer(remote.signer.clone());
+        c.remote = Some(remote);
+        c
+    }
+
+    /// The remote daemon this home is connected to, as a client; `None`
+    /// outside remote mode (no `remote.json`, or `CLAX_REMOTE=0`).
+    ///
+    /// # Errors
+    /// `remote_key_unreadable` (or `remote_json_unreadable`) when
+    /// `remote.json` exists but cannot be used: no command falls back to a
+    /// local daemon then (spec §22).
+    pub fn remote_mode(home: &Home) -> anyhow::Result<Option<Client>> {
+        match Mode::of(home) {
+            Mode::Local => Ok(None),
+            Mode::Remote(r) => Ok(Some(Client::for_remote(r))),
+            Mode::Broken(e) => Err(anyhow!("{e}")),
+        }
+    }
+
+    /// The remote connection, when this is a remote daemon's client.
+    pub fn remote(&self) -> Option<&Arc<Remote>> {
+        self.remote.as_ref()
+    }
+
+    /// This client's signer, when it signs.
+    pub fn signer(&self) -> Option<&Arc<Signer>> {
+        self.signed.as_ref().map(|s| s.signer())
+    }
+
+    /// Sends `req`: signed with the grant for a remote daemon, else as it
+    /// is (with the bearer token [`Client::authed`] added).
+    fn exec(
+        &self,
+        req: reqwest::blocking::RequestBuilder,
+    ) -> anyhow::Result<reqwest::blocking::Response> {
+        match (&self.signed, &self.remote) {
+            (Some(s), Some(r)) => s.send(req, r.grant()),
+            (Some(_), None) => bail!("this client holds no grant: connect first"),
+            (None, _) => Ok(req.send()?),
+        }
+    }
+
+    /// Asks the remote daemon for this machine's live agents (`GET
+    /// /api/sessions?live=true`, which a grant answers with its own
+    /// sessions, spec §6.7): whether it answers with this grant, the
+    /// sessions, and how far its clock (`Date`) is ahead of this
+    /// machine's.
+    ///
+    /// # Errors
+    /// The daemon cannot be reached, or refuses the grant.
+    pub fn probe_remote(&self) -> anyhow::Result<RemoteProbe> {
+        let path = "/api/sessions?live=true";
+        let res = self.exec(self.request(reqwest::Method::GET, path))?;
+        let local = chrono::Utc::now().timestamp();
+        let offset_s = res
+            .headers()
+            .get(reqwest::header::DATE)
+            .and_then(|d| d.to_str().ok())
+            .and_then(|d| clax_core::remote::daemon_offset(d, local));
+        let v = self.finish(path, res)?;
+        Ok(RemoteProbe {
+            offset_s,
+            sessions: v["sessions"].as_array().cloned().unwrap_or_default(),
+        })
+    }
+
+    /// A signed `method` request to `path` as `cred`, with `body` as JSON
+    /// when given: the status and the JSON answer (`{}` for none), whatever
+    /// the status (`clax connect` reads each).
+    ///
+    /// # Errors
+    /// When this client does not sign, when the daemon cannot be reached,
+    /// or a refusal [`crate::remote::SignedClient::send`] gives up on.
+    pub fn signed_call(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+        cred: Credential<'_>,
+    ) -> anyhow::Result<(u16, serde_json::Value)> {
+        let s = self
+            .signed
+            .as_ref()
+            .ok_or_else(|| anyhow!("a signed call needs a signing client"))?;
+        let mut req = self.http.request(method, format!("{}{path}", self.base));
+        if let Some(b) = body {
+            req = req.json(b);
+        }
+        if self.agent {
+            req = req.header(crate::channel::HEADER, crate::channel::AGENT);
+        }
+        let res = s.send(req, cred)?;
+        let status = res.status().as_u16();
+        let text = res.text().unwrap_or_default();
+        let v = if text.trim().is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(&text).unwrap_or(serde_json::json!({}))
+        };
+        Ok((status, v))
     }
 
     /// This client naming `via` as its channel (`x-clax-via`, spec
@@ -675,7 +871,13 @@ impl Client {
     /// `req` with the bearer token, the agent-channel marker when this
     /// client is an agent channel, and the channel it names when one is set.
     fn authed(&self, req: reqwest::blocking::RequestBuilder) -> reqwest::blocking::RequestBuilder {
-        let req = req.bearer_auth(&self.token);
+        // A remote daemon's requests carry the grant, added as they are
+        // signed.
+        let req = if self.signed.is_some() {
+            req
+        } else {
+            req.bearer_auth(&self.token)
+        };
         let req = if self.agent {
             req.header(crate::channel::HEADER, crate::channel::AGENT)
         } else {
@@ -735,7 +937,7 @@ impl Client {
         for (k, v) in headers {
             req = req.header(*k, *v);
         }
-        self.finish(path, req.send()?)
+        self.finish(path, self.exec(req)?)
     }
 
     /// This client with every request bounded by `timeout`.
@@ -748,9 +950,21 @@ impl Client {
         self
     }
 
-    /// A live daemon named by daemon.json that answers `/healthz`, or None.
-    /// Never starts one.
+    /// In remote mode, the remote daemon's client (`None` when `remote.json`
+    /// cannot be used); else a live daemon named by daemon.json that
+    /// answers `/healthz`, or None. Never starts one.
     pub fn discover(home: &Home) -> Option<Client> {
+        match Mode::of(home) {
+            Mode::Remote(r) => Some(Client::for_remote(r)),
+            Mode::Broken(_) => None,
+            Mode::Local => Client::discover_local(home),
+        }
+    }
+
+    /// The local daemon named by daemon.json that answers `/healthz`,
+    /// whatever the mode (`clax stop`, `clax doctor`), or None. Never
+    /// starts one.
+    pub fn discover_local(home: &Home) -> Option<Client> {
         Client::discover_with(home, &probe_client()?)
     }
 
@@ -764,8 +978,16 @@ impl Client {
         res.status().is_success().then(|| Client::from_info(info))
     }
 
-    /// Discover, or start a daemon on `port` (0 = any free port) and wait for it.
+    /// In remote mode, the remote daemon's client (never starting one
+    /// here); else discover, or start a daemon on `port` (0 = any free
+    /// port) and wait for it.
+    ///
+    /// # Errors
+    /// As [`Client::remote_mode`] and [`Client::connect_with_bind`].
     pub fn connect(home: &Home, port: u16) -> anyhow::Result<Client> {
+        if let Some(c) = Client::remote_mode(home)? {
+            return Ok(c);
+        }
         Client::connect_with_bind(home, port, IpAddr::V4(Ipv4Addr::LOCALHOST))
     }
 
@@ -1097,6 +1319,9 @@ impl Client {
     }
 
     pub fn browser_url(&self, path: &str) -> String {
+        if self.signed.is_some() {
+            return format!("{}{path}", self.base);
+        }
         format!(
             "http://{}:{}{}",
             browser_host(&self.info.bind),
@@ -1124,15 +1349,13 @@ impl Client {
 
     /// Status code of an unauthenticated GET, or None if unreachable.
     pub fn http_status(&self, path: &str) -> Option<u16> {
-        self.http
-            .get(format!("{}{path}", self.base))
-            .send()
+        self.exec(self.http.get(format!("{}{path}", self.base)))
             .ok()
             .map(|r| r.status().as_u16())
     }
     /// GET with the bearer token (the session routes need it; the others ignore it).
     pub fn get(&self, path: &str) -> anyhow::Result<serde_json::Value> {
-        self.finish(path, self.request(reqwest::Method::GET, path).send()?)
+        self.finish(path, self.exec(self.request(reqwest::Method::GET, path))?)
     }
     /// [`Client::get`] with this request alone bounded by `timeout`.
     pub fn get_with_timeout(
@@ -1142,9 +1365,7 @@ impl Client {
     ) -> anyhow::Result<serde_json::Value> {
         self.finish(
             path,
-            self.request(reqwest::Method::GET, path)
-                .timeout(timeout)
-                .send()?,
+            self.exec(self.request(reqwest::Method::GET, path).timeout(timeout))?,
         )
     }
     /// GET `path` with `query` and the bearer token, for a response read as
@@ -1161,10 +1382,10 @@ impl Client {
             .timeout(None)
             .connect_timeout(Duration::from_secs(5))
             .build()?;
-        let res = self
-            .authed(http.get(format!("{}{path}", self.base)))
-            .query(query)
-            .send()?;
+        let res = self.exec(
+            self.authed(http.get(format!("{}{path}", self.base)))
+                .query(query),
+        )?;
         if res.status().is_success() {
             Ok(res)
         } else {
@@ -1174,22 +1395,21 @@ impl Client {
     pub fn post(&self, path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
         self.finish(
             path,
-            self.request(reqwest::Method::POST, path)
-                .json(body)
-                .send()?,
+            self.exec(self.request(reqwest::Method::POST, path).json(body))?,
         )
     }
     pub fn patch(&self, path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
         self.finish(
             path,
-            self.request(reqwest::Method::PATCH, path)
-                .json(body)
-                .send()?,
+            self.exec(self.request(reqwest::Method::PATCH, path).json(body))?,
         )
     }
     pub fn delete(&self, path: &str) -> anyhow::Result<()> {
-        self.finish(path, self.request(reqwest::Method::DELETE, path).send()?)
-            .map(|_| ())
+        self.finish(
+            path,
+            self.exec(self.request(reqwest::Method::DELETE, path))?,
+        )
+        .map(|_| ())
     }
     /// A `method` request with the bearer token, with `body` as JSON when
     /// given. The token makes the request the owner's (or, as an agent
@@ -1205,7 +1425,7 @@ impl Client {
         if let Some(b) = body {
             req = req.json(b);
         }
-        self.finish(path, req.send()?)
+        self.finish(path, self.exec(req)?)
     }
     pub fn shutdown(&self) -> anyhow::Result<()> {
         self.post("/api/admin/shutdown", &serde_json::json!({}))

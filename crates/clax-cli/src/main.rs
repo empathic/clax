@@ -9,6 +9,7 @@ mod hooklog;
 mod host;
 mod plugin_bin;
 mod plugins;
+mod remote;
 mod term;
 
 use clap::error::ErrorKind;
@@ -145,6 +146,23 @@ pub enum Cmd {
     Haiku,
     /// Print the version; with --verbose, also the commit it was built from.
     Version(commands::version::Args),
+    /// Connect this machine to another machine's Clax as a person's
+    /// machine, show the connection, move it to a new address, or end it.
+    ///
+    /// With an invite (`clax connect http://<IP>:<port>/i/<code>`, as the
+    /// owner's People page shows it) the machine connects at once; with the
+    /// daemon's address alone it asks the owner, who approves the request
+    /// with the code this prints. Connected, this machine's CLI, hooks and
+    /// MCP server talk to that daemon, signed, and start none here
+    /// (`CLAX_REMOTE=0` turns that off). Writes `remote.json` and
+    /// `remote.key` (0600) in the Clax home.
+    Connect(commands::connect::Args),
+    /// List your agents that are running: the owner's here, or, connected
+    /// to another machine's Clax, this machine's.
+    Agents,
+    /// List your approvals and approval requests (approve and revoke them
+    /// in your browser, on the People page).
+    Approvals,
     /// The Chrome native messaging host for the Clax extension (Chrome runs it).
     #[command(hide = true)]
     NativeHost(commands::native_host::Args),
@@ -202,6 +220,47 @@ pub fn env_port(env: Option<std::ffi::OsString>) -> Option<anyhow::Result<u16>> 
                 )
             }),
     )
+}
+
+/// Whether `cmd` runs while this home is connected to another machine's
+/// Clax (spec §6.7): the commands that list, read and act through the
+/// remote daemon as the person (`list`, `read`, `open`, `versions`, `db`,
+/// `comments`, `agents`, `approvals`, `status`, `connect`), the agent
+/// sides that run over it (`mcp`, `hook`, `feedback`), and this machine's
+/// own (its local daemon with `serve` and `stop`, installing, `doctor`,
+/// `bin`, `version`, `haiku`). Every other command says it is not
+/// available on a remote Clax and exits 2.
+fn remote_ok(cmd: &Cmd) -> bool {
+    match cmd {
+        Cmd::List(_)
+        | Cmd::Read(_)
+        | Cmd::Open(_)
+        | Cmd::Versions(_)
+        | Cmd::Db(_)
+        | Cmd::Comments(_)
+        | Cmd::Agents
+        | Cmd::Approvals
+        | Cmd::Status(_)
+        | Cmd::Connect(_) => true,
+        Cmd::Mcp(_) | Cmd::Hook(_) | Cmd::Feedback(_) => true,
+        Cmd::Serve(_)
+        | Cmd::Stop
+        | Cmd::Doctor(_)
+        | Cmd::Init(_)
+        | Cmd::Uninit(_)
+        | Cmd::Bin { .. }
+        | Cmd::Haiku
+        | Cmd::Version(_) => true,
+        Cmd::Publish(_)
+        | Cmd::Asset(_)
+        | Cmd::Inbox(_)
+        | Cmd::Delete(_)
+        | Cmd::Pin(_)
+        | Cmd::Unpin(_)
+        | Cmd::Extension(_)
+        | Cmd::Toolpath(_)
+        | Cmd::NativeHost(_) => false,
+    }
 }
 
 /// The subcommand the command line names: its first argument that is
@@ -275,6 +334,11 @@ fn main() {
             std::process::exit(if hook { 0 } else { 1 });
         }
     };
+    if !remote_ok(&cli.cmd) && clax_core::remote::Mode::of(&home).is_remote() {
+        let name = invoked.as_deref().unwrap_or("this command");
+        eprintln!("{}", client::NotRemote::line_for(&home, name));
+        std::process::exit(2);
+    }
     let result = match &cli.cmd {
         Cmd::Serve(a) => commands::serve::run(&cli, &home, a),
         Cmd::Stop => commands::stop::run(&cli, &home),
@@ -303,11 +367,18 @@ fn main() {
         Cmd::Haiku => commands::haiku::run(&cli),
         Cmd::Version(a) => commands::version::run(&cli, a),
         Cmd::NativeHost(a) => commands::native_host::run(&cli, &home, a),
+        Cmd::Connect(a) => commands::connect::run(&cli, &home, a),
+        Cmd::Agents => commands::people::agents(&cli, &home),
+        Cmd::Approvals => commands::people::approvals(&cli, &home),
     };
     if let Err(e) = result {
         if let Some(n) = e.downcast_ref::<client::NotForAgents>() {
             // Under a harness, a route that serves people: one readable line.
             println!("{}", n.line());
+            std::process::exit(2);
+        }
+        if let Some(n) = e.downcast_ref::<client::NotRemote>() {
+            eprintln!("{n}");
             std::process::exit(2);
         }
         eprintln!("error: {e:#}");
