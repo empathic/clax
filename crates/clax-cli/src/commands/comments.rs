@@ -449,6 +449,13 @@ fn delivery(t: &Value) -> String {
         Some("delivered") => "sent to agent, delivered".into(),
         Some("acknowledged") => "sent to agent, read".into(),
         Some("agent_ended") => "sent to agent, whose session ended".into(),
+        Some("withheld") => match t["feedback_state"]["approver"].as_str() {
+            Some(who) => format!(
+                "sent to agent, waiting for {}'s approval",
+                term::snippet(who, 40)
+            ),
+            None => "sent to agent, waiting for an approval".into(),
+        },
         _ => "sent to agent".into(),
     }
 }

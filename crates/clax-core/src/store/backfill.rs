@@ -2928,6 +2928,7 @@ pub(crate) mod tests {
                 include_resends: false,
             },
             "http://localhost:1",
+            &crate::visibility::Visibility::all(),
         )
         .unwrap();
         st.resolve_thread(DAEMON, &t1, "agent:claude").unwrap();

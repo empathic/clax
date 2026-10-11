@@ -16,11 +16,14 @@ fn text(mut obj: Map<String, Value>) -> ContentBlock {
 }
 
 /// What a feedback poll handed over: comments (`feedback`), late answers
-/// to the session's questions (`answers`) and the prose for both (`text`).
+/// to the session's questions (`answers`), placeholders for comments held
+/// because their bodies are withheld from the session's person
+/// (`withheld`), and the prose for all of them (`text`).
 #[derive(Debug, Default)]
 pub struct Handover {
     pub feedback: Vec<Value>,
     pub answers: Vec<Value>,
+    pub withheld: Vec<Value>,
     pub text: Option<String>,
 }
 
@@ -31,13 +34,14 @@ impl Handover {
         Handover {
             feedback: list("feedback"),
             answers: list("answers"),
+            withheld: list("withheld"),
             text: res["text"].as_str().map(str::to_string),
         }
     }
 
     /// Whether nothing was handed over.
     pub fn is_empty(&self) -> bool {
-        self.feedback.is_empty() && self.answers.is_empty()
+        self.feedback.is_empty() && self.answers.is_empty() && self.withheld.is_empty()
     }
 }
 
@@ -48,7 +52,8 @@ pub fn success(value: Value) -> CallToolResult {
 }
 
 /// A success result for `value` (a JSON object) whose `feedback` array is
-/// `h.feedback`, with `answers` (the late answers) when there are any. When
+/// `h.feedback`, with `answers` (the late answers) and `withheld` (the
+/// placeholders) when there are any. When
 /// something was handed over and `h.text` is given, a second text block
 /// `---\n<text>` follows: the trailing block agents read as prose.
 pub fn success_with(value: Value, h: Handover) -> CallToolResult {
@@ -63,6 +68,9 @@ pub fn success_with(value: Value, h: Handover) -> CallToolResult {
     obj.insert("feedback".into(), Value::Array(h.feedback));
     if !h.answers.is_empty() {
         obj.insert("answers".into(), Value::Array(h.answers));
+    }
+    if !h.withheld.is_empty() {
+        obj.insert("withheld".into(), Value::Array(h.withheld));
     }
     let mut blocks = vec![ContentBlock::text(
         serde_json::to_string_pretty(&Value::Object(obj)).expect("JSON values serialise"),

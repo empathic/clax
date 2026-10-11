@@ -700,8 +700,7 @@ async fn the_route_limit_caps_the_pre_handler_read() {
     // read.
     let big = Raw::agent(&ts, &sam, "/api/sessions", b"", 3 * MIB, false).await;
     assert_eq!(big.response().await, (413, "body_too_large".into()));
-    // A Filtered route not yet live: 503 before anything is read, whatever
-    // its limit allows.
+    // A body over a GET route's limit: 413 before anything is read.
     let poll = format!("/api/sessions/{sid}/feedback?artifact={aid}");
     let headers = [
         ("authorization", format!("Clax-Grant {}", sam.access())),
@@ -710,7 +709,7 @@ async fn the_route_limit_caps_the_pre_handler_read() {
         ("content-length", (12 * MIB).to_string()),
     ];
     let raw = Raw::open(&ts, &sam, "GET", &poll, &headers).await;
-    assert_eq!(raw.response().await, (503, "not_yet".into()));
+    assert_eq!(raw.response().await, (413, "body_too_large".into()));
     assert_eq!(ts.agent_gate.state().read, read_before);
     // Within the limit: read, verified and handed on.
     let r = sam
@@ -1356,9 +1355,20 @@ async fn the_extractor_refuses_a_persons_agent_on_an_owner_agents_route() {
         .expect("refused");
     assert_eq!((e.status.as_u16(), e.code), (403, "forbidden"));
     // A route open to grants goes on to its other checks.
-    let e = Agent::<FeedbackPoll>::from_request_parts(&mut parts(), &state)
-        .await
-        .err()
-        .expect("not yet");
-    assert_eq!((e.status.as_u16(), e.code), (503, "not_yet"));
+    let r = Agent::<FeedbackPoll>::from_request_parts(&mut parts(), &state).await;
+    assert!(
+        r.as_ref().err().is_none_or(|e| e.code != "forbidden"),
+        "{:?}",
+        r.err().map(|e| e.code)
+    );
+    // Every Filtered route's filter is live.
+    for (_, _, need) in clax_server::agent::ROUTES {
+        if need.class == clax_server::agent::Class::Filtered {
+            assert!(
+                clax_server::agent::FILTERED_LIVE.contains(&need.name),
+                "{}",
+                need.name
+            );
+        }
+    }
 }

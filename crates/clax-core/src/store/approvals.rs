@@ -138,6 +138,67 @@ fn approval_record(kind: AuditKind, at: &str, a: &Approval) -> AuditRecord {
     rec
 }
 
+/// [`Store::request_state`] on connection `c`.
+pub(crate) fn request_state_in(
+    c: &rusqlite::Connection,
+    approver: Option<&str>,
+    artifact: &str,
+    thread: &str,
+    authors: &[String],
+) -> Result<ApprovalState> {
+    let authors = serde_json::to_string(authors).expect("strings serialise");
+    let (open, declined): (bool, bool) = c
+        .prepare_cached(
+            "SELECT COALESCE(MAX(status = 'open'), 0), COALESCE(MAX(status = 'declined'), 0)
+             FROM approval_requests
+             WHERE COALESCE(approver, '') = COALESCE(?1, '') AND artifact_id = ?2
+               AND (thread_id = ?3 OR thread_id IS NULL)
+               AND author IN (SELECT value FROM json_each(?4))",
+        )?
+        .query_row(params![approver, artifact, thread, authors], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?;
+    Ok(if open {
+        ApprovalState::Requested
+    } else if declined {
+        ApprovalState::Declined
+    } else {
+        ApprovalState::None
+    })
+}
+
+/// Clears `placeholder_at` on the undelivered rows `a` (an approval made
+/// or revoked) bears on: rows of its approver's sessions in its scope, and
+/// for an approval made, rows of comments its author wrote (or a page
+/// wrote, or by anyone when it approves `*unconnected`). A revoked
+/// approval's rows are held again and told once more (spec §9.4); an
+/// approved author's rows read `sent` until a take delivers them.
+pub(super) fn reset_placeholders(
+    tx: &rusqlite::Transaction<'_>,
+    a: &Approval,
+    any_author: bool,
+) -> Result<()> {
+    tx.execute(
+        "UPDATE feedback SET placeholder_at = NULL
+         WHERE delivered_at IS NULL AND placeholder_at IS NOT NULL
+           AND target_session_id IN (SELECT id FROM sessions WHERE COALESCE(person, '') = COALESCE(?1, ''))
+           AND (?2 = 'everywhere'
+                OR (?2 = 'artifact' AND thread_id IN (SELECT id FROM threads WHERE artifact_id = ?3))
+                OR (?2 = 'thread' AND thread_id = ?4))
+           AND (?5 OR ?6 = '*unconnected' OR comment_id IN (
+                SELECT id FROM comments WHERE author_public_id = ?6 OR via_page = 1))",
+        params![
+            a.approver,
+            a.scope.as_str(),
+            a.artifact_id,
+            a.thread_id,
+            any_author,
+            a.author
+        ],
+    )?;
+    Ok(())
+}
+
 /// Revokes live approval `id` at `now` in `tx`, recording `approval.revoke`
 /// under `ctx` and marking the visibility change.
 pub(super) fn revoke_in(
@@ -159,6 +220,7 @@ pub(super) fn revoke_in(
         .optional()?
         .ok_or(CoreError::NotFound)?;
     st.record_audit(tx, ctx, approval_record(AuditKind::ApprovalRevoke, now, &a))?;
+    reset_placeholders(tx, &a, true)?;
     st.visibility_changed();
     Ok(a)
 }
@@ -464,6 +526,7 @@ impl Store {
                 params![a.id, a.approver, a.author, a.scope.as_str(), a.artifact_id, a.thread_id, a.created_at, a.created_via],
             )?;
             self.record_audit(tx, ctx, approval_record(AuditKind::ApprovalGrant, &a.created_at, &a))?;
+            reset_placeholders(tx, &a, false)?;
             self.visibility_changed();
             Ok(a)
         })
@@ -522,26 +585,7 @@ impl Store {
         thread: &str,
         authors: &[String],
     ) -> Result<ApprovalState> {
-        let authors = serde_json::to_string(authors).expect("strings serialise");
-        let (open, declined): (bool, bool) = self.with_read(|c| {
-            Ok(c.prepare_cached(
-                "SELECT COALESCE(MAX(status = 'open'), 0), COALESCE(MAX(status = 'declined'), 0)
-                 FROM approval_requests
-                 WHERE COALESCE(approver, '') = COALESCE(?1, '') AND artifact_id = ?2
-                   AND (thread_id = ?3 OR thread_id IS NULL)
-                   AND author IN (SELECT value FROM json_each(?4))",
-            )?
-            .query_row(params![approver, artifact, thread, authors], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })?)
-        })?;
-        Ok(if open {
-            ApprovalState::Requested
-        } else if declined {
-            ApprovalState::Declined
-        } else {
-            ApprovalState::None
-        })
+        self.with_read(|c| request_state_in(c, approver, artifact, thread, authors))
     }
 }
 

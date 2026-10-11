@@ -173,8 +173,10 @@ impl<'a> RealClients<'a> {
     }
 
     /// Every channel but Pi's ([`RealClients::pi`]), each driven through
-    /// its real client.
+    /// its real client. The owner's comment on Mia's page is sent first, so
+    /// the notices and the feedback tiers have something to hand over.
     pub async fn run_every_channel(&self) -> Vec<Out> {
+        self.w.owner_thread_on_mias_page().await;
         // The notices first: the hooks hand the feedback over after them.
         let mut out = vec![self.follow().await];
         out.extend(self.hooks().await);
@@ -188,22 +190,29 @@ impl<'a> RealClients<'a> {
     /// The Claude Code hooks of the owner's agent's session.
     pub async fn hooks(&self) -> Vec<Out> {
         let mut out = Vec::new();
-        for (event, name) in [
-            ("session-start", "SessionStart"),
-            ("prompt", "UserPromptSubmit"),
-            ("stop", "Stop"),
-        ] {
-            let input = json!({"session_id": "owner-h1", "hook_event_name": name,
-                "stop_hook_active": false, "prompt": "Carry on.", "cwd": "/w", "source": "startup"})
-            .to_string();
-            let cmd = self.command(&clax_bin(), &["hook", "--agent", "claude", event], &[]);
-            let (text, _) = self.run(cmd, &input).await;
-            out.push(Out {
-                channel: format!("clax hook --agent claude {event}"),
-                text,
-            });
+        for event in ["session-start", "prompt", "stop"] {
+            out.push(self.hook(event).await);
         }
         out
+    }
+
+    /// One Claude Code hook (`session-start`, `prompt` or `stop`) of the
+    /// owner's agent's session.
+    pub async fn hook(&self, event: &str) -> Out {
+        let name = match event {
+            "session-start" => "SessionStart",
+            "prompt" => "UserPromptSubmit",
+            _ => "Stop",
+        };
+        let input = json!({"session_id": "owner-h1", "hook_event_name": name,
+            "stop_hook_active": false, "prompt": "Carry on.", "cwd": "/w", "source": "startup"})
+        .to_string();
+        let cmd = self.command(&clax_bin(), &["hook", "--agent", "claude", event], &[]);
+        let (text, _) = self.run(cmd, &input).await;
+        Out {
+            channel: format!("clax hook --agent claude {event}"),
+            text,
+        }
     }
 
     /// `clax feedback follow --once` for the owner's agent's session.

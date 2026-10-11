@@ -16,9 +16,11 @@ use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use clax_core::audit::AuditCtx;
-use clax_core::feedback::{ago, quoted, render_items, render_notice};
+use clax_core::feedback::{Placeholder, ago, quoted, render_delivery, render_notice};
+use clax_core::model::Artifact;
 use clax_core::questions::render_late;
 use clax_core::store::questions::Status;
+use clax_core::visibility::Visibility;
 use clax_core::working::Clock;
 use clax_core::{CoreError, Store, TakeFeedback, Tier};
 use serde::Deserialize;
@@ -82,15 +84,75 @@ fn late_answers(
     Ok((views, blocks))
 }
 
-/// The response text: the feedback items' text, then each late-answer
-/// block, separated by blank lines; `None` when there is neither.
-fn poll_text(items: &[clax_core::FeedbackItem], late: &[String]) -> Option<String> {
+/// The response text: the feedback items' text and each placeholder's
+/// line ([`render_delivery`]), then each late-answer block, separated by
+/// blank lines; `None` when there is none of them.
+fn poll_text(
+    items: &[clax_core::FeedbackItem],
+    placeholders: &[Placeholder],
+    late: &[String],
+) -> Option<String> {
     let mut parts: Vec<String> = Vec::with_capacity(1 + late.len());
-    if !items.is_empty() {
-        parts.push(render_items(items).trim_end().to_string());
+    if let Some(t) = render_delivery(items, placeholders) {
+        parts.push(t.trim_end().to_string());
     }
     parts.extend(late.iter().map(|b| b.trim_end().to_string()));
     (!parts.is_empty()).then(|| parts.join("\n\n"))
+}
+
+/// What ended a long-poll's wait ([`wait_for_change`]).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Woke {
+    /// The session's waiters were notified: a row, or its session's end.
+    Row,
+    /// The visibility generation moved past the one the take read.
+    Visibility,
+    Deadline,
+    Stopping,
+}
+
+/// Waits for whichever comes first after a take: `notified` (registered
+/// before the take), the visibility generation moving past `seen` (read
+/// before the take), the deadline, or `stopping`. A row or a bump that
+/// landed between the take and this call ends it at once (spec 2026-10-08
+/// §8.4, M17).
+pub(crate) async fn wait_for_change(
+    notified: std::pin::Pin<&mut tokio::sync::futures::Notified<'_>>,
+    vis_gen: &crate::state::VisGen,
+    seen: u64,
+    deadline: Instant,
+    stopping: std::pin::Pin<&mut (impl std::future::Future<Output = ()> + ?Sized)>,
+) -> Woke {
+    tokio::select! {
+        _ = notified => Woke::Row,
+        _ = vis_gen.wait_after(seen) => Woke::Visibility,
+        _ = tokio::time::sleep_until(deadline) => Woke::Deadline,
+        _ = stopping => Woke::Stopping,
+    }
+}
+
+/// The view session `sid`'s agent reads with (spec 2026-10-08 §8.4, M17):
+/// `vis` refreshed when the visibility generation moved past `seen`, its
+/// reader's, built when there is none yet.
+///
+/// # Errors
+/// The store's.
+fn view_at(
+    st: &Store,
+    sid: &str,
+    vis: Option<Visibility>,
+    seen: u64,
+) -> clax_core::Result<Visibility> {
+    match vis {
+        Some(mut v) => {
+            v.refresh_if_stale(st, seen)?;
+            Ok(v)
+        }
+        None => {
+            let reader = Visibility::reader_of_session(st, sid)?;
+            Visibility::for_reader(st, &reader, seen)
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -112,6 +174,19 @@ pub struct FeedbackQuery {
 /// once. `tier=queue` (the Codex queue) takes no answers and its `answers`
 /// is always empty.
 ///
+/// What is handed over is filtered for the session's person (spec
+/// 2026-10-08 §8.4, M16): a comment whose body the person's agents may not
+/// see is held, and the first take that holds it tells the session once,
+/// in `withheld` (one placeholder per authors and thread, present only
+/// when there are any) and in `text`; that answers the poll as a delivery
+/// does. Rows on an artifact a person's agent may not read are held
+/// untold. The view, and a person's agent's rights, are read again
+/// whenever the visibility generation moves (M17), and a waiting poll
+/// wakes on it: an approval or revocation that
+/// lands during the wait applies to its next take. The poll reads the
+/// generation, takes, and only then waits for a row, a bump or the
+/// deadline, so neither a row nor a bump after its take is missed.
+///
 /// A request dropped while waiting takes nothing (the handler future is
 /// dropped with the connection). A drop that lands after the wake, while
 /// the take is running on the blocking pool, still marks the rows handed
@@ -131,10 +206,6 @@ pub struct FeedbackQuery {
 /// woken by that start and answers the same way. The inject
 /// poll checks before each take; a wait poll that starts between that check
 /// and the take can lose one hand over to it.
-///
-/// Any holder of the token may read or acknowledge any session's feedback: the
-/// token is the local trust boundary, and sessions are not authenticated
-/// separately.
 pub async fn poll(
     State(s): State<AppState>,
     TokenOrAgent(a): TokenOrAgent<FeedbackPoll>,
@@ -153,6 +224,8 @@ pub async fn poll(
         Some(raw) => Some(a.named_artifact(&s, raw).await?.as_str().to_string()),
         None => None,
     };
+    let mut rights = a.read_rights();
+    let grant = a.grant().map(str::to_string);
     let check = sid.clone();
     // Built once: the poll's deliveries are recorded as this session's agent.
     let audit = std::sync::Arc::new(
@@ -181,10 +254,14 @@ pub async fn poll(
         artifact_id: artifact,
         include_resends: q.resends.unwrap_or(true),
     };
+    let mut vis: Option<Visibility> = None;
     loop {
+        // Registered before the take, and the generation read before it:
+        // a row or a bump after the take wakes the wait below.
         let notified = notify.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
+        let seen = s.vis_gen.current();
         if take.tier == Tier::Inject && s.feedback_waiters.is_waiting(&take.session_id) {
             return Ok(Json(
                 json!({"feedback": [], "answers": [], "text": null, "waited_s": 0}),
@@ -194,39 +271,73 @@ pub async fn poll(
         let t = take.clone();
         let (held, clock) = (s.questions.clone(), s.question_clock.clone());
         let audit = audit.clone();
-        let (items, (answers, late)) = s
+        let (prior_rights, grant) = (rights.clone(), grant.clone());
+        let prior = vis.take();
+        let (view, rights_now, taken, (answers, late)) = s
             .store_call(move |st| {
-                let (items, touched) = st.take_feedback(&audit, &t, &ctx.browser_base)?;
-                apply(&ctx, st, &touched);
+                let stale = prior.as_ref().is_some_and(|v| v.generation() != seen);
+                let view = view_at(st, &t.session_id, prior, seen)?;
+                let rights = if stale {
+                    prior_rights.current(st, grant.as_deref(), &t.session_id)?
+                } else {
+                    prior_rights
+                };
+                let readable = |a: &Artifact| rights.allows(a);
+                let readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)> =
+                    rights.is_person_agent().then_some(&readable);
+                let taken =
+                    st.take_feedback_readable(&audit, &t, &ctx.browser_base, &view, readable)?;
+                apply(&ctx, st, &taken.touched);
                 crate::working::renew_for_tier(&ctx, &t.session_id, t.tier);
                 if t.tier == Tier::Queue {
-                    return Ok((items, Default::default()));
+                    return Ok((view, rights, taken, Default::default()));
                 }
-                crate::working::mark_items(&ctx, &audit, st, &t.session_id, &items)?;
-                Ok((items, late_answers(st, &t.session_id, &held, &*clock)?))
+                crate::working::mark_items(&ctx, &audit, st, &t.session_id, &taken.items)?;
+                let late = late_answers(st, &t.session_id, &held, &*clock)?;
+                Ok((view, rights, taken, late))
             })
             .await?;
+        vis = Some(view);
+        rights = rights_now;
+        #[cfg(debug_assertions)]
+        s.feedback_waiters.stop_after_take(&take.session_id).await;
         #[cfg(debug_assertions)]
         let expired = _waiting.is_some() && s.feedback_waiters.take_expired(&take.session_id);
         #[cfg(not(debug_assertions))]
         let expired = false;
-        if !items.is_empty() || !answers.is_empty() || expired || Instant::now() >= deadline {
-            let text = poll_text(&items, &late);
-            return Ok(Json(json!({
+        let (items, placeholders) = (taken.items, taken.placeholders);
+        if !items.is_empty()
+            || !placeholders.is_empty()
+            || !answers.is_empty()
+            || expired
+            || Instant::now() >= deadline
+        {
+            let text = poll_text(&items, &placeholders, &late);
+            let mut out = json!({
                 "feedback": items,
                 "answers": answers,
                 "text": text,
                 "waited_s": started.elapsed().as_secs(),
-            })));
+            });
+            if !placeholders.is_empty() {
+                out["withheld"] = json!(placeholders);
+            }
+            return Ok(Json(out));
         }
         #[cfg(debug_assertions)]
         let _parked = s.feedback_waiters.park(&take.session_id, take.tier);
-        tokio::select! {
-            _ = &mut notified => {}
-            _ = tokio::time::sleep_until(deadline) => {}
-            _ = &mut stopping => {
-                return Ok(Json(json!({"feedback": [], "answers": [], "text": null, "waited_s": started.elapsed().as_secs()})));
-            }
+        let woke = wait_for_change(
+            notified.as_mut(),
+            &s.vis_gen,
+            seen,
+            deadline,
+            stopping.as_mut(),
+        )
+        .await;
+        if woke == Woke::Stopping {
+            return Ok(Json(
+                json!({"feedback": [], "answers": [], "text": null, "waited_s": started.elapsed().as_secs()}),
+            ));
         }
     }
 }
@@ -241,7 +352,12 @@ pub struct NoticesQuery {
 /// armed, undelivered comments that no follower has announced
 /// (`Store::take_notices`), as soon as there are any or after `wait`
 /// seconds (capped at 600): `{notices, lines, waited_s}`, one line per
-/// notice. Announcing delivers nothing. While the session is inside
+/// notice. Announcing delivers nothing. Only comments whose bodies the
+/// session's person's agents may see are announced, with the title
+/// filtered as the feedback text's is (spec 2026-10-08 §8.4), on artifacts
+/// a person's agent may read; the view follows the visibility generation
+/// as the feedback poll's does, so an approval during the wait announces
+/// what it lets through. While the session is inside
 /// `wait_for_feedback`, answers empty at once and announces nothing. The
 /// poll counts as a connected follower for `status`'s `push`. Unknown
 /// session: 404; ended: 400 `unknown_session`, before any wait, and also
@@ -250,7 +366,7 @@ pub struct NoticesQuery {
 /// answers empty at once.
 pub async fn notices(
     State(s): State<AppState>,
-    _a: TokenOrAgent<FeedbackNotices>,
+    TokenOrAgent(a): TokenOrAgent<FeedbackNotices>,
     sid: Result<Path<String>, PathRejection>,
     q: Result<Query<NoticesQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -258,6 +374,8 @@ pub async fn notices(
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let check = sid.clone();
     s.store_call(move |st| live_session(st, &check)).await?;
+    let mut rights = a.read_rights();
+    let grant = a.grant().map(str::to_string);
     let _following = s.followers.enter(&sid);
     let started = Instant::now();
     let deadline = started + Duration::from_secs(q.wait.min(MAX_WAIT_SECS));
@@ -271,31 +389,54 @@ pub async fn notices(
     };
     tokio::pin!(stopping);
     let empty = |waited: u64| Json(json!({"notices": [], "lines": [], "waited_s": waited}));
+    let mut vis: Option<Visibility> = None;
     loop {
         let notified = notify.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
+        let seen = s.vis_gen.current();
         if s.feedback_waiters.is_waiting(&sid) {
             return Ok(empty(0));
         }
         let base = s.browser_base.clone();
         let who = sid.clone();
-        let notices = s
+        let prior = vis.take();
+        let (prior_rights, grant) = (rights.clone(), grant.clone());
+        let (view, rights_now, notices) = s
             .store_call(move |st| {
                 live_session(st, &who)?;
-                st.take_notices(&who, &base)
+                let stale = prior.as_ref().is_some_and(|v| v.generation() != seen);
+                let view = view_at(st, &who, prior, seen)?;
+                let rights = if stale {
+                    prior_rights.current(st, grant.as_deref(), &who)?
+                } else {
+                    prior_rights
+                };
+                let readable = |a: &Artifact| rights.allows(a);
+                let readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)> =
+                    rights.is_person_agent().then_some(&readable);
+                let notices = st.take_notices(&who, &base, &view, readable)?;
+                Ok((view, rights, notices))
             })
             .await?;
+        vis = Some(view);
+        rights = rights_now;
         if !notices.is_empty() || Instant::now() >= deadline {
             let lines: Vec<String> = notices.iter().map(render_notice).collect();
             return Ok(Json(
                 json!({"notices": notices, "lines": lines, "waited_s": started.elapsed().as_secs()}),
             ));
         }
-        tokio::select! {
-            _ = &mut notified => {}
-            _ = tokio::time::sleep_until(deadline) => {}
-            _ = &mut stopping => return Ok(empty(started.elapsed().as_secs())),
+        let woke = wait_for_change(
+            notified.as_mut(),
+            &s.vis_gen,
+            seen,
+            deadline,
+            stopping.as_mut(),
+        )
+        .await;
+        if woke == Woke::Stopping {
+            return Ok(empty(started.elapsed().as_secs()));
         }
     }
 }
@@ -311,7 +452,8 @@ pub struct AckBody {
 
 /// Acknowledges the session's rows on `thread_ids` (every row on those
 /// threads) and on `comment_ids` (only rows for those comments, so a comment
-/// the caller has not seen stays pending); either or both, and a body with
+/// the caller has not seen stays pending), leaving held every row whose
+/// body the session's person's agents may not see; either or both, and a body with
 /// neither is 400 `invalid_json`. `{acknowledged: <threads touched>}`.
 /// Unknown session: 404; ended session: 400 `unknown_session`.
 pub async fn ack(
@@ -333,12 +475,18 @@ pub async fn ack(
     let n = s
         .store_call(move |st| {
             live_session(st, &sid)?;
-            let mut touched =
-                st.acknowledge(&audit, &sid, b.thread_ids.as_deref().unwrap_or_default())?;
+            let vis = Visibility::for_session(st, &sid)?;
+            let mut touched = st.acknowledge(
+                &audit,
+                &sid,
+                b.thread_ids.as_deref().unwrap_or_default(),
+                &vis,
+            )?;
             touched.merge(st.acknowledge_comments(
                 &audit,
                 &sid,
                 b.comment_ids.as_deref().unwrap_or_default(),
+                &vis,
             )?);
             apply(&ctx, st, &touched);
             Ok(touched.threads.len())
@@ -364,16 +512,46 @@ pub async fn expire(
 
 #[cfg(debug_assertions)]
 #[derive(Deserialize)]
+pub struct HoldBody {
+    hold: bool,
+}
+
+/// `POST /api/_test/sessions/<sid>/feedback/hold {hold}` (debug builds):
+/// with `hold: true`, each feedback poll of session `sid` stops after its
+/// take, before it answers or waits, until a `hold: false` lets them all
+/// go on (`FeedbackWaiters::hold`) → `{}`. Tests change what the session
+/// may see in that gap.
+#[cfg(debug_assertions)]
+pub async fn hold(
+    State(s): State<AppState>,
+    _d: crate::agent::DeniedToGrants,
+    _t: RequireToken,
+    sid: Result<Path<String>, PathRejection>,
+    b: Result<Json<HoldBody>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let sid = path(sid)?;
+    if body(b)?.hold {
+        s.feedback_waiters.hold(&sid);
+    } else {
+        s.feedback_waiters.release(&sid);
+    }
+    Ok(Json(json!({})))
+}
+
+#[cfg(debug_assertions)]
+#[derive(Deserialize)]
 pub struct WaitersQuery {
     until: Option<usize>,
     parked: Option<String>,
+    held: Option<bool>,
 }
 
 /// `GET /api/_test/sessions/<sid>/feedback/waiters?until=<n>` (debug
 /// builds): `{count}`, how many `wait_for_feedback` polls of session `sid`
 /// are in progress, answered once the count is `until` (or after 5 s), at
 /// once without it. With `parked=<tier>`, counts instead the session's
-/// feedback polls of that tier that are parked waiting to be woken.
+/// feedback polls of that tier that are parked waiting to be woken; with
+/// `held=true`, its polls stopped after their take (`hold`).
 #[cfg(debug_assertions)]
 pub async fn waiters(
     State(s): State<AppState>,
@@ -392,10 +570,113 @@ pub async fn waiters(
             })?),
         };
     let w = &s.feedback_waiters;
+    let held = q.held.unwrap_or(false);
     let count = || match parked {
+        _ if held => w.held(&sid),
         Some(tier) => w.parked(&sid, tier),
         None => w.count(&sid),
     };
     let n = crate::questions::count_until(w.changed(), count, q.until).await;
     Ok(Json(json!({"count": n})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Woke, wait_for_change};
+    use crate::state::VisGen;
+    use clax_core::audit::AuditCtx;
+    use clax_core::{Home, Store};
+    use std::time::Duration;
+    use tokio::sync::Notify;
+    use tokio::time::Instant;
+
+    fn store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let st = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
+        (dir, st)
+    }
+
+    /// The approval of `*unconnected` the store opens with, revoked: a
+    /// visibility change.
+    fn bump(st: &Store) {
+        let id = st.live_approvals(None).unwrap()[0].id.clone();
+        st.revoke_approval(&AuditCtx::DAEMON, &id, None).unwrap();
+    }
+
+    /// Paused time: the deadline passes only when nothing else ends the
+    /// wait, so which of them ended it is exact.
+    #[tokio::test(start_paused = true)]
+    async fn a_bump_or_row_between_take_and_wait_ends_the_wait_at_once() {
+        let (_d, st) = store();
+        let g = VisGen::install(&st);
+        let rows = Notify::new();
+        let stopping = std::future::pending::<()>();
+        tokio::pin!(stopping);
+        let deadline = Instant::now() + Duration::from_secs(600);
+        // A bump after the generation was read, before the wait.
+        let notified = rows.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        let seen = g.current();
+        bump(&st);
+        let start = Instant::now();
+        assert_eq!(
+            wait_for_change(notified.as_mut(), &g, seen, deadline, stopping.as_mut()).await,
+            Woke::Visibility
+        );
+        assert_eq!(Instant::now(), start, "no time passed");
+        // A row after the waiter registered, before the wait.
+        let notified = rows.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        let seen = g.current();
+        rows.notify_waiters();
+        assert_eq!(
+            wait_for_change(notified.as_mut(), &g, seen, deadline, stopping.as_mut()).await,
+            Woke::Row
+        );
+        assert_eq!(Instant::now(), start);
+        // Neither: the deadline, exactly.
+        let notified = rows.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        let seen = g.current();
+        assert_eq!(
+            wait_for_change(notified.as_mut(), &g, seen, deadline, stopping.as_mut()).await,
+            Woke::Deadline
+        );
+        assert_eq!(Instant::now(), deadline);
+    }
+
+    /// Paused time: a bump during the wait ends it when it lands, not at
+    /// the deadline.
+    #[tokio::test(start_paused = true)]
+    async fn a_bump_during_the_wait_ends_it_when_it_lands() {
+        let (_d, st) = store();
+        let st = std::sync::Arc::new(st);
+        let g = VisGen::install(&st);
+        let rows = Notify::new();
+        let stopping = std::future::pending::<()>();
+        tokio::pin!(stopping);
+        let start = Instant::now();
+        let deadline = start + Duration::from_secs(600);
+        let notified = rows.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        let seen = g.current();
+        let st2 = st.clone();
+        let later = async move {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            tokio::task::spawn_blocking(move || bump(&st2))
+                .await
+                .unwrap();
+            std::future::pending::<()>().await;
+        };
+        let woke = tokio::select! {
+            w = wait_for_change(notified.as_mut(), &g, seen, deadline, stopping.as_mut()) => w,
+            () = later => unreachable!(),
+        };
+        assert_eq!(woke, Woke::Visibility);
+        assert!(Instant::now() < deadline, "{:?}", Instant::now() - start);
+    }
 }

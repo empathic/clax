@@ -2,16 +2,19 @@
 //! tier hands them over, acknowledgement, resends, and retargeting.
 
 use super::Store;
+use super::artifacts::{SELECT_VERSION, live_artifact_in, row_to_version};
 use super::threads::{AUTHOR_VIEWER, thread_in, thread_record};
 use crate::anchor::Anchor;
 use crate::audit::{AuditCtx, AuditKind, AuditRecord};
 use crate::feedback::{
-    FeedbackBatch, FeedbackItem, FeedbackPhase, FeedbackState, Notice, Tier, Touched,
+    FeedbackBatch, FeedbackItem, FeedbackPhase, FeedbackState, ItemWithheld, Notice, Placeholder,
+    Tier, Touched,
 };
-use crate::model::{Feedback, Thread};
+use crate::model::{Artifact, Feedback, Thread, Version};
+use crate::visibility::{self, Author, Reader, Visibility};
 use crate::{ArtifactId, CoreError, Result, new_ulid};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// What a caller wants handed over: rows targeted to `session_id`, for `tier`,
 /// optionally only for one artifact; resend-eligible rows too when the tier
@@ -315,6 +318,282 @@ struct Pending {
     created_at: String,
     via_page: bool,
     batch: Option<FeedbackBatch>,
+    /// A take held it and told the session (`placeholder_at`).
+    told: bool,
+}
+
+/// What [`Store::take_feedback`] handed over (spec 2026-10-08 §8.4, M16):
+/// the rows whose bodies its reader may see, the placeholders for the
+/// held rows it told the session of, and what changed.
+#[derive(Clone, Debug, Default)]
+pub struct Taken {
+    pub items: Vec<FeedbackItem>,
+    pub placeholders: Vec<Placeholder>,
+    pub touched: Touched,
+}
+
+/// What a take's reader may see of one row: its body withheld (by these
+/// authors), or its body visible with these other fields withheld.
+enum Seen {
+    Held(Vec<Author>),
+    Body(Option<ItemWithheld>),
+}
+
+/// What a filtering take reads of the rows' threads, versions, artifacts
+/// and authors' names, each once, on its transaction's connection.
+struct Sight<'a> {
+    c: &'a Connection,
+    vis: &'a Visibility,
+    threads: HashMap<String, Option<Thread>>,
+    versions: HashMap<(String, u32), Option<Version>>,
+    artifacts: HashMap<String, Option<Artifact>>,
+    names: HashMap<Author, String>,
+}
+
+impl<'a> Sight<'a> {
+    fn new(c: &'a Connection, vis: &'a Visibility) -> Sight<'a> {
+        Sight {
+            c,
+            vis,
+            threads: HashMap::new(),
+            versions: HashMap::new(),
+            artifacts: HashMap::new(),
+            names: HashMap::new(),
+        }
+    }
+
+    fn thread(&mut self, tid: &str) -> Result<Option<Thread>> {
+        if !self.threads.contains_key(tid) {
+            let t = thread_in(self.c, tid)?;
+            self.threads.insert(tid.to_string(), t);
+        }
+        Ok(self.threads[tid].clone())
+    }
+
+    fn version(&mut self, aid: &str, n: u32) -> Result<Option<Version>> {
+        let key = (aid.to_string(), n);
+        if !self.versions.contains_key(&key) {
+            let v = self
+                .c
+                .query_row(
+                    &format!("{SELECT_VERSION} WHERE artifact_id = ?1 AND n = ?2"),
+                    params![aid, n],
+                    row_to_version,
+                )
+                .optional()?
+                .transpose()?;
+            self.versions.insert(key.clone(), v);
+        }
+        Ok(self.versions[&key].clone())
+    }
+
+    fn artifact(&mut self, aid: &str) -> Result<Option<Artifact>> {
+        if !self.artifacts.contains_key(aid) {
+            let a = live_artifact_in(self.c, aid)?;
+            self.artifacts.insert(aid.to_string(), a);
+        }
+        Ok(self.artifacts[aid].clone())
+    }
+
+    /// The display names of `authors`, joined with ` and `; `Viewer` for
+    /// an author with no name.
+    fn names(&mut self, authors: &[Author]) -> Result<String> {
+        let mut out = Vec::with_capacity(authors.len());
+        for a in authors {
+            if !self.names.contains_key(a) {
+                let raw: Option<String> = match a {
+                    Author::Owner => self
+                        .c
+                        .query_row(
+                            "SELECT display_name FROM viewers WHERE owner = 1",
+                            [],
+                            |r| r.get(0),
+                        )
+                        .optional()?
+                        .flatten(),
+                    Author::Person(p) => self
+                        .c
+                        .query_row(
+                            "SELECT display_name FROM viewers WHERE public_id = ?1",
+                            params![p],
+                            |r| r.get(0),
+                        )
+                        .optional()?
+                        .flatten(),
+                    Author::Unconnected | Author::System => None,
+                };
+                let name = crate::feedback::display_name(raw.as_deref().unwrap_or(""));
+                self.names.insert(a.clone(), name);
+            }
+            out.push(self.names[a].clone());
+        }
+        if out.is_empty() {
+            out.push(crate::feedback::display_name(""));
+        }
+        Ok(out.join(" and "))
+    }
+
+    /// The names withholding `authors` there, when any.
+    fn withheld(
+        &mut self,
+        authors: &[Author],
+        aid: &str,
+        tid: Option<&str>,
+    ) -> Result<Option<String>> {
+        let w = self.vis.withheld_authors(authors, aid, tid);
+        if w.is_empty() {
+            return Ok(None);
+        }
+        self.names(&w).map(Some)
+    }
+
+    /// What the reader may see of row `p`, whose anchor is `anchor`: a
+    /// body withheld holds the row; a gone thread or comment holds it as
+    /// withheld from no one named.
+    fn row(&mut self, p: &Pending, anchor: &Anchor) -> Result<Seen> {
+        let (aid, tid) = (p.artifact_id.as_str(), p.thread_id.as_str());
+        let Some(t) = self.thread(tid)? else {
+            return Ok(Seen::Held(Vec::new()));
+        };
+        let Some(c) = t.comments.iter().find(|c| c.id == p.comment_id) else {
+            return Ok(Seen::Held(Vec::new()));
+        };
+        let body = self
+            .vis
+            .withheld_authors(&visibility::authors_of_comment(c), aid, Some(tid));
+        if !body.is_empty() {
+            return Ok(Seen::Held(body));
+        }
+        let mut w = ItemWithheld::default();
+        if let Some(a) = self.artifact(aid)? {
+            w.title = self.withheld(
+                &visibility::authors_of_artifact_field(&a, "title"),
+                aid,
+                None,
+            )?;
+        }
+        // A version that is gone names no authors: withhold what it held.
+        match self.version(aid, p.version_n)? {
+            Some(v) => {
+                w.anchor = self.withheld(&visibility::authors_of_anchor(&t, &v), aid, Some(tid))?;
+                w.clip = p.has_clip
+                    && !self
+                        .vis
+                        .sees(&visibility::authors_of_clip(&t, &v), aid, Some(tid));
+            }
+            None => {
+                if !anchor.is_whole() {
+                    w.anchor = Some(self.names(&[])?);
+                }
+                w.clip = p.has_clip;
+            }
+        }
+        if let Some(b) = &p.batch
+            && b.note.is_some()
+        {
+            w.note = !self.vis.sees(
+                &visibility::authors_of_batch_note(b.sender.as_deref()),
+                aid,
+                Some(tid),
+            );
+        }
+        Ok(Seen::Body(Some(w)))
+    }
+}
+
+/// The held rows a take tells its session of, grouped by (thread,
+/// withheld authors) in the order first met.
+#[derive(Default)]
+struct Held {
+    groups: Vec<(String, String, Vec<Author>, Vec<String>)>,
+}
+
+impl Held {
+    /// Counts row `p`, whose body `authors` withhold.
+    fn add(&mut self, sight: &mut Sight<'_>, p: &Pending, authors: &[Author]) -> Result<()> {
+        let names = sight.names(authors)?;
+        match self
+            .groups
+            .iter_mut()
+            .find(|g| g.0 == p.thread_id && g.1 == names)
+        {
+            Some(g) => g.3.push(p.id.clone()),
+            None => self.groups.push((
+                p.thread_id.clone(),
+                names,
+                authors.to_vec(),
+                vec![p.id.clone()],
+            )),
+        }
+        Ok(())
+    }
+
+    /// Stamps `placeholder_at` on each counted row at `now`, and the
+    /// placeholders: each with its artifact's title as the reader may see
+    /// it, and whether the reader's person has been asked there.
+    fn finish(self, sight: &mut Sight<'_>, now: &str) -> Result<Vec<Placeholder>> {
+        let approver = match sight.vis.reader() {
+            Some(Reader::Person(p)) => Some(p.clone()),
+            _ => None,
+        };
+        let owner: Option<String> = sight
+            .c
+            .query_row("SELECT public_id FROM viewers WHERE owner = 1", [], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        let mut out = Vec::with_capacity(self.groups.len());
+        for (tid, author, authors, ids) in self.groups {
+            for id in &ids {
+                sight.c.execute(
+                    "UPDATE feedback SET placeholder_at = ?2 WHERE id = ?1",
+                    params![id, now],
+                )?;
+            }
+            let Some(t) = sight.thread(&tid)? else {
+                continue;
+            };
+            let aid = t.artifact_id.clone();
+            let title = match sight.artifact(&aid)? {
+                Some(a) => {
+                    match sight.withheld(
+                        &visibility::authors_of_artifact_field(&a, "title"),
+                        &aid,
+                        None,
+                    )? {
+                        Some(by) => crate::visibility::placeholder::title_by(&by),
+                        None => a.title.clone(),
+                    }
+                }
+                None => crate::visibility::placeholder::title_by(&sight.names(&[])?),
+            };
+            let keys: Vec<String> = authors
+                .iter()
+                .filter_map(|a| match a {
+                    Author::Owner => owner.clone(),
+                    Author::Person(p) => Some(p.clone()),
+                    Author::Unconnected => Some(super::approvals::UNCONNECTED.to_string()),
+                    Author::System => None,
+                })
+                .collect();
+            let asked = super::approvals::request_state_in(
+                sight.c,
+                approver.as_deref(),
+                &aid,
+                &tid,
+                &keys,
+            )? == crate::visibility::placeholder::ApprovalState::Requested;
+            out.push(Placeholder {
+                thread_id: tid,
+                artifact_id: aid,
+                count: ids.len(),
+                author,
+                title,
+                asked,
+            });
+        }
+        Ok(out)
+    }
 }
 
 fn waiting_on(harness: &str, has_hsid: bool, armed: bool, codex_push: bool) -> Tier {
@@ -458,12 +737,21 @@ impl Store {
         Ok((thread, touched))
     }
 
-    /// Hands over rows for `q` and records the hand-over in the same
+    /// Hands over rows for `q`, as `vis` lets its reader see them (spec
+    /// 2026-10-08 §8.4, M16), and records the hand-over in the same
     /// transaction, so two concurrent callers never receive the same row.
-    /// Undelivered rows are marked delivered by `q.tier`; resend-eligible rows
-    /// (see [`Tier::resends`]) get `resend_count + 1` and `resent: true`;
-    /// in-band tiers also acknowledge. Rows of deleted artifacts and resolved
-    /// threads are never handed over. Items are oldest first.
+    ///
+    /// Rows whose comment body the reader may see are handed over as
+    /// before, each other field it may not see replaced ([`FeedbackItem`]):
+    /// undelivered rows are marked delivered by `q.tier`; resend-eligible
+    /// rows (see [`Tier::resends`]) get `resend_count + 1` and `resent:
+    /// true`; in-band tiers also acknowledge. Rows whose body it may not
+    /// see are held: never marked, never resent. Each held undelivered row
+    /// not yet told of is counted in one [`Placeholder`] per (authors,
+    /// thread) and gets `placeholder_at`, so the session is told once;
+    /// `queue` hands over visible rows only and tells of none. Rows of
+    /// deleted artifacts and resolved threads are never handed over. Items
+    /// are oldest first.
     ///
     /// Each row handed over while undelivered is recorded as
     /// `feedback.delivered` (its ID and `q.tier`, the session in the
@@ -474,12 +762,28 @@ impl Store {
         ctx: &AuditCtx,
         q: &TakeFeedback,
         browser_base: &str,
-    ) -> Result<(Vec<FeedbackItem>, Touched)> {
+        vis: &Visibility,
+    ) -> Result<Taken> {
+        self.take_feedback_readable(ctx, q, browser_base, vis, None)
+    }
+
+    /// [`Store::take_feedback`], holding as well every row on an artifact
+    /// `readable` says the session may not read (a person's agent whose
+    /// rights were narrowed since): such rows are neither handed over nor
+    /// told of. `None` reads every artifact.
+    pub fn take_feedback_readable(
+        &self,
+        ctx: &AuditCtx,
+        q: &TakeFeedback,
+        browser_base: &str,
+        vis: &Visibility,
+        readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)>,
+    ) -> Result<Taken> {
         let cutoff = ts(self.now_utc(), Self::RESEND_AFTER_SECS);
         let resends = q.include_resends && q.tier.resends();
         let now = self.now();
         let base = browser_base.trim_end_matches('/').to_string();
-        let pending = self.with_tx(|tx| {
+        let (pending, placeholders) = self.with_tx(|tx| {
             let mut stmt = tx.prepare_cached(TAKE_FEEDBACK)?;
             let rows = stmt
                 .query_map(
@@ -517,60 +821,97 @@ impl Store {
                                 }),
                                 None => None,
                             },
+                            told: r.get(18)?,
                         })
                     },
                 )?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             drop(stmt);
+            let mut sight = Sight::new(tx, vis);
+            let mut held = Held::default();
             // A row whose anchor or artifact ID no longer parses is left
             // untouched (and skipped) rather than marked delivered without
             // being handed over.
             let mut good = Vec::with_capacity(rows.len());
-            for p in rows {
+            for mut p in rows {
                 let parsed = serde_json::from_str::<Anchor>(&p.anchor_json)
                     .ok()
                     .zip(ArtifactId::parse(&p.artifact_id).ok());
-                match parsed {
-                    Some((anchor, aid)) => {
-                        let clip_path = p.has_clip.then(|| {
-                            self.home.clip_path(&aid, &p.thread_id).to_string_lossy().into_owned()
-                        });
-                        let page = super::live::live_page_of_conn(tx, &p.artifact_id)?;
-                        let live_path: Option<String> = match page {
-                            Some(_) => tx.query_row(
-                                "SELECT live_path FROM threads WHERE id = ?1",
-                                params![p.thread_id],
-                                |r| r.get(0),
-                            )?,
-                            None => None,
-                        };
-                        let live = page.map(|lp| {
-                            crate::feedback::LiveRef {
-                                page_url: format!(
-                                    "{}{}{}",
-                                    lp.origin,
-                                    live_path.as_deref().unwrap_or(&lp.path),
-                                    anchor.route.as_deref().unwrap_or("")
-                                ),
-                                snapshot_path: self
-                                    .home
-                                    .version_dir(&aid, p.version_n)
-                                    .join(crate::publish::INDEX)
-                                    .to_string_lossy()
-                                    .into_owned(),
-                            }
-                        });
-                        good.push((p, anchor, clip_path, live));
-                    }
-                    None => tracing::warn!(
+                let Some((anchor, aid)) = parsed else {
+                    tracing::warn!(
                         feedback_id = p.id.as_str(),
                         thread_id = p.thread_id.as_str(),
                         artifact_id = p.artifact_id.as_str(),
                         "skipping feedback on a corrupt thread row"
-                    ),
+                    );
+                    continue;
+                };
+                if let Some(may) = readable {
+                    match sight.artifact(&p.artifact_id)? {
+                        Some(a) if may(&a) => {}
+                        _ => continue,
+                    }
                 }
+                let withheld = if vis.is_all() {
+                    None
+                } else {
+                    match sight.row(&p, &anchor)? {
+                        Seen::Held(authors) => {
+                            if !p.delivered && !p.told && q.tier != Tier::Queue {
+                                held.add(&mut sight, &p, &authors)?;
+                            }
+                            continue;
+                        }
+                        Seen::Body(w) => w,
+                    }
+                };
+                let withheld = withheld.filter(|w| !w.is_empty());
+                let shown = withheld.as_ref();
+                let clip_path = (p.has_clip && !shown.is_some_and(|w| w.clip))
+                    .then(|| self.home.clip_path(&aid, &p.thread_id).to_string_lossy().into_owned());
+                if let Some(w) = shown {
+                    if w.title.is_some() {
+                        p.title = crate::visibility::placeholder::title_by(
+                            w.title.as_deref().unwrap_or_default(),
+                        );
+                    }
+                    if w.note
+                        && let Some(b) = p.batch.as_mut()
+                    {
+                        b.note = None;
+                    }
+                }
+                let anchor_shown = shown.is_none_or(|w| w.anchor.is_none());
+                let page = super::live::live_page_of_conn(tx, &p.artifact_id)?;
+                let live_path: Option<String> = match page {
+                    Some(_) => tx.query_row(
+                        "SELECT live_path FROM threads WHERE id = ?1",
+                        params![p.thread_id],
+                        |r| r.get(0),
+                    )?,
+                    None => None,
+                };
+                let live = page.map(|lp| crate::feedback::LiveRef {
+                    page_url: format!(
+                        "{}{}{}",
+                        lp.origin,
+                        live_path.as_deref().unwrap_or(&lp.path),
+                        if anchor_shown {
+                            anchor.route.as_deref().unwrap_or("")
+                        } else {
+                            ""
+                        }
+                    ),
+                    snapshot_path: self
+                        .home
+                        .version_dir(&aid, p.version_n)
+                        .join(crate::publish::INDEX)
+                        .to_string_lossy()
+                        .into_owned(),
+                });
+                good.push((p, anchor_shown.then_some(anchor), clip_path, live, withheld));
             }
-            for (p, _, _, _) in &good {
+            for (p, _, _, _, _) in &good {
                 if p.delivered {
                     tx.execute(
                         "UPDATE feedback SET resend_count = resend_count + 1, last_sent_at = ?2,
@@ -594,11 +935,17 @@ impl Store {
                     self.record_audit(tx, ctx, rec)?;
                 }
             }
-            Ok(good)
+            let placeholders = held.finish(&mut sight, &now)?;
+            Ok((good, placeholders))
         })?;
         let mut touched = Touched::default();
+        for p in &placeholders {
+            touched
+                .threads
+                .insert((p.artifact_id.clone(), p.thread_id.clone()));
+        }
         let mut items = Vec::with_capacity(pending.len());
-        for (p, anchor, clip_path, live) in pending {
+        for (p, anchor, clip_path, live, withheld) in pending {
             touched
                 .threads
                 .insert((p.artifact_id.clone(), p.thread_id.clone()));
@@ -619,9 +966,14 @@ impl Store {
                 created_at: p.created_at,
                 batch: p.batch,
                 live,
+                withheld,
             });
         }
-        Ok((items, touched))
+        Ok(Taken {
+            items,
+            placeholders,
+            touched,
+        })
     }
 
     /// Returns `queue` hand-overs that were not confirmed to undelivered, so
@@ -671,14 +1023,17 @@ impl Store {
     /// Records that `session_id` has seen the threads (it read, replied to, or
     /// resolved them). Rows not yet delivered are marked delivered by
     /// `piggyback`, the in-band tool path, each recorded as
-    /// `feedback.delivered` under `ctx`.
+    /// `feedback.delivered` under `ctx`. A row whose comment body `vis`
+    /// withholds from the session's reader was not seen: it stays held
+    /// (spec 2026-10-08 M16).
     pub fn acknowledge(
         &self,
         ctx: &AuditCtx,
         session_id: &str,
         thread_ids: &[String],
+        vis: &Visibility,
     ) -> Result<Touched> {
-        self.acknowledge_where(ctx, "thread_id", session_id, thread_ids)
+        self.acknowledge_where(ctx, "thread_id", session_id, thread_ids, vis)
     }
 
     /// Like [`Store::acknowledge`], for `session_id`'s rows on exactly the
@@ -689,59 +1044,74 @@ impl Store {
         ctx: &AuditCtx,
         session_id: &str,
         comment_ids: &[String],
+        vis: &Visibility,
     ) -> Result<Touched> {
-        self.acknowledge_where(ctx, "comment_id", session_id, comment_ids)
+        self.acknowledge_where(ctx, "comment_id", session_id, comment_ids, vis)
     }
 
     /// Acknowledges `session_id`'s unacknowledged rows whose `column`
-    /// (`thread_id` or `comment_id`) is one of `ids`, recording the first
-    /// delivery of each that was undelivered.
+    /// (`thread_id` or `comment_id`) is one of `ids` and whose comment body
+    /// `vis` lets the session see, recording the first delivery of each
+    /// that was undelivered.
     fn acknowledge_where(
         &self,
         ctx: &AuditCtx,
         column: &str,
         session_id: &str,
         ids: &[String],
+        vis: &Visibility,
     ) -> Result<Touched> {
         debug_assert!(matches!(column, "thread_id" | "comment_id"));
         let now = self.now();
         let mut touched = Touched::default();
-        let undelivered = format!(
-            "SELECT f.id, f.thread_id, t.artifact_id FROM feedback f JOIN threads t ON t.id = f.thread_id
+        let rows = format!(
+            "SELECT f.id, f.thread_id, t.artifact_id, f.comment_id, f.delivered_at IS NULL
+             FROM feedback f JOIN threads t ON t.id = f.thread_id
              WHERE f.{column} = ?1 AND f.target_session_id = ?2 AND f.acknowledged_at IS NULL
-                AND f.delivered_at IS NULL
              ORDER BY f.created_at, f.id"
         );
-        let update = format!(
-            "UPDATE feedback SET acknowledged_at = ?3, delivered_at = COALESCE(delivered_at, ?3),
-                delivery_tier = COALESCE(delivery_tier, 'piggyback'), last_sent_at = COALESCE(last_sent_at, ?3)
-             WHERE {column} = ?1 AND target_session_id = ?2 AND acknowledged_at IS NULL
-             RETURNING thread_id"
-        );
         self.with_tx(|tx| {
+            let mut sight = Sight::new(tx, vis);
             for id in ids {
-                let first: Vec<(String, String, String)> = {
-                    let mut stmt = tx.prepare_cached(&undelivered)?;
+                let found: Vec<(String, String, String, String, bool)> = {
+                    let mut stmt = tx.prepare_cached(&rows)?;
                     stmt.query_map(params![id, session_id], |r| {
-                        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
                     })?
                     .collect::<rusqlite::Result<Vec<_>>>()?
                 };
-                for (fid, tid, aid) in &first {
-                    let rec =
-                        delivered_record(&now, aid, tid, session_id, fid, Tier::Piggyback.as_str());
-                    self.record_audit(tx, ctx, rec)?;
-                }
-                let tids: Vec<String> = {
-                    let mut stmt = tx.prepare(&update)?;
-                    stmt.query_map(params![id, session_id, now], |r| r.get(0))?
-                        .collect::<rusqlite::Result<Vec<_>>>()?
-                };
-                for tid in tids {
-                    let aid: String = tx.query_row(
-                        "SELECT artifact_id FROM threads WHERE id = ?1",
-                        params![tid],
-                        |r| r.get(0),
+                for (fid, tid, aid, cid, undelivered) in found {
+                    if !vis.is_all() {
+                        let seen = sight.thread(&tid)?.is_some_and(|t| {
+                            t.comments.iter().any(|c| {
+                                c.id == cid
+                                    && vis.sees(
+                                        &visibility::authors_of_comment(c),
+                                        &aid,
+                                        Some(&tid),
+                                    )
+                            })
+                        });
+                        if !seen {
+                            continue;
+                        }
+                    }
+                    if undelivered {
+                        let rec = delivered_record(
+                            &now,
+                            &aid,
+                            &tid,
+                            session_id,
+                            &fid,
+                            Tier::Piggyback.as_str(),
+                        );
+                        self.record_audit(tx, ctx, rec)?;
+                    }
+                    tx.execute(
+                        "UPDATE feedback SET acknowledged_at = ?2, delivered_at = COALESCE(delivered_at, ?2),
+                            delivery_tier = COALESCE(delivery_tier, 'piggyback'), last_sent_at = COALESCE(last_sent_at, ?2)
+                         WHERE id = ?1",
+                        params![fid, now],
                     )?;
                     touched.threads.insert((aid, tid));
                 }
@@ -795,7 +1165,19 @@ impl Store {
     /// target; the stamp is set only where it is still unset, so concurrent
     /// followers never announce the same row twice. Delivery is unaffected:
     /// the rows still wait for tiers 1, 2 and 4.
-    pub fn take_notices(&self, session_id: &str, browser_base: &str) -> Result<Vec<Notice>> {
+    ///
+    /// Only rows whose comment body `vis` lets its reader see are
+    /// announced, on artifacts `readable` lets the session read (`None`:
+    /// every one); a held row stays unannounced until it may be seen. A
+    /// notice's title is `an artifact by <name>` when the reader may not see
+    /// it (spec 2026-10-08 §8.4).
+    pub fn take_notices(
+        &self,
+        session_id: &str,
+        browser_base: &str,
+        vis: &Visibility,
+        readable: Option<&(dyn Fn(&Artifact) -> bool + Sync)>,
+    ) -> Result<Vec<Notice>> {
         let base = browser_base.trim_end_matches('/').to_string();
         let now = self.now();
         self.with_tx(|tx| {
@@ -823,8 +1205,39 @@ impl Store {
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?
             };
+            let mut sight = Sight::new(tx, vis);
             let mut out = Vec::new();
-            for (feedback_id, comment_id, thread_id, artifact_id, title) in rows {
+            for (feedback_id, comment_id, thread_id, artifact_id, mut title) in rows {
+                if let Some(may) = readable {
+                    match sight.artifact(&artifact_id)? {
+                        Some(a) if may(&a) => {}
+                        _ => continue,
+                    }
+                }
+                if !vis.is_all() {
+                    let Some(t) = sight.thread(&thread_id)? else {
+                        continue;
+                    };
+                    let Some(c) = t.comments.iter().find(|c| c.id == comment_id) else {
+                        continue;
+                    };
+                    if !vis.sees(
+                        &visibility::authors_of_comment(c),
+                        &artifact_id,
+                        Some(&thread_id),
+                    ) {
+                        continue;
+                    }
+                    if let Some(a) = sight.artifact(&artifact_id)?
+                        && let Some(by) = sight.withheld(
+                            &visibility::authors_of_artifact_field(&a, "title"),
+                            &artifact_id,
+                            None,
+                        )?
+                    {
+                        title = crate::visibility::placeholder::title_by(&by);
+                    }
+                }
                 let changed = tx.execute(
                     "UPDATE feedback SET notified_at = ?2
                      WHERE id = ?1 AND notified_at IS NULL AND delivered_at IS NULL",
@@ -876,7 +1289,10 @@ impl Store {
 
     /// The state of the thread's latest forwarded comment, or `None` when
     /// nothing was forwarded. Any acknowledged row: `acknowledged`; else any
-    /// delivered row: `delivered`; else any row targeting a live session:
+    /// delivered row: `delivered`; else any row a take held from its live
+    /// session because its body is withheld (`placeholder_at`): `withheld`,
+    /// naming that session's person as `approver` (spec 2026-10-08 §8.4);
+    /// else any row targeting a live session:
     /// `sent`, with the tier that session waits on (`queue` for an armed Codex
     /// session with a known session ID when `codex_push` and `codex queue` has
     /// not failed to take the row, `inject` for an
@@ -913,7 +1329,7 @@ impl Store {
 pub(crate) const TAKE_FEEDBACK: &str = "SELECT f.id, f.thread_id, f.comment_id, f.delivered_at IS NOT NULL AS delivered,
                         t.artifact_id, a.title, t.version_n, t.anchor_json, t.has_clip,
                         c.author_name, c.body, c.created_at, c.via_page,
-                        f.batch_id, b.size, b.note, b.sent_by, b.sender
+                        f.batch_id, b.size, b.note, b.sent_by, b.sender, f.placeholder_at IS NOT NULL
                  FROM feedback f
                  LEFT JOIN send_batches b ON b.id = f.batch_id
                  JOIN threads t ON t.id = f.thread_id
@@ -941,7 +1357,9 @@ pub(crate) fn id_array(ids: &[String]) -> String {
 pub(crate) const FEEDBACK_STATES: &str =
     "SELECT f.thread_id, f.target_session_id, f.created_at, f.delivered_at, f.delivery_tier, f.acknowledged_at,
             f.resend_count, f.untargeted_at, s.ended_at, s.harness, s.harness_session_id IS NOT NULL,
-            COALESCE(w.replies_armed, 0), f.push_failed_at IS NOT NULL
+            COALESCE(w.replies_armed, 0), f.push_failed_at IS NOT NULL, f.placeholder_at,
+            CASE WHEN s.person IS NULL THEN (SELECT display_name FROM viewers WHERE owner = 1)
+                 ELSE (SELECT display_name FROM viewers WHERE public_id = s.person) END
        FROM json_each(?1) j
       CROSS JOIN feedback f ON f.thread_id = j.value
        JOIN threads t ON t.id = f.thread_id
@@ -964,6 +1382,10 @@ struct StateRow {
     has_hsid: bool,
     armed: bool,
     push_failed: bool,
+    /// When a take held it from its session and told it so.
+    placeholder_at: Option<String>,
+    /// The display name of its session's person.
+    person_name: Option<String>,
 }
 
 pub(crate) fn feedback_states_in(
@@ -988,6 +1410,8 @@ pub(crate) fn feedback_states_in(
             has_hsid: r.get::<_, Option<bool>>(10)?.unwrap_or(false),
             armed: r.get::<_, i64>(11)? != 0,
             push_failed: r.get(12)?,
+            placeholder_at: r.get(13)?,
+            person_name: r.get(14)?,
         });
     }
     Ok(by_thread
@@ -1009,6 +1433,7 @@ fn state_of(thread_id: &str, rows: &[StateRow], codex_push: bool) -> FeedbackSta
         since: since.to_string(),
         resends,
         exhausted,
+        approver: None,
     };
     if let Some((r, at)) = rows
         .iter()
@@ -1039,6 +1464,18 @@ fn state_of(thread_id: &str, rows: &[StateRow], codex_push: bool) -> FeedbackSta
             resends,
             exhausted,
         );
+    }
+    if let Some((r, at)) = rows.iter().find_map(|r| {
+        r.placeholder_at
+            .as_deref()
+            .filter(|_| r.target.is_some() && r.ended_at.is_none())
+            .map(|at| (r, at))
+    }) {
+        let mut s = state(FeedbackPhase::Withheld, None, at, 0, false);
+        s.approver = Some(crate::feedback::display_name(
+            r.person_name.as_deref().unwrap_or(""),
+        ));
+        return s;
     }
     if let Some(r) = rows
         .iter()
@@ -1097,7 +1534,9 @@ mod tests {
             artifact_id: None,
             include_resends: true,
         };
-        st.take_feedback(DAEMON, &q, BASE).unwrap().0
+        st.take_feedback(DAEMON, &q, BASE, &Visibility::all())
+            .unwrap()
+            .items
     }
 
     fn sorted_targets(st: &Store, tid: &str) -> Vec<Option<String>> {
@@ -1171,16 +1610,22 @@ mod tests {
         let tid = thread(&st, &aid, "hi");
         st.send_to_agent(DAEMON, &tid).unwrap();
         assert!(
-            st.take_notices(&grok, "http://h:1").unwrap().is_empty(),
+            st.take_notices(&grok, "http://h:1", &Visibility::all(), None)
+                .unwrap()
+                .is_empty(),
             "unarmed: no notice"
         );
         st.ensure_watch(DAEMON, &grok, &aid).unwrap();
-        let n = st.take_notices(&grok, "http://h:1").unwrap();
+        let n = st
+            .take_notices(&grok, "http://h:1", &Visibility::all(), None)
+            .unwrap();
         assert_eq!(n.len(), 1);
         assert_eq!(n[0].thread_id, tid);
         assert_eq!(n[0].url, format!("http://h:1/a/{}", aid.as_str()));
         assert!(
-            st.take_notices(&grok, "http://h:1").unwrap().is_empty(),
+            st.take_notices(&grok, "http://h:1", &Visibility::all(), None)
+                .unwrap()
+                .is_empty(),
             "announced once"
         );
         // The notice delivered nothing: the Stop hook still hands the row over, once.
@@ -1197,7 +1642,11 @@ mod tests {
         let tid = thread(&st, &aid, "hi");
         st.send_to_agent(DAEMON, &tid).unwrap();
         take(&st, &grok, Tier::Piggyback);
-        assert!(st.take_notices(&grok, "http://h:1").unwrap().is_empty());
+        assert!(
+            st.take_notices(&grok, "http://h:1", &Visibility::all(), None)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1208,12 +1657,22 @@ mod tests {
         st.ensure_watch(DAEMON, &first, &aid).unwrap();
         let tid = thread(&st, &aid, "hi");
         st.send_to_agent(DAEMON, &tid).unwrap();
-        assert_eq!(st.take_notices(&first, "http://h:1").unwrap().len(), 1);
+        assert_eq!(
+            st.take_notices(&first, "http://h:1", &Visibility::all(), None)
+                .unwrap()
+                .len(),
+            1
+        );
         st.end_session(DAEMON, &first).unwrap();
         let next = session(&st, "grok", "g2");
         st.watch(DAEMON, &next, &aid, true).unwrap();
         st.retarget_untargeted(&aid, &next).unwrap();
-        assert_eq!(st.take_notices(&next, "http://h:1").unwrap().len(), 1);
+        assert_eq!(
+            st.take_notices(&next, "http://h:1", &Visibility::all(), None)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     fn targets(st: &Store, tid: &str) -> Vec<Option<String>> {
@@ -1502,7 +1961,7 @@ mod tests {
         st.send_to_agent(DAEMON, &t.id).unwrap();
         let items = take(&st, &owner, Tier::Piggyback);
         assert_eq!(items.len(), 1);
-        assert!(items[0].anchor.is_whole());
+        assert!(items[0].anchor.as_ref().unwrap().is_whole());
         let text = crate::feedback::render_item(&items[0]);
         assert!(
             text.contains("\nAnchored on: the whole artifact  (v1)\n"),
@@ -1607,7 +2066,10 @@ mod tests {
             include_resends: false,
         };
         assert!(
-            st.take_feedback(DAEMON, &q, BASE).unwrap().0.is_empty(),
+            st.take_feedback(DAEMON, &q, BASE, &Visibility::all())
+                .unwrap()
+                .items
+                .is_empty(),
             "stop_hook_active excludes resends"
         );
         assert!(
@@ -1627,7 +2089,12 @@ mod tests {
         let tid = thread(&st, &aid, "hi");
         st.send_to_agent(DAEMON, &tid).unwrap();
         let touched = st
-            .acknowledge(DAEMON, &owner, std::slice::from_ref(&tid))
+            .acknowledge(
+                DAEMON,
+                &owner,
+                std::slice::from_ref(&tid),
+                &Visibility::all(),
+            )
             .unwrap();
         assert!(
             touched
@@ -1669,13 +2136,23 @@ mod tests {
             .unwrap();
         st.send_to_agent(DAEMON, &tid).unwrap();
         assert!(
-            st.acknowledge_comments(DAEMON, &other, std::slice::from_ref(&first))
-                .unwrap()
-                .is_empty(),
+            st.acknowledge_comments(
+                DAEMON,
+                &other,
+                std::slice::from_ref(&first),
+                &Visibility::all()
+            )
+            .unwrap()
+            .is_empty(),
             "another session's acknowledgement touches nothing"
         );
         let touched = st
-            .acknowledge_comments(DAEMON, &owner, std::slice::from_ref(&first))
+            .acknowledge_comments(
+                DAEMON,
+                &owner,
+                std::slice::from_ref(&first),
+                &Visibility::all(),
+            )
             .unwrap();
         assert!(
             touched
@@ -1832,8 +2309,13 @@ mod tests {
             (s.state, s.tier),
             (FeedbackPhase::Delivered, Some(Tier::StopHook))
         );
-        st.acknowledge(DAEMON, &claude, std::slice::from_ref(&tid))
-            .unwrap();
+        st.acknowledge(
+            DAEMON,
+            &claude,
+            std::slice::from_ref(&tid),
+            &Visibility::all(),
+        )
+        .unwrap();
         assert_eq!(
             st.feedback_state(&tid, false).unwrap().unwrap().state,
             FeedbackPhase::Acknowledged
@@ -2038,7 +2520,10 @@ mod tests {
             artifact_id: Some(a1.as_str().into()),
             include_resends: true,
         };
-        let (items, _) = st.take_feedback(DAEMON, &q, BASE).unwrap();
+        let items = st
+            .take_feedback(DAEMON, &q, BASE, &Visibility::all())
+            .unwrap()
+            .items;
         assert_eq!(items.len(), 1);
         assert!(crate::feedback::render_item(&items[0]).contains("\nViewer: \"one\"\n"));
         let clip = items[0].clip_path.clone().unwrap();
@@ -2047,5 +2532,407 @@ mod tests {
             "{clip}"
         );
         assert_eq!(take(&st, &owner, Tier::Wait)[0].body, "two");
+    }
+}
+
+/// Delivery to an agent of another person, and to the owner's agents once
+/// people are connected (spec 2026-10-08 §8.3, §8.4, §9.4, M16, M17).
+#[cfg(test)]
+mod delivery {
+    use super::*;
+    use crate::feedback::render_delivery;
+    use crate::publish::{PublishRequest, validate};
+    use crate::store::approvals::{Scope, Via};
+    use crate::store::people::tests::{approved, store};
+    use crate::store::test_util::{DAEMON, anchor};
+    use crate::store::threads::{AUTHOR_VIEWER, NewComment, NewThread};
+    use crate::{RegisterSession, Store};
+
+    const BASE: &str = "http://h";
+    const MIA_TITLE: &str = "Mia's secret plan";
+    const MIA_QUOTE: &str = "Mia's quoted words";
+
+    struct Two {
+        _dir: tempfile::TempDir,
+        clock: std::sync::Arc<crate::working::ManualClock>,
+        st: Store,
+        owner: String,
+        sam: String,
+        mia: String,
+        /// Sam's agent's session.
+        sid: String,
+    }
+
+    fn two_people() -> Two {
+        let (dir, clock, st) = store();
+        let owner = st.owner_viewer(true).unwrap().public_id;
+        let (sam_grant, _, _) = approved(&st, "Sam", [1; 32]);
+        let sam = st.viewer_of_grant(&sam_grant).unwrap().public_id;
+        let (mia_grant, _, _) = approved(&st, "Mia", [2; 32]);
+        let mia = st.viewer_of_grant(&mia_grant).unwrap().public_id;
+        let sid = st
+            .register_session(
+                DAEMON,
+                RegisterSession {
+                    harness: "claude".into(),
+                    harness_session_id: Some("sam-h1".into()),
+                    cwd: "/w".into(),
+                    grant_id: Some(sam_grant),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .id;
+        assert_eq!(
+            st.get_session(&sid).unwrap().unwrap().person.as_deref(),
+            Some(sam.as_str())
+        );
+        Two {
+            _dir: dir,
+            clock,
+            st,
+            owner,
+            sam,
+            mia,
+            sid,
+        }
+    }
+
+    impl Two {
+        /// An artifact `person` publishes, titled `title`, whose index.html
+        /// holds `quote`; Sam's agent watches it with replies armed.
+        fn publish(&self, person: &str, title: &str, quote: &str) -> ArtifactId {
+            let req: PublishRequest = serde_json::from_value(serde_json::json!({
+                "title": title,
+                "files": {"index.html": {"content": format!("<main><h2>{quote}</h2></main>"), "encoding": "utf8"}}
+            }))
+            .unwrap();
+            let mut p = validate(req).unwrap();
+            p.person = Some(person.to_string());
+            let (a, _) = self.st.create_artifact(DAEMON, p, None).unwrap();
+            let aid = ArtifactId::parse(&a.id).unwrap();
+            self.st.ensure_watch(DAEMON, &self.sid, &aid).unwrap();
+            aid
+        }
+
+        /// A thread on `aid` by viewer `by`, quoting `quote`, with a clip
+        /// and `n` comments in all; sent to the agents.
+        fn thread(&self, aid: &ArtifactId, by: &str, body: &str, quote: &str, n: usize) -> String {
+            let name = if by == self.mia { "Mia" } else { "Alex" };
+            let t = self
+                .st
+                .create_thread(
+                    DAEMON,
+                    aid,
+                    NewThread {
+                        version_n: 1,
+                        anchor: crate::Anchor {
+                            quote: Some(quote.into()),
+                            ..anchor()
+                        },
+                        author_name: name.into(),
+                        author_public_id: Some(by.to_string()),
+                        body: body.into(),
+                        clip: Some(b"\x89PNG\r\n\x1a\nclip".to_vec()),
+                        via_page: false,
+                    },
+                )
+                .unwrap();
+            for i in 1..n {
+                self.st
+                    .add_comment(
+                        DAEMON,
+                        &t.id,
+                        NewComment {
+                            author_kind: AUTHOR_VIEWER,
+                            author_name: name.into(),
+                            author_public_id: Some(by.to_string()),
+                            via_session_id: None,
+                            body: format!("{body} {i}"),
+                            via_page: false,
+                        },
+                    )
+                    .unwrap();
+            }
+            self.st.send_to_agent(DAEMON, &t.id).unwrap();
+            t.id
+        }
+
+        fn sam_vis(&self) -> Visibility {
+            Visibility::for_session(&self.st, &self.sid).unwrap()
+        }
+
+        fn take(&self, tier: Tier, vis: &Visibility) -> Taken {
+            self.st
+                .take_feedback(
+                    DAEMON,
+                    &TakeFeedback {
+                        session_id: self.sid.clone(),
+                        tier,
+                        artifact_id: None,
+                        include_resends: true,
+                    },
+                    BASE,
+                    vis,
+                )
+                .unwrap()
+        }
+
+        fn approve(&self, author: &str, scope: Scope) -> String {
+            self.st
+                .approve(DAEMON, Some(&self.sam), author, scope, Via::Shell)
+                .unwrap()
+                .id
+        }
+
+        fn rows(&self, tid: &str) -> Vec<Feedback> {
+            self.st
+                .feedback_rows(tid)
+                .unwrap()
+                .into_iter()
+                .filter(|f| f.target_session_id.as_deref() == Some(&self.sid))
+                .collect()
+        }
+    }
+
+    /// Mia's `n` comments on an artifact of Sam's, sent to Sam's agent.
+    fn mia_sends_to_sams_agent(w: &Two, n: usize) -> String {
+        let aid = w.publish(&w.sam, "Sam's plan", "Sam's words");
+        w.thread(&aid, &w.mia, "MIACANARY", "Sam's words", n)
+    }
+
+    #[test]
+    fn withheld_bodies_stay_undelivered_and_get_one_placeholder() {
+        let w = two_people();
+        let tid = mia_sends_to_sams_agent(&w, 2);
+        let mut vis = w.sam_vis();
+        // `queue` hands over visible rows only and tells of none.
+        let q = w.take(Tier::Queue, &vis);
+        assert!(q.items.is_empty() && q.placeholders.is_empty());
+        let r = w.take(Tier::Piggyback, &vis);
+        assert!(r.items.is_empty());
+        assert_eq!((r.placeholders.len(), r.placeholders[0].count), (1, 2));
+        assert_eq!(
+            render_delivery(&r.items, &r.placeholders).unwrap(),
+            format!(
+                "[clax] 2 comments from Mia on \"Sam's plan\" (thread {tid}) are withheld until your person approves them. To ask your person, call ask with {{\"approval\": {{\"thread_id\": \"{tid}\"}}}}."
+            )
+        );
+        assert!(r.touched.threads.iter().any(|(_, t)| t == &tid));
+        for tier in [
+            Tier::Piggyback,
+            Tier::StopHook,
+            Tier::PromptHook,
+            Tier::Wait,
+            Tier::Inject,
+        ] {
+            let again = w.take(tier, &vis);
+            assert!(
+                again.items.is_empty() && again.placeholders.is_empty(),
+                "once: {tier:?}"
+            );
+        }
+        // Held, not dropped and not delivered; people see it withheld,
+        // waiting on Sam.
+        assert!(w.rows(&tid).iter().all(|f| f.delivered_at.is_none()));
+        let state = w.st.feedback_state(&tid, false).unwrap().unwrap();
+        assert_eq!(
+            (state.state, state.approver.as_deref(), state.tier),
+            (FeedbackPhase::Withheld, Some("Sam"), None)
+        );
+        // Reading the thread acknowledges nothing it withholds.
+        w.st.acknowledge(DAEMON, &w.sid, std::slice::from_ref(&tid), &vis)
+            .unwrap();
+        assert!(w.rows(&tid).iter().all(|f| f.acknowledged_at.is_none()));
+        // Approved: delivered at the next take, with the view refreshed.
+        w.approve(&w.mia, Scope::Thread(tid.clone()));
+        assert_eq!(
+            w.st.feedback_state(&tid, false).unwrap().unwrap().state,
+            FeedbackPhase::Sent,
+            "approved rows wait for a take"
+        );
+        assert!(
+            w.take(Tier::Piggyback, &vis).items.is_empty(),
+            "a stale view"
+        );
+        vis.refresh_if_stale(&w.st, w.st.visibility_generation())
+            .unwrap();
+        let r = w.take(Tier::Piggyback, &vis);
+        assert_eq!((r.items.len(), r.placeholders.len()), (2, 0));
+        assert_eq!(r.items[0].body, "MIACANARY");
+        assert!(r.items[0].withheld.is_none(), "Sam's own page");
+    }
+
+    #[test]
+    fn a_visible_body_is_delivered_with_its_withheld_fields_placeholdered() {
+        let w = two_people();
+        let aid = w.publish(&w.mia, MIA_TITLE, MIA_QUOTE);
+        let tid = w.thread(&aid, &w.owner, "fix the axis", MIA_QUOTE, 1);
+        // Sam approves the owner's words, not Mia's.
+        w.approve(&w.owner, Scope::Everywhere);
+        let vis = w.sam_vis();
+        let r = w.take(Tier::Piggyback, &vis);
+        assert_eq!((r.items.len(), r.placeholders.len()), (1, 0));
+        let text = render_delivery(&r.items, &r.placeholders).unwrap();
+        assert!(text.contains("fix the axis"), "{text}");
+        assert!(text.contains("on \"an artifact by Mia\""), "{text}");
+        assert!(
+            text.contains("\nAnchored on: (withheld: page by Mia)  (v1)\n"),
+            "{text}"
+        );
+        assert!(text.contains("\nClip: withheld\n"), "{text}");
+        assert!(
+            !text.contains(MIA_TITLE) && !text.contains(MIA_QUOTE),
+            "{text}"
+        );
+        let json = serde_json::to_string(&r.items).unwrap();
+        assert!(
+            !json.contains(MIA_TITLE) && !json.contains(MIA_QUOTE) && !json.contains("clips/"),
+            "{json}"
+        );
+        let i = &r.items[0];
+        assert_eq!((i.anchor.is_none(), i.clip_path.is_none()), (true, true));
+        assert_eq!(
+            i.withheld,
+            Some(ItemWithheld {
+                title: Some("Mia".into()),
+                anchor: Some("Mia".into()),
+                clip: true,
+                note: false
+            })
+        );
+        assert!(w.rows(&tid)[0].delivered_at.is_some());
+    }
+
+    #[test]
+    fn revocation_holds_undelivered_rows_again_and_tells_once() {
+        let w = two_people();
+        let tid = mia_sends_to_sams_agent(&w, 1);
+        // Told, approved, revoked before any take: told once more.
+        let r = w.take(Tier::Piggyback, &w.sam_vis());
+        assert_eq!(r.placeholders.len(), 1);
+        let id = w.approve(&w.mia, Scope::Everywhere);
+        w.st.revoke_approval(DAEMON, &id, Some(&w.sam)).unwrap();
+        let vis = w.sam_vis();
+        let r = w.take(Tier::Piggyback, &vis);
+        assert_eq!((r.items.len(), r.placeholders.len()), (0, 1));
+        assert!(
+            w.take(Tier::Piggyback, &vis).placeholders.is_empty(),
+            "once"
+        );
+        // Delivered while approved stays delivered; never resent once
+        // withheld again.
+        let id = w.approve(&w.mia, Scope::Thread(tid.clone()));
+        let vis = w.sam_vis();
+        let first = w.take(Tier::StopHook, &vis);
+        assert_eq!(first.items.len(), 1);
+        w.st.revoke_approval(DAEMON, &id, Some(&w.sam)).unwrap();
+        w.clock.advance(Store::RESEND_AFTER_SECS + 1);
+        let vis = w.sam_vis();
+        let again = w.take(Tier::StopHook, &vis);
+        assert!(
+            again.items.is_empty() && again.placeholders.is_empty(),
+            "no resend"
+        );
+        assert!(w.rows(&tid)[0].delivered_at.is_some(), "still delivered");
+    }
+
+    #[test]
+    fn a_resend_carries_only_bodies_still_visible() {
+        let w = two_people();
+        let aid = w.publish(&w.sam, "Sam's plan", "Sam's words");
+        let mine = w.thread(&aid, &w.sam, "Sam's own note", "Sam's words", 1);
+        let id = w.approve(&w.mia, Scope::Everywhere);
+        let theirs = w.thread(&aid, &w.mia, "MIACANARY", "Sam's words", 1);
+        let first = w.take(Tier::StopHook, &w.sam_vis());
+        assert_eq!(first.items.len(), 2);
+        w.st.revoke_approval(DAEMON, &id, Some(&w.sam)).unwrap();
+        w.clock.advance(Store::RESEND_AFTER_SECS + 1);
+        let r = w.take(Tier::StopHook, &w.sam_vis());
+        let bodies: Vec<&str> = r.items.iter().map(|i| i.body.as_str()).collect();
+        assert_eq!(bodies, ["Sam's own note"]);
+        assert!(r.items[0].resent);
+        assert_eq!(w.rows(&theirs)[0].resend_count, 0);
+        assert_eq!(w.rows(&mine)[0].resend_count, 1);
+    }
+
+    #[test]
+    fn notices_announce_only_visible_bodies_under_a_filtered_title() {
+        let w = two_people();
+        let aid = w.publish(&w.mia, MIA_TITLE, MIA_QUOTE);
+        let tid = w.thread(&aid, &w.mia, "MIACANARY", MIA_QUOTE, 1);
+        let vis = w.sam_vis();
+        assert!(
+            w.st.take_notices(&w.sid, BASE, &vis, None)
+                .unwrap()
+                .is_empty()
+        );
+        w.approve(&w.mia, Scope::Thread(tid.clone()));
+        let vis = w.sam_vis();
+        let n = w.st.take_notices(&w.sid, BASE, &vis, None).unwrap();
+        assert_eq!(n.len(), 1);
+        assert_eq!(
+            n[0].title, "an artifact by Mia",
+            "the thread scope covers no title"
+        );
+        assert!(!crate::feedback::render_notice(&n[0]).contains(MIA_TITLE));
+    }
+
+    #[test]
+    fn rows_on_an_artifact_the_session_may_not_read_are_held_untold() {
+        let w = two_people();
+        let aid = w.publish(&w.sam, "Sam's plan", "Sam's words");
+        let tid = w.thread(&aid, &w.sam, "Sam's own note", "Sam's words", 1);
+        let vis = w.sam_vis();
+        let q = TakeFeedback {
+            session_id: w.sid.clone(),
+            tier: Tier::Piggyback,
+            artifact_id: None,
+            include_resends: true,
+        };
+        let none = |_: &Artifact| false;
+        let r =
+            w.st.take_feedback_readable(DAEMON, &q, BASE, &vis, Some(&none))
+                .unwrap();
+        assert!(r.items.is_empty() && r.placeholders.is_empty());
+        assert!(
+            w.st.take_notices(&w.sid, BASE, &vis, Some(&none))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(w.rows(&tid)[0].delivered_at.is_none());
+        assert_eq!(w.take(Tier::Piggyback, &vis).items.len(), 1);
+    }
+
+    #[test]
+    fn the_owners_agents_are_filtered_once_people_are_connected() {
+        let w = two_people();
+        let owner_sid = crate::store::test_util::session(&w.st, "claude", "o1");
+        let aid = w.publish(&w.mia, MIA_TITLE, MIA_QUOTE);
+        w.st.ensure_watch(DAEMON, &owner_sid, &aid).unwrap();
+        let tid = w.thread(&aid, &w.mia, "MIACANARY", MIA_QUOTE, 1);
+        let vis = Visibility::for_session(&w.st, &owner_sid).unwrap();
+        assert!(!vis.is_all());
+        let r =
+            w.st.take_feedback(
+                DAEMON,
+                &TakeFeedback {
+                    session_id: owner_sid.clone(),
+                    tier: Tier::Wait,
+                    artifact_id: None,
+                    include_resends: true,
+                },
+                BASE,
+                &vis,
+            )
+            .unwrap();
+        assert!(r.items.is_empty());
+        assert_eq!(r.placeholders.len(), 1);
+        let line = r.placeholders[0].line();
+        assert!(
+            line.contains("on \"an artifact by Mia\"") && !line.contains(MIA_TITLE),
+            "{line}"
+        );
+        assert!(line.contains(&tid));
     }
 }

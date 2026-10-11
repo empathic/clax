@@ -59,7 +59,8 @@ pub use anchor::{Anchor, AnchorKind};
 pub use error::{CoreError, Result};
 pub use events::{EVENT_BUS_CAPACITY, Event, EventBus, Resume, Stamped};
 pub use feedback::{
-    FeedbackBatch, FeedbackItem, FeedbackPhase, FeedbackState, Notice, Tier, Touched,
+    FeedbackBatch, FeedbackItem, FeedbackPhase, FeedbackState, ItemWithheld, Notice, Placeholder,
+    Tier, Touched,
 };
 pub use home::Home;
 pub use ids::{
@@ -71,7 +72,7 @@ pub use store::Store;
 pub use store::artifacts::{CorruptRow, MetaPatch};
 pub use store::attention::{AgentView, Attention, AttentionSummary, Participants, Person};
 pub use store::audit::AuditRow;
-pub use store::feedback::{SendTarget, TakeFeedback};
+pub use store::feedback::{SendTarget, TakeFeedback, Taken};
 pub use store::sessions::{
     EndReason, EndedSession, JoinSession, NameSource, Reaped, RegisterSession,
 };

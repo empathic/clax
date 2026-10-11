@@ -55,7 +55,7 @@ tempfile.workspace = true
 clax-fake-exe = { path = "../clax-fake-exe" }
 chrono.workspace = true
 rusqlite.workspace = true
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
 tokio-tungstenite.workspace = true
 
 [[test]]

@@ -176,6 +176,7 @@ async fn one_stream_carries_each_subscribed_topic_as_small_deltas() {
         since: "s".into(),
         resends: 0,
         exhausted: false,
+        approver: None,
     });
     assert!(r.quiet_for(300).await);
 }
