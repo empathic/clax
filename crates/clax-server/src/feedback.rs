@@ -731,6 +731,37 @@ impl Vis {
         Ok(())
     }
 
+    /// A question's view `view` (crate::questions::view) as its asking
+    /// agent sees it: the question, its answers and its agent are the
+    /// agent's person's own (spec §8.2); its artifact's title is the
+    /// title's authors', null with `withheld: {authors}` beside it in
+    /// `artifact` when the reader may not see it.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn filter_question(&self, st: &Store, view: &mut Value) -> clax_core::Result<()> {
+        let Some(vis) = self.filtering() else {
+            return Ok(());
+        };
+        let Some(aid) = view["artifact"]["id"].as_str() else {
+            return Ok(());
+        };
+        let Some(a) = st.get_artifact(&ArtifactId::parse(aid)?)? else {
+            return Ok(());
+        };
+        let withheld = vis.withheld_authors(
+            &visibility::authors_of_artifact_field(&a, "title"),
+            &a.id,
+            None,
+        );
+        if !withheld.is_empty() {
+            let named = Withhold::new(st, vis).named(&withheld)?;
+            view["artifact"]["title"] = Value::Null;
+            view["artifact"]["withheld"] = json!({"authors": named});
+        }
+        Ok(())
+    }
+
     /// An artifact's view `view` (its JSON, with or without the fields of
     /// `with_owner`): each of its text fields (title, description, icon,
     /// `capabilities`) the reader may not see null, with `withheld:

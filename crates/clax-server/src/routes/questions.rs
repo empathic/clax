@@ -1,9 +1,14 @@
 //! Agent questions (spec 2026-10-06-agent-questions-and-inbox §6.1).
 //! Session routes (token) let the asking session create, wait on, withdraw,
 //! release and record the terminal answer of its own questions; another
-//! session's question is 404. Owner routes (§6.2) let the owner list,
-//! read, answer, decline and release every question; any other caller is
-//! 403, and they keep the viewer routes' origin rules.
+//! session's question is 404. A question view an agent gets passes through
+//! its `Visibility` (spec 2026-10-08-multi-agent-multi-person §8.2): the
+//! question and its answers are its person's, the artifact's title is its
+//! authors'. The person routes (§6.2), person-scoped (spec §18), let the
+//! owner list, read, answer, decline and release the questions of the
+//! owner's agents, and a connected person those of their own agents;
+//! another person's question is 404, any other caller 403, and they keep
+//! the viewer routes' origin rules.
 
 use super::artifacts::{body, body_within, path};
 use crate::agent::{DeniedToGrants, TokenOrAgent};
@@ -12,7 +17,9 @@ use crate::auth::Caller;
 #[cfg(debug_assertions)]
 use crate::auth::RequireToken;
 use crate::error::ApiError;
+use crate::feedback::VisFor;
 use crate::identity::Identity;
+use crate::inbox::recipient_of;
 use crate::questions::{announce, arm_grace, start_grace, view as question_view};
 use crate::state::AppState;
 use crate::viewer::SameOrigin;
@@ -79,36 +86,20 @@ fn live(db: &Store, sid: &str) -> clax_core::Result<()> {
     }
 }
 
-/// The view of a question as its asking agent sees it: a person's agent
-/// gets its artifact's ID and kind, never its title, until the filter
-/// covers questions (the title is an author field, spec §8.2).
-fn for_asker(caller: &Caller, mut v: Value) -> Value {
-    if matches!(caller, Caller::PersonAgent { .. })
-        && let Some(a) = v.get_mut("artifact").and_then(Value::as_object_mut)
-    {
-        a.insert("title".into(), Value::Null);
-    }
-    v
+/// `v`, a question's view, as the asking agent may see it (spec §8.2): its
+/// artifact's title, an author field, through the agent's visibility `vf`
+/// ([`crate::feedback::Vis::filter_question`]). Runs on a store thread.
+fn for_asker(db: &Store, vf: &VisFor, mut v: Value) -> clax_core::Result<Value> {
+    vf.build(db)?.filter_question(db, &mut v)?;
+    Ok(v)
 }
 
-/// [`for_asker`] on the `question` of a response.
-fn answer_asker(
-    caller: &Caller,
-    r: Result<Json<Value>, QuestionError>,
-) -> Result<Json<Value>, QuestionError> {
-    match r {
-        Ok(Json(mut v)) => {
-            if let Some(q) = v.get_mut("question") {
-                *q = for_asker(caller, q.take());
-            }
-            Ok(Json(v))
-        }
-        Err(QuestionError::Closed { message, question }) => Err(QuestionError::Closed {
-            message,
-            question: for_asker(caller, question),
-        }),
-        Err(e) => Err(e),
-    }
+/// [`for_asker`] on the question of a [`Closed`].
+fn closed_for_asker(db: &Store, vf: &VisFor, c: Closed) -> clax_core::Result<Closed> {
+    Ok(match c {
+        Closed::Done(v) => Closed::Done(for_asker(db, vf, v)?),
+        Closed::Already(m, v) => Closed::Already(m, for_asker(db, vf, v)?),
+    })
 }
 
 /// What applying a [`Close`] came to.
@@ -140,7 +131,7 @@ pub(crate) fn close(
     match db.close_question(ctx, qid, c) {
         Ok(q) => {
             let v = question_view(db, &q)?;
-            announce(s, &q, v.clone());
+            announce(s, db, &q, v.clone());
             Ok(Closed::Done(v))
         }
         Err(CoreError::Invalid {
@@ -204,7 +195,16 @@ pub async fn create(
             qs
         }
     };
-    let surface_open = s.stream.holds_owner_topics();
+    // A mirrored question waits in Clax only while its person has Clax
+    // open: the owner for the owner's agents, a connected person for theirs.
+    let asker = match &a.caller {
+        Caller::PersonAgent { person, .. } => person.clone(),
+        _ => None,
+    };
+    let surface_open = s
+        .stream
+        .holds_surface(clax_core::store::inbox::recipient_key(asker.as_deref()));
+    let vf = VisFor::of(&a.caller, &s);
     let after = s.terminal_after_s;
     let artifact_id = match (&b.artifact_id, source) {
         (Some(a), _) => Some(a.clone()),
@@ -276,8 +276,9 @@ pub async fn create(
             )?;
             let v = question_view(db, &row)?;
             if made {
-                announce(&st, &row, v.clone());
+                announce(&st, db, &row, v.clone());
             }
+            let v = for_asker(db, &vf, v)?;
             Ok((row, made, v))
         })
         .await?;
@@ -289,7 +290,6 @@ pub async fn create(
     } else {
         "wait"
     };
-    let v = for_asker(&a.caller, v);
     let out = json!({"question": v, "mode": mode, "terminal_after_s": after, "surface_open": surface_open});
     let status = if made {
         StatusCode::CREATED
@@ -330,6 +330,7 @@ pub async fn poll(
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let started = Instant::now();
     let wait = Duration::from_secs(q.wait.min(MAX_WAIT_SECS));
+    let vf = VisFor::of(&a.caller, &s);
     let (sid1, qid1) = (sid.clone(), qid.clone());
     let first = s
         .store_call(move |db| {
@@ -377,7 +378,7 @@ pub async fn poll(
         if s.questions.take_expired(&qid) {
             done = true;
         }
-        let (sid1, qid1, st) = (sid.clone(), qid.clone(), s.clone());
+        let (sid1, qid1, st, vf1) = (sid.clone(), qid.clone(), s.clone(), vf.clone());
         let out = s
             .store_call(move |db| {
                 let mut row = db.session_question(&sid1, &qid1)?;
@@ -391,12 +392,13 @@ pub async fn poll(
                 if matches!(row.status, Status::Answered | Status::Declined) {
                     db.take_question(&row.id)?;
                 }
-                question_view(db, &row).map(Some)
+                let v = question_view(db, &row)?;
+                for_asker(db, &vf1, v).map(Some)
             })
             .await?;
         if let Some(v) = out {
             return Ok(Json(
-                json!({"question": for_asker(&a.caller, v), "waited_s": started.elapsed().as_secs()}),
+                json!({"question": v, "waited_s": started.elapsed().as_secs()}),
             ));
         }
         tokio::select! {
@@ -407,9 +409,11 @@ pub async fn poll(
     }
 }
 
-/// Applies `c` to session `sid`'s question `qid`, as the session's agent.
+/// Applies `c` to session `sid`'s question `qid`, as the session's agent
+/// whose visibility is `vf`.
 async fn session_close(
     s: AppState,
+    vf: VisFor,
     audit: DeferredAudit,
     sid: String,
     qid: String,
@@ -421,7 +425,8 @@ async fn session_close(
             live(db, &sid)?;
             db.session_question(&sid, &qid)?;
             let ctx = audit.for_session(db, &sid)?;
-            close(&st, db, &ctx, &qid, c)
+            let c = close(&st, db, &ctx, &qid, c)?;
+            closed_for_asker(db, &vf, c)
         })
         .await?;
     closed.respond()
@@ -437,10 +442,8 @@ pub async fn withdraw(
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Json<Value>, QuestionError> {
     let (sid, qid) = path(p)?;
-    answer_asker(
-        &a.caller,
-        session_close(s, audit, sid, qid, Close::Withdraw).await,
-    )
+    let vf = VisFor::of(&a.caller, &s);
+    session_close(s, vf, audit, sid, qid, Close::Withdraw).await
 }
 
 /// `POST /api/sessions/<sid>/questions/<qid>/release` → `{question}`: the
@@ -454,10 +457,8 @@ pub async fn release(
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Json<Value>, QuestionError> {
     let (sid, qid) = path(p)?;
-    answer_asker(
-        &a.caller,
-        session_close(s, audit, sid, qid, Close::Expire).await,
-    )
+    let vf = VisFor::of(&a.caller, &s);
+    session_close(s, vf, audit, sid, qid, Close::Expire).await
 }
 
 #[derive(Deserialize)]
@@ -482,6 +483,7 @@ pub async fn terminal(
     let sid = path(p)?;
     let b = body(req)?;
     let st = s.clone();
+    let vf = VisFor::of(&a.caller, &s);
     let closed = s
         .store_call(move |db| {
             live(db, &sid)?;
@@ -493,12 +495,13 @@ pub async fn terminal(
             }
             let answers = from_claude_answers(&q.questions, &b.answers);
             let ctx = audit.answerer_in_terminal(db)?;
-            close(&st, db, &ctx, &q.id, Close::Terminal { answers }).map(Some)
+            let c = close(&st, db, &ctx, &q.id, Close::Terminal { answers })?;
+            closed_for_asker(db, &vf, c).map(Some)
         })
         .await?;
     Ok(match closed {
         None => StatusCode::NO_CONTENT.into_response(),
-        Some(c) => answer_asker(&a.caller, c.respond())?.into_response(),
+        Some(c) => c.respond()?.into_response(),
     })
 }
 
@@ -549,11 +552,13 @@ pub struct ListQuery {
     limit: Option<u32>,
 }
 
-/// `GET /api/questions?status=open|closed|all&limit=<1..200>` (owner) →
+/// `GET /api/questions?status=open|closed|all&limit=<1..200>` (the owner:
+/// the owner's agents' questions; a connected person: their agents') →
 /// `{questions, open}`: open questions oldest first, closed ones most
 /// recently closed first, and with `all` the open ones newest first before
-/// the closed ones; `open` counts every open question. Default `open`, 50;
-/// `limit` is clamped to 1..=200. 400 `invalid_query` for another status.
+/// the closed ones; `open` counts every open question of theirs. Default
+/// `open`, 50; `limit` is clamped to 1..=200. 400 `invalid_query` for
+/// another status.
 pub async fn list(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -561,8 +566,8 @@ pub async fn list(
     who: Identity,
     q: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    who.require_owner("sees and answers questions")?;
     d.refuse_agents()?;
+    let me = recipient_of(&s, &who).await?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let which = match q.status.as_deref() {
         None | Some("open") => ListStatus::Open,
@@ -578,7 +583,7 @@ pub async fn list(
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let out = s
         .store_call(move |db| {
-            let (rows, open) = db.list_questions(None, which, limit)?;
+            let (rows, open) = db.list_questions(me.as_deref(), which, limit)?;
             let views = rows
                 .iter()
                 .map(|r| question_view(db, r))
@@ -589,8 +594,8 @@ pub async fn list(
     Ok(Json(out))
 }
 
-/// `GET /api/questions/<qid>` (owner) → `{question}`; 404 when there is
-/// none.
+/// `GET /api/questions/<qid>` (the owner, or a connected person) →
+/// `{question}`; 404 unless one of the caller's agents asked it.
 pub async fn get_one(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -598,38 +603,34 @@ pub async fn get_one(
     who: Identity,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
-    who.require_owner("sees and answers questions")?;
     d.refuse_agents()?;
+    let me = recipient_of(&s, &who).await?;
     let qid = path(p)?;
     let v = s
         .store_call(move |db| {
-            let q = db.question(&qid)?.ok_or(CoreError::NotFound)?;
-            // Person-scoped (spec §18): a person's agent's question is not
-            // the owner's to see.
-            if db
-                .get_session(&q.session_id)?
-                .is_some_and(|s| s.person.is_some())
-            {
-                return Err(CoreError::NotFound);
-            }
+            // Person-scoped (spec §18): another person's agent's question
+            // is not the caller's to see.
+            let q = db.question_of(&qid, me.as_deref())?;
             question_view(db, &q)
         })
         .await?;
     Ok(Json(json!({"question": v})))
 }
 
-/// Applies the owner's `c` to question `qid`: 404 when there is none. The
-/// audit context is resolved once the question is found, so a request for
-/// none makes no row.
+/// Applies `c`, from the person `me` (`None`: the owner), to question
+/// `qid`: 404 unless one of their agents asked it. The audit context is
+/// resolved once the question is found, so a request for none makes no
+/// row.
 async fn owner_close(
     s: AppState,
+    me: Option<String>,
     audit: DeferredAudit,
     qid: String,
     c: Close,
 ) -> Result<Json<Value>, QuestionError> {
     let st = s.clone();
     s.store_call(move |db| {
-        db.question(&qid)?.ok_or(CoreError::NotFound)?;
+        db.question_of(&qid, me.as_deref())?;
         let ctx = audit.resolve(db)?;
         close(&st, db, &ctx, &qid, c)
     })
@@ -643,10 +644,11 @@ pub struct AnswerBody {
     answers: Vec<Answer>,
 }
 
-/// `POST /api/questions/<qid>/answer` (owner), body `{answers}` (spec §5.3)
-/// → `{question}`. `answered_via` is `extension` through the extension
-/// gateway, `cli` for the token from no browser of the owner's, else
-/// `shell`. 400 `invalid_answer` for answers that do not fit the questions;
+/// `POST /api/questions/<qid>/answer` (the owner, or a connected person,
+/// for their agents' questions), body `{answers}` (spec §5.3) →
+/// `{question}`; 404 for another's. `answered_via` is `extension` through
+/// the extension gateway, `cli` for the token from no browser of the
+/// owner's, else `shell` (a person's browser too). 400 `invalid_answer` for answers that do not fit the questions;
 /// 409 `question_closed`, with the question's view, when it is not open.
 /// Records `question.answer`.
 pub async fn answer(
@@ -658,8 +660,8 @@ pub async fn answer(
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<AnswerBody>, JsonRejection>,
 ) -> Result<Json<Value>, QuestionError> {
-    who.require_owner("sees and answers questions")?;
     d.refuse_agents()?;
+    let me = recipient_of(&s, &who).await?;
     let qid = path(p)?;
     let b = body(req)?;
     let via = if who.extension {
@@ -671,6 +673,7 @@ pub async fn answer(
     };
     owner_close(
         s,
+        me,
         audit,
         qid,
         Close::Answer {
@@ -681,9 +684,10 @@ pub async fn answer(
     .await
 }
 
-/// `POST /api/questions/<qid>/decline` (owner): the person skips the
-/// question → `{question}`; 409 `question_closed` when it is not open.
-/// Records `question.decline`.
+/// `POST /api/questions/<qid>/decline` (the owner, or a connected person,
+/// for their agents' questions): the person skips the question →
+/// `{question}`; 404 for another's; 409 `question_closed` when it is not
+/// open. Records `question.decline`.
 pub async fn decline(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -692,14 +696,15 @@ pub async fn decline(
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, QuestionError> {
-    who.require_owner("sees and answers questions")?;
     d.refuse_agents()?;
-    owner_close(s, audit, path(p)?, Close::Decline).await
+    let me = recipient_of(&s, &who).await?;
+    owner_close(s, me, audit, path(p)?, Close::Decline).await
 }
 
-/// `POST /api/questions/<qid>/release` (owner): "Answer in the terminal"
-/// for a mirrored question → `{question}`; 400 `not_mirrored` for an `ask`
-/// question; 409 `question_closed` when it is not open. Records
+/// `POST /api/questions/<qid>/release` (the owner, or a connected person,
+/// for their agents' questions): "Answer in the terminal" for a mirrored
+/// question → `{question}`; 404 for another's; 400 `not_mirrored` for an
+/// `ask` question; 409 `question_closed` when it is not open. Records
 /// `question.release` (reason `owner`).
 pub async fn release_owner(
     State(s): State<AppState>,
@@ -709,7 +714,7 @@ pub async fn release_owner(
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, QuestionError> {
-    who.require_owner("sees and answers questions")?;
     d.refuse_agents()?;
-    owner_close(s, audit, path(p)?, Close::Release).await
+    let me = recipient_of(&s, &who).await?;
+    owner_close(s, me, audit, path(p)?, Close::Release).await
 }

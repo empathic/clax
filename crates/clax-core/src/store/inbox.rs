@@ -523,6 +523,9 @@ pub(super) const BY_SEQS: &str = concat!(
     " FROM json_each(?1) j CROSS JOIN inbox_items i ON i.seq = j.value ORDER BY i.seq DESC"
 );
 /// Marks recipient `?3`'s items `?1` (a JSON array of IDs) read at `?2`.
+/// The recipients of the items with the `seq`s `?1` (a JSON array).
+pub(super) const RECIPIENTS_OF: &str = "SELECT DISTINCT i.recipient
+    FROM json_each(?1) j CROSS JOIN inbox_items i ON i.seq = j.value";
 pub(super) const MARK_READ: &str = "UPDATE inbox_items SET read_at = ?2
     WHERE id IN (SELECT value FROM json_each(?1)) AND +COALESCE(recipient, '') = ?3
       AND read_at IS NULL";
@@ -1325,6 +1328,32 @@ impl Store {
             Ok(st
                 .query_map(params![json], row)?
                 .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    /// The recipients of the items with these `seq`s (`None`: the owner),
+    /// each once.
+    pub fn inbox_recipients_of(&self, seqs: &[i64]) -> Result<Vec<Option<String>>> {
+        if seqs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let json = serde_json::to_string(seqs).expect("integers serialise");
+        self.with_read(|c| {
+            let mut st = c.prepare_cached(RECIPIENTS_OF)?;
+            Ok(st
+                .query_map(params![json], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    /// The connected people (not revoked), by public ID: who may receive
+    /// items besides the owner.
+    pub fn connected_people(&self) -> Result<std::collections::HashSet<String>> {
+        self.with_read(|c| {
+            let mut st = c.prepare_cached(CONNECTED_PEOPLE)?;
+            Ok(st
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?)
         })
     }
 
