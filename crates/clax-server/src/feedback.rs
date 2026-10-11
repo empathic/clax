@@ -45,7 +45,7 @@ pub struct FeedbackWaiters {
     /// until released ([`FeedbackWaiters::hold`]), and how many of each
     /// session's polls are stopped there.
     #[cfg(debug_assertions)]
-    holds: Mutex<HashMap<String, Arc<tokio::sync::Semaphore>>>,
+    holds: Mutex<HashMap<String, (Stop, Arc<tokio::sync::Semaphore>)>>,
     #[cfg(debug_assertions)]
     held: Mutex<HashMap<String, usize>>,
 }
@@ -125,31 +125,36 @@ impl FeedbackWaiters {
     }
 
     /// Debug builds: from now on, each feedback poll of `session_id`
-    /// stops after its take, before it decides to answer or wait, until
-    /// [`FeedbackWaiters::release`]: tests change what the session may see
-    /// in that gap.
+    /// stops at `at` until [`FeedbackWaiters::release`]: tests change what
+    /// the session may see in that gap.
     #[cfg(debug_assertions)]
-    pub fn hold(&self, session_id: &str) {
-        self.holds
-            .lock()
-            .unwrap()
-            .entry(session_id.to_string())
-            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(0)));
+    pub fn hold(&self, session_id: &str, at: Stop) {
+        self.holds.lock().unwrap().insert(
+            session_id.to_string(),
+            (at, Arc::new(tokio::sync::Semaphore::new(0))),
+        );
     }
 
     /// Debug builds: lets every poll of `session_id` stopped by
     /// [`FeedbackWaiters::hold`] go on, and stops no more.
     #[cfg(debug_assertions)]
     pub fn release(&self, session_id: &str) {
-        if let Some(s) = self.holds.lock().unwrap().remove(session_id) {
+        if let Some((_, s)) = self.holds.lock().unwrap().remove(session_id) {
             s.close();
         }
     }
 
-    /// Debug builds: stops here while `session_id` is held.
+    /// Debug builds: stops here while `session_id` is held at `at`.
     #[cfg(debug_assertions)]
-    pub async fn stop_after_take(&self, session_id: &str) {
-        let Some(s) = self.holds.lock().unwrap().get(session_id).cloned() else {
+    pub async fn stop_at(&self, session_id: &str, at: Stop) {
+        let Some(s) = self
+            .holds
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .filter(|(stop, _)| *stop == at)
+            .map(|(_, s)| s.clone())
+        else {
             return;
         };
         *self
@@ -168,7 +173,7 @@ impl FeedbackWaiters {
     }
 
     /// Debug builds: how many feedback polls of `session_id` are stopped
-    /// after their take.
+    /// at a hold.
     #[cfg(debug_assertions)]
     pub fn held(&self, session_id: &str) -> usize {
         self.held
@@ -233,6 +238,31 @@ impl FeedbackWaiters {
     /// is in progress; tier 5 (`codex queue`, Pi `inject`) is skipped while it is.
     pub fn is_waiting(&self, session_id: &str) -> bool {
         self.active.lock().unwrap().contains_key(session_id)
+    }
+}
+
+/// Debug builds: where a held feedback poll stops
+/// ([`FeedbackWaiters::hold`]).
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stop {
+    /// Before its first take reads the visibility generation.
+    FirstTake,
+    /// After it built its view, before the take's transaction.
+    BeforeTake,
+    /// After a take, before it answers or waits.
+    AfterTake,
+}
+
+#[cfg(debug_assertions)]
+impl Stop {
+    pub fn parse(s: &str) -> Option<Stop> {
+        match s {
+            "first_take" => Some(Stop::FirstTake),
+            "before_take" => Some(Stop::BeforeTake),
+            "after_take" => Some(Stop::AfterTake),
+            _ => None,
+        }
     }
 }
 

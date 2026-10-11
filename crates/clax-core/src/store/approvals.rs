@@ -168,16 +168,13 @@ pub(crate) fn request_state_in(
 }
 
 /// Clears `placeholder_at` on the undelivered rows `a` (an approval made
-/// or revoked) bears on: rows of its approver's sessions in its scope, and
-/// for an approval made, rows of comments its author wrote (or a page
-/// wrote, or by anyone when it approves `*unconnected`). A revoked
-/// approval's rows are held again and told once more (spec §9.4); an
-/// approved author's rows read `sent` until a take delivers them.
-pub(super) fn reset_placeholders(
-    tx: &rusqlite::Transaction<'_>,
-    a: &Approval,
-    any_author: bool,
-) -> Result<()> {
+/// or revoked) bears on: rows of its approver's sessions in its scope
+/// whose comment its author wrote (or a page wrote, or anyone when it is
+/// of `*unconnected`). A revoked approval's rows are held again and told
+/// once more (spec §9.4), and rows withheld for other authors are not told
+/// again; an approved author's rows read `sent` until a take delivers
+/// them.
+pub(super) fn reset_placeholders(tx: &rusqlite::Transaction<'_>, a: &Approval) -> Result<()> {
     tx.execute(
         "UPDATE feedback SET placeholder_at = NULL
          WHERE delivered_at IS NULL AND placeholder_at IS NOT NULL
@@ -185,14 +182,13 @@ pub(super) fn reset_placeholders(
            AND (?2 = 'everywhere'
                 OR (?2 = 'artifact' AND thread_id IN (SELECT id FROM threads WHERE artifact_id = ?3))
                 OR (?2 = 'thread' AND thread_id = ?4))
-           AND (?5 OR ?6 = '*unconnected' OR comment_id IN (
-                SELECT id FROM comments WHERE author_public_id = ?6 OR via_page = 1))",
+           AND (?5 = '*unconnected' OR comment_id IN (
+                SELECT id FROM comments WHERE author_public_id = ?5 OR via_page = 1))",
         params![
             a.approver,
             a.scope.as_str(),
             a.artifact_id,
             a.thread_id,
-            any_author,
             a.author
         ],
     )?;
@@ -220,7 +216,7 @@ pub(super) fn revoke_in(
         .optional()?
         .ok_or(CoreError::NotFound)?;
     st.record_audit(tx, ctx, approval_record(AuditKind::ApprovalRevoke, now, &a))?;
-    reset_placeholders(tx, &a, true)?;
+    reset_placeholders(tx, &a)?;
     st.visibility_changed();
     Ok(a)
 }
@@ -526,7 +522,7 @@ impl Store {
                 params![a.id, a.approver, a.author, a.scope.as_str(), a.artifact_id, a.thread_id, a.created_at, a.created_via],
             )?;
             self.record_audit(tx, ctx, approval_record(AuditKind::ApprovalGrant, &a.created_at, &a))?;
-            reset_placeholders(tx, &a, false)?;
+            reset_placeholders(tx, &a)?;
             self.visibility_changed();
             Ok(a)
         })

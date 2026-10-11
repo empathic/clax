@@ -1069,7 +1069,11 @@ are (people open them).
   every route (and the `/mcp` service) from source, and requires each
   handler's signature to carry exactly one of `Agent<N>` (whose `N` names
   the route table's right and class), `DeniedToGrants`, or `GrantFlow`; a
-  `Filtered` handler's source must pass its response through `vis.filter_`;
+  `Filtered` handler's source must pass its response through `vis.filter_`,
+  or, for the feedback and notices polls, hand over what a filtered store
+  take built (`Store::take_feedback_readable`, `Store::take_notices`, which
+  take the session's `Visibility` and decide held, told and delivered in
+  their own transaction, which no pass over their result could);
   an `Own` handler must not build a thread, comment, artifact, version,
   document or working view. The route table in §7.5 is generated into
   `docs/contract.md` from the same declarations, so they cannot drift.
@@ -1094,8 +1098,10 @@ are (people open them).
   Denied rows record the result.
 - **No inline credentials:** no handler outside `identity.rs` and `auth.rs`
   calls `has_token` or reads `Authorization`.
-- **Delivery guard** (`clax-core`): `FeedbackItem` and `Notice` are built
-  only inside functions that take `&Visibility`; a test scans the source.
+- **Delivery guard** (`clax-core`): `FeedbackItem`, `Notice` and
+  `Placeholder` are built only inside functions that take `&Visibility`,
+  and no non-test code of `clax-core` or `clax-server` names
+  `Visibility::all()`; a test scans the source.
 - **Canary sweep** (`clax-server/tests/api_canary.rs`): a seed puts a
   distinct canary string, authored by Mia, in every author field of §8.2
   (title, description, icon, label, note, file names and bytes, asset name

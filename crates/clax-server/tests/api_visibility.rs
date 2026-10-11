@@ -2906,3 +2906,132 @@ async fn rights_narrowed_during_a_wait_hold_rows_on_artifacts_no_longer_readable
     .await;
     assert_eq!(v["feedback"][0]["body"], "the owner, to Sam's agent", "{v}");
 }
+
+#[tokio::test]
+async fn rights_narrowed_before_a_polls_first_take_hold_its_rows() {
+    let w = World::two_people().await;
+    sam_rights(&w, "clax:full");
+    approve(&w.ts, Some(&sam_public(&w)), &owner_public(&w.ts));
+    let aid = w.ts.any_artifact().await;
+    let (status, v) = sam(
+        &w,
+        "PUT",
+        &format!("/api/sessions/{}/watches/{aid}", w.sam_session),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    let sid = w.sam_session.clone();
+    w.ts.hold_feedback_at(&sid, true, "first_take").await;
+    let path = format!("/api/sessions/{sid}/feedback?tier=wait&wait=600");
+    let poll = sam(&w, "GET", &path, None);
+    let control = async {
+        // The poll authenticated with Sam's full rights; it narrows before
+        // the poll reads the generation, so no later bump tells it.
+        w.ts.wait_held_feedback_polls(&sid, 1).await;
+        narrow_sam(&w, Some(&w.read.artifact));
+        let tid = owner_thread(&w.ts, &aid, 1, "index.html", "the owner, to Sam's agent").await;
+        w.ts.send_thread(&aid, &tid).await;
+        w.ts.hold_feedback_at(&sid, false, "first_take").await;
+        // Held untold, the poll waits; a poll on the old rights would
+        // have answered with the row.
+        w.ts.wait_parked_feedback_polls(&sid, "wait", 1).await;
+        w.ts.expire_feedback(&sid).await;
+    };
+    let ((status, v), ()) = tokio::join!(poll, control);
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["feedback"], json!([]), "{v}");
+    assert!(!v.to_string().contains("the owner, to Sam's agent"), "{v}");
+}
+
+#[tokio::test]
+async fn a_row_between_take_and_wait_is_not_missed() {
+    use crate::common::people::OWNER_ASKS;
+    let w = World::two_people().await;
+    // Told once already: a take finds nothing more to hand over.
+    owner_poll(&w, "tier=piggyback").await;
+    let sid = w.owner_session.clone();
+    w.ts.hold_feedback(&sid, true).await;
+    let poll = owner_poll(&w, "tier=wait&wait=600");
+    let control = async {
+        // The poll took nothing and stops before it waits: a row the
+        // owner's agent may read lands in that gap.
+        w.ts.wait_held_feedback_polls(&sid, 1).await;
+        w.owner_thread_on_mias_page().await;
+        w.ts.hold_feedback(&sid, false).await;
+        let v: Value =
+            w.ts.get_authed(&format!(
+                "/api/_test/feedback/{sid}/waiters?parked=wait&until=0"
+            ))
+            .await
+            .json()
+            .await
+            .unwrap();
+        if v["count"] != 0 {
+            w.ts.expire_feedback(&sid).await;
+        }
+        v["count"].clone()
+    };
+    let (v, parked) = tokio::join!(poll, control);
+    assert_eq!(parked, 0, "the poll missed the row: {v}");
+    assert!(
+        v["text"].as_str().unwrap_or_default().contains(OWNER_ASKS),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn a_revocation_between_view_and_take_withholds_what_follows_it() {
+    let w = World::two_people().await;
+    let id = owner_approves_mia(&w);
+    owner_poll(&w, "tier=piggyback").await;
+    let sid = w.owner_session.clone();
+    let late = "Mia, after the revocation";
+    w.ts.hold_feedback_at(&sid, true, "before_take").await;
+    let poll = owner_poll(&w, "tier=piggyback");
+    let control = async {
+        // The poll built its view with Mia approved and stops before the
+        // take: the revocation and Mia's next comment land in that gap.
+        w.ts.wait_held_feedback_polls(&sid, 1).await;
+        w.ts.store
+            .revoke_approval(&AuditCtx::DAEMON, &id, None)
+            .unwrap();
+        w.mia_comments(&w.read.artifact, &w.read.thread, late).await;
+        w.ts.hold_feedback_at(&sid, false, "before_take").await;
+    };
+    let (v, ()) = tokio::join!(poll, control);
+    assert!(!v.to_string().contains(late), "{v}");
+    assert_eq!(v["feedback"], json!([]), "{v}");
+    assert_eq!(v["withheld"][0]["count"], 1, "{v}");
+}
+
+#[tokio::test]
+async fn an_acknowledgement_needs_read_rights_on_the_artifact() {
+    let w = World::two_people().await;
+    sam_rights(&w, "clax:full");
+    approve(&w.ts, Some(&sam_public(&w)), &owner_public(&w.ts));
+    let aid = w.ts.any_artifact().await;
+    let (status, v) = sam(
+        &w,
+        "PUT",
+        &format!("/api/sessions/{}/watches/{aid}", w.sam_session),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    let tid = owner_thread(&w.ts, &aid, 1, "index.html", "for Sam's agent").await;
+    w.ts.send_thread(&aid, &tid).await;
+    narrow_sam(&w, Some(&w.read.artifact));
+    let ack = format!("/api/sessions/{}/feedback/ack", w.sam_session);
+    let (status, v) = sam(&w, "POST", &ack, Some(json!({"thread_ids": [tid]}))).await;
+    assert_eq!((status, v["acknowledged"].clone()), (200, json!(0)), "{v}");
+    let rows = w.ts.store.feedback_rows(&tid).unwrap();
+    let mine = rows
+        .iter()
+        .find(|f| f.target_session_id.as_deref() == Some(&w.sam_session))
+        .unwrap();
+    assert!(mine.delivered_at.is_none() && mine.acknowledged_at.is_none());
+    narrow_sam(&w, None);
+    let (status, v) = sam(&w, "POST", &ack, Some(json!({"thread_ids": [tid]}))).await;
+    assert_eq!((status, v["acknowledged"].clone()), (200, json!(1)), "{v}");
+}
