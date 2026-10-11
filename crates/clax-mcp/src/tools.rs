@@ -537,6 +537,13 @@ fn sent_comment_ids(threads: &[Value]) -> Vec<String> {
 /// and `addressed_pending` (an agent's address waits for a live page's next
 /// snapshot). A live page's thread also carries `page_url` and
 /// `snapshot_path` (null without the token).
+///
+/// What the daemon withheld from the session's person stays withheld (spec
+/// 2026-10-08 §8.3): a withheld comment keeps `body` null with `withheld:
+/// true`; a withheld anchor names no file and no summary, with
+/// `anchor_withheld: true`; a withheld clip has `clip_withheld: true`; and
+/// the thread's `withheld` summary (count, authors, approval) is carried
+/// over. None of these keys is present when nothing is withheld.
 pub fn thread_summary(t: &Value) -> Value {
     let comments: Vec<Value> = t["comments"]
         .as_array()
@@ -544,16 +551,21 @@ pub fn thread_summary(t: &Value) -> Value {
         .unwrap_or_default()
         .iter()
         .map(|c| {
-            json!({
+            let mut v = json!({
                 "id": c["id"],
                 "author_kind": c["author_kind"],
                 "author_name": c["author_name"],
                 "via_page": c["via_page"].as_bool().unwrap_or(false),
                 "body": c["body"],
                 "created_at": c["created_at"],
-            })
+            });
+            if c["withheld"] == true {
+                v["withheld"] = json!(true);
+            }
+            v
         })
         .collect();
+    let anchor_withheld = t["anchor_withheld"] == true;
     let mut out = json!({
         "thread_id": t["id"],
         "status": t["status"],
@@ -564,11 +576,19 @@ pub fn thread_summary(t: &Value) -> Value {
             "selector": t["anchor"]["selector"],
             "quote": t["anchor"]["quote"].as_str().map(clax_core::feedback::short_quote),
             "custom_name": t["anchor"]["custom_name"],
-            "file": t["anchor"]["file"].as_str().unwrap_or(clax_core::anchor::INDEX_FILE),
+            "file": if anchor_withheld {
+                Value::Null
+            } else {
+                json!(t["anchor"]["file"].as_str().unwrap_or(clax_core::anchor::INDEX_FILE))
+            },
             "area": t["anchor"]["area"],
-            "summary": serde_json::from_value::<clax_core::anchor::Anchor>(t["anchor"].clone())
-                .ok()
-                .map(|a| a.summary()),
+            "summary": if anchor_withheld {
+                None
+            } else {
+                serde_json::from_value::<clax_core::anchor::Anchor>(t["anchor"].clone())
+                    .ok()
+                    .map(|a| a.summary())
+            },
         },
         "clip_path": t["clip_path"],
         "comments": comments,
@@ -578,6 +598,15 @@ pub fn thread_summary(t: &Value) -> Value {
     if let Some(page) = t.get("page_url") {
         out["page_url"] = page.clone();
         out["snapshot_path"] = t["snapshot_path"].clone();
+    }
+    if anchor_withheld {
+        out["anchor_withheld"] = json!(true);
+    }
+    if t["clip_withheld"] == true {
+        out["clip_withheld"] = json!(true);
+    }
+    if let Some(w) = t.get("withheld").filter(|w| w.is_object()) {
+        out["withheld"] = w.clone();
     }
     out
 }
@@ -2533,6 +2562,46 @@ mod tests {
                 ),
             }
         }
+    }
+
+    #[test]
+    fn a_thread_summary_keeps_withheld_fields_withheld() {
+        let withheld = json!({
+            "id": "t1", "status": "open", "sent_to_agent": true, "version_n": 1,
+            "anchor": {"kind": "element", "selector": null, "quote": null, "custom_name": null,
+                       "file": null, "html_hash": null},
+            "anchor_withheld": true, "clip_withheld": true, "clip_path": null,
+            "comments": [{"id": "c1", "author_kind": "viewer", "author_name": "Mia",
+                          "via_page": false, "body": null, "created_at": "t", "withheld": true}],
+            "withheld": {"count": 1, "authors": [{"public_id": "u_1", "name": "Mia"}], "approval": "none"},
+            "feedback_state": null, "addressed_pending": null,
+        });
+        let s = thread_summary(&withheld);
+        assert_eq!(s["anchor"]["file"], Value::Null, "not index.html: {s}");
+        assert_eq!(s["anchor"]["summary"], Value::Null);
+        assert_eq!(
+            (&s["anchor_withheld"], &s["clip_withheld"]),
+            (&json!(true), &json!(true))
+        );
+        assert_eq!(s["comments"][0]["withheld"], true);
+        assert_eq!(s["comments"][0]["body"], Value::Null);
+        assert_eq!(s["withheld"], withheld["withheld"]);
+        // Nothing withheld: none of those keys.
+        let mut seen = withheld.clone();
+        for k in ["anchor_withheld", "clip_withheld", "withheld"] {
+            seen.as_object_mut().unwrap().remove(k);
+        }
+        seen["anchor"]["file"] = json!("index.html");
+        seen["comments"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("withheld");
+        let s = thread_summary(&seen);
+        assert_eq!(s["anchor"]["file"], "index.html");
+        for k in ["anchor_withheld", "clip_withheld", "withheld"] {
+            assert!(s.get(k).is_none(), "{k}: {s}");
+        }
+        assert!(s["comments"][0].get("withheld").is_none());
     }
 
     #[test]
