@@ -10,6 +10,7 @@ use clax_core::model::{Artifact, Asset, Comment, Thread, Version};
 use clax_core::store::approvals::UNCONNECTED;
 use clax_core::store::docs::{Acquired, Doc, DocPage, Written};
 use clax_core::store::live::LivePage;
+use clax_core::store::threads::ThreadOwner;
 use clax_core::visibility::placeholder::{self, ApprovalState, WithheldAuthor};
 use clax_core::visibility::{self, Author, Reader, Visibility};
 use clax_core::working::{SessionWorking, WorkingView};
@@ -485,18 +486,22 @@ pub fn thread_views(
 /// ([`clax_core::store::batches::ThreadSend::sender`], never served).
 type Senders = Vec<Vec<Option<String>>>;
 
-/// [`thread_views`], with each view's batch senders.
+/// Each thread view's owner agent, when it has one.
+type Owners = Vec<Option<ThreadOwner>>;
+
+/// [`thread_views`], with each view's batch senders and owner.
 fn views_and_senders(
     st: &Store,
     threads: &[Thread],
     codex_push: bool,
     with_path: bool,
-) -> clax_core::Result<(Vec<Value>, Senders)> {
+) -> clax_core::Result<(Vec<Value>, Senders, Owners)> {
     let extras = st.thread_extras(threads, codex_push)?;
     let senders: Senders = extras
         .iter()
         .map(|x| x.sends.iter().map(|b| b.sender.clone()).collect())
         .collect();
+    let owners: Owners = extras.iter().map(|x| x.owner.clone()).collect();
     let mut live: HashMap<&str, Option<LivePage>> = HashMap::new();
     for t in threads {
         if !live.contains_key(t.artifact_id.as_str()) {
@@ -531,6 +536,9 @@ fn views_and_senders(
                 Some((harness, at)) => json!({"harness": harness, "at": at}),
                 None => Value::Null,
             };
+            if let Some(o) = &x.owner {
+                v["owner"] = json!(o);
+            }
             if let Some(Some(p)) = live.get(t.artifact_id.as_str()) {
                 let path = x.live_path.as_deref().unwrap_or(&p.path);
                 v["page_path"] = json!(path);
@@ -556,7 +564,7 @@ fn views_and_senders(
             Ok(v)
         })
         .collect::<clax_core::Result<Vec<Value>>>()
-        .map(|views| (views, senders))
+        .map(|views| (views, senders, owners))
 }
 
 /// The visibility an agent channel's response goes through (spec §8):
@@ -566,6 +574,9 @@ fn views_and_senders(
 pub struct VisFor {
     pub reader: Option<Reader>,
     pub generation: u64,
+    /// For an agent channel, its session (`None` when it names none):
+    /// thread views say `taken_by` when another live agent owns one.
+    pub agent: Option<Option<String>>,
 }
 
 impl VisFor {
@@ -575,6 +586,9 @@ impl VisFor {
         VisFor {
             reader: caller.reader(),
             generation: s.vis_gen.current(),
+            agent: caller
+                .is_agent()
+                .then(|| caller.session().map(str::to_string)),
         }
     }
 
@@ -583,22 +597,29 @@ impl VisFor {
     /// # Errors
     /// The store's.
     pub fn build(&self, st: &Store) -> clax_core::Result<Vis> {
-        Ok(Vis(match &self.reader {
-            Some(r) => Some(Visibility::for_reader(st, r, self.generation)?),
-            None => None,
-        }))
+        Ok(Vis {
+            vis: match &self.reader {
+                Some(r) => Some(Visibility::for_reader(st, r, self.generation)?),
+                None => None,
+            },
+            agent: self.agent.clone(),
+        })
     }
 }
 
 /// What an agent channel may see of the threads a route returns, field by
 /// field (spec §8.2, §8.3, M10); for people ([`VisFor`] without a reader)
 /// and for a view that sees everything, the views as they are.
-pub struct Vis(Option<Visibility>);
+pub struct Vis {
+    vis: Option<Visibility>,
+    /// For an agent channel, its session, if it names one.
+    agent: Option<Option<String>>,
+}
 
 impl Vis {
     /// The filtering view, unless everything is visible.
     fn filtering(&self) -> Option<&Visibility> {
-        self.0.as_ref().filter(|v| !v.is_all())
+        self.vis.as_ref().filter(|v| !v.is_all())
     }
 
     /// Whether anything may be withheld from the reader.
@@ -607,7 +628,9 @@ impl Vis {
     }
 
     /// [`thread_views`] of `threads`, each field the reader may not see
-    /// replaced by its placeholder ([`Withhold::thread`]).
+    /// replaced by its placeholder ([`Withhold::thread`]). For an agent,
+    /// a thread another live agent owns says `taken_by: <its name>` (spec
+    /// §12; names are not filtered, §21.9).
     ///
     /// # Errors
     /// The store's.
@@ -618,7 +641,17 @@ impl Vis {
         codex_push: bool,
         with_path: bool,
     ) -> clax_core::Result<Vec<Value>> {
-        let (mut views, senders) = views_and_senders(st, threads, codex_push, with_path)?;
+        let (mut views, senders, owners) = views_and_senders(st, threads, codex_push, with_path)?;
+        if let Some(me) = &self.agent {
+            for (view, owner) in views.iter_mut().zip(&owners) {
+                if let Some(o) = owner
+                    && o.live
+                    && me.as_deref() != Some(o.session_id.as_str())
+                {
+                    view["taken_by"] = json!(o.display());
+                }
+            }
+        }
         if let Some(vis) = self.filtering() {
             let mut w = Withhold::new(st, vis);
             for ((t, view), senders) in threads.iter().zip(&mut views).zip(&senders) {
