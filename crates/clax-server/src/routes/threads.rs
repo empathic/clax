@@ -426,7 +426,7 @@ pub(crate) fn announce_new_thread(
         let (sids, u) = resolve_named(st, audit, &id, body, live_page)?;
         unresolved = u;
         if !sids.is_empty() {
-            let (sent, touched) = st.send_to_named(&thread.id, &sids)?;
+            let (sent, touched) = st.send_to_named(audit, &thread.id, &sids)?;
             thread = sent;
             apply(ctx, st, &touched);
         }
@@ -792,7 +792,7 @@ pub async fn comment(
                     touched.merge(st.send_to_agent(&audit, &tid)?.1);
                 }
                 if !named.is_empty() {
-                    touched.merge(st.send_to_named(&tid, &named)?.1);
+                    touched.merge(st.send_to_named(&audit, &tid, &named)?.1);
                 }
                 c
             };

@@ -1188,6 +1188,64 @@ pub(crate) fn question_changed(
     Ok(())
 }
 
+/// An approval request was made (spec 2026-10-08-multi-agent-multi-person
+/// §9.2): one `approval` item for its approver (`None`: the owner), about
+/// agent session `sid`'s artifact `aid` and thread `tid`, unread until it
+/// is decided, indexed by the author's name. `detail` says how it came
+/// (a page's send names the page's authors and the viewer).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn note_approval(
+    c: &Connection,
+    rid: &str,
+    approver: Option<&str>,
+    aid: &str,
+    tid: Option<&str>,
+    sid: Option<&str>,
+    author_name: &str,
+    detail: Option<Value>,
+    now: &str,
+) -> Result<Option<i64>> {
+    insert_at(
+        c,
+        New {
+            recipient: approver,
+            artifact_id: Some(aid),
+            thread_id: tid,
+            session_id: sid,
+            request_id: Some(rid),
+            detail,
+            text: author_name.to_string(),
+            ..New::of(Kind::Approval, format!("approval:{rid}"))
+        },
+        now,
+    )
+}
+
+/// New withheld content joined request `rid`: its `approval` item is
+/// unread again (re-announced), with `detail` when given.
+pub(crate) fn approval_reannounced(
+    c: &Connection,
+    rid: &str,
+    detail: Option<&Value>,
+) -> Result<()> {
+    c.execute(
+        "UPDATE inbox_items SET read_at = NULL, detail_json = COALESCE(?2, detail_json)
+         WHERE request_id = ?1",
+        params![rid, detail.map(Value::to_string)],
+    )?;
+    Ok(())
+}
+
+/// Request `rid` was decided or withdrawn: its `approval` item is read,
+/// and always written, so the listener hears that its source changed.
+pub(crate) fn approval_closed(c: &Connection, rid: &str, now: &str) -> Result<()> {
+    c.execute(
+        "UPDATE inbox_items SET read_at = COALESCE(read_at, ?2) WHERE request_id = ?1",
+        params![rid, now],
+    )?;
+    Ok(())
+}
+
 /// A grant request `gid` from `client_name` at `peer_ip` (spec §6.3): one
 /// `connection` item for the owner, a request waiting for them or, with an
 /// invite, a machine that connected, indexed by the client's name and

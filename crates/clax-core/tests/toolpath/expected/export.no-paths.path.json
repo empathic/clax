@@ -2236,13 +2236,174 @@
             ],
             "timestamp": "2026-10-06T14:07:00.060Z"
           }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/approval_request/01JBAR00000000000000000001": {
+              "structural": {
+                "approver": null,
+                "artifact_id": "k3m9q2w8x1ab",
+                "author": "u_77c0zz",
+                "cause": "ask",
+                "count": 1,
+                "request_id": "01JBAR00000000000000000001",
+                "thread_id": "01JB9T00000000000000000001",
+                "type": "clax.approval.request"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "approval.request",
+              "seq": 76,
+              "session_id": "01JB9S00000000000000000001",
+              "thread_id": "01JB9T00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "mcp"
+            },
+            "description": "Asked the owner to let u_77c0zz's content reach their agents (ask, 1)",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001",
+                "rel": "thread"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/s/01JB9S00000000000000000001",
+                "rel": "session"
+              },
+              {
+                "href": "agent://claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+                "rel": "agent-session"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claude-code/3f2c9a1e-5b7d-4c11-9e0a-2d6f8b1c0e44",
+            "id": "e000000000076",
+            "parents": [
+              "e000000000060"
+            ],
+            "timestamp": "2026-10-06T14:08:42.076Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/approval_request/01JBAR00000000000000000001": {
+              "structural": {
+                "request_id": "01JBAR00000000000000000001",
+                "scope": "decline",
+                "type": "clax.approval.decide"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "approval.decide",
+              "seq": 77,
+              "thread_id": "01JB9T00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Decided approval request 01JBAR00000000000000000001 (decline)",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001",
+                "rel": "thread"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000077",
+            "parents": [
+              "e000000000076"
+            ],
+            "timestamp": "2026-10-06T14:08:43.077Z"
+          }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/approval_request/01JBAR00000000000000000002": {
+              "structural": {
+                "reason": "thread_resolved",
+                "request_id": "01JBAR00000000000000000002",
+                "type": "clax.approval.withdraw"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "approval.withdraw",
+              "seq": 78,
+              "thread_id": "01JB9T00000000000000000001",
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Withdrew approval request 01JBAR00000000000000000002 (thread_resolved)",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab/t/01JB9T00000000000000000001",
+                "rel": "thread"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000078",
+            "parents": [
+              "e000000000077"
+            ],
+            "timestamp": "2026-10-06T14:08:44.078Z"
+          }
         }
       ],
       "path": {
         "base": {
           "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab"
         },
-        "head": "e000000000060",
+        "head": "e000000000078",
         "id": "clax-artifact-k3m9q2w8x1ab"
       },
       "meta": {
@@ -4682,7 +4843,7 @@
       "clax_version": "0.3.1",
       "first_seq": 1,
       "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-      "last_seq": 75,
+      "last_seq": 78,
       "redaction": [
         "no-paths"
       ],

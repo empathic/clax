@@ -2,6 +2,7 @@
 //! tier hands them over, acknowledgement, resends, and retargeting.
 
 use super::Store;
+use super::approvals::Route;
 use super::artifacts::{SELECT_VERSION, live_artifact_in, row_to_version};
 use super::threads::{AUTHOR_VIEWER, thread_in, thread_record};
 use crate::anchor::Anchor;
@@ -162,6 +163,8 @@ pub(crate) struct Sent {
     pub feedback_ids: Vec<String>,
     pub to: Option<String>,
     pub changed: bool,
+    /// The live sessions the send reached.
+    pub targets: Vec<String>,
 }
 
 /// The stored target session of thread `thread_id`.
@@ -221,13 +224,29 @@ pub(crate) fn send_in(
     let target_before = stored_target(tx, thread_id)?;
     let (targets, to) = targets_for(tx, thread_id, &t.artifact_id, owner.as_deref(), target)?;
     let retargeted = stored_target(tx, thread_id)? != target_before;
+    // A send to one agent gives it the thread's comments it has no row
+    // for, as `@name` does, the untargeted rows first.
+    if let SendTarget::Agent(sid) = target {
+        tx.execute(
+            "UPDATE feedback SET target_session_id = ?2, untargeted_at = NULL
+             WHERE thread_id = ?1 AND target_session_id IS NULL AND delivered_at IS NULL",
+            params![thread_id, sid],
+        )?;
+    }
     let mut inserted = Vec::new();
     for c in t.comments.iter().filter(|c| c.author_kind == AUTHOR_VIEWER) {
-        let has_row: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM feedback WHERE comment_id = ?1)",
-            params![c.id],
-            |r| r.get(0),
-        )?;
+        let has_row: bool = match target {
+            SendTarget::Agent(sid) => tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM feedback WHERE comment_id = ?1 AND target_session_id = ?2)",
+                params![c.id, sid],
+                |r| r.get(0),
+            )?,
+            _ => tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM feedback WHERE comment_id = ?1)",
+                params![c.id],
+                |r| r.get(0),
+            )?,
+        };
         if has_row {
             continue;
         }
@@ -259,6 +278,7 @@ pub(crate) fn send_in(
         changed: !t.sent_to_agent || retargeted || !inserted.is_empty(),
         feedback_ids: inserted,
         to,
+        targets,
     })
 }
 
@@ -658,12 +678,13 @@ impl Store {
     /// `NotFound` when the thread or its artifact is gone; `thread_resolved`
     /// for a resolved thread.
     pub fn send_to_agent(&self, ctx: &AuditCtx, thread_id: &str) -> Result<(Thread, Touched)> {
-        self.send_to(ctx, thread_id, SendTarget::Thread)
+        self.send_routed(ctx, thread_id, SendTarget::Thread, Route::Join, false)
+            .map(|(t, touched, _)| (t, touched))
     }
 
     /// [`Store::send_to_agent`] with an explicit `target`: one agent (which
     /// becomes the thread's target), everyone (clearing the target), or the
-    /// thread's own target.
+    /// thread's own target. It routes (M18): see [`Store::send_routed`].
     ///
     /// # Errors
     /// As [`Store::send_to_agent`], plus `unknown_agent` when `target` names a
@@ -674,19 +695,53 @@ impl Store {
         thread_id: &str,
         target: SendTarget<'_>,
     ) -> Result<(Thread, Touched)> {
+        self.send_routed(ctx, thread_id, target, Route::Send, false)
+            .map(|(t, touched, _)| (t, touched))
+    }
+
+    /// [`Store::send_to`], asking the people of the agents it reaches
+    /// (spec 2026-10-08 §9.2) in its transaction: for [`Route::Send`],
+    /// each live target's person who may not see some author of the
+    /// thread's comments gets a request per such author, made or joined;
+    /// for [`Route::Join`] (a later comment on a sent thread), only open
+    /// requests there count the new content. A page's send (`page`) names
+    /// the page and its viewer on the request's item. The `thread.send`
+    /// record names the requests (`approval_request_ids`) when there are
+    /// any; their IDs are returned too.
+    ///
+    /// # Errors
+    /// As [`Store::send_to`].
+    pub fn send_routed(
+        &self,
+        ctx: &AuditCtx,
+        thread_id: &str,
+        target: SendTarget<'_>,
+        route: Route,
+        page: bool,
+    ) -> Result<(Thread, Touched, Vec<String>)> {
         let mut touched = Touched::default();
-        self.with_tx(|tx| {
+        let requests = self.with_tx(|tx| {
             let now = self.now();
             let sent = send_in(tx, thread_id, None, target, &mut touched, &now)?;
+            let requests = super::approvals::route_in(
+                self,
+                tx,
+                ctx,
+                thread_id,
+                &sent.targets,
+                route,
+                page,
+                &now,
+            )?;
             if !sent.changed {
-                return Ok(());
+                return Ok(requests);
             }
             let aid: String = tx.query_row(
                 "SELECT artifact_id FROM threads WHERE id = ?1",
                 params![thread_id],
                 |r| r.get(0),
             )?;
-            let rec = send_record(
+            let mut rec = send_record(
                 &now,
                 &aid,
                 Some(thread_id),
@@ -695,11 +750,14 @@ impl Store {
                 None,
                 vec![thread_id.to_string()],
             );
+            if !requests.is_empty() {
+                rec = rec.with("approval_request_ids", requests.clone());
+            }
             self.record_audit(tx, ctx, rec)?;
-            Ok(())
+            Ok(requests)
         })?;
         let thread = self.get_thread(thread_id)?.ok_or(CoreError::NotFound)?;
-        Ok((thread, touched))
+        Ok((thread, touched, requests))
     }
 
     /// Sends the thread to each of the live sessions `sids` (`@name`, spec
@@ -707,12 +765,19 @@ impl Store {
     /// becomes the thread's target, the thread's undelivered untargeted
     /// rows become the first's, and each gets a row for every viewer
     /// comment it has none for, so a named agent receives the thread even
-    /// when another agent was sent its comments before.
+    /// when another agent was sent its comments before. Naming an agent
+    /// routes to it (M18): the requests are made under `ctx` as
+    /// [`Store::send_routed`] makes them.
     ///
     /// # Errors
     /// As [`Store::send_to`]; `unknown_agent` when a session is not a live
     /// owner or watcher of the artifact. Nothing is written then.
-    pub fn send_to_named(&self, thread_id: &str, sids: &[String]) -> Result<(Thread, Touched)> {
+    pub fn send_to_named(
+        &self,
+        ctx: &AuditCtx,
+        thread_id: &str,
+        sids: &[String],
+    ) -> Result<(Thread, Touched)> {
         let mut touched = Touched::default();
         self.with_tx(|tx| {
             let Some(first) = sids.first() else {
@@ -752,6 +817,7 @@ impl Store {
                     )?;
                 }
             }
+            super::approvals::route_in(self, tx, ctx, thread_id, sids, Route::Send, false, &now)?;
             touched.targets.extend(sids.iter().cloned());
             touched
                 .threads
@@ -1351,8 +1417,10 @@ impl Store {
     /// The state of the thread's latest forwarded comment, or `None` when
     /// nothing was forwarded. Any acknowledged row: `acknowledged`; else any
     /// delivered row: `delivered`; else any row a take held from its live
-    /// session because its body is withheld (`placeholder_at`): `withheld`,
-    /// naming that session's person as `approver` (spec 2026-10-08 §8.4);
+    /// session because its body is withheld (`placeholder_at`), or that an
+    /// open approval request of that session's person covers (a routed
+    /// send, §10): `withheld`, naming that session's person as `approver`
+    /// (spec 2026-10-08 §8.4);
     /// else any row targeting a live session:
     /// `sent`, with the tier that session waits on (`queue` for an armed Codex
     /// session with a known session ID when `codex_push` and `codex queue` has
@@ -1420,7 +1488,15 @@ pub(crate) const FEEDBACK_STATES: &str =
             f.resend_count, f.untargeted_at, s.ended_at, s.harness, s.harness_session_id IS NOT NULL,
             COALESCE(w.replies_armed, 0), f.push_failed_at IS NOT NULL, f.placeholder_at,
             CASE WHEN s.person IS NULL THEN (SELECT display_name FROM viewers WHERE owner = 1)
-                 ELSE (SELECT display_name FROM viewers WHERE public_id = s.person) END
+                 ELSE (SELECT display_name FROM viewers WHERE public_id = s.person) END,
+            f.delivered_at IS NULL AND EXISTS (
+                SELECT 1 FROM approval_requests r INDEXED BY approval_requests_open
+                 WHERE COALESCE(r.approver, '') = COALESCE(s.person, '') AND r.status = 'open'
+                   AND r.artifact_id = t.artifact_id AND COALESCE(r.thread_id, '') = f.thread_id
+                   AND r.author IN (SELECT c.author_public_id FROM comments c WHERE c.id = f.comment_id
+                                    UNION ALL
+                                    SELECT pa.author FROM page_authors pa
+                                     WHERE pa.kind = 'comment' AND pa.id = f.comment_id))
        FROM json_each(?1) j
       CROSS JOIN feedback f ON f.thread_id = j.value
        JOIN threads t ON t.id = f.thread_id
@@ -1447,6 +1523,9 @@ struct StateRow {
     placeholder_at: Option<String>,
     /// The display name of its session's person.
     person_name: Option<String>,
+    /// Undelivered, and an open approval request of its session's person
+    /// covers its comment's author there.
+    requested: bool,
 }
 
 pub(crate) fn feedback_states_in(
@@ -1473,6 +1552,7 @@ pub(crate) fn feedback_states_in(
             push_failed: r.get(12)?,
             placeholder_at: r.get(13)?,
             person_name: r.get(14)?,
+            requested: r.get(15)?,
         });
     }
     Ok(by_thread
@@ -1527,9 +1607,12 @@ fn state_of(thread_id: &str, rows: &[StateRow], codex_push: bool) -> FeedbackSta
         );
     }
     if let Some((r, at)) = rows.iter().find_map(|r| {
-        r.placeholder_at
-            .as_deref()
-            .filter(|_| r.target.is_some() && r.ended_at.is_none())
+        let held = match (&r.placeholder_at, r.requested) {
+            (Some(at), _) => Some(at.as_str()),
+            (None, true) => Some(r.created_at.as_str()),
+            (None, false) => None,
+        };
+        held.filter(|_| r.target.is_some() && r.ended_at.is_none())
             .map(|at| (r, at))
     }) {
         let mut s = state(FeedbackPhase::Withheld, None, at, 0, false);
@@ -1620,7 +1703,7 @@ mod tests {
         st.send_to(DAEMON, &tid, SendTarget::Agent(&api)).unwrap();
         assert_eq!(sorted_targets(&st, &tid), [Some(api.clone())]);
         let (t, touched) = st
-            .send_to_named(&tid, &[web.clone(), docs.clone()])
+            .send_to_named(DAEMON, &tid, &[web.clone(), docs.clone()])
             .unwrap();
         let mut want = vec![Some(api.clone()), Some(web.clone()), Some(docs.clone())];
         want.sort();
@@ -1641,12 +1724,13 @@ mod tests {
             })
             .unwrap();
         assert_eq!(target, Some(web.clone()), "the first named is the target");
-        st.send_to_named(&tid, std::slice::from_ref(&web)).unwrap();
+        st.send_to_named(DAEMON, &tid, std::slice::from_ref(&web))
+            .unwrap();
         assert_eq!(sorted_targets(&st, &tid).len(), 3, "idempotent");
         // A session that neither owns nor watches the artifact: nothing.
         let stranger = session(&st, "grok", "s");
         assert!(matches!(
-            st.send_to_named(&tid, &[web.clone(), stranger]),
+            st.send_to_named(DAEMON, &tid, &[web.clone(), stranger]),
             Err(CoreError::Invalid {
                 code: "unknown_agent",
                 ..
@@ -1659,7 +1743,8 @@ mod tests {
         st.send_to_agent(DAEMON, &t2).unwrap();
         assert_eq!(sorted_targets(&st, &t2), [None]);
         st.ensure_watch(DAEMON, &api, &lone).unwrap();
-        st.send_to_named(&t2, std::slice::from_ref(&api)).unwrap();
+        st.send_to_named(DAEMON, &t2, std::slice::from_ref(&api))
+            .unwrap();
         assert_eq!(sorted_targets(&st, &t2), [Some(api.clone())]);
     }
 
@@ -1983,7 +2068,8 @@ mod tests {
         viewer_says(&st, &tid, "fourth");
         st.send_to_agent(DAEMON, &tid).unwrap();
         assert_eq!(bodies(&owner), ["fourth"], "Everyone cleared the target");
-        assert_eq!(bodies(&second), ["fourth"]);
+        // The send to `second` gave it every comment it had no row for.
+        assert_eq!(bodies(&second), ["first", "second", "third", "fourth"]);
     }
 
     #[test]
