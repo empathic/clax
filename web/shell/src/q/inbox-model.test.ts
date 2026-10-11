@@ -22,6 +22,8 @@ describe("inbox model", () => {
     expect(itemText(item("connection", { connection: null, gone: true }))).toBe("");
     expect(itemTitle(item("approval"))).toBe("An agent waits for your approval");
     expect(itemTitle(item("ended"))).toBe("claude ended");
+    expect(itemText(item("ended"))).toBe("released 1 thread · withdrew 1 question");
+    expect(itemText(item("ended", { ended: null }))).toBe("");
   });
 
   it("names a second agent of a harness, and a deleted page", () => {

@@ -205,10 +205,22 @@ export type InboxItem = {
   /** `connection`: null once the request is gone. */
   connection?: InboxConnection | null;
   approval?: { request_id: string | null };
-  ended?: unknown;
+  /** `ended`: what the agent's end cleaned up; `text` is the note's line
+   * ("clax-claude ended · released 2 threads · withdrew 1 question"). */
+  ended?: InboxEnded | null;
   gone: boolean;
   /** Where opening the item leads (a path on the daemon). */
   url: string;
+};
+/** An `ended` item's note (spec 2026-10-08 §14, M25). */
+export type InboxEnded = {
+  name: string | null;
+  reason: "exit" | "idle" | "revoked" | "person";
+  text: string;
+  questions: number;
+  requests: number;
+  /** The open threads it released; `title` is null once the page is gone. */
+  threads: { id: string; artifact_id: string; title: string | null; url: string }[];
 };
 /** One page of `GET /api/inbox`; `total` is present when the query filters. */
 export type InboxPage = { items: InboxItem[]; next_cursor: string | null; unread: number; total?: number | "10000+" };

@@ -555,7 +555,7 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
     },
     onEvent(e: ArtifactEvent) {
       // Sessions starting or ending show in these; the next check asks again.
-      if (e.type === "version" || e.type === "feedback_state" || e.type === "ready" || e.type === "resync") canSendCache = null;
+      if (e.type === "version" || e.type === "feedback_state" || e.type === "agents" || e.type === "ready" || e.type === "resync") canSendCache = null;
       if (e.type === "thread" || e.type === "thread_resolved" || e.type === "thread_deleted") pushState();
       if (e.type === "working") pushWorking(e.working);
     },
