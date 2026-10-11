@@ -233,9 +233,11 @@ describe("comments in the shell", () => {
 
   it("canSendToClaude is cached until an event may mean the sessions changed; sendToClaude needs a gesture and posts then sends", async () => {
     const urls: string[] = [];
+    const sent: (Record<string, string> | undefined)[] = [];
     let live = false;
-    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
       urls.push(url);
+      if (url.endsWith("/send")) sent.push(init?.headers as Record<string, string> | undefined);
       if (url === "/api/artifacts/7q3k9mzx2b4t") return new Response(JSON.stringify({ artifact: { id: "7q3k9mzx2b4t", owner_live: live }, versions: [] }));
       return new Response(JSON.stringify({ thread: T("01J9C") }), { status: 201 });
     }));
@@ -260,6 +262,8 @@ describe("comments in the shell", () => {
     const r = (await h.call("sendToClaude", [{ anchor: T("x").anchor, text: "please" }])) as { threadId: string };
     expect(r.threadId).toMatch(/^t_/);
     expect(urls.at(-1)).toBe("/api/artifacts/7q3k9mzx2b4t/threads/01J9C/send");
+    // The send is the page's: its approval request names the page.
+    expect(sent.at(-1)?.["x-clax-via"]).toBe("page");
   });
 
   it("custom anchoring: register, thread handles, placement, reveal, release", async () => {

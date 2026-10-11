@@ -148,6 +148,7 @@ pub async fn events(
                 | Event::Question { .. }
                 | Event::InboxItem { .. }
                 | Event::InboxRead { .. }
+                | Event::ApprovalRequest { .. }
                 | Event::People { .. }
         ) {
             return false;

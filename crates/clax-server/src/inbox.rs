@@ -215,13 +215,24 @@ fn render(st: &Store, i: &ItemRow, s: Sources) -> clax_core::Result<Value> {
                 Err(e) => return Err(e),
             }
         }
+        // The card (spec §9.5): the request, the withheld content itself
+        // (people are not filtered) and how it came.
         Kind::Approval => {
-            v["approval"] = json!({"request_id": i.request_id});
-            v["url"] = json!(format!(
-                "/inbox?approval={}",
-                i.request_id.as_deref().unwrap_or_default()
-            ));
-            false
+            let rid = i.request_id.as_deref().unwrap_or_default();
+            v["url"] = json!(format!("/inbox?approval={rid}"));
+            if let Some(t) = &s.thread {
+                v["thread"] = json!({"id": t.id, "summary": t.summary, "status": t.status});
+            }
+            match crate::approvals::card(st, rid, i.recipient.as_deref(), i.detail.as_ref())? {
+                Some(card) => {
+                    v["approval"] = card;
+                    false
+                }
+                None => {
+                    v["approval"] = json!({"id": rid});
+                    true
+                }
+            }
         }
         Kind::Ended => {
             v["ended"] = i.detail.clone().unwrap_or(Value::Null);

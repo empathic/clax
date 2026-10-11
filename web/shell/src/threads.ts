@@ -66,9 +66,15 @@ export async function addComment(aid: string, tid: string, body: string): Promis
   return (await ok<{ thread: Thread }>(await post(`/api/artifacts/${aid}/threads/${tid}/comments`, { body }))).thread;
 }
 /** Sends a thread to the agent `to` names (a participant handle), or with
- * `to` null to every live owner and watcher; the body carries no `to` then. */
-export async function sendToAgent(aid: string, tid: string, to: string | null = null): Promise<Thread> {
-  return (await ok<{ thread: Thread }>(await post(`/api/artifacts/${aid}/threads/${tid}/send`, to === null ? undefined : { to }))).thread;
+ * `to` null to every live owner and watcher; the body carries no `to` then.
+ * `viaPage` marks a page's send (its `sendToClaude`, `x-clax-via: page`):
+ * the approval request it makes names the page and the viewer. */
+export async function sendToAgent(aid: string, tid: string, to: string | null = null, viaPage = false): Promise<Thread> {
+  const url = `/api/artifacts/${aid}/threads/${tid}/send`;
+  const res = viaPage
+    ? await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-clax-via": "page" }, body: to === null ? undefined : JSON.stringify({ to }) })
+    : await post(url, to === null ? undefined : { to });
+  return (await ok<{ thread: Thread }>(res)).thread;
 }
 /** Sends `threadIds` as one batch with an optional `note`, to the agent `to`
  * names or, with `to` null, without a target (the body has no `to` key). All

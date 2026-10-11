@@ -1729,10 +1729,26 @@ async fn at_name_reaches_a_persons_agent_only_where_its_rights_allow() {
     ts.store
         .set_person_rights(&clax_core::audit::AuditCtx::DAEMON, &person, Some(own_only))
         .unwrap();
+    // Naming an agent that may not read the artifact is refused, and
+    // nothing is written (spec §10: 400 `agent_cannot_read`).
+    let before = ts
+        .store
+        .list_threads(&clax_core::ArtifactId::parse(aid).unwrap(), true, None, 500)
+        .unwrap()
+        .0
+        .len();
     let res = ts.create_thread(aid, 1, "@sams have a look", None).await;
+    assert_eq!(res.status(), 400);
     let v: Value = res.json().await.unwrap();
-    assert_eq!(v["unresolved_mentions"], json!(["sams"]), "{v}");
-    assert_eq!(v["thread"]["sent_to_agent"], false);
+    assert_eq!(v["error"]["code"], "agent_cannot_read", "{v}");
+    assert_eq!(
+        ts.store
+            .list_threads(&clax_core::ArtifactId::parse(aid).unwrap(), true, None, 500)
+            .unwrap()
+            .0
+            .len(),
+        before
+    );
     assert!(!watches(&ts, &sid, aid), "no watch past its rights");
     // With rights to read and watch it, the name reaches it.
     ts.store

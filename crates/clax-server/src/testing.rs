@@ -272,6 +272,7 @@ impl TestServer {
         state.audit_wake.install(&state.store);
         state.stream.listen(&state.events);
         crate::inbox::listen(&state);
+        crate::approvals::listen(&state);
         let events = state.events.clone();
         let store = state.store.clone();
         let working = state.working.clone();
