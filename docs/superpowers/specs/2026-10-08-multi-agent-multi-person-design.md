@@ -889,7 +889,7 @@ of the owner's agents only, a person their agents' (§18).
 | `POST …/threads/{tid}/resolve`, `…/reopen` | Filtered (returns the thread) | comments resolve, and comments read |
 | `DELETE …/threads/{tid}` | Own; a person's agent deletes from a session (400 `no_session`) | comments resolve, and comments read |
 | `POST …/threads/{tid}/send`, `…/threads:send` | Filtered (returns the threads) | comments send, and comments read |
-| `GET/PUT/PATCH/DELETE …/docs/{*path}`, `GET …/docs`, `POST …/docs:batch`, `…/docs:str_replace`, `…/docs:acquire` | Filtered (every returned document; list `where`/`order_by` over visible documents only, §8.3); `str_replace`, `acquire` with a condition, and the matching `batch` operations on a document withheld from the caller are 403 `withheld` (with its withheld authors) before anything is evaluated, the pin included; today's `acquire` (a lease, with an optional merge) and `batch` (`set`, `update`, `delete`) have none, so `str_replace` is the one refused; blind `PUT`, `PATCH`, `DELETE`, batch writes and `acquire` stay allowed, answer a withheld document's placeholder, and add the writer to its authors; a person's agent writes documents with or without a session (the remote `clax db …`, §6.7), never with `x-clax-via: page` (400 `invalid_via_page`) | db read (GET) / db write |
+| `GET/PUT/PATCH/DELETE …/docs/{*path}`, `GET …/docs`, `POST …/docs:batch`, `…/docs:str_replace`, `…/docs:acquire` | Filtered (every returned document; list `where`/`order_by` over visible documents only, §8.3); writes whose outcome depends on a withheld document's content are 403 `withheld` (with its withheld authors) before anything is evaluated, the pin included: `str_replace`, and every merge (`PATCH`, a batch `update`, `acquire` with `data`), whose success (its size check, which fields a delete marker removes) depends on the stored body; blind `PUT`, `DELETE`, batch `set` and `delete`, and `acquire` without `data` stay allowed, answer a withheld document's placeholder, and add the writer to its authors; a lease in force on a withheld document is busy whatever holder the caller names, so `acquire` never confirms another's holder or takes their lease over; a person's agent writes documents with or without a session (the remote `clax db …`, §6.7), never with `x-clax-via: page` (400 `invalid_via_page`) | db read (GET) / db write |
 | `POST /api/sessions`, `POST /api/sessions/join` | Own (binding, §6.7) | none |
 | `GET /api/sessions`, `GET/PATCH /api/sessions/{id}` | Own (the grant's own sessions) | none |
 | `GET/PUT/DELETE /api/sessions/{id}/watches…` | Own | comments watch |
@@ -1001,8 +1001,10 @@ Withheld fields are replaced, never dropped:
   already hide from the caller), so neither their paths nor their field
   values are revealed; pages and `next_cursor` run over visible documents
   only, and so does the byte budget of an ordered query without a limit.
-  A response to a caller that sees every document carries no
-  `withheld_count`. Content-dependent writes on a withheld document are 403
+  A response to a caller whose view withholds nothing (the owner by
+  hand, a person's browser, a single-owner install) carries no
+  `withheld_count`; an agent whose view can withhold gets it, `0` when
+  nothing is withheld. Content-dependent writes on a withheld document are 403
   `withheld` before evaluation (§7.5).
 - **Asset:** name null, and `content_type`, `ext` and `size` (which its
   bytes decide) null, `"withheld": true`; its ID, artifact and time stay.
@@ -1631,7 +1633,9 @@ agents not to.
      file forward or rewriting a document does not move its words to a
      new author.
    - *Oracles:* queries run over visible documents only, and
-     content-dependent writes on withheld documents are refused.
+     content-dependent writes on withheld documents are refused:
+     `str_replace` and every merge (`PATCH`, a batch `update`, `acquire`
+     with `data`), before anything is evaluated (§7.5).
    - *Agent replies* are recognised from `Caller`, so a grant's reply can
      never be stored as an anonymous (`*unconnected`) comment (M8).
 4. **Token theft on the LAN.** Signed requests (M5): a sniffed request
@@ -1659,7 +1663,11 @@ agents not to.
    a visible, destructive version credited to its person (a put that
    collides with a withheld path, by letter case or as a file and a
    directory, drops that path as a remove would, so a collision is never
-   refused on a withheld name). Known limitations.
+   refused on a withheld name); an artifact's document and lease caps
+   (5000 documents, 100 leases in force) count every document and lease,
+   and document versions come from one sequence per artifact, so an agent
+   can count others' documents, leases and writes, never read them.
+   Known limitations.
 8. **Denial of service.** The token, timestamp and nonce are checked
    before the body is read; with a sniffed token, unverified bytes in
    flight are bounded per key and overall through bounded queues,

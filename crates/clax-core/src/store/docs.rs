@@ -786,6 +786,47 @@ fn filtering(vis: Option<&Visibility>) -> Option<&Visibility> {
     vis.filter(|v| !v.is_all())
 }
 
+/// The authors `vis` withholds of the existing document at `path` that
+/// `caller` may write; `None` when there is none, the rules hide it (it
+/// then answers as missing), or `vis` lets it through.
+fn withheld_in(
+    c: &Connection,
+    id: &ArtifactId,
+    rules: &Rules,
+    caller: &Caller,
+    path: &str,
+    vis: Option<&Visibility>,
+) -> Result<Option<Vec<Author>>> {
+    let Some(vis) = filtering(vis) else {
+        return Ok(None);
+    };
+    if !rules.allows(path, Op::Write, caller) || doc_in(c, id, path)?.is_none() {
+        return Ok(None);
+    }
+    let withheld = vis.withheld_authors(&authors_in(c, id, path)?, id.as_str(), None);
+    Ok((!withheld.is_empty()).then_some(withheld))
+}
+
+/// [`CoreError::DocWithheld`] for a write whose outcome depends on the
+/// document's content (`str_replace`, a merge) when `vis` withholds it:
+/// refused before the pin or the content is looked at (spec §7.5, §8.3).
+fn refuse_withheld(
+    c: &Connection,
+    id: &ArtifactId,
+    rules: &Rules,
+    caller: &Caller,
+    path: &str,
+    vis: Option<&Visibility>,
+) -> Result<()> {
+    match withheld_in(c, id, rules, caller, path, vis)? {
+        Some(authors) => Err(CoreError::DocWithheld {
+            path: path.to_string(),
+            authors,
+        }),
+        None => Ok(()),
+    }
+}
+
 /// `patch` merged into the document at `path`; `invalid_argument` when it
 /// does not exist (an update never creates).
 fn update_body(path: &str, cur: Option<&Doc>, patch: Value) -> Result<Option<Value>> {
@@ -880,10 +921,33 @@ impl Store {
         pin: Pin,
         caller: &Caller,
     ) -> Result<Written> {
-        doc_path(path)?;
+        self.doc_update_visible(ctx, id, path, patch, pin, caller, None)
+    }
+
+    /// [`Store::doc_update`] for a caller whose reader sees what `vis`
+    /// lets through: a merge's outcome (and its size check) depends on the
+    /// stored body, so on an existing document it may write but whose
+    /// authors `vis` withholds it is [`CoreError::DocWithheld`] before the
+    /// pin or the merge (spec §7.5, §8.3).
+    ///
+    /// # Errors
+    /// As above, and [`Store::doc_update`]'s.
+    #[allow(clippy::too_many_arguments)]
+    pub fn doc_update_visible(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        path: &str,
+        patch: Value,
+        pin: Pin,
+        caller: &Caller,
+        vis: Option<&Visibility>,
+    ) -> Result<Written> {
+        let dp = doc_path(path)?;
         check_body(&patch, true)?;
         self.with_tx(|tx| {
             let rules = rules_in(tx, id)?;
+            refuse_withheld(tx, id, &rules, caller, &dp.path, vis)?;
             let rc = Recorder {
                 st: self,
                 tx,
@@ -963,19 +1027,7 @@ impl Store {
         }
         self.with_tx(|tx| {
             let rules = rules_in(tx, id)?;
-            if let Some(vis) = filtering(vis)
-                && rules.allows(&dp.path, Op::Write, caller)
-                && doc_in(tx, id, &dp.path)?.is_some()
-            {
-                let withheld =
-                    vis.withheld_authors(&authors_in(tx, id, &dp.path)?, id.as_str(), None);
-                if !withheld.is_empty() {
-                    return Err(CoreError::DocWithheld {
-                        path: dp.path.clone(),
-                        authors: withheld,
-                    });
-                }
-            }
+            refuse_withheld(tx, id, &rules, caller, &dp.path, vis)?;
             let rc = Recorder { st: self, tx, ctx, op: "str_replace" };
             write_in(&rc, id, &rules, caller, path, pin, &self.now(), |cur| Body::of((|| {
                 let cur = cur.ok_or_else(|| CoreError::DocNotFound { path: path.to_string() })?;
@@ -1030,6 +1082,19 @@ impl Store {
         q: &DocQuery,
         caller: &Caller,
         vis: Option<&Visibility>,
+    ) -> Result<DocPage> {
+        self.doc_query_within(id, q, caller, vis, MAX_UNLIMITED_QUERY_BYTES)
+    }
+
+    /// [`Store::doc_query_visible`] with `budget` bytes for an ordered
+    /// query without a limit.
+    fn doc_query_within(
+        &self,
+        id: &ArtifactId,
+        q: &DocQuery,
+        caller: &Caller,
+        vis: Option<&Visibility>,
+        budget: usize,
     ) -> Result<DocPage> {
         let vis = filtering(vis);
         let collection = collection_path(&q.collection)?;
@@ -1090,11 +1155,11 @@ impl Store {
                     docs.push(d);
                 }
             }
-            if q.order_by.is_some() && q.limit.is_none() && bytes > MAX_UNLIMITED_QUERY_BYTES {
+            if q.order_by.is_some() && q.limit.is_none() && bytes > budget {
                 return Err(CoreError::invalid(
                     "resource_exhausted",
                     format!(
-                        "the matching documents hold {bytes} bytes, over the {MAX_UNLIMITED_QUERY_BYTES} an ordered query without a limit may return; add a limit or narrow the query"
+                        "the matching documents hold {bytes} bytes, over the {budget} an ordered query without a limit may return; add a limit or narrow the query"
                     ),
                 ));
             }
@@ -1133,6 +1198,25 @@ impl Store {
         writes: Vec<BatchWrite>,
         lww: bool,
         caller: &Caller,
+    ) -> Result<Vec<Written>> {
+        self.doc_batch_visible(ctx, id, writes, lww, caller, None)
+    }
+
+    /// [`Store::doc_batch`] for a caller whose reader sees what `vis` lets
+    /// through: an `update` of a document `vis` withholds fails at its
+    /// place as [`CoreError::DocWithheld`] before its pin or merge, as
+    /// [`Store::doc_update_visible`]; `set` and `delete` stay blind.
+    ///
+    /// # Errors
+    /// As above, and [`Store::doc_batch`]'s.
+    pub fn doc_batch_visible(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        writes: Vec<BatchWrite>,
+        lww: bool,
+        caller: &Caller,
+        vis: Option<&Visibility>,
     ) -> Result<Vec<Written>> {
         if writes.is_empty() || writes.len() > MAX_BATCH {
             return Err(invalid_argument(format!(
@@ -1201,16 +1285,20 @@ impl Store {
                             &self.now(),
                             |_| body.map(Some),
                         ),
-                        Prepared::Update(patch) => write_in(
-                            &rc("update"),
-                            id,
-                            &rules,
-                            caller,
-                            path,
-                            pin,
-                            &self.now(),
-                            |cur| Body::of(update_body(path, cur, patch)),
-                        ),
+                        Prepared::Update(patch) => {
+                            refuse_withheld(tx, id, &rules, caller, path, vis).and_then(|()| {
+                                write_in(
+                                    &rc("update"),
+                                    id,
+                                    &rules,
+                                    caller,
+                                    path,
+                                    pin,
+                                    &self.now(),
+                                    |cur| Body::of(update_body(path, cur, patch)),
+                                )
+                            })
+                        }
                         Prepared::Delete => write_in(
                             &rc("delete"),
                             id,
@@ -1241,6 +1329,26 @@ impl Store {
         a: Acquire,
         caller: &Caller,
     ) -> Result<(Acquired, Option<DocChange>)> {
+        self.doc_acquire_visible(ctx, id, path, a, caller, None)
+    }
+
+    /// [`Store::doc_acquire`] for a caller whose reader sees what `vis`
+    /// lets through, on a document `vis` withholds: with `data` (a merge)
+    /// [`CoreError::DocWithheld`] before anything is looked at; without, a
+    /// lease in force is busy whatever its holder, so the answer never
+    /// confirms a guessed holder and never takes another's lease over.
+    ///
+    /// # Errors
+    /// As above, and [`Store::doc_acquire`]'s.
+    pub fn doc_acquire_visible(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        path: &str,
+        a: Acquire,
+        caller: &Caller,
+        vis: Option<&Visibility>,
+    ) -> Result<(Acquired, Option<DocChange>)> {
         let dp = doc_path(path)?;
         if a.holder.is_empty() || a.holder.chars().count() > 200 {
             return Err(invalid_argument("holder is 1 to 200 characters"));
@@ -1257,6 +1365,12 @@ impl Store {
             if !rules.allows(&dp.path, Op::Write, caller) {
                 return Err(CoreError::DocNotFound { path: dp.path.clone() });
             }
+            let withheld = withheld_in(tx, id, &rules, caller, &dp.path, vis)?;
+            if let Some(authors) = &withheld
+                && a.data.is_some()
+            {
+                return Err(CoreError::DocWithheld { path: dp.path.clone(), authors: authors.clone() });
+            }
             let now = self.now();
             tx.execute(
                 "DELETE FROM leases WHERE artifact_id = ?1 AND expires_at <= ?2",
@@ -1270,7 +1384,7 @@ impl Store {
                 )
                 .optional()?;
             if let Some((holder, expires)) = &held
-                && *holder != a.holder
+                && (*holder != a.holder || withheld.is_some())
                 && *expires > now
             {
                 return Ok((Acquired { acquired: false, version: None, expires_at: Some(expires.clone()), holder: None }, None));
@@ -2710,6 +2824,228 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(w.doc.unwrap().data, json!({"text": "S's"}));
+        }
+
+        fn pad_to_cap(base: &Value) -> Value {
+            let n = MAX_DOC_BYTES - serde_json::to_vec(base).unwrap().len();
+            json!({"pad": "a".repeat(n)})
+        }
+
+        #[test]
+        fn a_merge_on_a_withheld_document_is_refused_before_it_is_evaluated() {
+            let t = two();
+            t.set(&t.mia, "c/t", json!({"flag": true, "text": "hello"}));
+            t.set(&t.mia, "c/f", json!({"flag": false, "text": "hello"}));
+            let vis = t.view(&t.sam);
+            // A patch that fits beside {flag: true} but not {flag: false}.
+            let patch = pad_to_cap(&json!({"flag": true, "text": "hello", "pad": ""}));
+            let before: Vec<Doc> = ["c/t", "c/f"]
+                .iter()
+                .map(|p| t.st.doc_get(&t.aid, p, &as_(&t.mia)).unwrap().unwrap())
+                .collect();
+            let refused = |r: Result<Written>, what: &str| match r {
+                Err(CoreError::DocWithheld { authors, .. }) => {
+                    assert_eq!(authors, vec![Author::Person(t.mia.clone())], "{what}")
+                }
+                other => panic!("{what}: {other:?}"),
+            };
+            for p in ["c/t", "c/f"] {
+                for pin in [page(), pinned(1), pinned(999)] {
+                    refused(
+                        t.st.doc_update_visible(
+                            DAEMON,
+                            &t.aid,
+                            p,
+                            patch.clone(),
+                            pin,
+                            &as_(&t.sam),
+                            Some(&vis),
+                        ),
+                        p,
+                    );
+                }
+                match t.st.doc_batch_visible(
+                    DAEMON,
+                    &t.aid,
+                    vec![
+                        BatchWrite {
+                            path: "c/sam".into(),
+                            op: BatchOp::Set(json!({"a": 1})),
+                            if_version: None,
+                        },
+                        BatchWrite {
+                            path: p.into(),
+                            op: BatchOp::Update(patch.clone()),
+                            if_version: None,
+                        },
+                    ],
+                    true,
+                    &as_(&t.sam),
+                    Some(&vis),
+                ) {
+                    Err(CoreError::InBatch { op: 1, error, .. }) => {
+                        assert!(matches!(*error, CoreError::DocWithheld { .. }), "{error:?}")
+                    }
+                    other => panic!("batch {p}: {other:?}"),
+                }
+                match t.st.doc_acquire_visible(
+                    DAEMON,
+                    &t.aid,
+                    p,
+                    Acquire {
+                        holder: "h".into(),
+                        ttl_ms: None,
+                        data: Some(patch.clone()),
+                    },
+                    &as_(&t.sam),
+                    Some(&vis),
+                ) {
+                    Err(CoreError::DocWithheld { .. }) => {}
+                    other => panic!("acquire {p}: {other:?}"),
+                }
+            }
+            // Nothing was written, not even the batch's other write.
+            let after: Vec<Doc> = ["c/t", "c/f"]
+                .iter()
+                .map(|p| t.st.doc_get(&t.aid, p, &as_(&t.mia)).unwrap().unwrap())
+                .collect();
+            assert_eq!(after, before);
+            assert_eq!(t.st.doc_get(&t.aid, "c/sam", &as_(&t.sam)).unwrap(), None);
+            assert_eq!(doc_count(&t.st, "leases"), 0);
+            // Blind writes stay allowed: set and delete in a batch, and a
+            // lease without data.
+            let w =
+                t.st.doc_batch_visible(
+                    DAEMON,
+                    &t.aid,
+                    vec![
+                        BatchWrite {
+                            path: "c/t".into(),
+                            op: BatchOp::Set(json!({"x": 1})),
+                            if_version: None,
+                        },
+                        BatchWrite {
+                            path: "c/f".into(),
+                            op: BatchOp::Delete,
+                            if_version: None,
+                        },
+                    ],
+                    true,
+                    &as_(&t.sam),
+                    Some(&vis),
+                )
+                .unwrap();
+            assert!(w[1].deleted);
+            let (a, _) =
+                t.st.doc_acquire_visible(
+                    DAEMON,
+                    &t.aid,
+                    "c/t",
+                    Acquire {
+                        holder: "h".into(),
+                        ttl_ms: None,
+                        data: None,
+                    },
+                    &as_(&t.sam),
+                    Some(&vis),
+                )
+                .unwrap();
+            assert!(a.acquired);
+            // Sam's own document merges as before.
+            t.set(&t.sam, "c/mine", json!({"a": 1}));
+            let w =
+                t.st.doc_update_visible(
+                    DAEMON,
+                    &t.aid,
+                    "c/mine",
+                    json!({"b": 2}),
+                    page(),
+                    &as_(&t.sam),
+                    Some(&vis),
+                )
+                .unwrap();
+            assert_eq!(w.doc.unwrap().data, json!({"a": 1, "b": 2}));
+        }
+
+        #[test]
+        fn a_lease_on_a_withheld_document_never_confirms_its_holder() {
+            let t = two();
+            t.set(&t.mia, "c/1", json!({"a": 1}));
+            let acquire = |by: &str, holder: &str, vis: Option<&Visibility>| {
+                t.st.doc_acquire_visible(
+                    DAEMON,
+                    &t.aid,
+                    "c/1",
+                    Acquire {
+                        holder: holder.into(),
+                        ttl_ms: Some(600_000),
+                        data: None,
+                    },
+                    &as_(by),
+                    vis,
+                )
+                .unwrap()
+                .0
+            };
+            let mine = acquire(&t.mia, "mia-laptop", Some(&t.view(&t.mia)));
+            assert!(mine.acquired);
+            let vis = t.view(&t.sam);
+            let miss = acquire(&t.sam, "guess", Some(&vis));
+            let hit = acquire(&t.sam, "mia-laptop", Some(&vis));
+            assert_eq!(miss, hit, "a guessed holder answers as any other");
+            assert_eq!((hit.acquired, hit.holder), (false, None));
+            assert_eq!(hit.expires_at, mine.expires_at, "her lease is untouched");
+            // Mia renews her own lease as before.
+            assert!(acquire(&t.mia, "mia-laptop", Some(&t.view(&t.mia))).acquired);
+        }
+
+        #[test]
+        fn withheld_documents_before_the_cursor_are_counted() {
+            let t = two();
+            t.set(&t.mia, "c/a", json!({"n": 1}));
+            t.set(&t.sam, "c/b", json!({"n": 2}));
+            t.set(&t.mia, "c/c", json!({"n": 3}));
+            t.set(&t.sam, "c/d", json!({"n": 4}));
+            t.set(&t.mia, "c/e", json!({"n": 5}));
+            for cursor in [None, Some("b"), Some("c"), Some("d"), Some("zz")] {
+                let got = t.query(
+                    &t.sam,
+                    DocQuery {
+                        collection: "c".into(),
+                        cursor: cursor.map(str::to_string),
+                        ..DocQuery::default()
+                    },
+                );
+                assert_eq!(got.withheld, Some(3), "{cursor:?}");
+                assert!(
+                    got.docs.iter().all(|d| d.id == "b" || d.id == "d"),
+                    "{cursor:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn the_byte_budget_counts_visible_bytes_only() {
+            let t = two();
+            t.set(&t.mia, "c/big", json!({"text": "m".repeat(1000)}));
+            t.set(&t.sam, "c/small", json!({"text": "s"}));
+            let q = DocQuery {
+                collection: "c".into(),
+                order_by: Some("text".into()),
+                ..DocQuery::default()
+            };
+            let got =
+                t.st.doc_query_within(&t.aid, &q, &as_(&t.sam), Some(&t.view(&t.sam)), 500)
+                    .unwrap();
+            assert_eq!((got.docs.len(), got.withheld), (1, Some(1)));
+            // Mia's own reader is held to the budget by her bytes.
+            assert!(matches!(
+                t.st.doc_query_within(&t.aid, &q, &as_(&t.mia), Some(&t.view(&t.mia)), 500),
+                Err(CoreError::Invalid {
+                    code: "resource_exhausted",
+                    ..
+                })
+            ));
         }
 
         #[test]
