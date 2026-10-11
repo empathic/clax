@@ -1440,6 +1440,28 @@ pub(crate) fn withdraw_session_in(
     )
 }
 
+/// Withdraws session `sid`'s open `ask` requests for thread `tid`, whose
+/// held rows a take or handoff removed (spec 2026-10-08 §12): approving
+/// them would release nothing to it.
+pub(crate) fn withdraw_taken_in(
+    st: &Store,
+    tx: &Transaction<'_>,
+    ctx: &AuditCtx,
+    tid: &str,
+    sid: &str,
+    now: &str,
+) -> Result<()> {
+    withdraw_where(
+        st,
+        tx,
+        ctx,
+        "thread_id = ?1 AND session_id = ?2 AND cause = 'ask'",
+        &[&tid, &sid],
+        "thread_taken",
+        now,
+    )
+}
+
 /// Withdraws the open requests of person `pid`, asked of them or about
 /// their content, once they are revoked: a revoked person approves
 /// nothing, and their content stays withheld (§6.4).

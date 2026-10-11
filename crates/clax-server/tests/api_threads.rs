@@ -2085,3 +2085,22 @@ async fn handoff_resends_and_release_untargets() {
         ]
     );
 }
+
+/// Two agents of one person take a fresh untargeted send at once over HTTP,
+/// round after round: exactly one gets it, and it is the owner.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn first_take_has_one_winner_over_http() {
+    let ts = TestServer::spawn().await;
+    let (web, api, aid, _) = two_agents_one_thread(&ts).await;
+    assert_eq!(take(&ts, &web).await.len() + take(&ts, &api).await.len(), 1);
+    for i in 0..20 {
+        let t = ts.thread(&aid, 1, &format!("round {i}")).await;
+        let tid = t["id"].as_str().unwrap().to_string();
+        ts.send_thread(&aid, &tid).await;
+        let (x, y) = tokio::join!(take(&ts, &web), take(&ts, &api));
+        assert_eq!(x.len() + y.len(), 1, "round {i}: {x:?} {y:?}");
+        let winner = if x.len() == 1 { &web } else { &api };
+        let owner = ts.store.thread_owner(&tid).unwrap().unwrap();
+        assert_eq!(&owner.session_id, winner, "round {i}");
+    }
+}

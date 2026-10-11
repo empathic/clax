@@ -231,48 +231,97 @@ pub(crate) fn check_not_taken_in(c: &Connection, tid: &str, sid: &str) -> Result
     }
 }
 
+/// The person of session `sid` (`None`: the owner's agents), or `None`
+/// for no such session.
+pub(crate) fn session_person_in(c: &Connection, sid: &str) -> Result<Option<Option<String>>> {
+    Ok(c.query_row(
+        "SELECT person FROM sessions WHERE id = ?1",
+        params![sid],
+        |r| r.get(0),
+    )
+    .optional()?)
+}
+
+/// The person who sent viewer comment `comment_id` to the agents (spec
+/// 2026-10-08 O8 as ruled for §12): its writer when the writer is a
+/// connected person, else the owner (`None`): the owner, LAN viewers who
+/// are not connected and anonymous viewers reach the owner's agents (O6).
+pub(crate) fn sender_person_in(c: &Connection, comment_id: &str) -> Result<Option<String>> {
+    let p: Option<String> = c
+        .query_row(
+            "SELECT v.public_id FROM comments k JOIN viewers v ON v.public_id = k.author_public_id
+             WHERE k.id = ?1 AND k.author_kind = 'viewer' AND v.person = 1 AND v.owner = 0",
+            params![comment_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(p)
+}
+
+/// Whether session `sid` may take thread `tid` implicitly (by a first
+/// delivery or a reply), or hand off or release it while it has no owner:
+/// one of `comment_ids`, the viewer comments of the thread the session
+/// received or sees, was sent by its person. O8 settles a first take among
+/// one person's agents; another person's agent becomes an owner only by a
+/// send naming it or a handoff.
+pub(crate) fn may_take_in(c: &Connection, sid: &str, comment_ids: &[String]) -> Result<bool> {
+    let Some(person) = session_person_in(c, sid)? else {
+        return Ok(false);
+    };
+    for id in comment_ids {
+        if sender_person_in(c, id)? == person {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Thread `tid`'s owner, when session `from` may hand the thread off or
-/// release it (spec 2026-10-08 §12): `from` owns it; its owner has ended
-/// and `from` is an agent of the same person; or it has no owner.
+/// release it (spec 2026-10-08 §12): `from` owns it; or it has no live
+/// owner and either its ended owner was an agent of `from`'s person or
+/// `from` may take it implicitly ([`may_take_in`] over `seen`, the viewer
+/// comments of the thread `from` sees).
 ///
 /// # Errors
-/// [`CoreError::ThreadTaken`] naming the owner otherwise.
+/// [`CoreError::ThreadTaken`] naming the owner (or nobody) otherwise.
 pub(crate) fn check_may_hand_off_in(
     c: &Connection,
     tid: &str,
     from: &str,
+    seen: &[String],
 ) -> Result<Option<ThreadOwner>> {
     let owner = owner_in(c, tid)?;
-    if let Some(o) = &owner {
-        let allowed = if o.live {
-            o.session_id == from
-        } else {
-            let person: Option<Option<String>> = c
-                .query_row(
-                    "SELECT person FROM sessions WHERE id = ?1",
-                    params![from],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            person.is_some_and(|p| p == o.person)
-        };
-        if !allowed {
-            return Err(CoreError::ThreadTaken {
-                name: o.display().to_string(),
-            });
+    let allowed = match &owner {
+        Some(o) if o.live => o.session_id == from,
+        Some(o) => {
+            session_person_in(c, from)?.is_some_and(|p| p == o.person)
+                || may_take_in(c, from, seen)?
         }
+        None => may_take_in(c, from, seen)?,
+    };
+    if !allowed {
+        return Err(CoreError::ThreadTaken {
+            name: owner
+                .as_ref()
+                .map_or("no agent of yours", |o| o.display())
+                .to_string(),
+        });
     }
     Ok(owner)
 }
 
-/// Makes session `sid` the owner of thread `tid` when it has no live owner
-/// (M23), and answers whether it did: every other session's undelivered
-/// rows of the thread are deleted (those sessions are added to
-/// `touched.targets`, so their waits learn the rows are gone), and its
-/// untargeted undelivered rows become `sid`'s (or are deleted, for a
-/// comment `sid` has a row for already). Recorded as `thread.take {thread_id,
-/// session, cause}` under `ctx`. A thread with a live owner, `sid` or
-/// another, is left as it is.
+/// Makes session `sid` the owner of thread `tid` by an implicit take
+/// (`cause` `first_delivery` or `reply`), and answers whether it did: only
+/// when the thread has no live owner and [`may_take_in`] lets `sid` take it
+/// over `comment_ids` (the comments it was handed, or sees, as it
+/// replies). The undelivered rows of the thread held by the other agents of
+/// `sid`'s person are deleted, and their sessions' open `ask` requests for
+/// the thread withdrawn (`approval.withdraw`, reason `thread_taken`);
+/// other people's agents' rows stay. Those sessions are added to
+/// `touched.targets`, so their waits learn the rows are gone. Untargeted
+/// undelivered rows become `sid`'s (or are deleted, for a comment `sid`
+/// has a row for already). Recorded as `thread.take {thread_id, session,
+/// cause}` under `ctx`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn take_in(
     st: &Store,
@@ -281,10 +330,11 @@ pub(crate) fn take_in(
     tid: &str,
     sid: &str,
     cause: &str,
+    comment_ids: &[String],
     now: &str,
     touched: &mut crate::feedback::Touched,
 ) -> Result<bool> {
-    if owner_in(tx, tid)?.is_some_and(|o| o.live) {
+    if owner_in(tx, tid)?.is_some_and(|o| o.live) || !may_take_in(tx, sid, comment_ids)? {
         return Ok(false);
     }
     let Some(aid) = tx
@@ -301,20 +351,26 @@ pub(crate) fn take_in(
         "UPDATE threads SET target_session_id = ?2 WHERE id = ?1",
         params![tid, sid],
     )?;
+    // The other agents of the taker's person.
+    const SAME_PERSON: &str = "target_session_id IN (SELECT o.id FROM sessions o, sessions me
+        WHERE me.id = ?2 AND o.id <> ?2 AND o.person IS me.person)";
     let others: Vec<String> = {
-        let mut stmt = tx.prepare_cached(
+        let mut stmt = tx.prepare_cached(&format!(
             "SELECT DISTINCT target_session_id FROM feedback
-             WHERE thread_id = ?1 AND delivered_at IS NULL
-               AND target_session_id IS NOT NULL AND target_session_id <> ?2",
-        )?;
+             WHERE thread_id = ?1 AND delivered_at IS NULL AND {SAME_PERSON}"
+        ))?;
         stmt.query_map(params![tid, sid], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?
     };
     tx.execute(
-        "DELETE FROM feedback WHERE thread_id = ?1 AND delivered_at IS NULL
-           AND target_session_id IS NOT NULL AND target_session_id <> ?2",
+        &format!(
+            "DELETE FROM feedback WHERE thread_id = ?1 AND delivered_at IS NULL AND {SAME_PERSON}"
+        ),
         params![tid, sid],
     )?;
+    for other in &others {
+        super::approvals::withdraw_taken_in(st, tx, ctx, tid, other, now)?;
+    }
     tx.execute(
         "DELETE FROM feedback WHERE thread_id = ?1 AND delivered_at IS NULL
            AND target_session_id IS NULL
@@ -933,14 +989,46 @@ impl Store {
     /// # Errors
     /// [`CoreError::ThreadTaken`] naming the owner otherwise.
     pub fn check_may_hand_off(&self, tid: &str, from: &str) -> Result<()> {
-        self.with_read(|c| check_may_hand_off_in(c, tid, from).map(|_| ()))
+        let seen = self.seen_comments(tid, from)?;
+        self.with_read(|c| check_may_hand_off_in(c, tid, from, &seen).map(|_| ()))
+    }
+
+    /// The viewer comments of thread `tid` whose bodies session `sid`'s
+    /// reader may see (spec 2026-10-08 §8), oldest first; none for a
+    /// thread or session that is gone.
+    ///
+    /// # Errors
+    /// The store's.
+    pub(crate) fn seen_comments(&self, tid: &str, sid: &str) -> Result<Vec<String>> {
+        let Some(t) = self.get_thread(tid)? else {
+            return Ok(Vec::new());
+        };
+        if self.get_session(sid)?.is_none() {
+            return Ok(Vec::new());
+        }
+        let vis = crate::visibility::Visibility::for_session(self, sid)?;
+        Ok(t.comments
+            .iter()
+            .filter(|c| {
+                c.author_kind == AUTHOR_VIEWER
+                    && vis.sees(
+                        &crate::visibility::authors_of_comment(c),
+                        &t.artifact_id,
+                        Some(tid),
+                    )
+            })
+            .map(|c| c.id.clone())
+            .collect())
     }
 
     /// An agent reply `c` on thread `tid` from the session `c` names
     /// (`via_session_id`), in one transaction with the ownership rules
     /// (M23, M24): refused with [`CoreError::ThreadTaken`] when another
     /// live session owns the thread; on a thread with no live owner the
-    /// replying session becomes its owner (`thread.take`, cause `reply`).
+    /// replying session becomes its owner (`thread.take`, cause `reply`)
+    /// when its person sent one of the thread's viewer comments it sees
+    /// (O8): a reply by another person's agent, or one written seeing none
+    /// of the comments, takes nothing.
     /// With `addressed` (the live page and the harness), it also records the
     /// thread's pending address as [`Store::add_addressed_reply`] does.
     /// Returns the comment and the sessions whose rows the take removed.
@@ -961,6 +1049,7 @@ impl Store {
                 "an agent reply comes from a session",
             ));
         };
+        let seen = self.seen_comments(tid, &sid)?;
         let mut touched = crate::feedback::Touched::default();
         let comment = self.add_comment_then(ctx, tid, c, |tx, t| {
             check_not_taken_in(tx, tid, &sid)?;
@@ -970,7 +1059,17 @@ impl Store {
                 }
                 super::live::mark_pending_in(tx, id, tid, "explicit", harness, &self.now())?;
             }
-            take_in(self, tx, ctx, tid, &sid, "reply", &self.now(), &mut touched)?;
+            take_in(
+                self,
+                tx,
+                ctx,
+                tid,
+                &sid,
+                "reply",
+                &seen,
+                &self.now(),
+                &mut touched,
+            )?;
             Ok(())
         })?;
         Ok((comment, touched))

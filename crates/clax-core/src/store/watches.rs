@@ -326,26 +326,7 @@ impl Store {
     /// # Errors
     /// As [`Store::watch`].
     pub fn ensure_watch(&self, ctx: &AuditCtx, session_id: &str, id: &ArtifactId) -> Result<Watch> {
-        self.with_tx(|tx| {
-            check(tx, session_id, id)?;
-            let n = tx.execute(
-                "INSERT OR IGNORE INTO watches (session_id, artifact_id, replies_armed, created_at) VALUES (?1, ?2, 1, ?3)",
-                params![session_id, id.as_str(), self.now()],
-            )?;
-            if n > 0 {
-                let rec = artifact_watch_record(
-                    tx,
-                    AuditKind::WatchStart,
-                    &self.now(),
-                    session_id,
-                    id.as_str(),
-                    true,
-                    "direct",
-                )?;
-                self.record_audit(tx, ctx, rec)?;
-            }
-            fetch(tx, session_id, id)
-        })
+        self.with_tx(|tx| ensure_watch_in(self, tx, ctx, session_id, id))
     }
 
     /// Removes the watch; true when one existed, and then records
@@ -414,6 +395,34 @@ impl Store {
             Ok(stmt.query_map(params![id.as_str()], row_to_watch)?.collect::<rusqlite::Result<Vec<_>>>()?)
         })
     }
+}
+
+/// [`Store::ensure_watch`] in transaction `tx`.
+pub(crate) fn ensure_watch_in(
+    st: &Store,
+    tx: &rusqlite::Transaction<'_>,
+    ctx: &AuditCtx,
+    session_id: &str,
+    id: &ArtifactId,
+) -> Result<Watch> {
+    check(tx, session_id, id)?;
+    let n = tx.execute(
+        "INSERT OR IGNORE INTO watches (session_id, artifact_id, replies_armed, created_at) VALUES (?1, ?2, 1, ?3)",
+        params![session_id, id.as_str(), st.now()],
+    )?;
+    if n > 0 {
+        let rec = artifact_watch_record(
+            tx,
+            AuditKind::WatchStart,
+            &st.now(),
+            session_id,
+            id.as_str(),
+            true,
+            "direct",
+        )?;
+        st.record_audit(tx, ctx, rec)?;
+    }
+    fetch(tx, session_id, id)
 }
 
 #[cfg(test)]

@@ -1567,7 +1567,9 @@ async fn handoff_to_another_persons_agent_makes_a_routing_request() {
     )
     .await;
     assert_eq!(status, 200, "{v}");
-    assert_eq!(v["thread"]["owner"]["handle"], json!(t.sam_handle), "{v}");
+    // Another person's agent: by name and state only (§13).
+    assert!(v["thread"]["owner"].get("handle").is_none(), "{v}");
+    assert_eq!(v["thread"]["owner"]["name"], json!(sam_name), "{v}");
     assert_eq!(v["thread"]["owner"]["person"], json!(t.sam_public()));
     assert_eq!(v["thread"]["taken_by"], json!(sam_name));
     let rs = t.sams_requests().await;
@@ -1597,4 +1599,387 @@ async fn handoff_to_another_persons_agent_makes_a_routing_request() {
         (409, &json!("thread_taken")),
         "{v}"
     );
+}
+
+/// The owner agent's call: `m path` with `body`, from its session.
+async fn owner_agent(t: &Two, m: &str, path: &str, body: Option<Value>) -> (u16, Value) {
+    let mut r =
+        t.w.ts
+            .authed(
+                t.w.ts
+                    .client
+                    .request(m.parse().unwrap(), format!("{}{path}", t.w.ts.base)),
+            )
+            .header("x-clax-session", &t.w.owner_session);
+    if let Some(b) = body {
+        r = r.json(&b);
+    }
+    json_of(r.send().await.unwrap()).await
+}
+
+/// The owner agent's piggyback take: its feedback items.
+async fn owner_take(t: &Two) -> Vec<Value> {
+    let (s, v) = owner_agent(
+        t,
+        "GET",
+        &format!(
+            "/api/sessions/{}/feedback?tier=piggyback",
+            t.w.owner_session
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    v["feedback"].as_array().cloned().unwrap_or_default()
+}
+
+async fn owner_reply(t: &Two, tid: &str) -> (u16, Value) {
+    owner_agent(
+        t,
+        "POST",
+        &format!("/api/artifacts/{}/threads/{tid}/comments", t.aid),
+        Some(json!({"body": "owner agent reply", "author_kind": "agent"})),
+    )
+    .await
+}
+
+fn approve_mia_for_owner(t: &Two) {
+    t.w.ts
+        .store
+        .approve(
+            &AuditCtx::DAEMON,
+            None,
+            &t.w.mia_public,
+            clax_core::store::approvals::Scope::Everywhere,
+            clax_core::store::approvals::Via::Shell,
+        )
+        .unwrap();
+}
+
+/// Each feedback row of `tid`: its target and whether it was delivered.
+fn rows_of(t: &Two, tid: &str) -> Vec<(Option<String>, bool)> {
+    t.w.ts
+        .store
+        .feedback_rows(tid)
+        .unwrap()
+        .into_iter()
+        .map(|f| (f.target_session_id, f.delivered_at.is_some()))
+        .collect()
+}
+
+/// An untargeted send of the owner's is first taken by the owner's agents
+/// only (O8): Sam's agent may receive it first, but owns nothing, and the
+/// owner's agent keeps its row and may reply.
+#[tokio::test]
+async fn another_persons_first_take_makes_no_owner() {
+    let t = Two::new().await;
+    owner_agent_watches(&t).await;
+    sam_approves_the_owner(&t).await;
+    let tid = t.w.ts.thread_as_owner(&t.aid, "OWNERWORDS fix it").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = t
+        .owner_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/send", t.aid),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let fb = t.sam_feedback("tier=piggyback").await;
+    assert_eq!(fb["feedback"].as_array().unwrap().len(), 1, "{fb}");
+    assert!(t.owner_thread(&tid).await.get("owner").is_none());
+    let own = owner_take(&t).await;
+    assert!(own.iter().any(|f| f["thread_id"] == json!(tid)), "{own:?}");
+    let (s, v) = owner_reply(&t, &tid).await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(
+        t.w.ts.store.thread_owner(&tid).unwrap().unwrap().session_id,
+        t.w.owner_session
+    );
+    // Now Sam's agent may not reply.
+    let (s, v) = t
+        .sam_agent(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/comments", t.aid),
+            Some(json!({"body": "mine", "author_kind": "agent"})),
+        )
+        .await;
+    assert_eq!(
+        (s, &v["error"]["code"]),
+        (409, &json!("thread_taken")),
+        "{v}"
+    );
+}
+
+/// A reply by an agent that sees only a placeholder takes nothing, and
+/// leaves every row in place.
+#[tokio::test]
+async fn a_blind_reply_by_another_persons_agent_takes_nothing() {
+    let t = Two::new().await;
+    owner_agent_watches(&t).await;
+    approve_mia_for_owner(&t);
+    let tid = t.mia_thread("MIAWORDS please").await;
+    let (s, v) = t
+        .mia_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/send", t.aid),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let fb = t.sam_feedback("tier=piggyback").await;
+    assert!(fb["text"].as_str().unwrap().contains("withheld"), "{fb}");
+    let (s, v) = t
+        .sam_agent(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/comments", t.aid),
+            Some(json!({"body": "mine now", "author_kind": "agent"})),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    assert!(v["thread"].get("owner").is_none(), "{v}");
+    let own = owner_take(&t).await;
+    assert!(
+        own.iter()
+            .any(|f| f["thread_id"] == json!(tid) && f["body"] == "MIAWORDS please"),
+        "the owner's agent still gets it: {own:?}"
+    );
+    let (s, v) = owner_reply(&t, &tid).await;
+    assert_eq!(s, 201, "{v}");
+}
+
+/// An agent that could not take an unowned thread may not release it or
+/// hand it off: nothing changes.
+#[tokio::test]
+async fn another_persons_agent_cannot_release_an_unowned_thread() {
+    let t = Two::new().await;
+    owner_agent_watches(&t).await;
+    approve_mia_for_owner(&t);
+    let tid = t.mia_thread("MIAWORDS release").await;
+    let (s, _) = t
+        .mia_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/send", t.aid),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200);
+    let before = rows_of(&t, &tid);
+    let sid = t.w.sam_session.clone();
+    for body in [json!({}), json!({"to": t.sam_handle})] {
+        let (s, v) = t
+            .sam_agent(
+                "POST",
+                &format!("/api/sessions/{sid}/threads/{tid}/handoff"),
+                Some(body),
+            )
+            .await;
+        assert_eq!(
+            (s, &v["error"]["code"]),
+            (409, &json!("thread_taken")),
+            "{v}"
+        );
+    }
+    assert_eq!(rows_of(&t, &tid), before, "nothing changed");
+    let own = owner_take(&t).await;
+    assert!(own.iter().any(|f| f["thread_id"] == json!(tid)), "{own:?}");
+}
+
+/// Sam's held row survives the owner agent's take, so the approval Sam's
+/// agent asked for delivers it.
+#[tokio::test]
+async fn an_ask_still_delivers_after_another_persons_agent_takes() {
+    let t = Two::new().await;
+    owner_agent_watches(&t).await;
+    approve_mia_for_owner(&t);
+    let tid = t.mia_thread("MIAWORDS held").await;
+    let (s, _) = t
+        .mia_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/send", t.aid),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200);
+    let _ = t.sam_feedback("tier=piggyback").await;
+    let sid = t.w.sam_session.clone();
+    let (s, v) = t
+        .sam_agent(
+            "POST",
+            &format!("/api/sessions/{sid}/approvals"),
+            Some(json!({"thread_id": tid})),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let rid = v["approval_id"].as_str().unwrap().to_string();
+    assert!(
+        owner_take(&t)
+            .await
+            .iter()
+            .any(|f| f["thread_id"] == json!(tid))
+    );
+    let (s, v) = t.sam_decides(&rid, "thread").await;
+    assert_eq!(s, 200, "{v}");
+    let fb = t.sam_feedback("tier=piggyback").await;
+    assert_eq!(fb["feedback"][0]["body"], "MIAWORDS held", "{fb}");
+}
+
+/// A handoff refused (here, of a resolved thread) gives its target no
+/// watch; one that goes through does.
+#[tokio::test]
+async fn a_refused_handoff_gives_no_watch() {
+    let t = Two::new().await;
+    owner_agent_watches(&t).await;
+    let tid = t.w.ts.thread_as_owner(&t.aid, "resolved one").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let owner_handle =
+        t.w.ts
+            .store
+            .get_session(&t.w.owner_session)
+            .unwrap()
+            .unwrap()
+            .agent_handle;
+    let (s, _) = t
+        .owner_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/send", t.aid),
+            Some(json!({"to": owner_handle})),
+        )
+        .await;
+    assert_eq!(s, 200);
+    t.w.ts
+        .store
+        .resolve_thread_touched(&AuditCtx::DAEMON, &tid, "viewer:anonymous")
+        .unwrap();
+    let mia_name =
+        t.w.ts
+            .store
+            .get_session(&t.w.mia_session)
+            .unwrap()
+            .unwrap()
+            .name
+            .unwrap();
+    let watches = |t: &Two| {
+        t.w.ts
+            .store
+            .list_watches(&t.w.mia_session)
+            .unwrap()
+            .iter()
+            .any(|w| w.artifact_id == t.aid)
+    };
+    assert!(!watches(&t));
+    let path = format!("/api/sessions/{}/threads/{tid}/handoff", t.w.owner_session);
+    let (s, v) = owner_agent(&t, "POST", &path, Some(json!({"to": mia_name}))).await;
+    assert_eq!(
+        (s, &v["error"]["code"]),
+        (400, &json!("thread_resolved")),
+        "{v}"
+    );
+    assert!(!watches(&t), "a refused handoff gives no watch");
+}
+
+/// A handoff naming another agent is a send: an agent without `comments
+/// send` may release its thread but not hand it to another.
+#[tokio::test]
+async fn a_handoff_to_another_agent_needs_comments_send() {
+    let t = Two::new().await;
+    sam_approves_the_owner(&t).await;
+    let rights = clax_core::rights::Rights::parse(&json!([
+        {"type": "clax-artifacts", "actions": ["read"], "locations": ["*"]},
+        {"type": "clax-comments", "actions": ["read", "write", "reply", "resolve", "watch"], "locations": ["*"]},
+        {"type": "clax-ask", "actions": ["ask"], "locations": ["*"]}
+    ]))
+    .unwrap();
+    t.w.ts
+        .store
+        .set_person_rights(&AuditCtx::DAEMON, &t.sam_public(), Some(rights))
+        .unwrap();
+    owner_agent_watches(&t).await;
+    let tid = t.w.ts.thread_as_owner(&t.aid, "for Sam").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = t
+        .owner_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/send", t.aid),
+            Some(json!({"to": t.sam_handle})),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let sid = t.w.sam_session.clone();
+    let path = format!("/api/sessions/{sid}/threads/{tid}/handoff");
+    let owner_name =
+        t.w.ts
+            .store
+            .get_session(&t.w.owner_session)
+            .unwrap()
+            .unwrap()
+            .name
+            .unwrap();
+    let (s, v) = t
+        .sam_agent("POST", &path, Some(json!({"to": owner_name})))
+        .await;
+    assert_eq!(
+        (s, &v["error"]["code"]),
+        (403, &json!("not_permitted")),
+        "{v}"
+    );
+    assert_eq!(v["error"]["right"]["action"], "send");
+    let (s, v) = t.sam_agent("POST", &path, Some(json!({}))).await;
+    assert_eq!(s, 200, "{v}");
+    assert!(t.w.ts.store.thread_owner(&tid).unwrap().is_none());
+}
+
+/// Thread views name the owner agent's handle only to its own person's
+/// readers and the owner (§13).
+#[tokio::test]
+async fn owner_handles_are_shown_only_to_their_person() {
+    let t = Two::new().await;
+    sam_approves_the_owner(&t).await;
+    let owner_handle = owner_agent_watches(&t).await;
+    let tid =
+        t.w.ts
+            .thread_as_owner(&t.aid, "for the owner's agent")
+            .await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+    let (s, _) = t
+        .owner_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/send", t.aid),
+            Some(json!({"to": owner_handle})),
+        )
+        .await;
+    assert_eq!(s, 200);
+    let path = format!("/api/artifacts/{}/threads/{tid}", t.aid);
+    // The owner's browser and agent see it.
+    assert_eq!(
+        t.owner_thread(&tid).await["owner"]["handle"],
+        json!(owner_handle)
+    );
+    let (_, v) = owner_agent(&t, "GET", &path, None).await;
+    assert_eq!(v["thread"]["owner"]["handle"], json!(owner_handle), "{v}");
+    // Sam's agent and browser see its name and state only.
+    let (s, v) = t.sam_agent("GET", &path, None).await;
+    assert_eq!(s, 200, "{v}");
+    let owner = &v["thread"]["owner"];
+    assert!(owner.get("handle").is_none(), "{v}");
+    assert_eq!(owner["live"], true);
+    assert!(v["thread"]["taken_by"].is_string(), "{v}");
+    assert!(!v.to_string().contains(&owner_handle), "{v}");
+    let (_, v) = t.sam_browser().call("GET", &path, None).await;
+    assert!(v["thread"]["owner"].get("handle").is_none(), "{v}");
 }
