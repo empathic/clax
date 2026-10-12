@@ -287,6 +287,7 @@ class FinishTool implements Tool {
     return ToolOk({
       'published': published,
       'replied': replied,
+      if (o case RunFinished(:final docsRefused?)) 'docs_refused': docsRefused,
       'outcome': switch (o) {
         RunFinished() => 'finished',
         RunGaveUp(:final reason) => 'gave up: $reason',
@@ -341,19 +342,30 @@ class FinishTool implements Tool {
       }
       return _Ended(RunGaveUp(e.message, answered: true));
     }
+    String? docsRefused;
     if (src.stagedDb.isNotEmpty) {
       try {
-        final refused = await _writeDocs(api, aid, src.stagedDb, src.pins);
-        if (refused != null) {
-          _log('new app $aid: its starting documents were refused: $refused');
-        }
-      } on ClaxApiError catch (e) {
-        _log('new app $aid: its starting documents were not written: $e');
+        docsRefused = await _writeDocs(api, aid, src.stagedDb, src.pins);
+      } on Object catch (e) {
+        // An unanswered batch may have run; recovery cannot tell for a new
+        // app, so it is reported as not written.
+        docsRefused = switch (e) {
+          final ClaxApiError e => e.message,
+          _ => '$e',
+        };
+      }
+      if (docsRefused != null) {
+        _log('new app $aid: its starting documents were refused: $docsRefused');
       }
     }
     await render.cleanup();
     return _Ended(
-      RunFinished(artifactId: aid, version: 1, answered: true),
+      RunFinished(
+        artifactId: aid,
+        version: 1,
+        answered: true,
+        docsRefused: docsRefused,
+      ),
       published: 1,
     );
   }
@@ -477,18 +489,26 @@ class FinishTool implements Tool {
       }
 
       if (src.stagedDb.isNotEmpty) {
-        final refused = await _writeDocs(api, aid, src.stagedDb, src.pins);
-        if (refused != null) {
-          if (landed != null) {
-            try {
-              await api.restoreVersion(aid, base, ifVersion: landed);
-            } on ClaxApiError catch (e) {
-              if (e.status == 0) rethrow;
-              _log('restoring $aid to version $base failed: $e');
-            }
-            await _forget(aid, base);
+        // Once a version landed, every failure but one without an answer
+        // undoes it: the page never stays live without its data.
+        final String? refused;
+        try {
+          refused = await _writeDocs(api, aid, src.stagedDb, src.pins);
+        } on ClaxApiError catch (e) {
+          if (e.status == 0) rethrow;
+          if (e.isNotFound && e.code == 'not_found' && e.body['path'] == null) {
+            _log('change on $aid dropped: the app is gone');
+            if (landed != null) await _forget(aid, base);
+            await _end(s);
+            return const _Ended(RunDropped());
           }
-          return await _fail(s, "its data couldn't be updated: $refused");
+          return await _undo(s, aid, base, landed, e.message);
+        } on Object catch (e) {
+          _log('documents of $aid not written: $e');
+          return await _undo(s, aid, base, landed, '$e');
+        }
+        if (refused != null) {
+          return await _undo(s, aid, base, landed, refused);
         }
         if (record != null) {
           record.docsDone = true;
@@ -530,6 +550,34 @@ class FinishTool implements Tool {
       _log('change on $aid failed: $e');
       return await _fail(s, '$e');
     }
+  }
+
+  /// Fails a change whose documents were [refused]: restores the version
+  /// before it ([base]) when one [landed] and forgets its ledger record,
+  /// so recovery never writes the documents later. A restore without an
+  /// answer is rethrown (the record kept); a refused one leaves [landed]
+  /// current, which the reply says.
+  Future<_Ended> _undo(
+    RunState s,
+    String aid,
+    int base,
+    int? landed,
+    String refused,
+  ) async {
+    var reason = "its data couldn't be updated: $refused";
+    if (landed != null) {
+      try {
+        await api.restoreVersion(aid, base, ifVersion: landed);
+      } on ClaxApiError catch (e) {
+        if (e.status == 0) rethrow;
+        _log('restoring $aid to version $base failed: $e');
+        reason =
+            "$reason; version $landed is still the current one, as it "
+            "couldn't be undone: ${e.message}";
+      }
+      await _forget(aid, base);
+    }
+    return _fail(s, reason);
   }
 
   Future<void> _record(ChangeRecord r) async {
@@ -819,7 +867,9 @@ Future<Set<String>> newerComments(
 /// A document that moved and does not hold the write was changed by
 /// someone else since this run read it, and is never written over: that
 /// is a refusal, as is a second conflict. Throws the [ClaxApiError] of a
-/// call that got no answer (status 0).
+/// call that got no answer (status 0) or found no app (404 `not_found`
+/// without a document path); a re-read's other errors are thrown as
+/// they come.
 Future<String?> _writeDocs(
   ClaxApi api,
   String aid,
@@ -842,7 +892,10 @@ Future<String?> _writeDocs(
       ]);
       return null;
     } on ClaxApiError catch (e) {
-      if (e.status == 0) rethrow;
+      // No answer, or the app is gone (a document's 404 names its path).
+      if (e.status == 0 || (e.code == 'not_found' && e.body['path'] == null)) {
+        rethrow;
+      }
       // A pin that moved: a version conflict, or a document created since
       // this run saw it absent.
       final moved = e.isConflict || e.code == 'if_version_required';
