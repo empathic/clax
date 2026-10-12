@@ -870,6 +870,13 @@ effective(session-less grant request)    = person_rights ∩ grant.narrow
   `not_narrower`.
 - No agent can change any rights: these routes are `Denied` to agents and
   refuse the bare token.
+- Narrowing and elevation apply to agents of connected machines (a
+  grant's sessions, the owner's other machines included). This machine's
+  agents act with the daemon token, which rights do not limit (§21): 400
+  `token_agent`.
+- The owner ends any agent, and a person their own (`DELETE
+  /api/agents/<handle>`, browser): the session ends with reason `person`
+  and §14's cleanup.
 
 ### 7.5 The route table
 
@@ -1427,7 +1434,8 @@ The route table (§7.5) is the agents' contract. New routes:
   `PUT|DELETE /api/agents/<handle>/elevate`.
 - Person (owner or connected person, own items; browser for changes): `GET
   /api/people/me`, `PUT /api/people/me/grants/<gid>/narrow`, `PUT
-  /api/agents/<handle>/narrow`, `PUT /api/agents/<handle>` (rename), `GET
+  /api/agents/<handle>/narrow`, `PUT /api/agents/<handle>` (rename),
+  `DELETE /api/agents/<handle>` (end; the owner ends any agent), `GET
   /api/agents`, `GET /api/approvals`, `POST /api/approvals`, `DELETE
   /api/approvals/<id>`, `GET /api/approvals/requests`, `POST
   /api/approvals/requests/<id>/decide`; the question and inbox routes,

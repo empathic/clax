@@ -587,6 +587,65 @@ fn views_and_senders(
         .map(|views| (views, senders, owners))
 }
 
+/// Comment `c`'s view `view` as an agent reads it: a viewer's name says
+/// `(not connected)` when the viewer is not (spec §9.6, §19 item 7); an
+/// agent's name is never marked.
+fn mark_comment(vis: &Visibility, c: &Comment, view: &mut Value) {
+    if c.author_kind == clax_core::store::threads::AUTHOR_AGENT {
+        return;
+    }
+    let author = Author::of_viewer(c.author_public_id.as_deref());
+    if let Some(name) = view["author_name"].as_str() {
+        view["author_name"] = json!(vis.label(name, &author));
+    }
+}
+
+/// Thread `t`'s view `view` as an agent reads it: every name of an author
+/// who is not connected says so (spec §9.6): its viewers' comments, its
+/// batches' senders (`senders`, in `sends` order) and the viewer who
+/// resolved it.
+fn mark_thread(vis: &Visibility, t: &Thread, view: &mut Value, senders: &[Option<String>]) {
+    for (i, c) in t.comments.iter().enumerate() {
+        mark_comment(vis, c, &mut view["comments"][i]);
+    }
+    for (i, sender) in senders.iter().enumerate() {
+        let send = &mut view["sends"][i];
+        if let Some(name) = send["sent_by"].as_str() {
+            let mut name = name.to_string();
+            for a in visibility::authors_of_batch_note(sender.as_deref()) {
+                name = vis.label(&name, &a);
+            }
+            send["sent_by"] = json!(name);
+        }
+    }
+    if let (Some(by), Some(name)) = (
+        t.resolved_by
+            .as_deref()
+            .filter(|b| b.starts_with("viewer:")),
+        view["resolved_by_name"].as_str(),
+    ) {
+        let name = match visibility::authors_of_resolved_by(by, None).first() {
+            Some(a) => vis.label(name, a),
+            None => name.to_string(),
+        };
+        view["resolved_by_name"] = json!(name);
+    }
+}
+
+/// An artifact view's `participants` as an agent reads them: each named
+/// person who is not connected says so (spec §9.6).
+fn mark_participants(vis: &Visibility, view: &mut Value) {
+    let Some(people) = view["participants"]["people"].as_array_mut() else {
+        return;
+    };
+    for p in people {
+        if let (Some(id), Some(name)) = (p["public_id"].as_str(), p["display_name"].as_str()) {
+            let name = vis.label(name, &Author::of_viewer(Some(id)));
+            p["display_name"] = json!(name);
+        }
+    }
+}
+
 /// The visibility an agent channel's response goes through (spec §8):
 /// the caller's reader and the visibility generation read when the
 /// request began, before the store reads that build the view (M17).
@@ -724,6 +783,11 @@ impl Vis {
                 w.thread(t, view, senders)?;
             }
         }
+        if let Some(vis) = &self.vis {
+            for ((t, view), senders) in threads.iter().zip(&mut views).zip(&senders) {
+                mark_thread(vis, t, view, senders);
+            }
+        }
         Ok(views)
     }
 
@@ -748,6 +812,9 @@ impl Vis {
     /// its thread's view.
     pub fn filter_comment(&self, aid: &str, c: &Comment) -> Value {
         let mut v = json!(c);
+        if let Some(vis) = &self.vis {
+            mark_comment(vis, c, &mut v);
+        }
         if let Some(vis) = self.filtering()
             && !vis.sees(&visibility::authors_of_comment(c), aid, Some(&c.thread_id))
         {
@@ -877,6 +944,9 @@ impl Vis {
         working: &[WorkingView],
         view: &mut Value,
     ) -> clax_core::Result<()> {
+        if let Some(vis) = &self.vis {
+            mark_participants(vis, view);
+        }
         let Some(vis) = self.filtering() else {
             return Ok(());
         };
@@ -1273,11 +1343,14 @@ impl<'a> Withhold<'a> {
                         Author::Person(p) => Some(p.clone()),
                         _ => viewer.as_ref().map(|v| v.public_id.clone()),
                     },
-                    name: clax_core::feedback::display_name(
-                        viewer
-                            .as_ref()
-                            .and_then(|v| v.display_name.as_deref())
-                            .unwrap_or(""),
+                    name: self.vis.label(
+                        &clax_core::feedback::display_name(
+                            viewer
+                                .as_ref()
+                                .and_then(|v| v.display_name.as_deref())
+                                .unwrap_or(""),
+                        ),
+                        a,
                     ),
                 };
                 self.names.insert(a.clone(), named);
