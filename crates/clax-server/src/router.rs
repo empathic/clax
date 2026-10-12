@@ -418,6 +418,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         )
         .route("/api/artifacts/{aid}/push", post(remotes::push))
         .route(
+            "/api/artifacts/{aid}/versions:restore",
+            post(artifacts::restore),
+        )
+        .route(
             "/api/artifacts/{aid}/assets",
             post(assets::upload.layer(asset_limit)),
         )

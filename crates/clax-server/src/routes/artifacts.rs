@@ -844,6 +844,71 @@ pub async fn publish(
     Ok((StatusCode::CREATED, Json(v)))
 }
 
+#[derive(Deserialize)]
+pub struct RestoreBody {
+    version: Option<u32>,
+    if_version: Option<u32>,
+}
+
+/// `POST /api/artifacts/<aid>/versions:restore` `{version, if_version}`:
+/// republishes version `version`'s files as a new version, in one store
+/// transaction ([`Store::restore_version`]); documents and the capability
+/// declaration are untouched. The answer is publish's (201 `{artifact,
+/// version, url, note_truncated}`), and a `version` event follows. 409
+/// `conflict` with `current` when `if_version` is not the current version,
+/// 404 `not_found` for an unknown artifact or version, 400 `invalid_args`
+/// when a field is missing, 400 `live_page` for a live page. An
+/// `X-Clax-Session` must name a live session, which the version records.
+pub async fn restore(
+    State(s): State<AppState>,
+    _t: RequireToken,
+    audit: AuditCtx,
+    headers: HeaderMap,
+    aid: Result<Path<String>, PathRejection>,
+    req: Result<Json<RestoreBody>, JsonRejection>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let id = parse_id(&path(aid)?)?;
+    if s.live_ids.contains(id.as_str()) {
+        return Err(ApiError::bad_request(
+            "live_page",
+            "a live page takes snapshots from the Clax extension; it cannot be restored",
+        ));
+    }
+    let b = body(req)?;
+    let (Some(n), Some(if_version)) = (b.version, b.if_version) else {
+        return Err(ApiError::bad_request(
+            "invalid_args",
+            "version and if_version are required",
+        ));
+    };
+    let session = session_header(&headers)?;
+    let events = s.events.clone();
+    let (artifact, version) = s
+        .store_call_async(move |st| async move {
+            let st = &*st;
+            let session = publishing_session(st, &session, None)?;
+            let (artifact, version) = st
+                .restore_version_async(&audit, &id, n, if_version, session.as_deref())
+                .await?;
+            events.publish(Event::Version {
+                artifact_id: artifact.id.clone(),
+                n: version.n,
+                by_page: false,
+                title: Some(artifact.title.clone()),
+                at: Some(version.created_at.clone()),
+            });
+            Ok((artifact, version))
+        })
+        .await?;
+    let url = format!("/a/{}", artifact.id);
+    Ok((
+        StatusCode::CREATED,
+        Json(
+            json!({"artifact": artifact, "version": version, "url": url, "note_truncated": false}),
+        ),
+    ))
+}
+
 /// Version `n`, filtered for an agent channel's reader; without the token,
 /// no session ID.
 pub async fn get_version(

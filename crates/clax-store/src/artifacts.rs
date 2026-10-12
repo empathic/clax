@@ -10,7 +10,7 @@ use clax_core::model::ARTIFACT_TEXT_FIELDS;
 use clax_core::model::{
     Artifact, ArtifactAuthors, CONTRACT_VERSION, FileMeta, ForkedFrom, Version, VersionAuthors,
 };
-use clax_core::publish::{FileChange, INDEX, ValidatedPublish};
+use clax_core::publish::{DecodedFile, FileChange, INDEX, ValidatedPublish};
 use clax_core::visibility::OWNER;
 use clax_core::visibility::{Author, file_authors};
 use clax_core::{ArtifactId, CoreError, Result};
@@ -1087,6 +1087,92 @@ impl Store {
             current.current_version,
             &p,
             &prev,
+            session_id,
+            |_, _| Ok(()),
+        )
+        .await
+        .map(|(a, v, ())| (a, v))
+    }
+
+    /// Republishes version `n`'s files, `index.html` included, as the next
+    /// version of `id`, labelled `Restored v<n>` with the note `Restored
+    /// version <n>`. `if_version` must equal the current version (`Conflict`
+    /// otherwise, checked again inside the version's transaction). Each file
+    /// keeps version `n`'s bytes, content type and hash, so the new version's
+    /// `content_sha256` equals `n`'s; files of the current version that `n`
+    /// lacks are not carried. Title, description, icon and capabilities stay
+    /// as they are, and documents are not touched. `session_id` is recorded
+    /// on the new version, and the version as `version.publish` under `ctx`.
+    ///
+    /// # Errors
+    /// `NotFound` for an unknown artifact or version `n`; `Corrupt` when
+    /// version `n`'s `files_json` is malformed.
+    pub fn restore_version(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        n: u32,
+        if_version: u32,
+        session_id: Option<&str>,
+    ) -> Result<(Artifact, Version)> {
+        self.block_on(self.restore_version_async(ctx, id, n, if_version, session_id))
+    }
+
+    /// [`Store::restore_version`], awaiting its content store. Version
+    /// `n`'s files are read from the content store and written again as
+    /// the new version's, so nothing of the current version is carried.
+    pub async fn restore_version_async(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        n: u32,
+        if_version: u32,
+        session_id: Option<&str>,
+    ) -> Result<(Artifact, Version)> {
+        let current = self.get_artifact(id)?.ok_or(CoreError::NotFound)?;
+        if if_version != current.current_version {
+            return Err(CoreError::Conflict {
+                current: current.current_version,
+            });
+        }
+        let source = self.get_version(id, n)?.ok_or(CoreError::NotFound)?;
+        let mut files = BTreeMap::new();
+        for (path, meta) in &source.files {
+            let bytes = self
+                .content
+                .read_file(id, n, path)
+                .await?
+                .ok_or_else(|| clax_core::content::missing(id, n, path))?;
+            files.insert(
+                path.clone(),
+                FileChange::Put(DecodedFile {
+                    bytes,
+                    content_type: meta.content_type.clone(),
+                }),
+            );
+        }
+        let p = ValidatedPublish {
+            title: None,
+            description: None,
+            icon: None,
+            label: Some(format!("Restored v{n}")),
+            if_version: Some(if_version),
+            capabilities: None,
+            files,
+            note: Some(format!("Restored version {n}")),
+            note_truncated: false,
+            addresses: Vec::new(),
+            working_threads: Vec::new(),
+            person: None,
+            by_page: false,
+            hidden: Vec::new(),
+        };
+        self.write_version_then_async(
+            ctx,
+            id,
+            if_version,
+            &p,
+            &BTreeMap::new(),
             session_id,
             |_, _| Ok(()),
         )
