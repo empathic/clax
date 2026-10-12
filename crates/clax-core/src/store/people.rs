@@ -1840,63 +1840,7 @@ impl Store {
     /// the request was authenticated); `foreign_session` when `session` is
     /// not one of the grant's.
     pub fn grant_caller(&self, gid: &str, session: Option<&str>) -> Result<GrantCaller> {
-        self.with_read(|c| {
-            let row: Option<(String, String, bool, String, Option<String>)> = c
-                .query_row(
-                    "SELECT g.status, g.viewer_id, COALESCE(v.owner, 0), v.public_id, g.narrow_json
-                     FROM grants g JOIN viewers v ON v.id = g.viewer_id WHERE g.id = ?1",
-                    params![gid],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-                )
-                .optional()?;
-            let Some((_, viewer_id, owner, public_id, narrow)) = row.filter(|r| r.0 == "approved")
-            else {
-                return Err(CoreError::invalid(
-                    "grant_revoked",
-                    "this machine's grant was revoked: connect again",
-                ));
-            };
-            let person_rights = rights_of_row(c, &viewer_id)?;
-            let grant_narrow = narrow.as_deref().map(read_rights).transpose()?;
-            let (session_narrow, elevate) = match session {
-                None => (None, None),
-                Some(sid) => {
-                    let row: Option<(Option<String>, Option<String>, Option<String>)> = c
-                        .query_row(
-                            "SELECT narrow_json, elevate_json, ended_at FROM sessions
-                             WHERE id = ?1 AND grant_id = ?2",
-                            params![sid, gid],
-                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                        )
-                        .optional()?;
-                    let (narrow, elevate, ended) = row.ok_or_else(|| {
-                        CoreError::invalid(
-                            "foreign_session",
-                            "that session is not one of this credential's",
-                        )
-                    })?;
-                    (
-                        narrow.as_deref().map(read_rights).transpose()?,
-                        elevate
-                            .filter(|_| ended.is_none())
-                            .as_deref()
-                            .map(read_rights)
-                            .transpose()?,
-                    )
-                }
-            };
-            Ok(GrantCaller {
-                grant_id: gid.to_string(),
-                person: (!owner).then_some(public_id),
-                session: session.map(str::to_string),
-                rights: crate::rights::effective(
-                    &person_rights,
-                    grant_narrow.as_ref(),
-                    session_narrow.as_ref(),
-                    elevate.as_ref(),
-                ),
-            })
-        })
+        self.with_read(|c| grant_caller_in(c, gid, session))
     }
 
     /// Whether artifact `aid` was created by `person` (a public ID; `None`
@@ -2125,6 +2069,68 @@ fn unhex32(s: &str) -> Option<[u8; 32]> {
         *b = u8::from_str_radix(s.get(2 * i..2 * i + 2)?, 16).ok()?;
     }
     Some(out)
+}
+
+/// [`Store::grant_caller`], read on `c`.
+pub(crate) fn grant_caller_in(
+    c: &rusqlite::Connection,
+    gid: &str,
+    session: Option<&str>,
+) -> Result<GrantCaller> {
+    let row: Option<(String, String, bool, String, Option<String>)> = c
+        .query_row(
+            "SELECT g.status, g.viewer_id, COALESCE(v.owner, 0), v.public_id, g.narrow_json
+                 FROM grants g JOIN viewers v ON v.id = g.viewer_id WHERE g.id = ?1",
+            params![gid],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .optional()?;
+    let Some((_, viewer_id, owner, public_id, narrow)) = row.filter(|r| r.0 == "approved") else {
+        return Err(CoreError::invalid(
+            "grant_revoked",
+            "this machine's grant was revoked: connect again",
+        ));
+    };
+    let person_rights = rights_of_row(c, &viewer_id)?;
+    let grant_narrow = narrow.as_deref().map(read_rights).transpose()?;
+    let (session_narrow, elevate) = match session {
+        None => (None, None),
+        Some(sid) => {
+            let row: Option<(Option<String>, Option<String>, Option<String>)> = c
+                .query_row(
+                    "SELECT narrow_json, elevate_json, ended_at FROM sessions
+                         WHERE id = ?1 AND grant_id = ?2",
+                    params![sid, gid],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            let (narrow, elevate, ended) = row.ok_or_else(|| {
+                CoreError::invalid(
+                    "foreign_session",
+                    "that session is not one of this credential's",
+                )
+            })?;
+            (
+                narrow.as_deref().map(read_rights).transpose()?,
+                elevate
+                    .filter(|_| ended.is_none())
+                    .as_deref()
+                    .map(read_rights)
+                    .transpose()?,
+            )
+        }
+    };
+    Ok(GrantCaller {
+        grant_id: gid.to_string(),
+        person: (!owner).then_some(public_id),
+        session: session.map(str::to_string),
+        rights: crate::rights::effective(
+            &person_rights,
+            grant_narrow.as_ref(),
+            session_narrow.as_ref(),
+            elevate.as_ref(),
+        ),
+    })
 }
 
 #[cfg(test)]

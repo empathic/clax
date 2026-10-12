@@ -144,6 +144,9 @@ impl Store {
             let mut took = Vec::new();
             for t in &ids {
                 let made = send_in(tx, t, Some(&batch_id), target, &mut touched, &self.now())?;
+                if let Some(old) = &made.took_from {
+                    super::feedback::displace_owner_in(self, tx, ctx, t, old, &self.now(), &mut touched)?;
+                }
                 if made.took {
                     took.push(t.clone());
                 }
@@ -194,6 +197,9 @@ impl Store {
                 rec = rec.with("approval_request_ids", requests);
             }
             self.record_audit(tx, ctx, rec)?;
+            if !took.is_empty() {
+                self.agents_pinged();
+            }
             if let Some(sid) = to.as_deref() {
                 for t in &took {
                     let rec = super::feedback::take_record(&self.now(), aid.as_str(), t, sid, "send");

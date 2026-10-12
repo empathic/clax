@@ -253,6 +253,17 @@ pub fn reap_idle(
     Ok(r)
 }
 
+/// Whether the machine slept between two reaper passes: wall time `wall`
+/// passed while monotonic time (which stands still in sleep) passed only
+/// `mono`, more than [`SLEEP_SLACK`] apart.
+pub fn slept(wall: Duration, mono: Duration) -> bool {
+    wall > mono + SLEEP_SLACK
+}
+
+/// How much more wall time than monotonic time between reaper passes
+/// counts as the machine having slept.
+pub const SLEEP_SLACK: Duration = Duration::from_secs(60);
+
 /// True when a process with `pid` exists. Probes with `kill(pid, 0)`: success or
 /// `EPERM` (the process exists but belongs to another user) both count as alive;
 /// `ESRCH` and out-of-range pids (0, or beyond `i32::MAX`) do not.
@@ -663,12 +674,24 @@ pub async fn serve(
 
     let reap_interval = cfg.reap_interval;
     let reaper = tokio::spawn(async move {
+        let mut since = (std::time::SystemTime::now(), Instant::now());
         loop {
             tokio::time::sleep(reap_interval).await;
+            let now = (std::time::SystemTime::now(), Instant::now());
+            let woke = slept(
+                now.0.duration_since(since.0).unwrap_or_default(),
+                now.1.duration_since(since.1),
+            );
+            since = now;
             let ctx = fctx.clone();
             let st = reap_state.clone();
             let reaped = reaper_store
                 .call(move |store| {
+                    if woke {
+                        // Remote agents could not reach a sleeping daemon:
+                        // their idle time counts from now (spec §14).
+                        store.mark_resumed();
+                    }
                     let r = reap_idle(&ctx, store, SESSION_IDLE, &pid_alive)?;
                     crate::questions::announce_ids(&st, store, &r.withdrawn_questions);
                     Ok(r)
@@ -776,6 +799,15 @@ pub async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wall_clock_jump_past_monotonic_time_is_a_sleep() {
+        let m = Duration::from_secs(60);
+        assert!(!slept(m, m), "an ordinary pass");
+        assert!(!slept(m + SLEEP_SLACK, m), "within the slack");
+        assert!(slept(Duration::from_secs(3600), m), "an hour asleep");
+        assert!(!slept(Duration::ZERO, m), "a clock set back");
+    }
 
     #[test]
     fn the_open_file_limit_ends_at_or_above_where_it_began() {

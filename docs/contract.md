@@ -2140,13 +2140,17 @@ results carry late answers as they carry tier 1 feedback: the JSON block's
 `answers` means late answers on every tool result; `ask` returns its own
 question's answers under `reply`.
 
-A session registered (or joined) within 24 hours of its harness session's
-end for 30 minutes without contact, with the same harness session ID and
-credential, gets that session's direct watches back, and its first
-feedback poll (every tier but `queue`) answers at once with the note in
-`notes` and at the head of `text`: `[clax] Your session ended after 30
-minutes without contact (<time>): 2 threads were released (<thread IDs>)
-and your questions withdrawn; your watches were restored.` Tool results
+A session registered (or joined, or given its harness session ID by a
+join) within 24 hours of its harness session's idle end (30 minutes
+without contact for another machine's agent, counted while the daemon
+runs; 5 for this machine's, once its process is gone), with the same
+harness session ID and credential, gets that session's direct watches
+back where its rights still allow watching, and its first feedback poll
+(every tier but `queue`) answers at once with the note in `notes` and at
+the head of `text`: `[clax] Your session ended after 30 minutes without
+contact (<time>): 2 threads were released (<thread IDs>) and your
+questions withdrawn; your watches were restored.` (5 minutes for this
+machine's agents). Tool results
 carry it as they carry late answers (`notes`, and the trailing `---`
 text). Another end, another credential, or a later registration gets
 nothing; the note is kept in the daemon's memory until that poll.
@@ -3328,7 +3332,7 @@ except as noted:
 | `presence:<aid>` | Its `presence` changes, and `artifact_deleted`. |
 | `working:<aid>` | Its `working` list, and `artifact_deleted`. |
 | `docs:<aid>` | Its `doc` events the caller may see, and `artifact_deleted`; needs `db` declared, or the token. |
-| `agents` | `agents` (`{topic}`, naming nothing) whenever the agents roster may have changed: an agent started, ended or was renamed, or a working record, question or approval request changed. Refetch `GET /api/agents`. Only the owner's and connected people's streams take it (403 `forbidden` otherwise). |
+| `agents` | `agents` (`{topic}`, naming nothing) whenever the agents roster may have changed: an agent started, ended, was renamed or got watches back, a thread's owner changed, or a working record, question or approval request changed. Refetch `GET /api/agents`. Only the owner's and connected people's streams take it (403 `forbidden` otherwise). |
 | `site:<origin>` | What `artifact:<aid>` carries, for every live page of the origin's site (every origin joined to it, those joined later too: see "Joined sites"), those made later included, and `site` when an origin joins the site or is split off. `<origin>` is written as the daemon normalizes it (`http://localhost:5173`: scheme, lowercased host, port unless the scheme's default, no path), else 400 `invalid_topic`. Only a stream that may see live pages takes it (404 `not_found` otherwise, as for a live page's topic), and only an owner's (403 `forbidden` otherwise). The `thread_deleted` a move sends for older clients is not on it. |
 
 **Events.** Every event but `ready` and `resync` carries `id:

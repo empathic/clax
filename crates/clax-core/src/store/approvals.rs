@@ -2775,10 +2775,13 @@ mod tests {
         w.st.send_to_agent(DAEMON, &tids[0]).unwrap();
         // The owner's own limit is the owner's.
         w.st.ensure_watch(DAEMON, &w.owner_sid, &w.aid).unwrap();
+        // (Another thread of Mia's: sending Sam's to the owner's agent would
+        // displace Sam's agent from it, spec 2026-10-08 §12.)
+        let t2 = w.thread_by(&w.mia, "for the owner");
         let made =
             w.st.send_routed(
                 DAEMON,
-                &t,
+                &t2,
                 crate::SendTarget::Agent(&w.owner_sid),
                 Route::Send,
                 false,

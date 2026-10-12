@@ -249,8 +249,10 @@ fn render(st: &Store, i: &ItemRow, s: Sources) -> clax_core::Result<Value> {
 
 /// An `ended` item's `ended`: `{name, reason, text, questions, requests,
 /// threads: [{id, artifact_id, title, url}]}`, each released thread with
-/// its page's title as it is now (`null` once the page is gone); a
-/// person's view leaves out threads on a live page.
+/// its page's title as its reader may read it now: the current title, or
+/// `null` once the page is gone. A person's note names no live page's
+/// thread (the store leaves them out, L10), and a person's browser reads
+/// every other artifact (spec 2026-10-08 §18).
 fn ended_view(st: &Store, i: &ItemRow) -> clax_core::Result<Value> {
     let Some(d) = &i.detail else {
         return Ok(Value::Null);
@@ -264,13 +266,6 @@ fn ended_view(st: &Store, i: &ItemRow) -> clax_core::Result<Value> {
             Ok(id) => st.get_artifact(&id)?,
             Err(_) => None,
         };
-        if i.recipient.is_some()
-            && art
-                .as_ref()
-                .is_some_and(|a| a.kind == clax_core::live::KIND_LIVE)
-        {
-            continue;
-        }
         threads.push(json!({
             "id": tid,
             "artifact_id": aid,
