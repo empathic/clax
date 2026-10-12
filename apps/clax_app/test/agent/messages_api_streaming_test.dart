@@ -368,6 +368,46 @@ void main() {
     });
   }
 
+  for (final stop in ['max_tokens', 'tool_use']) {
+    test('a tool call cut short ($stop) is an AgentError, never a '
+        'half-parsed block', () async {
+      final evs = streamedText('Writing.', thinking: false, stopReason: stop);
+      await serve([
+        FakeReply.stream([
+          sse([
+            ...evs.sublist(0, evs.length - 2),
+            {
+              'type': 'content_block_start',
+              'index': 1,
+              'content_block': {
+                'type': 'tool_use',
+                'id': 'toolu_1',
+                'name': 'write_file',
+                'input': <String, Object?>{},
+              },
+            },
+            {
+              'type': 'content_block_delta',
+              'index': 1,
+              'delta': {
+                'type': 'input_json_delta',
+                'partial_json': '{"path":"index.html","te',
+              },
+            },
+            {'type': 'content_block_stop', 'index': 1},
+            ...evs.sublist(evs.length - 2),
+          ]),
+        ]),
+      ]);
+      final e = await runFails(request());
+      expect(
+        e.message,
+        stop == 'max_tokens' ? contains('too long') : contains('write_file'),
+      );
+      expect(e.retryable, stop != 'max_tokens');
+    });
+  }
+
   test('a progress sink that throws does not fail the run', () async {
     await serve([
       FakeReply.stream([sse(streamedText(jsonEncode(_resultJson())))]),

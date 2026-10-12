@@ -333,7 +333,24 @@ class MessagesApiBackend implements AgentBackend {
       log('messages-api: the stream ended before message_stop');
       throw error('The answer stopped before it finished', retryable: true);
     }
-    return _parse(stream.message, error, log);
+    final Map<String, Object?> message;
+    try {
+      message = stream.message;
+    } on InvalidToolInput catch (e) {
+      log('messages-api: stop_reason=${stream.stopReason}; $e');
+      if (stream.stopReason == 'max_tokens') {
+        throw error(
+          'The result was too long: it ran past $maxTokens output tokens',
+          retryable: false,
+        );
+      }
+      throw error(
+        'The answer broke off in a call to ${e.name ?? 'a tool'}: its input '
+        'is not a JSON object',
+        retryable: true,
+      );
+    }
+    return _parse(message, error, log);
   }
 
   static bool _retriedStatus(int status) =>
