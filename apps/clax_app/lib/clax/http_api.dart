@@ -306,10 +306,11 @@ class HttpClaxApi implements ClaxApi {
   }
 
   @override
-  Future<Doc?> getDoc(String aid, String path) async {
+  Future<Doc?> getDoc(String aid, String path, {String? reader}) async {
     final r = await _send(
       'GET',
       '/api/artifacts/${_seg(aid)}/docs/${_path(path)}',
+      headers: _reader(reader),
     );
     // A missing document's 404 names its `path`; an unknown artifact's
     // does not, and is thrown.
@@ -372,19 +373,34 @@ class HttpClaxApi implements ClaxApi {
         'artifact': artifacts.join(','),
       if (types != null && types.isNotEmpty) 'types': types.join(','),
     };
+    return _sse(
+      '/api/events',
+      query,
+    ).map((m) => ClaxEvent(type: m.event, id: m.id, data: _eventData(m.data)));
+  }
+
+  /// The reconnecting SSE messages of `GET` [path] with the token. Each
+  /// connection sends `Last-Event-ID`: [resumeId]'s answer when given and
+  /// not null, else the last event ID seen.
+  Stream<SseMessage> _sse(
+    String path,
+    Map<String, String>? query, {
+    String? Function()? resumeId,
+  }) {
     Future<HttpClientResponse> open(String? lastId, SseAborter abort) async {
       final ep = endpoint();
-      final req = await _client.openUrl('GET', _uri(ep, '/api/events', query));
+      final req = await _client.openUrl('GET', _uri(ep, path, query));
       abort.onAbort = req.abort;
       req.headers
         ..set(HttpHeaders.authorizationHeader, 'Bearer ${ep.token}')
         ..set(HttpHeaders.acceptHeader, 'text/event-stream');
-      if (lastId != null) req.headers.set('last-event-id', lastId);
+      final id = resumeId?.call() ?? lastId;
+      if (id != null) req.headers.set('last-event-id', id);
       return req.close();
     }
 
     final retry = eventRetryDelay;
-    final messages = retry == null
+    return retry == null
         ? reconnectingSse(
             open,
             connectTimeout: eventConnectTimeout,
@@ -398,9 +414,276 @@ class HttpClaxApi implements ClaxApi {
             idleTimeout: eventIdleTimeout,
             timer: eventTimer,
           );
-    return messages.map(
-      (m) => ClaxEvent(type: m.event, id: m.id, data: _eventData(m.data)),
+  }
+
+  @override
+  ClaxStream stream() => SseClaxStream(
+    connect: (resumeId) => _sse('/api/stream', null, resumeId: resumeId),
+    update: (id, body) => _json('POST', '/api/stream/${_seg(id)}', body: body),
+    retryDelay: eventRetryDelay,
+  );
+
+  // --- drafts ---
+
+  @override
+  Future<DraftInfo> createDraft({
+    String? of,
+    required String title,
+    Map<String, Object?>? capabilities,
+    required Map<String, String> files,
+  }) async {
+    final j = await _json(
+      'POST',
+      '/api/drafts',
+      body: {
+        'of': of,
+        'title': title,
+        'capabilities': capabilities,
+        'files': files,
+      },
+      timeout: publishTimeout,
     );
+    return _parse(() => DraftInfo.fromJson((j['draft'] as Map).cast()));
+  }
+
+  @override
+  Future<PublishResult> publishDraft(String draftId, PublishRequest r) async {
+    if (r.ifVersion == null) {
+      throw ArgumentError.value(r, 'r', 'a publish needs ifVersion');
+    }
+    // Token only: a session here would make the draft its page and watch it.
+    final j = await _json(
+      'POST',
+      '/api/artifacts/${_seg(draftId)}/versions',
+      body: r.toJson(),
+      timeout: publishTimeout,
+    );
+    return _parse(() => PublishResult.fromJson(j));
+  }
+
+  @override
+  Future<void> deleteDraft(String draftId) async {
+    await _json('DELETE', '/api/drafts/${_seg(draftId)}');
+  }
+
+  @override
+  Future<List<DraftInfo>> listDrafts() async {
+    final j = await _json('GET', '/api/drafts');
+    return _parse(
+      () => [
+        for (final d in j['drafts'] as List<Object?>)
+          DraftInfo.fromJson((d as Map).cast()),
+      ],
+    );
+  }
+
+  // --- document queries ---
+
+  @override
+  Future<List<Doc>> queryDocs(
+    String aid,
+    String collection, {
+    List<List<Object?>>? where,
+    String? orderBy,
+    bool descending = false,
+    int limit = 50,
+    String? reader,
+  }) async {
+    final j = await _json(
+      'GET',
+      '/api/artifacts/${_seg(aid)}/docs',
+      query: {
+        'collection': collection,
+        if (where != null && where.isNotEmpty) 'where': jsonEncode(where),
+        'order_by': ?orderBy,
+        if (descending) 'direction': 'desc',
+        'limit': '$limit',
+      },
+      headers: _reader(reader),
+    );
+    return _parse(
+      () => [
+        for (final d in j['docs'] as List<Object?>)
+          Doc.fromJson((d as Map).cast()),
+      ],
+    );
+  }
+
+  @override
+  Future<List<Doc>> listDocsAs(
+    String aid,
+    String collection, {
+    required String reader,
+    int limit = 50,
+  }) => queryDocs(aid, collection, limit: limit, reader: reader);
+
+  // --- the owner's thread calls ---
+
+  @override
+  Future<ThreadView> postOwnerComment(String aid, String tid, String body) =>
+      _thread('comments', aid, tid, body: {'body': body});
+
+  @override
+  Future<ThreadView> sendThread(String aid, String tid) =>
+      _thread('send', aid, tid);
+
+  @override
+  Future<ThreadView> resolveAsOwner(String aid, String tid) =>
+      _thread('resolve', aid, tid);
+
+  @override
+  Future<ThreadView> reopenThread(String aid, String tid) =>
+      _thread('reopen', aid, tid);
+
+  /// `POST …/threads/<tid>/<action>` as the owner (no session, no `as`);
+  /// the thread's view from the answer.
+  Future<ThreadView> _thread(
+    String action,
+    String aid,
+    String tid, {
+    Map<String, Object?>? body,
+  }) async {
+    final j = await _json(
+      'POST',
+      '/api/artifacts/${_seg(aid)}/threads/${_seg(tid)}/$action',
+      body: body,
+    );
+    return _parse(() => ThreadView.fromJson((j['thread'] as Map).cast()));
+  }
+
+  // --- questions ---
+
+  @override
+  Future<QuestionView> askQuestion(
+    String sid,
+    List<Map<String, Object?>> questions, {
+    String? artifactId,
+  }) async {
+    final j = await _json(
+      'POST',
+      '/api/sessions/${_seg(sid)}/questions',
+      body: {
+        'questions': questions,
+        'artifact_id': ?artifactId,
+        'source': 'ask',
+      },
+    );
+    return _question(j);
+  }
+
+  @override
+  Future<QuestionView> waitQuestion(
+    String sid,
+    String qid, {
+    required Duration wait,
+  }) async {
+    final j = await _json(
+      'GET',
+      '/api/sessions/${_seg(sid)}/questions/${_seg(qid)}',
+      query: {'wait': '${wait.inSeconds}'},
+      timeout: wait + pollSlack,
+    );
+    return _question(j);
+  }
+
+  @override
+  Future<void> withdrawQuestion(String sid, String qid) async {
+    try {
+      await _json(
+        'POST',
+        '/api/sessions/${_seg(sid)}/questions/${_seg(qid)}/withdraw',
+      );
+    } on ClaxApiError catch (e) {
+      if (e.status == 409 && e.code == 'question_closed') return;
+      rethrow;
+    }
+  }
+
+  @override
+  Future<List<QuestionView>> questions({String status = 'open'}) async {
+    final j = await _json(
+      'GET',
+      '/api/questions',
+      query: {'status': status, 'limit': '200'},
+    );
+    return _parse(
+      () => [
+        for (final q in j['questions'] as List<Object?>)
+          QuestionView.fromJson((q as Map).cast()),
+      ],
+    );
+  }
+
+  @override
+  Future<QuestionView> answerQuestion(
+    String qid,
+    List<Map<String, Object?>> answers,
+  ) async {
+    final j = await _json(
+      'POST',
+      '/api/questions/${_seg(qid)}/answer',
+      body: {'answers': answers},
+    );
+    return _question(j);
+  }
+
+  @override
+  Future<QuestionView> declineQuestion(String qid) async {
+    final j = await _json('POST', '/api/questions/${_seg(qid)}/decline');
+    return _question(j);
+  }
+
+  static QuestionView _question(Map<String, Object?> j) =>
+      _parse(() => QuestionView.fromJson((j['question'] as Map).cast()));
+
+  // --- the inbox ---
+
+  @override
+  Future<InboxPage> inbox({
+    String? q,
+    List<String>? kinds,
+    String read = 'all',
+    String? before,
+    int limit = 50,
+  }) async {
+    final text = q?.trim();
+    final j = await _json(
+      'GET',
+      '/api/inbox',
+      query: {
+        if (text != null && text.isNotEmpty) 'q': text,
+        if (kinds != null && kinds.isNotEmpty) 'kind': kinds.join(','),
+        'read': read,
+        'before': ?before,
+        'limit': '$limit',
+      },
+    );
+    return _parse(() => InboxPage.fromJson(j));
+  }
+
+  @override
+  Future<InboxSummary> inboxSummary() async {
+    final j = await _json('GET', '/api/inbox/summary');
+    return _parse(() => InboxSummary.fromJson(j));
+  }
+
+  @override
+  Future<int> markInboxRead(String itemId) async {
+    final j = await _json('POST', '/api/inbox/${_seg(itemId)}/read');
+    return _parse(() => (j['unread'] as num).toInt());
+  }
+
+  @override
+  Future<int> markAllInboxRead({
+    int? upto,
+    Map<String, Object?>? filter,
+  }) async {
+    final j = await _json(
+      'POST',
+      '/api/inbox/read',
+      body: {'all': true, 'filter': ?filter, 'upto': ?upto},
+    );
+    return _parse(() => (j['unread'] as num).toInt());
   }
 
   static Map<String, Object?> _eventData(String data) {
@@ -466,6 +749,10 @@ class HttpClaxApi implements ClaxApi {
     return textExtensions.contains(path.substring(dot).toLowerCase());
   }
 
+  /// The `X-Clax-Reader` header naming [reader], when there is one.
+  static Map<String, String>? _reader(String? reader) =>
+      reader == null ? null : {'x-clax-reader': reader};
+
   /// One path segment, percent-encoded.
   static String _seg(String s) => Uri.encodeComponent(s);
 
@@ -488,6 +775,7 @@ class HttpClaxApi implements ClaxApi {
     Object? body,
     bool agent = false,
     Duration? timeout,
+    Map<String, String>? headers,
   }) async {
     final r = await _send(
       method,
@@ -496,6 +784,7 @@ class HttpClaxApi implements ClaxApi {
       body: body,
       agent: agent,
       timeout: timeout,
+      headers: headers,
     );
     return _ok(r);
   }
@@ -523,9 +812,13 @@ class HttpClaxApi implements ClaxApi {
     try {
       decoded = jsonDecode(utf8.decode(r.body, allowMalformed: true));
     } on FormatException catch (_) {}
-    final err = decoded is Map && decoded['error'] is Map
-        ? (decoded['error'] as Map).cast<String, Object?>()
-        : const <String, Object?>{};
+    var err = const <String, Object?>{};
+    if (decoded is Map && decoded['error'] is Map) {
+      err = {...(decoded['error'] as Map).cast<String, Object?>()};
+      // A closed question's view comes beside its error.
+      final q = decoded['question'];
+      if (q is Map && !err.containsKey('question')) err['question'] = q;
+    }
     throw ClaxApiError(
       status: r.status,
       code: err['code'] as String? ?? 'http_${r.status}',
@@ -541,12 +834,14 @@ class HttpClaxApi implements ClaxApi {
     Object? body,
     bool agent = false,
     Duration? timeout,
+    Map<String, String>? headers,
   }) async {
     final ep = endpoint();
     HttpClientRequest? req;
     Future<_Answer> go() async {
       final r = req = await _client.openUrl(method, _uri(ep, path, query));
       r.headers.set(HttpHeaders.authorizationHeader, 'Bearer ${ep.token}');
+      headers?.forEach(r.headers.set);
       final sid = sessionId;
       if (agent && sid != null) r.headers.set('x-clax-session', sid);
       if (body != null) {
