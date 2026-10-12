@@ -184,7 +184,7 @@ class AppPanel extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    d.label.isEmpty ? 'New comment' : 'On “${d.label}”',
+                    d.label.isEmpty ? 'New comment' : d.label,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.labelMedium?.copyWith(
@@ -250,6 +250,7 @@ class AppPanel extends StatelessWidget {
         final t = threads[threads.length - 1 - i];
         final resolved = t.status == 'resolved';
         final parts = [
+          if (t.label.isNotEmpty) t.label,
           'v${t.version}',
           t.comments == 1 ? '1 comment' : '${t.comments} comments',
           if (resolved)

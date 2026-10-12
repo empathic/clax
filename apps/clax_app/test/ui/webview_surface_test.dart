@@ -15,23 +15,32 @@ void main() {
   );
 
   test('the top level may load the shell app view', () {
-    expect(top('http://127.0.0.1:7999/a/x?app=1'), NavigationDecision.navigate);
-    expect(
-      top('http://127.0.0.1:7999/a/x/v/3?app=1#top'),
-      NavigationDecision.navigate,
-    );
+    for (final path in [
+      '/a/abcdefghjkmn?app=1',
+      '/a/abcdefghjkmn/?app=1',
+      '/a/abcdefghjkmn/v/3?app=1#top',
+      '/a/abcdefghjkmn/about.html?app=1',
+      '/a/abcdefghjkmn/v/3/pages/about.html?app=1',
+    ]) {
+      expect(
+        top('http://127.0.0.1:7999$path'),
+        NavigationDecision.navigate,
+        reason: path,
+      );
+    }
     expect(opened, isEmpty);
   });
 
   test('anything else at the top level is refused', () {
     for (final url in [
       'about:blank',
-      'http://127.0.0.1:7999/a/x',
+      'http://127.0.0.1:7999/a/abcdefghjkmn',
+      'http://127.0.0.1:7999/a/x?app=1',
       'http://127.0.0.1:7999/',
       'http://127.0.0.1:7999/api/token?app=1',
       'http://abc.localhost:7999/index.html',
-      'http://localhost:7999/a/x?app=1',
-      'http://127.0.0.1:7480/a/x?app=1',
+      'http://localhost:7999/a/abcdefghjkmn?app=1',
+      'http://127.0.0.1:7480/a/abcdefghjkmn?app=1',
       'file:///etc/passwd',
       'javascript:alert(1)',
     ]) {
