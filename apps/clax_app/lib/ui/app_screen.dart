@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show PointerDeviceKind;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -25,10 +26,11 @@ import 'versions_tab.dart';
 /// - **Page.** Loads `<base>/a/<aid>?app=1` and keeps it covered until the
 ///   shell's `ready`, so the browser view never shows; a load failure
 ///   covers it again, with Reload once the surface gives up.
-/// - **Finger attestation.** Every pointer down and up the page gets is
-///   passed to the shell (`attestPointer`), in the page's pixels: the
-///   shell needs it to take a long-press's pick when the WebView sends no
-///   click after the hold.
+/// - **Finger attestation.** Every touch and stylus down and up the page
+///   gets is passed to the shell (`attestPointer`), in the page's pixels:
+///   the shell needs it to take a long-press's pick when the WebView sends
+///   no click after the hold. A mouse's are not: the WebView reports its
+///   moves to the shell itself.
 /// - **Panel.** A two-finger swipe left, the edge handle, or (macOS)
 ///   App › Comments (⌘K) opens it and turns comment mode on; a swipe
 ///   right, back, Escape or ⌘K closes it and turns comment mode off. While
@@ -401,6 +403,10 @@ class _AppScreenState extends State<AppScreen> {
   // --- the view ---
 
   void _attest(PointerEvent e, PointerPhase phase) {
+    // A mouse's input reaches the WebView itself, and in WebKit script run
+    // between its press and release clears the shell's user activation, so
+    // the click's pick would be refused.
+    if (e.kind == PointerDeviceKind.mouse) return;
     final p = e.localPosition;
     if (!p.dx.isFinite || !p.dy.isFinite) return;
     _call(
