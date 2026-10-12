@@ -83,7 +83,20 @@ void main() {
     );
   });
 
-  test('an unknown model is priced as Opus', () {
-    expect(costOf('claude-next', const Usage(output: million)), 20);
+  test('the fallback-served models have their own prices', () {
+    expect(modelPrices.keys, containsAll(['claude-opus-5', 'claude-opus-4-8']));
+    for (final model in ['claude-opus-5', 'claude-opus-4-8']) {
+      expect(costOf(model, const Usage(input: million)), 5, reason: model);
+      expect(costOf(model, const Usage(output: million)), 25, reason: model);
+      expect(
+        costOf(model, const Usage(cacheRead: million)),
+        closeTo(0.5, 1e-12),
+      );
+      expect(costOf(model, const Usage(cacheWrite: million)), 6.25);
+    }
+  });
+
+  test('an unknown model is priced as the dearest Opus', () {
+    expect(costOf('claude-next', const Usage(output: million)), 25);
   });
 }
