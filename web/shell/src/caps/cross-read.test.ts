@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ShellToBridge } from "../../../bridge/src/protocol";
 import type { StreamEvent } from "../stream";
 import { crossRead } from "./cross-read";
-import { SNAPSHOT_DEBOUNCE_MS, dbHandler } from "./db";
+import { MAX_SUBSCRIPTIONS, SNAPSHOT_DEBOUNCE_MS, dbHandler } from "./db";
 import type { CapEnv } from "./host";
 import type { Prompt, PromptAnswer } from "./grants";
 
@@ -16,8 +16,8 @@ const refused = () => json({ error: { code: "not_granted", message: `${A} may no
 type Req = { method: string; url: string; reader: string | null; auth: string | null };
 
 /** A daemon where A may read B once `granted` (a grant or B's share). */
-function setup(opts: { token?: string | null; declared?: Record<string, unknown>; answer?: PromptAnswer; granted?: boolean; version?: () => number } = {}) {
-  const state = { granted: opts.granted ?? false, docVersion: opts.version ?? (() => 1) };
+function setup(opts: { token?: string | null; declared?: Record<string, unknown>; answer?: PromptAnswer; granted?: boolean; version?: () => number; sourceDb?: boolean } = {}) {
+  const state = { granted: opts.granted ?? false, docVersion: opts.version ?? (() => 1), sourceDb: opts.sourceDb ?? true, gate: null as Promise<void> | null };
   const requests: Req[] = [];
   const posted: ShellToBridge[] = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) => {
@@ -29,9 +29,11 @@ function setup(opts: { token?: string | null; declared?: Record<string, unknown>
       return json({ grant: { source_id: B, granted_at: "now" } });
     }
     if (url === `/api/artifacts/${A}`) return json({ artifact: { id: A, title: "Dashboard" } });
-    if (url === `/api/artifacts/${B}`) return json({ artifact: { id: B, title: "Runs" } });
+    if (url === `/api/artifacts/${B}`) return json({ artifact: { id: B, title: "Runs", capabilities: state.sourceDb ? { db: {} } : {} } });
     if (url.startsWith(`/api/artifacts/${B}/docs`)) {
+      if (state.gate) await state.gate;
       if (!state.granted) return refused();
+      if (!state.sourceDb) return json({ error: { code: "not_declared", message: "this artifact does not declare the db capability" } }, 403);
       if (url.includes("?collection=")) return json({ docs: [doc("runs/r1", state.docVersion())], next_cursor: null });
       return json({ doc: doc(url.split("/docs/")[1], state.docVersion()) });
     }
@@ -195,5 +197,46 @@ describe("db.artifact(id) in the shell", () => {
     expect(watchers).toEqual([]);
     h.dispose!();
     await expect(h.call("read", [get("runs/r1")])).rejects.toMatchObject({ code: "unavailable" });
+  });
+
+  it("holds at most MAX_SUBSCRIPTIONS subscriptions of other apps, however many are asked for at once", async () => {
+    const { cr, state, watchers } = setup({ granted: true });
+    let open!: () => void;
+    state.gate = new Promise<void>(r => { open = r; });
+    const all = Array.from({ length: 200 }, (_, i) => cr.call({ op: "subscribe", artifact: B, sub: `s${i}`, spec: { kind: "doc", path: "runs/r1" } }));
+    open();
+    const results = await Promise.allSettled(all);
+    expect(results.filter(r => r.status === "fulfilled")).toHaveLength(MAX_SUBSCRIPTIONS);
+    const refusals = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(refusals).toHaveLength(200 - MAX_SUBSCRIPTIONS);
+    expect(refusals.every(r => r.reason.code === "resource_exhausted")).toBe(true);
+    expect(watchers).toHaveLength(1);
+  });
+
+  it("drops a subscribe still waiting on its first read when the frame resets or leaves", async () => {
+    for (const end of ["reset", "leave"] as const) {
+      const { cr, state, posted, watchers } = setup({ granted: true });
+      let open!: () => void;
+      state.gate = new Promise<void>(r => { open = r; });
+      const pending = cr.call({ op: "subscribe", artifact: B, sub: "s1", spec: { kind: "doc", path: "runs/r1" } });
+      cr[end]();
+      open();
+      await expect(pending, end).rejects.toMatchObject({ code: "unavailable" });
+      expect(watchers, end).toEqual([]);
+      expect(posted, end).toEqual([]);
+      // The slot is free again for the next document.
+      state.gate = null;
+      await cr.call({ op: "subscribe", artifact: B, sub: "s1", spec: { kind: "doc", path: "runs/r1" } });
+      expect(watchers, end).toHaveLength(1);
+    }
+  });
+
+  it("keeps not_declared from a source without db, and never asks for a grant that cannot help", async () => {
+    for (const granted of [true, false]) {
+      const { cr, prompt, requests } = setup({ granted, sourceDb: false });
+      await expect(cr.call(get("runs/r1")), String(granted)).rejects.toMatchObject({ code: "not_declared" });
+      expect(prompt).not.toHaveBeenCalled();
+      expect(requests.some(r => r.method === "PUT")).toBe(false);
+    }
   });
 });

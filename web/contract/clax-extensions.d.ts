@@ -77,11 +77,16 @@ declare namespace ClaxExtensions {
    * and on the `onSnapshot` error callback:
    *
    * - `not_declared` — this artifact's `capabilities.db.read` does not list
-   *   `id`. Declare it (`{"db": {"read": ["<id>"]}}`); nothing was asked.
-   * - `not_granted` — the owner said no (Clax asks once per page load), a
-   *   viewer who is not the owner has no grant to use, or the owner withdrew
-   *   the grant (a live listener then ends with it). Render without that
+   *   `id` (declare it: `{"db": {"read": ["<id>"]}}`), or app `id` does not
+   *   declare `db` and so keeps no documents to share. Nothing was asked.
+   * - `not_granted` — the owner said no (Clax asks once per page load), or
+   *   a viewer who is not the owner has no grant to use. Render without that
    *   app's data; retrying in this page load cannot succeed.
+   *
+   * When the owner withdraws a grant while the page runs, a live listener
+   * stops receiving that app's changes at once; its error callback gets
+   * `not_granted` at the listener's next refresh (after a reconnect of the
+   * event stream), and any later `get()` rejects `not_granted`.
    */
   type DbCrossReadErrorCode = "not_declared" | "not_granted";
 
