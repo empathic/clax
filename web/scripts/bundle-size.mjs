@@ -6,9 +6,10 @@
 // scripts, and each page with the scripts and stylesheets it names), of the
 // question module (`questions`: the `q` chunk, which the gallery loads
 // through its lazy module, with what it imports that the gallery has not
-// loaded by then), and of the People page (`people`: its chunk, which the
+// loaded by then), of the People page (`people`: its chunk, which the
 // gallery loads at `/people` through its lazy module, with what it imports
-// that the gallery has not loaded by then),
+// that the gallery has not loaded by then), and of app mode's host chunk (`host`:
+// what the artifact entry loads for `?app=1` beyond itself),
 // against web/perf/bundle-budget.json. The shell sets its type in the
 // system's faces, so the build may carry no font file and no entry may load
 // one. The extension's release manifest may grant no host and declare no
@@ -128,6 +129,17 @@ const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), 
   sizes.people = [...new Set([...closure(page)].map(k => manifest[k].file))].filter(f => !loaded.has(f)).reduce((n, f) => n + gz(f), 0);
 }
 for (const [name, key] of Object.entries(partKeys)) sizes[key] = part(name);
+// App mode's host (`/a/<id>?app=1`): the chunk the artifact entry imports
+// for it, with what it imports (scripts and stylesheets) that the entry has
+// not loaded. The host's first `ready`, which ends the Clax app's
+// say-usable time, waits for it.
+{
+  const key = Object.keys(manifest).find(k => k.endsWith("src/app/host.ts"));
+  if (!key || !(manifest["artifact.html"].dynamicImports ?? []).includes(key)) throw new Error("dist has no app host chunk imported by artifact.html");
+  const files = k => [...closure(k)].flatMap(c => [manifest[c].file, ...(manifest[c].css ?? [])]);
+  const loaded = new Set(files("artifact.html"));
+  sizes.host = [...new Set(files(key))].filter(f => !loaded.has(f)).reduce((n, f) => n + gz(f), 0);
+}
 
 // The extension's release build.
 const ext = new URL("../dist-extension/", import.meta.url);
@@ -158,9 +170,9 @@ for (const [key, html] of [["extComposer", "composer.html"], ["extPanel", "sidep
   const files = [...text.matchAll(/(?:src|href)="\.\/(assets\/[^"]+)"/g)].map(m => m[1]);
   sizes[key] = extGz(html) + files.reduce((n, f) => n + extGz(f), 0);
 }
-console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, questions ${sizes.questions}, people ${sizes.people}, eager bridge ${sizes.bridge}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, room ${sizes.partRoom}, sample ${sizes.partSample}, live ${sizes.partLive}, extension: overlay ${sizes.extOverlay}, worker ${sizes.extWorker}, composer ${sizes.extComposer}, panel ${sizes.extPanel}`);
+console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, questions ${sizes.questions}, people ${sizes.people}, eager bridge ${sizes.bridge}, app host ${sizes.host}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, room ${sizes.partRoom}, sample ${sizes.partSample}, live ${sizes.partLive}, extension: overlay ${sizes.extOverlay}, worker ${sizes.extWorker}, composer ${sizes.extComposer}, panel ${sizes.extPanel}`);
 
-const RECORDED = ["gallery", "artifact", "bridge", ...Object.values(partKeys)];
+const RECORDED = ["gallery", "artifact", "host", "bridge", ...Object.values(partKeys)];
 const EXTENSION = ["extOverlay", "extWorker", "extComposer", "extPanel", "questions", "people"];
 const MEASURED = [...RECORDED, ...EXTENSION];
 const KEYS = [...MEASURED, "bridgeBaseline"];
