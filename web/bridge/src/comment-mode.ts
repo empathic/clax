@@ -18,15 +18,18 @@
 // mode off drops any pending hover, drag, and widening. The overlay lives in
 // a shadow root on <html>, so it never changes the page's body, selectors, or
 // text; it also draws the dashed outline of a focused thread's area.
-// On a touch screen a finger held still outlines its target and lifting it
-// picks, as a click would, moving focus into the page as an area drag's press
-// does (`long-press.ts`); while a finger is held, text selection and the
-// context menu are cancelled, so a long-press neither selects nor opens a
-// menu. A mouse or pen keeps selecting text and opening its menu.
+// On a touch screen a finger held still outlines its target, and lifting it
+// picks: the click the browser sends after the release picks, as a tap's
+// does, and when none comes within `TOUCH_CLICK_WAIT_MS` (after a long-press
+// on Android, say) comment mode picks what is under the finger itself,
+// moving focus into the page as an area drag's press does (`long-press.ts`).
+// While a finger is held, text selection and the context menu are cancelled,
+// so a long-press neither selects nor opens a menu. A mouse or pen keeps
+// selecting text and opening its menu.
 
 import { OVERLAY_TAG } from "./anchor";
 import { type AreaRect, REPLACED, Widen, dragRect, isClickSized, nonTextAt, widenedTarget } from "./area";
-import { LongPress, type Timers } from "./long-press";
+import { LongPress, type Timers, windowTimers } from "./long-press";
 import type { Box } from "./protocol";
 import { backgroundBehind, chooseTarget, outlineBox, outlineColors, rectOf, viewportOf } from "./target";
 
@@ -59,6 +62,10 @@ const CSS = `:host{all:initial}
  * callout (it has no effect on a mouse). */
 const GUARD_CSS = "html{-webkit-touch-callout:none}";
 
+/** How long after a long-press's release comment mode waits for the
+ * browser's click before it picks what is under the finger itself. */
+export const TOUCH_CLICK_WAIT_MS = 400;
+
 /** A drag that draws an area: where it started, in page coordinates. */
 type Drag = { x: number; y: number };
 
@@ -87,6 +94,10 @@ export class CommentMode {
   private readonly longPress: LongPress;
   /** The callout guard, in the page while the mode is on. */
   private guard: HTMLStyleElement | null = null;
+  private readonly timers: Timers;
+  /** A long-press released, waiting for the browser's click: the timer that
+   * picks without it. */
+  private touchWait: number | null = null;
 
   /** `opts.trustedOnly` (default true) ignores events the page dispatched
    * itself; tests that synthesise input turn it off. `opts.shadow`
@@ -95,11 +106,12 @@ export class CommentMode {
    * `opts.timers` (default the window's) times the long-press. */
   constructor(private readonly doc: Document, private readonly hooks: ModeHooks, opts: { trustedOnly?: boolean; shadow?: "open" | "closed"; timers?: Timers } = {}) {
     this.trustedOnly = opts.trustedOnly ?? true;
+    this.timers = opts.timers ?? windowTimers(doc.defaultView!);
     this.longPress = new LongPress(doc, {
       armed: (x, y) => this.hoverAt(this.elementAt(x, y), x, y),
       pick: (x, y) => this.touchPick(x, y),
       abandoned: () => this.unhover(),
-    }, opts.timers, { trustedOnly: this.trustedOnly });
+    }, this.timers, { trustedOnly: this.trustedOnly });
     this.host = doc.createElement(OVERLAY_TAG);
     const root = this.host.attachShadow({ mode: opts.shadow ?? "open" });
     root.innerHTML = `<style>${CSS}</style><div class="f"></div><div class="o"></div><div class="a"></div><div class="pin"></div>`;
@@ -132,6 +144,7 @@ export class CommentMode {
     this.doc.documentElement.style.cursor = on ? "crosshair" : "";
     if (on) this.ensureLast();
     this.suppressClick = false;
+    this.endTouchWait();
     if (on) {
       const sel = this.doc.getSelection();
       this.selectionBefore = sel && !sel.isCollapsed && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
@@ -372,14 +385,23 @@ export class CommentMode {
     return el.closest?.(OVERLAY_TAG) ? null : el;
   }
 
-  /** A long-press released: focus moves into the page, as the press of an
-   * area drag moves it (the release is cancelled, so no press of the
-   * browser's does), and what a click at (`x`, `y`) would pick is picked.
-   * The cancelled release is followed by no click. */
+  /** A long-press released at (`x`, `y`): the browser's click, if it comes
+   * within `TOUCH_CLICK_WAIT_MS`, picks; else focus moves into the page, as
+   * the press of an area drag moves it, and what a click there would pick is
+   * picked. */
   private touchPick(x: number, y: number): void {
     if (!this.on) return;
-    this.focusPage();
-    this.pickAt(this.elementAt(x, y), x, y, false);
+    this.endTouchWait();
+    this.touchWait = this.timers.set(() => {
+      this.touchWait = null;
+      this.focusPage();
+      this.pickAt(this.elementAt(x, y), x, y, false);
+    }, TOUCH_CLICK_WAIT_MS);
+  }
+
+  private endTouchWait(): void {
+    if (this.touchWait !== null) this.timers.clear(this.touchWait);
+    this.touchWait = null;
   }
 
   /** A text selection or context menu starting while a finger is held: the
@@ -456,6 +478,8 @@ export class CommentMode {
     if (!this.real(e)) return;
     e.preventDefault();
     e.stopPropagation();
+    // A long-press's release brought its click: it picks.
+    this.endTouchWait();
     if (this.suppressClick) { this.suppressClick = false; return; }
     this.pickAt(this.target(e), e.clientX, e.clientY, e.altKey);
   };

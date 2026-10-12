@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CommentMode, type ModeHooks } from "../src/comment-mode";
+import { CommentMode, type ModeHooks, TOUCH_CLICK_WAIT_MS } from "../src/comment-mode";
 
 // A backstop for a loaded machine; no test here times anything.
 vi.setConfig({ testTimeout: 20_000 });
@@ -508,15 +508,23 @@ describe("touch long-press", () => {
   });
   afterEach(() => { delete d.elementFromPoint; delete d.caretRangeFromPoint; });
 
-  /** Holds a finger on `el` at (x, y) past the hold, then lifts it there. */
+  /** Holds a finger on `el` at (x, y) past the hold, then lifts it there,
+   * and no click follows the release (as after a long-press on Android). */
   const longPress = (el: Element, x = 10, y = 10) => {
     under = el;
     touch(el, "touchstart", x, y);
     f.fire(450);
-    return touch(el, "touchend", x, y);
+    const end = touch(el, "touchend", x, y);
+    f.fire(TOUCH_CLICK_WAIT_MS);
+    return end;
+  };
+  const click = (el: Element, x = 10, y = 10) => {
+    const e = new MouseEvent("click", { bubbles: true, cancelable: true, clientX: x, clientY: y });
+    el.dispatchEvent(e);
+    return e;
   };
 
-  it("long_press picks the element under the finger", () => {
+  it("long_press picks the element under the finger when no click follows the release", () => {
     mode.set(true);
     const h2 = document.querySelector("h2")!;
     under = h2;
@@ -526,8 +534,23 @@ describe("touch long-press", () => {
     expect(outline().style.display).toBe("block");
     expect(hooks.pickElement).not.toHaveBeenCalled();
     const end = touch(h2, "touchend", 10, 10);
-    expect(end.defaultPrevented).toBe(true);
+    expect(end.defaultPrevented).toBe(false);
+    expect(hooks.pickElement).not.toHaveBeenCalled();
+    f.fire(TOUCH_CLICK_WAIT_MS);
     expect(hooks.pickElement).toHaveBeenCalledWith(h2);
+    expect(hooks.pickElement).toHaveBeenCalledTimes(1);
+  });
+
+  it("the browser's click after a long-press picks, once", () => {
+    mode.set(true);
+    const h2 = document.querySelector("h2")!;
+    under = h2;
+    touch(h2, "touchstart", 10, 10);
+    f.fire(450);
+    touch(h2, "touchend", 10, 10);
+    expect(click(h2).defaultPrevented).toBe(true);
+    expect(hooks.pickElement).toHaveBeenCalledWith(h2);
+    f.fire(TOUCH_CLICK_WAIT_MS);
     expect(hooks.pickElement).toHaveBeenCalledTimes(1);
   });
 
@@ -536,13 +559,15 @@ describe("touch long-press", () => {
     const hash = location.hash;
     mode.set(true);
     const a = document.querySelector("a")!;
-    longPress(a);
-    expect(hooks.pickElement).toHaveBeenCalledWith(a);
-    // The click the browser synthesizes after the touch: cancelled, and no second pick.
-    const click = new MouseEvent("click", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 });
-    a.dispatchEvent(click);
-    expect(click.defaultPrevented).toBe(true);
+    under = a;
+    touch(a, "touchstart", 10, 10);
+    f.fire(450);
+    touch(a, "touchend", 10, 10);
+    // The click the browser sends after the release: it picks, and is cancelled.
+    expect(click(a).defaultPrevented).toBe(true);
     expect(location.hash).toBe(hash);
+    expect(hooks.pickElement).toHaveBeenCalledWith(a);
+    f.fire(TOUCH_CLICK_WAIT_MS);
     expect(hooks.pickElement).toHaveBeenCalledTimes(1);
   });
 
@@ -551,26 +576,33 @@ describe("touch long-press", () => {
     const h2 = document.querySelector("h2")!;
     longPress(h2);
     mode.captured();
-    h2.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    click(h2);
     expect(hooks.pickElement).toHaveBeenCalledTimes(2);
   });
 
-  it("long_press_pick_moves_focus_into_the_page_first", () => {
+  it("long_press_pick_moves_focus_into_the_page_first when no click follows", () => {
     const order: string[] = [];
     const focus = vi.spyOn(window, "focus").mockImplementation(() => { order.push("focus"); });
     hooks.pickElement.mockImplementation(() => { order.push("pick"); });
     try {
       mode.set(true);
-      const h2 = document.querySelector("h2")!;
-      under = h2;
-      touch(h2, "touchstart", 10, 10);
-      f.fire(450);
-      expect(focus).not.toHaveBeenCalled();
-      touch(h2, "touchend", 10, 10);
+      longPress(document.querySelector("h2")!);
       expect(order).toEqual(["focus", "pick"]);
     } finally {
       focus.mockRestore();
     }
+  });
+
+  it("off before the wait ends drops the long-press pick", () => {
+    mode.set(true);
+    const h2 = document.querySelector("h2")!;
+    under = h2;
+    touch(h2, "touchstart", 10, 10);
+    f.fire(450);
+    touch(h2, "touchend", 10, 10);
+    mode.set(false);
+    f.fire();
+    expect(hooks.pickElement).not.toHaveBeenCalled();
   });
 
   it("long_press_on_oversized_element_picks_its_line", () => {
@@ -584,6 +616,7 @@ describe("touch long-press", () => {
     f.fire(450);
     expect(String(hooks.hover.mock.calls.at(-1)![0])).toBe("beta two");
     touch(pre, "touchend", 10, 60);
+    f.fire(TOUCH_CLICK_WAIT_MS);
     expect(hooks.pickElement).not.toHaveBeenCalled();
     expect(String(hooks.pickRange.mock.calls[0][0])).toBe("beta two");
   });

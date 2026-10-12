@@ -28,7 +28,10 @@ describe("LongPress", () => {
     touch("touchstart", [[20, 30]]); expect(f.pending()).toBe(1);
     f.fire(); expect(h.armed).toHaveBeenCalledWith(20, 30);
     const end = touch("touchend", [[22, 31]]);
-    expect(h.pick).toHaveBeenCalledWith(22, 31); expect(end.defaultPrevented).toBe(true);
+    expect(h.pick).toHaveBeenCalledWith(22, 31);
+    // The release is the browser's to finish: its click, and the focus and
+    // pointer arrival that come with it, follow.
+    expect(end.defaultPrevented).toBe(false);
     expect(h.abandoned).not.toHaveBeenCalled();
   });
 
