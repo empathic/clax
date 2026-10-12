@@ -521,6 +521,17 @@ void main() {
             1e-12,
           ),
         );
+        // Sonnet 5.5 at $2/$10 for the declined and last attempts; the
+        // served attempt at Opus 4.8's $5/$25.
+        expect(
+          b.costUsd,
+          closeTo(
+            (1000 * 2 + 200 * 10) / 1e6 +
+                (1000 * 5 + 300 * 25) / 1e6 +
+                (100 * 2 + 50 * 10) / 1e6,
+            1e-12,
+          ),
+        );
       },
     );
   });
