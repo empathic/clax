@@ -4,10 +4,11 @@ import 'dart:math' as math;
 
 import '../clax/api.dart';
 import 'loop.dart';
+import 'progress.dart';
 
 /// What the worker is doing, for the UI. Every [WorkerWorking] is followed
-/// by exactly one of the others for the same artifact, which ends the
-/// Working state.
+/// by any number of [WorkerProgress] events and then exactly one of the
+/// others for the same artifact, which ends the Working state.
 sealed class WorkerEvent {
   const WorkerEvent(this.artifactId);
 
@@ -19,6 +20,15 @@ final class WorkerWorking extends WorkerEvent {
   const WorkerWorking(super.artifactId, this.threads);
 
   final List<String> threads;
+}
+
+/// Progress of the running change of [artifactId] for [threads]; it does
+/// not end the Working state.
+final class WorkerProgress extends WorkerEvent {
+  const WorkerProgress(super.artifactId, this.threads, this.progress);
+
+  final List<String> threads;
+  final AgentProgress progress;
 }
 
 /// A change landed as [version].
@@ -250,6 +260,7 @@ class FeedbackWorker {
       items,
       session: _sid,
       cancelled: _stop.future,
+      onProgress: (p) => _events.add(WorkerProgress(aid, threads, p)),
     );
     _events.add(switch (outcome) {
       ChangeLanded(:final version) => WorkerLanded(aid, version),
