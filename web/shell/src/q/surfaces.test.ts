@@ -153,7 +153,7 @@ describe("the questions in the artifact view", () => {
     expect(document.querySelector(".thread-q-slot .qcard")).toBeNull();
   });
 
-  it("in app mode mounts the questions into the app's sheet, not the hidden sidebar, and tells the page each count", async () => {
+  it("in app mode mounts the questions into the app's sheet, not the hidden sidebar, and tells the page each change", async () => {
     vi.resetModules();
     const q = view();
     const elsewhere = view({ id: "Q3", artifact: { id: "other", title: "Other", kind: "html" } });
@@ -171,7 +171,7 @@ describe("the questions in the artifact view", () => {
       await settle();
       expect(document.querySelectorAll(".app-questions .qcard")).toHaveLength(1);
       expect(document.querySelector(".sidebar .side-q")).toBeNull();
-      expect(counts.at(-1)).toEqual({ open: 1, shown: 1 });
+      expect(counts.at(-1)).toEqual({ open: [q.id], closed: [] });
       // The sidebar mounting again does not take the list from the sheet.
       const side = document.querySelector(".sidebar > .questions-slot")!;
       flush(() => side.dispatchEvent(new CustomEvent("clax-questions-slot", { bubbles: true })));
@@ -179,10 +179,10 @@ describe("the questions in the artifact view", () => {
       expect(side.querySelector(".side-q")).toBeNull();
       // Answered: none open, its card still shown saying so.
       flush(() => stream.on.get("questions")!({ type: "question", question: { ...q, status: "answered", answered_via: "shell" } }));
-      expect(counts.at(-1)).toEqual({ open: 0, shown: 1 });
+      expect(counts.at(-1)).toEqual({ open: [], closed: [q.id] });
       stop();
       flush();
-      expect(counts.at(-1)).toEqual({ open: 0, shown: 0 });
+      expect(counts.at(-1)).toEqual({ open: [], closed: [] });
       expect(document.querySelector(".app-questions .qcard")).toBeNull();
     } finally {
       document.removeEventListener("clax-questions", hear);

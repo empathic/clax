@@ -69,11 +69,12 @@ const APP_SLOT = ".app-questions > .questions-slot";
 
 /** What the artifact view's question surfaces tell the page whenever the
  * questions about the artifact change (a `clax-questions` event on the
- * document): how many are `open`, and how many cards are `shown` (the open
- * ones and those that closed moments ago, which say what closed them). App
- * mode's host tells the app the first, and closes its sheet when the second
- * is 0. */
-export type QuestionsCount = { open: number; shown: number };
+ * document), before their cards are rendered: the IDs of the `open` ones,
+ * and of those `closed` moments ago (their cards still say what closed
+ * them), oldest first. App mode's host tells the app how many are open,
+ * shows the sheet for a question the app asked for, and closes it when no
+ * card is left. */
+export type QuestionsChange = { open: string[]; closed: string[] };
 
 /** The artifact view's surfaces for artifact `aid`, for the owner or a connected person: **Inbox**
  * in the top bar (before the island's controls), the questions about it at
@@ -83,7 +84,7 @@ export type QuestionsCount = { open: number; shown: number };
  * (`html.app`) the sidebar's questions go in the app's sheet
  * (`.app-questions`, its slot announced the same way) instead of the hidden
  * sidebar. Each change of the questions about `aid` is told as a
- * `clax-questions` event (`QuestionsCount`). `trail` is the view's keyboard
+ * `clax-questions` event (`QuestionsChange`). `trail` is the view's keyboard
  * trail, which its cards follow. The result removes them and stops the
  * feeds (`stop`). */
 export function artifact(aid: string, trail: Trail, stream: EventStream, doc: Document = document): () => void {
@@ -99,10 +100,10 @@ export function artifact(aid: string, trail: Trail, stream: EventStream, doc: Do
   const slot = (from: Element | null) => (doc.documentElement.classList.contains("app") ? doc.querySelector(APP_SLOT) : null) ?? from;
   const onSlot = (e: Event) => fill(slot(e.target as Element));
   const { questions } = shared();
-  const tell = (c: QuestionsCount) => doc.dispatchEvent(new CustomEvent<QuestionsCount>("clax-questions", { detail: c }));
+  const tell = (c: QuestionsChange) => doc.dispatchEvent(new CustomEvent<QuestionsChange>("clax-questions", { detail: c }));
   const count = () => {
     const list = questions.byArtifact(aid);
-    tell({ open: list.filter(q => q.status === "open").length, shown: list.length });
+    tell({ open: list.filter(q => q.status === "open").map(q => q.id), closed: list.filter(q => q.status !== "open").map(q => q.id) });
   };
   start(stream);
   // In the top bar before the controls; at phone width in the tab bar
@@ -132,7 +133,7 @@ export function artifact(aid: string, trail: Trail, stream: EventStream, doc: Do
     live = false;
     unlisten();
     slots?.();
-    tell({ open: 0, shown: 0 });
+    tell({ open: [], closed: [] });
   }, followDot(doc, aid));
   return () => {
     for (const f of off) f();
