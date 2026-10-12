@@ -261,6 +261,7 @@ void main() {
       PartialEdit(:final path, :final newStr) => 'edit $path: $newStr',
       OutputTokens(:final count) => 'tokens $count',
       AttemptStarted(:final attempt) => 'attempt $attempt',
+      Narration() || ToolStarted() || Inspected() => '$e',
     };
 
     test('reports each file content prefix under its path', () {

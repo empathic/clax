@@ -1,0 +1,231 @@
+import 'package:clax_app/agent/progress.dart';
+import 'package:clax_app/agent/request.dart';
+import 'package:clax_app/agent/tools/budget.dart';
+import 'package:clax_app/agent/tools/tool_spec.dart';
+import 'package:clax_app/agent/tools/toolbox.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'support.dart';
+
+/// A tool that ends the run, standing in for `finish`.
+class _EndTool implements Tool {
+  _EndTool(this.name);
+
+  final String name;
+  var calls = 0;
+
+  @override
+  ToolSpec get spec => ToolSpec(name, 'Ends the run.', const {
+    'type': 'object',
+    'properties': {},
+    'required': [],
+    'additionalProperties': false,
+  });
+
+  @override
+  Future<ToolOutput> call(Map<String, Object?> input, RunState s) async {
+    calls++;
+    s.outcome = const RunFinished(version: 4, answered: true);
+    return const ToolOk({'published': 4});
+  }
+}
+
+class _ThrowingTool implements Tool {
+  @override
+  ToolSpec get spec => const ToolSpec('give_up', 'Throws.', {
+    'type': 'object',
+    'properties': {},
+    'required': [],
+    'additionalProperties': false,
+  });
+
+  @override
+  Future<ToolOutput> call(Map<String, Object?> input, RunState s) =>
+      throw const FormatException('the daemon said no');
+}
+
+void main() {
+  test('specs follow toolOrder and leave out missing tools', () {
+    final tb = toolboxWith(extra: [_EndTool('finish')]);
+    expect(tb.specs.map((s) => s.name), [
+      'list_files',
+      'read_file',
+      'write_file',
+      'str_replace',
+      'delete_file',
+      'set_meta',
+      'finish',
+    ]);
+  });
+
+  test('a tool outside toolOrder, or twice, is a programming error', () {
+    expect(() => toolboxWith(extra: [_EndTool('shell')]), throwsArgumentError);
+    expect(
+      () => toolboxWith(extra: [_EndTool('finish'), _EndTool('finish')]),
+      throwsArgumentError,
+    );
+  });
+
+  test('an unknown tool is refused', () async {
+    final r = await toolboxWith().call('shell', {});
+    expect(r, isA<ToolRefused>());
+    expect((r as ToolRefused).message, contains('shell'));
+  });
+
+  test('every call after the outcome is set is refused', () async {
+    final end = _EndTool('finish');
+    final tb = toolboxWith(extra: [end]);
+    await tb.call('finish', {});
+    expect(tb.state.ended, isTrue);
+    for (final name in ['write_file', 'finish']) {
+      final r = await tb.call(name, {'path': 'a.txt', 'content': 'x'});
+      expect(r, isA<ToolRefused>());
+      expect((r as ToolRefused).message, 'The run has ended.');
+    }
+    expect(end.calls, 1);
+    expect(tb.state.draft.files.containsKey('a.txt'), isFalse);
+  });
+
+  test('a tool that throws an exception answers as a refusal', () async {
+    final tb = toolboxWith(extra: [_ThrowingTool()]);
+    final r = await tb.call('give_up', {});
+    expect(r, isA<ToolRefused>());
+    expect((r as ToolRefused).message, contains('the daemon said no'));
+    expect(tb.state.ended, isFalse);
+  });
+
+  test('past the wall clock only finish and give_up still run', () async {
+    final clock = StepClock();
+    final end = _EndTool('finish');
+    final tb = toolboxWith(clock: clock, extra: [end]);
+    clock.advance(const Duration(seconds: 45));
+    final r = await tb.call('write_file', {'path': 'a.txt', 'content': 'x'});
+    expect(r, isA<ToolRefused>());
+    expect((r as ToolRefused).message, contains('45 seconds'));
+    expect(tb.state.draft.files.containsKey('a.txt'), isFalse);
+    expect(await tb.call('finish', {}), isA<ToolOk>());
+  });
+
+  test('the tools of the turn that reached the turn cap still run', () async {
+    final tb = toolboxWith(caps: RunCaps.change);
+    for (var i = 0; i < 6; i++) {
+      tb.state.budget.addTurn(const Usage(output: 10));
+    }
+    expect(tb.state.budget.hardStop, '6 turns');
+    expect(
+      await tb.call('write_file', {'path': 'a.txt', 'content': 'x'}),
+      isA<ToolOk>(),
+    );
+  });
+
+  group('stopAtCap', () {
+    test('without a handler gives up naming the cap', () async {
+      final tb = toolboxWith();
+      final out = await tb.stopAtCap('6 turns');
+      expect(
+        out,
+        isA<RunGaveUp>().having((o) => o.reason, 'reason', '6 turns'),
+      );
+      expect((out as RunGaveUp).answered, isFalse);
+      expect(tb.state.outcome, same(out));
+    });
+
+    test('hands the cap and narration to the handler', () async {
+      final tb = toolboxWith();
+      final seen = <(String, String?)>[];
+      tb.capHandler = (cap, narration) async {
+        seen.add((cap, narration));
+        return const RunFinished(version: 4, answered: true);
+      };
+      final out = await tb.stopAtCap('45 seconds', narration: 'Adding totals');
+      expect(seen, [('45 seconds', 'Adding totals')]);
+      expect(out, isA<RunFinished>());
+      expect(tb.state.outcome, same(out));
+    });
+
+    test('keeps an outcome already set', () async {
+      final tb = toolboxWith();
+      tb.state.outcome = const RunCancelled();
+      var called = false;
+      tb.capHandler = (_, _) async {
+        called = true;
+        return const RunGaveUp('x', answered: true);
+      };
+      expect(await tb.stopAtCap('6 turns'), isA<RunCancelled>());
+      expect(called, isFalse);
+    });
+  });
+
+  group('draft', () {
+    test(
+      'a clean render keeps a snapshot that later edits leave alone',
+      () async {
+        final tb = toolboxWith(files: {'index.html': '<p>a</p>'});
+        final d = tb.state.draft;
+        await tb.call('str_replace', {
+          'path': 'index.html',
+          'old_str': 'a',
+          'new_str': 'b',
+        });
+        d.markRendered(errors: false);
+        expect(d.renderedRevision, d.revision);
+        await tb.call('str_replace', {
+          'path': 'index.html',
+          'old_str': 'b',
+          'new_str': 'c',
+        });
+        expect(d.renderedRevision, isNot(d.revision));
+        expect(d.lastClean!.files, {'index.html': '<p>b</p>'});
+        expect(d.lastClean!.revision, 1);
+        d.markRendered(errors: true);
+        expect(d.lastRenderHadErrors, isTrue);
+        expect(d.lastClean!.files, {'index.html': '<p>b</p>'});
+      },
+    );
+
+    test('changedFrom compares files, meta and staged writes', () {
+      final tb = toolboxWith(files: {'index.html': 'x'}, title: 'T');
+      final d = tb.state.draft;
+      expect(d.changedFrom({'index.html': 'x'}, title: 'T'), isFalse);
+      expect(d.changedFrom({'index.html': 'y'}, title: 'T'), isTrue);
+      expect(d.changedFrom({'index.html': 'x'}, title: 'U'), isTrue);
+      d.setMeta(capabilities: {'db': <String, Object?>{}});
+      expect(d.changedFrom({'index.html': 'x'}, title: 'T'), isTrue);
+      expect(
+        d.changedFrom(
+          {'index.html': 'x'},
+          title: 'T',
+          caps: {'db': <String, Object?>{}},
+        ),
+        isFalse,
+      );
+    });
+  });
+
+  group('toolLabel', () {
+    test('names the tool and its first input', () {
+      expect(
+        toolLabel('write_file', {'path': 'index.html'}),
+        'Writing index.html',
+      );
+      expect(toolLabel('write_file', {}), 'Writing a file');
+      expect(toolLabel('str_replace', {'path': 'app.js'}), 'Changing app.js');
+      expect(
+        toolLabel('db_list', {'collection': 'data/runs'}),
+        'Reading your runs',
+      );
+      expect(toolLabel('render', {}), 'Checking how it looks');
+      expect(toolLabel('ask', {}), 'Asking you a question');
+      expect(toolLabel('finish', {}), 'Publishing');
+      expect(toolLabel('mystery', {}), 'Working');
+    });
+  });
+
+  test('a RunContext defaults to no threads, items or documents', () {
+    final ctx = toolboxWith(kind: RequestKind.newApp).state.ctx;
+    expect(ctx.threadIds, isEmpty);
+    expect(ctx.items, isEmpty);
+    expect(ctx.shownDocs, isEmpty);
+    expect(ctx.artifactId, isNull);
+  });
+}
