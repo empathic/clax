@@ -96,17 +96,41 @@ pub fn page_src(id: &str, n: u64, origin: Option<&str>, key: Option<&str>, file:
         .join("/")
 }
 
+/// The name the Clax app's inspect view gives its content frame
+/// (`INSPECT_FRAME` in `web/bridge/src/protocol.ts`): the page's bridge keeps
+/// its errors from its first script only in a frame so named.
+pub const INSPECT_FRAME: &str = "clax-inspect";
+
+/// Whether a shell URL's query asks for the Clax app's inspect view, as the
+/// shell reads it (`inspectQuery` in `web/shell/src/route.ts`): the first
+/// `app` is `1` and the first `inspect` is `1`.
+pub fn inspect_query(query: Option<&str>) -> bool {
+    let Some(q) = query else { return false };
+    let first = |key: &str| {
+        url::form_urlencoded::parse(q.as_bytes())
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.into_owned())
+    };
+    first("app").as_deref() == Some("1") && first("inspect").as_deref() == Some("1")
+}
+
 /// The content frame's markup, with the attributes `FrameHost.show` in
 /// `web/shell/src/view/frame-host.ts` gives it: sandboxed exactly when there
-/// is no artifact origin.
-pub fn frame_html(src: &str, sandboxed: bool) -> String {
+/// is no artifact origin, and named [`INSPECT_FRAME`] in the inspect view
+/// (`inspect`), so the shell adopts it there too.
+pub fn frame_html(src: &str, sandboxed: bool, inspect: bool) -> String {
     let sandbox = if sandboxed {
         format!(" sandbox=\"{FRAME_SANDBOX}\"")
     } else {
         String::new()
     };
+    let name = if inspect {
+        format!(" name=\"{INSPECT_FRAME}\"")
+    } else {
+        String::new()
+    };
     format!(
-        "<iframe class=\"frame\" title=\"artifact content\" src=\"{}\" allow=\"clipboard-write; fullscreen\"{sandbox}></iframe>",
+        "<iframe class=\"frame\"{name} title=\"artifact content\" src=\"{}\" allow=\"clipboard-write; fullscreen\"{sandbox}></iframe>",
         html_escape(src)
     )
 }
@@ -171,6 +195,7 @@ fn without_sessions(artifact: Value, versions: Value) -> Value {
 pub async fn assemble(
     s: &AppState,
     route: ShellRoute,
+    query: Option<&str>,
     headers: &HeaderMap,
     extensions: &axum::http::Extensions,
 ) -> Result<Option<Injected>, ApiError> {
@@ -299,7 +324,7 @@ pub async fn assemble(
             let src = page_src(id.as_str(), n, origin.as_deref(), key.as_deref(), &file);
             let src = format!("{}{src}", content_origin.unwrap_or(""));
             (
-                Some(frame_html(&src, origin.is_none())),
+                Some(frame_html(&src, origin.is_none(), inspect_query(query))),
                 json!({"mode": if origin.is_some() { "subdomain" } else { "sandbox" }, "src": src}),
             )
         }
@@ -401,12 +426,45 @@ mod tests {
             assert!(host.contains(attr), "frame-host.ts no longer sets: {attr}");
         }
         assert_eq!(
-            frame_html("/c/x/v/1/\"><b>", true),
+            frame_html("/c/x/v/1/\"><b>", true, false),
             format!(
                 "<iframe class=\"frame\" title=\"artifact content\" src=\"/c/x/v/1/&quot;&gt;&lt;b&gt;\" allow=\"clipboard-write; fullscreen\" sandbox=\"{FRAME_SANDBOX}\"></iframe>"
             )
         );
-        assert!(!frame_html("http://x.localhost:1/v/1/", false).contains("sandbox"));
+        assert!(!frame_html("http://x.localhost:1/v/1/", false, false).contains("sandbox"));
+    }
+
+    #[test]
+    fn the_inspect_views_frame_is_named_as_frame_host_names_it() {
+        let host = include_str!("../../../web/shell/src/view/frame-host.ts");
+        assert!(host.contains("if (inspecting()) el.name = INSPECT_FRAME;"));
+        let proto = include_str!("../../../web/bridge/src/protocol.ts");
+        assert!(proto.contains(&format!(
+            "export const INSPECT_FRAME = \"{INSPECT_FRAME}\";"
+        )));
+        assert_eq!(
+            frame_html("/c/x/v/1/", true, true),
+            format!(
+                "<iframe class=\"frame\" name=\"clax-inspect\" title=\"artifact content\" src=\"/c/x/v/1/\" allow=\"clipboard-write; fullscreen\" sandbox=\"{FRAME_SANDBOX}\"></iframe>"
+            )
+        );
+        assert!(!frame_html("/c/x/v/1/", true, false).contains("name="));
+    }
+
+    #[test]
+    fn inspect_query_needs_app_and_inspect_as_the_shell_reads_them() {
+        for (q, want) in [
+            (Some("app=1&inspect=1"), true),
+            (Some("inspect=1&x=2&app=1"), true),
+            (Some("app=%31&inspect=1"), true),
+            (Some("inspect=1"), false),
+            (Some("app=1"), false),
+            (Some("app=1&inspect=0"), false),
+            (Some("app=2&app=1&inspect=1"), false),
+            (None, false),
+        ] {
+            assert_eq!(inspect_query(q), want, "{q:?}");
+        }
     }
 
     #[test]

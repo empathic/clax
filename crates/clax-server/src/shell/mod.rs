@@ -130,7 +130,7 @@ pub async fn artifact_page(
     let injected = if host_ok {
         within(
             s.request_timeout,
-            boot::assemble(&s, route, &req, &extensions),
+            boot::assemble(&s, route, uri.query(), &req, &extensions),
         )
         .await
     } else {
