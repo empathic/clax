@@ -62,30 +62,61 @@ Stream<SseMessage> decodeSse(
   }
 }
 
+/// Lets [reconnectingSse] abort a request [SseOpen] started: [SseOpen]
+/// sets [onAbort] (for example to `HttpClientRequest.abort`) before it
+/// waits for the answer.
+class SseAborter {
+  void Function()? onAbort;
+
+  void abort() {
+    final a = onAbort;
+    onAbort = null;
+    if (a != null) {
+      try {
+        a();
+      } on Object catch (_) {}
+    }
+  }
+}
+
 /// Opens one SSE response. [open] makes the request; it is given the last
 /// event ID seen so far (null on the first connection) for the
-/// `Last-Event-ID` header.
-typedef SseOpen = Future<HttpClientResponse> Function(String? lastEventId);
+/// `Last-Event-ID` header, and an [SseAborter] to register its abort with.
+typedef SseOpen = Future<HttpClientResponse> Function(
+  String? lastEventId,
+  SseAborter abort,
+);
 
 /// A stream of SSE messages that reconnects. Each connection is opened
 /// with [open]; when one ends or fails, the next is opened with the last
 /// event ID seen, after [delay] of the current backoff (0.5 s, doubling to
-/// 30 s, back to 0.5 s after a connection that delivered a message). A
-/// response other than 200 counts as a failed connection; one that answers
-/// 400, 403 or 404 ends the stream with an [HttpException] instead, since
-/// retrying the same request cannot change it. (A 401 is retried: [open]
-/// may name a restarted daemon's new token next time.) Cancelling the subscription closes the
-/// current connection and opens no other.
+/// 30 s, back to 0.5 s after a connection that delivered a message).
+///
+/// A connection fails, and is replaced the same way, when its answer does
+/// not come within [connectTimeout] (the request is aborted), when no byte
+/// arrives on it for [idleTimeout] (comments such as the daemon's
+/// keep-alive count; the connection is closed), or when it answers other
+/// than 200. One that answers 400, 403 or 404 ends the stream with an
+/// [HttpException] instead, since retrying the same request cannot change
+/// it. (A 401 is retried: [open] may name a restarted daemon's new token
+/// next time.) Cancelling the subscription closes the current connection
+/// and opens no other.
 Stream<SseMessage> reconnectingSse(
   SseOpen open, {
   Future<void> Function(Duration) delay = _delay,
   Duration first = const Duration(milliseconds: 500),
   Duration max = const Duration(seconds: 30),
+  Duration connectTimeout = const Duration(seconds: 10),
+  Duration idleTimeout = const Duration(seconds: 45),
 }) {
   late StreamController<SseMessage> out;
   var cancelled = false;
   StreamSubscription<SseMessage>? current;
   Completer<void>? ended;
+  SseAborter? pendingAbort;
+  Timer? idle;
+  // Restarts the idle deadline of the current connection.
+  void Function()? arm;
   String? lastId;
 
   Future<void> run() async {
@@ -93,7 +124,19 @@ Stream<SseMessage> reconnectingSse(
     while (!cancelled) {
       var delivered = false;
       try {
-        final res = await open(lastId);
+        final aborter = pendingAbort = SseAborter();
+        final pending = open(lastId, aborter);
+        final HttpClientResponse res;
+        try {
+          res = await pending.timeout(connectTimeout);
+        } on TimeoutException {
+          aborter.abort();
+          // An answer that still arrives is thrown away.
+          unawaited(pending.then(_discard, onError: (Object _) {}));
+          rethrow;
+        } finally {
+          pendingAbort = null;
+        }
         if (cancelled) {
           await _discard(res);
           break;
@@ -110,10 +153,30 @@ Stream<SseMessage> reconnectingSse(
         } else {
           final done = ended = Completer<void>();
           void finish([Object? _]) {
+            idle?.cancel();
             if (!done.isCompleted) done.complete();
           }
 
-          current = decodeSse(res, lastEventId: lastId).listen(
+          void silent() {
+            final sub = current;
+            current = null;
+            // Cancelling closes the connection.
+            unawaited(sub?.cancel());
+            finish();
+          }
+
+          void rearm() {
+            idle?.cancel();
+            idle = Timer(idleTimeout, silent);
+          }
+
+          arm = rearm;
+          rearm();
+          final bytes = res.map((chunk) {
+            rearm();
+            return chunk;
+          });
+          current = decodeSse(bytes, lastEventId: lastId).listen(
             (m) {
               delivered = true;
               lastId = m.id;
@@ -124,11 +187,12 @@ Stream<SseMessage> reconnectingSse(
             cancelOnError: true,
           );
           await done.future;
+          arm = null;
           current = null;
           ended = null;
         }
       } on Object catch (_) {
-        // A refused or dropped connection: retried below.
+        // A refused, silent or dropped connection: retried below.
       }
       if (cancelled) break;
       if (delivered) backoff = first;
@@ -141,10 +205,19 @@ Stream<SseMessage> reconnectingSse(
 
   out = StreamController<SseMessage>(
     onListen: () => unawaited(run()),
-    onPause: () => current?.pause(),
-    onResume: () => current?.resume(),
+    onPause: () {
+      // A paused listener stops reading; that is not the server's silence.
+      idle?.cancel();
+      current?.pause();
+    },
+    onResume: () {
+      current?.resume();
+      arm?.call();
+    },
     onCancel: () async {
       cancelled = true;
+      idle?.cancel();
+      pendingAbort?.abort();
       final sub = current;
       current = null;
       // Cancelling the response's subscription closes its connection.

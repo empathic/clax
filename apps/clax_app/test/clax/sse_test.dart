@@ -292,5 +292,101 @@ void main() {
         await raw.close();
       },
     );
+
+    test('an answer that does not come within the connect deadline is abandoned and retried', () async {
+      final raw = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final firstClosed = Completer<void>();
+      var connections = 0;
+      raw.listen((sock) {
+        final n = ++connections;
+        sock.listen(
+          (_) {},
+          onDone: () {
+            if (n == 1 && !firstClosed.isCompleted) firstClosed.complete();
+            sock.destroy();
+          },
+          onError: (Object _) {},
+        );
+        // The first connection never answers.
+        if (n > 1) {
+          sock.write(
+            'HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n'
+            'id: aa-1\nevent: ready\ndata: {}\n\n',
+          );
+        }
+      });
+      final quick = HttpClaxApi(
+        () => DaemonEndpoint(
+          base: Uri.parse('http://127.0.0.1:${raw.port}'),
+          token: 'tok',
+          pid: 1,
+          port: raw.port,
+        ),
+        eventRetryDelay: (d) async => delays.add(d),
+        eventConnectTimeout: const Duration(milliseconds: 50),
+      );
+      final e = await quick.events().first;
+      expect(e.type, 'ready');
+      await firstClosed.future;
+      expect(connections, 2);
+      expect(delays, [const Duration(milliseconds: 500)]);
+      quick.close();
+      await raw.close();
+    });
+
+    test('a connection silent past the idle deadline is replaced, resuming from its last ID', () async {
+      final raw = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final requests = <String>[];
+      raw.listen((sock) {
+        final n = requests.length;
+        requests.add('');
+        var answered = false;
+        sock.listen(
+          (data) {
+            requests[n] += utf8.decode(data);
+            // Answer once the request's headers are in, then stay silent
+            // with the socket left open.
+            if (!answered && requests[n].contains('\r\n\r\n')) {
+              answered = true;
+              sock.write(
+                'HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n'
+                '${n == 0 ? 'id: aa-1\nevent: ready\ndata: {}\n\n' : 'id: aa-2\nevent: version\ndata: {}\n\n'}',
+              );
+            }
+          },
+          onDone: sock.destroy,
+          onError: (Object _) {},
+        );
+      });
+      final quick = HttpClaxApi(
+        () => DaemonEndpoint(
+          base: Uri.parse('http://127.0.0.1:${raw.port}'),
+          token: 'tok',
+          pid: 1,
+          port: raw.port,
+        ),
+        eventRetryDelay: (d) async => delays.add(d),
+        eventIdleTimeout: const Duration(milliseconds: 50),
+      );
+      final got = await quick.events().take(2).toList();
+      expect(got.map((e) => e.id), ['aa-1', 'aa-2']);
+      expect(requests, hasLength(2));
+      expect(requests[1].toLowerCase(), contains('last-event-id: aa-1'));
+      expect(delays, [const Duration(milliseconds: 500)]);
+      quick.close();
+      await raw.close();
+    });
+
+    test('the default deadlines allow for the daemon keep-alive', () {
+      expect(
+        HttpClaxApi.defaultEventConnectTimeout,
+        const Duration(seconds: 10),
+      );
+      expect(
+        HttpClaxApi.defaultEventIdleTimeout,
+        const Duration(seconds: 45),
+        reason: 'three 15 s keep-alives',
+      );
+    });
   });
 }

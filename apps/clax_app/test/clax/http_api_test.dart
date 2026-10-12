@@ -266,6 +266,21 @@ void main() {
     });
 
     test(
+      'clip answers null for any 404, since the daemon names no cause',
+      () async {
+        server.json(
+          'GET',
+          '/api/artifacts/zzzzzzzzzzzz/threads/$tid/clip',
+          404,
+          {
+            'error': {'code': 'not_found', 'message': 'not found'},
+          },
+        );
+        expect(await api.clip('zzzzzzzzzzzz', tid), isNull);
+      },
+    );
+
+    test(
       'threads pages through every thread, resolved ones included',
       () async {
         server.json('GET', '/api/artifacts/$aid/threads', 200, {
@@ -398,6 +413,7 @@ void main() {
     test(
       'a stale publish is a conflict carrying the current version',
       () async {
+        api.sessionId = sid;
         server.json('POST', '/api/artifacts/$aid/versions', 409, {
           'error': {
             'code': 'conflict',
@@ -660,6 +676,19 @@ void main() {
         await expectLater(api.replyAsAgent(aid, tid, 'x'), throwsStateError);
         await expectLater(api.resolveAsAgent(aid, tid), throwsStateError);
         await expectLater(api.setWorking(aid, on: true), throwsStateError);
+        await expectLater(
+          api.createArtifact(
+            PublishRequest(title: 'T', files: {'index.html': 'x'}),
+          ),
+          throwsStateError,
+        );
+        await expectLater(
+          api.publish(
+            aid,
+            PublishRequest(ifVersion: 1, files: {'index.html': 'x'}),
+          ),
+          throwsStateError,
+        );
         expect(server.requests, isEmpty);
       },
     );
@@ -696,6 +725,21 @@ void main() {
         expect(only('DELETE', '/api/sessions/$sid/working/$aid').body, isEmpty);
       },
     );
+
+    test('setWorking on an unknown artifact stays not_found', () async {
+      api.sessionId = sid;
+      server.json('PUT', '/api/sessions/$sid/working/gonegonegone', 404, {
+        'error': {'code': 'not_found', 'message': 'not found'},
+      });
+      await expectLater(
+        api.setWorking('gonegonegone', on: true),
+        throwsA(
+          isA<ClaxApiError>()
+              .having((e) => e.code, 'code', 'not_found')
+              .having((e) => e.isUnknownSession, 'unknown', isFalse),
+        ),
+      );
+    });
   });
 
   group('documents', () {
@@ -816,6 +860,16 @@ void main() {
         },
       });
       expect(await api.getDoc(aid, 'runs/none'), isNull);
+    });
+
+    test('getDoc on an unknown artifact is not_found, not null', () async {
+      server.json('GET', '/api/artifacts/gonegonegone/docs/runs/r1', 404, {
+        'error': {'code': 'not_found', 'message': 'not found'},
+      });
+      await expectLater(
+        api.getDoc('gonegonegone', 'runs/r1'),
+        throwsA(isA<ClaxApiError>().having((e) => e.code, 'code', 'not_found')),
+      );
     });
   });
 

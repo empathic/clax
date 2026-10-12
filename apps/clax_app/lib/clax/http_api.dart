@@ -22,6 +22,8 @@ class HttpClaxApi implements ClaxApi {
     this.publishTimeout = const Duration(seconds: 125),
     this.pollSlack = defaultPollSlack,
     this.eventRetryDelay,
+    this.eventConnectTimeout = defaultEventConnectTimeout,
+    this.eventIdleTimeout = defaultEventIdleTimeout,
   }) : _client = client ?? HttpClient();
 
   final DaemonEndpoint Function() endpoint;
@@ -38,6 +40,16 @@ class HttpClaxApi implements ClaxApi {
   /// The wait before an event stream reconnects; [reconnectingSse]'s own
   /// backoff when null.
   final Future<void> Function(Duration)? eventRetryDelay;
+
+  /// How long an event stream waits for the daemon's answer before it
+  /// aborts the request and reconnects.
+  final Duration eventConnectTimeout;
+  static const defaultEventConnectTimeout = Duration(seconds: 10);
+
+  /// How long an event stream may go without a byte before it reconnects:
+  /// three of the daemon's 15 s keep-alives.
+  final Duration eventIdleTimeout;
+  static const defaultEventIdleTimeout = Duration(seconds: 45);
 
   /// The app session agent calls name in `X-Clax-Session`.
   String? sessionId;
@@ -94,6 +106,7 @@ class HttpClaxApi implements ClaxApi {
 
   @override
   Future<PublishResult> createArtifact(PublishRequest r) async {
+    _needSession();
     final j = await _json(
       'POST',
       '/api/artifacts',
@@ -109,6 +122,7 @@ class HttpClaxApi implements ClaxApi {
     if (r.ifVersion == null) {
       throw ArgumentError.value(r, 'r', 'a publish needs ifVersion');
     }
+    _needSession();
     final j = await _json(
       'POST',
       '/api/artifacts/${_seg(aid)}/versions',
@@ -216,15 +230,17 @@ class HttpClaxApi implements ClaxApi {
   }) async {
     final sid = _needSession();
     final path = '/api/sessions/${_seg(sid)}/working/${_seg(aid)}';
-    await _sessionCall(
-      () => on
-          ? _json(
-              'PUT',
-              path,
-              body: {'message': ?note, 'thread_ids': ?threadIds},
-            )
-          : _json('DELETE', path),
-    );
+    // Not a _sessionCall: this route's 404 may name the artifact, so it
+    // stays not_found; an ended session is unknown_session already.
+    if (on) {
+      await _json(
+        'PUT',
+        path,
+        body: {'message': ?note, 'thread_ids': ?threadIds},
+      );
+    } else {
+      await _json('DELETE', path);
+    }
   }
 
   @override
@@ -233,6 +249,8 @@ class HttpClaxApi implements ClaxApi {
       'GET',
       '/api/artifacts/${_seg(aid)}/threads/${_seg(tid)}/clip',
     );
+    // The daemon answers 404 alike for no clip, an unknown thread and an
+    // unknown artifact, so each is null.
     if (r.status == 404) return null;
     _check(r);
     return r.body;
@@ -289,7 +307,16 @@ class HttpClaxApi implements ClaxApi {
       'GET',
       '/api/artifacts/${_seg(aid)}/docs/${_path(path)}',
     );
-    if (r.status == 404) return null;
+    // A missing document's 404 names its `path`; an unknown artifact's
+    // does not, and is thrown.
+    if (r.status == 404) {
+      try {
+        _check(r);
+      } on ClaxApiError catch (e) {
+        if (e.body['path'] != null) return null;
+        rethrow;
+      }
+    }
     final j = _ok(r);
     return _parse(() => Doc.fromJson((j['doc'] as Map).cast()));
   }
@@ -341,9 +368,10 @@ class HttpClaxApi implements ClaxApi {
         'artifact': artifacts.join(','),
       if (types != null && types.isNotEmpty) 'types': types.join(','),
     };
-    Future<HttpClientResponse> open(String? lastId) async {
+    Future<HttpClientResponse> open(String? lastId, SseAborter abort) async {
       final ep = endpoint();
       final req = await _client.openUrl('GET', _uri(ep, '/api/events', query));
+      abort.onAbort = req.abort;
       req.headers
         ..set(HttpHeaders.authorizationHeader, 'Bearer ${ep.token}')
         ..set(HttpHeaders.acceptHeader, 'text/event-stream');
@@ -353,8 +381,17 @@ class HttpClaxApi implements ClaxApi {
 
     final retry = eventRetryDelay;
     final messages = retry == null
-        ? reconnectingSse(open)
-        : reconnectingSse(open, delay: retry);
+        ? reconnectingSse(
+            open,
+            connectTimeout: eventConnectTimeout,
+            idleTimeout: eventIdleTimeout,
+          )
+        : reconnectingSse(
+            open,
+            delay: retry,
+            connectTimeout: eventConnectTimeout,
+            idleTimeout: eventIdleTimeout,
+          );
     return messages.map(
       (m) => ClaxEvent(type: m.event, id: m.id, data: _eventData(m.data)),
     );

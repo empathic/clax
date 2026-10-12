@@ -10,6 +10,7 @@ void main() {
       throwsA(isA<ClaxApiError>().having((e) => e.code, 'code', code));
 
   test('publish carries files forward, removes nulls, and refuses a stale ifVersion', () async {
+    await api.registerAppSession(installId: 'i', pid: 1);
     final aid = api.seedArtifact('Runs', {
       'index.html': '<p>1</p>',
       'app.js': 'x()',
@@ -156,13 +157,70 @@ void main() {
     expect((await api.getArtifact(aid)).artifact.id, aid);
   });
 
-  test('version events reach listeners whose filters keep them', () async {
+  test(
+    'events open with ready, then version events their filters keep',
+    () async {
+      await api.registerAppSession(installId: 'i', pid: 1);
+      final aid = api.seedArtifact('Runs', {'index.html': 'x'});
+      final other = api.seedArtifact('Other', {'index.html': 'x'});
+      final got = api
+          .events(artifacts: [aid], types: ['version'])
+          .take(2)
+          .toList();
+      await api.publish(
+        other,
+        PublishRequest(ifVersion: 1, files: {'index.html': 'y'}),
+      );
+      await api.publish(
+        aid,
+        PublishRequest(ifVersion: 1, files: {'index.html': 'y'}),
+      );
+      final es = await got;
+      expect(es[0].type, 'ready');
+      expect(es[0].data, {'resumed': false});
+      expect(es[1].type, 'version');
+      expect(es[1].data, {
+        'type': 'version',
+        'artifact_id': aid,
+        'n': 2,
+        'by_page': false,
+        'title': 'Runs',
+      });
+    },
+  );
+
+  test('create and publish need a live session', () async {
     final aid = api.seedArtifact('Runs', {'index.html': 'x'});
-    final got = api.events(artifacts: [aid], types: ['version']).first;
-    await api.publish(
-      aid,
-      PublishRequest(ifVersion: 1, files: {'index.html': 'y'}),
+    final create = PublishRequest(title: 'T', files: {'index.html': 'x'});
+    final change = PublishRequest(ifVersion: 1, files: {'index.html': 'y'});
+    await expectLater(api.createArtifact(create), throwsStateError);
+    await expectLater(api.publish(aid, change), throwsStateError);
+    await api.registerAppSession(installId: 'i', pid: 1);
+    api.endSession('i');
+    await expectLater(api.createArtifact(create), apiError('unknown_session'));
+    await expectLater(api.publish(aid, change), apiError('unknown_session'));
+    expect(api.currentVersion(aid), 1);
+  });
+
+  test(
+    'getDoc and clip on an unknown artifact answer as the daemon does',
+    () async {
+      await expectLater(
+        api.getDoc('gonegonegone', 'runs/r1'),
+        apiError('not_found'),
+      );
+      expect(await api.clip('gonegonegone', 'thread-1'), isNull);
+      final aid = api.seedArtifact('Runs', {'index.html': 'x'});
+      expect(await api.getDoc(aid, 'runs/none'), isNull);
+      expect(await api.clip(aid, 'no-such-thread'), isNull);
+    },
+  );
+
+  test('setWorking on an unknown artifact is not_found', () async {
+    await api.registerAppSession(installId: 'i', pid: 1);
+    await expectLater(
+      api.setWorking('gonegonegone', on: true),
+      apiError('not_found'),
     );
-    expect((await got).data, {'artifact_id': aid, 'n': 2});
   });
 }
