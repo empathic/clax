@@ -171,6 +171,8 @@ fn topics(names: &[String]) -> Result<Vec<Topic>, ApiError> {
 /// `forbidden` otherwise, and the whole change is refused),
 /// and a `docs` topic needs the artifact to declare `db` unless the caller holds
 /// the token, in `Authorization` or as the events cookie (403 `not_declared`).
+/// Every topic of a draft needs the token or the events cookie (404
+/// otherwise): its events are the owner's alone.
 /// A `docs:<B>?reader=<A>` topic needs A to exist and to be allowed to read
 /// B now, whatever the caller ([`crate::db_caller::reader_caller`]: 403
 /// `not_granted` or `not_declared`); each of its events is checked again as
@@ -257,6 +259,11 @@ pub async fn update(
                 let Some(aid) = t.artifact() else { continue };
                 let aid = parse_id(aid).map_err(|_| CoreError::NotFound)?;
                 st.get_artifact(&aid)?.ok_or(CoreError::NotFound)?;
+                // A draft's topics are the owner's alone (spec
+                // 2026-10-12-flutter-app-round2-design §5.1).
+                if !token && st.is_hidden(aid.as_str()) {
+                    return Err(CoreError::NotFound);
+                }
                 if matches!(t, Topic::Docs(_)) && !token && !st.doc_declared(&aid)? {
                     return Err(CoreError::NotDeclared { capability: "db" });
                 }

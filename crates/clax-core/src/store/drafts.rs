@@ -28,6 +28,10 @@ pub const DRAFT_DOCS_MAX: usize = 2000;
 pub const DRAFT_DOCS_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// How old a draft gets before the daemon's sweep deletes it.
 pub const DRAFT_MAX_AGE: Duration = Duration::from_secs(3600);
+/// The directory, under the home's root, where a deleted draft's files wait
+/// to be removed: [`Store::delete_draft`] moves them there before it
+/// deletes the rows, and every delete and sweep empties it.
+pub const DRAFT_TRASH: &str = "draft-trash";
 
 /// A draft as `GET /api/drafts` lists it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -105,9 +109,18 @@ pub(crate) fn draft_of_in(c: &Connection, id: &str) -> Result<Option<String>> {
 /// Copies `of`'s documents that the owner reads (private per-viewer
 /// subtrees left out) into `draft`, in path order, each at version 1, until
 /// [`DRAFT_DOCS_MAX`] documents or [`DRAFT_DOCS_MAX_BYTES`] of JSON;
-/// returns how many it copied and whether any were left.
+/// returns how many it copied and whether any were left. When `of`'s rules
+/// do not parse, it copies nothing and says documents were left (when the
+/// app has any).
 fn copy_docs(c: &Connection, of: &ArtifactId, draft: &ArtifactId) -> Result<(usize, bool)> {
-    let rules = Rules::from_capabilities(&caps_in(c, of)?).unwrap_or_default();
+    let Ok(rules) = Rules::from_capabilities(&caps_in(c, of)?) else {
+        let any: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM docs WHERE artifact_id = ?1)",
+            params![of.as_str()],
+            |r| r.get(0),
+        )?;
+        return Ok((0, any));
+    };
     let owner = Caller {
         level: Level::Owner,
         viewer: None,
@@ -259,13 +272,30 @@ impl Store {
     }
 
     /// Deletes the draft `id` for good: its row, versions, assets,
-    /// documents and leases, then its directory. Recorded as
+    /// documents and leases, and its directory. Recorded as
     /// `artifact.delete` under `ctx`. `false` when `id` is no draft (an
     /// ordinary artifact is left alone).
     ///
+    /// The directory moves to [`DRAFT_TRASH`] first, so a delete that fails
+    /// keeps its files with its rows (they move back), and files that
+    /// cannot be removed after the rows are gone wait there for the next
+    /// delete or sweep ([`Store::empty_draft_trash`]).
+    ///
     /// # Errors
-    /// Database errors, and I/O errors other than a missing directory.
+    /// Database errors, and I/O errors moving the directory.
     pub fn delete_draft(&self, ctx: &AuditCtx, id: &ArtifactId) -> Result<bool> {
+        if !self.with_read(|c| is_hidden_in(c, id.as_str()))? {
+            return Ok(false);
+        }
+        let dir = self.home.artifact_dir(id);
+        let trash = self.home.root().join(DRAFT_TRASH);
+        std::fs::create_dir_all(&trash)?;
+        let held = trash.join(format!("{}-{}", id.as_str(), crate::new_ulid()));
+        let moved = match std::fs::rename(&dir, &held) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(e.into()),
+        };
         let gone = self.with_tx(|tx| {
             let Some((title, current)) = tx
                 .query_row(
@@ -298,23 +328,50 @@ impl Store {
                 )?;
             }
             Ok(true)
-        })?;
-        if !gone {
-            return Ok(false);
+        });
+        if !matches!(gone, Ok(true)) && moved {
+            // The rows stay (or were never a draft's): so do the files.
+            if let Err(e) = std::fs::rename(&held, &dir) {
+                tracing::warn!(draft = id.as_str(), error = %e, "could not move a draft's files back");
+            }
         }
-        match std::fs::remove_dir_all(self.home.artifact_dir(id)) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
+        if gone? {
+            self.empty_draft_trash();
+            Ok(true)
+        } else {
+            Ok(false)
         }
-        Ok(true)
+    }
+
+    /// Removes what [`DRAFT_TRASH`] holds; what cannot be removed is logged
+    /// and stays for the next call.
+    pub fn empty_draft_trash(&self) {
+        let trash = self.home.root().join(DRAFT_TRASH);
+        let entries = match super::assets::read_dir_or_empty(&trash) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read the draft trash");
+                return;
+            }
+        };
+        for entry in entries {
+            let removed = if entry.is_dir() {
+                std::fs::remove_dir_all(&entry)
+            } else {
+                std::fs::remove_file(&entry)
+            };
+            if let Err(e) = removed {
+                tracing::warn!(path = %entry.display(), error = %e, "could not remove a deleted draft's files");
+            }
+        }
     }
 
     /// Deletes ([`Store::delete_draft`]) every draft created before `now -
-    /// max_age`; the IDs it deleted.
+    /// max_age`, going on past one that fails (logged, retried next sweep),
+    /// then empties [`DRAFT_TRASH`]; the IDs it deleted.
     ///
     /// # Errors
-    /// As [`Store::delete_draft`]; drafts deleted before an error stay deleted.
+    /// Listing the drafts.
     pub fn sweep_drafts(
         &self,
         ctx: &AuditCtx,
@@ -334,10 +391,13 @@ impl Store {
             .collect();
         let mut gone = Vec::with_capacity(old.len());
         for id in old {
-            if self.delete_draft(ctx, &ArtifactId::parse(&id)?)? {
-                gone.push(id);
+            match ArtifactId::parse(&id).and_then(|aid| self.delete_draft(ctx, &aid)) {
+                Ok(true) => gone.push(id),
+                Ok(false) => {}
+                Err(e) => tracing::warn!(draft = id, error = %e, "could not delete an old draft"),
             }
         }
+        self.empty_draft_trash();
         Ok(gone)
     }
 }
@@ -578,6 +638,124 @@ mod tests {
             .map(|d| d.id)
             .collect();
         assert_eq!(left, vec![new.artifact.id]);
+    }
+
+    #[test]
+    fn the_copy_takes_nothing_when_the_apps_rules_do_not_parse() {
+        let (_d, st) = store();
+        let app = artifact_with_caps(&st, json!({"db": {}}));
+        set(&st, &app, "notes/n1", json!({}), &OWNER);
+        // A declaration stored before validation knew it, straight to the column.
+        st.with_tx(|tx| {
+            tx.execute(
+                "UPDATE artifacts SET capabilities_json = ?2 WHERE id = ?1",
+                params![
+                    app.as_str(),
+                    json!({"db": {"rules": "everyone"}}).to_string()
+                ],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let d = st
+            .create_draft(
+                DAEMON,
+                Some(&app),
+                publish("Draft", Some(json!({"db": {}}))),
+            )
+            .unwrap();
+        assert_eq!((d.docs_copied, d.docs_truncated), (0, true));
+    }
+
+    #[test]
+    fn the_sweep_goes_on_past_a_draft_it_cannot_delete() {
+        let (_d, st) = store();
+        let stuck = st
+            .create_draft(DAEMON, None, publish("Stuck", None))
+            .unwrap();
+        let old = st.create_draft(DAEMON, None, publish("Old", None)).unwrap();
+        st.with_tx(|tx| {
+            tx.execute(
+                "UPDATE artifacts SET created_at = '2026-10-12T09:00:00.000Z' WHERE id IN (?1, ?2)",
+                params![stuck.artifact.id, old.artifact.id],
+            )?;
+            // A row whose foreign key holds the draft's row.
+            tx.execute(
+                "INSERT INTO threads (id, artifact_id, version_n, anchor_json, created_at)
+                 VALUES ('t_stuck', ?1, 1, '{}', 'x')",
+                params![stuck.artifact.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let sid = ArtifactId::parse(&stuck.artifact.id).unwrap();
+        assert!(st.delete_draft(DAEMON, &sid).is_err());
+        assert!(
+            st.home().artifact_dir(&sid).exists(),
+            "a delete that fails keeps the files with the row"
+        );
+        let at = chrono::DateTime::parse_from_rfc3339("2026-10-12T11:00:00Z")
+            .unwrap()
+            .to_utc();
+        assert_eq!(
+            st.sweep_drafts(DAEMON, at, DRAFT_MAX_AGE).unwrap(),
+            vec![old.artifact.id.clone()]
+        );
+        let left: Vec<String> = st
+            .list_drafts()
+            .unwrap()
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
+        assert_eq!(left, vec![stuck.artifact.id]);
+    }
+
+    #[test]
+    fn files_a_delete_could_not_remove_go_on_the_next_sweep() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_d, st) = store();
+        let d = st
+            .create_draft(DAEMON, None, publish("Draft", None))
+            .unwrap();
+        let did = ArtifactId::parse(&d.artifact.id).unwrap();
+        let locked = st.home().artifact_dir(&did).join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::write(locked.join("f"), b"x").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+        assert!(st.delete_draft(DAEMON, &did).unwrap());
+        assert!(
+            !st.home().artifact_dir(&did).exists(),
+            "the files leave at once"
+        );
+        let trash = st.home().root().join(DRAFT_TRASH);
+        let held: Vec<_> = std::fs::read_dir(&trash).unwrap().collect();
+        assert_eq!(
+            held.len(),
+            1,
+            "what could not be removed waits in the trash"
+        );
+        for e in walk(&trash) {
+            std::fs::set_permissions(&e, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let at = chrono::Utc::now();
+        assert!(
+            st.sweep_drafts(DAEMON, at, DRAFT_MAX_AGE)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(std::fs::read_dir(&trash).unwrap().count(), 0);
+    }
+
+    /// Every directory under `dir`, `dir` included.
+    fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut out = vec![dir.to_path_buf()];
+        for e in std::fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                out.extend(walk(&p));
+            }
+        }
+        out
     }
 
     #[test]

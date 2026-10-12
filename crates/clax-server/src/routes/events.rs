@@ -106,8 +106,8 @@ fn list(v: Option<String>) -> Option<BTreeSet<String>> {
 /// `Authorization`, `?token=` or the events cookie, and the viewer cookie)
 /// are fixed when the stream opens. A stream opened by a request that may
 /// not see live pages ([`crate::live::sees_live_pages`]) carries no event
-/// of a live page, and a stream without `?artifact=` no event of a draft
-/// (spec 2026-10-12-flutter-app-round2-design §5.1).
+/// of a live page, and a stream without the token or without `?artifact=`
+/// no event of a draft (spec 2026-10-12-flutter-app-round2-design §5.1).
 ///
 /// Every event, `ready` included, carries an SSE `id` (`<epoch>-<n>`). A
 /// client reconnecting with that ID (the `Last-Event-ID` header, or
@@ -148,6 +148,7 @@ pub async fn events(
     let hidden = (!crate::live::sees_live_pages(&headers, &extensions, &s.token))
         .then(|| s.live_ids.clone());
     let who = who.or_events_cookie();
+    let token = who.has_token();
     // Resolved when the stream opens: a name set later takes effect on reconnect.
     let me = s
         .store_call(move |st| who.resolve(st))
@@ -201,8 +202,8 @@ pub async fn events(
         {
             return false;
         }
-        // A draft's events reach only a stream that names it.
-        if filter.is_none() && store.is_hidden(ev.artifact_id()) {
+        // A draft's events reach only a stream that names it and holds the token.
+        if (filter.is_none() || !token) && store.is_hidden(ev.artifact_id()) {
             return false;
         }
         if let Some(t) = &types
