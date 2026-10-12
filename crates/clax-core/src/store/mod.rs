@@ -55,6 +55,7 @@ pub mod batches;
 pub mod changelog;
 pub mod docs;
 pub mod elevations;
+pub mod drafts;
 pub mod exec;
 pub mod extension;
 pub mod feedback;
@@ -129,6 +130,8 @@ pub struct Store {
     /// daemon's last resume after its machine slept ([`Store::mark_resumed`]).
     /// A remote session's idle time counts from no earlier than this.
     resumed_at: Mutex<String>,
+    /// The hidden artifacts (drafts), for event routing.
+    hidden: drafts::HiddenIds,
 }
 
 /// `t` as the store writes times: RFC 3339 in UTC, to the millisecond.
@@ -182,6 +185,7 @@ impl Store {
         migrate(&mut conn)?;
         backfill::run(&mut conn, home, report)?;
         approvals::record_migration_approval(&mut conn)?;
+        let hidden = drafts::HiddenIds::load(&conn)?;
         conn.execute_batch(&format!(
             "PRAGMA analysis_limit={ANALYSIS_LIMIT}; PRAGMA optimize=0x10002;"
         ))?;
@@ -227,6 +231,7 @@ impl Store {
             agents_listener: RwLock::new(None),
             resumed_at: Mutex::new(stamp(clock.now())),
             clock,
+            hidden,
         })
     }
 

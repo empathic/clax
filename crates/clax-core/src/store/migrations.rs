@@ -775,6 +775,13 @@ pub const MIGRATIONS: &[&str] = &[
     BEGIN
         DELETE FROM db_read_grants WHERE reader_id = NEW.id OR source_id = NEW.id;
     END;",
+    // 25: draft artifacts (spec 2026-10-12-flutter-app-round2-design §5.1):
+    // an agent's work in progress, rendered but never listed. `hidden` keeps
+    // a row out of every listing; `draft_of` names the app a draft changes
+    // (NULL for a new app's draft), whose grants its reads use.
+    "ALTER TABLE artifacts ADD COLUMN draft_of TEXT;
+    ALTER TABLE artifacts ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
+    CREATE INDEX artifacts_hidden ON artifacts(hidden, created_at) WHERE hidden = 1;",
 ];
 
 /// The audit journal's migration, as a schema version (the
@@ -1516,6 +1523,40 @@ mod tests {
             }
             open_concurrently(&home, 6);
         }
+    }
+
+    /// Migration 25 adds the draft columns: every artifact it finds stays
+    /// listed (`hidden = 0`) and is a draft of nothing.
+    #[test]
+    fn migration_25_keeps_every_artifact_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            for sql in &MIGRATIONS[..24] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.pragma_update(None, "user_version", 24).unwrap();
+            c.execute_batch(
+                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+                    VALUES ('7q3k9mzx2b4t', 't', 'x', 'x', 1, '0');",
+            )
+            .unwrap();
+        }
+        let st = Store::open(&home).unwrap();
+        let row: (i64, Option<String>) = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT hidden, draft_of FROM artifacts WHERE id = '7q3k9mzx2b4t'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(row, (0, None));
+        assert!(!st.is_hidden("7q3k9mzx2b4t"));
+        assert_eq!(st.list_artifacts().unwrap().len(), 1);
     }
 
     #[test]

@@ -4,6 +4,7 @@ pub mod assets;
 pub mod connect;
 pub mod content;
 pub mod docs;
+pub mod drafts;
 pub mod events;
 pub mod extension;
 pub mod feedback;
@@ -262,6 +263,8 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             "/api/artifacts/{aid}/docs:collections",
             get(docs::collections),
         )
+        .route("/api/drafts", get(drafts::list))
+        .route("/api/drafts/{id}", delete(drafts::delete))
         .route("/api/artifacts/{aid}/db-grants", get(docs::grants))
         .route(
             "/api/artifacts/{aid}/db-grants/{source}",
@@ -375,6 +378,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             "/api/artifacts/{aid}/versions",
             post(artifacts::publish.layer(publish_limit)),
         )
+        .route("/api/drafts", post(drafts::create.layer(publish_limit)))
         .route(
             "/api/artifacts/{aid}/versions:restore",
             post(artifacts::restore),
@@ -638,6 +642,9 @@ mod l10 {
         ("sessions::join", AgentPath),
         ("sessions::get", AgentPath),
         ("sessions::patch", AgentPath),
+        ("drafts::create", Token),
+        ("drafts::list", Token),
+        ("drafts::delete", Token),
         ("sessions::push_status", NoArtifact),
         ("sessions::tool_call_ids", NoArtifact),
         ("sample::daemon", Token),
@@ -773,6 +780,7 @@ mod l10 {
             "grants" => include_str!("grants.rs"),
             "content" => include_str!("content.rs"),
             "docs" => include_str!("docs.rs"),
+            "drafts" => include_str!("drafts.rs"),
             "events" => include_str!("events.rs"),
             "extension" => include_str!("extension.rs"),
             "feedback" => include_str!("feedback.rs"),

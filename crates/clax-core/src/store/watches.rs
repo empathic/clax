@@ -40,6 +40,9 @@ fn check(c: &Connection, session_id: &str, id: &ArtifactId) -> Result<()> {
     if !artifact_live(c, id.as_str())? {
         return Err(CoreError::NotFound);
     }
+    if super::drafts::is_hidden_in(c, id.as_str())? {
+        return Err(CoreError::invalid("draft", "a draft takes no watch"));
+    }
     Ok(())
 }
 
@@ -265,7 +268,7 @@ impl Store {
     ///
     /// # Errors
     /// `unknown_session` for a missing or ended session; `NotFound` for a
-    /// missing or deleted artifact.
+    /// missing or deleted artifact; `draft` (403) for a draft.
     pub fn watch(
         &self,
         ctx: &AuditCtx,

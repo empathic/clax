@@ -278,6 +278,8 @@ impl TestServer {
             state.stream.check_reads(move |reader, source| {
                 crate::db_caller::reads_now(&store, reader, source)
             });
+            let store = state.store.clone();
+            state.stream.hide(move |aid| store.is_hidden(aid));
         }
         crate::inbox::listen(&state);
         crate::approvals::listen(&state);

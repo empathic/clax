@@ -586,6 +586,8 @@ pub(crate) fn announce_new_thread(
 /// 409 `merged_away` for a live page a join merged into another (spec
 /// §7.2): its threads are the other page's now, so a new one goes there.
 /// The error names it: `merged_into` (its artifact ID) and `page_url`.
+/// 403 `draft` for a draft (spec 2026-10-12-flutter-app-round2-design
+/// §5.1), which takes no threads.
 async fn refuse_merged_away(s: &AppState, aid: &str) -> Result<(), ApiError> {
     let a = aid.to_string();
     let into: Option<(String, Option<String>)> = s
@@ -627,6 +629,9 @@ pub async fn create(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let id = parse_id(&path(aid)?)?;
     refuse_merged_away(&s, id.as_str()).await?;
+    if s.store.is_hidden(id.as_str()) {
+        return Err(crate::routes::drafts::refused("threads"));
+    }
     let mut mp = mp.map_err(|e| multipart_error(e.status(), e.body_text()))?;
     let (mut anchor, mut text, mut version, mut clip) = (None, None, None, None);
     let mut via_page = false;

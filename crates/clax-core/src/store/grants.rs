@@ -146,10 +146,20 @@ impl Store {
     /// `reader == source` is `NotDeclared`, since a declaration cannot name
     /// its own artifact.
     ///
+    /// A draft of an app (spec 2026-10-12-flutter-app-round2-design §5.1)
+    /// reads as that app: its app's declaration and grants decide, so a
+    /// render reads what the app may read and asks no consent.
+    ///
     /// # Errors
-    /// `NotFound` when either artifact is missing or deleted.
+    /// `NotFound` when either artifact (or a draft's app) is missing or
+    /// deleted.
     pub fn may_read(&self, reader: &ArtifactId, source: &ArtifactId) -> Result<ReadAccess> {
         self.with_read(|c| {
+            caps_in(c, reader)?;
+            let app = super::drafts::draft_of_in(c, reader.as_str())?
+                .map(|of| ArtifactId::parse(&of))
+                .transpose()?;
+            let reader = app.as_ref().unwrap_or(reader);
             let reader_caps = caps_in(c, reader)?;
             let source_caps = caps_in(c, source)?;
             let declared = ReadDecl::from_capabilities(&reader_caps, reader.as_str())

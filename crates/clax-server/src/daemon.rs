@@ -16,6 +16,9 @@ pub const PORT_ATTEMPTS: u16 = 21;
 /// A session unseen for this long, with no live process, is ended by the reaper.
 const SESSION_IDLE: Duration = Duration::from_secs(Store::SESSION_IDLE_SECS);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+/// How often the daemon deletes drafts older than
+/// [`clax_core::store::drafts::DRAFT_MAX_AGE`] (and once at start).
+const DRAFT_SWEEP_INTERVAL: Duration = Duration::from_secs(3600);
 /// How long shutdown waits for the journal appender to close its segment.
 /// The appender stops as shutdown begins, beside the connection drain
 /// ([`DRAIN_TIMEOUT`]), and catches up for at most 0.5 s; a wedged one is
@@ -626,6 +629,8 @@ pub async fn serve(
         state
             .stream
             .check_reads(move |reader, source| crate::db_caller::reads_now(&store, reader, source));
+        let store = state.store.clone();
+        state.stream.hide(move |aid| store.is_hidden(aid));
     }
     crate::inbox::listen(&state);
     crate::approvals::listen(&state);
@@ -638,6 +643,7 @@ pub async fn serve(
     let (state_working, state_events) = (state.working.clone(), state.events.clone());
     let state_presence = state.presence.clone();
     let state_stream = state.stream.clone();
+    let (drafts_store, drafts_cache) = (state.store.clone(), state.wrap_cache.clone());
     let app = crate::build_router_with_shutdown(state, shutdown_tx.clone());
     if let Some(tx) = ready {
         let _ = tx.send(info.clone());
@@ -730,6 +736,24 @@ pub async fn serve(
         }
     });
 
+    // Drafts (spec 2026-10-12-flutter-app-round2-design §5.1) older than
+    // their age go at start, the first tick, and every interval after.
+    let drafts_sweeper = tokio::spawn(async move {
+        let mut every = tokio::time::interval(DRAFT_SWEEP_INTERVAL);
+        loop {
+            every.tick().await;
+            let cache = drafts_cache.clone();
+            let swept = drafts_store
+                .call(move |st| crate::routes::drafts::sweep(st, &cache, chrono::Utc::now()))
+                .await;
+            match swept {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(count = n, "removed old drafts"),
+                Err(e) => tracing::warn!(error = %e, "draft sweep failed"),
+            }
+        }
+    });
+
     let (sweep_working, sweep_events) = (state_working, state_events);
     let sweeper = tokio::spawn(async move {
         let mut every = tokio::time::interval(crate::working::SWEEP_INTERVAL);
@@ -781,6 +805,7 @@ pub async fn serve(
     grant_sweeper.abort();
     optimizer.abort();
     sweeper.abort();
+    drafts_sweeper.abort();
     // The journal has closed its segment (it began to as shutdown began)
     // before the store stops.
     if let Some(stopped) = journal_stopped {
