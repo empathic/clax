@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:clax_app/agent/backend.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
+import 'package:clax_app/ui/inbox_screen.dart';
 import 'package:clax_app/ui/launcher.dart';
 import 'package:clax_app/ui/making_screen.dart';
 import 'package:clax_app/ui/theme.dart';
@@ -533,6 +534,189 @@ void main() {
       final p = tester.renderObject<RenderParagraph>(find.text(long));
       expect(p.maxLines, 2);
       expect(p.didExceedMaxLines, isTrue);
+    });
+  });
+
+  group('inbox', () {
+    late List<(String, String?, int?)> targets;
+    late List<String> questionsOpened;
+
+    setUp(() {
+      targets = [];
+      questionsOpened = [];
+    });
+
+    Future<void> pumpWithInbox(
+      WidgetTester tester,
+      FakeClaxApi api, {
+      bool targetHook = true,
+      bool questionHook = false,
+    }) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Launcher(
+            api: api,
+            open: opened.add,
+            make: (_, _, _) async => throw StateError('unused'),
+            voice: FakeVoice.unsupported('No speech here'),
+            onOpenTarget: targetHook
+                ? (aid, {thread, version}) =>
+                      targets.add((aid, thread, version))
+                : null,
+            onOpenQuestion: questionHook ? questionsOpened.add : null,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    Badge badge(WidgetTester tester) => tester.widget<Badge>(
+      find.descendant(
+        of: find.byTooltip('Inbox'),
+        matching: find.byType(Badge),
+      ),
+    );
+
+    testWidgets('the inbox button shows the unread count', (tester) async {
+      final api = _api();
+      final aid = api.seedArtifact('Runs', _page);
+      api.pushInbox('reply', artifactId: aid, body: 'one');
+      api.pushInbox('reply', artifactId: aid, body: 'two');
+      await pumpWithInbox(tester, api);
+      expect(badge(tester).isLabelVisible, isTrue);
+      expect(
+        find.descendant(of: find.byType(Badge), matching: find.text('2')),
+        findsOneWidget,
+      );
+      final names = api.callNames;
+      expect(
+        names.indexOf('streamSubscribe'),
+        lessThan(names.indexOf('inboxSummary')),
+        reason: 'subscribed before the count is fetched',
+      );
+    });
+
+    testWidgets('no unread items: no count on the button', (tester) async {
+      await pumpWithInbox(tester, _api());
+      expect(badge(tester).isLabelVisible, isFalse);
+    });
+
+    testWidgets('the count follows inbox events', (tester) async {
+      final api = _api();
+      final aid = api.seedArtifact('Runs', _page);
+      await pumpWithInbox(tester, api);
+      final item = api.pushInbox('reply', artifactId: aid, body: 'one');
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(of: find.byType(Badge), matching: find.text('1')),
+        findsOneWidget,
+      );
+      await api.markInboxRead(item.id);
+      await tester.pumpAndSettle();
+      expect(badge(tester).isLabelVisible, isFalse);
+      api.emitStream(
+        const StreamEvent(
+          topic: 'inbox',
+          type: 'inbox_read',
+          data: {'topic': 'inbox', 'ids': null, 'read': true, 'unread': 7},
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(of: find.byType(Badge), matching: find.text('7')),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a resync refetches the count', (tester) async {
+      final api = _api();
+      await pumpWithInbox(tester, api);
+      final before = api.callNames.where((n) => n == 'inboxSummary').length;
+      api.emitStream(
+        const StreamEvent(
+          topic: 'inbox',
+          type: 'resync',
+          data: {'topic': 'inbox', 'reason': 'reconnect'},
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        api.callNames.where((n) => n == 'inboxSummary').length,
+        before + 1,
+      );
+    });
+
+    testWidgets('the button opens the inbox', (tester) async {
+      await pumpWithInbox(tester, _api());
+      await tester.tap(find.byTooltip('Inbox'));
+      await tester.pumpAndSettle();
+      expect(find.byType(InboxScreen), findsOneWidget);
+    });
+
+    testWidgets(
+      "a reply opens its app at the thread, a version at its number",
+      (tester) async {
+        final api = _api();
+        final aid = api.seedArtifact('Runs', _page);
+        api.pushInbox('reply', artifactId: aid, threadId: 't9', body: 'Fixed');
+        api.pushInbox('version', artifactId: aid, versionN: 4, note: 'Totals');
+        api.pushInbox('published', artifactId: aid);
+        await pumpWithInbox(tester, api);
+        await tester.tap(find.byTooltip('Inbox'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Fixed'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('v4: Totals'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('New app'));
+        await tester.pumpAndSettle();
+        expect(targets, [(aid, 't9', null), (aid, null, 4), (aid, null, null)]);
+      },
+    );
+
+    testWidgets('without a target hook an item opens its app', (tester) async {
+      final api = _api();
+      final aid = api.seedArtifact('Runs', _page);
+      api.pushInbox('reply', artifactId: aid, threadId: 't9', body: 'Fixed');
+      await pumpWithInbox(tester, api, targetHook: false);
+      await tester.tap(find.byTooltip('Inbox'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Fixed'));
+      await tester.pumpAndSettle();
+      expect(opened, [aid]);
+    });
+
+    testWidgets('a question goes to the question hook when there is one', (
+      tester,
+    ) async {
+      final api = _api();
+      final aid = api.seedArtifact('Runs', _page);
+      final s = await api.registerAppSession(installId: 'i', pid: 1);
+      final asked = await api.askQuestion(s.id, [
+        {'question': 'Which unit?', 'header': 'Units'},
+      ], artifactId: aid);
+      await pumpWithInbox(tester, api, questionHook: true);
+      await tester.tap(find.byTooltip('Inbox'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Units'));
+      await tester.pumpAndSettle();
+      expect(questionsOpened, [asked.question.id]);
+      expect(targets, isEmpty);
+    });
+
+    testWidgets('a question without the hook opens its app', (tester) async {
+      final api = _api();
+      final aid = api.seedArtifact('Runs', _page);
+      final s = await api.registerAppSession(installId: 'i', pid: 1);
+      await api.askQuestion(s.id, [
+        {'question': 'Which unit?', 'header': 'Units'},
+      ], artifactId: aid);
+      await pumpWithInbox(tester, api);
+      await tester.tap(find.byTooltip('Inbox'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Units'));
+      await tester.pumpAndSettle();
+      expect(targets, [(aid, null, null)]);
     });
   });
 }
