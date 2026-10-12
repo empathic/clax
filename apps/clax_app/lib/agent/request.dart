@@ -25,11 +25,14 @@ class CommentContext {
   /// The person's words. The prompt carries them as a JSON string, as data.
   final String body;
 
-  /// What the comment is anchored on, the text after "Anchored on: ": the
-  /// selector or "the whole artifact", the quoted text and the version.
+  /// What the comment is anchored on: the selector or "the whole
+  /// artifact", the quoted text and the version. The prompt carries it as a
+  /// JSON string after "Anchored on: ", since its quote is page text.
   final String anchorLine;
 
-  /// The PNG clip of the anchored region, when the comment has one.
+  /// The PNG clip of the anchored region. Set it on the first comment only
+  /// when the request's backend sends `AgentRequest.image`: the prompt then
+  /// says that the attached image is this comment's clip.
   final Uint8List? clip;
 }
 
