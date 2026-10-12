@@ -36,12 +36,39 @@ class MainFlutterWindow: NSWindow {
 
     #if DEBUG
       installTestInput(flutterViewController)
+      quitWithFlutterTool()
     #endif
 
     super.awakeFromNib()
   }
 
   #if DEBUG
+    private var toolExit: DispatchSourceProcess?
+
+    /// Debug builds only: an app started from the Flutter tool's
+    /// environment (`flutter test`, `flutter run`: it carries
+    /// `FLUTTER_ROOT`) lives only as long as the tool. Started as the
+    /// tool's child, it quits when the tool's process ends; started with no
+    /// parent but launchd (a second instance macOS opens after a fresh
+    /// build of `flutter test -d macos`, which no test drives), it exits at
+    /// once. An app started any other way is left alone.
+    private func quitWithFlutterTool() {
+      guard ProcessInfo.processInfo.environment["FLUTTER_ROOT"] != nil else { return }
+      let tool = getppid()
+      if tool <= 1 { exit(0) }
+      let source = DispatchSource.makeProcessSource(identifier: tool, eventMask: .exit, queue: .main)
+      source.setEventHandler {
+        // The app's own quit stops the worker and the daemon first; exit
+        // anyway if that does not finish (the Dart side may be gone).
+        NSApp.terminate(nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { exit(0) }
+      }
+      source.resume()
+      toolExit = source
+      // The tool may have ended before the source was armed.
+      if getppid() != tool { NSApp.terminate(nil) }
+    }
+
     /// Debug builds only: the `dev.empathic.clax/test-input` channel, with
     /// which the macOS integration test (`integration_test/`) clicks in the
     /// app's WebView as a person would. Its "click" method takes `x` and `y`
