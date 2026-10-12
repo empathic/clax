@@ -119,9 +119,10 @@ class MemoryAskedQuestions implements AskedQuestions {
 /// Every change replaces the file whole: the new content is written and
 /// flushed to `<file>.tmp`, then renamed over [file], so [file] always
 /// holds one complete state. Calls run one at a time, in the order they
-/// are made. Reading recovers what it can: a missing or unreadable [file]
-/// falls back to a whole `<file>.tmp` (a save cut before its rename), an
-/// entry that does not parse is skipped, and nothing readable is empty.
+/// are made. Reading recovers what it can: a whole `<file>.tmp` is read
+/// first, since it can only be a save whose rename never ran and so the
+/// newer state; else [file]; an entry that does not parse is skipped, and
+/// nothing readable is empty.
 class FileAskedQuestions implements AskedQuestions {
   FileAskedQuestions(this.file, {int limit = askedLimit})
     : _memory = MemoryAskedQuestions(limit: limit);
@@ -138,7 +139,7 @@ class FileAskedQuestions implements AskedQuestions {
     final out = _tail.then((_) async {
       if (!_loaded) {
         _loaded = true;
-        for (final e in await _read(file) ?? await _read(_tmp) ?? const []) {
+        for (final e in await _read(_tmp) ?? await _read(file) ?? const []) {
           _memory._put(e);
         }
       }
