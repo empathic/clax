@@ -110,6 +110,7 @@ pub mod feedback;
 pub mod forks;
 pub mod github;
 pub mod hosted;
+pub mod grants;
 pub mod inbox;
 pub mod joined;
 pub mod linked;

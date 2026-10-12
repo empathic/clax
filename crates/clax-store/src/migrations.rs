@@ -1163,6 +1163,22 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE sessions ADD COLUMN queued_since_turn INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE sessions ADD COLUMN delivered_written_at TEXT;
     ALTER TABLE sessions ADD COLUMN delivered_act TEXT;",
+    // 39: cross-app read grants (spec 2026-10-12-flutter-app-design §3.8): the
+    // owner let `reader_id` read `source_id`'s documents. Deleting either
+    // artifact removes the row: the foreign keys on a row delete, the trigger
+    // on the soft delete (`deleted_at` set), which is how artifacts are deleted.
+    "CREATE TABLE db_read_grants (
+        reader_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        source_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        granted_at TEXT NOT NULL,
+        PRIMARY KEY (reader_id, source_id)
+    ) WITHOUT ROWID;
+    CREATE INDEX db_read_grants_by_source ON db_read_grants(source_id);
+    CREATE TRIGGER db_read_grants_on_delete AFTER UPDATE OF deleted_at ON artifacts
+    WHEN NEW.deleted_at IS NOT NULL
+    BEGIN
+        DELETE FROM db_read_grants WHERE reader_id = NEW.id OR source_id = NEW.id;
+    END;",
 ];
 
 /// The audit journal's migration, as a schema version (the

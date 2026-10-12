@@ -2796,22 +2796,22 @@ pub(crate) mod tests {
     /// `files_json`'s per-file hashes and `content_sha256` taken out.
     fn everything_else(home: &Home) -> BTreeMap<String, Vec<String>> {
         let c = Connection::open(home.db_path()).unwrap();
-        let tables: Vec<String> = c
+        let tables: Vec<(String, bool)> = c
             .prepare(
-                "SELECT name FROM pragma_table_list
+                "SELECT name, wr FROM pragma_table_list
                  WHERE schema = 'main' AND type = 'table' AND name NOT LIKE 'sqlite_%'
                  AND name NOT IN ('audit_events', 'install', 'audit_backfill')",
             )
             .unwrap()
-            .query_map([], |r| r.get(0))
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         let mut out = BTreeMap::new();
-        for t in tables {
-            let mut q = c
-                .prepare(&format!("SELECT * FROM {t} ORDER BY rowid"))
-                .unwrap();
+        for (t, without_rowid) in tables {
+            // A WITHOUT ROWID table has no rowid; it scans in primary key order.
+            let order = if without_rowid { "" } else { " ORDER BY rowid" };
+            let mut q = c.prepare(&format!("SELECT * FROM {t}{order}")).unwrap();
             let names: Vec<String> = q.column_names().iter().map(|s| s.to_string()).collect();
             let rows: Vec<String> = q
                 .query_map([], |r| {
