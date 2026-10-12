@@ -1,14 +1,18 @@
 import 'package:flutter/material.dart';
 
 import '../clax/api.dart';
+import 'version_page.dart';
 
-/// The panel's Versions tab: every version, newest first. Tapping one
-/// shows it ([onPreview] with its number, or null for the latest, which
-/// follows new versions again); Restore makes an older one the latest
-/// ([onRestore]); Undo restores the version before the latest.
+/// The panel's Versions tab: every version, newest first. With [api],
+/// tapping one opens its [VersionPage]; without, it shows it. Showing a
+/// version is [onPreview] with its number, or null for the latest, which
+/// follows new versions again. Restore makes an older one the latest
+/// ([onRestore]); Undo restores the version before the latest. The
+/// version page's Preview and Restore close it and do the same.
 class VersionsTab extends StatelessWidget {
   const VersionsTab({
     super.key,
+    this.api,
     required this.detail,
     required this.error,
     required this.shown,
@@ -17,6 +21,9 @@ class VersionsTab extends StatelessWidget {
     required this.onRestore,
     required this.onRetry,
   });
+
+  /// The client the version pages read through; without it, rows preview.
+  final ClaxApi? api;
 
   /// The artifact and its versions; null while they load.
   final ArtifactDetail? detail;
@@ -98,7 +105,7 @@ class VersionsTab extends StatelessWidget {
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
             ),
-            subtitle: Text(_when(v.createdAt)),
+            subtitle: Text(versionTime(v.createdAt)),
             trailing: v.n == latest
                 ? Text(
                     'Latest',
@@ -111,7 +118,9 @@ class VersionsTab extends StatelessWidget {
                     onPressed: busy ? null : () => onRestore(v.n),
                     child: const Text('Restore'),
                   ),
-            onTap: () => onPreview(v.n == latest ? null : v.n),
+            onTap: () => api == null
+                ? onPreview(v.n == latest ? null : v.n)
+                : _open(context, api!, d.artifact.id, latest, v.n),
           ),
       ],
     );
@@ -123,15 +132,24 @@ class VersionsTab extends StatelessWidget {
     return v.n == 1 ? 'First version' : 'Version ${v.n}';
   }
 
-  static const _months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', //
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-  ];
-
-  static String _when(String stamp) {
-    final t = DateTime.tryParse(stamp)?.toLocal();
-    if (t == null) return '';
-    String two(int n) => n.toString().padLeft(2, '0');
-    return '${_months[t.month - 1]} ${t.day}, ${two(t.hour)}:${two(t.minute)}';
+  void _open(BuildContext context, ClaxApi api, String aid, int latest, int n) {
+    final nav = Navigator.of(context);
+    nav.push(
+      MaterialPageRoute<void>(
+        builder: (_) => VersionPage(
+          api: api,
+          aid: aid,
+          n: n,
+          onPreview: (n) {
+            nav.pop();
+            onPreview(n == latest ? null : n);
+          },
+          onRestore: (n) async {
+            nav.pop();
+            onRestore(n);
+          },
+        ),
+      ),
+    );
   }
 }
