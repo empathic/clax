@@ -50,11 +50,38 @@ class StreamError {
   final String message;
 }
 
+/// A streamed tool call whose input is not a whole JSON object: the
+/// answer stopped mid-call (`max_tokens`), or the input was streamed
+/// unchecked. Such a block must not be sent back as a tool call; answer it
+/// with an error `tool_result`, or send the request again.
+class InvalidToolInput implements Exception {
+  const InvalidToolInput(this.index, this.type, this.name, this.text);
+
+  /// The block's index in the message's content.
+  final int index;
+
+  /// `tool_use`, `server_tool_use` or `mcp_tool_use`.
+  final String type;
+
+  /// The tool's name, when the block gave one.
+  final String? name;
+
+  /// The input text as it streamed.
+  final String text;
+
+  @override
+  String toString() =>
+      'InvalidToolInput: the input of $type ${name ?? '(unnamed)'} '
+      '(block $index) is not a JSON object';
+}
+
 /// Rebuilds a Messages API response from its stream events, in the shape
 /// the non-streaming API returns: `content` blocks (`text` with its text,
-/// `thinking` with its thinking and signature, `tool_use` with its `input`
-/// parsed from the `input_json_delta`s), `stop_reason`, `stop_details` and
-/// `usage`.
+/// `thinking` with its thinking and signature, a tool call (`tool_use`,
+/// `server_tool_use`, `mcp_tool_use`) with its `input` parsed from its
+/// `input_json_delta`s, other blocks as they started), `stop_reason`,
+/// `stop_details` and `usage`. Every rebuilt block is fit to send back in
+/// an assistant turn: no block carries the streamed `partial_json`.
 ///
 /// It never throws: an event of the wrong shape is ignored. An `error`
 /// event is kept in [error]. A `message_start` begins a new message (as in
@@ -83,25 +110,41 @@ class MessageStream {
   /// The stream's `error` event, if one arrived.
   StreamError? get error => _error;
 
-  /// The latest message as rebuilt so far.
+  /// The latest message's `stop_reason`, once `message_delta` gave it.
+  String? get stopReason => switch (_message['stop_reason']) {
+    final String r => r,
+    _ => null,
+  };
+
+  /// The latest message as rebuilt so far. Throws [InvalidToolInput] when
+  /// a tool call's streamed input is not a JSON object.
   Map<String, Object?> get message => {
     ..._message,
     'content': [
-      for (final i in _blocks.keys.toList()..sort()) _block(_blocks[i]!),
+      for (final i in _blocks.keys.toList()..sort()) _block(i, _blocks[i]!),
     ],
   };
 
-  static Map<String, Object?> _block(Map<String, Object?> b) {
-    if (b['type'] != 'tool_use') return b;
+  static Map<String, Object?> _block(int index, Map<String, Object?> b) {
     final partial = b['partial_json'];
     if (partial is! String) return b;
     final out = Map.of(b)..remove('partial_json');
+    Object? input;
     try {
-      out['input'] = jsonDecode(partial.isEmpty ? '{}' : partial);
-      return out;
+      input = jsonDecode(partial.isEmpty ? '{}' : partial);
     } on FormatException {
-      return {...b, 'input': null};
+      input = null;
     }
+    if (input is! Map<String, Object?>) {
+      throw InvalidToolInput(
+        index,
+        '${b['type']}',
+        b['name'] is String ? b['name'] as String : null,
+        partial,
+      );
+    }
+    out['input'] = input;
+    return out;
   }
 
   /// Reads one decoded event.

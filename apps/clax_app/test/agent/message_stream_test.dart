@@ -187,11 +187,215 @@ void main() {
       ]) {
         s.add(e);
       }
-      expect(s.message['content'], [
-        {'type': 'tool_use', 'input': null, 'partial_json': '{"a'},
-      ]);
+      expect(
+        () => s.message,
+        throwsA(
+          isA<InvalidToolInput>()
+              .having((e) => e.index, 'index', 0)
+              .having((e) => e.type, 'type', 'tool_use')
+              .having((e) => e.text, 'text', '{"a'),
+        ),
+      );
       expect(s.error?.type, 'error');
     });
+
+    /// A stream of one message with [blocks], each given as its start
+    /// block and the deltas that follow it.
+    MessageStream streamOf(
+      List<(Map<String, Object?>, List<Map<String, Object?>>)> blocks, {
+      String stopReason = 'end_turn',
+    }) {
+      final s = MessageStream()
+        ..add(
+          _e('message_start', {
+            'message': {
+              'id': 'msg_1',
+              'type': 'message',
+              'role': 'assistant',
+              'content': <Object?>[],
+              'usage': {'input_tokens': 1, 'output_tokens': 1},
+            },
+          }),
+        );
+      for (final (i, (start, deltas)) in blocks.indexed) {
+        s.add(_e('content_block_start', {'index': i, 'content_block': start}));
+        for (final d in deltas) {
+          s.add(_e('content_block_delta', {'index': i, 'delta': d}));
+        }
+        s.add(_e('content_block_stop', {'index': i}));
+      }
+      return s
+        ..add(
+          _e('message_delta', {
+            'delta': {'stop_reason': stopReason},
+            'usage': {'output_tokens': 9},
+          }),
+        )
+        ..add(_e('message_stop'));
+    }
+
+    Map<String, Object?> json(String partial) => {
+      'type': 'input_json_delta',
+      'partial_json': partial,
+    };
+
+    test('the rebuilt content is valid to send back as an assistant turn', () {
+      final s = streamOf([
+        (
+          {'type': 'thinking', 'thinking': '', 'signature': ''},
+          [
+            {'type': 'thinking_delta', 'thinking': 'Plan.'},
+            {'type': 'signature_delta', 'signature': 'c2ln'},
+          ],
+        ),
+        (
+          {'type': 'text', 'text': ''},
+          [
+            {'type': 'text_delta', 'text': 'Looking.'},
+          ],
+        ),
+        (
+          {
+            'type': 'server_tool_use',
+            'id': 'srvtoolu_1',
+            'name': 'web_search',
+            'input': <String, Object?>{},
+          },
+          [json('{"query": "ru'), json('ns"}')],
+        ),
+        (
+          {
+            'type': 'web_search_tool_result',
+            'tool_use_id': 'srvtoolu_1',
+            'content': <Object?>[],
+          },
+          const [],
+        ),
+        (
+          {
+            'type': 'mcp_tool_use',
+            'id': 'mcptoolu_1',
+            'name': 'lookup',
+            'server_name': 'docs',
+            'input': <String, Object?>{},
+          },
+          [json('{"q":1}')],
+        ),
+        (
+          {
+            'type': 'tool_use',
+            'id': 'toolu_1',
+            'name': 'write_file',
+            'input': <String, Object?>{},
+          },
+          [json(''), json('{"path":"index.html",'), json('"text":"<p>"}')],
+        ),
+        (
+          {
+            'type': 'tool_use',
+            'id': 'toolu_2',
+            'name': 'list_files',
+            'input': <String, Object?>{},
+          },
+          const [],
+        ),
+      ], stopReason: 'tool_use');
+      final content = s.message['content']! as List<Object?>;
+      const allowed = {
+        'thinking': {'type', 'thinking', 'signature'},
+        'text': {'type', 'text'},
+        'server_tool_use': {'type', 'id', 'name', 'input'},
+        'web_search_tool_result': {'type', 'tool_use_id', 'content'},
+        'mcp_tool_use': {'type', 'id', 'name', 'server_name', 'input'},
+        'tool_use': {'type', 'id', 'name', 'input'},
+      };
+      for (final block in content.cast<Map<String, Object?>>()) {
+        expect(
+          allowed[block['type']]!.containsAll(block.keys),
+          isTrue,
+          reason: '$block',
+        );
+        if (block.containsKey('input')) {
+          expect(block['input'], isA<Map<String, Object?>>());
+        }
+      }
+      expect(content, [
+        {'type': 'thinking', 'thinking': 'Plan.', 'signature': 'c2ln'},
+        {'type': 'text', 'text': 'Looking.'},
+        {
+          'type': 'server_tool_use',
+          'id': 'srvtoolu_1',
+          'name': 'web_search',
+          'input': {'query': 'runs'},
+        },
+        {
+          'type': 'web_search_tool_result',
+          'tool_use_id': 'srvtoolu_1',
+          'content': <Object?>[],
+        },
+        {
+          'type': 'mcp_tool_use',
+          'id': 'mcptoolu_1',
+          'name': 'lookup',
+          'server_name': 'docs',
+          'input': {'q': 1},
+        },
+        {
+          'type': 'tool_use',
+          'id': 'toolu_1',
+          'name': 'write_file',
+          'input': {'path': 'index.html', 'text': '<p>'},
+        },
+        {
+          'type': 'tool_use',
+          'id': 'toolu_2',
+          'name': 'list_files',
+          'input': <String, Object?>{},
+        },
+      ]);
+      // Round trip: the turn encodes and decodes to the same content.
+      final turn = {'role': 'assistant', 'content': content};
+      expect(jsonDecode(jsonEncode(turn)), turn);
+    });
+
+    for (final (label, partial) in [
+      ('cut short', '{"path":"index.html","te'),
+      ('not an object', '[1, 2]'),
+    ]) {
+      test('a tool input $label is an InvalidToolInput, not a block', () {
+        for (final type in ['tool_use', 'server_tool_use', 'mcp_tool_use']) {
+          final s = streamOf([
+            (
+              {'type': 'text', 'text': ''},
+              [
+                {'type': 'text_delta', 'text': 'Writing.'},
+              ],
+            ),
+            (
+              {
+                'type': type,
+                'id': 'id_1',
+                'name': 'write_file',
+                'input': <String, Object?>{},
+              },
+              [json(partial)],
+            ),
+          ], stopReason: 'max_tokens');
+          expect(s.stopReason, 'max_tokens');
+          expect(
+            () => s.message,
+            throwsA(
+              isA<InvalidToolInput>()
+                  .having((e) => e.index, 'index', 1)
+                  .having((e) => e.type, 'type', type)
+                  .having((e) => e.name, 'name', 'write_file')
+                  .having((e) => e.text, 'text', partial)
+                  .having((e) => '$e', 'message', contains('write_file')),
+            ),
+          );
+        }
+      });
+    }
 
     test('a second message_start starts a new message', () {
       final deltas = <String>[];
