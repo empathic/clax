@@ -429,6 +429,60 @@ describe("app mode's host attestation", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(gesture!.frameGesture()).toBe(false);
   });
 
+  it("expires an unreleased press HELD_MAX_MS after its own press, whatever attests later", async () => {
+    let t = 10_000;
+    vi.spyOn(performance, "now").mockImplementation(() => t);
+    const { frame, host, m } = await appView();
+    hitTest(() => frame);
+    fingerOnPage(frame);
+    // A press whose release never comes (an OS-cancelled touch not reported).
+    host.attestPointer({ pointer: 1, phase: "down", x: 100, y: 100 });
+    t += m.HELD_MAX_MS - 500;
+    // Another finger's tap, released.
+    host.attestPointer({ pointer: 2, phase: "down", x: 100, y: 100 });
+    host.attestPointer({ pointer: 2, phase: "up", x: 100, y: 100 });
+    expect(gesture!.hostArrival.pending()).toBe(true);
+    t += 500;
+    // The stale press is gone: nothing pending, and the release counts
+    // ATTEST_MS, not HELD_MAX_MS.
+    expect(gesture!.hostArrival.pending()).toBe(false);
+    t += m.ATTEST_MS - 501;
+    expect(gesture!.frameGesture()).toBe(true);
+    t += 1;
+    expect(gesture!.frameGesture()).toBe(false);
+  });
+
+  it("takes a cancel attestation as the end of a press that grants nothing", async () => {
+    let t = 10_000;
+    vi.spyOn(performance, "now").mockImplementation(() => t);
+    const { ctl, frame, host, m } = await appView();
+    hello(frame, 1);
+    host.enterCommentMode();
+    hitTest(() => frame);
+    fingerOnPage(frame);
+    host.attestPointer({ pointer: 1, phase: "down", x: 50, y: 60 });
+    expect(gesture!.hostArrival.pending()).toBe(true);
+    // After the viewer's shell input, a cancel counts as no arrival, and
+    // ends the press, so nothing is pending.
+    gesture!.noteShellInput();
+    t += 1;
+    host.attestPointer({ pointer: 1, phase: "cancel", x: 50, y: 60 });
+    expect(gesture!.hostArrival.pending()).toBe(false);
+    expect(gesture!.frameGesture()).toBe(false);
+    // Its pick start is refused at once, with no wait.
+    fromFrame(frame.contentWindow!, startOf(pick("cancelled", "Quarterly goals")));
+    expect(ctl.state.get().draft).toBeNull();
+    // A release reported after the cancel attests nothing either.
+    host.attestPointer({ pointer: 1, phase: "up", x: 50, y: 60 });
+    expect(gesture!.frameGesture()).toBe(false);
+    // A cancel shortens no other window: a tap's release still counts ATTEST_MS.
+    host.attestPointer({ pointer: 2, phase: "down", x: 50, y: 60 });
+    host.attestPointer({ pointer: 2, phase: "up", x: 50, y: 60 });
+    host.attestPointer({ pointer: 3, phase: "cancel", x: 50, y: 60 });
+    t += m.ATTEST_MS - 1;
+    expect(gesture!.frameGesture()).toBe(true);
+  });
+
   it("takes a slow hold-then-drag's pick whose release is attested after the pick starts", async () => {
     let t = 10_000;
     vi.spyOn(performance, "now").mockImplementation(() => t);
@@ -450,16 +504,17 @@ describe("app mode's host attestation", { timeout: MOUNT_TIMEOUT_MS }, () => {
   it("lets a pick start wait PICK_ATTEST_WAIT_MS for a pending release attestation, then takes or refuses it", async () => {
     let t = 10_000;
     vi.spyOn(performance, "now").mockImplementation(() => t);
-    const { ctl, frame, host, m } = await appView();
+    const { ctl, frame, host } = await appView();
     hello(frame, 1);
     host.enterCommentMode();
     hitTest(() => frame);
     fingerOnPage(frame);
     const clock = (globalThis as unknown as { claxTestClock: { advance(ms: number): number } }).claxTestClock;
-    // A press held past HELD_MAX_MS no longer counts on its own: its
-    // release, attested within the wait, does.
+    // A held press made before the viewer's latest shell input no longer
+    // counts on its own: its release, attested within the wait, does.
     host.attestPointer({ pointer: 1, phase: "down", x: 50, y: 60 });
-    t += m.HELD_MAX_MS;
+    gesture!.noteShellInput();
+    t += 1;
     fromFrame(frame.contentWindow!, startOf(pick("late", "Quarterly goals")));
     expect(ctl.state.get().draft).toBeNull();
     clock.advance(gesture!.PICK_ATTEST_WAIT_MS - 1);
@@ -471,7 +526,7 @@ describe("app mode's host attestation", { timeout: MOUNT_TIMEOUT_MS }, () => {
   it("refuses a waiting pick start when no release attestation comes in time", async () => {
     let t = 10_000;
     vi.spyOn(performance, "now").mockImplementation(() => t);
-    const { ctl, frame, host, m } = await appView();
+    const { ctl, frame, host } = await appView();
     hello(frame, 1);
     host.enterCommentMode();
     hitTest(() => frame);
@@ -480,8 +535,10 @@ describe("app mode's host attestation", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const refused: unknown[] = [];
     frame.contentWindow!.addEventListener("message", e => { if ((e.data as { type?: string })?.type === "clax:pick-refused") refused.push(e.data); });
     host.attestPointer({ pointer: 1, phase: "down", x: 50, y: 60 });
-    t += m.HELD_MAX_MS;
+    gesture!.noteShellInput();
+    t += 1;
     fromFrame(frame.contentWindow!, startOf(pick("stale", "Quarterly goals")));
+    expect(refused).toEqual([]);
     clock.advance(gesture!.PICK_ATTEST_WAIT_MS);
     await waitFor(() => refused.length > 0 || null, "pick-refused");
     expect(ctl.state.get().draft).toBeNull();
