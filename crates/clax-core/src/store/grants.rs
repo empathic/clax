@@ -146,22 +146,21 @@ impl Store {
     /// `reader == source` is `NotDeclared`, since a declaration cannot name
     /// its own artifact.
     ///
-    /// A draft of an app (spec 2026-10-12-flutter-app-round2-design §5.1)
-    /// reads as that app: its app's declaration and grants decide, so a
-    /// render reads what the app may read and asks no consent.
+    /// A draft (spec 2026-10-12-flutter-app-round2-design §5.1) is
+    /// `NotGranted` for every other source, whatever grants or shares name
+    /// it or its app: what a render reads reaches the agent, and an app's
+    /// grant is not the owner's consent to that. A draft reads its own
+    /// copied documents without a reader.
     ///
     /// # Errors
-    /// `NotFound` when either artifact (or a draft's app) is missing or
-    /// deleted.
+    /// `NotFound` when either artifact is missing or deleted.
     pub fn may_read(&self, reader: &ArtifactId, source: &ArtifactId) -> Result<ReadAccess> {
         self.with_read(|c| {
-            caps_in(c, reader)?;
-            let app = super::drafts::draft_of_in(c, reader.as_str())?
-                .map(|of| ArtifactId::parse(&of))
-                .transpose()?;
-            let reader = app.as_ref().unwrap_or(reader);
             let reader_caps = caps_in(c, reader)?;
             let source_caps = caps_in(c, source)?;
+            if reader != source && super::drafts::is_hidden_in(c, reader.as_str())? {
+                return Ok(ReadAccess::NotGranted);
+            }
             let declared = ReadDecl::from_capabilities(&reader_caps, reader.as_str())
                 .is_ok_and(|d| d.reads.iter().any(|s| s == source.as_str()));
             if !declared {

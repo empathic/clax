@@ -383,27 +383,12 @@ async fn a_draft_is_published_without_a_session_and_never_watched() {
 }
 
 #[tokio::test]
-async fn draft_reads_another_app_with_ofs_grant() {
+async fn a_draft_reads_no_other_app_even_with_its_apps_grant() {
     let ts = TestServer::spawn().await;
     let b = app(&ts, "Source", json!({"db": {}})).await;
     seed(&ts, &b, "notes/n1", json!({"t": "b"})).await;
     let caps = json!({"db": {"read": [b.clone()]}});
     let a = app(&ts, "Reader", caps.clone()).await;
-    let did = id(&draft(&ts, Some(&a), caps).await);
-    let read = || {
-        authed(
-            &ts,
-            Method::GET,
-            &format!("/api/artifacts/{b}/docs/notes/n1"),
-        )
-        .header(READER, &did)
-    };
-    let (s, v) = send(read()).await;
-    assert_eq!(
-        (s, v["error"]["code"].as_str()),
-        (403, Some("not_granted")),
-        "{v}"
-    );
     let (s, _) = send(authed(
         &ts,
         Method::PUT,
@@ -411,16 +396,56 @@ async fn draft_reads_another_app_with_ofs_grant() {
     ))
     .await;
     assert!((200..300).contains(&s), "{s}");
-    let (s, v) = send(read()).await;
-    assert_eq!((s, v["doc"]["data"]["t"].as_str()), (200, Some("b")), "{v}");
-    let (s, _) = send(authed(
-        &ts,
-        Method::DELETE,
-        &format!("/api/artifacts/{a}/db-grants/{b}"),
-    ))
+    let read = |reader: &str| {
+        authed(
+            &ts,
+            Method::GET,
+            &format!("/api/artifacts/{b}/docs/notes/n1"),
+        )
+        .header(READER, reader)
+    };
+    let (s, v) = send(read(&a)).await;
+    assert_eq!(
+        (s, v["doc"]["data"]["t"].as_str()),
+        (200, Some("b")),
+        "the app reads: {v}"
+    );
+    let d = draft(&ts, Some(&a), caps).await;
+    let did = id(&d);
+    let (s, v) = send(read(&did)).await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (403, Some("not_granted")),
+        "its draft does not: {v}"
+    );
+    let (s, v) = send(
+        authed(
+            &ts,
+            Method::GET,
+            &format!("/api/artifacts/{b}/docs?collection=notes"),
+        )
+        .header(READER, &did),
+    )
     .await;
-    assert!((200..300).contains(&s), "{s}");
-    let (s, v) = send(read()).await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (403, Some("not_granted")),
+        "{v}"
+    );
+    let res = authed(&ts, Method::GET, "/api/stream")
+        .send()
+        .await
+        .unwrap();
+    let mut events = EventReader::from_response(res);
+    let sid = events.next_named("ready").await["stream"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = send(
+        authed(&ts, Method::POST, &format!("/api/stream/{sid}"))
+            .json(&json!({"subscribe": [format!("docs:{b}?reader={did}")]})),
+    )
+    .await;
     assert_eq!(
         (s, v["error"]["code"].as_str()),
         (403, Some("not_granted")),

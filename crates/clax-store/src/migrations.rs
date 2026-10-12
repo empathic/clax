@@ -1182,7 +1182,7 @@ pub const MIGRATIONS: &[&str] = &[
     // 25: draft artifacts (spec 2026-10-12-flutter-app-round2-design §5.1):
     // an agent's work in progress, rendered but never listed. `hidden` keeps
     // a row out of every listing; `draft_of` names the app a draft changes
-    // (NULL for a new app's draft), whose grants its reads use.
+    // (NULL for a new app's draft), whose documents it copies.
     "ALTER TABLE artifacts ADD COLUMN draft_of TEXT;
     ALTER TABLE artifacts ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
     CREATE INDEX artifacts_hidden ON artifacts(hidden, created_at) WHERE hidden = 1;",
