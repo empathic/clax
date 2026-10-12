@@ -29,6 +29,7 @@ class AppSettings {
     this.backend = backendMessagesApi,
     String? model,
     this.dictateComments = true,
+    this.dictationCues = true,
     this.claudePath,
   }) : model = model ?? modelChoices.first.id;
 
@@ -39,8 +40,13 @@ class AppSettings {
   /// One of [modelChoices]' IDs.
   String model;
 
-  /// Whether a new comment's draft starts dictation at once.
+  /// Whether dictation starts on its own: in a new comment's draft and in
+  /// an empty New sheet. Shown as "Start dictation automatically".
   bool dictateComments;
+
+  /// Whether dictation vibrates and plays a short tone as it starts and
+  /// stops (`VoiceCues`).
+  bool dictationCues;
 
   /// The `claude` executable to run; null finds it on `PATH`.
   String? claudePath;
@@ -49,6 +55,7 @@ class AppSettings {
     backend: backend,
     model: model,
     dictateComments: dictateComments,
+    dictationCues: dictationCues,
     claudePath: claudePath,
   );
 
@@ -56,6 +63,7 @@ class AppSettings {
     'backend': backend,
     'model': model,
     'dictate_comments': dictateComments,
+    'dictation_cues': dictationCues,
     'claude_path': claudePath,
   };
 
@@ -71,6 +79,8 @@ class AppSettings {
     if (modelChoices.any((m) => m.id == model)) s.model = model as String;
     final dictate = j['dictate_comments'];
     if (dictate is bool) s.dictateComments = dictate;
+    final cues = j['dictation_cues'];
+    if (cues is bool) s.dictationCues = cues;
     final path = j['claude_path'];
     if (path is String && path.trim().isNotEmpty) s.claudePath = path.trim();
     return s;
@@ -87,8 +97,21 @@ class SettingsStore {
 
   final File file;
 
+  AppSettings _last = AppSettings();
+
+  /// A copy of the settings this store last loaded or saved; the defaults
+  /// before the first. For readers that must answer at once, such as a
+  /// dictation cue.
+  AppSettings get last => _last.copy();
+
   /// The saved settings; the defaults when the file is missing or broken.
   Future<AppSettings> load() async {
+    final s = _read();
+    _last = s.copy();
+    return s;
+  }
+
+  AppSettings _read() {
     try {
       final j = jsonDecode(file.readAsStringSync());
       if (j is Map) return AppSettings.fromJson(j.cast<String, Object?>());
@@ -108,5 +131,6 @@ class SettingsStore {
       flush: true,
     );
     tmp.renameSync(file.path);
+    _last = s.copy();
   }
 }

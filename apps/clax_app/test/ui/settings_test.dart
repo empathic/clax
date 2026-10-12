@@ -46,6 +46,7 @@ void main() {
       expect(s.backend, 'messages-api');
       expect(s.model, 'claude-haiku-5-5');
       expect(s.dictateComments, isTrue);
+      expect(s.dictationCues, isTrue);
       expect(s.claudePath, isNull);
     });
 
@@ -56,10 +57,16 @@ void main() {
           backend: 'claude-cli',
           model: 'claude-opus-5-5',
           dictateComments: false,
+          dictationCues: false,
           claudePath: '/opt/claude',
         ),
       );
+      expect(
+        jsonDecode(file.readAsStringSync()),
+        containsPair('dictation_cues', false),
+      );
       final s = await store.load();
+      expect(s.dictationCues, isFalse);
       expect(s.backend, 'claude-cli');
       expect(s.model, 'claude-opus-5-5');
       expect(s.dictateComments, isFalse);
@@ -76,6 +83,18 @@ void main() {
       expect(s.backend, 'messages-api');
       expect(s.model, 'claude-haiku-5-5');
       expect(s.dictateComments, isTrue);
+      expect(s.dictationCues, isTrue);
+    });
+
+    test('last is the defaults, then what was last loaded or saved', () async {
+      final store = SettingsStore(file);
+      expect(store.last.dictationCues, isTrue);
+      file.writeAsStringSync(jsonEncode({'dictation_cues': false}));
+      await store.load();
+      expect(store.last.dictationCues, isFalse);
+      await store.save(AppSettings(dictateComments: false));
+      expect(store.last.dictationCues, isTrue);
+      expect(store.last.dictateComments, isFalse);
     });
   });
 
@@ -121,7 +140,13 @@ void main() {
     expect(find.text('Fast (Haiku 5.5)'), findsOneWidget);
     expect(find.text('Balanced (Sonnet 5.5)'), findsOneWidget);
     expect(find.text('Best (Opus 5.5)'), findsOneWidget);
-    expect(find.text('Dictate comments'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Dictation sounds and vibration'),
+      100,
+      scrollable: _list,
+    );
+    expect(find.text('Start dictation automatically'), findsOneWidget);
+    expect(find.text('Dictation sounds and vibration'), findsOneWidget);
   });
 
   testWidgets('with CLI support the agent can be switched and is saved', (
@@ -149,19 +174,22 @@ void main() {
     await pumpSettings(tester, store: store, key: FakeKey());
     await tester.tap(find.text('Best (Opus 5.5)'));
     await tester.pumpAndSettle();
-    await tester.scrollUntilVisible(
-      find.text('Dictate comments'),
-      100,
-      scrollable: _list,
-    );
-    await tester.tap(find.text('Dictate comments'));
-    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
-    await tester.pumpAndSettle();
+    for (final label in [
+      'Start dictation automatically',
+      'Dictation sounds and vibration',
+    ]) {
+      await tester.scrollUntilVisible(find.text(label), 100, scrollable: _list);
+      await tester.tap(find.text(label));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await tester.pumpAndSettle();
+    }
     await tester.runAsync(() async {
       final s = await store.load();
       expect(s.model, 'claude-opus-5-5');
       expect(s.dictateComments, isFalse);
+      expect(s.dictationCues, isFalse);
     });
+    expect(store.last.dictationCues, isFalse);
   });
 
   testWidgets('the key is masked and saved through SecureKey, never the file', (

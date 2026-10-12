@@ -6,8 +6,8 @@ import '../platform/secure_key.dart';
 import '../platform/settings_store.dart';
 
 /// Settings: the Claude API key, the agent (where `claude -p` can run), the
-/// model, comment dictation, the Claude Code path, and the last ten
-/// measured timings.
+/// model, dictation (whether it starts on its own, and its sounds and
+/// vibration), the Claude Code path, and the last ten measured timings.
 ///
 /// Every choice is saved to [store] as it is made. The key is saved only
 /// through [secureKey], on Save key, and is never shown back: a saved key
@@ -190,14 +190,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ],
                   ),
                 ),
-                const _Header('Comments'),
+                const _Header('Dictation'),
                 SwitchListTile(
-                  title: const Text('Dictate comments'),
+                  title: const Text('Start dictation automatically'),
                   subtitle: const Text(
-                    'Start listening as soon as you comment on an app',
+                    'Listen as soon as you start a new app or a comment',
                   ),
                   value: s.dictateComments,
                   onChanged: (v) => _change((s) => s.dictateComments = v),
+                ),
+                SwitchListTile(
+                  title: const Text('Dictation sounds and vibration'),
+                  subtitle: const Text(
+                    'A tone and a buzz as listening starts and stops',
+                  ),
+                  value: s.dictationCues,
+                  onChanged: (v) => _change((s) => s.dictationCues = v),
                 ),
                 const _Header('Recent timings'),
                 ..._timings(context),
