@@ -6,15 +6,17 @@
 // is down every subscription is refreshed every [`POLL_MS`]; a refetch the
 // daemon could not answer is retried after [`RETRY_MS`]. The page is
 // untrusted: every argument is checked here before any request, whatever the
-// bridge already checked.
+// bridge already checked. `read` serves `db.artifact(id)`, another app's
+// documents, from a chunk of its own (cross-read.ts).
 import type { ArtifactEvent } from "../events";
 import { CapError, SPECTATING } from "./errors";
+import type { CrossRead } from "./cross-read";
 import type { HandlerFactory } from "./host";
 
 export type WireDoc = { path: string; id: string; data: Record<string, unknown>; version: number };
-type QuerySpec = { kind: "query"; collection: string; where: unknown[]; orderBy: string | null; desc: boolean; limit: number | null };
-type Spec = { kind: "doc"; path: string } | QuerySpec;
-type ApiDoc = WireDoc & { collection: string; updated_at: string };
+export type QuerySpec = { kind: "query"; collection: string; where: unknown[]; orderBy: string | null; desc: boolean; limit: number | null };
+export type Spec = { kind: "doc"; path: string } | QuerySpec;
+export type ApiDoc = WireDoc & { collection: string; updated_at: string };
 
 export const SNAPSHOT_DEBOUNCE_MS = 25;
 export const MAX_SUBSCRIPTIONS = 64;
@@ -113,7 +115,7 @@ function checkWhere(v: unknown): [string, string, unknown][] {
   });
 }
 
-function checkSpec(v: unknown): Spec {
+export function checkSpec(v: unknown): Spec {
   const s = (v !== null && typeof v === "object" ? v : {}) as Record<string, unknown>;
   if (s.kind === "doc") return { kind: "doc", path: checkPath(s.path, 0) };
   if (s.kind !== "query") throw invalid("a subscription is a document path or a query");
@@ -125,7 +127,7 @@ function checkSpec(v: unknown): Spec {
   return { kind: "query", collection, where, orderBy: s.orderBy as string | null, desc: s.desc, limit: s.limit as number | null };
 }
 
-function checkSubId(v: unknown): string {
+export function checkSubId(v: unknown): string {
   if (typeof v !== "string" || !v || v.length > MAX_SUB_ID) throw invalid(`a subscription ID is 1 to ${MAX_SUB_ID} characters`);
   return v;
 }
@@ -145,8 +147,40 @@ function checkAcquire(v: unknown): { holder: string; ttl_ms?: number; data?: Rec
   return out;
 }
 
-const wire = (d: ApiDoc): WireDoc => ({ path: d.path, id: d.id, data: d.data, version: d.version });
+export const wire = (d: ApiDoc): WireDoc => ({ path: d.path, id: d.id, data: d.data, version: d.version });
 const parentOf = (path: string) => path.slice(0, path.lastIndexOf("/"));
+
+/** Whether a change to document `path` can change what `spec` matches. */
+export const touches = (spec: Spec, path: string) => (spec.kind === "doc" ? spec.path === path : parentOf(path) === spec.collection);
+
+/** `base`'s document URL for checked `path`. */
+export const docUrl = (base: string, path: string) => `${base}/${path.split("/").map(encodeURIComponent).join("/")}`;
+
+/** Every match of `spec` under Docs route `base`, read with `get`: one
+ * request for an ordered or limited query, else page by page. */
+export async function runQuery(get: (url: string) => Promise<unknown>, base: string, spec: QuerySpec): Promise<WireDoc[]> {
+  const q = new URLSearchParams({ collection: spec.collection });
+  if (spec.where.length) q.set("where", JSON.stringify(spec.where));
+  if (spec.orderBy) {
+    q.set("order_by", spec.orderBy);
+    if (spec.desc) q.set("direction", "desc");
+  }
+  if (spec.orderBy || spec.limit !== null) {
+    // Without a limit the daemon answers an ordered query with every match.
+    if (spec.limit !== null) q.set("limit", String(spec.limit));
+    return ((await get(`${base}?${q}`)) as { docs: ApiDoc[] }).docs.map(wire);
+  }
+  const out: WireDoc[] = [];
+  let cursor: string | null = null;
+  q.set("limit", "1000");
+  do {
+    if (cursor) q.set("cursor", cursor);
+    const page = (await get(`${base}?${q}`)) as { docs: ApiDoc[]; next_cursor: string | null };
+    out.push(...page.docs.map(wire));
+    cursor = page.next_cursor;
+  } while (cursor);
+  return out;
+}
 
 export const dbHandler: HandlerFactory = env => {
   const base = `/api/artifacts/${env.aid}/docs`;
@@ -166,7 +200,10 @@ export const dbHandler: HandlerFactory = env => {
   // result is never delivered after it (versions are never reused).
   const delivered = new Map<string, number>();
   let disposed = false;
-  const docUrl = (path: string) => `${base}/${path.split("/").map(encodeURIComponent).join("/")}`;
+  // `db.artifact(id)`'s reads, loaded on the page's first one.
+  let cross: Promise<CrossRead> | null = null;
+  let crossH: CrossRead | null = null;
+  const own = (path: string) => docUrl(base, path);
 
   async function request<T>(method: string, url: string, body?: unknown, missingIsNull = false): Promise<T | null> {
     if (disposed) throw new CapError("unavailable", "this view has closed");
@@ -187,33 +224,11 @@ export const dbHandler: HandlerFactory = env => {
     throw dbError(res.status, err, method !== "GET");
   }
 
-  async function query(spec: QuerySpec): Promise<WireDoc[]> {
-    const q = new URLSearchParams({ collection: spec.collection });
-    if (spec.where.length) q.set("where", JSON.stringify(spec.where));
-    if (spec.orderBy) {
-      q.set("order_by", spec.orderBy);
-      if (spec.desc) q.set("direction", "desc");
-    }
-    if (spec.orderBy || spec.limit !== null) {
-      // Without a limit the daemon answers an ordered query with every match.
-      if (spec.limit !== null) q.set("limit", String(spec.limit));
-      return (await request<{ docs: ApiDoc[] }>("GET", `${base}?${q}`))!.docs.map(wire);
-    }
-    const out: WireDoc[] = [];
-    let cursor: string | null = null;
-    q.set("limit", "1000");
-    do {
-      if (cursor) q.set("cursor", cursor);
-      const page: { docs: ApiDoc[]; next_cursor: string | null } = (await request<{ docs: ApiDoc[]; next_cursor: string | null }>("GET", `${base}?${q}`))!;
-      out.push(...page.docs.map(wire));
-      cursor = page.next_cursor;
-    } while (cursor);
-    return out;
-  }
+  const query = (spec: QuerySpec) => runQuery(url => request("GET", url), base, spec);
 
   async function current(spec: Spec): Promise<WireDoc[]> {
     if (spec.kind === "query") return query(spec);
-    const r = await request<{ doc: ApiDoc }>("GET", docUrl(spec.path), undefined, true);
+    const r = await request<{ doc: ApiDoc }>("GET", own(spec.path), undefined, true);
     return r ? [wire(r.doc)] : [];
   }
 
@@ -277,8 +292,6 @@ export const dbHandler: HandlerFactory = env => {
     poll = setInterval(() => { for (const sub of subs.keys()) schedule(sub); }, POLL_MS);
   }
 
-  const touches = (spec: Spec, path: string) => (spec.kind === "doc" ? spec.path === path : parentOf(path) === spec.collection);
-
   /** This shell wrote `path`: the page's matching subscriptions refetch now,
    * without waiting for the stream's `doc` event. */
   function echo(path: string): void {
@@ -296,19 +309,19 @@ export const dbHandler: HandlerFactory = env => {
       const path = () => checkPath(arg, 0);
       switch (method) {
         case "get": {
-          const r = await request<{ doc: ApiDoc }>("GET", docUrl(path()), undefined, true);
+          const r = await request<{ doc: ApiDoc }>("GET", own(path()), undefined, true);
           return r ? wire(r.doc) : null;
         }
         case "set":
         case "update": {
           const p = path();
-          await request(method === "set" ? "PUT" : "PATCH", docUrl(p), { data: checkBody(args[1]), lww: true });
+          await request(method === "set" ? "PUT" : "PATCH", own(p), { data: checkBody(args[1]), lww: true });
           echo(p);
           return null;
         }
         case "delete": {
           const p = path();
-          await request("DELETE", `${docUrl(p)}?lww=true`);
+          await request("DELETE", `${own(p)}?lww=true`);
           echo(p);
           return null;
         }
@@ -343,6 +356,12 @@ export const dbHandler: HandlerFactory = env => {
         case "unsubscribe":
           drop(checkSubId(arg));
           return null;
+        case "read": {
+          if (disposed) throw new CapError("unavailable", "this view has closed");
+          const c = await (cross ??= import("./cross-read").then(m => (crossH = m.crossRead(env))));
+          if (disposed) c.dispose();
+          return c.call(arg);
+        }
         default:
           throw new CapError("capability_removed", `db.${method} is not part of this runtime`);
       }
@@ -370,9 +389,12 @@ export const dbHandler: HandlerFactory = env => {
     reset() {
       for (const sub of [...subs.keys()]) drop(sub);
       stopPoll();
+      crossH?.reset();
     },
+    leave: () => crossH?.leave(),
     dispose() {
       disposed = true;
+      crossH?.dispose();
       for (const sub of [...subs.keys()]) drop(sub);
       stopPoll();
     },

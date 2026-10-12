@@ -172,3 +172,58 @@ describe("db fix round 1", () => {
     expect(f.calls).toHaveLength(1);
   });
 });
+
+describe("db.artifact(id)", () => {
+  const B = "8r4m0nay3c5v";
+
+  it("reads another app's documents over the read op and has no write methods", async () => {
+    const f = fakeRpc((m, a) => {
+      const op = (a[0] as { op: string }).op;
+      if (m === "read" && op === "get") return w("t1", 3, { title: "Run" });
+      if (m === "read" && op === "query") return [w("a", 1), w("b", 1)];
+      return null;
+    });
+    const db = makeDb(f.rpc as never);
+    const other = db.artifact(B);
+    const s = await other.doc("tasks/t1").get();
+    expect([s.id, s.exists, s.data()]).toEqual(["t1", true, { title: "Run" }]);
+    const q = await other.collection("tasks").where("n", ">", 1).limit(2).get();
+    expect(q.docs.map(d => d.id)).toEqual(["a", "b"]);
+    expect(f.calls).toEqual([
+      { method: "read", args: [{ op: "get", artifact: B, path: "tasks/t1" }] },
+      { method: "read", args: [{ op: "query", artifact: B, spec: { kind: "query", collection: "tasks", where: [["n", ">", 1]], orderBy: null, desc: false, limit: 2 } }] },
+    ]);
+    const d = other.doc("tasks/t1") as Record<string, unknown>;
+    const c = other.collection("tasks") as Record<string, unknown>;
+    for (const k of ["set", "update", "delete", "acquire"]) expect(d[k], k).toBeUndefined();
+    expect(c.add).toBeUndefined();
+    expect((other.doc("tasks/t1").collection("subs").doc("x") as Record<string, unknown>).set).toBeUndefined();
+    expect((other as Record<string, unknown>).artifact).toBeUndefined();
+  });
+
+  it("subscribes and unsubscribes over the read op, keyed by its own subscription ID", async () => {
+    const f = fakeRpc();
+    const db = makeDb(f.rpc as never);
+    const seen: string[][] = [];
+    const stop = db.artifact(B).collection("tasks").onSnapshot(s => seen.push(s.docs.map(x => x.id)));
+    await Promise.resolve();
+    const first = f.calls[0].args[0] as { op: string; artifact: string; sub: string; spec: unknown };
+    expect(first).toEqual({ op: "subscribe", artifact: B, sub: first.sub, spec: { kind: "query", collection: "tasks", where: [], orderBy: null, desc: false, limit: null } });
+    f.emit("snapshot", { sub: first.sub, docs: [w("a", 1)] });
+    expect(seen).toEqual([["a"]]);
+    stop();
+    expect(f.calls.at(-1)).toEqual({ method: "read", args: [{ op: "unsubscribe", sub: first.sub }] });
+    // A document of the other app is followed too.
+    db.artifact(B).doc("tasks/t1").onSnapshot(() => {});
+    await Promise.resolve();
+    expect(f.calls.at(-1)!.args[0]).toMatchObject({ op: "subscribe", artifact: B, spec: { kind: "doc", path: "tasks/t1" } });
+  });
+
+  it("throws TypeError for an ID that is not an artifact ID, and for bad paths", () => {
+    const { rpc } = fakeRpc();
+    const db = makeDb(rpc as never);
+    for (const bad of ["", "../x", "8R4M0NAY3C5V", "8r4m0nay3c5", "8r4m0nay3c5v/docs", 7]) expect(() => db.artifact(bad as never), String(bad)).toThrow(TypeError);
+    expect(() => db.artifact(B).doc("tasks")).toThrow(TypeError);
+    expect(() => db.artifact(B).doc("a/../b/c")).toThrow(TypeError);
+  });
+});

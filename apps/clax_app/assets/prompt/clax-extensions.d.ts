@@ -71,4 +71,66 @@ declare namespace ClaxExtensions {
     /** Calls `fn` with the current state, then on every change. Resolves a function that stops the calls. */
     onWorking(fn: (state: WorkingState) => void): Promise<() => void>;
   }
+
+  /**
+   * The codes `db.artifact(id)` adds to `DbErrorCode` (`db.d.ts`), on calls
+   * and on the `onSnapshot` error callback:
+   *
+   * - `not_declared` — this artifact's `capabilities.db.read` does not list
+   *   `id`. Declare it (`{"db": {"read": ["<id>"]}}`); nothing was asked.
+   * - `not_granted` — the owner said no (Clax asks once per page load), a
+   *   viewer who is not the owner has no grant to use, or the owner withdrew
+   *   the grant (a live listener then ends with it). Render without that
+   *   app's data; retrying in this page load cannot succeed.
+   */
+  type DbCrossReadErrorCode = "not_declared" | "not_granted";
+
+  /** A document of another app: read and follow, never write. */
+  interface DbReadOnlyDocument {
+    id: string;
+    path: string;
+    get(): Promise<DocumentSnapshot>;
+    onSnapshot(next: (snap: DocumentSnapshot) => void, error?: (e: DbError) => void): Unsubscribe;
+    collection(path: string): DbReadOnlyCollection;
+  }
+
+  /** A query over another app's collection: the builders of `Query`. */
+  interface DbReadOnlyQuery {
+    where(field: string, op: string, value: unknown): DbReadOnlyQuery;
+    orderBy(field: string, dir?: "asc" | "desc"): DbReadOnlyQuery;
+    limit(n: number): DbReadOnlyQuery;
+    get(): Promise<QuerySnapshot>;
+    onSnapshot(next: (snap: QuerySnapshot) => void, error?: (e: DbError) => void): Unsubscribe;
+  }
+
+  /** A collection of another app (no `add`). */
+  interface DbReadOnlyCollection extends DbReadOnlyQuery {
+    path: string;
+    doc(id: string): DbReadOnlyDocument;
+  }
+
+  /** Another app's documents, read-only. */
+  interface DbReadOnly {
+    doc(path: string): DbReadOnlyDocument;
+    collection(path: string): DbReadOnlyCollection;
+  }
+
+  /**
+   * Members Clax adds to the `db` namespace (`db.d.ts` `type DB`).
+   *
+   * Another app's documents are readable when this artifact declares the
+   * read in `capabilities.db.read` (`{"db": {"read": ["<id>"]}}`, at most 16
+   * artifact IDs) and either that app shares with this one
+   * (`{"db": {"share": {"read": ["<this ID>"]}}}`) or the owner allows it:
+   * Clax asks the owner on the first read ("Let … read …'s data?") and keeps
+   * the answer. The reads are judged at `view`: documents private to one
+   * viewer (`data/users/<id>/…`) and paths whose rules need more than
+   * `view` behave as missing.
+   */
+  interface Db {
+    /** Read-only refs over the documents of app `id` (an artifact ID).
+     * Throws `TypeError` for a value that is not one; calls reject with
+     * {@link DbCrossReadErrorCode}s. */
+    artifact(id: string): DbReadOnly;
+  }
 }

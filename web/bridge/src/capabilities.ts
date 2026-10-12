@@ -6,7 +6,7 @@ import type { Rpc } from "./rpc";
 export const CAPABILITY_METHODS = {
   permissions: ["state", "request"],
   artifact: ["publish", "edit", "sync"],
-  db: ["doc", "collection"],
+  db: ["doc", "collection", "artifact"],
   downloads: ["save"],
   user: ["isOwner", "canEdit", "can", "me", "id", "profiles", "name", "avatarUrl", "search", "email"],
   comments: ["openComposer", "anchorFor", "create", "reply", "sendToClaude", "canSendToClaude", "resolve", "delete", "customAnchors", "working", "onWorking"],
