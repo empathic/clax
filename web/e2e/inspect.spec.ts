@@ -104,6 +104,42 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   }
 }
 
+/** Where the first pixel within 12 of `rgb` on every channel is in the PNG
+ * (row-major), decoded by the browser; null when none is. */
+function firstPixel(page: Page, png: string, rgb: [number, number, number]) {
+  return page.evaluate(async ({ b64, want }) => {
+    const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    const bmp = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+    const ctx = new OffscreenCanvas(bmp.width, bmp.height).getContext("2d")!;
+    ctx.drawImage(bmp, 0, 0);
+    const px = ctx.getImageData(0, 0, bmp.width, bmp.height).data;
+    for (let i = 0; i < px.length; i += 4) if ([0, 1, 2].every(c => Math.abs(px[i + c] - want[c]) <= 12)) return { x: (i / 4) % bmp.width, y: Math.floor(i / 4 / bmp.width) };
+    return null;
+  }, { b64: png, want: rgb });
+}
+
+// A body with no margin whose first child's top margin collapses through
+// it, an absolutely placed marker, and an inline image that fails to load
+// (with alt text, beside a button) above an in-flow marker.
+const PLACED: [number, number, number] = [220, 20, 60];
+const FLOWED: [number, number, number] = [200, 0, 200];
+const OFFSETS = `<!doctype html><html><head><title>Offsets</title><style>body{margin:0;font:16px sans-serif}p{margin:24px 0}#placed{position:absolute;left:30px;top:40px;width:20px;height:20px;background:rgb(${PLACED})}#flowed{width:20px;height:20px;margin-left:60px;background:rgb(${FLOWED})}</style></head>
+<body><p>First paragraph</p><div id="placed"></div><button>Add</button><img src="gone.png" alt="chart of runs" width="40" height="40"><div id="flowed"></div><p>After</p></body></html>`;
+
+for (const mode of ["subdomain", "sandbox"] as const) {
+  test(`${mode}: the PNG places content where the page does, past a collapsed first-child margin and a broken inline image`, async ({ page }) => {
+    const id = await draft(OFFSETS);
+    const frame = await view(page, id, "app=1&inspect=1", mode);
+    await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
+    const r = await inspect(page, "{ settleMs: 500 }");
+    expect(r.error).toBeUndefined();
+    const at = (sel: string) => frame.evaluate(q => { const b = document.querySelector(q)!.getBoundingClientRect(); return { x: Math.round(b.x), y: Math.round(b.y) }; }, sel);
+    expect(await at("#placed")).toEqual({ x: 30, y: 40 });
+    expect(await firstPixel(page, r.png!, PLACED)).toEqual(await at("#placed"));
+    expect(await firstPixel(page, r.png!, FLOWED)).toEqual(await at("#flowed"));
+  });
+}
+
 test("a PNG over maxBytes is rendered again smaller, and one that cannot fit answers why", async ({ page }) => {
   const id = await draft(BROKEN);
   await view(page, id, "app=1&inspect=1", "subdomain");

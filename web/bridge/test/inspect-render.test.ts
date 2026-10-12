@@ -32,7 +32,7 @@ describe("faithfulClone", () => {
     onClone(co);
     expect(cg.getAttribute("src")).toBe(brokenImage(120, 40, "Logo"));
     expect(cg.hasAttribute("srcset")).toBe(false);
-    expect([cg.style.width, cg.style.height]).toEqual(["120px", "40px"]);
+    expect([cg.style.width, cg.style.height, cg.style.verticalAlign]).toEqual(["120px", "40px", "text-bottom"]);
     expect(co.getAttribute("src")).toBe("ok.png");
   });
 
@@ -41,6 +41,6 @@ describe("faithfulClone", () => {
     expect(svg).toMatch(/^data:image\/svg\+xml;charset=utf-8,<svg /);
     expect(svg).toContain('fill="none"');
     expect(svg).not.toContain("<b>");
-    expect(svg).toContain('width="16" height="16"');
+    expect(svg).toContain('width="10" height="5"');
   });
 });
