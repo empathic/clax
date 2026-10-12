@@ -168,6 +168,33 @@ pub(crate) struct Sent {
     /// The send named one agent that did not own the thread before: it
     /// is the new owner (M23), for a `thread.take` record.
     pub took: bool,
+    /// The session that owned the thread before the send made another
+    /// agent its owner: the caller displaces it ([`displace_owner_in`]).
+    pub took_from: Option<String>,
+}
+
+/// Session `old` lost thread `tid` to a send naming another agent (spec
+/// 2026-10-08 §12): its undelivered rows of the thread are deleted and
+/// its open `ask` requests for it withdrawn (`approval.withdraw`, reason
+/// `thread_taken`), as a take does; `touched.targets` gets `old`, so its
+/// waits learn the rows are gone.
+pub(crate) fn displace_owner_in(
+    st: &super::Store,
+    tx: &Transaction<'_>,
+    ctx: &AuditCtx,
+    tid: &str,
+    old: &str,
+    now: &str,
+    touched: &mut Touched,
+) -> Result<()> {
+    tx.execute(
+        "DELETE FROM feedback WHERE thread_id = ?1 AND target_session_id = ?2 AND delivered_at IS NULL",
+        params![tid, old],
+    )?;
+    st.agents_pinged();
+    super::approvals::withdraw_taken_in(st, tx, ctx, tid, old, now)?;
+    touched.targets.insert(old.to_string());
+    Ok(())
 }
 
 /// The stored target session of thread `thread_id`.
@@ -280,6 +307,7 @@ pub(crate) fn send_in(
     Ok(Sent {
         changed: !t.sent_to_agent || retargeted || !inserted.is_empty(),
         took: retargeted && matches!(target, SendTarget::Agent(_)),
+        took_from: target_before.filter(|_| retargeted && matches!(target, SendTarget::Agent(_))),
         feedback_ids: inserted,
         to,
         targets,
@@ -746,6 +774,9 @@ impl Store {
         let requests = self.with_tx(|tx| {
             let now = self.now();
             let sent = send_in(tx, thread_id, None, target, &mut touched, &now)?;
+            if let Some(old) = &sent.took_from {
+                displace_owner_in(self, tx, ctx, thread_id, old, &now, &mut touched)?;
+            }
             let requests = super::approvals::route_in(
                 self,
                 tx,
@@ -780,6 +811,7 @@ impl Store {
             if sent.took
                 && let Some(sid) = sent.to.as_deref()
             {
+                self.agents_pinged();
                 self.record_audit(tx, ctx, take_record(&now, &aid, thread_id, sid, "send"))?;
             }
             Ok(requests)
@@ -830,12 +862,14 @@ impl Store {
                 "UPDATE threads SET sent_to_agent = 1, target_session_id = ?2 WHERE id = ?1",
                 params![thread_id, first],
             )?;
+            // `@name` adds agents to a thread; the earlier ones keep their
+            // rows (§11), unlike a send naming one agent.
+            let now = self.now();
             tx.execute(
                 "UPDATE feedback SET target_session_id = ?2, untargeted_at = NULL
                  WHERE thread_id = ?1 AND target_session_id IS NULL AND delivered_at IS NULL",
                 params![thread_id, first],
             )?;
-            let now = self.now();
             for c in t.comments.iter().filter(|c| c.author_kind == AUTHOR_VIEWER) {
                 for sid in sids {
                     tx.execute(
@@ -848,6 +882,7 @@ impl Store {
             }
             super::approvals::route_in(self, tx, ctx, thread_id, sids, Route::Send, false, &now)?;
             if took {
+                self.agents_pinged();
                 let rec = take_record(&now, &t.artifact_id, thread_id, first, "mention");
                 self.record_audit(tx, ctx, rec)?;
             }
@@ -925,6 +960,7 @@ impl Store {
                     "UPDATE threads SET target_session_id = NULL WHERE id = ?1",
                     params![tid],
                 )?;
+                self.agents_pinged();
                 tx.execute(
                     "UPDATE feedback SET target_session_id = NULL, untargeted_at = ?2,
                         notified_at = NULL, push_failed_at = NULL
@@ -977,6 +1013,7 @@ impl Store {
                 "UPDATE threads SET sent_to_agent = 1, target_session_id = ?2 WHERE id = ?1",
                 params![tid, to],
             )?;
+            self.agents_pinged();
             for other in holders.iter().filter(|h| h.as_str() != to) {
                 super::approvals::withdraw_taken_in(self, tx, ctx, tid, other, &now)?;
             }

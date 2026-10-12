@@ -813,9 +813,12 @@ costs about 20 µs and verifying about 50 µs.
   session's end with `ended_reason = 'idle'`, restores the direct watches
   saved in its `ended_watches_json` (still subject to rights and
   visibility at every take); no other end reason restores anything, and its first tool
-  result carries a note: `[clax] Your session ended after 30 minutes
-  without contact (<time>): N threads were released and your questions
-  withdrawn; your watches were restored.`
+  result carries a note: `[clax] Your session ended after <window> minutes
+  without contact (<time>): N threads were released (<thread IDs>) and
+  your questions withdrawn; your watches were restored.`, where the window
+  is the one that ended it (30 for another machine's agent, 5 for this
+  machine's). The rule is the same for both, and a watch comes back only
+  where the session's rights still allow watching.
 
 ## 7. Rights
 
@@ -1343,8 +1346,9 @@ again.
   accept any agent with the rights; the first reply takes the thread only
   as an implicit take above.
 - **Handoff.** `comments_handoff {url_or_id, thread_id, to}` by the owner
-  agent; while the thread has no live owner, by an agent of its ended
-  owner's person or by an agent that could take it implicitly (above). A
+  agent; while the thread has no owner, by an agent that could take it
+  implicitly (above). (An owner's end releases its threads, §14, so a
+  thread never keeps an ended owner.) A
   handoff with `to` also needs `comments send`. `to` names, by name or
   handle, a live agent that may read and watch the artifact, which is
   given a watch when it has none (as `@name` gives), only once nothing
@@ -1356,7 +1360,12 @@ again.
   owner. Without `to`, the live owner releases the thread (owner cleared,
   undelivered rows untargeted, one per comment); a release of a thread
   with no live owner changes nothing. Anyone else: 409 `thread_taken`.
-- **People** take over by sending again.
+- **People** take over by sending again. A send naming one agent (the
+  picker, `to`, a batch naming it) that makes it the new owner removes the
+  previous owner's undelivered rows of the thread and withdraws that
+  session's open `ask` requests for it (`approval.withdraw`, reason
+  `thread_taken`), as a take does. `@name` adds the named agents and
+  keeps the earlier ones' rows (§11).
 
 ## 13. Agent-aware attention
 
@@ -1398,7 +1407,9 @@ owner ended it). An `idle` end also saves its direct watches to
    an hour.
 
 Remote sessions (with a `grant_id`) are never PID-probed; they end after 30
-minutes without a heartbeat (local sessions keep 5 minutes), so a laptop
+minutes without a heartbeat (local sessions keep 5 minutes), counted only
+while the daemon runs: a remote session's unseen time starts no earlier
+than the daemon's start or its last wake from sleep, so a laptop
 that sleeps briefly keeps its sessions; a longer sleep releases its threads
 and makes the note, and the agent's next request registers anew, getting
 its watches back and a note saying what ended (§6.7).
