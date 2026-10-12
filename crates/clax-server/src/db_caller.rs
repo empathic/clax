@@ -16,7 +16,8 @@
 //! when [`Store::may_read`] says `Granted`, at `min(level, view)` with no
 //! viewer identity, so neither a rule above `view` nor a private
 //! `data/users/<id>/` document is ever readable that way. Writes with the
-//! header are refused before any handler runs ([`refuse_reader_writes`]).
+//! header, and the header on any route but the document reads, are refused
+//! before any handler runs ([`refuse_reader_elsewhere`]).
 
 use crate::error::ApiError;
 use crate::identity::Identity;
@@ -54,20 +55,50 @@ pub fn reader_of(headers: &axum::http::HeaderMap) -> Result<Option<ArtifactId>, 
         .ok_or_else(|| ApiError::bad_request("invalid_args", "X-Clax-Reader is not an artifact ID"))
 }
 
-/// 403 `read_only` for a request that carries `X-Clax-Reader` with a method
-/// other than `GET`, `HEAD` or `OPTIONS`, on any route: a reader only ever
-/// reads. Runs before every handler.
-pub async fn refuse_reader_writes(
+/// Whether `path` is a route that serves a reader: an artifact's document
+/// list (`/api/artifacts/<aid>/docs`), one document
+/// (`/api/artifacts/<aid>/docs/<path>`), or `docs:collections` (which
+/// refuses it itself). Matched on the raw path, so any other spelling is
+/// another route.
+fn reader_route(path: &str) -> bool {
+    let segs: Vec<&str> = path.split('/').collect();
+    match segs.as_slice() {
+        ["", "api", "artifacts", aid, "docs", rest @ ..] => {
+            !aid.is_empty() && rest.iter().all(|s| !s.is_empty())
+        }
+        ["", "api", "artifacts", aid, "docs:collections"] => !aid.is_empty(),
+        _ => false,
+    }
+}
+
+/// Refuses a request that carries `X-Clax-Reader` anywhere it is not
+/// honoured, before any handler runs: a reader only ever reads, and only
+/// another app's documents. With a method other than `GET` or `HEAD`: 403
+/// `read_only`. A `GET` or `HEAD` outside the document read routes
+/// ([`reader_route`]): 403 `not_granted`, since serving it with the
+/// caller's own credentials would ignore the reader. The event stream takes
+/// its reader as `?reader=`, and `/api/stream` in its topic, never the
+/// header.
+pub async fn refuse_reader_elsewhere(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use axum::http::Method;
     use axum::response::IntoResponse;
-    let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
-    if !safe && req.headers().contains_key(READER_HEADER) {
+    if !req.headers().contains_key(READER_HEADER) {
+        return next.run(req).await;
+    }
+    if !matches!(*req.method(), Method::GET | Method::HEAD) {
         return ApiError::forbidden(
             "read_only",
             "a request with X-Clax-Reader only reads another app's documents",
+        )
+        .into_response();
+    }
+    if !reader_route(req.uri().path()) {
+        return ApiError::forbidden(
+            "not_granted",
+            "X-Clax-Reader is honoured only on an artifact's document reads",
         )
         .into_response();
     }
@@ -403,7 +434,34 @@ impl Subscriber {
 
 #[cfg(test)]
 mod tests {
-    use super::percent_decode;
+    use super::{percent_decode, reader_route};
+
+    #[test]
+    fn only_the_document_reads_are_reader_routes() {
+        for ok in [
+            "/api/artifacts/7q3k9mzx2b4t/docs",
+            "/api/artifacts/7q3k9mzx2b4t/docs/runs/r1",
+            "/api/artifacts/7q3k9mzx2b4t/docs:collections",
+        ] {
+            assert!(reader_route(ok), "{ok}");
+        }
+        for no in [
+            "/api/artifacts/7q3k9mzx2b4t",
+            "/api/artifacts/7q3k9mzx2b4t/",
+            "/api/artifacts/7q3k9mzx2b4t/docs/",
+            "/api/artifacts/7q3k9mzx2b4t/docs//x",
+            "/api/artifacts//docs",
+            "/api/artifacts/7q3k9mzx2b4t/do%63s",
+            "/api/artifacts/7q3k9mzx2b4t/docs:batch",
+            "/api/artifacts/7q3k9mzx2b4t/threads",
+            "/api/artifacts/7q3k9mzx2b4t/versions/1/files/docs",
+            "/c/7q3k9mzx2b4t/v/1/docs",
+            "/api/events",
+            "//api/artifacts/7q3k9mzx2b4t/docs",
+        ] {
+            assert!(!reader_route(no), "{no}");
+        }
+    }
 
     #[test]
     fn percent_decoding_fails_closed() {
