@@ -7,8 +7,9 @@ import 'dart:convert';
 
 import '../edit_result.dart' show DbOp;
 
-/// The draft as one render saw it, kept so a run stopped at a cap can
-/// publish exactly what rendered clean.
+/// The draft at one [revision]: what a render uploads and inspects, kept
+/// as [Draft.lastClean] so a run stopped at a cap can publish exactly what
+/// rendered clean.
 class DraftSnapshot {
   DraftSnapshot({
     required Map<String, String> files,
@@ -17,6 +18,7 @@ class DraftSnapshot {
     required List<DbOp> stagedDb,
     required Map<String, int?> pins,
     required this.revision,
+    required this.baseVersion,
   }) : files = Map.unmodifiable(files),
        capabilities = capabilities == null
            ? null
@@ -32,6 +34,10 @@ class DraftSnapshot {
 
   /// The [Draft.revision] it was taken at.
   final int revision;
+
+  /// The version its files are built on: a publish of it is pinned to this
+  /// version, never to a later base.
+  final int baseVersion;
 
   /// Whether it differs from the app's [base] files, [title] and [caps], or
   /// stages a document write.
@@ -89,22 +95,34 @@ class Draft {
   int get revision => _revision;
 
   /// The [revision] the latest render saw, or null before any render.
-  int? renderedRevision;
+  int? get renderedRevision => _renderedRevision;
+  int? _renderedRevision;
 
   /// Whether the latest render had uncaught errors.
-  bool lastRenderHadErrors = false;
+  bool get lastRenderHadErrors => _lastRenderHadErrors;
+  var _lastRenderHadErrors = false;
 
   /// The hidden draft artifact a render serves the draft as, and its
   /// version.
   String? draftArtifactId;
   int? draftVersion;
 
-  /// The draft as of the latest render without uncaught errors.
-  DraftSnapshot? lastClean;
+  /// The snapshot the latest render without uncaught errors rendered, on
+  /// the current [baseVersion]; a [reset] clears it.
+  DraftSnapshot? get lastClean => _lastClean;
+  DraftSnapshot? _lastClean;
 
-  /// Whether the latest draft has been rendered, without uncaught errors.
+  /// [lastClean] when it is built on the current [baseVersion], else null:
+  /// the only snapshot a cap stop may publish.
+  DraftSnapshot? get cleanOnBase => switch (_lastClean) {
+    final c? when c.baseVersion == baseVersion => c,
+    _ => null,
+  };
+
+  /// Whether the current draft, at its latest revision, rendered without
+  /// uncaught errors: the gate for publishing it.
   bool get renderedClean =>
-      renderedRevision == _revision && !lastRenderHadErrors;
+      _renderedRevision == _revision && !_lastRenderHadErrors;
 
   /// Creates or replaces [path]; returns whether it was created.
   bool writeFile(String path, String content) {
@@ -138,8 +156,8 @@ class Draft {
   }
 
   /// Replaces the draft's files, meta and staged writes, as a conflict
-  /// reset onto the latest version does; pins and render state are kept
-  /// for the caller to adjust.
+  /// reset onto the latest version does, and clears [lastClean], which was
+  /// built on the old base. Pins are kept for the caller to adjust.
   void reset({
     required Map<String, String> files,
     String? title,
@@ -158,6 +176,7 @@ class Draft {
       ..clear()
       ..addAll(stagedDb);
     this.baseVersion = baseVersion;
+    _lastClean = null;
     _revision++;
   }
 
@@ -169,14 +188,18 @@ class Draft {
     stagedDb: _stagedDb,
     pins: pins,
     revision: _revision,
+    baseVersion: baseVersion,
   );
 
-  /// Records a render of the current draft; a render without uncaught
-  /// [errors] also keeps the draft as [lastClean].
-  void markRendered({required bool errors}) {
-    renderedRevision = _revision;
-    lastRenderHadErrors = errors;
-    if (!errors) lastClean = snapshot();
+  /// Records a render of [rendered], the [snapshot] the render took before
+  /// it uploaded the draft. The current draft counts as rendered only when
+  /// nothing changed since ([renderedClean]). A render without uncaught
+  /// [errors] keeps [rendered] as [lastClean], unless it is built on a base
+  /// other than the current one.
+  void markRendered(DraftSnapshot rendered, {required bool errors}) {
+    _renderedRevision = rendered.revision;
+    _lastRenderHadErrors = errors;
+    if (!errors && rendered.baseVersion == baseVersion) _lastClean = rendered;
   }
 
   /// Whether the draft differs from the app's [base] files, [title] and

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/request.dart';
 import 'package:clax_app/agent/tools/budget.dart';
@@ -42,6 +44,32 @@ class _ThrowingTool implements Tool {
   @override
   Future<ToolOutput> call(Map<String, Object?> input, RunState s) =>
       throw const FormatException('the daemon said no');
+}
+
+/// A render that snapshots the draft, waits for [gate], then marks what
+/// it saw as rendered clean.
+class _GatedRender implements Tool {
+  _GatedRender(this.gate);
+
+  final Completer<void> gate;
+  var started = 0;
+
+  @override
+  ToolSpec get spec => const ToolSpec('render', 'Renders.', {
+    'type': 'object',
+    'properties': {},
+    'required': [],
+    'additionalProperties': false,
+  });
+
+  @override
+  Future<ToolOutput> call(Map<String, Object?> input, RunState s) async {
+    started++;
+    final seen = s.draft.snapshot();
+    await gate.future;
+    s.draft.markRendered(seen, errors: false);
+    return const ToolOk({'console_errors': []});
+  }
 }
 
 void main() {
@@ -94,7 +122,7 @@ void main() {
     expect(tb.state.ended, isFalse);
   });
 
-  test('past the wall clock only finish and give_up still run', () async {
+  test('past the wall clock every call is refused, finish too', () async {
     final clock = StepClock();
     final end = _EndTool('finish');
     final tb = toolboxWith(clock: clock, extra: [end]);
@@ -103,7 +131,47 @@ void main() {
     expect(r, isA<ToolRefused>());
     expect((r as ToolRefused).message, contains('45 seconds'));
     expect(tb.state.draft.files.containsKey('a.txt'), isFalse);
-    expect(await tb.call('finish', {}), isA<ToolOk>());
+    expect(await tb.call('finish', {}), isA<ToolRefused>());
+    expect(end.calls, 0);
+  });
+
+  test(
+    'a call made before the deadline runs, even if it starts after',
+    () async {
+      final clock = StepClock();
+      final gate = Completer<void>();
+      final render = _GatedRender(gate);
+      final end = _EndTool('finish');
+      final tb = toolboxWith(clock: clock, extra: [render, end]);
+      final first = tb.call('render', {});
+      final second = tb.call('finish', {});
+      clock.advance(const Duration(seconds: 45));
+      gate.complete();
+      expect(await first, isA<ToolOk>());
+      expect(await second, isA<ToolOk>());
+      expect(end.calls, 1);
+    },
+  );
+
+  test('calls run one at a time, in order: a write during a render waits, '
+      'and the draft is not marked clean', () async {
+    final gate = Completer<void>();
+    final render = _GatedRender(gate);
+    final tb = toolboxWith(files: {'index.html': '<p>ok</p>'}, extra: [render]);
+    final d = tb.state.draft;
+    final rendering = tb.call('render', {});
+    final writing = tb.call('write_file', {
+      'path': 'index.html',
+      'content': '<p>broken',
+    });
+    await pumpEventQueue();
+    expect(render.started, 1);
+    expect(d.files['index.html'], '<p>ok</p>', reason: 'the write waits');
+    gate.complete();
+    await Future.wait([rendering, writing]);
+    expect(d.files['index.html'], '<p>broken');
+    expect(d.renderedClean, isFalse);
+    expect(d.lastClean!.files, {'index.html': '<p>ok</p>'});
   });
 
   test('the tools of the turn that reached the turn cap still run', () async {
@@ -157,31 +225,61 @@ void main() {
   });
 
   group('draft', () {
-    test(
-      'a clean render keeps a snapshot that later edits leave alone',
-      () async {
-        final tb = toolboxWith(files: {'index.html': '<p>a</p>'});
-        final d = tb.state.draft;
-        await tb.call('str_replace', {
-          'path': 'index.html',
-          'old_str': 'a',
-          'new_str': 'b',
-        });
-        d.markRendered(errors: false);
-        expect(d.renderedRevision, d.revision);
-        await tb.call('str_replace', {
-          'path': 'index.html',
-          'old_str': 'b',
-          'new_str': 'c',
-        });
-        expect(d.renderedRevision, isNot(d.revision));
-        expect(d.lastClean!.files, {'index.html': '<p>b</p>'});
-        expect(d.lastClean!.revision, 1);
-        d.markRendered(errors: true);
-        expect(d.lastRenderHadErrors, isTrue);
-        expect(d.lastClean!.files, {'index.html': '<p>b</p>'});
-      },
-    );
+    test('a clean render keeps the snapshot it rendered', () async {
+      final tb = toolboxWith(files: {'index.html': '<p>a</p>'});
+      final d = tb.state.draft;
+      await tb.call('str_replace', {
+        'path': 'index.html',
+        'old_str': 'a',
+        'new_str': 'b',
+      });
+      d.markRendered(d.snapshot(), errors: false);
+      expect(d.renderedRevision, d.revision);
+      expect(d.renderedClean, isTrue);
+      await tb.call('str_replace', {
+        'path': 'index.html',
+        'old_str': 'b',
+        'new_str': 'c',
+      });
+      expect(d.renderedClean, isFalse);
+      expect(d.lastClean!.files, {'index.html': '<p>b</p>'});
+      expect(d.lastClean!.revision, 1);
+      expect(d.lastClean!.baseVersion, 3);
+      d.markRendered(d.snapshot(), errors: true);
+      expect(d.lastRenderHadErrors, isTrue);
+      expect(d.renderedClean, isFalse);
+      expect(d.lastClean!.files, {'index.html': '<p>b</p>'});
+    });
+
+    test('an edit between the snapshot and the mark is not rendered', () {
+      final d = toolboxWith(files: {'index.html': '<p>a</p>'}).state.draft;
+      final seen = d.snapshot();
+      d.writeFile('index.html', '<p>broken');
+      d.markRendered(seen, errors: false);
+      expect(d.renderedRevision, seen.revision);
+      expect(d.renderedClean, isFalse);
+      expect(d.lastClean, same(seen));
+      expect(d.lastClean!.files, {'index.html': '<p>a</p>'});
+    });
+
+    test('a reset clears lastClean, and a snapshot of the old base is never '
+        'kept', () {
+      final d = toolboxWith(files: {'index.html': 'v3'}).state.draft;
+      d.writeFile('index.html', 'mine');
+      final old = d.snapshot();
+      d.markRendered(old, errors: false);
+      expect(d.cleanOnBase, same(old));
+      d.reset(files: {'index.html': 'v4'}, baseVersion: 4);
+      expect(d.lastClean, isNull);
+      expect(d.cleanOnBase, isNull);
+      d.markRendered(old, errors: false);
+      expect(d.lastClean, isNull, reason: 'rendered on version 3');
+      expect(d.renderedClean, isFalse);
+      final fresh = d.snapshot();
+      d.markRendered(fresh, errors: false);
+      expect(d.cleanOnBase, same(fresh));
+      expect(fresh.baseVersion, 4);
+    });
 
     test('changedFrom compares files, meta and staged writes', () {
       final tb = toolboxWith(files: {'index.html': 'x'}, title: 'T');
