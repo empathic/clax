@@ -39,11 +39,11 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
   // The question module imports the gallery's entry chunk, the gallery's
   // lazy module's own import (which the artifact view has not loaded), and
   // one file of its own.
-  for (const f of ["w.js", "as.js", "s.js", "q.js", "qd.js"]) dist(`_clax/shell/${f}`, f.repeat(100));
+  for (const f of ["w.js", "as.js", "s.js", "q.js", "qd.js", "h.js", "hd.js"]) dist(`_clax/shell/${f}`, f.repeat(100));
   // The People page imports the gallery's lazy module's import too, and one file of its own.
   for (const f of ["p.js", "pd.js"]) dist(`_clax/shell/${f}`, f.repeat(100));
   dist(".vite/manifest.json", JSON.stringify({
-    "index.html": { file: "_clax/shell/a.js" }, "artifact.html": { file: "_clax/shell/a.js" },
+    "index.html": { file: "_clax/shell/a.js" }, "artifact.html": { file: "_clax/shell/a.js", dynamicImports: ["src/app/host.ts"] },
     "src/ui/gallery-working.ts": { file: "_clax/shell/w.js", isDynamicEntry: true, imports: ["index.html", "_s.js"], dynamicImports: ["_index-q.js", "src/people/People.svelte"] },
     "src/people/People.svelte": { file: "_clax/shell/p.js", isDynamicEntry: true, imports: ["index.html", "_s.js", "_pd.js"] },
     "_pd.js": { file: "_clax/shell/pd.js" },
@@ -53,6 +53,10 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
     "_s.js": { file: "_clax/shell/s.js" },
     "_index-q.js": { file: "_clax/shell/q.js", name: "index", isDynamicEntry: true, imports: ["index.html", "_s.js", "_qd.js"] },
     "_qd.js": { file: "_clax/shell/qd.js" },
+    // App mode's host: the artifact entry's dynamic import, with one import
+    // the entry has not loaded.
+    "src/app/host.ts": { file: "_clax/shell/h.js", name: "host", isDynamicEntry: true, imports: ["artifact.html", "_hd.js"] },
+    "_hd.js": { file: "_clax/shell/hd.js" },
   }));
   // The parts: clip and caps import the comment part's file.
   for (const f of ["comment-1.js", "clip-1.js", "caps-1.js", "room-1.js", "sample-1.js"]) dist(`_clax/bridge/${f}`, f.repeat(50));
@@ -80,7 +84,7 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
 }
 
 describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
-  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partRoom: 10_000, partSample: 10_000, extOverlay: 10_000, extWorker: 10_000, extComposer: 10_000, extPanel: 10_000, questions: 10_000, people: 10_000 };
+  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partRoom: 10_000, partSample: 10_000, extOverlay: 10_000, extWorker: 10_000, extComposer: 10_000, extPanel: 10_000, questions: 10_000, people: 10_000, host: 10_000 };
 
   it("passes within budget", () => {
     expect(run(full).status).toBe(0);
@@ -115,6 +119,22 @@ describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
     const r = run({ ...full, partClip: s.clip - 1 });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("partClip");
+  });
+
+  it("counts app mode's host chunk with what it imports beyond the artifact entry, against its own budget", () => {
+    const r0 = run(full);
+    const host = Number(/\bhost (\d+)/.exec(r0.stdout)?.[1]);
+    const one = (f: string) => pako.gzip(f.repeat(100), { level: 9 }).length;
+    expect(host).toBe(one("h.js") + one("hd.js"));
+    rmSync(root, { recursive: true, force: true });
+    const r = run({ ...full, host: host - 1 });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("host");
+    rmSync(root, { recursive: true, force: true });
+    const { host: _, ...noHost } = full;
+    const m = run(noHost);
+    expect(m.status).toBe(1);
+    expect(m.stderr).toContain("lacks a numeric budget for: host");
   });
 
   it("fails when the build carries a font file, wherever it is", () => {
