@@ -4,7 +4,7 @@
 use super::Store;
 use super::approvals::Route;
 use super::artifacts::{SELECT_VERSION, live_artifact_in, row_to_version};
-use super::threads::{AUTHOR_VIEWER, take_in, thread_in, thread_record};
+use super::threads::{AUTHOR_AGENT, AUTHOR_VIEWER, take_in, thread_in, thread_record};
 use crate::anchor::Anchor;
 use crate::audit::{AuditCtx, AuditKind, AuditRecord};
 use crate::feedback::{
@@ -383,6 +383,10 @@ struct Pending {
     batch: Option<FeedbackBatch>,
     /// A take held it and told the session (`placeholder_at`).
     told: bool,
+    /// The comment's author as the filter reads it: its viewer, or for an
+    /// agent's comment, [`Author::System`] (an agent's name is never
+    /// marked).
+    writer: Author,
 }
 
 /// What [`Store::take_feedback`] handed over (spec 2026-10-08 §8.4, M16):
@@ -505,7 +509,8 @@ impl<'a> Sight<'a> {
                     Author::Unconnected | Author::System => None,
                 };
                 let name = crate::feedback::display_name(raw.as_deref().unwrap_or(""));
-                self.names.insert(a.clone(), name);
+                // An unconnected author reads `<name> (not connected)`.
+                self.names.insert(a.clone(), self.vis.label(&name, a));
             }
             out.push(self.names[a].clone());
         }
@@ -1173,6 +1178,11 @@ impl Store {
                                 None => None,
                             },
                             told: r.get(18)?,
+                            writer: if r.get::<_, String>(19)? == AUTHOR_AGENT {
+                                Author::System
+                            } else {
+                                Author::of_viewer(r.get::<_, Option<String>>(20)?.as_deref())
+                            },
                         })
                     },
                 )?
@@ -1329,7 +1339,14 @@ impl Store {
                 .insert((p.artifact_id.clone(), p.thread_id.clone()));
         }
         let mut items = Vec::with_capacity(pending.len());
-        for (p, anchor, clip_path, live, withheld) in pending {
+        for (mut p, anchor, clip_path, live, withheld) in pending {
+            // Names of authors who are not connected say so (spec §9.6).
+            p.author = vis.label(&p.author, &p.writer);
+            if let Some(b) = p.batch.as_mut() {
+                for a in visibility::authors_of_batch_note(b.sender.as_deref()) {
+                    b.sent_by = vis.label(&b.sent_by, &a);
+                }
+            }
             touched
                 .threads
                 .insert((p.artifact_id.clone(), p.thread_id.clone()));
@@ -1752,7 +1769,8 @@ impl Store {
 pub(crate) const TAKE_FEEDBACK: &str = "SELECT f.id, f.thread_id, f.comment_id, f.delivered_at IS NOT NULL AS delivered,
                         t.artifact_id, a.title, t.version_n, t.anchor_json, t.has_clip,
                         c.author_name, c.body, c.created_at, c.via_page,
-                        f.batch_id, b.size, b.note, b.sent_by, b.sender, f.placeholder_at IS NOT NULL
+                        f.batch_id, b.size, b.note, b.sent_by, b.sender, f.placeholder_at IS NOT NULL,
+                        c.author_kind, c.author_public_id
                  FROM feedback f
                  LEFT JOIN send_batches b ON b.id = f.batch_id
                  JOIN threads t ON t.id = f.thread_id

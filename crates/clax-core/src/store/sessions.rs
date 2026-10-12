@@ -91,10 +91,11 @@ pub struct EndedSession {
     pub released_threads: Vec<String>,
 }
 
-const SELECT: &str = "SELECT id, harness, harness_session_id, cwd, pid, parent_pid, started_at,
+pub(super) const SELECT: &str =
+    "SELECT id, harness, harness_session_id, cwd, pid, parent_pid, started_at,
     last_seen_at, ended_at, agent_handle, grant_id, person, name, name_source FROM sessions";
 
-fn row_to_session(r: &Row<'_>) -> rusqlite::Result<Session> {
+pub(super) fn row_to_session(r: &Row<'_>) -> rusqlite::Result<Session> {
     Ok(Session {
         id: r.get("id")?,
         harness: r.get("harness")?,
@@ -844,10 +845,26 @@ impl Store {
     /// `question.withdraw` (reason `session_end`) for each question
     /// withdrawn; ending an ended one records nothing. The session's `ended_reason` is `exit`.
     pub fn end_session_touched(&self, ctx: &AuditCtx, id: &str) -> Result<EndedSession> {
+        self.end_session_for(ctx, id, EndReason::Exit)
+    }
+
+    /// Ends live session `id` because its person or the owner ended it
+    /// from their browser (spec 2026-10-08-multi-agent-multi-person §14,
+    /// `ended_reason` `person`), with the cleanup every end does
+    /// ([`Store::end_session_touched`]); `session.end` is recorded with
+    /// reason `person` under `ctx`. An ended session is left as it was.
+    ///
+    /// # Errors
+    /// `NotFound` when no such session exists.
+    pub fn end_session_by_person(&self, ctx: &AuditCtx, id: &str) -> Result<EndedSession> {
+        self.end_session_for(ctx, id, EndReason::Person)
+    }
+
+    fn end_session_for(&self, ctx: &AuditCtx, id: &str, reason: EndReason) -> Result<EndedSession> {
         self.with_tx(|tx| {
             let now = self.now();
             let c = self
-                .end_in(tx, ctx, id, &now, EndReason::Exit, None)?
+                .end_in(tx, ctx, id, &now, reason, None)?
                 .unwrap_or_default();
             Ok(EndedSession {
                 session: fetch(tx, id).map_err(not_found)?,

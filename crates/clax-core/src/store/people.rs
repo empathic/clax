@@ -1656,9 +1656,21 @@ impl Store {
     /// grant `gid`, recording `grant.narrow` under `ctx`.
     ///
     /// # Errors
-    /// `NotFound` unless `gid` names a pending or approved grant.
+    /// `NotFound` unless `gid` names a pending or approved grant;
+    /// `not_narrower` for a narrowing of a grant with a person that allows
+    /// anything the person's rights do not.
     pub fn narrow_grant(&self, ctx: &AuditCtx, gid: &str, narrow: Option<Rights>) -> Result<Grant> {
         self.with_tx(|tx| {
+            if let Some(viewer_id) = tx
+                .query_row(
+                    "SELECT viewer_id FROM grants WHERE id = ?1 AND viewer_id IS NOT NULL",
+                    params![gid],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?
+            {
+                check_narrower(narrow.as_ref(), &rights_of_row(tx, &viewer_id)?)?;
+            }
             let json = narrow.as_ref().map(write_rights);
             let was: Option<Option<String>> = tx
                 .query_row(
@@ -2034,6 +2046,237 @@ impl Store {
                 self.visibility_changed();
             }
             Ok(out)
+        })
+    }
+}
+
+/// A connected person (or a revoked one, kept as history) with their
+/// rights (spec §7.3, §7.4).
+#[derive(Clone, Debug)]
+pub struct PersonRow {
+    pub viewer: Viewer,
+    pub rights: Rights,
+}
+
+/// A live agent with the narrowing its person set and the elevation the
+/// owner gave it (spec §7.2, §7.4).
+#[derive(Clone, Debug)]
+pub struct AgentRights {
+    pub session: crate::model::Session,
+    /// Its person's narrowing of it alone.
+    pub narrow: Option<Rights>,
+    /// The owner's elevation of it, until its session ends.
+    pub elevate: Option<Rights>,
+    /// What it may do (`(person ∩ grant.narrow ∩ narrow) ∪ elevate`); `None`
+    /// for an agent of this machine, which acts with the daemon token that
+    /// rights do not limit.
+    pub rights: Option<Rights>,
+}
+
+/// The access an agent of grant `gid` has before its own narrowing and
+/// elevation: its person's rights within the grant's narrowing.
+fn agent_base(c: &rusqlite::Connection, gid: &str) -> Result<Rights> {
+    let (viewer_id, narrow): (String, Option<String>) = c
+        .query_row(
+            "SELECT viewer_id, narrow_json FROM grants WHERE id = ?1 AND viewer_id IS NOT NULL",
+            params![gid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .ok_or(CoreError::NotFound)?;
+    grant_access(
+        c,
+        &viewer_id,
+        narrow.as_deref().map(read_rights).transpose()?.as_ref(),
+    )
+}
+
+/// 400 `not_narrower`: `narrow` allows something `base` does not.
+fn check_narrower(narrow: Option<&Rights>, base: &Rights) -> Result<()> {
+    match narrow {
+        Some(n) if !n.is_narrower_or_equal(base) => Err(CoreError::invalid(
+            "not_narrower",
+            "a narrowing only takes rights away: this one allows something the agent's person may not do",
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Live session `sid` on `c` with its narrowing and elevation.
+fn agent_rights_in(c: &rusqlite::Connection, sid: &str) -> Result<Option<AgentRights>> {
+    let row = c
+        .query_row(
+            &format!(
+                "{} WHERE id = ?1 AND ended_at IS NULL",
+                super::sessions::SELECT.replace(
+                    " FROM sessions",
+                    ", narrow_json AS narrow_j, elevate_json AS elevate_j FROM sessions"
+                )
+            ),
+            params![sid],
+            |r| {
+                Ok((
+                    super::sessions::row_to_session(r)?,
+                    r.get::<_, Option<String>>("narrow_j")?,
+                    r.get::<_, Option<String>>("elevate_j")?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((session, narrow, elevate)) = row else {
+        return Ok(None);
+    };
+    let rights = match &session.grant_id {
+        Some(gid) => match grant_caller_in(c, gid, Some(sid)) {
+            Ok(gc) => Some(gc.rights),
+            // A grant that ended has no agents that act.
+            Err(CoreError::Invalid { .. }) => None,
+            Err(e) => return Err(e),
+        },
+        None => None,
+    };
+    Ok(Some(AgentRights {
+        session,
+        narrow: narrow.as_deref().map(read_rights).transpose()?,
+        elevate: elevate.as_deref().map(read_rights).transpose()?,
+        rights,
+    }))
+}
+
+/// 400 `token_agent`: rights neither narrow nor elevate an agent of this
+/// machine, which acts with the daemon token.
+fn token_agent() -> CoreError {
+    CoreError::invalid(
+        "token_agent",
+        "this machine's agents act with the daemon token, which rights do not limit: narrowing and elevation apply to agents of connected machines",
+    )
+}
+
+/// The live session `sid`'s grant on `tx`: `NotFound` for one that is not
+/// live, [`token_agent`] for one of this machine.
+fn live_grant_of(tx: &Transaction<'_>, sid: &str) -> Result<String> {
+    let gid: Option<Option<String>> = tx
+        .query_row(
+            "SELECT grant_id FROM sessions WHERE id = ?1 AND ended_at IS NULL",
+            params![sid],
+            |r| r.get(0),
+        )
+        .optional()?;
+    gid.ok_or(CoreError::NotFound)?.ok_or_else(token_agent)
+}
+
+impl Store {
+    /// Every connected person, and every revoked one, oldest first, with
+    /// their rights.
+    pub fn people(&self) -> Result<Vec<PersonRow>> {
+        self.with_read(|c| {
+            let mut stmt = c.prepare(
+                "SELECT id, public_id, display_name, created_at, person, person_revoked_at
+                 FROM viewers WHERE person = 1 AND owner = 0 ORDER BY created_at, rowid",
+            )?;
+            let viewers = stmt
+                .query_map([], row_to_viewer)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            viewers
+                .into_iter()
+                .map(|v| {
+                    let rights = rights_of_row(c, &v.id)?;
+                    Ok(PersonRow { viewer: v, rights })
+                })
+                .collect()
+        })
+    }
+
+    /// Every live agent with its narrowing and elevation, oldest first.
+    pub fn live_agents(&self) -> Result<Vec<AgentRights>> {
+        self.with_read(|c| {
+            let ids: Vec<String> = {
+                let mut stmt = c.prepare(
+                    "SELECT id FROM sessions WHERE ended_at IS NULL ORDER BY started_at, id",
+                )?;
+                stmt.query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            let mut out = Vec::with_capacity(ids.len());
+            for id in ids {
+                if let Some(a) = agent_rights_in(c, &id)? {
+                    out.push(a);
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    /// Live session `sid` with its narrowing and elevation; `None` once it
+    /// has ended or for no such session.
+    pub fn agent_rights(&self, sid: &str) -> Result<Option<AgentRights>> {
+        self.with_read(|c| agent_rights_in(c, sid))
+    }
+
+    /// Sets (or with `None` clears) the narrowing of live agent `sid` of
+    /// another machine (spec §7.4), recorded as `agent.narrow {session,
+    /// access}` under `ctx`. From its next request on, it may do only
+    /// what `(person ∩ grant narrowing ∩ narrow) ∪ elevation` allows
+    /// (M17: a change bumps the visibility generation).
+    ///
+    /// # Errors
+    /// `NotFound` for a session that is not live; `token_agent` for an
+    /// agent of this machine; `not_narrower` for a narrowing that allows
+    /// anything its person's rights within its grant's narrowing do not.
+    pub fn narrow_agent(
+        &self,
+        ctx: &AuditCtx,
+        sid: &str,
+        narrow: Option<Rights>,
+    ) -> Result<AgentRights> {
+        self.set_agent_rights(ctx, sid, "narrow_json", AuditKind::AgentNarrow, narrow)
+    }
+
+    /// Sets (or with `None` removes) the owner's elevation of live agent
+    /// `sid` of another machine (spec §7.4): rights beyond its person's,
+    /// for it alone, until its session ends (§14 clears it). Recorded as
+    /// `agent.elevate {session, access}` under `ctx`; a change bumps the
+    /// visibility generation (M17).
+    ///
+    /// # Errors
+    /// `NotFound` for a session that is not live; `token_agent` for an
+    /// agent of this machine.
+    pub fn elevate_agent(
+        &self,
+        ctx: &AuditCtx,
+        sid: &str,
+        elevate: Option<Rights>,
+    ) -> Result<AgentRights> {
+        self.set_agent_rights(ctx, sid, "elevate_json", AuditKind::AgentElevate, elevate)
+    }
+
+    fn set_agent_rights(
+        &self,
+        ctx: &AuditCtx,
+        sid: &str,
+        column: &'static str,
+        kind: AuditKind,
+        value: Option<Rights>,
+    ) -> Result<AgentRights> {
+        self.with_tx(|tx| {
+            let gid = live_grant_of(tx, sid)?;
+            if kind == AuditKind::AgentNarrow {
+                check_narrower(value.as_ref(), &agent_base(tx, &gid)?)?;
+            }
+            let json = value.as_ref().map(write_rights);
+            let changed = tx.execute(
+                &format!("UPDATE sessions SET {column} = ?2 WHERE id = ?1 AND {column} IS NOT ?2"),
+                params![sid, json],
+            )? > 0;
+            let mut rec = AuditRecord::new(kind, self.now())
+                .with("session", sid)
+                .with("access", value.as_ref().map(Rights::to_json));
+            rec.ids.session = Some(sid.to_string());
+            self.record_audit(tx, ctx, rec)?;
+            if changed {
+                self.visibility_changed();
+            }
+            agent_rights_in(tx, sid)?.ok_or(CoreError::NotFound)
         })
     }
 }
@@ -3064,6 +3307,123 @@ pub(crate) mod tests {
             c.rights.is_narrower_or_equal(&collaborator)
                 && collaborator.is_narrower_or_equal(&c.rights)
         );
+    }
+
+    #[test]
+    fn an_agent_is_narrowed_by_its_person_and_elevated_by_the_owner_until_it_ends() {
+        use crate::rights::{PRESET_FULL, PRESET_READER, RightType};
+        let (_d, _c, st) = store();
+        let (gid, _, _) = approved(&st, "Sam", KEY_A);
+        let none = |_: &str| false;
+        let s1 = st.register_session(DAEMON, reg(Some(&gid))).unwrap();
+        let reader = Rights::preset(PRESET_READER).unwrap();
+        let full = Rights::preset(PRESET_FULL).unwrap();
+        // Wider than Sam's rights: refused, nothing written, no bump.
+        let g0 = st.visibility_generation();
+        assert_eq!(
+            code(st.narrow_agent(DAEMON, &s1.id, Some(full.clone()))),
+            "not_narrower"
+        );
+        assert_eq!(
+            code(st.narrow_grant(DAEMON, &gid, Some(full.clone()))),
+            "not_narrower"
+        );
+        assert_eq!(st.visibility_generation(), g0);
+        assert!(st.agent_rights(&s1.id).unwrap().unwrap().narrow.is_none());
+        // Narrowed to reading: one bump, and its rights follow.
+        let a = st
+            .narrow_agent(DAEMON, &s1.id, Some(reader.clone()))
+            .unwrap();
+        assert_eq!(st.visibility_generation(), g0 + 1);
+        assert_eq!(a.narrow.as_ref(), Some(&reader));
+        assert!(
+            !a.rights
+                .unwrap()
+                .allows(RightType::Db, "write", Some("x"), &none)
+        );
+        // The same narrowing again changes nothing: no bump.
+        st.narrow_agent(DAEMON, &s1.id, Some(reader.clone()))
+            .unwrap();
+        assert_eq!(st.visibility_generation(), g0 + 1);
+        // The owner's elevation goes beyond Sam's rights, for this agent.
+        let a = st
+            .elevate_agent(DAEMON, &s1.id, Some(full.clone()))
+            .unwrap();
+        assert_eq!(st.visibility_generation(), g0 + 2);
+        assert!(
+            a.rights
+                .unwrap()
+                .allows(RightType::Artifacts, "delete", Some("x"), &none)
+        );
+        let s2 = st.register_session(DAEMON, reg(Some(&gid))).unwrap();
+        let other = st.agent_rights(&s2.id).unwrap().unwrap();
+        assert!(
+            !other
+                .rights
+                .unwrap()
+                .allows(RightType::Artifacts, "delete", Some("x"), &none)
+        );
+        // Ended by its person: both go, and nothing applies to an ended one.
+        let ended = st.end_session_by_person(DAEMON, &s1.id).unwrap();
+        assert!(ended.session.ended_at.is_some());
+        assert!(st.agent_rights(&s1.id).unwrap().is_none());
+        assert!(matches!(
+            st.narrow_agent(DAEMON, &s1.id, None),
+            Err(CoreError::NotFound)
+        ));
+        assert!(matches!(
+            st.elevate_agent(DAEMON, &s1.id, None),
+            Err(CoreError::NotFound)
+        ));
+        let reason: String = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT ended_reason FROM sessions WHERE id = ?1",
+                    params![s1.id],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(reason, "person");
+        // An agent of this machine: rights do not limit the daemon token.
+        let s0 = st.register_session(DAEMON, reg(None)).unwrap();
+        assert_eq!(
+            code(st.narrow_agent(DAEMON, &s0.id, Some(reader))),
+            "token_agent"
+        );
+        assert_eq!(
+            code(st.elevate_agent(DAEMON, &s0.id, Some(full))),
+            "token_agent"
+        );
+    }
+
+    #[test]
+    fn people_lists_every_person_with_their_rights_revoked_ones_kept() {
+        use crate::rights::PRESET_READER;
+        let (_d, _c, st) = store();
+        let (sam_g, _, _) = approved(&st, "Sam", KEY_A);
+        let (mia_g, _, _) = approved(&st, "Mia", KEY_B);
+        let sam = st.grant(&sam_g).unwrap().person.unwrap();
+        let mia = st.grant(&mia_g).unwrap().person.unwrap();
+        let reader = Rights::preset(PRESET_READER).unwrap();
+        st.set_person_rights(DAEMON, &mia, Some(reader.clone()))
+            .unwrap();
+        st.revoke_person(DAEMON, &sam).unwrap();
+        let people = st.people().unwrap();
+        let names: Vec<_> = people
+            .iter()
+            .map(|p| {
+                (
+                    p.viewer.display_name.clone().unwrap(),
+                    p.viewer.person_revoked_at.is_some(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            names,
+            [("Sam".to_string(), true), ("Mia".to_string(), false)]
+        );
+        assert_eq!(people[1].rights, reader);
     }
 
     #[test]

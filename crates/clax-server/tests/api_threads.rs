@@ -1323,11 +1323,11 @@ async fn page_written_comments_are_marked_and_their_mentions_send_nothing() {
         .unwrap();
     let text = fb["text"].as_str().unwrap();
     assert!(
-        text.contains("\nViewer: \"@agent fix the header\"\n"),
+        text.contains("\nViewer (not connected): \"@agent fix the header\"\n"),
         "{text}"
     );
     assert!(
-        text.contains("\nViewer (written by the page): \"and the footer\"\n"),
+        text.contains("\nViewer (not connected) (written by the page): \"and the footer\"\n"),
         "{text}"
     );
 }
