@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../clax/api.dart';
 import '../platform/voice.dart';
+import 'inbox_screen.dart';
 import 'making_screen.dart';
 import 'new_sheet.dart';
 
@@ -19,6 +20,13 @@ import 'new_sheet.dart';
 /// The list is loaded at start and again whenever the event stream says
 /// events may have been missed: `resync`, or a `ready` that did not resume
 /// (a new daemon, or a reconnect it could not resume).
+///
+/// The top bar's inbox button shows the unread count: the launcher holds a
+/// [ClaxStream] on `inbox`, fetches [ClaxApi.inboxSummary] once subscribed
+/// (and again on `resync` and on coming back from the inbox), and takes
+/// each event's `unread`. The button pushes [InboxScreen]; an item opened
+/// there goes to [onOpenQuestion] (a question, when given), else to
+/// [onOpenTarget] with its thread or version, else to [open].
 class Launcher extends StatefulWidget {
   const Launcher({
     super.key,
@@ -28,6 +36,8 @@ class Launcher extends StatefulWidget {
     required this.voice,
     this.openSettings,
     this.needsKey = false,
+    this.onOpenTarget,
+    this.onOpenQuestion,
   });
 
   final ClaxApi api;
@@ -42,6 +52,14 @@ class Launcher extends StatefulWidget {
   /// then says so above the apps, with Add key opening Settings.
   final bool needsKey;
 
+  /// Opens app [aid] from the inbox: at [thread] (a reply's thread) or at
+  /// version [version]. When null, the app opens as [open] opens it.
+  final void Function(String aid, {String? thread, int? version})? onOpenTarget;
+
+  /// Shows question [qid] for an answer, from the inbox. When null, a
+  /// question about an app opens that app through [onOpenTarget].
+  final void Function(String qid)? onOpenQuestion;
+
   @override
   State<Launcher> createState() => _LauncherState();
 }
@@ -51,6 +69,10 @@ class _LauncherState extends State<Launcher> {
   Object? _loadError;
   StreamSubscription<ClaxEvent>? _events;
   String _draft = '';
+  ClaxStream? _inbox;
+  StreamSubscription<StreamEvent>? _inboxEvents;
+  int _unread = 0;
+  int _summaries = 0;
 
   /// Bumped by each load, so only the newest load's answer is kept.
   int _loads = 0;
@@ -62,12 +84,83 @@ class _LauncherState extends State<Launcher> {
         .events(types: const ['version', 'artifact_deleted'])
         .listen(_onEvent, onError: (Object _) {});
     _load();
+    unawaited(_watchInbox());
   }
 
   @override
   void dispose() {
     _events?.cancel();
+    unawaited(_inboxEvents?.cancel());
+    unawaited(_inbox?.close());
     super.dispose();
+  }
+
+  Future<void> _watchInbox() async {
+    final inbox = _inbox = widget.api.stream();
+    _inboxEvents = inbox.events.listen(_onInboxEvent, onError: (Object _) {});
+    try {
+      await inbox.subscribe(const ['inbox']);
+    } catch (_) {
+      // The count still shows; it only goes stale until the next fetch.
+    }
+    await _loadUnread();
+  }
+
+  Future<void> _loadUnread() async {
+    final load = ++_summaries;
+    try {
+      final summary = await widget.api.inboxSummary();
+      if (mounted && load == _summaries) {
+        setState(() => _unread = summary.unread);
+      }
+    } catch (_) {
+      // Kept as it was; the next event or fetch corrects it.
+    }
+  }
+
+  void _onInboxEvent(StreamEvent e) {
+    if (!mounted) return;
+    if (e.type == 'resync' || e.type == 'unsubscribed') {
+      unawaited(_loadUnread());
+      return;
+    }
+    if (e.topic != 'inbox') return;
+    if (e.data['unread'] case final num n) {
+      // A newer count than any summary still in flight.
+      _summaries++;
+      setState(() => _unread = n.toInt());
+    }
+  }
+
+  Future<void> _openInbox() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => InboxScreen(api: widget.api, onOpen: _openItem),
+      ),
+    );
+    if (mounted) await _loadUnread();
+  }
+
+  void _openItem(InboxItem item) {
+    final question = item.question;
+    if (item.kind == 'question' &&
+        question != null &&
+        widget.onOpenQuestion != null) {
+      widget.onOpenQuestion!(question.id);
+      return;
+    }
+    final aid = item.artifactId;
+    if (aid == null) return;
+    final target = widget.onOpenTarget;
+    if (target == null) {
+      widget.open(aid);
+      return;
+    }
+    target(
+      aid,
+      thread: item.kind == 'reply' ? item.thread?.id : null,
+      version: item.kind == 'version' ? item.versionN : null,
+    );
   }
 
   Future<void> _load() async {
@@ -158,6 +251,15 @@ class _LauncherState extends State<Launcher> {
             SliverAppBar.large(
               title: const Text('Clax'),
               actions: [
+                IconButton(
+                  tooltip: 'Inbox',
+                  onPressed: _openInbox,
+                  icon: Badge.count(
+                    count: _unread,
+                    isLabelVisible: _unread > 0,
+                    child: const Icon(Icons.inbox_outlined),
+                  ),
+                ),
                 if (widget.openSettings != null)
                   IconButton(
                     tooltip: 'Settings',
@@ -242,7 +344,7 @@ class _AppTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final tile = _tileScheme(app.id, theme.brightness);
+    final tile = tileScheme(app.id, theme.brightness);
     final (bg, fg) = (tile.primaryContainer, tile.onPrimaryContainer);
     return Semantics(
       button: true,
@@ -425,7 +527,9 @@ Color tileSeed(String id) {
 
 final _tileSchemes = <(String, Brightness), ColorScheme>{};
 
-ColorScheme _tileScheme(String id, Brightness b) => _tileSchemes.putIfAbsent((
+/// The colour scheme of artifact [id]'s tile and inbox rows in [b], seeded
+/// by [tileSeed].
+ColorScheme tileScheme(String id, Brightness b) => _tileSchemes.putIfAbsent((
   id,
   b,
 ), () => ColorScheme.fromSeed(seedColor: tileSeed(id), brightness: b));
