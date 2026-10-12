@@ -3,8 +3,8 @@
 # app and places it where the app's build picks it up:
 #   macos    apps/clax_app/build-native/macos/clax (the host target)
 #   android  apps/clax_app/android/app/src/main/jniLibs/<abi>/libclax.so for
-#            arm64-v8a and x86_64, linked with the NDK's API 29 clang and
-#            stripped
+#            arm64-v8a and x86_64, compiled and linked with the NDK's
+#            API 29 clang and stripped
 # The default is all, a release build. A release build embeds web/dist, so
 # the web UI is built first. Each binary is written beside its destination
 # and renamed into place, never copied over a binary that may be running;
@@ -51,8 +51,11 @@ if [ "$what" = android ] || [ "$what" = all ]; then
     for t in aarch64-linux-android:arm64-v8a x86_64-linux-android:x86_64; do
         triple="${t%%:*}"; abi="${t##*:}"
         var="CARGO_TARGET_$(echo "$triple" | tr 'a-z-' 'A-Z_')_LINKER"
+        # The C sources of rusqlite (bundled SQLite) and ring are compiled by
+        # cc-rs, which reads the target's compiler and archiver from these.
+        cc_var="CC_$(echo "$triple" | tr '-' '_')"; ar_var="AR_$(echo "$triple" | tr '-' '_')"
         run rustup target add "$triple"
-        run env "$var=$bin/${triple}29-clang" cargo build -q ${flag[@]+"${flag[@]}"} -p clax-cli --target "$triple"
+        run env "$var=$bin/${triple}29-clang" "$cc_var=$bin/${triple}29-clang" "$ar_var=$bin/llvm-ar" cargo build -q ${flag[@]+"${flag[@]}"} -p clax-cli --target "$triple"
         run "$bin/llvm-strip" -o "target/$triple/$profile/clax.stripped" "target/$triple/$profile/clax"
         place "target/$triple/$profile/clax.stripped" "apps/clax_app/android/app/src/main/jniLibs/$abi/libclax.so"
     done
