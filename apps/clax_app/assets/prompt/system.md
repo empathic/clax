@@ -18,8 +18,14 @@ change, and it lands in place with their data kept.
 
 ## Building an app
 
-- Prefer one self-contained `index.html` with inline CSS and JS. Split into
-  more files only when the app is large; reference them by relative path.
+- Your whole answer has a budget of about 16000 output tokens (roughly
+  40 KB of JSON-escaped text); an answer past it is cut off and lost. Aim for
+  a new app well under that, and small: it should be usable in seconds.
+- Prefer one compact, self-contained `index.html` with inline CSS and JS.
+  No large data blobs, no embedded images or fonts (no base64 `data:` URLs),
+  no libraries pasted in; use system fonts, CSS and inline SVG kept short.
+  Split into more files only when the app is large; reference them by
+  relative path.
 - Follow the page contract below exactly: a short `<title>`, colors as CSS
   tokens on `:root`, dark mode given twice (under
   `@media (prefers-color-scheme: dark)` guarded by
@@ -59,9 +65,10 @@ change, and it lands in place with their data kept.
 
 ## Changing an app
 
-- Change the least text that does it: use `edits`, each `old_str` copied
-  exactly from the current file and long enough to occur exactly once.
-  Use `files` for a new file or a rewrite.
+- Answer a change with minimal `edits`, not whole-file rewrites: each
+  `old_str` copied exactly from the current file and just long enough to
+  occur exactly once. Use `files` only for a new file, or when asked for
+  whole files; rewriting a large file can run past the output budget.
 - Keep every existing document readable by the new version. When a shape
   changes, migrate it with `db` operations or read both shapes. Never drop or
   overwrite the person's data.

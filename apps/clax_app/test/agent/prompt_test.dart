@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:clax_app/agent/messages_api_backend.dart';
 import 'package:clax_app/agent/prompt.dart';
 import 'package:clax_app/agent/request.dart';
 import 'package:flutter/services.dart';
@@ -55,6 +56,18 @@ void main() {
       expect(order.every((i) => i >= 0), isTrue, reason: '$order');
       expect([...order]..sort(), order);
       expect(system, isNot(contains('## Runtime capabilities in detail')));
+    });
+
+    test('system.md states the output budget the Messages API backend '
+        'sends, and asks for compact pages and minimal edits', () async {
+      final ownMd = await rootBundle.loadString('assets/prompt/system.md');
+      expect(
+        ownMd,
+        contains('${MessagesApiBackend.maxTokens} output tokens'),
+        reason: 'max_tokens in messages_api_backend.dart',
+      );
+      expect(ownMd, contains('embedded images'));
+      expect(ownMd, contains('not whole-file rewrites'));
     });
 
     test('the synced copies match the repository sources', () {
