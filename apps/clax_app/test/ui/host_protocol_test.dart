@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -154,9 +155,11 @@ void main() {
       // shell's host is there.
       expect(
         const Init('ab"c', visible: true, waitMs: 500).toJs(),
-        '(function(n,v,t){function f(){var h=window.claxHost;'
+        '(function(n,v,t){window.__claxHostVisible=v;'
+        'function f(){var h=window.claxHost;'
         'if(h&&typeof h.init==="function"){h.init({nonce:n});'
-        'if(typeof h.setVisible==="function")h.setVisible(v);return}'
+        'if(typeof h.setVisible==="function")'
+        'h.setVisible(window.__claxHostVisible);return}'
         r'if(t-->0)setTimeout(f,50)}f()})("ab\"c",true,10)',
       );
       expect(
@@ -165,7 +168,8 @@ void main() {
       );
       expect(
         const SetVisible(false).toJs(),
-        'window.claxHost?.setVisible(false)',
+        '(function(v){window.__claxHostVisible=v;var h=window.claxHost;'
+        'if(h&&typeof h.setVisible==="function")h.setVisible(v)})(false)',
       );
     });
 
@@ -344,15 +348,86 @@ void main() {
       final init = s.documentLoaded(shell)!;
       expect(init.visible, isTrue, reason: 'the latest visibility');
       expect(s.visibilityChanged(true), isNull, reason: 'unchanged');
-      expect(
-        s.visibilityChanged(false)?.toJs(),
-        'window.claxHost?.setVisible(false)',
-      );
+      expect(s.visibilityChanged(false), isA<SetVisible>());
       // A reload: nothing until its init, which carries the visibility.
       s.documentStarted(shell);
       expect(s.visibilityChanged(true), isNull);
       expect(s.visibilityChanged(false), isNull);
       expect(s.documentLoaded(shell)!.visible, isFalse);
     });
+  });
+
+  group('visibility in the page', () {
+    // Runs the calls' JavaScript in node with a fake window and timers: the
+    // shell's host appears only after [hostAfter] calls, as when its chunk
+    // is still loading after the document has loaded.
+    Future<List<String>> run(List<HostCall> calls, {int hostAfter = 0}) async {
+      final js = StringBuffer('''
+const log = []; const timers = [];
+globalThis.window = {};
+globalThis.setTimeout = f => timers.push(f);
+const host = { init: p => log.push('init'), setVisible: v => log.push('visible ' + v) };
+''');
+      for (var i = 0; i < calls.length; i++) {
+        if (i == hostAfter) js.writeln('window.claxHost = host;');
+        js.writeln('${calls[i].toJs()};');
+      }
+      if (hostAfter >= calls.length) js.writeln('window.claxHost = host;');
+      js.writeln('while (timers.length) timers.shift()();');
+      js.writeln('console.log(JSON.stringify(log));');
+      final r = await Process.run('node', ['-e', js.toString()]);
+      expect(r.exitCode, 0, reason: '${r.stderr}');
+      return (jsonDecode(r.stdout as String) as List).cast<String>();
+    }
+
+    final node = Process.runSync('sh', ['-c', 'command -v node']).exitCode == 0;
+    final skip = node ? false : 'node is not installed';
+
+    test(
+      'a change while the host loads applies after init: resumed to paused',
+      () async {
+        expect(
+          await run(const [
+            Init('n', visible: true),
+            SetVisible(false),
+          ], hostAfter: 2),
+          ['init', 'visible false'],
+        );
+      },
+      skip: skip,
+    );
+
+    test(
+      'a change while the host loads applies after init: paused to resumed',
+      () async {
+        expect(
+          await run(const [
+            Init('n', visible: false),
+            SetVisible(true),
+          ], hostAfter: 2),
+          ['init', 'visible true'],
+        );
+      },
+      skip: skip,
+    );
+
+    test('only the latest of several changes applies', () async {
+      expect(
+        await run(const [
+          Init('n', visible: true),
+          SetVisible(false),
+          SetVisible(true),
+        ], hostAfter: 3),
+        ['init', 'visible true'],
+      );
+    }, skip: skip);
+
+    test('with the host there, each call applies at once, in order', () async {
+      expect(await run(const [Init('n', visible: true), SetVisible(false)]), [
+        'init',
+        'visible true',
+        'visible false',
+      ]);
+    }, skip: skip);
   });
 }
