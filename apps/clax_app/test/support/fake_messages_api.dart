@@ -90,20 +90,25 @@ class FakeMessagesApi {
   /// Every request received, in order.
   final List<SeenRequest> seen = [];
 
+  final _received = StreamController<SeenRequest>.broadcast(sync: true);
+
+  /// Each request as it is received, before it is answered.
+  Stream<SeenRequest> get received => _received.stream;
+
   Uri get baseUrl => Uri.parse('http://127.0.0.1:${_server.port}');
 
   Future<void> _handle(HttpRequest req) async {
     final text = await utf8.decoder.bind(req).join();
     final headers = <String, String>{};
     req.headers.forEach((name, values) => headers[name] = values.join(', '));
-    seen.add(
-      SeenRequest(
-        req.method,
-        req.uri.path,
-        headers,
-        text.isEmpty ? null : jsonDecode(text),
-      ),
+    final r = SeenRequest(
+      req.method,
+      req.uri.path,
+      headers,
+      text.isEmpty ? null : jsonDecode(text),
     );
+    seen.add(r);
+    _received.add(r);
     if (_script.isEmpty) {
       req.response.statusCode = 599;
       req.response.write('FakeMessagesApi: no scripted reply left');
@@ -129,5 +134,6 @@ class FakeMessagesApi {
       r.response.detachSocket().then((s) => s.destroy(), onError: (_) {});
     }
     await _server.close(force: true);
+    await _received.close();
   }
 }

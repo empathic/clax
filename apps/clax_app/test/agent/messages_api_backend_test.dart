@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -33,13 +34,15 @@ Map<String, Object?> _resultJson() => {
   'resolve': true,
 };
 
-AgentRequest _request({Uint8List? image}) => AgentRequest(
-  kind: RequestKind.newApp,
-  model: 'claude-haiku-5-5',
-  systemPrompt: 'You build small apps.',
-  userText: 'A tracker for my runs.',
-  image: image,
-);
+AgentRequest _request({Uint8List? image, Future<void>? cancelled}) =>
+    AgentRequest(
+      kind: RequestKind.newApp,
+      model: 'claude-haiku-5-5',
+      systemPrompt: 'You build small apps.',
+      userText: 'A tracker for my runs.',
+      image: image,
+      cancelled: cancelled,
+    );
 
 void main() {
   late FakeMessagesApi api;
@@ -369,6 +372,61 @@ void main() {
     expect(e.message, contains('timed out'));
     expect(api.seen, hasLength(1));
     expect(delays, isEmpty);
+  });
+
+  test('cancelling while the API has not answered aborts the request, '
+      'without a retry', () async {
+    await serve([FakeReply.never, FakeReply.text(jsonEncode(_resultJson()))]);
+    final cancel = Completer<void>();
+    final arrived = api.received.first;
+    final run = runFails(backend(), _request(cancelled: cancel.future));
+    await arrived;
+    cancel.complete();
+    final e = await run;
+    expect(e.kind, AgentErrorKind.cancelled);
+    expect(e.retryable, isFalse);
+    expect(api.seen, hasLength(1));
+    expect(delays, isEmpty);
+  });
+
+  test('cancelling during the wait before a retry sends no retry', () async {
+    await serve([
+      FakeReply.error(529, 'overloaded_error', 'Overloaded'),
+      FakeReply.text(jsonEncode(_resultJson())),
+    ]);
+    final cancel = Completer<void>();
+    final b = MessagesApiBackend(
+      apiKey: () async => _key,
+      baseUrl: api.baseUrl,
+      log: logLines.add,
+      delay: (d) {
+        delays.add(d);
+        cancel.complete();
+        return Completer<void>().future;
+      },
+    );
+    final e = await runFails(b, _request(cancelled: cancel.future));
+    expect(e.kind, AgentErrorKind.cancelled);
+    expect(api.seen, hasLength(1));
+    expect(delays, [const Duration(seconds: 1)]);
+  });
+
+  test('a request cancelled before the run sends nothing', () async {
+    await serve([FakeReply.text(jsonEncode(_resultJson()))]);
+    final e = await runFails(
+      backend(),
+      _request(cancelled: Future<void>.value()),
+    );
+    expect(e.kind, AgentErrorKind.cancelled);
+    expect(api.seen, isEmpty);
+  });
+
+  test('a cancellation signal that never fires leaves the run alone', () async {
+    await serve([FakeReply.text(jsonEncode(_resultJson()))]);
+    final r = await backend().run(
+      _request(cancelled: Completer<void>().future),
+    );
+    expect(r.toJson(), _resultJson());
   });
 
   test('an unreachable API is a retryable AgentError', () async {

@@ -16,7 +16,9 @@ import 'request.dart';
 /// [maxRetryAfter]) or else 1 s, then 2 s. A timeout, any other 4xx, a
 /// refusal, a `max_tokens` stop and an unparseable result are not retried.
 /// An [AgentError] from [run] is final: callers must not send the request
-/// again because [AgentError.retryable] is true.
+/// again because [AgentError.retryable] is true. When the request's
+/// [AgentRequest.cancelled] fires, the request in flight is aborted, no
+/// retry is sent, and [run] throws [AgentError.cancelled].
 ///
 /// The API key is read from the key callback on every run, is sent only in
 /// the `x-api-key` header, and is removed from every log line and error
@@ -97,7 +99,9 @@ class MessagesApiBackend implements AgentBackend {
 
   @override
   Future<EditResult> run(AgentRequest r) async {
+    final cancel = CancelWatch(r.cancelled);
     final key = (await _apiKey())?.trim();
+    cancel.check();
     if (key == null || key.isEmpty) {
       throw const AgentError('Add your Claude API key in Settings');
     }
@@ -118,13 +122,13 @@ class MessagesApiBackend implements AgentBackend {
         );
         final _Exchange ex;
         try {
-          ex = await _send(client, key, payload, error);
+          ex = await _send(client, key, payload, error, cancel);
         } on _NoResponse catch (e) {
           log('$name: request failed: ${e.cause}');
           if (retry < maxRetries) {
             final wait = _backoff(retry);
             log('$name: retrying in ${wait.inMilliseconds}ms');
-            await _delay(wait);
+            await _wait(wait, cancel);
             continue;
           }
           throw error(
@@ -145,7 +149,7 @@ class MessagesApiBackend implements AgentBackend {
             '$name: retrying in ${wait.inMilliseconds}ms '
             'after HTTP ${ex.status}',
           );
-          await _delay(wait);
+          await _wait(wait, cancel);
           continue;
         }
         throw failure;
@@ -155,35 +159,60 @@ class MessagesApiBackend implements AgentBackend {
     }
   }
 
-  /// Sends one attempt. Throws [_NoResponse] when no response arrived, and a
-  /// final [AgentError] on a timeout or a connection lost mid-response.
+  /// Waits [wait] before a retry; throws [AgentError.cancelled] when
+  /// [cancel] fires first.
+  Future<void> _wait(Duration wait, CancelWatch cancel) async {
+    await Future.any([_delay(wait), cancel.whenCancelled]);
+    cancel.check();
+  }
+
+  /// Sends one attempt. Throws [_NoResponse] when no response arrived, a
+  /// final [AgentError] on a timeout or a connection lost mid-response, and
+  /// [AgentError.cancelled] (aborting the request) when [cancel] fires.
   Future<_Exchange> _send(
     HttpClient client,
     String key,
     List<int> payload,
     AgentError Function(String, {required bool retryable}) error,
+    CancelWatch cancel,
   ) async {
+    cancel.check();
     HttpClientRequest? request;
     var responded = false;
+    final exchange = () async {
+      final req = request = await client.postUrl(_endpoint);
+      if (cancel.isCancelled) {
+        req.abort();
+        throw const AgentError.cancelled();
+      }
+      req.headers
+        ..set('x-api-key', key)
+        ..set('anthropic-version', apiVersion)
+        ..contentType = ContentType.json
+        ..contentLength = payload.length;
+      req.add(payload);
+      final res = await req.close();
+      responded = true;
+      final text = await utf8.decoder.bind(res).join();
+      return _Exchange(
+        res.statusCode,
+        text,
+        res.headers.value('request-id'),
+        res.headers.value('retry-after'),
+      );
+    }().timeout(_timeout);
     try {
-      return await () async {
-        final req = request = await client.postUrl(_endpoint);
-        req.headers
-          ..set('x-api-key', key)
-          ..set('anthropic-version', apiVersion)
-          ..contentType = ContentType.json
-          ..contentLength = payload.length;
-        req.add(payload);
-        final res = await req.close();
-        responded = true;
-        final text = await utf8.decoder.bind(res).join();
-        return _Exchange(
-          res.statusCode,
-          text,
-          res.headers.value('request-id'),
-          res.headers.value('retry-after'),
-        );
-      }().timeout(_timeout);
+      final done = await Future.any<_Exchange?>([
+        exchange,
+        cancel.whenCancelled.then((_) => null),
+      ]);
+      if (done == null) {
+        request?.abort();
+        exchange.ignore();
+        _log?.call('$name: cancelled');
+        throw const AgentError.cancelled();
+      }
+      return done;
     } on TimeoutException {
       request?.abort();
       _log?.call('$name: timed out after ${_timeout.inSeconds}s');
