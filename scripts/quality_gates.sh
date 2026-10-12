@@ -4,8 +4,8 @@
 #
 # The web UI is built and its unit tests run first, alone. The other
 # independent gates then run concurrently in lanes (web e2e, Rust, web, the
-# release build, Pi, scripts), each printing a line per gate as it finishes;
-# the lanes that take longest start first. The perf gates then run alone, in
+# release build, Pi, scripts, the Flutter app), each printing a line per
+# gate as it finishes; the lanes that take longest start first. The perf gates then run alone, in
 # their quick mode, on the one release binary. At the end a table gives each
 # gate's time and the total; times are reported, never judged. `just perf`
 # runs the perf gates' full versions.
@@ -133,6 +133,16 @@ lane_lint() {
     run "clippy (no test features)" cargo clippy --workspace -- -D warnings &&
     mark linted
 }
+# The Flutter app's analysis and tests (apps/clax_app/tool/check.sh), with
+# the gates' debug clax for the tests that run the daemon. Skipped where
+# Flutter is not installed.
+lane_app() {
+    if ! command -v flutter >/dev/null 2>&1; then
+        echo "app: skipped (flutter not found)"; return 0
+    fi
+    await clax-built rust &&
+    run "app (flutter analyze + test)" bash -c 'cd apps/clax_app && CLAX_TEST_BIN="$CLAX_TEST_BIN" tool/check.sh'
+}
 lane_release() {
     run "release build"         bash -c 'cargo build -q --release -p clax-cli && mkdir -p "$(dirname "$CLAX_PERF_BIN")" && kept="$(scripts/stable-bin.sh target/release/clax target/clax-bin/release)" && ln -sfn "$PWD/$kept" "$CLAX_PERF_BIN"' &&
     mark release-built
@@ -148,7 +158,7 @@ run "web unit"              bash -c 'cd web && npm test -- --reporter=dot' || ex
 
 # Web e2e runs beside the other lanes: they wait mostly on processes and
 # sockets, not the CPU, while the browser tests need the CPU.
-echo "quality gates: concurrent lanes (web e2e, Rust, web, Pi, scripts, release build)"
+echo "quality gates: concurrent lanes (web e2e, Rust, web, Pi, scripts, release build, app)"
 lane e2e lane_e2e
 lane rust lane_rust
 lane installer lane_installer
@@ -160,6 +170,7 @@ lane web lane_web
 lane plugins lane_plugins
 lane lint lane_lint
 lane release lane_release
+lane app lane_app
 FAILED=""
 for entry in $LANES; do
     if ! wait "${entry%%:*}"; then FAILED="$FAILED ${entry#*:}"; fi
