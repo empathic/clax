@@ -112,8 +112,9 @@ export class QuestionFeed {
     const r = this.recent.findIndex(x => x.id === q.id);
     if (r >= 0) { this.recent = this.recent.map(x => (x.id === q.id ? q : x)); return; }
     if (was < 0) return;
+    // One change for the listeners: never a moment with the card in neither list.
+    this.s.recent = [...this.recent, q];
     this.open = this.open.filter(x => x.id !== q.id);
-    this.recent = [...this.recent, q];
     this.leave.set(q.id, this.after(LEAVE_MS, () => {
       this.leave.delete(q.id);
       this.recent = this.recent.filter(x => x.id !== q.id);

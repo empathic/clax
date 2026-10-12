@@ -4,8 +4,9 @@
 //
 // - The host calls `window.claxHost` (by `runJavaScript`): comment mode, the
 //   version shown, the open composer's text, Send and Cancel, a thread, and
-//   the attestation of a finger on the page (`attestPointer`), and a composer
-//   on the whole app (`composeArtifact`).
+//   the attestation of a finger on the page (`attestPointer`), a composer
+//   on the whole app (`composeArtifact`), and the questions sheet
+//   (`openQuestions`).
 // - The view tells the host what changed through the WebView's JavaScript
 //   channel `window.ClaxHost` (`HostMessage`, as JSON); a page without it (a
 //   browser) drops them.
@@ -58,6 +59,19 @@
 //   request, and only in the shape below (the page shares the bridge's
 //   window, so it can answer in the bridge's place: it can describe only
 //   itself). Anywhere else `inspect` answers an error and asks nothing.
+// - Questions (spec 2026-10-12-flutter-app-round2-design R§10.2): the
+//   owner's open agent questions about the artifact are the shell's own
+//   question cards (`q/QuestionCard.svelte`), which a browser shows at the
+//   top of the sidebar. App mode hides the sidebar, so the host docks them
+//   in a sheet at the bottom (`.app-questions`, over the composer), closed
+//   until `openQuestions()`; the person closes it (its Close button,
+//   Escape), and it closes once no card is left. The question module
+//   (`q/index.ts`) mounts the cards there and tells each change of the
+//   questions about the artifact (`clax-questions`); the host posts
+//   `questions {open}` whenever the number open changes, from `init` on (at
+//   `init`, the number last told, if any). The question module loads only in
+//   an owner's browser, after the first paint: until it has told a count,
+//   no `questions` message is posted. The inspect view has no sheet.
 // Its styles go in with it: the shell links no stylesheet a lazy chunk
 // imports (`vite.shell.config.ts`, `inlineCss`).
 import appCss from "./app.css?inline";
@@ -94,7 +108,10 @@ export type HostMessage =
    * shows; `title`; `height`, its scroll height in CSS pixels. Or `error`,
    * why there is none. */
   | { type: "inspection"; png: string; errors: InspectError[]; failed: string[]; text: string; title: string; height: number }
-  | { type: "inspection"; error: string };
+  | { type: "inspection"; error: string }
+  /** How many of the owner's questions about the artifact are open, posted
+   * whenever that changes (see Questions above). */
+  | { type: "questions"; open: number };
 /** What goes on the channel: a `HostMessage` with this load's nonce. */
 export type Posted = HostMessage & { nonce: string };
 
@@ -139,7 +156,14 @@ export type ClaxHost = {
    * absent), its screenshot at most `maxBytes` (`INSPECT_MAX_BYTES`):
    * `inspection` answers. A later call replaces an earlier one. */
   inspect(p: { settleMs?: number; maxBytes?: number }): void;
+  /** Shows the questions sheet, focusing its first card. With no card yet
+   * (the app heard of a question before the shell's feed did), the sheet
+   * shows when one comes within `OPEN_WAIT_MS`. Not in the inspect view. */
+  openQuestions(): void;
 };
+
+/** How long an `openQuestions` with no question to show waits for one. */
+export const OPEN_WAIT_MS = 5000;
 
 /** `inspect`'s defaults and bounds (`bridge/src/inspect.ts` has the same). */
 export const INSPECT_SETTLE_MS = 3000;
@@ -184,6 +208,8 @@ function summary(t: Thread): string {
 }
 
 const NONCE = /^[A-Za-z0-9_-]{16,128}$/;
+const CLOSE_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+const count = (v: unknown) => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null);
 
 const bounded = (v: unknown, lo: number, hi: number, dflt: number) => (typeof v === "number" && Number.isFinite(v) ? Math.min(hi, Math.max(lo, Math.round(v))) : dflt);
 const str = (v: unknown, n: number) => (typeof v === "string" ? v.slice(0, n) : "");
@@ -428,6 +454,68 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   };
   hostArrival.pending = () => live().size > 0;
   const composer = () => doc.querySelector<HTMLFormElement>(".stage form.composer");
+
+  // The questions sheet (none in the inspect view), and what the question
+  // module last told of the questions about the artifact: `open`, null
+  // until it has told any; `shown`, the cards in the sheet.
+  const dock = inspecting ? null : doc.createElement("section");
+  let questionsOpen: number | null = null;
+  let questionsPosted: number | null = null;
+  let questionsShown = 0;
+  // When `openQuestions` found no card to show, until a card shows or `OPEN_WAIT_MS` passes.
+  let askedAt: number | null = null;
+  const postQuestions = () => {
+    if (nonce === null || questionsOpen === null || questionsOpen === questionsPosted) return;
+    questionsPosted = questionsOpen;
+    post({ type: "questions", open: questionsOpen });
+  };
+  const showQuestions = () => {
+    if (!dock) return;
+    askedAt = null;
+    dock.hidden = false;
+    dock.querySelector<HTMLElement>(".qcard")?.focus({ preventScroll: true });
+  };
+  const hideQuestions = () => {
+    if (!dock || dock.hidden) return;
+    const had = dock.contains(doc.activeElement);
+    dock.hidden = true;
+    if (had) (doc.activeElement as HTMLElement | null)?.blur?.();
+  };
+  const onQuestions = (e: Event) => {
+    const d = (e as CustomEvent<{ open?: unknown; shown?: unknown }>).detail;
+    const open = count(d?.open);
+    const shown = count(d?.shown);
+    if (open === null || shown === null) return;
+    questionsOpen = open;
+    questionsShown = shown;
+    postQuestions();
+    if (!shown) hideQuestions();
+    else if (askedAt !== null && now() - askedAt < OPEN_WAIT_MS) showQuestions();
+  };
+  if (dock) {
+    dock.className = "app-questions";
+    dock.hidden = true;
+    dock.setAttribute("aria-label", "Questions for you");
+    const close = doc.createElement("button");
+    close.type = "button";
+    close.className = "ghost icon app-questions-close";
+    close.setAttribute("aria-label", "Close questions");
+    close.innerHTML = CLOSE_ICON;
+    close.addEventListener("click", () => { askedAt = null; hideQuestions(); });
+    const slot = doc.createElement("div");
+    slot.className = "questions-slot";
+    dock.append(close, slot);
+    dock.addEventListener("keydown", e => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      e.preventDefault();
+      askedAt = null;
+      hideQuestions();
+    });
+    doc.body.append(dock);
+    doc.addEventListener("clax-questions", onQuestions);
+    // A question module already showing the cards in the hidden sidebar moves them here.
+    slot.dispatchEvent(new CustomEvent("clax-questions-slot", { bubbles: true }));
+  }
   // The app's word on visibility: null until `init` (the document's own applies).
   let hostHidden: boolean | null = null;
   // What `setVisible` said before `init`, which applies from `init` on.
@@ -476,6 +564,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       lastNotice = null;
       onState(s());
       if (ready) post(ready);
+      postQuestions();
     },
     enterCommentMode: () => { if (!inspecting && !s().commenting) ctl.toggleComment(); },
     exitCommentMode: () => { if (s().commenting) ctl.toggleComment(); },
@@ -485,6 +574,13 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     },
     reloadLatest: () => { void follow(true); },
     setDraftText: text => {
+      // A text field of a question card in the shown sheet, when it has focus.
+      const a = doc.activeElement;
+      if (dock && !dock.hidden && dock.contains(a) && (a instanceof HTMLTextAreaElement || (a instanceof HTMLInputElement && a.type === "text"))) {
+        a.value = String(text);
+        a.dispatchEvent(new Event("input", { bubbles: true }));
+        return;
+      }
       const ta = composer()?.querySelector("textarea");
       if (!ta || !s().draft) return;
       ta.value = String(text);
@@ -537,6 +633,11 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       inspection = { requestId: `inspect-${++inspections}`, maxBytes };
       ctl.send({ type: "clax:inspect", requestId: inspection.requestId, settleMs, maxBytes });
     },
+    openQuestions: () => {
+      if (!dock) return;
+      if (questionsShown > 0) showQuestions();
+      else askedAt = now();
+    },
   };
   Object.defineProperty(w, "claxHost", { value: host, configurable: true });
 
@@ -555,6 +656,10 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     if (hostHidden !== null) visibility.changed();
     if (stream && hostHidden !== null) stream.pageStream().visibilityChanged();
     if (ctl.app) ctl.app = null;
+    if (dock) {
+      doc.removeEventListener("clax-questions", onQuestions);
+      dock.remove();
+    }
     delete w.claxHost;
     doc.documentElement.classList.remove("app", "inspect");
     style.remove();

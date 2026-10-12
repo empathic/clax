@@ -63,12 +63,26 @@ export function stop(): void {
   started = false;
 }
 
+/** The app's question sheet's slot (`app/host.ts` makes it, in app mode only). */
+const APP_SLOT = ".app-questions > .questions-slot";
+
+/** What the artifact view's question surfaces tell the page whenever the
+ * questions about the artifact change (a `clax-questions` event on the
+ * document): how many are `open`, and how many cards are `shown` (the open
+ * ones and those that closed moments ago, which say what closed them). App
+ * mode's host tells the app the first, and closes its sheet when the second
+ * is 0. */
+export type QuestionsCount = { open: number; shown: number };
+
 /** The artifact view's surfaces for artifact `aid`, for the owner or a connected person: **Inbox**
  * in the top bar (before the island's controls), the questions about it at
  * the top of the sidebar (in the sidebar's `.questions-slot`, each time it
- * mounts), and the dot on the threads controls. `trail` is the view's
- * keyboard trail, which its cards follow. The result removes them and stops
- * the feeds (`stop`). */
+ * mounts), and the dot on the threads controls. In app mode (`html.app`)
+ * the questions go in the app's sheet (`.app-questions`, its slot announced
+ * the same way) instead of the hidden sidebar. Each change of the questions
+ * about `aid` is told as a `clax-questions` event (`QuestionsCount`).
+ * `trail` is the view's keyboard trail, which its cards follow. The result
+ * removes them and stops the feeds (`stop`). */
 export function artifact(aid: string, trail: Trail, stream: EventStream, doc: Document = document): () => void {
   useTrail(trail);
   let off: (() => void)[] = [];
@@ -78,7 +92,15 @@ export function artifact(aid: string, trail: Trail, stream: EventStream, doc: Do
     if (side) void unmount(side.c);
     side = { el, c: mount(SidebarQuestions, { target: el, props: { aid } }) };
   };
-  const onSlot = (e: Event) => fill(e.target as Element);
+  // In app mode the sheet's slot, whichever slot announced itself; else the one that did.
+  const slot = (from: Element | null) => (doc.documentElement.classList.contains("app") ? doc.querySelector(APP_SLOT) : null) ?? from;
+  const onSlot = (e: Event) => fill(slot(e.target as Element));
+  const { questions } = shared();
+  const tell = (c: QuestionsCount) => doc.dispatchEvent(new CustomEvent<QuestionsCount>("clax-questions", { detail: c }));
+  const count = () => {
+    const list = questions.byArtifact(aid);
+    tell({ open: list.filter(q => q.status === "open").length, shown: list.length });
+  };
   start(stream);
   // In the top bar before the controls; at phone width in the tab bar
   // instead, so the top bar keeps its title.
@@ -87,11 +109,12 @@ export function artifact(aid: string, trail: Trail, stream: EventStream, doc: Do
     off.push(() => { void unmount(link); });
   }
   doc.addEventListener("clax-questions-slot", onSlot);
-  fill(doc.querySelector(".sidebar > .questions-slot"));
-  off.push(() => {
+  fill(slot(doc.querySelector(".sidebar > .questions-slot")));
+  off.push(questions.listen(count), () => {
     doc.removeEventListener("clax-questions-slot", onSlot);
     if (side) void unmount(side.c);
     side = null;
+    tell({ open: 0, shown: 0 });
   }, followDot(doc, aid));
   return () => {
     for (const f of off) f();
