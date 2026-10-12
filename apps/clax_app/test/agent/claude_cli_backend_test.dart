@@ -347,53 +347,56 @@ void main() {
     expect(r.toJson(), resultJson());
   });
 
-  test('the child gets the parent environment without Claude Code session '
-      'variables or ANTHROPIC_API_KEY', () async {
-    final (b, starter) = backend(
-      {'FAKE_CLAUDE_OUT': out(cliOutput(structured: resultJson()))},
-      parentEnvironment: {
-        'PATH': Platform.environment['PATH']!,
-        'HOME': '/Users/someone',
-        'USER': 'someone',
-        'TMPDIR': '/tmp/someone',
-        'CLAUDE_CONFIG_DIR': '/Users/someone/.claude-work',
-        'CLAUDE_CODE_OAUTH_TOKEN': 'oauth-token',
-        'CLAUDECODE': '1',
-        'CLAUDE_CODE_SESSION_ID': 'f00d',
-        'CLAUDE_CODE_CHILD_SESSION': '1',
-        'CLAUDE_CODE_MESSAGING_SOCKET': '/tmp/sock',
-        'CLAUDE_PID': '42',
-        'CLAUDE_EFFORT': 'max',
-        'CLAUDE_PLUGIN_DATA': '/tmp/plugin',
-        'ANTHROPIC_API_KEY': 'sk-ant-x',
-      },
-    );
-    await b.run(request);
-    final passed = starter.environments.single;
-    expect(passed, {
-      'PATH': Platform.environment['PATH']!,
+  test('the child gets the parent environment without the variables of a '
+      'parent Claude Code session or an API key, keeping provider and auth '
+      'settings', () async {
+    const kept = {
       'HOME': '/Users/someone',
       'USER': 'someone',
       'TMPDIR': '/tmp/someone',
       'CLAUDE_CONFIG_DIR': '/Users/someone/.claude-work',
       'CLAUDE_CODE_OAUTH_TOKEN': 'oauth-token',
-    });
+      'CLAUDE_CODE_USE_BEDROCK': '1',
+      'CLAUDE_CODE_USE_VERTEX': '1',
+      'CLAUDE_CODE_SKIP_BEDROCK_AUTH': '1',
+      'CLAUDE_CODE_SKIP_VERTEX_AUTH': '1',
+      'CLAUDE_CODE_MAX_OUTPUT_TOKENS': '32000',
+      'ANTHROPIC_BASE_URL': 'https://gateway.example',
+      'ANTHROPIC_MODEL': 'claude-haiku-5-5',
+    };
+    const dropped = {
+      'CLAUDECODE': '1',
+      'CLAUDE_CODE_ENTRYPOINT': 'cli',
+      'CLAUDE_CODE_SESSION_ID': 'f00d',
+      'CLAUDE_CODE_SESSION_ATTENDED': '1',
+      'CLAUDE_CODE_CHILD_SESSION': '1',
+      'CLAUDE_CODE_MESSAGING_SOCKET': '/tmp/sock',
+      'CLAUDE_CODE_MESSAGING_TOKEN': 'tok',
+      'CLAUDE_CODE_EXECPATH': '/usr/local/bin/claude',
+      'CLAUDE_CODE_SSE_PORT': '1234',
+      'CLAUDE_CODE_SIMPLE': '1',
+      'CLAUDE_CODE_SAFE_MODE': '1',
+      'CLAUDE_PID': '42',
+      'CLAUDE_EFFORT': 'max',
+      'CLAUDE_PLUGIN_DATA': '/tmp/plugin',
+      'CLAUDE_PLUGIN_ROOT': '/tmp/plugin-root',
+      'ANTHROPIC_API_KEY': 'sk-ant-x',
+      'ANTHROPIC_AUTH_TOKEN': 'bearer-x',
+    };
+    final path = Platform.environment['PATH']!;
+    final (b, starter) = backend(
+      {'FAKE_CLAUDE_OUT': out(cliOutput(structured: resultJson()))},
+      parentEnvironment: {'PATH': path, ...kept, ...dropped},
+    );
+    await b.run(request);
+    expect(starter.environments.single, {'PATH': path, ...kept});
     final seen = {
       for (final line in File('$log.env').readAsLinesSync())
         if (line.contains('=')) line.substring(0, line.indexOf('=')),
     };
-    expect(seen, containsAll(['HOME', 'USER', 'CLAUDE_CONFIG_DIR']));
-    for (final dropped in [
-      'CLAUDECODE',
-      'CLAUDE_CODE_SESSION_ID',
-      'CLAUDE_CODE_CHILD_SESSION',
-      'CLAUDE_CODE_MESSAGING_SOCKET',
-      'CLAUDE_PID',
-      'CLAUDE_EFFORT',
-      'CLAUDE_PLUGIN_DATA',
-      'ANTHROPIC_API_KEY',
-    ]) {
-      expect(seen, isNot(contains(dropped)), reason: dropped);
+    expect(seen, containsAll(kept.keys));
+    for (final name in dropped.keys) {
+      expect(seen, isNot(contains(name)), reason: name);
     }
   });
 

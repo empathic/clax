@@ -32,24 +32,47 @@ Future<Process> startWithEnvironment(
   includeParentEnvironment: false,
 );
 
-/// The environment `claude` runs with: [parent] without the variables of a
-/// Claude Code session the app may have been started from (`CLAUDECODE`,
-/// `CLAUDE_CODE_*` except `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_PID`,
-/// `CLAUDE_EFFORT`, `CLAUDE_PLUGIN_*`) and without `ANTHROPIC_API_KEY`, so
-/// the run uses the person's Claude login and is not tied to that session.
-/// Everything else, `HOME`, `PATH` and `CLAUDE_CONFIG_DIR` included, is kept.
+/// The environment `claude` runs with: [parent] without
+/// [droppedSessionVariables] and the variables starting with one of
+/// [droppedSessionPrefixes], which mark a Claude Code session the app may
+/// have been started from (a child of that session would read itself as
+/// one, reach its messaging socket and take its effort), and without
+/// `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`. Either key would replace
+/// the person's Claude login, which this backend exists to use; the
+/// Messages API backend is the way to run on a key. Everything else is
+/// kept: `HOME`, `PATH`, `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN`,
+/// and provider settings such as `CLAUDE_CODE_USE_*`,
+/// `CLAUDE_CODE_SKIP_*_AUTH` and `ANTHROPIC_BASE_URL`.
 Map<String, String> claudeEnvironment(Map<String, String> parent) => {
   for (final MapEntry(:key, :value) in parent.entries)
     if (!_dropFromEnvironment(key)) key: value,
 };
 
+/// Variables [claudeEnvironment] drops by name.
+const droppedSessionVariables = {
+  'CLAUDECODE',
+  'CLAUDE_PID',
+  'CLAUDE_EFFORT',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_EXECPATH',
+  'CLAUDE_CODE_SSE_PORT',
+  'CLAUDE_CODE_SIMPLE',
+  'CLAUDE_CODE_SAFE_MODE',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+};
+
+/// Prefixes of the variables [claudeEnvironment] drops.
+const droppedSessionPrefixes = [
+  'CLAUDE_PLUGIN_',
+  'CLAUDE_CODE_SESSION_',
+  'CLAUDE_CODE_MESSAGING_',
+];
+
 bool _dropFromEnvironment(String name) =>
-    name == 'CLAUDECODE' ||
-    name == 'CLAUDE_PID' ||
-    name == 'CLAUDE_EFFORT' ||
-    name == 'ANTHROPIC_API_KEY' ||
-    name.startsWith('CLAUDE_PLUGIN_') ||
-    (name.startsWith('CLAUDE_CODE_') && name != 'CLAUDE_CODE_OAUTH_TOKEN');
+    droppedSessionVariables.contains(name) ||
+    droppedSessionPrefixes.any(name.startsWith);
 
 /// The desktop backend: runs `claude -p` with [editSchema] as its
 /// structured output, all tools off, at effort low, and the request on
