@@ -23,7 +23,9 @@ adb install -r apps/clax_app/build/app/outputs/flutter-apk/app-release.apk
 ```
 
 Open Clax, tap Settings (the launcher shows a banner while no key is set),
-paste a Claude API key, and tap New. The APK is signed with the Android
+paste a Claude API key, and tap New. This would be the first run of the
+app on any Android device, and the first call of `MessagesApiBackend` to
+the real API (section 4): expect it to be where problems show up first. The APK is signed with the Android
 debug key (`CN=Android Debug`, certificate SHA-256
 `9874f8473ebc181beb90c6af8b4d29dfac87a97bcde62da0880a71938d28ce85`), as
 `android/app/build.gradle.kts` configures the release build. That is enough
@@ -146,7 +148,11 @@ document. The command was `scripts/build-app-clax.sh macos` followed by
 42 s of test time, 92 s with the build (`target/flutter-app/v1/f10.log`).
 
 It runs the real release `clax` from the app bundle, the real HTTP client,
-supervisor, worker and WKWebView, with a scripted agent (no model):
+supervisor, worker and WKWebView, with a scripted agent (no model). The app
+around them is a debug build, which runs without the App Sandbox (D-5), so
+this test says nothing about the sandboxed release app. Its clicks are
+NSEvents the test synthesizes, and the test attests each press to the
+shell itself (c0375dfc):
 
 1. New app → Make → the app opens on its first `ready`, and its db
    document is in the store.
@@ -160,7 +166,7 @@ supervisor, worker and WKWebView, with a scripted agent (no model):
 5. The daemon is killed by its PID while a change is held in the agent.
    The supervisor restarts it, and the change completes exactly once.
 6. A second app declares a read of the first. Opening it asks the owner.
-   A real click on Allow grants the read, and the data shows.
+   A synthesized click on Allow grants the read, and the data shows.
 
 The two "feedback poll failed" lines in the log come from step 5's
 deliberate daemon kill.
@@ -190,8 +196,10 @@ What the runs showed:
   daemon, and its data persisted.
 - **Change.** The change landed in place in the app, with the data kept.
 - **Dashboard.** It declared `db.read` of the run log. The consent dialog
-  armed in the app, a real click on Allow granted the read (in
-  `grants.json`), and the dashboard showed the weekly total.
+  armed in the app, a synthesized NSEvent click on Allow (its press
+  attested through `claxHost` by the test) granted the read (in
+  `grants.json`), and the dashboard showed the weekly total, as read in
+  Chromium.
 
 Not every step was live:
 
@@ -202,6 +210,9 @@ Not every step was live:
   in-app frame is cross-origin to the shell.
 - No screenshot of the app window was possible (no screen-recording
   permission).
+- Each live measure is one run. The change (call 4) and the dashboard
+  (call 6) were made on top of replayed earlier steps, and every pick and
+  click was synthesized, never a person's mouse or finger.
 
 L1 found two blockers, 4ae44372 and 9e96bca7. Both were fixed and
 re-verified live before this document.
@@ -306,16 +317,28 @@ wall clock was 273.8 s, and the run exited 1 on one perf gate.
 Time to usable failed on the subdomain run's comment-ready figure. It
 measured 95, 104 and 102 ms against a limit of 86 ms (three tries). The
 sandbox run passed, and `app ready` (43 to 45 ms against 75) passed
-everywhere.
+everywhere. The subdomain cold ready latency was also over its limit in
+two of the three tries (42 and 44 ms against 38). `web/perf/budget.json`
+sets `enforceTargets`, so that measure is gated too, and the comment-ready
+failure stops the test before it is checked: making comment ready pass
+alone would not make this gate pass. No record covers the cold-ready
+overrun.
 
 Rerun alone (`cd web && CLAX_PERF_QUICK=1 npm run perf`, load average
 10 to 12, `target/flutter-app/v1/perf-rerun.log`), it failed the same way.
 Comment ready measured 103, 104 and 106 ms against scaled limits of 94 to
-102 ms, and the sandbox run passed.
+102 ms; cold ready latency was 43 ms against 41 in two tries; the sandbox
+run passed.
 
-This is the known item f585f63e, which waits on the owner. Its replies
-1e79ad8b and 30446f51 trace the path. Nothing this branch changes runs on
-it, and the pre-branch web UI fails the same way as often.
+The comment-ready part is the known item f585f63e, which waits on the
+owner. That record was opened on 2026-10-10 for another branch, and its
+title says the overrun never happened on main. Its reply 1e79ad8b traces
+the comment-ready path for that other branch, not this one. For this
+branch the evidence is 30446f51: in two interleaved runs each, at load
+average 5 to 7, the web UI from before this branch's web work
+(`8a2ff314^`) measured 97 and 95 ms and the current one 91 and 92 ms,
+both over the 86 ms limit. That is two runs, not a trace, and nobody ran
+the gate on main itself for this document.
 
 `backfill_on_perf_seed_under_3s`, the other known load-sensitive test,
 passed in this run's `cargo nextest`.
@@ -328,30 +351,46 @@ depends on.
 **Spec §12** (`docs/superpowers/specs/2026-10-12-flutter-app-design.md`):
 
 - **D-1** (8966525a): the Messages API backend uses structured output, not
-  one forced tool.
+  one forced tool. The spec asked for a forced tool, but forcing a tool
+  returns 400 on Opus 5.5 and Sonnet 5.5. Recommended: keep structured
+  output. It has never run against the real API.
 - **D-2** (92ee4c3f): the default model is `claude-haiku-5-5` at effort
-  `low`.
+  `low`, chosen for speed; apps may be worse than Sonnet's. Recommended:
+  keep it until someone compares live runs with Sonnet 5.5.
 - **D-3** (51f0d067): other Android apps can reach the embedded daemon and
-  fetch its token through `/api/token`.
+  fetch its token through `/api/token`. Any app on the phone would then
+  have full owner access to every Clax app and its data. Recommended:
+  accept it on your own phone only, and close it before anyone else
+  installs the app.
 - **D-4** (c1f27009): there is no automatic read grant when the agent
-  builds an app that reads another app.
+  builds an app that reads another app, so you are asked once even though
+  you requested it. Recommended: keep asking unless it proves annoying.
 - **D-5** (f998fa52): macOS debug builds run without the App Sandbox so
-  that `claude -p` can be started.
+  that `claude -p` can be started; the release build keeps the sandbox and
+  needs an API key. Recommended: keep.
 
 **Server-side:**
 
 - **d359fbc3**: an app session's feedback is acknowledged at hand-over and
-  never resent.
+  never resent, so a comment in flight when the app or daemon dies would
+  be lost. You decide whether the app's own recovery is enough or the
+  server should resend.
   - The app recovers on start: it re-runs threads that are sent to the
     agent, acknowledged, and have no agent reply after the last viewer
     comment (74211b60).
   - The server stays unchanged.
 - **d20ea53f**: an owner grant outlives a re-publish that drops `db.read`.
-  It applies again without a prompt when the declaration returns.
+  It applies again without a prompt when the declaration returns, even if
+  the agent has rewritten the reader into a different app. You decide
+  whether a grant belongs to the pair of apps (now) or should be dropped
+  when the declaration is.
 
 **Gates:**
 
-- **f585f63e**: time to usable's subdomain comment ready (section 5).
+- **f585f63e**: time to usable's subdomain comment ready (section 5): the
+  gate fails, so a merge needs either a fix, a raised budget, or your
+  acceptance of a failing gate. Cold ready latency also fails (section 5)
+  and has no record.
 
 **Settled:**
 
@@ -419,12 +458,13 @@ a migration first.
 `qualifier diff main` is reckoned from the merge-base 5da3c86. The full
 output is in `target/flutter-app/v1/qual-diff.txt`.
 
-**Added (117 records still active):**
+**Added (118 records still active** when `qualifier diff main` was rerun
+after 5b4ba6c8; the saved file, from before 44c5dca6, has 117):
 
 | Kind | Count |
 |---|---|
 | comment | 64 |
-| concern | 36 |
+| concern | 37 |
 | alternative | 14 |
 | suggestion | 2 |
 | waiver | 1 |
