@@ -25,6 +25,11 @@
 // with the hub. The page tells the hub whether it has focus (on `focus`,
 // `blur` and `visibilitychange`, and once it joins), so the hub can ask the
 // most recently focused tab to notify when no tab has focus (`onNotify`).
+//
+// Hidden means `visibility.hidden`: the document's visibility, except in the
+// Clax app, whose WebView may report its document hidden while the app is in
+// front: there the app's host says (`app/host.ts`, `claxHost.setVisible`),
+// and calls `visibilityChanged` when it does.
 import { getToken } from "./api";
 import { after } from "./clock";
 import { STREAM_DOWN, connTrouble } from "./conn-notice";
@@ -39,6 +44,9 @@ export type StreamEvent = { type: string; topic?: string; [field: string]: unkno
 
 /** How long the stream may be down before the notice shows. */
 export const NOTICE_MS = 1500;
+/** Whether the page counts as hidden (see the header); app mode replaces it. */
+export const visibility = { hidden: (d: Document): boolean => d.visibilityState === "hidden" };
+
 /** How long a hidden page keeps its topics. */
 export const HIDDEN_MS = 30_000;
 /** How long a shared worker's hub may stay silent (it pings every 10 s)
@@ -296,14 +304,14 @@ export class EventStream {
     this.win.document.addEventListener("visibilitychange", this.onVisibility);
     this.win.addEventListener("focus", this.onFocus);
     this.win.addEventListener("blur", this.onFocus);
-    if (this.win.document.visibilityState === "hidden") this.onVisibility();
+    if (visibility.hidden(this.win.document)) this.onVisibility();
   }
 
   /** Tells the hub whether this page has focus, when that changed. */
   private onFocus = () => {
     if (!this.link) return;
     const d = this.win.document;
-    const focused = d.visibilityState !== "hidden" && d.hasFocus();
+    const focused = !visibility.hidden(d) && d.hasFocus();
     if (focused === this.focusSent) return;
     this.focusSent = focused;
     this.link.send({ t: "focus", focused });
@@ -320,11 +328,16 @@ export class EventStream {
     this.schedule();
   };
 
+  /** The page's visibility (`visibility.hidden`) may have changed: a hidden
+   * page releases its topics after `HIDDEN_MS`; a shown one takes them again
+   * (each watcher hears `ready` and refetches). */
+  visibilityChanged(): void { this.onVisibility(); }
+
   private onVisibility = () => {
     this.onFocus();
     this.hiddenTimer?.();
     this.hiddenTimer = undefined;
-    if (this.win.document.visibilityState === "hidden") {
+    if (visibility.hidden(this.win.document)) {
       this.hiddenTimer = after(HIDDEN_MS, () => {
         this.hiddenTimer = undefined;
         this.released = true;
@@ -442,7 +455,7 @@ export class EventStream {
   }
 
   private check(): void {
-    if (!this.link || !this.sent || this.win.document.visibilityState === "hidden") return;
+    if (!this.link || !this.sent || visibility.hidden(this.win.document)) return;
     if (Date.now() - this.heard > DEAD_MS) this.lost(this.link);
   }
 
