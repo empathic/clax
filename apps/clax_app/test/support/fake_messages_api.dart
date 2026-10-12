@@ -272,3 +272,52 @@ class FakeMessagesApi {
     await _received.close();
   }
 }
+
+/// A server on a raw socket that answers its first request with an
+/// event-stream head and [body], then keeps the connection open; [closed]
+/// completes when the client closes it. (An `HttpServer` does not notice a
+/// client closing a response it is still writing.)
+class OpenStreamServer {
+  OpenStreamServer._(this._server);
+
+  static Future<OpenStreamServer> start(String body) async {
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final s = OpenStreamServer._(server);
+    server.listen((socket) {
+      final request = StringBuffer();
+      var answered = false;
+      socket.listen(
+        (data) {
+          if (answered) return;
+          request.write(latin1.decode(data));
+          if (!request.toString().contains('\r\n\r\n')) return;
+          answered = true;
+          socket.add(
+            utf8.encode(
+              'HTTP/1.1 200 OK\r\n'
+              'content-type: text/event-stream; charset=utf-8\r\n'
+              'connection: close\r\n\r\n$body',
+            ),
+          );
+        },
+        onDone: s._close,
+        onError: (Object _) => s._close(),
+      );
+    });
+    return s;
+  }
+
+  final ServerSocket _server;
+  final _closed = Completer<void>();
+
+  Uri get baseUrl => Uri.parse('http://127.0.0.1:${_server.port}');
+
+  /// Completes when the client closed the connection.
+  Future<void> get closed => _closed.future;
+
+  void _close() {
+    if (!_closed.isCompleted) _closed.complete();
+  }
+
+  Future<void> close() => _server.close();
+}

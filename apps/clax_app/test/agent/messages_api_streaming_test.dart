@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:clax_app/agent/backend.dart';
 import 'package:clax_app/agent/edit_result.dart';
@@ -314,6 +315,58 @@ void main() {
     expect(events, hasLength(seen));
     expect(api.seen, hasLength(1));
   });
+
+  for (final timeout in [false, true]) {
+    test('${timeout ? 'a timeout' : 'cancelling'} mid-stream closes the '
+        'connection of a shared client', () async {
+      final evs = streamedText(jsonEncode(_resultJson(content: 'y' * 1000)));
+      final open = await OpenStreamServer.start(
+        sse(evs.sublist(0, evs.length ~/ 2)),
+      );
+      addTearDown(open.close);
+      await serve([]);
+      final client = HttpClient();
+      addTearDown(() => client.close(force: true));
+      final cancel = Completer<void>();
+      final partial = Completer<void>();
+      final b = MessagesApiBackend(
+        apiKey: () async => _key,
+        baseUrl: open.baseUrl,
+        client: client,
+        timeout: timeout
+            ? const Duration(milliseconds: 300)
+            : const Duration(minutes: 5),
+        log: logLines.add,
+        delay: (d) async => delays.add(d),
+      );
+      final run = b.run(
+        AgentRequest(
+          kind: RequestKind.newApp,
+          model: 'claude-haiku-5-5',
+          systemPrompt: 's',
+          userText: 'u',
+          cancelled: cancel.future,
+          onProgress: (e) {
+            if (e is PartialFile && !partial.isCompleted) partial.complete();
+          },
+        ),
+      );
+      await partial.future;
+      if (!timeout) cancel.complete();
+      await expectLater(
+        run,
+        throwsA(
+          isA<AgentError>().having(
+            (e) => e.kind,
+            'kind',
+            timeout ? AgentErrorKind.failed : AgentErrorKind.cancelled,
+          ),
+        ),
+      );
+      // The shared client stays open; only this connection closes.
+      await open.closed;
+    });
+  }
 
   test('a progress sink that throws does not fail the run', () async {
     await serve([

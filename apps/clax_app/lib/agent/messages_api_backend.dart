@@ -495,16 +495,21 @@ class _Connection {
     if (response == null) return;
     final reading = _reading;
     _reading = null;
-    if (reading != null) {
-      unawaited(reading.cancel());
-    }
     final body = _body;
     if (body != null && !body.isClosed) unawaited(body.close());
-    // The socket may already be gone, or detached; either is fine.
-    response.detachSocket().then(
-      (socket) => socket.destroy(),
-      onError: (Object _) {},
-    );
+    if (reading != null) {
+      // Cancelling an unfinished body closes its connection.
+      unawaited(reading.cancel());
+      return;
+    }
+    try {
+      response.detachSocket().then(
+        (socket) => socket.destroy(),
+        onError: (Object _) {},
+      );
+    } on StateError {
+      // Already read or detached: nothing is left open.
+    }
   }
 }
 
