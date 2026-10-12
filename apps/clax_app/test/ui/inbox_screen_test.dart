@@ -1,8 +1,7 @@
 import 'dart:async';
 
+import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
-import 'package:clax_app/clax/models.dart';
-import 'package:clax_app/clax/stream.dart';
 import 'package:clax_app/ui/inbox_screen.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:flutter/material.dart';
@@ -43,12 +42,14 @@ void main() {
   late String aid;
   late List<InboxItem> opened;
   late _Timers timers;
+  late List<Duration> delays;
 
   setUp(() {
     api = FakeClaxApi(clock: () => '2026-10-12T09:00:00Z');
     aid = api.seedArtifact('Run log', _page);
     opened = [];
     timers = _Timers();
+    delays = [];
   });
 
   Future<void> pumpInbox(WidgetTester tester, {Brightness? brightness}) async {
@@ -60,6 +61,7 @@ void main() {
           onOpen: opened.add,
           timer: timers.call,
           now: () => DateTime.utc(2026, 10, 12, 9, 30),
+          retryDelay: (d) async => delays.add(d),
         ),
       ),
     );
@@ -333,6 +335,125 @@ void main() {
     expect(inboxTime('2025-09-03T06:30:00Z', now), 'Sep 3, 2025');
     expect(inboxTime('garbage', now), '');
   });
+
+  testWidgets('an item event during the first fetch is applied on its result', (
+    tester,
+  ) async {
+    final held = _HeldInbox();
+    final heldAid = held.seedArtifact('Run log', _page);
+    held.pushInbox('finished', artifactId: heldAid, message: 'before');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: InboxScreen(api: held, onOpen: (_) {}, timer: timers.call),
+      ),
+    );
+    await tester.pump();
+    expect(held.pending, isNotNull, reason: 'the fetch is held');
+    // The page was read before this item existed; only its event says so.
+    held.pushInbox('reply', artifactId: heldAid, body: 'During the fetch');
+    await tester.pump();
+    held.pending!.complete();
+    await tester.pumpAndSettle();
+    expect(find.text('Finished: before'), findsOneWidget);
+    expect(find.text('During the fetch'), findsOneWidget);
+  });
+
+  testWidgets('an unsubscribed topic is subscribed again with backoff', (
+    tester,
+  ) async {
+    await pumpInbox(tester);
+    final fetches = api.callNames.where((n) => n == 'inbox').length;
+    api.failNext(
+      'streamSubscribe',
+      const ClaxApiError(status: 0, code: 'timeout', message: 'x'),
+    );
+    api.failNext(
+      'streamSubscribe',
+      const ClaxApiError(status: 0, code: 'timeout', message: 'x'),
+    );
+    api.emitStream(
+      const StreamEvent(
+        topic: 'inbox',
+        type: 'unsubscribed',
+        data: {'topic': 'inbox', 'code': 'not_found', 'message': 'gone'},
+      ),
+    );
+    await tester.pumpAndSettle();
+    final again = api.calls
+        .where((c) => c.name == 'streamSubscribe')
+        .skip(1)
+        .map((c) => c.args['topics'])
+        .toList();
+    expect(again, [
+      ['inbox'],
+      ['inbox'],
+      ['inbox'],
+    ]);
+    expect(delays, [const Duration(seconds: 1), const Duration(seconds: 2)]);
+    expect(api.callNames.where((n) => n == 'inbox').length, fetches + 1);
+  });
+
+  test('previews read as one line of plain text', () {
+    expect(
+      plainPreview('Done.\n\nI **moved** the `total` to the [top](https://x).'),
+      'Done. I moved the total to the top.',
+    );
+    expect(
+      plainPreview('## Changes\n- kept _old_ runs\n- 2. added *km*\n> quoted'),
+      'Changes · kept old runs · added km quoted',
+    );
+    expect(
+      plainPreview(
+        '## Done\n\n- Checked items sink to the **bottom**\n- `Clear done` removes them\n\nSee [the list](https://x).',
+      ),
+      'Done · Checked items sink to the bottom · Clear done removes them · See the list.',
+    );
+    expect(
+      plainPreview('a soft\nwrapped line.\n\nNext.'),
+      'a soft wrapped line. Next.',
+    );
+    expect(plainPreview('```\ncode()\n```'), 'code()');
+    expect(
+      plainPreview('snake_case_name and 2*3*4'),
+      'snake_case_name and 2*3*4',
+    );
+  });
+
+  testWidgets("a reply row shows its Markdown as one line", (tester) async {
+    api.pushInbox(
+      'reply',
+      artifactId: aid,
+      body: 'Done.\n\n**Distances** now read in `km`.',
+    );
+    await pumpInbox(tester);
+    expect(find.text('Done. Distances now read in km.'), findsOneWidget);
+  });
+}
+
+/// A fake whose first-page fetch waits for [pending] after reading the
+/// page, so a change can land between the read and the answer.
+class _HeldInbox extends FakeClaxApi {
+  Completer<void>? pending;
+
+  @override
+  Future<InboxPage> inbox({
+    String? q,
+    List<String>? kinds,
+    String read = 'all',
+    String? before,
+    int limit = 50,
+  }) async {
+    final page = await super.inbox(
+      q: q,
+      kinds: kinds,
+      read: read,
+      before: before,
+      limit: limit,
+    );
+    final hold = pending = Completer<void>();
+    await hold.future;
+    return page;
+  }
 }
 
 Map<String, Object?> _goneJson(InboxItem item) => {

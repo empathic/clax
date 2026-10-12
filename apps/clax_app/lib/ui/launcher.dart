@@ -38,6 +38,7 @@ class Launcher extends StatefulWidget {
     this.needsKey = false,
     this.onOpenTarget,
     this.onOpenQuestion,
+    this.retryDelay,
   });
 
   final ClaxApi api;
@@ -60,6 +61,10 @@ class Launcher extends StatefulWidget {
   /// question about an app opens that app through [onOpenTarget].
   final void Function(String qid)? onOpenQuestion;
 
+  /// Waits between tries to subscribe `inbox` again after the stream
+  /// dropped it; [Future.delayed] when null.
+  final Future<void> Function(Duration)? retryDelay;
+
   @override
   State<Launcher> createState() => _LauncherState();
 }
@@ -73,6 +78,7 @@ class _LauncherState extends State<Launcher> {
   StreamSubscription<StreamEvent>? _inboxEvents;
   int _unread = 0;
   int _summaries = 0;
+  bool _resubscribing = false;
 
   /// Bumped by each load, so only the newest load's answer is kept.
   int _loads = 0;
@@ -106,6 +112,25 @@ class _LauncherState extends State<Launcher> {
     await _loadUnread();
   }
 
+  /// Subscribes `inbox` again after the stream dropped it, then refetches
+  /// the count.
+  Future<void> _resubscribe() async {
+    final inbox = _inbox;
+    if (inbox == null || _resubscribing) return;
+    _resubscribing = true;
+    try {
+      final ok = await resubscribe(
+        inbox,
+        const ['inbox'],
+        delay: widget.retryDelay ?? Future.delayed,
+        alive: () => mounted,
+      );
+      if (ok && mounted) await _loadUnread();
+    } finally {
+      _resubscribing = false;
+    }
+  }
+
   Future<void> _loadUnread() async {
     final load = ++_summaries;
     try {
@@ -120,7 +145,11 @@ class _LauncherState extends State<Launcher> {
 
   void _onInboxEvent(StreamEvent e) {
     if (!mounted) return;
-    if (e.type == 'resync' || e.type == 'unsubscribed') {
+    if (e.type == 'unsubscribed') {
+      unawaited(_resubscribe());
+      return;
+    }
+    if (e.type == 'resync') {
       unawaited(_loadUnread());
       return;
     }

@@ -540,8 +540,10 @@ void main() {
   group('inbox', () {
     late List<(String, String?, int?)> targets;
     late List<String> questionsOpened;
+    late List<Duration> delays;
 
     setUp(() {
+      delays = [];
       targets = [];
       questionsOpened = [];
     });
@@ -564,6 +566,7 @@ void main() {
                       targets.add((aid, thread, version))
                 : null,
             onOpenQuestion: questionHook ? questionsOpened.add : null,
+            retryDelay: (d) async => delays.add(d),
           ),
         ),
       );
@@ -717,6 +720,32 @@ void main() {
       await tester.tap(find.text('Units'));
       await tester.pumpAndSettle();
       expect(targets, [(aid, null, null)]);
+    });
+
+    testWidgets('an unsubscribed inbox is subscribed again with backoff', (
+      tester,
+    ) async {
+      final api = _api();
+      await pumpWithInbox(tester, api);
+      final summaries = api.callNames.where((n) => n == 'inboxSummary').length;
+      api.failNext(
+        'streamSubscribe',
+        const ClaxApiError(status: 503, code: 'unavailable', message: 'x'),
+      );
+      api.emitStream(
+        const StreamEvent(
+          topic: 'inbox',
+          type: 'unsubscribed',
+          data: {'topic': 'inbox', 'code': 'unavailable', 'message': 'x'},
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(api.callNames.where((n) => n == 'streamSubscribe').length, 3);
+      expect(delays, [const Duration(seconds: 1)]);
+      expect(
+        api.callNames.where((n) => n == 'inboxSummary').length,
+        summaries + 1,
+      );
     });
   });
 }
