@@ -3,6 +3,12 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- On-device dictation. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <!-- Runs keep going while the person is elsewhere: BackgroundRunService
+         is a dataSync foreground service, and it and the "is ready" notices
+         need POST_NOTIFICATIONS to be seen (asked for at the first make). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
         android:label="Clax"
         android:name="${applicationName}"
@@ -31,6 +37,10 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <service
+            android:name=".BackgroundRunService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"/>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
