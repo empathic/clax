@@ -2,9 +2,12 @@
 // `SLOP_PX` of where it went down arms (the caller outlines the target), and
 // lifting it there picks. The pick waits for the release because the browser
 // grants user activation on `touchend`, not while a finger rests, and the
-// shell takes a pick only with the frame's activation. Moving beyond the
-// slop, a second finger, or `touchcancel` abandons it; a release before the
-// hold is an ordinary tap, left to the browser (its synthesized click).
+// shell takes a pick only with the frame's activation. The release is never
+// cancelled: the mouse events and click the browser may send after it are
+// what move focus into the page and show the shell the finger's arrival on
+// the frame. Moving beyond the slop, a second finger, or `touchcancel`
+// abandons it; a release before the hold is an ordinary tap, left to the
+// browser (its click).
 
 export const HOLD_MS = 450;
 export const SLOP_PX = 10;
@@ -127,8 +130,6 @@ export class LongPress {
     const h = this.drop()!;
     if (!h.armed) return; // a tap: the browser's click takes it
     if (Math.hypot(t.clientX - h.x, t.clientY - h.y) > SLOP_PX) { this.hooks.abandoned(); return; }
-    // No synthesized mouse events or click follow a cancelled release.
-    e.preventDefault();
     this.hooks.pick(t.clientX, t.clientY);
   };
 
