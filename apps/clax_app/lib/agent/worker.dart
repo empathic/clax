@@ -276,27 +276,37 @@ class FeedbackWorker {
   }
 
   /// [job]'s items, plus the comments of its rechecked threads that are
-  /// still stranded now. A rechecked thread whose change landed before its
-  /// reply was lost gets a reply naming the version instead.
+  /// still stranded now and that no standing version answered.
+  /// [AgentLoop.settle] first finishes what the change ledger says landed
+  /// (its document writes, its reply); a thread with a version addressed
+  /// at or after its last viewer comment and no ledger record gets a reply
+  /// naming that version instead of a run.
   Future<List<FeedbackItem>> _withRechecked(_Job job) async {
     final items = List.of(job.items);
     if (job.recheck.isEmpty) return items;
     final aid = job.artifactId;
     try {
-      final threads = await _api.threads(aid);
+      final stranded = [
+        for (final t in await _api.threads(aid))
+          if (job.recheck.contains(t.id) && t.stranded) t,
+      ];
+      if (stranded.isEmpty) return items;
+      final settled = await _loop.settle(aid, stranded);
       final seen = {for (final i in items) i.commentId};
       List<VersionInfo>? versions;
-      String? title;
-      for (final t in threads) {
-        if (!job.recheck.contains(t.id) || !t.stranded) continue;
-        final last = t.comments.lastWhere((c) => c.authorKind == 'viewer');
-        if (t.addressedIn.isNotEmpty) {
-          if (versions == null) {
-            final detail = await _api.getArtifact(aid);
-            versions = detail.versions;
-            title = detail.artifact.title;
-          }
-          final landed = _landedAfter(versions, t.addressedIn, last.createdAt);
+      for (final t in stranded) {
+        if (settled.replied.contains(t.id)) continue;
+        final pending = pendingComments(t);
+        final known = pending.any((c) => settled.answered.contains(c.id));
+        if (!known &&
+            !settled.undone.contains(t.id) &&
+            t.addressedIn.isNotEmpty) {
+          versions ??= (await _api.getArtifact(aid)).versions;
+          final landed = _landedAfter(
+            versions,
+            t.addressedIn,
+            pending.last.createdAt,
+          );
           if (landed != null) {
             await _api.replyAsAgent(
               aid,
@@ -306,8 +316,9 @@ class FeedbackWorker {
             continue;
           }
         }
-        for (final i in _items(aid, title ?? '', t)) {
-          if (seen.add(i.commentId)) items.add(i);
+        for (final c in pending) {
+          if (settled.answered.contains(c.id) || !seen.add(c.id)) continue;
+          items.add(_item(aid, t, c));
         }
       }
     } on ClaxApiError catch (e) {
@@ -364,27 +375,19 @@ class FeedbackWorker {
     return found;
   }
 
-  /// The viewer comments of [t] after its last agent comment, as the items
-  /// a poll would have handed over.
-  static List<FeedbackItem> _items(String aid, String title, ThreadView t) {
-    final since = t.comments.lastIndexWhere((c) => c.byAgent) + 1;
-    return [
-      for (final c in t.comments.skip(since))
-        if (c.authorKind == 'viewer')
-          FeedbackItem(
-            feedbackId: '',
-            threadId: t.id,
-            commentId: c.id,
-            artifactId: aid,
-            artifactTitle: title,
-            body: c.body,
-            author: c.authorName,
-            version: t.versionN,
-            anchor: t.anchor,
-            viaPage: c.viaPage,
-            resent: true,
-            createdAt: c.createdAt,
-          ),
-    ];
-  }
+  /// Comment [c] of [t] as the item a poll would have handed over.
+  static FeedbackItem _item(String aid, ThreadView t, ThreadComment c) =>
+      FeedbackItem(
+        feedbackId: '',
+        threadId: t.id,
+        commentId: c.id,
+        artifactId: aid,
+        body: c.body,
+        author: c.authorName,
+        version: t.versionN,
+        anchor: t.anchor,
+        viaPage: c.viaPage,
+        resent: true,
+        createdAt: c.createdAt,
+      );
 }

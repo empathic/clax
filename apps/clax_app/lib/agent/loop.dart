@@ -6,6 +6,7 @@ import '../clax/api.dart';
 import 'apply.dart';
 import 'backend.dart';
 import 'edit_result.dart';
+import 'ledger.dart';
 import 'prompt.dart';
 import 'request.dart';
 import 'timings.dart';
@@ -118,10 +119,15 @@ class AgentLoop {
     required this._prompts,
     required this._model,
     required this._timings,
+    ChangeLedger? ledger,
     bool Function(AgentBackend backend)? sendsImage,
     void Function(String line)? log,
-  }) : _sendsImage = sendsImage ?? ((b) => imageBackends.contains(b.name)),
+  }) : ledger = ledger ?? MemoryChangeLedger(),
+       _sendsImage = sendsImage ?? ((b) => imageBackends.contains(b.name)),
        _log = log ?? ((_) {});
+
+  /// What each change published, for [settle]; in memory unless given.
+  final ChangeLedger ledger;
 
   final ClaxApi _api;
   final AgentBackend Function() _backend;
@@ -266,12 +272,16 @@ class AgentLoop {
     final cancel = CancelWatch(cancelled);
     final commentIds = {for (final i in items) i.commentId};
 
+    var newerAtPublish = const <String>{};
     Future<ChangeOutcome> finish(
       String reply,
       ChangeOutcome Function(bool answered) of, {
       bool resolve = false,
     }) async {
-      final newer = await _newerComments(aid, threadIds, commentIds);
+      final newer = {
+        ...newerAtPublish,
+        ...await _newerComments(aid, threadIds, commentIds),
+      };
       var answered = true;
       for (final t in threadIds) {
         if (newer.contains(t)) {
@@ -358,8 +368,9 @@ class AgentLoop {
         }
         if (cancel.isCancelled) return const ChangeCancelled();
 
+        // Only what the prompt carried counts as shown.
         final shown = {
-          for (final c in snap.docs)
+          for (final c in PromptBuilder.trimDocuments(snap.docs))
             for (final d in c.docs) d.path: d.version,
         };
         final Map<String, String?> changed;
@@ -384,7 +395,36 @@ class AgentLoop {
 
         final v = snap.artifact.currentVersion;
         int? landed;
+        ChangeRecord? record;
         if (_changesVersion(snap.artifact, snap.files, changed, r)) {
+          // A thread the person wrote on again while this ran is left out
+          // of addresses: this version does not answer its newer comment.
+          newerAtPublish = await _newerComments(aid, threadIds, commentIds);
+          final addresses = [
+            for (final t in threadIds)
+              if (!newerAtPublish.contains(t)) t,
+          ];
+          record = ChangeRecord(
+            artifactId: aid,
+            base: v,
+            addresses: addresses,
+            answered: {
+              for (final t in threadIds)
+                t: [
+                  for (final i in items)
+                    if (i.threadId == t) i.commentId,
+                ],
+            },
+            reply: r.reply,
+            resolve: r.resolve,
+            db: r.db,
+            pins: {
+              for (final o in r.db)
+                '${o.collection}/${o.docId}':
+                    shown['${o.collection}/${o.docId}'],
+            },
+          );
+          await _record(record);
           try {
             final res = await _api.publish(
               aid,
@@ -394,11 +434,14 @@ class AgentLoop {
                 capabilities: r.capabilities,
                 note: r.reply,
                 files: changed,
-                addresses: threadIds,
+                addresses: addresses,
               ),
             );
             landed = res.version.n;
           } on ClaxApiError catch (e) {
+            // Without an answer the publish may have landed: the record
+            // stays for recovery to settle.
+            if (e.status != 0) await _forget(aid, v);
             if (e.isConflict && !reran) {
               reran = true;
               snap = await _snapshot(aid);
@@ -418,8 +461,13 @@ class AgentLoop {
                 if (e.status == 0) return const ChangeInterrupted();
                 _log('restoring $aid to version $v failed: $e');
               }
+              await _forget(aid, v);
             }
             return await fail("its data couldn't be updated: $refused");
+          }
+          if (record != null) {
+            record.docsDone = true;
+            await _record(record);
           }
         }
         return await finish(
@@ -446,6 +494,122 @@ class AgentLoop {
     } on Object catch (e) {
       _log('change on $aid failed: $e');
       return await fail('$e');
+    }
+  }
+
+  /// For recovery: settles what [ledger] says this app published on [aid],
+  /// given the artifact's [stranded] threads, and returns the comment IDs
+  /// a standing version already answered, the threads it replied on, and
+  /// the threads of changes it undid (whose comments run again, and whose
+  /// undone version must not be taken as their answer).
+  ///
+  /// A record whose version is not there (the publish never landed) is
+  /// dropped. For one whose version is there: document writes that may not
+  /// have run are sent again with their pins (a conflict or a refused
+  /// unpinned write means they ran); a refusal restores the version before
+  /// it, when it is still current, and drops the record, so its comments
+  /// run again. Then each addressed thread whose pending comments the
+  /// record all answered gets the record's reply (and resolve). Throws
+  /// [ClaxApiError] when the daemon gives no answer.
+  Future<({Set<String> answered, Set<String> replied, Set<String> undone})>
+  settle(String aid, List<ThreadView> stranded) async {
+    final answered = <String>{};
+    final replied = <String>{};
+    final undone = <String>{};
+    final List<ChangeRecord> records;
+    try {
+      records = await ledger.of(aid);
+    } on Object catch (e) {
+      _log('change ledger unavailable: $e');
+      return (answered: answered, replied: replied, undone: undone);
+    }
+    if (records.isEmpty) {
+      return (answered: answered, replied: replied, undone: undone);
+    }
+    final detail = await _api.getArtifact(aid);
+    for (final r in records) {
+      final v = detail.versions
+          .where((x) => x.n == r.base + 1 && _madeBy(x, r))
+          .firstOrNull;
+      if (v == null) {
+        await _forget(aid, r.base);
+        continue;
+      }
+      if (!r.docsDone && r.db.isNotEmpty) {
+        try {
+          await _api.batchDocs(aid, [
+            for (final o in r.db)
+              DocWrite(
+                op: o.op,
+                collection: o.collection,
+                docId: o.docId,
+                data: o.data,
+                ifVersion: r.pins['${o.collection}/${o.docId}'],
+              ),
+          ]);
+        } on ClaxApiError catch (e) {
+          if (e.status == 0) rethrow;
+          if (!e.isConflict && e.code != 'if_version_required') {
+            _log('documents of $aid version ${v.n} refused: $e');
+            if (detail.artifact.currentVersion == v.n) {
+              try {
+                await _api.restoreVersion(aid, r.base, ifVersion: v.n);
+              } on ClaxApiError catch (e) {
+                if (e.status == 0) rethrow;
+                _log('restoring $aid to version ${r.base} failed: $e');
+              }
+            }
+            await _forget(aid, r.base);
+            undone.addAll(r.answered.keys);
+            continue;
+          }
+          // A pin that no longer matches: the batch already ran.
+        }
+        r.docsDone = true;
+        await _record(r);
+      }
+      for (final ids in r.answered.values) {
+        answered.addAll(ids);
+      }
+      for (final t in stranded) {
+        if (!r.addresses.contains(t.id) || replied.contains(t.id)) continue;
+        final done = r.answered[t.id] ?? const [];
+        if (!pendingComments(t).every((c) => done.contains(c.id))) continue;
+        await _api.replyAsAgent(aid, t.id, r.reply);
+        replied.add(t.id);
+        if (r.resolve) {
+          await _quiet('resolve ${t.id}', () => _api.resolveAsAgent(aid, t.id));
+        }
+      }
+    }
+    return (answered: answered, replied: replied, undone: undone);
+  }
+
+  /// Whether version [v] is the one [r] published: the number it would
+  /// get, the same addresses and a note that opens with the reply.
+  static bool _madeBy(VersionInfo v, ChangeRecord r) {
+    if (v.addresses.length != r.addresses.length ||
+        !v.addresses.every(r.addresses.contains)) {
+      return false;
+    }
+    final reply = _collapse(r.reply);
+    final head = reply.length > 40 ? reply.substring(0, 40) : reply;
+    return _collapse(v.note ?? '').startsWith(head);
+  }
+
+  Future<void> _record(ChangeRecord r) async {
+    try {
+      await ledger.put(r);
+    } on Object catch (e) {
+      _log('change ledger write failed: $e');
+    }
+  }
+
+  Future<void> _forget(String aid, int base) async {
+    try {
+      await ledger.remove(aid, base);
+    } on Object catch (e) {
+      _log('change ledger write failed: $e');
     }
   }
 
@@ -726,6 +890,16 @@ extension<T> on List<T> {
     }
     return null;
   }
+}
+
+/// The viewer comments of [t] after its last agent comment: the ones no
+/// reply has answered yet.
+List<ThreadComment> pendingComments(ThreadView t) {
+  final since = t.comments.lastIndexWhere((c) => c.byAgent) + 1;
+  return [
+    for (final c in t.comments.skip(since))
+      if (c.authorKind == 'viewer') c,
+  ];
 }
 
 /// The comment's anchor as the daemon's feedback payload renders it on its
