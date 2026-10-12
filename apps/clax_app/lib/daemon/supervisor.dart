@@ -1,0 +1,493 @@
+import 'dart:async';
+import 'dart:collection';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:io' as io show pid;
+import 'dart:math' as math;
+
+import 'clock.dart';
+import 'exe_locator.dart';
+import 'health.dart';
+import 'ports.dart';
+import 'process.dart';
+
+/// What the embedded daemon is doing.
+sealed class DaemonState {
+  const DaemonState();
+}
+
+/// A daemon is being started (or the supervisor has not started one yet).
+final class Starting extends DaemonState {
+  const Starting();
+  @override
+  String toString() => 'Starting()';
+}
+
+/// A daemon answers at [endpoint].
+final class Up extends DaemonState {
+  const Up(this.endpoint);
+  final DaemonEndpoint endpoint;
+  @override
+  String toString() => 'Up($endpoint)';
+}
+
+/// The daemon exited (or failed to start); it is started again after
+/// [after]. [attempt] counts the exits since the daemon last stayed up for
+/// a minute.
+final class Restarting extends DaemonState {
+  const Restarting(this.attempt, this.after);
+  final int attempt;
+  final Duration after;
+  @override
+  String toString() => 'Restarting($attempt, $after)';
+}
+
+/// The daemon exited too often; nothing restarts it until `ensureUp`.
+/// [stderrTail] is the last lines the daemon wrote to stderr, across its
+/// runs.
+final class Failed extends DaemonState {
+  const Failed(this.reason, this.stderrTail);
+  final String reason;
+  final List<String> stderrTail;
+  @override
+  String toString() => 'Failed($reason)';
+}
+
+/// Where a running daemon answers, and the bearer token its write routes
+/// require.
+class DaemonEndpoint {
+  const DaemonEndpoint({
+    required this.base,
+    required this.token,
+    required this.pid,
+    required this.port,
+  });
+  final Uri base;
+  final String token;
+  final int pid;
+  final int port;
+  @override
+  String toString() => 'DaemonEndpoint($base, pid $pid)';
+}
+
+/// `ensureUp` could not bring the daemon up: it reached [Failed].
+class DaemonFailure implements Exception {
+  const DaemonFailure(this.reason, this.stderrTail);
+  final String reason;
+  final List<String> stderrTail;
+  @override
+  String toString() => 'DaemonFailure: $reason';
+}
+
+/// `ensureUp` was waiting when `stop` was called.
+class DaemonStopped implements Exception {
+  const DaemonStopped();
+  @override
+  String toString() => 'DaemonStopped';
+}
+
+/// Starts, watches and restarts the embedded `clax` daemon.
+///
+/// The daemon runs as `<exe> --port <P> serve --foreground` with a clean
+/// environment (`CLAX_HOME` = [home], `HOME` = the support directory,
+/// `TMPDIR` = the cache directory, a system `PATH`, `RUST_LOG=warn`) and
+/// [home] as its working directory. Before each start, a live daemon that
+/// `<home>/daemon.json` names is stopped (SIGTERM, then SIGKILL after 3 s),
+/// since nothing else uses this home. The port asked for is the one kept in
+/// `<support>/daemon-port` when it binds, so the WebView's origin stays the
+/// same; the daemon is up once `daemon.json` names the started PID and
+/// `/healthz` on the port it reports answers, within 15 s. The endpoint's
+/// port and token come from `daemon.json`, and that port is kept.
+///
+/// An exit the supervisor did not ask for (or a failed start) restarts the
+/// daemon after [backoff] (5 s from the fifth on); five within sixty
+/// seconds is [Failed]. After [stop] nothing restarts until [ensureUp].
+class DaemonSupervisor {
+  DaemonSupervisor({
+    required this._exe,
+    required this._home,
+    required String supportDir,
+    required String cacheDir,
+    required this._starter,
+    required this._ports,
+    required this._health,
+    required this._pids,
+    this._clock = const SystemClock(),
+    this._android = false,
+  }) : _support = supportDir,
+       _cache = cacheDir;
+
+  static const backoff = [
+    Duration(milliseconds: 200),
+    Duration(milliseconds: 500),
+    Duration(seconds: 1),
+    Duration(seconds: 2),
+    Duration(seconds: 5),
+  ];
+
+  /// How long a start may take to answer `/healthz`.
+  static const healthLimit = Duration(seconds: 15);
+
+  /// How often a starting daemon is probed.
+  static const pollInterval = Duration(milliseconds: 50);
+
+  /// How long a daemon gets after SIGTERM before SIGKILL.
+  static const termGrace = Duration(seconds: 3);
+
+  /// Exits within this window count toward [failAfter]; a daemon that
+  /// stays up this long resets the backoff.
+  static const failWindow = Duration(seconds: 60);
+  static const failAfter = 5;
+  static const tailLines = 50;
+
+  final ExeLocator _exe;
+  final String _home;
+  final String _support;
+  final String _cache;
+  final ProcessStarter _starter;
+  final PortPicker _ports;
+  final HealthProbe _health;
+  final PidKiller _pids;
+  final Clock _clock;
+  final bool _android;
+
+  final _states = StreamController<DaemonState>.broadcast();
+  DaemonState _state = const Starting();
+
+  final _tail = ListQueue<String>();
+  final _exits = <DateTime>[];
+  int _attempt = 0;
+  String _lastReason = 'unknown';
+
+  /// The loop is running (between `ensureUp` and its end on stop or
+  /// failure).
+  Completer<void>? _loopDone;
+  bool _stopping = false;
+  Future<void>? _stopFuture;
+  RunningProcess? _proc;
+  Completer<DaemonEndpoint>? _waiter;
+  Completer<void>? _wake;
+  bool _skipBackoff = false;
+
+  Stream<DaemonState> get states => _states.stream;
+  DaemonState get state => _state;
+
+  /// The running daemon's endpoint, starting it (or waiting for the start
+  /// or restart under way) when there is none. Throws [DaemonFailure] when
+  /// the daemon reaches [Failed], and [DaemonStopped] when [stop] is called
+  /// first. After [Failed] or [stop], it starts afresh.
+  Future<DaemonEndpoint> ensureUp() {
+    final stopping = _stopFuture;
+    if (stopping != null) return stopping.then((_) => ensureUp());
+    final s = _state;
+    if (_loopDone != null && s is Up) return Future.value(s.endpoint);
+    final w = _waiter ??= Completer<DaemonEndpoint>();
+    if (_loopDone == null) {
+      _exits.clear();
+      _attempt = 0;
+      unawaited(_loop());
+    }
+    return w.future;
+  }
+
+  /// Called when the app comes back to the foreground: a daemon that no
+  /// longer answers `/healthz` is killed and started again at once, and a
+  /// pending backoff is cut short. Does nothing before the first start,
+  /// after [stop], or once [Failed].
+  Future<void> onResume() async {
+    if (_loopDone == null || _stopping) return;
+    final s = _state;
+    if (s is Restarting) {
+      _wakeUp();
+      return;
+    }
+    if (s is! Up) return;
+    if (await _health.up(s.endpoint.base)) return;
+    if (!identical(_state, s) || _stopping) return;
+    _lastReason = 'did not answer /healthz on resume';
+    _skipBackoff = true;
+    _proc?.kill(ProcessSignal.sigkill);
+  }
+
+  /// Stops the daemon (SIGTERM, then SIGKILL after 3 s) and does not
+  /// restart it. Completes once it has exited.
+  Future<void> stop() =>
+      _stopFuture ??= _stop().whenComplete(() => _stopFuture = null);
+
+  Future<void> _stop() async {
+    final loop = _loopDone;
+    if (loop == null) return;
+    _stopping = true;
+    _wakeUp();
+    final p = _proc;
+    if (p != null) await _terminate(p);
+    await loop.future;
+  }
+
+  Future<void> _loop() async {
+    final done = _loopDone = Completer<void>();
+    _stopping = false;
+    try {
+      while (!_stopping) {
+        _set(const Starting());
+        final started = await _startOnce();
+        if (_stopping) break;
+        if (started != null) {
+          final (proc, endpoint) = started;
+          final upAt = _clock.now();
+          _writePort(endpoint.port);
+          _set(Up(endpoint));
+          final w = _waiter;
+          _waiter = null;
+          w?.complete(endpoint);
+          final code = await proc.exitCode;
+          _proc = null;
+          _forgetDaemonJson(proc.pid);
+          if (_stopping) break;
+          // A kill by onResume keeps the reason it gave.
+          if (!_skipBackoff) _lastReason = 'exited with code $code';
+          if (_clock.now().difference(upAt) >= failWindow) _attempt = 0;
+        }
+        final now = _clock.now();
+        _exits
+          ..add(now)
+          ..removeWhere((t) => now.difference(t) >= failWindow);
+        _attempt++;
+        if (_exits.length >= failAfter) {
+          final tail = List<String>.unmodifiable(_tail);
+          final reason =
+              'clax stopped ${_exits.length} times within a minute; last: $_lastReason';
+          _set(Failed(reason, tail));
+          final w = _waiter;
+          _waiter = null;
+          w?.completeError(DaemonFailure(reason, tail));
+          break;
+        }
+        final skip = _skipBackoff;
+        _skipBackoff = false;
+        final after = skip
+            ? Duration.zero
+            : backoff[math.min(_attempt - 1, backoff.length - 1)];
+        _set(Restarting(_attempt, after));
+        if (!skip) await _sleep(after);
+      }
+    } finally {
+      _loopDone = null;
+      final w = _waiter;
+      if (_stopping && w != null) {
+        _waiter = null;
+        w.completeError(const DaemonStopped());
+      }
+      done.complete();
+    }
+  }
+
+  /// One start: the daemon and its endpoint once it answers, or null when
+  /// it exited, did not answer in time, could not be started, or [stop]
+  /// was called.
+  Future<(RunningProcess, DaemonEndpoint)?> _startOnce() async {
+    RunningProcess? p;
+    try {
+      final exe = await _exe.clax();
+      await _stopStale();
+      if (_stopping) return null;
+      for (final d in [_home, _support, _cache]) {
+        Directory(d).createSync(recursive: true);
+      }
+      final port = await _ports.pick(preferred: _readPort());
+      final proc = p = await _starter.start(
+        exe,
+        ['--port', '$port', 'serve', '--foreground'],
+        environment: _environment(),
+        workingDirectory: _home,
+      );
+      _proc = proc;
+      _keepTail(proc);
+      if (_stopping) {
+        await _terminate(proc);
+        return null;
+      }
+      int? code;
+      final exited = proc.exitCode.then((c) => code = c);
+      final deadline = _clock.now().add(healthLimit);
+      while (true) {
+        if (_stopping) return null;
+        if (code != null) return _startExited(proc, code!);
+        final info = _readDaemonJson();
+        if (info != null && info.pid == proc.pid) {
+          final base = Uri.parse('http://127.0.0.1:${info.port}');
+          if (await _health.up(base)) {
+            if (_stopping) return null;
+            if (code != null) return _startExited(proc, code!);
+            return (
+              proc,
+              DaemonEndpoint(
+                base: base,
+                token: info.token,
+                pid: proc.pid,
+                port: info.port,
+              ),
+            );
+          }
+        }
+        if (!_clock.now().isBefore(deadline)) {
+          _lastReason =
+              'did not answer /healthz within ${healthLimit.inSeconds} s';
+          proc.kill(ProcessSignal.sigkill);
+          await proc.exitCode;
+          _proc = null;
+          _forgetDaemonJson(proc.pid);
+          return null;
+        }
+        await Future.any([_clock.delay(pollInterval), exited]);
+      }
+    } on Object catch (e) {
+      _lastReason = 'could not start clax: $e';
+      _addTail('clax app: could not start clax: $e');
+      final proc = p;
+      if (proc != null) {
+        proc.kill(ProcessSignal.sigkill);
+        _proc = null;
+      }
+      return null;
+    }
+  }
+
+  (RunningProcess, DaemonEndpoint)? _startExited(
+    RunningProcess proc,
+    int code,
+  ) {
+    _lastReason = 'exited with code $code while starting';
+    _proc = null;
+    _forgetDaemonJson(proc.pid);
+    return null;
+  }
+
+  /// SIGTERM, then SIGKILL after [termGrace]; completes once [p] exited.
+  Future<void> _terminate(RunningProcess p) async {
+    var exited = false;
+    final f = p.exitCode.then((_) => exited = true);
+    p.kill(ProcessSignal.sigterm);
+    await Future.any([f, _clock.delay(termGrace)]);
+    if (!exited) {
+      p.kill(ProcessSignal.sigkill);
+      await f;
+    }
+  }
+
+  /// Stops a live daemon that `daemon.json` names (one left by an earlier
+  /// run of the app): SIGTERM, then SIGKILL after [termGrace].
+  Future<void> _stopStale() async {
+    final pid = _readDaemonJson()?.pid;
+    if (pid == null || pid <= 0 || pid == io.pid) return;
+    if (!_pids.alive(pid)) return;
+    _pids.kill(pid, ProcessSignal.sigterm);
+    if (await _waitGone(pid)) return;
+    _pids.kill(pid, ProcessSignal.sigkill);
+    await _waitGone(pid);
+  }
+
+  /// Whether [pid] is gone within [termGrace], checking every
+  /// [pollInterval].
+  Future<bool> _waitGone(int pid) async {
+    final deadline = _clock.now().add(termGrace);
+    while (_pids.alive(pid)) {
+      if (!_clock.now().isBefore(deadline)) return false;
+      await _clock.delay(pollInterval);
+    }
+    return true;
+  }
+
+  Map<String, String> _environment() => {
+    'CLAX_HOME': _home,
+    'HOME': _support,
+    'TMPDIR': _cache,
+    'PATH': _android ? '/system/bin' : '/usr/bin:/bin',
+    'RUST_LOG': 'warn',
+  };
+
+  void _keepTail(RunningProcess p) {
+    p.stderr
+        .transform(const Utf8Decoder(allowMalformed: true))
+        .transform(const LineSplitter())
+        .listen(_addTail, onError: (Object _) {});
+  }
+
+  void _addTail(String line) {
+    _tail.addLast(line);
+    while (_tail.length > tailLines) {
+      _tail.removeFirst();
+    }
+  }
+
+  Future<void> _sleep(Duration d) async {
+    final wake = _wake = Completer<void>();
+    await Future.any([_clock.delay(d), wake.future]);
+    _wake = null;
+  }
+
+  void _wakeUp() {
+    final w = _wake;
+    if (w != null && !w.isCompleted) w.complete();
+  }
+
+  void _set(DaemonState s) {
+    _state = s;
+    _states.add(s);
+  }
+
+  File get _portFile => File('$_support/daemon-port');
+  File get _daemonJson => File('$_home/daemon.json');
+
+  int? _readPort() {
+    try {
+      final p = int.tryParse(_portFile.readAsStringSync().trim());
+      return p != null && p > 0 && p < 65536 ? p : null;
+    } on FileSystemException {
+      return null;
+    }
+  }
+
+  /// Keeps [port] for the next start, written beside and renamed into
+  /// place.
+  void _writePort(int port) {
+    try {
+      final tmp = File('$_support/daemon-port.tmp')
+        ..writeAsStringSync('$port\n', flush: true);
+      tmp.renameSync(_portFile.path);
+    } on FileSystemException {
+      // Only the next start's port preference is lost.
+    }
+  }
+
+  _DaemonInfo? _readDaemonJson() {
+    try {
+      final j = jsonDecode(_daemonJson.readAsStringSync());
+      if (j is! Map<String, Object?>) return null;
+      final pid = j['pid'], port = j['port'], token = j['token'];
+      if (pid is! int || port is! int || token is! String) return null;
+      return _DaemonInfo(pid, port, token);
+    } on Object {
+      return null;
+    }
+  }
+
+  /// Removes `daemon.json` when it still names [pid], a daemon that has
+  /// exited (a killed daemon leaves it behind), so a later start never
+  /// signals a process that has since taken that PID.
+  void _forgetDaemonJson(int pid) {
+    if (_readDaemonJson()?.pid != pid) return;
+    try {
+      _daemonJson.deleteSync();
+    } on FileSystemException {
+      // Already gone.
+    }
+  }
+}
+
+class _DaemonInfo {
+  const _DaemonInfo(this.pid, this.port, this.token);
+  final int pid;
+  final int port;
+  final String token;
+}
