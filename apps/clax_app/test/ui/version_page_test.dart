@@ -61,6 +61,7 @@ Future<_Rig> _rig() async {
       ifVersion: 2,
       note: 'Add the data',
       files: {
+        'index.html': page(v2Body),
         'data.csv': [for (var i = 0; i < 4001; i++) '$i,x'].join('\n'),
       },
     ),
@@ -299,7 +300,10 @@ void main() {
     await api.registerAppSession(installId: 'i', pid: 1);
     await api.publish(
       aid,
-      PublishRequest(ifVersion: 1, files: {'a.txt': 'kept\n'}),
+      PublishRequest(
+        ifVersion: 1,
+        files: {'index.html': page(v1Body), 'a.txt': 'kept\n'},
+      ),
     );
     await tester.pumpWidget(_Rig(api, aid).versionPage(2));
     await tester.pumpAndSettle();
@@ -319,7 +323,10 @@ void main() {
     await api.registerAppSession(installId: 'i', pid: 1);
     await api.publish(
       aid,
-      PublishRequest(ifVersion: 1, files: {'notes.txt': 'a\r\nb\n'}),
+      PublishRequest(
+        ifVersion: 1,
+        files: {'index.html': page(v1Body), 'notes.txt': 'a\r\nb\n'},
+      ),
     );
     await tester.pumpWidget(_Rig(api, aid).versionPage(2));
     await tester.pumpAndSettle();
@@ -341,7 +348,10 @@ void main() {
     await api.registerAppSession(installId: 'i', pid: 1);
     await api.publish(
       aid,
-      PublishRequest(ifVersion: 1, files: {path: 'x()\n'}),
+      PublishRequest(
+        ifVersion: 1,
+        files: {'index.html': page(v1Body), path: 'x()\n'},
+      ),
     );
     await tester.pumpWidget(_Rig(api, aid).versionPage(2));
     await tester.pumpAndSettle();

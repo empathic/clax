@@ -22,7 +22,8 @@ class FakeCall {
 ///
 /// It keeps the daemon's rules that callers depend on: a publish or restore
 /// whose `ifVersion` is not the current version is 409 `conflict` with
-/// `current`; a create needs a title and `index.html`; creates,
+/// `current`; a create needs a title and `index.html`, and every publish
+/// request names `index.html` (unchanged files carry forward); creates,
 /// publishes, agent replies, resolves and working marks need a registered
 /// session ([StateError] without one, `unknown_session` once it ended), and
 /// replies and resolves a sent thread; a document write to an existing
@@ -403,6 +404,7 @@ class FakeClaxApi implements ClaxApi {
         throw _invalid('unknown_thread', 'no thread $t');
       }
     }
+    _needIndex(r);
     final files = Map.of(a.versions.last.files);
     for (final e in r.files.entries) {
       if (e.value == null) {
@@ -410,9 +412,6 @@ class FakeClaxApi implements ClaxApi {
       } else {
         files[e.key] = e.value!;
       }
-    }
-    if (!files.containsKey('index.html')) {
-      throw _invalid('missing_index', 'a version must include index.html');
     }
     if (r.title != null) a.title = r.title!;
     if (r.capabilities != null) a.capabilities = Map.of(r.capabilities!);
@@ -781,6 +780,7 @@ class FakeClaxApi implements ClaxApi {
       throw ArgumentError.value(draftId, 'draftId', 'is not a draft');
     }
     _checkVersion(a, r.ifVersion!);
+    _needIndex(r);
     final files = Map.of(a.versions.last.files);
     for (final e in r.files.entries) {
       if (e.value == null) {
@@ -788,9 +788,6 @@ class FakeClaxApi implements ClaxApi {
       } else {
         files[e.key] = e.value!;
       }
-    }
-    if (!files.containsKey('index.html')) {
-      throw _invalid('missing_index', 'a version must include index.html');
     }
     if (r.title != null) a.title = r.title!;
     if (r.capabilities != null) a.capabilities = Map.of(r.capabilities!);
@@ -1732,6 +1729,17 @@ class FakeClaxApi implements ClaxApi {
       'array-contains' => v is List && v.any((x) => eq(x, want)),
       _ => throw _invalid('invalid_argument', 'unknown operator ${w[1]}'),
     };
+  }
+
+  /// The daemon requires `index.html` in every publish request, whatever
+  /// the previous version held.
+  static void _needIndex(PublishRequest r) {
+    if (r.files['index.html'] == null) {
+      throw _invalid(
+        'missing_index',
+        'index.html is required on every publish',
+      );
+    }
   }
 
   static ClaxApiError _draftThread() => const ClaxApiError(
