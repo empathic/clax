@@ -46,10 +46,15 @@ class FakeCall {
 /// get the `inbox` and `questions` events of their subscribed topics, and
 /// [emitStream]'s.
 class FakeClaxApi implements ClaxApi {
-  FakeClaxApi({this.clock});
+  FakeClaxApi({this.clock, Timer Function(Duration, void Function())? timer})
+    : _timer = timer ?? Timer.new;
 
   /// The `created_at` and `updated_at` stamps; a fixed one when null.
   final String Function()? clock;
+
+  /// Ends a [waitQuestion] when its `wait` runs out; tests inject their
+  /// own to run it at will.
+  final Timer Function(Duration, void Function()) _timer;
 
   final List<FakeCall> calls = [];
   final Map<String, _FakeArtifact> _artifacts = {};
@@ -252,6 +257,10 @@ class FakeClaxApi implements ClaxApi {
     for (final q in _questions.values) {
       final ws = List.of(q.waits);
       q.waits.clear();
+      for (final t in q.timers.values) {
+        t.cancel();
+      }
+      q.timers.clear();
       for (final w in ws) {
         w.complete(q.view);
       }
@@ -966,8 +975,12 @@ class FakeClaxApi implements ClaxApi {
 
   // --- questions ---
 
+  /// The open questions one session, and the daemon, may hold.
+  static const maxOpenPerSession = 8;
+  static const maxOpen = 100;
+
   @override
-  Future<QuestionView> askQuestion(
+  Future<AskResult> askQuestion(
     String sid,
     List<Map<String, Object?>> questions, {
     String? artifactId,
@@ -980,6 +993,15 @@ class FakeClaxApi implements ClaxApi {
     _liveSession(sid);
     _validateQuestions(questions);
     final a = artifactId == null ? null : _artifact(artifactId);
+    final open = _questions.values.where((q) => q.status == 'open');
+    if (open.where((q) => q.sessionId == sid).length >= maxOpenPerSession ||
+        open.length >= maxOpen) {
+      throw const ClaxApiError(
+        status: 429,
+        code: 'limit_reached',
+        message: 'at most 8 open questions per session and 100 in all',
+      );
+    }
     final qid = 'question-${++_ids}';
     final q = _questions[qid] = _FakeQuestion(sid, {
       'id': qid,
@@ -998,9 +1020,9 @@ class FakeClaxApi implements ClaxApi {
               for (final o in (x['options'] as List<Object?>?) ?? const [])
                 {
                   'label': (o! as Map)['label'],
-                  'description': o['description'],
-                  'preview': o['preview'],
-                  'recommended': o['recommended'] ?? false,
+                  'description': ?o['description'],
+                  'preview': ?o['preview'],
+                  if (o['recommended'] == true) 'recommended': true,
                 },
             ],
             'multi_select': x['multi_select'] ?? false,
@@ -1035,7 +1057,14 @@ class FakeClaxApi implements ClaxApi {
     _inbox.add(item);
     _announceQuestion(q);
     _announceItem(item);
-    return q.view;
+    return AskResult(
+      question: q.view,
+      mode: 'wait',
+      terminalAfterS: 600,
+      surfaceOpen: _streams.any(
+        (st) => st.topics.contains('inbox') || st.topics.contains('questions'),
+      ),
+    );
   }
 
   @override
@@ -1051,8 +1080,13 @@ class FakeClaxApi implements ClaxApi {
       q.taken = true;
       return q.view;
     }
+    if (wait <= Duration.zero) return q.view;
     final c = Completer<QuestionView>();
     q.waits.add(c);
+    q.timers[c] = _timer(wait, () {
+      q.timers.remove(c);
+      if (q.waits.remove(c)) c.complete(q.view);
+    });
     return c.future;
   }
 
@@ -1092,13 +1126,10 @@ class FakeClaxApi implements ClaxApi {
   ) async {
     _call('answerQuestion', {'qid': qid, 'answers': answers});
     final q = _openQuestion(qid);
-    final asked = q.json['questions']! as List<Object?>;
-    if (answers.length != asked.length) {
-      throw _invalid('invalid_answer', 'one answer per question');
-    }
-    q.json['answers'] = [
-      for (final a in answers) {'selected': a['selected'], 'text': a['text']},
-    ];
+    q.json['answers'] = _validateAnswers(
+      q.json['questions']! as List<Object?>,
+      answers,
+    );
     q.json['answered_via'] = 'cli';
     _close(q, 'answered');
     return q.view;
@@ -1140,6 +1171,10 @@ class FakeClaxApi implements ClaxApi {
     q.closing = ++_closings;
     final ws = List.of(q.waits);
     q.waits.clear();
+    for (final t in q.timers.values) {
+      t.cancel();
+    }
+    q.timers.clear();
     final answered = status == 'answered' || status == 'declined';
     if (ws.isNotEmpty && answered) q.taken = true;
     for (final w in ws) {
@@ -1171,37 +1206,135 @@ class FakeClaxApi implements ClaxApi {
     return out;
   }
 
+  /// The daemon's question rules (`crates/clax-core/src/questions.rs`
+  /// `check_one`, `check_all`): unknown keys refused, lengths in
+  /// characters.
   static void _validateQuestions(List<Map<String, Object?>> qs) {
     Never bad(String m) => throw _invalid('invalid_question', m);
-    if (qs.isEmpty || qs.length > 4) bad('a set holds one to four questions');
+    int chars(String s) => s.runes.length;
+    bool blank(String s) => s.trim().isEmpty;
+    if (qs.isEmpty || qs.length > 4) bad('an ask holds one to four questions');
     final texts = <String>{};
     for (final q in qs) {
+      final unknown = q.keys.toSet().difference(_questionKeys);
+      if (unknown.isNotEmpty) bad('unknown field ${unknown.first}');
       final text = q['question'];
-      if (text is! String || text.trim().isEmpty || text.length > 2000) {
-        bad('question is 1 to 2,000 characters');
+      if (text is! String || blank(text) || chars(text) > 2000) {
+        bad('a question is 1 to 2000 characters, not only spaces');
       }
-      if (!texts.add(text)) bad('questions are unique within the set');
+      if (!texts.add(text)) bad('each question must be unique within the ask');
       final header = q['header'];
-      if (header is! String || header.isEmpty || header.length > 12) {
-        bad('header is 1 to 12 characters');
+      if (header is! String || blank(header) || chars(header) > 12) {
+        bad('a header is 1 to 12 characters, not only spaces');
       }
-      final options = (q['options'] as List<Object?>?) ?? const [];
-      if (options.length == 1 || options.length > 4) {
-        bad('options are none, or 2 to 4');
+      final rawOptions = q['options'];
+      if (rawOptions != null && rawOptions is! List) bad('options is a list');
+      final options = (rawOptions as List<Object?>?) ?? const [];
+      if (options.isNotEmpty && (options.length < 2 || options.length > 4)) {
+        bad('two to four options, or none for free text');
+      }
+      for (final k in ['multi_select', 'other']) {
+        if (q[k] != null && q[k] is! bool) bad('$k is true or false');
+      }
+      if (options.isEmpty && q['multi_select'] == true) {
+        bad('multi_select needs options');
       }
       final labels = <String>{};
       var recommended = 0;
       for (final o in options) {
-        final m = o is Map ? o : bad('an option is an object');
+        final m = o is Map<String, Object?> ? o : bad('an option is an object');
+        final unknown = m.keys.toSet().difference(_optionKeys);
+        if (unknown.isNotEmpty) bad('unknown field ${unknown.first}');
         final label = m['label'];
-        if (label is! String || label.isEmpty || label.length > 100) {
-          bad('label is 1 to 100 characters');
+        if (label is! String ||
+            blank(label) ||
+            chars(label) > 100 ||
+            !labels.add(label)) {
+          bad('each label is 1 to 100 characters, not only spaces, and unique');
         }
-        if (!labels.add(label)) bad('labels are unique within the question');
+        final description = m['description'];
+        if (description != null &&
+            (description is! String || chars(description) > 500)) {
+          bad('a description is at most 500 characters');
+        }
+        final preview = m['preview'];
+        if (preview != null && (preview is! String || chars(preview) > 20000)) {
+          bad('a preview is at most 20000 characters');
+        }
         if (m['recommended'] == true) recommended++;
       }
-      if (recommended > 1) bad('at most one option is recommended');
+      if (recommended > 1) bad('at most one recommended option');
     }
+  }
+
+  static const _questionKeys = {
+    'question',
+    'header',
+    'options',
+    'multi_select',
+    'other',
+  };
+  static const _optionKeys = {'label', 'description', 'preview', 'recommended'};
+
+  /// The daemon's answer rules (`crates/clax-core/src/questions.rs`
+  /// `validate_answers`): the answers as stored, `selected` a list and
+  /// `text` trimmed, or null when blank. A body the route cannot read (an
+  /// unknown key, `selected: null`) is `invalid_json`.
+  static List<Map<String, Object?>> _validateAnswers(
+    List<Object?> questions,
+    List<Map<String, Object?>> answers,
+  ) {
+    for (final a in answers) {
+      if (a.keys.any((k) => k != 'selected' && k != 'text') ||
+          (a.containsKey('selected') && a['selected'] is! List) ||
+          (a['text'] != null && a['text'] is! String)) {
+        throw _invalid('invalid_json', 'an answer is {selected: [...], text}');
+      }
+    }
+    if (answers.length != questions.length) {
+      throw _invalid('invalid_answer', 'one answer per question, in order');
+    }
+    final out = <Map<String, Object?>>[];
+    for (var i = 0; i < answers.length; i++) {
+      final q = questions[i]! as Map<String, Object?>;
+      Never no(String why) =>
+          throw _invalid('invalid_answer', '"${q['header']}": $why');
+      final labels = [
+        for (final o in q['options']! as List<Object?>)
+          (o! as Map)['label'] as String,
+      ];
+      final selected = [
+        for (final l in (answers[i]['selected'] as List<Object?>?) ?? const [])
+          l is String ? l : no('a label is a string'),
+      ];
+      final raw = (answers[i]['text'] as String?)?.trim();
+      final text = raw == null || raw.isEmpty ? null : raw;
+      if (text != null && text.runes.length > 10000) {
+        no('the text is at most 10,000 characters');
+      }
+      if (selected.any((l) => !labels.contains(l))) {
+        no('a selected label is not one of its options');
+      }
+      if (selected.toSet().length != selected.length) {
+        no('a label is selected twice');
+      }
+      if (labels.isEmpty) {
+        if (selected.isNotEmpty || text == null) {
+          no('a free-text question takes text only');
+        }
+      } else {
+        if (text != null && q['other'] == false) {
+          no('this question takes no Other text');
+        }
+        final n = selected.length + (text == null ? 0 : 1);
+        if (n == 0) no('it has no answer');
+        if (q['multi_select'] != true && n > 1) {
+          no('pick one option or type Other, not both');
+        }
+      }
+      out.add({'selected': selected, 'text': text});
+    }
+    return out;
   }
 
   // --- the inbox ---
@@ -1703,6 +1836,9 @@ class _FakeQuestion {
   final String sessionId;
   final Map<String, Object?> json;
   final List<Completer<QuestionView>> waits = [];
+
+  /// Each wait's deadline.
+  final Map<Completer<QuestionView>, Timer> timers = {};
 
   /// Whether a wait or a feedback poll has handed the answer over.
   bool taken = false;

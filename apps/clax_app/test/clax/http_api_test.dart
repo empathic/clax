@@ -1309,9 +1309,14 @@ void main() {
         'terminal_after_s': 600,
         'surface_open': true,
       });
-      final q = await api.askQuestion(sid, [
+      final asked = await api.askQuestion(sid, [
         {'question': 'Which unit should distances use?', 'header': 'Unit'},
       ], artifactId: aid);
+      expect(
+        (asked.mode, asked.terminalAfterS, asked.surfaceOpen),
+        ('wait', 600, true),
+      );
+      final q = asked.question;
       final req = only('POST', '/api/sessions/$sid/questions');
       expectOwnerCall(req);
       expect(req.json, {
@@ -1342,7 +1347,7 @@ void main() {
         'terminal_after_s': 600,
         'surface_open': false,
       });
-      final q = await api.askQuestion(sid, [
+      final asked = await api.askQuestion(sid, [
         {'question': 'Q?', 'header': 'H'},
       ]);
       expect(
@@ -1351,7 +1356,8 @@ void main() {
         ),
         isFalse,
       );
-      expect(q.artifactId, isNull);
+      expect(asked.question.artifactId, isNull);
+      expect(asked.surfaceOpen, isFalse, reason: 'no owner surface is open');
     });
 
     test('an invalid question set is invalid_question', () async {
@@ -1446,21 +1452,22 @@ void main() {
           'question': questionJson(
             status: 'answered',
             answers: [
-              {'selected': null, 'text': 'nautical miles'},
+              {'selected': <String>[], 'text': 'nautical miles'},
             ],
           ),
         });
         final q = await api.answerQuestion(qid, [
-          {'selected': null, 'text': 'nautical miles'},
+          const QuestionAnswer(text: 'nautical miles').toJson(),
         ]);
         final req = only('POST', '/api/questions/$qid/answer');
         expectOwnerCall(req);
         expect(req.json, {
           'answers': [
-            {'selected': null, 'text': 'nautical miles'},
+            {'selected': <String>[], 'text': 'nautical miles'},
           ],
         });
         expect(q.answers!.single.text, 'nautical miles');
+        expect(q.answers!.single.selected, isEmpty);
 
         server.json('POST', '/api/questions/q2/answer', 409, {
           'error': {'code': 'question_closed', 'message': 'declined'},
@@ -1647,6 +1654,27 @@ void main() {
         ]);
       },
     );
+  });
+
+  group('question answers', () {
+    test('toJson never writes selected: null, which the daemon refuses', () {
+      expect(const QuestionAnswer(text: 'other').toJson(), {
+        'selected': <String>[],
+        'text': 'other',
+      });
+      expect(const QuestionAnswer(selected: ['km']).toJson(), {
+        'selected': ['km'],
+        'text': null,
+      });
+    });
+
+    test('a missing or null selected reads as none', () {
+      expect(QuestionAnswer.fromJson({'text': 'x'}).selected, isEmpty);
+      expect(
+        QuestionAnswer.fromJson({'selected': null, 'text': 'x'}).selected,
+        isEmpty,
+      );
+    });
   });
 
   group('the recovery rule', () {

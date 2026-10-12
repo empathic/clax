@@ -299,6 +299,90 @@ void main() {
     ]);
   });
 
+  /// A stream that drops once after its subscribe and comes back as [s2].
+  void dropToNewStream() {
+    final subscribed = Completer<void>();
+    server.handle(
+      'GET',
+      '/api/stream',
+      conn((write) async {
+        await write(ready(s1, 41));
+        await subscribed.future;
+      }),
+    );
+    server.handle(
+      'GET',
+      '/api/stream',
+      conn((write) async {
+        await write(ready(s2, 7));
+        await hold.future;
+      }),
+    );
+    acceptSubscribes(s1, posted: subscribed);
+  }
+
+  final unavailable = {
+    'error': {'code': 'unavailable', 'message': 'busy'},
+  };
+
+  test(
+    'a re-subscribe that fails for a while is retried until it holds',
+    () async {
+      dropToNewStream();
+      server.json('POST', '/api/stream/$s2', 503, unavailable);
+      server.json('POST', '/api/stream/$s2', 503, unavailable);
+      acceptSubscribes(s2);
+      final got = stream.events.first;
+      await stream.subscribe(['inbox']);
+      final e = await got;
+      expect(
+        (e.topic, e.type, e.data['reason']),
+        ('inbox', 'resync', 'reconnect'),
+      );
+      expect(subscribeBodies(s2), hasLength(3));
+    },
+  );
+
+  test(
+    'a topic whose single re-subscribe fails for a while is retried alone',
+    () async {
+      dropToNewStream();
+      final gone = {
+        'error': {'code': 'not_found', 'message': 'no such artifact'},
+      };
+      server.json('POST', '/api/stream/$s2', 404, gone);
+      server.json('POST', '/api/stream/$s2', 503, unavailable);
+      server.json('POST', '/api/stream/$s2', 404, gone);
+      acceptSubscribes(s2);
+      final got = stream.events.take(2).toList();
+      await stream.subscribe(['inbox', 'artifact:7q3k9mzx2b4t']);
+      final es = await got;
+      expect(es.map((e) => (e.topic, e.type)), [
+        ('artifact:7q3k9mzx2b4t', 'unsubscribed'),
+        ('inbox', 'resync'),
+      ]);
+      expect(subscribeBodies(s2).last, {
+        'subscribe': ['inbox'],
+      });
+    },
+  );
+
+  test(
+    'a re-subscribe that keeps failing gives up with unsubscribed per topic',
+    () async {
+      dropToNewStream();
+      server.json('POST', '/api/stream/$s2', 503, unavailable);
+      final got = stream.events.take(2).toList();
+      await stream.subscribe(['inbox', 'questions']);
+      final es = await got;
+      expect(es.map((e) => (e.topic, e.type, e.data['code'])), [
+        ('inbox', 'unsubscribed', 'unavailable'),
+        ('questions', 'unsubscribed', 'unavailable'),
+      ]);
+      expect(subscribeBodies(s2), hasLength(SseClaxStream.restoreAttempts));
+    },
+  );
+
   test(
     'a refused subscribe throws, and the topic is not subscribed again later',
     () async {

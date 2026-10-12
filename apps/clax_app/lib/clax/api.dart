@@ -180,10 +180,12 @@ abstract interface class ClaxApi {
   // --- questions ---
 
   /// Asks [questions] (one to four, `docs/contract.md`'s question shape)
-  /// as session [sid], about [artifactId] when given (`source: ask`).
-  /// 400 `invalid_question` for a set that breaks a rule; 429
-  /// `limit_reached` past the open-question limits.
-  Future<QuestionView> askQuestion(
+  /// as session [sid], about [artifactId] when given (`source: ask`), and
+  /// returns the create answer: the question, its mode and whether an
+  /// owner surface is open. 400 `invalid_question` for a set that breaks a
+  /// rule; 429 `limit_reached` past the open-question limits (8 per
+  /// session, 100 in all).
+  Future<AskResult> askQuestion(
     String sid,
     List<Map<String, Object?>> questions, {
     String? artifactId,
@@ -208,8 +210,11 @@ abstract interface class ClaxApi {
   Future<List<QuestionView>> questions({String status = 'open'});
 
   /// Answers question [qid] as the owner, one entry per question
-  /// (`{selected, text}`). 400 `invalid_answer`; 409 `question_closed`,
-  /// whose [ClaxApiError.body] holds the `question` view.
+  /// (`{selected, text}`, as [QuestionAnswer.toJson] writes it: `selected`
+  /// a list, never null). 400 `invalid_answer` for answers that do not fit
+  /// the questions, `invalid_json` for another shape; 409
+  /// `question_closed`, whose [ClaxApiError.body] holds the `question`
+  /// view.
   Future<QuestionView> answerQuestion(
     String qid,
     List<Map<String, Object?>> answers,

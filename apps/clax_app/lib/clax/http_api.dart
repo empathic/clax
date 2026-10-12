@@ -554,7 +554,7 @@ class HttpClaxApi implements ClaxApi {
   // --- questions ---
 
   @override
-  Future<QuestionView> askQuestion(
+  Future<AskResult> askQuestion(
     String sid,
     List<Map<String, Object?>> questions, {
     String? artifactId,
@@ -568,7 +568,7 @@ class HttpClaxApi implements ClaxApi {
         'source': 'ask',
       },
     );
-    return _question(j);
+    return _parse(() => AskResult.fromJson(j));
   }
 
   @override

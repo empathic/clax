@@ -308,7 +308,13 @@ void main() {
           {'label': 'mi'},
         ],
       };
-      final q = await api.askQuestion(s.id, [unit], artifactId: aid);
+      final asked = await api.askQuestion(s.id, [unit], artifactId: aid);
+      expect(
+        (asked.mode, asked.surfaceOpen),
+        ('wait', true),
+        reason: 'the stream holds inbox and questions',
+      );
+      final q = asked.question;
       expect((q.isOpen, q.artifactId, q.source), (true, aid, 'ask'));
       await seen('questions', 'question');
       await seen('inbox', 'inbox_item');
@@ -354,13 +360,13 @@ void main() {
       );
       await api.withdrawQuestion(s.id, q.id);
 
-      final q2 = await api.askQuestion(s.id, [
+      final q2 = (await api.askQuestion(s.id, [
         {'question': 'Anything else?', 'header': 'Else'},
-      ]);
+      ])).question;
       expect((await api.declineQuestion(q2.id)).isDeclined, isTrue);
-      final q3 = await api.askQuestion(s.id, [
+      final q3 = (await api.askQuestion(s.id, [
         {'question': 'Still there?', 'header': 'Ping'},
-      ]);
+      ])).question;
       await api.withdrawQuestion(s.id, q3.id);
       expect((await api.questions(status: 'closed')).map((x) => x.id), [
         q3.id,
@@ -404,20 +410,24 @@ void main() {
       )).artifact.id;
       await api.batchDocs(aid, const [
         DocWrite(op: 'set', collection: 'runs', docId: 'r1', data: {'km': 5}),
-        DocWrite(
-          op: 'set',
-          collection: 'data/users/u1/prefs',
-          docId: 'p',
-          data: {'dark': true},
-        ),
       ]);
+      // A viewer's private document, which only that viewer reads or writes
+      // (the token neither): the copy leaves it out.
+      final viewer = await d.newViewer('V');
+      final private = 'data/users/${viewer.publicId}/prefs';
+      await d.viewerPutDoc(aid, private, {'dark': true}, viewer.cookie);
+      expect(await d.viewerGetDocStatus(aid, private, viewer.cookie), 200);
       final draft = await api.createDraft(
         of: aid,
         title: 'Runs',
         capabilities: {'db': <String, Object?>{}},
         files: {'index.html': '<p>draft</p>'},
       );
-      expect((draft.of, draft.version, draft.docsCopied), (aid, 1, 1));
+      expect(
+        (draft.of, draft.version, draft.docsCopied, draft.docsTruncated),
+        (aid, 1, 1, false),
+        reason: 'runs/r1 is copied; the private document is not',
+      );
       expect((await api.listArtifacts()).map((a) => a.id), [aid]);
       expect((await api.listDrafts()).map((x) => x.id), [draft.id]);
 
@@ -451,9 +461,7 @@ void main() {
         throwsA(isA<ClaxApiError>().having((e) => e.isNotFound, '404', isTrue)),
       );
     },
-    skip: bin == null
-        ? 'CLAX_TEST_BIN is not set'
-        : 'needs the daemon draft routes, /api/drafts (task S1)',
+    skip: bin == null ? 'CLAX_TEST_BIN is not set' : false,
     timeout: const Timeout(Duration(minutes: 3)),
   );
 }
@@ -581,6 +589,75 @@ class _Daemon {
       'multipart/form-data; boundary=$boundary',
     );
     return (j['thread'] as Map)['id'] as String;
+  }
+
+  /// A new named viewer: its cookie and public ID.
+  Future<({String cookie, String publicId})> newViewer(String name) async {
+    final client = HttpClient();
+    try {
+      final req = await client.getUrl(
+        endpoint.base.replace(path: '/api/viewers/me'),
+      );
+      final res = await req.close();
+      await res.drain<void>();
+      final cookie = res.cookies.firstWhere((c) => c.name == 'clax_viewer');
+      final put = await client.openUrl(
+        'PUT',
+        endpoint.base.replace(path: '/api/viewers/me'),
+      );
+      put.cookies.add(cookie);
+      put.headers.contentType = ContentType.json;
+      put.write(jsonEncode({'display_name': name}));
+      final named = await put.close();
+      final j = jsonDecode(await utf8.decodeStream(named)) as Map;
+      expect(named.statusCode, 200, reason: '$j');
+      return (
+        cookie: cookie.value,
+        publicId: (j['viewer'] as Map)['public_id'] as String,
+      );
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// Writes document [path] of [aid] as the viewer of [cookie].
+  Future<void> viewerPutDoc(
+    String aid,
+    String path,
+    Map<String, Object?> data,
+    String cookie,
+  ) async {
+    final client = HttpClient();
+    try {
+      final req = await client.openUrl(
+        'PUT',
+        endpoint.base.replace(path: '/api/artifacts/$aid/docs/$path'),
+      );
+      req.cookies.add(Cookie('clax_viewer', cookie));
+      req.headers.contentType = ContentType.json;
+      req.write(jsonEncode({'data': data, 'lww': true}));
+      final res = await req.close();
+      final text = await utf8.decodeStream(res);
+      expect(res.statusCode, 200, reason: 'PUT $path: $text');
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// The status of reading document [path] of [aid] as the viewer.
+  Future<int> viewerGetDocStatus(String aid, String path, String cookie) async {
+    final client = HttpClient();
+    try {
+      final req = await client.getUrl(
+        endpoint.base.replace(path: '/api/artifacts/$aid/docs/$path'),
+      );
+      req.cookies.add(Cookie('clax_viewer', cookie));
+      final res = await req.close();
+      await res.drain<void>();
+      return res.statusCode;
+    } finally {
+      client.close(force: true);
+    }
   }
 
   /// Sends thread [tid] to the agent, as the shell's Send does.
