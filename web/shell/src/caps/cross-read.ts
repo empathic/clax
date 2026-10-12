@@ -12,12 +12,15 @@
 //   source and view ("Let “A” read “B”'s data?"); Allow makes the grant
 //   (`PUT /api/artifacts/<A>/db-grants/<B>`) and the read is tried again.
 //   A share in B's declaration, or an earlier grant, is served without
-//   asking. A viewer who is not the owner is never asked;
+//   asking. A viewer who is not the owner is never asked, nor is anyone in
+//   the app's inspect view (`?app=1&inspect=1`, `app/host.ts`), which
+//   renders a draft for the agent: there a refusal stands;
 // - subscriptions follow the stream topic `docs:<B>?reader=<A>` only (never
 //   `docs:<B>`, whose events reach the stream at its own level), and refetch
 //   on B's `doc` events there; nothing else of B (threads, files, versions)
 //   reaches the page. A refetch the daemon refuses (the grant was revoked)
 //   ends the subscription with `not_granted`, without asking.
+import { inspectQuery } from "../route";
 import { type StreamEvent, pageStream } from "../stream";
 import { type ApiDoc, MAX_SUBSCRIPTIONS, SNAPSHOT_DEBOUNCE_MS, type Spec, type WireDoc, checkPath, checkSpec, checkSubId, dbError, docUrl, runQuery, touches, wire } from "./db";
 import { CapError } from "./errors";
@@ -112,12 +115,13 @@ export function crossRead(env: CapEnv, watch: Watch = (t, on) => pageStream().wa
   }
 
   /** `url` read as A; on a refusal in the owner shell, when `mayAsk` (a
-   * call of the page, not a refetch), asked once per source. */
+   * call of the page, not a refetch), asked once per source, except in the
+   * inspect view. */
   async function read(src: string, url: string, mayAsk: boolean): Promise<unknown> {
     try {
       return await get(url);
     } catch (e) {
-      if (!(e instanceof CapError && e.code === "not_granted") || env.token === null || !mayAsk) throw e;
+      if (!(e instanceof CapError && e.code === "not_granted") || env.token === null || !mayAsk || inspectQuery(location.search)) throw e;
       let p = asked.get(src);
       if (!p) asked.set(src, p = ask(src));
       if (!(await p)) throw e;

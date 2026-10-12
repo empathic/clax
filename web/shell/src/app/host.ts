@@ -4,7 +4,8 @@
 //
 // - The host calls `window.claxHost` (by `runJavaScript`): comment mode, the
 //   version shown, the open composer's text, Send and Cancel, a thread, and
-//   the attestation of a finger on the page (`attestPointer`).
+//   the attestation of a finger on the page (`attestPointer`), and a composer
+//   on the whole app (`composeArtifact`).
 // - The view tells the host what changed through the WebView's JavaScript
 //   channel `window.ClaxHost` (`HostMessage`, as JSON); a page without it (a
 //   browser) drops them.
@@ -45,6 +46,18 @@
 //   it can read neither the shell's variables nor `window.claxHost`, and the
 //   shell never posts the nonce to the frame. The channel's messages go from
 //   the shell's frame to the app, never through the page's.
+// - The inspect view (`?app=1&inspect=1`, spec 2026-10-12-flutter-app-
+//   round2-design R§5.2): the app loads a draft of an app there, hidden, to
+//   see what the agent made. It shows no comment UI (comment mode, composers
+//   and pins stay closed), follows no events (the page's stream stands
+//   down, so no version is followed either), and answers every consent
+//   prompt "Don't allow" without showing it. `inspect({settleMs, maxBytes})`
+//   asks the page's bridge for an inspection (`bridge/src/inspect.ts`) and
+//   posts it as `inspection`, under the nonce like every message: the
+//   bridge's answer is taken only from the frame, only for the latest
+//   request, and only in the shape below (the page shares the bridge's
+//   window, so it can answer in the bridge's place: it can describe only
+//   itself). Anywhere else `inspect` answers an error and asks nothing.
 // Its styles go in with it: the shell links no stylesheet a lazy chunk
 // imports (`vite.shell.config.ts`, `inlineCss`).
 import appCss from "./app.css?inline";
@@ -55,10 +68,10 @@ import { visibility } from "../visibility";
 import { now } from "../clock";
 import { SEND_FAILED, failureText, report, scopedNotice } from "../failure";
 import { type Thread, sendToAgent, upsert } from "../threads";
-import type { PickDesc } from "../../../bridge/src/protocol";
+import { INDEX_FILE, type InspectError, type PickDesc } from "../../../bridge/src/protocol";
 import type { ArtifactController, ViewState } from "../view/artifact-controller";
 import { anchorLabel } from "./label";
-import { appQuery, parseShellPath } from "../route";
+import { appQuery, inspectQuery, parseShellPath } from "../route";
 import { setUrl } from "../view/url";
 
 export type HostMessage =
@@ -74,7 +87,14 @@ export type HostMessage =
   | { type: "notice"; text: string }
   /** A posted thread's send to the agent failed (`text` says why): it stays
    * unsent until `resend(thread)`. */
-  | { type: "sendFailed"; thread: string; text: string };
+  | { type: "sendFailed"; thread: string; text: string }
+  /** The inspect view's answer to `inspect`: `png`, the page's viewport (a
+   * PNG, base64); `errors`, its newest errors since its first script;
+   * `failed`, the URLs it failed to load; `text`, an outline of what it
+   * shows; `title`; `height`, its scroll height in CSS pixels. Or `error`,
+   * why there is none. */
+  | { type: "inspection"; png: string; errors: InspectError[]; failed: string[]; text: string; title: string; height: number }
+  | { type: "inspection"; error: string };
 /** What goes on the channel: a `HostMessage` with this load's nonce. */
 export type Posted = HostMessage & { nonce: string };
 
@@ -109,7 +129,31 @@ export type ClaxHost = {
    * press so counted: a press on a shell control (which may be gone by the
    * release) never does. */
   attestPointer(p: { pointer: number; phase: "down" | "up"; x: number; y: number }): void;
+  /** Opens the composer on the whole app (an `artifact` anchor, no
+   * screenshot), unless one holding typed text is open. Not in the inspect view. */
+  composeArtifact(): void;
+  /** In the inspect view, asks the page for an inspection once it has been
+   * still for 300 ms, waiting `settleMs` at most (`INSPECT_SETTLE_MS` when
+   * absent), its screenshot at most `maxBytes` (`INSPECT_MAX_BYTES`):
+   * `inspection` answers. A later call replaces an earlier one. */
+  inspect(p: { settleMs?: number; maxBytes?: number }): void;
 };
+
+/** `inspect`'s defaults and bounds (`bridge/src/inspect.ts` has the same). */
+export const INSPECT_SETTLE_MS = 3000;
+const INSPECT_SETTLE_MAX_MS = 10_000;
+export const INSPECT_MAX_BYTES = 1024 * 1024;
+const INSPECT_MAX_BYTES_MAX = 16 * 1024 * 1024;
+/** What an inspection carries at most, whatever the page sends. */
+const INSPECT_ERRORS = 20;
+const INSPECT_ERROR_CHARS = 501;
+const INSPECT_TEXT_CHARS = 3072;
+const INSPECT_TITLE_CHARS = 200;
+const INSPECT_KINDS = new Set(["error", "unhandledrejection", "console"]);
+/** What the composer calls the whole artifact in the app, and says of its
+ * screenshot (as `view/whole-comment.ts` does in a browser). */
+const WHOLE_APP = "The whole app";
+const WHOLE_NO_CLIP = "it is about the whole app";
 
 /** How long a host's attestation of a finger on the frame counts. A
  * long-press's pick comes at most about 400 ms after the release
@@ -134,6 +178,33 @@ function summary(t: Thread): string {
 
 const NONCE = /^[A-Za-z0-9_-]{16,128}$/;
 
+const bounded = (v: unknown, lo: number, hi: number, dflt: number) => (typeof v === "number" && Number.isFinite(v) ? Math.min(hi, Math.max(lo, Math.round(v))) : dflt);
+const str = (v: unknown, n: number) => (typeof v === "string" ? v.slice(0, n) : "");
+
+/** The base64 of `buf`. */
+function base64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+/** The host message for the page's answer `m` to an inspection: only the
+ * fields and sizes `inspection` names, whatever else the page sent. */
+function inspected(m: Record<string, unknown>, maxBytes: number): HostMessage {
+  if (typeof m.error === "string") return { type: "inspection", error: m.error.slice(0, INSPECT_ERROR_CHARS) || "the inspection failed" };
+  const png = m.png;
+  if (!(png instanceof ArrayBuffer)) return { type: "inspection", error: "the page sent no screenshot" };
+  if (png.byteLength > maxBytes) return { type: "inspection", error: `the screenshot is over ${maxBytes} bytes` };
+  const errors = (Array.isArray(m.errors) ? m.errors : [])
+    .filter((e): e is InspectError => !!e && typeof e === "object" && INSPECT_KINDS.has(e.kind) && typeof e.text === "string")
+    .slice(-INSPECT_ERRORS)
+    .map(e => ({ kind: e.kind, text: e.text.slice(0, INSPECT_ERROR_CHARS) }));
+  const failed = (Array.isArray(m.failed) ? m.failed : []).filter((u): u is string => typeof u === "string").slice(-INSPECT_ERRORS).map(u => u.slice(0, INSPECT_ERROR_CHARS));
+  const height = typeof m.height === "number" && Number.isFinite(m.height) && m.height >= 0 ? m.height : 0;
+  return { type: "inspection", png: base64(png), errors, failed, text: str(m.text, INSPECT_TEXT_CHARS), title: str(m.title, INSPECT_TITLE_CHARS), height };
+}
+
 /** Installs `window.claxHost` over `ctl`, and, from `init` on, posts every
  * `HostMessage` with the nonce to `window.ClaxHost` (the app's channel) when
  * it exists. Nothing, outside the top-level document at an app shell path.
@@ -142,7 +213,9 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   const w = win as Window_;
   if (win.top !== win || parseShellPath(win.location.pathname).kind !== "artifact" || !appQuery(win.location.search)) return () => {};
   const doc = win.document;
+  const inspecting = inspectQuery(win.location.search);
   doc.documentElement.classList.add("app");
+  if (inspecting) doc.documentElement.classList.add("inspect");
   const style = doc.createElement("style");
   style.textContent = appCss;
   doc.head.append(style);
@@ -229,7 +302,16 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     // A version published while this one loaded is followed in turn.
     if (loaded) followIfDue(s());
   };
-  const followIfDue = (v: ViewState) => { if (v.newer !== null && v.pinnedVersion === null && !v.draft) void follow(false); };
+  const followIfDue = (v: ViewState) => { if (!inspecting && v.newer !== null && v.pinnedVersion === null && !v.draft) void follow(false); };
+  /** In the inspect view: a consent prompt is answered "Don't allow", and a
+   * composer or comment mode (the page's comments capability may open them)
+   * closed. True when it changed something. */
+  const closeForInspect = (v: ViewState): boolean => {
+    if (v.ask) { v.ask.answer("deny"); return true; }
+    if (v.draft) { ctl.cancelDraft(); return true; }
+    if (v.commenting) { ctl.toggleComment(); return true; }
+    return false;
+  };
 
   let lastState = "";
   let lastThreads: Thread[] | null = null;
@@ -261,6 +343,9 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     return true;
   };
   const onState = (v: ViewState) => {
+    // The inspect view closes what would ask the viewer anything; each sets
+    // the state again, which posts it.
+    if (inspecting && closeForInspect(v)) return;
     // Labelling sets the state again, which posts it.
     if (labelDraft(v)) return;
     postState(v);
@@ -285,6 +370,13 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   // label is posted again with it).
   const onMessage = (e: MessageEvent) => {
     const m = acceptFromFrame(e, ctl.frame?.el?.contentWindow ?? null, s().origin ?? null);
+    if (m?.type === "clax:inspection") {
+      if (!inspection || m.requestId !== inspection.requestId) return;
+      const { maxBytes } = inspection;
+      inspection = null;
+      post(inspected(m as unknown as Record<string, unknown>, maxBytes));
+      return;
+    }
     if (m?.type === "clax:pick-start" && typeof m.pickId === "string" && m.desc) {
       picked.clear();
       picked.set(m.pickId, m.desc);
@@ -293,6 +385,9 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     if (m?.type !== "clax:scroll" || typeof m.file !== "string" || m.file !== s().file) return;
     if (typeof m.y === "number" && Number.isFinite(m.y) && m.y >= 0) scrolled.set(m.file, m.y);
   };
+  // The inspection asked of the page, until it answers.
+  let inspection: { requestId: string; maxBytes: number } | null = null;
+  let inspections = 0;
   // The shell's own trusted presses and releases, where and when.
   let shellPresses: { x: number; y: number; at: number }[] = [];
   const onPress = (e: Event) => {
@@ -326,9 +421,18 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   // paint), so this chunk stays small: told of a change once it is in.
   let stream: typeof import("../stream") | null = null;
   let uninstalled = false;
+  // The inspect view follows no events: the page's stream forgets its
+  // watchers and takes no new ones, for this document's life.
+  let quieted: { watch: unknown } | null = null;
   void import("../stream").then(m => {
     if (uninstalled) return;
     stream = m;
+    if (inspecting) {
+      const ps = m.pageStream();
+      ps.close();
+      ps.watch = () => () => {};
+      quieted = ps;
+    }
     if (hostHidden !== null) m.pageStream().visibilityChanged();
   }, () => {});
   const visibleNow = (hidden: boolean) => {
@@ -354,7 +458,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       onState(s());
       if (ready) post(ready);
     },
-    enterCommentMode: () => { if (!s().commenting) ctl.toggleComment(); },
+    enterCommentMode: () => { if (!inspecting && !s().commenting) ctl.toggleComment(); },
     exitCommentMode: () => { if (s().commenting) ctl.toggleComment(); },
     loadVersion: n => {
       if (n === null) ctl.chooseVersion(ctl.latest());
@@ -392,6 +496,22 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
         if (at && at === ctl.frame?.el && !onShell) { pressed.add(pointer); attestedAt = now(); } else pressed.delete(pointer);
       } else if (phase === "up" && pressed.delete(pointer)) attestedAt = now();
     },
+    composeArtifact: () => {
+      const v = s();
+      if (inspecting || v.data === null || (v.draft && ctl.composerText.trim())) return;
+      // On no page: the daemon stores the index's `file` as none.
+      const anchor = { kind: "artifact" as const, selector: null, quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: INDEX_FILE };
+      ctl.set({ draft: { pickId: `whole-${now()}`, anchor, version: ctl.shown(v), clip: null, clipError: WHOLE_NO_CLIP, label: WHOLE_APP } });
+    },
+    inspect: p => {
+      if (nonce === null) return;
+      if (!inspecting) { post({ type: "inspection", error: "this view is not the inspect view" }); return; }
+      if (!ctl.gate.open) { post({ type: "inspection", error: "the page has not loaded" }); return; }
+      const settleMs = bounded(p?.settleMs, 0, INSPECT_SETTLE_MAX_MS, INSPECT_SETTLE_MS);
+      const maxBytes = bounded(p?.maxBytes, 1, INSPECT_MAX_BYTES_MAX, INSPECT_MAX_BYTES);
+      inspection = { requestId: `inspect-${++inspections}`, maxBytes };
+      ctl.send({ type: "clax:inspect", requestId: inspection.requestId, settleMs, maxBytes });
+    },
   };
   Object.defineProperty(w, "claxHost", { value: host, configurable: true });
 
@@ -403,13 +523,14 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     win.removeEventListener("pointerup", onPress, true);
     hostArrival.fresh = () => false;
     uninstalled = true;
+    if (quieted) delete quieted.watch;
     visibility.hidden = docHidden;
     visibility.shown = docShown;
     if (hostHidden !== null) visibility.changed();
     if (stream && hostHidden !== null) stream.pageStream().visibilityChanged();
     if (ctl.app) ctl.app = null;
     delete w.claxHost;
-    doc.documentElement.classList.remove("app");
+    doc.documentElement.classList.remove("app", "inspect");
     style.remove();
   };
 }

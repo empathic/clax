@@ -35,8 +35,9 @@ const channel = () => ({ postMessage: (m: string) => {
  * version that was latest when it was asked). */
 let held: Promise<void> | null = null;
 
-async function appView(opts: { pinned?: number | null; channel?: boolean; init?: boolean; threads?: unknown[]; comments?: (url: string, init?: RequestInit) => Response | undefined } = {}) {
-  history.replaceState(null, "", opts.pinned ? `/a/${ID}/v/${opts.pinned}?app=1` : `/a/${ID}?app=1`);
+async function appView(opts: { pinned?: number | null; channel?: boolean; init?: boolean; threads?: unknown[]; comments?: (url: string, init?: RequestInit) => Response | undefined; query?: string } = {}) {
+  const query = opts.query ?? "?app=1";
+  history.replaceState(null, "", opts.pinned ? `/a/${ID}/v/${opts.pinned}${query}` : `/a/${ID}${query}`);
   toHost = [];
   raw = [];
   requests = [];
@@ -805,5 +806,185 @@ describe("app mode's visibility", { timeout: MOUNT_TIMEOUT_MS }, () => {
     gestureIn(frame);
     fromFrame(frame.contentWindow!, startOf(pick("p1", "Quarterly goals")));
     await waitFor(() => document.querySelector(".composer [role=status]")?.textContent === "Taking the screenshot…", "the composer's status");
+  });
+});
+
+describe("app mode's whole-app comment", { timeout: MOUNT_TIMEOUT_MS }, () => {
+  artifactViewHooks();
+  afterEach(() => {
+    delete (window as unknown as { ClaxHost?: unknown }).ClaxHost;
+    delete (window as unknown as { claxHost?: unknown }).claxHost;
+    document.documentElement.classList.remove("app");
+    latest = 1;
+  });
+
+  it("composeArtifact opens the composer on the whole app, with no screenshot, and Send posts an artifact anchor", async () => {
+    const posted = thread("tw", "all of it", { anchor: { kind: "artifact", selector: null, quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "" } });
+    const { ctl, frame, host } = await appView({
+      comments: (url, init) => {
+        if (init?.method !== "POST") return undefined;
+        if (url === `/api/artifacts/${ID}/threads`) return new Response(JSON.stringify({ thread: posted }));
+        if (url === `/api/artifacts/${ID}/threads/tw/send`) return new Response(JSON.stringify({ thread: { ...posted, sent_to_agent: true } }));
+        return undefined;
+      },
+    });
+    const framed = framePosts(frame);
+    hello(frame, 1);
+    host.composeArtifact();
+    await waitFor(() => ofType("state").at(-1)?.draft, "a draft");
+    expect(ofType("state").at(-1)!.draft).toEqual({ label: "The whole app", text: "", clip: "none" });
+    expect(ctl.state.get().draft!.anchor.kind).toBe("artifact");
+    await waitFor(() => document.querySelector(".composer textarea"), "composer");
+    // No pick, so nothing is asked of the page.
+    expect(framed.filter(m => m.type === "clax:composer-ready")).toEqual([]);
+    host.setDraftText("all of it");
+    host.submitDraft();
+    await waitFor(() => ofType("sent").length, "sent");
+    const form = requests.find(r => r.method === "POST")!.body as FormData;
+    expect(JSON.parse(form.get("anchor") as string)).toMatchObject({ kind: "artifact", selector: null, quote: null });
+    expect(form.get("clip")).toBeNull();
+  });
+
+  it("composeArtifact keeps an open composer that holds typed text", async () => {
+    const { ctl, frame, host } = await appView();
+    hello(frame, 1);
+    host.enterCommentMode();
+    viewerPick(frame, { ...pick("p1", "Quarterly goals"), clipError: "none here" });
+    await waitFor(() => document.querySelector(".composer textarea"), "composer");
+    host.setDraftText("bigger");
+    host.composeArtifact();
+    expect(ctl.state.get().draft!.anchor.kind).toBe("element");
+    host.setDraftText("");
+    host.composeArtifact();
+    expect(ctl.state.get().draft!.anchor.kind).toBe("artifact");
+  });
+});
+
+describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
+  artifactViewHooks();
+  afterEach(() => {
+    delete (window as unknown as { ClaxHost?: unknown }).ClaxHost;
+    delete (window as unknown as { claxHost?: unknown }).claxHost;
+    document.documentElement.classList.remove("app", "inspect");
+    latest = 1;
+  });
+  const INSPECT = "?app=1&inspect=1";
+  const shot = new Uint8Array([137, 80, 78, 71, 1, 2, 3]);
+  const b64 = btoa(String.fromCharCode(...shot));
+  const answer = (requestId: string, over: Record<string, unknown> = {}) => ({
+    type: "clax:inspection", requestId, png: shot.slice().buffer, errors: [{ kind: "error", text: "boom" }], failed: ["https://cdn.test/a.png"], text: "# Groceries", title: "Groceries", height: 1200, ...over,
+  });
+
+  it("inspect asks the page and posts its inspection with the nonce", async () => {
+    const { frame, host } = await appView({ query: INSPECT });
+    expect(document.documentElement.classList.contains("inspect")).toBe(true);
+    const framed = framePosts(frame);
+    hello(frame, 1);
+    host.inspect({ settleMs: 500, maxBytes: 4096 });
+    const ask = framed.find(m => m.type === "clax:inspect")!;
+    expect(ask).toEqual({ type: "clax:inspect", requestId: expect.any(String), settleMs: 500, maxBytes: 4096 });
+    // Another request's answer, or one from elsewhere, is not taken.
+    fromFrame(frame.contentWindow!, answer("other"));
+    fromFrame(window, answer(ask.requestId as string));
+    expect(ofType("inspection")).toEqual([]);
+    fromFrame(frame.contentWindow!, answer(ask.requestId as string));
+    expect(ofType("inspection")).toEqual([{ type: "inspection", png: b64, errors: [{ kind: "error", text: "boom" }], failed: ["https://cdn.test/a.png"], text: "# Groceries", title: "Groceries", height: 1200 }]);
+    expect(raw.filter(r => r.includes("\"inspection\"")).every(r => JSON.parse(r).nonce === NONCE)).toBe(true);
+    // Answered once.
+    fromFrame(frame.contentWindow!, answer(ask.requestId as string));
+    expect(ofType("inspection")).toHaveLength(1);
+    // The page never hears the nonce.
+    expect(JSON.stringify(framed)).not.toContain(NONCE);
+  });
+
+  it("takes the defaults for missing limits, and only the latest request's answer", async () => {
+    const { frame, host } = await appView({ query: INSPECT });
+    const framed = framePosts(frame);
+    hello(frame, 1);
+    host.inspect({});
+    host.inspect({ settleMs: -5, maxBytes: "big" as never });
+    const asks = framed.filter(m => m.type === "clax:inspect");
+    expect(asks.map(a => [a.settleMs, a.maxBytes])).toEqual([[3000, 1048576], [0, 1048576]]);
+    fromFrame(frame.contentWindow!, answer(asks[0].requestId as string));
+    expect(ofType("inspection")).toEqual([]);
+    fromFrame(frame.contentWindow!, { type: "clax:inspection", requestId: asks[1].requestId, error: "the screenshot took longer than 4000 ms" });
+    expect(ofType("inspection")).toEqual([{ type: "inspection", error: "the screenshot took longer than 4000 ms" }]);
+  });
+
+  it("checks the shape of what the page answers", async () => {
+    const { frame, host } = await appView({ query: INSPECT });
+    const framed = framePosts(frame);
+    hello(frame, 1);
+    const ask = async (over: Record<string, unknown>, maxBytes = 1 << 20) => {
+      host.inspect({ maxBytes });
+      const id = framed.filter(m => m.type === "clax:inspect").at(-1)!.requestId as string;
+      fromFrame(frame.contentWindow!, answer(id, over));
+      return ofType("inspection").at(-1)!;
+    };
+    const many = Array.from({ length: 30 }, (_, i) => ({ kind: "console", text: `e${i}` }));
+    const odd = await ask({ errors: [...many, { kind: "alert", text: "x" }, { kind: "error", text: 5 }, "nope"], failed: ["a", 3, "b"], text: "t".repeat(5000), title: 7, height: Number.NaN });
+    expect(odd).toMatchObject({ failed: ["a", "b"], title: "", height: 0 });
+    expect((odd as { errors: unknown[] }).errors).toHaveLength(20);
+    expect((odd as { errors: { text: string }[] }).errors.at(-1)!.text).toBe("e29");
+    expect((odd as { text: string }).text.length).toBeLessThanOrEqual(3072);
+    expect(await ask({ png: "not bytes" })).toEqual({ type: "inspection", error: "the page sent no screenshot" });
+    expect(await ask({}, 4)).toEqual({ type: "inspection", error: "the screenshot is over 4 bytes" });
+  });
+
+  it("answers an error before the page has greeted, and outside the inspect view", async () => {
+    const { frame, host } = await appView({ query: INSPECT });
+    const framed = framePosts(frame);
+    host.inspect({});
+    expect(ofType("inspection")).toEqual([{ type: "inspection", error: "the page has not loaded" }]);
+    expect(framed.filter(m => m.type === "clax:inspect")).toEqual([]);
+    const other = await appView();
+    const otherFramed = framePosts(other.frame);
+    hello(other.frame, 1);
+    toHost = [];
+    other.host.inspect({});
+    expect(ofType("inspection")).toEqual([{ type: "inspection", error: "this view is not the inspect view" }]);
+    expect(otherFramed.filter(m => m.type === "clax:inspect")).toEqual([]);
+  });
+
+  it("shows no comment UI: comment mode, a whole-app composer and a page's composer stay closed", async () => {
+    const { ctl, frame, host } = await appView({ query: INSPECT });
+    hello(frame, 1);
+    host.enterCommentMode();
+    expect(ctl.state.get().commenting).toBe(false);
+    host.composeArtifact();
+    expect(ctl.state.get().draft).toBeNull();
+    ctl.commentsUi.openComposer({ anchor: { kind: "element", selector: "h2", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }, version: 1, clip: null });
+    expect(ctl.state.get().draft).toBeNull();
+  });
+
+  it("answers every consent prompt Don't allow without showing it", async () => {
+    const { ctl, frame } = await appView({ query: INSPECT });
+    hello(frame, 1);
+    const prompt = (ctl as unknown as { prompt(p: unknown): Promise<string> }).prompt;
+    await expect(prompt({ title: "Let “A” read “B”'s data?", body: "…", allow: "Allow", deny: "Don't allow" })).resolves.toBe("deny");
+    expect(ctl.state.get().ask).toBeNull();
+    expect(document.querySelector(".prompt-backdrop")).toBeNull();
+  });
+
+  it("follows no events, and drops nothing else's stream once uninstalled", async () => {
+    const { uninstall } = await appView({ query: INSPECT });
+    const st = (await import("../stream")).pageStream();
+    await waitFor(() => Object.hasOwn(st, "watch"), "the stream stood down");
+    await settle();
+    expect(st.topics).toEqual([]);
+    expect(st.watching).toEqual([]);
+    st.watch(["gallery"], () => {});
+    expect(st.watching).toEqual([]);
+    uninstall();
+    expect(Object.hasOwn(st, "watch")).toBe(false);
+  });
+
+  it("keeps inspect=1 only with app=1, and carries it from page to page", async () => {
+    const { appQuery, inspectQuery } = await import("../route");
+    expect(appQuery("?app=1&inspect=1&x=2")).toBe("?app=1&inspect=1");
+    expect(appQuery("?inspect=1")).toBe("");
+    expect(inspectQuery("?inspect=1")).toBe(false);
+    expect(inspectQuery("?app=1")).toBe(false);
+    expect(inspectQuery("?inspect=1&app=1")).toBe(true);
   });
 });

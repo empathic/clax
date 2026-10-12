@@ -32,7 +32,9 @@
  * caps part, loaded on that welcome, so a page outside the app loads none of
  * it. On
  * `pagehide` it says `clax:bye`, and the shell stops sending until the next
- * document greets.
+ * document greets. Framed, it keeps the page's errors from before its first
+ * script (`inspect.ts`), and answers the app's inspect view's
+ * `clax:inspect` with the clip part's inspection (`clax:inspection`).
  * The daemon serves it right after the doctype (first in the skeleton's
  * `<head>` for a fragment), and only the document's first bridge tag runs, so
  * `window.claude` exists before any page script; shell
@@ -56,6 +58,7 @@ import { now } from "../../shell/src/clock";
 import type { Resolved } from "./anchor";
 import { acceptFromShell, forwardedKey, shellOrigins } from "./channel";
 import { commentsContext } from "./comments-context";
+import { installErrorRing } from "./inspect";
 import { hashFor, helloFor, isFirstBridge, readMeta } from "./meta";
 import { followInPlace, linkToHandOver } from "./nav";
 import type { CommentPart, Parts } from "./parts/types";
@@ -101,6 +104,10 @@ type PartName = keyof Parts;
   // bridge posts, nor pose as the shell.
   const shellWin = window.parent;
   const framed = shellWin !== window;
+  // The page's errors from its first script on, for an inspection
+  // (`inspect.ts`), and the observer the settle wait uses, as it is now.
+  const ring = framed ? installErrorRing(window) : null;
+  const Observer = MutationObserver;
   let shellOrigin: string | null = null;
   const post = (m: BridgeToShell, transfer: Transferable[] = []) =>
     shellWin.postMessage(m, shellOrigin ?? "*", transfer);
@@ -343,6 +350,16 @@ type PartName = keyof Parts;
       case "clax:peers": withComment(l => l.layer.peers(m)); break;
       case "clax:pick-refused": if (typeof m.pickId === "string") picks.answer(m.pickId, false); break;
       case "clax:composer-ready": if (typeof m.pickId === "string") picks.answer(m.pickId, true); break;
+      // The app's inspect view asks what the page looks like once it settles
+      // (`inspect.ts`), with the clip part; the answer goes to the shell only.
+      case "clax:inspect": {
+        const requestId = m.requestId;
+        if (typeof requestId !== "string" || !ring) break;
+        const fail = (err: unknown) => post({ type: "clax:inspection", requestId, error: err instanceof Error ? err.message : String(err) });
+        whenParsed(document, () => void clips().then(c => c.inspectPage(window, ring, m, { timers: clock, Observer, render: s => c.renderViewport(window, s) }))
+          .then(r => post({ type: "clax:inspection", requestId, ...r }, [r.png]), fail));
+        break;
+      }
       case "clax:key": {
         const k = forwardedKey(m);
         // Keys count only in comment mode, which loads as it turns on.

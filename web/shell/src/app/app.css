@@ -22,3 +22,11 @@ html.app .composer {
   border-bottom: 0;
   padding-bottom: calc(12px + env(safe-area-inset-bottom));
 }
+/* The inspect view (`?app=1&inspect=1`, `html.app.inspect`): the page alone,
+   with nothing of the comment UI or the shell's notices over it. */
+html.app.inspect .pins,
+html.app.inspect .composer,
+html.app.inspect .prompt-backdrop,
+html.app.inspect .banner,
+html.app.inspect .gesture-hint,
+html.app.inspect .selbar { display: none !important; }
