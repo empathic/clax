@@ -92,15 +92,26 @@ describe("restoreScroll", () => {
     expect(f.pending()).toBe(0);
   });
 
-  it("gives up after 2000 ms in all", () => {
+  it("after 2000 ms in all, scrolls as far towards the position as the document reaches", () => {
     const f = fakeTimers();
     setHeight(800);
     restoreScroll(window, 1400, f.t);
     let waited = 0;
-    for (let i = 0; i < 1000 && f.pending(); i++) waited += f.fire().reduce((a, b) => a + b, 0);
+    for (let i = 0; i < 1000 && f.pending(); i++) {
+      expect(scrollTo).not.toHaveBeenCalled();
+      waited += f.fire().reduce((a, b) => a + b, 0);
+    }
     expect(waited).toBe(2000);
     expect(f.pending()).toBe(0);
-    expect(scrollTo).not.toHaveBeenCalled();
+    expect(scrollTo.mock.calls).toEqual([[0, 200]]);
+  });
+
+  it("after 2000 ms, a document shorter than the viewport stays at the top", () => {
+    const f = fakeTimers();
+    setHeight(300);
+    restoreScroll(window, 1400, f.t);
+    for (let i = 0; i < 1000 && f.pending(); i++) f.fire();
+    expect(scrollTo.mock.calls).toEqual([[0, 0]]);
   });
 
   it("scrolls to the top at once, and ignores a position that is not a number", () => {
