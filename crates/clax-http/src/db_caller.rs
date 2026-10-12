@@ -61,7 +61,7 @@ pub fn reader_of(headers: &axum::http::HeaderMap) -> Result<Option<ArtifactId>, 
 /// (`/api/artifacts/<aid>/docs/<path>`), or `docs:collections` (which
 /// refuses it itself). Matched on the raw path, so any other spelling is
 /// another route.
-fn reader_route(path: &str) -> bool {
+pub(crate) fn reader_route(path: &str) -> bool {
     let segs: Vec<&str> = path.split('/').collect();
     match segs.as_slice() {
         ["", "api", "artifacts", aid, "docs", rest @ ..] => {
