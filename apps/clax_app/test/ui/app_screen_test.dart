@@ -10,6 +10,7 @@ import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/app_surface.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/theme.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -245,6 +246,22 @@ void main() {
       expect(rig.surface.hostCalls, isEmpty);
     },
   );
+
+  testWidgets('a mouse on the page is not attested; a stylus is', (
+    tester,
+  ) async {
+    final rig = await pumpScreen(tester);
+    rig.surface.push(rig.ready());
+    await tester.pump();
+    // A mouse's input reaches the WebView itself, and script run during
+    // its click clears the shell's activation in WebKit.
+    await tester.tapAt(const Offset(100, 200), kind: PointerDeviceKind.mouse);
+    await tester.pump();
+    expect(rig.surface.attests, isEmpty);
+    await tester.tapAt(const Offset(100, 200), kind: PointerDeviceKind.stylus);
+    await tester.pump();
+    expect(rig.surface.attests, hasLength(2));
+  });
 
   testWidgets(
     'a two-finger swipe left opens the panel and comment mode; right closes both',
