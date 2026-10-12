@@ -70,7 +70,8 @@ lane_scripts() {
     run "tool hook gate"        scripts/test-tool-hook.sh &&
     run "extension signing"     scripts/test-extension-signing.sh &&
     run "stable bin"            scripts/test-stable-bin.sh &&
-    run "fake exe"              scripts/test-fake-exe.sh
+    run "fake exe"              scripts/test-fake-exe.sh &&
+    run "build app clax"        bash scripts/test-build-app-clax.sh
 }
 lane_installer() {
     run "release installer"     scripts/test-install.sh
