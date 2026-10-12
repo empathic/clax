@@ -223,6 +223,10 @@ fn rule<'a>(m: &Method, path: &'a str) -> Option<Rule<'a>> {
         ["api", "inbox", _] if get => Some(Rule::Any),
         ["api", "inbox", "read"] if post => Some(Rule::Any),
         ["api", "inbox", _, "read" | "unread"] if post => Some(Rule::Any),
+        // The panel's count of the owner's approval requests and its links
+        // to the shell's inbox, where they are decided (spec 2026-10-08
+        // §9.5, §15): listing only, never deciding.
+        ["api", "approvals", "requests"] if get => Some(Rule::Any),
         ["api", "stream"] if get => Some(Rule::Any),
         ["api", "stream", _] if post => Some(Rule::Any),
         ["api", "artifacts", aid] if get => Some(Rule::Live(aid)),
@@ -562,6 +566,15 @@ mod tests {
             (&d, "/api/inbox/I", None),
             (&g, "/api/inbox/I/read", None),
             (&p, "/api/inbox/I/delete", None),
+            (&g, "/api/approvals/requests", Some(Rule::Any)),
+            (&p, "/api/approvals/requests/R/decide", None),
+            (&g, "/api/approvals/requests/R", None),
+            (&g, "/api/approvals", None),
+            (&p, "/api/approvals", None),
+            (&d, "/api/approvals/A", None),
+            (&g, "/api/people", None),
+            (&u, "/api/people/P/rights", None),
+            (&u, "/api/agents/H/elevate", None),
             (&g, "/api/stream", Some(Rule::Any)),
             (&p, "/api/stream/s1", Some(Rule::Any)),
             (&g, "/api/artifacts/A", Some(Rule::Live("A"))),
