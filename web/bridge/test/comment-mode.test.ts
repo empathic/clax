@@ -743,6 +743,13 @@ describe("touch long-press", () => {
     afterEach(() => { Range.prototype.getClientRects = rects; });
     /** One finger down at (x, y), held past the hold. */
     const arm = (el: Element, x: number, y: number) => { touch(el, "touchstart", x, y); f.fire(450); };
+    /** Comment mode as app mode has it: a drag picks on its release. */
+    const appMode = () => {
+      mode.set(false);
+      document.querySelectorAll("clax-overlay").forEach(n => n.remove());
+      mode = new CommentMode(document, hooks, { trustedOnly: false, timers: f.t, confirmDrag: () => false });
+    };
+    beforeEach(appMode);
 
     it("drag after arming selects a text range and picks it on release", () => {
       mode.set(true);
@@ -905,6 +912,138 @@ describe("touch long-press", () => {
       p.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       expect(hooks.pickElement).not.toHaveBeenCalled();
       expect(hooks.pickRange).toHaveBeenCalledTimes(1);
+    });
+  
+    describe("in a browser, a Comment chip confirms the drag", () => {
+      const chip = () => document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".c")!;
+      /** A tap on the chip, as the browser delivers it: touches, then the
+       * compatibility mouse events and the click, from inside the overlay. */
+      const tapChip = () => {
+        const c = chip();
+        const t = [{ identifier: 0, clientX: 1, clientY: 1, target: c }] as unknown as Touch[];
+        c.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, cancelable: true, composed: true, touches: t, changedTouches: t }));
+        c.dispatchEvent(new TouchEvent("touchend", { bubbles: true, cancelable: true, composed: true, touches: [], changedTouches: t }));
+        const out: Record<string, boolean> = {};
+        for (const type of ["mousedown", "mouseup", "click"]) {
+          const e = new MouseEvent(type, { bubbles: true, cancelable: true, composed: true, button: 0 });
+          c.dispatchEvent(e);
+          out[type] = e.defaultPrevented;
+        }
+        return out;
+      };
+      beforeEach(() => {
+        mode.set(false);
+        document.querySelectorAll("clax-overlay").forEach(n => n.remove());
+        mode = new CommentMode(document, hooks, { trustedOnly: false, timers: f.t });
+      });
+
+      it("keeps a text drag's selection with the chip, and the chip's tap picks it", () => {
+        mode.set(true);
+        expect(chip().style.display).not.toBe("block");
+        arm(p, 1, 10);
+        touch(p, "touchmove", 52, 12);
+        touch(p, "touchend", 52, 12);
+        f.fire();
+        expect(hooks.pickRange).not.toHaveBeenCalled();
+        expect(document.getSelection()!.toString()).toBe("alpha beta");
+        expect(chip().style.display).toBe("block");
+        expect(chip().textContent).toBe("Comment");
+        const tap = tapChip();
+        // The chip's press neither moves the selection nor starts a drag.
+        expect(tap.mousedown).toBe(true);
+        expect(tap.click).toBe(true);
+        expect(hooks.pickRange).toHaveBeenCalledTimes(1);
+        expect(String(hooks.pickRange.mock.calls[0][0])).toBe("alpha beta");
+        expect(hooks.pickArea).not.toHaveBeenCalled();
+        expect(hooks.pickElement).not.toHaveBeenCalled();
+        expect(chip().style.display).toBe("none");
+        expect(document.getSelection()!.isCollapsed).toBe(true);
+      });
+
+      it("keeps an area drag's box with the chip, and the chip's tap picks the area", () => {
+        mode.set(true);
+        arm(img, 210, 10);
+        touch(img, "touchmove", 260, 60);
+        touch(img, "touchend", 280, 70);
+        expect(hooks.pickArea).not.toHaveBeenCalled();
+        expect(areaBox().style.display).toBe("block");
+        expect(chip().style.display).toBe("block");
+        tapChip();
+        expect(hooks.pickArea).toHaveBeenCalledWith({ left: 210, top: 10, width: 70, height: 60 });
+        expect(areaBox().classList.contains("capturing")).toBe(true);
+        expect(hooks.pickRange).not.toHaveBeenCalled();
+        expect(hooks.pickElement).not.toHaveBeenCalled();
+      });
+
+      it("offers a small drag's target with the chip", () => {
+        mode.set(true);
+        arm(img, 210, 10);
+        touch(img, "touchmove", 240, 13);
+        touch(img, "touchend", 240, 13);
+        expect(hooks.pickElement).not.toHaveBeenCalled();
+        expect(chip().style.display).toBe("block");
+        tapChip();
+        expect(hooks.pickElement).toHaveBeenCalledWith(img);
+        expect(hooks.pickElement).toHaveBeenCalledTimes(1);
+      });
+
+      it("a tap elsewhere dismisses the chip and its selection, and picks nothing", () => {
+        mode.set(true);
+        arm(p, 1, 10);
+        touch(p, "touchmove", 52, 12);
+        touch(p, "touchend", 52, 12);
+        touch(p, "touchstart", 30, 10);
+        expect(chip().style.display).toBe("none");
+        expect(document.getSelection()!.isCollapsed).toBe(true);
+        touch(p, "touchend", 30, 10);
+        p.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));
+        p.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+        expect(click(p).defaultPrevented).toBe(true);
+        f.fire();
+        expect(hooks.pickRange).not.toHaveBeenCalled();
+        expect(hooks.pickElement).not.toHaveBeenCalled();
+        // The tap after that picks as a tap does.
+        touch(p, "touchstart", 30, 10);
+        touch(p, "touchend", 30, 10);
+        click(p);
+        expect(hooks.pickElement).toHaveBeenCalledWith(p);
+      });
+
+      it("a scroll dismisses the chip and its box", () => {
+        mode.set(true);
+        arm(img, 210, 10);
+        touch(img, "touchmove", 260, 60);
+        touch(img, "touchend", 260, 60);
+        document.dispatchEvent(new Event("scroll"));
+        expect(chip().style.display).toBe("none");
+        expect(areaBox().style.display).toBe("none");
+        expect(hooks.pickArea).not.toHaveBeenCalled();
+      });
+
+      it("comment mode off dismisses the chip", () => {
+        mode.set(true);
+        arm(p, 1, 10);
+        touch(p, "touchmove", 52, 12);
+        touch(p, "touchend", 52, 12);
+        mode.set(false);
+        expect(chip().style.display).toBe("none");
+        expect(document.getSelection()!.isCollapsed).toBe(true);
+        expect([...document.querySelectorAll("style")].some(s => s.textContent!.includes("::selection"))).toBe(false);
+      });
+
+      it("a new hold-then-drag replaces the offer", () => {
+        mode.set(true);
+        arm(img, 210, 10);
+        touch(img, "touchmove", 260, 60);
+        touch(img, "touchend", 260, 60);
+        arm(p, 1, 10);
+        expect(areaBox().style.display).toBe("none");
+        touch(p, "touchmove", 52, 12);
+        touch(p, "touchend", 52, 12);
+        tapChip();
+        expect(hooks.pickArea).not.toHaveBeenCalled();
+        expect(String(hooks.pickRange.mock.calls[0][0])).toBe("alpha beta");
+      });
     });
   });
 });
