@@ -198,7 +198,13 @@ pub async fn artifact_page(
     let injected = if crate::auth::request_host_allowed(&req, &uri, &extensions) {
         within(
             s.request_timeout,
-            crate::boot::assemble(&s, route, &req, crate::identity::peer_of(&extensions)),
+            crate::boot::assemble(
+                &s,
+                route,
+                uri.query(),
+                &req,
+                crate::identity::peer_of(&extensions),
+            ),
         )
         .await
     } else {

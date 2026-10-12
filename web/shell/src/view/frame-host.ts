@@ -13,11 +13,12 @@ const inspecting = () => inspectQuery(location.search);
 
 /** Whether `el`, a frame the daemon put in the stage, is the one the shell
  * would make for `src` (fragment aside: the daemon never sees it): the same
- * `src`, `allow`, title and class, and the same sandbox, exactly, or none.
- * The daemon names no frame, so none is adopted in the inspect view. */
+ * `src`, `allow`, title and class, and the same sandbox, exactly, or none;
+ * and named `INSPECT_FRAME` in the inspect view (the daemon names it so
+ * there, `frame_html` in `crates/clax-server/src/boot.rs`), unnamed elsewhere. */
 function servedAs(el: HTMLIFrameElement, src: string, sandboxed: boolean): boolean {
   const hash = src.indexOf("#");
-  return !inspecting() && el.getAttribute("src") === (hash < 0 ? src : src.slice(0, hash))
+  return el.getAttribute("name") === (inspecting() ? INSPECT_FRAME : null) && el.getAttribute("src") === (hash < 0 ? src : src.slice(0, hash))
     && el.getAttribute("sandbox") === (sandboxed ? FRAME_SANDBOX : null)
     && el.getAttribute("allow") === FRAME_ALLOW
     && el.getAttribute("title") === FRAME_TITLE
