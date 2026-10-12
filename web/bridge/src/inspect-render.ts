@@ -12,10 +12,10 @@ import { CLIP_TIMEOUT_MS, clipBackground, crossOriginImage, dataUrlToBuffer } fr
 const TRANSPARENT = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
 const GREY = "#9aa0a6";
-const glyphSize = (w: number, h: number) => [Math.max(16, Math.round(w)), Math.max(16, Math.round(h))];
+const glyphSize = (w: number, h: number) => [Math.max(1, Math.round(w)), Math.max(1, Math.round(h))];
 const esc = (s: string) => s.replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 
-/** A broken-image glyph `w` x `h` CSS pixels (16 at least each way), as an
+/** A broken-image glyph `w` x `h` CSS pixels (rounded, 1 at least), as an
  * SVG data URL: an outline, a small picture-frame icon and `alt`. */
 export function brokenImage(w: number, h: number, alt: string): string {
   const [W, H] = glyphSize(w, h);
@@ -38,11 +38,11 @@ export function faithfulClone(root: Element, win: Window): (cloned: Node) => voi
   for (const el of root.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input[placeholder], textarea[placeholder]")) {
     if (!el.value) queue(fields, el.getAttribute("placeholder")!, win.getComputedStyle(el, "::placeholder").color);
   }
-  const broken = new Map<string, { url: string; size: number[] }[]>();
+  const broken = new Map<string, { url: string; size: number[]; text: boolean }[]>();
   for (const img of root.querySelectorAll<HTMLImageElement>("img[src]")) {
     if (!img.complete || img.naturalWidth > 0) continue;
     const r = img.getBoundingClientRect();
-    queue(broken, img.getAttribute("src")!, { url: brokenImage(r.width, r.height, img.alt), size: glyphSize(r.width, r.height) });
+    queue(broken, img.getAttribute("src")!, { url: brokenImage(r.width, r.height, img.alt), size: glyphSize(r.width, r.height), text: !!img.alt });
   }
   return cloned => {
     if (!(cloned instanceof Element)) return;
@@ -58,15 +58,22 @@ export function faithfulClone(root: Element, win: Window): (cloned: Node) => voi
       cloned.setAttribute("src", glyph.url);
       style.width = `${glyph.size[0]}px`;
       style.height = `${glyph.size[1]}px`;
+      // A broken image with alt text lays out as that text does (its box's
+      // bottom at the text's, not on the baseline as an image's is).
+      if (glyph.text) style.verticalAlign = "text-bottom";
     }
   };
 }
 
-/** A PNG of what `win`'s viewport shows (its body, cropped to the viewport)
- * at `scale` CSS pixels to one image pixel; rejects after `timeoutMs`. */
+/** A PNG of what `win`'s viewport shows (its root element, cropped to the
+ * viewport) at `scale` CSS pixels to one image pixel; rejects after
+ * `timeoutMs`. The root, not the body, is rendered, as a block formatting
+ * context: a first child's top margin that collapses through the body then
+ * stays above the body in the picture as on the page, and absolutely
+ * positioned elements keep the document as their containing block. */
 export async function renderViewport(win: Window, scale: number, timeoutMs = CLIP_TIMEOUT_MS): Promise<ArrayBuffer> {
   const doc = win.document;
-  const root = doc.body ?? doc.documentElement;
+  const root = doc.documentElement;
   const box = root.getBoundingClientRect();
   const w = Math.max(1, Math.round(doc.documentElement.clientWidth || win.innerWidth));
   const h = Math.max(1, Math.round(doc.documentElement.clientHeight || win.innerHeight));
@@ -80,7 +87,7 @@ export async function renderViewport(win: Window, scale: number, timeoutMs = CLI
     onCloneEachNode: faithfulClone(root, win),
     backgroundColor: clipBackground(root, win),
     // The root at its own size, moved so the viewport sits in the picture.
-    style: { margin: "0", width: `${box.width}px`, height: `${box.height}px`, transform: `translate(${box.left}px, ${box.top}px)`, transformOrigin: "0 0" },
+    style: { margin: "0", display: "flow-root", width: `${box.width}px`, height: `${box.height}px`, transform: `translate(${box.left}px, ${box.top}px)`, transformOrigin: "0 0" },
     timeout: timeoutMs,
   });
   if (win.origin === "null") ctx.sandbox = doc.createElement("iframe");
