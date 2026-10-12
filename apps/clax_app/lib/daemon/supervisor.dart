@@ -42,9 +42,10 @@ final class Restarting extends DaemonState {
   String toString() => 'Restarting($attempt, $after)';
 }
 
-/// The daemon exited too often; nothing restarts it until `ensureUp`.
-/// [stderrTail] is the last lines the daemon wrote to stderr, across its
-/// runs.
+/// The daemon exited too often, or did not come up; nothing restarts it
+/// until `ensureUp` or `onResume`. [stderrTail] is the last lines the
+/// daemon wrote, to stdout (its log) and stderr, as they arrived, across
+/// its runs.
 final class Failed extends DaemonState {
   const Failed(this.reason, this.stderrTail);
   final String reason;
@@ -91,9 +92,11 @@ class DaemonStopped implements Exception {
 /// The daemon runs as `<exe> --port <P> serve --foreground` with a clean
 /// environment (`CLAX_HOME` = [home], `HOME` = the support directory,
 /// `TMPDIR` = the cache directory, a system `PATH`, `RUST_LOG=warn`) and
-/// [home] as its working directory. Before each start, a live daemon that
-/// `<home>/daemon.json` names is stopped (SIGTERM, then SIGKILL after 3 s),
-/// since nothing else uses this home. The port asked for is the one kept in
+/// [home] as its working directory. Before each start, a daemon that
+/// `<home>/daemon.json` names is stopped (SIGTERM, then SIGKILL after 3 s)
+/// when its PID is alive and `/healthz` on its port answers with that PID;
+/// a process that does not is left alone, since its PID may have been
+/// reused. The port asked for is the one kept in
 /// `<support>/daemon-port` when it binds, so the WebView's origin stays the
 /// same; the daemon is up once `daemon.json` names the started PID and
 /// `/healthz` on the port it reports answers, within 15 s. The endpoint's
@@ -101,7 +104,8 @@ class DaemonStopped implements Exception {
 ///
 /// An exit the supervisor did not ask for (or a failed start) restarts the
 /// daemon after [backoff] (5 s from the fifth on); five within sixty
-/// seconds is [Failed]. After [stop] nothing restarts until [ensureUp].
+/// seconds, or [startFailAfter] starts in a row that never come up, is
+/// [Failed]. After [stop] nothing restarts until [ensureUp].
 class DaemonSupervisor {
   DaemonSupervisor({
     required this._exe,
@@ -138,6 +142,10 @@ class DaemonSupervisor {
   /// stays up this long resets the backoff.
   static const failWindow = Duration(seconds: 60);
   static const failAfter = 5;
+
+  /// Starts in a row that never come up (exit, no answer within
+  /// [healthLimit], or no process) before [Failed].
+  static const startFailAfter = 3;
   static const tailLines = 50;
 
   final ExeLocator _exe;
@@ -157,6 +165,7 @@ class DaemonSupervisor {
   final _tail = ListQueue<String>();
   final _exits = <DateTime>[];
   int _attempt = 0;
+  int _failedStarts = 0;
   String _lastReason = 'unknown';
 
   /// The loop is running (between `ensureUp` and its end on stop or
@@ -169,6 +178,9 @@ class DaemonSupervisor {
   Completer<void>? _wake;
   bool _skipBackoff = false;
 
+  /// [stop] was called and no `ensureUp` since.
+  bool _stopped = false;
+
   Stream<DaemonState> get states => _states.stream;
   DaemonState get state => _state;
 
@@ -179,29 +191,41 @@ class DaemonSupervisor {
   Future<DaemonEndpoint> ensureUp() {
     final stopping = _stopFuture;
     if (stopping != null) return stopping.then((_) => ensureUp());
+    _stopped = false;
     final s = _state;
     if (_loopDone != null && s is Up) return Future.value(s.endpoint);
     final w = _waiter ??= Completer<DaemonEndpoint>();
     if (_loopDone == null) {
       _exits.clear();
       _attempt = 0;
+      _failedStarts = 0;
       unawaited(_loop());
     }
     return w.future;
   }
 
-  /// Called when the app comes back to the foreground: a daemon that no
-  /// longer answers `/healthz` is killed and started again at once, and a
-  /// pending backoff is cut short. Does nothing before the first start,
-  /// after [stop], or once [Failed].
+  /// Called when the app comes back to the foreground: a daemon that does
+  /// not answer `/healthz` twice in a row is killed and started again at
+  /// once, a pending backoff is cut short, and a [Failed] supervisor
+  /// starts afresh (exits while the app was in the background, such as
+  /// Android's phantom-process kills, are forgotten). Does nothing before
+  /// the first start or after [stop].
   Future<void> onResume() async {
-    if (_loopDone == null || _stopping) return;
+    if (_stopped || _stopping) return;
+    if (_loopDone == null) {
+      if (_state is Failed) {
+        unawaited(ensureUp().then((_) {}, onError: (Object _) {}));
+      }
+      return;
+    }
     final s = _state;
     if (s is Restarting) {
       _wakeUp();
       return;
     }
     if (s is! Up) return;
+    if (await _health.up(s.endpoint.base)) return;
+    if (!identical(_state, s) || _stopping) return;
     if (await _health.up(s.endpoint.base)) return;
     if (!identical(_state, s) || _stopping) return;
     _lastReason = 'did not answer /healthz on resume';
@@ -215,6 +239,7 @@ class DaemonSupervisor {
       _stopFuture ??= _stop().whenComplete(() => _stopFuture = null);
 
   Future<void> _stop() async {
+    _stopped = true;
     final loop = _loopDone;
     if (loop == null) return;
     _stopping = true;
@@ -235,6 +260,7 @@ class DaemonSupervisor {
         if (started != null) {
           final (proc, endpoint) = started;
           final upAt = _clock.now();
+          _failedStarts = 0;
           _writePort(endpoint.port);
           _set(Up(endpoint));
           final w = _waiter;
@@ -253,10 +279,20 @@ class DaemonSupervisor {
           ..add(now)
           ..removeWhere((t) => now.difference(t) >= failWindow);
         _attempt++;
-        if (_exits.length >= failAfter) {
-          final tail = List<String>.unmodifiable(_tail);
-          final reason =
+        if (started == null) _failedStarts++;
+        final String? failure;
+        if (_failedStarts >= startFailAfter) {
+          failure =
+              'clax did not come up $_failedStarts times in a row; last: $_lastReason';
+        } else if (_exits.length >= failAfter) {
+          failure =
               'clax stopped ${_exits.length} times within a minute; last: $_lastReason';
+        } else {
+          failure = null;
+        }
+        if (failure != null) {
+          final reason = failure;
+          final tail = List<String>.unmodifiable(_tail);
           _set(Failed(reason, tail));
           final w = _waiter;
           _waiter = null;
@@ -378,9 +414,12 @@ class DaemonSupervisor {
   /// Stops a live daemon that `daemon.json` names (one left by an earlier
   /// run of the app): SIGTERM, then SIGKILL after [termGrace].
   Future<void> _stopStale() async {
-    final pid = _readDaemonJson()?.pid;
+    final info = _readDaemonJson();
+    final pid = info?.pid;
     if (pid == null || pid <= 0 || pid == io.pid) return;
     if (!_pids.alive(pid)) return;
+    final port = info!.port;
+    if (await _health.pid(Uri.parse('http://127.0.0.1:$port')) != pid) return;
     _pids.kill(pid, ProcessSignal.sigterm);
     if (await _waitGone(pid)) return;
     _pids.kill(pid, ProcessSignal.sigkill);
@@ -406,11 +445,15 @@ class DaemonSupervisor {
     'RUST_LOG': 'warn',
   };
 
+  /// Keeps the last lines of both of [p]'s output streams; reading stdout
+  /// also keeps a full pipe from blocking the daemon.
   void _keepTail(RunningProcess p) {
-    p.stderr
-        .transform(const Utf8Decoder(allowMalformed: true))
-        .transform(const LineSplitter())
-        .listen(_addTail, onError: (Object _) {});
+    for (final stream in [p.stdout, p.stderr]) {
+      stream
+          .transform(const Utf8Decoder(allowMalformed: true))
+          .transform(const LineSplitter())
+          .listen(_addTail, onError: (Object _) {});
+    }
   }
 
   void _addTail(String line) {
