@@ -21,15 +21,15 @@ class SseMessage {
 /// CR; a line starting with `:` is a comment; a field's value loses one
 /// leading space; a blank line dispatches the block, and a block with no
 /// `data` line dispatches nothing. [lastEventId] seeds the ID in effect.
-Stream<SseMessage> decodeSse(
-  Stream<List<int>> bytes, {
-  String? lastEventId,
-}) async* {
+///
+/// Cancelling the decoded stream cancels [bytes] at once, between messages
+/// too (a generator would notice the cancel only at its next message, and
+/// hold the connection open until then).
+Stream<SseMessage> decodeSse(Stream<List<int>> bytes, {String? lastEventId}) {
   var id = lastEventId;
   String? event;
   final data = <String>[];
-  await for (final line
-      in bytes.transform(utf8.decoder).transform(const LineSplitter())) {
+  Iterable<SseMessage> onLine(String line) sync* {
     if (line.isEmpty) {
       if (data.isNotEmpty) {
         yield SseMessage(
@@ -40,9 +40,9 @@ Stream<SseMessage> decodeSse(
       }
       event = null;
       data.clear();
-      continue;
+      return;
     }
-    if (line.startsWith(':')) continue;
+    if (line.startsWith(':')) return;
     final colon = line.indexOf(':');
     final field = colon < 0 ? line : line.substring(0, colon);
     var value = colon < 0 ? '' : line.substring(colon + 1);
@@ -60,6 +60,11 @@ Stream<SseMessage> decodeSse(
         break;
     }
   }
+
+  return bytes
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())
+      .expand(onLine);
 }
 
 /// Lets [reconnectingSse] abort a request [SseOpen] started: [SseOpen]

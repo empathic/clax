@@ -318,6 +318,47 @@ void main() {
       },
     );
 
+    test('cancelling between messages closes the connection at once', () async {
+      // The daemon sends nothing more after the first message, so the
+      // cancel comes while the decoder waits for the next line.
+      final raw = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final closed = Completer<void>();
+      raw.listen((sock) {
+        sock.listen(
+          (_) {},
+          onDone: () {
+            if (!closed.isCompleted) closed.complete();
+            sock.destroy();
+          },
+          onError: (Object _) {},
+        );
+        sock.write(
+          'HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n'
+          'id: aa-1\nevent: ready\ndata: {}\n\n: keep-alive\n\n',
+        );
+      });
+      final rawApi = HttpClaxApi(
+        () => DaemonEndpoint(
+          base: Uri.parse('http://127.0.0.1:${raw.port}'),
+          token: 'tok',
+          pid: 1,
+          port: raw.port,
+        ),
+        eventRetryDelay: (d) async => delays.add(d),
+      );
+      final got = Completer<void>();
+      final sub = rawApi.events().listen((_) {
+        if (!got.isCompleted) got.complete();
+      });
+      await got.future;
+      await pumpEventQueue();
+      await sub.cancel();
+      await closed.future;
+      expect(delays, isEmpty);
+      rawApi.close();
+      await raw.close();
+    });
+
     test('an answer that does not come within the connect deadline is abandoned and retried', () async {
       final timers = ManualTimers();
       final raw = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
