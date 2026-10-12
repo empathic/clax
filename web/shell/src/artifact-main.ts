@@ -1,5 +1,5 @@
 import { mountArtifactView } from "./artifact";
-import { parseShellPath } from "./route";
+import { appQuery, parseShellPath } from "./route";
 import { loadMoreMenu } from "./ui/more-menu.svelte";
 import { allowSidebarPrefetch } from "./ui/sidebar-chunk";
 import { afterPaint } from "./view/after-paint";
@@ -15,7 +15,7 @@ if (r.kind === "artifact") {
   const mount = mountArtifactView(document.getElementById("app")!, { id: r.id, pinnedVersion: r.version, file: r.file }, { boot: readBoot(), early: () => takeEarly() });
   // The Clax app's view (`?app=1`): its host module, with its styles, loads
   // only here, so a browser's view carries none of it.
-  if (new URLSearchParams(location.search).get("app") === "1") void import("./app/host").then(m => m.installHost(window, mount.controller()));
+  if (appQuery(location.search)) void import("./app/host").then(m => m.installHost(window, mount.controller()));
   afterPaint(loadMoreMenu);
   // The view ended as the page was hidden (`ArtifactController`): a page the
   // back/forward cache restores loads again, live.

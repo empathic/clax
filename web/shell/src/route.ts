@@ -6,6 +6,10 @@
 // `v/<digits>/` is reachable only through the versioned form.
 
 export const INDEX = "index.html";
+
+/** The shell URL query a view carries from page to page: `?app=1` for the
+ * Clax app's view, else none (any other query stays where it was given). */
+export const appQuery = (search: string): string => new URLSearchParams(search).get("app") === "1" ? "?app=1" : "";
 const ID = /^[0-9a-hj-km-np-tv-z]{12}$/;
 
 export type ShellRoute =

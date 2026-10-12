@@ -1114,4 +1114,14 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(sent.find(m => m.type === "clax:welcome")).toEqual({ type: "clax:welcome", mode: "view", app: true, restoreScroll: 40 });
     ctl.dispose();
   });
+
+  it("carries app=1 in its URLs and no other query", async () => {
+    const { ctl } = await started();
+    history.replaceState(null, "", `/a/${ID}?thread=t1`);
+    expect(ctl.here(null)).toBe(`/a/${ID}`);
+    expect(ctl.here(1)).toBe(`/a/${ID}/v/1`);
+    history.replaceState(null, "", `/a/${ID}?thread=t1&app=1`);
+    expect(ctl.here(null)).toBe(`/a/${ID}?app=1`);
+    ctl.dispose();
+  });
 });
