@@ -2,7 +2,9 @@ import 'dart:async';
 
 import 'package:clax_app/agent/edit_result.dart';
 import 'package:clax_app/agent/loop.dart';
+import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/prompt.dart';
+import 'package:clax_app/agent/scripted_backend.dart';
 import 'package:clax_app/agent/worker.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
@@ -108,10 +110,44 @@ void main() {
             WorkerFailed() => 'failed',
             WorkerCancelled() => 'cancelled',
             WorkerInterrupted() => 'interrupted',
+            WorkerProgress() => 'progress',
           },
       ],
       ['working', 'landed 2', 'working', 'landed 3'],
     );
+  });
+
+  test('a change\'s progress arrives between working and landed, with its '
+      'threads', () async {
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    workerWith([
+      WithProgress(const [
+        PartialEdit('index.html', 'Ke'),
+        OutputTokens(30),
+      ], change(reply: 'Keep.', edits: [edit('Save', 'Keep')])),
+    ]).start();
+    await idle();
+    final item = api.sendComment(aid, 'Say Keep');
+    await until(() => events.any((e) => e is WorkerLanded));
+    expect(
+      [
+        for (final e in events)
+          switch (e) {
+            WorkerWorking(:final threads) => 'working $threads',
+            WorkerProgress(:final threads, :final progress) =>
+              '$progress $threads',
+            WorkerLanded(:final version) => 'landed $version',
+            _ => '$e',
+          },
+      ],
+      [
+        'working [${item.threadId}]',
+        'PartialEdit(index.html, 2 chars) [${item.threadId}]',
+        'OutputTokens(30) [${item.threadId}]',
+        'landed 2',
+      ],
+    );
+    expect(events.every((e) => e.artifactId == aid), isTrue);
   });
 
   test('batches of two artifacts run one after the other', () async {

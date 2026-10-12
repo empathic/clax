@@ -318,6 +318,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         setState(() => _changes.workerFailed(reason));
       case WorkerCancelled():
         setState(_changes.workerCancelled);
+      case WorkerProgress():
+        break;
     }
   }
 

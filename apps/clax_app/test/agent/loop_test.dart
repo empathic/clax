@@ -4,8 +4,10 @@ import 'package:clax_app/agent/backend.dart';
 import 'package:clax_app/agent/edit_result.dart';
 import 'package:clax_app/agent/ledger.dart';
 import 'package:clax_app/agent/loop.dart';
+import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/prompt.dart';
 import 'package:clax_app/agent/request.dart';
+import 'package:clax_app/agent/scripted_backend.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:flutter/services.dart';
@@ -41,6 +43,48 @@ void main() {
   });
 
   group('newApp', () {
+    test('forwards each run\'s progress, the resent run included', () async {
+      const noIndex = EditResult(
+        reply: 'Made it.',
+        title: 'Run log',
+        files: [FileWrite(path: 'main.html', content: page)],
+      );
+      final loop = loopWith([
+        const WithProgress([PartialFile('main.html', '<p>')], noIndex),
+        const WithProgress(
+          [PartialFile('index.html', '<!doc'), OutputTokens(12)],
+          EditResult(
+            reply: 'Made it.',
+            title: 'Run log',
+            files: [FileWrite(path: 'index.html', content: page)],
+          ),
+        ),
+      ]);
+      final events = <AgentProgress>[];
+      await loop.newApp('a log', onProgress: events.add);
+      expect(events.map((e) => '$e'), [
+        'PartialFile(main.html, 3 chars)',
+        'PartialFile(index.html, 5 chars)',
+        'OutputTokens(12)',
+      ]);
+      expect(backend.seen.every((r) => r.onProgress != null), isTrue);
+    });
+
+    test('without a progress sink the backend gets none', () async {
+      final loop = loopWith([
+        const WithProgress(
+          [PartialFile('index.html', '<p>')],
+          EditResult(
+            reply: 'Made it.',
+            title: 'Run log',
+            files: [FileWrite(path: 'index.html', content: page)],
+          ),
+        ),
+      ]);
+      await loop.newApp('a log');
+      expect(backend.seen.single.onProgress, isNull);
+    });
+
     test('new app creates the artifact as the session with title, '
         'capabilities and files, then the db ops', () async {
       final loop = loopWith([
@@ -190,6 +234,24 @@ void main() {
 
     setUp(() {
       aid = api.seedArtifact('Runs', {'index.html': page});
+    });
+
+    test('forwards the backend\'s progress to onProgress', () async {
+      final loop = loopWith([
+        WithProgress(const [
+          PartialEdit('index.html', 'Ke'),
+        ], change(reply: 'Keep.', edits: [edit('Save', 'Keep')])),
+      ]);
+      final item = api.sendComment(aid, 'Say Keep', queue: false);
+      final events = <AgentProgress>[];
+      final outcome = await loop.change(
+        aid,
+        [item],
+        session: sid,
+        onProgress: events.add,
+      );
+      expect(outcome, isA<ChangeLanded>());
+      expect(events.map((e) => '$e'), ['PartialEdit(index.html, 2 chars)']);
     });
 
     test('change publishes edits with if_version and addresses, replies, '

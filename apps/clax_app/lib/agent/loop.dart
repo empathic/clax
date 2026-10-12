@@ -7,6 +7,7 @@ import 'apply.dart';
 import 'backend.dart';
 import 'edit_result.dart';
 import 'ledger.dart';
+import 'progress.dart';
 import 'prompt.dart';
 import 'request.dart';
 import 'timings.dart';
@@ -146,7 +147,15 @@ class AgentLoop {
   /// documents, so none is read first). Throws [AgentError]: the backend's
   /// own, a result still invalid after one retry, a refused create, or
   /// [AgentError.cancelled] when [cancelled] fires before the create.
-  Future<String> newApp(String request, {Future<void>? cancelled}) async {
+  ///
+  /// [onProgress] receives each backend run's [AgentProgress] events; a
+  /// run sent again after an invalid result reports its partial output
+  /// from the beginning. Without it the backend does not stream.
+  Future<String> newApp(
+    String request, {
+    Future<void>? cancelled,
+    ProgressSink? onProgress,
+  }) async {
     final cancel = CancelWatch(cancelled);
     final backend = _backend();
     final reads = await Future.wait<Object>([
@@ -169,6 +178,7 @@ class AgentLoop {
         text,
         null,
         cancelled,
+        onProgress,
         const {},
       );
       cancel.check();
@@ -238,12 +248,14 @@ class AgentLoop {
   /// fails. A daemon call without an answer ends the run as
   /// [ChangeInterrupted]. When [cancelled] fires before the publish, the
   /// run stops with [ChangeCancelled] and nothing is published, replied or
-  /// acknowledged.
+  /// acknowledged. [onProgress] receives the backend runs' progress, as
+  /// for [newApp].
   Future<ChangeOutcome> change(
     String aid,
     List<FeedbackItem> items, {
     String? session,
     Future<void>? cancelled,
+    ProgressSink? onProgress,
   }) async {
     if (items.isEmpty) return const ChangeAnswered();
     final threadIds = [
@@ -260,7 +272,14 @@ class AgentLoop {
     );
     final ChangeOutcome outcome;
     try {
-      outcome = await _change(aid, items, threadIds, session, cancelled);
+      outcome = await _change(
+        aid,
+        items,
+        threadIds,
+        session,
+        cancelled,
+        onProgress,
+      );
     } finally {
       await _quiet('clear working', () => _api.setWorking(aid, on: false));
     }
@@ -273,6 +292,7 @@ class AgentLoop {
     List<String> threadIds,
     String? session,
     Future<void>? cancelled,
+    ProgressSink? onProgress,
   ) async {
     final cancel = CancelWatch(cancelled);
     final commentIds = {for (final i in items) i.commentId};
@@ -363,6 +383,7 @@ class AgentLoop {
             text,
             clip,
             cancelled,
+            onProgress,
             {'artifact': aid},
           );
         } on AgentError catch (e) {
@@ -835,6 +856,7 @@ class AgentLoop {
     String text,
     Uint8List? image,
     Future<void>? cancelled,
+    ProgressSink? onProgress,
     Map<String, Object?> extra,
   ) async {
     final name = kind == RequestKind.newApp
@@ -851,6 +873,7 @@ class AgentLoop {
           userText: text,
           image: image,
           cancelled: cancelled,
+          onProgress: onProgress,
         ),
       );
     } finally {
