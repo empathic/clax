@@ -3,6 +3,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:clax_app/agent/backend.dart';
 import 'package:clax_app/agent/edit_result.dart';
@@ -90,7 +91,61 @@ List<Object> script() => [
   rename(firstTitle, changedTitle),
   // After Undo the page is the first version's again.
   rename(firstTitle, recoveredTitle),
+  const EditResult(
+    reply: 'Made a summary that reads the run log.',
+    title: 'Run summary',
+    files: [FileWrite(path: 'index.html', content: readerHtml)],
+    capabilities: {
+      'db': {
+        'read': [runLogId],
+      },
+    },
+  ),
 ];
+
+/// Stands for the run log's artifact ID in the script, which is known only
+/// once the app is made; [HeldBackend.runLog] replaces it.
+const runLogId = '@RUN-LOG@';
+
+/// A second app that reads the run log's `runs/r1` through
+/// `db.artifact(<run log>)` (the owner is asked to allow it) and shows it.
+/// It reports the outcome in its own document `probe/read`: `status` (`ok`
+/// or the error's code) and what it shows.
+const readerHtml =
+    '''<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run summary</title>
+<style>
+:root { --bg: #ffffff; --fg: #1d1d1f; }
+@media (prefers-color-scheme: dark) { :root { --bg: #1d1d1f; --fg: #f5f5f7; } }
+body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 16px/1.4 system-ui, sans-serif; }
+</style>
+</head>
+<body>
+<h1>Run summary</h1>
+<p id="total">…</p>
+<script>
+(async () => {
+  const db = await window.claude.use("db");
+  if (!db) return;
+  const total = document.getElementById("total");
+  let status = "ok";
+  try {
+    const run = await db.artifact("$runLogId").doc("runs/r1").get();
+    total.textContent = run.exists ? run.data().km + " km logged" : "no runs";
+  } catch (e) {
+    status = (e && e.code) || String(e);
+    total.textContent = "The run log is not shared";
+  }
+  await db.doc("probe/read").set({ status, shown: total.textContent });
+})();
+</script>
+</body>
+</html>
+''';
 
 /// [ScriptedBackend] whose call number [holdAt] (from 1) is held after
 /// the script answers it, until [release]: the change is then under way,
@@ -102,6 +157,10 @@ class HeldBackend implements AgentBackend {
   final ScriptedBackend inner;
   final int holdAt;
   var calls = 0;
+
+  /// The run log's artifact ID, put in place of [runLogId] in every
+  /// answer's files and declaration.
+  String? runLog;
 
   /// Completes when call [holdAt] is held.
   final held = Completer<void>();
@@ -117,11 +176,32 @@ class HeldBackend implements AgentBackend {
   @override
   Future<EditResult> run(AgentRequest request) async {
     final n = ++calls;
-    final result = await inner.run(request);
+    final result = _fill(await inner.run(request));
     if (n == holdAt) {
       held.complete();
       await _release.future;
     }
     return result;
+  }
+
+  EditResult _fill(EditResult r) {
+    final id = runLog;
+    if (id == null) return r;
+    String f(String s) => s.replaceAll(runLogId, id);
+    final caps = r.capabilities;
+    return EditResult(
+      reply: r.reply,
+      title: r.title,
+      files: [
+        for (final w in r.files) FileWrite(path: w.path, content: f(w.content)),
+      ],
+      edits: r.edits,
+      removed: r.removed,
+      db: r.db,
+      capabilities: caps == null
+          ? null
+          : (jsonDecode(f(jsonEncode(caps))) as Map).cast<String, Object?>(),
+      resolve: r.resolve,
+    );
   }
 }

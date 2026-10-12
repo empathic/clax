@@ -72,6 +72,7 @@ void main() {
       () => rig.messages.whereType<Ready>().firstOrNull,
     );
     final aid = first.artifact;
+    rig.backend.runLog = aid;
     expect(first.version, 1);
     expect(find.byType(AppScreen), findsOneWidget);
     expect(rig.timings(sayUsable), hasLength(1));
@@ -193,6 +194,41 @@ void main() {
     await rig.untilProbe(tester, aid, recoveredTitle, scrolled: false);
     expect((await rig.api.getDoc(aid, 'runs/r1'))?.data, {'km': 5});
     expect(rig.timings(sayUsable), hasLength(1));
+
+    // --- Cross-app read with consent: a second app declares a read of the
+    // run log; opening it asks the owner, a real click on Allow grants it,
+    // and the page shows the run log's data.
+    final ctx = tester.element(find.byType(AppScreen));
+    Navigator.of(ctx).pop();
+    await rig.until(
+      tester,
+      'the launcher again',
+      () => find.byType(AppScreen).evaluate().isEmpty,
+    );
+    await tester.tap(find.text('New app'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'Sum up my runs');
+    await tester.pump();
+    await tester.tap(find.text('Make it'));
+    final reader = await rig.until<Ready>(
+      tester,
+      'the reader app\'s first ready',
+      () => rig.messages
+          .whereType<Ready>()
+          .where((r) => r.artifact != aid)
+          .firstOrNull,
+    );
+    final bid = reader.artifact;
+    expect(rig.backend.calls, 4);
+    await rig.clickAllow(tester);
+    final read = await rig.until<Map<String, Object?>>(
+      tester,
+      'the reader page reporting its read',
+      () async => (await rig.api.getDoc(bid, 'probe/read'))?.data,
+    );
+    expect(read, {'status': 'ok', 'shown': '5 km logged'});
+    final grants = await rig.grants(bid);
+    expect([for (final g in grants) g['source_id']], [aid]);
 
     // Unmount the app: its worker stops before the daemon does.
     await tester.pumpWidget(const SizedBox());
@@ -448,6 +484,56 @@ class _Rig {
       () => messages.skip(before).whereType<Sent>().firstOrNull,
     );
     return sent.thread;
+  }
+
+  /// Waits for the shell's consent dialog to arm Allow, then clicks it
+  /// with a real click.
+  Future<void> clickAllow(WidgetTester tester) async {
+    var last = '';
+    final Map<String, Object?> at;
+    try {
+      at = await until<Map<String, Object?>>(tester, 'the consent dialog\'s Allow armed', () async {
+        final raw = await surface!.evaluate(
+          '(function(){var b=document.querySelector(".prompt button.primary");'
+          'if(!b)return "no dialog";if(b.disabled)return "Allow disabled";'
+          'var r=b.getBoundingClientRect();'
+          'return JSON.stringify({x:r.left+r.width/2,y:r.top+r.height/2})})()',
+        );
+        last = raw is String ? raw : '$raw';
+        return last.startsWith('{')
+            ? (jsonDecode(last) as Map).cast<String, Object?>()
+            : null;
+      });
+    } on TestFailure catch (e) {
+      throw TestFailure('${e.message} (last seen: $last)');
+    }
+    final web = tester.getRect(find.byType(WebViewWidget));
+    final hit = await _input.invokeMethod<bool>('click', {
+      'x': web.left + (at['x']! as num).toDouble(),
+      'y': web.top + (at['y']! as num).toDouble(),
+    });
+    expect(hit, isTrue);
+  }
+
+  /// `GET /api/artifacts/<aid>/db-grants`: the owner's read grants of [aid].
+  Future<List<Map<String, Object?>>> grants(String aid) async {
+    final e = _endpoint();
+    final client = HttpClient();
+    try {
+      final req = await client.getUrl(
+        e.base.replace(path: '/api/artifacts/$aid/db-grants'),
+      );
+      req.headers.set('authorization', 'Bearer ${e.token}');
+      final res = await req.close();
+      final body = await res.transform(utf8.decoder).join();
+      expect(res.statusCode, 200, reason: body);
+      return [
+        for (final g in (jsonDecode(body) as Map)['grants'] as List)
+          (g as Map).cast<String, Object?>(),
+      ];
+    } finally {
+      client.close(force: true);
+    }
   }
 
   /// The content frame's box in the WebView, in CSS pixels.
