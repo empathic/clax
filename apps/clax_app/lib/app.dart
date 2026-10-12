@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:io' as io show pid;
+import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -345,11 +346,45 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       case AppLifecycleState.resumed:
         unawaited(_s.supervisor.onResume());
       case AppLifecycleState.detached:
-        unawaited(_runtime.close().whenComplete(_s.supervisor.stop));
+        unawaited(_shutDown());
       case _:
         break;
     }
   }
+
+  /// The app is about to quit (macOS: Quit, ⌘Q, or closing the last
+  /// window): the daemon is stopped before the process exits, so it does
+  /// not outlive the app.
+  @override
+  Future<AppExitResponse> didRequestAppExit() async {
+    await _shutDown();
+    return AppExitResponse.exit;
+  }
+
+  /// How long the worker gets to wind down its change before the daemon
+  /// is stopped anyway.
+  static const workerStopLimit = Duration(seconds: 2);
+
+  /// The longest a quit waits for the daemon: its SIGTERM grace (after
+  /// which the supervisor sends SIGKILL) and a little more.
+  static const daemonStopLimit = Duration(seconds: 5);
+
+  Future<void>? _shuttingDown;
+
+  /// Stops the worker, then the daemon (SIGTERM, then SIGKILL), each
+  /// within its limit; once, however many times it is asked.
+  Future<void> _shutDown() => _shuttingDown ??= () async {
+    try {
+      await _runtime.close().timeout(workerStopLimit);
+    } on Object {
+      // Stop the daemon anyway.
+    }
+    try {
+      await _s.supervisor.stop().timeout(daemonStopLimit);
+    } on Object {
+      // Quit anyway; the next launch stops a daemon left behind.
+    }
+  }();
 
   Future<void> _loadSettings() async {
     final s = await _s.settings.load();
