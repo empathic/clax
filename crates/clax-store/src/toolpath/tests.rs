@@ -1783,7 +1783,36 @@ fn every_recorded_kind_is_classified_and_renders_conformant() {
         st.set_session_name(ctx, &sid, "named-one", crate::NameSource::Agent)
             .unwrap();
     }
+    // A restore (`version.publish` with `restored_from`) and a read grant
+    // made and revoked (`artifact.update` with `db_read_grants`).
+    {
+        use crate::store::test_util::artifact;
+        let dctx = &crate::audit::AuditCtx::DAEMON;
+        let a = artifact(&st, None);
+        let req: crate::publish::PublishRequest = serde_json::from_value(json!({
+            "if_version": 1,
+            "files": {"index.html": {"content": "<main>v2</main>", "encoding": "utf8"}}
+        }))
+        .unwrap();
+        st.publish_version(dctx, &a, crate::publish::validate(req).unwrap(), None)
+            .unwrap();
+        st.restore_version(dctx, &a, 1, 2, None).unwrap();
+        let b = artifact(&st, None);
+        st.grant_read(dctx, &a, &b).unwrap();
+        assert!(st.revoke_read(dctx, &a, &b).unwrap());
+    }
     let live = st.events_after(0, 100_000).unwrap();
+    let restored = live
+        .iter()
+        .any(|r| r.kind == "version.publish" && r.body.contains("\"restored_from\""));
+    let granted = live
+        .iter()
+        .filter(|r| r.kind == "artifact.update" && r.body.contains("\"db_read_grants\""))
+        .count();
+    assert!(
+        restored && granted == 2,
+        "the restore and the grant change are in the fixture"
+    );
     let home = st.home().clone();
     st.with_write(|c| {
         c.execute_batch("DELETE FROM audit_events; DELETE FROM install WHERE k = 'backfill';")?;

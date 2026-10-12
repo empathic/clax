@@ -246,20 +246,26 @@ impl Store {
     /// Overwrites each field that is `Some` in `patch` (a `capabilities` value
     /// replaces the whole declaration; `{}` clears it) and leaves the others
     /// untouched; any other field therefore cannot be cleared through this
-    /// call. The caller validates `capabilities`. Does not
+    /// call. The caller validates `capabilities`; this call refuses a read
+    /// declaration naming the artifact itself
+    /// ([`ReadDecl::from_capabilities`](crate::db::ReadDecl::from_capabilities)). Does not
     /// bump `updated_at` (metadata edits are not new content). Recorded,
     /// in the same transaction, as `artifact.update` under `ctx`, naming in
     /// `fields` each field the patch sets, even to the value it had (an
     /// explicit request); a patch that sets nothing records nothing.
     ///
     /// # Errors
-    /// `NotFound` when the artifact does not exist or is deleted.
+    /// `NotFound` when the artifact does not exist or is deleted;
+    /// `invalid_capabilities` when `db.read` or `db.share.read` names it.
     pub fn update_meta(
         &self,
         ctx: &AuditCtx,
         id: &ArtifactId,
         patch: MetaPatch,
     ) -> Result<Artifact> {
+        if let Some(caps) = &patch.capabilities {
+            crate::db::ReadDecl::from_capabilities(caps, id.as_str())?;
+        }
         self.with_tx(|tx| {
             let Some(before) = tx
                 .query_row(
@@ -1337,6 +1343,11 @@ impl Store {
         step: VersionStep<'_>,
         then: impl FnOnce(&rusqlite::Transaction<'_>, u32) -> Result<T>,
     ) -> Result<(Artifact, Version, T)> {
+        if let Some(caps) = &p.capabilities {
+            // The publish check has no artifact ID; a declaration may not
+            // read or share with its own artifact.
+            crate::db::ReadDecl::from_capabilities(caps, id.as_str())?;
+        }
         let n = expected + 1;
         let adopt = matches!(step, VersionStep::Adopt(_));
         let carried = carried_of(prev, p, adopt);

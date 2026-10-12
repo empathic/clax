@@ -468,3 +468,42 @@ async fn publish_capabilities_are_a_full_set_and_validated() {
         .await;
     assert_eq!(bad.status(), 400);
 }
+
+#[tokio::test]
+async fn a_read_declaration_naming_its_own_artifact_is_refused() {
+    let ts = TestServer::spawn().await;
+    let created = ts.publish("A", &[("index.html", "<p>v1</p>")]).await;
+    let aid = created["artifact"]["id"].as_str().unwrap().to_string();
+    let other = ts.publish("B", &[("index.html", "<p>b</p>")]).await;
+    let bid = other["artifact"]["id"].as_str().unwrap().to_string();
+    let code = |v: serde_json::Value| v["error"]["code"].clone();
+    for caps in [
+        json!({"db": {"read": [bid, aid]}}),
+        json!({"db": {"share": {"read": [aid]}}}),
+    ] {
+        let res = patch(&ts, &aid, json!({"capabilities": caps})).await;
+        assert_eq!(res.status(), 400, "PATCH {caps}");
+        assert_eq!(code(res.json().await.unwrap()), "invalid_capabilities");
+        let res = ts
+            .post_json(
+                &format!("/api/artifacts/{aid}/versions"),
+                json!({"if_version": 1, "capabilities": caps,
+                       "files": {"index.html": {"content": "<p>v2</p>", "encoding": "utf8"}}}),
+            )
+            .await;
+        assert_eq!(res.status(), 400, "publish {caps}");
+        assert_eq!(code(res.json().await.unwrap()), "invalid_capabilities");
+    }
+    let got: serde_json::Value = ts
+        .authed(ts.client.get(format!("{}/api/artifacts/{aid}", ts.base)))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(got["artifact"]["current_version"], 1, "{got}");
+    assert_eq!(got["artifact"]["capabilities"], json!({}), "{got}");
+    let res = patch(&ts, &aid, json!({"capabilities": {"db": {"read": [bid]}}})).await;
+    assert_eq!(res.status(), 200, "naming another artifact is accepted");
+}
