@@ -166,12 +166,14 @@ class AgentLoop {
     final system = reads[1] as String;
     final base = _prompts.newApp(request, others);
     String? retryReason;
+    var attempt = 0;
     while (true) {
       cancel.check();
       final text = retryReason == null
           ? base
           : '$base\n${_retryText(retryReason)}';
       final r = await _run(
+        ++attempt,
         backend,
         RequestKind.newApp,
         system,
@@ -355,6 +357,7 @@ class AgentLoop {
       final system = reads[3]! as String;
       String? retryReason;
       var reran = false;
+      var attempt = 0;
       while (true) {
         cancel.check();
         final text = _prompts.change(
@@ -377,6 +380,7 @@ class AgentLoop {
         final EditResult r;
         try {
           r = await _run(
+            ++attempt,
             backend,
             RequestKind.change,
             system,
@@ -849,7 +853,10 @@ class AgentLoop {
     return false;
   }
 
+  /// Runs [backend] once, as attempt [attempt] of this request, telling
+  /// [onProgress] first.
   Future<EditResult> _run(
+    int attempt,
     AgentBackend backend,
     RequestKind kind,
     String system,
@@ -863,6 +870,16 @@ class AgentLoop {
         ? agentNewTiming
         : agentChangeTiming;
     final model = _model();
+    final ProgressSink? sink = onProgress == null
+        ? null
+        : (event) {
+            try {
+              onProgress(event);
+            } on Object catch (e) {
+              _log('the progress listener failed: $e');
+            }
+          };
+    sink?.call(AttemptStarted(attempt));
     _timings.start(name);
     try {
       return await backend.run(
@@ -873,7 +890,7 @@ class AgentLoop {
           userText: text,
           image: image,
           cancelled: cancelled,
-          onProgress: onProgress,
+          onProgress: sink,
         ),
       );
     } finally {

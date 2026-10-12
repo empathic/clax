@@ -260,6 +260,7 @@ void main() {
       PartialFile(:final path, :final text) => 'file $path: $text',
       PartialEdit(:final path, :final newStr) => 'edit $path: $newStr',
       OutputTokens(:final count) => 'tokens $count',
+      AttemptStarted(:final attempt) => 'attempt $attempt',
     };
 
     test('reports each file content prefix under its path', () {

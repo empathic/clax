@@ -1,13 +1,27 @@
 /// What a backend reports while a run is under way, before its result.
 ///
 /// Events are advisory: they never change the run's result, which is
-/// parsed and validated whole once the run ends. A run that is retried or
-/// sent again starts its partial output from the beginning.
+/// parsed and validated whole once the run ends. A run that is sent again
+/// starts its partial output from the beginning, after an
+/// [AttemptStarted].
 library;
 
 /// One progress event of a backend run.
 sealed class AgentProgress {
   const AgentProgress();
+}
+
+/// Run [attempt] of a request (from 1) begins: the events after it belong
+/// to that run. A resend after an invalid result is a new attempt, and its
+/// partial output starts again from empty text, so a consumer drops what
+/// the earlier attempt reported.
+final class AttemptStarted extends AgentProgress {
+  const AttemptStarted(this.attempt);
+
+  final int attempt;
+
+  @override
+  String toString() => 'AttemptStarted($attempt)';
 }
 
 /// The `content` of the whole-file write of [path] so far.

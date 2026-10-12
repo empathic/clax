@@ -372,7 +372,9 @@ class _Item {
 /// (message_stream.dart)) to one [EditProgress] per content block, so a
 /// result streamed as a `text` block (structured output) or as a
 /// `tool_use` block's input reports the same events. A block whose text is
-/// not a JSON object (prose) reports nothing.
+/// not a JSON object (prose) reports nothing. A block of a later message
+/// (`claude -p` stream-json carries one per turn) starts its files from
+/// empty text; [AttemptStarted] marks only the loop's runs.
 class BlockProgress {
   BlockProgress(this.sink, {this.minGrowth = 256});
 
