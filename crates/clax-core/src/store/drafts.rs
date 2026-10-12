@@ -4,8 +4,9 @@
 //!
 //! A draft of an app (`draft_of`) starts with a copy of the app's documents
 //! that the owner reads, private per-viewer subtrees left out, so a page
-//! that writes while it renders writes into the copy only. Its reads of
-//! other apps use the grants of `draft_of` ([`Store::may_read`]). Deleting
+//! that writes while it renders writes into the copy only. A draft reads
+//! no other app's documents, whatever its app may read
+//! ([`Store::may_read`]): a render's reads reach the agent. Deleting
 //! a draft removes its rows and files for good; [`Store::sweep_drafts`]
 //! deletes the ones older than [`DRAFT_MAX_AGE`].
 
@@ -93,16 +94,6 @@ pub(crate) fn is_hidden_in(c: &Connection, id: &str) -> Result<bool> {
             .query_row(params![id], |r| r.get::<_, i64>(0))
             .optional()?
             .is_some_and(|h| h != 0),
-    )
-}
-
-/// The app `id` is a draft of, when `id` is a draft of an app.
-pub(crate) fn draft_of_in(c: &Connection, id: &str) -> Result<Option<String>> {
-    Ok(
-        c.prepare_cached("SELECT draft_of FROM artifacts WHERE id = ?1 AND hidden = 1")?
-            .query_row(params![id], |r| r.get::<_, Option<String>>(0))
-            .optional()?
-            .flatten(),
     )
 }
 
@@ -759,27 +750,35 @@ mod tests {
     }
 
     #[test]
-    fn a_draft_reads_with_its_apps_declaration_and_grants() {
+    fn a_draft_reads_no_other_app_whatever_its_apps_grants_and_shares() {
         use crate::store::grants::ReadAccess;
         let (_d, st) = store();
         let b = artifact_with_caps(&st, json!({"db": {}}));
         let a = artifact_with_caps(&st, json!({"db": {"read": [b.as_str()]}}));
+        st.grant_read(DAEMON, &a, &b).unwrap();
+        assert_eq!(st.may_read(&a, &b).unwrap(), ReadAccess::Granted);
         let caps = json!({"db": {"read": [b.as_str()]}});
         let d = st
             .create_draft(DAEMON, Some(&a), publish("Draft", Some(caps.clone())))
             .unwrap();
         let did = ArtifactId::parse(&d.artifact.id).unwrap();
-        assert_eq!(st.may_read(&did, &b).unwrap(), ReadAccess::NotGranted);
-        st.grant_read(DAEMON, &a, &b).unwrap();
-        assert_eq!(st.may_read(&did, &b).unwrap(), ReadAccess::Granted);
+        assert_eq!(
+            st.may_read(&did, &b).unwrap(),
+            ReadAccess::NotGranted,
+            "the app's grant is not the owner's consent to the agent"
+        );
+        // A share the source declares to the draft does not count either.
+        let shared = artifact_with_caps(&st, json!({"db": {"share": {"read": [did.as_str()]}}}));
+        assert_eq!(st.may_read(&did, &shared).unwrap(), ReadAccess::NotGranted);
         let fresh = st
             .create_draft(DAEMON, None, publish("New", Some(caps)))
             .unwrap();
         let fresh = ArtifactId::parse(&fresh.artifact.id).unwrap();
+        st.grant_read(DAEMON, &fresh, &b).unwrap();
         assert_eq!(
             st.may_read(&fresh, &b).unwrap(),
             ReadAccess::NotGranted,
-            "a new app's draft has no app's grants"
+            "a new app's draft reads nothing either, even granted"
         );
     }
 
