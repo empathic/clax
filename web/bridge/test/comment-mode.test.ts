@@ -467,3 +467,149 @@ describe("Option widening", () => {
     expect(hooks.hover).toHaveBeenLastCalledWith(p);
   });
 });
+
+describe("touch long-press", () => {
+  function fakeTimers() {
+    let next = 1;
+    const due = new Map<number, { fn: () => void; ms: number }>();
+    return {
+      t: { set: (fn: () => void, ms: number) => { due.set(next, { fn, ms }); return next++; }, clear: (id: number) => { due.delete(id); } },
+      /** Runs the timers set with delay `ms` (all of them without one). */
+      fire: (ms?: number) => { for (const [id, d] of [...due]) if (ms === undefined || d.ms === ms) { due.delete(id); d.fn(); } },
+    };
+  }
+  const touch = (el: Element, type: string, x: number, y: number) => {
+    const t = [{ identifier: 0, clientX: x, clientY: y, target: el }] as unknown as Touch[];
+    const e = new TouchEvent(type, { bubbles: true, cancelable: true, touches: type === "touchend" ? [] : t, changedTouches: t });
+    el.dispatchEvent(e);
+    return e;
+  };
+  const d = document as unknown as { elementFromPoint?: (x: number, y: number) => Element | null; caretRangeFromPoint?: (x: number, y: number) => Range | null };
+  let f: ReturnType<typeof fakeTimers>;
+  let under: Element | null;
+  beforeEach(() => {
+    mode.set(false);
+    document.querySelectorAll("clax-overlay").forEach(n => n.remove());
+    f = fakeTimers();
+    mode = new CommentMode(document, hooks, { trustedOnly: false, timers: f.t });
+    under = null;
+    d.elementFromPoint = () => under;
+  });
+  afterEach(() => { delete d.elementFromPoint; delete d.caretRangeFromPoint; });
+
+  /** Holds a finger on `el` at (x, y) past the hold, then lifts it there. */
+  const longPress = (el: Element, x = 10, y = 10) => {
+    under = el;
+    touch(el, "touchstart", x, y);
+    f.fire(450);
+    return touch(el, "touchend", x, y);
+  };
+
+  it("long_press picks the element under the finger", () => {
+    mode.set(true);
+    const h2 = document.querySelector("h2")!;
+    under = h2;
+    touch(h2, "touchstart", 10, 10);
+    f.fire(450);
+    expect(hooks.hover).toHaveBeenLastCalledWith(h2);
+    expect(outline().style.display).toBe("block");
+    expect(hooks.pickElement).not.toHaveBeenCalled();
+    const end = touch(h2, "touchend", 10, 10);
+    expect(end.defaultPrevented).toBe(true);
+    expect(hooks.pickElement).toHaveBeenCalledWith(h2);
+    expect(hooks.pickElement).toHaveBeenCalledTimes(1);
+  });
+
+  it("long_press_on_link_picks_without_navigating", () => {
+    document.body.innerHTML = `<a href="#x">go</a>`;
+    const hash = location.hash;
+    mode.set(true);
+    const a = document.querySelector("a")!;
+    longPress(a);
+    expect(hooks.pickElement).toHaveBeenCalledWith(a);
+    // The click the browser synthesizes after the touch: cancelled, and no second pick.
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 });
+    a.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(true);
+    expect(location.hash).toBe(hash);
+    expect(hooks.pickElement).toHaveBeenCalledTimes(1);
+  });
+
+  it("swallows only the click within 800 ms of a long-press pick", () => {
+    mode.set(true);
+    const h2 = document.querySelector("h2")!;
+    longPress(h2);
+    mode.captured();
+    f.fire(800);
+    h2.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    expect(hooks.pickElement).toHaveBeenCalledTimes(2);
+  });
+
+  it("long_press_on_oversized_element_picks_its_line", () => {
+    document.body.innerHTML = `<main><pre style="white-space: pre">alpha one\nbeta two\ngamma three</pre></main>`;
+    const pre = document.querySelector("pre")!;
+    pre.getBoundingClientRect = () => ({ left: 0, top: -2630, right: 900, bottom: 18445, width: 900, height: 21075, x: 0, y: -2630, toJSON() {} }) as DOMRect;
+    d.caretRangeFromPoint = (_x, y) => { const r = document.createRange(); r.setStart(pre.firstChild!, y < 50 ? 2 : 13); return r; };
+    mode.set(true);
+    under = pre;
+    touch(pre, "touchstart", 10, 60);
+    f.fire(450);
+    expect(String(hooks.hover.mock.calls.at(-1)![0])).toBe("beta two");
+    touch(pre, "touchend", 10, 60);
+    expect(hooks.pickElement).not.toHaveBeenCalled();
+    expect(String(hooks.pickRange.mock.calls[0][0])).toBe("beta two");
+  });
+
+  it("an abandoned long-press drops its outline and picks nothing", () => {
+    mode.set(true);
+    const h2 = document.querySelector("h2")!;
+    under = h2;
+    touch(h2, "touchstart", 10, 10);
+    f.fire(450);
+    expect(outline().style.display).toBe("block");
+    touch(h2, "touchmove", 40, 10);
+    expect(outline().style.display).toBe("none");
+    expect(hooks.hover).toHaveBeenLastCalledWith(null);
+    touch(h2, "touchend", 40, 10);
+    expect(hooks.pickElement).not.toHaveBeenCalled();
+  });
+
+  it("starts no long-press pick while another pick's clip is taken", () => {
+    mode.set(true);
+    const h2 = document.querySelector("h2")!;
+    longPress(h2);
+    f.fire(800);
+    longPress(h2);
+    expect(hooks.pickElement).toHaveBeenCalledTimes(1);
+  });
+
+  it("a short tap keeps picking by the synthesized click", () => {
+    mode.set(true);
+    const h2 = document.querySelector("h2")!;
+    under = h2;
+    touch(h2, "touchstart", 10, 10);
+    const end = touch(h2, "touchend", 10, 10);
+    expect(end.defaultPrevented).toBe(false);
+    expect(hooks.pickElement).not.toHaveBeenCalled();
+    h2.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    expect(hooks.pickElement).toHaveBeenCalledWith(h2);
+  });
+
+  it("guard_is_on_only_in_comment_mode", () => {
+    const guard = () => [...document.querySelectorAll("style")].find(s => s.textContent!.includes("-webkit-touch-callout:none"));
+    const cancelled = (type: string) => { const e = new Event(type, { bubbles: true, cancelable: true }); document.body.dispatchEvent(e); return e.defaultPrevented; };
+    expect(guard()).toBeUndefined();
+    mode.set(true);
+    expect(guard()?.textContent).toContain("user-select:none");
+    expect(cancelled("contextmenu")).toBe(true);
+    expect(cancelled("selectstart")).toBe(true);
+    mode.set(false);
+    expect(guard()).toBeUndefined();
+    expect(cancelled("contextmenu")).toBe(false);
+    expect(cancelled("selectstart")).toBe(false);
+    under = document.querySelector("h2");
+    touch(under!, "touchstart", 10, 10);
+    f.fire();
+    expect(hooks.hover).not.toHaveBeenCalled();
+  });
+});
