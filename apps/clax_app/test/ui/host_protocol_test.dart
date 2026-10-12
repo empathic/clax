@@ -430,4 +430,162 @@ const host = { init: p => log.push('init'), setVisible: v => log.push('visible '
       ]);
     }, skip: skip);
   });
+
+  group('round 2: whole-app comments, inspections, questions', () {
+    test('ComposeArtifact, OpenQuestions and Inspect render their calls', () {
+      expect(
+        const ComposeArtifact().toJs(),
+        'window.claxHost?.composeArtifact()',
+      );
+      expect(const OpenQuestions().toJs(), 'window.claxHost?.openQuestions()');
+      expect(
+        const Inspect().toJs(),
+        'window.claxHost?.inspect({settleMs:3000,maxBytes:1048576})',
+      );
+      expect(
+        const Inspect(settleMs: 500, maxBytes: 2048).toJs(),
+        'window.claxHost?.inspect({settleMs:500,maxBytes:2048})',
+      );
+    });
+
+    test('AttestPointer passes an OS-cancelled touch as phase cancel', () {
+      expect(
+        const AttestPointer(
+          pointer: 3,
+          phase: PointerPhase.cancel,
+          x: 1,
+          y: 2,
+          devicePixelRatio: 1,
+        ).toJs(),
+        contains('h.attestPointer({pointer:3,phase:"cancel",'),
+      );
+    });
+
+    test('an inspection decodes its screenshot and keeps its findings', () {
+      final png = [0x89, 0x50, 0x4e, 0x47, 0, 255];
+      final m = HostMessage.parse(
+        jsonEncode({
+          'type': 'inspection',
+          'png': base64Encode(png),
+          'errors': [
+            {'kind': 'error', 'text': 'x is not defined'},
+            {'kind': 'console', 'text': 'boom'},
+          ],
+          'failed': ['http://127.0.0.1:7999/a/x/missing.png'],
+          'text': '# Runs\n[button] Add',
+          'title': 'Runs',
+          'height': 1200,
+        }),
+      );
+      final i = m as InspectionMsg;
+      expect(i.error, isNull);
+      expect(i.png, png);
+      expect(i.errors, [
+        (kind: 'error', text: 'x is not defined'),
+        (kind: 'console', text: 'boom'),
+      ]);
+      expect(i.failed, ['http://127.0.0.1:7999/a/x/missing.png']);
+      expect(i.text, '# Runs\n[button] Add');
+      expect(i.title, 'Runs');
+      expect(i.height, 1200);
+    });
+
+    test('an inspection that failed carries only why', () {
+      final i = HostMessage.parse(
+        '{"type":"inspection","error":"the page has not loaded"}',
+      ) as InspectionMsg;
+      expect(i.error, 'the page has not loaded');
+      expect(i.png, isEmpty);
+      expect(i.errors, isEmpty);
+      expect(i.failed, isEmpty);
+    });
+
+    test('a malformed inspection is null', () {
+      for (final bad in [
+        {'type': 'inspection'},
+        {
+          'type': 'inspection',
+          'png': 'not base64!',
+          'errors': [],
+          'failed': [],
+          'text': '',
+          'title': '',
+          'height': 1,
+        },
+        {
+          'type': 'inspection',
+          'png': '',
+          'errors': [
+            {'kind': 'error'},
+          ],
+          'failed': [],
+          'text': '',
+          'title': '',
+          'height': 1,
+        },
+        {
+          'type': 'inspection',
+          'png': '',
+          'errors': [],
+          'failed': [1],
+          'text': '',
+          'title': '',
+          'height': 1,
+        },
+        {
+          'type': 'inspection',
+          'png': '',
+          'errors': [],
+          'failed': [],
+          'text': '',
+          'title': '',
+          'height': 1.5,
+        },
+      ]) {
+        expect(HostMessage.parse(jsonEncode(bad)), isNull, reason: '$bad');
+      }
+    });
+
+    test('questions carries how many are open', () {
+      expect(
+        (HostMessage.parse(
+          '{"type":"questions","open":2}',
+        ) as QuestionsMsg).open,
+        2,
+      );
+      expect(HostMessage.parse('{"type":"questions"}'), isNull);
+      expect(HostMessage.parse('{"type":"questions","open":-1}'), isNull);
+      expect(HostMessage.parse('{"type":"questions","open":"1"}'), isNull);
+    });
+
+    test('the shell session accepts them under the nonce', () {
+      final s = ShellSession(Uri.parse('http://127.0.0.1:7999'));
+      final url = Uri.parse('http://127.0.0.1:7999/a/abcdefghjkmn?app=1');
+      s.documentStarted(url);
+      final n = s.documentLoaded(url)!.nonce;
+      expect(
+        s.accept(jsonEncode({'type': 'questions', 'open': 1, 'nonce': n})),
+        isA<QuestionsMsg>(),
+      );
+      expect(
+        s.accept(jsonEncode({'type': 'inspection', 'error': 'x', 'nonce': n})),
+        isA<InspectionMsg>(),
+      );
+      expect(
+        s.accept(
+          jsonEncode({
+            'type': 'inspection',
+            'png': '%%',
+            'errors': [],
+            'failed': [],
+            'text': '',
+            'title': '',
+            'height': 1,
+            'nonce': n,
+          }),
+        ),
+        isNull,
+      );
+    });
+  });
 }
