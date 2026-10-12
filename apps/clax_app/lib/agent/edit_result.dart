@@ -196,7 +196,9 @@ const maxDbOps = 50;
 const maxPathLength = 200;
 
 /// Validates [r] for a request of [kind] against an artifact holding
-/// [existingPaths] (empty for a new app). Throws [ResultInvalid] naming the
+/// [existingPaths] (empty for a new app). Each document is written at most
+/// once, since the daemon refuses a `docs:batch` that names a document
+/// twice. Throws [ResultInvalid] naming the
 /// first problem; nothing of a refused result may be published.
 void validateResult(
   EditResult r, {
@@ -268,8 +270,15 @@ void validateResult(
       'are allowed',
     );
   }
+  final dbPaths = <String>{};
   for (final o in r.db) {
     final at = 'db operation on ${_q('${o.collection}/${o.docId}')}';
+    if (!dbPaths.add('${o.collection}/${o.docId}')) {
+      throw ResultInvalid(
+        '$at: the document is written twice; write each document at most '
+        'once per result',
+      );
+    }
     if (o.op != 'set' && o.op != 'update' && o.op != 'delete') {
       throw ResultInvalid(
         '$at: op ${_q(o.op)} is not one of set, update, delete',
