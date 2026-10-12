@@ -11,7 +11,7 @@ class FakeVoice implements VoiceInput {
     this.script = const [],
     VoiceAvailability? availability,
     this.hold = false,
-  }) : _availability = availability ?? const VoiceAvailable();
+  }) : availabilityNow = availability ?? const VoiceAvailable();
 
   /// A voice that is turned off with [reason].
   FakeVoice.denied(String reason) : this(availability: VoiceDenied(reason));
@@ -22,7 +22,13 @@ class FakeVoice implements VoiceInput {
 
   final List<String> script;
   final bool hold;
-  final VoiceAvailability _availability;
+
+  /// What [availability] answers; a test may change it, as the person
+  /// granting access in system settings does.
+  VoiceAvailability availabilityNow;
+
+  /// How many times [openPermissionSettings] was called.
+  int settingsOpened = 0;
 
   /// How many times [listen] and [stop] were called.
   int listens = 0;
@@ -34,7 +40,13 @@ class FakeVoice implements VoiceInput {
   bool get listening => _current != null;
 
   @override
-  Future<VoiceAvailability> availability() async => _availability;
+  Future<VoiceAvailability> availability() async => availabilityNow;
+
+  @override
+  Future<bool> openPermissionSettings() async {
+    settingsOpened++;
+    return true;
+  }
 
   @override
   Stream<VoiceResult> listen({String? locale}) {

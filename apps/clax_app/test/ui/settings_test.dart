@@ -6,6 +6,7 @@ import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/settings_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -233,5 +234,59 @@ void main() {
     );
     expect(tester.takeException(), isNull);
     expect(find.text('A key is saved'), findsOneWidget);
+  });
+
+  testWidgets('the key field says where a key comes from', (tester) async {
+    await pumpSettings(tester, store: SettingsStore(file), key: FakeKey());
+    expect(
+      find.text('Create one at console.anthropic.com, then paste it here'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('Paste fills the key field from the clipboard', (tester) async {
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async => call.method == 'Clipboard.getData'
+          ? {'text': '  sk-ant-pasted-key \n'}
+          : null,
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+    final key = FakeKey();
+    await pumpSettings(tester, store: SettingsStore(file), key: key);
+    await tester.tap(find.byTooltip('Paste'));
+    await tester.pumpAndSettle();
+    final field = find.byKey(const Key('api-key-field'));
+    expect(
+      tester
+          .widget<EditableText>(
+            find.descendant(of: field, matching: find.byType(EditableText)),
+          )
+          .controller
+          .text,
+      'sk-ant-pasted-key',
+    );
+    await tester.tap(find.text('Save key'));
+    await tester.pumpAndSettle();
+    expect(key.writes, ['sk-ant-pasted-key']);
+  });
+
+  testWidgets('a key without the sk-ant- prefix is not saved', (tester) async {
+    final key = FakeKey();
+    await pumpSettings(tester, store: SettingsStore(file), key: key);
+    await tester.enterText(
+      find.byKey(const Key('api-key-field')),
+      'hello there',
+    );
+    await tester.pump();
+    await tester.tap(find.text('Save key'));
+    await tester.pumpAndSettle();
+    expect(key.writes, isEmpty);
+    expect(find.text('Claude API keys start with sk-ant-'), findsOneWidget);
   });
 }

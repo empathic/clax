@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../agent/timings.dart';
 import '../platform/secure_key.dart';
@@ -78,10 +79,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await widget.store.save(s);
   }
 
+  /// Why the typed key is refused, shown under the field.
+  String? _keyError;
+
+  /// The prefix every Claude API key starts with.
+  static const keyPrefix = 'sk-ant-';
+
   Future<void> _saveKey() async {
     final v = _key.text.trim();
     if (v.isEmpty) return;
+    if (!v.startsWith(keyPrefix)) {
+      setState(() => _keyError = 'Claude API keys start with $keyPrefix');
+      return;
+    }
     await _writeKey(v);
+  }
+
+  Future<void> _paste() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text?.trim();
+    if (text == null || text.isEmpty || !mounted) return;
+    _key.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    setState(() => _keyError = null);
   }
 
   Future<void> _writeKey(String? v) async {
@@ -219,18 +241,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
             keyboardType: TextInputType.visiblePassword,
             decoration: InputDecoration(
               labelText: 'Claude API key',
-              helperText: 'Kept in this device\'s secure storage',
-              suffixIcon: IconButton(
-                tooltip: _showKey ? 'Hide' : 'Show',
-                onPressed: () => setState(() => _showKey = !_showKey),
-                icon: Icon(
-                  _showKey
-                      ? Icons.visibility_off_outlined
-                      : Icons.visibility_outlined,
-                ),
+              helperText:
+                  'Create one at console.anthropic.com, then paste it here',
+              helperMaxLines: 2,
+              errorText: _keyError,
+              suffixIcon: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    tooltip: 'Paste',
+                    onPressed: _paste,
+                    icon: const Icon(Icons.content_paste_rounded),
+                  ),
+                  IconButton(
+                    tooltip: _showKey ? 'Hide' : 'Show',
+                    onPressed: () => setState(() => _showKey = !_showKey),
+                    icon: Icon(
+                      _showKey
+                          ? Icons.visibility_off_outlined
+                          : Icons.visibility_outlined,
+                    ),
+                  ),
+                ],
               ),
             ),
-            onChanged: (_) => setState(() {}),
+            onChanged: (_) => setState(() => _keyError = null),
             onSubmitted: (_) => _saveKey(),
           ),
           const SizedBox(height: 8),
