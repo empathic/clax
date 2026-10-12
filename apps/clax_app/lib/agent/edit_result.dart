@@ -309,46 +309,47 @@ void validateResult(
 }
 
 void _checkPath(String path, String field) {
+  if (pathProblem(path, field: field) case final p?) throw ResultInvalid(p);
+}
+
+/// Why [path] may not name a file of an app, or null when it may: it must
+/// be non-empty and at most [maxPathLength] characters, relative, without
+/// control characters, U+2028, U+2029 or backslashes, and without empty,
+/// `.` or `..` segments. [field] names where the path came from in the
+/// reason ("the path "/x" in files must be relative").
+String? pathProblem(String path, {String? field}) {
+  final inField = field == null ? '' : ' in $field';
   if (path.isEmpty) {
-    throw ResultInvalid('a path in $field is empty');
+    return field == null ? 'the path is empty' : 'a path in $field is empty';
   }
   if (path.length > maxPathLength) {
-    throw ResultInvalid(
-      'the path ${_q(path.substring(0, 40))}… in $field is longer than '
-      '$maxPathLength characters',
-    );
+    return 'the path ${_q(path.substring(0, 40))}…$inField is longer than '
+        '$maxPathLength characters';
   }
   for (final unit in path.codeUnits) {
     if (unit < 0x20 || (unit >= 0x7f && unit <= 0x9f)) {
-      throw ResultInvalid(
-        'the path ${_q(path)} in $field contains a control character',
-      );
+      return 'the path ${_q(path)}$inField contains a control character';
     }
   }
   if (path.contains('\u2028') || path.contains('\u2029')) {
-    throw ResultInvalid(
-      'the path ${_q(path)} in $field contains a line or paragraph separator '
-      '(U+2028 or U+2029)',
-    );
+    return 'the path ${_q(path)}$inField contains a line or paragraph '
+        'separator (U+2028 or U+2029)';
   }
   if (path.contains(r'\')) {
-    throw ResultInvalid(
-      'the path ${_q(path)} in $field contains a backslash (\\)',
-    );
+    return 'the path ${_q(path)}$inField contains a backslash (\\)';
   }
   if (path.startsWith('/')) {
-    throw ResultInvalid('the path ${_q(path)} in $field must be relative');
+    return 'the path ${_q(path)}$inField must be relative';
   }
   for (final s in path.split('/')) {
     if (s == '..' || s == '.') {
-      throw ResultInvalid('the path ${_q(path)} in $field has a "$s" segment');
+      return 'the path ${_q(path)}$inField has a "$s" segment';
     }
     if (s.isEmpty) {
-      throw ResultInvalid(
-        'the path ${_q(path)} in $field has an empty segment',
-      );
+      return 'the path ${_q(path)}$inField has an empty segment';
     }
   }
+  return null;
 }
 
 /// The most bytes of one document path segment (the daemon's

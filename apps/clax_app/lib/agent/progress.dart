@@ -6,6 +6,8 @@
 /// [AttemptStarted].
 library;
 
+import 'dart:typed_data';
+
 /// One progress event of a backend run.
 sealed class AgentProgress {
   const AgentProgress();
@@ -60,6 +62,73 @@ final class OutputTokens extends AgentProgress {
 
   @override
   String toString() => 'OutputTokens($count)';
+}
+
+/// The first sentence of an assistant text block of a tool-loop run: what
+/// the agent says it is doing ("Adding the weekly total").
+final class Narration extends AgentProgress {
+  const Narration(this.text);
+
+  final String text;
+
+  @override
+  String toString() => 'Narration($text)';
+}
+
+/// A tool call of a tool-loop run began; [label] says what it does, for the
+/// person ("Writing index.html"), from [toolLabel].
+final class ToolStarted extends AgentProgress {
+  const ToolStarted(this.name, this.label);
+
+  final String name;
+  final String label;
+
+  @override
+  String toString() => 'ToolStarted($name, $label)';
+}
+
+/// A render of the draft finished: [png] is its screenshot, [errors] the
+/// number of uncaught errors it logged.
+final class Inspected extends AgentProgress {
+  const Inspected(this.png, this.errors);
+
+  final Uint8List png;
+  final int errors;
+
+  @override
+  String toString() => 'Inspected(${png.length} bytes, $errors errors)';
+}
+
+/// What a call of the tool [name] does, for the person, from its input so
+/// far ([partialInput] may lack fields while the call streams).
+String toolLabel(String name, Map<String, Object?> partialInput) {
+  String? field(String key) => switch (partialInput[key]) {
+    final String v when v.isNotEmpty => v,
+    _ => null,
+  };
+  final path = field('path');
+  final collection = switch (field('collection')) {
+    final c? => c.split('/').last,
+    null => null,
+  };
+  return switch (name) {
+    'list_files' => 'Looking at the files',
+    'read_file' => path == null ? 'Reading a file' : 'Reading $path',
+    'write_file' => path == null ? 'Writing a file' : 'Writing $path',
+    'str_replace' => path == null ? 'Changing a file' : 'Changing $path',
+    'delete_file' => path == null ? 'Removing a file' : 'Removing $path',
+    'set_meta' => 'Naming the app',
+    'db_collections' => 'Looking at your data',
+    'db_list' || 'db_query' =>
+      collection == null ? 'Reading your data' : 'Reading your $collection',
+    'db_get' => 'Reading your data',
+    'db_write' => 'Updating your data',
+    'render' => 'Checking how it looks',
+    'ask' => 'Asking you a question',
+    'finish' => 'Publishing',
+    'give_up' => 'Stopping',
+    _ => 'Working',
+  };
 }
 
 /// Receives a run's [AgentProgress] events.
