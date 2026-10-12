@@ -77,6 +77,31 @@ void main() {
     });
   });
 
+  group('SseAborter', () {
+    test(
+      'an abort requested before the request exists is applied once it does',
+      () {
+        final a = SseAborter();
+        a.abort();
+        var aborted = 0;
+        a.onAbort = () => aborted++;
+        expect(aborted, 1);
+        a.abort();
+        expect(aborted, 1, reason: 'an abort applies once');
+        expect(a.aborted, isTrue);
+      },
+    );
+
+    test('an abort after the request exists calls it at once', () {
+      final a = SseAborter();
+      var aborted = 0;
+      a.onAbort = () => aborted++;
+      expect(aborted, 0);
+      a.abort();
+      expect(aborted, 1);
+    });
+  });
+
   group('events', () {
     late ScriptedServer server;
     late HttpClaxApi api;
@@ -294,26 +319,34 @@ void main() {
     );
 
     test('an answer that does not come within the connect deadline is abandoned and retried', () async {
+      final timers = ManualTimers();
       final raw = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final firstArrived = Completer<void>();
       final firstClosed = Completer<void>();
       var connections = 0;
       raw.listen((sock) {
         final n = ++connections;
+        var text = '';
         sock.listen(
-          (_) {},
+          (data) {
+            text += utf8.decode(data);
+            if (!text.contains('\r\n\r\n')) return;
+            // The first connection never answers.
+            if (n == 1 && !firstArrived.isCompleted) firstArrived.complete();
+            if (n > 1 && !text.contains('HTTP/1.1 200')) {
+              text += 'HTTP/1.1 200';
+              sock.write(
+                'HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n'
+                'id: aa-1\nevent: ready\ndata: {}\n\n',
+              );
+            }
+          },
           onDone: () {
             if (n == 1 && !firstClosed.isCompleted) firstClosed.complete();
             sock.destroy();
           },
           onError: (Object _) {},
         );
-        // The first connection never answers.
-        if (n > 1) {
-          sock.write(
-            'HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n'
-            'id: aa-1\nevent: ready\ndata: {}\n\n',
-          );
-        }
       });
       final quick = HttpClaxApi(
         () => DaemonEndpoint(
@@ -323,11 +356,13 @@ void main() {
           port: raw.port,
         ),
         eventRetryDelay: (d) async => delays.add(d),
-        eventConnectTimeout: const Duration(milliseconds: 50),
+        eventTimer: timers.call,
       );
-      final e = await quick.events().first;
-      expect(e.type, 'ready');
+      final first = quick.events().first;
+      await firstArrived.future;
+      timers.fire(HttpClaxApi.defaultEventConnectTimeout);
       await firstClosed.future;
+      expect((await first).type, 'ready');
       expect(connections, 2);
       expect(delays, [const Duration(milliseconds: 500)]);
       quick.close();
@@ -335,6 +370,7 @@ void main() {
     });
 
     test('a connection silent past the idle deadline is replaced, resuming from its last ID', () async {
+      final timers = ManualTimers();
       final raw = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
       final requests = <String>[];
       raw.listen((sock) {
@@ -366,16 +402,67 @@ void main() {
           port: raw.port,
         ),
         eventRetryDelay: (d) async => delays.add(d),
-        eventIdleTimeout: const Duration(milliseconds: 50),
+        eventTimer: timers.call,
       );
-      final got = await quick.events().take(2).toList();
-      expect(got.map((e) => e.id), ['aa-1', 'aa-2']);
+      final events = StreamIterator(quick.events());
+      expect(await events.moveNext(), isTrue);
+      expect(events.current.id, 'aa-1');
+      expect(delays, isEmpty);
+      timers.fire(HttpClaxApi.defaultEventIdleTimeout);
+      expect(await events.moveNext(), isTrue);
+      expect(events.current.id, 'aa-2');
+      await events.cancel();
       expect(requests, hasLength(2));
       expect(requests[1].toLowerCase(), contains('last-event-id: aa-1'));
       expect(delays, [const Duration(milliseconds: 500)]);
       quick.close();
       await raw.close();
     });
+
+    test(
+      'a stream cancelled while its answer is on the way closes that answer',
+      () async {
+        // An endless event stream, as the daemon's.
+        final raw = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+        final closed = Completer<void>();
+        raw.listen((sock) {
+          var answered = false;
+          sock.listen(
+            (data) {
+              if (answered) return;
+              answered = true;
+              sock.write(
+                'HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n'
+                ': keep-alive\n\n',
+              );
+            },
+            onDone: () {
+              if (!closed.isCompleted) closed.complete();
+              sock.destroy();
+            },
+            onError: (Object _) {},
+          );
+        });
+        final client = HttpClient();
+        final answered = Completer<void>();
+        final release = Completer<void>();
+        final sub = reconnectingSse((_, _) async {
+          final req = await client.getUrl(
+            Uri.parse('http://127.0.0.1:${raw.port}/'),
+          );
+          final res = await req.close();
+          answered.complete();
+          await release.future;
+          return res;
+        }).listen((_) {});
+        await answered.future;
+        await sub.cancel();
+        release.complete();
+        await closed.future;
+        client.close(force: true);
+        await raw.close();
+      },
+    );
 
     test('the default deadlines allow for the daemon keep-alive', () {
       expect(
@@ -389,4 +476,48 @@ void main() {
       );
     });
   });
+}
+
+/// Timers that fire only when the test says so.
+class ManualTimer implements Timer {
+  ManualTimer(this.duration, this._callback);
+
+  final Duration duration;
+  final void Function() _callback;
+  bool _active = true;
+
+  @override
+  bool get isActive => _active;
+
+  @override
+  int get tick => 0;
+
+  @override
+  void cancel() => _active = false;
+
+  void fire() {
+    if (!_active) return;
+    _active = false;
+    _callback();
+  }
+}
+
+class ManualTimers {
+  final List<ManualTimer> all = [];
+
+  Timer call(Duration d, void Function() callback) {
+    final t = ManualTimer(d, callback);
+    all.add(t);
+    return t;
+  }
+
+  /// Fires the one active timer of [d].
+  void fire(Duration d) {
+    final live = [
+      for (final t in all)
+        if (t.isActive && t.duration == d) t,
+    ];
+    expect(live, hasLength(1), reason: 'active timers of $d');
+    live.single.fire();
+  }
 }

@@ -63,14 +63,29 @@ Stream<SseMessage> decodeSse(
 }
 
 /// Lets [reconnectingSse] abort a request [SseOpen] started: [SseOpen]
-/// sets [onAbort] (for example to `HttpClientRequest.abort`) before it
-/// waits for the answer.
+/// sets [onAbort] (for example to `HttpClientRequest.abort`) once it has
+/// the request. An abort asked for before that is remembered and applied
+/// when [onAbort] is set. An abort applies once.
 class SseAborter {
-  void Function()? onAbort;
+  void Function()? _onAbort;
+  bool _aborted = false;
+
+  /// Whether [abort] was called.
+  bool get aborted => _aborted;
+
+  set onAbort(void Function()? f) {
+    _onAbort = f;
+    if (_aborted) _apply();
+  }
 
   void abort() {
-    final a = onAbort;
-    onAbort = null;
+    _aborted = true;
+    _apply();
+  }
+
+  void _apply() {
+    final a = _onAbort;
+    _onAbort = null;
     if (a != null) {
       try {
         a();
@@ -78,6 +93,9 @@ class SseAborter {
     }
   }
 }
+
+/// Makes a timer; [Timer.new] unless a test injects its own.
+typedef SseTimer = Timer Function(Duration duration, void Function() callback);
 
 /// Opens one SSE response. [open] makes the request; it is given the last
 /// event ID seen so far (null on the first connection) for the
@@ -100,7 +118,8 @@ typedef SseOpen = Future<HttpClientResponse> Function(
 /// [HttpException] instead, since retrying the same request cannot change
 /// it. (A 401 is retried: [open] may name a restarted daemon's new token
 /// next time.) Cancelling the subscription closes the current connection
-/// and opens no other.
+/// and opens no other; an answer that arrives after a cancel or a missed
+/// connect deadline is closed, not read. Both deadlines run on [timer].
 Stream<SseMessage> reconnectingSse(
   SseOpen open, {
   Future<void> Function(Duration) delay = _delay,
@@ -108,6 +127,7 @@ Stream<SseMessage> reconnectingSse(
   Duration max = const Duration(seconds: 30),
   Duration connectTimeout = const Duration(seconds: 10),
   Duration idleTimeout = const Duration(seconds: 45),
+  SseTimer timer = Timer.new,
 }) {
   late StreamController<SseMessage> out;
   var cancelled = false;
@@ -126,30 +146,47 @@ Stream<SseMessage> reconnectingSse(
       try {
         final aborter = pendingAbort = SseAborter();
         final pending = open(lastId, aborter);
+        final answer = Completer<HttpClientResponse>();
+        var late = false;
+        final deadline = timer(connectTimeout, () {
+          if (answer.isCompleted) return;
+          late = true;
+          aborter.abort();
+          answer.completeError(TimeoutException('no answer', connectTimeout));
+        });
+        pending.then(
+          (r) {
+            // An answer after the deadline is closed, not read.
+            if (late) {
+              unawaited(_close(r));
+            } else {
+              answer.complete(r);
+            }
+          },
+          onError: (Object e, StackTrace st) {
+            if (!late) answer.completeError(e, st);
+          },
+        );
         final HttpClientResponse res;
         try {
-          res = await pending.timeout(connectTimeout);
-        } on TimeoutException {
-          aborter.abort();
-          // An answer that still arrives is thrown away.
-          unawaited(pending.then(_discard, onError: (Object _) {}));
-          rethrow;
+          res = await answer.future;
         } finally {
+          deadline.cancel();
           pendingAbort = null;
         }
         if (cancelled) {
-          await _discard(res);
+          await _close(res);
           break;
         }
         if (const {400, 403, 404}.contains(res.statusCode)) {
-          await _discard(res);
+          await _close(res);
           out.addError(
             HttpException('event stream refused: ${res.statusCode}'),
           );
           break;
         }
         if (res.statusCode != 200) {
-          await _discard(res);
+          await _close(res);
         } else {
           final done = ended = Completer<void>();
           void finish([Object? _]) {
@@ -167,7 +204,7 @@ Stream<SseMessage> reconnectingSse(
 
           void rearm() {
             idle?.cancel();
-            idle = Timer(idleTimeout, silent);
+            idle = timer(idleTimeout, silent);
           }
 
           arm = rearm;
@@ -231,8 +268,10 @@ Stream<SseMessage> reconnectingSse(
 
 Future<void> _delay(Duration d) => Future<void>.delayed(d);
 
-Future<void> _discard(HttpClientResponse res) async {
+/// Closes [res]'s connection without reading it: an event stream that
+/// answered 200 never ends, so draining it would hold the connection.
+Future<void> _close(HttpClientResponse res) async {
   try {
-    await res.drain<void>();
+    await res.listen(null).cancel();
   } on Object catch (_) {}
 }

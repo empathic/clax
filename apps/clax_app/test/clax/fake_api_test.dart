@@ -77,6 +77,33 @@ void main() {
     expect((await empty).isEmpty, isTrue);
   });
 
+  test(
+    'feedback reads sent until a poll takes it, then acknowledged',
+    () async {
+      final s = await api.registerAppSession(installId: 'i', pid: 1);
+      final aid = api.seedArtifact('Runs', {'index.html': 'x'});
+      final queued = api.sendComment(aid, 'queued before any poll');
+      var t = api.threadOf(aid, queued.threadId);
+      expect(t.feedbackState!.state, 'sent');
+      expect(t.stranded, isFalse, reason: 'the next poll delivers it');
+      expect(
+        (await api.pollFeedback(s.id)).items.single.threadId,
+        queued.threadId,
+      );
+      t = api.threadOf(aid, queued.threadId);
+      expect(t.feedbackState!.state, 'acknowledged');
+      expect(t.stranded, isTrue);
+
+      final waiting = api.pollFeedback(s.id);
+      final handed = api.sendComment(aid, 'taken by a waiting poll');
+      await waiting;
+      expect(
+        api.threadOf(aid, handed.threadId).feedbackState!.state,
+        'acknowledged',
+      );
+    },
+  );
+
   test('replies and resolves need the session and a sent thread, and are recorded in order', () async {
     final aid = api.seedArtifact('Runs', {'index.html': 'x'});
     final item = api.sendComment(aid, 'make it blue', queue: false);

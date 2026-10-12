@@ -136,13 +136,10 @@ class FakeClaxApi implements ClaxApi {
   }
 
   /// Queues [items] as one poll's batch, answering a waiting poll first.
+  /// Their threads read `sent` until a poll takes them.
   void pushFeedback(List<FeedbackItem> items) {
-    for (final i in items) {
-      final t = _artifacts[i.artifactId]?.threads[i.threadId];
-      if (t != null) t.feedbackState = 'acknowledged';
-    }
     if (_polls.isNotEmpty) {
-      _polls.removeAt(0).complete(FeedbackBatch(items: items));
+      _polls.removeAt(0).complete(_handOver(items));
     } else {
       _feedback.add(items);
     }
@@ -352,9 +349,7 @@ class FakeClaxApi implements ClaxApi {
   }) async {
     _call('pollFeedback', {'sid': sid, 'wait': wait});
     _liveSession(sid);
-    if (_feedback.isNotEmpty) {
-      return FeedbackBatch(items: _feedback.removeFirst());
-    }
+    if (_feedback.isNotEmpty) return _handOver(_feedback.removeFirst());
     final c = Completer<FeedbackBatch>();
     _polls.add(c);
     return c.future;
@@ -554,6 +549,16 @@ class FakeClaxApi implements ClaxApi {
   }
 
   // --- internals ---
+
+  /// A poll takes [items]: as the daemon's wait tier does, that
+  /// acknowledges them, so their threads read `acknowledged` from here on.
+  FeedbackBatch _handOver(List<FeedbackItem> items) {
+    for (final i in items) {
+      final t = _artifacts[i.artifactId]?.threads[i.threadId];
+      if (t != null) t.feedbackState = 'acknowledged';
+    }
+    return FeedbackBatch(items: items);
+  }
 
   void _call(String name, [Map<String, Object?> args = const {}]) {
     calls.add(FakeCall(name, args));
