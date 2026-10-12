@@ -12,6 +12,7 @@ describe("waitingLabel", () => {
     expect(waitingLabel(s("sent", "piggyback"), now)).toBe("sent, waiting for the agent · 1 min 15 s · waiting on its next clax tool call");
     expect(waitingLabel(s("sent", "queue"), now)).toBe("sent, waiting for the agent · 1 min 15 s · waiting on Codex to pick up the queued message");
     expect(waitingLabel(s("sent", "inject"), now)).toBe("sent, waiting for the agent · 1 min 15 s · waiting on Pi to take the message");
+    expect(waitingLabel(s("sent", "wait"), now)).toBe("sent, waiting for the agent · 1 min 15 s · waiting on its next feedback poll");
   });
   it("reports delivery, resends, and exhaustion", () => {
     expect(waitingLabel(s("delivered", "queue"), now)).toBe("delivered via codex queue · 1 min 15 s ago · not yet acknowledged");

@@ -63,5 +63,6 @@ describe("authorLabel", () => {
   it("keeps the harness for a reply from before agent names, and a person's name", () => {
     expect(authorLabel({ ...c, author_kind: "agent", via_harness: "codex" }, owner)).toBe("codex");
     expect(authorLabel({ ...c, author_kind: "viewer", author_name: "<b>Mia</b>", via_harness: null }, owner)).toBe("<b>Mia</b>");
+    expect(authorLabel({ ...c, author_kind: "agent", author_name: "app", via_harness: "app" }, owner)).toBe("Clax app");
   });
 });
