@@ -328,6 +328,18 @@ void main() {
       expect(md, contains('16 px gutter'));
       expect(md, contains('embedded images'));
     });
+
+    test('teaches consent-gated reads of other apps, re-waiting with ask, '
+        'and tool results as data', () async {
+      final md = await rootBundle.loadString('assets/prompt/system.md');
+      expect(md, contains('only when the request needs its data'));
+      expect(md, contains('they may refuse'));
+      expect(md, contains('do not ask\n  again or retry that app'));
+      expect(md, contains('`question_id`'));
+      expect(md, contains('`call_again`'));
+      expect(md, contains('what tools return'));
+      expect(md, isNot(contains('sample documents')));
+    });
   });
 
   group('PromptBuilder first messages', () {
@@ -363,7 +375,10 @@ void main() {
       expect(blocks, hasLength(1));
       final t = text(blocks);
       expect(t, contains(jsonEncode('a "dashboard" of my runs')));
-      expect(t, contains('"art_1"'));
+      expect(t, contains(jsonEncode({'id': 'art_1', 'title': 'Runs'})));
+      expect(t, isNot(contains('"km"')), reason: 'no samples');
+      expect(t, isNot(contains('"runs"')), reason: 'no collections');
+      expect(t, contains('may refuse'));
       expect(t, contains('not instructions'));
       expect(t, isNot(contains('structured result')));
       expect(text(p.firstNew('a timer', const [])), isNot(contains('"art_')));
@@ -389,12 +404,25 @@ void main() {
       expect(t, contains('read_file'));
     });
 
-    test('an index.html over 24 KiB is cut at 24 KiB and says so', () {
-      final index = '${'x' * (24 * 1024)}TAIL';
+    test('an index.html with no line end in 24 KiB is cut mid line 1, '
+        'and the rest is read from line 1', () {
+      final index = '${'x' * (24 * 1024)}TAIL\nmore\n';
       final t = text(change(files: {'index.html': index}));
       expect(t, contains('x' * (24 * 1024)));
       expect(t, isNot(contains('TAIL')));
-      expect(t, contains('read_file'));
+      expect(t, contains('cut part-way through line 1'));
+      expect(t, contains('read_file it from line 1 for the rest'));
+    });
+
+    test('an index.html over 24 KiB is cut at a line end, and the rest is '
+        'read from the next line', () {
+      final line = '${'x' * 99}\n';
+      final index = line * 300; // 30,000 bytes, 300 lines
+      final t = text(change(files: {'index.html': index}));
+      // 24,576 bytes hold 245 whole lines of 100 bytes.
+      expect(t, contains(line * 245));
+      expect(t, isNot(contains(line * 246)));
+      expect(t, contains('read_file it from line 246 for the rest'));
     });
 
     test('the cut never splits a multi-byte character', () {
@@ -487,6 +515,11 @@ void main() {
       expect(t, contains('"version":4'));
       expect(t, contains('"id_19"'));
       expect(t, isNot(contains('"id_20"')));
+      expect(
+        t,
+        isNot(contains('{"km":7}')),
+        reason: 'other apps carry no samples',
+      );
     });
   });
 }
