@@ -21,16 +21,18 @@ class _Change {
 /// can come in either order, so a thread the worker already finished is
 /// never started again by a late `sent`.
 ///
-/// A change has landed once a frame shows its version: the shell's
-/// `landed`, or a `ready` of that version or newer (a page reloaded
-/// mid-change opens the latest without `landed`). A frame of a newer
-/// version that the worker has not reported yet is taken as the running
-/// change's, unless this screen made it by a restore ([restored]).
+/// A change has landed once a frame shows the version the worker reported
+/// for it: the shell's `landed`, or a `ready` of that version or newer (a
+/// page reloaded mid-change opens the latest without `landed`). A frame of
+/// a version the worker has not reported is never credited to a change: it
+/// may be a restore's or another client's publish. When the frame comes
+/// first, the change lands (and its timing stops) on the worker's report.
 ///
 /// The long-press→landed timing runs from Send to that frame
 /// (docs/superpowers/specs/2026-10-12-flutter-app-design.md section 6.2).
 /// One change is timed at a time: a Send while a timed change is in
-/// flight is not timed, so each record is one change's. A change that ends
+/// flight is not timed, so each record is one change's. A Send the worker
+/// already started is timed from the Send. A change that ends
 /// without a frame (a reply, a failure, a cancel, a landing while the view
 /// shows an older version) records nothing.
 class ChangeTracker {
@@ -48,9 +50,6 @@ class ChangeTracker {
 
   /// Threads whose change the worker finished.
   final _finished = <String>{};
-
-  /// Versions this screen made by restoring.
-  final _restored = <int>{};
 
   /// The newest version a frame showed, and whether the view is pinned to
   /// an older one.
@@ -75,10 +74,15 @@ class ChangeTracker {
 
   /// The shell sent [thread] to the agent.
   void sent(String thread) {
-    if (_finished.contains(thread) || _changes.containsKey(thread)) return;
+    if (_finished.contains(thread)) return;
     final timed = !_changes.values.any((c) => c.timed);
-    _changes[thread] = _Change(timed: timed);
-    if (timed) timings.start(longpressLanded);
+    // The worker may have started it already (its poll wakes before the
+    // shell hears the send's answer): time it from here.
+    final c = _changes.putIfAbsent(thread, () => _Change(timed: false));
+    if (timed && c.version == null) {
+      c.timed = true;
+      timings.start(longpressLanded);
+    }
     _newWork();
   }
 
@@ -133,9 +137,6 @@ class ChangeTracker {
     'Stopped. It runs again when the app restarts.',
   );
 
-  /// This screen restored a version, which became [version].
-  void restored(int version) => _restored.add(version);
-
   /// The shell's `ready`: a frame shows [version], pinned or following.
   void shown(int version, {required bool pinned}) {
     _pinned = pinned;
@@ -144,15 +145,7 @@ class ChangeTracker {
 
   /// A frame of the latest version, [version], loaded.
   void frame(int version) {
-    final newer = version > _shownMax;
-    if (newer) _shownMax = version;
-    if (newer && !_restored.contains(version)) {
-      // A version the worker has not reported yet: the running change's.
-      for (final t in _running) {
-        final c = _changes[t];
-        if (c != null && c.version == null) _land(c, version);
-      }
-    }
+    if (version > _shownMax) _shownMax = version;
     _settle();
   }
 
