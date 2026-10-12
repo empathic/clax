@@ -127,19 +127,27 @@ class MessagesApiBackend implements AgentBackend, TurnBackend {
     },
   );
 
-  /// The beta flags of a turn of [model]: task budgets, and server-side
-  /// refusal fallbacks for the models that have them.
+  /// The beta flags of a turn of [model]: task budgets, and for the
+  /// Sonnet and Opus 5.5 models server-side refusal fallbacks and
+  /// progress notes as thinking text.
   static List<String> turnBetas(String model) => [
     'task-budgets-2026-03-13',
-    if (_fallbackModels.contains(model)) 'server-side-fallback-2026-07-01',
+    if (_fallbackModels.contains(model)) ...[
+      'server-side-fallback-2026-07-01',
+      'thinking-display-updates-2026-08-18',
+    ],
   ];
 
-  /// The models a refusal falls back from server-side.
+  /// The models a refusal falls back from server-side, and whose notes
+  /// between tool calls come back as thinking blocks, shown as text under
+  /// thinking display `updates`. Haiku writes those notes as text blocks
+  /// and takes neither.
   static const _fallbackModels = {'claude-sonnet-5-5', 'claude-opus-5-5'};
 
   /// The request body of a tool-loop turn (R§6.1): streamed, the system
-  /// prompt and the end of the history cached, adaptive thinking, the
-  /// tools chosen freely, and the run's output cap as the task budget.
+  /// prompt and the end of the history cached, adaptive thinking (showing
+  /// progress notes on the Sonnet and Opus 5.5 models), the tools chosen
+  /// freely, and the run's output cap as the task budget.
   static Map<String, Object?> turnBody(TurnRequest r) => {
     'model': r.model,
     'max_tokens': r.maxTokens,
@@ -153,7 +161,10 @@ class MessagesApiBackend implements AgentBackend, TurnBackend {
     ],
     'tools': r.tools,
     'tool_choice': {'type': 'auto'},
-    'thinking': {'type': 'adaptive'},
+    'thinking': {
+      'type': 'adaptive',
+      if (_fallbackModels.contains(r.model)) 'display': 'updates',
+    },
     'output_config': {
       'effort': effort,
       'task_budget': {'type': 'tokens', 'total': r.outputCap},
@@ -165,8 +176,11 @@ class MessagesApiBackend implements AgentBackend, TurnBackend {
 
   /// Asks for one streamed turn of a tool loop. Retries as [run] does;
   /// a stream that breaks after it began, an `error` event and a
-  /// non-message answer are [AgentError]s. A turn whose tool call's input
-  /// is not a JSON object comes back [ModelTurn.broken], with no content.
+  /// non-message answer are [AgentError]s. After a mid-output fallback the
+  /// content is [MessageStream.echoMessage]'s: nothing of the declined
+  /// attempt but its text. A turn whose kept tool call's input is not a
+  /// JSON object comes back [ModelTurn.broken], with no content. Usage is
+  /// summed over `usage.iterations`, each attempt priced at its model.
   /// When [TurnRequest.cancelled] fires, the request is aborted and its
   /// connection closed, and this throws [AgentError.cancelled].
   @override
@@ -179,7 +193,11 @@ class MessagesApiBackend implements AgentBackend, TurnBackend {
     readStream: (res, emit) {
       final progress = emit == null
           ? null
-          : TurnProgress(emit, outputBefore: r.outputBefore);
+          : TurnProgress(
+              emit,
+              outputBefore: r.outputBefore,
+              onFallback: r.onFallback,
+            );
       return _readEvents(res, MessageStream(), onEvent: progress?.add);
     },
     onOk: (ex, error, log) {
@@ -201,13 +219,15 @@ class MessagesApiBackend implements AgentBackend, TurnBackend {
           );
         }
         try {
-          message = stream.message;
+          message = stream.echoMessage;
         } on InvalidToolInput catch (e) {
           log('$name: stop_reason=${stream.stopReason}; $e');
+          final spent = _spent(stream.head, const [], r.model);
           return ModelTurn(
             content: const [],
             stopReason: stream.stopReason ?? 'max_tokens',
-            usage: Usage.fromApi(_usageOf(stream)),
+            usage: spent.usage,
+            attempts: spent.attempts,
             broken: true,
           );
         }
@@ -221,45 +241,92 @@ class MessagesApiBackend implements AgentBackend, TurnBackend {
         }
         message = decoded;
       }
-      return _turnOf(message, error, log);
+      return _turnOf(message, r.model, error, log);
     },
   );
 
-  /// The usage a stream reported, read without rebuilding its content.
-  static Object? _usageOf(MessageStream stream) {
-    try {
-      return stream.message['usage'];
-    } on InvalidToolInput {
-      return null;
+  /// What a turn spent: summed over `usage.iterations` when the message
+  /// has them (one per model attempt; a declined attempt is a `message`
+  /// of [requested], the serving one a `fallback_message` of the model the
+  /// last `fallback` block of [content] or the message names), else the
+  /// top-level usage at the message's model.
+  static ({Usage usage, List<TurnAttempt> attempts}) _spent(
+    Map<String, Object?> m,
+    List<Map<String, Object?>> content,
+    String requested,
+  ) {
+    final top = Usage.fromApi(m['usage']);
+    final served = switch (m['model']) {
+      final String s when s.isNotEmpty => s,
+      _ => requested,
+    };
+    final iterations = switch (m['usage']) {
+      {'iterations': final List<Object?> l} when l.isNotEmpty => l,
+      _ => null,
+    };
+    if (iterations == null) {
+      return (
+        usage: top,
+        attempts: served == requested
+            ? const <TurnAttempt>[]
+            : [(model: served, usage: top)],
+      );
     }
+    String? switchedTo;
+    for (final b in content) {
+      if (b case {'type': 'fallback', 'to': {'model': final String to}}) {
+        switchedTo = to;
+      }
+    }
+    final attempts = <TurnAttempt>[
+      for (final e in iterations)
+        if (e is Map<String, Object?>)
+          (
+            model: switch (e) {
+              {'model': final String model} => model,
+              {'type': 'fallback_message'} => switchedTo ?? served,
+              _ => requested,
+            },
+            usage: Usage.fromApi(e),
+          ),
+    ];
+    return (
+      usage: attempts.fold(const Usage(), (sum, a) => sum + a.usage),
+      attempts: attempts,
+    );
   }
 
   ModelTurn _turnOf(
     Map<String, Object?> m,
+    String requested,
     AgentError Function(String, {required bool retryable}) error,
     void Function(String) log,
   ) {
-    final usage = Usage.fromApi(m['usage']);
     final stop = m['stop_reason'];
-    log(
-      '$name: stop_reason=$stop input=${usage.input} output=${usage.output} '
-      'cache_read=${usage.cacheRead} cache_creation=${usage.cacheWrite}',
-    );
-    final content = m['content'];
-    if (stop is! String || content is! List) {
+    final raw = m['content'];
+    if (stop is! String || raw is! List) {
       throw error('The answer was not a whole message', retryable: true);
     }
+    final content = [
+      for (final b in raw)
+        if (b is Map<String, Object?>) b,
+    ];
+    final spent = _spent(m, content, requested);
+    final usage = spent.usage;
+    log(
+      '$name: stop_reason=$stop model=${m['model']} input=${usage.input} '
+      'output=${usage.output} cache_read=${usage.cacheRead} '
+      'cache_creation=${usage.cacheWrite} attempts=${spent.attempts.length}',
+    );
     return ModelTurn(
-      content: [
-        for (final b in content)
-          if (b is Map<String, Object?>) b,
-      ],
+      content: content,
       stopReason: stop,
       stopDetails: switch (m['stop_details']) {
         final Map<String, Object?> d => d,
         _ => null,
       },
       usage: usage,
+      attempts: spent.attempts,
     );
   }
 

@@ -128,11 +128,20 @@ class RunBudget {
   Future<void>? _whenTimeUp;
   final _ended = Completer<void>();
 
-  /// Counts one model turn and its usage, priced as one request.
-  void addTurn(Usage u) {
+  /// Counts one model turn and its usage [u]. The turn is priced as one
+  /// request of [model], or, given [attempts] (each model that ran in the
+  /// turn, with its own usage, which sum to [u]), as one request per
+  /// attempt at that attempt's model.
+  void addTurn(Usage u, {List<({String model, Usage usage})>? attempts}) {
     _turns++;
     _usage += u;
-    _cost += costOf(model, u);
+    if (attempts == null || attempts.isEmpty) {
+      _cost += costOf(model, u);
+    } else {
+      for (final a in attempts) {
+        _cost += costOf(a.model, a.usage);
+      }
+    }
   }
 
   /// Counts one render.

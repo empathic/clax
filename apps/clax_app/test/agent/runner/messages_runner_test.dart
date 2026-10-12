@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import 'package:clax_app/agent/backend.dart';
 import 'package:clax_app/agent/messages_api_backend.dart';
+import 'package:clax_app/agent/pricing.dart';
 import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/request.dart';
 import 'package:clax_app/agent/runner.dart';
@@ -217,7 +218,7 @@ void main() {
         final body = api.seen.single.body! as Map<String, Object?>;
         final fallbacks = model != 'claude-haiku-5-5';
         expect(body['model'], model);
-        expect(body['max_tokens'], 32000);
+        expect(body['max_tokens'], 20000);
         expect(body['stream'], isTrue);
         expect(body['system'], [
           {
@@ -240,7 +241,12 @@ void main() {
           ],
         );
         expect(body['tool_choice'], {'type': 'auto'});
-        expect(body['thinking'], {'type': 'adaptive'});
+        expect(
+          body['thinking'],
+          fallbacks
+              ? {'type': 'adaptive', 'display': 'updates'}
+              : {'type': 'adaptive'},
+        );
         expect(body['output_config'], {
           'effort': 'low',
           'task_budget': {'type': 'tokens', 'total': 20000},
@@ -253,7 +259,8 @@ void main() {
         expect(
           headers['anthropic-beta'],
           fallbacks
-              ? 'task-budgets-2026-03-13,server-side-fallback-2026-07-01'
+              ? 'task-budgets-2026-03-13,server-side-fallback-2026-07-01,'
+                    'thinking-display-updates-2026-08-18'
               : 'task-budgets-2026-03-13',
         );
         expect(headers['x-api-key'], _key);
@@ -262,54 +269,75 @@ void main() {
   });
 
   group('truncated_write_never_reaches_the_draft', () {
-    List<Map<String, Object?>> cut() => streamedTurn([
-      _text('Rewriting the page.'),
-      {
-        'type': 'tool_use',
-        'id': 't1',
-        'name': 'write_file',
-        'json': '{"path": "index.html", "content": "<!doctype html><p>half',
-      },
-    ], stopReason: 'max_tokens');
+    Map<String, Object?> cutWrite(String id) => {
+      'type': 'tool_use',
+      'id': id,
+      'name': 'write_file',
+      'json': '{"path": "index.html", "content": "<!doctype html><p>half',
+    };
 
-    test('a cut turn is sent again once with a larger max_tokens', () async {
+    test('a turn cut at the output cap stops at the cap; the draft never '
+        'sees the cut write', () async {
       await serve([
-        sseReply(cut()),
         sseReply(
           streamedTurn([
-            _use('t1', 'write_file', {
-              'path': 'index.html',
-              'content': 'whole',
-            }),
-            _use('t2', 'finish', {}),
-          ]),
+            _text('Rewriting the page.'),
+            cutWrite('t1'),
+          ], stopReason: 'max_tokens'),
         ),
       ]);
       final tb = toolbox(extra: [_Finish()]);
       final out = await run(tb);
-      expect(out, isA<RunFinished>());
-      expect(api.seen, hasLength(2));
-      expect((api.seen[1].body! as Map)['max_tokens'], 64000);
+      expect(api.seen, hasLength(1));
+      expect((api.seen.single.body! as Map)['max_tokens'], 20000);
       expect(
-        jsonEncode(messagesOf(1)),
-        jsonEncode(messagesOf(0)),
-        reason: 'nothing of the cut turn is kept',
+        out,
+        isA<RunGaveUp>().having(
+          (o) => o.reason,
+          'reason',
+          '20000 output tokens',
+        ),
       );
-      expect(tb.state.draft.files['index.html'], 'whole');
-      final attempt = events.indexWhere((e) => e is AttemptStarted);
-      expect(events[attempt], isA<AttemptStarted>());
-      expect((events[attempt] as AttemptStarted).attempt, 2);
-    });
-
-    test('a second cut gives up and the draft never saw it', () async {
-      await serve([sseReply(cut()), sseReply(cut())]);
-      final tb = toolbox(extra: [_Finish()]);
-      final out = await run(tb);
-      expect(out, isA<RunGaveUp>());
-      expect(api.seen, hasLength(2));
       expect(tb.state.draft.files['index.html'], _page);
       expect(tb.state.draft.revision, 0);
-      expect(tb.state.outcome, same(out));
+    });
+
+    test('a turn cut at the cap after a clean render publishes that '
+        'render', () async {
+      await serve([
+        sseReply(
+          streamedTurn([
+            _use('t1', 'str_replace', {
+              'path': 'index.html',
+              'old_str': '<p>runs</p>',
+              'new_str': '<p><b>runs</b></p>',
+            }),
+            _use('t2', 'render', {}),
+          ], outputTokens: 400),
+        ),
+        sseReply(
+          streamedTurn(
+            [_text('Adding a chart.'), cutWrite('t3')],
+            stopReason: 'max_tokens',
+            outputTokens: 19600,
+          ),
+        ),
+      ]);
+      final tb = toolbox(extra: [_Render(), _Finish()]);
+      final stops = <(String, String?, Map<String, String>)>[];
+      tb.capHandler = (cap, narration) async {
+        stops.add((cap, narration, {...?tb.state.draft.cleanOnBase?.files}));
+        return const RunFinished(artifactId: 'a1', version: 4, answered: true);
+      };
+      expect(await run(tb), isA<RunFinished>());
+      expect((api.seen[1].body! as Map)['max_tokens'], 19600);
+      expect(stops, hasLength(1));
+      final (cap, narration, published) = stops.single;
+      expect(cap, '20000 output tokens');
+      expect(narration, 'Adding a chart');
+      expect(published, {
+        'index.html': '<!doctype html><title>Runs</title><p><b>runs</b></p>',
+      });
     });
 
     test('a cut after a whole call runs none of the turn', () async {
@@ -317,22 +345,52 @@ void main() {
         sseReply(
           streamedTurn([
             _use('t0', 'delete_file', {'path': 'other.js'}),
-            {
-              'type': 'tool_use',
-              'id': 't1',
-              'name': 'write_file',
-              'json': '{"path": "index.html", "content": "x',
-            },
+            cutWrite('t1'),
           ], stopReason: 'max_tokens'),
         ),
-        sseReply(streamedTurn([_use('t2', 'finish', {})])),
       ]);
       final tb = toolbox(
         files: const {'index.html': _page, 'other.js': '1'},
         extra: [_Finish()],
       );
       await run(tb);
+      expect(api.seen, hasLength(1));
       expect(tb.state.draft.files.keys, contains('other.js'));
+      expect(tb.state.draft.revision, 0);
+    });
+
+    test('a cut with output cap left is sent again, sized to what is '
+        'left, without its partial output', () async {
+      await serve([
+        sseReply(
+          streamedTurn(
+            [cutWrite('t1')],
+            stopReason: 'max_tokens',
+            outputTokens: 32000,
+          ),
+        ),
+        sseReply(
+          streamedTurn([
+            _use('t2', 'write_file', {'path': 'index.html', 'content': 'w'}),
+            _use('t3', 'finish', {}),
+          ]),
+        ),
+      ]);
+      final tb = toolbox(
+        caps: const RunCaps(
+          turns: 6,
+          renders: 2,
+          outputTokens: 40000,
+          wallClock: Duration(seconds: 45),
+        ),
+        extra: [_Finish()],
+      );
+      expect(await run(tb), isA<RunFinished>());
+      expect((api.seen[0].body! as Map)['max_tokens'], 32000);
+      expect((api.seen[1].body! as Map)['max_tokens'], 8000);
+      expect(jsonEncode(messagesOf(1)), jsonEncode(messagesOf(0)));
+      expect(tb.state.draft.files['index.html'], 'w');
+      expect(events.whereType<AttemptStarted>().map((e) => e.attempt), [2]);
     });
 
     test('invalid tool JSON without a cut is sent again at the same size, '
@@ -348,13 +406,123 @@ void main() {
       await serve([sseReply(bad), sseReply(bad)]);
       final tb = toolbox();
       final out = await run(tb);
-      expect((api.seen[1].body! as Map)['max_tokens'], 32000);
+      expect((api.seen[0].body! as Map)['max_tokens'], 20000);
+      expect((api.seen[1].body! as Map)['max_tokens'], 19950);
       expect(
         out,
         isA<RunGaveUp>().having((o) => o.reason, 'reason', contains('JSON')),
       );
       expect(tb.state.draft.revision, 0);
     });
+  });
+
+  test('max_tokens is the output cap left, at most 32000', () async {
+    await serve([
+      sseReply(
+        streamedTurn([_use('t1', 'list_files', {})], outputTokens: 5000),
+      ),
+      sseReply(streamedTurn([_use('t2', 'finish', {})])),
+    ]);
+    await run(toolbox(caps: RunCaps.newApp, extra: [_Finish()]));
+    expect((api.seen[0].body! as Map)['max_tokens'], 32000);
+    expect((api.seen[1].body! as Map)['max_tokens'], 27000);
+  });
+
+  group('mid-output fallback', () {
+    const declinedSig = 'ZGVjbGluZWQ=';
+    const servedSig = 'c2VydmVk';
+    List<Map<String, Object?>> turn() => streamedTurn(
+      [
+        {'type': 'thinking', 'thinking': '', 'signature': declinedSig},
+        _text('Writing the page.'),
+        _use('t0', 'delete_file', {'path': 'other.js'}),
+        {
+          'type': 'tool_use',
+          'id': 't1',
+          'name': 'write_file',
+          'json': '{"path": "index.html", "content": "decl',
+        },
+        {
+          'type': 'fallback',
+          'from': {'model': 'claude-sonnet-5-5'},
+          'to': {'model': 'claude-opus-4-8'},
+        },
+        {'type': 'thinking', 'thinking': '', 'signature': servedSig},
+        _use('t2', 'write_file', {'path': 'index.html', 'content': 'served'}),
+      ],
+      model: 'claude-sonnet-5-5',
+      inputTokens: 1000,
+      outputTokens: 300,
+      iterations: [
+        {'type': 'message', 'input_tokens': 1000, 'output_tokens': 200},
+        {
+          'type': 'fallback_message',
+          'input_tokens': 1000,
+          'output_tokens': 300,
+        },
+      ],
+    );
+
+    test('runs only the serving model\'s calls and echoes none of the '
+        'declined attempt but its text', () async {
+      await serve([
+        sseReply(turn()),
+        sseReply(streamedTurn([_use('t3', 'finish', {})])),
+      ]);
+      final tb = toolbox(
+        model: 'claude-sonnet-5-5',
+        files: const {'index.html': _page, 'other.js': '1'},
+        extra: [_Finish()],
+      );
+      expect(await run(tb), isA<RunFinished>());
+      expect(tb.state.draft.files, {'index.html': 'served', 'other.js': '1'});
+      final assistant = (messagesOf(1)[1] as Map)['content'] as List;
+      expect(assistant, [
+        _text('Writing the page.'),
+        {
+          'type': 'fallback',
+          'from': {'model': 'claude-sonnet-5-5'},
+          'to': {'model': 'claude-opus-4-8'},
+        },
+        {'type': 'thinking', 'thinking': '', 'signature': servedSig},
+        _use('t2', 'write_file', {'path': 'index.html', 'content': 'served'}),
+      ]);
+      final results = (messagesOf(1)[2] as Map)['content'] as List;
+      expect([for (final r in results) (r as Map)['tool_use_id']], ['t2']);
+      expect(events.whereType<AttemptStarted>().map((e) => e.attempt), [
+        2,
+      ], reason: 'the preview drops the declined partial output');
+    });
+
+    test(
+      'each attempt is counted, at the price of the model that ran it',
+      () async {
+        await serve([
+          sseReply(turn()),
+          sseReply(
+            streamedTurn([
+              _use('t3', 'finish', {}),
+            ], model: 'claude-sonnet-5-5'),
+          ),
+        ]);
+        final tb = toolbox(model: 'claude-sonnet-5-5', extra: [_Finish()]);
+        await run(tb);
+        final b = tb.state.budget;
+        const declined = Usage(input: 1000, output: 200);
+        const served = Usage(input: 1000, output: 300);
+        const last = Usage(input: 100, output: 50);
+        expect(b.usage, declined + served + last);
+        expect(
+          b.costUsd,
+          closeTo(
+            costOf('claude-sonnet-5-5', declined) +
+                costOf('claude-opus-4-8', served) +
+                costOf('claude-sonnet-5-5', last),
+            1e-12,
+          ),
+        );
+      },
+    );
   });
 
   test('refusal_gives_up_with_its_category', () async {
@@ -837,6 +1005,49 @@ void main() {
   });
 
   group('TurnProgress', () {
+    void feed(
+      TurnProgress p,
+      int i,
+      Map<String, Object?> block,
+      List<Map<String, Object?>> deltas,
+    ) {
+      p.add({
+        'type': 'content_block_start',
+        'index': i,
+        'content_block': block,
+      });
+      for (final d in deltas) {
+        p.add({'type': 'content_block_delta', 'index': i, 'delta': d});
+      }
+      p.add({'type': 'content_block_stop', 'index': i});
+    }
+
+    test('a progress note in a thinking block is narrated; an empty block '
+        'and the interrupted-work sentinel are not', () {
+      final got = <AgentProgress>[];
+      final p = TurnProgress(got.add);
+      const thinking = {'type': 'thinking', 'thinking': '', 'signature': ''};
+      feed(p, 0, thinking, [
+        {'type': 'signature_delta', 'signature': 's'},
+      ]);
+      feed(p, 1, thinking, [
+        {'type': 'thinking_delta', 'thinking': 'Checking the weekly '},
+        {'type': 'thinking_delta', 'thinking': 'totals first. Then more'},
+        {'type': 'signature_delta', 'signature': 's'},
+      ]);
+      feed(p, 2, thinking, [
+        {
+          'type': 'thinking_delta',
+          'thinking':
+              'This part of the response was interrupted before it '
+              'finished.',
+        },
+      ]);
+      expect(got.map((e) => '$e'), [
+        'Narration(Checking the weekly totals first)',
+      ]);
+    });
+
     test('narration cuts at the first sentence', () {
       expect(
         narrationOf('Adding the weekly total. '),

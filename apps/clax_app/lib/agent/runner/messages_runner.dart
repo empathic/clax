@@ -21,28 +21,30 @@ const finishNudge = 'Call finish or give_up.';
 ///   budget's soft note are appended after it;
 /// - the tool calls of a turn run in order, one at a time; their results
 ///   answer in one user message, in the same order;
-/// - a turn cut off (`max_tokens`) or with a tool call whose input is not
-///   JSON runs none of its tools and is sent once more (`max_tokens` with
-///   [retryMaxTokens]); a second such turn gives up; a `refusal` gives up
-///   naming its category;
+/// - each turn's `max_tokens` is the run's output cap left, at most
+///   [maxTokens], so a turn cut off (`max_tokens`) has normally spent the
+///   cap and the run stops at it; a cut-off turn, or one with a tool call
+///   whose input is not JSON, runs none of its tools; while output cap is
+///   left it is sent once more, and a second such turn gives up; a
+///   `refusal` gives up naming its category;
 /// - before each turn a hard cap of the budget, or the run's cancel,
 ///   ends the run; while a turn streams, the wall clock running out
 ///   ([RunBudget.whenTimeUp]) aborts it and the run stops at that cap
 ///   ([Toolbox.stopAtCap], with the latest [Narration]);
 /// - progress goes to `toolbox.state.progress`: each turn's
 ///   [Narration], [ToolStarted], [PartialFile], [PartialEdit] and the
-///   run's [OutputTokens]; an [AttemptStarted] precedes a resent turn,
-///   whose partial output starts again from empty.
+///   run's [OutputTokens]; an [AttemptStarted] precedes a resent turn and
+///   follows a mid-output fallback to another model, after which the
+///   partial output starts again from empty;
+/// - a turn is priced per model attempt (a fallback model at its own
+///   rates).
 class MessagesApiRunner implements AgentRunner {
   MessagesApiRunner(this.backend);
 
   final TurnBackend backend;
 
-  /// A turn's `max_tokens`.
+  /// The most `max_tokens` of one turn.
   static const maxTokens = 32000;
-
-  /// The `max_tokens` of a turn sent again after `max_tokens` cut it.
-  static const retryMaxTokens = 64000;
 
   @override
   String get name => backend.name;
@@ -107,7 +109,6 @@ class _Run {
 
   Future<RunOutcome> _loop() async {
     messages.add({'role': 'user', 'content': input.first});
-    var maxTokens = MessagesApiRunner.maxTokens;
     var resent = false;
     while (true) {
       if (state.outcome case final o?) return o;
@@ -122,11 +123,12 @@ class _Run {
             system: input.system,
             tools: tools,
             messages: List.unmodifiable(messages),
-            maxTokens: maxTokens,
+            maxTokens: _maxTokens(),
             outputCap: state.budget.caps.outputTokens,
             cancelled: _stop.future,
             onProgress: _emit,
             outputBefore: state.budget.usage.output,
+            onFallback: () => _emit(AttemptStarted(++_attempt)),
           ),
         );
       } on AgentError catch (e) {
@@ -136,7 +138,7 @@ class _Run {
         if (_cancelled) return _end(const RunCancelled());
         return _cap(state.budget.hardStop ?? _wallClockCap());
       }
-      state.budget.addTurn(turn.usage);
+      state.budget.addTurn(turn.usage, attempts: turn.attempts);
 
       if (turn.stopReason == 'refusal') {
         final category = switch (turn.stopDetails?['category']) {
@@ -148,26 +150,24 @@ class _Run {
         );
       }
       if (turn.broken || turn.stopReason == 'max_tokens') {
+        // None of a cut-off or broken turn is used. With the output cap
+        // spent the run stops there; else the turn is sent once more.
+        if (state.budget.hardStop case final cap?) return _cap(cap);
         if (resent) {
           return _end(
             RunGaveUp(
-              turn.broken && turn.stopReason != 'max_tokens'
-                  ? 'the model wrote a tool call that is not valid JSON'
-                  : 'the answer ran past '
-                        '${MessagesApiRunner.retryMaxTokens} output tokens',
+              turn.stopReason == 'max_tokens'
+                  ? 'the answer was cut off twice'
+                  : 'the model wrote a tool call that is not valid JSON',
               answered: false,
             ),
           );
         }
         resent = true;
-        if (turn.stopReason == 'max_tokens') {
-          maxTokens = MessagesApiRunner.retryMaxTokens;
-        }
         _emit(AttemptStarted(++_attempt));
         continue;
       }
       resent = false;
-      maxTokens = MessagesApiRunner.maxTokens;
 
       if (turn.content.isNotEmpty) {
         messages.add({'role': 'assistant', 'content': turn.content});
@@ -208,6 +208,13 @@ class _Run {
         ],
       });
     }
+  }
+
+  /// The output cap left, at most [MessagesApiRunner.maxTokens]; the loop
+  /// asks only while some is left.
+  int _maxTokens() {
+    final left = state.budget.caps.outputTokens - state.budget.usage.output;
+    return left.clamp(1, MessagesApiRunner.maxTokens);
   }
 
   String _wallClockCap() => '${state.budget.caps.wallClock.inSeconds} seconds';
