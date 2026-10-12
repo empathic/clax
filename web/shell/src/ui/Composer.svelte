@@ -1,14 +1,15 @@
 <script lang="ts">
   // The composer for `draft`; `onText` hears the typed text on every input,
   // and "" when it closes; `onFocused` hears that its textarea took focus as
-  // it opened.
+  // it opened. `send`: the primary button is the app's Send (its `onSubmit`
+  // posts and sends to the agent) rather than Post comment.
   import { onDestroy, untrack } from "svelte";
   import { type Anchor, INDEX_FILE } from "../../../bridge/src/protocol";
   import { type Draft, composerQuote, isSubmitKey, submitKeysLabel } from "../view/composer-model";
   import { guardedAction } from "../view/trail";
 
-  type Props = { draft: Draft; onCancel(): void; onSubmit(body: string): Promise<void>; onText?(text: string): void; onFocused?(): void };
-  let { draft, onCancel, onSubmit, onText, onFocused }: Props = $props();
+  type Props = { draft: Draft; onCancel(): void; onSubmit(body: string): Promise<void>; onText?(text: string): void; onFocused?(): void; send?: boolean };
+  let { draft, onCancel, onSubmit, onText, onFocused, send }: Props = $props();
   const uid = $props.id();
   let body = $state("");
   let busy = $state(false);
@@ -115,8 +116,8 @@
     <!-- While the screenshot is taken, Post stays focusable (Tab order does
          not change) and waits: pressing it queues the post, which the status
          line it is described by announces. -->
-    <button type="submit" class="primary" onclick={e => { if (!guard(e, () => {})) e.preventDefault(); }} title={draft.capturing ? "Posts once the screenshot is taken" : `Post comment (${submitKeysLabel()})`} disabled={busy || !body.trim()}
-      aria-disabled={draft.capturing ? "true" : undefined} aria-describedby={draft.capturing && !clipUrl ? `${uid}-status` : undefined}>Post comment</button>
+    <button type="submit" class="primary" onclick={e => { if (!guard(e, () => {})) e.preventDefault(); }} title={draft.capturing ? "Posts once the screenshot is taken" : `${send ? "Send" : "Post comment"} (${submitKeysLabel()})`} disabled={busy || !body.trim()}
+      aria-disabled={draft.capturing ? "true" : undefined} aria-describedby={draft.capturing && !clipUrl ? `${uid}-status` : undefined}>{send ? "Send" : "Post comment"}</button>
   </div>
   <p class="act-hint" role="status">{hint ?? ""}</p>
 </form>

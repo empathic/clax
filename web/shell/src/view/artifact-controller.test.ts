@@ -1091,4 +1091,27 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
       vi.useRealTimers();
     }
   });
+
+  it("app mode composer Send posts and sends; browser mode Post only posts", async () => {
+    const t9 = thread("t9");
+    const { ctl, frame } = await started({ routes: (url, init) => (init?.method === "POST" && url === `/api/artifacts/${ID}/threads` ? { thread: t9 } : undefined) });
+    const anchor = t9.anchor;
+    const posts = () => (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(([, i]) => (i as RequestInit | undefined)?.method === "POST").map(([u]) => String(u));
+    // A browser's view: Post posts, and nothing is sent.
+    await ctl.submitDraft("first", { pickId: "p1", anchor, version: 2, clip: null, capturing: false, clipToken: "p1" });
+    expect(posts()).toEqual([`/api/artifacts/${ID}/threads`]);
+    // App mode: each post is handed to the app's hook, which sends it.
+    const posted = vi.fn();
+    const welcome = vi.fn((_file: string) => ({ app: true as const, restoreScroll: 40 }));
+    ctl.app = { welcome, posted };
+    await ctl.submitDraft("second", { pickId: "p2", anchor, version: 2, clip: null, capturing: false, clipToken: "p2" });
+    expect(posted).toHaveBeenCalledWith(t9);
+    // The welcome carries what the hook adds, for the page that greeted.
+    const sent: { type: string }[] = [];
+    frame.contentWindow!.postMessage = ((m: { type: string }) => { sent.push(m); }) as Window["postMessage"];
+    hello(frame.contentWindow!);
+    expect(welcome).toHaveBeenCalledWith("index.html");
+    expect(sent.find(m => m.type === "clax:welcome")).toEqual({ type: "clax:welcome", mode: "view", app: true, restoreScroll: 40 });
+    ctl.dispose();
+  });
 });
