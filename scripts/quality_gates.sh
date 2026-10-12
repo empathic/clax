@@ -71,7 +71,8 @@ lane_scripts() {
     run "release scripts"       scripts/test-release.sh &&
     run "tool hook gate"        scripts/test-tool-hook.sh &&
     run "extension signing"     scripts/test-extension-signing.sh &&
-    run "stable bin"            scripts/test-stable-bin.sh
+    run "stable bin"            scripts/test-stable-bin.sh &&
+    run "build app clax"        bash scripts/test-build-app-clax.sh
 }
 lane_installer() {
     run "release installer"     scripts/test-install.sh
