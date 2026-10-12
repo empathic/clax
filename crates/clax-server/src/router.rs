@@ -266,6 +266,15 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             post(docs::str_replace),
         )
         .route("/api/artifacts/{aid}/docs:acquire", post(docs::acquire))
+        .route(
+            "/api/artifacts/{aid}/docs:collections",
+            get(docs::collections),
+        )
+        .route("/api/artifacts/{aid}/db-grants", get(docs::grants))
+        .route(
+            "/api/artifacts/{aid}/db-grants/{source}",
+            axum::routing::put(docs::grant).delete(docs::revoke),
+        )
         .route("/api/artifacts/{aid}/working", get(working::for_artifact))
         .route("/api/artifacts/{aid}/presence", get(artifacts::presence))
         .route("/api/artifacts/{aid}/snapshot", get(snapshot::snapshot))
@@ -548,6 +557,11 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     let r = r.route_layer(axum::middleware::from_fn_with_state(
         state.clone(),
         agent::verify_layer,
+    ));
+    // A request reading for another app never writes, on any route (spec
+    // 2026-10-12-flutter-app-design §3.8).
+    let r = r.layer(axum::middleware::from_fn(
+        clax_http::db_caller::refuse_reader_writes,
     ));
     // Live pages answer 404 to callers that may not see them, before any
     // handler runs (spec 2026-10-05-chrome-overlay-design L10).

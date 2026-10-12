@@ -420,6 +420,12 @@ impl AppState {
     /// the linked threads' sync.
     pub fn start_listeners(&self) {
         self.stream.listen(&self.events);
+        {
+            let store = self.store.clone();
+            self.stream.check_reads(move |reader, source| {
+                crate::db_caller::reads_now(&store, reader, source)
+            });
+        }
         crate::seats::install(self);
         crate::views::inbox::listen(self);
         crate::views::approval::listen(self);

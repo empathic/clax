@@ -157,6 +157,11 @@ impl From<CoreError> for ApiError {
                     | "quota_exceeded" | "github_blocked" | "github_not_owner"),
                 message,
             } => ApiError::new(StatusCode::FORBIDDEN, code, message),
+            // A cross-app read without consent (spec 2026-10-12-flutter-app-design §3.8).
+            CoreError::Invalid {
+                code: "not_granted",
+                message,
+            } => ApiError::forbidden("not_granted", message),
             CoreError::Invalid { code, message } => ApiError::bad_request(code, message),
             CoreError::ThreadTaken { name } => {
                 let message = CoreError::ThreadTaken { name: name.clone() }.to_string();

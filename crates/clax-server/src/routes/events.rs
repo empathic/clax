@@ -4,7 +4,8 @@ use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use clax_core::db::{Caller, Level};
-use clax_core::{Event, Stamped};
+use clax_core::{ArtifactId, Event, Stamped};
+use clax_http::error::ApiError;
 use clax_http::state::AppState;
 use futures::stream::Stream;
 use serde::Deserialize;
@@ -27,6 +28,18 @@ pub struct EventsQuery {
     /// The resume point, as the `Last-Event-ID` header carries it; the header
     /// wins when both are present.
     last_event_id: Option<String>,
+    /// The app the subscriber reads for (spec 2026-10-12-flutter-app-design
+    /// §3.8): `doc` events are judged at `view` with no viewer, and each
+    /// reaches the stream only while this app may read its artifact
+    /// ([`crate::db_caller::reader_caller`]), checked as it is sent.
+    reader: Option<String>,
+}
+
+/// What the stream sends after `ready`: a bus event, or `resync` after
+/// `dropped` events were lost.
+enum Out {
+    Event(Stamped),
+    Resync(u64),
 }
 
 /// How many `/api/events` streams are open in this process.
@@ -101,6 +114,13 @@ fn list(v: Option<String>) -> Option<BTreeSet<String>> {
 /// filters pass, and `ready` says `{"resumed": true}`; otherwise (no ID, an
 /// ID from another daemon run, or one older than every retained event)
 /// `ready` says `{"resumed": false}` and the client should refetch state.
+///
+/// With `?reader=<A>` (an artifact ID, else 400 `invalid_args`), the
+/// subscriber reads for app A: a `doc` event reaches it only when `view`
+/// with no viewer may read its path, and only while A may read the event's
+/// artifact, checked for each event as it is sent, so a revoked grant, a
+/// withdrawn share or a dropped declaration stops the next one. Other
+/// events are unchanged.
 /// A subscriber that falls more than the bus capacity behind receives
 /// `event: resync` with `data: {"dropped": <n>}` and then continues from the oldest
 /// retained event; clients should refetch state on `resync`. A `: keep-alive`
@@ -117,6 +137,13 @@ pub async fn events(
     // The event stream serves people (spec §7.5): an agent reads through
     // the filtered routes.
     d.refuse_agents()?;
+    let reader =
+        match &q.reader {
+            None => None,
+            Some(r) => Some(ArtifactId::parse(r).map_err(|_| {
+                ApiError::bad_request("invalid_args", "reader is not an artifact ID")
+            })?),
+        };
     let hidden = (!clax_http::live_access::sees_live_pages(&headers, &extensions, &s.token))
         .then(|| s.live_ids.clone());
     let who = who.or_events_cookie();
@@ -128,6 +155,11 @@ pub async fn events(
             tracing::warn!(error = ?e, "resolving an event subscriber failed; streaming at view");
             Caller::new(Level::View, None)
         });
+    let me = if reader.is_some() {
+        Caller::new(me.level.min(Level::View), None)
+    } else {
+        me
+    };
     let epoch: Arc<str> = s.events.epoch().into();
     let after = headers
         .get("last-event-id")
@@ -215,21 +247,39 @@ pub async fn events(
         .id(format!("{epoch}-{at}"))
         .event("ready")
         .data(serde_json::json!({ "resumed": resume.resumed }).to_string())));
-    let replay: Vec<_> = resume
+    let replay: Vec<Out> = resume
         .replay
         .iter()
         .filter(|st| passes(&st.event))
-        .map(|st| Ok(sse(st)))
+        .map(|st| Out::Event(st.clone()))
         .collect();
     let open = OpenStream::new();
     let live = BroadcastStream::new(resume.rx).filter_map(move |item| match item {
         Ok(st) => {
             let _held = &open;
-            passes(&st.event).then(|| Ok(sse(&st)))
+            passes(&st.event).then_some(Out::Event(st))
         }
-        Err(BroadcastStreamRecvError::Lagged(dropped)) => Some(Ok(SseEvent::default()
-            .event("resync")
-            .data(serde_json::json!({ "dropped": dropped }).to_string()))),
+        Err(BroadcastStreamRecvError::Lagged(dropped)) => Some(Out::Resync(dropped)),
+    });
+    // Only a reader's stream asks the store about its events.
+    let check = reader.map(|r| (s.clone(), r));
+    let sent = futures::StreamExt::filter_map(tokio_stream::iter(replay).chain(live), move |out| {
+        let (check, sse) = (check.clone(), sse.clone());
+        async move {
+            match out {
+                Out::Resync(dropped) => Some(Ok(SseEvent::default()
+                    .event("resync")
+                    .data(serde_json::json!({ "dropped": dropped }).to_string()))),
+                Out::Event(st) => {
+                    if let (Some((state, r)), Event::Doc { artifact_id, .. }) = (check, &st.event)
+                        && !reads(&state, r, artifact_id).await
+                    {
+                        return None;
+                    }
+                    Some(Ok(sse(&st)))
+                }
+            }
+        }
     });
     let mut shutdown = s.shutdown.clone();
     // A dropped sender means the state has no shutdown source; never end the stream then.
@@ -238,15 +288,24 @@ pub async fn events(
             std::future::pending::<()>().await;
         }
     };
-    Ok(Sse::new(futures::StreamExt::take_until(
-        ready.chain(tokio_stream::iter(replay)).chain(live),
-        stop,
-    ))
-    .keep_alive(
-        KeepAlive::new()
-            .interval(s.sse_keep_alive)
-            .text("keep-alive"),
-    ))
+    Ok(
+        Sse::new(futures::StreamExt::take_until(ready.chain(sent), stop)).keep_alive(
+            KeepAlive::new()
+                .interval(s.sse_keep_alive)
+                .text("keep-alive"),
+        ),
+    )
+}
+
+/// Whether `reader` may read `source`'s documents now; an error (an unknown
+/// or deleted artifact, a failed read) is no.
+async fn reads(s: &AppState, reader: ArtifactId, source: &str) -> bool {
+    let Ok(source) = ArtifactId::parse(source) else {
+        return false;
+    };
+    s.store_call(move |st| crate::db_caller::reader_caller(st, &reader, &source, Level::View))
+        .await
+        .is_ok()
 }
 
 #[cfg(test)]

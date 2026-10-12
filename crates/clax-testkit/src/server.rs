@@ -574,6 +574,12 @@ impl TestServer {
         clax_http::seats::install(&state);
         let seats = state.seats.clone();
         let live_layers = state.live_layers.clone();
+        {
+            let store = state.store.clone();
+            state.stream.check_reads(move |reader, source| {
+                clax_http::db_caller::reads_now(&store, reader, source)
+            });
+        }
         clax_http::views::inbox::listen(&state);
         clax_http::views::approval::listen(&state);
         clax_server::routes::people::listen(&state);

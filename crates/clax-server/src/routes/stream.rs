@@ -12,6 +12,7 @@ use axum::http::HeaderValue;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::CoreError;
+use clax_core::db::Level;
 use clax_http::error::ApiError;
 use clax_http::headers::parse_id;
 use clax_http::seats::Subscribe;
@@ -329,7 +330,11 @@ fn topics(names: &[String]) -> Result<Vec<Topic>, ApiError> {
 /// owner or a connected person, the person the stream was opened for (403
 /// `forbidden` otherwise, and the whole change is refused),
 /// and a `docs` topic needs the artifact to declare `db` unless the caller holds
-/// the token, in `Authorization` or as the events cookie (403 `not_declared`). 404 `unknown_stream` when no stream has
+/// the token, in `Authorization` or as the events cookie (403 `not_declared`).
+/// A `docs:<B>?reader=<A>` topic needs A to exist and to be allowed to read
+/// B now, whatever the caller ([`crate::db_caller::reader_caller`]: 403
+/// `not_granted` or `not_declared`); each of its events is checked again as
+/// it is dispatched. 404 `unknown_stream` when no stream has
 /// that ID for this caller (a stream opened through the extension gateway
 /// is changed only with its own credential, and any other only without
 /// one); 429 `limit_reached` past
@@ -381,7 +386,10 @@ pub async fn update(
     {
         return Err(live_only_refusal());
     }
-    for aid in add.iter().filter_map(Topic::artifact) {
+    for aid in add
+        .iter()
+        .flat_map(|t| t.artifact().into_iter().chain(t.reader()))
+    {
         sees.check(&s.live_ids, aid)?;
     }
     if add.iter().any(|t| matches!(t, Topic::Site(_))) {
@@ -431,6 +439,10 @@ pub async fn update(
                 }
                 if t.is_live() {
                     live.insert(aid.as_str().to_string());
+                }
+                if let Some(reader) = t.reader() {
+                    let reader = parse_id(reader).map_err(|_| CoreError::NotFound)?;
+                    clax_http::db_caller::reader_caller(st, &reader, &aid, Level::View)?;
                 }
             }
             // The live seat each artifact's live topics take (spec

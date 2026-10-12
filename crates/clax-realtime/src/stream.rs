@@ -68,7 +68,8 @@ pub const MAX_DETACHED: usize = 4096;
 /// 2026-10-08-multi-agent-multi-person §5.3, §15), `people` (people,
 /// invites and grants, for the owner alone; §6.2–§6.4), and `agents` (a
 /// bare `agents` ping whenever the agents roster may have changed, for the
-/// owner and connected people; §13).
+/// owner and connected people; §13), and `docs:<B>?reader=<A>` (B's `doc`
+/// events as app A reads them; spec 2026-10-12-flutter-app-design §3.8).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Topic {
     Gallery,
@@ -82,6 +83,13 @@ pub enum Topic {
     Presence(String),
     Working(String),
     Docs(String),
+    /// The `doc` events of `source` that `view` with no viewer may read,
+    /// each delivered only while `reader` may read `source` (checked as
+    /// it is dispatched, [`Hub::check_reads`]).
+    DocsRead {
+        source: String,
+        reader: String,
+    },
     Site(String),
     Questions,
     Inbox,
@@ -125,6 +133,23 @@ impl Topic {
         let (kind, aid) = s
             .split_once(':')
             .ok_or_else(|| format!("unknown topic '{s}'"))?;
+        let id = |aid: &str| -> Result<String, String> {
+            Ok(ArtifactId::parse(aid)
+                .map_err(|_| format!("'{aid}' is not an artifact ID"))?
+                .as_str()
+                .to_string())
+        };
+        if kind == "docs"
+            && let Some((source, query)) = aid.split_once('?')
+        {
+            let reader = query
+                .strip_prefix("reader=")
+                .ok_or_else(|| format!("unknown topic '{s}'"))?;
+            return Ok(Topic::DocsRead {
+                source: id(source)?,
+                reader: id(reader)?,
+            });
+        }
         let aid = ArtifactId::parse(aid)
             .map_err(|_| format!("'{aid}' is not an artifact ID"))?
             .as_str()
@@ -145,6 +170,7 @@ impl Topic {
             Topic::Presence(a) => format!("presence:{a}"),
             Topic::Working(a) => format!("working:{a}"),
             Topic::Docs(a) => format!("docs:{a}"),
+            Topic::DocsRead { source, reader } => format!("docs:{source}?reader={reader}"),
             Topic::Site(o) => format!("site:{o}"),
             Topic::Questions => "questions".into(),
             Topic::Inbox => "inbox".into(),
@@ -153,8 +179,9 @@ impl Topic {
         }
     }
 
-    /// The artifact the topic is about; `None` for the gallery, a site,
-    /// `questions`, `inbox` and `people`.
+    /// The artifact the topic is about (the source of a reader's topic);
+    /// `None` for the gallery, a site, `questions`, `inbox`, `people` and
+    /// `agents`.
     pub fn artifact(&self) -> Option<&str> {
         match self {
             Topic::Gallery
@@ -167,7 +194,8 @@ impl Topic {
             | Topic::ArtifactQuiet(a)
             | Topic::Presence(a)
             | Topic::Working(a)
-            | Topic::Docs(a) => Some(a),
+            | Topic::Docs(a)
+            | Topic::DocsRead { source: a, .. } => Some(a),
         }
     }
 
@@ -178,6 +206,14 @@ impl Topic {
         match self {
             Topic::Artifact(a) => Topic::ArtifactQuiet(a),
             t => t,
+        }
+    }
+
+    /// The app a `docs:<B>?reader=<A>` topic reads for.
+    pub fn reader(&self) -> Option<&str> {
+        match self {
+            Topic::DocsRead { reader, .. } => Some(reader),
+            _ => None,
         }
     }
 
@@ -212,6 +248,9 @@ impl Topic {
             Topic::People => vec![Chan::People],
             // Every person sees every agent's name and state (§13, §18).
             Topic::Agents => person.map(|_| Chan::Agents).into_iter().collect(),
+            Topic::DocsRead { source, reader } => {
+                vec![Chan::DocsRead(source.clone(), reader.clone())]
+            }
             Topic::Docs(a) => {
                 let mut v: Vec<Chan> = [Level::View, Level::Interact, Level::Admin, Level::Owner]
                     .into_iter()
@@ -243,6 +282,9 @@ enum Chan {
     Drafts(String),
     DocsAt(String, Level),
     DocsOf(String, String),
+    /// The documents of an artifact (first) that `view` with no viewer
+    /// reads, for one reader app (second).
+    DocsRead(String, String),
     /// The `artifact` channel's events of every live page of an origin.
     Site(String),
     /// The changes of one person's agents' questions, by recipient key
@@ -271,6 +313,7 @@ impl Chan {
             Chan::Presence(a) => format!("presence:{a}"),
             Chan::Working(a) | Chan::Drafts(a) => format!("working:{a}"),
             Chan::DocsAt(a, _) | Chan::DocsOf(a, _) => format!("docs:{a}"),
+            Chan::DocsRead(a, r) => format!("docs:{a}?reader={r}"),
         }
     }
 }
@@ -466,13 +509,19 @@ pub enum SubError {
 /// not show.
 pub fn live_only_admits(live: &crate::live::LiveIds, t: &Topic) -> bool {
     match t {
-        Topic::Gallery | Topic::Docs(_) | Topic::People | Topic::Agents => false,
+        Topic::Gallery | Topic::Docs(_) | Topic::DocsRead { .. } | Topic::People | Topic::Agents => {
+            false
+        }
         Topic::Site(_) | Topic::Questions | Topic::Inbox => true,
         Topic::Artifact(a) | Topic::ArtifactQuiet(a) | Topic::Presence(a) | Topic::Working(a) => {
             live.contains(a)
         }
     }
 }
+
+/// Whether a reader app (first) may read a source artifact's (second)
+/// documents now.
+type ReadCheck = Box<dyn Fn(&str, &str) -> bool + Send + Sync>;
 
 /// The hub: every topic's channel and every stream.
 #[derive(Default)]
@@ -482,6 +531,9 @@ pub struct Hub {
     live: Arc<crate::live::LiveIds>,
     /// Called after a frame is queued for any stream ([`Hub::on_queue`]).
     queued: Mutex<Option<QueueListener>>,
+    /// Asked before each `doc` event goes to a `docs:<B>?reader=<A>`
+    /// channel; until set, those channels receive nothing.
+    reads: std::sync::OnceLock<ReadCheck>,
 }
 
 /// What [`Hub::on_queue`] calls.
@@ -854,6 +906,7 @@ impl Hub {
             inner: Mutex::default(),
             live,
             queued: Mutex::default(),
+            reads: std::sync::OnceLock::new(),
         })
     }
 
@@ -875,6 +928,46 @@ impl Hub {
         if let Some(f) = f {
             f();
         }
+    }
+
+    /// Makes `may_read(reader, source)` decide, for each `doc` event of
+    /// `source`, whether it reaches the `docs:<source>?reader=<reader>`
+    /// subscribers. It is asked without the hub's lock held, on the thread
+    /// that publishes the event. Set once; a later call changes nothing.
+    pub fn check_reads(&self, may_read: impl Fn(&str, &str) -> bool + Send + Sync + 'static) {
+        if self.reads.set(Box::new(may_read)).is_err() {
+            tracing::warn!("the stream hub's read check is already set");
+        }
+    }
+
+    /// The reader channels `ev` goes to: for a `doc` event that `view` with
+    /// no viewer may read, each `docs:<B>?reader=<A>` channel of its
+    /// artifact whose reader may read it now.
+    fn reader_routes(&self, ev: &Event) -> Vec<(Chan, Gate)> {
+        let Event::Doc {
+            artifact_id,
+            private_to: None,
+            read_level: Level::View,
+            ..
+        } = ev
+        else {
+            return vec![];
+        };
+        let candidates: Vec<Chan> = self
+            .lock()
+            .chans
+            .keys()
+            .filter(|c| matches!(c, Chan::DocsRead(a, _) if a == artifact_id))
+            .cloned()
+            .collect();
+        let Some(may_read) = self.reads.get() else {
+            return vec![];
+        };
+        candidates
+            .into_iter()
+            .filter(|c| matches!(c, Chan::DocsRead(a, r) if may_read(r, a)))
+            .map(|c| (c, Gate::Any))
+            .collect()
     }
 
     /// Makes `bus` hand every event to this hub. A bus feeds one hub.
@@ -954,6 +1047,7 @@ impl Hub {
     /// Files `ev` in each subscribed channel it belongs to and offers it to
     /// their subscribers.
     pub fn dispatch(&self, ev: &Event) {
+        let readers = self.reader_routes(ev);
         let mut g = self.lock();
         if g.chans.is_empty() {
             return;
@@ -961,6 +1055,7 @@ impl Hub {
         let site = self.live.origin_of(ev.artifact_id());
         let live = site.is_some();
         let mut all = routes(ev);
+        all.extend(readers);
         // A live page's `artifact` events also go to its site's channels:
         // one per origin of its site (spec §7.2: a joined site's origins
         // hear each other's pages, origins joined later included). (Not the
@@ -1873,6 +1968,7 @@ mod tests {
             "presence:7q3k9mzx2b4t",
             "working:7q3k9mzx2b4t",
             "docs:7q3k9mzx2b4t",
+            "docs:7q3k9mzx2b4t?reader=8r4m0nay3c5v",
         ] {
             assert_eq!(Topic::parse(t).unwrap().name(), t);
         }
@@ -1882,6 +1978,11 @@ mod tests {
             "artifact:",
             "artifact:NOPE",
             "threads:7q3k9mzx2b4t",
+            "docs:7q3k9mzx2b4t?reader=",
+            "docs:7q3k9mzx2b4t?reader=NOPE",
+            "docs:7q3k9mzx2b4t?viewer=8r4m0nay3c5v",
+            "docs:NOPE?reader=8r4m0nay3c5v",
+            "artifact:7q3k9mzx2b4t?reader=8r4m0nay3c5v",
         ] {
             assert!(Topic::parse(bad).is_err(), "{bad}");
         }
@@ -2246,6 +2347,66 @@ mod tests {
             1,
             "once, though both channels carry it"
         );
+    }
+
+    #[test]
+    fn a_reader_topic_carries_view_documents_only_while_the_check_allows() {
+        const R: &str = "8r4m0nay3c5v";
+        let doc = |private_to: Option<&str>, read_level| Event::Doc {
+            artifact_id: A.into(),
+            path: "p".into(),
+            version: Some(1),
+            private_to: private_to.map(str::to_string),
+            read_level,
+            self_read: None,
+        };
+        let topic = Topic::DocsRead {
+            source: A.into(),
+            reader: R.into(),
+        };
+        let owner = viewer(Level::Admin, Some("u_me"));
+
+        // No check set: nothing reaches a reader topic.
+        let hub = Hub::new(Default::default());
+        let mut o = hub.open(owner.clone(), true, None, None);
+        hub.update(&o.id, &owner, std::slice::from_ref(&topic), &[])
+            .unwrap();
+        hub.dispatch(&doc(None, Level::View));
+        assert!(drain(&mut o).is_empty(), "fails closed");
+
+        let hub = Hub::new(Default::default());
+        let allow = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        {
+            let (allow, asked) = (allow.clone(), asked.clone());
+            hub.check_reads(move |r, s| {
+                asked.lock().unwrap().push((r.to_string(), s.to_string()));
+                allow.load(std::sync::atomic::Ordering::SeqCst)
+            });
+        }
+        let mut o = hub.open(owner.clone(), true, None, None);
+        hub.update(&o.id, &owner, std::slice::from_ref(&topic), &[])
+            .unwrap();
+        hub.dispatch(&doc(Some("u_me"), Level::View));
+        hub.dispatch(&doc(None, Level::Interact));
+        assert!(
+            drain(&mut o).is_empty(),
+            "private and above-view documents never, though the stream is the owner's admin"
+        );
+        assert!(asked.lock().unwrap().is_empty(), "not even asked");
+        hub.dispatch(&doc(None, Level::View));
+        let got = drain(&mut o);
+        assert_eq!(got.len(), 1);
+        assert!(
+            got[0]
+                .1
+                .contains(&format!("\"topic\":\"docs:{A}?reader={R}\"")),
+            "{got:?}"
+        );
+        assert_eq!(*asked.lock().unwrap(), vec![(R.to_string(), A.to_string())]);
+        allow.store(false, std::sync::atomic::Ordering::SeqCst);
+        hub.dispatch(&doc(None, Level::View));
+        assert!(drain(&mut o).is_empty(), "checked again for each event");
     }
 
     #[test]
