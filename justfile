@@ -128,9 +128,9 @@ app-test:
 app-integration:
     ./scripts/build-app-clax.sh macos && cd apps/clax_app && flutter test integration_test -d macos
 
-# Build the Android clax binaries and the Clax app's release APK (arm64 and x86_64 only, the ABIs clax is built for)
+# Build the Android clax binaries and the Clax app's release APK, for arm64 and x86_64 only (the ABIs clax is built for); disable-abi-filtering keeps Flutter's Gradle plugin from adding armeabi-v7a back to the app's abiFilters
 app-apk:
-    ./scripts/build-app-clax.sh android && cd apps/clax_app && flutter build apk --release --target-platform android-arm64,android-x64
+    ./scripts/build-app-clax.sh android && cd apps/clax_app && flutter build apk --release --target-platform android-arm64,android-x64 -P disable-abi-filtering=true
 
 # Build the macOS clax and the Clax app's release macOS app
 app-macos:
