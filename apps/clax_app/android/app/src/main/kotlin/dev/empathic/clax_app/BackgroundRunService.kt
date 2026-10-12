@@ -119,8 +119,10 @@ class BackgroundRunService : Service() {
             running = true
         } catch (e: RuntimeException) {
             // ForegroundServiceStartNotAllowedException (in the background, or
-            // the type's time spent) or a SecurityException.
-            stopOnItsOwn()
+            // the type's time spent) or a SecurityException. A start queued
+            // after this one gets its own try.
+            running = false
+            if (stopSelfResult(startId)) onStopped?.invoke()
         }
         return START_NOT_STICKY
     }
