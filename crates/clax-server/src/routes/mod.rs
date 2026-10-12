@@ -874,6 +874,39 @@ mod l10 {
     /// handlers that record events take it (or a
     /// [`DeferredAudit`](crate::audit::DeferredAudit) to resolve it later),
     /// and no `GET` handler does.
+    /// `X-Clax-Reader` is admitted on exactly the document read routes:
+    /// every mounted path, with each `{param}` filled in, passes
+    /// `reader_route` only when it is one of them, so a new route under
+    /// `…/docs/` cannot take the header without being added here.
+    #[test]
+    fn only_the_document_reads_admit_the_reader_header() {
+        let src = include_str!("mod.rs");
+        let src = &src[..src.find("mod l10 {").unwrap()];
+        let admitted = [
+            "/api/artifacts/{aid}/docs",
+            "/api/artifacts/{aid}/docs/{*path}",
+            "/api/artifacts/{aid}/docs:collections",
+        ];
+        let fill = |template: &str| -> String {
+            template
+                .split('/')
+                .map(|seg| match seg {
+                    s if s.starts_with("{*") => "a/b".to_string(),
+                    s if s.starts_with('{') => "7q3k9mzx2b4t".to_string(),
+                    s => s.to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        let mut seen = 0;
+        for (path, _) in routes(src) {
+            let want = admitted.contains(&path.as_str());
+            assert_eq!(crate::db_caller::reader_route(&fill(&path)), want, "{path}");
+            seen += usize::from(want);
+        }
+        assert_eq!(seen, admitted.len(), "every admitted route is mounted");
+    }
+
     #[test]
     fn no_get_route_resolves_the_audit_context() {
         let src = include_str!("mod.rs");
