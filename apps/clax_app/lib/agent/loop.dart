@@ -3,23 +3,39 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import '../clax/api.dart';
+import '../daemon/clock.dart';
 import 'apply.dart';
+import 'asked.dart';
 import 'backend.dart';
 import 'edit_result.dart';
+import 'failure.dart';
+import 'inspector.dart';
 import 'ledger.dart';
 import 'progress.dart';
 import 'prompt.dart';
+import 'read_consent.dart';
 import 'request.dart';
+import 'runner.dart';
 import 'timings.dart';
+import 'tools/ask_tool.dart';
+import 'tools/budget.dart';
+import 'tools/data_tools.dart';
+import 'tools/draft.dart';
+import 'tools/file_tools.dart';
+import 'tools/finish.dart';
+import 'tools/render_tool.dart';
+import 'tools/tool_spec.dart';
+import 'tools/toolbox.dart';
 
-/// The timing name of a new app's backend run.
+/// The timing name of a new app's run.
 const agentNewTiming = 'agent-new';
 
-/// The timing name of a change's backend run.
+/// The timing name of a change's run.
 const agentChangeTiming = 'agent-change';
 
-/// The backends that send [AgentRequest.image] to the model.
-/// `claude-cli` runs with tools off and cannot read an image.
+/// The single-call backends that send [AgentRequest.image] to the model.
+/// `claude-cli` runs with tools off and cannot read an image. A tool-loop
+/// runner says so itself ([AgentRunner.sendsImages]).
 const imageBackends = {'messages-api', 'scripted'};
 
 /// How [AgentLoop.change] ended.
@@ -53,7 +69,7 @@ final class ChangeAnswered extends ChangeOutcome {
 
 /// Nothing stayed published (a version whose documents were refused is
 /// restored away); when [answered], each thread got a reply that opens
-/// "Couldn't make that change:" and names [reason], and stays open.
+/// [failurePrefix] and names [reason], and stays open.
 final class ChangeFailed extends ChangeOutcome {
   const ChangeFailed(this.reason, {required this.answered});
 
@@ -97,67 +113,238 @@ typedef _Snapshot = ({
   List<AppCollection> docs,
 });
 
-/// Asks the backend for an [EditResult] and applies it over the daemon's
-/// API: a new app from a description, or a change from comments.
+/// One tool-loop run as it ended: its [outcome], whether a tool ended it
+/// (`finish`, `give_up` or the cap stop, which reply themselves) or the
+/// runner did ([byTool] false: a refusal, a broken turn, a cancel between
+/// turns, a model failure), the model failure itself, and its `ask` tool.
+typedef _Ran = ({
+  RunOutcome outcome,
+  bool byTool,
+  AgentError? error,
+  AskTool ask,
+  RunState state,
+});
+
+/// Makes new apps and changes them in answer to comments, over the
+/// daemon's API.
 ///
-/// Retries: a result that fails [validateResult], whose edit misses
-/// ([EditMiss]), or that writes an existing document the prompt did not
-/// show, is asked for once more, naming the failure and asking for whole
-/// files; a publish conflict re-reads the latest version and runs the
-/// change once more; a document conflict after the publish re-reads those
-/// documents and writes once more. A backend [AgentError] is never resent,
-/// whatever its `retryable` says: backends retry their own transport
-/// failures.
+/// Each run takes one of two ways, chosen when it starts:
 ///
-/// [timings] receives one record per backend run ([agentNewTiming],
-/// [agentChangeTiming]). Give it a store kept apart from the defended
+/// - **The tool loop** (R§2, R§4): an [AgentRunner] from [runner] moves the
+///   model's tool calls through a [Toolbox] holding the file and data
+///   tools, `render` (the draft served as a hidden draft artifact and
+///   inspected by [inspector] at [baseUrl]), `ask` (Clax's questions, kept
+///   in [asked] for a change), `finish` and `give_up`. Every rule (caps,
+///   the publish gate, the change ledger, pinned document writes) is the
+///   Toolbox's; this loop builds the run, ends it and says how it went.
+/// - **The single structured call** (R§4.3, the `claude -p` fallback):
+///   when [singleCall] answers a backend for the run, today's one
+///   [EditResult] call, validated and applied here.
+///
+/// The tool loop's every end, however it came: the draft artifact is
+/// deleted ([RenderTool.cleanup]); a change whose runner ended it without
+/// a reply (a refusal, a broken turn, a model failure) gets the failure
+/// reply ([failureReply]) and its comments are acknowledged; the run's
+/// question is withdrawn when the run gave up or its app is gone, and for
+/// a new app whenever it is still open ([AskTool.withdrawOpen]). A change
+/// that finished with its question open is parked: its [AskedEntry] stays
+/// for a late answer.
+///
+/// Retries of the single call: a result that fails [validateResult], whose
+/// edit misses ([EditMiss]), or that writes an existing document the
+/// prompt did not show, is asked for once more, naming the failure and
+/// asking for whole files; a publish conflict re-reads the latest version
+/// and runs the change once more; a document conflict after the publish
+/// re-reads those documents and writes once more. A backend [AgentError]
+/// is never resent, whatever its `retryable` says: backends retry their
+/// own transport failures.
+///
+/// [timings] receives one record per run ([agentNewTiming],
+/// [agentChangeTiming]); a tool-loop record also carries the run's turns,
+/// tokens, cost and outcome. Give it a store kept apart from the defended
 /// numbers (`sayUsable`, `longpressLanded`), so their recent list holds
 /// only those.
+///
+/// Other apps go into a first message by ID and title only: their
+/// documents are read through the data tools, after the owner's own
+/// consent ([readConsent]; without one such reads are refused).
 class AgentLoop {
   AgentLoop({
     required this._api,
-    required this._backend,
+    AgentRunner Function()? runner,
     required this._prompts,
     required this._model,
     required this._timings,
+    this._inspector,
+    this._baseUrl,
     ChangeLedger? ledger,
+    AskedQuestions? asked,
+    this._readConsent,
+    AgentBackend? Function()? singleCall,
+    this._clock = const SystemClock(),
     bool Function(AgentBackend backend)? sendsImage,
+    this._onAsked,
     void Function(String line)? log,
-  }) : ledger = ledger ?? MemoryChangeLedger(),
+  }) : assert(
+         runner != null || singleCall != null,
+         'an AgentLoop needs a runner or a single call',
+       ),
+       ledger = ledger ?? MemoryChangeLedger(),
+       asked = asked ?? MemoryAskedQuestions(),
+       _runner = runner,
+       _singleCall = singleCall,
        _sendsImage = sendsImage ?? ((b) => imageBackends.contains(b.name)),
        _log = log ?? ((_) {});
 
   /// What each change published, for [settle]; in memory unless given.
   final ChangeLedger ledger;
 
+  /// What each change's still-open question was asked for, so a late
+  /// answer runs that change again; in memory unless given.
+  final AskedQuestions asked;
+
   final ClaxApi _api;
-  final AgentBackend Function() _backend;
+  final AgentRunner Function()? _runner;
   final PromptBuilder _prompts;
   final String Function() _model;
   final Timings _timings;
+  final Inspector? _inspector;
+  final Uri Function()? _baseUrl;
+  final AgentReadConsent? _readConsent;
+  final AgentBackend? Function()? _singleCall;
+  final Clock _clock;
+  final void Function(QuestionView q)? _onAsked;
   final bool Function(AgentBackend) _sendsImage;
   final void Function(String) _log;
 
-  /// The most collections of one other app summarized for a prompt.
-  static const maxCollectionsPerApp = 8;
-
   /// Makes a new app from the person's [request] and returns its artifact
-  /// ID. The artifact is created as the app session, then the result's
-  /// document writes are sent in one batch (a new artifact has no
-  /// documents, so none is read first). Throws [AgentError]: the backend's
-  /// own, a result still invalid after one retry, a refused create, or
+  /// ID, as the app session [session] (which also asks [AskTool]'s
+  /// question; without one the agent cannot ask). Throws [AgentError]: a
+  /// model failure, a run that gave up (its reason), a refused create, or
   /// [AgentError.cancelled] when [cancelled] fires before the create.
   ///
-  /// [onProgress] receives each backend run's [AgentProgress] events; a
-  /// run sent again after an invalid result reports its partial output
-  /// from the beginning. Without it the backend does not stream.
+  /// [onProgress] receives the run's [AgentProgress] events, from an
+  /// [AttemptStarted]. Without it the single call does not stream.
+  ///
+  /// A tool-loop create that got no answer (the daemon went away) looks
+  /// for the app among the artifacts that were not there before the run,
+  /// made by the app session, and returns it when found; else it throws,
+  /// saying to look for it before trying again, so a Retry does not make
+  /// it twice.
   Future<String> newApp(
     String request, {
     Future<void>? cancelled,
     ProgressSink? onProgress,
+    String? session,
   }) async {
+    final single = _singleCall?.call();
+    if (single != null) {
+      return _newAppSingle(single, request, cancelled, onProgress);
+    }
+    return _newAppTools(request, cancelled, onProgress, session);
+  }
+
+  Future<String> _newAppTools(
+    String request,
+    Future<void>? cancelled,
+    ProgressSink? onProgress,
+    String? session,
+  ) async {
     final cancel = CancelWatch(cancelled);
-    final backend = _backend();
+    final runner = _requireRunner();
+    final Uri base;
+    try {
+      base = _baseUrl!();
+    } on ClaxApiError catch (e) {
+      throw AgentError(e.message);
+    }
+    final listing = _api.listArtifacts();
+    final reads = await Future.wait<Object?>([
+      listing.then<List<ArtifactSummary>?>(
+        (l) => l,
+        onError: (Object _) => null,
+      ),
+      _othersFrom(listing),
+      _prompts.toolSystem(),
+    ]);
+    final before = switch (reads[0]) {
+      final List<ArtifactSummary> l => {for (final a in l) a.id},
+      _ => null,
+    };
+    final others = reads[1]! as List<OtherApp>;
+    final system = reads[2]! as String;
+    cancel.check();
+    final ran = await _runTools(
+      runner,
+      base,
+      RunContext(
+        kind: RequestKind.newApp,
+        files: const {},
+        sessionId: session,
+        cancelled: cancelled,
+        clock: _clock,
+      ),
+      RunCaps.newApp,
+      RunInput(system: system, first: _prompts.firstNew(request, others)),
+      onProgress,
+      agentNewTiming,
+      const {},
+    );
+    // A new app's question is about nothing that outlives the run.
+    await ran.ask.withdrawOpen();
+    switch (ran.outcome) {
+      case RunFinished(:final artifactId?, :final docsRefused):
+        if (docsRefused != null) {
+          _log('new app $artifactId: made without its documents: $docsRefused');
+        }
+        return artifactId;
+      case RunFinished():
+        throw const AgentError('The app was not created.');
+      case RunCancelled():
+        throw const AgentError.cancelled();
+      case RunGaveUp(:final reason):
+        throw ran.error ?? AgentError(reason);
+      case RunDropped():
+        throw const AgentError('The app was deleted before it was finished.');
+      case RunInterrupted():
+        if (await _findCreated(before) case final aid?) return aid;
+        throw const AgentError(
+          'Clax lost its connection while saving your app, so it may have '
+          'been made. Look for it in your apps before you try again.',
+        );
+    }
+  }
+
+  /// The artifact the app session made during an interrupted create: one
+  /// not in [before] whose version 1 the app session published; null when
+  /// there is none, or the daemon cannot say.
+  Future<String?> _findCreated(Set<String>? before) async {
+    if (before == null) return null;
+    try {
+      for (final a in await _api.listArtifacts()) {
+        if (before.contains(a.id) || a.kind != 'html') continue;
+        final d = await _api.getArtifact(a.id);
+        final first = d.versions.where((v) => v.n == 1).firstOrNull;
+        if (first != null &&
+            first.sessionId != null &&
+            first.agentHarness == appHarness) {
+          _log('new app ${a.id} was made before its answer was lost');
+          return a.id;
+        }
+      }
+    } on Object catch (e) {
+      _log('looking for an interrupted new app failed: $e');
+    }
+    return null;
+  }
+
+  Future<String> _newAppSingle(
+    AgentBackend backend,
+    String request,
+    Future<void>? cancelled,
+    ProgressSink? onProgress,
+  ) async {
+    final cancel = CancelWatch(cancelled);
     final reads = await Future.wait<Object>([
       _othersFrom(_api.listArtifacts()),
       _prompts.system(),
@@ -231,38 +418,43 @@ class AgentLoop {
 
   /// Changes artifact [aid] in answer to [items] (comments, possibly
   /// several of one thread), and never throws: a failure becomes a reply on
-  /// the threads, which stay open.
+  /// the threads ([failureReply]), which stay open.
   ///
-  /// Order: mark working; read the current version's text files, the
-  /// app's own documents, the other apps' summaries, the clip and the
-  /// system prompt, all at once; run the backend; validate and apply the
-  /// result; publish with `if_version` and the threads as `addresses`;
-  /// write the documents, each pinned to the version the prompt showed;
-  /// reply on each thread; resolve them when the result says so;
-  /// acknowledge the comments to [session] (skipped when null); clear the
-  /// working mark.
+  /// First, every [AskedEntry] whose comments overlap [items] is taken and
+  /// its question withdrawn: this run answers those comments, so a late
+  /// answer to the earlier run's question must not run them again.
+  ///
+  /// Then: mark working; read the current version's text files, the app's
+  /// own documents (this app's only, the versions they were shown at are
+  /// what a write may be pinned to), the other apps by ID and title, the
+  /// clip (when the run sends images) and the system prompt, all at once;
+  /// run; acknowledge the comments to [session] (skipped when null) as
+  /// the run's end replies; clear the working mark.
+  ///
+  /// [answers] is the daemon's late-answer text for a question an earlier
+  /// run of these comments asked; the first message carries it.
   ///
   /// A thread whose latest viewer comment is not one of [items] (the
   /// person wrote again while this ran) gets neither the reply nor the
   /// resolve: the newer comment's own run answers it, and until then it
-  /// stays recoverable. A refused document write that is not a conflict,
-  /// or a second conflict, restores the version before the change and
-  /// fails. A daemon call without an answer ends the run as
+  /// stays recoverable. A daemon call without an answer ends the run as
   /// [ChangeInterrupted]. When [cancelled] fires before the publish, the
   /// run stops with [ChangeCancelled] and nothing is published, replied or
-  /// acknowledged. [onProgress] receives the backend runs' progress, as
-  /// for [newApp].
+  /// acknowledged. [onProgress] receives the run's progress, as for
+  /// [newApp].
   Future<ChangeOutcome> change(
     String aid,
     List<FeedbackItem> items, {
     String? session,
     Future<void>? cancelled,
     ProgressSink? onProgress,
+    String? answers,
   }) async {
     if (items.isEmpty) return const ChangeAnswered();
     final threadIds = [
       ...{for (final i in items) i.threadId},
     ];
+    await _takeOverQuestions(items, session);
     await _quiet(
       'mark working',
       () => _api.setWorking(
@@ -274,21 +466,369 @@ class AgentLoop {
     );
     final ChangeOutcome outcome;
     try {
-      outcome = await _change(
-        aid,
-        items,
-        threadIds,
-        session,
-        cancelled,
-        onProgress,
-      );
+      final single = _singleCall?.call();
+      outcome = single != null
+          ? await _changeSingle(
+              single,
+              aid,
+              items,
+              threadIds,
+              session,
+              cancelled,
+              onProgress,
+            )
+          : await _changeTools(
+              aid,
+              items,
+              threadIds,
+              session,
+              cancelled,
+              onProgress,
+              answers,
+            );
     } finally {
       await _quiet('clear working', () => _api.setWorking(aid, on: false));
     }
     return outcome;
   }
 
-  Future<ChangeOutcome> _change(
+  /// Takes every [AskedEntry] whose comments overlap [items] and withdraws
+  /// its question, as [session]; a question that is closed or gone stays
+  /// so.
+  Future<void> _takeOverQuestions(
+    List<FeedbackItem> items,
+    String? session,
+  ) async {
+    final ids = {for (final i in items) i.commentId};
+    final List<AskedEntry> entries;
+    try {
+      entries = await asked.all();
+    } on Object catch (e) {
+      _log('asked questions unavailable: $e');
+      return;
+    }
+    for (final e in entries) {
+      if (!e.commentIds.any(ids.contains)) continue;
+      try {
+        await asked.take(e.questionId);
+      } on Object catch (err) {
+        _log('forgetting question ${e.questionId} failed: $err');
+      }
+      if (session == null) continue;
+      try {
+        await _api.withdrawQuestion(session, e.questionId);
+      } on Object catch (err) {
+        _log('withdrawing question ${e.questionId} failed: $err');
+      }
+    }
+  }
+
+  Future<ChangeOutcome> _changeTools(
+    String aid,
+    List<FeedbackItem> items,
+    List<String> threadIds,
+    String? session,
+    Future<void>? cancelled,
+    ProgressSink? onProgress,
+    String? answers,
+  ) async {
+    final cancel = CancelWatch(cancelled);
+    Future<ChangeOutcome> fail(String reason) async {
+      final answered = await _replyFailure(
+        aid,
+        items,
+        threadIds,
+        session,
+        reason,
+      );
+      return ChangeFailed(reason, answered: answered);
+    }
+
+    final AgentRunner runner;
+    final Uri base;
+    final _Snapshot snap;
+    final List<OtherApp> others;
+    final Uint8List? clip;
+    final String system;
+    try {
+      runner = _requireRunner();
+      base = _baseUrl!();
+      final listing = _api.listArtifacts();
+      final reads = await Future.wait<Object?>([
+        _firstSnapshot(aid, listing),
+        _othersFrom(listing, exclude: aid),
+        runner.sendsImages
+            ? _clip(aid, items.first.threadId)
+            : Future<Uint8List?>.value(),
+        _prompts.toolSystem(),
+      ]);
+      snap = reads[0]! as _Snapshot;
+      others = reads[1]! as List<OtherApp>;
+      clip = reads[2] as Uint8List?;
+      system = reads[3]! as String;
+    } on ClaxApiError catch (e) {
+      if (e.status == 0) {
+        _log('change on $aid interrupted: $e');
+        return const ChangeInterrupted();
+      }
+      if (e.isNotFound && e.code == 'not_found') {
+        _log('change on $aid dropped: the app is gone');
+        return const ChangeDropped();
+      }
+      return fail(e.message);
+    } on AgentError catch (e) {
+      return fail(e.message);
+    } on Object catch (e) {
+      _log('change on $aid failed before its run: $e');
+      return fail('$e');
+    }
+    if (cancel.isCancelled) return const ChangeCancelled();
+
+    final documents = PromptBuilder.trimDocuments(snap.docs);
+    final ran = await _runTools(
+      runner,
+      base,
+      RunContext(
+        kind: RequestKind.change,
+        artifactId: aid,
+        baseVersion: snap.artifact.currentVersion,
+        title: snap.artifact.title,
+        capabilities: snap.artifact.capabilities,
+        files: snap.files,
+        items: items,
+        threadIds: threadIds,
+        // This app's documents only: db_write pins by path alone.
+        shownDocs: {
+          for (final c in documents)
+            for (final d in c.docs) d.path: d.version,
+        },
+        sessionId: session,
+        cancelled: cancelled,
+        clock: _clock,
+      ),
+      RunCaps.change,
+      RunInput(
+        system: system,
+        first: _prompts.firstChange(
+          title: snap.artifact.title,
+          files: snap.files,
+          comments: [
+            for (var i = 0; i < items.length; i++)
+              CommentContext(
+                threadId: items[i].threadId,
+                author: items[i].author,
+                body: items[i].body,
+                anchorLine: anchorLine(items[i].anchor, items[i].version),
+                clip: i == 0 ? clip : null,
+              ),
+          ],
+          others: others,
+          documents: snap.docs,
+          answers: answers,
+        ),
+      ),
+      onProgress,
+      agentChangeTiming,
+      {'artifact': aid},
+    );
+
+    final outcome = ran.outcome;
+    if (outcome is RunGaveUp || outcome is RunDropped) {
+      // Nothing waits on the question any more: the change failed or its
+      // app is gone.
+      await ran.ask.withdrawOpen();
+    }
+    switch (outcome) {
+      case RunFinished(:final version, :final answered):
+        return version == null
+            ? ChangeAnswered(answered: answered)
+            : ChangeLanded(version, answered: answered);
+      case RunGaveUp(:final reason, :final answered):
+        if (ran.byTool) return ChangeFailed(reason, answered: answered);
+        // The runner ended it (a refusal, a broken turn, a model failure):
+        // nothing has replied yet.
+        return fail(ran.error?.message ?? reason);
+      case RunCancelled():
+        return const ChangeCancelled();
+      case RunInterrupted():
+        return const ChangeInterrupted();
+      case RunDropped():
+        return const ChangeDropped();
+    }
+  }
+
+  /// Replies [failureReply] of [reason] on each of [threadIds] but those
+  /// with a newer viewer comment, then acknowledges [items] to [session].
+  /// Returns whether every reply was taken.
+  Future<bool> _replyFailure(
+    String aid,
+    List<FeedbackItem> items,
+    List<String> threadIds,
+    String? session,
+    String reason,
+  ) async {
+    final newer = await newerComments(_api, aid, threadIds, {
+      for (final i in items) i.commentId,
+    }, log: _log);
+    var answered = true;
+    for (final t in threadIds) {
+      if (newer.contains(t)) {
+        _log('$aid/$t has a newer comment; its own run answers it');
+        continue;
+      }
+      try {
+        await _api.replyAsAgent(aid, t, failureReply(reason));
+      } on Object catch (e) {
+        _log('reply on $aid/$t failed: $e');
+        answered = false;
+      }
+    }
+    if (session != null) {
+      await _quiet(
+        'acknowledge',
+        () => _api.ackFeedback(session, [for (final i in items) i.commentId]),
+      );
+    }
+    return answered;
+  }
+
+  /// The runner of a tool-loop run; throws [AgentError] when this loop
+  /// cannot run one (no runner, or no inspector to render with).
+  AgentRunner _requireRunner() {
+    final make = _runner;
+    if (make == null || _inspector == null || _baseUrl == null) {
+      throw const AgentError(
+        'The agent cannot check its work here: no runner or renderer is set '
+        'up.',
+      );
+    }
+    return make();
+  }
+
+  /// Runs [runner] over a fresh [Toolbox] for [ctx], timed as [timing].
+  /// Ends the run however it ended: the draft artifact is deleted, and a
+  /// model failure becomes the outcome ([RunGaveUp], or [RunCancelled]
+  /// when the run was cancelled).
+  Future<_Ran> _runTools(
+    AgentRunner runner,
+    Uri base,
+    RunContext ctx,
+    RunCaps caps,
+    RunInput input,
+    ProgressSink? onProgress,
+    String timing,
+    Map<String, Object?> extra,
+  ) async {
+    // [_requireRunner] made [runner], so the inspector is there.
+    final inspector = _inspector!;
+    final model = _model();
+    final sink = _guarded(onProgress);
+    final render = RenderTool(_api, inspector, baseUrl: base);
+    final finish = FinishTool(_api, ledger, render: render, log: _log);
+    final giveUp = GiveUpTool(_api, render: render, log: _log);
+    final ask = AskTool(
+      _api,
+      asked,
+      maxWaitNew: askWaitNewApp,
+      maxWaitChange: askWaitChange,
+      onAsked: _onAsked,
+    );
+    final state = RunState(
+      ctx: ctx,
+      draft: Draft(
+        files: ctx.files,
+        title: ctx.title,
+        capabilities: ctx.capabilities,
+        baseVersion: ctx.baseVersion,
+      ),
+      budget: RunBudget(caps, model, _clock),
+      progress: sink,
+      readConsent: _readConsent,
+    );
+    var byTool = false;
+    void ended() => byTool = byTool || state.ended;
+    final toolbox = Toolbox(state, [
+      ...fileTools(),
+      ...dataTools(_api),
+      render,
+      ask,
+      _Ending(finish, ended),
+      _Ending(giveUp, ended),
+    ]);
+    finish.attach(toolbox);
+    toolbox.capHandler = (cap, narration) async {
+      final o = await finish.capStop(cap, narration: narration);
+      byTool = true;
+      return o;
+    };
+
+    sink?.call(const AttemptStarted(1));
+    _timings.start(timing);
+    RunOutcome outcome;
+    AgentError? error;
+    try {
+      outcome = await runner.run(input, toolbox);
+    } on AgentError catch (e) {
+      error = e;
+      outcome =
+          state.outcome ??
+          (e.kind == AgentErrorKind.cancelled
+              ? const RunCancelled()
+              : RunGaveUp(e.message, answered: false));
+    } on Object catch (e) {
+      _log('the $timing run failed: $e');
+      error = AgentError('$e');
+      outcome = state.outcome ?? RunGaveUp('$e', answered: false);
+    } finally {
+      final b = state.budget;
+      _timings.stop(
+        timing,
+        extra: {
+          ...extra,
+          'model': model,
+          'backend': runner.name,
+          'turns': b.turns,
+          'renders': b.renders,
+          'input_tokens': b.usage.input,
+          'cache_read_tokens': b.usage.cacheRead,
+          'cache_write_tokens': b.usage.cacheWrite,
+          'output_tokens': b.usage.output,
+          'cost_usd': b.costUsd,
+          'outcome': switch (state.outcome) {
+            RunFinished() => 'finished',
+            RunGaveUp() => 'gave up',
+            RunCancelled() => 'cancelled',
+            RunInterrupted() => 'interrupted',
+            RunDropped() => 'dropped',
+            null => error == null ? 'ended' : 'failed',
+          },
+        },
+      );
+    }
+    state.outcome ??= outcome;
+    // Every end deletes the draft, the runner's own ends included.
+    await render.cleanup();
+    return (
+      outcome: outcome,
+      byTool: byTool,
+      error: error,
+      ask: ask,
+      state: state,
+    );
+  }
+
+  ProgressSink? _guarded(ProgressSink? onProgress) => onProgress == null
+      ? null
+      : (event) {
+          try {
+            onProgress(event);
+          } on Object catch (e) {
+            _log('the progress listener failed: $e');
+          }
+        };
+
+  Future<ChangeOutcome> _changeSingle(
+    AgentBackend backend,
     String aid,
     List<FeedbackItem> items,
     List<String> threadIds,
@@ -307,7 +847,7 @@ class AgentLoop {
     }) async {
       final newer = {
         ...newerAtPublish,
-        ...await _newerComments(aid, threadIds, commentIds),
+        ...await newerComments(_api, aid, threadIds, commentIds, log: _log),
       };
       var answered = true;
       for (final t in threadIds) {
@@ -336,12 +876,11 @@ class AgentLoop {
     }
 
     Future<ChangeOutcome> fail(String reason) => finish(
-      "Couldn't make that change: $reason",
+      failureReply(reason),
       (answered) => ChangeFailed(reason, answered: answered),
     );
 
     try {
-      final backend = _backend();
       final images = _sendsImage(backend);
       // Every read before the model call runs at once.
       final listing = _api.listArtifacts();
@@ -429,7 +968,13 @@ class AgentLoop {
         if (_changesVersion(snap.artifact, snap.files, changed, r)) {
           // A thread the person wrote on again while this ran is left out
           // of addresses: this version does not answer its newer comment.
-          newerAtPublish = await _newerComments(aid, threadIds, commentIds);
+          newerAtPublish = await newerComments(
+            _api,
+            aid,
+            threadIds,
+            commentIds,
+            log: _log,
+          );
           final addresses = [
             for (final t in threadIds)
               if (!newerAtPublish.contains(t)) t,
@@ -559,7 +1104,7 @@ class AgentLoop {
     final detail = await _api.getArtifact(aid);
     for (final r in records) {
       final v = detail.versions
-          .where((x) => x.n == r.base + 1 && _madeBy(x, r))
+          .where((x) => x.n == r.base + 1 && madeBy(x, r))
           .firstOrNull;
       if (v == null) {
         await _forget(aid, r.base);
@@ -634,34 +1179,6 @@ class AgentLoop {
     }
     return (answered: answered, replied: replied, undone: undone);
   }
-
-  /// Whether version [v] is the one [r] published: the number it would
-  /// get, the same addresses and a note that opens with the reply.
-  static bool _madeBy(VersionInfo v, ChangeRecord r) {
-    // Published by the app session: not a restore (no session) and not
-    // another harness's publish.
-    if (v.sessionId == null || v.agentHarness != 'app') return false;
-    if (v.addresses.length != r.addresses.length ||
-        !v.addresses.every(r.addresses.contains)) {
-      return false;
-    }
-    final reply = _cleanLine(r.reply);
-    final head = reply.length > 40 ? reply.substring(0, 40) : reply;
-    return _cleanLine(v.note ?? '').startsWith(head);
-  }
-
-  /// [s] as the daemon stores a note (`clean_line`,
-  /// crates/clax-core/src/working.rs): control characters other than
-  /// whitespace dropped, whitespace collapsed to single spaces.
-  static String _cleanLine(String s) => _collapse(
-    String.fromCharCodes(
-      s.runes.where(
-        (c) =>
-            !((c < 0x20 || (c >= 0x7f && c <= 0x9f)) &&
-                !const {0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x85}.contains(c)),
-      ),
-    ),
-  );
 
   /// Whether the documents hold [ops]' writes: a set's document holds its
   /// data, an update's holds each of its fields, a delete's is gone.
@@ -811,29 +1328,6 @@ class AgentLoop {
     }
   }
 
-  /// The threads of [threadIds] whose latest viewer comment is not one of
-  /// [commentIds]; none when the threads cannot be read.
-  Future<Set<String>> _newerComments(
-    String aid,
-    List<String> threadIds,
-    Set<String> commentIds,
-  ) async {
-    final List<ThreadView> threads;
-    try {
-      threads = await _api.threads(aid);
-    } on Object catch (e) {
-      _log('threads of $aid unavailable: $e');
-      return const {};
-    }
-    return {
-      for (final t in threads)
-        if (threadIds.contains(t.id))
-          if (t.comments.lastWhereOrNull((c) => c.authorKind == 'viewer')
-              case final last? when !commentIds.contains(last.id))
-            t.id,
-    };
-  }
-
   /// Whether applying [changed] (and [r]'s title and capabilities) makes a
   /// version different from the current one.
   static bool _changesVersion(
@@ -941,9 +1435,10 @@ class AgentLoop {
     }
   }
 
-  /// The person's other apps that keep documents, in [listing]'s order,
-  /// without [exclude]; each app's documents are read at once, and an app
-  /// whose documents cannot be read is left out.
+  /// The person's other apps that declare `db`, by ID and title only, in
+  /// [listing]'s order, without [exclude]; none when they cannot be
+  /// listed. Nothing of their documents is read here: the agent reads them
+  /// through the data tools, after the owner's own consent.
   Future<List<OtherApp>> _othersFrom(
     Future<List<ArtifactSummary>> listing, {
     String? exclude,
@@ -955,36 +1450,11 @@ class AgentLoop {
       _log('other apps unavailable: $e');
       return const [];
     }
-    final candidates = all
-        .where((a) => a.id != exclude && a.declaresDb && a.kind == 'html')
-        .take(PromptBuilder.maxOthers);
-    final summaries = await Future.wait([
-      for (final a in candidates) _summary(a),
-    ]);
-    return [for (final s in summaries) ?s];
-  }
-
-  Future<OtherApp?> _summary(ArtifactSummary a) async {
-    try {
-      final colls = await _api.collections(a.id);
-      if (colls.isEmpty) return null;
-      final collections = await Future.wait([
-        for (final c in colls.take(maxCollectionsPerApp))
-          _api
-              .listDocs(a.id, c.path, limit: PromptBuilder.maxSamples)
-              .then(
-                (docs) => (
-                  path: c.path,
-                  count: c.count,
-                  samples: [for (final d in docs) d.data],
-                ),
-              ),
-      ]);
-      return OtherApp(id: a.id, title: a.title, collections: collections);
-    } on Object catch (e) {
-      _log('documents of ${a.id} unavailable: $e');
-      return null;
-    }
+    return [
+      for (final a in all)
+        if (a.id != exclude && a.declaresDb && a.kind == 'html')
+          OtherApp(id: a.id, title: a.title, collections: const []),
+    ].take(PromptBuilder.maxOthers).toList();
   }
 
   static String _workingNote(List<FeedbackItem> items) {
@@ -1001,12 +1471,25 @@ class AgentLoop {
   }
 }
 
-extension<T> on List<T> {
-  T? lastWhereOrNull(bool Function(T) test) {
-    for (var i = length - 1; i >= 0; i--) {
-      if (test(this[i])) return this[i];
+/// A tool that ends a run (`finish`, `give_up`), telling [ended] after
+/// each call, so the loop knows the run's end came from a tool, which
+/// replied itself.
+class _Ending implements Tool {
+  _Ending(this.inner, this.ended);
+
+  final Tool inner;
+  final void Function() ended;
+
+  @override
+  ToolSpec get spec => inner.spec;
+
+  @override
+  Future<ToolOutput> call(Map<String, Object?> input, RunState s) async {
+    try {
+      return await inner.call(input, s);
+    } finally {
+      ended();
     }
-    return null;
   }
 }
 

@@ -7,17 +7,26 @@ import 'dart:ui' show AppExitResponse;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import 'agent/asked.dart';
 import 'agent/backend.dart';
 import 'agent/claude_cli_backend.dart';
 import 'agent/edit_result.dart';
+import 'agent/inspector.dart';
 import 'agent/ledger.dart';
 import 'agent/loop.dart';
 import 'agent/messages_api_backend.dart';
+import 'agent/progress.dart';
 import 'agent/prompt.dart';
+import 'agent/read_consent.dart';
 import 'agent/request.dart';
+import 'agent/runner.dart';
+import 'agent/runner/messages_runner.dart';
+import 'agent/runner/scripted_runner.dart';
+import 'agent/runner/turn.dart';
 import 'agent/timings.dart';
 import 'agent/worker.dart';
 import 'clax/api.dart';
+import 'daemon/clock.dart';
 import 'daemon/supervisor.dart';
 import 'platform/background_work.dart';
 import 'platform/network_pause.dart';
@@ -52,6 +61,11 @@ class AppServices {
     required this.supportDir,
     required this.prompts,
     this.ledger,
+    this.asked,
+    this.inspector,
+    this.readConsent,
+    this.runner,
+    this.clock = const SystemClock(),
     this.cliSupported = false,
     this.background = const NoBackgroundWork(),
     PendingMake? pendingMake,
@@ -97,6 +111,26 @@ class AppServices {
   /// when null.
   final ChangeLedger? ledger;
 
+  /// What each change's open question was asked for, so a late answer
+  /// runs it again after an exit; in memory when null.
+  final AskedQuestions? asked;
+
+  /// Renders the tool loop's drafts. Without one, every run takes the
+  /// single structured call (see [usesToolLoop]).
+  final Inspector? inspector;
+
+  /// Asks the owner before the agent reads another app's documents;
+  /// without one such reads are refused.
+  final AgentReadConsent? readConsent;
+
+  /// The tool loop's runner in place of the Messages API's (a debug
+  /// build's [ScriptedRunner]); used only with an [inspector].
+  final AgentRunner Function()? runner;
+
+  /// The clock of the runs' budgets and of [ResumingTurns], so a held turn
+  /// and a run's wall clock are measured alike.
+  final Clock clock;
+
   /// Whether `claude -p` can run here (`ClaudeCliBackend.supported`).
   final bool cliSupported;
 
@@ -130,6 +164,48 @@ AgentBackend chooseBackend(
   }
   return MessagesApiBackend(apiKey: key.read, log: log);
 }
+
+/// The tool loop's runner over [backend] (R§4.2, R§4.7): a
+/// [MessagesApiRunner] whose turns wait out a background network cut
+/// ([ResumingTurns]) on [clock], which must be the clock of the runs'
+/// budgets so a held turn stops the same wall clock it is measured by.
+/// [onPause] and [onResume] are called as a hold starts and as its turn is
+/// sent again; a hold that a cancel ends calls no [onResume], so whatever
+/// [onPause] shows must also end with the run.
+AgentRunner toolLoopRunner(
+  TurnBackend backend,
+  AppPresence presence, {
+  required Clock clock,
+  void Function()? onPause,
+  void Function()? onResume,
+}) => MessagesApiRunner(
+  ResumingTurns(
+    backend,
+    presence,
+    clock: clock,
+    onPause: onPause,
+    onResume: onResume,
+  ),
+);
+
+/// Whether a run on [backend] takes the tool loop: with an [inspector] to
+/// render with, and either a [runner] override or a [backend] that takes
+/// turns (the Messages API). Otherwise it takes the single structured
+/// call (`claude -p`, or a debug build's scripted results).
+bool usesToolLoop(
+  AgentBackend backend, {
+  required Inspector? inspector,
+  AgentRunner Function()? runner,
+}) => inspector != null && (runner != null || backend is TurnBackend);
+
+/// What a progress event says the run is doing, for a notification or the
+/// making screen: the agent's narration or the label of the tool it
+/// started; null for the others.
+String? progressStep(AgentProgress p) => switch (p) {
+  Narration(:final text) => text,
+  ToolStarted(:final label) => label,
+  _ => null,
+};
 
 /// `claude -p`, found at each run ([ClaudeCliBackend.find]) from the
 /// configured path, `PATH` or the usual install directories.
@@ -170,6 +246,39 @@ List<Object> readAgentScript(String json) {
         AgentError(message, retryable: item['retryable'] == true)
       else
         _result(item.cast<String, Object?>(), i),
+  ];
+}
+
+/// Reads a scripted tool loop from [json]: `{"runs": [[call, …], …]}`,
+/// one list per run, each call `{"tool": "name", "input": {…},
+/// "narration": "text"}` (the narration optional), for
+/// [ScriptedRunner.runs]. Throws [FormatException].
+List<List<ScriptedCall>> readRunnerScript(String json) {
+  final j = jsonDecode(json);
+  final runs = switch (j) {
+    {'runs': final List<Object?> runs} => runs,
+    _ => throw const FormatException('a runner script is {"runs": [...]}'),
+  };
+  return [
+    for (final (i, run) in runs.indexed)
+      if (run is! List)
+        throw FormatException('run $i of the runner script is not a list')
+      else
+        [
+          for (final (k, c) in run.indexed)
+            switch (c) {
+              {'tool': final String tool} => ScriptedCall(
+                tool,
+                switch (c['input']) {
+                  null => const {},
+                  final Map<Object?, Object?> m => m.cast<String, Object?>(),
+                  _ => throw FormatException('call $k of run $i: bad input'),
+                },
+                c['narration'] as String?,
+              ),
+              _ => throw FormatException('call $k of run $i has no tool'),
+            },
+        ],
   ];
 }
 
@@ -319,12 +428,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       supervisor: _s.supervisor,
       api: _api,
       loop: _loop(
-        () => ResumingBackend(
-          _s.backend(_settings, _s.key),
-          _presence,
-          onPause: () => _stepChanges(MakeStage.paused.label),
-          onResume: () => _stepChanges(MakeStage.resuming.label),
-        ),
+        onPause: () => _stepChanges(MakeStage.paused.label),
+        onResume: () => _stepChanges(MakeStage.resuming.label),
       ),
       installId: _s.installId,
       pid: _s.pid,
@@ -367,14 +472,54 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         message: 'the daemon has not started yet',
       ));
 
-  AgentLoop _loop(AgentBackend Function() backend) => AgentLoop(
-    api: _api,
-    backend: backend,
-    prompts: _s.prompts,
-    model: () => _settings.model,
-    timings: _s.agentTimings,
-    ledger: _s.ledger,
-  );
+  late final _asked = _s.asked ?? MemoryAskedQuestions();
+
+  /// A loop whose runs follow the settings at their start: the tool loop
+  /// when [usesToolLoop], else the single call, each waiting out a
+  /// background network cut ([onPause], [onResume]). A single call's
+  /// backend goes through [wrap] (the making screen's stages).
+  AgentLoop _loop({
+    required void Function() onPause,
+    required void Function() onResume,
+    AgentBackend Function(AgentBackend backend)? wrap,
+  }) {
+    AgentBackend backend() => _s.backend(_settings, _s.key);
+    bool tools(AgentBackend b) =>
+        usesToolLoop(b, inspector: _s.inspector, runner: _s.runner);
+    return AgentLoop(
+      api: _api,
+      prompts: _s.prompts,
+      model: () => _settings.model,
+      timings: _s.agentTimings,
+      ledger: _s.ledger,
+      asked: _asked,
+      inspector: _s.inspector,
+      baseUrl: () => _currentEndpoint().base,
+      readConsent: _s.readConsent,
+      clock: _s.clock,
+      singleCall: () {
+        final b = backend();
+        if (tools(b)) return null;
+        final resuming = ResumingBackend(
+          b,
+          _presence,
+          onPause: onPause,
+          onResume: onResume,
+        );
+        return wrap == null ? resuming : wrap(resuming);
+      },
+      runner: () =>
+          _s.runner?.call() ??
+          toolLoopRunner(
+            backend() as TurnBackend,
+            _presence,
+            clock: _s.clock,
+            onPause: onPause,
+            onResume: onResume,
+          ),
+      log: (l) => debugPrint('clax agent: $l'),
+    );
+  }
 
   void _start() => unawaited(
     _s.supervisor.ensureUp().then<void>((_) {}, onError: (Object _) {}),
@@ -497,20 +642,32 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       _runs.step(run, s.label);
     }
 
+    // The tool loop's stage follows its progress: writing from the first
+    // event, publishing once it calls finish; the notification shows the
+    // latest step.
+    void progress(AgentProgress p) {
+      if (p case ToolStarted(name: 'finish')) {
+        stage(MakeStage.publishing);
+      } else if (p is AttemptStarted || p is ToolStarted || p is Narration) {
+        stage(MakeStage.writing);
+      }
+      if (progressStep(p) case final text?) _runs.step(run, text);
+    }
+
     _s.timings.start(sayUsable);
     final String aid;
     try {
-      aid = await _loop(
-        () => StagedBackend(
-          ResumingBackend(
-            backend,
-            _presence,
+      aid =
+          await _loop(
             onPause: () => staged(MakeStage.paused),
             onResume: () => staged(MakeStage.resuming),
-          ),
-          staged,
-        ),
-      ).newApp(request, cancelled: cancelled);
+            wrap: (b) => StagedBackend(b, staged),
+          ).newApp(
+            request,
+            cancelled: cancelled,
+            onProgress: progress,
+            session: _runtime.worker.sessionId,
+          );
     } on AgentError catch (e) {
       _runs.end(
         run,
@@ -599,10 +756,17 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     }
   }
 
-  /// Shows each change the worker runs as a background run.
+  /// Shows each change the worker runs as a background run, with its
+  /// latest step.
   void _onWorker(WorkerEvent e) {
     final aid = e.artifactId;
-    if (e is WorkerProgress) return;
+    if (e is WorkerProgress) {
+      final run = _changes[aid];
+      if (run != null) {
+        if (progressStep(e.progress) case final text?) _runs.step(run, text);
+      }
+      return;
+    }
     if (e is WorkerWorking) {
       if (_changes.containsKey(aid)) return;
       final run = _changes[aid] = _runs.begin(
@@ -680,6 +844,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
                   settings: settings,
                   timings: _s.timings,
                   worker: _runtime.worker.events,
+                  onRetry: _runtime.worker.retry,
                   onReady: (r) => _onReady(aid, r),
                   comments: _comments,
                 ),

@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import '../agent/failure.dart';
 import '../clax/api.dart';
 import '../platform/voice.dart';
 
@@ -20,18 +21,13 @@ enum ThreadStatus {
   /// The agent answered the last comment.
   replied,
 
-  /// The agent's last comment is a failure reply ([isFailureReply]).
+  /// The agent's last comment is this app's failure reply
+  /// ([isAppFailureReply]).
   failed,
 
   /// Resolved.
   resolved,
 }
-
-/// Whether [body] is the agent's reply to a change it could not make:
-/// it opens "Couldn't make that change:" (with either apostrophe).
-bool isFailureReply(String body) =>
-    body.startsWith("Couldn't make that change:") ||
-    body.startsWith('Couldn’t make that change:');
 
 /// [t]'s status. An agent that took a sent thread acknowledges its
 /// feedback (the app's session acknowledges when its poll takes it), so a
@@ -42,9 +38,7 @@ ThreadStatus threadStatus(ThreadView t) {
   if (!t.sentToAgent) return ThreadStatus.unsent;
   final last = t.comments.isEmpty ? null : t.comments.last;
   if (last != null && last.byAgent) {
-    return isFailureReply(last.body)
-        ? ThreadStatus.failed
-        : ThreadStatus.replied;
+    return isAppFailureReply(last) ? ThreadStatus.failed : ThreadStatus.replied;
   }
   return t.feedbackState?.state == 'acknowledged'
       ? ThreadStatus.working
@@ -705,7 +699,7 @@ class _ThreadDetailState extends State<ThreadDetail> {
         : (owner != null && c.authorPublicId == owner) || c.authorName.isEmpty
         ? 'You'
         : c.authorName;
-    final failed = agent && isFailureReply(c.body);
+    final failed = isAppFailureReply(c);
     final bubble = agent
         ? (failed ? scheme.errorContainer : scheme.secondaryContainer)
         : scheme.surfaceContainerHigh;

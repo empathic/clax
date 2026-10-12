@@ -1,10 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:clax_app/agent/backend.dart';
 import 'package:clax_app/agent/edit_result.dart';
 import 'package:clax_app/agent/request.dart';
+import 'package:clax_app/agent/runner.dart';
+import 'package:clax_app/agent/runner/scripted_runner.dart';
 import 'package:clax_app/agent/scripted_backend.dart';
 import 'package:clax_app/agent/timings.dart';
+import 'package:clax_app/agent/tools/toolbox.dart';
 
 /// A [ScriptedBackend] under another [name], whose calls can be held at a
 /// gate until the test opens it, and which honours
@@ -106,3 +110,108 @@ Future<void> until(
   }
   throw StateError('condition not reached: ${reason ?? condition}');
 }
+
+/// A [ScriptedRunner] of [runs] whose runs can be held at a gate until the
+/// test opens it, and which ends a held run cancelled when its cancel
+/// fires; it keeps every run's input and state.
+class HeldRunner implements AgentRunner {
+  HeldRunner(
+    List<List<ScriptedCall>> runs, {
+    this.name = 'scripted',
+    this.sendsImages = true,
+  }) : _inner = ScriptedRunner.runs(runs, name: name, sendsImages: sendsImages);
+
+  final ScriptedRunner _inner;
+
+  @override
+  final String name;
+
+  @override
+  final bool sendsImages;
+
+  /// Runs that start while this is set wait for it to complete.
+  Completer<void>? gate;
+
+  /// Completes when a run reaches the gate.
+  Completer<void> arrived = Completer<void>();
+
+  /// Every run's input, in order, recorded when it starts.
+  final List<RunInput> seen = [];
+
+  /// Every run's state, in order.
+  final List<RunState> states = [];
+
+  /// The text of run [i]'s first message.
+  String text(int i) => [
+    for (final b in seen[i].first)
+      if (b['type'] == 'text') b['text']! as String,
+  ].join('\n');
+
+  @override
+  Future<RunOutcome> run(RunInput input, Toolbox toolbox) async {
+    seen.add(input);
+    states.add(toolbox.state);
+    final g = gate;
+    if (g != null) {
+      if (!arrived.isCompleted) arrived.complete();
+      final watch = CancelWatch(toolbox.state.ctx.cancelled);
+      await Future.any([g.future, watch.whenCancelled]);
+      if (watch.isCancelled) {
+        return toolbox.state.outcome ??= const RunCancelled();
+      }
+    }
+    return _inner.run(input, toolbox);
+  }
+}
+
+/// A change's tool calls: each of [edits] as a `str_replace` of
+/// index.html, the [db] writes staged, a render, then `finish` with
+/// [reply].
+List<ScriptedCall> changeCalls({
+  String reply = 'Done.',
+  List<(String, String)> edits = const [],
+  List<DbOp> db = const [],
+  bool resolve = true,
+  String? narration,
+}) => [
+  for (final (i, (from, to)) in edits.indexed)
+    ScriptedCall('str_replace', {
+      'path': 'index.html',
+      'old_str': from,
+      'new_str': to,
+    }, i == 0 ? narration : null),
+  if (db.isNotEmpty)
+    ScriptedCall('db_write', {
+      'app': null,
+      'ops': [
+        for (final o in db)
+          {
+            'op': o.op,
+            'collection': o.collection,
+            'doc_id': o.docId,
+            'data_json': o.data == null ? null : jsonEncode(o.data),
+          },
+      ],
+    }),
+  if (edits.isNotEmpty || db.isNotEmpty)
+    const ScriptedCall('render', {'file': null}),
+  ScriptedCall('finish', {'reply': reply, 'resolve': resolve}),
+];
+
+/// A new app's tool calls: `set_meta` with [title] (and [capabilities]),
+/// `write_file` of index.html with [page], a render, then `finish`.
+List<ScriptedCall> newAppCalls({
+  String title = 'Runs',
+  String page = '<!doctype html><title>Runs</title><h1>Runs</h1>',
+  Map<String, Object?>? capabilities,
+  String reply = 'Made a run tracker.',
+  String? narration = 'Writing the tracker',
+}) => [
+  ScriptedCall('set_meta', {
+    'title': title,
+    'capabilities_json': capabilities == null ? null : jsonEncode(capabilities),
+  }, narration),
+  ScriptedCall('write_file', {'path': 'index.html', 'content': page}),
+  const ScriptedCall('render', {'file': null}),
+  ScriptedCall('finish', {'reply': reply, 'resolve': false}),
+];
