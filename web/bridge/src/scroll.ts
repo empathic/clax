@@ -39,16 +39,15 @@ export function reportScroll(win: Window, post: (m: { type: "clax:scroll"; file:
 
 /** Scrolls the page to `y` once the document is tall enough to reach it,
  * measuring again every `RESTORE_EVERY_MS`; after `RESTORE_WITHIN_MS` it
- * gives up and leaves the page where it is. A `y` that is not a finite,
- * non-negative number is ignored. */
+ * scrolls as far towards `y` as the document then reaches. A `y` that is not
+ * a finite, non-negative number is ignored. */
 export function restoreScroll(win: Window, y: number, timers: Timers = windowTimers(win)): void {
   if (typeof y !== "number" || !Number.isFinite(y) || y < 0) return;
   let waited = 0;
   const attempt = () => {
     const doc = win.document;
-    const height = (doc.scrollingElement ?? doc.documentElement).scrollHeight;
-    if (y === 0 || height - win.innerHeight >= y) { win.scrollTo(0, y); return; }
-    if (waited >= RESTORE_WITHIN_MS) return;
+    const reach = Math.max(0, (doc.scrollingElement ?? doc.documentElement).scrollHeight - win.innerHeight);
+    if (reach >= y || waited >= RESTORE_WITHIN_MS) { win.scrollTo(0, Math.min(y, reach)); return; }
     waited += RESTORE_EVERY_MS;
     timers.set(attempt, RESTORE_EVERY_MS);
   };
