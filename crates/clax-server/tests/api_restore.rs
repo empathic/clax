@@ -277,3 +277,86 @@ async fn restore_is_attributed_to_a_live_session_and_refuses_an_unknown_one() {
     assert_eq!(v["version"]["n"], 2);
     assert_eq!(v["version"]["session_id"], sid);
 }
+
+#[tokio::test]
+async fn a_live_page_cannot_be_restored() {
+    let ts = TestServer::spawn().await;
+    let v = ts.viewer(Some("Alex")).await;
+    let anchor =
+        json!({"kind": "element", "selector": "main", "quote": "Save", "file": "index.html"});
+    let form = reqwest::multipart::Form::new()
+        .text("url", "http://localhost:5173/")
+        .text("title", "Settings")
+        .text("anchor", anchor.to_string())
+        .text("body", "The button overflows")
+        .text("pending", "[]")
+        .text("snapshot", "<p>");
+    let res = ts
+        .client
+        .post(format!("{}/api/live/threads", ts.base))
+        .header("cookie", format!("clax_viewer={}", v.cookie))
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success(), "{}", res.text().await.unwrap());
+    let body: Value = res.json().await.unwrap();
+    let aid = body["page"]["artifact_id"].as_str().unwrap();
+    let res = restore(&ts, aid, json!({"version": 1, "if_version": 1})).await;
+    assert_eq!(res.status(), 400);
+    assert_eq!(
+        res.json::<Value>().await.unwrap()["error"]["code"],
+        "live_page"
+    );
+    let a: Value = ts
+        .get_authed(&format!("/api/artifacts/{aid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(a["artifact"]["current_version"], 1);
+}
+
+#[tokio::test]
+async fn a_publish_after_a_restore_builds_on_the_restored_files() {
+    let ts = TestServer::spawn().await;
+    let p = ts
+        .publish(
+            "Runs",
+            &[("index.html", "<p>one</p>"), ("style.css", "p{}")],
+        )
+        .await;
+    let aid = p["artifact"]["id"].as_str().unwrap().to_string();
+    publish(
+        &ts,
+        &aid,
+        1,
+        json!({"index.html": {"content": "<p>two</p>"}, "style.css": null, "app.js": {"content": "x()"}}),
+    )
+    .await;
+    assert_eq!(
+        restore(&ts, &aid, json!({"version": 1, "if_version": 2}))
+            .await
+            .status(),
+        201
+    );
+    let v = publish(
+        &ts,
+        &aid,
+        3,
+        json!({"index.html": {"content": "<p>four</p>"}}),
+    )
+    .await;
+    assert_eq!(v["version"]["n"], 4);
+    let files: Vec<&String> = v["version"]["files"].as_object().unwrap().keys().collect();
+    assert_eq!(files, ["index.html", "style.css"]);
+    assert_eq!(
+        file(&ts, &aid, 4, "index.html").await.text().await.unwrap(),
+        "<p>four</p>"
+    );
+    assert_eq!(
+        file(&ts, &aid, 4, "style.css").await.text().await.unwrap(),
+        "p{}"
+    );
+    assert_eq!(file(&ts, &aid, 4, "app.js").await.status(), 404);
+}

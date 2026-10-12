@@ -222,7 +222,7 @@ fn body_class(kind: &str, field: &str) -> Class {
         (
             "version.publish" | "live.snapshot",
             "n" | "files" | "content_sha256" | "carried" | "addresses" | "by_page" | "origin"
-            | "path" | "source" | "files_unreadable",
+            | "path" | "source" | "files_unreadable" | "restored_from",
         ) => Safe,
         ("artifact.update", "fields") => Fields,
         ("artifact.delete", "title") => Text,
@@ -340,7 +340,7 @@ fn anchor_class(field: &str) -> Class {
 
 fn fields_class(field: &str) -> Class {
     match field {
-        "icon" | "pinned" => Class::Safe,
+        "icon" | "pinned" | "db_read_grants" => Class::Safe,
         "title" | "description" | "capabilities" => Class::Text,
         _ => Class::Unclassified,
     }
