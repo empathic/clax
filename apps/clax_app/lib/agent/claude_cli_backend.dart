@@ -6,6 +6,9 @@ import 'dart:typed_data';
 import 'backend.dart';
 import 'edit_result.dart';
 import 'edit_schema.dart';
+import 'json_stream.dart';
+import 'message_stream.dart';
+import 'progress.dart';
 import 'request.dart';
 
 /// Starts `claude` for [ClaudeCliBackend] with its stdin, stdout and stderr
@@ -84,6 +87,16 @@ bool _dropFromEnvironment(String name) =>
 /// (the system prompt) and used as the working directory; it is removed
 /// when the run ends. The clip is not sent: with tools off `claude` has no
 /// way to read it, and the anchor and quote travel in the request text.
+///
+/// When the request has an [AgentRequest.onProgress] sink, `claude` runs
+/// with `--output-format stream-json --verbose --include-partial-messages`:
+/// the Messages API events inside its `stream_event` lines report
+/// [PartialFile], [PartialEdit] and [OutputTokens] progress, whether the
+/// result streams as text or as a tool's input, and its final `result`
+/// line is read exactly as the `json` output is. A `claude` that refuses
+/// those options (an unknown-option error before any result) is run once
+/// more without streaming. Without a sink it runs with `--output-format
+/// json`.
 class ClaudeCliBackend implements AgentBackend {
   ClaudeCliBackend({
     required this.executable,
@@ -124,14 +137,21 @@ class ClaudeCliBackend implements AgentBackend {
   String get name => 'claude-cli';
 
   /// `claude`'s arguments for a run with [model] and the system prompt in
-  /// [systemPromptFile], in order.
+  /// [systemPromptFile], in order; [stream] asks for stream-json with
+  /// partial messages.
   static List<String> arguments({
     required String model,
     required String systemPromptFile,
+    bool stream = false,
   }) => [
     '-p',
     '--output-format',
-    'json',
+    if (stream) ...[
+      'stream-json',
+      '--verbose',
+      '--include-partial-messages',
+    ] else
+      'json',
     '--json-schema',
     jsonEncode(editSchema),
     '--tools',
@@ -202,25 +222,46 @@ class ClaudeCliBackend implements AgentBackend {
     try {
       final systemFile = File('${dir.path}/system.md');
       await systemFile.writeAsString(request.systemPrompt, flush: true);
-      final args = [
-        ...prefixArgs,
-        ...arguments(model: request.model, systemPromptFile: systemFile.path),
-      ];
-      final Process p;
-      try {
-        cancel.check();
-        p = await _start(
-          executable,
-          args,
-          workingDirectory: dir.path,
-          environment: claudeEnvironment(
-            _parentEnvironment ?? Platform.environment,
+      Future<EditResult> attempt(ProgressSink? emit) async {
+        final args = [
+          ...prefixArgs,
+          ...arguments(
+            model: request.model,
+            systemPromptFile: systemFile.path,
+            stream: emit != null,
           ),
-        );
-      } on ProcessException catch (e) {
-        throw AgentError("Couldn't start claude ($executable): ${e.message}");
+        ];
+        final Process p;
+        try {
+          cancel.check();
+          p = await _start(
+            executable,
+            args,
+            workingDirectory: dir.path,
+            environment: claudeEnvironment(
+              _parentEnvironment ?? Platform.environment,
+            ),
+          );
+        } on ProcessException catch (e) {
+          throw AgentError("Couldn't start claude ($executable): ${e.message}");
+        }
+        return _finish(p, request.userText, cancel, emit);
       }
-      return await _finish(p, request.userText, cancel);
+
+      final sink = request.onProgress;
+      if (sink == null) return await attempt(null);
+      try {
+        return await attempt((event) {
+          if (cancel.isCancelled) return;
+          try {
+            sink(event);
+          } on Object {
+            // A failing listener must not fail the run.
+          }
+        });
+      } on _StreamUnsupported {
+        return await attempt(null);
+      }
     } finally {
       try {
         await dir.delete(recursive: true);
@@ -234,8 +275,12 @@ class ClaudeCliBackend implements AgentBackend {
     Process p,
     String userText,
     CancelWatch cancel,
+    ProgressSink? emit,
   ) async {
-    final stdout = _collect(p.stdout);
+    final streamed = emit == null ? null : _StreamedOutput(emit);
+    final Future<List<int>> stdout = streamed == null
+        ? _collect(p.stdout)
+        : streamed.read(p.stdout);
     final stderr = _collect(p.stderr);
     // Not awaited on its own: a child that never reads stdin must still be
     // bounded by the timeout below.
@@ -263,11 +308,24 @@ class ClaudeCliBackend implements AgentBackend {
         retryable: true,
       );
     }
-    return _parse(
-      code,
-      utf8.decode(out, allowMalformed: true),
-      utf8.decode(err, allowMalformed: true),
-    );
+    final errText = utf8.decode(err, allowMalformed: true);
+    if (streamed != null) {
+      final result = streamed.resultLine;
+      if (result == null && code != 0 && _refusesStreaming(errText)) {
+        throw const _StreamUnsupported();
+      }
+      return _parse(code, result ?? streamed.otherText, errText);
+    }
+    return _parse(code, utf8.decode(out, allowMalformed: true), errText);
+  }
+
+  /// Whether `claude`'s [stderr] says it does not know a streaming option.
+  static bool _refusesStreaming(String stderr) {
+    final text = stderr.toLowerCase();
+    return text.contains('unknown option') &&
+        (text.contains('--include-partial-messages') ||
+            text.contains('stream-json') ||
+            text.contains('--verbose'));
   }
 
   static Future<void> _feed(IOSink stdin, String text) async {
@@ -366,6 +424,66 @@ class ClaudeCliBackend implements AgentBackend {
       "claude's result is not a JSON object: ${_cut(text)}",
       retryable: true,
     );
+  }
+}
+
+/// A run in stream-json mode could not stream; it is run again without.
+class _StreamUnsupported implements Exception {
+  const _StreamUnsupported();
+}
+
+/// Reads `claude`'s stream-json output line by line: `stream_event` lines
+/// feed a [MessageStream] whose deltas report progress, the `result` line
+/// is kept as the run's answer, and lines that are neither are kept for an
+/// error message.
+class _StreamedOutput {
+  _StreamedOutput(ProgressSink emit) {
+    final blocks = BlockProgress(emit);
+    _stream = MessageStream(
+      onDelta: blocks.delta,
+      onUsage: (n) => emit(OutputTokens(n)),
+    );
+  }
+
+  late final MessageStream _stream;
+
+  /// The last `result` line, as printed.
+  String? resultLine;
+  final _other = StringBuffer();
+
+  /// The lines that were not stream events, assistant messages or a
+  /// result, joined.
+  String get otherText => _other.toString();
+
+  /// Reads [stdout] to its end; returns no bytes, since the lines are kept
+  /// as they are read.
+  Future<List<int>> read(Stream<List<int>> stdout) async {
+    await for (final line
+        in stdout
+            .transform(const Utf8Decoder(allowMalformed: true))
+            .transform(const LineSplitter())) {
+      _line(line);
+    }
+    return const [];
+  }
+
+  void _line(String line) {
+    Object? json;
+    try {
+      json = jsonDecode(line);
+    } on FormatException {
+      json = null;
+    }
+    switch (json) {
+      case {'type': 'stream_event', 'event': final Object? event}:
+        _stream.add(event);
+      case {'type': 'result'}:
+        resultLine = line;
+      case {'type': 'assistant' || 'user' || 'system'}:
+        break;
+      case _:
+        if (line.trim().isNotEmpty) _other.writeln(line);
+    }
   }
 }
 

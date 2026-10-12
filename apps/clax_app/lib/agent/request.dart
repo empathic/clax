@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'backend.dart' show AgentError, AgentErrorKind;
+import 'progress.dart';
 
 /// What a request to the agent asks for.
 enum RequestKind {
@@ -79,6 +80,7 @@ class AgentRequest {
     required this.userText,
     this.image,
     this.cancelled,
+    this.onProgress,
   });
 
   final RequestKind kind;
@@ -96,4 +98,9 @@ class AgentRequest {
   /// the HTTP request) and throws an [AgentError] of kind
   /// [AgentErrorKind.cancelled]. Null: the request is never cancelled.
   final Future<void>? cancelled;
+
+  /// Receives [AgentProgress] events while the run is under way. A backend
+  /// that can stream its answer does so only when this is set; null runs
+  /// the request without streaming. Events stop once [cancelled] fires.
+  final ProgressSink? onProgress;
 }

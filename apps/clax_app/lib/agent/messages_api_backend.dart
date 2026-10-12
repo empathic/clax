@@ -5,6 +5,9 @@ import 'dart:io';
 import 'backend.dart';
 import 'edit_result.dart';
 import 'edit_schema.dart';
+import 'json_stream.dart';
+import 'message_stream.dart';
+import 'progress.dart';
 import 'request.dart';
 
 /// Asks the Claude Messages API for one [EditResult], with [editSchema] as
@@ -19,6 +22,15 @@ import 'request.dart';
 /// again because [AgentError.retryable] is true. When the request's
 /// [AgentRequest.cancelled] fires, the request in flight is aborted, no
 /// retry is sent, and [run] throws [AgentError.cancelled].
+///
+/// When the request has an [AgentRequest.onProgress] sink, the answer is
+/// streamed (server-sent events): the sink receives [PartialFile] and
+/// [PartialEdit] events as the result's JSON arrives, and [OutputTokens]
+/// as the usage reports them; the result is then parsed and checked from
+/// the whole message exactly as without streaming. A stream that breaks
+/// after it began (an `error` event, a lost connection, an end before
+/// `message_stop`) fails the run and is not sent again. Without a sink the
+/// request does not stream.
 ///
 /// The API key is read from the key callback on every run, is sent only in
 /// the `x-api-key` header, and is removed from every log line and error
@@ -63,10 +75,11 @@ class MessagesApiBackend implements AgentBackend {
     return base.replace(path: '$prefix/v1/messages');
   }
 
-  /// The request body for [r].
+  /// The request body for [r]; it streams when [r] has a progress sink.
   static Map<String, Object?> body(AgentRequest r) => {
     'model': r.model,
     'max_tokens': maxTokens,
+    if (r.onProgress != null) 'stream': true,
     'system': [
       {
         'type': 'text',
@@ -109,6 +122,17 @@ class MessagesApiBackend implements AgentBackend {
     void log(String line) => _log?.call(redact(line));
     AgentError error(String message, {required bool retryable}) =>
         AgentError(redact(message), retryable: retryable);
+    final sink = r.onProgress;
+    final ProgressSink? emit = sink == null
+        ? null
+        : (event) {
+            if (cancel.isCancelled) return;
+            try {
+              sink(event);
+            } on Object catch (e) {
+              log('$name: the progress listener failed: $e');
+            }
+          };
 
     final payload = utf8.encode(jsonEncode(body(r)));
     final client = _client ?? HttpClient();
@@ -122,7 +146,7 @@ class MessagesApiBackend implements AgentBackend {
         );
         final _Exchange ex;
         try {
-          ex = await _send(client, key, payload, error, cancel);
+          ex = await _send(client, key, payload, error, cancel, emit);
         } on _NoResponse catch (e) {
           log('$name: request failed: ${e.cause}');
           if (retry < maxRetries) {
@@ -141,7 +165,12 @@ class MessagesApiBackend implements AgentBackend {
           '$name: HTTP ${ex.status} in ${ms}ms '
           'request-id=${ex.requestId ?? "-"}',
         );
-        if (ex.status == HttpStatus.ok) return _parse(ex.text, error, log);
+        if (ex.status == HttpStatus.ok) {
+          if (ex.stream case final stream?) {
+            return _parseStream(stream, error, log);
+          }
+          return _parse(_tryDecode(ex.text), error, log);
+        }
         final failure = _httpError(ex.status, ex.text, error);
         if (_retriedStatus(ex.status) && retry < maxRetries) {
           final wait = _retryAfter(ex.retryAfter) ?? _backoff(retry);
@@ -175,6 +204,7 @@ class MessagesApiBackend implements AgentBackend {
     List<int> payload,
     AgentError Function(String, {required bool retryable}) error,
     CancelWatch cancel,
+    ProgressSink? emit,
   ) async {
     cancel.check();
     HttpClientRequest? request;
@@ -193,6 +223,17 @@ class MessagesApiBackend implements AgentBackend {
       req.add(payload);
       final res = await req.close();
       responded = true;
+      if (emit != null &&
+          res.statusCode == HttpStatus.ok &&
+          res.headers.contentType?.mimeType == 'text/event-stream') {
+        return _Exchange(
+          res.statusCode,
+          '',
+          res.headers.value('request-id'),
+          null,
+          stream: await _readStream(res, emit),
+        );
+      }
       final text = await utf8.decoder.bind(res).join();
       return _Exchange(
         res.statusCode,
@@ -229,6 +270,62 @@ class MessagesApiBackend implements AgentBackend {
     }
   }
 
+  /// Reads [res]'s events into a [MessageStream] until it ends or sends
+  /// an `error` event, reporting progress to [emit].
+  static Future<MessageStream> _readStream(
+    HttpClientResponse res,
+    ProgressSink emit,
+  ) async {
+    final blocks = BlockProgress(emit);
+    final stream = MessageStream(
+      onDelta: blocks.delta,
+      onUsage: (n) => emit(OutputTokens(n)),
+    );
+    void event(String? data) {
+      if (data == null) return;
+      try {
+        stream.add(jsonDecode(data));
+      } on FormatException {
+        // Not an event; the message is judged when the stream ends.
+      }
+    }
+
+    final sse = SseDecoder();
+    await for (final line
+        in utf8.decoder.bind(res).transform(const LineSplitter())) {
+      event(sse.line(line));
+      if (stream.error != null || stream.stopped) break;
+    }
+    event(sse.close());
+    return stream;
+  }
+
+  /// The API error types of a mid-stream `error` event worth trying again.
+  static const _retriedStreamErrors = {
+    'overloaded_error',
+    'api_error',
+    'rate_limit_error',
+  };
+
+  static EditResult _parseStream(
+    MessageStream stream,
+    AgentError Function(String, {required bool retryable}) error,
+    void Function(String) log,
+  ) {
+    if (stream.error case final e?) {
+      log('messages-api: the stream ended with ${e.type}');
+      throw error(
+        'Claude API error mid-answer (${e.type}): ${e.message}',
+        retryable: _retriedStreamErrors.contains(e.type),
+      );
+    }
+    if (!stream.stopped) {
+      log('messages-api: the stream ended before message_stop');
+      throw error('The answer stopped before it finished', retryable: true);
+    }
+    return _parse(stream.message, error, log);
+  }
+
   static bool _retriedStatus(int status) =>
       status == 408 || status == 429 || status >= 500;
 
@@ -263,11 +360,10 @@ class MessagesApiBackend implements AgentBackend {
   }
 
   static EditResult _parse(
-    String text,
+    Object? response,
     AgentError Function(String, {required bool retryable}) error,
     void Function(String) log,
   ) {
-    final Object? response = _tryDecode(text);
     if (response is! Map<String, Object?>) {
       throw error(
         'The Claude API answered with something other than a message',
@@ -335,12 +431,21 @@ class MessagesApiBackend implements AgentBackend {
 
 /// One HTTP exchange that got a response.
 class _Exchange {
-  const _Exchange(this.status, this.text, this.requestId, this.retryAfter);
+  const _Exchange(
+    this.status,
+    this.text,
+    this.requestId,
+    this.retryAfter, {
+    this.stream,
+  });
 
   final int status;
   final String text;
   final String? requestId;
   final String? retryAfter;
+
+  /// The streamed answer, when the response was a stream.
+  final MessageStream? stream;
 }
 
 /// An attempt that failed before any response arrived.
