@@ -1,0 +1,351 @@
+import 'dart:async';
+
+import 'package:clax_app/agent/loop.dart';
+import 'package:clax_app/agent/prompt.dart';
+import 'package:clax_app/agent/worker.dart';
+import 'package:clax_app/clax/api.dart';
+import 'package:clax_app/clax/fake_api.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'loop_support.dart';
+
+const page = '<!doctype html><title>Runs</title><button>Save</button>';
+
+const unreachable = ClaxApiError(
+  status: 0,
+  code: 'daemon_unreachable',
+  message: 'no connection',
+);
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  late FakeClaxApi api;
+  late HeldBackend backend;
+  late FeedbackWorker worker;
+  late List<WorkerEvent> events;
+  late int registrations;
+  late List<Duration> delays;
+
+  FeedbackWorker workerWith(List<Object> script) {
+    backend = HeldBackend(script);
+    final loop = AgentLoop(
+      api: api,
+      backend: () => backend,
+      prompts: PromptBuilder(rootBundle),
+      model: () => 'claude-haiku-5-5',
+      timings: RecordingTimings(),
+    );
+    worker = FeedbackWorker(
+      api: api,
+      loop: loop,
+      session: () async {
+        registrations++;
+        return (await api.registerAppSession(installId: 'install', pid: 1)).id;
+      },
+      delay: (d) async => delays.add(d),
+    );
+    worker.events.listen(events.add);
+    return worker;
+  }
+
+  List<String> publishedOn(String aid) => [
+    for (final c in api.calls)
+      if (c.name == 'publish' && c.args['aid'] == aid)
+        '${(c.args['request']! as PublishRequest).ifVersion}',
+  ];
+
+  Future<void> idle() => until(
+    () => api.waitingPolls == 1 && worker.isIdle,
+    reason: 'the worker is idle on a poll',
+  );
+
+  setUp(() {
+    api = FakeClaxApi();
+    events = [];
+    registrations = 0;
+    delays = [];
+  });
+
+  tearDown(() async {
+    await worker.stop();
+    api.releasePolls();
+  });
+
+  test('second_batch_runs_on_the_landed_version', () async {
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    workerWith([
+      change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
+      change(reply: 'Red.', edits: [edit('<button>', '<button class=red>')]),
+    ]).start();
+    await idle();
+    backend.gate = Completer<void>();
+    api.sendComment(aid, 'Say Keep');
+    await backend.arrived.future;
+    final second = api.sendComment(aid, 'Make it red');
+    await until(() => api.waitingPolls == 1, reason: 'second batch taken');
+    expect(backend.seen, hasLength(1), reason: 'one change at a time');
+    backend.gate!.complete();
+    backend.gate = null;
+    await idle();
+
+    expect(publishedOn(aid), ['1', '2']);
+    expect(backend.seen[1].userText, contains('Keep'));
+    expect(
+      api.filesOf(aid, 3)['index.html'],
+      '<!doctype html><title>Runs</title><button class=red>Keep</button>',
+    );
+    expect(api.threadOf(aid, second.threadId).comments.last.body, 'Red.');
+    expect(
+      [
+        for (final e in events)
+          switch (e) {
+            WorkerWorking() => 'working',
+            WorkerLanded(:final version) => 'landed $version',
+            WorkerReplied() => 'replied',
+            WorkerFailed() => 'failed',
+          },
+      ],
+      ['working', 'landed 2', 'working', 'landed 3'],
+    );
+  });
+
+  test('batches of two artifacts run one after the other', () async {
+    final a = api.seedArtifact('A', {'index.html': page});
+    final b = api.seedArtifact('B', {'index.html': page});
+    workerWith([
+      change(edits: [edit('Save', 'A')]),
+      change(edits: [edit('Save', 'B')]),
+    ]).start();
+    await idle();
+    backend.gate = Completer<void>();
+    api.sendComment(a, 'x');
+    await backend.arrived.future;
+    api.sendComment(b, 'y');
+    await until(() => api.waitingPolls == 1);
+    expect(backend.seen, hasLength(1));
+    backend.gate!.complete();
+    backend.gate = null;
+    await idle();
+    expect(api.filesOf(a, 2)['index.html'], contains('>A<'));
+    expect(api.filesOf(b, 2)['index.html'], contains('>B<'));
+    expect([for (final e in events) e.artifactId], [a, a, b, b]);
+  });
+
+  test(
+    'one poll with comments on two artifacts makes one change for each',
+    () async {
+      final a = api.seedArtifact('A', {'index.html': page});
+      final b = api.seedArtifact('B', {'index.html': page});
+      workerWith([
+        change(edits: [edit('Save', 'A')]),
+        change(edits: [edit('Save', 'B')]),
+      ]);
+      final a1 = api.sendComment(a, 'one', queue: false);
+      final b1 = api.sendComment(b, 'two', queue: false);
+      final a2 = api.sendComment(a, 'three', queue: false);
+      worker.start();
+      await idle();
+      api.pushFeedback([a1, b1, a2]);
+      await until(() => api.currentVersion(b) == 2);
+      await idle();
+      expect(
+        backend.seen[0].userText,
+        allOf(contains('one'), contains('three')),
+      );
+      expect(backend.seen[1].userText, contains('two'));
+    },
+  );
+
+  test('unknown_session re-registers and polls again', () async {
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    workerWith([
+      change(edits: [edit('Save', 'Keep')]),
+    ]).start();
+    await idle();
+    final first = api.sessionId;
+    api.endSession('install');
+    api.releasePolls();
+    await until(() => registrations == 2 && api.waitingPolls == 1);
+    final second = api.sessionId;
+    expect(second, isNot(first));
+    final polls = [
+      for (final c in api.calls)
+        if (c.name == 'pollFeedback') c.args['sid'],
+    ];
+    expect(polls.last, second);
+
+    final item = api.sendComment(aid, 'Say Keep');
+    await until(() => api.acked.isNotEmpty);
+    expect(api.acked, [item.commentId]);
+    final ack = api.calls.lastWhere((c) => c.name == 'ackFeedback');
+    expect(ack.args['sid'], second);
+  });
+
+  test('a failing poll backs off, then registers again', () async {
+    workerWith([]);
+    api
+      ..failNext('pollFeedback', unreachable)
+      ..failNext('pollFeedback', unreachable);
+    worker.start();
+    await until(() => api.waitingPolls == 1);
+    expect(registrations, 3);
+    expect(delays, hasLength(2));
+    expect(delays[1], greaterThan(delays[0]));
+  });
+
+  test('worker_survives_daemon_restart_mid_change', () async {
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    workerWith([
+      change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
+      change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
+    ]).start();
+    await idle();
+    backend.gate = Completer<void>();
+    final item = api.sendComment(aid, 'Say Keep');
+    await backend.arrived.future;
+
+    // The daemon restarts while the backend runs: the long poll breaks and
+    // the old session is gone. The worker registers again and recovers,
+    // leaving the change in flight alone.
+    api.endSession('install');
+    api.releasePolls();
+    await until(() => registrations == 2 && api.waitingPolls == 1);
+    expect(backend.seen, hasLength(1), reason: 'the change in flight is kept');
+
+    // The change in flight then cannot publish or reply.
+    api
+      ..failNext('publish', unreachable)
+      ..failNext('replyAsAgent', unreachable);
+    backend.gate!.complete();
+    backend.gate = null;
+    await until(() => api.currentVersion(aid) == 2);
+    await idle();
+
+    expect(backend.seen, hasLength(2), reason: 'run again exactly once');
+    expect(publishedOn(aid), ['1', '1']);
+    expect(api.currentVersion(aid), 2, reason: 'exactly one new version');
+    final t = api.threadOf(aid, item.threadId);
+    expect([for (final c in t.comments) c.authorKind], ['viewer', 'agent']);
+    expect(t.comments.last.body, 'Keep.');
+    expect(t.status, 'resolved');
+  });
+
+  test('a change that fails before the poll sees the restart is recovered '
+      'once the worker registers again', () async {
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    workerWith([
+      change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
+      change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
+    ]).start();
+    await idle();
+    const gone = ClaxApiError(
+      status: 400,
+      code: 'unknown_session',
+      message: 'the session has ended',
+    );
+    api
+      ..failNext('publish', gone)
+      ..failNext('replyAsAgent', gone);
+    final item = api.sendComment(aid, 'Say Keep');
+    await until(() => worker.isIdle && backend.seen.length == 1);
+    expect(api.currentVersion(aid), 1);
+
+    api.endSession('install');
+    api.releasePolls();
+    await until(() => api.currentVersion(aid) == 2);
+    await idle();
+    expect(backend.seen, hasLength(2));
+    final t = api.threadOf(aid, item.threadId);
+    expect([for (final c in t.comments) c.authorKind], ['viewer', 'agent']);
+  });
+
+  test('recovery on start re-runs only acknowledged, unanswered threads, '
+      'and never applies a change twice', () async {
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    final sid = (await api.registerAppSession(installId: 'install', pid: 1)).id;
+    Future<FeedbackItem> taken(String body) async {
+      final item = api.sendComment(aid, body);
+      final got = await api.pollFeedback(sid);
+      expect(got.items.single.threadId, item.threadId);
+      return item;
+    }
+
+    // Taken by a poll, then the app died before any reply: stranded.
+    final stranded = await taken('Say Keep');
+    // Taken and answered: done.
+    final answered = await taken('Hello');
+    await api.replyAsAgent(aid, answered.threadId, 'Hi.');
+    // Taken, published, and the app died before the reply: landed.
+    final landed = await taken('Add a footer');
+    await api.publish(
+      aid,
+      PublishRequest(
+        ifVersion: 1,
+        files: {'index.html': '$page<footer>'},
+        addresses: [landed.threadId],
+      ),
+    );
+    // Sent and not yet taken: the poll delivers it.
+    final pending = api.sendComment(aid, 'Make it red', queue: false);
+
+    workerWith([
+      change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
+      change(reply: 'Red.', edits: [edit('<button>', '<button class=red>')]),
+    ]).start();
+    await idle();
+
+    expect(backend.seen, hasLength(1));
+    expect(backend.seen.single.userText, contains('Say Keep'));
+    expect(api.threadOf(aid, stranded.threadId).comments.last.body, 'Keep.');
+    expect(
+      api.threadOf(aid, landed.threadId).comments.last.body,
+      'Made this change in version 2.',
+    );
+    expect(api.threadOf(aid, answered.threadId).comments, hasLength(2));
+    expect(api.threadOf(aid, pending.threadId).comments, hasLength(1));
+    expect(api.currentVersion(aid), 3);
+
+    api.pushFeedback([pending]);
+    await until(() => api.currentVersion(aid) == 4);
+    await idle();
+    expect(backend.seen, hasLength(2), reason: 'the pending one runs once');
+    expect(api.threadOf(aid, pending.threadId).comments.last.body, 'Red.');
+    expect(
+      api.filesOf(aid, 4)['index.html'],
+      allOf(contains('<button class=red>Keep</button>'), contains('<footer>')),
+    );
+  });
+
+  test('stop cancels the change in flight without a reply', () async {
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    workerWith([
+      change(edits: [edit('Save', 'Keep')]),
+    ]).start();
+    await idle();
+    backend.gate = Completer<void>();
+    final item = api.sendComment(aid, 'Say Keep');
+    await backend.arrived.future;
+    await worker.stop();
+    expect(api.currentVersion(aid), 1);
+    expect(api.threadOf(aid, item.threadId).comments, hasLength(1));
+    expect(api.callNames, isNot(contains('replyAsAgent')));
+    expect(api.working, isEmpty);
+  });
+
+  test('a failed change is reported with its reason', () async {
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    workerWith([
+      change(removed: ['x']),
+      change(removed: ['x']),
+    ]).start();
+    await idle();
+    api.sendComment(aid, 'x');
+    await until(() => events.whereType<WorkerFailed>().isNotEmpty);
+    expect(
+      events.whereType<WorkerFailed>().single.reason,
+      contains('removed names "x"'),
+    );
+  });
+}
