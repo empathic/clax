@@ -65,6 +65,7 @@ class World {
     Map<String, int?> shownDocs = const {},
     bool withConsent = true,
     StepClock? clock,
+    Future<void>? cancelled,
   }) {
     clock ??= StepClock();
     final kind = newApp ? RequestKind.newApp : RequestKind.change;
@@ -73,8 +74,10 @@ class World {
       artifactId: newApp ? null : app,
       baseVersion: newApp ? 0 : 1,
       title: 'Runs',
+      capabilities: newApp ? null : api.capabilitiesOf(app),
       files: const {'index.html': '<p>runs</p>'},
       shownDocs: shownDocs,
+      cancelled: cancelled,
       clock: clock,
     );
     return Toolbox(
@@ -83,6 +86,7 @@ class World {
         draft: Draft(
           files: ctx.files,
           title: ctx.title,
+          capabilities: ctx.capabilities,
           baseVersion: ctx.baseVersion,
         ),
         budget: RunBudget(
@@ -521,6 +525,37 @@ void main() {
       expect(docsOf(await r), hasLength(1));
       expect(tb.state.budget.timeUp, isFalse);
     });
+
+    test('a cancelled run answers the question as denied', () async {
+      final w = World();
+      w.api.putDoc(w.other, 'meals/m1', {'kcal': 500});
+      final asked = Completer<void>();
+      w.consent.answer = (_) {
+        asked.complete();
+        return Completer<ConsentAnswer>().future; // nobody answers
+      };
+      final cancel = Completer<void>();
+      final clock = StepClock();
+      final tb = w.toolbox(cancelled: cancel.future, clock: clock);
+      final r = tb.call('db_list', list(w.other));
+      await asked.future;
+      expect(w.consent.asks.single.cancelled, same(cancel.future));
+      cancel.complete();
+      expect(await r, refused('The owner did not allow reading Diet.'));
+      expect(w.otherReads, isEmpty);
+      // The clock runs again, and the run does not ask again.
+      clock.advance(const Duration(minutes: 5));
+      expect(tb.state.budget.timeUp, isTrue);
+    });
+
+    test('a run cancelled before it asks does not ask', () async {
+      final w = World()..allowRead();
+      w.api.putDoc(w.other, 'meals/m1', {'kcal': 500});
+      final tb = w.toolbox(cancelled: Future.value());
+      final r = await tb.call('db_list', list(w.other));
+      expect(r, refused('The owner did not allow reading Diet.'));
+      expect(w.consent.shown, 0);
+    });
   });
 
   group('db_write', () {
@@ -774,6 +809,205 @@ void main() {
         'ops': [op('set', 'runs', 'r1', '{"blob": "${'x' * (256 * 1024)}"}')],
       });
       expect(r, refused(contains('256 KiB')));
+    });
+  });
+
+  group('private subtrees', () {
+    void selfRule(Map<String, Object?> caps, {bool opened = false}) =>
+        caps['db'] = <String, Object?>{
+          'rules': [
+            if (opened) {'path': 'prefs', 'read': 'owner', 'write': 'owner'},
+            {'path': 'prefs/{self}', 'read': 'view', 'write': 'interact'},
+          ],
+        };
+
+    test("a {self} rule's subtree is never read", () async {
+      final w = World();
+      selfRule(w.api.capabilitiesOf(w.app));
+      w.api
+        ..putDoc(w.app, 'prefs/u_x', {'dark': true})
+        ..putDoc(w.app, 'prefs/u_x/items/a', {'n': 1})
+        ..putDoc(w.app, 'runs/r1', {'km': 5});
+      final tb = w.toolbox();
+      expect(
+        await tb.call('db_get', {'path': 'prefs/u_x', 'app': null}),
+        refused(contains('private')),
+      );
+      expect(
+        await tb.call('db_list', {
+          'collection': 'prefs/u_x/items',
+          'app': null,
+          'limit': null,
+        }),
+        refused(contains('private')),
+      );
+      expect(
+        await tb.call('db_list', {
+          'collection': 'prefs',
+          'app': null,
+          'limit': null,
+        }),
+        refused(contains('private')),
+      );
+      expect(okJson(await tb.call('db_collections', {'app': null})), {
+        'app': null,
+        'collections': [
+          {'path': 'runs', 'count': 1},
+        ],
+      });
+      expect(tb.state.draft.pins, isEmpty);
+    });
+
+    test("a {self} rule's subtree is never written", () async {
+      final w = World();
+      selfRule(w.api.capabilitiesOf(w.app));
+      final r = await w.toolbox().call('db_write', {
+        'app': null,
+        'ops': [
+          {
+            'op': 'set',
+            'collection': 'prefs/u_x/items',
+            'doc_id': 'a',
+            'data_json': '{}',
+          },
+        ],
+      });
+      expect(r, refused(contains('private')));
+    });
+
+    test('a {self} rule the draft adds makes its subtree private', () async {
+      final w = World();
+      final tb = w.toolbox();
+      await tb.call('set_meta', {
+        'title': null,
+        'capabilities_json':
+            '{"db": {"rules": [{"path": "prefs/{self}", "read": "view", '
+            '"write": "interact"}]}}',
+      });
+      final r = await tb.call('db_write', {
+        'app': null,
+        'ops': [
+          {
+            'op': 'set',
+            'collection': 'prefs',
+            'doc_id': 'u_x',
+            'data_json': '{}',
+          },
+        ],
+      });
+      expect(r, refused(contains('private')));
+    });
+
+    test('a rule at the prefix opens its subtrees', () async {
+      final w = World();
+      selfRule(w.api.capabilitiesOf(w.app), opened: true);
+      w.api.putDoc(w.app, 'prefs/u_x', {'dark': true});
+      final r = await w.toolbox().call('db_get', {
+        'path': 'prefs/u_x',
+        'app': null,
+      });
+      expect(okJson(r)['exists'], true);
+    });
+
+    test("another app's {self} subtree is never read", () async {
+      final w = World()..allowRead();
+      selfRule(w.api.capabilitiesOf(w.other));
+      w.api.putDoc(w.other, 'prefs/u_x', {'dark': true});
+      final r = await w.toolbox().call('db_get', {
+        'path': 'prefs/u_x',
+        'app': w.other,
+      });
+      expect(r, refused(contains('private')));
+    });
+  });
+
+  group('db_write bodies', () {
+    Future<ToolOutput> write(
+      Toolbox tb,
+      String op,
+      String docId,
+      String data,
+    ) => tb.call('db_write', {
+      'app': null,
+      'ops': [
+        {'op': op, 'collection': 'runs', 'doc_id': docId, 'data_json': data},
+      ],
+    });
+
+    String nested(int objects) {
+      var s = '1';
+      for (var i = 0; i < objects; i++) {
+        s = '{"a": $s}';
+      }
+      return s;
+    }
+
+    test('a delete marker is refused in a set', () async {
+      final w = World();
+      expect(
+        await write(w.toolbox(), 'set', 'r1', '{"old": {"__delete__": true}}'),
+        refused(contains('__delete__')),
+      );
+    });
+
+    test('a delete marker removes a field in an update', () async {
+      final w = World();
+      w.api.putDoc(w.app, 'runs/r1', {'km': 5, 'old': 1});
+      final tb = w.toolbox();
+      await tb.call('db_get', {'path': 'runs/r1', 'app': null});
+      final r = await write(
+        tb,
+        'update',
+        'r1',
+        '{"old": {"__delete__": true}}',
+      );
+      expect(okJson(r)['staged'], 1);
+    });
+
+    test(
+      'a delete marker in an array or as the whole body is refused',
+      () async {
+        final w = World();
+        w.api.putDoc(w.app, 'runs/r1', {'km': 5});
+        final tb = w.toolbox();
+        await tb.call('db_get', {'path': 'runs/r1', 'app': null});
+        expect(
+          await write(tb, 'update', 'r1', '{"xs": [{"__delete__": true}]}'),
+          refused(contains('__delete__')),
+        );
+        expect(
+          await write(tb, 'update', 'r1', '{"__delete__": true}'),
+          refused(contains('use delete')),
+        );
+        expect(tb.state.draft.stagedDb, isEmpty);
+      },
+    );
+
+    test('nesting is at most 32 levels', () async {
+      final w = World();
+      final tb = w.toolbox();
+      expect(okJson(await write(tb, 'set', 'r1', nested(31)))['staged'], 1);
+      expect(
+        await write(tb, 'set', 'r2', nested(32)),
+        refused(contains('32 levels')),
+      );
+    });
+
+    test("an update's merged body is at most 256 KiB", () async {
+      final w = World();
+      w.api.putDoc(w.app, 'runs/r1', {'a': 'x' * (200 * 1024)});
+      final tb = w.toolbox();
+      await tb.call('db_get', {'path': 'runs/r1', 'app': null});
+      expect(
+        await write(tb, 'update', 'r1', '{"b": "${'y' * (100 * 1024)}"}'),
+        refused(allOf(contains('256 KiB'), contains('runs/r1'))),
+      );
+      expect(
+        okJson(
+          await write(tb, 'update', 'r1', '{"a": "${'y' * (100 * 1024)}"}'),
+        )['staged'],
+        1,
+      );
     });
   });
 }

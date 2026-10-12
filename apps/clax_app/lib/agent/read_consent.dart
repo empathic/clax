@@ -26,11 +26,16 @@ abstract interface class AgentReadConsent {
   /// An implementation remembers [ConsentAnswer.always] per ([reader],
   /// [source]) pair and answers it again without asking; a null [reader]
   /// is never remembered.
+  ///
+  /// [cancelled] completes when the run is cancelled: the implementation
+  /// takes the question down then. The caller does not wait for the answer
+  /// after that and takes it as [ConsentAnswer.denied] for the run.
   Future<ConsentAnswer> ask({
     required String? reader,
     required String? readerTitle,
     required String source,
     required String sourceTitle,
+    Future<void>? cancelled,
   });
 }
 
@@ -40,6 +45,7 @@ typedef ConsentAsk = ({
   String? readerTitle,
   String source,
   String sourceTitle,
+  Future<void>? cancelled,
   bool remembered,
 });
 
@@ -77,6 +83,7 @@ class FakeReadConsent implements AgentReadConsent {
     required String? readerTitle,
     required String source,
     required String sourceTitle,
+    Future<void>? cancelled,
   }) async {
     final remembered = reader != null && _always.contains((reader, source));
     final a = (
@@ -84,6 +91,7 @@ class FakeReadConsent implements AgentReadConsent {
       readerTitle: readerTitle,
       source: source,
       sourceTitle: sourceTitle,
+      cancelled: cancelled,
       remembered: remembered,
     );
     asks.add(a);

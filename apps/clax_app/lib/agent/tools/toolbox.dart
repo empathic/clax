@@ -97,7 +97,9 @@ class RunContext {
   final List<String> threadIds;
 
   /// Document path → the version the first message showed it at, so a
-  /// write may be pinned to it without a read.
+  /// write may be pinned to it without a read. It holds this app's own
+  /// documents only, never another app's samples: `db_write` pins this
+  /// app's writes to these versions by path alone.
   final Map<String, int?> shownDocs;
 
   /// The app session the run replies under.

@@ -39,8 +39,8 @@ const maxDocBytes = 256 * 1024;
 /// The most `where` clauses of one query (the daemon's limit).
 const maxWhereClauses = 10;
 
-/// The private documents of each viewer.
-const _usersPrefix = 'data/users/';
+/// The most levels of nesting of one document (the daemon's `MAX_DEPTH`).
+const maxDocNesting = 32;
 
 /// The note every read result carries.
 const _dataNote =
@@ -98,7 +98,7 @@ class DbCollectionsTool implements Tool {
     final all = await _read(src, () => _api.collections(aid));
     final colls = [
       for (final c in all)
-        if (!_private(c.path)) c,
+        if (!src.privateCollection(c.path)) c,
     ];
     return ToolOk({
       'app': src.app,
@@ -133,6 +133,7 @@ class DbListTool implements Tool {
     final collection = _collection(input);
     final limit = _limit(input);
     final src = await _source(input, s, _api);
+    if (src.privateCollection(collection)) throw _privateError(collection);
     final aid = src.aid;
     if (aid == null) return _page(const [], limit, src, s);
     final docs = await _read(
@@ -165,8 +166,8 @@ class DbGetTool implements Tool {
     _onlyKeys(input, const {'path', 'app'});
     final path = _string(input, 'path');
     if (_docPathProblem(path) case final p?) throw ToolInputError(p);
-    if (_private(path)) throw _privateError(path);
     final src = await _source(input, s, _api);
+    if (src.private(path)) throw _privateError(path);
     final aid = src.aid;
     final doc = aid == null
         ? null
@@ -233,6 +234,7 @@ class DbQueryTool implements Tool {
     final where = _where(input['where']);
     final (orderBy, descending) = _orderBy(input['order_by']);
     final src = await _source(input, s, _api);
+    if (src.privateCollection(collection)) throw _privateError(collection);
     final aid = src.aid;
     if (aid == null) return _page(const [], limit, src, s);
     final docs = await _read(
@@ -305,6 +307,7 @@ class DbWriteTool implements Tool {
         '${d.stagedDb.length} are staged and this call adds ${raw.length}.',
       );
     }
+    final prefixes = _ownPrivatePrefixes(s);
     final staged = {for (final o in d.stagedDb) '${o.collection}/${o.docId}'};
     final seen = <String>{};
     final ops = <DbOp>[];
@@ -312,6 +315,7 @@ class DbWriteTool implements Tool {
     for (final (i, item) in raw.indexed) {
       final o = _op(item, i);
       final path = '${o.collection}/${o.docId}';
+      if (_underPrefix(path, prefixes)) throw _privateError(path);
       if (staged.contains(path)) {
         throw ToolInputError(
           '$path already has a write staged this run; write each document '
@@ -346,6 +350,20 @@ class DbWriteTool implements Tool {
           '$path does not exist; there is nothing to delete.',
         );
       }
+      if (o.op == 'update' && aid != null) {
+        // The daemon checks the merged body as it would store it.
+        final now = await _api.getDoc(aid, path);
+        if (now == null) {
+          throw ToolInputError(
+            '$path was deleted since this run read it; read it again with '
+            'db_get.',
+          );
+        }
+        final merged = _merged(now.data, o.data!);
+        if (_bodyProblem(merged, markers: false) case final p?) {
+          throw ToolInputError('ops[$i] ($path) merged into the document: $p.');
+        }
+      }
       ops.add(o);
     }
     d.pins.addAll(newPins);
@@ -357,14 +375,24 @@ class DbWriteTool implements Tool {
 /// Where a read goes: [aid] (null for a new app's own documents, which do
 /// not exist yet).
 class _Source {
-  const _Source({required this.aid, required this.app});
+  const _Source({required this.aid, required this.app, required this.prefixes});
 
   final String? aid;
 
   /// The `app` the result names: null for this app.
   final String? app;
 
+  /// The app's private prefixes ([_privatePrefixes]).
+  final List<List<String>> prefixes;
+
   bool get mine => app == null;
+
+  /// Whether document [path] is private to a viewer.
+  bool private(String path) => _underPrefix(path, prefixes);
+
+  /// Whether the documents of [collection] are private to a viewer.
+  bool privateCollection(String collection) =>
+      _underPrefix('$collection/_', prefixes);
 }
 
 /// The app [input] names. Another app is read only once the owner allows
@@ -376,8 +404,9 @@ Future<_Source> _source(
 ) async {
   final own = s.ctx.artifactId;
   final app = _optString(input, 'app');
-  if (app == null || app == own) return _Source(aid: own, app: null);
-  final src = _Source(aid: app, app: app);
+  if (app == null || app == own) {
+    return _Source(aid: own, app: null, prefixes: _ownPrivatePrefixes(s));
+  }
   final consent = s.readConsent;
   if (consent == null) {
     throw const ToolInputError(
@@ -386,26 +415,55 @@ Future<_Source> _source(
       'message.',
     );
   }
-  final title = (await _read(src, () => api.getArtifact(app))).artifact.title;
-  var answer = s.readConsents[app];
-  if (answer == null) {
-    s.budget.pauseClock();
-    try {
-      answer = await consent.ask(
-        reader: own,
-        readerTitle: own == null ? null : s.ctx.title,
-        source: app,
-        sourceTitle: title,
-      );
-    } finally {
-      s.budget.resumeClock();
-    }
-    s.readConsents[app] = answer;
-  }
+  final cancel = s.ctx.cancelled;
+  var cancelled = false;
+  cancel?.then((_) => cancelled = true, onError: (Object _) {});
+  final probe = _Source(aid: app, app: app, prefixes: const []);
+  final source = (await _read(probe, () => api.getArtifact(app))).artifact;
+  final title = source.title;
+  final answer = s.readConsents[app] ??= cancelled
+      ? ConsentAnswer.denied
+      : await _askOwner(s, consent, app, title);
   if (answer == ConsentAnswer.denied) {
     throw ToolInputError('The owner did not allow reading $title.');
   }
-  return src;
+  return _Source(
+    aid: app,
+    app: app,
+    prefixes: _privatePrefixes([source.capabilities]),
+  );
+}
+
+/// Asks [consent] whether the agent may read [source] ([title]), with the
+/// wall clock stopped; a cancel of the run answers [ConsentAnswer.denied]
+/// without waiting for the owner.
+Future<ConsentAnswer> _askOwner(
+  RunState s,
+  AgentReadConsent consent,
+  String source,
+  String title,
+) async {
+  final own = s.ctx.artifactId;
+  final cancel = s.ctx.cancelled;
+  s.budget.pauseClock();
+  try {
+    return await Future.any([
+      consent.ask(
+        reader: own,
+        readerTitle: own == null ? null : s.ctx.title,
+        source: source,
+        sourceTitle: title,
+        cancelled: cancel,
+      ),
+      if (cancel != null)
+        cancel.then(
+          (_) => ConsentAnswer.denied,
+          onError: (Object _) => ConsentAnswer.denied,
+        ),
+    ]);
+  } finally {
+    s.budget.resumeClock();
+  }
 }
 
 /// Runs [read], answering an app that does not exist as a refusal the
@@ -426,7 +484,7 @@ Future<T> _read<T>(_Source src, Future<T> Function() read) async {
 ToolOk _page(List<Doc> docs, int limit, _Source src, RunState s) {
   final visible = [
     for (final d in docs)
-      if (!_private(d.path)) d,
+      if (!src.private(d.path)) d,
   ];
   var truncated = visible.length > limit;
   final out = <Map<String, Object?>>[];
@@ -490,7 +548,6 @@ DbOp _op(Object? item, int i) {
   }
   final path = '$collection/$docId';
   if (_docPathProblem(path) case final p?) throw ToolInputError(p);
-  if (_private(path)) throw _privateError(path);
   final json = _optString(o, 'data_json');
   if (op == 'delete') {
     if (json != null) {
@@ -509,11 +566,8 @@ DbOp _op(Object? item, int i) {
     throw notObject;
   }
   if (data is! Map<String, Object?>) throw notObject;
-  final size = utf8.encode(json).length;
-  if (size > maxDocBytes) {
-    throw ToolInputError(
-      'ops[$i] ($path) is $size bytes; a document may be at most 256 KiB.',
-    );
+  if (_bodyProblem(data, markers: op == 'update') case final p?) {
+    throw ToolInputError('ops[$i] ($path): $p.');
   }
   return DbOp(op: op, collection: collection, docId: docId, data: data);
 }
@@ -592,16 +646,141 @@ String _collection(Map<String, Object?> input) {
   if (_pathProblem(c, collection: true) case final p?) {
     throw ToolInputError(p);
   }
-  if (_private('$c/')) throw _privateError(c);
   return c;
 }
 
-bool _private(String path) => path.startsWith(_usersPrefix);
+/// This app's private prefixes under both its live declaration and the
+/// draft's, so a `{self}` rule the draft adds or drops counts either way.
+List<List<String>> _ownPrivatePrefixes(RunState s) =>
+    _privatePrefixes([s.ctx.capabilities, s.draft.capabilities]);
+
+/// The prefixes whose per-viewer subtrees are private, as the daemon's
+/// `Rules::self_prefixes` and `Rules::private_to`
+/// (crates/clax-core/src/db.rs): `data/users`, always (even where a rule
+/// opens it, which this side does not follow), and the prefix of each
+/// `{self}` rule of [declarations]' `db.rules` that no rule declared at
+/// the prefix itself opens. The app's token has no viewer, so the daemon
+/// answers such documents as absent and refuses to write them.
+List<List<String>> _privatePrefixes(
+  Iterable<Map<String, Object?>?> declarations,
+) {
+  final out = <List<String>>[
+    ['data', 'users'],
+  ];
+  bool has(List<String> p) => out.any((q) => q.join('/') == p.join('/'));
+  for (final caps in declarations) {
+    final rules = switch (caps?['db']) {
+      {'rules': final List<Object?> r} => r,
+      _ => const <Object?>[],
+    };
+    final paths = {
+      for (final r in rules)
+        if (r case {'path': final String p}) p,
+    };
+    for (final p in paths) {
+      final segs = p.split('/');
+      if (segs.length < 2 || segs.last != '{self}') continue;
+      final prefix = segs.sublist(0, segs.length - 1);
+      if (paths.contains(prefix.join('/')) || has(prefix)) continue;
+      out.add(prefix);
+    }
+  }
+  return out;
+}
+
+/// Whether [path] lies in a subtree under one of [prefixes]: below the
+/// prefix, the segment naming a viewer and more.
+bool _underPrefix(String path, List<List<String>> prefixes) {
+  final segs = path.split('/');
+  return prefixes.any((p) {
+    if (segs.length <= p.length) return false;
+    for (var i = 0; i < p.length; i++) {
+      if (segs[i] != p[i]) return false;
+    }
+    return true;
+  });
+}
 
 ToolInputError _privateError(String path) => ToolInputError(
-  '$path is under data/users/, which holds each viewer\'s private '
-  'documents; they are never read or written here.',
+  '$path is private to each viewer (under data/users/ or a {self} rule of '
+  "the app's db.rules); it is never read or written here.",
 );
+
+bool _isDeleteMarker(Object? v) =>
+    v is Map && v.length == 1 && v['__delete__'] == true;
+
+/// Why the daemon would refuse [data] as a document body, or null: its
+/// `check_body` (crates/clax-core/src/store/docs.rs). A body is a JSON
+/// object at most [maxDocNesting] levels deep and [maxDocBytes] as JSON;
+/// `{"__delete__": true}` only as a field's value when [markers] (an
+/// update's patch), never inside an array and never as the whole body.
+String? _bodyProblem(Object? data, {required bool markers}) {
+  if (data is! Map) return 'a document body is a JSON object';
+  if (_isDeleteMarker(data)) {
+    return '{"__delete__": true} as the whole body would remove every '
+        'field; use delete to remove the document';
+  }
+  String? walk(Object? v, int depth, bool inArray) {
+    if (depth > maxDocNesting) {
+      return 'a document is at most $maxDocNesting levels deep';
+    }
+    if (_isDeleteMarker(v)) {
+      return markers && !inArray
+          ? null
+          : '{"__delete__": true} removes a field only in an update, and '
+                'never inside an array';
+    }
+    if (v is Map) {
+      for (final x in v.values) {
+        if (walk(x, depth + 1, false) case final p?) return p;
+      }
+    } else if (v is List) {
+      for (final x in v) {
+        if (walk(x, depth + 1, true) case final p?) return p;
+      }
+    }
+    return null;
+  }
+
+  if (walk(data, 1, false) case final p?) return p;
+  final size = utf8.encode(jsonEncode(data)).length;
+  if (size > maxDocBytes) {
+    return 'it is $size bytes as JSON; a document is at most 256 KiB';
+  }
+  return null;
+}
+
+/// [patch] merged into [base] as the daemon's `merged` does: nested
+/// objects merge field by field, a delete marker removes its field, and
+/// anything else (arrays included) replaces it, with markers inside it
+/// dropped.
+Map<String, Object?> _merged(
+  Map<String, Object?> base,
+  Map<String, Object?> patch,
+) {
+  final out = (jsonDecode(jsonEncode(base)) as Map).cast<String, Object?>();
+  void into(Map<String, Object?> b, Map<String, Object?> p) {
+    for (final MapEntry(:key, :value) in p.entries) {
+      if (_isDeleteMarker(value)) {
+        b.remove(key);
+      } else if (b[key] is Map && value is Map) {
+        into((b[key]! as Map).cast<String, Object?>(), value.cast());
+      } else {
+        b[key] = _stripMarkers(value);
+      }
+    }
+  }
+
+  into(out, patch);
+  return out;
+}
+
+Object? _stripMarkers(Object? v) => v is Map
+    ? {
+        for (final MapEntry(:key, :value) in v.entries)
+          if (!_isDeleteMarker(value)) '$key': _stripMarkers(value),
+      }
+    : v;
 
 String? _docPathProblem(String path) => _pathProblem(path, collection: false);
 
