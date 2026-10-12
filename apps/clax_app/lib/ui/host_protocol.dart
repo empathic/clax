@@ -6,6 +6,7 @@ library;
 
 import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data';
 
 /// A message from the shell, posted as JSON on the `ClaxHost` channel.
 sealed class HostMessage {
@@ -54,12 +55,22 @@ sealed class HostMessage {
           m['thread'] as String,
           text: m['text'] as String? ?? '',
         ),
+        'inspection' => InspectionMsg.fromJson(m),
+        'questions' => QuestionsMsg(_count(m['open'])),
         _ => null,
       };
     } on TypeError {
       return null;
+    } on FormatException {
+      return null;
     }
   }
+}
+
+int _count(Object? v) {
+  final n = _int(v);
+  if (n < 0) throw TypeError();
+  return n;
 }
 
 int _int(Object? v) => switch (v) {
@@ -210,6 +221,73 @@ final class Notice extends HostMessage {
   final String text;
 }
 
+/// The inspect view's answer to [Inspect]: the page as it settled, or
+/// [error], why there is none (then every other field is empty).
+final class InspectionMsg extends HostMessage {
+  const InspectionMsg({
+    required this.png,
+    required this.errors,
+    required this.failed,
+    required this.text,
+    required this.title,
+    required this.height,
+  }) : error = null;
+
+  InspectionMsg.failed(String this.error)
+    : png = Uint8List(0),
+      errors = const [],
+      failed = const [],
+      text = '',
+      title = '',
+      height = 0;
+
+  /// The message [m] holds; a [TypeError] or [FormatException] for any
+  /// other shape (a field missing or of the wrong type, `png` not base64).
+  factory InspectionMsg.fromJson(Map<String, Object?> m) {
+    final error = m['error'];
+    if (error is String) return InspectionMsg.failed(error);
+    return InspectionMsg(
+      png: base64Decode(m['png'] as String),
+      errors: [
+        for (final e in m['errors'] as List)
+          (kind: (e as Map)['kind'] as String, text: e['text'] as String),
+      ],
+      failed: [for (final f in m['failed'] as List) f as String],
+      text: m['text'] as String,
+      title: m['title'] as String,
+      height: _int(m['height']),
+    );
+  }
+
+  /// The page's viewport as a PNG; empty with [error].
+  final Uint8List png;
+
+  /// The page's newest errors since its first script: [kind] is `error`,
+  /// `unhandledrejection` or `console`.
+  final List<({String kind, String text})> errors;
+
+  /// The URLs of the resources the page failed to load.
+  final List<String> failed;
+
+  /// An outline of what the page shows.
+  final String text;
+  final String title;
+
+  /// The page's scroll height, in CSS pixels.
+  final int height;
+
+  /// Why the inspection failed, when it did.
+  final String? error;
+}
+
+/// How many of the agent's questions about this app are [open]; posted
+/// whenever that changes.
+final class QuestionsMsg extends HostMessage {
+  const QuestionsMsg(this.open);
+
+  final int open;
+}
+
 /// A call into the page's `window.claxHost`, run as JavaScript. Each is a
 /// no-op on a page without it.
 sealed class HostCall {
@@ -337,15 +415,45 @@ final class Resend extends HostCall {
   String toJs() => 'window.claxHost?.resend(${jsString(id)})';
 }
 
-/// Whether an [AttestPointer] is a press or a release.
-enum PointerPhase { down, up }
+/// Opens the composer on the whole app (no screenshot), unless one holding
+/// typed text is open; the shell's `state` reports it like a pick.
+final class ComposeArtifact extends HostCall {
+  const ComposeArtifact();
+  @override
+  String toJs() => 'window.claxHost?.composeArtifact()';
+}
 
-/// A real finger pressed or lifted on the WebView at ([x], [y]) logical
-/// pixels from its top left, on a screen of [devicePixelRatio].
+/// Shows the open questions about the app, docked over it.
+final class OpenQuestions extends HostCall {
+  const OpenQuestions();
+  @override
+  String toJs() => 'window.claxHost?.openQuestions()';
+}
+
+/// In the inspect view (`?app=1&inspect=1`), asks for an [InspectionMsg]
+/// once the page has been still for 300 ms, waiting [settleMs] at most,
+/// its screenshot at most [maxBytes]. A later call replaces an earlier one;
+/// anywhere else the shell answers an inspection with an error.
+final class Inspect extends HostCall {
+  const Inspect({this.settleMs = 3000, this.maxBytes = 1 << 20});
+  final int settleMs;
+  final int maxBytes;
+  @override
+  String toJs() =>
+      'window.claxHost?.inspect({settleMs:$settleMs,maxBytes:$maxBytes})';
+}
+
+/// Whether an [AttestPointer] is a press, a release, or a touch the OS
+/// took back.
+enum PointerPhase { down, up, cancel }
+
+/// A real finger pressed, lifted or cancelled on the WebView at ([x], [y])
+/// logical pixels from its top left, on a screen of [devicePixelRatio].
 ///
-/// The shell counts it as the finger's arrival on the content frame
+/// The shell counts a press as the finger's arrival on the content frame
 /// (`attestPointer`), which a long-press's pick needs when the WebView
-/// sends no click after it. The page takes CSS pixels of its layout
+/// sends no click after it; a cancel ends that press and counts as
+/// nothing. The page takes CSS pixels of its layout
 /// viewport, so the call converts there: the physical pixels divided by
 /// the page's own device pixel ratio and pinch scale, plus the visual
 /// viewport's offset.
