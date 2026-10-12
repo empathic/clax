@@ -61,7 +61,7 @@
     {@const draft = s.draft}
     {#key draft.pickId}
       <Composer {draft} onText={v => ctl.composerInput(v)} onFocused={() => ctl.composerFocused(draft.pickId)}
-        onCancel={() => ctl.cancelDraft()} onSubmit={body => ctl.submitDraft(body, draft)} />
+        onCancel={() => ctl.cancelDraft()} onSubmit={body => ctl.submitDraft(body, draft)} send={!!ctl.app} />
     {/key}
   {/if}
   {#if s.notice}

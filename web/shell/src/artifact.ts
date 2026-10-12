@@ -11,7 +11,9 @@ import { type Skeleton, skeleton } from "./view/skeleton";
 export { MOVE_TO_CLICK, MOVE_TO_PICK, pageWait } from "./view/artifact-controller";
 export type { ArtifactProps } from "./view/artifact-controller";
 
-export type ArtifactMount = { root: HTMLElement; update(props: ArtifactProps): void; unmount(): void };
+/** `controller()`: the view's controller now (another artifact's `update`
+ * replaces it). */
+export type ArtifactMount = { root: HTMLElement; update(props: ArtifactProps): void; unmount(): void; controller(): ArtifactController };
 
 /** Sets `el`'s text, leaving the DOM alone when it is already that. */
 function setText(el: HTMLElement, text: string): void {
@@ -102,5 +104,6 @@ export function mountArtifactView(root: HTMLElement, props: ArtifactProps, opts:
       run.ctl.update(next);
     },
     unmount: () => run.stop(),
+    controller: () => run.ctl,
   };
 }

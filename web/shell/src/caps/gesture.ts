@@ -130,6 +130,21 @@
 // whatever that input was meant for. The cost: a viewer who clicks a page's
 // control within that time after using the shell is refused
 // (`shell_input_recent`) and must click again.
+//
+// App mode's host attestation (`hostArrival`). In the Clax app the frame
+// sits in an Android WebView, where a finger on a cross-origin frame sends
+// the shell nothing, and a long-press may end with no click: no counted
+// arrival, so the long-press's pick would be refused. There the app's host,
+// which sees the real pointer over the WebView, attests each finger press
+// and release (`claxHost.attestPointer`, `app/host.ts`), and an attestation
+// on the frame, made after the viewer's latest shell input and within
+// `ATTEST_MS` (in `app/host.ts`), counts as the pointer's arrival for
+// condition 3. Conditions 1 and 2 still hold as they are. Only app mode
+// sets `hostArrival.fresh`; outside it, it is always false. Nothing in the
+// content frame can reach it: the frame is cross-origin (subdomain mode) or
+// an opaque origin (sandbox mode), so `parent.claxHost` throws there, and
+// no message from the frame calls it; only script in the shell's own
+// document, which the app's host runs by `runJavaScript`, can.
 
 import { after, now } from "../clock";
 
@@ -528,7 +543,7 @@ export function frameGesture(doc: Document = document): boolean {
   const ua = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
   if (ua?.isActive !== true) return false;
   if (!isFrame(doc.activeElement)) return false;
-  if (pointerFresh()) return true;
+  if (pointerFresh() || hostArrival.fresh(lastShellInputAt)) return true;
   return lastShellInput < frameEnteredAt && entryByViewer;
 }
 
@@ -539,6 +554,11 @@ export function frameGestureStrict(doc: Document = document): "ok" | "no_gesture
   if (!frameGesture(doc)) return "no_gesture";
   return now() - lastShellInputAt < SHELL_QUIET_MS ? "shell_input_recent" : "ok";
 }
+
+/** App mode's host attestation of a finger on the frame (see the header):
+ * whether one counts now, given when (`now()`) the latest shell input was.
+ * Never, until `app/host.ts` sets it. */
+export const hostArrival = { fresh: (_since: number): boolean => false };
 
 /** Forgets what was recorded (tests). */
 export function forgetGestures(): void {

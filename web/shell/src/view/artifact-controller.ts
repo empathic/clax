@@ -156,11 +156,19 @@ const threadIds = (ts: Thread[]) => ts.map(t => t.id).join(",");
 export class ArtifactController {
   readonly state: Store<ViewState>;
   readonly id: string;
-  /** The URL fragment the frame opens at. */
-  readonly startHash: string;
+  /** The URL fragment the frame opens at (app mode's auto-follow moves it to
+   * the frame's latest, `app/host.ts`). */
+  startHash: string;
   /** The content frame; the mount sets it before `start`. */
   frame: FrameHost | null = null;
   readonly commentsUi: CommentsUi;
+  /** App mode's hooks (`app/host.ts` sets them; null in a browser): what the
+   * welcome adds for a page that greeted with `file` (`app`, and the scroll
+   * position to restore after a newer version loaded in place), and what
+   * follows a post from the composer (its Send also sends the thread to the
+   * agent). */
+  /** @internal */
+  app: { welcome(file: string): { app: true; restoreScroll?: number }; posted(t: Thread): void } | null = null;
 
   /** @internal (read by the stream module) */
   disposed = false;
@@ -191,7 +199,8 @@ export class ArtifactController {
   // closes.
   private resumeAfter: string | null = null;
   // What the open composer holds, so a page's open never replaces typed text.
-  private composerText = "";
+  /** @internal (read by app mode's host) */
+  composerText = "";
   /** The thread a viewer asked to reopen before naming itself, reopened if it
    * names itself within REOPEN_NAME_MS, unless it closed the prompt with no name. */
   private reopenAfterName: { id: string; until: number } | null = null;
@@ -214,7 +223,8 @@ export class ArtifactController {
   // `pageWait.ms` with a notice.
   private pendingScroll: { thread: Thread; cancel: () => void } | null = null;
   // The frame's latest known fragment.
-  private frameHash: string;
+  /** @internal (read by app mode's host) */
+  frameHash: string;
   /** A fragment for the frame's page to move to once it greets: an adopted
    * frame's (`FrameHost.takeFragment`), or one the address bar moved to
    * while no page had greeted. */
@@ -385,9 +395,10 @@ export class ArtifactController {
     return s.file ?? (r.kind === "artifact" ? r.file : INDEX_FILE);
   }
 
-  /** The shell URL of the current page in `version` (null: the latest). */
+  /** The shell URL of the current page in `version` (null: the latest), with
+   * the shell URL's query (app mode's `?app=1`). */
   here(version: number | null, s: ViewState = this.s): string {
-    return shellPath(this.id, version, this.pageNow(s), this.shown(s));
+    return shellPath(this.id, version, this.pageNow(s), this.shown(s)) + location.search;
   }
 
   /** The "open raw" link: the current page in the shown version. */
@@ -536,7 +547,8 @@ export class ArtifactController {
     this.hintTimer = after(HINT_MS, () => this.set({ hint: null }));
   }
 
-  private whileBusy<T>(p: Promise<T>): Promise<T> {
+  /** @internal */
+  whileBusy<T>(p: Promise<T>): Promise<T> {
     this.set(s => ({ busy: s.busy + 1 }));
     return p.finally(() => this.set(s => ({ busy: s.busy - 1 })));
   }
@@ -699,7 +711,7 @@ export class ArtifactController {
    * still moves, with an entry of its own (the page's greeting then updates
    * the address bar in place). */
   private openPage(target: string, hash = ""): void {
-    const pushed = setUrl(shellPath(this.id, this.pinnedVersion, target, this.shown()) + hash, true);
+    const pushed = setUrl(shellPath(this.id, this.pinnedVersion, target, this.shown()) + location.search + hash, true);
     this.navigateFrame(target, pushed, hash);
   }
 
@@ -733,7 +745,8 @@ export class ArtifactController {
     this.life.timeout(() => this.openStream(), STREAM_WAIT_MS);
   }
 
-  private loaded(d: Loaded, attention: Attention | null = d.attention ?? null): void {
+  /** @internal (also app mode's auto-follow: a newer version loaded in place) */
+  loaded(d: Loaded, attention: Attention | null = d.attention ?? null): void {
     if (this.disposed) return;
     this.latestKnown = Math.max(this.latestKnown, d.artifact.current_version);
     // The stream opens after the load starts: a working delta already heard is newer.
@@ -1104,7 +1117,7 @@ export class ArtifactController {
           this.send({ type: "clax:hash", hash: this.pendingFragment });
           this.pendingFragment = null;
         }
-        this.send({ type: "clax:welcome", mode: this.s.commenting ? "comment" : "view" });
+        this.send({ type: "clax:welcome", mode: this.s.commenting ? "comment" : "view", ...this.app?.welcome(greeted) });
         this.resolveAll();
         this.sendFocus();
         const p = this.pendingScroll;
@@ -1334,7 +1347,8 @@ export class ArtifactController {
    * success. A target that ended since the last refetch (`unknown_agent`)
    * refetches the agents, so the next Send names a live one; the failure
    * shows and the send is never retried without `to`. */
-  private sendTracked<T>(p: Promise<T>, to: string | null): Promise<T> {
+  /** @internal */
+  sendTracked<T>(p: Promise<T>, to: string | null): Promise<T> {
     return p.then(v => { if (to !== null) rememberTarget(this.id, to); return v; }, (e: unknown) => {
       if (e instanceof ApiError && e.code === "unknown_agent") this.refreshAgents();
       throw e;
@@ -1475,8 +1489,9 @@ export class ArtifactController {
   composerFocused(pickId: string): void { if (this.pendingPick?.pickId === pickId) this.send({ type: "clax:composer-ready", pickId }); }
   cancelDraft(): void { this.set({ draft: null }); }
 
-  /** Posts `draft`'s comment (the open composer's); a failure shows in the
-   * notice and is rethrown so the composer stays. */
+  /** Posts `draft`'s comment (the open composer's), and in app mode hands
+   * the thread to `app.posted` to send; a failure to post shows in the notice
+   * and is rethrown so the composer stays. */
   async submitDraft(body: string, draft: Draft | null = this.s.draft): Promise<void> {
     if (!draft) return;
     try {
@@ -1485,6 +1500,7 @@ export class ArtifactController {
       this.noticeFor(CLIP_DROPPED)(clipError ? `${CLIP_DROPPED}: ${clipError}` : null);
       this.changeThreads(ts => upsert(ts, thread));
       this.set({ selected: thread.id, draft: null, panel: true });
+      this.app?.posted(thread);
     } catch (e) {
       void report(Promise.reject(e), POST_FAILED, this.noticeFor(POST_FAILED));
       throw e;

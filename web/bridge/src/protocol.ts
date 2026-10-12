@@ -127,11 +127,11 @@ export type BridgeToShell =
   | { type: "clax:degraded"; part: "comment" | "clip" | "caps" | "room" | "sample"; message: string }
   /** The page's vertical scroll position (CSS pixels) on its `file`, after a
    * welcome with `app: true`: at most every 250 ms while the page scrolls,
-   * the last position of a burst always sent. Not in `BRIDGE_TYPES` yet:
-   * the shell drops it until its app mode takes it. */
+   * the last position of a burst always sent; only the app shell reads it
+   * (`web/shell/src/app/host.ts`). */
   | { type: "clax:scroll"; file: string; y: number }
   | UseRequest
   | CallRequest;
 
 export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:greet", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:use-result", "clax:call-result", "clax:event"]);
-export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:use", "clax:call"]);
+export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:scroll", "clax:use", "clax:call"]);
