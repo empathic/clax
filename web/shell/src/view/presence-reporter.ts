@@ -5,6 +5,7 @@
 // stream (re)connect.
 import { getPresence, putPresence } from "../api";
 import { after, wall } from "../clock";
+import { visibility } from "../stream";
 import type { ViewState } from "./artifact-controller";
 import { type PresenceView, stateFor, whereLabel } from "./presence-model";
 
@@ -23,7 +24,7 @@ export class PresenceReporter {
   private readonly onVisible = () => this.report();
   private readonly onInput = () => {
     this.lastInput = wall();
-    if (this.reported?.state === "away" && document.visibilityState === "visible") this.report();
+    if (this.reported?.state === "away" && !visibility.hidden(document)) this.report();
   };
   /** Leaving the page: away at once, rather than here until the report lapses. */
   readonly leave = () => {
@@ -52,7 +53,8 @@ export class PresenceReporter {
   report(force = false): void {
     const s = this.state();
     if (this.done || !this.may(s)) return;
-    const state = stateFor(document.visibilityState === "visible", wall() - this.lastInput);
+    // The page counts as shown by the stream's rule (in the app, the host says).
+    const state = stateFor(!visibility.hidden(document), wall() - this.lastInput);
     const where = state === "here" && s.shareWhere ? whereLabel(s) : null;
     const last = this.reported;
     if (!force && last && last.state === state && last.where === where) return;
