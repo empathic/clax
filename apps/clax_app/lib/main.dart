@@ -20,6 +20,7 @@ import 'daemon/supervisor.dart';
 import 'platform/background_work.dart';
 import 'platform/external_links.dart';
 import 'platform/install_id.dart';
+import 'platform/pending_make.dart';
 import 'platform/secure_key.dart';
 import 'platform/settings_store.dart';
 import 'platform/timings.dart';
@@ -43,7 +44,7 @@ Future<void> main() async {
 /// Files in the support directory: `clax-home/` (the daemon's
 /// `CLAX_HOME`), `settings.json`, `install-id`, `timings.jsonl` (the
 /// defended numbers), `agent-timings.jsonl` (the agent's runs) and
-/// `change-ledger.json`.
+/// `change-ledger.json` and `pending-make.json` (the make in flight).
 Future<AppServices> platformServices() async {
   final support = await getApplicationSupportDirectory();
   final cache = await getApplicationCacheDirectory();
@@ -89,6 +90,7 @@ Future<AppServices> platformServices() async {
     ledger: FileChangeLedger(File('${support.path}/change-ledger.json')),
     cliSupported: cliSupported,
     background: android ? ChannelBackgroundWork() : const NoBackgroundWork(),
+    pendingMake: PendingMake(File('${support.path}/pending-make.json')),
   );
 }
 
