@@ -24,6 +24,7 @@ class HttpClaxApi implements ClaxApi {
     this.eventRetryDelay,
     this.eventConnectTimeout = defaultEventConnectTimeout,
     this.eventIdleTimeout = defaultEventIdleTimeout,
+    this.eventTimer = Timer.new,
   }) : _client = client ?? HttpClient();
 
   final DaemonEndpoint Function() endpoint;
@@ -50,6 +51,9 @@ class HttpClaxApi implements ClaxApi {
   /// three of the daemon's 15 s keep-alives.
   final Duration eventIdleTimeout;
   static const defaultEventIdleTimeout = Duration(seconds: 45);
+
+  /// Makes the event stream's deadline timers; tests inject their own.
+  final SseTimer eventTimer;
 
   /// The app session agent calls name in `X-Clax-Session`.
   String? sessionId;
@@ -385,12 +389,14 @@ class HttpClaxApi implements ClaxApi {
             open,
             connectTimeout: eventConnectTimeout,
             idleTimeout: eventIdleTimeout,
+            timer: eventTimer,
           )
         : reconnectingSse(
             open,
             delay: retry,
             connectTimeout: eventConnectTimeout,
             idleTimeout: eventIdleTimeout,
+            timer: eventTimer,
           );
     return messages.map(
       (m) => ClaxEvent(type: m.event, id: m.id, data: _eventData(m.data)),
