@@ -138,8 +138,11 @@ class DaemonSupervisor {
   `apps/clax_app/build-native/macos/clax` into
   `$BUILT_PRODUCTS_DIR/$CONTENTS_FOLDER_PATH/Resources/clax` by writing a
   temporary file next to it and renaming it into place (never a copy over a
-  binary that may be running), then signs it with
-  `macos/Runner/ClaxHelper.entitlements` (`app-sandbox`, `inherit`).
+  binary that may be running), then signs it. In Release it is signed with
+  `macos/Runner/ClaxHelper.entitlements` (`app-sandbox`, `inherit`), so it
+  inherits the sandboxed app's sandbox. In Debug and Profile it is signed
+  without entitlements: the Runner there is not sandboxed, and a helper
+  carrying `inherit` under an unsandboxed parent is killed at launch.
   Entitlements:
   - `Release.entitlements`: `app-sandbox`, `network.server`,
     `network.client`, `device.audio-input`, keychain access group for
