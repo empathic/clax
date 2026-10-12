@@ -146,6 +146,26 @@ void main() {
       expect(all.single.questionId, 'q1');
     });
 
+    test('a whole temporary file beside the file is the newer state and '
+        'wins', () async {
+      final a = FileAskedQuestions(file);
+      await a.put(entry('q1'));
+      await File('${file.path}.tmp').writeAsString(
+        jsonEncode({
+          'version': 1,
+          'entries': [entry('q1').toJson(), entry('q2').toJson()],
+        }),
+      );
+      final b = FileAskedQuestions(file);
+      expect([for (final e in await b.all()) e.questionId], ['q1', 'q2']);
+      await b.drop('q1');
+      expect(await File('${file.path}.tmp').exists(), isFalse);
+      expect(
+        [for (final e in await FileAskedQuestions(file).all()) e.questionId],
+        ['q2'],
+      );
+    });
+
     test('a cut temporary file is ignored beside a whole file', () async {
       final a = FileAskedQuestions(file);
       await a.put(entry('q1'));
