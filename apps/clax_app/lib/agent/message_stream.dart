@@ -81,7 +81,8 @@ class InvalidToolInput implements Exception {
 /// `server_tool_use`, `mcp_tool_use`) with its `input` parsed from its
 /// `input_json_delta`s, other blocks as they started), `stop_reason`,
 /// `stop_details` and `usage`. Every rebuilt block is fit to send back in
-/// an assistant turn: no block carries the streamed `partial_json`.
+/// an assistant turn: no block carries the streamed `partial_json`, and
+/// no text block is empty.
 ///
 /// It never throws: an event of the wrong shape is ignored. An `error`
 /// event is kept in [error]. A `message_start` begins a new message (as in
@@ -117,13 +118,19 @@ class MessageStream {
   };
 
   /// The latest message as rebuilt so far. Throws [InvalidToolInput] when
-  /// a tool call's streamed input is not a JSON object.
+  /// a tool call's streamed input is not a JSON object. A text block with
+  /// no text is left out, since the API refuses an empty text block in an
+  /// assistant turn sent back.
   Map<String, Object?> get message => {
     ..._message,
     'content': [
-      for (final i in _blocks.keys.toList()..sort()) _block(i, _blocks[i]!),
+      for (final i in _blocks.keys.toList()..sort())
+        if (!_emptyText(_blocks[i]!)) _block(i, _blocks[i]!),
     ],
   };
+
+  static bool _emptyText(Map<String, Object?> b) =>
+      b['type'] == 'text' && (b['text'] is! String || b['text'] == '');
 
   static Map<String, Object?> _block(int index, Map<String, Object?> b) {
     final partial = b['partial_json'];
