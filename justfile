@@ -89,9 +89,9 @@ app-test:
 app-integration:
     ./scripts/build-app-clax.sh macos && cd apps/clax_app && flutter test integration_test -d macos
 
-# Build the Android clax binaries and the Clax app's release APK
+# Build the Android clax binaries and the Clax app's release APK (arm64 and x86_64 only, the ABIs clax is built for)
 app-apk:
-    ./scripts/build-app-clax.sh android && cd apps/clax_app && flutter build apk --release
+    ./scripts/build-app-clax.sh android && cd apps/clax_app && flutter build apk --release --target-platform android-arm64,android-x64
 
 # Build the macOS clax and the Clax app's release macOS app
 app-macos:
