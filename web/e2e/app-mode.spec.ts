@@ -31,12 +31,17 @@ async function openApp(page: Page, title: string, mode: "subdomain" | "sandbox",
   return { id: artifact.id, sid: s.id, frame };
 }
 
-/** Holds one finger on `target` past the bridge's hold, then lifts it. */
-async function holdOn(cdp: CDPSession, target: Locator) {
+/** The selectors of the outlines the page has shown the shell so far. */
+const hovers = (page: Page) => quietEval<string[]>(page, "window.claxMsgs.filter(m => m.type === 'clax:hover').map(m => m.selector)");
+
+/** Holds one finger on `target` until the bridge's hold arms (it outlines
+ * what is under the finger, `selector`), then lifts it. */
+async function holdOn(page: Page, cdp: CDPSession, target: Locator, selector: string) {
   const b = (await target.boundingBox())!;
   const at = { x: b.x + Math.min(40, b.width / 2), y: b.y + b.height / 2 };
+  const seen = (await hovers(page)).length;
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [at] });
-  await new Promise(r => setTimeout(r, 800));
+  await expect.poll(async () => (await hovers(page)).slice(seen)).toContain(selector);
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
 }
 
@@ -130,7 +135,7 @@ test("a long-press picks and Send sends to the app session", async ({ page }) =>
   await host(page, "enterCommentMode()");
   await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
   const cdp = await page.context().newCDPSession(page);
-  await holdOn(cdp, frame.locator("#t"));
+  await holdOn(page, cdp, frame.locator("#t"), "#t");
   await expect.poll(async () => (await ofType(page, "state")).at(-1)?.draft ?? null).toMatchObject({ label: "“Quarterly goals”" });
   await expect(page.getByRole("button", { name: "Send", exact: true })).toBeVisible();
   await host(page, `setDraftText("make it blue")`);
