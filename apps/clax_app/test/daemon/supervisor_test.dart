@@ -56,6 +56,7 @@ class FakeProcess implements RunningProcess {
   final int pid;
   final _exit = Completer<int>();
   final _stderr = StreamController<List<int>>();
+  final _stdout = StreamController<List<int>>();
   final List<ProcessSignal> signals = [];
 
   /// Whether the process ignores SIGTERM.
@@ -65,6 +66,8 @@ class FakeProcess implements RunningProcess {
   Future<int> get exitCode => _exit.future;
   @override
   Stream<List<int>> get stderr => _stderr.stream;
+  @override
+  Stream<List<int>> get stdout => _stdout.stream;
   bool get exited => _exit.isCompleted;
 
   void exit(int code) {
@@ -72,6 +75,7 @@ class FakeProcess implements RunningProcess {
   }
 
   void writeErr(String s) => _stderr.add(utf8.encode(s));
+  void writeOut(String s) => _stdout.add(utf8.encode(s));
 
   @override
   bool kill([ProcessSignal s = ProcessSignal.sigterm]) {
@@ -167,11 +171,23 @@ class FakePorts implements PortPicker {
 
 class FakeHealth implements HealthProbe {
   bool answers = true;
+
+  /// Answers `up` gives before falling back to [answers].
+  final List<bool> next = [];
+
+  /// The PID `/healthz` answers on each port.
+  final Map<int, int> pidAt = {};
   final List<Uri> probed = [];
   @override
   Future<bool> up(Uri base) async {
     probed.add(base);
-    return answers;
+    return next.isNotEmpty ? next.removeAt(0) : answers;
+  }
+
+  @override
+  Future<int?> pid(Uri base) async {
+    probed.add(base);
+    return pidAt[base.port];
   }
 }
 
@@ -326,6 +342,7 @@ void main() {
     rig = Rig();
     writeDaemon(rig.home, pid: 777, port: 41000, token: 'old');
     rig.pids.live.add(777);
+    rig.health.pidAt[41000] = 777;
     rig.pids.ignoreTerm = true;
     final f = rig.sup.ensureUp();
     await rig.clock.advance(Duration.zero);
@@ -351,8 +368,29 @@ void main() {
     rig = Rig();
     writeDaemon(rig.home, pid: 777, port: 41000, token: 'old');
     rig.pids.live.add(777);
+    rig.health.pidAt[41000] = 777;
     await rig.up();
     expect(rig.pids.sent, [(777, ProcessSignal.sigterm)]);
+    expect(rig.starter.calls, hasLength(1));
+  });
+
+  test('a live PID that /healthz does not answer as is left alone', () async {
+    rig = Rig();
+    writeDaemon(rig.home, pid: 777, port: 41000, token: 'old');
+    rig.pids.live.add(777);
+    // Another process took the PID; the port answers another daemon, or
+    // nothing at all.
+    rig.health.pidAt[41000] = 888;
+    await rig.up();
+    expect(rig.pids.sent, isEmpty);
+    expect(rig.starter.calls, hasLength(1));
+
+    rig.dispose();
+    rig = Rig();
+    writeDaemon(rig.home, pid: 777, port: 41000, token: 'old');
+    rig.pids.live.add(777);
+    await rig.up();
+    expect(rig.pids.sent, isEmpty);
     expect(rig.starter.calls, hasLength(1));
   });
 
@@ -442,7 +480,12 @@ void main() {
     final afters = <Duration>[];
     for (var i = 0; i < 5; i++) {
       final p = rig.starter.last;
-      for (var l = 0; l < 30; l++) {
+      // The daemon logs to stdout and fails on stderr; the tail keeps both.
+      for (var l = 0; l < 15; l++) {
+        p.writeOut('run $i line $l\n');
+      }
+      await settle();
+      for (var l = 15; l < 30; l++) {
         p.writeErr('run $i line $l\n');
       }
       await settle();
@@ -466,6 +509,7 @@ void main() {
     expect(failed.stderrTail, hasLength(50));
     expect(failed.stderrTail.last, 'run 4 line 29');
     expect(failed.stderrTail.first, 'run 3 line 10');
+    expect(failed.stderrTail, contains('run 4 line 0'));
     expect(failed.reason, contains('101'));
     expect(rig.starter.calls, hasLength(5));
     await rig.clock.advance(const Duration(seconds: 30));
@@ -538,6 +582,47 @@ void main() {
     rig.health.answers = true;
     await rig.clock.advance(const Duration(milliseconds: 50));
     expect(rig.sup.state, isA<Up>());
+  });
+
+  test(
+    'onResume probes again before restarting a daemon slow to answer',
+    () async {
+      rig = Rig();
+      await rig.up();
+      rig.health.next.add(false);
+      await rig.sup.onResume();
+      await rig.clock.advance(Duration.zero);
+      expect(rig.starter.calls, hasLength(1));
+      expect(rig.starter.last.exited, isFalse);
+      expect(rig.sup.state, isA<Up>());
+    },
+  );
+
+  test('onResume starts afresh once Failed', () async {
+    rig = Rig();
+    await rig.up();
+    for (var i = 0; i < 5; i++) {
+      rig.starter.last.exit(1);
+      await rig.clock.advance(Duration.zero);
+      final s = rig.sup.state;
+      if (s is Restarting) await rig.clock.advance(s.after);
+    }
+    expect(rig.sup.state, isA<Failed>());
+    rig.states.clear();
+    await rig.sup.onResume();
+    await rig.clock.advance(Duration.zero);
+    expect(rig.states.first, isA<Starting>());
+    expect(rig.sup.state, isA<Up>());
+    expect(rig.starter.calls, hasLength(6));
+  });
+
+  test('onResume after stop does nothing', () async {
+    rig = Rig();
+    await rig.up();
+    await rig.sup.stop();
+    await rig.sup.onResume();
+    await rig.clock.advance(Duration.zero);
+    expect(rig.starter.calls, hasLength(1));
   });
 
   test('onResume during a backoff restarts at once', () async {
@@ -639,27 +724,76 @@ void main() {
     expect(r.attempt, 1);
   });
 
-  test('an executable that cannot be started fails after five tries', () async {
-    final dir = Directory.systemTemp.createTempSync('clax-sup-');
+  test('three starts in a row that never come up is Failed', () async {
     rig = Rig();
-    final clock = FakeClock();
-    final sup = DaemonSupervisor(
-      exe: const FixedExeLocator('/opt/clax'),
-      home: '${dir.path}/home',
-      supportDir: '${dir.path}/support',
-      cacheDir: '${dir.path}/cache',
-      starter: _ThrowingStarter(),
-      ports: FakePorts(),
-      health: FakeHealth(),
-      pids: FakePids(),
-      clock: clock,
+    rig.health.answers = false;
+    Object? error;
+    unawaited(
+      rig.sup.ensureUp().then((_) {}, onError: (Object e) => error = e),
     );
-    unawaited(sup.ensureUp().then((_) {}, onError: (_) {}));
-    await clock.advance(const Duration(seconds: 10));
-    final failed = sup.state as Failed;
-    expect(failed.reason, contains('no such file'));
-    dir.deleteSync(recursive: true);
+    await rig.clock.advance(const Duration(seconds: 15));
+    expect(rig.sup.state, isA<Restarting>());
+    await rig.clock.advance(const Duration(milliseconds: 200));
+    await rig.clock.advance(const Duration(seconds: 15));
+    expect(rig.sup.state, isA<Restarting>());
+    await rig.clock.advance(const Duration(milliseconds: 500));
+    await rig.clock.advance(const Duration(seconds: 15));
+    final failed = rig.sup.state as Failed;
+    expect(failed.reason, contains('did not answer /healthz'));
+    expect(rig.starter.calls, hasLength(3));
+    expect(error, isA<DaemonFailure>());
   });
+
+  test(
+    'a start that comes up resets the count of starts that did not',
+    () async {
+      rig = Rig();
+      rig.health.answers = false;
+      unawaited(rig.sup.ensureUp().then((_) {}, onError: (_) {}));
+      await rig.clock.advance(const Duration(milliseconds: 15200));
+      await rig.clock.advance(const Duration(milliseconds: 15500));
+      rig.health.answers = true;
+      await rig.clock.advance(const Duration(milliseconds: 50));
+      expect(rig.sup.state, isA<Up>());
+      // Up for a minute, so the earlier exits leave the sixty-second window
+      // and only the count of starts in a row could fail it.
+      await rig.clock.advance(const Duration(seconds: 61));
+      rig.health.answers = false;
+      rig.starter.last.exit(1);
+      await rig.clock.advance(const Duration(milliseconds: 200));
+      await rig.clock.advance(const Duration(seconds: 15));
+      await rig.clock.advance(const Duration(milliseconds: 500));
+      await rig.clock.advance(const Duration(seconds: 15));
+      expect(rig.sup.state, isA<Restarting>(), reason: 'two in a row so far');
+      expect(rig.starter.calls, hasLength(5));
+    },
+  );
+
+  test(
+    'an executable that cannot be started fails after three tries',
+    () async {
+      final dir = Directory.systemTemp.createTempSync('clax-sup-');
+      rig = Rig();
+      final clock = FakeClock();
+      final sup = DaemonSupervisor(
+        exe: const FixedExeLocator('/opt/clax'),
+        home: '${dir.path}/home',
+        supportDir: '${dir.path}/support',
+        cacheDir: '${dir.path}/cache',
+        starter: _ThrowingStarter(),
+        ports: FakePorts(),
+        health: FakeHealth(),
+        pids: FakePids(),
+        clock: clock,
+      );
+      unawaited(sup.ensureUp().then((_) {}, onError: (_) {}));
+      await clock.advance(const Duration(seconds: 10));
+      final failed = sup.state as Failed;
+      expect(failed.reason, contains('3 times in a row'));
+      expect(failed.reason, contains('no such file'));
+      dir.deleteSync(recursive: true);
+    },
+  );
 }
 
 class _ThrowingStarter implements ProcessStarter {

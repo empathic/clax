@@ -11,6 +11,10 @@ abstract interface class RunningProcess {
   /// The child's standard error.
   Stream<List<int>> get stderr;
 
+  /// The child's standard output. It must be read, or a full pipe blocks
+  /// the child.
+  Stream<List<int>> get stdout;
+
   /// Sends [s]; false when it could not be sent.
   bool kill([ProcessSignal s = ProcessSignal.sigterm]);
 }
@@ -28,8 +32,7 @@ abstract interface class ProcessStarter {
 }
 
 /// Starts real processes with `Process.start`, without the parent's
-/// environment. The child's stdin is closed at once and its stdout is read
-/// and discarded, so a full pipe never blocks it.
+/// environment. The child's stdin is closed at once.
 class IoProcessStarter implements ProcessStarter {
   const IoProcessStarter();
 
@@ -48,7 +51,6 @@ class IoProcessStarter implements ProcessStarter {
       includeParentEnvironment: false,
     );
     unawaited(p.stdin.close().catchError((Object _) {}));
-    unawaited(p.stdout.drain<void>().catchError((Object _) {}));
     return _IoRunningProcess(p);
   }
 }
@@ -63,6 +65,8 @@ class _IoRunningProcess implements RunningProcess {
   Future<int> get exitCode => _p.exitCode;
   @override
   Stream<List<int>> get stderr => _p.stderr;
+  @override
+  Stream<List<int>> get stdout => _p.stdout;
   @override
   bool kill([ProcessSignal s = ProcessSignal.sigterm]) => _p.kill(s);
 }
