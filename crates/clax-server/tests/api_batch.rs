@@ -70,7 +70,7 @@ async fn a_batch_is_delivered_as_one_group_led_by_its_note_through_every_tier() 
         assert_eq!(lines[0], "[clax] 3 comments sent to you:", "{tier}");
         assert_eq!(
             lines[1],
-            "[clax] 3 comments on \"Quarterly Review\", sent together by Alex. Note: \"Before the demo\"",
+            "[clax] 3 comments on \"Quarterly Review\", sent together by Alex (not connected). Note: \"Before the demo\"",
             "{tier}"
         );
         for t in &tids {

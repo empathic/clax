@@ -872,7 +872,7 @@ async fn a_batch_piggybacks_as_one_group_on_the_next_tool_result() {
     assert_eq!(v["feedback"].as_array().unwrap().len(), 2);
     assert_eq!(v["feedback"][0]["batch"]["size"], 2);
     let text = trailing.unwrap();
-    assert!(text.starts_with("---\n[clax] 2 comments sent to you:\n[clax] 2 comments on \"Batch\", sent together by Viewer.\n"), "{text}");
+    assert!(text.starts_with("---\n[clax] 2 comments sent to you:\n[clax] 2 comments on \"Batch\", sent together by Viewer (not connected).\n"), "{text}");
 }
 
 #[tokio::test]

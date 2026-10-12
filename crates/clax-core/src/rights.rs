@@ -1047,6 +1047,60 @@ mod tests {
         }
     }
 
+    /// A person's narrowing of an agent (spec §7.4) only takes rights away:
+    /// whatever it is, the agent may do nothing it could not do without it,
+    /// at any db level; and a narrowing the store accepts (no wider than
+    /// the person's rights within the grant's narrowing) is exactly what
+    /// the agent may then do, before any elevation.
+    #[test]
+    fn a_narrowing_never_widens_an_agent() {
+        let mut g = Lcg(0x7a11_0017);
+        for round in 0..600 {
+            let (person, grant, narrow, up) = (
+                random_rights(&mut g),
+                random_rights(&mut g),
+                random_rights(&mut g),
+                random_rights(&mut g),
+            );
+            let without = effective(&person, Some(&grant), None, Some(&up));
+            let with = effective(&person, Some(&grant), Some(&narrow), Some(&up));
+            let accepted = narrow.is_narrower_or_equal(&person.intersect(&grant));
+            let bare = effective(&person, Some(&grant), Some(&narrow), None);
+            let ctx = || {
+                format!(
+                    "round {round}\nP {}\nG {}\nN {}",
+                    person.to_json(),
+                    grant.to_json(),
+                    narrow.to_json()
+                )
+            };
+            every_point(|kind, action, artifact, own| {
+                if with.allows(kind, action, artifact, own) {
+                    assert!(
+                        without.allows(kind, action, artifact, own),
+                        "widened\n{}",
+                        ctx()
+                    );
+                }
+                if accepted {
+                    assert_eq!(
+                        bare.allows(kind, action, artifact, own),
+                        narrow.allows(kind, action, artifact, own),
+                        "accepted narrowing, {kind:?} {action} {artifact:?}\n{}",
+                        ctx()
+                    );
+                }
+                if let (RightType::Db, Some(x)) = (kind, artifact) {
+                    assert!(
+                        with.db_level(x, action, own) <= without.db_level(x, action, own),
+                        "level widened\n{}",
+                        ctx()
+                    );
+                }
+            });
+        }
+    }
+
     #[test]
     fn the_algebra_holds_on_random_rights() {
         let mut g = Lcg(0x5eed_c1a7);

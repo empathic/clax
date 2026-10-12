@@ -13,6 +13,7 @@ use crate::store::Store;
 use crate::store::approvals::{OWNER, UNCONNECTED};
 use rusqlite::{OptionalExtension, params};
 use std::collections::HashSet;
+use std::sync::Arc;
 
 /// The person an agent channel reads for (spec §6.1): the owner, for the
 /// owner's agents and for agents of a grant of the owner's row; else the
@@ -296,6 +297,57 @@ enum View {
     Filtered(Box<Approved>),
 }
 
+/// What an unconnected author's name reads in every payload and view an
+/// agent gets (spec §9.6, §19 item 7): `<name> (not connected)`.
+pub const NOT_CONNECTED: &str = " (not connected)";
+
+/// Who is connected, for marking the names of authors who are not (spec
+/// §9.6): the owner's public ID and every person's (connected or revoked:
+/// a revoked person's words stay theirs, §6.4). Every other author, the
+/// anonymous included, is of the `*unconnected` class (M14).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Connected {
+    owner: Option<String>,
+    people: HashSet<String>,
+}
+
+impl Connected {
+    /// Read on `c`.
+    pub(crate) fn read(c: &rusqlite::Connection) -> Result<Connected> {
+        let mut out = Connected::default();
+        let mut stmt =
+            c.prepare_cached("SELECT public_id, owner FROM viewers WHERE owner = 1 OR person = 1")?;
+        for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)))? {
+            let (p, owner) = row?;
+            if owner {
+                out.owner = Some(p);
+            } else {
+                out.people.insert(p);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Whether `author` is of the `*unconnected` class: neither the owner,
+    /// nor a person, nor Clax.
+    pub fn is_unconnected(&self, author: &Author) -> bool {
+        match author {
+            Author::Unconnected => true,
+            Author::Person(p) => self.owner.as_deref() != Some(p) && !self.people.contains(p),
+            Author::Owner | Author::System => false,
+        }
+    }
+
+    /// `name`, followed by [`NOT_CONNECTED`] when `author` is unconnected.
+    pub fn label(&self, name: &str, author: &Author) -> String {
+        if self.is_unconnected(author) {
+            format!("{name}{NOT_CONNECTED}")
+        } else {
+            name.to_string()
+        }
+    }
+}
+
 /// What one agent channel may see (§8.1): built for a reader at a
 /// generation of the store's visibility (M17), rebuilt when it changes.
 #[derive(Clone, Debug)]
@@ -303,6 +355,9 @@ pub struct Visibility {
     generation: u64,
     reader: Option<Reader>,
     view: View,
+    /// Who is connected, for marking unconnected authors' names; `None`
+    /// marks no one ([`Visibility::all`]).
+    connected: Option<Arc<Connected>>,
 }
 
 impl Visibility {
@@ -316,6 +371,7 @@ impl Visibility {
             generation: 0,
             reader: None,
             view: View::All,
+            connected: None,
         }
     }
 
@@ -327,11 +383,13 @@ impl Visibility {
     /// everything at the cost of one atomic load (§8.7).
     pub fn for_reader(st: &Store, reader: &Reader, generation: u64) -> Result<Visibility> {
         let reader = Some(reader.clone());
+        let connected = Some(st.connected()?);
         if reader == Some(Reader::Owner) && st.owner_sees_all()? {
             return Ok(Visibility {
                 generation,
                 reader,
                 view: View::All,
+                connected,
             });
         }
         let approved = st.with_read(|c| approved_in(c, reader.as_ref()))?;
@@ -339,6 +397,7 @@ impl Visibility {
             generation,
             reader,
             view: View::Filtered(Box::new(approved)),
+            connected,
         })
     }
 
@@ -358,6 +417,7 @@ impl Visibility {
             generation,
             reader,
             view: View::Filtered(Box::new(approved)),
+            connected: Some(Arc::new(Connected::read(c)?)),
         })
     }
 
@@ -404,6 +464,21 @@ impl Visibility {
     /// The reader it was built for; `None` for [`Visibility::all`].
     pub fn reader(&self) -> Option<&Reader> {
         self.reader.as_ref()
+    }
+
+    /// `name` as an agent of this view's reader reads it: followed by
+    /// [`NOT_CONNECTED`] when `author` is not connected (spec §9.6).
+    pub fn label(&self, name: &str, author: &Author) -> String {
+        match &self.connected {
+            Some(c) => c.label(name, author),
+            None => name.to_string(),
+        }
+    }
+
+    /// Who is connected, as this view was built; `None` for
+    /// [`Visibility::all`], which marks no one.
+    pub fn connected(&self) -> Option<&Connected> {
+        self.connected.as_deref()
     }
 
     /// `authors` normalised against this view's owner ([`normalise`]).
@@ -735,6 +810,26 @@ pub mod placeholder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_authors_who_are_not_connected_are_marked() {
+        let c = Connected {
+            owner: Some("u_owner".into()),
+            people: ["u_sam".to_string()].into_iter().collect(),
+        };
+        let p = |x: &str| Author::Person(x.into());
+        assert_eq!(c.label("Lan", &p("u_lan")), "Lan (not connected)");
+        assert_eq!(
+            c.label("Viewer", &Author::Unconnected),
+            "Viewer (not connected)"
+        );
+        assert_eq!(c.label("Sam", &p("u_sam")), "Sam");
+        assert_eq!(c.label("Alex", &p("u_owner")), "Alex");
+        assert_eq!(c.label("Alex", &Author::Owner), "Alex");
+        assert_eq!(c.label("clax", &Author::System), "clax");
+        // A view that marks no one leaves every name as it is.
+        assert_eq!(Visibility::all().label("Lan", &p("u_lan")), "Lan");
+    }
     use crate::db::{Caller, Level};
     use crate::publish::{PublishRequest, validate};
     use crate::store::approvals::{Scope, Via};
