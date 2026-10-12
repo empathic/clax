@@ -71,6 +71,39 @@ class AppPanel extends StatelessWidget {
   /// The peek's height above the bottom inset.
   static const peekHeight = 76.0;
 
+  /// The space between the peek's label and its status.
+  static const _peekGap = 2.0;
+
+  /// What of the peek's label (one line) and status (up to two lines) fits
+  /// in [room] at [scaler]: both with two status lines, else both with
+  /// one, else the status alone on one line. Large text scales on a short
+  /// peek give up the label before the status, which carries what was
+  /// heard.
+  static ({bool label, int statusLines}) peekFit({
+    required double room,
+    required TextStyle? label,
+    required TextStyle? status,
+    required TextScaler scaler,
+  }) {
+    double line(TextStyle? style) {
+      final p = TextPainter(
+        text: TextSpan(text: 'Ag', style: style),
+        textScaler: scaler,
+        textDirection: TextDirection.ltr,
+        maxLines: 1,
+      )..layout();
+      final h = p.height;
+      p.dispose();
+      return h;
+    }
+
+    final l = line(label) + _peekGap;
+    final s = line(status);
+    if (l + 2 * s <= room) return (label: true, statusLines: 2);
+    if (l + s <= room) return (label: true, statusLines: 1);
+    return (label: false, statusLines: 1);
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -179,39 +212,64 @@ class AppPanel extends StatelessWidget {
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    d.label.isEmpty ? 'New comment' : d.label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.labelMedium?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    status,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      color: x.unavailable != null || x.error != null
-                          ? scheme.error
-                          : null,
-                    ),
-                  ),
-                ],
+              child: LayoutBuilder(
+                builder: (context, box) {
+                  final labelStyle = theme.textTheme.labelMedium?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  );
+                  final statusStyle = theme.textTheme.bodyMedium?.copyWith(
+                    color: x.unavailable != null || x.error != null
+                        ? scheme.error
+                        : null,
+                  );
+                  final fit = peekFit(
+                    room: box.maxHeight,
+                    label: labelStyle,
+                    status: statusStyle,
+                    scaler: MediaQuery.textScalerOf(context),
+                  );
+                  return Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (fit.label) ...[
+                        Text(
+                          d.label.isEmpty ? 'New comment' : d.label,
+                          key: const ValueKey('peek-label'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: labelStyle,
+                        ),
+                        const SizedBox(height: _peekGap),
+                      ],
+                      Text(
+                        status,
+                        key: const ValueKey('peek-status'),
+                        maxLines: fit.statusLines,
+                        overflow: TextOverflow.ellipsis,
+                        style: statusStyle,
+                      ),
+                    ],
+                  );
+                },
               ),
             ),
             const SizedBox(width: 8),
-            FilledButton.icon(
-              key: const ValueKey('send'),
-              onPressed: busy ? null : onSend,
-              icon: const Icon(Icons.send, size: 18),
-              label: const Text('Send'),
-            ),
+            // At large text scales the label would take the status's room.
+            if (MediaQuery.textScalerOf(context).scale(14) > 22)
+              IconButton.filled(
+                key: const ValueKey('send'),
+                tooltip: 'Send',
+                onPressed: busy ? null : onSend,
+                icon: const Icon(Icons.send),
+              )
+            else
+              FilledButton.icon(
+                key: const ValueKey('send'),
+                onPressed: busy ? null : onSend,
+                icon: const Icon(Icons.send, size: 18),
+                label: const Text('Send'),
+              ),
           ],
         ),
       ),
@@ -256,7 +314,7 @@ class AppPanel extends StatelessWidget {
           if (resolved)
             'resolved'
           else if (t.sent)
-            'sent to Claude'
+            'sent to Clax'
           else
             'not sent',
         ];

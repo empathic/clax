@@ -17,6 +17,7 @@ import 'change_tracker.dart';
 import 'comment_button.dart';
 import 'host_protocol.dart';
 import 'swipe.dart';
+import 'thread_detail.dart';
 import 'threads_panel.dart';
 import 'versions_tab.dart';
 
@@ -65,6 +66,10 @@ import 'versions_tab.dart';
 ///   without a version, a failure, a cancel or a failed send ends the
 ///   chip and shows which it was (Retry for a failed send). The chip can
 ///   always be dismissed.
+/// - **Thread page.** Tapping a thread in the panel opens [ThreadDetail]
+///   over the screen, with the shell's label for its anchor. Its "Changed
+///   in vN" closes it and previews that version (`loadVersion`); its Retry
+///   calls [AppScreen.onRetry], and is not offered without one.
 /// - **Versions.** Tap to preview, Restore (or Undo) to republish an
 ///   earlier version (`restoreVersion`), then `reloadLatest`.
 ///
@@ -85,6 +90,7 @@ class AppScreen extends StatefulWidget {
     this.comments,
     this.commentButtonDy,
     this.onCommentButtonMoved,
+    this.onRetry,
   });
 
   final String aid;
@@ -119,6 +125,11 @@ class AppScreen extends StatefulWidget {
   /// The comment button was dragged to this height, for the caller to
   /// keep.
   final ValueChanged<double>? onCommentButtonMoved;
+
+  /// Runs the failed change of thread `tid` of app `aid` again, posting
+  /// nothing; null when the app cannot, and the thread page offers no
+  /// Retry.
+  final void Function(String aid, String tid)? onRetry;
 
   /// The app view's URL for [aid] under [base].
   static Uri appUrl(Uri base, String aid) {
@@ -378,6 +389,31 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     _call(Resend(id));
   }
 
+  /// Opens thread [id]'s page over the screen.
+  void _openThread(String id) {
+    final label = _threads.where((t) => t.id == id).firstOrNull?.label;
+    final retry = widget.onRetry;
+    unawaited(
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (route) => ThreadDetail(
+            api: widget.api,
+            aid: widget.aid,
+            tid: id,
+            voice: widget.voice,
+            autoDictate: widget.settings.dictateComments,
+            label: label,
+            onPreview: (n) {
+              Navigator.of(route).pop();
+              _call(LoadVersion(n));
+            },
+            onRetry: retry == null ? null : (tid) => retry(widget.aid, tid),
+          ),
+        ),
+      ),
+    );
+  }
+
   void _snack(String text, {SnackBarAction? action}) {
     ScaffoldMessenger.maybeOf(context)
       ?..hideCurrentSnackBar()
@@ -582,9 +618,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       ),
     );
     screen = CallbackShortcuts(
-      bindings: {
-        const SingleActivator(LogicalKeyboardKey.escape): _closeTop,
-      },
+      bindings: {const SingleActivator(LogicalKeyboardKey.escape): _closeTop},
       child: Focus(autofocus: true, child: screen),
     );
     final own = _ownComments;
@@ -885,7 +919,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       onMic: () => unawaited(_toggleMic()),
       onSend: () => _call(const SubmitDraft()),
       threads: _threads,
-      onThread: (id) => _call(OpenThread(id)),
+      onThread: _openThread,
       onResend: _resend,
       versions: VersionsTab(
         api: widget.api,

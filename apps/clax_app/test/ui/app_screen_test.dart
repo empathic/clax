@@ -12,6 +12,7 @@ import 'package:clax_app/ui/app_surface.dart';
 import 'package:clax_app/ui/comment_button.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/theme.dart';
+import 'package:clax_app/ui/thread_detail.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -123,6 +124,7 @@ void main() {
     double? buttonDy,
     ValueChanged<double>? onButtonMoved,
     CommentsCommand? comments,
+    void Function(String aid, String tid)? onRetry,
   }) async {
     phone(tester, size: size);
     final (api, aid) = await _seeded();
@@ -149,6 +151,7 @@ void main() {
           commentButtonDy: buttonDy,
           onCommentButtonMoved: onButtonMoved,
           comments: comments,
+          onRetry: onRetry,
         ),
       ),
     );
@@ -626,17 +629,35 @@ void main() {
     );
   });
 
-  testWidgets('the Threads tab lists the shell threads and opens one', (
+  testWidgets('the Threads tab lists the shell threads; a tap opens its page', (
     tester,
   ) async {
-    final rig = await pumpScreen(tester);
+    final retries = <(String, String)>[];
+    final rig = await pumpScreen(
+      tester,
+      onRetry: (aid, tid) => retries.add((aid, tid)),
+    );
+    final item = rig.api.sendComment(rig.aid, 'make the title blue');
+    await rig.api.replyAsAgent(
+      rig.aid,
+      item.threadId,
+      "Couldn't make that change: the network dropped",
+    );
+    await rig.api.publish(
+      rig.aid,
+      PublishRequest(
+        ifVersion: 3,
+        files: {'index.html': '<h1>Runs</h1>'},
+        addresses: [item.threadId],
+      ),
+    );
     rig.surface.push(rig.ready());
     await openPanel(tester);
     expect(find.textContaining('Hold a finger'), findsOneWidget);
     rig.surface.push(
-      const ThreadsMsg([
+      ThreadsMsg([
         ThreadSummary(
-          id: 't1',
+          id: item.threadId,
           status: 'open',
           summary: 'make the title blue',
           sent: true,
@@ -649,8 +670,54 @@ void main() {
     await tester.pump();
     expect(find.textContaining('the page title'), findsOneWidget);
     await tester.tap(find.text('make the title blue'));
+    await tester.pumpAndSettle();
+
+    // The page: the shell's label, the whole conversation, and Retry.
+    expect(find.byType(ThreadDetail), findsOneWidget);
+    expect(find.text('the page title'), findsOneWidget);
+    expect(find.text('make the title blue'), findsOneWidget);
+    expect(find.text('Clax'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('thread-retry')));
     await tester.pump();
-    expect(rig.surface.js.last, 'window.claxHost?.openThread("t1")');
+    expect(retries, [(rig.aid, item.threadId)]);
+
+    // "Changed in v4" closes the page and previews version 4.
+    rig.surface.js.clear();
+    await tester.tap(find.text('Changed in v4'));
+    await tester.pumpAndSettle();
+    expect(find.byType(ThreadDetail), findsNothing);
+    expect(rig.surface.js, contains('window.claxHost?.loadVersion(4)'));
+  });
+
+  testWidgets('without a retry hook the thread page offers no Retry', (
+    tester,
+  ) async {
+    final rig = await pumpScreen(tester);
+    final item = rig.api.sendComment(rig.aid, 'make it blue');
+    await rig.api.replyAsAgent(
+      rig.aid,
+      item.threadId,
+      "Couldn't make that change: x",
+    );
+    rig.surface.push(rig.ready());
+    await openPanel(tester);
+    rig.surface.push(
+      ThreadsMsg([
+        ThreadSummary(
+          id: item.threadId,
+          status: 'open',
+          summary: 'make it blue',
+          sent: true,
+          comments: 2,
+          version: 3,
+        ),
+      ]),
+    );
+    await tester.pump();
+    await tester.tap(find.text('make it blue'));
+    await tester.pumpAndSettle();
+    expect(find.text('Couldn’t make that change'), findsOneWidget);
+    expect(find.byKey(const ValueKey('thread-retry')), findsNothing);
   });
 
   testWidgets('a shell notice shows as a snack bar', (tester) async {
