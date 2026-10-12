@@ -124,10 +124,10 @@ export type ClaxHost = {
   /** A real finger `pointer` pressed (`down`) or lifted (`up`) at (`x`,
    * `y`), CSS pixels in the WebView's viewport, as the app's listener saw it
    * reach the WebView. A press on the content frame itself counts as the
-   * finger's arrival there for `ATTEST_MS` (`caps/gesture.ts`, "App mode's
-   * host attestation"); its release counts again, and only a release whose
-   * press so counted: a press on a shell control (which may be gone by the
-   * release) never does. */
+   * finger's arrival there until its release (at most `HELD_MAX_MS`;
+   * `caps/gesture.ts`, "App mode's host attestation"); its release counts
+   * for `ATTEST_MS`, and only a release whose press so counted: a press on a
+   * shell control (which may be gone by the release) never does. */
   attestPointer(p: { pointer: number; phase: "down" | "up"; x: number; y: number }): void;
   /** Opens the composer on the whole app (an `artifact` anchor, no
    * screenshot), unless one holding typed text is open. Not in the inspect view. */
@@ -155,10 +155,14 @@ const INSPECT_KINDS = new Set(["error", "unhandledrejection", "console"]);
 const WHOLE_APP = "The whole app";
 const WHOLE_NO_CLIP = "it is about the whole app";
 
-/** How long a host's attestation of a finger on the frame counts. A
- * long-press's pick comes at most about 400 ms after the release
- * (`web/bridge/src/comment-mode.ts`), and the release is attested too. */
+/** How long a host's attestation of a finger's release on the frame counts,
+ * and a press's with no pairing: a long-press's pick comes at most about
+ * 400 ms after the release (`web/bridge/src/comment-mode.ts`). */
 export const ATTEST_MS = 1000;
+/** How long an attested press counts while its release is not attested: a
+ * hold, then a drag, takes seconds, and a release the host never reports
+ * (the app paused mid-touch) must not leave the frame's gesture standing. */
+export const HELD_MAX_MS = 30_000;
 /** How near (CSS pixels, each way) a shell press is to an attested press for
  * both to be the same finger: the app's and the WebView's coordinates of a
  * touch can differ by rounding and the finger's contact point. */
@@ -407,7 +411,8 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   let attestedAt = -Infinity;
   // The pointers whose press was attested on the frame, until their release.
   const pressed = new Set<number>();
-  hostArrival.fresh = since => attestedAt > since && now() - attestedAt < ATTEST_MS;
+  hostArrival.fresh = since => attestedAt > since && now() - attestedAt < (pressed.size > 0 ? HELD_MAX_MS : ATTEST_MS);
+  hostArrival.pending = () => pressed.size > 0;
   const composer = () => doc.querySelector<HTMLFormElement>(".stage form.composer");
   // The app's word on visibility: null until `init` (the document's own applies).
   let hostHidden: boolean | null = null;
@@ -493,8 +498,8 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
         const at = doc.elementFromPoint(x, y);
         const t = now();
         const onShell = shellPresses.some(q => t - q.at < ATTEST_MS && Math.abs(q.x - x) <= NEAR_PX && Math.abs(q.y - y) <= NEAR_PX);
-        if (at && at === ctl.frame?.el && !onShell) { pressed.add(pointer); attestedAt = now(); } else pressed.delete(pointer);
-      } else if (phase === "up" && pressed.delete(pointer)) attestedAt = now();
+        if (at && at === ctl.frame?.el && !onShell) { pressed.add(pointer); attestedAt = now(); hostArrival.attested(); } else pressed.delete(pointer);
+      } else if (phase === "up" && pressed.delete(pointer)) { attestedAt = now(); hostArrival.attested(); }
     },
     composeArtifact: () => {
       const v = s();
@@ -522,6 +527,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     win.removeEventListener("pointerdown", onPress, true);
     win.removeEventListener("pointerup", onPress, true);
     hostArrival.fresh = () => false;
+    hostArrival.pending = () => false;
     uninstalled = true;
     if (quieted) delete quieted.watch;
     visibility.hidden = docHidden;
