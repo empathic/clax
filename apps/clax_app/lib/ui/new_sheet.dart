@@ -3,24 +3,32 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../platform/voice.dart';
+import '../platform/voice_cues.dart';
 
 /// Opens the New sheet and returns the request the person submitted, or
-/// null when they closed it. [initial] fills the field; an empty sheet
-/// starts listening at once when dictation is available, so saying what
-/// you want is one tap from the launcher. [onChanged] sees every change to
-/// the text, typed or heard, so a closed sheet's draft can be kept.
+/// null when they closed it. [initial] fills the field. An empty sheet
+/// starts listening at once when dictation is available and [autoStart]
+/// is on (when null, [autoStartOf] the voice: the person's "Start
+/// dictation automatically"), so saying what you want is one tap from the
+/// launcher. [onChanged] sees every change to the text, typed or heard, so
+/// a closed sheet's draft can be kept.
 Future<String?> showNewSheet(
   BuildContext context,
   VoiceInput voice,
   String initial, {
   ValueChanged<String>? onChanged,
+  bool? autoStart,
 }) => showModalBottomSheet<String>(
   context: context,
   isScrollControlled: true,
   useSafeArea: true,
   showDragHandle: true,
-  builder: (_) =>
-      NewSheet(voice: voice, initial: initial, onChanged: onChanged),
+  builder: (_) => NewSheet(
+    voice: voice,
+    initial: initial,
+    onChanged: onChanged,
+    autoStart: autoStart,
+  ),
 );
 
 /// The New sheet's body: a text field, a mic button and "Make it".
@@ -30,11 +38,16 @@ class NewSheet extends StatefulWidget {
     required this.voice,
     this.initial = '',
     this.onChanged,
+    this.autoStart,
   });
 
   final VoiceInput voice;
   final String initial;
   final ValueChanged<String>? onChanged;
+
+  /// Whether an empty sheet starts listening on its own; when null,
+  /// [autoStartOf] [voice].
+  final bool? autoStart;
 
   @override
   State<NewSheet> createState() => _NewSheetState();
@@ -66,9 +79,10 @@ class _NewSheetState extends State<NewSheet> {
     widget.voice.availability().then((a) {
       if (!mounted) return;
       setState(() => _availability = a);
-      if (a is VoiceAvailable && _text.text.trim().isEmpty) {
+      final auto = widget.autoStart ?? autoStartOf(widget.voice);
+      if (a is VoiceAvailable && auto && _text.text.trim().isEmpty) {
         _startListening();
-      } else if (a is! VoiceAvailable) {
+      } else if (a is! VoiceAvailable || !auto) {
         _focus.requestFocus();
       }
     });

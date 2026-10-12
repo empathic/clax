@@ -14,6 +14,7 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         background = BackgroundWorkChannel(this, flutterEngine.dartExecutor.binaryMessenger)
+        CuesChannel(applicationContext, flutterEngine.dartExecutor.binaryMessenger)
         // "nativeLibraryDir" answers the directory holding libclax.so, the
         // embedded clax executable. "openAppSettings" opens this app's page
         // in system settings (its permissions among it) and answers true.

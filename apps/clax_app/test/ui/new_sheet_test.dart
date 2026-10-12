@@ -1,4 +1,5 @@
 import 'package:clax_app/platform/voice.dart';
+import 'package:clax_app/platform/voice_cues.dart';
 import 'package:clax_app/ui/new_sheet.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -14,6 +15,7 @@ void main() {
     WidgetTester tester,
     VoiceInput voice, {
     String initial = '',
+    bool? autoStart,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -21,8 +23,14 @@ void main() {
           builder: (context) => Scaffold(
             body: Center(
               child: TextButton(
-                onPressed: () async =>
-                    results.add(await showNewSheet(context, voice, initial)),
+                onPressed: () async => results.add(
+                  await showNewSheet(
+                    context,
+                    voice,
+                    initial,
+                    autoStart: autoStart,
+                  ),
+                ),
                 child: const Text('open'),
               ),
             ),
@@ -162,5 +170,45 @@ void main() {
     );
     expect(tester.takeException(), isNull);
     expect(find.text('Make it'), findsOneWidget);
+  });
+
+  testWidgets('with auto-start off the sheet waits for the mic', (
+    tester,
+  ) async {
+    final voice = FakeVoice(script: ['a run tracker']);
+    await pumpSheet(tester, voice, autoStart: false);
+    expect(voice.listens, 0);
+    expect(fieldText(tester), '');
+    await tester.tap(find.byKey(const Key('new-sheet-mic')));
+    await tester.pumpAndSettle();
+    expect(voice.listens, 1);
+    expect(fieldText(tester), 'a run tracker');
+  });
+
+  testWidgets("the app's voice decides when no choice is passed", (
+    tester,
+  ) async {
+    final inner = FakeVoice(script: ['a run tracker']);
+    final voice = DictationVoice(
+      inner,
+      cues: const NoVoiceCues(),
+      autoStart: () => false,
+    );
+    await pumpSheet(tester, voice);
+    expect(inner.listens, 0);
+  });
+
+  testWidgets("the app's voice with auto-start on listens at once", (
+    tester,
+  ) async {
+    final inner = FakeVoice(script: ['a run tracker']);
+    final voice = DictationVoice(
+      inner,
+      cues: const NoVoiceCues(),
+      autoStart: () => true,
+    );
+    await pumpSheet(tester, voice);
+    expect(inner.listens, 1);
+    expect(fieldText(tester), 'a run tracker');
   });
 }

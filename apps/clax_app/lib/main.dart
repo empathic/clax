@@ -25,6 +25,7 @@ import 'platform/secure_key.dart';
 import 'platform/settings_store.dart';
 import 'platform/timings.dart';
 import 'platform/voice.dart';
+import 'platform/voice_cues.dart';
 import 'ui/webview_surface.dart';
 
 /// A debug build given `--dart-define=CLAX_SCRIPTED_AGENT=<path>` answers
@@ -66,6 +67,7 @@ Future<AppServices> platformServices() async {
   final scratch = Directory('${cache.path}/claude-cli');
   final scripted = await _scriptedBackend();
   const links = ExternalLinks();
+  final settings = SettingsStore(File('${support.path}/settings.json'));
   return AppServices(
     supervisor: supervisor,
     api: HttpClaxApi.new,
@@ -78,8 +80,8 @@ Future<AppServices> platformServices() async {
           scratch: scratch,
           log: (l) => debugPrint('clax agent: $l'),
         ),
-    voice: SpeechToTextVoice(),
-    settings: SettingsStore(File('${support.path}/settings.json')),
+    voice: DictationVoice.forSettings(SpeechToTextVoice(), settings),
+    settings: settings,
     key: FlutterSecureKey(),
     timings: FileTimings(File('${support.path}/timings.jsonl')),
     agentTimings: FileTimings(File('${support.path}/agent-timings.jsonl')),

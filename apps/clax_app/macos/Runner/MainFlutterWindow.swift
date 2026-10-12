@@ -34,6 +34,8 @@ class MainFlutterWindow: NSWindow {
       }
     }
 
+    installCues(flutterViewController)
+
     #if DEBUG
       installTestInput(flutterViewController)
       quitWithFlutterTool()
@@ -41,6 +43,41 @@ class MainFlutterWindow: NSWindow {
 
     super.awakeFromNib()
   }
+
+  /// The `dev.empathic.clax/cues` channel for `ChannelVoiceCues` in
+  /// `lib/platform/voice_cues.dart`: `play` {cue: "start"|"stop"} plays the
+  /// system sound "Tink" or "Pop" and answers whether it played.
+  private func installCues(_ controller: FlutterViewController) {
+    let channel = FlutterMethodChannel(
+      name: "dev.empathic.clax/cues",
+      binaryMessenger: controller.engine.binaryMessenger)
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard call.method == "play" else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      let cue = (call.arguments as? [String: Any])?["cue"] as? String
+      let name: NSSound.Name
+      switch cue {
+      case "start": name = "Tink"
+      case "stop": name = "Pop"
+      default:
+        result(FlutterError(code: "bad_cue", message: "cue must be start or stop", details: nil))
+        return
+      }
+      // Held by the window while it plays; a cue played again restarts.
+      guard let self, let sound = self.cueSounds[name] ?? NSSound(named: name) else {
+        result(false)
+        return
+      }
+      self.cueSounds[name] = sound
+      sound.volume = 0.6
+      sound.stop()
+      result(sound.play())
+    }
+  }
+
+  private var cueSounds: [NSSound.Name: NSSound] = [:]
 
   #if DEBUG
     private var toolExit: DispatchSourceProcess?
