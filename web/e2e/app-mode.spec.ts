@@ -1,10 +1,10 @@
 // The Clax app's view (`/a/<id>?app=1`): no chrome, `window.claxHost` for the
 // app that hosts it, messages to the app's channel (`window.ClaxHost`), Send,
-// and a newer version followed in place with the scroll kept. The host's
-// calls go in through the DevTools protocol with no user gesture
-// (`quietEval`), as the app's `runJavaScript` does.
-import { type CDPSession, type Locator, type Page } from "@playwright/test";
-import { test, expect, type Daemon, api, contentFrame, publishAs, publishNext, record, registerSession } from "./fixtures";
+// and a newer version, published or restored, followed in place with the
+// page's documents and scroll kept. The app's side is ./app-host.ts.
+import { type CDPSession, type Frame, type Locator, type Page } from "@playwright/test";
+import { hostChannel, host, initHost, NONCE, ofType, toHost } from "./app-host";
+import { test, expect, type Daemon, api, contentFrame, publishAs, publishNext, record, registerSession, streamLive } from "./fixtures";
 import { quietEval } from "./time";
 
 let d: Daemon;
@@ -15,31 +15,12 @@ const PAGE = `<!doctype html><html><head><title>App</title><style>body{margin:0;
 </head>
 <body><main><h2 id="t">Quarterly goals</h2><p>Grow revenue in every region this year.</p><div class="tall"></div><p id="end">The end</p></main></body></html>`;
 
-type HostMessage = { type: string; [k: string]: unknown };
-
-/** The app's channel: every message the view posts to its host, parsed. */
-async function hostChannel(page: Page) {
-  await page.addInitScript(() => {
-    if (window.top !== window) return;
-    (window as unknown as { claxToHost: unknown[] }).claxToHost = [];
-    (window as unknown as { ClaxHost: unknown }).ClaxHost = { postMessage: (m: string) => (window as unknown as { claxToHost: unknown[] }).claxToHost.push(JSON.parse(m)) };
-  });
-}
-/** This load's nonce, as the app makes one per load of the shell. */
-const NONCE = "e2e-nonce-0123456789abcdef";
-/** What the shell posted with this load's nonce (the app drops the rest). */
-const toHost = (page: Page) => quietEval<HostMessage[]>(page, `window.claxToHost.filter(m => m.nonce === ${JSON.stringify(NONCE)}).map(({ nonce, ...m }) => m)`);
-/** The app's `init`, once the shell's host module has loaded. */
-async function initHost(page: Page) {
-  await expect.poll(() => quietEval<string>(page, "typeof window.claxHost")).toBe("object");
-  await quietEval(page, `window.claxHost.init({ nonce: ${JSON.stringify(NONCE)} })`);
-}
-const ofType = async (page: Page, type: string) => (await toHost(page)).filter(m => m.type === type);
-const host = (page: Page, call: string) => quietEval<unknown>(page, `window.claxHost.${call}`);
-
-async function openApp(page: Page, title: string, mode: "subdomain" | "sandbox", app = true, opts: { beforeGoto?: () => Promise<void> } = {}) {
+async function openApp(page: Page, title: string, mode: "subdomain" | "sandbox", app = true, opts: { beforeGoto?: () => Promise<void>; html?: string; capabilities?: Record<string, unknown> } = {}) {
   const s = await registerSession(d.base, d.token, "app");
-  const { artifact } = await publishAs(d.base, d.token, s.id, title, { "index.html": PAGE });
+  const html = opts.html ?? PAGE;
+  const { artifact } = opts.capabilities
+    ? await api(d.base, d.token, "/api/artifacts", { method: "POST", session: s.id, body: JSON.stringify({ title, capabilities: opts.capabilities, files: { "index.html": { content: html, encoding: "utf8" } } }) }) as { artifact: { id: string } }
+    : await publishAs(d.base, d.token, s.id, title, { "index.html": html });
   if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
   await hostChannel(page);
   await record(page);
@@ -57,6 +38,28 @@ async function holdOn(cdp: CDPSession, target: Locator) {
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [at] });
   await new Promise(r => setTimeout(r, 800));
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+}
+
+/** The last scroll position the page reported to the shell. */
+const reported = (page: Page) => page.evaluate(() => (window as unknown as { claxMsgs: { type: string; y?: number }[] }).claxMsgs.filter(m => m.type === "clax:scroll").at(-1)?.y ?? null);
+
+/** Scrolls the page to about `y` until the shell has heard where it is, and
+ * returns that position. The page reports its scroll once the welcome's part
+ * has loaded, which may be after a first scroll: it moves by a pixel until a
+ * report of where it is arrives. */
+async function scrollAndReport(page: Page, frame: Frame, y: number): Promise<number> {
+  await expect.poll(async () => {
+    const at = await frame.evaluate(t => { scrollTo(0, scrollY === t ? t + 1 : t); return scrollY; }, y);
+    const r = await reported(page);
+    return r !== null && Math.abs(r - at) <= 1;
+  }).toBe(true);
+  return (await reported(page))!;
+}
+
+/** Expects the frame at `y` within 2 px, once the restore has run. */
+async function expectScrollNear(frame: Frame, y: number) {
+  await expect.poll(() => frame.evaluate(() => scrollY)).toBeGreaterThanOrEqual(y - 2);
+  expect(await frame.evaluate(() => scrollY)).toBeLessThanOrEqual(y + 2);
 }
 
 for (const mode of ["subdomain", "sandbox"] as const) {
@@ -145,28 +148,46 @@ test("a long-press picks and Send sends to the app session", async ({ page }) =>
   expect(JSON.stringify(fb)).toContain(thread);
 });
 
+/** A page that keeps one note in its documents: Add writes it, and the page
+ * shows it while it exists. */
+const NOTES = `<!doctype html><html><head><title>Notes</title><style>body{margin:0;font:18px/28px sans-serif}main{padding:24px}h2{margin:0 0 24px}.tall{height:3000px}</style>
+</head>
+<body><main><h2 id="t">Notes</h2><p id="note">none</p><button id="add">Add</button><div class="tall"></div><p id="end">The end</p></main>
+<script>
+(async () => {
+  const db = await claude.use("db");
+  db.doc("notes/n1").onSnapshot(s => { document.getElementById("note").textContent = s.exists ? s.data().text : "none"; });
+  document.getElementById("add").onclick = () => db.doc("notes/n1").set({ text: "kept" });
+})();
+</script></body></html>`;
+
 for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: a published version lands in place with the scroll kept`, async ({ page }) => {
-    const { id, sid, frame } = await openApp(page, `App follow ${mode}`, mode);
+  test(`${mode}: a published version lands in place with the documents and scroll kept, and a restore brings the earlier version back`, async ({ page }) => {
+    const { id, sid, frame } = await openApp(page, `App notes ${mode}`, mode, true, { html: NOTES, capabilities: { db: {} } });
     await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
-    // The page reports its scroll once the welcome's part has loaded, which
-    // may be after this first scroll: it moves by a pixel until a report of
-    // where it is arrives.
-    const reported = () => page.evaluate(() => (window as unknown as { claxMsgs: { type: string; y?: number }[] }).claxMsgs.filter(m => m.type === "clax:scroll").at(-1)?.y ?? null);
-    await expect.poll(async () => {
-      const y = await frame.evaluate(() => { scrollTo(0, scrollY === 1200 ? 1201 : 1200); return scrollY; });
-      const r = await reported();
-      return r !== null && Math.abs(r - y) <= 1;
-    }).toBe(true);
-    const y = (await reported())!;
-    await publishNext(d.base, d.token, sid, id, 1, { files: { "index.html": PAGE.replace("Quarterly goals", "Quarterly goals, in blue") } });
+    await frame.locator("#add").tap();
+    await expect(frame.locator("#note")).toHaveText("kept");
+    await streamLive(page);
+    const y = await scrollAndReport(page, frame, 1200);
+    expect(y).toBeGreaterThanOrEqual(1199);
+
+    await publishNext(d.base, d.token, sid, id, 1, { files: { "index.html": NOTES.replace(">Notes</h2>", ">Notes, in blue</h2>") } });
     await expect.poll(async () => (await ofType(page, "landed")).length, { timeout: 10_000 }).toBe(1);
     expect((await ofType(page, "landed"))[0]).toEqual({ type: "landed", version: 2 });
-    const next = await contentFrame(page, id, 2);
-    await expect(next.locator("#t")).toHaveText("Quarterly goals, in blue");
-    await expect.poll(() => next.evaluate(() => scrollY)).toBeGreaterThanOrEqual(y - 2);
-    expect(await next.evaluate(() => scrollY)).toBeLessThanOrEqual(y + 2);
-    expect(y).toBeGreaterThanOrEqual(1199);
+    const v2 = await contentFrame(page, id, 2);
+    await expect(v2.locator("#t")).toHaveText("Notes, in blue");
+    await expect(v2.locator("#note")).toHaveText("kept");
+    await expectScrollNear(v2, y);
+
+    // Undo: version 1's files come back as version 3, over the same
+    // documents, and the view follows it as it followed version 2.
+    await api(d.base, d.token, `/api/artifacts/${id}/versions:restore`, { method: "POST", session: sid, body: JSON.stringify({ version: 1, if_version: 2 }) });
+    await expect.poll(async () => (await ofType(page, "landed")).length, { timeout: 10_000 }).toBe(2);
+    expect((await ofType(page, "landed"))[1]).toEqual({ type: "landed", version: 3 });
+    const v3 = await contentFrame(page, id, 3);
+    await expect(v3.locator("#t")).toHaveText("Notes");
+    await expect(v3.locator("#note")).toHaveText("kept");
+    await expectScrollNear(v3, y);
     expect(new URL(page.url()).search).toBe("?app=1");
   });
 }
