@@ -426,5 +426,52 @@ void main() {
         {'type': 'text', 'text': 'm2'},
       ]);
     });
+
+    test('a text block that got no text is left out of the content', () {
+      final s = MessageStream()
+        ..add(
+          _e('message_start', {
+            'message': {'id': 'msg_1'},
+          }),
+        )
+        ..add(
+          _e('content_block_start', {
+            'index': 0,
+            'content_block': {'type': 'text', 'text': ''},
+          }),
+        )
+        ..add(_e('content_block_stop', {'index': 0}))
+        ..add(
+          _e('content_block_start', {
+            'index': 1,
+            'content_block': {
+              'type': 'tool_use',
+              'id': 'tu_1',
+              'name': 'render',
+              'input': <String, Object?>{},
+            },
+          }),
+        )
+        ..add(
+          _e('content_block_delta', {
+            'index': 1,
+            'delta': {'type': 'input_json_delta', 'partial_json': '{}'},
+          }),
+        )
+        ..add(
+          _e('content_block_start', {
+            'index': 2,
+            'content_block': {'type': 'text'},
+          }),
+        );
+      expect(s.message['content'], [
+        {
+          'type': 'tool_use',
+          'id': 'tu_1',
+          'name': 'render',
+          'input': <String, Object?>{},
+        },
+      ]);
+    });
   });
 }
