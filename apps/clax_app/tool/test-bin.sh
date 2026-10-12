@@ -10,7 +10,8 @@ if cargo build -q -p clax-cli; then
     echo "$PWD/$kept"
     exit 0
 fi
-newest="$(ls -t target/clax-bin/debug/*/clax 2>/dev/null | awk 'NR == 1')"
+# ls fails when nothing is kept; that is the empty case below, not an error.
+newest="$(ls -t target/clax-bin/debug/*/clax 2>/dev/null | awk 'NR == 1' || true)"
 if [ -z "$newest" ]; then
     echo "test-bin: cargo build failed and no kept clax exists under target/clax-bin/debug" >&2
     exit 1
