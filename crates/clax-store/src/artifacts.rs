@@ -751,6 +751,11 @@ pub(super) enum VersionStep<'a> {
     /// Pushed commit `.0`, made the version as it is
     /// ([`clax_core::content::ContentStore::tag_pushed`]).
     Adopt(&'a str),
+    /// A restore of version `from`: written as [`VersionStep::Write`] is,
+    /// from a publish that puts every file of `from`. Its `version.publish`
+    /// record's `carried` is `unchanged` (the paths whose bytes equal the
+    /// previous version's) and it adds `restored_from`.
+    Restore { from: u32, unchanged: &'a [String] },
 }
 
 /// The paths of `prev` a new version made from `p` carries: every one `p`
@@ -1102,7 +1107,9 @@ impl Store {
     /// `content_sha256` equals `n`'s; files of the current version that `n`
     /// lacks are not carried. Title, description, icon and capabilities stay
     /// as they are, and documents are not touched. `session_id` is recorded
-    /// on the new version, and the version as `version.publish` under `ctx`.
+    /// on the new version, and the version as `version.publish` under `ctx`
+    /// with `restored_from: n`; its `carried` names only the files (other
+    /// than `index.html`) whose bytes equal the previous version's.
     ///
     /// # Errors
     /// `NotFound` for an unknown artifact or version `n`; `Corrupt` when
@@ -1167,13 +1174,31 @@ impl Store {
             by_page: false,
             hidden: Vec::new(),
         };
-        self.write_version_then_async(
+        let previous = self
+            .get_version(id, if_version)?
+            .map(|v| v.files)
+            .unwrap_or_default();
+        let unchanged: Vec<String> = source
+            .files
+            .iter()
+            .filter(|(path, meta)| {
+                *path != INDEX
+                    && meta.sha256.is_some()
+                    && previous.get(*path).map(|m| &m.sha256) == Some(&meta.sha256)
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
+        self.write_version_step_async(
             ctx,
             id,
             if_version,
             &p,
             &BTreeMap::new(),
             session_id,
+            VersionStep::Restore {
+                from: n,
+                unchanged: &unchanged,
+            },
             |_, _| Ok(()),
         )
         .await
@@ -1231,6 +1256,34 @@ impl Store {
         session_id: Option<&str>,
         then: impl FnOnce(&rusqlite::Transaction<'_>, u32) -> Result<T>,
     ) -> Result<(Artifact, Version, T)> {
+        self.write_version_step_async(
+            ctx,
+            id,
+            expected,
+            p,
+            prev,
+            session_id,
+            VersionStep::Write,
+            then,
+        )
+        .await
+    }
+
+    /// [`Store::write_version_then_async`], with `step` saying how the
+    /// version is written and recorded ([`VersionStep::Write`] or
+    /// [`VersionStep::Restore`]).
+    #[allow(clippy::too_many_arguments)]
+    async fn write_version_step_async<T>(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        expected: u32,
+        p: &ValidatedPublish,
+        prev: &BTreeMap<String, FileMeta>,
+        session_id: Option<&str>,
+        step: VersionStep<'_>,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, u32) -> Result<T>,
+    ) -> Result<(Artifact, Version, T)> {
         // Refused before waiting for the lock.
         check_collisions(carried_of(prev, p, false).into_iter().chain(put_paths(p)))?;
         let _lock = self.lock_content(id).await?;
@@ -1262,7 +1315,7 @@ impl Store {
             p,
             prev,
             session_id,
-            VersionStep::Write,
+            step,
             then,
         )
         .await
@@ -1287,7 +1340,10 @@ impl Store {
         let n = expected + 1;
         let adopt = matches!(step, VersionStep::Adopt(_));
         let carried = carried_of(prev, p, adopt);
-        let carried_paths: Vec<String> = carried.iter().map(|p| (*p).clone()).collect();
+        let carried_paths: Vec<String> = match step {
+            VersionStep::Restore { unchanged, .. } => unchanged.to_vec(),
+            _ => carried.iter().map(|p| (*p).clone()).collect(),
+        };
         check_collisions(carried.iter().copied().chain(put_paths(p)))?;
         if let Some(current) = self.current_version_of(id)?
             && current != expected
@@ -1326,7 +1382,7 @@ impl Store {
                 );
             }
         }
-        if expected > 0 && matches!(step, VersionStep::Write) {
+        if expected > 0 && matches!(step, VersionStep::Write | VersionStep::Restore { .. }) {
             // Every agent's repository token blind to the publisher goes
             // before the commit exists (an adopted commit's were revoked
             // before it was recorded; a new artifact has none): refused
@@ -1351,7 +1407,7 @@ impl Store {
         }
         // Whether this call made `n` (an adopted commit may already be it).
         let written = match step {
-            VersionStep::Write => {
+            VersionStep::Write | VersionStep::Restore { .. } => {
                 let write = VersionWrite {
                     carry: carried.iter().map(|p| p.as_str()).collect(),
                     put,
@@ -1470,7 +1526,10 @@ impl Store {
             if expected == 0 && a.kind != KIND_LIVE {
                 self.record_audit(tx, ctx, create_record(&a, &v.created_at))?;
             }
-            let rec = version_record(&a, &v, &carried_paths, Some(p.by_page), page.as_ref());
+            let mut rec = version_record(&a, &v, &carried_paths, Some(p.by_page), page.as_ref());
+            if let VersionStep::Restore { from, .. } = step {
+                rec = rec.with("restored_from", from);
+            }
             self.record_audit(tx, ctx, rec)?;
             Ok((a, v, extra))
         });
@@ -1480,7 +1539,9 @@ impl Store {
         if result.is_err()
             && made
             && let Err(e) = match step {
-                VersionStep::Write => self.content.remove_version(id, n).await,
+                VersionStep::Write | VersionStep::Restore { .. } => {
+                    self.content.remove_version(id, n).await
+                }
                 VersionStep::Adopt(commit) => self.content.untag_pushed(id, n, commit).await,
             }
         {
@@ -2143,6 +2204,145 @@ mod tests {
         ));
         assert!(!store.home().version_dir(&id, 2).exists());
         assert_eq!(store.get_artifact(&id).unwrap().unwrap().current_version, 1);
+    }
+
+    /// Versions 1 (`index.html` "v1", `a.css` "a", `b.css` "b") and 2
+    /// (`index.html` "v2", `b.css` "b2", `a.css` carried).
+    fn two_versions(store: &Store) -> crate::ArtifactId {
+        let (a, _) = store
+            .create_artifact(
+                DAEMON,
+                publish(
+                    &[
+                        ("index.html", Some("v1")),
+                        ("a.css", Some("a")),
+                        ("b.css", Some("b")),
+                    ],
+                    None,
+                ),
+                None,
+            )
+            .unwrap();
+        let id = crate::ArtifactId::parse(&a.id).unwrap();
+        store
+            .publish_version(
+                DAEMON,
+                &id,
+                publish(
+                    &[("index.html", Some("v2")), ("b.css", Some("b2"))],
+                    Some(1),
+                ),
+                None,
+            )
+            .unwrap();
+        id
+    }
+
+    #[test]
+    fn a_version_landing_before_the_restore_transaction_is_a_conflict() {
+        let (_d, store) = store();
+        let id = two_versions(&store);
+        let v1 = store.get_version(&id, 1).unwrap().unwrap();
+        // The state restore_version sees when version 2 lands after its own
+        // check against version 1: the transaction's re-check refuses it.
+        let p = super::ValidatedPublish {
+            title: None,
+            description: None,
+            icon: None,
+            label: Some("Restored v1".into()),
+            if_version: Some(1),
+            capabilities: None,
+            files: BTreeMap::new(),
+            note: None,
+            note_truncated: false,
+            addresses: Vec::new(),
+            working_threads: Vec::new(),
+            person: None,
+            by_page: false,
+            hidden: Vec::new(),
+        };
+        let seq = store.events_after(0, 100).unwrap().last().unwrap().seq;
+        let e = store
+            .block_on(store.record_version_locked(
+                DAEMON,
+                &id,
+                1,
+                &p,
+                &v1.files,
+                None,
+                super::VersionStep::Restore {
+                    from: 1,
+                    unchanged: &[],
+                },
+                |_, _| Ok(()),
+            ))
+            .unwrap_err();
+        assert!(
+            matches!(e, crate::CoreError::Conflict { current: 2 }),
+            "{e:?}"
+        );
+        assert_eq!(store.get_artifact(&id).unwrap().unwrap().current_version, 2);
+        assert_eq!(store.list_versions(&id).unwrap().len(), 2);
+        assert!(store.read_file(&id, 3, "index.html").unwrap().is_none());
+        assert_eq!(store.events_after(seq, 100).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn a_restore_records_its_source_and_only_unchanged_files_as_carried() {
+        let (_d, store) = store();
+        let id = two_versions(&store);
+        let seq = store.events_after(0, 100).unwrap().last().unwrap().seq;
+        let (_, v) = store.restore_version(DAEMON, &id, 1, 2, None).unwrap();
+        assert_eq!(v.n, 3);
+        let rows = store.events_after(seq, 100).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].kind, "version.publish");
+        let body: serde_json::Value = serde_json::from_str(&rows[0].body).unwrap();
+        assert_eq!(body["n"], 3);
+        assert_eq!(body["restored_from"], 1);
+        assert_eq!(body["label"], "Restored v1");
+        assert_eq!(body["note"], "Restored version 1");
+        assert_eq!(
+            body["carried"],
+            serde_json::json!(["a.css"]),
+            "b.css and index.html differ from version 2"
+        );
+        let files: Vec<&String> = body["files"].as_object().unwrap().keys().collect();
+        assert_eq!(files, ["a.css", "b.css", "index.html"]);
+    }
+
+    #[test]
+    fn a_publish_records_no_source_version() {
+        let (_d, store) = store();
+        two_versions(&store);
+        let last = store.events_after(0, 100).unwrap().pop().unwrap();
+        let body: serde_json::Value = serde_json::from_str(&last.body).unwrap();
+        assert_eq!(body["carried"], serde_json::json!(["a.css"]));
+        assert!(body.get("restored_from").is_none(), "{body}");
+    }
+
+    #[test]
+    fn a_publish_after_a_restore_carries_the_restored_files() {
+        let (_d, store) = store();
+        let id = two_versions(&store);
+        store.restore_version(DAEMON, &id, 1, 2, None).unwrap();
+        let (_, v4) = store
+            .publish_version(
+                DAEMON,
+                &id,
+                publish(&[("index.html", Some("v4"))], Some(3)),
+                None,
+            )
+            .unwrap();
+        assert_eq!(v4.n, 4);
+        let read = |n: u32, path: &str| {
+            let (bytes, _) = store.read_file(&id, n, path).unwrap().unwrap();
+            String::from_utf8(bytes).unwrap()
+        };
+        assert_eq!(read(4, "index.html"), "v4");
+        assert_eq!(read(4, "a.css"), "a");
+        assert_eq!(read(4, "b.css"), "b", "version 1's b.css, restored in 3");
+        assert_eq!(read(3, "index.html"), "v1", "version 1's index.html");
     }
 
     #[test]
