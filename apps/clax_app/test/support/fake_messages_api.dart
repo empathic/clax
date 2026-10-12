@@ -4,7 +4,12 @@ import 'dart:io';
 
 /// One scripted answer of [FakeMessagesApi].
 class FakeReply {
-  const FakeReply(this.status, this.body, {this.hang = false});
+  const FakeReply(
+    this.status,
+    this.body, {
+    this.hang = false,
+    this.headers = const {},
+  });
 
   /// A 200 with a Messages API response whose first text block is [text].
   factory FakeReply.text(
@@ -27,12 +32,16 @@ class FakeReply {
   });
 
   /// An API error in the Messages API's error shape.
-  factory FakeReply.error(int status, String type, String message) =>
-      FakeReply(status, {
-        'type': 'error',
-        'error': {'type': type, 'message': message},
-        'request_id': 'req_fake',
-      });
+  factory FakeReply.error(
+    int status,
+    String type,
+    String message, {
+    Map<String, String> headers = const {},
+  }) => FakeReply(status, {
+    'type': 'error',
+    'error': {'type': type, 'message': message},
+    'request_id': 'req_fake',
+  }, headers: headers);
 
   /// A request that is never answered while the server runs.
   static const never = FakeReply(0, null, hang: true);
@@ -42,6 +51,9 @@ class FakeReply {
   /// Encoded as JSON, or written as is when a [String].
   final Object? body;
   final bool hang;
+
+  /// Response headers to add, such as `retry-after`.
+  final Map<String, String> headers;
 }
 
 /// A request the fake received.
@@ -105,6 +117,7 @@ class FakeMessagesApi {
     }
     req.response.statusCode = reply.status;
     req.response.headers.contentType = ContentType.json;
+    reply.headers.forEach(req.response.headers.set);
     req.response.write(
       reply.body is String ? reply.body : jsonEncode(reply.body),
     );
