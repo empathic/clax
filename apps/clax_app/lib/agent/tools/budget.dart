@@ -1,6 +1,8 @@
 /// A run's caps and what it has spent against them.
 library;
 
+import 'dart:async';
+
 import '../../daemon/clock.dart';
 import '../pricing.dart';
 
@@ -118,14 +120,18 @@ class RunBudget {
   var _turns = 0;
   var _renders = 0;
   var _usage = const Usage();
+  var _cost = 0.0;
   var _elapsed = Duration.zero;
   DateTime? _since;
   var _pauses = 0;
+  Completer<void>? _resumed;
+  Future<void>? _whenTimeUp;
 
-  /// Counts one model turn and its usage.
+  /// Counts one model turn and its usage, priced as one request.
   void addTurn(Usage u) {
     _turns++;
     _usage += u;
+    _cost += costOf(model, u);
   }
 
   /// Counts one render.
@@ -137,13 +143,39 @@ class RunBudget {
     if (_pauses++ == 0) {
       _elapsed = elapsed;
       _since = null;
+      _resumed = Completer<void>();
     }
   }
 
   /// Ends one [pauseClock].
   void resumeClock() {
     if (_pauses == 0) return;
-    if (--_pauses == 0) _since = clock.now();
+    if (--_pauses == 0) {
+      _since = clock.now();
+      _resumed?.complete();
+      _resumed = null;
+    }
+  }
+
+  /// The wall clock left, paused time excluded; zero once it is spent.
+  Duration get remaining {
+    final left = caps.wallClock - elapsed;
+    return left.isNegative ? Duration.zero : left;
+  }
+
+  /// Completes once the wall clock is spent ([timeUp]); it never runs out
+  /// while the clock is paused. A runner cancels the turn in flight when it
+  /// completes and stops at the cap.
+  Future<void> get whenTimeUp => _whenTimeUp ??= _waitTimeUp();
+
+  Future<void> _waitTimeUp() async {
+    while (!timeUp) {
+      if (_resumed case final r?) {
+        await r.future;
+      } else {
+        await clock.delay(remaining);
+      }
+    }
   }
 
   /// The run's wall-clock time so far, paused time left out.
@@ -155,7 +187,9 @@ class RunBudget {
   int get turns => _turns;
   int get renders => _renders;
   Usage get usage => _usage;
-  double get costUsd => costOf(model, _usage);
+
+  /// The run's cost so far, each turn priced as its own request.
+  double get costUsd => _cost;
 
   /// Whether another render is within [RunCaps.renders].
   bool get canRender => _renders < caps.renders;

@@ -140,6 +140,68 @@ void main() {
     });
   });
 
+  group('deadline', () {
+    test('remaining is the wall clock left, paused time excluded', () {
+      final clock = StepClock();
+      final b = RunBudget(RunCaps.change, 'claude-haiku-5-5', clock);
+      expect(b.remaining, const Duration(seconds: 45));
+      clock.advance(const Duration(seconds: 20));
+      b.pauseClock();
+      clock.advance(const Duration(minutes: 3));
+      expect(b.remaining, const Duration(seconds: 25));
+      b.resumeClock();
+      clock.advance(const Duration(seconds: 60));
+      expect(b.remaining, Duration.zero);
+    });
+
+    test('whenTimeUp completes when the wall clock runs out, not while an '
+        'ask waits', () async {
+      final clock = StepClock();
+      final b = RunBudget(RunCaps.change, 'claude-haiku-5-5', clock);
+      var fired = false;
+      b.whenTimeUp.then((_) => fired = true);
+      clock.advance(const Duration(seconds: 30));
+      await pumpEventQueue();
+      expect(fired, isFalse);
+      b.pauseClock();
+      clock.advance(const Duration(minutes: 10));
+      await pumpEventQueue();
+      expect(fired, isFalse);
+      b.resumeClock();
+      clock.advance(const Duration(seconds: 14));
+      await pumpEventQueue();
+      expect(fired, isFalse);
+      clock.advance(const Duration(seconds: 1));
+      await pumpEventQueue();
+      expect(fired, isTrue);
+      expect(b.timeUp, isTrue);
+    });
+
+    test(
+      'whenTimeUp is complete at once when the time is already up',
+      () async {
+        final clock = StepClock();
+        final b = RunBudget(RunCaps.change, 'claude-haiku-5-5', clock);
+        clock.advance(const Duration(seconds: 50));
+        await b.whenTimeUp;
+        expect(identical(b.whenTimeUp, b.whenTimeUp), isTrue);
+      },
+    );
+  });
+
+  test('each turn is priced on its own, so the long-prompt rate applies per '
+      'request', () {
+    final short = RunBudget(RunCaps.newApp, 'claude-haiku-5-5', StepClock());
+    short.addTurn(const Usage(input: 60000));
+    short.addTurn(const Usage(input: 60000));
+    // Two 60K-token prompts at $0.10/MTok.
+    expect(short.costUsd, closeTo(0.012, 1e-12));
+    final long = RunBudget(RunCaps.newApp, 'claude-haiku-5-5', StepClock());
+    long.addTurn(const Usage(input: 120000));
+    // One 120K-token prompt at the long-prompt $0.50/MTok.
+    expect(long.costUsd, closeTo(0.06, 1e-12));
+  });
+
   test('renders are counted against their cap', () {
     final b = RunBudget(RunCaps.change, 'claude-haiku-5-5', StepClock());
     expect(b.canRender, isTrue);

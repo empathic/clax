@@ -167,10 +167,6 @@ class RunState {
   bool get ended => outcome != null;
 }
 
-/// The tools that end a run, which still run once the wall clock is spent
-/// so a turn that ends the run is not thrown away.
-const _endingTools = {'finish', 'give_up'};
-
 /// One run's tools over one [RunState]. Every rule lives here or in the
 /// tools, so each runner behaves the same.
 class Toolbox {
@@ -182,6 +178,9 @@ class Toolbox {
   final RunState state;
   final Map<String, Tool> _tools;
   Future<RunOutcome> Function(String cap, String? narration)? _capHandler;
+
+  /// Completes when the latest queued call or cap stop has ended.
+  Future<void> _tail = Future.value();
 
   static Map<String, Tool> _byOrder(List<Tool> tools) {
     final byName = <String, Tool>{};
@@ -210,48 +209,67 @@ class Toolbox {
     Future<RunOutcome> Function(String cap, String? narration) h,
   ) => _capHandler = h;
 
-  /// Runs the tool [name] on [input]. Never throws an [Exception]: an
-  /// unknown tool, a call after the run ended, a call past the wall clock
-  /// (other than `finish` and `give_up`), refused input and a tool's
-  /// exception all answer as [ToolRefused].
+  /// Runs the tool [name] on [input], after every call made before it has
+  /// ended: calls run one at a time, in the order they are made, so a
+  /// write never lands while a render is inspecting the draft.
+  ///
+  /// Never throws an [Exception]: an unknown tool, a call made once the
+  /// wall clock is spent ([RunBudget.timeUp], `finish` and `give_up`
+  /// included), a call that starts after the run ended, refused input and
+  /// a tool's exception all answer as [ToolRefused]. A call made before the
+  /// deadline runs even when it starts after it.
   ///
   /// Turn, token and cost caps do not refuse calls: the turn that reached
   /// them is paid for, so its tools run, and the runner stops before the
   /// next turn.
-  Future<ToolOutput> call(String name, Map<String, Object?> input) async {
+  Future<ToolOutput> call(String name, Map<String, Object?> input) {
     final tool = _tools[name];
     if (tool == null) {
-      return ToolRefused(
-        'There is no tool "$name"; use one of ${_tools.keys.join(', ')}.',
+      return Future.value(
+        ToolRefused(
+          'There is no tool "$name"; use one of ${_tools.keys.join(', ')}.',
+        ),
       );
     }
-    if (state.ended) return const ToolRefused('The run has ended.');
-    if (state.budget.timeUp && !_endingTools.contains(name)) {
-      return ToolRefused(
-        'The run is out of time (${state.budget.caps.wallClock.inSeconds} '
-        'seconds): call finish now with what rendered clean, or give_up.',
+    if (state.budget.timeUp) {
+      return Future.value(
+        ToolRefused(
+          'The run is out of time '
+          '(${state.budget.caps.wallClock.inSeconds} seconds).',
+        ),
       );
     }
-    try {
-      return await tool.call(input, state);
-    } on ToolInputError catch (e) {
-      return ToolRefused(e.message);
-    } on Exception catch (e) {
-      return ToolRefused('$name failed: ${_reason(e)}');
-    }
+    return _queued(() async {
+      if (state.ended) return const ToolRefused('The run has ended.');
+      try {
+        return await tool.call(input, state);
+      } on ToolInputError catch (e) {
+        return ToolRefused(e.message);
+      } on Exception catch (e) {
+        return ToolRefused('$name failed: ${_reason(e)}');
+      }
+    });
   }
 
   /// Ends the run at the hard cap [cap] ("6 turns", "45 seconds", …), with
-  /// the agent's latest [narration]. The [capHandler] publishes the last
-  /// clean draft or gives up; without one the run gives up naming [cap].
-  /// A run that has already ended keeps its outcome.
-  Future<RunOutcome> stopAtCap(String cap, {String? narration}) async {
-    if (state.outcome case final o?) return o;
-    final out = switch (_capHandler) {
-      final h? => await h(cap, narration),
-      null => RunGaveUp(cap, answered: false),
-    };
-    return state.outcome ??= out;
+  /// the agent's latest [narration], once the calls already made have
+  /// ended. The [capHandler] publishes [Draft.cleanOnBase] or gives up;
+  /// without one the run gives up naming [cap]. A run that has already
+  /// ended keeps its outcome.
+  Future<RunOutcome> stopAtCap(String cap, {String? narration}) =>
+      _queued(() async {
+        if (state.outcome case final o?) return o;
+        final out = switch (_capHandler) {
+          final h? => await h(cap, narration),
+          null => RunGaveUp(cap, answered: false),
+        };
+        return state.outcome ??= out;
+      });
+
+  Future<T> _queued<T>(Future<T> Function() work) {
+    final result = _tail.then((_) => work());
+    _tail = result.then<void>((_) {}, onError: (Object _) {});
+    return result;
   }
 
   static String _reason(Exception e) {
