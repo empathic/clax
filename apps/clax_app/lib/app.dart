@@ -19,6 +19,8 @@ import 'agent/timings.dart';
 import 'agent/worker.dart';
 import 'clax/api.dart';
 import 'daemon/supervisor.dart';
+import 'platform/background_work.dart';
+import 'platform/network_pause.dart';
 import 'platform/secure_key.dart';
 import 'platform/settings_store.dart';
 import 'platform/voice.dart';
@@ -50,6 +52,7 @@ class AppServices {
     required this.prompts,
     this.ledger,
     this.cliSupported = false,
+    this.background = const NoBackgroundWork(),
     int? pid,
   }) : pid = pid ?? io.pid;
 
@@ -93,6 +96,9 @@ class AppServices {
 
   /// Whether `claude -p` can run here (`ClaudeCliBackend.supported`).
   final bool cliSupported;
+
+  /// The foreground service and notifications of runs the person leaves.
+  final BackgroundWork background;
 
   /// The app's process ID, given to the daemon with the session.
   final int pid;
@@ -234,6 +240,14 @@ class AgentRuntime {
 ///   shows the run's stage, and Cancel reaches the run. The say→usable
 ///   timing starts on Make and stops at the new app's first `ready`.
 ///   Comments are run by an [AgentRuntime].
+/// - **Background.** While a make or a change runs, [BackgroundRuns] keeps
+///   the platform's foreground service up (Android cuts a background app's
+///   network otherwise), with the run's stage as its progress text; a run
+///   that ends while Clax is in the background posts "… is ready" or
+///   "Couldn't …", and tapping that opens its app. A run whose network was
+///   cut in the background anyway waits for Clax to return and runs again
+///   ([ResumingBackend]) instead of failing. Notification permission is
+///   asked for at the first Make.
 /// - **Lifecycle.** Resuming probes the daemon (`onResume`); detaching stops
 ///   the worker and the daemon. An open app reloads when the daemon was
 ///   restarted, and opens again at the new address when its port changed.
@@ -259,6 +273,23 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   late final ClaxApi _api;
   late final AgentRuntime _runtime;
   StreamSubscription<DaemonState>? _states;
+  StreamSubscription<WorkerEvent>? _worker;
+  StreamSubscription<String>? _opened;
+
+  final _presence = AppPresence();
+  late final _runs = BackgroundRuns(
+    _s.background,
+    foreground: () => _presence.foreground,
+  );
+
+  /// The change running on each artifact, as shown in the background.
+  final _changes = <String, BackgroundRun>{};
+
+  /// The artifacts of the open app pages, bottom to top.
+  final _openAids = <String>[];
+
+  /// An app a notification asked to open before the daemon was up.
+  String? _pendingOpen;
 
   DaemonState _daemon = const Starting();
 
@@ -280,7 +311,14 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     _runtime = AgentRuntime(
       supervisor: _s.supervisor,
       api: _api,
-      loop: _loop(() => _s.backend(_settings, _s.key)),
+      loop: _loop(
+        () => ResumingBackend(
+          _s.backend(_settings, _s.key),
+          _presence,
+          onPause: () => _stepChanges(MakeStage.paused.label),
+          onResume: () => _stepChanges(MakeStage.resuming.label),
+        ),
+      ),
       installId: _s.installId,
       pid: _s.pid,
       cwd: _s.supportDir,
@@ -288,7 +326,14 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     );
     _onState(_s.supervisor.state);
     _states = _s.supervisor.states.listen(_onState);
+    _worker = _runtime.worker.events.listen(_onWorker);
     _runtime.attach();
+    _opened = _s.background.opened.listen(_openFromNotice);
+    unawaited(
+      _s.background.launchArtifact().then((aid) {
+        if (aid != null && mounted) _openFromNotice(aid);
+      }),
+    );
     _start();
     unawaited(_loadSettings());
   }
@@ -297,6 +342,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_states?.cancel());
+    unawaited(_worker?.cancel());
+    unawaited(_opened?.cancel());
     unawaited(_runtime.close());
     _comments.dispose();
     _endpoint.dispose();
@@ -331,6 +378,10 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       case Up(:final endpoint):
         _wasUp = true;
         _endpoint.value = endpoint;
+        if (_pendingOpen case final aid?) {
+          _pendingOpen = null;
+          scheduleMicrotask(() => _openFromNotice(aid));
+        }
       case Failed():
         _wasUp = false;
         _nav.currentState?.popUntil((r) => r.isFirst);
@@ -342,6 +393,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _presence.onLifecycle(state);
     switch (state) {
       case AppLifecycleState.resumed:
         unawaited(_s.supervisor.onResume());
@@ -384,6 +436,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     } on Object {
       // Quit anyway; the next launch stops a daemon left behind.
     }
+    await _s.background.stop();
   }();
 
   Future<void> _loadSettings() async {
@@ -421,10 +474,47 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   ) async {
     final settings = _settings;
     final backend = _s.backend(settings, _s.key);
+    unawaited(_s.background.requestPermission());
+    final run = _runs.begin(makingTitle(request), MakeStage.starting.label);
+    // Progress hook: anything that knows the run's step (these stages, or
+    // streamed steps) shows it with `_runs.step(run, text)`.
+    void staged(MakeStage s) {
+      stage(s);
+      _runs.step(run, s.label);
+    }
+
     _s.timings.start(sayUsable);
-    final aid = await _loop(
-      () => StagedBackend(backend, stage),
-    ).newApp(request, cancelled: cancelled);
+    final String aid;
+    try {
+      aid = await _loop(
+        () => StagedBackend(
+          ResumingBackend(
+            backend,
+            _presence,
+            onPause: () => staged(MakeStage.paused),
+            onResume: () => staged(MakeStage.resuming),
+          ),
+          staged,
+        ),
+      ).newApp(request, cancelled: cancelled);
+    } on AgentError catch (e) {
+      _runs.end(
+        run,
+        e.kind == AgentErrorKind.cancelled
+            ? const RunQuiet()
+            : RunFailed("Couldn't make your app", e.message),
+      );
+      rethrow;
+    } catch (e) {
+      _runs.end(run, RunFailed("Couldn't make your app", '$e'));
+      rethrow;
+    }
+    unawaited(
+      _titleOf(aid, fallback: request).then(
+        (title) =>
+            _runs.end(run, RunReady(aid, '$title is ready', 'Tap to open it')),
+      ),
+    );
     _made = (
       aid: aid,
       extra: {
@@ -436,6 +526,73 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     return aid;
   }
 
+  /// The title of [aid], or [fallback] when the daemon cannot say.
+  Future<String> _titleOf(String aid, {required String fallback}) async {
+    try {
+      return (await _api.getArtifact(aid)).artifact.title;
+    } on Object {
+      return fallback;
+    }
+  }
+
+  void _stepChanges(String text) {
+    for (final run in _changes.values) {
+      _runs.step(run, text);
+    }
+  }
+
+  /// Shows each change the worker runs as a background run.
+  void _onWorker(WorkerEvent e) {
+    final aid = e.artifactId;
+    if (e is WorkerProgress) return;
+    if (e is WorkerWorking) {
+      if (_changes.containsKey(aid)) return;
+      final run = _changes[aid] = _runs.begin(
+        'Changing your app',
+        'Working on your comment',
+      );
+      unawaited(
+        _titleOf(aid, fallback: '').then((t) {
+          if (t.isNotEmpty) {
+            _runs.step(run, run.step, title: 'Changing $t');
+          }
+        }),
+      );
+      return;
+    }
+    final run = _changes.remove(aid);
+    if (run == null) return;
+    unawaited(
+      _titleOf(aid, fallback: 'Your app').then(
+        (t) => _runs.end(run, switch (e) {
+          WorkerLanded() => RunReady(aid, '$t changed', 'Tap to see it'),
+          WorkerReplied() => RunReady(
+            aid,
+            'Claude replied on $t',
+            'Tap to read it',
+          ),
+          WorkerFailed(:final reason) => RunFailed(
+            "Couldn't change $t",
+            reason,
+            artifactId: aid,
+          ),
+          _ => const RunQuiet(),
+        }),
+      ),
+    );
+  }
+
+  /// Opens [aid] for a tapped notification, unless its page is already on
+  /// top; after the daemon is up.
+  void _openFromNotice(String aid) {
+    if (!_wasUp || _endpoint.value == null) {
+      _pendingOpen = aid;
+      return;
+    }
+    if (_openAids.isNotEmpty && _openAids.last == aid) return;
+    _open(aid);
+  }
+
   void _onReady(String aid, Ready r) {
     final made = _made;
     if (made == null || made.aid != aid || r.artifact != aid) return;
@@ -445,28 +602,33 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
 
   void _open(String aid) {
     final settings = _settings;
+    final nav = _nav.currentState;
+    if (nav == null) return;
+    _openAids.add(aid);
     unawaited(
-      _nav.currentState?.push(
-        MaterialPageRoute<void>(
-          builder: (_) => _AppPage(
-            endpoint: _endpoint,
-            surface: _s.surface,
-            screen: (base, surface) => AppScreen(
-              key: ValueKey(base),
-              aid: aid,
-              base: base,
-              api: _api,
-              surface: surface,
-              voice: _s.voice,
-              settings: settings,
-              timings: _s.timings,
-              worker: _runtime.worker.events,
-              onReady: (r) => _onReady(aid, r),
-              comments: _comments,
+      nav
+          .push(
+            MaterialPageRoute<void>(
+              builder: (_) => _AppPage(
+                endpoint: _endpoint,
+                surface: _s.surface,
+                screen: (base, surface) => AppScreen(
+                  key: ValueKey(base),
+                  aid: aid,
+                  base: base,
+                  api: _api,
+                  surface: surface,
+                  voice: _s.voice,
+                  settings: settings,
+                  timings: _s.timings,
+                  worker: _runtime.worker.events,
+                  onReady: (r) => _onReady(aid, r),
+                  comments: _comments,
+                ),
+              ),
             ),
-          ),
-        ),
-      ),
+          )
+          .whenComplete(() => _openAids.removeAt(_openAids.lastIndexOf(aid))),
     );
   }
 

@@ -33,7 +33,14 @@ enum MakeStage {
   retrying('Fixing a problem and trying again'),
 
   /// The result came back; it is checked and published.
-  publishing('Checking and publishing');
+  publishing('Checking and publishing'),
+
+  /// The device cut Clax's network while it was in the background; the
+  /// run waits for Clax to come back to the front.
+  paused('Waiting for Clax to come back…'),
+
+  /// Clax is back after a cut; the model is asked again.
+  resuming('Picking up where it left off');
 
   const MakeStage(this.label);
 

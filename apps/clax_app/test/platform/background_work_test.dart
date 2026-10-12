@@ -97,12 +97,14 @@ void main() {
       runs.step(a, 'a2'); // not shown: B is newer
       runs.end(b, const RunQuiet());
       runs.step(a, 'a3');
+      runs.step(a, 'a3', title: 'A2');
       runs.end(a, const RunQuiet());
       expect(w.calls, [
         'start(A, a1)',
         'update(B, b1)',
         'update(A, a2)',
         'update(A, a3)',
+        'update(A2, a3)',
         'stop',
       ]);
     });
