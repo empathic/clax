@@ -10,6 +10,7 @@ import '../clax/api.dart';
 import '../daemon/clock.dart';
 import '../platform/settings_store.dart';
 import '../platform/voice.dart';
+import 'app_menu.dart';
 import 'app_surface.dart';
 import 'change_tracker.dart';
 import 'host_protocol.dart';
@@ -64,6 +65,7 @@ class AppScreen extends StatefulWidget {
     required this.worker,
     this.clock = const SystemClock(),
     this.onReady,
+    this.comments,
   });
 
   final String aid;
@@ -85,6 +87,11 @@ class AppScreen extends StatefulWidget {
   /// Each `ready` the shell posts (the say→usable timing ends on the
   /// first).
   final ValueChanged<Ready>? onReady;
+
+  /// The app's App › Comments command, which the screen registers its
+  /// panel toggle with while it is shown. Without it, the screen installs
+  /// its own macOS menu bar ([ClaxMenuBar]).
+  final CommentsCommand? comments;
 
   /// The app view's URL for [aid] under [base].
   static Uri appUrl(Uri base, String aid) {
@@ -134,6 +141,8 @@ class _AppScreenState extends State<AppScreen> {
   void initState() {
     super.initState();
     _changes = ChangeTracker(timings: widget.timings, artifact: widget.aid);
+    _comments = widget.comments ?? (_ownComments = CommentsCommand());
+    _comments.register(_toggleOpen);
     _swipe = TwoFingerSwipe(
       left: () => _setOpen(true),
       right: () => _setOpen(false),
@@ -146,8 +155,18 @@ class _AppScreenState extends State<AppScreen> {
     unawaited(widget.surface.load(AppScreen.appUrl(widget.base, widget.aid)));
   }
 
+  late final CommentsCommand _comments;
+
+  /// The command this screen made for its own menu bar, when the app gave
+  /// it none.
+  CommentsCommand? _ownComments;
+
+  void _toggleOpen() => _setOpen(!_open);
+
   @override
   void dispose() {
+    _comments.unregister(_toggleOpen);
+    _ownComments?.dispose();
     for (final s in _subs) {
       s.cancel();
     }
@@ -431,7 +450,10 @@ class _AppScreenState extends State<AppScreen> {
       },
       child: Focus(autofocus: true, child: screen),
     );
-    if (macOS) screen = _menus(screen);
+    final own = _ownComments;
+    if (macOS && own != null) {
+      screen = ClaxMenuBar(comments: own, child: screen);
+    }
     return PopScope(
       canPop: !_open,
       onPopInvokedWithResult: (didPop, _) {
@@ -701,50 +723,4 @@ class _AppScreenState extends State<AppScreen> {
       ),
     ),
   );
-
-  /// The macOS menu bar: the app menu, and App › Comments (⌘K), which
-  /// toggles the panel. The menu's key equivalent works while the page has
-  /// the keyboard focus, where Flutter's shortcuts do not reach.
-  Widget _menus(Widget child) {
-    PlatformMenuItemGroup? provided(List<PlatformProvidedMenuItemType> types) {
-      final items = [
-        for (final t in types)
-          if (PlatformProvidedMenuItem.hasMenu(t))
-            PlatformProvidedMenuItem(type: t),
-      ];
-      return items.isEmpty ? null : PlatformMenuItemGroup(members: items);
-    }
-
-    return PlatformMenuBar(
-      menus: [
-        PlatformMenu(
-          label: 'Clax',
-          menus: [
-            ?provided(const [PlatformProvidedMenuItemType.about]),
-            ?provided(const [PlatformProvidedMenuItemType.servicesSubmenu]),
-            ?provided(const [
-              PlatformProvidedMenuItemType.hide,
-              PlatformProvidedMenuItemType.hideOtherApplications,
-              PlatformProvidedMenuItemType.showAllApplications,
-            ]),
-            ?provided(const [PlatformProvidedMenuItemType.quit]),
-          ],
-        ),
-        PlatformMenu(
-          label: 'App',
-          menus: [
-            PlatformMenuItem(
-              label: 'Comments',
-              shortcut: const SingleActivator(
-                LogicalKeyboardKey.keyK,
-                meta: true,
-              ),
-              onSelected: () => _setOpen(!_open),
-            ),
-          ],
-        ),
-      ],
-      child: child,
-    );
-  }
 }

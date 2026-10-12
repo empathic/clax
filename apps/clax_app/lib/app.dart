@@ -1,0 +1,566 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:io' as io show pid;
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+
+import 'agent/backend.dart';
+import 'agent/claude_cli_backend.dart';
+import 'agent/edit_result.dart';
+import 'agent/ledger.dart';
+import 'agent/loop.dart';
+import 'agent/messages_api_backend.dart';
+import 'agent/prompt.dart';
+import 'agent/request.dart';
+import 'agent/timings.dart';
+import 'agent/worker.dart';
+import 'clax/api.dart';
+import 'daemon/supervisor.dart';
+import 'platform/secure_key.dart';
+import 'platform/settings_store.dart';
+import 'platform/voice.dart';
+import 'ui/app_menu.dart';
+import 'ui/app_screen.dart';
+import 'ui/app_surface.dart';
+import 'ui/error_screen.dart';
+import 'ui/host_protocol.dart' show Ready;
+import 'ui/launcher.dart';
+import 'ui/making_screen.dart';
+import 'ui/settings_screen.dart';
+import 'ui/theme.dart';
+
+/// Everything [AppRoot] needs. `main` builds it for the platform; tests
+/// give fakes.
+class AppServices {
+  AppServices({
+    required this.supervisor,
+    required this.api,
+    required this.backend,
+    required this.voice,
+    required this.settings,
+    required this.key,
+    required this.timings,
+    required this.agentTimings,
+    required this.surface,
+    required this.installId,
+    required this.supportDir,
+    required this.prompts,
+    this.ledger,
+    this.cliSupported = false,
+    int? pid,
+  }) : pid = pid ?? io.pid;
+
+  /// Starts and watches the embedded daemon.
+  final DaemonSupervisor supervisor;
+
+  /// The daemon client, built once; [endpoint] answers the running
+  /// daemon's address and token at each call, so the client follows
+  /// restarts.
+  final ClaxApi Function(DaemonEndpoint Function() endpoint) api;
+
+  /// The backend a run uses under [AppSettings] (see [chooseBackend]).
+  final AgentBackend Function(AppSettings settings, SecureKey key) backend;
+
+  final VoiceInput voice;
+  final SettingsStore settings;
+  final SecureKey key;
+
+  /// The two defended numbers, [sayUsable] and [longpressLanded], which
+  /// Settings lists.
+  final Timings timings;
+
+  /// The agent's own runs ([agentNewTiming], [agentChangeTiming]), kept
+  /// apart from [timings] so its recent list holds only the defended
+  /// numbers.
+  final Timings agentTimings;
+
+  /// A new page surface for the daemon at `base`.
+  final AppSurface Function(Uri base) surface;
+
+  /// This install's ID, which the daemon finds the app session by.
+  final String installId;
+
+  /// The application support directory (the app session's `cwd`).
+  final String supportDir;
+  final PromptBuilder prompts;
+
+  /// What each change published, for recovery after an exit; in memory
+  /// when null.
+  final ChangeLedger? ledger;
+
+  /// Whether `claude -p` can run here (`ClaudeCliBackend.supported`).
+  final bool cliSupported;
+
+  /// The app's process ID, given to the daemon with the session.
+  final int pid;
+}
+
+/// Runs the app with [services].
+Future<void> runClaxApp(AppServices services) async =>
+    runApp(AppRoot(services: services));
+
+/// The backend for [settings]: `claude -p` when the settings choose it and
+/// [cliSupported], else the Messages API with the key from [key]. The CLI
+/// runs in [scratch].
+AgentBackend chooseBackend(
+  AppSettings settings,
+  SecureKey key, {
+  required bool cliSupported,
+  required Directory scratch,
+  void Function(String line)? log,
+}) {
+  if (cliSupported && settings.backend == backendClaudeCli) {
+    return LocatedCliBackend(configured: settings.claudePath, scratch: scratch);
+  }
+  return MessagesApiBackend(apiKey: key.read, log: log);
+}
+
+/// `claude -p`, found at each run ([ClaudeCliBackend.find]) from the
+/// configured path, `PATH` or the usual install directories.
+class LocatedCliBackend implements AgentBackend {
+  LocatedCliBackend({this.configured, required this.scratch});
+
+  final String? configured;
+  final Directory scratch;
+
+  @override
+  String get name => backendClaudeCli;
+
+  @override
+  Future<EditResult> run(AgentRequest request) async {
+    final exe = await ClaudeCliBackend.find(configured: configured);
+    if (exe == null) {
+      throw const AgentError(
+        "Claude Code wasn't found. Set its path in Settings.",
+      );
+    }
+    return ClaudeCliBackend(executable: exe, scratch: scratch).run(request);
+  }
+}
+
+/// Reads a scripted agent's answers from [json]: an array whose items are
+/// edit results in the schema's shape, or `{"error": "<message>"}` (with
+/// an optional `"retryable"`) for a failed run. Throws [FormatException].
+List<Object> readAgentScript(String json) {
+  final items = jsonDecode(json);
+  if (items is! List) {
+    throw const FormatException('an agent script is a JSON array');
+  }
+  return [
+    for (final (i, item) in items.indexed)
+      if (item is! Map)
+        throw FormatException('item $i of the agent script is not an object')
+      else if (item['error'] case final String message)
+        AgentError(message, retryable: item['retryable'] == true)
+      else
+        _result(item.cast<String, Object?>(), i),
+  ];
+}
+
+EditResult _result(Map<String, Object?> j, int i) {
+  try {
+    return EditResult.fromJson(j);
+  } on FormatException {
+    rethrow;
+  } on Object catch (e) {
+    throw FormatException('item $i of the agent script: $e');
+  }
+}
+
+/// Runs the feedback worker while the daemon is up: started by the
+/// supervisor's [Up] (registering the app session and recovering cut-off
+/// changes from the daemon's threads), and stopped by [Failed], since
+/// nothing answers until Restart. A restart in between needs nothing: the
+/// worker's poll fails, it registers again and recovers.
+class AgentRuntime {
+  AgentRuntime({
+    required this._supervisor,
+    required ClaxApi api,
+    required AgentLoop loop,
+    required String installId,
+    required int pid,
+    String cwd = '',
+    Future<void> Function(Duration)? delay,
+    void Function(String line)? log,
+  }) : worker = FeedbackWorker(
+         api: api,
+         loop: loop,
+         session: () async => (await api.registerAppSession(
+           installId: installId,
+           pid: pid,
+           cwd: cwd,
+         )).id,
+         delay: delay,
+         log: log,
+       );
+
+  final DaemonSupervisor _supervisor;
+  final FeedbackWorker worker;
+  StreamSubscription<DaemonState>? _sub;
+
+  /// Follows the supervisor from its current state on.
+  void attach() {
+    _sub ??= _supervisor.states.listen(_on);
+    _on(_supervisor.state);
+  }
+
+  void _on(DaemonState s) {
+    switch (s) {
+      case Up():
+        worker.start();
+      case Failed():
+        unawaited(worker.stop());
+      case Starting() || Restarting():
+        break;
+    }
+  }
+
+  /// Stops following the supervisor and stops the worker.
+  Future<void> close() async {
+    unawaited(_sub?.cancel());
+    _sub = null;
+    await worker.stop();
+  }
+}
+
+/// The app: a splash until the daemon is first up, then the launcher (kept
+/// through restarts), and the error screen when the daemon has failed.
+///
+/// - **Agent.** Each new app runs through its own [AgentLoop] whose backend
+///   is a [StagedBackend] around the settings' backend, so the making screen
+///   shows the run's stage, and Cancel reaches the run. The say→usable
+///   timing starts on Make and stops at the new app's first `ready`.
+///   Comments are run by an [AgentRuntime].
+/// - **Lifecycle.** Resuming probes the daemon (`onResume`); detaching stops
+///   the worker and the daemon. An open app reloads when the daemon was
+///   restarted, and opens again at the new address when its port changed.
+/// - **macOS.** The app owns the menu bar ([ClaxMenuBar]); the open app
+///   screen registers App › Comments.
+class AppRoot extends StatefulWidget {
+  const AppRoot({super.key, required this.services});
+
+  final AppServices services;
+
+  @override
+  State<AppRoot> createState() => _AppRootState();
+}
+
+class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
+  final _nav = GlobalKey<NavigatorState>();
+  final _comments = CommentsCommand();
+  final _endpoint = ValueNotifier<DaemonEndpoint?>(null);
+
+  /// Bumped when anything the home screen shows changes.
+  final _revision = ValueNotifier(0);
+
+  late final ClaxApi _api;
+  late final AgentRuntime _runtime;
+  StreamSubscription<DaemonState>? _states;
+
+  DaemonState _daemon = const Starting();
+
+  /// The daemon has been up since the last failure.
+  var _wasUp = false;
+  AppSettings _settings = AppSettings();
+  var _needsKey = false;
+
+  /// The app the last Make made, until its first `ready`.
+  ({String aid, Map<String, Object?> extra})? _made;
+
+  AppServices get _s => widget.services;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _api = _s.api(_currentEndpoint);
+    _runtime = AgentRuntime(
+      supervisor: _s.supervisor,
+      api: _api,
+      loop: _loop(() => _s.backend(_settings, _s.key)),
+      installId: _s.installId,
+      pid: _s.pid,
+      cwd: _s.supportDir,
+      log: (l) => debugPrint('clax worker: $l'),
+    );
+    _onState(_s.supervisor.state);
+    _states = _s.supervisor.states.listen(_onState);
+    _runtime.attach();
+    _start();
+    unawaited(_loadSettings());
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    unawaited(_states?.cancel());
+    unawaited(_runtime.close());
+    _comments.dispose();
+    _endpoint.dispose();
+    _revision.dispose();
+    super.dispose();
+  }
+
+  DaemonEndpoint _currentEndpoint() =>
+      _endpoint.value ??
+      (throw const ClaxApiError(
+        status: 0,
+        code: 'daemon_unreachable',
+        message: 'the daemon has not started yet',
+      ));
+
+  AgentLoop _loop(AgentBackend Function() backend) => AgentLoop(
+    api: _api,
+    backend: backend,
+    prompts: _s.prompts,
+    model: () => _settings.model,
+    timings: _s.agentTimings,
+    ledger: _s.ledger,
+  );
+
+  void _start() => unawaited(
+    _s.supervisor.ensureUp().then<void>((_) {}, onError: (Object _) {}),
+  );
+
+  void _onState(DaemonState s) {
+    _daemon = s;
+    switch (s) {
+      case Up(:final endpoint):
+        _wasUp = true;
+        _endpoint.value = endpoint;
+      case Failed():
+        _wasUp = false;
+        _nav.currentState?.popUntil((r) => r.isFirst);
+      case Starting() || Restarting():
+        break;
+    }
+    _revision.value++;
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    switch (state) {
+      case AppLifecycleState.resumed:
+        unawaited(_s.supervisor.onResume());
+      case AppLifecycleState.detached:
+        unawaited(_runtime.close().whenComplete(_s.supervisor.stop));
+      case _:
+        break;
+    }
+  }
+
+  Future<void> _loadSettings() async {
+    final s = await _s.settings.load();
+    String? key;
+    try {
+      key = await _s.key.read();
+    } on Object {
+      key = null;
+    }
+    if (!mounted) return;
+    _settings = s;
+    _needsKey = key == null && _s.backend(s, _s.key).name == backendMessagesApi;
+    _revision.value++;
+  }
+
+  Future<void> _openSettings() async {
+    await _nav.currentState?.push(
+      MaterialPageRoute<void>(
+        builder: (_) => SettingsScreen(
+          store: _s.settings,
+          secureKey: _s.key,
+          cliSupported: _s.cliSupported,
+          timings: _s.timings.recent(10),
+        ),
+      ),
+    );
+    await _loadSettings();
+  }
+
+  Future<String> _make(
+    String request,
+    Future<void> cancelled,
+    void Function(MakeStage stage) stage,
+  ) async {
+    final settings = _settings;
+    final backend = _s.backend(settings, _s.key);
+    _s.timings.start(sayUsable);
+    final aid = await _loop(
+      () => StagedBackend(backend, stage),
+    ).newApp(request, cancelled: cancelled);
+    _made = (
+      aid: aid,
+      extra: {
+        'artifact': aid,
+        'model': settings.model,
+        'backend': backend.name,
+      },
+    );
+    return aid;
+  }
+
+  void _onReady(String aid, Ready r) {
+    final made = _made;
+    if (made == null || made.aid != aid || r.artifact != aid) return;
+    _made = null;
+    _s.timings.stop(sayUsable, extra: made.extra);
+  }
+
+  void _open(String aid) {
+    final settings = _settings;
+    unawaited(
+      _nav.currentState?.push(
+        MaterialPageRoute<void>(
+          builder: (_) => _AppPage(
+            endpoint: _endpoint,
+            surface: _s.surface,
+            screen: (base, surface) => AppScreen(
+              key: ValueKey(base),
+              aid: aid,
+              base: base,
+              api: _api,
+              surface: surface,
+              voice: _s.voice,
+              settings: settings,
+              timings: _s.timings,
+              worker: _runtime.worker.events,
+              onReady: (r) => _onReady(aid, r),
+              comments: _comments,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _home(BuildContext context) {
+    final d = _daemon;
+    if (d is Failed) {
+      return ErrorScreen(
+        key: const ValueKey('error'),
+        reason: d.reason,
+        tail: d.stderrTail,
+        onRestart: _start,
+      );
+    }
+    if (!_wasUp) return const _Splash(key: ValueKey('splash'));
+    return Launcher(
+      api: _api,
+      open: _open,
+      make: _make,
+      voice: _s.voice,
+      openSettings: () => unawaited(_openSettings()),
+      needsKey: _needsKey,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    Widget app = MaterialApp(
+      title: 'Clax',
+      navigatorKey: _nav,
+      theme: claxTheme(Brightness.light),
+      darkTheme: claxTheme(Brightness.dark),
+      home: ListenableBuilder(
+        listenable: _revision,
+        builder: (context, _) => _home(context),
+      ),
+    );
+    if (defaultTargetPlatform == TargetPlatform.macOS) {
+      app = ClaxMenuBar(comments: _comments, child: app);
+    }
+    return app;
+  }
+}
+
+/// The open app's page: a surface for the daemon's address, loaded again
+/// when the daemon is restarted on that address, and replaced (with the
+/// screen) when the address changes.
+class _AppPage extends StatefulWidget {
+  const _AppPage({
+    required this.endpoint,
+    required this.surface,
+    required this.screen,
+  });
+
+  final ValueListenable<DaemonEndpoint?> endpoint;
+  final AppSurface Function(Uri base) surface;
+  final Widget Function(Uri base, AppSurface surface) screen;
+
+  @override
+  State<_AppPage> createState() => _AppPageState();
+}
+
+class _AppPageState extends State<_AppPage> {
+  late Uri _base;
+  late int _pid;
+  late AppSurface _surface;
+
+  @override
+  void initState() {
+    super.initState();
+    final e = widget.endpoint.value!;
+    _base = e.base;
+    _pid = e.pid;
+    _surface = widget.surface(_base);
+    widget.endpoint.addListener(_onEndpoint);
+  }
+
+  @override
+  void dispose() {
+    widget.endpoint.removeListener(_onEndpoint);
+    super.dispose();
+  }
+
+  void _onEndpoint() {
+    final e = widget.endpoint.value;
+    if (e == null || e.pid == _pid && e.base == _base) return;
+    if (e.base != _base) {
+      // The screen keyed by the old address disposes the old surface.
+      setState(() {
+        _base = e.base;
+        _pid = e.pid;
+        _surface = widget.surface(_base);
+      });
+    } else {
+      _pid = e.pid;
+      unawaited(_surface.reload());
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.screen(_base, _surface);
+}
+
+class _Splash extends StatelessWidget {
+  const _Splash({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Clax', style: theme.textTheme.displaySmall),
+            const SizedBox(height: 24),
+            const SizedBox.square(
+              dimension: 24,
+              child: CircularProgressIndicator(strokeWidth: 3),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Starting…',
+              style: theme.textTheme.bodyLarge?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
