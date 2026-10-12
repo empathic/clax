@@ -1231,8 +1231,8 @@ by the reaper.
 The Clax app (`apps/clax_app`) runs its own daemon and its own agent on the
 device (see "The Clax app" under "Comments and feedback"). Its agent
 registers once the daemon is up: `POST /api/sessions` with `{"harness":
-"app", "harness_session_id": <install ID>, "cwd": "", "pid": <the app's
-PID>}`, where the install ID is a random UUID the app keeps in its support
+"app", "harness_session_id": <install ID>, "cwd": <the app's application
+support directory>, "pid": <the app's PID>}`, where the install ID is a random UUID the app keeps in its support
 directory, so a restarted daemon or app reuses the live row. It creates
 apps with `X-Clax-Session` naming that row, so the session owns and watches
 them, and registers again when a call answers `unknown_session`. It has no
@@ -4794,8 +4794,9 @@ artifacts it lets read it in `db.share.read`:
 {"db": {"share": {"read": ["7q3k9mzx2b4t"]}}}
 ```
 
-Each list holds at most 16 artifact IDs, never the artifact's own; a
-repeated ID counts once, and `db.share` holds only `read`. Anything else is
+Each list holds at most 16 entries, repeats included (17 entries naming
+2 IDs are refused), never the artifact's own ID; a repeated ID is then
+kept once, and `db.share` holds only `read`. Anything else is
 400 `invalid_capabilities` on publish and `PATCH`. Declaring grants
 nothing alone.
 
@@ -4821,9 +4822,13 @@ lists B again; deleting either artifact removes its grants.
 `X-Clax-Reader: <A>`. The request is then served for A: at `view` (or the
 caller's own level, if lower) with no viewer, so documents under
 `data/users/<id>/` and paths whose read rule needs more than `view` answer
-404 as missing ones do. Without A's consent it is 403 `not_granted`; when B
-does not declare `db` it is 403 `not_declared`, the token included; an
-unknown A or B is 404; a header that names no artifact, or is repeated, is
+404 as missing ones do. Without A's consent it is 403 `not_granted`; with
+it (a share needs B's own declaration, so only an owner's grant can give
+it then), a B that does not declare `db` is 403 `not_declared`, the token
+included. So an ungranted B without `db` answers `not_granted`; in the owner's
+browser the page's `db.artifact(id)` checks B's declaration and reports
+`not_declared` for it itself. An unknown A or B
+is 404; a header that names no artifact, or is repeated, is
 400 `invalid_args`. The header is refused everywhere else, before any
 handler runs: on a method other than `GET` or `HEAD` with 403 `read_only`,
 and on any other route (B's threads, files, versions, assets, content, the

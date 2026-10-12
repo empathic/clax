@@ -550,10 +550,11 @@ results, or `{"error": "<message>"}` items) instead of a model, which drives
 the whole app without one.
 
 **On an Android phone.** Turn on developer options and USB debugging, plug
-the phone in, and check that `adb devices` lists it (`adb` is in
-`~/Library/Android/sdk/platform-tools`). Then:
+the phone in, and from the checkout run:
 
 ```
+export PATH="$HOME/Library/Android/sdk/platform-tools:$PATH"
+adb devices    # lists the phone; accept the prompt on it if it says unauthorized
 just app-apk
 adb install -r apps/clax_app/build/app/outputs/flutter-apk/app-release.apk
 ```
