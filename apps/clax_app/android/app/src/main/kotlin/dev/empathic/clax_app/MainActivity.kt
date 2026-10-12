@@ -69,9 +69,27 @@ class MainActivity : FlutterActivity() {
         background?.onPermissionResult(requestCode, grantResults)
     }
 
+    /**
+     * Back on the home screen sends the task to the background instead of
+     * finishing the activity, so its engine and any run in it live on.
+     */
+    override fun popSystemNavigator(): Boolean {
+        moveTaskToBack(true)
+        return true
+    }
+
     override fun onDestroy() {
+        BackgroundRunService.onStopped = null
         // Without its Dart run, the service has nothing to keep alive.
-        if (isFinishing) stopService(Intent(this, BackgroundRunService::class.java))
+        if (isFinishing) {
+            val stop = Intent(this, BackgroundRunService::class.java)
+                .setAction(BackgroundRunService.ACTION_STOP)
+            try {
+                startService(stop)
+            } catch (e: IllegalStateException) {
+                stopService(Intent(this, BackgroundRunService::class.java))
+            }
+        }
         super.onDestroy()
     }
 }

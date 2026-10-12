@@ -84,33 +84,54 @@ object Notices {
  * A `dataSync` foreground service that runs while Clax makes or changes
  * an app, so a run the person leaves keeps its process and its network
  * (Android cuts a background app's network: `blocked=APP_BACKGROUND`). It
- * does no work itself: the Dart run does, and stops it when the last run
- * ends. Each start shows [Notices.EXTRA_TITLE] and [Notices.EXTRA_TEXT].
- * It stops on its own when the system's time limit for the type is spent
- * ([onTimeout]) and when the app's task is removed.
+ * does no work itself: the Dart run does.
+ *
+ * Every command reaches [onStartCommand] in the order it was sent. A start
+ * (no action) shows [Notices.EXTRA_TITLE] and [Notices.EXTRA_TEXT] and
+ * enters the foreground; [ACTION_STOP] leaves it and stops the service
+ * unless a newer start is already queued. So a stop sent right after a
+ * start is handled after that start's `startForeground`, as Android
+ * requires of a service started with `startForegroundService`.
+ *
+ * It stops on its own, and calls [onStopped], when `startForeground` is
+ * refused, when the system's time limit for the type is spent
+ * ([onTimeout]), and when the app's task is removed.
  */
 class BackgroundRunService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            if (stopSelfResult(startId)) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                running = false
+            }
+            return START_NOT_STICKY
+        }
         Notices.ensureChannels(this)
         val n = Notices.run(
             this,
             intent?.getStringExtra(Notices.EXTRA_TITLE) ?: "Clax",
             intent?.getStringExtra(Notices.EXTRA_TEXT) ?: "",
         )
-        startForeground(Notices.RUN_NOTIFICATION, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        running = true
+        try {
+            startForeground(Notices.RUN_NOTIFICATION, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            running = true
+        } catch (e: RuntimeException) {
+            // ForegroundServiceStartNotAllowedException (in the background, or
+            // the type's time spent) or a SecurityException.
+            stopOnItsOwn()
+        }
         return START_NOT_STICKY
     }
 
     /** Android 15 and later: the type's daily time is spent. */
     override fun onTimeout(startId: Int, fgsType: Int) {
-        stopSelf()
+        stopOnItsOwn()
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        stopSelf()
+        stopOnItsOwn()
     }
 
     override fun onDestroy() {
@@ -118,10 +139,22 @@ class BackgroundRunService : Service() {
         super.onDestroy()
     }
 
+    private fun stopOnItsOwn() {
+        running = false
+        stopSelf()
+        onStopped?.invoke()
+    }
+
     companion object {
+        /** The command that stops the service; see [onStartCommand]. */
+        const val ACTION_STOP = "dev.empathic.clax.STOP_RUNS"
+
         /** Whether the service is in the foreground now. */
         @Volatile
         var running = false
             private set
+
+        /** Called on the main thread when the service stopped on its own. */
+        var onStopped: (() -> Unit)? = null
     }
 }
