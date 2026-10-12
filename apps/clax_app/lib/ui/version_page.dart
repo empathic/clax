@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../clax/api.dart';
@@ -11,20 +12,21 @@ const int diffMaxBytes = 256 * 1024;
 /// A file with more lines than this shows its sizes only.
 const int diffMaxLines = 4000;
 
+/// Above this many lines on both sides together, the diff runs on a
+/// background isolate.
+const int diffIsolateLines = 1000;
+
 /// How a file differs between the two versions compared.
 enum FileChangeKind { added, removed, changed }
 
-/// One file that differs between version `from` and version `to`.
+/// One file that differs between version `from` and version `to`, as the
+/// versions' file metadata tells it.
 class FileChange {
   const FileChange({
     required this.path,
     required this.kind,
     this.fromSize,
     this.toSize,
-    this.fromLines,
-    this.toLines,
-    this.hunks,
-    this.why,
   });
 
   final String path;
@@ -34,91 +36,136 @@ class FileChange {
   final int? fromSize;
   final int? toSize;
 
+  /// The last path segment.
+  String get name => path.substring(path.lastIndexOf('/') + 1);
+
+  /// The directory part with its trailing `/`; empty at the top.
+  String get dir => path.substring(0, path.lastIndexOf('/') + 1);
+
+  /// Whether either side is over [diffMaxBytes], so no text is fetched.
+  bool get tooLarge =>
+      (fromSize ?? 0) > diffMaxBytes || (toSize ?? 0) > diffMaxBytes;
+}
+
+/// The files that differ between [from] (empty for "no version") and
+/// [to], ordered by path. Two files are the same when their SHA-256
+/// hashes match; without both hashes, a size difference is a change and
+/// equal sizes are one only when the path is in [changedTexts] (see
+/// [unsettled]).
+List<FileChange> listChanges(
+  Map<String, FileMeta> from,
+  Map<String, FileMeta> to, {
+  Set<String> changedTexts = const {},
+}) {
+  final paths = {...from.keys, ...to.keys}.toList()..sort();
+  return [
+    for (final p in paths)
+      if (_kind(from[p], to[p], changedTexts.contains(p)) case final kind?)
+        FileChange(
+          path: p,
+          kind: kind,
+          fromSize: from[p]?.size,
+          toSize: to[p]?.size,
+        ),
+  ];
+}
+
+FileChangeKind? _kind(FileMeta? a, FileMeta? b, bool textChanged) {
+  if (a == null) return FileChangeKind.added;
+  if (b == null) return FileChangeKind.removed;
+  if (a.sha256 != null && b.sha256 != null) {
+    return a.sha256 == b.sha256 ? null : FileChangeKind.changed;
+  }
+  if (a.size != b.size || textChanged) return FileChangeKind.changed;
+  return null;
+}
+
+/// The paths present on both sides whose metadata cannot tell whether
+/// they changed: no SHA-256 on one side and equal sizes. Only their texts
+/// can.
+Set<String> unsettled(Map<String, FileMeta> from, Map<String, FileMeta> to) => {
+  for (final e in to.entries)
+    if (from[e.key] case final a?)
+      if ((a.sha256 == null || e.value.sha256 == null) &&
+          a.size == e.value.size)
+        e.key,
+};
+
+/// [s]'s length in UTF-8 bytes; 0 for null.
+int utf8Length(String? s) => s == null ? 0 : utf8.encode(s).length;
+
+/// One file's line diff, or why it has none.
+class FileDiff {
+  const FileDiff({
+    this.hunks,
+    this.why,
+    this.fromLines,
+    this.toLines,
+    this.endingsOnly = false,
+  });
+
+  /// The hunks, or null when only sizes are shown ([why] says why).
+  final List<DiffHunk>? hunks;
+  final String? why;
+
   /// Each side's line count, when it is a text file.
   final int? fromLines;
   final int? toLines;
 
-  /// The line diff, or null when only sizes are shown ([why] says why).
-  final List<DiffHunk>? hunks;
-  final String? why;
+  /// The texts differ only in line endings or the final newline.
+  final bool endingsOnly;
 
   int get added => _count(DiffKind.add);
   int get removed => _count(DiffKind.del);
 
-  int _count(DiffKind k) => [
-    for (final h in hunks ?? const <DiffHunk>[])
-      for (final l in h.lines)
-        if (l.kind == k) l,
-  ].length;
+  int _count(DiffKind k) {
+    var n = 0;
+    for (final h in hunks ?? const <DiffHunk>[]) {
+      for (final l in h.lines) {
+        if (l.kind == k) n++;
+      }
+    }
+    return n;
+  }
 }
 
-/// The files that differ between two versions: [fromMeta]/[fromText] (both
-/// empty for "no version") and [toMeta]/[toText], ordered by path. The
-/// texts hold the text files only; a file without text compares by
-/// SHA-256 when both sides have one, else by size.
-List<FileChange> compareFiles({
-  required Map<String, FileMeta> fromMeta,
-  required Map<String, String> fromText,
-  required Map<String, FileMeta> toMeta,
-  required Map<String, String> toText,
-}) {
-  final paths = {...fromMeta.keys, ...toMeta.keys}.toList()..sort();
-  final out = <FileChange>[];
-  for (final p in paths) {
-    final a = fromMeta[p];
-    final b = toMeta[p];
-    final at = fromText[p];
-    final bt = toText[p];
-    final FileChangeKind kind;
-    if (a == null) {
-      kind = FileChangeKind.added;
-    } else if (b == null) {
-      kind = FileChangeKind.removed;
-    } else {
-      final differs = (at != null && bt != null)
-          ? at != bt
-          : (a.sha256 != null && b.sha256 != null)
-          ? a.sha256 != b.sha256
-          : a.size != b.size;
-      if (!differs) continue;
-      kind = FileChangeKind.changed;
-    }
-    final aLines = at == null ? null : splitLines(at);
-    final bLines = bt == null ? null : splitLines(bt);
-    final textual =
-        (a == null || aLines != null) && (b == null || bLines != null);
-    String? why;
-    List<DiffHunk>? hunks;
-    if (!textual) {
-      why = 'Not a text file';
-    } else if ((a?.size ?? 0) > diffMaxBytes ||
-        (b?.size ?? 0) > diffMaxBytes ||
-        utf8Length(at) > diffMaxBytes ||
-        utf8Length(bt) > diffMaxBytes ||
-        (aLines?.length ?? 0) > diffMaxLines ||
-        (bLines?.length ?? 0) > diffMaxLines) {
-      why = 'Too large to compare line by line';
-    } else {
-      hunks = lineDiff(aLines ?? const [], bLines ?? const []);
-    }
-    out.add(
-      FileChange(
-        path: p,
-        kind: kind,
-        fromSize: a?.size,
-        toSize: b?.size,
-        fromLines: aLines?.length,
-        toLines: bLines?.length,
-        hunks: hunks,
-        why: why,
-      ),
+/// The diff of a file whose text is [from] before and [to] after (null
+/// where it is not text or absent). [fromPresent]/[toPresent] say whether
+/// the file exists on each side; a present side without text is not a
+/// text file. Large inputs are diffed on a background isolate.
+Future<FileDiff> diffTexts(
+  String? from,
+  String? to, {
+  bool fromPresent = true,
+  bool toPresent = true,
+}) async {
+  if ((fromPresent && from == null) || (toPresent && to == null)) {
+    return const FileDiff(why: 'Not a text file');
+  }
+  final a = from == null ? const <String>[] : splitLines(from);
+  final b = to == null ? const <String>[] : splitLines(to);
+  if (utf8Length(from) > diffMaxBytes ||
+      utf8Length(to) > diffMaxBytes ||
+      a.length > diffMaxLines ||
+      b.length > diffMaxLines) {
+    return FileDiff(
+      why: 'Too large to compare line by line',
+      fromLines: from == null ? null : a.length,
+      toLines: to == null ? null : b.length,
     );
   }
-  return out;
+  final hunks = a.length + b.length > diffIsolateLines
+      ? await compute(_diffPair, [a, b])
+      : lineDiff(a, b);
+  return FileDiff(
+    hunks: hunks,
+    fromLines: from == null ? null : a.length,
+    toLines: to == null ? null : b.length,
+    endingsOnly: hunks.isEmpty && from != to,
+  );
 }
 
-/// [s]'s length in UTF-8 bytes; 0 for null.
-int utf8Length(String? s) => s == null ? 0 : utf8.encode(s).length;
+List<DiffHunk> _diffPair(List<List<String>> ab) => lineDiff(ab[0], ab[1]);
 
 /// A version's page: its number, time, note, label and the threads it
 /// addressed, and the files changed against the version before (or, with
@@ -154,6 +201,13 @@ class _VersionPageState extends State<VersionPage> {
   bool _withCurrent = false;
   bool _restoring = false;
 
+  /// Each version's text files, read once per page and only when needed.
+  final Map<int, Future<Map<String, String>>> _texts = {};
+
+  /// The versions compared: `from` (0 for none) and `to`.
+  int _from = 0;
+  int _to = 0;
+
   /// Bumped per load, so a slower earlier load never overwrites a later one.
   int _loads = 0;
 
@@ -170,6 +224,25 @@ class _VersionPageState extends State<VersionPage> {
     return null;
   }
 
+  Future<Map<String, String>> _textsOf(int n) {
+    if (n < 1) return Future.value(const {});
+    final cached = _texts[n];
+    if (cached != null) return cached;
+    final read = widget.api.readFiles(widget.aid, n);
+    _texts[n] = read;
+    // A failed read is not kept, so the next open or Retry reads again.
+    read.then<void>(
+      (_) {},
+      onError: (Object _) {
+        _texts.remove(n);
+      },
+    );
+    return read;
+  }
+
+  /// Reads the artifact (again, so Compare with current meets the latest)
+  /// and lists the changed files from the versions' metadata. Texts are
+  /// read here only for files the metadata cannot settle.
   Future<void> _load() async {
     final load = ++_loads;
     setState(() {
@@ -177,7 +250,7 @@ class _VersionPageState extends State<VersionPage> {
       _changes = null;
     });
     try {
-      final d = _detail ?? await widget.api.getArtifact(widget.aid);
+      final d = await widget.api.getArtifact(widget.aid);
       final latest = d.artifact.currentVersion;
       final withCurrent = _withCurrent && widget.n != latest;
       final from = withCurrent ? widget.n : widget.n - 1;
@@ -190,13 +263,16 @@ class _VersionPageState extends State<VersionPage> {
           message: 'no version $to',
         );
       }
-      final fromInfo = from < 1 ? null : _info(d, from);
-      final texts = await Future.wait([
-        fromInfo == null
-            ? Future.value(const <String, String>{})
-            : widget.api.readFiles(widget.aid, from),
-        widget.api.readFiles(widget.aid, to),
-      ]);
+      final fromMeta = (from < 1 ? null : _info(d, from))?.files ?? const {};
+      final open = unsettled(fromMeta, toInfo.files);
+      final changedTexts = <String>{};
+      if (open.isNotEmpty) {
+        final texts = await Future.wait([_textsOf(from), _textsOf(to)]);
+        for (final p in open) {
+          final a = texts[0][p];
+          if (a != null && a != texts[1][p]) changedTexts.add(p);
+        }
+      }
       var threads = _threads;
       final addresses = _info(d, widget.n)?.addresses ?? const [];
       if (addresses.isNotEmpty && threads.isEmpty) {
@@ -212,11 +288,12 @@ class _VersionPageState extends State<VersionPage> {
       setState(() {
         _detail = d;
         _threads = threads;
-        _changes = compareFiles(
-          fromMeta: fromInfo?.files ?? const {},
-          fromText: texts[0],
-          toMeta: toInfo.files,
-          toText: texts[1],
+        _from = from;
+        _to = to;
+        _changes = listChanges(
+          fromMeta,
+          toInfo.files,
+          changedTexts: changedTexts,
         );
       });
     } on ClaxApiError catch (e) {
@@ -413,11 +490,48 @@ class _VersionPageState extends State<VersionPage> {
     ];
   }
 
+  Future<FileDiff> _diff(FileChange c) async {
+    if (c.tooLarge) {
+      return const FileDiff(why: 'Too large to compare line by line');
+    }
+    final texts = await Future.wait([_textsOf(_from), _textsOf(_to)]);
+    return diffTexts(
+      texts[0][c.path],
+      texts[1][c.path],
+      fromPresent: c.fromSize != null,
+      toPresent: c.toSize != null,
+    );
+  }
+
   void _open(FileChange c) {
-    Navigator.of(context)
-        .push(MaterialPageRoute<void>(builder: (_) => FileDiffPage(change: c)));
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => FileDiffPage(change: c, diff: _diff(c)),
+      ),
+    );
   }
 }
+
+/// [c]'s file name over its directory, so a long path keeps the name.
+Widget _pathTitle(FileChange c, TextStyle? dirStyle) => Column(
+  crossAxisAlignment: CrossAxisAlignment.start,
+  mainAxisSize: MainAxisSize.min,
+  children: [
+    Text(
+      c.name,
+      style: const TextStyle(fontFamily: 'monospace'),
+      maxLines: 2,
+      overflow: TextOverflow.ellipsis,
+    ),
+    if (c.dir.isNotEmpty)
+      Text(
+        c.dir,
+        style: dirStyle,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+  ],
+);
 
 class _FileRow extends StatelessWidget {
   const _FileRow({required this.change, required this.onTap});
@@ -457,25 +571,20 @@ class _FileRow extends StatelessWidget {
       key: ValueKey('file-${c.path}'),
       contentPadding: EdgeInsets.zero,
       leading: Icon(icon, color: color),
-      title: Text(
-        c.path,
-        style: const TextStyle(fontFamily: 'monospace'),
-        overflow: TextOverflow.ellipsis,
+      title: _pathTitle(
+        c,
+        theme.textTheme.bodySmall?.copyWith(
+          fontFamily: 'monospace',
+          color: scheme.onSurfaceVariant,
+        ),
       ),
       subtitle: Row(
         children: [
           Text(word, style: TextStyle(color: color)),
-          Text(' · $sizes'),
+          Flexible(child: Text(' · $sizes', overflow: TextOverflow.ellipsis)),
         ],
       ),
-      trailing: c.hunks == null
-          ? null
-          : Text(
-              '+${c.added} −${c.removed}',
-              style: theme.textTheme.labelMedium?.copyWith(
-                fontFeatures: const [FontFeature.tabularFigures()],
-              ),
-            ),
+      trailing: const Icon(Icons.chevron_right),
       onTap: onTap,
     );
   }
@@ -518,39 +627,108 @@ class DiffColors {
   final Color onDel;
 }
 
-/// One file's change: its unified line diff, unchanged runs between hunks
-/// folded to a count, or its sizes when it has no diff.
+/// One row of a diff page: a folded run of unchanged lines, or a line.
+sealed class _Row {
+  const _Row();
+}
+
+class _Fold extends _Row {
+  const _Fold(this.n);
+  final int n;
+}
+
+class _Line extends _Row {
+  const _Line(this.kind, this.a, this.b, this.text);
+  final DiffKind kind;
+  final int? a;
+  final int? b;
+  final String text;
+}
+
+List<_Row> _rows(FileDiff d) {
+  final out = <_Row>[];
+  var aNext = 0;
+  for (final h in d.hunks!) {
+    if (h.aStart > aNext) out.add(_Fold(h.aStart - aNext));
+    var ai = h.aStart;
+    var bi = h.bStart;
+    for (final l in h.lines) {
+      switch (l.kind) {
+        case DiffKind.same:
+          out.add(_Line(l.kind, ++ai, ++bi, l.text));
+        case DiffKind.del:
+          out.add(_Line(l.kind, ++ai, null, l.text));
+        case DiffKind.add:
+          out.add(_Line(l.kind, null, ++bi, l.text));
+      }
+    }
+    aNext = ai;
+  }
+  final total = d.fromLines ?? 0;
+  if (total > aNext) out.add(_Fold(total - aNext));
+  return out;
+}
+
+/// One file's change: its unified line diff (built row by row as it
+/// scrolls), unchanged runs between hunks folded to a count; its sizes
+/// when it has no diff; or a note when only line endings or the final
+/// newline changed.
 class FileDiffPage extends StatelessWidget {
-  const FileDiffPage({super.key, required this.change});
+  const FileDiffPage({super.key, required this.change, required this.diff});
 
   final FileChange change;
+  final Future<FileDiff> diff;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final c = change;
-    final hunks = c.hunks;
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-          c.path,
-          style: const TextStyle(fontFamily: 'monospace'),
-          overflow: TextOverflow.ellipsis,
+        title: _pathTitle(
+          change,
+          theme.textTheme.labelSmall?.copyWith(
+            fontFamily: 'monospace',
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
         ),
       ),
       body: SafeArea(
         top: false,
-        child: hunks == null
-            ? _sizesOnly(theme)
-            : ListView(
-                padding: const EdgeInsets.only(bottom: 24),
-                children: _lines(theme, hunks),
-              ),
+        child: FutureBuilder<FileDiff>(
+          future: diff,
+          builder: (context, snap) {
+            if (snap.hasError) {
+              final e = snap.error;
+              return _note(
+                theme,
+                'Couldn’t read the file: '
+                '${e is ClaxApiError ? e.message : e}',
+              );
+            }
+            final d = snap.data;
+            if (d == null) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (d.hunks == null) return _sizesOnly(theme, d);
+            if (d.endingsOnly) {
+              return _note(
+                theme,
+                'Only line endings or the final newline changed.',
+              );
+            }
+            return _lines(theme, d);
+          },
+        ),
       ),
     );
   }
 
-  Widget _sizesOnly(ThemeData theme) {
+  Widget _note(ThemeData theme, String text) => Padding(
+    padding: const EdgeInsets.all(16),
+    child: Text(text, style: theme.textTheme.titleSmall),
+  );
+
+  Widget _sizesOnly(ThemeData theme, FileDiff d) {
     final c = change;
     String side(int? size, int? lines) => size == null
         ? 'no such file'
@@ -562,75 +740,90 @@ class FileDiffPage extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('${c.why}.', style: theme.textTheme.titleSmall),
+          Text('${d.why}.', style: theme.textTheme.titleSmall),
           const SizedBox(height: 12),
-          Text('Before: ${side(c.fromSize, c.fromLines)}'),
+          Text('Before: ${side(c.fromSize, d.fromLines)}'),
           const SizedBox(height: 4),
-          Text('After: ${side(c.toSize, c.toLines)}'),
+          Text('After: ${side(c.toSize, d.toLines)}'),
         ],
       ),
     );
   }
 
-  List<Widget> _lines(ThemeData theme, List<DiffHunk> hunks) {
+  Widget _lines(ThemeData theme, FileDiff d) {
     final colors = DiffColors.of(theme);
     final mono = theme.textTheme.bodySmall?.copyWith(
       fontFamily: 'monospace',
       height: 1.35,
     );
-    final out = <Widget>[];
-    var aNext = 0;
-    for (final h in hunks) {
-      if (h.aStart > aNext) out.add(_fold(theme, h.aStart - aNext));
-      var ai = h.aStart;
-      var bi = h.bStart;
-      for (final l in h.lines) {
-        switch (l.kind) {
-          case DiffKind.same:
-            ai++;
-            bi++;
-            out.add(_line(mono, theme, ' ', ai, bi, l.text, null, null));
-          case DiffKind.del:
-            ai++;
-            out.add(
-              KeyedSubtree(
-                key: ValueKey('del-a$ai'),
-                child: _line(
-                  mono,
-                  theme,
-                  '−',
-                  ai,
-                  null,
-                  l.text,
-                  colors.del,
-                  colors.onDel,
-                ),
+    final rows = _rows(d);
+    return ListView.builder(
+      padding: const EdgeInsets.only(bottom: 24),
+      itemCount: rows.length + 1,
+      itemBuilder: (context, i) {
+        if (i == 0) {
+          return Padding(
+            key: const ValueKey('counts'),
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+            child: Text.rich(
+              TextSpan(
+                children: [
+                  TextSpan(
+                    text: '+${d.added}',
+                    style: TextStyle(color: colors.addInk),
+                  ),
+                  const TextSpan(text: '  '),
+                  TextSpan(
+                    text: '−${d.removed}',
+                    style: TextStyle(color: theme.colorScheme.error),
+                  ),
+                ],
               ),
-            );
-          case DiffKind.add:
-            bi++;
-            out.add(
-              KeyedSubtree(
-                key: ValueKey('add-b$bi'),
-                child: _line(
-                  mono,
-                  theme,
-                  '+',
-                  null,
-                  bi,
-                  l.text,
-                  colors.add,
-                  colors.onAdd,
-                ),
-              ),
-            );
+              style: theme.textTheme.labelLarge,
+            ),
+          );
         }
-      }
-      aNext = ai;
-    }
-    final total = change.fromLines ?? 0;
-    if (total > aNext) out.add(_fold(theme, total - aNext));
-    return out;
+        return switch (rows[i - 1]) {
+          _Fold(:final n) => _fold(theme, n),
+          _Line(kind: DiffKind.same, :final a, :final b, :final text) => _line(
+            mono,
+            theme,
+            ' ',
+            a,
+            b,
+            text,
+            null,
+            null,
+          ),
+          _Line(kind: DiffKind.del, :final a, :final text) => KeyedSubtree(
+            key: ValueKey('del-a$a'),
+            child: _line(
+              mono,
+              theme,
+              '−',
+              a,
+              null,
+              text,
+              colors.del,
+              colors.onDel,
+            ),
+          ),
+          _Line(kind: DiffKind.add, :final b, :final text) => KeyedSubtree(
+            key: ValueKey('add-b$b'),
+            child: _line(
+              mono,
+              theme,
+              '+',
+              null,
+              b,
+              text,
+              colors.add,
+              colors.onAdd,
+            ),
+          ),
+        };
+      },
+    );
   }
 
   Widget _fold(ThemeData theme, int n) => Container(

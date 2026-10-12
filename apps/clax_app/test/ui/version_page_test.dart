@@ -93,8 +93,6 @@ void main() {
     expect(find.text('Added'), findsOneWidget);
     expect(find.text('Removed'), findsOneWidget);
     expect(find.text('Changed'), findsOneWidget);
-    // Line counts of the text diff on the changed file.
-    expect(find.text('+1 −1'), findsOneWidget);
   });
 
   testWidgets('tapping a changed file shows coloured added and removed lines', (
@@ -132,6 +130,7 @@ void main() {
     expect(fill(del), scheme.errorContainer);
     expect(fill(add), isNot(scheme.errorContainer));
     expect(fill(add), isNotNull);
+    expect(find.text('+1  −1', findRichText: true), findsOneWidget);
     // The unchanged runs before and after the hunk are folded.
     expect(find.text('8 unchanged lines'), findsOneWidget);
     expect(find.text('7 unchanged lines'), findsOneWidget);
@@ -249,5 +248,139 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('preview')));
     await tester.pumpAndSettle();
     expect(previews, [2, null]);
+  });
+
+  testWidgets('reads no file until one is tapped when the metadata settles', (
+    tester,
+  ) async {
+    final api = FakeClaxApi(clock: () => '2026-10-12T09:30:00Z');
+    final aid = api.seedArtifact('Runs', {'index.html': page(v1Body)});
+    await api.registerAppSession(installId: 'i', pid: 1);
+    await api.publish(
+      aid,
+      PublishRequest(
+        ifVersion: 1,
+        files: {
+          'index.html': page([...v1Body, '<p>more</p>']),
+        },
+      ),
+    );
+    final r = _Rig(api, aid);
+    await tester.pumpWidget(r.versionPage(2));
+    await tester.pumpAndSettle();
+    List<Object?> reads() => [
+      for (final c in api.calls)
+        if (c.name == 'readFiles') c.args['n'],
+    ];
+    expect(find.byKey(const ValueKey('file-index.html')), findsOneWidget);
+    expect(reads(), isEmpty);
+
+    await tester.tap(find.byKey(const ValueKey('file-index.html')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('add-b23')), findsOneWidget);
+    expect(reads(), unorderedEquals([1, 2]));
+
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('file-index.html')));
+    await tester.pumpAndSettle();
+    expect(reads(), hasLength(2), reason: 'each version is read once');
+  });
+
+  testWidgets('same-size files without hashes are compared by their text', (
+    tester,
+  ) async {
+    final api = FakeClaxApi(clock: () => '2026-10-12T09:30:00Z');
+    final aid = api.seedArtifact('Runs', {
+      'index.html': page(v1Body),
+      'a.txt': 'keep\n',
+      'b.txt': 'same\n',
+    });
+    await api.registerAppSession(installId: 'i', pid: 1);
+    await api.publish(
+      aid,
+      PublishRequest(ifVersion: 1, files: {'a.txt': 'kept\n'}),
+    );
+    await tester.pumpWidget(_Rig(api, aid).versionPage(2));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('file-a.txt')), findsOneWidget);
+    expect(find.byKey(const ValueKey('file-b.txt')), findsNothing);
+    expect(find.byKey(const ValueKey('file-index.html')), findsNothing);
+  });
+
+  testWidgets('a change of line endings or final newline only says so', (
+    tester,
+  ) async {
+    final api = FakeClaxApi(clock: () => '2026-10-12T09:30:00Z');
+    final aid = api.seedArtifact('Runs', {
+      'index.html': page(v1Body),
+      'notes.txt': 'a\nb',
+    });
+    await api.registerAppSession(installId: 'i', pid: 1);
+    await api.publish(
+      aid,
+      PublishRequest(ifVersion: 1, files: {'notes.txt': 'a\r\nb\n'}),
+    );
+    await tester.pumpWidget(_Rig(api, aid).versionPage(2));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('file-notes.txt')));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Only line endings or the final newline changed.'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('a long path shows its file name over its directory', (
+    tester,
+  ) async {
+    const path =
+        'src/components/very/deeply/nested/folder/with-a-long-file-name.component.js';
+    final api = FakeClaxApi(clock: () => '2026-10-12T09:30:00Z');
+    final aid = api.seedArtifact('Runs', {'index.html': page(v1Body)});
+    await api.registerAppSession(installId: 'i', pid: 1);
+    await api.publish(
+      aid,
+      PublishRequest(ifVersion: 1, files: {path: 'x()\n'}),
+    );
+    await tester.pumpWidget(_Rig(api, aid).versionPage(2));
+    await tester.pumpAndSettle();
+    final row = find.byKey(const ValueKey('file-$path'));
+    expect(
+      find.descendant(
+        of: row,
+        matching: find.text('with-a-long-file-name.component.js'),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: row,
+        matching: find.text('src/components/very/deeply/nested/folder/'),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  test(
+    'a large pair is diffed off the UI isolate with the same result',
+    () async {
+      final a = [for (var i = 0; i < 900; i++) 'line $i'];
+      final b = [...a]..[450] = 'changed';
+      final d = await diffTexts(a.join('\n'), b.join('\n'));
+      expect(d.hunks, hasLength(1));
+      expect(a.length + b.length, greaterThan(diffIsolateLines));
+      expect(d.added, 1);
+      expect(d.removed, 1);
+      expect(d.endingsOnly, isFalse);
+    },
+  );
+
+  test('a present side without text is not a text file', () async {
+    final d = await diffTexts(null, 'x');
+    expect(d.hunks, isNull);
+    expect(d.why, 'Not a text file');
+    final added = await diffTexts(null, 'x', fromPresent: false);
+    expect(added.added, 1);
   });
 }
