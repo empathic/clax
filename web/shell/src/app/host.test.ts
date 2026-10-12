@@ -394,7 +394,7 @@ describe("app mode's host attestation", { timeout: MOUNT_TIMEOUT_MS }, () => {
   /** What is under (x, y): the frame, unless `over` is given. */
   const hitTest = (el: () => Element | null) => { document.elementFromPoint = () => el(); };
 
-  it("counts a host attestation on the frame as the finger's arrival, for ATTEST_MS", async () => {
+  it("counts an attested press on the frame as the finger's arrival until its release, and ATTEST_MS after it", async () => {
     let t = 10_000;
     vi.spyOn(performance, "now").mockImplementation(() => t);
     const { frame, host, m } = await appView();
@@ -404,13 +404,106 @@ describe("app mode's host attestation", { timeout: MOUNT_TIMEOUT_MS }, () => {
     host.attestPointer({ pointer: 1, phase: "down", x: 100, y: 100 });
     expect(gesture!.frameGesture()).toBe(true);
     expect(gesture!.frameGestureStrict()).toBe("ok");
+    // Held (a hold, then a slow drag): still the finger's arrival.
+    t += 5 * m.ATTEST_MS;
+    expect(gesture!.frameGesture()).toBe(true);
+    // The release, attested, counts for ATTEST_MS more.
+    host.attestPointer({ pointer: 1, phase: "up", x: 100, y: 120 });
+    expect(gesture!.frameGesture()).toBe(true);
     t += m.ATTEST_MS - 1;
     expect(gesture!.frameGesture()).toBe(true);
     t += 1;
     expect(gesture!.frameGesture()).toBe(false);
-    // The release, attested too, counts afresh.
-    host.attestPointer({ pointer: 1, phase: "up", x: 100, y: 120 });
+  });
+
+  it("stops counting a press whose release never comes after HELD_MAX_MS", async () => {
+    let t = 10_000;
+    vi.spyOn(performance, "now").mockImplementation(() => t);
+    const { frame, host, m } = await appView();
+    hitTest(() => frame);
+    fingerOnPage(frame);
+    host.attestPointer({ pointer: 1, phase: "down", x: 100, y: 100 });
+    t += m.HELD_MAX_MS - 1;
     expect(gesture!.frameGesture()).toBe(true);
+    t += 1;
+    expect(gesture!.frameGesture()).toBe(false);
+  });
+
+  it("takes a slow hold-then-drag's pick whose release is attested after the pick starts", async () => {
+    let t = 10_000;
+    vi.spyOn(performance, "now").mockImplementation(() => t);
+    const { ctl, frame, host } = await appView();
+    hello(frame, 1);
+    host.enterCommentMode();
+    hitTest(() => frame);
+    fingerOnPage(frame);
+    host.attestPointer({ pointer: 1, phase: "down", x: 50, y: 60 });
+    // A 600 ms hold and a 600 ms drag; the bridge's pick starts on touchend,
+    // before the host's release attestation reaches the shell.
+    t += 1_200;
+    fromFrame(frame.contentWindow!, startOf(pick("slow", "Quarterly goals")));
+    expect(ctl.state.get().draft?.pickId).toBe("slow");
+    host.attestPointer({ pointer: 1, phase: "up", x: 210, y: 60 });
+    expect(ctl.state.get().draft?.pickId).toBe("slow");
+  });
+
+  it("lets a pick start wait PICK_ATTEST_WAIT_MS for a pending release attestation, then takes or refuses it", async () => {
+    let t = 10_000;
+    vi.spyOn(performance, "now").mockImplementation(() => t);
+    const { ctl, frame, host, m } = await appView();
+    hello(frame, 1);
+    host.enterCommentMode();
+    hitTest(() => frame);
+    fingerOnPage(frame);
+    const clock = (globalThis as unknown as { claxTestClock: { advance(ms: number): number } }).claxTestClock;
+    // A press held past HELD_MAX_MS no longer counts on its own: its
+    // release, attested within the wait, does.
+    host.attestPointer({ pointer: 1, phase: "down", x: 50, y: 60 });
+    t += m.HELD_MAX_MS;
+    fromFrame(frame.contentWindow!, startOf(pick("late", "Quarterly goals")));
+    expect(ctl.state.get().draft).toBeNull();
+    clock.advance(gesture!.PICK_ATTEST_WAIT_MS - 1);
+    expect(ctl.state.get().draft).toBeNull();
+    host.attestPointer({ pointer: 1, phase: "up", x: 50, y: 60 });
+    expect(ctl.state.get().draft?.pickId).toBe("late");
+  });
+
+  it("refuses a waiting pick start when no release attestation comes in time", async () => {
+    let t = 10_000;
+    vi.spyOn(performance, "now").mockImplementation(() => t);
+    const { ctl, frame, host, m } = await appView();
+    hello(frame, 1);
+    host.enterCommentMode();
+    hitTest(() => frame);
+    fingerOnPage(frame);
+    const clock = (globalThis as unknown as { claxTestClock: { advance(ms: number): number } }).claxTestClock;
+    const refused: unknown[] = [];
+    frame.contentWindow!.addEventListener("message", e => { if ((e.data as { type?: string })?.type === "clax:pick-refused") refused.push(e.data); });
+    host.attestPointer({ pointer: 1, phase: "down", x: 50, y: 60 });
+    t += m.HELD_MAX_MS;
+    fromFrame(frame.contentWindow!, startOf(pick("stale", "Quarterly goals")));
+    clock.advance(gesture!.PICK_ATTEST_WAIT_MS);
+    await waitFor(() => refused.length > 0 || null, "pick-refused");
+    expect(ctl.state.get().draft).toBeNull();
+    // The release coming after the wait takes nothing.
+    host.attestPointer({ pointer: 1, phase: "up", x: 50, y: 60 });
+    expect(ctl.state.get().draft).toBeNull();
+  });
+
+  it("starts no wait without a pending press: a forged or unpaired start is refused at once", async () => {
+    const { ctl, frame, host } = await appView();
+    hello(frame, 1);
+    host.enterCommentMode();
+    hitTest(() => frame);
+    fingerOnPage(frame);
+    // An unpaired release attests nothing, and leaves nothing pending.
+    host.attestPointer({ pointer: 9, phase: "up", x: 50, y: 60 });
+    expect(gesture!.hostArrival.pending()).toBe(false);
+    fromFrame(frame.contentWindow!, startOf(pick("forged", "Forged")));
+    expect(ctl.state.get().draft).toBeNull();
+    // A press attested later does not revive the refused start.
+    host.attestPointer({ pointer: 2, phase: "down", x: 50, y: 60 });
+    expect(ctl.state.get().draft).toBeNull();
   });
 
   it("a long-press's pick is taken on the attestation alone", async () => {

@@ -136,10 +136,16 @@
 // the shell nothing, and a long-press may end with no click: no counted
 // arrival, so the long-press's pick would be refused. There the app's host,
 // which sees the real pointer over the WebView, attests each finger press
-// and release (`claxHost.attestPointer`, `app/host.ts`), and an attestation
-// on the frame, made after the viewer's latest shell input and within
-// `ATTEST_MS` (in `app/host.ts`), counts as the pointer's arrival for
-// condition 3. Conditions 1 and 2 still hold as they are. Only app mode
+// and release (`claxHost.attestPointer`, `app/host.ts`). A press attested on
+// the frame after the viewer's latest shell input counts as the pointer's
+// arrival for condition 3 while that pointer is down (at most `HELD_MAX_MS`,
+// in `app/host.ts`), and its paired release for `ATTEST_MS` after it, so a
+// hold that then drags for seconds still picks. The host's attestations
+// reach the shell by `runJavaScript`, in no fixed order with the frame's
+// messages: a pick start that finds no counted arrival while an attested
+// press still awaits its release waits up to `PICK_ATTEST_WAIT_MS` for that
+// release (`afterHostAttestation`) and is judged again; with no press
+// pending it is refused at once. Conditions 1 and 2 still hold as they are. Only app mode
 // sets `hostArrival.fresh`; outside it, it is always false. Nothing in the
 // content frame can reach it: the frame is cross-origin (subdomain mode) or
 // an opaque origin (sandbox mode), so `parent.claxHost` throws there, and
@@ -555,10 +561,34 @@ export function frameGestureStrict(doc: Document = document): "ok" | "no_gesture
   return now() - lastShellInputAt < SHELL_QUIET_MS ? "shell_input_recent" : "ok";
 }
 
-/** App mode's host attestation of a finger on the frame (see the header):
- * whether one counts now, given when (`now()`) the latest shell input was.
- * Never, until `app/host.ts` sets it. */
-export const hostArrival = { fresh: (_since: number): boolean => false };
+/** How long a pick start with no counted arrival waits for a pending
+ * release attestation from the app's host (see the header). */
+export const PICK_ATTEST_WAIT_MS = 300;
+
+/** Who waits for the host's next attestation (`afterHostAttestation`). */
+const attestWaiters = new Set<() => void>();
+
+/** App mode's host attestation of a finger on the frame (see the header).
+ * `fresh`: whether one counts now, given when (`now()`) the latest shell
+ * input was. `pending`: whether a press attested on the frame awaits its
+ * release. Both never, until `app/host.ts` sets them; it calls `attested`
+ * after each attestation it counts. */
+export const hostArrival = {
+  fresh: (_since: number): boolean => false,
+  pending: (): boolean => false,
+  attested(): void { for (const f of [...attestWaiters]) f(); },
+};
+
+/** Runs `f` once, at the host's next counted attestation or after `ms` of
+ * the shell's clock, whichever is first; returns its cancel. */
+export function afterHostAttestation(ms: number, f: () => void): () => void {
+  let stop = () => {};
+  const fire = () => { cancel(); f(); };
+  const cancel = () => { attestWaiters.delete(fire); stop(); };
+  attestWaiters.add(fire);
+  stop = after(ms, fire);
+  return cancel;
+}
 
 /** Forgets what was recorded (tests). */
 export function forgetGestures(): void {

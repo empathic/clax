@@ -6,7 +6,7 @@ import { ApiError, type Artifact, type Attention, type SampleStatus, type Versio
 import { getDrafts, getSampleStatus, putLooked, putSeen } from "./view-api";
 import { acceptByeFromFrame, acceptFromFrame, helloMatches, sendToFrame } from "../bridge-link";
 import type { Declared } from "../caps/availability";
-import { HINT_MS, frameGesture, onShieldPress, pickHintAllowed, setForwardedKeys } from "../caps/gesture";
+import { HINT_MS, PICK_ATTEST_WAIT_MS, afterHostAttestation, frameGesture, hostArrival, onShieldPress, pickHintAllowed, setForwardedKeys } from "../caps/gesture";
 import { CapabilityHost, type CommentsUi } from "../caps/host";
 import { REQUEST_STUCK, connTrouble } from "../conn-notice";
 import { Lifecycle, onPageCache, retrying } from "../lifecycle";
@@ -221,6 +221,8 @@ export class ArtifactController {
   // opened the composer, while its screenshot is still to come, with when
   // the start arrived.
   private pendingPick: { pickId: string; at: number } | null = null;
+  /** A pick start waiting for the app host's release attestation: its cancel. */
+  private pickWait: (() => void) | null = null;
   /** The bridge's lazy parts the greeted page reported it could not load
    * (`clax:degraded`); forgotten whenever the gate closes (another page,
    * version or origin, or a document that loaded without greeting) and at
@@ -963,6 +965,8 @@ export class ArtifactController {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.pickWait?.();
+    this.pickWait = null;
     this.live = false;
     this.life.dispose();
     this.cancelFlush();
@@ -1165,7 +1169,9 @@ export class ArtifactController {
     this.liveView?.left();
   }
 
-  private onMessage(e: MessageEvent): void {
+  /** `waited`: a pick start judged again after waiting for the app host's
+   * release attestation (see `clax:pick-start`). */
+  private onMessage(e: MessageEvent, waited = false): void {
     if (this.disposed) return;
     if (acceptByeFromFrame(e, this.frameWin(), this.s.origin ?? null)) { this.frameLeft(); return; }
     const m = acceptFromFrame(e, this.frameWin(), this.s.origin ?? null);
@@ -1261,7 +1267,16 @@ export class ArtifactController {
         }
         if (!this.s.commenting) { refuse(); break; }
         this.pendingPick = null;
-        if (!frameGesture()) { refuse(); if (pickHintAllowed()) this.showHint(MOVE_TO_PICK); break; }
+        if (!frameGesture()) {
+          // In app mode the host's release attestation may still be on its
+          // way: the start is judged again once it lands, or after the wait.
+          if (!waited && hostArrival.pending()) {
+            this.pickWait?.();
+            this.pickWait = afterHostAttestation(PICK_ATTEST_WAIT_MS, () => { this.pickWait = null; this.onMessage(e, true); });
+            break;
+          }
+          refuse(); if (pickHintAllowed()) this.showHint(MOVE_TO_PICK); break;
+        }
         if (!m.anchor || typeof m.anchor !== "object" || typeof m.version !== "number") { refuse(); break; }
         const pickId = m.pickId;
         this.pendingPick = { pickId, at: Date.now() };
