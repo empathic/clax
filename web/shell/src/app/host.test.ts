@@ -793,4 +793,17 @@ describe("app mode's visibility", { timeout: MOUNT_TIMEOUT_MS }, () => {
     clock().advance(HIDDEN_MS + 1);
     await untilHeld(false, "released");
   });
+
+  it("with no animation frames at all, the address bar follows the page's fragment and the composer's status shows", async () => {
+    const { frame, host } = await appView();
+    vi.stubGlobal("requestAnimationFrame", () => 1);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    hello(frame, 1);
+    fromFrame(frame.contentWindow!, { type: "clax:hash", hash: "#later" });
+    await waitFor(() => location.hash === "#later", "the fragment in the address bar");
+    host.enterCommentMode();
+    gestureIn(frame);
+    fromFrame(frame.contentWindow!, startOf(pick("p1", "Quarterly goals")));
+    await waitFor(() => document.querySelector(".composer [role=status]")?.textContent === "Taking the screenshot…", "the composer's status");
+  });
 });

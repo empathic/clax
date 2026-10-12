@@ -6,6 +6,7 @@
   import { onDestroy, untrack } from "svelte";
   import { type Anchor, INDEX_FILE } from "../../../bridge/src/protocol";
   import { type Draft, composerQuote, isSubmitKey, submitKeysLabel } from "../view/composer-model";
+  import { nextFrame } from "../view/after-paint";
   import { guardedAction } from "../view/trail";
 
   type Props = { draft: Draft; onCancel(): void; onSubmit(body: string): Promise<void>; onText?(text: string): void; onFocused?(): void; send?: boolean };
@@ -85,9 +86,9 @@
   // run, when screen readers know the region; later changes are announced.
   let spoken = $state(false);
   $effect(() => {
-    let second = 0;
-    const first = requestAnimationFrame(() => { second = requestAnimationFrame(() => { spoken = true; }); });
-    return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); };
+    let second = () => {};
+    const first = nextFrame(() => { second = nextFrame(() => { spoken = true; }); });
+    return () => { first(); second(); };
   });
   const status = $derived(!spoken ? "\u00a0" : draft.capturing
     ? queued ? "Posting once the screenshot is taken…" : "Taking the screenshot…"

@@ -16,6 +16,7 @@
   // of the shell is inert and Tab stays among its buttons ("Don't allow"
   // alone until "Allow" is armed).
   import { after as later } from "../clock";
+  import { nextFrame } from "../view/after-paint";
   import { ALLOW_DELAY_MS, type Ask } from "../view/prompt-queue";
   import { guardedAction } from "../view/trail";
   import { inertOutside, trapTab } from "./modal";
@@ -39,7 +40,11 @@
   // refusing button and disarms "Allow" at once, so it never paints armed,
   // then arms it ALLOW_DELAY_MS after the dialog's next paint: the second
   // animation frame runs only once the first one, which painted the dialog,
-  // is done (in a hidden tab, not until the tab is shown).
+  // is done (in a hidden tab, not until the tab is shown). In the Clax app,
+  // whose WebView may run no frames while the app shows the page, each frame
+  // falls back to a short timer while the app's host says the page is shown
+  // (`nextFrame` with `whenShown`), so the delay still counts from about
+  // when the dialog could first be seen.
   $effect(() => {
     const a = ask;
     armed = false;
@@ -48,13 +53,13 @@
     lastFresh = false;
     hint = null;
     deny?.focus();
-    let second = 0;
+    let second = () => {};
     let disarm = () => {};
-    const first = requestAnimationFrame(() => {
-      second = requestAnimationFrame(() => {
+    const first = nextFrame(() => {
+      second = nextFrame(() => {
         disarm = later(ALLOW_DELAY_MS, () => { armedAt = performance.now(); armed = true; });
-      });
-    });
+      }, true);
+    }, true);
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") a.answer("dismiss"); };
     const onPress = (e: PointerEvent) => {
       lastFresh = after(e);
@@ -63,8 +68,8 @@
     addEventListener("keydown", onKey);
     addEventListener("pointerdown", onPress, true);
     return () => {
-      cancelAnimationFrame(first);
-      cancelAnimationFrame(second);
+      first();
+      second();
       disarm();
       removeEventListener("keydown", onKey);
       removeEventListener("pointerdown", onPress, true);

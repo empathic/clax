@@ -51,6 +51,7 @@ import appCss from "./app.css?inline";
 import { getArtifact } from "../api";
 import { acceptFromFrame } from "../bridge-link";
 import { hostArrival } from "../caps/gesture";
+import { visibility } from "../visibility";
 import { now } from "../clock";
 import { SEND_FAILED, failureText, report, scopedNotice } from "../failure";
 import { type Thread, sendToAgent, upsert } from "../threads";
@@ -317,16 +318,17 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   let hostHidden: boolean | null = null;
   // What `setVisible` said before `init`, which applies from `init` on.
   let wanted = true;
+  const docHidden = visibility.hidden;
+  const docShown = visibility.shownByHost;
+  visibility.hidden = d => hostHidden ?? docHidden(d);
+  visibility.shownByHost = () => hostHidden === false;
   // The stream module, loaded on its own (the view loads it after its first
-  // paint): this chunk stays small, and the rule applies once both are in.
+  // paint), so this chunk stays small: told of a change once it is in.
   let stream: typeof import("../stream") | null = null;
-  let docHidden: (d: Document) => boolean = () => false;
   let uninstalled = false;
   void import("../stream").then(m => {
     if (uninstalled) return;
     stream = m;
-    docHidden = m.visibility.hidden;
-    m.visibility.hidden = d => hostHidden ?? docHidden(d);
     if (hostHidden !== null) m.pageStream().visibilityChanged();
   }, () => {});
   const visibleNow = (hidden: boolean) => {
@@ -400,10 +402,9 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     win.removeEventListener("pointerup", onPress, true);
     hostArrival.fresh = () => false;
     uninstalled = true;
-    if (stream) {
-      stream.visibility.hidden = docHidden;
-      if (hostHidden !== null) stream.pageStream().visibilityChanged();
-    }
+    visibility.hidden = docHidden;
+    visibility.shownByHost = docShown;
+    if (stream && hostHidden !== null) stream.pageStream().visibilityChanged();
     if (ctl.app) ctl.app = null;
     delete w.claxHost;
     doc.documentElement.classList.remove("app");

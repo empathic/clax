@@ -55,7 +55,7 @@ describe("bridge orders that arrive before <body>", () => {
     expect(anchorsFor("r3")).toEqual([expect.objectContaining({ results: [expect.objectContaining({ found: false })] })]);
     const before = anchorsFor(null).length;
     document.body.insertAdjacentHTML("beforeend", "<div id=\"late\">Rendered late</div>");
-    await frames();
+    await vi.waitFor(() => expect(anchorsFor(null).length).toBeGreaterThan(before));
     const after = anchorsFor(null).slice(before);
     expect(after).toEqual([expect.objectContaining({ results: [expect.objectContaining({ id: "b", found: true })] })]);
   });

@@ -28,6 +28,7 @@
 // selecting text and opening its menu.
 
 import { OVERLAY_TAG } from "./anchor";
+import { nextFrame } from "./frame";
 import { type AreaRect, REPLACED, Widen, dragRect, isClickSized, nonTextAt, widenedTarget } from "./area";
 import { LongPress, type Timers, windowTimers } from "./long-press";
 import type { Box } from "./protocol";
@@ -77,7 +78,7 @@ export class CommentMode {
   private readonly focusBox: HTMLElement;
   private readonly pin: HTMLElement;
   private suppressClick = false;
-  private frame = 0;
+  private frame: (() => void) | null = null;
   private hovered: Element | Range | null = null;
   /** The target under the pointer before widening. */
   private base: Element | Range | null = null;
@@ -149,8 +150,8 @@ export class CommentMode {
       const sel = this.doc.getSelection();
       this.selectionBefore = sel && !sel.isCollapsed && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
     } else {
-      if (this.frame) cancelAnimationFrame(this.frame);
-      this.frame = 0;
+      this.frame?.();
+      this.frame = null;
       this.selectionBefore = null;
       this.outline.style.display = "none";
       this.pin.style.display = "none";
@@ -347,8 +348,8 @@ export class CommentMode {
     }
     this.pointer = { x: e.clientX, y: e.clientY, el: this.target(e) };
     if (this.frame) return;
-    this.frame = requestAnimationFrame(() => {
-      this.frame = 0;
+    this.frame = nextFrame(() => {
+      this.frame = null;
       if (!this.on || this.drag) return;
       this.hoverAt(this.pointer.el, this.pointer.x, this.pointer.y);
     });

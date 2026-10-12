@@ -16,7 +16,7 @@ import { artifactOrigin, cachedOriginOk, pageSrc, probeOrigin } from "../origin"
 import { appQuery, parseShellPath, shellPath } from "../route";
 import { type Thread, type Viewer, addComment, createThread, currentViewer, fetchThread, getViewer, listThreads, onViewer, reopenThread, resolveThread, seedViewer, sendBatch, sendToAgent, upsert } from "../threads";
 import { after } from "../clock";
-import { afterPaint } from "./after-paint";
+import { afterPaint, nextFrame } from "./after-paint";
 import { EMPTY_SELECTION, type Selection, prune, toggle, unsent } from "./batch-model";
 import { AnchorHandles } from "./anchor-handles";
 import type { Decided } from "./changelog-model";
@@ -266,8 +266,8 @@ export class ArtifactController {
    * frame's (`FrameHost.takeFragment`), or one the address bar moved to
    * while no page had greeted. */
   private pendingFragment: string | null = null;
-  // The pending animation frame that copies `frameHash` into the address bar.
-  private hashFrame = 0;
+  // Cancels the pending frame that copies `frameHash` into the address bar.
+  private hashFrame: (() => void) | null = null;
   private hintTimer: (() => void) | undefined;
   private captureTimer: (() => void) | undefined;
   private stream: ArtifactStream | null = null;
@@ -978,8 +978,8 @@ export class ArtifactController {
     this.lookTimer?.();
     this.hintTimer?.();
     this.captureTimer?.();
-    if (this.hashFrame) cancelAnimationFrame(this.hashFrame);
-    this.hashFrame = 0;
+    this.hashFrame?.();
+    this.hashFrame = null;
   }
 
   private listen(): void {
@@ -1301,13 +1301,14 @@ export class ArtifactController {
       case "clax:cancel": this.set({ commenting: false }); break;
       case "clax:hash":
         // The page's fragment moved (a link, a script): the address bar
-        // follows in place, once per animation frame with the latest
-        // fragment; the frame's own history entry carries the move.
+        // follows in place, once per animation frame (or `nextFrame`'s
+        // timer, where frames do not come) with the latest fragment; the
+        // frame's own history entry carries the move.
         if (!this.gate.open || !validHash(m.hash)) break;
         this.frameHash = m.hash;
         if (!this.hashFrame) {
-          this.hashFrame = requestAnimationFrame(() => {
-            this.hashFrame = 0;
+          this.hashFrame = nextFrame(() => {
+            this.hashFrame = null;
             if (location.hash !== this.frameHash) setUrl(location.pathname + location.search + this.frameHash);
           });
         }
