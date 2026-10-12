@@ -19,6 +19,7 @@ class TurnRequest {
     this.onProgress,
     this.outputBefore = 0,
     this.onFallback,
+    this.holds,
   });
 
   final String model;
@@ -50,6 +51,39 @@ class TurnRequest {
   /// mid-output, and what the declined attempt streamed so far will not be
   /// used.
   final void Function()? onFallback;
+
+  /// The run's holds, shared by its turns: what a backend that holds a turn
+  /// back from the model (until the app is back in the foreground) uses
+  /// from the run. Null: the run's clock is not paused for a hold.
+  final TurnHolds? holds;
+}
+
+/// The time a run's turns were held back from the model, and the run's
+/// side of each hold. One per run, shared by every [TurnRequest] of it.
+///
+/// A backend that holds a turn calls [pauseClock] before the hold and
+/// [resumeClock] after it (whatever ended it), adds the hold's length to
+/// [held], and calls [onResend] before it sends the held turn again.
+class TurnHolds {
+  TurnHolds({
+    required this.pauseClock,
+    required this.resumeClock,
+    this.onResend,
+  });
+
+  /// Stops the run's wall clock: a held turn does not spend it, as an
+  /// `ask` waiting for the person does not.
+  final void Function() pauseClock;
+
+  /// Ends one [pauseClock].
+  final void Function() resumeClock;
+
+  /// Called before a held turn is sent again: what the cut attempt
+  /// streamed will not be used.
+  final void Function()? onResend;
+
+  /// The run's turns' holds so far, summed.
+  Duration held = Duration.zero;
 }
 
 /// One model attempt of a turn and what it spent: a turn has more than one
