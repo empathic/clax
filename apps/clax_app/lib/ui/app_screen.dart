@@ -38,10 +38,12 @@ import 'versions_tab.dart';
 ///   under the panel on a narrow screen. A tap turns comment mode on and
 ///   puts the [CommentBar] under the page (the page shrinks above it, so
 ///   none of it is covered): Whole app (`composeArtifact`), Threads (the
-///   panel) and ✕ (comment mode off). While the panel is open (beside it,
-///   on a wide screen) a tap closes the panel and comment mode. A
-///   long-press opens the panel. A composer the bar led to opens the
-///   panel's peek, and closing it goes back to the bar.
+///   panel) and ✕ (comment mode off); back, Escape and ⌘K end it too,
+///   closing the panel first when it is open over the bar. While the panel
+///   is open (beside it, on a wide screen) a tap closes the panel and
+///   comment mode. A long-press opens the panel. A composer the bar led to
+///   opens the panel's peek in the bar's place, at the bar's height, and
+///   closing it goes back to the bar.
 /// - **Panel.** A two-finger swipe left, the edge handle, the comment
 ///   button's long-press, or (macOS)
 ///   App › Comments (⌘K) opens it and turns comment mode on; a swipe
@@ -232,7 +234,12 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   /// it none.
   CommentsCommand? _ownComments;
 
-  void _toggleOpen() => _setOpen(!_open);
+  /// App › Comments (⌘K): ends comment mode when the panel or the bar is
+  /// up, else opens the panel.
+  void _toggleOpen() => _wantComment ? _closeTop() : _setOpen(true);
+
+  /// Closes what is on top: the panel, else the comment bar.
+  void _closeTop() => _open ? _setOpen(false) : _setBar(false);
 
   @override
   void dispose() {
@@ -576,7 +583,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     );
     screen = CallbackShortcuts(
       bindings: {
-        const SingleActivator(LogicalKeyboardKey.escape): () => _setOpen(false),
+        const SingleActivator(LogicalKeyboardKey.escape): _closeTop,
       },
       child: Focus(autofocus: true, child: screen),
     );
@@ -585,9 +592,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       screen = ClaxMenuBar(comments: own, child: screen);
     }
     return PopScope(
-      canPop: !_open,
+      canPop: !_wantComment,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _setOpen(false);
+        if (!didPop) _closeTop();
       },
       child: screen,
     );

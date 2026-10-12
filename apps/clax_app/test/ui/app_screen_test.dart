@@ -6,6 +6,7 @@ import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/daemon/clock.dart';
 import 'package:clax_app/platform/settings_store.dart';
+import 'package:clax_app/ui/app_menu.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/app_surface.dart';
 import 'package:clax_app/ui/comment_button.dart';
@@ -121,6 +122,7 @@ void main() {
     Size size = const Size(360, 780),
     double? buttonDy,
     ValueChanged<double>? onButtonMoved,
+    CommentsCommand? comments,
   }) async {
     phone(tester, size: size);
     final (api, aid) = await _seeded();
@@ -146,6 +148,7 @@ void main() {
           clock: _Clock(),
           commentButtonDy: buttonDy,
           onCommentButtonMoved: onButtonMoved,
+          comments: comments,
         ),
       ),
     );
@@ -1152,6 +1155,99 @@ void main() {
       expect(modes(rig), isEmpty);
       expect(rig.surface.attests, isEmpty, reason: 'not a touch on the page');
     });
+
+    testWidgets('back with the bar up ends comment mode and keeps the screen', (
+      tester,
+    ) async {
+      final rig = await pumpScreen(tester);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      await tester.tap(button);
+      await tester.pumpAndSettle();
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byType(AppScreen), findsOneWidget);
+      expect(bar, findsNothing);
+      expect(button, findsOneWidget);
+      expect(modes(rig), [enter, exit]);
+    });
+
+    testWidgets('back closes the panel opened from the bar, then the bar', (
+      tester,
+    ) async {
+      final rig = await pumpScreen(tester);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      await tester.tap(button);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('comment-threads')));
+      await tester.pumpAndSettle();
+      expect(panel, findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(panel, findsNothing);
+      expect(bar, findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(bar, findsNothing);
+      expect(find.byType(AppScreen), findsOneWidget);
+      expect(modes(rig), [enter, exit]);
+    });
+
+    testWidgets(
+      'Escape and the Comments command end comment mode from the bar',
+      (tester) async {
+        final cmd = CommentsCommand();
+        addTearDown(cmd.dispose);
+        final rig = await pumpScreen(
+          tester,
+          size: const Size(1200, 800),
+          comments: cmd,
+        );
+        rig.surface.push(rig.ready());
+        await tester.pump();
+        await tester.tap(button);
+        await tester.pumpAndSettle();
+        expect(bar, findsOneWidget);
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+        expect(bar, findsNothing);
+        expect(modes(rig), [enter, exit]);
+
+        await tester.tap(button);
+        await tester.pumpAndSettle();
+        cmd.toggle!();
+        await tester.pumpAndSettle();
+        expect(bar, findsNothing);
+        expect(panel, findsNothing, reason: 'it ends the mode, opens nothing');
+        expect(modes(rig), [enter, exit, enter, exit]);
+        // With nothing up, the command opens the panel as before.
+        cmd.toggle!();
+        await tester.pumpAndSettle();
+        expect(panel, findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'a pick from the bar puts the peek in its place: the page keeps its height',
+      (tester) async {
+        final rig = await pumpScreen(tester);
+        rig.surface.push(rig.ready());
+        await tester.pump();
+        await tester.tap(button);
+        await tester.pumpAndSettle();
+        final page = find.byKey(const ValueKey('fake-surface'));
+        final withBar = tester.getRect(page);
+        rig.surface.push(_Rig.draft);
+        await tester.pumpAndSettle();
+        expect(panel, findsOneWidget);
+        expect(tester.getRect(page), withBar);
+        rig.surface.push(_Rig.noDraft);
+        await tester.pumpAndSettle();
+        expect(bar, findsOneWidget);
+        expect(tester.getRect(page), withBar);
+      },
+    );
 
     testWidgets('the two-finger swipe still opens the panel', (tester) async {
       final rig = await pumpScreen(tester);
