@@ -66,9 +66,14 @@ void main() {
       expect(api.callNames.where((n) => n != 'listArtifacts'), [
         'registerAppSession',
         'createArtifact',
-        'getDoc',
         'batchDocs',
       ]);
+      final seed = api.calls.firstWhere((c) => c.name == 'batchDocs');
+      expect(
+        [for (final w in seed.args['writes']! as List<DocWrite>) w.ifVersion],
+        [null],
+        reason: 'a new artifact has no documents to read first',
+      );
       final create = api.calls.firstWhere((c) => c.name == 'createArtifact');
       expect(create.args['session'], sid);
       final r = create.args['request']! as PublishRequest;
@@ -198,12 +203,20 @@ void main() {
       final outcome = await loop.change(aid, [item], session: sid);
 
       expect(outcome, isA<ChangeLanded>().having((o) => o.version, 'v', 2));
-      expect(api.callNames.skip(1).where((n) => n != 'listArtifacts'), [
+      const steps = {
         'setWorking',
-        'clip',
-        'getArtifact',
         'readFiles',
         'publish',
+        'threads',
+        'replyAsAgent',
+        'resolveAsAgent',
+        'ackFeedback',
+      };
+      expect(api.callNames.where(steps.contains), [
+        'setWorking',
+        'readFiles',
+        'publish',
+        'threads',
         'replyAsAgent',
         'resolveAsAgent',
         'ackFeedback',
@@ -437,7 +450,7 @@ void main() {
       expect(api.callNames, isNot(contains('replyAsAgent')));
     });
 
-    test('db ops read the current version of each existing document', () async {
+    test('db ops are pinned to the version the prompt showed', () async {
       final have = api.putDoc(aid, 'runs/a', {'km': 5});
       final loop = loopWith([
         change(
@@ -459,6 +472,10 @@ void main() {
       ]);
       final item = api.sendComment(aid, 'x', queue: false);
       await loop.change(aid, [item], session: sid);
+      expect(
+        backend.seen.single.userText,
+        contains('{"path":"runs/a","version":${have.version},"data":{"km":5}}'),
+      );
       final batch = api.calls.firstWhere((c) => c.name == 'batchDocs');
       final writes = batch.args['writes']! as List<DocWrite>;
       expect([for (final w in writes) w.path], ['runs/a', 'runs/b']);
@@ -467,32 +484,226 @@ void main() {
       expect((await api.getDoc(aid, 'runs/a'))!.data, {'km': 5, 'unit': 'km'});
     });
 
+    test('a refused db batch restores the previous version and leaves the '
+        'threads open', () async {
+      final loop = loopWith([
+        change(
+          reply: 'Added units.',
+          edits: [edit('Save', 'Keep')],
+          db: [
+            const DbOp(
+              op: 'update',
+              collection: 'runs',
+              docId: 'gone',
+              data: {'unit': 'km'},
+            ),
+          ],
+        ),
+      ]);
+      final item = api.sendComment(aid, 'x', queue: false);
+      final outcome = await loop.change(aid, [item], session: sid);
+      expect(outcome, isA<ChangeFailed>());
+      final restore = api.calls.singleWhere((c) => c.name == 'restoreVersion');
+      expect(restore.args, {'aid': aid, 'n': 1, 'ifVersion': 2});
+      expect(api.filesOf(aid, 3), api.filesOf(aid, 1));
+      final t = api.threadOf(aid, item.threadId);
+      expect(t.comments.last.body, startsWith("Couldn't make that change: "));
+      expect(t.status, 'open');
+    });
+
+    test('a document conflict re-reads and writes once more', () async {
+      final before = api.putDoc(aid, 'runs/a', {'km': 5});
+      final loop = loopWith([
+        change(
+          edits: [edit('Save', 'Keep')],
+          db: [
+            const DbOp(
+              op: 'update',
+              collection: 'runs',
+              docId: 'a',
+              data: {'unit': 'km'},
+            ),
+          ],
+        ),
+      ]);
+      backend.gate = Completer<void>();
+      final item = api.sendComment(aid, 'x', queue: false);
+      final run = loop.change(aid, [item], session: sid);
+      await backend.arrived.future;
+      // The page writes the document while the model runs.
+      final after = api.putDoc(aid, 'runs/a', {'km': 6});
+      backend.gate!.complete();
+      final outcome = await run;
+
+      expect(outcome, isA<ChangeLanded>());
+      final batches = [
+        for (final c in api.calls)
+          if (c.name == 'batchDocs')
+            (c.args['writes']! as List<DocWrite>).single.ifVersion,
+      ];
+      expect(batches, [before.version, after.version]);
+      expect((await api.getDoc(aid, 'runs/a'))!.data, {'km': 6, 'unit': 'km'});
+    });
+
+    test('a second document conflict restores the previous version', () async {
+      final loop = loopWith([
+        change(
+          edits: [edit('Save', 'Keep')],
+          db: [
+            const DbOp(
+              op: 'set',
+              collection: 'runs',
+              docId: 'b',
+              data: {'km': 1},
+            ),
+          ],
+        ),
+      ]);
+      const conflict = ClaxApiError(
+        status: 409,
+        code: 'conflict',
+        message: 'document runs/b changed',
+      );
+      api
+        ..failNext('batchDocs', conflict)
+        ..failNext('batchDocs', conflict);
+      final item = api.sendComment(aid, 'x', queue: false);
+      final outcome = await loop.change(aid, [item], session: sid);
+      expect(outcome, isA<ChangeFailed>());
+      expect(api.callNames.where((n) => n == 'batchDocs'), hasLength(2));
+      expect(api.callNames, contains('restoreVersion'));
+      expect(api.threadOf(aid, item.threadId).status, 'open');
+    });
+
     test(
-      'a refused db batch is named in the reply after the version lands',
+      'two db writes to one document retry before anything is published',
       () async {
+        const twice = [
+          DbOp(op: 'set', collection: 'runs', docId: 'r1', data: {'km': 1}),
+          DbOp(op: 'update', collection: 'runs', docId: 'r1', data: {'u': 1}),
+        ];
         final loop = loopWith([
-          change(
-            reply: 'Added units.',
-            edits: [edit('Save', 'Keep')],
-            db: [
-              const DbOp(
-                op: 'update',
-                collection: 'runs',
-                docId: 'gone',
-                data: {'unit': 'km'},
-              ),
-            ],
-          ),
+          change(edits: [edit('Save', 'Keep')], db: twice),
+          change(edits: [edit('Save', 'Keep')], db: [twice.first]),
         ]);
         final item = api.sendComment(aid, 'x', queue: false);
         final outcome = await loop.change(aid, [item], session: sid);
+        expect(backend.seen, hasLength(2));
+        expect(backend.seen[1].userText, contains('written twice'));
         expect(outcome, isA<ChangeLanded>());
-        expect(
-          api.threadOf(aid, item.threadId).comments.last.body,
-          allOf(startsWith('Added units.'), contains("data wasn't changed")),
-        );
+        expect(api.callNames.where((n) => n == 'publish'), hasLength(1));
+        expect((await api.getDoc(aid, 'runs/r1'))!.data, {'km': 1});
       },
     );
+
+    test('a write to an existing document the prompt did not show is '
+        'refused and asked for again', () async {
+      for (var i = 0; i < PromptBuilder.maxOwnDocs + 1; i++) {
+        api.putDoc(aid, 'runs/r$i', {'km': i});
+      }
+      final loop = loopWith([
+        change(
+          db: [
+            DbOp(
+              op: 'set',
+              collection: 'runs',
+              docId: 'r${PromptBuilder.maxOwnDocs}',
+              data: const {'km': 0},
+            ),
+          ],
+        ),
+        change(resolve: false),
+      ]);
+      final item = api.sendComment(aid, 'x', queue: false);
+      await loop.change(aid, [item], session: sid);
+      final first = backend.seen.first.userText;
+      expect(
+        first,
+        isNot(contains('"path":"runs/r${PromptBuilder.maxOwnDocs}"')),
+      );
+      expect(backend.seen, hasLength(2));
+      expect(backend.seen[1].userText, contains('was not shown'));
+      expect(api.callNames, isNot(contains('batchDocs')));
+    });
+
+    test(
+      'a publish with no answer is left for recovery without a reply',
+      () async {
+        final loop = loopWith([
+          change(edits: [edit('Save', 'Keep')]),
+        ]);
+        api.failNext(
+          'publish',
+          const ClaxApiError(status: 0, code: 'timeout', message: 'no answer'),
+        );
+        final item = api.sendComment(aid, 'x', queue: false);
+        final outcome = await loop.change(aid, [item], session: sid);
+        expect(outcome, isA<ChangeInterrupted>());
+        expect(outcome.answered, isFalse);
+        expect(api.callNames, isNot(contains('replyAsAgent')));
+        expect(api.callNames, isNot(contains('ackFeedback')));
+        expect(api.working, isEmpty);
+      },
+    );
+
+    test(
+      'a read with no answer is left for recovery without a reply',
+      () async {
+        final loop = loopWith([]);
+        api.failNext(
+          'readFiles',
+          const ClaxApiError(
+            status: 0,
+            code: 'daemon_unreachable',
+            message: 'no connection',
+          ),
+        );
+        final item = api.sendComment(aid, 'x', queue: false);
+        final outcome = await loop.change(aid, [item], session: sid);
+        expect(outcome, isA<ChangeInterrupted>());
+        expect(backend.seen, isEmpty);
+        expect(api.callNames, isNot(contains('replyAsAgent')));
+      },
+    );
+
+    test('a thread with a newer viewer comment is neither answered nor '
+        'resolved', () async {
+      final newer = NewerCommentApi();
+      api = newer;
+      sid = (await api.registerAppSession(installId: 'install', pid: 1)).id;
+      aid = api.seedArtifact('Runs', {'index.html': page});
+      final loop = loopWith([
+        change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
+      ]);
+      final first = api.sendComment(aid, 'Say Keep', queue: false);
+      final other = api.sendComment(aid, 'Bigger', queue: false);
+      newer.newerOn = first.threadId;
+      final outcome = await loop.change(aid, [first, other], session: sid);
+      expect(outcome, isA<ChangeLanded>());
+      final t = api.threadOf(aid, first.threadId);
+      expect(t.comments, hasLength(1));
+      expect(t.status, 'open');
+      expect(api.threadOf(aid, other.threadId).status, 'resolved');
+      expect(api.acked, [first.commentId, other.commentId]);
+    });
+
+    test('every read before the model call starts at once', () async {
+      final gated = GatedListApi();
+      api = gated;
+      sid = (await api.registerAppSession(installId: 'install', pid: 1)).id;
+      aid = api.seedArtifact('Runs', {'index.html': page});
+      final loop = loopWith([change(resolve: false)]);
+      final item = api.sendComment(aid, 'x', queue: false);
+      final run = loop.change(aid, [item], session: sid);
+      await until(() => api.callNames.contains('listArtifacts'));
+      await until(() => api.callNames.contains('collections'));
+      expect(api.callNames, contains('clip'));
+      expect(api.callNames, isNot(contains('readFiles')));
+      gated.gate.complete();
+      await run;
+      expect(api.callNames, isNot(contains('getArtifact')));
+      expect(api.calls.where((c) => c.name == 'readFiles'), hasLength(1));
+    });
 
     test('other apps summary excludes the artifact being changed', () async {
       final mine = api.seedArtifact(
@@ -557,7 +768,7 @@ void main() {
       final loop = loopWith([]);
       final item = api.sendComment(aid, 'x', queue: false);
       api.failNext(
-        'getArtifact',
+        'readFiles',
         const ClaxApiError(status: 404, code: 'not_found', message: 'gone'),
       );
       final outcome = await loop.change(aid, [item], session: sid);
@@ -618,6 +829,33 @@ void main() {
     });
   });
 
+  group('PromptBuilder.trimDocuments', () {
+    AppDocument doc(int i, [int bytes = 10]) =>
+        (path: 'runs/r$i', version: i, data: {'x': 'a' * bytes});
+
+    test('keeps at most the collection and document limits', () {
+      final kept = PromptBuilder.trimDocuments([
+        for (var c = 0; c < PromptBuilder.maxOwnCollections + 2; c++)
+          (path: 'c$c', count: 50, docs: [for (var i = 0; i < 30; i++) doc(i)]),
+      ]);
+      expect(kept, hasLength(PromptBuilder.maxOwnCollections));
+      expect(
+        kept.every((c) => c.docs.length == PromptBuilder.maxOwnDocs),
+        isTrue,
+      );
+      expect(kept.first.count, 50);
+    });
+
+    test('drops documents from the last collection back to fit the budget', () {
+      final kept = PromptBuilder.trimDocuments([
+        (path: 'a', count: 2, docs: [doc(1, 9000), doc(2, 9000)]),
+        (path: 'b', count: 2, docs: [doc(3, 9000), doc(4, 9000)]),
+      ]);
+      expect([for (final c in kept) c.docs.length], [2, 0]);
+      expect([for (final c in kept) c.count], [2, 2]);
+    });
+  });
+
   group('anchorLine', () {
     test('renders as the daemon payload does', () {
       expect(
@@ -654,4 +892,51 @@ void main() {
       );
     });
   });
+}
+
+/// A fake whose threads route shows one more viewer comment on [newerOn],
+/// as when the person writes again while a change runs.
+class NewerCommentApi extends FakeClaxApi {
+  String? newerOn;
+
+  @override
+  Future<List<ThreadView>> threads(String aid) async {
+    final all = await super.threads(aid);
+    return [
+      for (final t in all)
+        if (t.id == newerOn)
+          ThreadView(
+            id: t.id,
+            artifactId: t.artifactId,
+            versionN: t.versionN,
+            status: t.status,
+            sentToAgent: t.sentToAgent,
+            feedbackState: t.feedbackState,
+            comments: [
+              ...t.comments,
+              const ThreadComment(
+                id: 'comment-newer',
+                authorKind: 'viewer',
+                authorName: 'Alex',
+                body: 'And make it red',
+                createdAt: '2026-10-12T00:00:01Z',
+              ),
+            ],
+          )
+        else
+          t,
+    ];
+  }
+}
+
+/// A fake whose artifact listing waits for [gate].
+class GatedListApi extends FakeClaxApi {
+  final gate = Completer<void>();
+
+  @override
+  Future<List<ArtifactSummary>> listArtifacts() async {
+    final all = super.listArtifacts();
+    await gate.future;
+    return all;
+  }
 }

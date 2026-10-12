@@ -5,7 +5,9 @@ import 'dart:math' as math;
 import '../clax/api.dart';
 import 'loop.dart';
 
-/// What the worker is doing, for the UI.
+/// What the worker is doing, for the UI. Every [WorkerWorking] is followed
+/// by exactly one of the others for the same artifact, which ends the
+/// Working state.
 sealed class WorkerEvent {
   const WorkerEvent(this.artifactId);
 
@@ -26,41 +28,68 @@ final class WorkerLanded extends WorkerEvent {
   final int version;
 }
 
-/// The agent replied without a new version.
+/// The agent replied without a new version (a question, or documents
+/// only). No new version will arrive for this change.
 final class WorkerReplied extends WorkerEvent {
   const WorkerReplied(super.artifactId);
 }
 
-/// A change failed (or was dropped or cancelled) for [reason].
+/// A change failed for [reason], or its app is gone. The threads carry
+/// the reason as a reply when the daemon took it.
 final class WorkerFailed extends WorkerEvent {
   const WorkerFailed(super.artifactId, this.reason);
 
   final String reason;
 }
 
+/// The change was cancelled by [FeedbackWorker.stop]; not a failure. Its
+/// threads run again on the next start.
+final class WorkerCancelled extends WorkerEvent {
+  const WorkerCancelled(super.artifactId);
+}
+
+/// The daemon stopped answering mid-change; the worker runs the change
+/// again (or replies with the version that landed) once it answers.
+final class WorkerInterrupted extends WorkerEvent {
+  const WorkerInterrupted(super.artifactId);
+}
+
+/// One queued run: comments a poll handed over, and threads recovery
+/// found stranded, which are checked again just before the run.
 class _Job {
-  _Job(this.artifactId, this.items);
+  _Job(this.artifactId, {List<FeedbackItem>? items, Set<String>? recheck})
+    : items = items ?? [],
+      recheck = recheck ?? {};
 
   final String artifactId;
   final List<FeedbackItem> items;
-  Iterable<String> get threads => items.map((i) => i.threadId);
+  final Set<String> recheck;
+
+  bool names(String tid) =>
+      recheck.contains(tid) || items.any((i) => i.threadId == tid);
 }
 
 /// Takes the app session's comments and runs them through [AgentLoop]:
 /// one long poll at a time, a poll's comments grouped by artifact, one
-/// change at a time, later ones queued behind it in arrival order.
+/// change at a time. When a run starts, every queued job of its artifact
+/// joins it, in arrival order, so comments sent while a change runs are
+/// answered by one run on the version it landed.
 ///
 /// Registration and recovery: [start], and every poll failure, registers
 /// the session again (the daemon finds its row by the install ID, or makes
 /// a new one after `unknown_session`), then recovers. An app session's
 /// feedback is acknowledged when its poll takes it and never resent, so a
 /// change cut off by a daemon or app exit is found again from
-/// `GET /api/threads`: a thread that is [ThreadView.stranded] and not
-/// already queued or running is run again. A stranded thread that a
-/// version addressed after its last comment (the reply was lost after the
-/// publish) gets a reply naming that version instead of a second run.
-/// A change in flight across a registration that ended without its
-/// replies is recovered again when it ends.
+/// `GET /api/threads`: each thread that is [ThreadView.stranded] and not
+/// already queued or running is queued, and checked again from the
+/// artifact's threads just before its run, so one that was answered in
+/// the meantime is skipped. A stranded thread that a version addressed at
+/// or after its last viewer comment (the reply was lost after the publish)
+/// gets a reply naming that version instead of a second run.
+///
+/// A change that ends unanswered is recovered again when the worker
+/// registered while it ran; an interrupted one ([ChangeInterrupted]) is
+/// also recovered once without a registration, and again after the next.
 class FeedbackWorker {
   FeedbackWorker({
     required this._api,
@@ -82,6 +111,10 @@ class FeedbackWorker {
   final _events = StreamController<WorkerEvent>.broadcast();
   final _queue = Queue<_Job>();
   final _running = <String>{};
+
+  /// Threads already recovered after an interruption since the last
+  /// registration.
+  final _interrupted = <String>{};
   var _started = false;
   Completer<void> _stop = Completer<void>();
   String? _sid;
@@ -93,7 +126,7 @@ class FeedbackWorker {
   static const firstBackoff = Duration(milliseconds: 250);
   static const maxBackoff = Duration(seconds: 10);
 
-  /// Changes started, landed and failed.
+  /// Changes started and how each ended.
   Stream<WorkerEvent> get events => _events.stream;
 
   /// Whether no change is queued, running or being recovered.
@@ -132,6 +165,7 @@ class FeedbackWorker {
         if (register) {
           _sid = await _session();
           _generation++;
+          _interrupted.clear();
           register = false;
           await _recover();
         }
@@ -161,7 +195,7 @@ class FeedbackWorker {
       byArtifact.putIfAbsent(i.artifactId, () => []).add(i);
     }
     for (final e in byArtifact.entries) {
-      _queue.add(_Job(e.key, e.value));
+      _queue.add(_Job(e.key, items: e.value));
     }
     _kick();
   }
@@ -175,89 +209,134 @@ class FeedbackWorker {
     });
   }
 
+  /// The next job with every queued job of its artifact merged into it.
+  _Job _next() {
+    final first = _queue.removeFirst();
+    final job = _Job(
+      first.artifactId,
+      items: List.of(first.items),
+      recheck: Set.of(first.recheck),
+    );
+    _queue.removeWhere((j) {
+      if (j.artifactId != job.artifactId) return false;
+      job.items.addAll(j.items);
+      job.recheck.addAll(j.recheck);
+      return true;
+    });
+    return job;
+  }
+
   Future<void> _drain() async {
     while (_queue.isNotEmpty && _started) {
-      final job = _queue.removeFirst();
+      final job = _next();
       final aid = job.artifactId;
-      final threads = job.threads.toSet().toList();
-      _running.addAll(threads);
-      final generation = _generation;
-      _events.add(WorkerWorking(aid, threads));
-      final ChangeOutcome outcome;
+      _running.addAll({...job.recheck, ...job.items.map((i) => i.threadId)});
       try {
-        outcome = await _loop.change(
-          aid,
-          job.items,
-          session: _sid,
-          cancelled: _stop.future,
-        );
+        final items = await _withRechecked(job);
+        if (items.isEmpty || !_started) continue;
+        await _runChange(aid, items);
       } finally {
-        _running.removeAll(threads);
-      }
-      _events.add(switch (outcome) {
-        ChangeLanded(:final version) => WorkerLanded(aid, version),
-        ChangeAnswered() => WorkerReplied(aid),
-        ChangeFailed(:final reason) => WorkerFailed(aid, reason),
-        ChangeCancelled() => WorkerFailed(aid, 'Stopped before it finished'),
-        ChangeDropped() => WorkerFailed(aid, 'The app is gone'),
-      });
-      if (!outcome.answered &&
-          outcome is! ChangeCancelled &&
-          outcome is! ChangeDropped &&
-          generation != _generation &&
-          _started) {
-        try {
-          await _recover();
-        } on Object catch (e) {
-          _log('recovery after ${job.artifactId} failed: $e');
-        }
+        _running.clear();
       }
     }
   }
 
-  bool _known(String tid) =>
-      _running.contains(tid) || _queue.any((j) => j.threads.contains(tid));
+  Future<void> _runChange(String aid, List<FeedbackItem> items) async {
+    final threads = {for (final i in items) i.threadId}.toList();
+    final generation = _generation;
+    _events.add(WorkerWorking(aid, threads));
+    final outcome = await _loop.change(
+      aid,
+      items,
+      session: _sid,
+      cancelled: _stop.future,
+    );
+    _events.add(switch (outcome) {
+      ChangeLanded(:final version) => WorkerLanded(aid, version),
+      ChangeAnswered() => WorkerReplied(aid),
+      ChangeFailed(:final reason) => WorkerFailed(aid, reason),
+      ChangeDropped() => WorkerFailed(aid, 'The app is gone'),
+      ChangeCancelled() => WorkerCancelled(aid),
+      ChangeInterrupted() => WorkerInterrupted(aid),
+    });
+    if (outcome.answered || !_started) return;
+    final again = switch (outcome) {
+      ChangeCancelled() || ChangeDropped() => false,
+      ChangeInterrupted() =>
+        generation != _generation || threads.every(_interrupted.add),
+      _ => generation != _generation,
+    };
+    if (!again) return;
+    _running.removeAll(threads);
+    try {
+      await _recover();
+    } on Object catch (e) {
+      _log('recovery after $aid failed: $e');
+    }
+  }
 
-  /// Queues the stranded threads that are not already queued or running;
-  /// throws when the daemon cannot list them.
+  /// [job]'s items, plus the comments of its rechecked threads that are
+  /// still stranded now. A rechecked thread whose change landed before its
+  /// reply was lost gets a reply naming the version instead.
+  Future<List<FeedbackItem>> _withRechecked(_Job job) async {
+    final items = List.of(job.items);
+    if (job.recheck.isEmpty) return items;
+    final aid = job.artifactId;
+    try {
+      final threads = await _api.threads(aid);
+      final seen = {for (final i in items) i.commentId};
+      List<VersionInfo>? versions;
+      String? title;
+      for (final t in threads) {
+        if (!job.recheck.contains(t.id) || !t.stranded) continue;
+        final last = t.comments.lastWhere((c) => c.authorKind == 'viewer');
+        if (t.addressedIn.isNotEmpty) {
+          if (versions == null) {
+            final detail = await _api.getArtifact(aid);
+            versions = detail.versions;
+            title = detail.artifact.title;
+          }
+          final landed = _landedAfter(versions, t.addressedIn, last.createdAt);
+          if (landed != null) {
+            await _api.replyAsAgent(
+              aid,
+              t.id,
+              'Made this change in version $landed.',
+            );
+            continue;
+          }
+        }
+        for (final i in _items(aid, title ?? '', t)) {
+          if (seen.add(i.commentId)) items.add(i);
+        }
+      }
+    } on ClaxApiError catch (e) {
+      // Left for the next recovery, after the worker registers again.
+      _log('recheck of $aid failed: $e');
+    }
+    return items;
+  }
+
+  bool _known(String aid, String tid) =>
+      _running.contains(tid) ||
+      _queue.any((j) => j.artifactId == aid && j.names(tid));
+
+  /// Queues the stranded threads that are not already queued or running,
+  /// to be checked again just before their run; throws when the daemon
+  /// cannot list them.
   Future<void> _recover() async {
     _recovering++;
     try {
       final all = await _api.allThreads();
       final jobs = <_Job>[];
       for (final at in all) {
-        final stranded = [
+        final stranded = {
           for (final t in at.threads)
-            if (t.stranded && !_known(t.id)) t,
-        ];
-        if (stranded.isEmpty) continue;
-        List<VersionInfo>? versions;
-        final rerun = <FeedbackItem>[];
-        for (final t in stranded) {
-          final last = t.comments.lastWhere((c) => c.authorKind == 'viewer');
-          if (t.addressedIn.isNotEmpty) {
-            versions ??= (await _api.getArtifact(at.artifactId)).versions;
-            final landed = _landedAfter(
-              versions,
-              t.addressedIn,
-              last.createdAt,
-            );
-            if (landed != null) {
-              try {
-                await _api.replyAsAgent(
-                  at.artifactId,
-                  t.id,
-                  'Made this change in version $landed.',
-                );
-              } on ClaxApiError catch (e) {
-                _log('reply on ${at.artifactId}/${t.id} failed: $e');
-              }
-              continue;
-            }
-          }
-          rerun.addAll(_items(at, t));
+            if (t.stranded && !_known(at.artifactId, t.id)) t.id,
+        };
+        if (stranded.isNotEmpty) {
+          jobs.add(_Job(at.artifactId, recheck: stranded));
         }
-        if (rerun.isNotEmpty) jobs.add(_Job(at.artifactId, rerun));
       }
       if (jobs.isNotEmpty && _started) {
         _queue.addAll(jobs);
@@ -287,7 +366,7 @@ class FeedbackWorker {
 
   /// The viewer comments of [t] after its last agent comment, as the items
   /// a poll would have handed over.
-  static List<FeedbackItem> _items(ArtifactThreads at, ThreadView t) {
+  static List<FeedbackItem> _items(String aid, String title, ThreadView t) {
     final since = t.comments.lastIndexWhere((c) => c.byAgent) + 1;
     return [
       for (final c in t.comments.skip(since))
@@ -296,8 +375,8 @@ class FeedbackWorker {
             feedbackId: '',
             threadId: t.id,
             commentId: c.id,
-            artifactId: at.artifactId,
-            artifactTitle: at.title,
+            artifactId: aid,
+            artifactTitle: title,
             body: c.body,
             author: c.authorName,
             version: t.versionN,

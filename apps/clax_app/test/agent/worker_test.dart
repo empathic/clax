@@ -105,6 +105,8 @@ void main() {
             WorkerLanded(:final version) => 'landed $version',
             WorkerReplied() => 'replied',
             WorkerFailed() => 'failed',
+            WorkerCancelled() => 'cancelled',
+            WorkerInterrupted() => 'interrupted',
           },
       ],
       ['working', 'landed 2', 'working', 'landed 3'],
@@ -214,10 +216,8 @@ void main() {
     await until(() => registrations == 2 && api.waitingPolls == 1);
     expect(backend.seen, hasLength(1), reason: 'the change in flight is kept');
 
-    // The change in flight then cannot publish or reply.
-    api
-      ..failNext('publish', unreachable)
-      ..failNext('replyAsAgent', unreachable);
+    // The change in flight then gets no answer to its publish.
+    api.failNext('publish', unreachable);
     backend.gate!.complete();
     backend.gate = null;
     await until(() => api.currentVersion(aid) == 2);
@@ -332,6 +332,99 @@ void main() {
     expect(api.threadOf(aid, item.threadId).comments, hasLength(1));
     expect(api.callNames, isNot(contains('replyAsAgent')));
     expect(api.working, isEmpty);
+    await until(() => events.last is WorkerCancelled);
+  });
+
+  test('comments queued while a change runs join one run', () async {
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    workerWith([
+      change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
+      change(reply: 'Done.', edits: [edit('<button>', '<button class=big>')]),
+    ]).start();
+    await idle();
+    backend.gate = Completer<void>();
+    api.sendComment(aid, 'Say Keep');
+    await backend.arrived.future;
+    final later = <FeedbackItem>[];
+    for (final body in ['Bigger', 'Bolder', 'Brighter']) {
+      later.add(api.sendComment(aid, body));
+      await until(() => api.waitingPolls == 1, reason: '$body taken');
+    }
+    backend.gate!.complete();
+    backend.gate = null;
+    await idle();
+
+    expect(backend.seen, hasLength(2), reason: 'one run for the three');
+    expect(
+      backend.seen[1].userText,
+      allOf(contains('Bigger'), contains('Bolder'), contains('Brighter')),
+    );
+    expect(publishedOn(aid), ['1', '2']);
+    for (final i in later) {
+      expect(api.threadOf(aid, i.threadId).comments.last.body, 'Done.');
+    }
+  });
+
+  test('an interrupted change is run again once the daemon answers, '
+      'without a registration', () async {
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    workerWith([
+      change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
+      change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
+    ]).start();
+    await idle();
+    api.failNext('publish', unreachable);
+    final item = api.sendComment(aid, 'Say Keep');
+    await until(() => api.currentVersion(aid) == 2);
+    await idle();
+    expect(registrations, 1);
+    expect(backend.seen, hasLength(2));
+    final t = api.threadOf(aid, item.threadId);
+    expect([for (final c in t.comments) c.body], ['Say Keep', 'Keep.']);
+    expect(events.whereType<WorkerInterrupted>(), hasLength(1));
+  });
+
+  test('an interrupted change is run again at most once before the next '
+      'registration', () async {
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    workerWith([
+      change(edits: [edit('Save', 'Keep')]),
+      change(edits: [edit('Save', 'Keep')]),
+    ]).start();
+    await idle();
+    api
+      ..failNext('publish', unreachable)
+      ..failNext('publish', unreachable);
+    api.sendComment(aid, 'Say Keep');
+    await until(() => events.whereType<WorkerInterrupted>().length == 2);
+    await idle();
+    expect(backend.seen, hasLength(2));
+    expect(api.currentVersion(aid), 1);
+  });
+
+  test('a recovered thread answered before its run is not run again', () async {
+    final stale = StaleThreadsApi();
+    api = stale;
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    final sid = (await api.registerAppSession(installId: 'install', pid: 1)).id;
+    final item = api.sendComment(aid, 'Say Keep');
+    await api.pollFeedback(sid);
+    // The snapshot is taken while the thread is stranded; its change then
+    // lands and is answered before the recovered job runs.
+    stale.snapshot = await api.allThreads();
+    await api.publish(
+      aid,
+      PublishRequest(
+        ifVersion: 1,
+        files: {'index.html': '$page<p>'},
+        addresses: [item.threadId],
+      ),
+    );
+    await api.replyAsAgent(aid, item.threadId, 'Keep.');
+    workerWith([]).start();
+    await idle();
+    expect(backend.seen, isEmpty);
+    expect(api.threadOf(aid, item.threadId).comments, hasLength(2));
   });
 
   test('a failed change is reported with its reason', () async {
@@ -348,4 +441,20 @@ void main() {
       contains('removed names "x"'),
     );
   });
+}
+
+/// A fake whose all-threads listing answers with [snapshot] once, as a
+/// listing taken just before the threads changed.
+class StaleThreadsApi extends FakeClaxApi {
+  List<ArtifactThreads>? snapshot;
+
+  @override
+  Future<List<ArtifactThreads>> allThreads({
+    bool includeResolved = false,
+  }) async {
+    final live = await super.allThreads(includeResolved: includeResolved);
+    final s = snapshot;
+    snapshot = null;
+    return s ?? live;
+  }
 }
