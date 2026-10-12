@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:clax_app/agent/backend.dart';
 import 'package:clax_app/agent/edit_result.dart';
+import 'package:clax_app/agent/ledger.dart';
 import 'package:clax_app/agent/loop.dart';
 import 'package:clax_app/agent/prompt.dart';
 import 'package:clax_app/agent/request.dart';
@@ -215,6 +216,7 @@ void main() {
       expect(api.callNames.where(steps.contains), [
         'setWorking',
         'readFiles',
+        'threads',
         'publish',
         'threads',
         'replyAsAgent',
@@ -685,6 +687,96 @@ void main() {
       expect(t.status, 'open');
       expect(api.threadOf(aid, other.threadId).status, 'resolved');
       expect(api.acked, [first.commentId, other.commentId]);
+    });
+
+    test(
+      'a document read but trimmed from the prompt counts as not shown',
+      () async {
+        // Two big documents: the prompt's budget keeps only the first.
+        api.putDoc(aid, 'notes/a', {'text': 'a' * 15000});
+        api.putDoc(aid, 'notes/b', {'text': 'b' * 15000});
+        final loop = loopWith([
+          change(
+            db: [
+              const DbOp(
+                op: 'set',
+                collection: 'notes',
+                docId: 'b',
+                data: {'text': ''},
+              ),
+            ],
+          ),
+          change(resolve: false),
+        ]);
+        final item = api.sendComment(aid, 'x', queue: false);
+        await loop.change(aid, [item], session: sid);
+        expect(
+          backend.seen.first.userText,
+          isNot(contains('"path":"notes/b"')),
+        );
+        expect(backend.seen, hasLength(2));
+        expect(backend.seen[1].userText, contains('was not shown'));
+        expect(api.callNames, isNot(contains('batchDocs')));
+        expect((await api.getDoc(aid, 'notes/b'))!.data['text'], 'b' * 15000);
+      },
+    );
+
+    test('a thread with a newer viewer comment is left out of addresses, '
+        'and the ledger says which comments the version answered', () async {
+      final newer = NewerCommentApi();
+      api = newer;
+      sid = (await api.registerAppSession(installId: 'install', pid: 1)).id;
+      aid = api.seedArtifact('Runs', {'index.html': page});
+      final ledger = MemoryChangeLedger();
+      backend = HeldBackend([
+        change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
+      ]);
+      final loop = AgentLoop(
+        api: api,
+        backend: () => backend,
+        prompts: PromptBuilder(rootBundle),
+        model: () => 'claude-haiku-5-5',
+        timings: timings,
+        ledger: ledger,
+      );
+      final first = api.sendComment(aid, 'Say Keep', queue: false);
+      final other = api.sendComment(aid, 'Bigger', queue: false);
+      newer.newerOn = first.threadId;
+      await loop.change(aid, [first, other], session: sid);
+      final publish = api.calls.singleWhere((c) => c.name == 'publish');
+      expect((publish.args['request']! as PublishRequest).addresses, [
+        other.threadId,
+      ]);
+      expect(api.versionOf(aid, 2).addresses, [other.threadId]);
+      final r = (await ledger.of(aid)).single;
+      expect(r.base, 1);
+      expect(r.addresses, [other.threadId]);
+      expect(r.answered, {
+        first.threadId: [first.commentId],
+        other.threadId: [other.commentId],
+      });
+    });
+
+    test('a publish refused for good leaves no ledger record', () async {
+      final ledger = MemoryChangeLedger();
+      backend = HeldBackend([
+        change(edits: [edit('Save', 'Keep')]),
+      ]);
+      final loop = AgentLoop(
+        api: api,
+        backend: () => backend,
+        prompts: PromptBuilder(rootBundle),
+        model: () => 'claude-haiku-5-5',
+        timings: timings,
+        ledger: ledger,
+      );
+      api.failNext(
+        'publish',
+        const ClaxApiError(status: 400, code: 'invalid', message: 'no'),
+      );
+      final item = api.sendComment(aid, 'x', queue: false);
+      await loop.change(aid, [item], session: sid);
+      expect(await ledger.of(aid), isEmpty);
     });
 
     test('every read before the model call starts at once', () async {

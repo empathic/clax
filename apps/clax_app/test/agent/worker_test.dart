@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:clax_app/agent/edit_result.dart';
 import 'package:clax_app/agent/loop.dart';
 import 'package:clax_app/agent/prompt.dart';
 import 'package:clax_app/agent/worker.dart';
@@ -402,6 +403,115 @@ void main() {
     expect(api.currentVersion(aid), 1);
   });
 
+  test(
+    'a version that answered an earlier comment is not taken as the '
+    'answer to a newer one, and the earlier comment is not run again',
+    () async {
+      final commenting = CommentingApi();
+      api = commenting;
+      final aid = api.seedArtifact('Runs', {'index.html': page});
+      workerWith([
+        change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
+        change(reply: 'Red.', edits: [edit('<button>', '<button class=red>')]),
+        change(reply: 'Red.', edits: [edit('<button>', '<button class=red>')]),
+      ]).start();
+      await idle();
+
+      // c1 runs; c2 arrives on the same thread while it does.
+      final gate1 = backend.gate = Completer<void>();
+      final c1 = api.sendComment(aid, 'Say Keep');
+      await backend.arrived.future;
+      final c2 = commenting.addComment(aid, c1.threadId, 'Make it red');
+      api.pushFeedback([c2]);
+      await until(() => api.waitingPolls == 1, reason: 'c2 taken');
+
+      // c1's change publishes; c2's run is then interrupted.
+      backend
+        ..arrived = Completer<void>()
+        ..gate = Completer<void>();
+      gate1.complete();
+      await backend.arrived.future;
+      expect(api.currentVersion(aid), 2);
+      expect(api.versionOf(aid, 2).addresses, isEmpty);
+      api.failNext('publish', unreachable);
+      backend.gate!.complete();
+      backend.gate = null;
+
+      // Recovery runs c2 alone, and its reply is c2's.
+      await until(() => api.currentVersion(aid) == 3);
+      await idle();
+      expect(backend.seen, hasLength(3));
+      expect(backend.seen[2].userText, contains('"Make it red"'));
+      expect(backend.seen[2].userText, isNot(contains('"Say Keep"')));
+      final t = api.threadOf(aid, c1.threadId);
+      expect(
+        [for (final c in t.comments) c.body],
+        ['Say Keep', 'Make it red', 'Red.'],
+      );
+      expect(
+        api.filesOf(aid, 3)['index.html'],
+        '<!doctype html><title>Runs</title><button class=red>Keep</button>',
+      );
+    },
+  );
+
+  test('a publish whose answer was lost has its documents written and its '
+      'reply posted by recovery', () async {
+    final lossy = LostAnswerApi();
+    api = lossy;
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    workerWith([
+      change(
+        reply: 'Keep.',
+        edits: [edit('Save', 'Keep')],
+        db: const [
+          DbOp(op: 'set', collection: 'runs', docId: 'a', data: {'km': 1}),
+        ],
+      ),
+    ]).start();
+    await idle();
+    lossy.loseNextPublish = true;
+    final item = api.sendComment(aid, 'Say Keep');
+    await until(
+      () => api.threadOf(aid, item.threadId).comments.length == 2,
+      reason: 'the reply',
+    );
+    await idle();
+    expect(backend.seen, hasLength(1));
+    expect(api.currentVersion(aid), 2);
+    expect((await api.getDoc(aid, 'runs/a'))!.data, {'km': 1});
+    final t = api.threadOf(aid, item.threadId);
+    expect(t.comments.last.body, 'Keep.');
+    expect(t.status, 'resolved');
+  });
+
+  test('a lost publish whose documents are then refused is undone and run '
+      'again', () async {
+    final lossy = LostAnswerApi();
+    api = lossy;
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    const missing = DbOp(
+      op: 'update',
+      collection: 'runs',
+      docId: 'gone',
+      data: {'km': 1},
+    );
+    workerWith([
+      change(reply: 'Keep.', edits: [edit('Save', 'Keep')], db: [missing]),
+      change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
+    ]).start();
+    await idle();
+    lossy.loseNextPublish = true;
+    final item = api.sendComment(aid, 'Say Keep');
+    await until(() => api.currentVersion(aid) == 4);
+    await idle();
+    final restore = api.calls.singleWhere((c) => c.name == 'restoreVersion');
+    expect(restore.args, {'aid': aid, 'n': 1, 'ifVersion': 2});
+    expect(backend.seen, hasLength(2));
+    expect(api.filesOf(aid, 4)['index.html'], contains('Keep'));
+    expect(api.threadOf(aid, item.threadId).comments.last.body, 'Keep.');
+  });
+
   test('a recovered thread answered before its run is not run again', () async {
     final stale = StaleThreadsApi();
     api = stale;
@@ -456,5 +566,103 @@ class StaleThreadsApi extends FakeClaxApi {
     final s = snapshot;
     snapshot = null;
     return s ?? live;
+  }
+}
+
+/// A fake that can add a viewer comment to an existing thread, as the
+/// person writing again on it. The comment shows in every thread view,
+/// after the comment it follows.
+class CommentingApi extends FakeClaxApi {
+  CommentingApi() : super(clock: _tick);
+
+  static var _t = 0;
+  static String _tick() =>
+      DateTime.utc(2026, 10, 12).add(Duration(seconds: ++_t)).toIso8601String();
+
+  final Map<String, List<(String after, ThreadComment comment)>> _extra = {};
+  var _n = 0;
+
+  FeedbackItem addComment(String aid, String tid, String body) {
+    final before = super.threadOf(aid, tid).comments.last.id;
+    final c = ThreadComment(
+      id: 'added-${++_n}',
+      authorKind: 'viewer',
+      authorName: 'Alex',
+      body: body,
+      createdAt: _tick(),
+    );
+    _extra.putIfAbsent(tid, () => []).add((before, c));
+    return FeedbackItem(
+      feedbackId: 'added-feedback-$_n',
+      threadId: tid,
+      commentId: c.id,
+      artifactId: aid,
+      body: body,
+      author: 'Alex',
+      version: currentVersion(aid),
+    );
+  }
+
+  ThreadView _with(ThreadView t) {
+    final extra = _extra[t.id];
+    if (extra == null) return t;
+    final comments = List.of(t.comments);
+    for (final (after, c) in extra) {
+      comments.insert(comments.indexWhere((x) => x.id == after) + 1, c);
+    }
+    return ThreadView(
+      id: t.id,
+      artifactId: t.artifactId,
+      versionN: t.versionN,
+      status: t.status,
+      sentToAgent: t.sentToAgent,
+      comments: comments,
+      anchor: t.anchor,
+      hasClip: t.hasClip,
+      createdAt: t.createdAt,
+      resolvedAt: t.resolvedAt,
+      resolvedBy: t.resolvedBy,
+      feedbackState: t.feedbackState,
+      addressedIn: t.addressedIn,
+    );
+  }
+
+  @override
+  ThreadView threadOf(String aid, String tid) =>
+      _with(super.threadOf(aid, tid));
+
+  @override
+  Future<List<ThreadView>> threads(String aid) async => [
+    for (final t in await super.threads(aid)) _with(t),
+  ];
+
+  @override
+  Future<List<ArtifactThreads>> allThreads({
+    bool includeResolved = false,
+  }) async => [
+    for (final a in await super.allThreads(includeResolved: includeResolved))
+      ArtifactThreads(
+        artifactId: a.artifactId,
+        title: a.title,
+        currentVersion: a.currentVersion,
+        files: a.files,
+        threads: [for (final t in a.threads) _with(t)],
+      ),
+  ];
+}
+
+/// A fake whose next publish commits but answers as if the daemon were
+/// gone.
+class LostAnswerApi extends FakeClaxApi {
+  var loseNextPublish = false;
+
+  @override
+  Future<PublishResult> publish(String aid, PublishRequest r) async {
+    final res = await super.publish(aid, r);
+    if (loseNextPublish) {
+      loseNextPublish = false;
+      throw unreachable;
+    }
+    return res;
   }
 }
