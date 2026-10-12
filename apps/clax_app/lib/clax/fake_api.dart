@@ -76,6 +76,27 @@ class FakeClaxApi implements ClaxApi {
   /// The session agent calls are made as; [registerAppSession] sets it.
   String? sessionId;
 
+  /// The owner's display name, which every owner comment is posted with
+  /// from then on; a test may change it, as `PUT /api/viewers/me` does.
+  String ownerName = 'Alex';
+
+  /// Whether the owner exists; [ownerPublicId] is null until it does. An
+  /// owner comment makes it.
+  bool ownerExists = true;
+
+  /// The owner's public ID, on every comment the owner writes.
+  static const ownerId = 'u_owner';
+
+  /// The public ID of viewer [name] other than the owner.
+  static String viewerId(String name) => 'u_${name.toLowerCase()}';
+
+  /// The name and public ID of a comment by [author]: the owner's when
+  /// [author] is null or the owner's name.
+  (String, String) _author(String? author) =>
+      author == null || author == ownerName
+      ? (ownerName, ownerId)
+      : (author, viewerId(author));
+
   /// The comment IDs [ackFeedback] acknowledged, in order.
   final List<String> acked = [];
 
@@ -120,7 +141,7 @@ class FakeClaxApi implements ClaxApi {
   FeedbackItem sendComment(
     String aid,
     String body, {
-    String author = 'Alex',
+    String? author,
     Map<String, Object?> anchor = const {'kind': 'artifact', 'file': ''},
     Uint8List? clip,
     bool queue = true,
@@ -129,6 +150,8 @@ class FakeClaxApi implements ClaxApi {
     if (a.hidden) throw _draftThread();
     final tid = 'thread-${++_ids}';
     final cid = 'comment-${++_ids}';
+    final (name, publicId) = _author(author);
+    if (publicId == ownerId) ownerExists = true;
     a.threads[tid] = _FakeThread(
       id: tid,
       versionN: a.current,
@@ -138,7 +161,8 @@ class FakeClaxApi implements ClaxApi {
         ThreadComment(
           id: cid,
           authorKind: 'viewer',
-          authorName: author,
+          authorName: name,
+          authorPublicId: publicId,
           body: body,
           createdAt: _now(),
         ),
@@ -152,7 +176,7 @@ class FakeClaxApi implements ClaxApi {
       artifactId: aid,
       artifactTitle: a.title,
       body: body,
-      author: author,
+      author: name,
       version: a.current,
       anchor: anchor,
     );
@@ -225,12 +249,14 @@ class FakeClaxApi implements ClaxApi {
   String addThread(
     String aid,
     String body, {
-    String author = 'Alex',
+    String? author,
     Map<String, Object?> anchor = const {'kind': 'artifact', 'file': ''},
   }) {
     final a = _artifact(aid);
     if (a.draftOf != null || a.hidden) throw _draftThread();
     final tid = 'thread-${++_ids}';
+    final (name, publicId) = _author(author);
+    if (publicId == ownerId) ownerExists = true;
     a.threads[tid] = _FakeThread(
       id: tid,
       versionN: a.current,
@@ -240,7 +266,8 @@ class FakeClaxApi implements ClaxApi {
         ThreadComment(
           id: 'comment-${++_ids}',
           authorKind: 'viewer',
-          authorName: author,
+          authorName: name,
+          authorPublicId: publicId,
           body: body,
           createdAt: _now(),
         ),
@@ -893,6 +920,12 @@ class FakeClaxApi implements ClaxApi {
   // --- the owner's thread calls ---
 
   @override
+  Future<String?> ownerPublicId() async {
+    _call('ownerPublicId');
+    return ownerExists ? ownerId : null;
+  }
+
+  @override
   Future<ThreadView> postOwnerComment(
     String aid,
     String tid,
@@ -900,10 +933,12 @@ class FakeClaxApi implements ClaxApi {
   ) async {
     _call('postOwnerComment', {'aid': aid, 'tid': tid, 'body': body});
     final (a, t) = _ownerThread(aid, tid);
+    ownerExists = true;
     final c = ThreadComment(
       id: 'comment-${++_ids}',
       authorKind: 'viewer',
-      authorName: 'Owner',
+      authorName: ownerName,
+      authorPublicId: ownerId,
       body: body,
       createdAt: _now(),
     );

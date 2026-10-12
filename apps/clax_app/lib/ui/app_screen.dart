@@ -127,9 +127,9 @@ class AppScreen extends StatefulWidget {
   final ValueChanged<double>? onCommentButtonMoved;
 
   /// Runs the failed change of thread `tid` of app `aid` again, posting
-  /// nothing; null when the app cannot, and the thread page offers no
-  /// Retry.
-  final void Function(String aid, String tid)? onRetry;
+  /// nothing, and answers whether a change was queued; null when the app
+  /// cannot, and the thread page offers no Retry.
+  final Future<bool> Function(String aid, String tid)? onRetry;
 
   /// The app view's URL for [aid] under [base].
   static Uri appUrl(Uri base, String aid) {
