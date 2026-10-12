@@ -130,24 +130,27 @@ describe("the shell's fragment", () => {
 });
 
 describe("the app shell's scroll", () => {
-  it("is reported only after a welcome with app: true, and restored on request", async () => {
+  it("is reported only after a welcome with app: true, which also restores the position it carries", async () => {
     const scrolls = () => posted.filter(m => m.type === "clax:scroll");
-    posted.length = 0;
-    dispatchEvent(new Event("scroll"));
-    expect(scrolls()).toEqual([]);
-    send({ type: "clax:welcome", mode: "view", app: true });
-    Object.defineProperty(window, "scrollY", { value: 420, configurable: true });
-    dispatchEvent(new Event("scroll"));
-    expect(scrolls()).toEqual([{ type: "clax:scroll", file: "index.html", y: 420 }]);
-    Object.defineProperty(window, "scrollY", { value: 0, configurable: true });
     const scrollTo = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
     Object.defineProperty(document.documentElement, "scrollHeight", { value: 5000, configurable: true });
     try {
-      send({ type: "clax:restore-scroll", y: 420 });
+      posted.length = 0;
+      send({ type: "clax:welcome", mode: "view", restoreScroll: 300 });
+      await settle();
+      dispatchEvent(new Event("scroll"));
+      expect(scrolls()).toEqual([]);
+      expect(scrollTo).not.toHaveBeenCalled();
+      send({ type: "clax:welcome", mode: "view", app: true, restoreScroll: 420 });
+      // The report and the restore are in the caps part, loaded on that welcome.
       await settle();
       expect(scrollTo).toHaveBeenCalledWith(0, 420);
+      Object.defineProperty(window, "scrollY", { value: 420, configurable: true });
+      dispatchEvent(new Event("scroll"));
+      expect(scrolls()).toEqual([{ type: "clax:scroll", file: "index.html", y: 420 }]);
     } finally {
       scrollTo.mockRestore();
+      Object.defineProperty(window, "scrollY", { value: 0, configurable: true });
       Object.defineProperty(document.documentElement, "scrollHeight", { value: 0, configurable: true });
     }
     // The scroll's reflow of the earlier tests' anchors runs on the next frame.

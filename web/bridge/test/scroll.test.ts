@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SCROLL_EVERY_MS, reportScroll, restoreScroll } from "../src/scroll";
+import { SCROLL_EVERY_MS, appScroll, reportScroll, restoreScroll } from "../src/scroll";
 
 function fakeTimers() {
   let next = 1;
@@ -123,5 +123,28 @@ describe("restoreScroll", () => {
     restoreScroll(window, -5, f.t);
     expect(scrollTo).toHaveBeenCalledTimes(1);
     expect(f.pending()).toBe(0);
+  });
+});
+
+describe("appScroll", () => {
+  it("starts one scroll report however often it is called, and restores each position it is given", () => {
+    const scrollTo = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    const add = vi.spyOn(window, "addEventListener");
+    Object.defineProperty(window, "innerHeight", { value: 600, configurable: true });
+    setHeight(5000);
+    try {
+      const post = vi.fn();
+      appScroll(window, post, "index.html");
+      appScroll(window, post, "index.html", 250);
+      appScroll(window, post, "index.html", Number.NaN);
+      expect(add.mock.calls.filter(c => c[0] === "scroll")).toHaveLength(1);
+      expect(scrollTo.mock.calls).toEqual([[0, 250]]);
+      window.dispatchEvent(new Event("scroll"));
+      expect(post).toHaveBeenCalledTimes(1);
+    } finally {
+      scrollTo.mockRestore();
+      add.mockRestore();
+      setHeight(0);
+    }
   });
 });
