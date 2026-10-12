@@ -634,10 +634,11 @@ describe("touch long-press", () => {
     touch(h2, "touchstart", 10, 10);
     f.fire(450);
     expect(outline().style.display).toBe("block");
-    touch(h2, "touchmove", 40, 10);
+    touch(h2, "touchcancel", 10, 10);
     expect(outline().style.display).toBe("none");
     expect(hooks.hover).toHaveBeenLastCalledWith(null);
-    touch(h2, "touchend", 40, 10);
+    touch(h2, "touchend", 10, 10);
+    f.fire();
     expect(hooks.pickElement).not.toHaveBeenCalled();
   });
 
@@ -706,5 +707,193 @@ describe("touch long-press", () => {
     f.fire();
     expect(hooks.hover).toHaveBeenCalledTimes(hovers);
     touch(h2, "touchend", 10, 10);
+  });
+  describe("hold, then drag", () => {
+    const areaBox = () => document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".a")!;
+    const rects = Range.prototype.getClientRects;
+    let p: HTMLElement;
+    let img: HTMLElement;
+    /** Text to x < 200 (5 px a character), the image from 200 to 300, and
+     * nothing (off the page) beyond. */
+    beforeEach(() => {
+      document.body.innerHTML = `<p id="t">alpha beta gamma delta</p><img id="i">`;
+      p = document.querySelector("#t")!;
+      img = document.querySelector("#i")!;
+      d.elementFromPoint = (x: number) => (x < 200 ? p : x < 300 ? img : null);
+      d.caretRangeFromPoint = (x: number) => {
+        if (x >= 300) return null;
+        const r = document.createRange();
+        if (x >= 200) r.setStart(document.body, 1); // the caret before the image, in no text
+        else r.setStart(p.firstChild!, Math.min(p.firstChild!.textContent!.length, Math.floor(x / 5)));
+        return r;
+      };
+      Range.prototype.getClientRects = function () { return [{ left: 0, top: 0, right: 1000, bottom: 1000, width: 1000, height: 1000 }] as unknown as DOMRectList; };
+    });
+    afterEach(() => { Range.prototype.getClientRects = rects; });
+    /** One finger down at (x, y), held past the hold. */
+    const arm = (el: Element, x: number, y: number) => { touch(el, "touchstart", x, y); f.fire(450); };
+
+    it("drag after arming selects a text range and picks it on release", () => {
+      mode.set(true);
+      arm(p, 1, 10);
+      touch(p, "touchmove", 52, 12);
+      expect(document.getSelection()!.toString()).toBe("alpha beta");
+      expect(outline().style.display).toBe("none");
+      touch(p, "touchend", 52, 12);
+      expect(hooks.pickRange).toHaveBeenCalledTimes(1);
+      expect(String(hooks.pickRange.mock.calls[0][0])).toBe("alpha beta");
+      // The selection is not left behind, and nothing else is picked.
+      expect(document.getSelection()!.isCollapsed).toBe(true);
+      f.fire();
+      expect(hooks.pickElement).not.toHaveBeenCalled();
+      expect(hooks.pickArea).not.toHaveBeenCalled();
+    });
+
+    it("a text drag backwards selects from the finger to the arming caret", () => {
+      mode.set(true);
+      arm(p, 52, 10);
+      touch(p, "touchmove", 31, 12);
+      touch(p, "touchend", 31, 12);
+      expect(String(hooks.pickRange.mock.calls[0][0])).toBe("beta");
+    });
+
+    it("shows the selection in the outline tint while dragging, and drops the tint after", () => {
+      mode.set(true);
+      const tinted = () => [...document.querySelectorAll("style")].some(s => s.textContent!.includes("::selection"));
+      arm(p, 1, 10);
+      expect(tinted()).toBe(false);
+      touch(p, "touchmove", 52, 12);
+      expect(tinted()).toBe(true);
+      touch(p, "touchend", 52, 12);
+      expect(tinted()).toBe(false);
+    });
+
+    it("text_drag_ending_off_text_keeps_the_last_caret", () => {
+      mode.set(true);
+      arm(p, 1, 10);
+      touch(p, "touchmove", 52, 12);
+      touch(p, "touchmove", 250, 12); // over the image
+      expect(document.getSelection()!.toString()).toBe("alpha beta");
+      touch(p, "touchmove", 400, 12); // off the page
+      touch(p, "touchend", 400, 12);
+      expect(String(hooks.pickRange.mock.calls[0][0])).toBe("alpha beta");
+      expect(hooks.pickArea).not.toHaveBeenCalled();
+    });
+
+    it("drag from empty space draws an area and picks it", () => {
+      mode.set(true);
+      arm(img, 210, 10);
+      touch(img, "touchmove", 260, 60);
+      expect(areaBox().style.display).toBe("block");
+      expect(document.getSelection()!.isCollapsed).toBe(true);
+      touch(img, "touchend", 280, 70);
+      expect(hooks.pickArea).toHaveBeenCalledWith({ left: 210, top: 10, width: 70, height: 60 });
+      expect(areaBox().classList.contains("capturing")).toBe(true);
+      expect(hooks.pickRange).not.toHaveBeenCalled();
+      expect(hooks.pickElement).not.toHaveBeenCalled();
+      // The rectangle goes once its clip is taken, as a mouse area's does.
+      mode.captured();
+      expect(areaBox().style.display).toBe("none");
+    });
+
+    it("an area drag moves focus into the page before it picks", () => {
+      const order: string[] = [];
+      const focus = vi.spyOn(window, "focus").mockImplementation(() => { order.push("focus"); });
+      hooks.pickArea.mockImplementation(() => { order.push("pick"); });
+      try {
+        mode.set(true);
+        arm(img, 210, 10);
+        touch(img, "touchmove", 260, 60);
+        touch(img, "touchend", 260, 60);
+        expect(order).toEqual(["focus", "pick"]);
+      } finally {
+        focus.mockRestore();
+      }
+    });
+
+    it("small drag is a tap pick", () => {
+      mode.set(true);
+      arm(img, 210, 10);
+      touch(img, "touchmove", 240, 13); // 30 px across, 3 px down: under AREA_MIN
+      touch(img, "touchend", 240, 13);
+      expect(hooks.pickArea).not.toHaveBeenCalled();
+      expect(hooks.pickElement).toHaveBeenCalledWith(img);
+      expect(areaBox().style.display).toBe("none");
+      f.fire();
+      expect(hooks.pickElement).toHaveBeenCalledTimes(1);
+    });
+
+    it("a text drag that comes back to its arming caret is a tap pick", () => {
+      mode.set(true);
+      arm(p, 1, 10);
+      touch(p, "touchmove", 30, 10);
+      touch(p, "touchend", 3, 10);
+      // What a tap at the arming point picks: the paragraph.
+      expect(hooks.pickElement).toHaveBeenCalledWith(p);
+      expect(hooks.pickRange).not.toHaveBeenCalled();
+      expect(document.getSelection()!.isCollapsed).toBe(true);
+    });
+
+    it("second finger or touchcancel abandons and clears the selection", () => {
+      mode.set(true);
+      arm(p, 1, 10);
+      touch(p, "touchmove", 52, 12);
+      expect(document.getSelection()!.isCollapsed).toBe(false);
+      const two = [{ identifier: 0, clientX: 52, clientY: 12, target: p }, { identifier: 1, clientX: 150, clientY: 80, target: p }] as unknown as Touch[];
+      p.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, cancelable: true, touches: two, changedTouches: [two[1]] }));
+      expect(document.getSelection()!.isCollapsed).toBe(true);
+      touch(p, "touchend", 52, 12);
+      // An area drag, cancelled: its box goes.
+      arm(img, 210, 10);
+      touch(img, "touchmove", 260, 60);
+      expect(areaBox().style.display).toBe("block");
+      touch(img, "touchcancel", 260, 60);
+      expect(areaBox().style.display).toBe("none");
+      touch(img, "touchend", 260, 60);
+      f.fire();
+      expect(hooks.pickRange).not.toHaveBeenCalled();
+      expect(hooks.pickArea).not.toHaveBeenCalled();
+      expect(hooks.pickElement).not.toHaveBeenCalled();
+      expect(hooks.hover).toHaveBeenLastCalledWith(null);
+    });
+
+    it("comment mode off mid-drag clears the selection and the box", () => {
+      mode.set(true);
+      arm(p, 1, 10);
+      touch(p, "touchmove", 52, 12);
+      mode.set(false);
+      expect(document.getSelection()!.isCollapsed).toBe(true);
+      expect([...document.querySelectorAll("style")].some(s => s.textContent!.includes("::selection"))).toBe(false);
+      mode.set(true);
+      arm(img, 210, 10);
+      touch(img, "touchmove", 260, 60);
+      mode.set(false);
+      expect(areaBox().style.display).toBe("none");
+    });
+
+    it("starts no drag while another pick's clip is taken", () => {
+      mode.set(true);
+      arm(img, 210, 10);
+      touch(img, "touchmove", 260, 60);
+      touch(img, "touchend", 260, 60);
+      expect(hooks.pickArea).toHaveBeenCalledTimes(1);
+      arm(p, 1, 10);
+      touch(p, "touchmove", 52, 12);
+      expect(document.getSelection()!.isCollapsed).toBe(true);
+      touch(p, "touchend", 52, 12);
+      expect(hooks.pickRange).not.toHaveBeenCalled();
+    });
+
+    it("leaves a mouse selection's pick path as it was", () => {
+      mode.set(true);
+      arm(p, 1, 10);
+      touch(p, "touchmove", 52, 12);
+      touch(p, "touchend", 52, 12);
+      mode.captured();
+      // A click the browser may still send after the drag picks nothing.
+      p.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      expect(hooks.pickElement).not.toHaveBeenCalled();
+      expect(hooks.pickRange).toHaveBeenCalledTimes(1);
+    });
   });
 });
