@@ -91,9 +91,22 @@ export type ShellToBridge =
    * renders its clip now, never before, so that work (which can hold the main
    * thread the page may share with the shell) never delays that focus. */
   | { type: "clax:composer-ready"; pickId: string }
+  /** The app's inspect view (`/a/<id>?app=1&inspect=1`, `web/shell/src/app/host.ts`)
+   * asks for an inspection of the page (`inspect.ts`): it waits until the
+   * page settles (at most `settleMs`), then answers `clax:inspection` with
+   * the same `requestId`, its screenshot at most `maxBytes`. */
+  | { type: "clax:inspect"; requestId: string; settleMs?: number; maxBytes?: number }
   | UseResult
   | CallResult
   | CapEvent;
+
+/** One of a page's errors since its first script (`inspect.ts`): an `error`
+ * event, an unhandled promise rejection, or a `console.error` call. */
+export interface InspectError { kind: "error" | "unhandledrejection" | "console"; text: string }
+/** What an inspection found (`inspect.ts`): `png`, the viewport; `failed`,
+ * the URLs of resources that failed to load; `text`, an outline of the
+ * page; `height`, the document's scroll height in CSS pixels. */
+export interface Inspection { png: ArrayBuffer; errors: InspectError[]; failed: string[]; text: string; title: string; height: number }
 
 /** What a picked element is, for the app's words about it (`describe.ts`):
  * its tag, its ARIA role and its accessible name, as the page gives them. */
@@ -134,8 +147,13 @@ export type BridgeToShell =
    * the last position of a burst always sent; only the app shell reads it
    * (`web/shell/src/app/host.ts`). */
   | { type: "clax:scroll"; file: string; y: number }
+  /** The answer to `clax:inspect` (`inspect.ts`): the viewport as a PNG,
+   * the page's errors and failed loads, an outline of its text, its title
+   * and height; or why there is none. The page can post this too, so the
+   * shell takes it only for the request it has open and checks its shape. */
+  | ({ type: "clax:inspection"; requestId: string } & (Inspection | { error: string }))
   | UseRequest
   | CallRequest;
 
-export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:greet", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:use-result", "clax:call-result", "clax:event"]);
-export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:scroll", "clax:use", "clax:call"]);
+export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:greet", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:inspect", "clax:use-result", "clax:call-result", "clax:event"]);
+export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:scroll", "clax:inspection", "clax:use", "clax:call"]);

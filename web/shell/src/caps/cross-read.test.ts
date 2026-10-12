@@ -117,6 +117,22 @@ describe("db.artifact(id) in the shell", () => {
     }
   });
 
+  it("in the app's inspect view, rejects not_granted without asking or granting", async () => {
+    history.replaceState(null, "", `/a/${A}?app=1&inspect=1`);
+    try {
+      const { cr, requests, prompt } = setup();
+      await expect(cr.call(get("runs/r1"))).rejects.toMatchObject({ code: "not_granted" });
+      await expect(cr.call({ op: "subscribe", artifact: B, sub: "s1", spec: { kind: "doc", path: "runs/r1" } })).rejects.toMatchObject({ code: "not_granted" });
+      expect(prompt).not.toHaveBeenCalled();
+      expect(requests.filter(r => r.method !== "GET" || !r.url.includes("/docs"))).toEqual([]);
+      // A grant the owner made before is still served.
+      const granted = setup({ granted: true });
+      await expect(granted.cr.call(get("runs/r1"))).resolves.toMatchObject({ path: "runs/r1" });
+    } finally {
+      history.replaceState(null, "", "/");
+    }
+  });
+
   it("reads a source that shares, or was granted before, without asking", async () => {
     const { cr, prompt, requests } = setup({ granted: true });
     expect(await cr.call(get("runs/r1"))).toMatchObject({ id: "r1" });
