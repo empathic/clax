@@ -5,3 +5,4 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 flutter analyze --no-fatal-infos
 flutter test --reporter=compact
+../../scripts/sync-app-prompt.sh --check
