@@ -485,6 +485,33 @@ void main() {
     expect(t.status, 'resolved');
   });
 
+  test('a document batch without an answer is finished by recovery, not '
+      'undone', () async {
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    workerWith([
+      change(
+        reply: 'Keep.',
+        edits: [edit('Save', 'Keep')],
+        db: const [
+          DbOp(op: 'set', collection: 'runs', docId: 'a', data: {'km': 1}),
+        ],
+      ),
+    ]).start();
+    await idle();
+    api.failNext('batchDocs', unreachable);
+    final item = api.sendComment(aid, 'Say Keep');
+    await until(
+      () => api.threadOf(aid, item.threadId).comments.length == 2,
+      reason: 'the reply',
+    );
+    await idle();
+    expect(api.callNames, isNot(contains('restoreVersion')));
+    expect(api.currentVersion(aid), 2);
+    expect((await api.getDoc(aid, 'runs/a'))!.data, {'km': 1});
+    expect(api.threadOf(aid, item.threadId).comments.last.body, 'Keep.');
+    expect(events.whereType<WorkerInterrupted>(), hasLength(1));
+  });
+
   test('a lost publish whose documents are then refused is undone and run '
       'again', () async {
     final lossy = LostAnswerApi();
