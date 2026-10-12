@@ -1,0 +1,33 @@
+import { describe, expect, it } from "vitest";
+import type { Anchor } from "../../../bridge/src/protocol";
+import { anchorLabel } from "./label";
+
+const anchor = (over: Partial<Anchor> = {}): Anchor => ({ kind: "element", selector: "body > main > div.run:nth-of-type(2)", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html", ...over });
+
+describe("anchorLabel", () => {
+  it("is the quoted text, trimmed and cut short", () => {
+    expect(anchorLabel(anchor({ quote: "  Mon   5 km \n run " }))).toBe("“Mon 5 km run”");
+    expect(anchorLabel(anchor({ quote: "x".repeat(100) }))).toBe(`“${"x".repeat(60)}…”`);
+  });
+  it("is what the element is, from its role, tag and name, when it quotes nothing", () => {
+    expect(anchorLabel(anchor(), { tag: "button", role: null, name: "Save" })).toBe("the button “Save”");
+    expect(anchorLabel(anchor(), { tag: "div", role: "button", name: null })).toBe("a button");
+    expect(anchorLabel(anchor(), { tag: "img", role: null, name: null })).toBe("an image");
+    expect(anchorLabel(anchor(), { tag: "img", role: null, name: "A cat" })).toBe("the image “A cat”");
+    expect(anchorLabel(anchor({ selector: "body > h2" }))).toBe("a heading");
+    expect(anchorLabel(anchor(), { tag: "div", role: null, name: "Weekly plan" })).toBe("“Weekly plan”");
+  });
+  it("is never a selector", () => {
+    for (const a of [anchor(), anchor({ selector: "#run-3 > span.km" }), anchor({ selector: "div[data-x='1'] > div" })]) {
+      const l = anchorLabel(a);
+      expect(l).toBe("this spot");
+    }
+    expect(anchorLabel(anchor(), { tag: "<b>", role: "x y", name: null })).toBe("this spot");
+  });
+  it("names the whole app, a custom anchor, and a drawn area", () => {
+    expect(anchorLabel(anchor({ kind: "artifact", selector: null, file: "" }))).toBe("Whole app");
+    expect(anchorLabel(anchor({ kind: "custom", selector: null, custom_name: "Week 3" }))).toBe("Week 3");
+    expect(anchorLabel(anchor({ kind: "area", area: { x: 0, y: 0, w: 1, h: 1, tag: "img" } }))).toBe("part of an image");
+    expect(anchorLabel(anchor({ kind: "area", area: { x: 0, y: 0, w: 1, h: 1, tag: "div" } }))).toBe("this area");
+  });
+});

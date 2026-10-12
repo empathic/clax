@@ -4,4 +4,5 @@ export { AnchorCache, buildElementAnchor, buildRangeAnchor, cssPath, resolveAnch
 export type { Resolved } from "../anchor";
 export { areaBox, boxOf, buildAreaAnchor, containingElement, placeArea } from "../area";
 export { blockAncestor } from "../block";
+export { describeElement as desc } from "../describe";
 export { CommentMode } from "../comment-mode";

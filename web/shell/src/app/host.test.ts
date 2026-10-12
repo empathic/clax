@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { MOUNT_TIMEOUT_MS } from "../test/timeouts";
 import { FakeES, ID, artifact, artifactViewHooks, buttonNamed, fromFrame, gesture, gestureIn, mountView, page, pick, startOf, viewerPick, waitFor } from "../test/artifact-view";
 import type { HostMessage } from "./host";
@@ -126,13 +127,13 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const p = pick("p1", "Quarterly goals");
     fromFrame(frame.contentWindow!, startOf(p));
     await waitFor(() => ofType("state").at(-1)?.draft, "a draft");
-    expect(ofType("state").at(-1)).toEqual({ type: "state", commenting: false, draft: { label: "«Quarterly goals»", text: "", clip: "pending" }, busy: false });
+    expect(ofType("state").at(-1)).toEqual({ type: "state", commenting: false, draft: { label: "“Quarterly goals”", text: "", clip: "pending" }, busy: false });
     const textarea = await waitFor(() => document.querySelector<HTMLTextAreaElement>(".composer textarea"), "composer");
     textarea.value = "bigger";
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    expect(ofType("state").at(-1)!.draft).toEqual({ label: "«Quarterly goals»", text: "bigger", clip: "pending" });
+    expect(ofType("state").at(-1)!.draft).toEqual({ label: "“Quarterly goals”", text: "bigger", clip: "pending" });
     fromFrame(frame.contentWindow!, { ...p, clipPng: new Uint8Array([1, 2, 3]).buffer });
-    expect(ofType("state").at(-1)!.draft).toEqual({ label: "«Quarterly goals»", text: "bigger", clip: "ready" });
+    expect(ofType("state").at(-1)!.draft).toEqual({ label: "“Quarterly goals”", text: "bigger", clip: "ready" });
     host.cancelDraft();
     // Comment mode comes back once the composer has closed.
     await waitFor(() => ofType("state").at(-1)?.commenting, "comment mode back");
@@ -194,7 +195,7 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(posts[1].body).toEqual({ to: "app-agent" });
     expect(ctl.state.get().draft).toBeNull();
     await waitFor(() => ctl.state.get().threads.find(t => t.id === "t9")?.sent_to_agent, "the sent thread");
-    expect(ofType("threads").at(-1)!.threads).toEqual([{ id: "t9", status: "open", summary: "make it blue", sent: true, comments: 1, version: 1 }]);
+    expect(ofType("threads").at(-1)!.threads).toEqual([{ id: "t9", status: "open", summary: "make it blue", label: "“Quarterly goals”", sent: true, comments: 1, version: 1 }]);
   });
 
   it("a send that fails shows the notice and posts no sent", async () => {
@@ -348,7 +349,7 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const { ctl, frame, host } = await appView({ threads: [thread("t1")] });
     hello(frame, 1);
     await waitFor(() => ctl.state.get().threads.length, "threads");
-    expect(ofType("threads").at(-1)!.threads).toEqual([{ id: "t1", status: "open", summary: "make it blue", sent: false, comments: 1, version: 1 }]);
+    expect(ofType("threads").at(-1)!.threads).toEqual([{ id: "t1", status: "open", summary: "make it blue", label: "“Quarterly goals”", sent: false, comments: 1, version: 1 }]);
     host.openThread("nope");
     expect(ctl.state.get().selected).toBeNull();
     host.openThread("t1");
@@ -632,5 +633,50 @@ describe("app mode's host channel", { timeout: MOUNT_TIMEOUT_MS }, () => {
     hello(frame, 1);
     fromFrame(frame.contentWindow!, { type: "clax:navigate", file: "index.html", hash: "#b" });
     expect(location.search).toBe("?app=1");
+  });
+
+  it("labels a draft from the pick's element description, and a thread on the whole app", async () => {
+    const whole = thread("tw", "all of it", { anchor: { kind: "artifact", selector: null, quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "" } });
+    const { frame, host } = await appView({ threads: [whole] });
+    hello(frame, 1);
+    await waitFor(() => ofType("threads").at(-1)?.threads.length, "threads");
+    expect(ofType("threads").at(-1)!.threads[0].label).toBe("Whole app");
+    host.enterCommentMode();
+    gestureIn(frame);
+    const icon = { kind: "element", selector: "body > main > div.run > svg", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
+    fromFrame(frame.contentWindow!, { type: "clax:pick-start", pickId: "d1", version: 1, anchor: icon, desc: { tag: "svg", role: "button", name: "Delete run" } });
+    await waitFor(() => ofType("state").at(-1)?.draft, "a draft");
+    expect(ofType("state").at(-1)!.draft!.label).toBe("the button “Delete run”");
+    expect(JSON.stringify(toHost)).not.toContain("div.run");
+    // The shell's own composer says the same, not the selector.
+    await waitFor(() => document.querySelector(".composer-quote")?.textContent === "the button “Delete run”", "the composer's words");
+  });
+
+  it("refuses a press attestation where the shell itself saw a trusted press moments before", async () => {
+    let t = 50_000;
+    vi.spyOn(performance, "now").mockImplementation(() => t);
+    const { frame, host, m } = await appView();
+    // A tap on Cancel over the page: the shell saw it, and Cancel is gone by
+    // the time the press's attestation runs.
+    const cancel = document.createElement("button");
+    document.body.append(cancel);
+    dispatchTrusted(cancel, new MouseEvent("pointerdown", { bubbles: true, clientX: 200, clientY: 300 }));
+    dispatchTrusted(cancel, new MouseEvent("pointerup", { bubbles: true, clientX: 201, clientY: 300 }));
+    cancel.remove();
+    document.elementFromPoint = () => frame;
+    Object.defineProperty(navigator, "userActivation", { value: { isActive: true }, configurable: true });
+    frame.focus();
+    t += 120;
+    host.attestPointer({ pointer: 1, phase: "down", x: 205, y: 310 });
+    host.attestPointer({ pointer: 1, phase: "up", x: 205, y: 310 });
+    expect(gesture!.frameGesture()).toBe(false);
+    // Far from that press, or once ATTEST_MS has passed, a press counts.
+    host.attestPointer({ pointer: 2, phase: "down", x: 20, y: 40 });
+    expect(gesture!.frameGesture()).toBe(true);
+    gesture!.noteShellInput();
+    t += m.ATTEST_MS;
+    host.attestPointer({ pointer: 3, phase: "down", x: 205, y: 310 });
+    expect(gesture!.frameGesture()).toBe(true);
+    vi.restoreAllMocks();
   });
 });

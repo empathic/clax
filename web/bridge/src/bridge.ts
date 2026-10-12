@@ -160,7 +160,7 @@ type PartName = keyof Parts;
   // A pick's clip is rendered only once the shell's composer for it has
   // focus (see `pick.ts`).
   const picks = new PickFlow(window, post, meta.version);
-  const pick = (anchor: Anchor, clip: () => Promise<ArrayBuffer>) => picks.start(anchor, clip);
+  const pick = picks.start.bind(picks);
 
   let live: Promise<Live> | null = null;
   /** Runs `f` with comment mode once its part has loaded; calls run in the
@@ -173,7 +173,7 @@ type PartName = keyof Parts;
         let resolutions: Cache | null = null;
         const mode: Mode = new part.CommentMode(document, {
           hover: t => post({ type: "clax:hover", selector: t ? part.cssPath(t instanceof Element ? t : part.blockAncestor(t.commonAncestorContainer, window)) : null, rect: t ? box(t) : null }),
-          pickElement: el => { void pick(part.buildElementAnchor(document, el, meta.file), () => clips().then(c => c.renderTargetClip(el))).finally(() => mode.captured()); },
+          pickElement: el => { void pick(part.buildElementAnchor(document, el, meta.file), () => clips().then(c => c.renderTargetClip(el)), part.desc(el)).finally(() => mode.captured()); },
           pickRange: r => { void pick(part.buildRangeAnchor(document, r, meta.file), () => clips().then(c => c.renderTargetClip(r))).finally(() => mode.captured()); },
           // The clip is the drawn rectangle, placed on its element at release,
           // cropped out of a render of that element. The rectangle stays drawn

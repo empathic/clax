@@ -95,6 +95,10 @@ export type ShellToBridge =
   | CallResult
   | CapEvent;
 
+/** What a picked element is, for the app's words about it (`describe.ts`):
+ * its tag, its ARIA role and its accessible name, as the page gives them. */
+export interface PickDesc { tag: string; role: string | null; name: string | null }
+
 export type BridgeToShell =
   | { type: "clax:hello"; artifact: string; version: number; file: string }
   | { type: "clax:hover"; selector: string | null; rect: Box | null }
@@ -102,7 +106,7 @@ export type BridgeToShell =
    * clip is rendered, with the pick's anchor: the shell opens the composer
    * for it at once, focused and waiting for the screenshot, only when this
    * arrived while the frame held the viewer's gesture. */
-  | { type: "clax:pick-start"; pickId: string; version: number; anchor: Anchor }
+  | { type: "clax:pick-start"; pickId: string; version: number; anchor: Anchor; desc?: PickDesc }
   /** The pick's screenshot (or why there is none); the shell takes it only
    * for the composer its accepted start opened, and ignores the anchor here. */
   | { type: "clax:pick"; pickId: string; version: number; anchor: Anchor; clipPng?: ArrayBuffer; clipError?: string }
