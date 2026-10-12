@@ -703,6 +703,16 @@ impl Store {
     }
 }
 
+/// Where a new version's carried files are read from.
+#[derive(Clone, Copy)]
+struct Carry {
+    /// The version whose stored files are copied.
+    from: u32,
+    /// Whether `index.html` is carried as well (a restore), rather than
+    /// always taken from the publish.
+    index: bool,
+}
+
 /// Removes its directory on drop; a no-op once the directory has been renamed away.
 struct Staging(PathBuf);
 
@@ -1032,6 +1042,65 @@ impl Store {
         self.write_version(ctx, id, current.current_version, &p, &prev, session_id)
     }
 
+    /// Republishes version `n`'s files, `index.html` included, as the next
+    /// version of `id`, labelled `Restored v<n>` with the note `Restored
+    /// version <n>`. `if_version` must equal the current version (`Conflict`
+    /// otherwise, checked again inside the version's transaction). Each file
+    /// keeps version `n`'s bytes, content type and hash, so the new version's
+    /// `content_sha256` equals `n`'s; files of the current version that `n`
+    /// lacks are not carried. Title, description, icon and capabilities stay
+    /// as they are, and documents are not touched. `session_id` is recorded
+    /// on the new version, and the version as `version.publish` under `ctx`.
+    ///
+    /// # Errors
+    /// `NotFound` for an unknown artifact or version `n`; `Corrupt` when
+    /// version `n`'s `files_json` is malformed.
+    pub fn restore_version(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        n: u32,
+        if_version: u32,
+        session_id: Option<&str>,
+    ) -> Result<(Artifact, Version)> {
+        let current = self.get_artifact(id)?.ok_or(CoreError::NotFound)?;
+        if if_version != current.current_version {
+            return Err(CoreError::Conflict {
+                current: current.current_version,
+            });
+        }
+        let source = self.get_version(id, n)?.ok_or(CoreError::NotFound)?;
+        let p = ValidatedPublish {
+            title: None,
+            description: None,
+            icon: None,
+            label: Some(format!("Restored v{n}")),
+            if_version: Some(if_version),
+            capabilities: None,
+            files: BTreeMap::new(),
+            note: Some(format!("Restored version {n}")),
+            note_truncated: false,
+            addresses: Vec::new(),
+            working_threads: Vec::new(),
+            by_page: false,
+        };
+        let carry = Carry {
+            from: n,
+            index: true,
+        };
+        self.write_version_from(
+            ctx,
+            id,
+            if_version,
+            &p,
+            &source.files,
+            carry,
+            session_id,
+            |_, _| Ok(()),
+        )
+        .map(|(a, v, ())| (a, v))
+    }
+
     /// Stages the files of version `expected + 1` in a private directory,
     /// carrying forward `prev` entries not named in `p.files`, then, in one
     /// transaction, re-checks that the artifact is still at `expected`
@@ -1074,10 +1143,32 @@ impl Store {
         session_id: Option<&str>,
         then: impl FnOnce(&rusqlite::Transaction<'_>, u32) -> Result<T>,
     ) -> Result<(Artifact, Version, T)> {
+        let carry = Carry {
+            from: expected,
+            index: false,
+        };
+        self.write_version_from(ctx, id, expected, p, prev, carry, session_id, then)
+    }
+
+    /// [`Store::write_version_then`], carrying `prev`'s files from the
+    /// version `carry` names rather than from `expected`, and `index.html`
+    /// too when `carry.index` is set and `p` does not supply it.
+    #[allow(clippy::too_many_arguments)]
+    fn write_version_from<T>(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        expected: u32,
+        p: &ValidatedPublish,
+        prev: &BTreeMap<String, FileMeta>,
+        carry: Carry,
+        session_id: Option<&str>,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, u32) -> Result<T>,
+    ) -> Result<(Artifact, Version, T)> {
         let n = expected + 1;
         let carried: Vec<&String> = prev
             .keys()
-            .filter(|path| *path != INDEX && !p.files.contains_key(*path))
+            .filter(|path| (carry.index || *path != INDEX) && !p.files.contains_key(*path))
             .filter(|path| !(p.hidden.contains(*path) && put_paths(p).any(|q| collide(path, q))))
             .collect();
         let carried_paths: Vec<String> = carried.iter().map(|p| (*p).clone()).collect();
@@ -1102,8 +1193,12 @@ impl Store {
         };
         let mut files: BTreeMap<String, FileMeta> = BTreeMap::new();
         for path in carried {
-            let src = self.home.version_dir(id, expected).join("files").join(path);
-            let dest = files_dir.join(path);
+            let src = version_file_path(&self.home, id, carry.from, path);
+            let dest = if path == INDEX {
+                staging.0.join(INDEX)
+            } else {
+                files_dir.join(path)
+            };
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent)?;
             }
