@@ -199,11 +199,11 @@ class _LauncherState extends State<Launcher> {
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 112),
                 sliver: SliverGrid.builder(
-                  gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                  gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
                     maxCrossAxisExtent: 176,
                     mainAxisSpacing: 12,
                     crossAxisSpacing: 12,
-                    childAspectRatio: 0.92,
+                    mainAxisExtent: _AppTile.extent(context),
                   ),
                   itemCount: apps.length,
                   itemBuilder: (context, i) => _AppTile(
@@ -221,6 +221,19 @@ class _LauncherState extends State<Launcher> {
 
 class _AppTile extends StatelessWidget {
   const _AppTile({required this.app, required this.onTap});
+
+  static const _padding = 16.0;
+  static const _badge = 52.0;
+  static const _gap = 12.0;
+
+  /// The tile's height: padding, the badge, a gap and two lines of the
+  /// title at the current text scale, so a wrapped title always fits.
+  static double extent(BuildContext context) {
+    final style = Theme.of(context).textTheme.titleMedium!;
+    final size = MediaQuery.textScalerOf(context).scale(style.fontSize!);
+    final line = (size * (style.height ?? 1.2)).ceilToDouble();
+    return _padding * 2 + _badge + _gap + line * 2;
+  }
 
   final ArtifactSummary app;
   final VoidCallback onTap;
@@ -242,13 +255,13 @@ class _AppTile extends StatelessWidget {
         child: InkWell(
           onTap: onTap,
           child: Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(_padding),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Container(
-                  width: 52,
-                  height: 52,
+                  width: _badge,
+                  height: _badge,
                   decoration: BoxDecoration(
                     color: bg,
                     borderRadius: BorderRadius.circular(16),

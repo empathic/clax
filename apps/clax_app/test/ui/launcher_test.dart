@@ -7,6 +7,7 @@ import 'package:clax_app/ui/launcher.dart';
 import 'package:clax_app/ui/making_screen.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_voice.dart';
@@ -482,6 +483,56 @@ void main() {
       await pumpLauncher(tester, api);
       expect(find.text('RL'), findsOneWidget);
       expect(find.text('G'), findsOneWidget);
+    });
+  });
+
+  group('tile layout at 412 dp', () {
+    for (final scale in [1.0, 1.3]) {
+      testWidgets('two-line titles fit at text scale $scale', (tester) async {
+        tester.view.physicalSize = const Size(412, 892);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.reset);
+        final api = _api();
+        for (final t in ['Mood journal', 'Weekly run tracker', 'Water']) {
+          api.seedArtifact(t, _page);
+        }
+        await tester.pumpWidget(
+          MaterialApp(
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(context)
+                  .copyWith(textScaler: TextScaler.linear(scale)),
+              child: child!,
+            ),
+            home: Launcher(
+              api: api,
+              open: opened.add,
+              make: (_, _, _) async => 'x',
+              voice: FakeVoice.unsupported('No speech here'),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        final title = tester.renderObject<RenderParagraph>(
+          find.text('Weekly run tracker'),
+        );
+        expect(title.size.height, greaterThan(title.text.style!.fontSize!));
+      });
+    }
+
+    testWidgets('a very long title ellipsizes on two lines', (tester) async {
+      tester.view.physicalSize = const Size(412, 892);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final api = _api();
+      const long =
+          'A very long title for an app that tracks every single thing I do';
+      api.seedArtifact(long, _page);
+      await pumpLauncher(tester, api);
+      expect(tester.takeException(), isNull);
+      final p = tester.renderObject<RenderParagraph>(find.text(long));
+      expect(p.maxLines, 2);
+      expect(p.didExceedMaxLines, isTrue);
     });
   });
 }
