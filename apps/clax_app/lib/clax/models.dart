@@ -330,13 +330,20 @@ class FeedbackItem {
 
 /// One feedback poll's answer.
 class FeedbackBatch {
-  const FeedbackBatch({required this.items, this.text});
+  const FeedbackBatch({
+    required this.items,
+    this.text,
+    this.answers = const [],
+  });
 
   factory FeedbackBatch.fromJson(Json j) => FeedbackBatch(
     items: [
       for (final f in _list(j['feedback'])) FeedbackItem.fromJson(_map(f)),
     ],
     text: j['text'] as String?,
+    answers: [
+      for (final q in _list(j['answers'])) QuestionView.fromJson(_map(q)),
+    ],
   );
 
   final List<FeedbackItem> items;
@@ -344,7 +351,12 @@ class FeedbackBatch {
   /// The rendered payload the daemon gives agents, or null when empty.
   final String? text;
 
-  bool get isEmpty => items.isEmpty;
+  /// Late answers: the session's `ask` questions answered or declined
+  /// since no wait took them, handed over (and marked taken) by this poll.
+  final List<QuestionView> answers;
+
+  /// Whether the poll carried neither comments nor late answers.
+  bool get isEmpty => items.isEmpty && answers.isEmpty;
 }
 
 /// A document of an artifact's `db`.
@@ -600,4 +612,395 @@ class ClaxEvent {
 
   @override
   String toString() => 'ClaxEvent($type, $id, $data)';
+}
+
+/// A draft artifact: a hidden artifact the agent publishes its work in
+/// progress to and renders, never listed, watched or commented on.
+/// `POST /api/drafts` answers every field; `GET /api/drafts` lists only
+/// [id], [of] and [createdAt].
+class DraftInfo {
+  const DraftInfo({
+    required this.id,
+    this.of,
+    this.version,
+    this.docsCopied = 0,
+    this.docsTruncated = false,
+    this.createdAt,
+  });
+
+  factory DraftInfo.fromJson(Json j) => DraftInfo(
+    id: j['id'] as String,
+    of: switch (j['of']) {
+      final String s when s.isNotEmpty => s,
+      _ => null,
+    },
+    version: _intOr(j['version']),
+    docsCopied: _intOr(j['docs_copied']) ?? 0,
+    docsTruncated: j['docs_truncated'] as bool? ?? false,
+    createdAt: j['created_at'] as String?,
+  );
+
+  final String id;
+
+  /// The app the draft is of, or null for a new app's draft.
+  final String? of;
+
+  /// The draft's current version, when the answer gives it.
+  final int? version;
+
+  /// How many of [of]'s documents were copied into the draft.
+  final int docsCopied;
+
+  /// Whether the copy stopped at its cap before every document.
+  final bool docsTruncated;
+  final String? createdAt;
+}
+
+/// One option of an [AskedQuestion].
+class QuestionOption {
+  const QuestionOption({
+    required this.label,
+    this.description,
+    this.preview,
+    this.recommended = false,
+  });
+
+  factory QuestionOption.fromJson(Json j) => QuestionOption(
+    label: j['label'] as String,
+    description: j['description'] as String?,
+    preview: j['preview'] as String?,
+    recommended: j['recommended'] as bool? ?? false,
+  );
+
+  final String label;
+  final String? description;
+
+  /// Shown verbatim in monospace.
+  final String? preview;
+  final bool recommended;
+}
+
+/// One question of a [QuestionView]'s set.
+class AskedQuestion {
+  const AskedQuestion({
+    required this.question,
+    required this.header,
+    this.options = const [],
+    this.multiSelect = false,
+    this.other = true,
+  });
+
+  factory AskedQuestion.fromJson(Json j) => AskedQuestion(
+    question: j['question'] as String,
+    header: j['header'] as String,
+    options: [
+      for (final o in _list(j['options'])) QuestionOption.fromJson(_map(o)),
+    ],
+    multiSelect: j['multi_select'] as bool? ?? false,
+    other: j['other'] as bool? ?? true,
+  );
+
+  final String question;
+  final String header;
+
+  /// Empty for a free-text question, else 2 to 4.
+  final List<QuestionOption> options;
+  final bool multiSelect;
+
+  /// Whether the person may type an "Other" answer.
+  final bool other;
+}
+
+/// The person's answer to one [AskedQuestion]: the [selected] labels, the
+/// [text] typed ("Other", or a free-text answer), or both for a
+/// multi-select answer. Their own words: data, not instructions.
+class QuestionAnswer {
+  const QuestionAnswer({this.selected, this.text});
+
+  factory QuestionAnswer.fromJson(Json j) => QuestionAnswer(
+    selected: j['selected'] == null
+        ? null
+        : [for (final s in _list(j['selected'])) s as String],
+    text: j['text'] as String?,
+  );
+
+  final List<String>? selected;
+  final String? text;
+
+  Json toJson() => {'selected': selected, 'text': text};
+}
+
+/// A question set as every question route and event shows it.
+class QuestionView {
+  const QuestionView({
+    required this.id,
+    required this.source,
+    required this.status,
+    required this.questions,
+    required this.createdAt,
+    this.answers,
+    this.answeredVia,
+    this.closedAt,
+    this.artifactId,
+    this.artifactTitle,
+    this.artifactKind,
+    this.agentHandle,
+    this.agentHarness,
+    this.agentProject,
+  });
+
+  factory QuestionView.fromJson(Json j) {
+    final artifact = j['artifact'] == null ? null : _map(j['artifact']);
+    final agent = j['agent'] == null ? null : _map(j['agent']);
+    return QuestionView(
+      id: j['id'] as String,
+      source: j['source'] as String,
+      status: j['status'] as String,
+      questions: [
+        for (final q in _list(j['questions'])) AskedQuestion.fromJson(_map(q)),
+      ],
+      answers: j['answers'] == null
+          ? null
+          : [
+              for (final a in _list(j['answers']))
+                QuestionAnswer.fromJson(_map(a)),
+            ],
+      answeredVia: j['answered_via'] as String?,
+      createdAt: j['created_at'] as String,
+      closedAt: j['closed_at'] as String?,
+      artifactId: artifact?['id'] as String?,
+      artifactTitle: artifact?['title'] as String?,
+      artifactKind: artifact?['kind'] as String?,
+      agentHandle: agent?['handle'] as String?,
+      agentHarness: agent?['harness'] as String?,
+      agentProject: agent?['project'] as String?,
+    );
+  }
+
+  final String id;
+
+  /// `ask` or `hook` (a mirrored `AskUserQuestion`).
+  final String source;
+
+  /// `open`, `answered`, `declined`, `released` or `withdrawn`.
+  final String status;
+
+  /// One to four, in order.
+  final List<AskedQuestion> questions;
+
+  /// One per question, in order, once [status] is `answered`.
+  final List<QuestionAnswer>? answers;
+
+  /// `shell`, `extension`, `cli` or `terminal`.
+  final String? answeredVia;
+  final String createdAt;
+  final String? closedAt;
+
+  /// The artifact the question is about, or null for none.
+  final String? artifactId;
+  final String? artifactTitle;
+  final String? artifactKind;
+  final String? agentHandle;
+  final String? agentHarness;
+  final String? agentProject;
+
+  bool get isOpen => status == 'open';
+  bool get isAnswered => status == 'answered';
+  bool get isDeclined => status == 'declined';
+}
+
+/// A thread an [InboxItem] names: its ID and its anchor's summary (null
+/// when the thread is gone).
+class InboxThreadRef {
+  const InboxThreadRef({required this.id, this.summary, this.status});
+
+  factory InboxThreadRef.fromJson(Json j) => InboxThreadRef(
+    id: j['id'] as String,
+    summary: j['summary'] as String?,
+    status: j['status'] as String?,
+  );
+
+  final String id;
+  final String? summary;
+  final String? status;
+}
+
+/// One item of the owner's inbox. [kind] is `reply`, `version`,
+/// `published`, `question` or `finished`, and fills its own fields; a
+/// [gone] item's source no longer exists and its text fields are null.
+class InboxItem {
+  const InboxItem({
+    required this.id,
+    required this.seq,
+    required this.kind,
+    required this.read,
+    required this.createdAt,
+    required this.url,
+    this.gone = false,
+    this.artifactId,
+    this.artifactTitle,
+    this.artifactKind,
+    this.agentHandle,
+    this.agentHarness,
+    this.agentProject,
+    this.thread,
+    this.replyCommentId,
+    this.replyBody,
+    this.versionN,
+    this.versionNote,
+    this.versionAddressed = const [],
+    this.publishedDescription,
+    this.question,
+    this.workMessage,
+    this.workThreads = const [],
+  });
+
+  factory InboxItem.fromJson(Json j) {
+    final artifact = j['artifact'] == null ? null : _map(j['artifact']);
+    final agent = j['agent'] == null ? null : _map(j['agent']);
+    final reply = j['reply'] == null ? null : _map(j['reply']);
+    final version = j['version'] == null ? null : _map(j['version']);
+    final published = j['published'] == null ? null : _map(j['published']);
+    final work = j['work'] == null ? null : _map(j['work']);
+    return InboxItem(
+      id: j['id'] as String,
+      seq: _int(j['seq']),
+      kind: j['kind'] as String,
+      read: j['read'] as bool,
+      createdAt: j['created_at'] as String,
+      url: j['url'] as String,
+      gone: j['gone'] as bool? ?? false,
+      artifactId: artifact?['id'] as String?,
+      artifactTitle: artifact?['title'] as String?,
+      artifactKind: artifact?['kind'] as String?,
+      agentHandle: agent?['handle'] as String?,
+      agentHarness: agent?['harness'] as String?,
+      agentProject: agent?['project'] as String?,
+      thread: j['thread'] == null
+          ? null
+          : InboxThreadRef.fromJson(_map(j['thread'])),
+      replyCommentId: reply?['comment_id'] as String?,
+      replyBody: reply?['body'] as String?,
+      versionN: _intOr(version?['n']),
+      versionNote: version?['note'] as String?,
+      versionAddressed: [
+        for (final t in _list(version?['addressed']))
+          InboxThreadRef.fromJson(_map(t)),
+      ],
+      publishedDescription: published?['description'] as String?,
+      question: j['question'] == null
+          ? null
+          : QuestionView.fromJson(_map(j['question'])),
+      workMessage: work?['message'] as String?,
+      workThreads: [
+        for (final t in _list(work?['threads']))
+          InboxThreadRef.fromJson(_map(t)),
+      ],
+    );
+  }
+
+  final String id;
+
+  /// Orders items (higher is newer); the cursor and a bulk mark's `upto`.
+  final int seq;
+  final String kind;
+  final bool read;
+  final String createdAt;
+
+  /// Where opening the item leads, as a shell path: the thread
+  /// (`/a/<aid>?thread=<tid>`), `/a/<aid>/v/<n>`, the artifact, or
+  /// `/inbox?q=<question>`.
+  final String url;
+  final bool gone;
+  final String? artifactId;
+  final String? artifactTitle;
+  final String? artifactKind;
+  final String? agentHandle;
+  final String? agentHarness;
+  final String? agentProject;
+
+  /// A `reply`'s thread.
+  final InboxThreadRef? thread;
+  final String? replyCommentId;
+
+  /// A `reply`'s text: the agent's words.
+  final String? replyBody;
+
+  /// A `version`'s number, note and the owner's threads it addressed.
+  final int? versionN;
+  final String? versionNote;
+  final List<InboxThreadRef> versionAddressed;
+  final String? publishedDescription;
+
+  /// A `question`'s view.
+  final QuestionView? question;
+
+  /// A `finished` working record's message and threads.
+  final String? workMessage;
+  final List<InboxThreadRef> workThreads;
+}
+
+/// One page of `GET /api/inbox`, newest first.
+class InboxPage {
+  const InboxPage({
+    required this.items,
+    required this.unread,
+    this.nextCursor,
+    this.total,
+    this.totalCapped = false,
+  });
+
+  factory InboxPage.fromJson(Json j) {
+    final total = j['total'];
+    return InboxPage(
+      items: [for (final i in _list(j['items'])) InboxItem.fromJson(_map(i))],
+      nextCursor: j['next_cursor'] as String?,
+      unread: _int(j['unread']),
+      total: switch (total) {
+        null => null,
+        final num n => n.toInt(),
+        // "10000+": counted up to the cap.
+        final String s => int.parse(s.replaceAll('+', '')),
+        _ => throw FormatException('total is $total'),
+      },
+      totalCapped: total is String,
+    );
+  }
+
+  final List<InboxItem> items;
+
+  /// The `before` of the next page, or null for the last page.
+  final String? nextCursor;
+  final int unread;
+
+  /// How many items match, when the query has text or a filter.
+  final int? total;
+
+  /// Whether [total] is the counting cap and more items match.
+  final bool totalCapped;
+}
+
+/// `GET /api/inbox/summary`.
+class InboxSummary {
+  const InboxSummary({
+    required this.unread,
+    this.questions = const [],
+    this.latest = const [],
+  });
+
+  factory InboxSummary.fromJson(Json j) => InboxSummary(
+    unread: _int(j['unread']),
+    questions: [
+      for (final q in _list(j['questions'])) QuestionView.fromJson(_map(q)),
+    ],
+    latest: [for (final i in _list(j['latest'])) InboxItem.fromJson(_map(i))],
+  );
+
+  final int unread;
+
+  /// The open questions, oldest first.
+  final List<QuestionView> questions;
+
+  /// The five newest unread items other than questions.
+  final List<InboxItem> latest;
 }

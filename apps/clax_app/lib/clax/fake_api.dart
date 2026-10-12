@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'api.dart';
@@ -33,6 +34,17 @@ class FakeCall {
 /// [pollFeedback] answers at once when a batch is queued; otherwise it
 /// waits for the next [pushFeedback] or [releasePolls], and never for
 /// [pollFeedback]'s `wait`, so no test depends on the clock.
+///
+/// Drafts are hidden artifacts ([listArtifacts] and [allThreads] leave
+/// them out, a thread on one is 403 `draft`) with a copy of their app's
+/// documents. A read with a `reader` needs the source to declare `db` and
+/// a [grantRead] from the reader (a draft's from its app), and never sees
+/// `data/users/`. Questions follow the question routes: [waitQuestion]
+/// waits for an answer, a skip, a withdrawal or [releaseQuestionWaits];
+/// an answer no wait took is a late answer on the next [pollFeedback].
+/// Each question makes an inbox item; [pushInbox] adds others. [stream]s
+/// get the `inbox` and `questions` events of their subscribed topics, and
+/// [emitStream]'s.
 class FakeClaxApi implements ClaxApi {
   FakeClaxApi({this.clock});
 
@@ -48,6 +60,12 @@ class FakeClaxApi implements ClaxApi {
   final StreamController<ClaxEvent> _events = StreamController.broadcast();
   int _ids = 0;
   int _docVersions = 0;
+  final Set<(String, String)> _grants = {};
+  final Map<String, _FakeQuestion> _questions = {};
+  final List<Map<String, Object?>> _inbox = [];
+  int _inboxSeq = 0;
+  int _closings = 0;
+  final List<FakeClaxStream> _streams = [];
 
   /// The session agent calls are made as; [registerAppSession] sets it.
   String? sessionId;
@@ -102,6 +120,7 @@ class FakeClaxApi implements ClaxApi {
     bool queue = true,
   }) {
     final a = _artifact(aid);
+    if (a.hidden) throw _draftThread();
     final tid = 'thread-${++_ids}';
     final cid = 'comment-${++_ids}';
     a.threads[tid] = _FakeThread(
@@ -195,12 +214,127 @@ class FakeClaxApi implements ClaxApi {
   void setClip(String aid, String tid, Uint8List png) =>
       _artifact(aid).threads[tid]!.clip = png;
 
+  /// Adds an open thread with one viewer comment on [aid]'s current
+  /// version, not sent to the agent; returns its ID.
+  String addThread(
+    String aid,
+    String body, {
+    String author = 'Alex',
+    Map<String, Object?> anchor = const {'kind': 'artifact', 'file': ''},
+  }) {
+    final a = _artifact(aid);
+    if (a.draftOf != null || a.hidden) throw _draftThread();
+    final tid = 'thread-${++_ids}';
+    a.threads[tid] = _FakeThread(
+      id: tid,
+      versionN: a.current,
+      anchor: anchor,
+      sent: false,
+      comments: [
+        ThreadComment(
+          id: 'comment-${++_ids}',
+          authorKind: 'viewer',
+          authorName: author,
+          body: body,
+          createdAt: _now(),
+        ),
+      ],
+    )..feedbackState = null;
+    return tid;
+  }
+
+  /// The owner's grant: app [reader] may read [source]'s documents while
+  /// its `db.read` lists [source].
+  void grantRead(String reader, String source) => _grants.add((reader, source));
+
+  /// Ends every waiting [waitQuestion] with its question's view as it is.
+  void releaseQuestionWaits() {
+    for (final q in _questions.values) {
+      final ws = List.of(q.waits);
+      q.waits.clear();
+      for (final w in ws) {
+        w.complete(q.view);
+      }
+    }
+  }
+
+  /// Adds an unread inbox item of [kind] about [artifactId] and returns it
+  /// as the inbox shows it; a `stream` holding `inbox` gets its event.
+  InboxItem pushInbox(
+    String kind, {
+    String? artifactId,
+    String? threadId,
+    String? body,
+    int? versionN,
+    String? note,
+    String? message,
+    String? description,
+  }) {
+    final a = artifactId == null ? null : _artifacts[artifactId];
+    final item = <String, Object?>{
+      'id': 'item-${++_ids}',
+      'seq': ++_inboxSeq,
+      'kind': kind,
+      'read': false,
+      'created_at': _now(),
+      'agent': {'handle': 'a_app', 'harness': 'app', 'project': ''},
+      'artifact': artifactId == null
+          ? null
+          : {
+              'id': artifactId,
+              'title': a?.title,
+              'kind': 'html',
+              'page_url': null,
+            },
+      'thread': kind == 'reply'
+          ? {'id': threadId ?? 'thread-0', 'summary': null, 'status': 'open'}
+          : null,
+      'reply': kind == 'reply'
+          ? {
+              'comment_id': 'comment-${++_ids}',
+              'body': body,
+              'addressed': false,
+            }
+          : null,
+      'version': kind == 'version'
+          ? {'n': versionN ?? 1, 'note': note, 'addressed': <Object?>[]}
+          : null,
+      'published': kind == 'published' ? {'description': description} : null,
+      'question': null,
+      'work': kind == 'finished'
+          ? {'message': message, 'threads': <Object?>[]}
+          : null,
+      'gone': false,
+      'url': switch (kind) {
+        'reply' => '/a/$artifactId?thread=${threadId ?? 'thread-0'}',
+        'version' => '/a/$artifactId/v/${versionN ?? 1}',
+        _ => '/a/$artifactId',
+      },
+    };
+    _inbox.add(item);
+    _announceItem(item);
+    return InboxItem.fromJson(item);
+  }
+
+  /// Sends [e] to every [stream] holding its topic.
+  void emitStream(StreamEvent e) {
+    for (final s in List.of(_streams)) {
+      s._deliver(e);
+    }
+  }
+
+  /// The question [qid] as the routes show it.
+  QuestionView questionOf(String qid) => _questions[qid]!.view;
+
   // --- ClaxApi ---
 
   @override
   Future<List<ArtifactSummary>> listArtifacts() async {
     _call('listArtifacts');
-    return [for (final a in _artifacts.values) a.summary(_now())];
+    return [
+      for (final a in _artifacts.values)
+        if (!a.hidden) a.summary(_now()),
+    ];
   }
 
   @override
@@ -349,7 +483,11 @@ class FakeClaxApi implements ClaxApi {
   }) async {
     _call('pollFeedback', {'sid': sid, 'wait': wait});
     _liveSession(sid);
-    if (_feedback.isNotEmpty) return _handOver(_feedback.removeFirst());
+    final answers = _takeLateAnswers(sid);
+    if (_feedback.isNotEmpty) {
+      return _handOver(_feedback.removeFirst(), answers);
+    }
+    if (answers.isNotEmpty) return FeedbackBatch(items: [], answers: answers);
     final c = Completer<FeedbackBatch>();
     _polls.add(c);
     return c.future;
@@ -488,9 +626,14 @@ class FakeClaxApi implements ClaxApi {
   }
 
   @override
-  Future<Doc?> getDoc(String aid, String path) async {
-    _call('getDoc', {'aid': aid, 'path': path});
-    return _artifact(aid).docs[path];
+  Future<Doc?> getDoc(String aid, String path, {String? reader}) async {
+    _call('getDoc', {'aid': aid, 'path': path, 'reader': reader});
+    final a = _artifact(aid);
+    if (reader != null) {
+      _checkReader(reader, a);
+      if (path.startsWith(_usersPrefix)) return null;
+    }
+    return a.docs[path];
   }
 
   @override
@@ -506,7 +649,8 @@ class FakeClaxApi implements ClaxApi {
     _call('allThreads', {'includeResolved': includeResolved});
     return [
       for (final a in _artifacts.values)
-        if (a.threads.values.any((t) => includeResolved || t.status == 'open'))
+        if (!a.hidden &&
+            a.threads.values.any((t) => includeResolved || t.status == 'open'))
           ArtifactThreads(
             artifactId: a.id,
             title: a.title,
@@ -548,16 +692,709 @@ class FakeClaxApi implements ClaxApi {
     return out.stream;
   }
 
+  // --- drafts ---
+
+  /// The most document data a draft's copy takes, as the daemon's cap.
+  static const draftDocCap = 2000;
+  static const draftBytesCap = 8 << 20;
+
+  @override
+  Future<DraftInfo> createDraft({
+    String? of,
+    required String title,
+    Map<String, Object?>? capabilities,
+    required Map<String, String> files,
+  }) async {
+    _call('createDraft', {
+      'of': of,
+      'title': title,
+      'capabilities': capabilities,
+      'files': Map.of(files),
+    });
+    final app = of == null ? null : _artifact(of);
+    if (title.trim().isEmpty) {
+      throw _invalid('invalid_args', 'title is required');
+    }
+    if (!files.containsKey('index.html')) {
+      throw _invalid('missing_index', 'a version must include index.html');
+    }
+    final id = _newArtifactId();
+    final d = _artifacts[id] = _FakeArtifact(
+      id: id,
+      title: title,
+      capabilities: Map.of(capabilities ?? app?.capabilities ?? const {}),
+      versions: [_version(id, 1, Map.of(files))],
+      draftOf: of,
+      hidden: true,
+      createdAt: _now(),
+    );
+    var copied = 0;
+    var bytes = 0;
+    var truncated = false;
+    for (final doc in app?.docs.values ?? const <Doc>[]) {
+      if (doc.path.startsWith(_usersPrefix)) continue;
+      final size = jsonEncode(doc.data).length;
+      if (copied == draftDocCap || bytes + size > draftBytesCap) {
+        truncated = true;
+        break;
+      }
+      d.docs[doc.path] = Doc(
+        path: doc.path,
+        collection: doc.collection,
+        id: doc.id,
+        data: Map.of(doc.data),
+        version: 1,
+        updatedAt: _now(),
+      );
+      copied++;
+      bytes += size;
+    }
+    return DraftInfo(
+      id: id,
+      of: of,
+      version: 1,
+      docsCopied: copied,
+      docsTruncated: truncated,
+      createdAt: d.createdAt,
+    );
+  }
+
+  /// Publishes to a draft like [publish], with no session. A test that
+  /// publishes to an artifact that is not a draft gets [ArgumentError]:
+  /// the daemon would take it, and a version without the session's
+  /// change ledger is never what the app means to make.
+  @override
+  Future<PublishResult> publishDraft(String draftId, PublishRequest r) async {
+    _call('publishDraft', {'draftId': draftId, 'request': r});
+    if (r.ifVersion == null) throw ArgumentError('a publish needs ifVersion');
+    final a = _artifact(draftId);
+    if (!a.hidden) {
+      throw ArgumentError.value(draftId, 'draftId', 'is not a draft');
+    }
+    _checkVersion(a, r.ifVersion!);
+    final files = Map.of(a.versions.last.files);
+    for (final e in r.files.entries) {
+      if (e.value == null) {
+        files.remove(e.key);
+      } else {
+        files[e.key] = e.value!;
+      }
+    }
+    if (!files.containsKey('index.html')) {
+      throw _invalid('missing_index', 'a version must include index.html');
+    }
+    if (r.title != null) a.title = r.title!;
+    if (r.capabilities != null) a.capabilities = Map.of(r.capabilities!);
+    a.versions.add(
+      _version(draftId, a.current + 1, files, label: r.label, note: r.note),
+    );
+    return _landed(a, const []);
+  }
+
+  @override
+  Future<void> deleteDraft(String draftId) async {
+    _call('deleteDraft', {'draftId': draftId});
+    final a = _artifacts[draftId];
+    if (a == null || !a.hidden) throw _notFound();
+    _artifacts.remove(draftId);
+  }
+
+  @override
+  Future<List<DraftInfo>> listDrafts() async {
+    _call('listDrafts');
+    return [
+      for (final a in _artifacts.values)
+        if (a.hidden)
+          DraftInfo(id: a.id, of: a.draftOf, createdAt: a.createdAt),
+    ];
+  }
+
+  // --- document queries ---
+
+  @override
+  Future<List<Doc>> queryDocs(
+    String aid,
+    String collection, {
+    List<List<Object?>>? where,
+    String? orderBy,
+    bool descending = false,
+    int limit = 50,
+    String? reader,
+  }) async {
+    _call('queryDocs', {
+      'aid': aid,
+      'collection': collection,
+      'where': where,
+      'orderBy': orderBy,
+      'descending': descending,
+      'limit': limit,
+      'reader': reader,
+    });
+    return _query(
+      aid,
+      collection,
+      where: where,
+      orderBy: orderBy,
+      descending: descending,
+      limit: limit,
+      reader: reader,
+    );
+  }
+
+  @override
+  Future<List<Doc>> listDocsAs(
+    String aid,
+    String collection, {
+    required String reader,
+    int limit = 50,
+  }) async {
+    _call('listDocsAs', {
+      'aid': aid,
+      'collection': collection,
+      'reader': reader,
+      'limit': limit,
+    });
+    return _query(aid, collection, limit: limit, reader: reader);
+  }
+
+  List<Doc> _query(
+    String aid,
+    String collection, {
+    List<List<Object?>>? where,
+    String? orderBy,
+    bool descending = false,
+    int limit = 50,
+    String? reader,
+  }) {
+    final a = _artifact(aid);
+    if (reader != null) _checkReader(reader, a);
+    final docs = [
+      for (final d in a.docs.values)
+        if (d.collection == collection &&
+            !(reader != null && d.path.startsWith(_usersPrefix)) &&
+            (where ?? const []).every((w) => _matches(d.data, w)))
+          d,
+    ];
+    if (orderBy != null) {
+      docs.sort((x, y) {
+        final c = _compare(_field(x.data, orderBy), _field(y.data, orderBy));
+        return descending ? -c : c;
+      });
+    }
+    return docs.take(limit).toList();
+  }
+
+  // --- the owner's thread calls ---
+
+  @override
+  Future<ThreadView> postOwnerComment(
+    String aid,
+    String tid,
+    String body,
+  ) async {
+    _call('postOwnerComment', {'aid': aid, 'tid': tid, 'body': body});
+    final (a, t) = _ownerThread(aid, tid);
+    final c = ThreadComment(
+      id: 'comment-${++_ids}',
+      authorKind: 'viewer',
+      authorName: 'Owner',
+      body: body,
+      createdAt: _now(),
+    );
+    t.comments.add(c);
+    if (t.sent) _sendToAgent(a, t, c);
+    return t.view(aid);
+  }
+
+  @override
+  Future<ThreadView> sendThread(String aid, String tid) async {
+    _call('sendThread', {'aid': aid, 'tid': tid});
+    final (a, t) = _ownerThread(aid, tid);
+    if (!t.sent) {
+      t.sent = true;
+      final last = t.comments.lastWhere(
+        (c) => !c.byAgent,
+        orElse: () => t.comments.last,
+      );
+      _sendToAgent(a, t, last);
+    }
+    return t.view(aid);
+  }
+
+  @override
+  Future<ThreadView> resolveAsOwner(String aid, String tid) async {
+    _call('resolveAsOwner', {'aid': aid, 'tid': tid});
+    final (_, t) = _ownerThread(aid, tid);
+    t.status = 'resolved';
+    t.resolvedBy = 'viewer:owner';
+    return t.view(aid);
+  }
+
+  @override
+  Future<ThreadView> reopenThread(String aid, String tid) async {
+    _call('reopenThread', {'aid': aid, 'tid': tid});
+    final (_, t) = _ownerThread(aid, tid);
+    t.status = 'open';
+    t.resolvedBy = null;
+    return t.view(aid);
+  }
+
+  (_FakeArtifact, _FakeThread) _ownerThread(String aid, String tid) {
+    final a = _artifact(aid);
+    if (a.hidden) throw _draftThread();
+    final t = a.threads[tid];
+    if (t == null) throw _notFound();
+    return (a, t);
+  }
+
+  void _sendToAgent(_FakeArtifact a, _FakeThread t, ThreadComment c) {
+    t.feedbackState = 'sent';
+    pushFeedback([
+      FeedbackItem(
+        feedbackId: 'feedback-${++_ids}',
+        threadId: t.id,
+        commentId: c.id,
+        artifactId: a.id,
+        artifactTitle: a.title,
+        body: c.body,
+        author: c.authorName,
+        version: a.current,
+        anchor: t.anchor,
+      ),
+    ]);
+  }
+
+  // --- questions ---
+
+  @override
+  Future<QuestionView> askQuestion(
+    String sid,
+    List<Map<String, Object?>> questions, {
+    String? artifactId,
+  }) async {
+    _call('askQuestion', {
+      'sid': sid,
+      'questions': questions,
+      'artifactId': artifactId,
+    });
+    _liveSession(sid);
+    _validateQuestions(questions);
+    final a = artifactId == null ? null : _artifact(artifactId);
+    final qid = 'question-${++_ids}';
+    final q = _questions[qid] = _FakeQuestion(sid, {
+      'id': qid,
+      'agent': {'handle': 'a_app', 'harness': 'app', 'project': ''},
+      'artifact': a == null
+          ? null
+          : {'id': a.id, 'title': a.title, 'kind': 'html'},
+      'source': 'ask',
+      'status': 'open',
+      'questions': [
+        for (final x in questions)
+          {
+            'question': x['question'],
+            'header': x['header'],
+            'options': [
+              for (final o in (x['options'] as List<Object?>?) ?? const [])
+                {
+                  'label': (o! as Map)['label'],
+                  'description': o['description'],
+                  'preview': o['preview'],
+                  'recommended': o['recommended'] ?? false,
+                },
+            ],
+            'multi_select': x['multi_select'] ?? false,
+            'other': x['other'] ?? true,
+          },
+      ],
+      'answers': null,
+      'answered_via': null,
+      'created_at': _now(),
+      'closed_at': null,
+    });
+    final item = <String, Object?>{
+      'id': 'item-${++_ids}',
+      'seq': ++_inboxSeq,
+      'kind': 'question',
+      'read': false,
+      'created_at': _now(),
+      'agent': q.json['agent'],
+      'artifact': a == null
+          ? null
+          : {'id': a.id, 'title': a.title, 'kind': 'html', 'page_url': null},
+      'thread': null,
+      'reply': null,
+      'version': null,
+      'published': null,
+      'question': q.json,
+      'work': null,
+      'gone': false,
+      'url': '/inbox?q=$qid',
+    };
+    q.item = item;
+    _inbox.add(item);
+    _announceQuestion(q);
+    _announceItem(item);
+    return q.view;
+  }
+
+  @override
+  Future<QuestionView> waitQuestion(
+    String sid,
+    String qid, {
+    required Duration wait,
+  }) async {
+    _call('waitQuestion', {'sid': sid, 'qid': qid, 'wait': wait});
+    _liveSession(sid);
+    final q = _sessionQuestion(sid, qid);
+    if (q.status != 'open') {
+      q.taken = true;
+      return q.view;
+    }
+    final c = Completer<QuestionView>();
+    q.waits.add(c);
+    return c.future;
+  }
+
+  @override
+  Future<void> withdrawQuestion(String sid, String qid) async {
+    _call('withdrawQuestion', {'sid': sid, 'qid': qid});
+    _liveSession(sid);
+    final q = _sessionQuestion(sid, qid);
+    if (q.status != 'open') return;
+    _close(q, 'withdrawn');
+  }
+
+  @override
+  Future<List<QuestionView>> questions({String status = 'open'}) async {
+    _call('questions', {'status': status});
+    if (!const {'open', 'closed', 'all'}.contains(status)) {
+      throw _invalid('invalid_query', 'status is open, closed or all');
+    }
+    final open = [
+      for (final q in _questions.values)
+        if (q.status == 'open') q,
+    ];
+    final closed = [
+      for (final q in _questions.values)
+        if (q.status != 'open') q,
+    ]..sort((x, y) => y.closing.compareTo(x.closing));
+    return [
+      if (status != 'closed') ...open.map((q) => q.view),
+      if (status != 'open') ...closed.map((q) => q.view),
+    ];
+  }
+
+  @override
+  Future<QuestionView> answerQuestion(
+    String qid,
+    List<Map<String, Object?>> answers,
+  ) async {
+    _call('answerQuestion', {'qid': qid, 'answers': answers});
+    final q = _openQuestion(qid);
+    final asked = q.json['questions']! as List<Object?>;
+    if (answers.length != asked.length) {
+      throw _invalid('invalid_answer', 'one answer per question');
+    }
+    q.json['answers'] = [
+      for (final a in answers) {'selected': a['selected'], 'text': a['text']},
+    ];
+    q.json['answered_via'] = 'cli';
+    _close(q, 'answered');
+    return q.view;
+  }
+
+  @override
+  Future<QuestionView> declineQuestion(String qid) async {
+    _call('declineQuestion', {'qid': qid});
+    final q = _openQuestion(qid);
+    _close(q, 'declined');
+    return q.view;
+  }
+
+  _FakeQuestion _sessionQuestion(String sid, String qid) {
+    final q = _questions[qid];
+    if (q == null || q.sessionId != sid) throw _notFound();
+    return q;
+  }
+
+  _FakeQuestion _openQuestion(String qid) {
+    final q = _questions[qid];
+    if (q == null) throw _notFound();
+    if (q.status != 'open') {
+      throw ClaxApiError(
+        status: 409,
+        code: 'question_closed',
+        message: 'the question is ${q.status}',
+        body: {'code': 'question_closed', 'question': q.json},
+      );
+    }
+    return q;
+  }
+
+  /// Moves [q] to [status]; a wait takes an answer or a skip, else a
+  /// waiting feedback poll takes it as a late answer.
+  void _close(_FakeQuestion q, String status) {
+    q.json['status'] = status;
+    q.json['closed_at'] = _now();
+    q.closing = ++_closings;
+    final ws = List.of(q.waits);
+    q.waits.clear();
+    final answered = status == 'answered' || status == 'declined';
+    if (ws.isNotEmpty && answered) q.taken = true;
+    for (final w in ws) {
+      w.complete(q.view);
+    }
+    final item = q.item;
+    if (item != null && answered && item['read'] != true) {
+      item['read'] = true;
+    }
+    _announceQuestion(q);
+    if (item != null) _announceItem(item);
+    if (answered && !q.taken && _polls.isNotEmpty) {
+      final late = _takeLateAnswers(q.sessionId);
+      _polls.removeAt(0).complete(FeedbackBatch(items: [], answers: late));
+    }
+  }
+
+  List<QuestionView> _takeLateAnswers(String sid) {
+    final out = <QuestionView>[];
+    for (final q in _questions.values) {
+      if (q.sessionId == sid &&
+          !q.taken &&
+          q.waits.isEmpty &&
+          (q.status == 'answered' || q.status == 'declined')) {
+        q.taken = true;
+        out.add(q.view);
+      }
+    }
+    return out;
+  }
+
+  static void _validateQuestions(List<Map<String, Object?>> qs) {
+    Never bad(String m) => throw _invalid('invalid_question', m);
+    if (qs.isEmpty || qs.length > 4) bad('a set holds one to four questions');
+    final texts = <String>{};
+    for (final q in qs) {
+      final text = q['question'];
+      if (text is! String || text.trim().isEmpty || text.length > 2000) {
+        bad('question is 1 to 2,000 characters');
+      }
+      if (!texts.add(text)) bad('questions are unique within the set');
+      final header = q['header'];
+      if (header is! String || header.isEmpty || header.length > 12) {
+        bad('header is 1 to 12 characters');
+      }
+      final options = (q['options'] as List<Object?>?) ?? const [];
+      if (options.length == 1 || options.length > 4) {
+        bad('options are none, or 2 to 4');
+      }
+      final labels = <String>{};
+      var recommended = 0;
+      for (final o in options) {
+        final m = o is Map ? o : bad('an option is an object');
+        final label = m['label'];
+        if (label is! String || label.isEmpty || label.length > 100) {
+          bad('label is 1 to 100 characters');
+        }
+        if (!labels.add(label)) bad('labels are unique within the question');
+        if (m['recommended'] == true) recommended++;
+      }
+      if (recommended > 1) bad('at most one option is recommended');
+    }
+  }
+
+  // --- the inbox ---
+
+  @override
+  Future<InboxPage> inbox({
+    String? q,
+    List<String>? kinds,
+    String read = 'all',
+    String? before,
+    int limit = 50,
+  }) async {
+    _call('inbox', {
+      'q': q,
+      'kinds': kinds,
+      'read': read,
+      'before': before,
+      'limit': limit,
+    });
+    final text = q?.trim() ?? '';
+    final matching = [
+      for (final i in _inbox.reversed)
+        if (_inboxMatches(i, text: text, kinds: kinds, read: read)) i,
+    ];
+    final cursor = before == null ? null : int.parse(before);
+    final after = [
+      for (final i in matching)
+        if (cursor == null || (i['seq']! as int) < cursor) i,
+    ];
+    final page = after.take(limit).toList();
+    final filtered =
+        text.isNotEmpty || (kinds?.isNotEmpty ?? false) || read != 'all';
+    return InboxPage(
+      items: [for (final i in page) InboxItem.fromJson(i)],
+      nextCursor: after.length > page.length ? '${page.last['seq']}' : null,
+      unread: _unread,
+      total: filtered ? matching.length : null,
+    );
+  }
+
+  @override
+  Future<InboxSummary> inboxSummary() async {
+    _call('inboxSummary');
+    return InboxSummary(
+      unread: _unread,
+      questions: [
+        for (final q in _questions.values)
+          if (q.status == 'open') q.view,
+      ],
+      latest: [
+        for (final i
+            in _inbox.reversed
+                .where((i) => i['read'] != true && i['kind'] != 'question')
+                .take(5))
+          InboxItem.fromJson(i),
+      ],
+    );
+  }
+
+  @override
+  Future<int> markInboxRead(String itemId) async {
+    _call('markInboxRead', {'itemId': itemId});
+    final item = _inbox.firstWhere(
+      (i) => i['id'] == itemId,
+      orElse: () => throw _notFound(),
+    );
+    if (item['read'] != true) {
+      item['read'] = true;
+      _announceItem(item);
+    }
+    return _unread;
+  }
+
+  @override
+  Future<int> markAllInboxRead({
+    int? upto,
+    Map<String, Object?>? filter,
+  }) async {
+    _call('markAllInboxRead', {'upto': upto, 'filter': filter});
+    final kinds = switch (filter?['kind']) {
+      null => null,
+      final String k => k.split(','),
+      final List<Object?> k => [for (final x in k) x! as String],
+      _ => throw _invalid('invalid_query', 'kind is a string or a list'),
+    };
+    final text = (filter?['q'] as String?)?.trim() ?? '';
+    final artifact = filter?['artifact'] as String?;
+    final marked = [
+      for (final i in _inbox)
+        if (i['read'] != true &&
+            (upto == null || (i['seq']! as int) <= upto) &&
+            (artifact == null || (i['artifact'] as Map?)?['id'] == artifact) &&
+            _inboxMatches(i, text: text, kinds: kinds, read: 'all'))
+          i,
+    ];
+    for (final i in marked) {
+      i['read'] = true;
+    }
+    if (marked.length > 50) {
+      emitStream(
+        StreamEvent(
+          topic: 'inbox',
+          type: 'inbox_read',
+          data: {
+            'topic': 'inbox',
+            'ids': null,
+            'read': true,
+            'unread': _unread,
+          },
+        ),
+      );
+    } else {
+      marked.forEach(_announceItem);
+    }
+    return _unread;
+  }
+
+  int get _unread => _inbox.where((i) => i['read'] != true).length;
+
+  /// Whether [item] matches: every word of [text] starts a word of the
+  /// item's text, its kind is one of [kinds], and its read mark is [read].
+  static bool _inboxMatches(
+    Map<String, Object?> item, {
+    required String text,
+    List<String>? kinds,
+    required String read,
+  }) {
+    if (kinds != null && kinds.isNotEmpty && !kinds.contains(item['kind'])) {
+      return false;
+    }
+    if (read == 'unread' && item['read'] == true) return false;
+    if (read == 'read' && item['read'] != true) return false;
+    if (text.isEmpty) return true;
+    final words = _words([
+      (item['artifact'] as Map?)?['title'],
+      (item['reply'] as Map?)?['body'],
+      (item['version'] as Map?)?['note'],
+      (item['work'] as Map?)?['message'],
+      (item['published'] as Map?)?['description'],
+      for (final q
+          in ((item['question'] as Map?)?['questions'] as List?) ??
+              const []) ...[(q as Map)['header'], q['question']],
+    ]);
+    return _words([text]).every((w) => words.any((x) => x.startsWith(w)));
+  }
+
+  static List<String> _words(List<Object?> texts) => [
+    for (final t in texts)
+      if (t is String)
+        ...t
+            .toLowerCase()
+            .split(RegExp(r'[^\p{L}\p{N}]+', unicode: true))
+            .where((w) => w.isNotEmpty),
+  ];
+
+  void _announceItem(Map<String, Object?> item) => emitStream(
+    StreamEvent(
+      topic: 'inbox',
+      type: 'inbox_item',
+      data: {'topic': 'inbox', 'item': item, 'unread': _unread},
+    ),
+  );
+
+  void _announceQuestion(_FakeQuestion q) => emitStream(
+    StreamEvent(
+      topic: 'questions',
+      type: 'question',
+      data: {'topic': 'questions', 'question': q.json},
+    ),
+  );
+
+  // --- the stream ---
+
+  @override
+  ClaxStream stream() {
+    final s = FakeClaxStream._(this);
+    _streams.add(s);
+    return s;
+  }
+
   // --- internals ---
 
   /// A poll takes [items]: as the daemon's wait tier does, that
   /// acknowledges them, so their threads read `acknowledged` from here on.
-  FeedbackBatch _handOver(List<FeedbackItem> items) {
+  FeedbackBatch _handOver(
+    List<FeedbackItem> items, [
+    List<QuestionView> answers = const [],
+  ]) {
     for (final i in items) {
       final t = _artifacts[i.artifactId]?.threads[i.threadId];
       if (t != null) t.feedbackState = 'acknowledged';
     }
-    return FeedbackBatch(items: items);
+    return FeedbackBatch(items: items, answers: answers);
   }
 
   void _call(String name, [Map<String, Object?> args = const {}]) {
@@ -613,6 +1450,13 @@ class FakeClaxApi implements ClaxApi {
 
   PublishResult _landed(_FakeArtifact a, List<String> addresses) {
     final v = a.versions.last.info;
+    if (a.hidden) {
+      return PublishResult(
+        artifact: a.summary(_now()),
+        version: v,
+        url: '/a/${a.id}',
+      );
+    }
     if (sessionId != null) working.remove(a.id);
     _events.add(
       ClaxEvent(
@@ -682,6 +1526,87 @@ class FakeClaxApi implements ClaxApi {
         _ => 'text/plain; charset=utf-8',
       };
 
+  static const _usersPrefix = 'data/users/';
+
+  /// Refuses app [reader] a read of [source] as the reader routes do:
+  /// without consent (the reader's `db.read` lists [source], and the owner
+  /// granted it or [source]'s `db.share.read` lists the reader) it is
+  /// `not_granted`; with it, a [source] that does not declare `db` is
+  /// `not_declared`. A draft reads with its app's declaration and grants.
+  void _checkReader(String reader, _FakeArtifact source) {
+    final r = _artifact(reader);
+    final app = r.draftOf == null ? r : _artifact(r.draftOf!);
+    List<Object?> list(Object? v) => v is List ? v : const [];
+    final db = source.capabilities['db'];
+    final declared = list((app.capabilities['db'] as Map?)?['read']);
+    final shared = list(((db as Map?)?['share'] as Map?)?['read']);
+    final consent =
+        declared.contains(source.id) &&
+        (_grants.contains((app.id, source.id)) || shared.contains(app.id));
+    if (!consent) {
+      throw const ClaxApiError(
+        status: 403,
+        code: 'not_granted',
+        message: 'the reader may not read this artifact',
+      );
+    }
+    if (!source.capabilities.containsKey('db')) {
+      throw const ClaxApiError(
+        status: 403,
+        code: 'not_declared',
+        message: 'the artifact does not declare db',
+      );
+    }
+  }
+
+  static Object? _field(Map<String, Object?> data, String field) {
+    Object? v = data;
+    for (final part in field.split('.')) {
+      v = v is Map ? v[part] : null;
+    }
+    return v;
+  }
+
+  /// Nulls first, then numbers, then strings; others compare equal.
+  static int _compare(Object? x, Object? y) => switch ((x, y)) {
+    (null, null) => 0,
+    (null, _) => -1,
+    (_, null) => 1,
+    (final num a, final num b) => a.compareTo(b),
+    (final String a, final String b) => a.compareTo(b),
+    (num _, String _) => -1,
+    (String _, num _) => 1,
+    _ => 0,
+  };
+
+  static bool _matches(Map<String, Object?> data, List<Object?> w) {
+    if (w.length != 3) {
+      throw _invalid('invalid_argument', 'where is [field, op, value]');
+    }
+    final v = _field(data, w[0]! as String);
+    final want = w[2];
+    // 1 == 1.0 in Dart, as in JSON.
+    bool eq(Object? a, Object? b) => a == b;
+    return switch (w[1]) {
+      '==' || 'eq' => eq(v, want),
+      '!=' || 'ne' => !eq(v, want),
+      '<' || 'lt' => v != null && _compare(v, want) < 0,
+      '<=' || 'lte' => v != null && _compare(v, want) <= 0,
+      '>' || 'gt' => v != null && _compare(v, want) > 0,
+      '>=' || 'gte' => v != null && _compare(v, want) >= 0,
+      'in' => (want! as List).any((x) => eq(v, x)),
+      'not-in' => !(want! as List).any((x) => eq(v, x)),
+      'array-contains' => v is List && v.any((x) => eq(x, want)),
+      _ => throw _invalid('invalid_argument', 'unknown operator ${w[1]}'),
+    };
+  }
+
+  static ClaxApiError _draftThread() => const ClaxApiError(
+    status: 403,
+    code: 'draft',
+    message: 'a draft takes no threads',
+  );
+
   static ClaxApiError _notFound() =>
       const ClaxApiError(status: 404, code: 'not_found', message: 'not found');
 
@@ -702,9 +1627,17 @@ class _FakeArtifact {
     required this.capabilities,
     required this.versions,
     this.ownerSession,
+    this.draftOf,
+    this.hidden = false,
+    this.createdAt,
   });
 
   final String id;
+
+  /// A draft's app, null for a new app's draft and every other artifact.
+  final String? draftOf;
+  final bool hidden;
+  final String? createdAt;
   String title;
   Map<String, Object?> capabilities;
   final String? ownerSession;
@@ -739,7 +1672,7 @@ class _FakeThread {
   final String id;
   final int versionN;
   final Map<String, Object?> anchor;
-  final bool sent;
+  bool sent;
   final List<ThreadComment> comments;
   final List<int> addressedIn = [];
   Uint8List? clip;
@@ -762,4 +1695,68 @@ class _FakeThread {
         : FeedbackState(state: feedbackState!),
     addressedIn: List.of(addressedIn),
   );
+}
+
+class _FakeQuestion {
+  _FakeQuestion(this.sessionId, this.json);
+
+  final String sessionId;
+  final Map<String, Object?> json;
+  final List<Completer<QuestionView>> waits = [];
+
+  /// Whether a wait or a feedback poll has handed the answer over.
+  bool taken = false;
+
+  /// The order it closed in, for the closed listing.
+  int closing = 0;
+  Map<String, Object?>? item;
+
+  String get status => json['status']! as String;
+  QuestionView get view => QuestionView.fromJson(
+    jsonDecode(jsonEncode(json)) as Map<String, Object?>,
+  );
+}
+
+/// [FakeClaxApi]'s [ClaxStream]: [subscribe] is recorded as a
+/// `streamSubscribe` call (with `topics`), and only the subscribed topics'
+/// events reach [events].
+class FakeClaxStream implements ClaxStream {
+  FakeClaxStream._(this._api);
+
+  final FakeClaxApi _api;
+  final StreamController<StreamEvent> _out = StreamController.broadcast();
+  final Set<String> topics = {};
+  var _closed = false;
+
+  @override
+  Stream<StreamEvent> get events => _out.stream;
+
+  @override
+  Future<void> subscribe(List<String> topics) async {
+    if (_closed) throw StateError('the stream is closed');
+    _api._call('streamSubscribe', {'topics': List.of(topics)});
+    this.topics.addAll(topics);
+  }
+
+  @override
+  Future<void> close() async {
+    if (_closed) return;
+    _closed = true;
+    _api._streams.remove(this);
+    await _out.close();
+  }
+
+  void _deliver(StreamEvent e) {
+    if (!_closed && topics.contains(e.topic)) {
+      // A copy, as each SSE event is its own JSON.
+      _out.add(
+        StreamEvent(
+          topic: e.topic,
+          type: e.type,
+          data: jsonDecode(jsonEncode(e.data)) as Map<String, Object?>,
+          id: e.id,
+        ),
+      );
+    }
+  }
 }

@@ -1,8 +1,10 @@
 import 'dart:typed_data';
 
 import 'models.dart';
+import 'stream.dart';
 
 export 'models.dart';
+export 'stream.dart';
 
 /// The app's typed client of the embedded daemon's HTTP API.
 ///
@@ -10,7 +12,9 @@ export 'models.dart';
 /// ([createArtifact], [publish], [replyAsAgent], [resolveAsAgent]) also
 /// carry `X-Clax-Session`, naming the app session [registerAppSession]
 /// made; the owner's (a restore from the versions list, reads, document
-/// writes) do not. A refused request throws [ClaxApiError].
+/// writes, drafts, the owner's thread calls, questions' answers, the inbox)
+/// do not. The question routes name the asking session in their path
+/// instead. A refused request throws [ClaxApiError].
 abstract interface class ClaxApi {
   /// Every artifact, as the gallery lists them.
   Future<List<ArtifactSummary>> listArtifacts();
@@ -90,8 +94,9 @@ abstract interface class ClaxApi {
   Future<void> batchDocs(String aid, List<DocWrite> writes);
 
   /// The document at [path] (`<collection>/<id>`), or null when there is
-  /// none. An unknown artifact is [ClaxApiError] `not_found`.
-  Future<Doc?> getDoc(String aid, String path);
+  /// none. An unknown artifact is [ClaxApiError] `not_found`. With
+  /// [reader], read as that app (`X-Clax-Reader`), as [queryDocs] does.
+  Future<Doc?> getDoc(String aid, String path, {String? reader});
 
   /// Every thread of the artifact, resolved ones included, oldest first.
   Future<List<ThreadView>> threads(String aid);
@@ -105,6 +110,142 @@ abstract interface class ClaxApi {
   /// events arrive first; `ready` (`{resumed}`) and `resync` come through
   /// for the listener to refetch on. Cancelling the subscription closes it.
   Stream<ClaxEvent> events({List<String>? artifacts, List<String>? types});
+
+  // --- drafts (all token only: no session, so no watch and no feedback) ---
+
+  /// `POST /api/drafts`: a hidden draft artifact of the app [of] (null for
+  /// a new app) at version 1 with [files] (path → text), carrying a copy
+  /// of [of]'s documents (the owner's, without `data/users/`, up to the
+  /// copy's cap).
+  Future<DraftInfo> createDraft({
+    String? of,
+    required String title,
+    Map<String, Object?>? capabilities,
+    required Map<String, String> files,
+  });
+
+  /// Publishes a new version of draft [draftId] with the token and no
+  /// session. `r.ifVersion` is required, as for [publish].
+  Future<PublishResult> publishDraft(String draftId, PublishRequest r);
+
+  /// `DELETE /api/drafts/<id>`: removes the draft, its files and its
+  /// documents. An ID that names no draft is [ClaxApiError] 404.
+  Future<void> deleteDraft(String draftId);
+
+  /// Every draft the daemon holds.
+  Future<List<DraftInfo>> listDrafts();
+
+  // --- document queries ---
+
+  /// The first [limit] documents of [collection] matching every `where`
+  /// triple (`[field, op, value]`, the daemon's operators), ordered by
+  /// [orderBy] ([descending] for `desc`). With [reader], the request is
+  /// made as that app (`X-Clax-Reader: <reader>`): served at `view` level
+  /// and only while [reader] may read [aid] (403 `not_granted` or
+  /// `not_declared` otherwise). A draft reads with its app's grants.
+  Future<List<Doc>> queryDocs(
+    String aid,
+    String collection, {
+    List<List<Object?>>? where,
+    String? orderBy,
+    bool descending = false,
+    int limit = 50,
+    String? reader,
+  });
+
+  /// [listDocs] made as app [reader], as [queryDocs] with `reader`.
+  Future<List<Doc>> listDocsAs(
+    String aid,
+    String collection, {
+    required String reader,
+    int limit = 50,
+  });
+
+  // --- the owner's thread calls ---
+
+  /// Adds the owner's comment to thread [tid]. On a thread sent to the
+  /// agent, the daemon sends the comment too.
+  Future<ThreadView> postOwnerComment(String aid, String tid, String body);
+
+  /// Sends thread [tid] to every live owner and watcher of [aid] (the
+  /// shell's Send to Clax); idempotent.
+  Future<ThreadView> sendThread(String aid, String tid);
+
+  /// Resolves thread [tid] as the owner.
+  Future<ThreadView> resolveAsOwner(String aid, String tid);
+
+  /// Reopens thread [tid] as the owner.
+  Future<ThreadView> reopenThread(String aid, String tid);
+
+  // --- questions ---
+
+  /// Asks [questions] (one to four, `docs/contract.md`'s question shape)
+  /// as session [sid], about [artifactId] when given (`source: ask`).
+  /// 400 `invalid_question` for a set that breaks a rule; 429
+  /// `limit_reached` past the open-question limits.
+  Future<QuestionView> askQuestion(
+    String sid,
+    List<Map<String, Object?>> questions, {
+    String? artifactId,
+  });
+
+  /// Waits up to [wait] for session [sid]'s question [qid] to close and
+  /// returns its view (still `open` when the wait ran out). An answer or
+  /// skip it returns is taken: no feedback poll hands it over again.
+  Future<QuestionView> waitQuestion(
+    String sid,
+    String qid, {
+    required Duration wait,
+  });
+
+  /// Withdraws session [sid]'s open question [qid]. One that has closed
+  /// already is left as it is (an answer not taken then reaches the
+  /// session as a late answer).
+  Future<void> withdrawQuestion(String sid, String qid);
+
+  /// Every question with [status] (`open`, `closed` or `all`): open ones
+  /// oldest first, closed ones most recently closed first.
+  Future<List<QuestionView>> questions({String status = 'open'});
+
+  /// Answers question [qid] as the owner, one entry per question
+  /// (`{selected, text}`). 400 `invalid_answer`; 409 `question_closed`,
+  /// whose [ClaxApiError.body] holds the `question` view.
+  Future<QuestionView> answerQuestion(
+    String qid,
+    List<Map<String, Object?>> answers,
+  );
+
+  /// Skips question [qid] as the owner; 409 as [answerQuestion].
+  Future<QuestionView> declineQuestion(String qid);
+
+  // --- the inbox ---
+
+  /// One page of the owner's inbox, newest first: matching [q] (search
+  /// text), [kinds], [read] (`unread`, `read` or `all`), older than the
+  /// cursor [before].
+  Future<InboxPage> inbox({
+    String? q,
+    List<String>? kinds,
+    String read = 'all',
+    String? before,
+    int limit = 50,
+  });
+
+  /// The unread count, the open questions and the newest unread items.
+  Future<InboxSummary> inboxSummary();
+
+  /// Marks item [itemId] read; returns the unread count after it.
+  Future<int> markInboxRead(String itemId);
+
+  /// Marks every unread item matching [filter] (`{q, kind, artifact,
+  /// agent, since, until}`) read, only up to item `seq` [upto] when given;
+  /// returns the unread count after it.
+  Future<int> markAllInboxRead({int? upto, Map<String, Object?>? filter});
+
+  /// A `/api/stream` connection with the owner's token, for the `inbox`
+  /// and `questions` topics (and any other). It connects on the first
+  /// [ClaxStream.subscribe] or listen; [ClaxStream.close] ends it.
+  ClaxStream stream();
 }
 
 /// A request the daemon refused, or one that never reached it.

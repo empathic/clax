@@ -250,4 +250,504 @@ void main() {
       apiError('not_found'),
     );
   });
+
+  group('drafts', () {
+    test(
+      'a draft copies the documents but the user subtree, and stays hidden',
+      () async {
+        final aid = api.seedArtifact(
+          'Runs',
+          {'index.html': 'x'},
+          capabilities: {'db': <String, Object?>{}},
+        );
+        api.putDoc(aid, 'runs/r1', {'km': 5});
+        api.putDoc(aid, 'runs/r2', {'km': 7});
+        api.putDoc(aid, 'data/users/u1/prefs', {'dark': true});
+        final d = await api.createDraft(
+          of: aid,
+          title: 'Runs',
+          files: {'index.html': '<p>draft</p>'},
+        );
+        expect(
+          (d.of, d.version, d.docsCopied, d.docsTruncated),
+          (aid, 1, 2, false),
+        );
+        expect((await api.getDoc(d.id, 'runs/r1'))!.version, 1);
+        expect(await api.getDoc(d.id, 'data/users/u1/prefs'), isNull);
+        expect((await api.listArtifacts()).map((a) => a.id), [aid]);
+        expect((await api.listDrafts()).map((x) => (x.id, x.of)), [
+          (d.id, aid),
+        ]);
+        await expectLater(api.sendThread(d.id, 'thread-1'), apiError('draft'));
+        expect(() => api.sendComment(d.id, 'hi'), throwsA(isA<ClaxApiError>()));
+      },
+    );
+
+    test('writes on a draft never touch the app', () async {
+      final aid = api.seedArtifact('Runs', {'index.html': 'x'});
+      final r1 = api.putDoc(aid, 'runs/r1', {'km': 5});
+      final d = await api.createDraft(
+        of: aid,
+        title: 'Runs',
+        files: {'index.html': 'x'},
+      );
+      await api.batchDocs(d.id, const [
+        DocWrite(
+          op: 'update',
+          collection: 'runs',
+          docId: 'r1',
+          data: {'km': 9},
+          ifVersion: 1,
+        ),
+      ]);
+      expect((await api.getDoc(d.id, 'runs/r1'))!.data, {'km': 9});
+      expect((await api.getDoc(aid, 'runs/r1'))!.data, {'km': 5});
+      expect((await api.getDoc(aid, 'runs/r1'))!.version, r1.version);
+    });
+
+    test('the copy stops at 2,000 documents', () async {
+      final aid = api.seedArtifact('Runs', {'index.html': 'x'});
+      for (var i = 0; i < 2001; i++) {
+        api.putDoc(aid, 'runs/r$i', {'i': i});
+      }
+      final d = await api.createDraft(
+        of: aid,
+        title: 'Runs',
+        files: {'index.html': 'x'},
+      );
+      expect((d.docsCopied, d.docsTruncated), (2000, true));
+    });
+
+    test('publishDraft needs no session and keeps if_version', () async {
+      final d = await api.createDraft(title: 'New', files: {'index.html': '1'});
+      expect(d.of, isNull);
+      final r = await api.publishDraft(
+        d.id,
+        PublishRequest(ifVersion: 1, files: {'index.html': '2'}),
+      );
+      expect(r.version.n, 2);
+      expect(api.filesOf(d.id, 2), {'index.html': '2'});
+      await expectLater(
+        api.publishDraft(
+          d.id,
+          PublishRequest(ifVersion: 1, files: {'index.html': '3'}),
+        ),
+        apiError('conflict'),
+      );
+      final aid = api.seedArtifact('Runs', {'index.html': 'x'});
+      await expectLater(
+        api.publishDraft(
+          aid,
+          PublishRequest(ifVersion: 1, files: {'index.html': 'y'}),
+        ),
+        throwsArgumentError,
+      );
+    });
+
+    test('deleteDraft removes a draft; anything else is not_found', () async {
+      final aid = api.seedArtifact('Runs', {'index.html': 'x'});
+      final d = await api.createDraft(
+        of: aid,
+        title: 'Runs',
+        files: {'index.html': 'x'},
+      );
+      await api.deleteDraft(d.id);
+      expect(await api.listDrafts(), isEmpty);
+      await expectLater(api.getDoc(d.id, 'runs/r1'), apiError('not_found'));
+      await expectLater(api.deleteDraft(d.id), apiError('not_found'));
+      await expectLater(api.deleteDraft(aid), apiError('not_found'));
+      expect((await api.listArtifacts()).single.id, aid);
+    });
+  });
+
+  group('document queries', () {
+    late String a;
+    late String b;
+    late String plain;
+    setUp(() {
+      b = api.seedArtifact(
+        'B',
+        {'index.html': 'x'},
+        capabilities: {'db': <String, Object?>{}},
+      );
+      plain = api.seedArtifact('Plain', {'index.html': 'x'});
+      a = api.seedArtifact(
+        'A',
+        {'index.html': 'x'},
+        capabilities: {
+          'db': {
+            'read': [b, plain],
+          },
+        },
+      );
+      api.putDoc(b, 'runs/r1', {'km': 5, 'tag': 'easy'});
+      api.putDoc(b, 'runs/r2', {'km': 12, 'tag': 'long'});
+      api.putDoc(b, 'runs/r3', {'km': 8, 'tag': 'easy'});
+      api.putDoc(b, 'data/users/u1/runs', {'km': 1});
+    });
+
+    test('queryDocs filters, orders and limits', () async {
+      final docs = await api.queryDocs(
+        b,
+        'runs',
+        where: [
+          ['tag', '==', 'easy'],
+        ],
+        orderBy: 'km',
+        descending: true,
+      );
+      expect(docs.map((d) => d.id), ['r3', 'r1']);
+      expect(
+        (await api.queryDocs(
+          b,
+          'runs',
+          where: [
+            ['km', '>', 6],
+          ],
+          orderBy: 'km',
+          limit: 1,
+        )).map((d) => d.id),
+        ['r3'],
+      );
+      expect(
+        (await api.queryDocs(
+          b,
+          'runs',
+          where: [
+            [
+              'tag',
+              'in',
+              ['long'],
+            ],
+          ],
+        )).map((d) => d.id),
+        ['r2'],
+      );
+    });
+
+    test('a reader needs a grant; a draft reads with its app grants', () async {
+      await expectLater(
+        api.listDocsAs(b, 'runs', reader: a),
+        apiError('not_granted'),
+      );
+      api.grantRead(a, b);
+      expect((await api.listDocsAs(b, 'runs', reader: a)).map((d) => d.id), [
+        'r1',
+        'r2',
+        'r3',
+      ]);
+      final d = await api.createDraft(
+        of: a,
+        title: 'A',
+        files: {'index.html': 'x'},
+      );
+      expect((await api.queryDocs(b, 'runs', reader: d.id)).length, 3);
+      expect((await api.getDoc(b, 'runs/r1', reader: d.id))!.data['km'], 5);
+      await expectLater(
+        api.listDocsAs(a, 'runs', reader: b),
+        apiError('not_granted'),
+      );
+      await expectLater(
+        api.listDocsAs(plain, 'runs', reader: a),
+        apiError('not_granted'),
+      );
+      api.grantRead(a, plain);
+      await expectLater(
+        api.listDocsAs(plain, 'runs', reader: a),
+        apiError('not_declared'),
+      );
+    });
+
+    test("a reader never sees the users' subtree", () async {
+      api.grantRead(a, b);
+      expect(await api.listDocsAs(b, 'data/users/u1', reader: a), isEmpty);
+      expect(await api.getDoc(b, 'data/users/u1/runs', reader: a), isNull);
+      expect(await api.listDocs(b, 'data/users/u1'), hasLength(1));
+    });
+  });
+
+  group('the owner thread calls', () {
+    test('a comment on a sent thread is sent to the agent', () async {
+      final aid = api.seedArtifact('Runs', {'index.html': 'x'});
+      final first = api.sendComment(aid, 'make it blue', queue: false);
+      final t = await api.postOwnerComment(aid, first.threadId, 'and bigger');
+      expect(t.comments.map((c) => (c.authorKind, c.body)), [
+        ('viewer', 'make it blue'),
+        ('viewer', 'and bigger'),
+      ]);
+      await api.registerAppSession(installId: 'i', pid: 1);
+      final b = await api.pollFeedback(api.sessionId!);
+      expect(b.items.single.body, 'and bigger');
+      expect(b.items.single.threadId, first.threadId);
+    });
+
+    test('send, resolve and reopen change the thread', () async {
+      final aid = api.seedArtifact('Runs', {'index.html': 'x'});
+      final tid = api.addThread(aid, 'a plain note');
+      expect(api.threadOf(aid, tid).sentToAgent, isFalse);
+      var t = await api.postOwnerComment(aid, tid, 'still plain');
+      expect(api.waitingPolls, 0);
+      t = await api.sendThread(aid, tid);
+      expect((t.sentToAgent, t.feedbackState?.state), (true, 'sent'));
+      await api.registerAppSession(installId: 'i', pid: 1);
+      expect(
+        (await api.pollFeedback(api.sessionId!)).items.single.body,
+        'still plain',
+      );
+      t = await api.resolveAsOwner(aid, tid);
+      expect((t.status, t.resolvedBy), ('resolved', 'viewer:owner'));
+      t = await api.reopenThread(aid, tid);
+      expect((t.status, t.resolvedBy), ('open', null));
+    });
+  });
+
+  group('questions', () {
+    const unit = {
+      'question': 'Which unit?',
+      'header': 'Unit',
+      'options': [
+        {'label': 'km', 'recommended': true},
+        {'label': 'mi'},
+      ],
+    };
+
+    late String sid;
+    late String aid;
+    setUp(() async {
+      sid = (await api.registerAppSession(installId: 'i', pid: 1)).id;
+      aid = api.seedArtifact('Runs', {'index.html': 'x'});
+    });
+
+    test('a set that breaks a rule is invalid_question', () async {
+      await expectLater(api.askQuestion(sid, []), apiError('invalid_question'));
+      await expectLater(
+        api.askQuestion(sid, [
+          {...unit, 'header': 'Far too long a header'},
+        ]),
+        apiError('invalid_question'),
+      );
+      await expectLater(
+        api.askQuestion(sid, [
+          {
+            ...unit,
+            'options': [
+              {'label': 'only'},
+            ],
+          },
+        ]),
+        apiError('invalid_question'),
+      );
+      await expectLater(
+        api.askQuestion(sid, [
+          for (var i = 0; i < 5; i++) {...unit, 'question': 'Q$i?'},
+        ]),
+        apiError('invalid_question'),
+      );
+    });
+
+    test('a wait returns the answer, and takes it', () async {
+      final q = await api.askQuestion(sid, [unit], artifactId: aid);
+      expect((q.isOpen, q.artifactTitle), (true, 'Runs'));
+      final waiting = api.waitQuestion(
+        sid,
+        q.id,
+        wait: const Duration(minutes: 5),
+      );
+      final answered = await api.answerQuestion(q.id, [
+        {
+          'selected': ['km'],
+          'text': null,
+        },
+      ]);
+      expect(answered.isAnswered, isTrue);
+      final got = await waiting;
+      expect(got.answers!.single.selected, ['km']);
+      final poll = api.pollFeedback(sid);
+      api.releasePolls();
+      expect((await poll).answers, isEmpty);
+    });
+
+    test('an answer no wait took is a late answer on the next poll', () async {
+      final q = await api.askQuestion(sid, [unit]);
+      final poll = api.pollFeedback(sid);
+      await api.declineQuestion(q.id);
+      final b = await poll;
+      expect(b.items, isEmpty);
+      expect(b.answers.single.isDeclined, isTrue);
+      final q2 = await api.askQuestion(sid, [unit]);
+      await api.answerQuestion(q2.id, [
+        {'selected': null, 'text': 'leagues'},
+      ]);
+      expect(
+        (await api.pollFeedback(sid)).answers.single.answers!.single.text,
+        'leagues',
+      );
+    });
+
+    test('an open wait ends with the open view when released', () async {
+      final q = await api.askQuestion(sid, [unit]);
+      final waiting = api.waitQuestion(
+        sid,
+        q.id,
+        wait: const Duration(seconds: 60),
+      );
+      api.releaseQuestionWaits();
+      expect((await waiting).isOpen, isTrue);
+    });
+
+    test('answers to a closed question are question_closed; a withdraw of one is a no-op', () async {
+      final q = await api.askQuestion(sid, [unit]);
+      await api.answerQuestion(q.id, [
+        {
+          'selected': ['mi'],
+          'text': null,
+        },
+      ]);
+      await expectLater(
+        api.declineQuestion(q.id),
+        throwsA(
+          isA<ClaxApiError>()
+              .having((e) => (e.status, e.code), 'error', (
+                409,
+                'question_closed',
+              ))
+              .having(
+                (e) => (e.body['question'] as Map)['status'],
+                'status',
+                'answered',
+              ),
+        ),
+      );
+      await api.withdrawQuestion(sid, q.id);
+      expect((await api.questions(status: 'all')).single.status, 'answered');
+      final q2 = await api.askQuestion(sid, [unit]);
+      await api.withdrawQuestion(sid, q2.id);
+      expect((await api.questions()).map((x) => x.id), isEmpty);
+      expect((await api.questions(status: 'closed')).map((x) => x.status), [
+        'withdrawn',
+        'answered',
+      ]);
+    });
+
+    test('a wrong number of answers is invalid_answer', () async {
+      final q = await api.askQuestion(sid, [unit]);
+      await expectLater(
+        api.answerQuestion(q.id, []),
+        apiError('invalid_answer'),
+      );
+    });
+  });
+
+  group('the inbox', () {
+    test('a question makes an item that its answer marks read', () async {
+      final sid = (await api.registerAppSession(installId: 'i', pid: 1)).id;
+      final q = await api.askQuestion(sid, [
+        {'question': 'Q?', 'header': 'H'},
+      ]);
+      var page = await api.inbox();
+      expect(
+        (page.unread, page.items.single.kind, page.items.single.question!.id),
+        (1, 'question', q.id),
+      );
+      final summary = await api.inboxSummary();
+      expect((summary.unread, summary.questions.single.id), (1, q.id));
+      expect(summary.latest, isEmpty);
+      await api.answerQuestion(q.id, [
+        {'selected': null, 'text': 'yes'},
+      ]);
+      page = await api.inbox();
+      expect((page.unread, page.items.single.read), (0, true));
+    });
+
+    test('filters, search and paging newest first', () async {
+      final aid = api.seedArtifact('Runs', {'index.html': 'x'});
+      for (var i = 0; i < 5; i++) {
+        api.pushInbox('reply', artifactId: aid, body: 'reply number$i');
+      }
+      api.pushInbox('version', artifactId: aid, versionN: 2, note: 'Bar chart');
+      var page = await api.inbox(limit: 4);
+      expect(page.items.map((i) => i.kind), [
+        'version',
+        'reply',
+        'reply',
+        'reply',
+      ]);
+      expect(page.total, isNull);
+      page = await api.inbox(limit: 4, before: page.nextCursor);
+      expect(page.items.map((i) => i.replyBody), [
+        'reply number1',
+        'reply number0',
+      ]);
+      expect(page.nextCursor, isNull);
+      page = await api.inbox(kinds: ['version']);
+      expect((page.items.single.versionNote, page.total), ('Bar chart', 1));
+      page = await api.inbox(q: 'num');
+      expect(page.total, 5);
+      page = await api.inbox(q: 'umber');
+      expect(page.items, isEmpty);
+    });
+
+    test(
+      'a read mark and a mark-all up to a seq keep the newer items unread',
+      () async {
+        final aid = api.seedArtifact('Runs', {'index.html': 'x'});
+        final first = api.pushInbox('reply', artifactId: aid, body: 'one');
+        final second = api.pushInbox('reply', artifactId: aid, body: 'two');
+        final third = api.pushInbox(
+          'finished',
+          artifactId: aid,
+          message: 'done',
+        );
+        expect(await api.markInboxRead(first.id), 2);
+        expect(await api.markAllInboxRead(upto: second.seq), 1);
+        final unread = await api.inbox(read: 'unread');
+        expect(unread.items.single.id, third.id);
+        expect(await api.markAllInboxRead(filter: {'kind': 'reply'}), 1);
+        expect(await api.markAllInboxRead(), 0);
+      },
+    );
+  });
+
+  group('stream', () {
+    test(
+      'subscribe is recorded, and only subscribed topics get events',
+      () async {
+        final s = api.stream();
+        final got = <StreamEvent>[];
+        final sub = s.events.listen(got.add);
+        await s.subscribe(['inbox']);
+        expect(api.callNames, ['streamSubscribe']);
+        expect(api.calls.single.args['topics'], ['inbox']);
+        final sid = (await api.registerAppSession(installId: 'i', pid: 1)).id;
+        final q = await api.askQuestion(sid, [
+          {'question': 'Q?', 'header': 'H'},
+        ]);
+        await api.answerQuestion(q.id, [
+          {'selected': null, 'text': 'yes'},
+        ]);
+        await pumpEventQueue();
+        expect(got.map((e) => (e.topic, e.type)), [
+          ('inbox', 'inbox_item'),
+          ('inbox', 'inbox_item'),
+        ]);
+        expect((got.first.data['item'] as Map)['kind'], 'question');
+        expect(got.last.data['unread'], 0);
+        await s.subscribe(['questions']);
+        api.emitStream(
+          const StreamEvent(
+            topic: 'questions',
+            type: 'resync',
+            data: {'topic': 'questions', 'reason': 'behind'},
+          ),
+        );
+        api.emitStream(const StreamEvent(topic: 'gallery', type: 'version'));
+        await pumpEventQueue();
+        expect(got.last.type, 'resync');
+        expect(got, hasLength(3));
+        await sub.cancel();
+        await s.close();
+        await expectLater(s.subscribe(['inbox']), throwsStateError);
+      },
+    );
+  });
 }
