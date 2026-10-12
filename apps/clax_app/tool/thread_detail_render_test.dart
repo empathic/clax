@@ -228,7 +228,7 @@ void main() {
               autoDictate: false,
               label: 'the run card “Mon”',
               onPreview: (_) {},
-              onRetry: (_) {},
+              onRetry: (_) async => true,
               now: () => DateTime.utc(2026, 10, 12, 9, 14),
             ),
             brightness: brightness,

@@ -520,6 +520,17 @@ class HttpClaxApi implements ClaxApi {
   // --- the owner's thread calls ---
 
   @override
+  Future<String?> ownerPublicId() async {
+    final j = await _json('GET', '/api/viewers/me');
+    return _parse(
+      () => switch (j['viewer']) {
+        final Map<String, Object?> v => v['public_id'] as String,
+        _ => null,
+      },
+    );
+  }
+
+  @override
   Future<ThreadView> postOwnerComment(String aid, String tid, String body) =>
       _thread('comments', aid, tid, body: {'body': body});
 

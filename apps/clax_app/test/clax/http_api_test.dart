@@ -1300,6 +1300,40 @@ void main() {
     );
   });
 
+  group('the owner', () {
+    test(
+      'ownerPublicId reads the owner from viewers/me with the token',
+      () async {
+        server.json('GET', '/api/viewers/me', 200, {
+          'viewer': {
+            'public_id': 'u_owner',
+            'display_name': null,
+            'created_at': '2026-10-12T09:00:00Z',
+          },
+        });
+        expect(await api.ownerPublicId(), 'u_owner');
+        expectOwnerCall(only('GET', '/api/viewers/me'));
+      },
+    );
+
+    test('ownerPublicId is null before the owner exists', () async {
+      server.json('GET', '/api/viewers/me', 200, {'viewer': null});
+      expect(await api.ownerPublicId(), isNull);
+    });
+
+    test('a comment carries its author public ID', () {
+      final c = ThreadComment.fromJson({
+        'id': 'c1',
+        'author_kind': 'viewer',
+        'author_name': 'Viewer',
+        'author_public_id': 'u_owner',
+        'body': 'x',
+        'created_at': '2026-10-12T09:00:00Z',
+      });
+      expect(c.authorPublicId, 'u_owner');
+    });
+  });
+
   group('questions', () {
     test('askQuestion creates an ask question for the session', () async {
       api.sessionId = sid;

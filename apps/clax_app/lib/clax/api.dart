@@ -163,6 +163,12 @@ abstract interface class ClaxApi {
 
   // --- the owner's thread calls ---
 
+  /// The owner's public ID (`GET /api/viewers/me` with the token), the
+  /// [ThreadComment.authorPublicId] of every comment the owner wrote under
+  /// any name; null before the owner exists (the first owner comment makes
+  /// it).
+  Future<String?> ownerPublicId();
+
   /// Adds the owner's comment to thread [tid]. On a thread sent to the
   /// agent, the daemon sends the comment too.
   Future<ThreadView> postOwnerComment(String aid, String tid, String body);

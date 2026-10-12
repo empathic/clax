@@ -464,6 +464,7 @@ class ThreadComment {
     required this.createdAt,
     this.viaHarness,
     this.viaPage = false,
+    this.authorPublicId,
   });
 
   factory ThreadComment.fromJson(Json j) => ThreadComment(
@@ -474,6 +475,7 @@ class ThreadComment {
     createdAt: j['created_at'] as String,
     viaHarness: j['via_harness'] as String?,
     viaPage: j['via_page'] as bool? ?? false,
+    authorPublicId: j['author_public_id'] as String?,
   );
 
   final String id;
@@ -483,6 +485,10 @@ class ThreadComment {
   final String createdAt;
   final String? viaHarness;
   final bool viaPage;
+
+  /// The viewer who wrote it (stable across renames); null for an agent's
+  /// comment. [authorName] is the name it was posted with.
+  final String? authorPublicId;
 
   bool get byAgent => authorKind == 'agent';
 }

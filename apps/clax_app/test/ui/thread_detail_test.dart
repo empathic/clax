@@ -27,6 +27,9 @@ class _Rig {
   final String aid;
   final previews = <int>[];
   final retries = <String>[];
+
+  /// What onRetry answers: whether a change was queued.
+  var queued = true;
 }
 
 Future<_Rig> _seeded() async {
@@ -57,7 +60,12 @@ void main() {
           voice: voice ?? FakeVoice(),
           autoDictate: autoDictate,
           onPreview: rig.previews.add,
-          onRetry: retry ? rig.retries.add : null,
+          onRetry: retry
+              ? (tid) async {
+                  rig.retries.add(tid);
+                  return rig.queued;
+                }
+              : null,
           label: label,
           now: () => _now,
         ),
@@ -78,7 +86,7 @@ void main() {
     expect(find.text('make the title blue'), findsOneWidget);
     expect(find.text('Done: it is blue.'), findsOneWidget);
     expect(find.text('darker please'), findsOneWidget);
-    expect(find.text('Alex'), findsOneWidget);
+    expect(find.text('You'), findsNWidgets(2));
     expect(find.text('Clax'), findsOneWidget);
     expect(
       find.byKey(
@@ -103,10 +111,12 @@ void main() {
     );
     await pumpDetail(tester, rig, a.threadId);
     expect(find.text('“Runs”'), findsOneWidget);
+    expect(find.text('The page title'), findsNothing);
 
     final b = rig.api.sendComment(rig.aid, 'all of it');
     await pumpDetail(tester, rig, b.threadId, label: 'the page title');
-    expect(find.text('the page title'), findsOneWidget);
+    // The title starts with a capital letter.
+    expect(find.text('The page title'), findsOneWidget);
 
     final c = rig.api.sendComment(rig.aid, 'everything');
     await pumpDetail(tester, rig, c.threadId);
@@ -273,6 +283,27 @@ void main() {
       await tester.pump();
       expect(rig.retries, [tid]);
       expect(rig.api.callNames.where((n) => n == 'postOwnerComment'), isEmpty);
+      await tester.pump();
+      expect(find.text('Trying again'), findsOneWidget);
+      expect(find.byKey(const ValueKey('thread-retry')), findsNothing);
+    });
+
+    testWidgets('that queued nothing keeps the failure and says so', (
+      tester,
+    ) async {
+      final (rig, tid) = await failed("Couldn't make that change: x");
+      rig.queued = false;
+      await pumpDetail(tester, rig, tid);
+      await tester.tap(find.byKey(const ValueKey('thread-retry')));
+      await tester.pumpAndSettle();
+      expect(rig.retries, [tid]);
+      expect(find.text('Trying again'), findsNothing);
+      expect(find.text('Couldn’t make that change'), findsOneWidget);
+      expect(find.byKey(const ValueKey('thread-retry')), findsOneWidget);
+      expect(
+        find.text('There was nothing to run again. Reply to ask once more.'),
+        findsOneWidget,
+      );
     });
 
     testWidgets('a typographic apostrophe counts too', (tester) async {
@@ -381,6 +412,70 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('On it.'), findsOneWidget);
+  });
+
+  group('the owner', () {
+    testWidgets('is You under every name, other viewers by theirs', (
+      tester,
+    ) async {
+      final rig = await _seeded();
+      rig.api.ownerName = 'Viewer';
+      final item = rig.api.sendComment(rig.aid, 'make it blue');
+      rig.api.ownerName = 'Alexandra';
+      await rig.api.postOwnerComment(rig.aid, item.threadId, 'darker');
+      final other = rig.api.sendComment(rig.aid, 'and mine', author: 'Sam');
+      await pumpDetail(tester, rig, item.threadId);
+      expect(find.text('You'), findsNWidgets(2));
+      expect(find.text('Viewer'), findsNothing);
+      expect(find.text('Alexandra'), findsNothing);
+
+      await pumpDetail(tester, rig, other.threadId);
+      expect(find.text('Sam'), findsOneWidget);
+      expect(find.text('You'), findsNothing);
+    });
+
+    testWidgets('made by the first reply is read again after it', (
+      tester,
+    ) async {
+      final rig = await _seeded();
+      final item = rig.api.sendComment(rig.aid, 'mine', author: 'Sam');
+      rig.api.ownerExists = false;
+      await pumpDetail(tester, rig, item.threadId);
+      await tester.enterText(find.byKey(const ValueKey('reply-field')), 'ok');
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('reply-send')));
+      await tester.pumpAndSettle();
+      expect(find.text('You'), findsOneWidget);
+      expect(find.text('Sam'), findsOneWidget);
+    });
+  });
+
+  testWidgets('each comment reads as one node; a failure reply says failed', (
+    tester,
+  ) async {
+    final handle = tester.ensureSemantics();
+    final rig = await _seeded();
+    final item = rig.api.sendComment(rig.aid, 'make it blue');
+    await rig.api.replyAsAgent(
+      rig.aid,
+      item.threadId,
+      "Couldn't make that change: timeout",
+    );
+    await pumpDetail(tester, rig, item.threadId);
+    final t = rig.api.threadOf(rig.aid, item.threadId);
+    final person = tester.getSemantics(
+      find.byKey(ValueKey('comment-person-${t.comments[0].id}')),
+    );
+    expect(person.label, contains('You'));
+    expect(person.label, contains('6 min ago'));
+    expect(person.label, contains('make it blue'));
+    final agent = tester.getSemantics(
+      find.byKey(ValueKey('comment-agent-${t.comments[1].id}')),
+    );
+    expect(agent.label, contains('Clax'));
+    expect(agent.label, contains('failed'));
+    expect(agent.label, contains('timeout'));
+    handle.dispose();
   });
 
   testWidgets('a thread that is gone says so', (tester) async {

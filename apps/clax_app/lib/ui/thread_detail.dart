@@ -106,8 +106,15 @@ String relativeTime(String iso, DateTime now) {
 /// - **Send to Clax** on a thread never sent ([ClaxApi.sendThread]).
 /// - **Retry** when the agent's last comment is a failure reply and
 ///   [onRetry] is given: it calls [onRetry] with the thread's ID and posts
-///   nothing; the page then reads the thread as working again until the
-///   thread changes.
+///   nothing. When [onRetry] answers that it queued the change, the page
+///   reads the thread as working again until the thread changes; when it
+///   queued nothing, the failure stays with a note saying so.
+/// - **Authors.** Every comment the owner wrote reads "You", whatever name
+///   it was posted with: the owner is known by public ID
+///   ([ClaxApi.ownerPublicId], read once, and again after the first reply
+///   while the owner did not exist). Other viewers keep their name, the
+///   agent reads "Clax". Each comment is one screen-reader node, and a
+///   failure reply says "failed".
 /// - **Resolve** / **Reopen** as the owner.
 /// - **Versions.** "Changed in vN" for each version that addressed the
 ///   thread calls [onPreview].
@@ -138,9 +145,9 @@ class ThreadDetail extends StatefulWidget {
   /// Shows version `n` of the app.
   final void Function(int n) onPreview;
 
-  /// Runs the thread's failed change again; null when nothing can, and
-  /// Retry is not offered.
-  final void Function(String tid)? onRetry;
+  /// Runs the thread's failed change again, answering whether it queued
+  /// one; null when nothing can, and Retry is not offered.
+  final Future<bool> Function(String tid)? onRetry;
 
   /// What the thread is anchored to in the shell's words; [anchorWords]
   /// of its anchor when null or empty.
@@ -175,6 +182,9 @@ class _ThreadDetailState extends State<ThreadDetail> {
   /// working until the count moves on.
   int? _retriedAt;
 
+  /// The owner's public ID, once read; null before the owner exists.
+  String? _owner;
+
   // Dictation.
   StreamSubscription<VoiceResult>? _listen;
   var _listening = false;
@@ -198,6 +208,16 @@ class _ThreadDetailState extends State<ThreadDetail> {
         .events(artifacts: [widget.aid], types: _eventTypes)
         .listen((_) => unawaited(_load()), onError: (Object _) {});
     unawaited(_load());
+    unawaited(_readOwner());
+  }
+
+  Future<void> _readOwner() async {
+    try {
+      final id = await widget.api.ownerPublicId();
+      if (mounted && id != _owner) setState(() => _owner = id);
+    } on ClaxApiError {
+      // Owner comments then read by the name they were posted with.
+    }
   }
 
   @override
@@ -305,14 +325,24 @@ class _ThreadDetailState extends State<ThreadDetail> {
       () => widget.api.postOwnerComment(widget.aid, widget.tid, text),
       'Couldn’t send the reply',
     );
+    // The first owner comment makes the owner.
+    if (_owner == null) await _readOwner();
   }
 
-  void _retry() {
+  Future<void> _retry() async {
     final t = _thread;
     final retry = widget.onRetry;
-    if (t == null || retry == null) return;
-    setState(() => _retriedAt = t.comments.length);
-    retry(widget.tid);
+    if (t == null || retry == null || _retriedAt != null) return;
+    setState(() {
+      _retriedAt = t.comments.length;
+      _actionError = null;
+    });
+    final queued = await retry(widget.tid);
+    if (!mounted || queued) return;
+    setState(() {
+      _retriedAt = null;
+      _actionError = 'There was nothing to run again. Reply to ask once more.';
+    });
   }
 
   // --- dictation ---
@@ -445,7 +475,7 @@ class _ThreadDetailState extends State<ThreadDetail> {
             key: const ValueKey('thread-list'),
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
             children: [
-              Text(label, style: theme.textTheme.titleLarge),
+              Text(_sentence(label), style: theme.textTheme.titleLarge),
               const SizedBox(height: 2),
               Text(
                 'On version ${t.versionN}',
@@ -590,7 +620,7 @@ class _ThreadDetailState extends State<ThreadDetail> {
           backgroundColor: scheme.error,
           foregroundColor: scheme.onError,
         ),
-        onPressed: _retry,
+        onPressed: () => unawaited(_retry()),
         icon: const Icon(Icons.refresh, size: 18),
         label: const Text('Retry'),
       ),
@@ -669,9 +699,10 @@ class _ThreadDetailState extends State<ThreadDetail> {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final agent = c.byAgent;
+    final owner = _owner;
     final name = agent
         ? 'Clax'
-        : c.authorName.isEmpty
+        : (owner != null && c.authorPublicId == owner) || c.authorName.isEmpty
         ? 'You'
         : c.authorName;
     final failed = agent && isFailureReply(c.body);
@@ -682,76 +713,88 @@ class _ThreadDetailState extends State<ThreadDetail> {
         ? (failed ? scheme.onErrorContainer : scheme.onSecondaryContainer)
         : scheme.onSurface;
     final time = relativeTime(c.createdAt, now);
-    return Padding(
+    return MergeSemantics(
       key: ValueKey('comment-${agent ? 'agent' : 'person'}-${c.id}'),
-      padding: const EdgeInsets.only(bottom: 14),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          CircleAvatar(
-            radius: 16,
-            backgroundColor: agent ? scheme.primary : scheme.tertiaryContainer,
-            foregroundColor: agent
-                ? scheme.onPrimary
-                : scheme.onTertiaryContainer,
-            child: agent
-                ? const Icon(Icons.auto_awesome, size: 16)
-                : ExcludeSemantics(
-                    child: Text(
-                      name.characters.first.toUpperCase(),
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                  ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Wrap(
-                  spacing: 8,
-                  crossAxisAlignment: WrapCrossAlignment.end,
-                  children: [
-                    Text(
-                      name,
-                      style: theme.textTheme.labelLarge?.copyWith(
-                        color: agent ? scheme.primary : null,
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 14),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            CircleAvatar(
+              radius: 16,
+              backgroundColor: agent
+                  ? scheme.primary
+                  : scheme.tertiaryContainer,
+              foregroundColor: agent
+                  ? scheme.onPrimary
+                  : scheme.onTertiaryContainer,
+              child: agent
+                  ? const Icon(Icons.auto_awesome, size: 16)
+                  : ExcludeSemantics(
+                      child: Text(
+                        name.characters.first.toUpperCase(),
+                        style: const TextStyle(fontWeight: FontWeight.w600),
                       ),
                     ),
-                    if (time.isNotEmpty)
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Wrap(
+                    spacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.end,
+                    children: [
                       Text(
-                        time,
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          color: scheme.onSurfaceVariant,
+                        name,
+                        style: theme.textTheme.labelLarge?.copyWith(
+                          color: agent ? scheme.primary : null,
                         ),
                       ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: bubble,
-                    borderRadius: const BorderRadius.only(
-                      topRight: Radius.circular(14),
-                      bottomLeft: Radius.circular(14),
-                      bottomRight: Radius.circular(14),
-                      topLeft: Radius.circular(4),
-                    ),
+                      if (time.isNotEmpty)
+                        Text(
+                          time,
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      if (failed)
+                        Text(
+                          'failed',
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: scheme.error,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                    ],
                   ),
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 9, 12, 10),
-                    child: Text(
-                      c.body,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: onBubble,
+                  const SizedBox(height: 4),
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: bubble,
+                      borderRadius: const BorderRadius.only(
+                        topRight: Radius.circular(14),
+                        bottomLeft: Radius.circular(14),
+                        bottomRight: Radius.circular(14),
+                        topLeft: Radius.circular(4),
+                      ),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 9, 12, 10),
+                      child: Text(
+                        c.body,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: onBubble,
+                        ),
                       ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

@@ -124,7 +124,7 @@ void main() {
     double? buttonDy,
     ValueChanged<double>? onButtonMoved,
     CommentsCommand? comments,
-    void Function(String aid, String tid)? onRetry,
+    Future<bool> Function(String aid, String tid)? onRetry,
   }) async {
     phone(tester, size: size);
     final (api, aid) = await _seeded();
@@ -635,7 +635,10 @@ void main() {
     final retries = <(String, String)>[];
     final rig = await pumpScreen(
       tester,
-      onRetry: (aid, tid) => retries.add((aid, tid)),
+      onRetry: (aid, tid) async {
+        retries.add((aid, tid));
+        return true;
+      },
     );
     final item = rig.api.sendComment(rig.aid, 'make the title blue');
     await rig.api.replyAsAgent(
@@ -674,7 +677,7 @@ void main() {
 
     // The page: the shell's label, the whole conversation, and Retry.
     expect(find.byType(ThreadDetail), findsOneWidget);
-    expect(find.text('the page title'), findsOneWidget);
+    expect(find.text('The page title'), findsOneWidget);
     expect(find.text('make the title blue'), findsOneWidget);
     expect(find.text('Clax'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('thread-retry')));
