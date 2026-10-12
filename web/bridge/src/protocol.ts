@@ -52,8 +52,11 @@ export type CapEvent = { type: "clax:event"; ns: string; topic: string; data: un
 
 export type ShellToBridge =
   /** `app`: the shell is the Clax app's (`/a/<id>?app=1`); the page then
-   * reports its scroll position (`clax:scroll`). */
-  | { type: "clax:welcome"; mode: "comment" | "view"; app?: boolean }
+   * reports its scroll position (`clax:scroll`), and scrolls to
+   * `restoreScroll` (CSS pixels from the top) once the document is tall
+   * enough, or after 2 s as far as it reaches: the app shell sends it when it
+   * loaded a newer version in place of the one the viewer was scrolling. */
+  | { type: "clax:welcome"; mode: "comment" | "view"; app?: boolean; restoreScroll?: number }
   | { type: "clax:comment-mode"; on: boolean }
   /** Moves the page to the fragment `hash` (`#…`, or `""` for none) in
    * place, replacing its history entry (the page's own `clax:hash` reports
@@ -88,10 +91,6 @@ export type ShellToBridge =
    * renders its clip now, never before, so that work (which can hold the main
    * thread the page may share with the shell) never delays that focus. */
   | { type: "clax:composer-ready"; pickId: string }
-  /** Scrolls the page to `y` (CSS pixels from the top), once the document
-   * is tall enough, within 2 s; sent after the app shell loaded a newer
-   * version in place of the one the viewer was scrolling. */
-  | { type: "clax:restore-scroll"; y: number }
   | UseResult
   | CallResult
   | CapEvent;
@@ -128,10 +127,11 @@ export type BridgeToShell =
   | { type: "clax:degraded"; part: "comment" | "clip" | "caps" | "room" | "sample"; message: string }
   /** The page's vertical scroll position (CSS pixels) on its `file`, after a
    * welcome with `app: true`: at most every 250 ms while the page scrolls,
-   * the last position of a burst always sent. */
+   * the last position of a burst always sent. Not in `BRIDGE_TYPES` yet:
+   * the shell drops it until its app mode takes it. */
   | { type: "clax:scroll"; file: string; y: number }
   | UseRequest
   | CallRequest;
 
-export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:greet", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:restore-scroll", "clax:use-result", "clax:call-result", "clax:event"]);
-export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:scroll", "clax:use", "clax:call"]);
+export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:greet", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:use-result", "clax:call-result", "clax:event"]);
+export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:use", "clax:call"]);

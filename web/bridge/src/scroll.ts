@@ -1,6 +1,8 @@
 // The page's scroll position for the app shell: reported while the page
-// scrolls, and restored when the shell loads a newer version of the page in
-// its place (spec "Bridge additions": `clax:scroll`, `clax:restore-scroll`).
+// scrolls (`clax:scroll`), and restored when the shell loads a newer version
+// of the page in its place (the welcome's `restoreScroll`). Loaded with the
+// caps part on the app shell's welcome, so a page outside the app loads none
+// of it.
 
 import { type Timers, windowTimers } from "./long-press";
 
@@ -35,6 +37,18 @@ export function reportScroll(win: Window, post: (m: { type: "clax:scroll"; file:
     if (timer !== null) timers.clear(timer);
     timer = null;
   };
+}
+
+/** Whether this document's scroll report has started. */
+let reporting = false;
+
+/** On the app shell's welcome: starts the scroll report for the page `file`
+ * of `win` (once per document, whatever the number of welcomes), and
+ * restores the position `y` the welcome carries, if any. */
+export function appScroll(win: Window, post: (m: { type: "clax:scroll"; file: string; y: number }) => void, file: string, y?: number): void {
+  if (!reporting) reportScroll(win, post, () => file);
+  reporting = true;
+  if (y !== undefined) restoreScroll(win, y);
 }
 
 /** Scrolls the page to `y` once the document is tall enough to reach it,
