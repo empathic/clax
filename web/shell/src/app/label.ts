@@ -31,7 +31,7 @@ const NOUNS: Record<string, string> = {
  * quote marks made ', cut at `max` characters; null when nothing is left. */
 const clean = (s: unknown, max: number): string | null => {
   if (typeof s !== "string") return null;
-  const t = cleanLabel(s)?.replace(/["“”„‟«»‹›]/g, "'");
+  const t = cleanLabel(s)?.replace(/["“”„‟«»‹›＂〝〞〟‚]/g, "'");
   if (!t) return null;
   const chars = [...t];
   return chars.length > max ? `${chars.slice(0, max).join("").trimEnd()}…` : t;

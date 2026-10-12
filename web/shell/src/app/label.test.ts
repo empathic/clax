@@ -35,6 +35,7 @@ describe("anchorLabel", () => {
     expect(anchorLabel(anchor({ quote: "this spot" }))).toBe("“this spot”");
     expect(anchorLabel(anchor(), { tag: "button", role: null, name: "Save” and “Delete" })).toBe("the button “Save' and 'Delete”");
     expect(anchorLabel(anchor({ quote: 'say "hi" «there»' }))).toBe("“say 'hi' 'there'”");
+    expect(anchorLabel(anchor({ quote: "a＂b〝c〞d〟e‚f" }))).toBe("“a'b'c'd'e'f”");
     // Bidi, format and control characters are dropped.
     expect(anchorLabel(anchor({ quote: "abc\u202Edef\u200B\u0007" }))).toBe("“abcdef”");
     expect(anchorLabel(anchor(), { tag: "img", role: null, name: "\u202E\u2066" })).toBe("an image");

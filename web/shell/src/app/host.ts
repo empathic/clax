@@ -55,8 +55,9 @@ import { setUrl } from "../view/url";
 export type HostMessage =
   | { type: "ready"; artifact: string; version: number; latest: number; file: string }
   /** `draft.label`: what the composer's anchor is, in words (`label.ts`),
-   * or the label the page gave a composer it opened. */
-  | { type: "state"; commenting: boolean; draft: { label: string; text: string; clip: "pending" | "ready" | "none" } | null; busy: boolean }
+   * or the label the page gave a composer it opened; `byPage`: the page
+   * opened this composer (its comments capability), not the viewer's pick. */
+  | { type: "state"; commenting: boolean; draft: { label: string; text: string; clip: "pending" | "ready" | "none"; byPage?: true } | null; busy: boolean }
   /** `label`: what each thread's anchor is, in words (`label.ts`). */
   | { type: "threads"; threads: { id: string; status: string; summary: string; label: string; sent: boolean; comments: number; version: number }[] }
   | { type: "sent"; thread: string }
@@ -226,7 +227,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     const m: HostMessage = {
       type: "state",
       commenting: v.commenting,
-      draft: d ? { label: d.label ?? anchorLabel(d.anchor, picked.get(d.pickId)), text: ctl.composerText, clip: d.capturing ? "pending" : d.clip ? "ready" : "none" } : null,
+      draft: d ? { label: d.label ?? anchorLabel(d.anchor, picked.get(d.pickId)), text: ctl.composerText, clip: d.capturing ? "pending" : d.clip ? "ready" : "none", ...(d.byPage ? { byPage: true as const } : {}) } : null,
       busy: v.busy > 0,
     };
     const json = JSON.stringify(m);
