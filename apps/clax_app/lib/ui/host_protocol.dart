@@ -109,6 +109,7 @@ final class Draft {
     },
   );
 
+  /// What the composer is about, in a person's words, shown as is.
   final String label;
   final String text;
   final DraftClip clip;
@@ -137,6 +138,7 @@ final class ThreadSummary {
     required this.sent,
     required this.comments,
     required this.version,
+    this.label = '',
   });
 
   factory ThreadSummary.fromJson(Map<String, Object?> j) => ThreadSummary(
@@ -146,6 +148,7 @@ final class ThreadSummary {
     sent: j['sent'] as bool,
     comments: _int(j['comments']),
     version: _int(j['version']),
+    label: j['label'] as String? ?? '',
   );
 
   final String id;
@@ -162,6 +165,10 @@ final class ThreadSummary {
 
   /// The version the thread was made on.
   final int version;
+
+  /// What the thread is anchored to, in a person's words; empty when the
+  /// shell gives none.
+  final String label;
 }
 
 /// The view's threads changed.
@@ -349,14 +356,16 @@ final class AttestPointer extends HostCall {
 /// The host's side of one WebView's documents: which top-level document is
 /// the shell, its nonce, and which messages are the shell's.
 ///
-/// - The top level may only be the shell, `<base>/a/<id>[/v/<n>]?app=1`
-///   on [base]'s origin ([isShellUrl]); anything else is refused there.
+/// - The top level may only be the shell's app view on [base]'s origin
+///   ([isShellUrl], the rule the shell installs its host by).
 /// - Each shell document gets a fresh random nonce once it has loaded
-///   ([documentLoaded] returns the [Init] call carrying it).
+///   ([documentLoaded] returns the [Init] call carrying it); a URL change
+///   inside the document (the shell moving between the app's pages or
+///   versions by history) keeps it.
 /// - A message is the shell's only when it carries the current nonce
 ///   ([accept]): every frame of the page can reach the JavaScript channel,
 ///   so anything else is dropped, as is everything before [Init] and
-///   after the document is left.
+///   after a new document starts.
 /// - `claxHost` is called only in a shell document that was handed its
 ///   nonce ([canCall]).
 class ShellSession {
@@ -369,46 +378,60 @@ class ShellSession {
   String? _nonce;
   var _shell = false;
 
-  static final _shellPath = RegExp(r'^/a/[^/]+(/v/[1-9][0-9]*)?$');
+  /// An artifact ID, as the shell's `parseShellPath` takes it
+  /// (`web/shell/src/route.ts`).
+  static final _id = RegExp(r'^[0-9a-hj-km-np-tv-z]{12}$');
 
-  /// Whether [url] is the shell's app view on [base]'s origin.
-  static bool isShellUrl(Uri base, Uri? url) =>
-      url != null &&
-      url.scheme == base.scheme &&
-      url.host.toLowerCase() == base.host.toLowerCase() &&
-      url.port == base.port &&
-      url.userInfo.isEmpty &&
-      _shellPath.hasMatch(url.path) &&
-      url.queryParameters['app'] == '1';
+  /// Whether [url] is the shell's app view on [base]'s origin: the path
+  /// `/a/<id>[/v/<n>][/<file>]` (`parseShellPath` in
+  /// `web/shell/src/route.ts`: a valid ID, an optional version, then any
+  /// file segments that percent-decode) with `app=1` first in its query
+  /// (`appQuery`), which is where the shell installs `window.claxHost`.
+  static bool isShellUrl(Uri base, Uri? url) {
+    if (url == null ||
+        url.scheme != base.scheme ||
+        url.host.toLowerCase() != base.host.toLowerCase() ||
+        url.port != base.port ||
+        url.userInfo.isNotEmpty) {
+      return false;
+    }
+    if (url.queryParametersAll['app']?.first != '1') return false;
+    final segs = url.path.split('/');
+    if (segs.length < 3 || segs[0] != '' || segs[1] != 'a') return false;
+    if (!_id.hasMatch(segs[2])) return false;
+    try {
+      for (final s in segs.skip(3)) {
+        Uri.decodeComponent(s);
+      }
+    } on FormatException {
+      return false;
+    } on ArgumentError {
+      return false;
+    }
+    return true;
+  }
 
   /// Whether calls may be made now.
   bool get canCall => _shell && _nonce != null;
 
-  /// A new top-level document started loading: nothing is accepted or
-  /// called until it has loaded.
+  /// A new top-level document started loading at [url]: nothing is
+  /// accepted or called until it has loaded.
   void documentStarted(Uri? url) {
     _nonce = null;
     _shell = isShellUrl(base, url);
   }
 
-  /// The top-level URL changed within the document (a history push).
-  void urlChanged(Uri? url) {
-    if (!isShellUrl(base, url)) {
-      _shell = false;
-      _nonce = null;
-    }
-  }
+  /// The top-level URL changed inside the document (the shell's history
+  /// push or replace). The document, and so its host and nonce, stay.
+  void urlChanged(Uri? url) {}
 
   /// The top-level document loaded at [url]: the call handing the shell
   /// its nonce, or null when it is not the shell or already has one (a
   /// document is handed one nonce).
   Init? documentLoaded(Uri? url) {
-    _shell = isShellUrl(base, url);
-    if (!_shell) {
-      _nonce = null;
-      return null;
-    }
     if (_nonce != null) return null;
+    _shell = isShellUrl(base, url);
+    if (!_shell) return null;
     final bytes = List<int>.generate(16, (_) => _random.nextInt(256));
     final n = [for (final b in bytes) b.toRadixString(16).padLeft(2, '0')]
         .join();

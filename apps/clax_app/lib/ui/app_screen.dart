@@ -11,6 +11,7 @@ import '../daemon/clock.dart';
 import '../platform/settings_store.dart';
 import '../platform/voice.dart';
 import 'app_surface.dart';
+import 'change_tracker.dart';
 import 'host_protocol.dart';
 import 'swipe.dart';
 import 'threads_panel.dart';
@@ -29,18 +30,23 @@ import 'versions_tab.dart';
 ///   click after the hold.
 /// - **Panel.** A two-finger swipe left, the edge handle, or (macOS)
 ///   App › Comments (⌘K) opens it and turns comment mode on; a swipe
-///   right, back, Escape or ⌘K closes it and turns comment mode off. On a
-///   narrow screen it is the lower 45% with the page above it; on a wide
-///   one a 360 px side panel. While the shell's composer is open it
-///   shrinks to a peek with the mic and Send.
+///   right, back, Escape or ⌘K closes it and turns comment mode off. While
+///   the shell's composer is open comment mode is the shell's: opening or
+///   closing the panel leaves it, and a composer that closes while the
+///   panel is closed has comment mode turned off again. On a narrow screen
+///   the panel is the lower 45% with the page above it; on a wide one a
+///   360 px side panel. While a composer is open it shrinks to a peek with
+///   the mic and Send.
 /// - **Dictation.** A pick (the composer opening) starts dictation when
 ///   [AppSettings.dictateComments] is on; heard words replace what
 ///   dictation added to the composer's text.
-/// - **Working chip and timing.** The pick starts the long-press→landed
-///   timing; `sent` shows Working…; the version's frame load (`landed`)
-///   ends both and records the timing. A reply without a version, a
-///   failure or a cancel ends the chip, shows which it was, and drops the
-///   timing.
+/// - **Working chip and timing** ([ChangeTracker]). Each change is kept by
+///   its thread, from the shell's `sent` or the worker's start to the
+///   frame that shows its version, whatever order those come in. The
+///   long-press→landed timing runs from Send to that frame. A reply
+///   without a version, a failure, a cancel or a failed send ends the
+///   chip and shows which it was (Retry for a failed send). The chip can
+///   always be dismissed.
 /// - **Versions.** Tap to preview, Restore (or Undo) to republish an
 ///   earlier version (`restoreVersion`), then `reloadLatest`.
 ///
@@ -93,8 +99,6 @@ class AppScreen extends StatefulWidget {
   State<AppScreen> createState() => _AppScreenState();
 }
 
-enum _ChipKind { none, working, replied, failed, stopped, sendFailed }
-
 class _AppScreenState extends State<AppScreen> {
   final _pageKey = GlobalKey(debugLabel: 'app-page');
   late final TwoFingerSwipe _swipe;
@@ -118,15 +122,8 @@ class _AppScreenState extends State<AppScreen> {
   String? _detailError;
   var _restoring = false;
 
-  // The chip and the long-press→landed timing.
-  var _chip = _ChipKind.none;
-
-  /// The thread whose send failed, for the chip's Retry.
-  String? _sendFailed;
-  String _chipText = '';
-
-  /// A change was sent and its timing runs until its version's frame loads.
-  var _armed = false;
+  /// The changes in flight, for the chip and the long-press→landed timing.
+  late final ChangeTracker _changes;
 
   // Dictation.
   Future<VoiceAvailability>? _availability;
@@ -136,6 +133,7 @@ class _AppScreenState extends State<AppScreen> {
   @override
   void initState() {
     super.initState();
+    _changes = ChangeTracker(timings: widget.timings, artifact: widget.aid);
     _swipe = TwoFingerSwipe(
       left: () => _setOpen(true),
       right: () => _setOpen(false),
@@ -173,6 +171,7 @@ class _AppScreenState extends State<AppScreen> {
           _ready = m;
           _covered = false;
           _gaveUp = null;
+          _changes.shown(m.version, pinned: m.pinned);
         });
         // A reloaded shell starts with comment mode off. While its composer
         // is open comment mode reads off too, and the shell turns it back
@@ -194,34 +193,25 @@ class _AppScreenState extends State<AppScreen> {
           _busy = m.busy;
           if (picked) _open = true;
         });
-        if (picked) {
-          if (!_armed) widget.timings.start(longpressLanded);
-          if (widget.settings.dictateComments) unawaited(_startDictation());
+        if (picked && widget.settings.dictateComments) {
+          unawaited(_startDictation());
         }
         if (closed) unawaited(_stopDictation());
+        // The shell turns comment mode back on when a composer closes; with
+        // the panel closed meanwhile, it stays off.
+        if (m.commenting && !_open && m.draft == null) {
+          _call(const ExitCommentMode());
+        }
       case ThreadsMsg():
         setState(() => _threads = m.threads);
-      case Sent():
-        _armed = true;
-        _setChip(_ChipKind.working);
+      case Sent(:final thread):
+        setState(() => _changes.sent(thread));
         unawaited(_stopDictation());
-      case Landed():
-        if (_armed) {
-          _armed = false;
-          widget.timings.stop(
-            longpressLanded,
-            extra: {'artifact': widget.aid, 'version': m.version},
-          );
-        }
-        if (_chip == _ChipKind.working) _setChip(_ChipKind.none);
+      case Landed(:final version):
+        setState(() => _changes.frame(version));
         if (_open) _loadVersions();
       case SendFailed(:final thread, :final text):
-        _armed = false;
-        _sendFailed = thread;
-        _setChip(
-          _ChipKind.sendFailed,
-          text.isEmpty ? 'Couldn’t send the comment' : text,
-        );
+        setState(() => _changes.sendFailed(thread, text));
       case Notice():
         _snack(m.text);
     }
@@ -245,15 +235,14 @@ class _AppScreenState extends State<AppScreen> {
   void _onWorker(WorkerEvent e) {
     if (!mounted || e.artifactId != widget.aid) return;
     switch (e) {
-      case WorkerWorking() || WorkerInterrupted():
-        // An interrupted change runs again once the daemon answers.
-        _setChip(_ChipKind.working);
+      case WorkerWorking(:final threads):
+        setState(() => _changes.workerWorking(threads));
+      case WorkerInterrupted():
+        setState(_changes.workerInterrupted);
       case WorkerLanded(:final version):
-        // The shell follows a new version unless it shows an older one;
-        // then no `landed` comes for this change.
-        if (_ready?.pinned ?? false) {
-          _armed = false;
-          if (_chip == _ChipKind.working) _setChip(_ChipKind.none);
+        final pinned = _changes.workerLanded(version);
+        setState(() {});
+        if (pinned) {
           _snack(
             'Version $version is ready',
             action: SnackBarAction(
@@ -263,32 +252,20 @@ class _AppScreenState extends State<AppScreen> {
           );
         }
       case WorkerReplied():
-        _armed = false;
-        _setChip(_ChipKind.replied, 'Answered in the thread');
+        setState(_changes.workerReplied);
       case WorkerFailed(:final reason):
-        _armed = false;
-        _setChip(_ChipKind.failed, 'Couldn’t make that change: $reason');
+        setState(() => _changes.workerFailed(reason));
       case WorkerCancelled():
-        _armed = false;
-        _setChip(
-          _ChipKind.stopped,
-          'Stopped. It runs again when the app restarts.',
-        );
+        setState(_changes.workerCancelled);
     }
   }
 
   /// Sends thread [id] to the agent again.
   void _resend(String? id) {
     if (id == null) return;
-    _sendFailed = null;
-    _setChip(_ChipKind.none);
+    setState(_changes.dismiss);
     _call(Resend(id));
   }
-
-  void _setChip(_ChipKind kind, [String text = '']) => setState(() {
-    _chip = kind;
-    _chipText = text;
-  });
 
   void _snack(String text, {SnackBarAction? action}) {
     ScaffoldMessenger.maybeOf(context)
@@ -301,7 +278,12 @@ class _AppScreenState extends State<AppScreen> {
   void _setOpen(bool open) {
     if (!mounted || open == _open) return;
     setState(() => _open = open);
-    _call(open ? const EnterCommentMode() : const ExitCommentMode());
+    // While a composer is open the shell keeps comment mode off and turns
+    // it back on once the composer closes (the StateMsg handler turns it
+    // off then if the panel was closed meanwhile); the draft stays.
+    if (_draft == null) {
+      _call(open ? const EnterCommentMode() : const ExitCommentMode());
+    }
     if (open) {
       _loadVersions();
     } else {
@@ -332,7 +314,12 @@ class _AppScreenState extends State<AppScreen> {
     if (latest == null || _restoring) return;
     setState(() => _restoring = true);
     try {
-      await widget.api.restoreVersion(widget.aid, n, ifVersion: latest);
+      final r = await widget.api.restoreVersion(
+        widget.aid,
+        n,
+        ifVersion: latest,
+      );
+      _changes.restored(r.version.n);
       _call(const ReloadLatest());
     } on ClaxApiError catch (e) {
       _snack(
@@ -486,7 +473,7 @@ class _AppScreenState extends State<AppScreen> {
                 child: widget.surface.build(context),
               ),
               if (_covered) _cover(context),
-              if (_chip != _ChipKind.none)
+              if (_changes.outcome != null || _changes.working)
                 Positioned(
                   top: 8,
                   left: 56,
@@ -587,8 +574,17 @@ class _AppScreenState extends State<AppScreen> {
   Widget _chipView(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final (Color bg, Color fg, Widget lead, String text) = switch (_chip) {
-      _ChipKind.working => (
+    final outcome = _changes.outcome;
+    final text = _changes.outcomeText;
+    final (
+      String key,
+      Color bg,
+      Color fg,
+      Widget lead,
+      String label,
+    ) = switch (outcome) {
+      null => (
+        'working',
         scheme.inverseSurface,
         scheme.onInverseSurface,
         SizedBox.square(
@@ -600,7 +596,8 @@ class _AppScreenState extends State<AppScreen> {
         ),
         'Working…',
       ),
-      _ChipKind.replied => (
+      ChangeOutcome.replied => (
+        'replied',
         scheme.secondaryContainer,
         scheme.onSecondaryContainer,
         Icon(
@@ -608,9 +605,10 @@ class _AppScreenState extends State<AppScreen> {
           size: 16,
           color: scheme.onSecondaryContainer,
         ),
-        _chipText,
+        text,
       ),
-      _ChipKind.stopped => (
+      ChangeOutcome.stopped => (
+        'stopped',
         scheme.surfaceContainerHighest,
         scheme.onSurfaceVariant,
         Icon(
@@ -618,32 +616,34 @@ class _AppScreenState extends State<AppScreen> {
           size: 16,
           color: scheme.onSurfaceVariant,
         ),
-        _chipText,
+        text,
       ),
-      _ChipKind.failed || _ChipKind.sendFailed || _ChipKind.none => (
+      ChangeOutcome.failed || ChangeOutcome.sendFailed => (
+        outcome == ChangeOutcome.failed ? 'failed' : 'sendFailed',
         scheme.errorContainer,
         scheme.onErrorContainer,
         Icon(Icons.error_outline, size: 16, color: scheme.onErrorContainer),
-        _chipText,
+        text,
       ),
     };
-    final dismissable = _chip != _ChipKind.working;
     return Material(
-      key: ValueKey('chip-${_chip.name}'),
+      key: ValueKey('chip-$key'),
       color: bg,
       elevation: 2,
       shape: const StadiumBorder(),
       child: InkWell(
         customBorder: const StadiumBorder(),
-        onTap: _chip == _ChipKind.replied
+        onTap: outcome == ChangeOutcome.replied
             ? () {
-                _setChip(_ChipKind.none);
-                setState(() => _tab = PanelTab.threads);
+                setState(() {
+                  _changes.dismiss();
+                  _tab = PanelTab.threads;
+                });
                 _setOpen(true);
               }
             : null,
         child: Padding(
-          padding: EdgeInsets.fromLTRB(14, 8, dismissable ? 4 : 16, 8),
+          padding: const EdgeInsets.fromLTRB(14, 8, 4, 8),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -651,28 +651,28 @@ class _AppScreenState extends State<AppScreen> {
               const SizedBox(width: 8),
               Flexible(
                 child: Text(
-                  text,
+                  label,
                   maxLines: 3,
                   overflow: TextOverflow.ellipsis,
                   style: theme.textTheme.labelLarge?.copyWith(color: fg),
                 ),
               ),
-              if (_chip == _ChipKind.sendFailed)
+              if (outcome == ChangeOutcome.sendFailed)
                 TextButton(
                   key: const ValueKey('retry-send'),
                   style: TextButton.styleFrom(foregroundColor: fg),
-                  onPressed: () => _resend(_sendFailed),
+                  onPressed: () => _resend(_changes.retryThread),
                   child: const Text('Retry'),
                 ),
-              if (dismissable)
-                IconButton(
-                  tooltip: 'Dismiss',
-                  visualDensity: VisualDensity.compact,
-                  iconSize: 16,
-                  color: fg,
-                  onPressed: () => _setChip(_ChipKind.none),
-                  icon: const Icon(Icons.close),
-                ),
+              IconButton(
+                key: const ValueKey('chip-dismiss'),
+                tooltip: 'Dismiss',
+                visualDensity: VisualDensity.compact,
+                iconSize: 16,
+                color: fg,
+                onPressed: () => setState(_changes.dismiss),
+                icon: const Icon(Icons.close),
+              ),
             ],
           ),
         ),

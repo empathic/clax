@@ -208,22 +208,44 @@ void main() {
 
   group('ShellSession', () {
     final base = Uri.parse('http://127.0.0.1:7999');
-    final shell = Uri.parse('http://127.0.0.1:7999/a/a1?app=1');
+    const id = 'abcdefghjkmn';
+    Uri at(String path) => Uri.parse('http://127.0.0.1:7999$path');
+    final shell = at('/a/$id?app=1');
     String msg(String? nonce, [String type = 'landed']) =>
         jsonEncode({'type': type, 'version': 4, 'nonce': ?nonce});
 
-    test('the shell URL is the app view on the daemon origin only', () {
+    test('the shell URL is any app view path on the daemon origin', () {
       bool ok(String u) => ShellSession.isShellUrl(base, Uri.parse(u));
-      expect(ok('http://127.0.0.1:7999/a/a1?app=1'), isTrue);
-      expect(ok('http://127.0.0.1:7999/a/a1/v/2?app=1#x'), isTrue);
-      expect(ok('http://127.0.0.1:7999/a/a1'), isFalse);
-      expect(ok('http://127.0.0.1:7999/a/a1?app=0'), isFalse);
-      expect(ok('http://127.0.0.1:7999/a/a1/v/0?app=1'), isFalse);
-      expect(ok('http://127.0.0.1:7999/a/a1/x?app=1'), isFalse);
-      expect(ok('http://a1.localhost:7999/a/a1?app=1'), isFalse);
-      expect(ok('http://127.0.0.1:7998/a/a1?app=1'), isFalse);
-      expect(ok('https://127.0.0.1:7999/a/a1?app=1'), isFalse);
-      expect(ok('http://u@127.0.0.1:7999/a/a1?app=1'), isFalse);
+      for (final path in [
+        '/a/$id?app=1',
+        '/a/$id/?app=1',
+        '/a/$id/v/2?app=1#x',
+        '/a/$id/v/0?app=1',
+        '/a/$id/about.html?app=1',
+        '/a/$id/pages/about.html?app=1',
+        '/a/$id/v/3/about.html?app=1',
+        '/a/$id/my%20page.html?app=1',
+        '/a/$id?x=2&app=1',
+      ]) {
+        expect(ok('http://127.0.0.1:7999$path'), isTrue, reason: path);
+      }
+      for (final u in [
+        'http://127.0.0.1:7999/a/$id',
+        'http://127.0.0.1:7999/a/$id?app=0',
+        'http://127.0.0.1:7999/a/$id?app=0&app=1',
+        'http://127.0.0.1:7999/a/short?app=1',
+        'http://127.0.0.1:7999/a/ABCDEFGHJKMN?app=1',
+        'http://127.0.0.1:7999/a/abcdefghjkmi?app=1',
+        'http://127.0.0.1:7999/a/$id/bad%E0%A4.html?app=1',
+        'http://127.0.0.1:7999/?app=1',
+        'http://127.0.0.1:7999/b/$id?app=1',
+        'http://$id.localhost:7999/a/$id?app=1',
+        'http://127.0.0.1:7998/a/$id?app=1',
+        'https://127.0.0.1:7999/a/$id?app=1',
+        'http://u@127.0.0.1:7999/a/$id?app=1',
+      ]) {
+        expect(ok(u), isFalse, reason: u);
+      }
       expect(ShellSession.isShellUrl(base, null), isFalse);
     });
 
@@ -266,24 +288,41 @@ void main() {
 
     test('a document that is not the shell gets no nonce and no calls', () {
       final s = ShellSession(base);
-      final page = Uri.parse('http://a1.localhost:7999/index.html');
+      final page = Uri.parse('http://$id.localhost:7999/index.html');
       s.documentStarted(page);
       expect(s.documentLoaded(page), isNull);
       expect(s.canCall, isFalse);
     });
 
-    test(
-      'a history push keeps the nonce on a shell path and drops it off one',
-      () {
-        final s = ShellSession(base);
-        s.documentStarted(shell);
-        final init = s.documentLoaded(shell)!;
-        s.urlChanged(Uri.parse('http://127.0.0.1:7999/a/a1/v/2?app=1'));
-        expect(s.accept(msg(init.nonce)), isA<Landed>());
-        s.urlChanged(Uri.parse('http://127.0.0.1:7999/'));
-        expect(s.canCall, isFalse);
-        expect(s.accept(msg(init.nonce)), isNull);
-      },
-    );
+    test('a multi-page app: moving between pages keeps the channel, a reload on a page re-nonces', () {
+      final s = ShellSession(base);
+      s.documentStarted(shell);
+      final init = s.documentLoaded(shell)!;
+      // The shell pushes the page's URL when its frame moves to about.html.
+      s.urlChanged(at('/a/$id/about.html?app=1'));
+      expect(s.canCall, isTrue);
+      expect(s.accept(msg(init.nonce)), isA<Landed>());
+      // A finished-load report within the same document hands out nothing.
+      expect(s.documentLoaded(at('/a/$id/about.html?app=1')), isNull);
+      s.urlChanged(shell);
+      expect(s.accept(msg(init.nonce)), isA<Landed>());
+      s.urlChanged(at('/a/$id/v/2/about.html?app=1'));
+      expect(s.accept(msg(init.nonce)), isA<Landed>());
+      // Reloaded while it shows about.html: a new document and nonce.
+      s.documentStarted(at('/a/$id/about.html?app=1'));
+      expect(s.accept(msg(init.nonce)), isNull);
+      final again = s.documentLoaded(at('/a/$id/about.html?app=1'))!;
+      expect(again.nonce, isNot(init.nonce));
+      expect(s.accept(msg(again.nonce)), isA<Landed>());
+    });
+
+    test('a same-document URL change never clears the session', () {
+      final s = ShellSession(base);
+      s.documentStarted(shell);
+      final init = s.documentLoaded(shell)!;
+      s.urlChanged(at('/'));
+      expect(s.canCall, isTrue);
+      expect(s.accept(msg(init.nonce)), isA<Landed>());
+    });
   });
 }

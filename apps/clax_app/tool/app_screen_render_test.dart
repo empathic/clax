@@ -219,6 +219,7 @@ void main() {
       id: 't2',
       status: 'open',
       summary: 'Make the run cards bigger and show the pace per km',
+      label: 'The run cards',
       sent: true,
       comments: 1,
       version: 3,
@@ -241,7 +242,11 @@ void main() {
       s.push(
         const StateMsg(
           commenting: true,
-          draft: Draft(label: 'div.run', text: '', clip: DraftClip.ready),
+          draft: Draft(
+            label: 'The Mon run card',
+            text: '',
+            clip: DraftClip.ready,
+          ),
           busy: false,
         ),
       );

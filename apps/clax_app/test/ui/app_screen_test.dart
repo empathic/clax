@@ -147,6 +147,14 @@ void main() {
     return rig;
   }
 
+  /// Frames enough for a restore and its list to finish while a spinner
+  /// (which never settles) runs.
+  Future<void> frames(WidgetTester tester) async {
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+  }
+
   Future<void> openPanel(WidgetTester tester) async {
     await tester.pump();
     await tester.tap(find.byKey(const ValueKey('panel-handle')));
@@ -303,7 +311,7 @@ void main() {
   });
 
   testWidgets(
-    'a pick shrinks the panel to a peek, dictates into the draft, and starts the timing',
+    'a pick shrinks the panel to a peek and dictates into the draft; the timing waits for Send',
     (tester) async {
       final rig = await pumpScreen(tester);
       rig.surface.push(rig.ready());
@@ -314,7 +322,7 @@ void main() {
       final peek = tester.getRect(find.byKey(const ValueKey('app-panel')));
       expect(peek.height, lessThan(full.height / 2));
       expect(find.text('Versions'), findsNothing);
-      expect(rig.timings.log, ['start $longpressLanded']);
+      expect(rig.timings.log, isEmpty, reason: 'it starts at Send (spec 6.2)');
       expect(rig.voice.listens, 1);
       expect(
         rig.surface.js,
@@ -499,6 +507,7 @@ void main() {
       rig.surface.push(rig.ready(version: 2, latest: 3));
       rig.surface.push(const Sent('thread-1'));
       await tester.pump();
+      rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
       rig.worker.add(WorkerLanded(rig.aid, 4));
       await tester.pump();
       expect(find.text('Working…'), findsNothing);
@@ -601,10 +610,12 @@ void main() {
           sent: true,
           comments: 2,
           version: 3,
+          label: 'the page title',
         ),
       ]),
     );
     await tester.pump();
+    expect(find.textContaining('the page title'), findsOneWidget);
     await tester.tap(find.text('make the title blue'));
     await tester.pump();
     expect(rig.surface.js.last, 'window.claxHost?.openThread("t1")');
@@ -720,6 +731,125 @@ void main() {
         'window.claxHost?.enterCommentMode()',
       ]);
       await tester.pumpAndSettle();
+    },
+  );
+
+  testWidgets('a failure that comes before Send still ends Working', (
+    tester,
+  ) async {
+    final rig = await pumpScreen(tester);
+    rig.surface.push(rig.ready());
+    await tester.pump();
+    rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
+    rig.worker.add(WorkerFailed(rig.aid, 'The API key was refused'));
+    rig.surface.push(const Sent('thread-1'));
+    await tester.pump();
+    expect(find.text('Working…'), findsNothing);
+    expect(find.byKey(const ValueKey('chip-failed')), findsOneWidget);
+  });
+
+  testWidgets('a page reloaded mid-change ends Working on the newer version', (
+    tester,
+  ) async {
+    final rig = await pumpScreen(tester);
+    rig.surface.push(rig.ready());
+    rig.surface.push(const Sent('thread-1'));
+    rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
+    rig.worker.add(WorkerLanded(rig.aid, 4));
+    await tester.pump();
+    expect(find.text('Working…'), findsOneWidget);
+    rig.surface.fault(const SurfaceFault('gone', reloading: true));
+    rig.surface.push(rig.ready(version: 4, latest: 4));
+    await tester.pump();
+    expect(find.text('Working…'), findsNothing);
+    expect(rig.timings.log, [
+      'start $longpressLanded',
+      'stop $longpressLanded',
+    ]);
+    expect(rig.timings.extras.single['version'], 4);
+  });
+
+  testWidgets("a Restore's landing leaves another change Working and timed", (
+    tester,
+  ) async {
+    final rig = await pumpScreen(tester);
+    rig.surface.push(rig.ready());
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('panel-handle')));
+    await frames(tester);
+    rig.surface.push(const Sent('thread-1'));
+    rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
+    await tester.tap(find.text('Versions'));
+    await frames(tester);
+    await tester.tap(find.byKey(const ValueKey('undo')));
+    await frames(tester);
+    rig.surface.push(const Landed(4));
+    await tester.pump();
+    expect(find.text('Working…'), findsOneWidget);
+    expect(rig.timings.log, ['start $longpressLanded']);
+  });
+
+  testWidgets('Working can be dismissed, and comes back with new work', (
+    tester,
+  ) async {
+    final rig = await pumpScreen(tester);
+    rig.surface.push(rig.ready());
+    rig.surface.push(const Sent('thread-1'));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('chip-dismiss')));
+    await tester.pump();
+    expect(find.text('Working…'), findsNothing);
+    rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
+    await tester.pump();
+    expect(find.text('Working…'), findsOneWidget);
+  });
+
+  testWidgets(
+    'reopening the panel mid-draft leaves comment mode to the shell',
+    (tester) async {
+      final rig = await pumpScreen(tester);
+      rig.surface.push(rig.ready());
+      await openPanel(tester);
+      rig.surface.push(
+        const StateMsg(
+          commenting: false,
+          draft: Draft(label: 'the title', text: '', clip: DraftClip.ready),
+          busy: false,
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('app-panel')), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('panel-handle')));
+      await tester.pumpAndSettle();
+      expect(rig.surface.js.where((j) => j.contains('CommentMode')).toList(), [
+        'window.claxHost?.enterCommentMode()',
+      ], reason: 'only the first open, before the pick');
+    },
+  );
+
+  testWidgets(
+    'a composer closed while the panel is closed leaves comment mode off',
+    (tester) async {
+      final rig = await pumpScreen(tester);
+      rig.surface.push(rig.ready());
+      await openPanel(tester);
+      rig.surface.push(
+        const StateMsg(
+          commenting: false,
+          draft: Draft(label: '', text: '', clip: DraftClip.ready),
+          busy: false,
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      // The shell turns comment mode back on as the composer closes.
+      rig.surface.push(_Rig.noDraft);
+      await tester.pumpAndSettle();
+      expect(rig.surface.js.last, 'window.claxHost?.exitCommentMode()');
+      expect(find.byKey(const ValueKey('app-panel')), findsNothing);
     },
   );
 
