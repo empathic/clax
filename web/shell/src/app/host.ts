@@ -106,6 +106,8 @@ export const ATTEST_MS = 1000;
  * both to be the same finger: the app's and the WebView's coordinates of a
  * touch can differ by rounding and the finger's contact point. */
 export const NEAR_PX = 24;
+/** How many of the shell's presses of the last `ATTEST_MS` are kept. */
+const MAX_PRESSES = 16;
 /** A thread's summary: its first comment, cut to this many characters. */
 const SUMMARY_CHARS = 140;
 const FOLLOW_FAILED = "Could not load the latest version";
@@ -237,7 +239,8 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   const labelled = new Set<string>();
   const labelDraft = (v: ViewState): boolean => {
     const d = v.draft;
-    if (!d || d.byPage || (d.label !== undefined && !labelled.has(d.pickId))) return false;
+    // A page's composer keeps a label the page gave it; one without gets these words too.
+    if (!d || (d.label !== undefined && !labelled.has(d.pickId))) return false;
     const label = anchorLabel(d.anchor, picked.get(d.pickId));
     if (d.label === label) return false;
     labelled.add(d.pickId);
@@ -278,10 +281,12 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     if (typeof m.y === "number" && Number.isFinite(m.y) && m.y >= 0) scrolled.set(m.file, m.y);
   };
   // The shell's own trusted presses and releases, where and when.
-  let shellPress: { x: number; y: number; at: number } | null = null;
+  let shellPresses: { x: number; y: number; at: number }[] = [];
   const onPress = (e: Event) => {
     const p = e as MouseEvent;
-    if (e.isTrusted) shellPress = { x: p.clientX, y: p.clientY, at: now() };
+    if (!e.isTrusted) return;
+    const t = now();
+    shellPresses = [...shellPresses.filter(q => t - q.at < ATTEST_MS).slice(-(MAX_PRESSES - 1)), { x: p.clientX, y: p.clientY, at: t }];
   };
   win.addEventListener("input", onInput);
   win.addEventListener("message", onMessage);
@@ -340,8 +345,8 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
         // on the tap's click: a press the shell itself saw near here within
         // `ATTEST_MS` was that finger, on the shell.
         const at = doc.elementFromPoint(x, y);
-        const sp = shellPress;
-        const onShell = !!sp && now() - sp.at < ATTEST_MS && Math.abs(sp.x - x) <= NEAR_PX && Math.abs(sp.y - y) <= NEAR_PX;
+        const t = now();
+        const onShell = shellPresses.some(q => t - q.at < ATTEST_MS && Math.abs(q.x - x) <= NEAR_PX && Math.abs(q.y - y) <= NEAR_PX);
         if (at && at === ctl.frame?.el && !onShell) { pressed.add(pointer); attestedAt = now(); } else pressed.delete(pointer);
       } else if (phase === "up" && pressed.delete(pointer)) attestedAt = now();
     },

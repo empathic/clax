@@ -679,4 +679,40 @@ describe("app mode's host channel", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(gesture!.frameGesture()).toBe(true);
     vi.restoreAllMocks();
   });
+
+  it("labels a composer the page opened without a label, and keeps a label the page gave", async () => {
+    const { ctl, frame } = await appView();
+    hello(frame, 1);
+    const base = { quote: null, prefix: null, suffix: null, html_hash: null, rect: null, file: "index.html" };
+    ctl.commentsUi.openComposer({ anchor: { kind: "element", selector: "#save", custom_name: null, ...base }, version: 1, clip: null, clipError: "anchored by the page" });
+    await waitFor(() => document.querySelector(".composer-quote")?.textContent === "this spot", "the composer's words");
+    expect(ofType("state").at(-1)!.draft!.label).toBe("this spot");
+    expect(JSON.stringify(toHost)).not.toContain("#save");
+    ctl.cancelDraft();
+    ctl.commentsUi.openComposer({ anchor: { kind: "custom", selector: null, custom_name: "Week 3", ...base }, version: 1, clip: null, clipError: "anchored by the page" });
+    await waitFor(() => document.querySelector(".composer-quote")?.textContent === "“Week 3”", "a custom anchor's words");
+    ctl.cancelDraft();
+    ctl.commentsUi.openComposer({ anchor: { kind: "element", selector: "#save", custom_name: null, ...base }, version: 1, clip: null, clipError: "anchored by the page", label: "The save button" });
+    await waitFor(() => document.querySelector(".composer-quote")?.textContent === "The save button", "the page's label");
+    expect(ofType("state").at(-1)!.draft!.label).toBe("The save button");
+  });
+
+  it("refuses a press attestation near any of the shell's recent presses, not only the latest", async () => {
+    let t = 70_000;
+    vi.spyOn(performance, "now").mockImplementation(() => t);
+    const { frame, host } = await appView();
+    const control = document.createElement("button");
+    document.body.append(control);
+    dispatchTrusted(control, new MouseEvent("pointerdown", { bubbles: true, clientX: 200, clientY: 300 }));
+    t += 40;
+    dispatchTrusted(control, new MouseEvent("pointerdown", { bubbles: true, clientX: 20, clientY: 40 }));
+    control.remove();
+    document.elementFromPoint = () => frame;
+    Object.defineProperty(navigator, "userActivation", { value: { isActive: true }, configurable: true });
+    frame.focus();
+    t += 100;
+    host.attestPointer({ pointer: 1, phase: "down", x: 200, y: 300 });
+    expect(gesture!.frameGesture()).toBe(false);
+    vi.restoreAllMocks();
+  });
 });

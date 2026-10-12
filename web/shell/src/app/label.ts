@@ -1,8 +1,12 @@
 // What an anchor is about, in words a person reads in the app: the text it
 // quotes, else what the element is ("the button “Save”", "a heading", "an
 // image"), else "this spot"; "Whole app" for the whole artifact. Never a
-// selector: one is read, at most, for its last tag name.
+// selector: one is read, at most, for its last tag name. The page's own words
+// (a quote, a name) are always inside “ ”, with format, control and bidi
+// characters dropped and quote marks inside them made ', so no page text can
+// read as the app's own words or close its quotes.
 import type { Anchor, PickDesc } from "../../../bridge/src/protocol";
+import { cleanLabel } from "../caps/comments";
 
 /** The longest quote shown, in characters. */
 const QUOTE_CHARS = 60;
@@ -22,10 +26,15 @@ const NOUNS: Record<string, string> = {
   label: "label", blockquote: "quote", pre: "code block", code: "code", progress: "progress bar", progressbar: "progress bar",
 };
 
+/** The page's text `s`, made safe to fence in “ ”: `cleanLabel`'s rules
+ * (no format or control characters, collapsed spaces, some letter or digit),
+ * quote marks made ', cut at `max` characters; null when nothing is left. */
 const clean = (s: unknown, max: number): string | null => {
   if (typeof s !== "string") return null;
-  const t = s.replace(/\s+/g, " ").trim();
-  return t ? (t.length > max ? `${t.slice(0, max).trimEnd()}…` : t) : null;
+  const t = cleanLabel(s)?.replace(/["“”„‟«»‹›]/g, "'");
+  if (!t) return null;
+  const chars = [...t];
+  return chars.length > max ? `${chars.slice(0, max).join("").trimEnd()}…` : t;
 };
 const word = (s: unknown): string | null => (typeof s === "string" && /^[a-z][a-z0-9-]{0,31}$/i.test(s.trim()) ? s.trim().toLowerCase() : null);
 const article = (n: string) => (/^[aeiou]/.test(n) ? "an" : "a");
@@ -51,7 +60,7 @@ export function anchorLabel(anchor: Anchor, desc?: PickDesc | null): string {
   if (quote) return `“${quote}”`;
   if (anchor.kind === "custom") {
     const n = clean(anchor.custom_name, NAME_CHARS);
-    if (n) return n;
+    if (n) return `“${n}”`;
   }
   const d = desc && typeof desc === "object" ? desc : null;
   const tag = word(d?.tag) ?? word(anchor.area?.tag) ?? tagOf(anchor.selector);

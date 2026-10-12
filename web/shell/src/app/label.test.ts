@@ -26,8 +26,17 @@ describe("anchorLabel", () => {
   });
   it("names the whole app, a custom anchor, and a drawn area", () => {
     expect(anchorLabel(anchor({ kind: "artifact", selector: null, file: "" }))).toBe("Whole app");
-    expect(anchorLabel(anchor({ kind: "custom", selector: null, custom_name: "Week 3" }))).toBe("Week 3");
+    expect(anchorLabel(anchor({ kind: "custom", selector: null, custom_name: "Week 3" }))).toBe("“Week 3”");
     expect(anchorLabel(anchor({ kind: "area", area: { x: 0, y: 0, w: 1, h: 1, tag: "img" } }))).toBe("part of an image");
     expect(anchorLabel(anchor({ kind: "area", area: { x: 0, y: 0, w: 1, h: 1, tag: "div" } }))).toBe("this area");
+  });
+  it("fences the page's words so they never read as the app's own", () => {
+    expect(anchorLabel(anchor({ kind: "custom", selector: null, custom_name: "Whole app" }))).toBe("“Whole app”");
+    expect(anchorLabel(anchor({ quote: "this spot" }))).toBe("“this spot”");
+    expect(anchorLabel(anchor(), { tag: "button", role: null, name: "Save” and “Delete" })).toBe("the button “Save' and 'Delete”");
+    expect(anchorLabel(anchor({ quote: 'say "hi" «there»' }))).toBe("“say 'hi' 'there'”");
+    // Bidi, format and control characters are dropped.
+    expect(anchorLabel(anchor({ quote: "abc\u202Edef\u200B\u0007" }))).toBe("“abcdef”");
+    expect(anchorLabel(anchor(), { tag: "img", role: null, name: "\u202E\u2066" })).toBe("an image");
   });
 });
