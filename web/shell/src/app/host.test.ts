@@ -718,3 +718,79 @@ describe("app mode's host channel", { timeout: MOUNT_TIMEOUT_MS }, () => {
     vi.restoreAllMocks();
   });
 });
+
+describe("app mode's visibility", { timeout: MOUNT_TIMEOUT_MS }, () => {
+  artifactViewHooks();
+  const hideDocument = () => {
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  };
+  const clock = () => (globalThis as unknown as { claxTestClock: { advance(ms: number): number } }).claxTestClock;
+  afterEach(() => {
+    delete (document as unknown as { visibilityState?: unknown }).visibilityState;
+    delete (window as unknown as { ClaxHost?: unknown }).ClaxHost;
+    delete (window as unknown as { claxHost?: unknown }).claxHost;
+    document.documentElement.classList.remove("app");
+    latest = 1;
+  });
+  const artifactTopic = `artifact:${ID}`;
+  const holdsArtifact = async () => (await import("../stream")).pageStream().topics.includes(artifactTopic);
+  /** Waits until the page's stream holds the artifact's topic, or (`held` false) does not. */
+  const untilHeld = async (holds: boolean, what: string) => {
+    const st = (await import("../stream")).pageStream();
+    await waitFor(() => st.topics.includes(artifactTopic) === holds, what);
+  };
+
+  it("a hidden document does not stop the app's view following: a version 60 s later still lands", async () => {
+    hideDocument();
+    const { view, frame } = await appView();
+    hello(frame, 1);
+    await waitFor(() => FakeES.last, "stream");
+    const { HIDDEN_MS } = await import("../stream");
+    clock().advance(2 * HIDDEN_MS);
+    await settle();
+    expect(await holdsArtifact()).toBe(true);
+    latest = 2;
+    (await waitFor(() => FakeES.last, "stream still held")).emit("version", { type: "version", artifact_id: ID, n: 2 });
+    const next = await waitFor(() => { const f = view.root.querySelector<HTMLIFrameElement>("iframe.frame"); return f && f !== frame ? f : null; }, "the newer version's frame");
+    hello(next, 2);
+    expect(ofType("landed")).toEqual([{ type: "landed", version: 2 }]);
+  });
+
+  it("a browser's hidden view releases the artifact's topics after HIDDEN_MS (the rule app mode replaces)", async () => {
+    history.replaceState(null, "", `/a/${ID}`);
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1, { "index.html": page }))));
+    await waitFor(() => view.root.querySelector("iframe.frame"), "frame");
+    await waitFor(() => FakeES.last, "stream");
+    hideDocument();
+    const { HIDDEN_MS } = await import("../stream");
+    clock().advance(HIDDEN_MS + 1);
+    await untilHeld(false, "released");
+  });
+
+  it("setVisible(false) releases the artifact's topics after HIDDEN_MS, and setVisible(true) takes them again with a refetch", async () => {
+    const { host } = await appView();
+    await waitFor(() => FakeES.last, "stream");
+    const { HIDDEN_MS } = await import("../stream");
+    host.setVisible(false);
+    clock().advance(HIDDEN_MS + 1);
+    await untilHeld(false, "released");
+    const loads = () => requests.filter(r => r.url === `/api/artifacts/${ID}`).length;
+    host.setVisible(true);
+    await untilHeld(true, "taken again");
+    const before = loads();
+    FakeES.last!.emit("ready", {});
+    await waitFor(() => loads() > before, "a refetch");
+  });
+
+  it("before init the document's visibility applies, and a setVisible before init holds from init on", async () => {
+    hideDocument();
+    const { host } = await appView({ init: false });
+    await waitFor(() => FakeES.last, "stream");
+    host.setVisible(false);
+    host.init({ nonce: NONCE });
+    const { HIDDEN_MS } = await import("../stream");
+    clock().advance(HIDDEN_MS + 1);
+    await untilHeld(false, "released");
+  });
+});

@@ -5,7 +5,7 @@
 import { type CDPSession, type Frame, type Locator, type Page } from "@playwright/test";
 import { hostChannel, host, initHost, NONCE, ofType, toHost } from "./app-host";
 import { test, expect, type Daemon, api, contentFrame, publishAs, publishNext, record, registerSession, streamLive } from "./fixtures";
-import { quietEval } from "./time";
+import { advance, quietEval } from "./time";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -196,3 +196,21 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(new URL(page.url()).search).toBe("?app=1");
   });
 }
+
+test("a version published after the hidden-page threshold still lands while the WebView reports the document hidden", async ({ page }) => {
+  // As the app's WKWebView does from load on.
+  await page.addInitScript(() => {
+    if (window.top !== window) return;
+    Object.defineProperty(document, "visibilityState", { get: () => "hidden", configurable: true });
+    Object.defineProperty(document, "hidden", { get: () => true, configurable: true });
+  });
+  const { id, sid } = await openApp(page, "App hidden", "subdomain");
+  await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
+  expect(await quietEval<string>(page, "document.visibilityState")).toBe("hidden");
+  // Past the stream's 30 s hidden-page threshold (web/shell/src/stream.ts HIDDEN_MS), on the shell's test clock.
+  await advance(page, 60_000);
+  await publishNext(d.base, d.token, sid, id, 1, { files: { "index.html": PAGE.replace("Quarterly goals", "Quarterly goals, later") } });
+  await expect.poll(async () => (await ofType(page, "landed")).length, { timeout: 10_000 }).toBe(1);
+  const next = await contentFrame(page, id, 2);
+  await expect(next.locator("#t")).toHaveText("Quarterly goals, later");
+});

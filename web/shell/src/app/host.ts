@@ -26,6 +26,14 @@
 //   shell's messages from the page's, the app makes a fresh random nonce for
 //   each load of the shell document and, once that document has loaded,
 //   calls `claxHost.init({nonce})` by `runJavaScript` (main frame only).
+// - Visibility: a WebView may report the shell's document hidden while the
+//   app shows it (macOS WKWebView does from load on), and a page hidden for
+//   30 s stops following its artifact (`stream.ts`, `HIDDEN_MS`), so no
+//   change would land. From `init` on, the shell counts itself visible
+//   unless the app says otherwise with `claxHost.setVisible(false)` (its
+//   lifecycle: paused, hidden, or the app screen not shown), and
+//   `setVisible(true)` takes the artifact's events again, refetching what it
+//   missed. Before `init` the document's own visibility applies.
 // - Before `init` the shell posts nothing on the channel. From `init` on,
 //   every message it posts carries `nonce`, and `init` first posts the
 //   current `state`, `threads`, and the `ready` of the page shown if one
@@ -73,6 +81,9 @@ export type ClaxHost = {
   /** Starts the channel with this load's `nonce` (16 to 128 characters of
    * `A-Z a-z 0-9 _ -`); see the protocol above. Only the first valid call counts. */
   init(p: { nonce: string }): void;
+  /** Whether the app shows this view (see the protocol above): visible from
+   * `init` on unless told otherwise, before or after it. */
+  setVisible(visible: boolean): void;
   enterCommentMode(): void;
   exitCommentMode(): void;
   /** Shows version `n`, or the latest for null (a load of the shell). */
@@ -302,11 +313,38 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   const pressed = new Set<number>();
   hostArrival.fresh = since => attestedAt > since && now() - attestedAt < ATTEST_MS;
   const composer = () => doc.querySelector<HTMLFormElement>(".stage form.composer");
+  // The app's word on visibility: null until `init` (the document's own applies).
+  let hostHidden: boolean | null = null;
+  // What `setVisible` said before `init`, which applies from `init` on.
+  let wanted = true;
+  // The stream module, loaded on its own (the view loads it after its first
+  // paint): this chunk stays small, and the rule applies once both are in.
+  let stream: typeof import("../stream") | null = null;
+  let docHidden: (d: Document) => boolean = () => false;
+  let uninstalled = false;
+  void import("../stream").then(m => {
+    if (uninstalled) return;
+    stream = m;
+    docHidden = m.visibility.hidden;
+    m.visibility.hidden = d => hostHidden ?? docHidden(d);
+    if (hostHidden !== null) m.pageStream().visibilityChanged();
+  }, () => {});
+  const visibleNow = (hidden: boolean) => {
+    if (hostHidden === hidden) return;
+    hostHidden = hidden;
+    stream?.pageStream().visibilityChanged();
+  };
   const host: ClaxHost = {
+    setVisible: v => {
+      if (typeof v !== "boolean") return;
+      if (nonce === null) wanted = v;
+      else visibleNow(!v);
+    },
     init: p => {
       const n = p?.nonce;
       if (nonce !== null || typeof n !== "string" || !NONCE.test(n)) return;
       nonce = n;
+      visibleNow(!wanted);
       lastState = "";
       lastThreads = null;
       lastNotice = null;
@@ -361,6 +399,11 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     win.removeEventListener("pointerdown", onPress, true);
     win.removeEventListener("pointerup", onPress, true);
     hostArrival.fresh = () => false;
+    uninstalled = true;
+    if (stream) {
+      stream.visibility.hidden = docHidden;
+      if (hostHidden !== null) stream.pageStream().visibilityChanged();
+    }
     if (ctl.app) ctl.app = null;
     delete w.claxHost;
     doc.documentElement.classList.remove("app");
