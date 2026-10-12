@@ -126,6 +126,7 @@ class RunBudget {
   var _pauses = 0;
   Completer<void>? _resumed;
   Future<void>? _whenTimeUp;
+  final _ended = Completer<void>();
 
   /// Counts one model turn and its usage, priced as one request.
   void addTurn(Usage u) {
@@ -140,6 +141,7 @@ class RunBudget {
   /// Stops the wall clock, while an `ask` waits for the person. Pauses
   /// nest: the clock runs again at the matching [resumeClock].
   void pauseClock() {
+    if (_ended.isCompleted) return;
     if (_pauses++ == 0) {
       _elapsed = elapsed;
       _since = null;
@@ -149,7 +151,7 @@ class RunBudget {
 
   /// Ends one [pauseClock].
   void resumeClock() {
-    if (_pauses == 0) return;
+    if (_ended.isCompleted || _pauses == 0) return;
     if (--_pauses == 0) {
       _since = clock.now();
       _resumed?.complete();
@@ -170,12 +172,30 @@ class RunBudget {
 
   Future<void> _waitTimeUp() async {
     while (!timeUp) {
-      if (_resumed case final r?) {
-        await r.future;
-      } else {
-        await clock.delay(remaining);
+      if (_ended.isCompleted) {
+        // Ended before the deadline: never completes.
+        await Completer<void>().future;
       }
+      await Future.any([
+        _resumed?.future ?? clock.delay(remaining),
+        _ended.future,
+      ]);
     }
+  }
+
+  /// Ends the run's wall clock for good, when the run is over: [elapsed]
+  /// stays where it is, pauses no longer count, and a [whenTimeUp] not
+  /// yet complete never completes, so nothing waits on a deadline of a
+  /// run that has ended. The clock's own pending delay, if any, then
+  /// wakes nothing.
+  void endClock() {
+    if (_ended.isCompleted) return;
+    _elapsed = elapsed;
+    _since = null;
+    _pauses = 0;
+    _resumed?.complete();
+    _resumed = null;
+    _ended.complete();
   }
 
   /// The run's wall-clock time so far, paused time left out.

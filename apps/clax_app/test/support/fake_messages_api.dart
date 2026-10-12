@@ -321,3 +321,122 @@ class OpenStreamServer {
 
   Future<void> close() => _server.close();
 }
+
+/// The stream events of one tool-loop turn whose content is [blocks], in
+/// order. A block is given as the API returns it: `text` (its text sent in
+/// `text_delta`s of [piece] characters), `thinking` (its thinking and
+/// signature sent as deltas), `tool_use` or `server_tool_use` (its `input`
+/// sent as `input_json_delta`s of [piece] characters; a `json` string
+/// instead of `input` is sent as is, so it may be cut or invalid). Then
+/// [stopReason], [stopDetails] and the usage; no `message_stop` unless
+/// [stop].
+List<Map<String, Object?>> streamedTurn(
+  List<Map<String, Object?>> blocks, {
+  int piece = 9,
+  String stopReason = 'tool_use',
+  Map<String, Object?>? stopDetails,
+  int inputTokens = 100,
+  int outputTokens = 50,
+  int cacheRead = 0,
+  int cacheWrite = 0,
+  bool stop = true,
+}) {
+  List<String> pieces(String s) => [
+    for (var i = 0; i < s.length; i += piece)
+      s.substring(i, (i + piece).clamp(0, s.length)),
+  ];
+  return [
+    {
+      'type': 'message_start',
+      'message': {
+        'id': 'msg_turn',
+        'type': 'message',
+        'role': 'assistant',
+        'model': 'claude-haiku-5-5',
+        'content': <Object?>[],
+        'stop_reason': null,
+        'usage': {
+          'input_tokens': inputTokens,
+          'cache_read_input_tokens': cacheRead,
+          'cache_creation_input_tokens': cacheWrite,
+          'output_tokens': 1,
+        },
+      },
+    },
+    for (final (i, b) in blocks.indexed)
+      ...switch (b['type']) {
+        'text' => [
+          {
+            'type': 'content_block_start',
+            'index': i,
+            'content_block': {'type': 'text', 'text': ''},
+          },
+          for (final p in pieces('${b['text']}'))
+            {
+              'type': 'content_block_delta',
+              'index': i,
+              'delta': {'type': 'text_delta', 'text': p},
+            },
+          {'type': 'content_block_stop', 'index': i},
+        ],
+        'thinking' => [
+          {
+            'type': 'content_block_start',
+            'index': i,
+            'content_block': {
+              'type': 'thinking',
+              'thinking': '',
+              'signature': '',
+            },
+          },
+          if ('${b['thinking'] ?? ''}'.isNotEmpty)
+            {
+              'type': 'content_block_delta',
+              'index': i,
+              'delta': {'type': 'thinking_delta', 'thinking': b['thinking']},
+            },
+          {
+            'type': 'content_block_delta',
+            'index': i,
+            'delta': {'type': 'signature_delta', 'signature': b['signature']},
+          },
+          {'type': 'content_block_stop', 'index': i},
+        ],
+        _ => [
+          {
+            'type': 'content_block_start',
+            'index': i,
+            'content_block': {
+              'type': b['type'],
+              'id': b['id'],
+              'name': b['name'],
+              'input': <String, Object?>{},
+            },
+          },
+          for (final p in pieces(
+            b['json'] is String ? b['json'] as String : jsonEncode(b['input']),
+          ))
+            {
+              'type': 'content_block_delta',
+              'index': i,
+              'delta': {'type': 'input_json_delta', 'partial_json': p},
+            },
+          {'type': 'content_block_stop', 'index': i},
+        ],
+      },
+    {
+      'type': 'message_delta',
+      'delta': {
+        'stop_reason': stopReason,
+        'stop_sequence': null,
+        'stop_details': ?stopDetails,
+      },
+      'usage': {'output_tokens': outputTokens},
+    },
+    if (stop) {'type': 'message_stop'},
+  ];
+}
+
+/// A [FakeReply] streaming [events] as server-sent events.
+FakeReply sseReply(List<Map<String, Object?>> events) =>
+    FakeReply.stream([sse(events)]);
