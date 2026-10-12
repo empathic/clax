@@ -2,12 +2,13 @@
 /// app's) and stage writes to them.
 ///
 /// Reads of this run's app are made at the owner's level and pin each
-/// document they return to the version seen ([Draft.pins]). Reads of
-/// another app are made as this run's app (`X-Clax-Reader`), so they are
-/// served only within the consent the owner gave that app (its `db.read`
-/// declaration plus a grant or the source's share), never pin and never
-/// write. `data/users/<id>/` documents are private to each viewer and are
-/// never read or written.
+/// document they return to the version seen ([Draft.pins]). A read of
+/// another app first asks the owner ([RunState.readConsent]): that consent
+/// is the agent's own, separate from the app's `db.read` declaration and
+/// the owner's grant for the page, which it neither needs nor uses. Once
+/// allowed, the read is made at the owner's level; it never pins, and
+/// another app is never written. `data/users/<id>/` documents are private
+/// to each viewer and are never read or written.
 ///
 /// `db_write` stages, never writes: [Draft.stage] adds the ops for the
 /// render's document copy and for `finish`, which writes them in one batch
@@ -18,6 +19,7 @@ import 'dart:convert';
 
 import '../../clax/api.dart';
 import '../edit_result.dart' show DbOp, maxDbOps;
+import '../read_consent.dart';
 import 'tool_spec.dart';
 import 'toolbox.dart';
 
@@ -70,8 +72,8 @@ List<Tool> dataTools(ClaxApi api) => [
 final _appProperty = nullable(
   'string',
   description:
-      "null: this app. Else another app's ID from the first message, read "
-      'only if this app declares db.read of it and the owner allowed it.',
+      "null: this app. Else another app's ID from the first message; the "
+      'owner is asked first and may refuse.',
 );
 
 /// Lists an app's collections with their document counts.
@@ -83,15 +85,14 @@ class DbCollectionsTool implements Tool {
   @override
   final spec = ToolSpec(
     'db_collections',
-    "Lists an app's document collections with their counts (counts include "
-        "documents another app's read may not see).",
+    "Lists an app's document collections with their counts.",
     objectSchema({'app': _appProperty}),
   );
 
   @override
   Future<ToolOutput> call(Map<String, Object?> input, RunState s) async {
     _onlyKeys(input, const {'app'});
-    final src = _source(input, s);
+    final src = await _source(input, s, _api);
     final aid = src.aid;
     if (aid == null) return const ToolOk({'app': null, 'collections': []});
     final all = await _read(src, () => _api.collections(aid));
@@ -99,14 +100,6 @@ class DbCollectionsTool implements Tool {
       for (final c in all)
         if (!_private(c.path)) c,
     ];
-    // docs:collections takes no reader, so consent is checked with a
-    // reader's read of one collection before any of the listing is shown.
-    if (src.reader case final reader? when colls.isNotEmpty) {
-      await _read(
-        src,
-        () => _api.listDocsAs(aid, colls.first.path, reader: reader, limit: 1),
-      );
-    }
     return ToolOk({
       'app': src.app,
       'collections': [
@@ -139,20 +132,12 @@ class DbListTool implements Tool {
     _onlyKeys(input, const {'collection', 'app', 'limit'});
     final collection = _collection(input);
     final limit = _limit(input);
-    final src = _source(input, s);
+    final src = await _source(input, s, _api);
     final aid = src.aid;
     if (aid == null) return _page(const [], limit, src, s);
     final docs = await _read(
       src,
-      () => switch (src.reader) {
-        final reader? => _api.listDocsAs(
-          aid,
-          collection,
-          reader: reader,
-          limit: limit + 1,
-        ),
-        null => _api.listDocs(aid, collection, limit: limit + 1),
-      },
+      () => _api.listDocs(aid, collection, limit: limit + 1),
     );
     return _page(docs, limit, src, s);
   }
@@ -181,11 +166,11 @@ class DbGetTool implements Tool {
     final path = _string(input, 'path');
     if (_docPathProblem(path) case final p?) throw ToolInputError(p);
     if (_private(path)) throw _privateError(path);
-    final src = _source(input, s);
+    final src = await _source(input, s, _api);
     final aid = src.aid;
     final doc = aid == null
         ? null
-        : await _read(src, () => _api.getDoc(aid, path, reader: src.reader));
+        : await _read(src, () => _api.getDoc(aid, path));
     if (src.mine) _pin(s, path, doc?.version);
     return ToolOk({
       'exists': doc != null,
@@ -247,7 +232,7 @@ class DbQueryTool implements Tool {
     final limit = _limit(input);
     final where = _where(input['where']);
     final (orderBy, descending) = _orderBy(input['order_by']);
-    final src = _source(input, s);
+    final src = await _source(input, s, _api);
     final aid = src.aid;
     if (aid == null) return _page(const [], limit, src, s);
     final docs = await _read(
@@ -259,7 +244,6 @@ class DbQueryTool implements Tool {
         orderBy: orderBy,
         descending: descending,
         limit: limit + 1,
-        reader: src.reader,
       ),
     );
     return _page(docs, limit, src, s);
@@ -371,50 +355,65 @@ class DbWriteTool implements Tool {
 }
 
 /// Where a read goes: [aid] (null for a new app's own documents, which do
-/// not exist yet), read as [reader] when it is another app's.
+/// not exist yet).
 class _Source {
-  const _Source({required this.aid, required this.app, this.reader});
+  const _Source({required this.aid, required this.app});
 
   final String? aid;
 
   /// The `app` the result names: null for this app.
   final String? app;
-  final String? reader;
 
   bool get mine => app == null;
 }
 
-_Source _source(Map<String, Object?> input, RunState s) {
+/// The app [input] names. Another app is read only once the owner allows
+/// it: asked at most once a run, with the wall clock stopped meanwhile.
+Future<_Source> _source(
+  Map<String, Object?> input,
+  RunState s,
+  ClaxApi api,
+) async {
   final own = s.ctx.artifactId;
   final app = _optString(input, 'app');
   if (app == null || app == own) return _Source(aid: own, app: null);
-  if (own == null) {
+  final src = _Source(aid: app, app: app);
+  final consent = s.readConsent;
+  if (consent == null) {
     throw const ToolInputError(
-      "A new app cannot read another app's documents: it may once it is "
-      'published, declares db.read of that app and the owner allows it. '
-      "Use the other apps' samples in the first message.",
+      "Reading another app's documents needs the owner's consent, which "
+      "this run cannot ask for; use the other apps' summaries in the first "
+      'message.',
     );
   }
-  return _Source(aid: app, app: app, reader: own);
+  final title = (await _read(src, () => api.getArtifact(app))).artifact.title;
+  var answer = s.readConsents[app];
+  if (answer == null) {
+    s.budget.pauseClock();
+    try {
+      answer = await consent.ask(
+        reader: own,
+        readerTitle: own == null ? null : s.ctx.title,
+        source: app,
+        sourceTitle: title,
+      );
+    } finally {
+      s.budget.resumeClock();
+    }
+    s.readConsents[app] = answer;
+  }
+  if (answer == ConsentAnswer.denied) {
+    throw ToolInputError('The owner did not allow reading $title.');
+  }
+  return src;
 }
 
-/// Runs [read], answering a refusal of the reader's consent, or an app
-/// that does not exist, as a refusal the model can act on.
+/// Runs [read], answering an app that does not exist as a refusal the
+/// model can act on.
 Future<T> _read<T>(_Source src, Future<T> Function() read) async {
   try {
     return await read();
   } on ClaxApiError catch (e) {
-    if (src.reader != null &&
-        e.status == 403 &&
-        (e.code == 'not_granted' || e.code == 'not_declared')) {
-      throw ToolInputError(
-        e.code == 'not_declared'
-            ? 'App ${src.app} does not keep documents.'
-            : 'This app may not read ${src.app}: it must declare db.read of '
-                  'it (set_meta) and the owner must allow it, which they '
-                  'do when the published app first reads it.',
-      );
-    }
     if (e.isNotFound && src.app != null && e.body['path'] == null) {
       throw ToolInputError('There is no app ${src.app}.');
     }

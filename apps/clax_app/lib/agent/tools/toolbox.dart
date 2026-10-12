@@ -7,6 +7,7 @@ import 'dart:typed_data';
 import '../../clax/models.dart' show FeedbackItem;
 import '../../daemon/clock.dart';
 import '../progress.dart';
+import '../read_consent.dart';
 import '../request.dart';
 import 'budget.dart';
 import 'draft.dart';
@@ -153,12 +154,21 @@ class RunState {
     required this.draft,
     required this.budget,
     this.progress,
+    this.readConsent,
   });
 
   final RunContext ctx;
   final Draft draft;
   final RunBudget budget;
   final ProgressSink? progress;
+
+  /// Asks the owner before the agent reads another app's documents; null:
+  /// such reads are refused.
+  final AgentReadConsent? readConsent;
+
+  /// Source app ID → the owner's answer this run, so each app is asked
+  /// about at most once a run.
+  final Map<String, ConsentAnswer> readConsents = {};
 
   /// Set once by whatever ends the run: `finish`, `give_up`, a cap or a
   /// cancel.

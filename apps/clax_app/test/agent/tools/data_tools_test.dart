@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:clax_app/agent/read_consent.dart';
 import 'package:clax_app/agent/request.dart';
 import 'package:clax_app/agent/tools/budget.dart';
 import 'package:clax_app/agent/tools/data_tools.dart';
@@ -22,16 +25,15 @@ List<Map<String, Object?>> docsOf(ToolOutput r) => [
   for (final d in okJson(r)['docs']! as List) (d as Map).cast(),
 ];
 
-/// A fake daemon with this run's app ([app], declaring `db`) and another
-/// app ([other]) whose documents [app] may read only once granted.
+/// A fake daemon with this run's app ([app], declaring `db` but no
+/// `db.read`) and another app ([other]) whose documents the agent may read
+/// only once the owner allows it ([consent]).
 class World {
   World() {
     app = api.seedArtifact(
       'Runs',
       {'index.html': '<p>runs</p>'},
-      capabilities: {
-        'db': <String, Object?>{'read': <Object?>[]},
-      },
+      capabilities: {'db': <String, Object?>{}},
     );
     other = api.seedArtifact(
       'Diet',
@@ -44,19 +46,27 @@ class World {
   late final String app;
   late final String other;
 
-  /// Lets [app] read [other]: the declaration and the owner's grant.
-  void allowRead() {
-    final caps = api.capabilitiesOf(app);
-    (caps['db']! as Map)['read'] = [other];
-    api.grantRead(app, other);
-  }
+  /// The owner's answers; denies until [allowRead].
+  final consent = FakeReadConsent();
+
+  /// The owner answers [answer] to every question shown.
+  void allowRead([ConsentAnswer answer = ConsentAnswer.once]) =>
+      consent.answer = (_) async => answer;
+
+  /// The document calls made on [other].
+  List<FakeCall> get otherReads => [
+    for (final c in api.calls)
+      if (c.args['aid'] == other && c.name != 'getArtifact') c,
+  ];
 
   /// A Toolbox for a change on [app] (a new app when [newApp]).
   Toolbox toolbox({
     bool newApp = false,
     Map<String, int?> shownDocs = const {},
+    bool withConsent = true,
+    StepClock? clock,
   }) {
-    final clock = StepClock();
+    clock ??= StepClock();
     final kind = newApp ? RequestKind.newApp : RequestKind.change;
     final ctx = RunContext(
       kind: kind,
@@ -80,6 +90,7 @@ class World {
           'claude-haiku-5-5',
           clock,
         ),
+        readConsent: withConsent ? consent : null,
       ),
       [...fileTools(), ...dataTools(api)],
     );
@@ -136,14 +147,17 @@ void main() {
 
     test("another app's collections need the owner's consent", () async {
       final w = World();
-      w.api.putDoc(w.other, 'meals/m1', {'kcal': 500});
-      final tb = w.toolbox();
+      w.api
+        ..putDoc(w.other, 'meals/m1', {'kcal': 500})
+        ..putDoc(w.other, 'data/users/u1/n1', {'t': 'secret'});
       expect(
-        await tb.call('db_collections', {'app': w.other}),
-        refused(contains('db.read')),
+        await w.toolbox().call('db_collections', {'app': w.other}),
+        refused('The owner did not allow reading Diet.'),
       );
+      expect(w.otherReads, isEmpty);
       w.allowRead();
-      expect(okJson(await tb.call('db_collections', {'app': w.other})), {
+      final r = await w.toolbox().call('db_collections', {'app': w.other});
+      expect(okJson(r), {
         'app': w.other,
         'collections': [
           {'path': 'meals', 'count': 1},
@@ -151,14 +165,17 @@ void main() {
       });
     });
 
-    test('a new app cannot read another app', () async {
-      final w = World();
+    test('a new app may read another app once the owner allows it', () async {
+      final w = World()..allowRead();
       w.api.putDoc(w.other, 'meals/m1', {'kcal': 500});
       final r = await w.toolbox(newApp: true).call('db_collections', {
         'app': w.other,
       });
-      expect(r, refused(contains('new app')));
-      expect(w.api.calls, isEmpty);
+      expect((okJson(r)['collections']! as List), hasLength(1));
+      final ask = w.consent.asks.single;
+      expect(ask.reader, isNull);
+      expect(ask.source, w.other);
+      expect(ask.sourceTitle, 'Diet');
     });
   });
 
@@ -189,10 +206,10 @@ void main() {
       );
     });
 
-    test('reads another app as this app, and pins nothing', () async {
-      final w = World();
+    test('reads another app after consent, with no reader, and pins '
+        'nothing', () async {
+      final w = World()..allowRead();
       w.api.putDoc(w.other, 'meals/m1', {'kcal': 500});
-      w.allowRead();
       final tb = w.toolbox();
       final r = await tb.call('db_list', {
         'collection': 'meals',
@@ -201,8 +218,11 @@ void main() {
       });
       expect(docsOf(r).single['data'], {'kcal': 500});
       expect(tb.state.draft.pins, isEmpty);
-      final read = w.api.calls.lastWhere((c) => c.args['aid'] == w.other);
-      expect(read.args['reader'], w.app);
+      expect(w.otherReads.single.args['reader'], isNull);
+      final ask = w.consent.asks.single;
+      expect(ask.reader, w.app);
+      expect(ask.readerTitle, 'Runs');
+      expect(ask.sourceTitle, 'Diet');
     });
 
     test("another app's documents without consent are refused", () async {
@@ -213,7 +233,8 @@ void main() {
         'app': w.other,
         'limit': null,
       });
-      expect(r, refused(contains('db.read')));
+      expect(r, refused('The owner did not allow reading Diet.'));
+      expect(w.otherReads, isEmpty);
     });
 
     test('caps at 50 documents and says it is truncated', () async {
@@ -317,14 +338,14 @@ void main() {
       expect(tb.state.draft.pins, {'runs/r9': null});
     });
 
-    test("another app's document is read as this app", () async {
+    test("another app's document is read after consent", () async {
       final w = World();
       w.api.putDoc(w.other, 'meals/m1', {'kcal': 500});
       w.allowRead();
       final tb = w.toolbox();
       final r = await tb.call('db_get', {'path': 'meals/m1', 'app': w.other});
       expect((okJson(r)['doc']! as Map)['data'], {'kcal': 500});
-      expect(w.api.calls.last.args['reader'], w.app);
+      expect(w.otherReads.single.args['reader'], isNull);
       expect(tb.state.draft.pins, isEmpty);
     });
 
@@ -387,7 +408,7 @@ void main() {
       expect(r, refused(contains('value_json')));
     });
 
-    test('reads another app as this app', () async {
+    test('reads another app after consent', () async {
       final w = World();
       w.api.putDoc(w.other, 'meals/m1', {'kcal': 500});
       w.allowRead();
@@ -399,7 +420,106 @@ void main() {
         'limit': null,
       });
       expect(docsOf(r), hasLength(1));
-      expect(w.api.calls.last.args['reader'], w.app);
+      expect(w.otherReads.single.args['reader'], isNull);
+    });
+  });
+
+  group('read consent', () {
+    Map<String, Object?> list(String app) => {
+      'collection': 'meals',
+      'app': app,
+      'limit': null,
+    };
+
+    test('once covers this run only', () async {
+      final w = World()..allowRead();
+      w.api.putDoc(w.other, 'meals/m1', {'kcal': 500});
+      final tb = w.toolbox();
+      await tb.call('db_list', list(w.other));
+      await tb.call('db_get', {'path': 'meals/m1', 'app': w.other});
+      expect(w.consent.shown, 1);
+      await w.toolbox().call('db_list', list(w.other));
+      expect(w.consent.shown, 2);
+    });
+
+    test('always is remembered for the pair of apps', () async {
+      final w = World()..allowRead(ConsentAnswer.always);
+      w.api.putDoc(w.other, 'meals/m1', {'kcal': 500});
+      expect(
+        docsOf(await w.toolbox().call('db_list', list(w.other))),
+        hasLength(1),
+      );
+      final r = await w.toolbox().call('db_list', list(w.other));
+      expect(docsOf(r), hasLength(1));
+      expect(w.consent.shown, 1);
+      expect(w.consent.asks.last.remembered, isTrue);
+    });
+
+    test('denied is not asked again this run', () async {
+      final w = World();
+      w.api.putDoc(w.other, 'meals/m1', {'kcal': 500});
+      final tb = w.toolbox();
+      await tb.call('db_list', list(w.other));
+      final r = await tb.call('db_get', {'path': 'meals/m1', 'app': w.other});
+      expect(r, refused('The owner did not allow reading Diet.'));
+      expect(w.consent.shown, 1);
+      expect(w.otherReads, isEmpty);
+    });
+
+    test("the app's own db.read grant is not the agent's consent", () async {
+      final w = World();
+      w.api
+        ..capabilitiesOf(w.app)['db'] = <String, Object?>{
+          'read': [w.other],
+        }
+        ..grantRead(w.app, w.other)
+        ..putDoc(w.other, 'meals/m1', {'kcal': 500});
+      final r = await w.toolbox().call('db_list', list(w.other));
+      expect(r, refused('The owner did not allow reading Diet.'));
+    });
+
+    test('without a way to ask, reads of another app are refused', () async {
+      final w = World();
+      w.api.putDoc(w.other, 'meals/m1', {'kcal': 500});
+      final r = await w
+          .toolbox(withConsent: false)
+          .call('db_list', list(w.other));
+      expect(r, refused(contains("owner's consent")));
+      expect(w.otherReads, isEmpty);
+    });
+
+    test('an unknown app is named, and nothing is asked', () async {
+      final w = World();
+      final r = await w.toolbox().call('db_list', list('zzzzzzzzzzzz'));
+      expect(r, refused(contains('There is no app zzzzzzzzzzzz')));
+      expect(w.consent.asks, isEmpty);
+    });
+
+    test('naming this app needs no consent', () async {
+      final w = World();
+      w.api.putDoc(w.app, 'meals/m1', {'kcal': 500});
+      final r = await w.toolbox().call('db_list', list(w.app));
+      expect(docsOf(r), hasLength(1));
+      expect(w.consent.asks, isEmpty);
+    });
+
+    test('the wall clock stops while the owner is asked', () async {
+      final w = World();
+      w.api.putDoc(w.other, 'meals/m1', {'kcal': 500});
+      final asked = Completer<void>();
+      final answer = Completer<ConsentAnswer>();
+      w.consent.answer = (_) {
+        asked.complete();
+        return answer.future;
+      };
+      final clock = StepClock();
+      final tb = w.toolbox(clock: clock);
+      final r = tb.call('db_list', list(w.other));
+      await asked.future;
+      clock.advance(const Duration(minutes: 5));
+      answer.complete(ConsentAnswer.once);
+      expect(docsOf(await r), hasLength(1));
+      expect(tb.state.budget.timeUp, isFalse);
     });
   });
 
@@ -614,7 +734,7 @@ void main() {
 
     test("never writes another app's documents", () async {
       final w = World();
-      w.allowRead();
+      w.allowRead(ConsentAnswer.always);
       final tb = w.toolbox();
       expect(
         await tb.call('db_write', {
