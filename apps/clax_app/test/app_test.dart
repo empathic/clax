@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' show AppExitResponse;
 
 import 'package:clax_app/agent/backend.dart';
 import 'package:clax_app/agent/edit_result.dart';
@@ -229,6 +230,30 @@ void main() {
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.detached);
     await tester.pumpAndSettle();
+    expect(rig.supervisor.stopCalls, 1);
+  });
+
+  testWidgets('quitting the app stops the worker and the daemon first', (
+    tester,
+  ) async {
+    await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+    await up(tester);
+    await until(() => rig.api.waitingPolls == 1);
+    final response = await tester.binding.handleRequestAppExit();
+    expect(response, AppExitResponse.exit);
+    expect(rig.supervisor.stopCalls, 1);
+    // The worker no longer polls: a released poll is not followed by
+    // another.
+    final polls = rig.api.callNames.where((n) => n == 'pollFeedback').length;
+    rig.api.releasePolls();
+    await tester.pump();
+    expect(
+      rig.api.callNames.where((n) => n == 'pollFeedback').length,
+      polls,
+    );
+    // A detach after the quit does not stop it twice.
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.detached);
+    await tester.pump();
     expect(rig.supervisor.stopCalls, 1);
   });
 
