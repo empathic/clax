@@ -278,10 +278,29 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             get(grants::list_invites).post(grants::create_invite),
         )
         .route("/api/people/invites/{id}", delete(grants::revoke_invite))
+        .route("/api/people", get(people::list_people))
+        .route("/api/people/me", get(people::me))
+        .route(
+            "/api/people/me/grants/{gid}/narrow",
+            axum::routing::put(people::narrow_grant),
+        )
+        .route("/api/people/{pid}", delete(people::revoke_person))
+        .route(
+            "/api/people/{pid}/rights",
+            axum::routing::put(people::set_rights),
+        )
         .route("/api/agents", get(people::list_agents))
         .route(
             "/api/agents/{handle}",
-            axum::routing::put(people::rename_agent),
+            axum::routing::put(people::rename_agent).delete(people::end_agent),
+        )
+        .route(
+            "/api/agents/{handle}/narrow",
+            axum::routing::put(people::narrow_agent),
+        )
+        .route(
+            "/api/agents/{handle}/elevate",
+            axum::routing::put(people::elevate_agent).delete(people::unelevate_agent),
         );
     #[cfg(feature = "test-routes")]
     let api_fast = api_fast
@@ -676,6 +695,15 @@ mod l10 {
         ("grants::test_fail_index", Token),
         ("connect::browser_link", NoArtifact),
         ("people::rename_agent", NoArtifact),
+        ("people::end_agent", NoArtifact),
+        ("people::narrow_agent", NoArtifact),
+        ("people::elevate_agent", NoArtifact),
+        ("people::unelevate_agent", NoArtifact),
+        ("people::list_people", NoArtifact),
+        ("people::me", NoArtifact),
+        ("people::narrow_grant", NoArtifact),
+        ("people::revoke_person", NoArtifact),
+        ("people::set_rights", NoArtifact),
         ("people::list_agents", Filtered),
         ("agent::test_gate", Token),
         ("agent::test_caller", NoArtifact),
@@ -1639,6 +1667,8 @@ mod agents {
         "inbox_views(",
         "grant_view(",
         "invite_view(",
+        "person_view(",
+        "agent_view(",
         "Sse::new(",
         "WebSocketUpgrade",
         "stream_response(",
@@ -1647,6 +1677,15 @@ mod agents {
     /// Denied handlers the spec names as refusing the owner's agents
     /// whatever their source shows (spec §7.5).
     const MUST_REFUSE: &[&str] = &[
+        "people::list_people",
+        "people::me",
+        "people::set_rights",
+        "people::revoke_person",
+        "people::narrow_grant",
+        "people::narrow_agent",
+        "people::elevate_agent",
+        "people::unelevate_agent",
+        "people::end_agent",
         "inbox::list",
         "inbox::summary",
         "inbox::get_one",

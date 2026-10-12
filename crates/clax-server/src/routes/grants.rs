@@ -82,7 +82,7 @@ fn invite_view(i: &Invite) -> Value {
     })
 }
 
-fn announce(s: &AppState, change: Value) {
+pub(crate) fn announce(s: &AppState, change: Value) {
     s.events.publish(Event::People { change });
 }
 

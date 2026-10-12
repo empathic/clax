@@ -29,6 +29,7 @@ mod api_live_watch;
 mod api_mcp;
 mod api_notices;
 mod api_owner;
+mod api_people;
 mod api_perf;
 mod api_presence;
 mod api_push;

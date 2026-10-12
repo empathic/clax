@@ -1636,7 +1636,11 @@ waits for a live page's next snapshot (see "Live pages"). A live page's
 thread also carries `page_url` (the page's URL with the thread's route) and
 `snapshot_path` (the absolute path of its version's `index.html`, the
 snapshot it was made on). `note` says that comment text comes from people
-viewing the page. Through a session, reading acknowledges the returned comments of sent threads
+viewing the page. A viewer who is neither the owner nor a connected person
+(a LAN viewer, an anonymous one) is named `<name> (not connected)` in every
+author name an agent reads: `author_name`, a feedback item's `author` and
+its text's author line, a batch's `sent_by`, `resolved_by_name`, and an
+artifact's `participants`. Through a session, reading acknowledges the returned comments of sent threads
 for that session (a comment added after the read stays pending).
 
 `comments_reply` posts the reply as the agent; the person sees it under the
