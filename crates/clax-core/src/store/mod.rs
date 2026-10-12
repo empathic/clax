@@ -123,6 +123,10 @@ pub struct Store {
     /// Where every time the store writes or compares is read
     /// ([`Store::now`]). IDs are minted from the system clock.
     clock: Arc<dyn Clock>,
+    /// When this store last started watching sessions: its opening, or the
+    /// daemon's last resume after its machine slept ([`Store::mark_resumed`]).
+    /// A remote session's idle time counts from no earlier than this.
+    resumed_at: Mutex<String>,
 }
 
 /// `t` as the store writes times: RFC 3339 in UTC, to the millisecond.
@@ -219,6 +223,7 @@ impl Store {
             visibility: approvals::VisState::default(),
             agents_changed: Mutex::new(None),
             agents_listener: RwLock::new(None),
+            resumed_at: Mutex::new(stamp(clock.now())),
             clock,
         })
     }
@@ -270,6 +275,19 @@ impl Store {
     /// The current time by the store's clock.
     pub fn now_utc(&self) -> DateTime<Utc> {
         self.clock.now()
+    }
+
+    /// Records that the daemon resumes watching sessions now, after time in
+    /// which it could not hear from them (its machine slept): a remote
+    /// session's idle time counts from no earlier than this
+    /// ([`Store::reap_sessions`]). Opening the store marks it too.
+    pub fn mark_resumed(&self) {
+        *self.resumed_at.lock().unwrap() = self.now();
+    }
+
+    /// When the daemon last resumed watching sessions ([`Store::mark_resumed`]).
+    pub fn resumed_at(&self) -> String {
+        self.resumed_at.lock().unwrap().clone()
     }
 
     /// Runs `f` on a reader connection, which refuses writes.
@@ -359,8 +377,14 @@ impl Store {
         Ok(())
     }
 
+    /// Marks the write under way as changing the agents roster without an
+    /// agent starting or ending: a thread's owner changed (`threads_owned`).
+    pub(crate) fn agents_pinged(&self) {
+        self.agents_changed.lock().unwrap().get_or_insert_default();
+    }
+
     /// Installs `f`, called after each committed write that started, ended
-    /// or renamed an agent session, with the artifacts those agents
+    /// or renamed an agent session, or changed a thread's owner, with the artifacts those agents
     /// watched, outside the write turn and after the other listeners.
     /// Replaces any earlier listener.
     pub fn set_agents_listener(&self, f: impl Fn(Vec<String>) + Send + Sync + 'static) {

@@ -842,7 +842,7 @@ fn keyed(key: &str, recipient: Option<&str>) -> String {
 
 /// Whether `aid` is a live page, which only the owner's browsers on this
 /// machine see (L10): no connected person gets an item about one.
-fn is_live_page(c: &Connection, aid: &str) -> Result<bool> {
+pub(super) fn is_live_page(c: &Connection, aid: &str) -> Result<bool> {
     Ok(c.query_row(
         "SELECT kind = ?2 FROM artifacts WHERE id = ?1",
         params![aid, crate::live::KIND_LIVE],

@@ -351,6 +351,7 @@ pub(crate) fn take_in(
         "UPDATE threads SET target_session_id = ?2 WHERE id = ?1",
         params![tid, sid],
     )?;
+    st.agents_pinged();
     // The other agents of the taker's person.
     const SAME_PERSON: &str = "target_session_id IN (SELECT o.id FROM sessions o, sessions me
         WHERE me.id = ?2 AND o.id <> ?2 AND o.person IS me.person)";

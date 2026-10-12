@@ -199,10 +199,17 @@ async fn roster_reports_blocked_since_and_is_person_scoped() {
         assert_eq!(own["project"], "w");
         for other in [&mia_name, &owner_name] {
             let o = row(agents, other);
-            assert_eq!(o["handle"], Value::Null, "{o}");
-            assert_eq!(o["project"], Value::Null);
-            assert_eq!(o["harness"], Value::Null);
-            assert_eq!(o["working"], Value::Null);
+            for k in [
+                "handle",
+                "project",
+                "harness",
+                "working",
+                "blocked",
+                "threads_owned",
+                "unread",
+            ] {
+                assert_eq!(o[k], Value::Null, "{k} of another person's agent: {o}");
+            }
             assert_eq!(o["state"], "idle");
             assert!(o["since"].is_string());
         }
@@ -220,6 +227,24 @@ async fn roster_reports_blocked_since_and_is_person_scoped() {
         Value::Null
     );
 
+    // The owner's agent works on a page: the owner by hand sees its title,
+    // the agent itself does not (titles are withheld per field from agents).
+    let aid = r.ts.any_artifact().await;
+    let res =
+        r.ts.authed(r.ts.client.put(format!(
+            "{}/api/sessions/{}/working/{aid}",
+            r.ts.base, r.owner_session
+        )))
+        .header("x-clax-session", &r.owner_session)
+        .json(&json!({"message": "on it"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "{}", res.text().await.unwrap());
+    let by_hand = r.owners().await;
+    let w = &row(&by_hand, &owner_name)["working"][0];
+    assert_eq!(w["artifact_id"], aid.as_str());
+    assert!(w["title"].is_string(), "{w}");
     // The owner's agent sees the owner's agents in full, others' by name.
     let r2 =
         r.ts.authed(r.ts.client.get(format!("{}/api/agents", r.ts.base)))
@@ -231,6 +256,13 @@ async fn roster_reports_blocked_since_and_is_person_scoped() {
     let v: Value = r2.json().await.unwrap();
     let agents = v["agents"].as_array().unwrap();
     assert!(row(agents, &owner_name)["handle"].is_string());
+    let w = &row(agents, &owner_name)["working"][0];
+    assert_eq!(
+        (&w["artifact_id"], &w["title"]),
+        (&json!(aid), &Value::Null),
+        "{w}"
+    );
+    assert_eq!(row(agents, &owner_name)["state"], "working");
     assert_eq!(row(agents, &sam_name)["handle"], Value::Null);
 
     // No credential, no roster.
@@ -402,15 +434,84 @@ async fn an_agents_end_tells_the_send_menus_of_what_it_watched() {
         .json(&json!({"ended": true}));
     let mut ev = r.sams_stream(&[&format!("artifact:{aid}")]).await;
     assert_eq!(res.send().await.unwrap().status(), 200);
-    loop {
-        let (name, data) = ev.next().await;
-        if name == "agents" {
-            assert_eq!(
-                data,
-                json!({"topic": format!("artifact:{aid}")}),
-                "a ping names nothing"
-            );
-            break;
+    let heard = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let (name, data) = ev.next().await;
+            if name == "agents" {
+                return data;
+            }
         }
+    })
+    .await
+    .expect("no agents event on the artifact's topic within 10 s");
+    assert_eq!(
+        heard,
+        json!({"topic": format!("artifact:{aid}")}),
+        "a ping names nothing"
+    );
+}
+
+/// A person's ended note never names a live page's thread (L10): their
+/// browser never sees a live page.
+#[tokio::test]
+async fn a_persons_ended_note_leaves_out_live_pages() {
+    let w = crate::common::people::World::two_people().await;
+    let cookie = w.ts.store.viewer_of_grant(&w.sam.grant_id()).unwrap().id;
+    // Sam's agent owns a thread on Mia's page and one on the live page
+    // (written directly: no send reaches a person's agent on a live page).
+    let db = rusqlite::Connection::open(w.ts.home.db_path()).unwrap();
+    let mut ids = Vec::new();
+    for aid in [&w.read.artifact, &w.live] {
+        let tid: String = db
+            .query_row(
+                "SELECT id FROM threads WHERE artifact_id = ?1 AND status = 'open' LIMIT 1",
+                [aid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        db.execute(
+            "UPDATE threads SET target_session_id = ?2 WHERE id = ?1",
+            [&tid, &w.sam_session],
+        )
+        .unwrap();
+        ids.push(tid);
     }
+    let res = w
+        .sam
+        .agent(
+            "PATCH",
+            &format!("/api/sessions/{}", w.sam_session),
+            Some(&w.sam_session),
+            Some(json!({"ended": true})),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let v: Value =
+        w.ts.client
+            .get(format!("{}/api/inbox?kind=ended", w.ts.base))
+            .header("cookie", format!("clax_viewer={cookie}"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+    let item = &v["items"][0];
+    assert_eq!(item["kind"], "ended", "{v}");
+    let shown: Vec<&str> = item["ended"]["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        shown,
+        [ids[0].as_str()],
+        "the live page's thread is left out"
+    );
+    assert!(!v.to_string().contains(w.live.as_str()), "{v}");
+    assert_eq!(
+        item["ended"]["threads"][0]["url"],
+        format!("/a/{}?thread={}", w.read.artifact, ids[0])
+    );
 }

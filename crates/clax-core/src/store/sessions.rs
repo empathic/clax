@@ -522,7 +522,16 @@ impl Store {
                         params![id, name],
                     )?;
                 }
-                return Ok((fetch(tx, &id)?, None));
+                // A row adopted by its parent PID takes the harness
+                // session ID now: what its last idle end saved comes back.
+                let restored = if facts_before.harness_session_id.is_none()
+                    && r.harness_session_id.is_some()
+                {
+                    self.restore_in(tx, ctx, &id)?
+                } else {
+                    None
+                };
+                return Ok((fetch(tx, &id)?, restored));
             }
             let id = new_ulid();
             let name = derived_name(
@@ -652,8 +661,15 @@ impl Store {
                          WHERE id = ?1",
                         params![id, harness_session_id, parent_pid, now, cwd, transcript_path],
                     )?;
-                    if facts(tx, &id)? != before {
+                    let after = facts(tx, &id)?;
+                    if after != before {
                         self.record_session(tx, ctx, AuditKind::SessionJoin, &id, harness)?;
+                    }
+                    // A row the shim made without the harness session ID
+                    // (Codex's) gets it here: what its last idle end saved
+                    // comes back now.
+                    if before.harness_session_id.is_none() {
+                        restored = self.restore_in(tx, ctx, &id)?;
                     }
                     id
                 }
@@ -975,8 +991,10 @@ impl Store {
     /// Ends live sessions not seen for long enough (spec 2026-10-08 §14):
     /// a local one (no `grant_id`) unseen for `idle` whose `pid` is unknown
     /// or no longer alive; a remote one (with a `grant_id`) unseen for
-    /// [`Store::REMOTE_SESSION_IDLE_SECS`], whose process is never probed:
-    /// it runs on another machine. Each ends as
+    /// [`Store::REMOTE_SESSION_IDLE_SECS`] of the daemon's uptime (counted
+    /// from no earlier than [`Store::resumed_at`]: it could not be heard
+    /// while the daemon was down or its machine slept), whose process is
+    /// never probed: it runs on another machine. Each ends as
     /// [`Store::end_session_touched`] ends one, for `idle`: its direct
     /// watches saved in `ended_watches_json` first, `session.end` (reason
     /// `ttl`) recorded as `system:ttl`, naming the session's agent in
@@ -987,14 +1005,17 @@ impl Store {
         let now = self.now_utc();
         let local = super::stamp(now - idle);
         let remote = super::stamp(now - Duration::from_secs(Self::REMOTE_SESSION_IDLE_SECS));
+        // A remote session could not reach the daemon while it was down or
+        // its machine slept: its idle time counts from the resume.
+        let resumed = self.resumed_at();
         let stale = self.with_read(|c| {
             let mut stmt = c.prepare(
                 "SELECT id, pid, grant_id IS NOT NULL FROM sessions WHERE ended_at IS NULL
                    AND ((grant_id IS NULL AND last_seen_at < ?1)
-                     OR (grant_id IS NOT NULL AND last_seen_at < ?2))",
+                     OR (grant_id IS NOT NULL AND max(last_seen_at, ?3) < ?2))",
             )?;
             Ok(stmt
-                .query_map(params![local, remote], |r| {
+                .query_map(params![local, remote, resumed], |r| {
                     Ok((
                         r.get::<_, String>(0)?,
                         r.get::<_, Option<u32>>(1)?,
@@ -1077,10 +1098,38 @@ impl Store {
             .and_then(|j| serde_json::from_str(j).ok())
             .unwrap_or_default();
         let now = self.now();
+        // A grant's session watches only where its rights let it now (its
+        // person's, its grant's and its own narrowing): a watch PUT would
+        // be refused elsewhere.
+        let (grant, person): (Option<String>, Option<String>) = tx.query_row(
+            "SELECT grant_id, person FROM sessions WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let rights = match &grant {
+            Some(g) => Some(super::people::grant_caller_in(tx, g, Some(id))?.rights),
+            None => None,
+        };
         let mut artifacts = Vec::new();
         for w in saved {
             if !super::threads::artifact_live(tx, &w.artifact_id)? {
                 continue;
+            }
+            if let Some(r) = &rights {
+                let creator: Option<String> = tx.query_row(
+                    "SELECT person FROM artifacts WHERE id = ?1",
+                    params![w.artifact_id],
+                    |r| r.get(0),
+                )?;
+                let own = |x: &str| x == w.artifact_id && creator == person;
+                if !r.allows(
+                    crate::rights::RightType::Comments,
+                    "watch",
+                    Some(&w.artifact_id),
+                    &own,
+                ) {
+                    continue;
+                }
             }
             let n = tx.execute(
                 "INSERT OR IGNORE INTO watches (session_id, artifact_id, replies_armed, created_at)
@@ -1120,7 +1169,16 @@ impl Store {
                 })
             })
             .unwrap_or_default();
-        let note = restore_note(&ended_at, &threads);
+        if !artifacts.is_empty() {
+            // Their Send menus offer the agent again.
+            self.agents_changed(tx, id)?;
+        }
+        let window = if grant.is_some() {
+            Self::REMOTE_SESSION_IDLE_SECS
+        } else {
+            Self::SESSION_IDLE_SECS
+        };
+        let note = restore_note(window / 60, &ended_at, &threads);
         Ok(Some(Restored {
             from,
             ended_at,
@@ -1132,15 +1190,17 @@ impl Store {
 }
 
 /// The note a restored session's first tool result carries (spec
-/// 2026-10-08 §6.7), naming the threads its end released.
-pub fn restore_note(ended_at: &str, threads: &[String]) -> String {
+/// 2026-10-08 §6.7), naming the window it went unseen for (`minutes`: 30
+/// for another machine's agent, 5 for this machine's) and the threads its
+/// end released.
+pub fn restore_note(minutes: u64, ended_at: &str, threads: &[String]) -> String {
     let released = match threads.len() {
         0 => "no threads were released".to_string(),
         1 => format!("1 thread was released ({})", threads[0]),
         n => format!("{n} threads were released ({})", threads.join(", ")),
     };
     format!(
-        "[clax] Your session ended after 30 minutes without contact ({ended_at}): {released} and your questions withdrawn; your watches were restored."
+        "[clax] Your session ended after {minutes} minutes without contact ({ended_at}): {released} and your questions withdrawn; your watches were restored."
     )
 }
 
@@ -1341,9 +1401,12 @@ impl Store {
             questions: withdrawn_questions.len(),
             requests: withdrawn_requests.len(),
         };
+        // A person never hears of a live page (L10): their note leaves out
+        // its threads.
+        let person = super::inbox::person_of_session(tx, id)?;
         for (aid, tid, open) in &released {
             touched.threads.insert((aid.clone(), tid.clone()));
-            if *open {
+            if *open && (person.is_none() || !super::inbox::is_live_page(tx, aid)?) {
                 note.threads.push((aid.clone(), tid.clone()));
             }
         }
@@ -2937,7 +3000,10 @@ mod tests {
             // A remote row that holds a process ID (the daemon drops one
             // from a grant's registration; this one is written directly).
             w.st.with_tx(|tx| {
-                tx.execute("UPDATE sessions SET pid = 777 WHERE id = ?1", params![w.sid])?;
+                tx.execute(
+                    "UPDATE sessions SET pid = 777 WHERE id = ?1",
+                    params![w.sid],
+                )?;
                 Ok(())
             })
             .unwrap();
@@ -3103,6 +3169,205 @@ mod tests {
             assert_eq!(r.artifacts, vec![w.aid.to_string()]);
             assert!(r.note.contains("no threads were released"), "{}", r.note);
             assert_eq!(w.st.list_watches(&s.id).unwrap().len(), 1);
+        }
+
+        #[test]
+        fn daemon_downtime_does_not_count_against_remote_sessions() {
+            let (d, clock, st) = store();
+            let (gid, _, _) = approved(&st, "Sam", KEY_A);
+            let sid = st
+                .register_session(DAEMON, reg_in(&gid, "hs-1"))
+                .unwrap()
+                .id;
+            drop(st);
+            // The daemon is down for an hour, then starts again.
+            clock.advance(3600);
+            let st = Store::open_with_clock(&crate::Home::at(d.path().join("ax")), clock.clone())
+                .unwrap();
+            let idle = Duration::from_secs(Store::SESSION_IDLE_SECS);
+            assert!(st.reap_sessions(idle, &|_| false).unwrap().ended.is_empty());
+            clock.advance(29 * 60);
+            assert!(
+                st.reap_sessions(idle, &|_| false).unwrap().ended.is_empty(),
+                "29 minutes of uptime"
+            );
+            // Its machine sleeps an hour; on wake the daemon marks the resume.
+            clock.advance(3600);
+            st.mark_resumed();
+            assert!(st.reap_sessions(idle, &|_| false).unwrap().ended.is_empty());
+            clock.advance(31 * 60);
+            assert_eq!(
+                st.reap_sessions(idle, &|_| false).unwrap().ended,
+                vec![sid],
+                "a whole window of uptime unseen"
+            );
+        }
+
+        #[test]
+        fn a_restore_brings_back_only_watches_the_rights_allow_and_pings_them() {
+            let w = bare();
+            let other = artifact(&w.st, None);
+            w.st.watch(DAEMON, &w.sid, &other, true).unwrap();
+            w.clock.advance(Store::REMOTE_SESSION_IDLE_SECS as i64 + 1);
+            w.st.reap_sessions(Duration::from_secs(Store::SESSION_IDLE_SECS), &|_| false)
+                .unwrap();
+            let pinged = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let p = pinged.clone();
+            w.st.set_agents_listener(move |a| p.lock().unwrap().push(a));
+            // Sam narrows his machine to reading the first artifact only.
+            let narrow = crate::rights::Rights::parse(&serde_json::json!([
+                {"type": "clax-artifacts", "actions": ["read"]},
+                {"type": "clax-comments", "actions": ["read", "watch"], "locations": [w.aid.as_str()]}
+            ]))
+            .unwrap();
+            w.st.narrow_grant(DAEMON, &w.grant, Some(narrow)).unwrap();
+            pinged.lock().unwrap().clear();
+            let (s, r) =
+                w.st.register_session_restoring(DAEMON, reg_in(&w.grant, "hs-1"))
+                    .unwrap();
+            assert_eq!(r.unwrap().artifacts, vec![w.aid.to_string()]);
+            let back: Vec<String> =
+                w.st.list_watches(&s.id)
+                    .unwrap()
+                    .into_iter()
+                    .map(|x| x.artifact_id)
+                    .collect();
+            assert_eq!(
+                back,
+                vec![w.aid.to_string()],
+                "not the one it may no longer watch"
+            );
+            assert!(
+                pinged
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|a| a.contains(&w.aid.to_string())),
+                "the restored watch's Send menu hears of it: {:?}",
+                pinged.lock().unwrap()
+            );
+        }
+
+        #[test]
+        fn a_codex_session_restores_when_its_hook_names_it() {
+            // Codex's shim registers with no harness session ID; its hook
+            // joins by parent PID with the ID.
+            let (_d, clock, st) = store();
+            let shim = |pid: u32| RegisterSession {
+                harness: "codex".into(),
+                cwd: "/w".into(),
+                parent_pid: Some(pid),
+                ..Default::default()
+            };
+            let hook = |pid: u32| JoinSession {
+                harness: "codex".into(),
+                parent_pid: pid,
+                harness_session_id: "cx-1".into(),
+                cwd: None,
+                transcript_path: None,
+                ancestor_pids: vec![],
+            };
+            let first = st.register_session(DAEMON, shim(10)).unwrap().id;
+            st.join_session(DAEMON, hook(10), None).unwrap();
+            let aid = artifact(&st, None);
+            st.watch(DAEMON, &first, &aid, true).unwrap();
+            clock.advance(Store::SESSION_IDLE_SECS as i64 + 1);
+            st.reap_sessions(Duration::from_secs(Store::SESSION_IDLE_SECS), &|_| false)
+                .unwrap();
+            // Resumed: a new shim process, then its hook.
+            let (again, none) = st.register_session_restoring(DAEMON, shim(11)).unwrap();
+            assert_eq!(none, None, "no harness session ID yet");
+            let (joined, r) = st.join_session_restoring(DAEMON, hook(11), None).unwrap();
+            assert_eq!(joined.id, again.id);
+            let r = r.expect("restored at the join");
+            assert_eq!(r.artifacts, vec![aid.to_string()]);
+            assert!(
+                r.note
+                    .starts_with("[clax] Your session ended after 5 minutes without contact"),
+                "a local session names the local window: {}",
+                r.note
+            );
+        }
+
+        #[test]
+        fn a_named_send_to_another_agent_displaces_the_old_owner() {
+            let w = world();
+            let seq = w.last_seq();
+            // Sam's second agent, then a send naming it.
+            let second =
+                w.st.register_session(DAEMON, reg_in(&w.grant, "hs-2"))
+                    .unwrap()
+                    .id;
+            w.st.ensure_watch(DAEMON, &second, &w.aid).unwrap();
+            // The first agent asks about the owned thread too.
+            let mia_comment = |tid: &str| {
+                let (g, _, _) = approved(&w.st, "Ola", [7; 32]);
+                let ola = w.st.viewer_of_grant(&g).unwrap().public_id;
+                w.st.add_comment(
+                    DAEMON,
+                    tid,
+                    crate::store::threads::NewComment {
+                        author_public_id: Some(ola),
+                        author_kind: crate::store::threads::AUTHOR_VIEWER,
+                        author_name: "Ola".into(),
+                        via_session_id: None,
+                        body: "more".into(),
+                        via_page: false,
+                    },
+                )
+                .unwrap();
+            };
+            mia_comment(&w.owned);
+            w.st.ask_approval(
+                DAEMON,
+                &AskApproval {
+                    session_id: w.sid.clone(),
+                    artifact_id: None,
+                    thread_id: Some(w.owned.clone()),
+                    author: None,
+                },
+            )
+            .unwrap();
+            let undelivered = |sid: &str| -> i64 {
+                w.st.with_read(|c| {
+                    Ok(c.query_row(
+                        "SELECT count(*) FROM feedback WHERE thread_id = ?1 AND target_session_id = ?2
+                           AND delivered_at IS NULL",
+                        [&w.owned, sid],
+                        |r| r.get(0),
+                    )?)
+                })
+                .unwrap()
+            };
+            assert!(undelivered(&w.sid) > 0);
+            let pings = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let p = pings.clone();
+            w.st.set_agents_listener(move |_| {
+                p.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            });
+            let (_, touched, _) =
+                w.st.send_routed(
+                    DAEMON,
+                    &w.owned,
+                    crate::SendTarget::Agent(&second),
+                    Route::Send,
+                    false,
+                )
+                .unwrap();
+            assert_eq!(w.owner_of(&w.owned).as_deref(), Some(second.as_str()));
+            assert_eq!(undelivered(&w.sid), 0, "the old owner's rows are gone");
+            assert_eq!(
+                pings.load(std::sync::atomic::Ordering::Relaxed),
+                1,
+                "the owner changed: the roster's threads_owned did"
+            );
+            assert!(touched.targets.contains(&w.sid));
+            let recs = w.kinds_since(seq);
+            assert!(
+                recs.iter()
+                    .any(|(k, b)| k == "approval.withdraw" && b["reason"] == "thread_taken"),
+                "{recs:?}"
+            );
         }
     }
 }
