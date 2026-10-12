@@ -32,6 +32,7 @@ class InboxScreen extends StatefulWidget {
     this.timer,
     this.now,
     this.searchDelay = const Duration(milliseconds: 300),
+    this.retryDelay,
   });
 
   final ClaxApi api;
@@ -47,6 +48,10 @@ class InboxScreen extends StatefulWidget {
   final DateTime Function()? now;
 
   final Duration searchDelay;
+
+  /// Waits between tries to subscribe a topic again; [Future.delayed]
+  /// when null.
+  final Future<void> Function(Duration)? retryDelay;
 
   @override
   State<InboxScreen> createState() => _InboxScreenState();
@@ -85,6 +90,9 @@ class _InboxScreenState extends State<InboxScreen> {
   /// The `inbox_item` events received while a first-page fetch was in
   /// flight, applied again on its result.
   List<InboxItem>? _duringLoad;
+
+  /// The topics being subscribed again after an `unsubscribed`.
+  final Set<String> _resubscribing = {};
 
   @override
   void initState() {
@@ -173,7 +181,11 @@ class _InboxScreenState extends State<InboxScreen> {
   void _onEvent(StreamEvent e) {
     if (!mounted) return;
     switch (e.type) {
-      case 'resync' || 'unsubscribed' when e.data['topic'] == 'inbox':
+      case 'unsubscribed':
+        if (e.data['topic'] case final String topic) {
+          unawaited(_resubscribe(topic));
+        }
+      case 'resync' when e.data['topic'] == 'inbox':
         unawaited(_refresh());
       case 'inbox_read':
         unawaited(_refresh());
@@ -189,6 +201,24 @@ class _InboxScreenState extends State<InboxScreen> {
           if (e.data['unread'] case final num n) _unread = n.toInt();
           _upsert(item);
         });
+    }
+  }
+
+  /// Subscribes [topic] again after the stream dropped it, then refetches
+  /// what an `inbox` gap may have missed.
+  Future<void> _resubscribe(String topic) async {
+    final stream = _stream;
+    if (stream == null || !_resubscribing.add(topic)) return;
+    try {
+      final ok = await resubscribe(
+        stream,
+        [topic],
+        delay: widget.retryDelay ?? Future.delayed,
+        alive: () => mounted,
+      );
+      if (ok && mounted && topic == 'inbox') await _refresh();
+    } finally {
+      _resubscribing.remove(topic);
     }
   }
 
@@ -481,11 +511,11 @@ String inboxLine(InboxItem item) {
   if (item.gone) return 'No longer available';
   switch (item.kind) {
     case 'reply':
-      final body = item.replyBody?.trim() ?? '';
+      final body = plainPreview(item.replyBody ?? '');
       return body.isEmpty ? 'Replied' : body;
     case 'version':
       final n = item.versionN;
-      final note = item.versionNote?.trim() ?? '';
+      final note = _oneLine(item.versionNote ?? '');
       final v = n == null ? 'New version' : 'v$n';
       return note.isEmpty ? v : '$v: $note';
     case 'published':
@@ -493,14 +523,93 @@ String inboxLine(InboxItem item) {
     case 'question':
       final q = item.question;
       if (q == null || q.questions.isEmpty) return 'A question';
-      final header = q.questions.first.header.trim();
-      return header.isEmpty ? q.questions.first.question : header;
+      final header = _oneLine(q.questions.first.header);
+      return header.isEmpty ? _oneLine(q.questions.first.question) : header;
     case 'finished':
-      final m = item.workMessage?.trim() ?? '';
+      final m = _oneLine(item.workMessage ?? '');
       return m.isEmpty ? 'Finished' : 'Finished: $m';
     default:
       return item.kind;
   }
+}
+
+/// [text] with every run of whitespace, newlines included, as one space.
+String _oneLine(String text) => text.replaceAll(RegExp(r'\s+'), ' ').trim();
+
+/// Markdown [text] as one line of plain text for a preview: line markers
+/// (headings, quotes, list bullets and numbers, fences) and inline markers
+/// (emphasis, code, links' and images' syntax) dropped, whitespace
+/// collapsed. Blocks (paragraphs, headings, list items) are joined with
+/// ` · ` when the earlier one ends without punctuation, else a space.
+String plainPreview(String text) {
+  final marker = RegExp(
+    r'^\s*(?:#{1,6}\s+|>\s?|[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)*',
+  );
+  final ownBlock = RegExp(r'^\s*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s)');
+  final blocks = <String>[];
+  var current = <String>[];
+  void endBlock() {
+    final b = _oneLine(current.join(' '));
+    if (b.isNotEmpty) blocks.add(b);
+    current = [];
+  }
+
+  for (final line in text.split('\n')) {
+    if (RegExp(r'^\s*(```|~~~)').hasMatch(line)) continue;
+    if (line.trim().isEmpty || ownBlock.hasMatch(line)) endBlock();
+    current.add(line.replaceFirst(marker, ''));
+    if (RegExp(r'^\s*#{1,6}\s').hasMatch(line)) endBlock();
+  }
+  endBlock();
+  final lines = <String>[];
+  for (final b in blocks) {
+    if (lines.isNotEmpty && !RegExp(r'[.!?:;,…]$').hasMatch(lines.last)) {
+      lines.add('·');
+    }
+    lines.add(b);
+  }
+  final plain = lines
+      .join(' ')
+      .replaceAllMapped(RegExp(r'!?\[([^\]]*)\]\([^)]*\)'), (m) => m[1]!)
+      .replaceAllMapped(RegExp(r'(\*\*|__)(.+?)\1'), (m) => m[2]!)
+      .replaceAllMapped(
+        RegExp(r'(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])'),
+        (m) => m[1]!,
+      )
+      .replaceAllMapped(
+        RegExp(r'(?<!\w)_(?!\s)(.+?)(?<!\s)_(?!\w)'),
+        (m) => m[1]!,
+      )
+      .replaceAllMapped(RegExp(r'~~(.+?)~~'), (m) => m[1]!)
+      .replaceAllMapped(RegExp(r'`+([^`]*)`+'), (m) => m[1]!);
+  return _oneLine(plain);
+}
+
+/// Subscribes [stream] to [topics] again after the daemon dropped them
+/// (an `unsubscribed` event): at once, then after [delay] of 1 s doubling
+/// to 60 s between tries. True once subscribed; false when [alive] turns
+/// false or the stream is closed.
+Future<bool> resubscribe(
+  ClaxStream stream,
+  List<String> topics, {
+  required Future<void> Function(Duration) delay,
+  required bool Function() alive,
+}) async {
+  const most = Duration(seconds: 60);
+  var wait = const Duration(seconds: 1);
+  while (alive()) {
+    try {
+      await stream.subscribe(topics);
+      return true;
+    } on StateError {
+      return false;
+    } catch (_) {
+      // Refused or unanswered: try again after the wait.
+    }
+    await delay(wait);
+    wait = wait * 2 > most ? most : wait * 2;
+  }
+  return false;
 }
 
 /// The icon of an item's kind.
