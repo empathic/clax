@@ -617,6 +617,20 @@ fn people_and_their_agents_render_with_grant_and_person() {
     }
 }
 
+#[test]
+fn the_app_harness_is_the_clax_app_by_anthropic() {
+    let app = Actor::Agent(AgentActor {
+        session_id: Some("01JB9S00000000000000000009".into()),
+        harness: Some("app".into()),
+        harness_session_id: Some("install-1".into()),
+        ..AgentActor::default()
+    });
+    let def = actor_def(&app, "i", "c", &Redaction::NONE);
+    assert_eq!(def["name"], "Clax app");
+    assert_eq!(def["provider"], "anthropic");
+    assert_eq!(actor_string(&app, "0.3.1"), "agent:app/install-1");
+}
+
 /// A row of `kind` by `actor` with `ids` and the kind's `body` fields (the
 /// envelope added).
 fn row(seq: i64, kind: &str, actor: Value, ids: AuditIds, body: Value) -> AuditRow {

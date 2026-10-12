@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 /// The harness names a session may carry.
-pub const HARNESSES: [&str; 4] = ["claude", "codex", "grok", "pi"];
+pub const HARNESSES: [&str; 5] = ["claude", "codex", "grok", "pi", "app"];
 
 /// The harness of a session another machine's Clax registers to publish
 /// its person's own versions there, made by hand (the CLI or the browser)
@@ -418,7 +418,9 @@ const PI_NO_LOOP: &str = "the Clax Pi extension's injection loop is not polling 
 /// follow` of the session is connected. For Claude Code, the daemon
 /// reports a notice follower as tier `notice`, and the shim's channel
 /// alone as tier `channel` with `sure: false` (Claude Code never says
-/// whether it registered the channel); the shim refines it.
+/// whether it registered the channel); the shim refines it. The Clax app's
+/// agent (harness `app`) always long-polls its feedback, so its tier is
+/// `wait`.
 fn push_info(
     s: &Session,
     codex: &CodexPush,
@@ -448,6 +450,7 @@ fn push_info(
         }
         "pi" => json!({"tier": "inject", "available": live.inject,
             "reason": (!live.inject).then_some(PI_NO_LOOP)}),
+        "app" => json!({"tier": "wait", "available": true, "reason": null}),
         "grok" => {
             let reason = (!live.follower).then_some(
                 "no clax feedback follow is running for this session; the clax-grok skill starts one with Grok's monitor tool after a publish. Meanwhile comments arrive at the end of a turn (Stop hook), on the next clax tool call, or during wait_for_feedback",

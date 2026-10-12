@@ -228,6 +228,7 @@ fn harness_name(harness: &str) -> &str {
         "pi" => "Pi",
         "grok" => "Grok",
         "gemini" => "Gemini CLI",
+        "app" => "Clax app",
         "unknown" => "Agent",
         h => h,
     }
@@ -236,7 +237,7 @@ fn harness_name(harness: &str) -> &str {
 /// The company behind a harness, where there is one.
 fn company_for(harness: &str) -> Option<&'static str> {
     match harness {
-        "claude" => Some("anthropic"),
+        "claude" | "app" => Some("anthropic"),
         "codex" => Some("openai"),
         "grok" => Some("xai"),
         "gemini" => Some("google"),
