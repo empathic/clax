@@ -68,11 +68,7 @@ async fn app_session_replies_and_resolves_as_the_agent() {
         .send()
         .await
         .unwrap();
-    assert!(
-        reply.status().is_success(),
-        "{}",
-        reply.text().await.unwrap()
-    );
+    assert_eq!(reply.status(), 201, "{}", reply.text().await.unwrap());
     let res = ts
         .authed(ts.client.post(format!(
             "{}/api/artifacts/{aid}/threads/{tid}/resolve",
@@ -91,6 +87,11 @@ async fn app_session_replies_and_resolves_as_the_agent() {
         .await
         .unwrap();
     assert_eq!(v["thread"]["status"], "resolved", "{v}");
+    assert_eq!(v["thread"]["resolved_by"], "agent:app", "{v}");
+    let last = v["thread"]["comments"].as_array().unwrap().last().unwrap();
+    assert_eq!(last["body"], "Done: blue now.", "{v}");
+    assert_eq!(last["author_kind"], "agent", "{v}");
+    assert_eq!(last["via_harness"], "app", "{v}");
 }
 
 #[tokio::test]

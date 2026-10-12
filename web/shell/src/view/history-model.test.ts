@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Version } from "../api";
 import type { Comment, Thread } from "../threads";
-import { addressedNote, commentVersion, historyOf, isOutdated, versionAt } from "./history-model";
+import { addressedNote, agentName, commentVersion, historyOf, isOutdated, versionAt } from "./history-model";
 
 const V = (n: number, at: string): Version => ({ artifact_id: "a", n, label: null, created_at: at, files: {} });
 const vs = [V(1, "2026-09-30T10:00:00.000Z"), V(2, "2026-09-30T11:00:00.000Z"), V(3, "2026-09-30T12:00:00.000Z")];
@@ -15,6 +15,14 @@ const T = (over: Partial<Thread>): Thread => ({
 const names = (by: string) => (by === "viewer:u_1" ? "alex" : by.startsWith("agent:") ? by.slice(6) : "someone");
 
 describe("history-model", () => {
+  it("names the Clax app's agent \"Clax app\", another agent by its harness, and an unknown one \"agent\"", () => {
+    expect(agentName("app")).toBe("Clax app");
+    expect(agentName("claude")).toBe("claude");
+    expect(agentName(null)).toBe("agent");
+    const t = { ...T({ comments: [C("1", "viewer", "alex", "2026-10-05T10:00:00.000Z")] }), addressed_pending: { harness: "app", at: "2026-10-05T10:05:00.000Z" } };
+    expect(historyOf(t, [], by => by).at(-1)?.who).toBe("Clax app");
+  });
+
   it("tags an event with the version current when it happened", () => {
     expect(versionAt(vs, "2026-09-30T09:00:00.000Z")).toBe(1);
     expect(versionAt(vs, "2026-09-30T11:30:00.000Z")).toBe(2);
