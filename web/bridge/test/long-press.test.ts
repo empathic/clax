@@ -16,7 +16,7 @@ function touch(type: string, pts: [number, number][]) {
   document.body.dispatchEvent(e);
   return e;
 }
-const hooks = () => ({ armed: vi.fn(), pick: vi.fn(), abandoned: vi.fn() });
+const hooks = () => ({ armed: vi.fn(), pick: vi.fn(), abandoned: vi.fn(), dragStart: vi.fn(), dragMove: vi.fn(), dragEnd: vi.fn() });
 
 let lp: LongPress | null = null;
 afterEach(() => { lp?.set(false); lp = null; });
@@ -47,17 +47,74 @@ describe("LongPress", () => {
     expect(h.abandoned).not.toHaveBeenCalled();
   });
 
-  it("moving beyond the slop abandons", () => {
+  it("moving beyond the slop after arming drags, and the release ends the drag", () => {
     const f = fakeTimers(); const h = hooks();
     lp = new LongPress(document, h, f.t, { trustedOnly: false }); lp.set(true);
     touch("touchstart", [[20, 30]]); f.fire();
     touch("touchmove", [[20 + SLOP_PX, 30]]);
-    expect(h.abandoned).not.toHaveBeenCalled();
+    expect(h.dragStart).not.toHaveBeenCalled();
     touch("touchmove", [[20 + SLOP_PX + 1, 30]]);
-    expect(h.abandoned).toHaveBeenCalledTimes(1);
-    const end = touch("touchend", [[31, 30]]);
+    expect(h.dragStart).toHaveBeenCalledWith(20, 30);
+    expect(h.dragMove).toHaveBeenLastCalledWith(31, 30);
+    touch("touchmove", [[80, 90]]);
+    expect(h.dragStart).toHaveBeenCalledTimes(1);
+    expect(h.dragMove).toHaveBeenLastCalledWith(80, 90);
+    const end = touch("touchend", [[82, 91]]);
+    expect(h.dragEnd).toHaveBeenCalledWith(82, 91);
     expect(h.pick).not.toHaveBeenCalled();
+    expect(h.abandoned).not.toHaveBeenCalled();
     expect(end.defaultPrevented).toBe(false);
+    expect(lp.holding).toBe(false);
+  });
+
+  it("page_scrolls_before_arming_not_after", () => {
+    const f = fakeTimers(); const h = hooks();
+    lp = new LongPress(document, h, f.t, { trustedOnly: false }); lp.set(true);
+    // Before the hold the page keeps its scroll, within the slop and beyond.
+    touch("touchstart", [[20, 30]]);
+    expect(touch("touchmove", [[22, 31]]).defaultPrevented).toBe(false);
+    expect(touch("touchmove", [[20, 60]]).defaultPrevented).toBe(false);
+    touch("touchend", [[20, 60]]);
+    expect(h.dragStart).not.toHaveBeenCalled();
+    // Once dragging, every move is the drag's, never a scroll.
+    touch("touchstart", [[20, 30]]); f.fire();
+    expect(touch("touchmove", [[20, 60]]).defaultPrevented).toBe(true);
+    expect(h.dragStart).toHaveBeenCalledTimes(1);
+    expect(touch("touchmove", [[20, 200]]).defaultPrevented).toBe(true);
+    expect(touch("touchmove", [[20, 25]]).defaultPrevented).toBe(true);
+    touch("touchend", [[20, 25]]);
+    // After the drag ends, a new touch scrolls again.
+    touch("touchstart", [[20, 30]]);
+    expect(touch("touchmove", [[20, 80]]).defaultPrevented).toBe(false);
+  });
+
+  it("a second finger or touchcancel abandons a drag", () => {
+    const f = fakeTimers(); const h = hooks();
+    lp = new LongPress(document, h, f.t, { trustedOnly: false }); lp.set(true);
+    touch("touchstart", [[20, 30]]); f.fire();
+    touch("touchmove", [[60, 30]]);
+    touch("touchmove", [[60, 30], [200, 300]]);
+    expect(h.abandoned).toHaveBeenCalledTimes(1);
+    touch("touchend", [[60, 30]]);
+    expect(h.dragEnd).not.toHaveBeenCalled();
+    touch("touchstart", [[20, 30]]); f.fire();
+    touch("touchmove", [[60, 30]]);
+    touch("touchcancel", [[60, 30]]);
+    expect(h.abandoned).toHaveBeenCalledTimes(2);
+    touch("touchend", [[60, 30]]);
+    expect(h.dragEnd).not.toHaveBeenCalled();
+    expect(h.pick).not.toHaveBeenCalled();
+  });
+
+  it("off mid-drag drops it without reporting", () => {
+    const f = fakeTimers(); const h = hooks();
+    lp = new LongPress(document, h, f.t, { trustedOnly: false }); lp.set(true);
+    touch("touchstart", [[20, 30]]); f.fire();
+    touch("touchmove", [[60, 30]]);
+    lp.set(false);
+    expect(lp.holding).toBe(false);
+    expect(h.abandoned).not.toHaveBeenCalled();
+    expect(h.dragEnd).not.toHaveBeenCalled();
   });
 
   it("moving beyond the slop before the hold never arms", () => {

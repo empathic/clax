@@ -5,9 +5,12 @@
 // shell takes a pick only with the frame's activation. The release is never
 // cancelled: the mouse events and click the browser may send after it are
 // what move focus into the page and show the shell the finger's arrival on
-// the frame. Moving beyond the slop, a second finger, or `touchcancel`
-// abandons it; a release before the hold is an ordinary tap, left to the
-// browser (its click).
+// the frame. Moving beyond the slop after arming starts a drag: every later
+// move is the drag's (cancelled, so the page does not scroll) and the release
+// ends it. Before arming, moving beyond the slop is the page's scroll and
+// drops the hold. A second finger or `touchcancel` abandons a hold or a drag;
+// a release before the hold is an ordinary tap, left to the browser (its
+// click).
 
 export const HOLD_MS = 450;
 export const SLOP_PX = 10;
@@ -20,8 +23,16 @@ export type LongPressHooks = {
   armed(x: number, y: number): void;
   /** Released after `armed`, without moving beyond the slop: pick what is under (x, y). */
   pick(x: number, y: number): void;
-  /** Abandoned after `armed` (moved, second finger, cancel). */
+  /** Abandoned after `armed` (second finger, cancel, or released beyond the
+   * slop without a move reported), dragging or not. */
   abandoned(): void;
+  /** Moved beyond the slop after `armed`: a drag from the arming point
+   * (x, y). `dragMove` with the finger's position follows at once. */
+  dragStart(x: number, y: number): void;
+  /** The dragging finger is at (x, y). */
+  dragMove(x: number, y: number): void;
+  /** The dragging finger was lifted at (x, y). */
+  dragEnd(x: number, y: number): void;
 };
 
 /** The window's own timers, as they are when this is called. */
@@ -31,8 +42,9 @@ export function windowTimers(win: Window): Timers {
   return { set: (fn, ms) => set(fn, ms), clear: id => clear(id) };
 }
 
-/** One finger down: where it went down and its touch's identifier. */
-type Hold = { id: number; x: number; y: number; timer: number | null; armed: boolean };
+/** One finger down: where it went down, its touch's identifier, and whether
+ * it armed and then started dragging. */
+type Hold = { id: number; x: number; y: number; timer: number | null; armed: boolean; dragging: boolean };
 
 export class LongPress {
   private on = false;
@@ -48,7 +60,7 @@ export class LongPress {
   }
 
   /** Whether a finger is down on a hold that has not ended or been
-   * abandoned (armed or not). */
+   * abandoned (armed or not, dragging or not). */
   get holding(): boolean {
     return this.hold !== null;
   }
@@ -103,7 +115,7 @@ export class LongPress {
     this.abandon();
     if (e.touches.length !== 1) return;
     const t = e.touches[0];
-    const h: Hold = { id: t.identifier, x: t.clientX, y: t.clientY, timer: null, armed: false };
+    const h: Hold = { id: t.identifier, x: t.clientX, y: t.clientY, timer: null, armed: false, dragging: false };
     h.timer = this.timers.set(() => {
       if (this.hold !== h) return;
       h.timer = null;
@@ -118,9 +130,17 @@ export class LongPress {
     if (e.touches.length > 1) { this.abandon(); return; }
     const t = this.find(e.touches) ?? this.find(e.changedTouches);
     if (!t) return;
-    if (Math.hypot(t.clientX - this.hold.x, t.clientY - this.hold.y) > SLOP_PX) { this.abandon(); return; }
-    // An armed finger resting within the slop does not scroll the page.
-    if (this.hold.armed) e.preventDefault();
+    const h = this.hold;
+    if (!h.dragging && Math.hypot(t.clientX - h.x, t.clientY - h.y) > SLOP_PX) {
+      // Before arming it is a scroll; after, a drag.
+      if (!h.armed) { this.abandon(); return; }
+      h.dragging = true;
+      this.hooks.dragStart(h.x, h.y);
+    }
+    // An armed finger, resting within the slop or dragging, does not scroll
+    // the page.
+    if (h.armed) e.preventDefault();
+    if (h.dragging) this.hooks.dragMove(t.clientX, t.clientY);
   };
 
   private onEnd = (e: TouchEvent) => {
@@ -129,6 +149,7 @@ export class LongPress {
     if (!t) return;
     const h = this.drop()!;
     if (!h.armed) return; // a tap: the browser's click takes it
+    if (h.dragging) { this.hooks.dragEnd(t.clientX, t.clientY); return; }
     if (Math.hypot(t.clientX - h.x, t.clientY - h.y) > SLOP_PX) { this.hooks.abandoned(); return; }
     this.hooks.pick(t.clientX, t.clientY);
   };

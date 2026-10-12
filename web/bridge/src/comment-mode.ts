@@ -25,14 +25,20 @@
 // moving focus into the page as an area drag's press does (`long-press.ts`).
 // While a finger is held, text selection and the context menu are cancelled,
 // so a long-press neither selects nor opens a menu. A mouse or pen keeps
-// selecting text and opening its menu.
+// selecting text and opening its menu. A held finger that then moves drags:
+// from text under it at arming, the selection runs from that caret to the
+// last text caret under the finger (shown in the outline tint) and the release
+// picks it as a mouse selection is picked; from anywhere else it draws an area
+// as a mouse drag does. A drag whose range is empty, or whose area is under
+// `AREA_MIN`, picks what a tap at the arming point would. A second finger or
+// `touchcancel` drops the drag, its selection and its rectangle.
 
 import { OVERLAY_TAG } from "./anchor";
 import { nextFrame } from "./frame";
 import { type AreaRect, REPLACED, Widen, dragRect, isClickSized, nonTextAt, widenedTarget } from "./area";
 import { LongPress, type Timers, windowTimers } from "./long-press";
 import type { Box } from "./protocol";
-import { backgroundBehind, chooseTarget, outlineBox, outlineColors, rectOf, viewportOf } from "./target";
+import { backgroundBehind, caretAt, chooseTarget, outlineBox, outlineColors, rectOf, viewportOf } from "./target";
 
 export interface ModeHooks {
   hover(target: Element | Range | null): void;
@@ -70,6 +76,17 @@ export const TOUCH_CLICK_WAIT_MS = 400;
 /** A drag that draws an area: where it started, in page coordinates. */
 type Drag = { x: number; y: number };
 
+/** A text position. */
+type Caret = { node: Node; offset: number };
+
+/** A held finger's drag: where it armed (viewport), and for text, the caret
+ * there and the last text caret under the finger. `none` is a drag that
+ * started while another pick's clip was taken: it does nothing. */
+type TouchDrag =
+  | { kind: "text"; x: number; y: number; from: Caret; to: Caret }
+  | { kind: "area"; x: number; y: number }
+  | { kind: "none" };
+
 export class CommentMode {
   private on = false;
   private readonly host: HTMLElement;
@@ -99,6 +116,8 @@ export class CommentMode {
   /** A long-press released, waiting for the browser's click: the timer that
    * picks without it. */
   private touchWait: number | null = null;
+  /** A held finger's drag in progress. */
+  private touchDrag: TouchDrag | null = null;
 
   /** `opts.trustedOnly` (default true) ignores events the page dispatched
    * itself; tests that synthesise input turn it off. `opts.shadow`
@@ -111,7 +130,10 @@ export class CommentMode {
     this.longPress = new LongPress(doc, {
       armed: (x, y) => this.hoverAt(this.elementAt(x, y), x, y),
       pick: (x, y) => this.touchPick(x, y),
-      abandoned: () => this.unhover(),
+      abandoned: () => { this.endTouchDrag(); this.unhover(); },
+      dragStart: (x, y) => this.touchDragStart(x, y),
+      dragMove: (x, y) => this.touchDragMove(x, y),
+      dragEnd: (x, y) => this.touchDragEnd(x, y),
     }, this.timers, { trustedOnly: this.trustedOnly });
     this.host = doc.createElement(OVERLAY_TAG);
     const root = this.host.attachShadow({ mode: opts.shadow ?? "open" });
@@ -158,16 +180,18 @@ export class CommentMode {
       this.hovered = null;
       this.base = null;
       this.widen.stop();
+      this.endTouchDrag();
       this.endDrag();
       this.captured();
     }
   }
 
-  /** Adds or removes the callout guard. */
-  private setGuard(on: boolean): void {
+  /** Adds or removes the callout guard; `selection` (a colour) also tints
+   * the page's selection, for a text drag. */
+  private setGuard(on: boolean, selection?: string): void {
     if (!on) { this.guard?.remove(); this.guard = null; return; }
     this.guard ??= this.doc.createElement("style");
-    this.guard.textContent = GUARD_CSS;
+    this.guard.textContent = selection ? `${GUARD_CSS}::selection{background:${selection}}` : GUARD_CSS;
     (this.doc.head ?? this.doc.documentElement).appendChild(this.guard);
   }
 
@@ -403,6 +427,94 @@ export class CommentMode {
   private endTouchWait(): void {
     if (this.touchWait !== null) this.timers.clear(this.touchWait);
     this.touchWait = null;
+  }
+
+  /** A held finger moved beyond the slop from (`x`, `y`), where it armed:
+   * a text drag when text is under that point, else an area drag. None
+   * starts while another pick's clip is taken. */
+  private touchDragStart(x: number, y: number): void {
+    if (!this.on) return;
+    this.endTouchWait();
+    if (this.capturing) { this.touchDrag = { kind: "none" }; return; }
+    const el = this.elementAt(x, y);
+    const from = nonTextAt(this.doc, el, x, y) ? null : caretAt(this.doc, x, y);
+    this.unhover();
+    if (from) {
+      this.touchDrag = { kind: "text", x, y, from, to: from };
+      this.colour(el ?? this.doc.body);
+      this.setGuard(true, this.tint);
+      return;
+    }
+    this.touchDrag = { kind: "area", x, y };
+    const win = this.doc.defaultView!;
+    this.drag = { x: x + win.scrollX, y: y + win.scrollY };
+    this.colour(el ?? this.doc.body);
+  }
+
+  /** The dragging finger is at (`x`, `y`): the selection runs to the text
+   * caret there (the last one found stays when there is none, over an image
+   * or off the page), or the area's rectangle is redrawn to it. */
+  private touchDragMove(x: number, y: number): void {
+    const d = this.touchDrag;
+    if (!this.on || !d || d.kind === "none") return;
+    if (d.kind === "area") {
+      const b = outlineBox(rectOf0(this.dragRectTo(x, y)), viewportOf(this.doc));
+      if (b) {
+        this.ensureLast();
+        Object.assign(this.areaBox.style, { display: "block", left: `${b.left}px`, top: `${b.top}px`, width: `${b.width}px`, height: `${b.height}px` });
+      }
+      return;
+    }
+    const c = caretAt(this.doc, x, y);
+    if (c && c.node.nodeType === Node.TEXT_NODE && this.doc.body.contains(c.node)) d.to = c;
+    this.doc.getSelection()?.setBaseAndExtent(d.from.node, d.from.offset, d.to.node, d.to.offset);
+  }
+
+  /** The dragging finger was lifted at (`x`, `y`): focus moves into the
+   * page, as the press of a mouse area drag moves it, and the range or the
+   * area is picked; an empty range or an area under `AREA_MIN` picks what a
+   * tap at the arming point would. */
+  private touchDragEnd(x: number, y: number): void {
+    const d = this.touchDrag;
+    if (!this.on || !d || d.kind === "none") { this.touchDrag = null; return; }
+    this.touchDragMove(x, y);
+    let range: Range | null = null;
+    let area: AreaRect | null = null;
+    if (d.kind === "text") {
+      const sel = this.doc.getSelection();
+      if (sel && !sel.isCollapsed && sel.rangeCount) range = sel.getRangeAt(0).cloneRange();
+    } else {
+      const r = this.dragRectTo(x, y);
+      if (!isClickSized(r)) area = r;
+    }
+    this.endTouchDrag();
+    // A click the browser may still send for the release picks nothing.
+    this.suppressClick = true;
+    this.focusPage();
+    if (area) {
+      this.capturing = true;
+      this.areaBox.style.display = "block";
+      this.areaBox.classList.add("capturing");
+      this.hooks.pickArea(area);
+    } else if (range && this.doc.body.contains(range.commonAncestorContainer)) {
+      this.capturing = true;
+      this.hooks.pickRange(range);
+    } else {
+      this.pickAt(this.elementAt(d.x, d.y), d.x, d.y, false);
+    }
+  }
+
+  /** Ends a held finger's drag: its selection is cleared, the selection
+   * tint dropped, and its rectangle removed (a capturing one stays). */
+  private endTouchDrag(): void {
+    const d = this.touchDrag;
+    this.touchDrag = null;
+    if (d?.kind === "text") {
+      this.doc.getSelection()?.removeAllRanges();
+      if (this.guard) this.setGuard(this.on);
+    } else if (d?.kind === "area") {
+      this.endDrag();
+    }
   }
 
   /** A text selection or context menu starting while a finger is held: the
