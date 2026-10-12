@@ -921,6 +921,93 @@ void main() {
     });
   });
 
+  group('settle', () {
+    late String aid;
+    late MemoryChangeLedger ledger;
+    late AgentLoop loop;
+
+    setUp(() {
+      aid = api.seedArtifact('Runs', {'index.html': page});
+      ledger = MemoryChangeLedger();
+      backend = HeldBackend([]);
+      loop = AgentLoop(
+        api: api,
+        backend: () => backend,
+        prompts: PromptBuilder(rootBundle),
+        model: () => 'claude-haiku-5-5',
+        timings: timings,
+        ledger: ledger,
+      );
+    });
+
+    Future<ThreadView> stranded(String body) async {
+      final item = api.sendComment(aid, body);
+      await api.pollFeedback(sid);
+      return api.threadOf(aid, item.threadId);
+    }
+
+    test(
+      'a version the app session did not publish is not the record\'s',
+      () async {
+        final t = await stranded('Say Keep');
+        await api.publish(
+          aid,
+          PublishRequest(ifVersion: 1, files: {'index.html': '$page<p>'}),
+        );
+        await api.restoreVersion(aid, 1, ifVersion: 2);
+        // A record that would make version 3, the restore, by number,
+        // addresses and note.
+        await ledger.put(
+          ChangeRecord(
+            artifactId: aid,
+            base: 2,
+            addresses: const [],
+            answered: {
+              t.id: [t.comments.single.id],
+            },
+            reply: 'Restored version 1',
+            resolve: false,
+          ),
+        );
+        final got = await loop.settle(aid, [t]);
+        expect(got.answered, isEmpty);
+        expect(await ledger.of(aid), isEmpty);
+      },
+    );
+
+    test(
+      'a note the daemon cleaned of control characters still matches',
+      () async {
+        final t = await stranded('Say Keep');
+        await ledger.put(
+          ChangeRecord(
+            artifactId: aid,
+            base: 1,
+            addresses: [t.id],
+            answered: {
+              t.id: [t.comments.single.id],
+            },
+            reply: 'Keep\u0007 it\u0000 now.',
+            resolve: false,
+          ),
+        );
+        // As the daemon stores the note: control characters dropped.
+        await api.publish(
+          aid,
+          PublishRequest(
+            ifVersion: 1,
+            files: {'index.html': '$page<p>'},
+            note: 'Keep it now.',
+            addresses: [t.id],
+          ),
+        );
+        final got = await loop.settle(aid, [t]);
+        expect(got.replied, {t.id});
+        expect(got.answered, {t.comments.single.id});
+      },
+    );
+  });
+
   group('PromptBuilder.trimDocuments', () {
     AppDocument doc(int i, [int bytes = 10]) =>
         (path: 'runs/r$i', version: i, data: {'x': 'a' * bytes});
