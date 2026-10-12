@@ -43,23 +43,10 @@ class AppPresence {
       _foreground ? Future.value() : (_back ??= Completer<void>()).future;
 }
 
-/// Whether [e] says the model could not be reached at all (no DNS, refused
-/// or reset connection, unreachable network): what a run sees when Android
-/// cut the app's network in the background. It reads the message, since
-/// the backends report transport failures as text (`MessagesApiBackend`:
-/// "Couldn't reach the Claude API: …", "The connection to the Claude API
-/// was lost: …").
-bool isNetworkCut(AgentError e) {
-  if (e.kind == AgentErrorKind.cancelled) return false;
-  final m = e.message;
-  return m.contains("Couldn't reach the Claude API") ||
-      m.contains('The connection to the Claude API was lost') ||
-      m.contains('SocketException') ||
-      m.contains('Failed host lookup') ||
-      m.contains('Connection refused') ||
-      m.contains('Connection reset') ||
-      m.contains('Network is unreachable');
-}
+/// Whether [e] says the model could not be reached at all, or the
+/// connection broke ([AgentErrorKind.network]): what a run sees when
+/// Android cut the app's network in the background.
+bool isNetworkCut(AgentError e) => e.kind == AgentErrorKind.network;
 
 /// An [AgentBackend] that waits out a network cut by the background: when
 /// [inner] fails with [isNetworkCut] and the app left the foreground
@@ -69,8 +56,9 @@ bool isNetworkCut(AgentError e) {
 /// network failure while the app stayed in front, is thrown as before. A
 /// cancel while paused throws [AgentError.cancelled].
 ///
-/// Resending here is a transport retry: nothing was received, so nothing
-/// was applied.
+/// Resending here is a transport retry: a network failure means no answer
+/// was used, so nothing was applied. A backend that applies work during a
+/// run (publishing between model turns) must resume that run instead.
 class ResumingBackend implements AgentBackend {
   ResumingBackend(
     this.inner,

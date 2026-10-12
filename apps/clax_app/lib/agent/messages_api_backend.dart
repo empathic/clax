@@ -120,8 +120,11 @@ class MessagesApiBackend implements AgentBackend {
     }
     String redact(String s) => s.replaceAll(key, '[api key]');
     void log(String line) => _log?.call(redact(line));
-    AgentError error(String message, {required bool retryable}) =>
-        AgentError(redact(message), retryable: retryable);
+    AgentError error(
+      String message, {
+      required bool retryable,
+      AgentErrorKind kind = AgentErrorKind.failed,
+    }) => AgentError(redact(message), retryable: retryable, kind: kind);
     final sink = r.onProgress;
     final ProgressSink? emit = sink == null
         ? null
@@ -158,6 +161,7 @@ class MessagesApiBackend implements AgentBackend {
           throw error(
             "Couldn't reach the Claude API: ${e.cause}",
             retryable: true,
+            kind: AgentErrorKind.network,
           );
         }
         final ms = DateTime.now().difference(started).inMilliseconds;
@@ -202,12 +206,14 @@ class MessagesApiBackend implements AgentBackend {
     HttpClient client,
     String key,
     List<int> payload,
-    AgentError Function(String, {required bool retryable}) error,
+    AgentError Function(String, {required bool retryable, AgentErrorKind kind})
+    error,
     CancelWatch cancel,
     ProgressSink? emit,
   ) async {
     cancel.check();
     HttpClientRequest? request;
+    final connection = _Connection();
     var responded = false;
     final exchange = () async {
       final req = request = await client.postUrl(_endpoint);
@@ -223,6 +229,7 @@ class MessagesApiBackend implements AgentBackend {
       req.add(payload);
       final res = await req.close();
       responded = true;
+      final body = connection.read(res);
       if (emit != null &&
           res.statusCode == HttpStatus.ok &&
           res.headers.contentType?.mimeType == 'text/event-stream') {
@@ -231,10 +238,10 @@ class MessagesApiBackend implements AgentBackend {
           '',
           res.headers.value('request-id'),
           null,
-          stream: await _readStream(res, emit),
+          stream: await _readStream(body, emit),
         );
       }
-      final text = await utf8.decoder.bind(res).join();
+      final text = await utf8.decoder.bind(body).join();
       return _Exchange(
         res.statusCode,
         text,
@@ -249,6 +256,7 @@ class MessagesApiBackend implements AgentBackend {
       ]);
       if (done == null) {
         request?.abort();
+        connection.close();
         exchange.ignore();
         _log?.call('$name: cancelled');
         throw const AgentError.cancelled();
@@ -256,6 +264,7 @@ class MessagesApiBackend implements AgentBackend {
       return done;
     } on TimeoutException {
       request?.abort();
+      connection.close();
       _log?.call('$name: timed out after ${_timeout.inSeconds}s');
       throw error(
         'The Claude API timed out after ${_timeout.inSeconds} s',
@@ -266,6 +275,7 @@ class MessagesApiBackend implements AgentBackend {
       throw error(
         'The connection to the Claude API was lost: $e',
         retryable: true,
+        kind: AgentErrorKind.network,
       );
     }
   }
@@ -273,7 +283,7 @@ class MessagesApiBackend implements AgentBackend {
   /// Reads [res]'s events into a [MessageStream] until it ends or sends
   /// an `error` event, reporting progress to [emit].
   static Future<MessageStream> _readStream(
-    HttpClientResponse res,
+    Stream<List<int>> res,
     ProgressSink emit,
   ) async {
     final blocks = BlockProgress(emit);
@@ -446,6 +456,56 @@ class _Exchange {
 
   /// The streamed answer, when the response was a stream.
   final MessageStream? stream;
+}
+
+/// The response body of one attempt, read through a subscription that
+/// [close] can end from outside the reader: once a response has arrived,
+/// aborting its request does not stop the body, so an attempt given up
+/// (cancelled, timed out) closes its connection here, whoever owns the
+/// [HttpClient].
+class _Connection {
+  HttpClientResponse? _response;
+  StreamSubscription<List<int>>? _reading;
+  StreamController<List<int>>? _body;
+  var _closed = false;
+
+  /// [response]'s body, as a stream [close] can end.
+  Stream<List<int>> read(HttpClientResponse response) {
+    _response = response;
+    final body = _body = StreamController<List<int>>(sync: true);
+    if (_closed) {
+      close();
+      return body.stream;
+    }
+    body.onListen = () {
+      _reading = response.listen(
+        body.add,
+        onError: body.addError,
+        onDone: body.close,
+      );
+    };
+    body.onCancel = () => _reading?.cancel();
+    return body.stream;
+  }
+
+  /// Ends the body for its reader and destroys the socket under it.
+  void close() {
+    _closed = true;
+    final response = _response;
+    if (response == null) return;
+    final reading = _reading;
+    _reading = null;
+    if (reading != null) {
+      unawaited(reading.cancel());
+    }
+    final body = _body;
+    if (body != null && !body.isClosed) unawaited(body.close());
+    // The socket may already be gone, or detached; either is fine.
+    response.detachSocket().then(
+      (socket) => socket.destroy(),
+      onError: (Object _) {},
+    );
+  }
 }
 
 /// An attempt that failed before any response arrived.

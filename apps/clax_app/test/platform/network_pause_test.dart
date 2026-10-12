@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:clax_app/agent/backend.dart';
 import 'package:clax_app/agent/edit_result.dart';
+import 'package:clax_app/agent/messages_api_backend.dart';
 import 'package:clax_app/agent/request.dart';
 import 'package:clax_app/platform/network_pause.dart';
 import 'package:flutter/widgets.dart' show AppLifecycleState;
@@ -23,6 +25,7 @@ const _dns = AgentError(
   "'api.anthropic.com' (OS Error: No address associated with hostname, "
   'errno = 7)',
   retryable: true,
+  kind: AgentErrorKind.network,
 );
 
 /// Answers each run with the next item: an [AgentError] is thrown, a
@@ -73,19 +76,61 @@ void main() {
     expect(back, isTrue);
   });
 
-  test('network failures are told from the others', () {
+  test('network failures are told by their kind, not their text', () {
     expect(isNetworkCut(_dns), isTrue);
     expect(
       isNetworkCut(
         const AgentError(
-          'The connection to the Claude API was lost: Connection reset',
+          "HTTP 500: Couldn't reach the Claude API: SocketException",
         ),
       ),
-      isTrue,
+      isFalse,
     );
     expect(isNetworkCut(const AgentError('The API key was refused')), isFalse);
-    expect(isNetworkCut(const AgentError('The Claude API timed out')), isFalse);
     expect(isNetworkCut(const AgentError.cancelled()), isFalse);
+  });
+
+  test('MessagesApiBackend reports an unreachable API as a network cut, '
+      'which ResumingBackend waits out', () async {
+    // A port nothing listens on: bind one, note it, close it.
+    final s = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final port = s.port;
+    await s.close();
+    final p = AppPresence();
+    final api = MessagesApiBackend(
+      apiKey: () async => 'sk-ant-test',
+      baseUrl: Uri.parse('http://127.0.0.1:$port'),
+      // The app leaves while the backend waits to retry.
+      delay: (_) async => p.onLifecycle(AppLifecycleState.paused),
+    );
+    final direct = await api
+        .run(_request())
+        .then<Object?>((_) => null, onError: (Object e) => e);
+    expect(direct, isA<AgentError>());
+    expect(isNetworkCut(direct! as AgentError), isTrue);
+
+    p.onLifecycle(AppLifecycleState.resumed);
+    final cancel = Completer<void>();
+    var paused = false;
+    final run = ResumingBackend(
+      api,
+      p,
+      onPause: () {
+        paused = true;
+        cancel.complete();
+      },
+    ).run(_request(cancel.future));
+    await expectLater(
+      run,
+      throwsA(
+        isA<AgentError>().having(
+          (e) => e.kind,
+          'kind',
+          AgentErrorKind.cancelled,
+        ),
+      ),
+    );
+    expect(paused, isTrue);
   });
 
   test('a cut while backgrounded pauses until the app is back, then runs '
