@@ -166,6 +166,9 @@ type PartName = keyof Parts;
   // a custom-anchors registration is live.
   let shellMode = false;
   let welcomed = false;
+  // Welcomed by the Clax app's shell, whose host attests the viewer's finger:
+  // a hold-then-drag picks on its release, with no chip to confirm it.
+  let appShell = false;
 
   // A pick's clip is rendered only once the shell's composer for it has
   // focus (see `pick.ts`).
@@ -195,7 +198,7 @@ type PartName = keyof Parts;
             void pick(anchor, () => clips().then(c => c.renderAreaClip(el, at))).finally(() => mode.captured());
           },
           cancel: () => { mode.set(false); post({ type: "clax:cancel" }); },
-        });
+        }, { confirmDrag: () => !appShell });
         commentsContext.liveChanged = () => mode.set(shellMode && !commentsContext.live);
         return {
           part,
@@ -281,7 +284,7 @@ type PartName = keyof Parts;
     shellOrigin = e.origin;
     switch (m.type) {
       case "clax:welcome":
-        welcomed = true; shellMode = m.mode === "comment"; followMode(); rpc.connect(); post(hashFor(location.hash));
+        welcomed = true; appShell = m.app === true; shellMode = m.mode === "comment"; followMode(); rpc.connect(); post(hashFor(location.hash));
         prefetch();
         if (m.app) void parts.caps().then(c => c.appScroll(window, post, meta.file, m.restoreScroll), () => {});
         break;
