@@ -206,9 +206,28 @@ test.describe("app mode", () => {
       expect(PARA.startsWith(pick.anchor.quote.trim())).toBe(true);
       expect(pick.clipError).toBeUndefined();
       await expect(frame.locator("clax-overlay .c")).toBeHidden();
-      await expect.poll(() => page.evaluate(() => !!document.querySelector(".composer"))).toBe(true);
+      // The composer shows the words the drag selected.
+      await expect(page.locator(".composer .composer-quote")).toContainText(pick.anchor.quote.trim());
     });
   }
+
+  test("a hold on empty space, then a drag, opens a composer on the area it drew", async ({ page }) => {
+    const { frame, cdp } = await appView(page, "App drag area");
+    const tail = (await frame.locator("#tail").boundingBox())!;
+    const from = { x: tail.x + 40, y: tail.y + 60 };
+    const to = { x: from.x + 150, y: from.y + 120 };
+    await attest(page, "down", from);
+    await holdDrag(cdp, from, to, 600, 8, 0);
+    await attest(page, "up", to);
+    const pick = await last(page, "clax:pick");
+    expect(pick.anchor).toMatchObject({ kind: "area", quote: null, file: "index.html" });
+    const fb = (await page.locator("iframe.frame").boundingBox())!;
+    for (const [k, v] of Object.entries({ x: from.x - fb.x, y: from.y - fb.y, w: 150, h: 120 })) expect(Math.abs(pick.anchor.rect[k] - v), k).toBeLessThanOrEqual(1);
+    expect(pick.clipError).toBeUndefined();
+    expect(await frame.evaluate(() => scrollY)).toBe(0);
+    await expect(page.locator(".composer .composer-quote")).toHaveText("this area");
+    await expect.poll(async () => ((await ofType(page, "state")).at(-1)?.draft as { label?: string } | undefined)?.label).toBe("this area");
+  });
 
   test("a drag with no attested press is refused", async ({ page }) => {
     const { frame, cdp } = await appView(page, "App drag unattested");
