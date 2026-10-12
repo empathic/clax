@@ -10,6 +10,7 @@ describe("inbox model", () => {
     expect(itemTitle(item("version", { version: { n: 6, note: null, addressed: [] } }))).toBe("claude published v6 of Quarterly Review");
     expect(itemTitle(item("published"))).toBe("claude published Sales dashboard");
     expect(itemTitle(item("question"))).toBe("claude asks: Layout, Sidebars, Notes");
+    expect(itemTitle(item("question", { question: view({ status: "withdrawn" }) }))).toBe("claude withdrew its question: Layout, Sidebars, Notes");
     expect(itemTitle(item("finished"))).toBe("claude finished on Quarterly Review");
   });
 
