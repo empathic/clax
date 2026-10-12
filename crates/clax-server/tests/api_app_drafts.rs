@@ -98,6 +98,23 @@ async fn listed(ts: &TestServer, query: &str) -> Vec<String> {
         .collect()
 }
 
+/// Opens `/api/stream` with the token and subscribes it to `topics`.
+async fn stream_with_token(ts: &TestServer, topics: &[&str]) -> EventReader {
+    let res = authed(ts, Method::GET, "/api/stream").send().await.unwrap();
+    assert_eq!(res.status(), 200);
+    let mut events = EventReader::from_response(res);
+    let sid = events.next_named("ready").await["stream"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = send(
+        authed(ts, Method::POST, &format!("/api/stream/{sid}")).json(&json!({"subscribe": topics})),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    events
+}
+
 /// The next event naming an artifact: its name and artifact ID.
 async fn next_about(r: &mut EventReader) -> (String, String) {
     loop {
@@ -489,7 +506,7 @@ async fn hidden_artifacts_never_listed() {
     let mut named = ts
         .events_with(&format!("?artifact={did}"), |r| r.bearer_auth(&ts.token))
         .await;
-    let mut topic = ts.stream_as_owner(&[&format!("artifact:{did}")]).await;
+    let mut topic = stream_with_token(&ts, &[&format!("artifact:{did}")]).await;
 
     publish(&ts, &did, 1).await;
     seed(&ts, &did, "notes/n1", json!({})).await;
@@ -573,4 +590,105 @@ async fn hidden_artifacts_never_listed() {
     .unwrap();
     assert!(text.contains(&a), "the list names the app: {text}");
     assert!(!text.contains(&did), "the list never names a draft: {text}");
+}
+
+/// A draft's documents are the owner's alone: without the token no read,
+/// list, write or subscription reaches them, whatever the draft's rules
+/// say, even after a publish loosens them; and no app reads a draft.
+#[tokio::test]
+async fn a_drafts_documents_are_the_owners_alone() {
+    let ts = TestServer::spawn().await;
+    let rules = json!({"db": {"rules": [{"path": "secrets", "read": "owner", "write": "owner"}]}});
+    let a = app(&ts, "Vault", rules.clone()).await;
+    seed(&ts, &a, "secrets/s1", json!({"k": "hush"})).await;
+    seed(&ts, &a, "notes/n1", json!({"t": "open"})).await;
+    let loose = id(&draft(&ts, Some(&a), json!({"db": {}})).await);
+    let strict = id(&draft(&ts, Some(&a), rules).await);
+    let v = publish(&ts, &strict, 1).await;
+    assert_eq!(v["version"]["n"], 2);
+    let (s, v) = send(
+        authed(
+            &ts,
+            Method::POST,
+            &format!("/api/artifacts/{strict}/versions"),
+        )
+        .json(&json!({
+            "if_version": 2, "capabilities": {"db": {}},
+            "files": {"index.html": {"content": "<p>loosened</p>"}}
+        })),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    let viewer = ts.viewer(Some("Named")).await;
+    let cookie = format!("clax_viewer={}", viewer.cookie);
+    for did in [&loose, &strict] {
+        for path in [
+            format!("/api/artifacts/{did}/docs/secrets/s1"),
+            format!("/api/artifacts/{did}/docs/notes/n1"),
+            format!("/api/artifacts/{did}/docs?collection=secrets"),
+            format!("/api/artifacts/{did}/docs?collection=notes"),
+        ] {
+            let anon = send(ts.client.get(format!("{}{path}", ts.base))).await;
+            assert_eq!(anon.0, 404, "no credentials: {path} {}", anon.1);
+            let named = send(
+                ts.client
+                    .get(format!("{}{path}", ts.base))
+                    .header("cookie", &cookie),
+            )
+            .await;
+            assert_eq!(named.0, 404, "a viewer: {path} {}", named.1);
+        }
+        let (s, _) = send(
+            ts.client
+                .put(format!("{}/api/artifacts/{did}/docs/notes/n9", ts.base))
+                .header("cookie", &cookie)
+                .json(&json!({"data": {}, "lww": true})),
+        )
+        .await;
+        assert_eq!(s, 404, "a viewer writes nothing");
+        let (s, v) = send(authed(
+            &ts,
+            Method::GET,
+            &format!("/api/artifacts/{did}/docs/secrets/s1"),
+        ))
+        .await;
+        assert_eq!(
+            (s, v["doc"]["data"]["k"].as_str()),
+            (200, Some("hush")),
+            "the token reads"
+        );
+        for topic in [format!("docs:{did}"), format!("artifact:{did}")] {
+            assert_eq!(viewer.subscribe_status(&[&topic]).await, 404, "{topic}");
+        }
+    }
+    // An events stream naming the draft, without the token, hears none of it.
+    let mut anon = ts.events(&format!("?artifact={loose},{a}")).await;
+    let mut named = ts
+        .events_as(&format!("?artifact={loose},{a}"), Some(&viewer.cookie))
+        .await;
+    seed(&ts, &loose, "notes/n1", json!({"t": "changed"})).await;
+    publish(&ts, &loose, 1).await;
+    publish(&ts, &a, 1).await;
+    assert_eq!(next_about(&mut anon).await, ("version".into(), a.clone()));
+    assert_eq!(next_about(&mut named).await, ("version".into(), a.clone()));
+
+    // No app reads a draft, even one declaring and granted the read.
+    let reader = app(&ts, "Reader", json!({"db": {"read": [loose.clone()]}})).await;
+    let (s, _) = send(authed(
+        &ts,
+        Method::PUT,
+        &format!("/api/artifacts/{reader}/db-grants/{loose}"),
+    ))
+    .await;
+    assert!((200..300).contains(&s), "{s}");
+    let (s, v) = send(
+        authed(
+            &ts,
+            Method::GET,
+            &format!("/api/artifacts/{loose}/docs/notes/n1"),
+        )
+        .header(READER, &reader),
+    )
+    .await;
+    assert_eq!(s, 404, "{v}");
 }

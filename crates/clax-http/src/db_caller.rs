@@ -111,14 +111,18 @@ pub async fn refuse_reader_elsewhere(
 /// [`Store::may_read`] says `Granted` and `source` declares `db`.
 ///
 /// # Errors
-/// `NotFound` when either artifact is missing; `not_granted` (403) without
-/// consent; [`CoreError::NotDeclared`] when `source` does not declare `db`.
+/// `NotFound` when either artifact is missing or `source` is a draft (its
+/// documents are the owner's alone); `not_granted` (403) without consent;
+/// [`CoreError::NotDeclared`] when `source` does not declare `db`.
 pub fn reader_caller(
     st: &Store,
     reader: &ArtifactId,
     source: &ArtifactId,
     level: Level,
 ) -> clax_core::Result<Caller> {
+    if st.is_hidden(source.as_str()) {
+        return Err(CoreError::NotFound);
+    }
     if st.may_read(reader, source)? != ReadAccess::Granted {
         return Err(not_granted(reader, source));
     }
@@ -349,7 +353,14 @@ impl CallerParts {
     /// request's action at `id` (`view` when none), its viewer its person's
     /// (the owner's for a grant of the owner's row); it needs the
     /// declaration as a viewer does.
+    ///
+    /// A draft's documents (spec 2026-10-12-flutter-app-round2-design §5.1)
+    /// are a copy of an app's at the owner's level, whatever rules the draft
+    /// declares: a caller without the token is refused `NotFound`.
     pub fn resolve_for(&self, st: &Store, id: &ArtifactId) -> clax_core::Result<Caller> {
+        if !self.token && st.is_hidden(id.as_str()) {
+            return Err(CoreError::NotFound);
+        }
         if let Some(reader) = &self.reader {
             let level = self.resolve(st)?.level;
             return reader_caller(st, reader, id, level);
@@ -438,6 +449,11 @@ impl Subscriber {
                 .then(|| crate::identity::SocketCredentials::token_tag(token)),
             ..crate::identity::SocketCredentials::of_request(&self.who, token, extensions)
         }
+    }
+
+    /// Whether the subscriber holds the token.
+    pub fn has_token(&self) -> bool {
+        self.token
     }
 
     /// The subscriber's level and viewer, as `base_caller` decides them.
