@@ -214,10 +214,14 @@ class BackgroundRuns {
     return run;
   }
 
-  /// Shows that [run] is now doing [text]; ignored once it ended.
-  void step(BackgroundRun run, String text) {
-    if (run._ended || run.step == text) return;
+  /// Shows that [run] is now doing [text], and is called [title] when
+  /// given; ignored once it ended.
+  void step(BackgroundRun run, String text, {String? title}) {
+    if (run._ended || run.step == text && (title ?? run.title) == run.title) {
+      return;
+    }
     run.step = text;
+    run.title = title ?? run.title;
     if (identical(_active.last, run)) {
       unawaited(_work.update(run.title, text));
     }

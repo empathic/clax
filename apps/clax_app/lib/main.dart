@@ -17,6 +17,7 @@ import 'daemon/health.dart';
 import 'daemon/ports.dart';
 import 'daemon/process.dart';
 import 'daemon/supervisor.dart';
+import 'platform/background_work.dart';
 import 'platform/external_links.dart';
 import 'platform/install_id.dart';
 import 'platform/secure_key.dart';
@@ -87,6 +88,7 @@ Future<AppServices> platformServices() async {
     prompts: PromptBuilder(rootBundle),
     ledger: FileChangeLedger(File('${support.path}/change-ledger.json')),
     cliSupported: cliSupported,
+    background: android ? ChannelBackgroundWork() : const NoBackgroundWork(),
   );
 }
 
