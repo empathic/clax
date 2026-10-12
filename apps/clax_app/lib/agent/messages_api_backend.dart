@@ -10,11 +10,17 @@ import 'request.dart';
 /// Asks the Claude Messages API for one [EditResult], with [editSchema] as
 /// structured output (`output_config.format`).
 ///
-/// Raw HTTP: there is no official Anthropic SDK for Dart. One request per
-/// [run], no retries here; an [AgentError] says whether the same request may
-/// succeed if sent again. The API key is read from [apiKey] on every run, is
-/// sent only in the `x-api-key` header, and is removed from every log line
-/// and error message.
+/// Raw HTTP: there is no official Anthropic SDK for Dart. A request that
+/// fails with HTTP 408, 429 or 5xx, or cannot connect, is sent again up to
+/// [maxRetries] times, after the `retry-after` delay (at most
+/// [maxRetryAfter]) or else 1 s, then 2 s. A timeout, any other 4xx, a
+/// refusal, a `max_tokens` stop and an unparseable result are not retried.
+/// An [AgentError] from [run] is final: callers must not send the request
+/// again because [AgentError.retryable] is true.
+///
+/// The API key is read from the key callback on every run, is sent only in
+/// the `x-api-key` header, and is removed from every log line and error
+/// message.
 class MessagesApiBackend implements AgentBackend {
   MessagesApiBackend({
     required this._apiKey,
@@ -22,18 +28,27 @@ class MessagesApiBackend implements AgentBackend {
     this._client,
     this._timeout = const Duration(minutes: 5),
     this._log,
-  }) : _endpoint = _messagesUrl(baseUrl ?? Uri.parse(defaultBaseUrl));
+    Future<void> Function(Duration wait)? delay,
+  }) : _endpoint = _messagesUrl(baseUrl ?? Uri.parse(defaultBaseUrl)),
+       _delay = delay ?? Future<void>.delayed;
 
   static const defaultBaseUrl = 'https://api.anthropic.com';
   static const apiVersion = '2023-06-01';
   static const maxTokens = 16000;
   static const effort = 'low';
+  static const maxRetries = 2;
+  static const maxRetryAfter = Duration(seconds: 20);
 
   final Future<String?> Function() _apiKey;
   final Uri _endpoint;
   final HttpClient? _client;
+
+  /// The longest one attempt may take, from connecting to the last byte.
   final Duration _timeout;
   final void Function(String line)? _log;
+
+  /// Waits between attempts; injected so tests do not wait.
+  final Future<void> Function(Duration wait) _delay;
 
   @override
   String get name => 'messages-api';
@@ -91,41 +106,113 @@ class MessagesApiBackend implements AgentBackend {
     AgentError error(String message, {required bool retryable}) =>
         AgentError(redact(message), retryable: retryable);
 
+    final payload = utf8.encode(jsonEncode(body(r)));
     final client = _client ?? HttpClient();
-    final started = DateTime.now();
-    HttpClientRequest? request;
-    log('$name: POST $_endpoint model=${r.model} kind=${r.kind.name}');
     try {
-      final (status, text, requestId) = await () async {
+      for (var retry = 0; ; retry++) {
+        final started = DateTime.now();
+        final attempt = '${retry + 1} of ${maxRetries + 1}';
+        log(
+          '$name: POST $_endpoint model=${r.model} kind=${r.kind.name} '
+          'attempt $attempt',
+        );
+        final _Exchange ex;
+        try {
+          ex = await _send(client, key, payload, error);
+        } on _NoResponse catch (e) {
+          log('$name: request failed: ${e.cause}');
+          if (retry < maxRetries) {
+            final wait = _backoff(retry);
+            log('$name: retrying in ${wait.inMilliseconds}ms');
+            await _delay(wait);
+            continue;
+          }
+          throw error(
+            "Couldn't reach the Claude API: ${e.cause}",
+            retryable: true,
+          );
+        }
+        final ms = DateTime.now().difference(started).inMilliseconds;
+        log(
+          '$name: HTTP ${ex.status} in ${ms}ms '
+          'request-id=${ex.requestId ?? "-"}',
+        );
+        if (ex.status == HttpStatus.ok) return _parse(ex.text, error, log);
+        final failure = _httpError(ex.status, ex.text, error);
+        if (_retriedStatus(ex.status) && retry < maxRetries) {
+          final wait = _retryAfter(ex.retryAfter) ?? _backoff(retry);
+          log(
+            '$name: retrying in ${wait.inMilliseconds}ms '
+            'after HTTP ${ex.status}',
+          );
+          await _delay(wait);
+          continue;
+        }
+        throw failure;
+      }
+    } finally {
+      if (_client == null) client.close(force: true);
+    }
+  }
+
+  /// Sends one attempt. Throws [_NoResponse] when no response arrived, and a
+  /// final [AgentError] on a timeout or a connection lost mid-response.
+  Future<_Exchange> _send(
+    HttpClient client,
+    String key,
+    List<int> payload,
+    AgentError Function(String, {required bool retryable}) error,
+  ) async {
+    HttpClientRequest? request;
+    var responded = false;
+    try {
+      return await () async {
         final req = request = await client.postUrl(_endpoint);
         req.headers
           ..set('x-api-key', key)
           ..set('anthropic-version', apiVersion)
-          ..contentType = ContentType.json;
-        req.add(utf8.encode(jsonEncode(body(r))));
+          ..contentType = ContentType.json
+          ..contentLength = payload.length;
+        req.add(payload);
         final res = await req.close();
+        responded = true;
         final text = await utf8.decoder.bind(res).join();
-        return (res.statusCode, text, res.headers.value('request-id'));
+        return _Exchange(
+          res.statusCode,
+          text,
+          res.headers.value('request-id'),
+          res.headers.value('retry-after'),
+        );
       }().timeout(_timeout);
-      final ms = DateTime.now().difference(started).inMilliseconds;
-      log('$name: HTTP $status in ${ms}ms request-id=${requestId ?? "-"}');
-      if (status != HttpStatus.ok) throw _httpError(status, text, error);
-      return _parse(text, error, log);
     } on TimeoutException {
       request?.abort();
-      log('$name: timed out after ${_timeout.inSeconds}s');
+      _log?.call('$name: timed out after ${_timeout.inSeconds}s');
       throw error(
         'The Claude API timed out after ${_timeout.inSeconds} s',
         retryable: true,
       );
-    } on AgentError {
-      rethrow;
     } on IOException catch (e) {
-      log('$name: request failed: $e');
-      throw error("Couldn't reach the Claude API: $e", retryable: true);
-    } finally {
-      if (_client == null) client.close(force: true);
+      if (!responded) throw _NoResponse(e);
+      throw error(
+        'The connection to the Claude API was lost: $e',
+        retryable: true,
+      );
     }
+  }
+
+  static bool _retriedStatus(int status) =>
+      status == 408 || status == 429 || status >= 500;
+
+  /// 1 s before the first retry, 2 s before the second.
+  static Duration _backoff(int retry) => Duration(seconds: 1 << retry);
+
+  /// The `retry-after` header in seconds, capped at [maxRetryAfter]; null
+  /// when absent or not a number.
+  static Duration? _retryAfter(String? header) {
+    final seconds = header == null ? null : double.tryParse(header.trim());
+    if (seconds == null || seconds.isNaN || seconds < 0) return null;
+    final wait = Duration(milliseconds: (seconds * 1000).round());
+    return wait > maxRetryAfter ? maxRetryAfter : wait;
   }
 
   static AgentError _httpError(
@@ -140,10 +227,9 @@ class MessagesApiBackend implements AgentBackend {
     if (status == HttpStatus.unauthorized) {
       return error('The API key was refused', retryable: false);
     }
-    final retryable = status == 408 || status == 429 || status >= 500;
     return error(
       'Claude API error (HTTP $status): ${apiMessage ?? "no message"}',
-      retryable: retryable,
+      retryable: _retriedStatus(status),
     );
   }
 
@@ -160,6 +246,16 @@ class MessagesApiBackend implements AgentBackend {
       );
     }
     final stopReason = response['stop_reason'];
+    final usage = switch (response['usage']) {
+      final Map<String, Object?> u => u,
+      _ => const <String, Object?>{},
+    };
+    log(
+      'messages-api: stop_reason=$stopReason '
+      'input=${usage['input_tokens']} output=${usage['output_tokens']} '
+      'cache_read=${usage['cache_read_input_tokens']} '
+      'cache_creation=${usage['cache_creation_input_tokens']}',
+    );
     if (stopReason == 'refusal') {
       final category = switch (response['stop_details']) {
         {'category': final String c} => ' (category: $c)',
@@ -206,4 +302,21 @@ class MessagesApiBackend implements AgentBackend {
       return null;
     }
   }
+}
+
+/// One HTTP exchange that got a response.
+class _Exchange {
+  const _Exchange(this.status, this.text, this.requestId, this.retryAfter);
+
+  final int status;
+  final String text;
+  final String? requestId;
+  final String? retryAfter;
+}
+
+/// An attempt that failed before any response arrived.
+class _NoResponse implements Exception {
+  const _NoResponse(this.cause);
+
+  final IOException cause;
 }
