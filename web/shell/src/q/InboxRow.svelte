@@ -5,7 +5,9 @@
   // §9.2): its kind's icon, who did what on which page, its text on one line
   // ("(deleted)" when its source is gone), its age, and the read dot. The row
   // is a button that opens the item; the dot is its own button, which marks
-  // the item read or unread without opening it. Every string is text. Its
+  // the item read or unread without opening it. An ended agent's row lists
+  // the threads its end released as links below it, to send them again;
+  // its text wraps rather than cut what was released. Every string is text. Its
   // styles travel with the question module's lazy chunk (injected on mount);
   // its state shows in data attributes (see `QuestionCard`).
   import type { InboxItem } from "../api";
@@ -24,6 +26,7 @@
   const title = $derived(itemTitle(p.item, p.others ?? []));
   const text = $derived(p.item.gone ? "(deleted)" : itemText(p.item));
   const mark = $derived(p.item.read ? "Mark unread" : "Mark read");
+  const released = $derived(p.item.kind === "ended" ? p.item.ended?.threads ?? [] : []);
   const KIND_NAMES = { reply: "Reply", version: "Version", published: "Published", question: "Question", finished: "Finished", approval: "Approval", connection: "Connection", ended: "Ended" } as const;
   // One path per kind (an SVG fragment would need the runtime's SVG templates).
   const ICONS = {
@@ -46,12 +49,17 @@
     </span>
     <span class="main">
       <span class="title" id={`irow-${p.item.id}`}>{title}</span>
-      {#if text}<span class="text" data-gone={p.item.gone ? "" : undefined}>{text}</span>{/if}
+      {#if text}<span class="text" data-gone={p.item.gone ? "" : undefined} data-wrap={p.item.kind === "ended" ? "" : undefined}>{text}</span>{/if}
     </span>
     <time datetime={p.item.created_at}>{relativeTime(p.item.created_at, p.now ?? new Date())}</time>
   </button>
   <button type="button" class="dot" aria-describedby={`irow-${p.item.id}`} aria-label={mark} title={mark}
     onclick={() => p.onToggle(p.item)}><span aria-hidden="true"></span></button>
+  {#if released.length}
+    <ul class="released" aria-label="Released threads">
+      {#each released as t (t.id)}<li><a href={t.url}>{t.title ?? "a deleted page"}</a> <span class="tid">· thread {t.id.slice(-6)}</span></li>{/each}
+    </ul>
+  {/if}
 </li>
 
 <style>
@@ -67,6 +75,13 @@
     .irow[data-unread] .title { color: var(--fg); font-weight: 600; }
     .irow .text { color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .irow .text[data-gone] { font-style: italic; }
+    .irow .text[data-wrap] { white-space: normal; overflow-wrap: anywhere; }
+    .irow { flex-wrap: wrap; }
+    .irow .released { flex-basis: 100%; margin: -4px 0 8px; padding: 0 40px 0 40px; display: grid; gap: 2px; font: 400 12.5px/1.4 var(--font); }
+    .irow .released li { list-style: none; min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
+    .irow .released a { color: var(--fg); text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 2px; }
+    .irow .released a:hover { text-decoration-color: currentColor; }
+    .irow .released .tid { font-variant-numeric: tabular-nums; }
     .irow time { font: 400 11.5px/19px var(--font); color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
     .irow .dot { flex: none; align-self: center; width: 32px; min-height: 32px; padding: 0; background: none; border-color: transparent; border-radius: 50%; }
     .irow .dot:not(:disabled):hover { background-color: var(--hover); border-color: transparent; }
