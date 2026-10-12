@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { commentsContext } from "../src/comments-context";
 import { settle } from "../src/parts-static";
 import { dispatchTrusted } from "./trusted";
@@ -126,5 +126,31 @@ describe("the shell's fragment", () => {
     send({ type: "clax:hash", hash: "" });
     expect(location.hash).toBe("");
     expect(history.length).toBe(entries);
+  });
+});
+
+describe("the app shell's scroll", () => {
+  it("is reported only after a welcome with app: true, and restored on request", async () => {
+    const scrolls = () => posted.filter(m => m.type === "clax:scroll");
+    posted.length = 0;
+    dispatchEvent(new Event("scroll"));
+    expect(scrolls()).toEqual([]);
+    send({ type: "clax:welcome", mode: "view", app: true });
+    Object.defineProperty(window, "scrollY", { value: 420, configurable: true });
+    dispatchEvent(new Event("scroll"));
+    expect(scrolls()).toEqual([{ type: "clax:scroll", file: "index.html", y: 420 }]);
+    Object.defineProperty(window, "scrollY", { value: 0, configurable: true });
+    const scrollTo = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    Object.defineProperty(document.documentElement, "scrollHeight", { value: 5000, configurable: true });
+    try {
+      send({ type: "clax:restore-scroll", y: 420 });
+      await settle();
+      expect(scrollTo).toHaveBeenCalledWith(0, 420);
+    } finally {
+      scrollTo.mockRestore();
+      Object.defineProperty(document.documentElement, "scrollHeight", { value: 0, configurable: true });
+    }
+    // The scroll's reflow of the earlier tests' anchors runs on the next frame.
+    await frames();
   });
 });

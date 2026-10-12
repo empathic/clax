@@ -1,0 +1,56 @@
+// The page's scroll position for the app shell: reported while the page
+// scrolls, and restored when the shell loads a newer version of the page in
+// its place (spec "Bridge additions": `clax:scroll`, `clax:restore-scroll`).
+
+import { type Timers, windowTimers } from "./long-press";
+
+export const SCROLL_EVERY_MS = 250;
+/** How long a restore waits for the document to grow tall enough. */
+export const RESTORE_WITHIN_MS = 2000;
+/** How often a waiting restore measures the document again. */
+const RESTORE_EVERY_MS = 100;
+
+/** Posts `clax:scroll` with the page's file and vertical scroll position as
+ * the page scrolls: at once, then at most once every `SCROLL_EVERY_MS`, the
+ * last position of a burst always posted. Returns a function that stops it. */
+export function reportScroll(win: Window, post: (m: { type: "clax:scroll"; file: string; y: number }) => void, file: () => string, timers: Timers = windowTimers(win)): () => void {
+  let timer: number | null = null;
+  let dirty = false;
+  const send = () => post({ type: "clax:scroll", file: file(), y: win.scrollY });
+  const tick = () => {
+    timer = null;
+    if (!dirty) return;
+    dirty = false;
+    send();
+    timer = timers.set(tick, SCROLL_EVERY_MS);
+  };
+  const onScroll = () => {
+    if (timer !== null) { dirty = true; return; }
+    send();
+    timer = timers.set(tick, SCROLL_EVERY_MS);
+  };
+  win.addEventListener("scroll", onScroll, { passive: true });
+  return () => {
+    win.removeEventListener("scroll", onScroll);
+    if (timer !== null) timers.clear(timer);
+    timer = null;
+  };
+}
+
+/** Scrolls the page to `y` once the document is tall enough to reach it,
+ * measuring again every `RESTORE_EVERY_MS`; after `RESTORE_WITHIN_MS` it
+ * gives up and leaves the page where it is. A `y` that is not a finite,
+ * non-negative number is ignored. */
+export function restoreScroll(win: Window, y: number, timers: Timers = windowTimers(win)): void {
+  if (typeof y !== "number" || !Number.isFinite(y) || y < 0) return;
+  let waited = 0;
+  const attempt = () => {
+    const doc = win.document;
+    const height = (doc.scrollingElement ?? doc.documentElement).scrollHeight;
+    if (y === 0 || height - win.innerHeight >= y) { win.scrollTo(0, y); return; }
+    if (waited >= RESTORE_WITHIN_MS) return;
+    waited += RESTORE_EVERY_MS;
+    timers.set(attempt, RESTORE_EVERY_MS);
+  };
+  attempt();
+}

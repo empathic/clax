@@ -25,7 +25,10 @@
  * is cancelled and handed to the shell (`clax:navigate`), which follows it
  * with one history entry; a link to this page under another spelling of its
  * path (`index.html` for `/v/<n>/`) is followed in place (`followInPlace`). After the welcome and
- * on every `hashchange` it reports the page's fragment (`clax:hash`). On
+ * on every `hashchange` it reports the page's fragment (`clax:hash`). After
+ * a welcome with `app: true` (the Clax app's shell) it reports the page's
+ * scroll position as it scrolls (`clax:scroll`), and on `clax:restore-scroll`
+ * scrolls the page back there (`scroll.ts`). On
  * `pagehide` it says `clax:bye`, and the shell stops sending until the next
  * document greets.
  * The daemon serves it right after the doctype (first in the skeleton's
@@ -58,6 +61,7 @@ import { type Clock, retrying } from "./part-loader";
 import { PickFlow } from "./pick";
 import type { Anchor, AnchorResult, Box, BridgeToShell } from "./protocol";
 import { Rpc } from "./rpc";
+import { reportScroll, restoreScroll } from "./scroll";
 import { whenParsed } from "./parsed";
 import { makeUse } from "./use";
 
@@ -87,6 +91,7 @@ type PartName = keyof Parts;
   // only hold up or hurry its own parts. (`now` is the shell's clock module,
   // which a test build lets the browser tests advance.)
   const clock: Clock = { now, setTimeout: setTimeout.bind(window), clearTimeout: clearTimeout.bind(window) as (t: unknown) => void };
+  const timers = { set: (fn: () => void, ms: number) => clock.setTimeout(fn, ms) as unknown as number, clear: (id: number) => clock.clearTimeout(id) };
 
   // The shell's window as it is when the bridge loads: a page script that
   // later replaces `window.parent` can neither read nor alter what the
@@ -159,6 +164,8 @@ type PartName = keyof Parts;
   // a custom-anchors registration is live.
   let shellMode = false;
   let welcomed = false;
+  /** Stops the scroll report, which runs from the app shell's welcome. */
+  let stopScroll: (() => void) | null = null;
 
   // A pick's clip is rendered only once the shell's composer for it has
   // focus (see `pick.ts`).
@@ -279,6 +286,7 @@ type PartName = keyof Parts;
       case "clax:welcome":
         welcomed = true; shellMode = m.mode === "comment"; followMode(); rpc.connect(); post(hashFor(location.hash));
         prefetch();
+        if (m.app === true && !stopScroll) stopScroll = reportScroll(window, post, () => meta.file, timers);
         break;
       case "clax:use-result": case "clax:call-result": case "clax:event": rpc.accept(m); break;
       case "clax:comment-mode": shellMode = m.on; followMode(); break;
@@ -328,6 +336,7 @@ type PartName = keyof Parts;
       // Other people's pointers and selections, drawn once the page has parsed.
       // (The comment part loads only once the page has parsed.)
       case "clax:peers": withComment(l => l.layer.peers(m)); break;
+      case "clax:restore-scroll": { const y = m.y; whenParsed(document, () => restoreScroll(window, y, timers)); break; }
       case "clax:pick-refused": if (typeof m.pickId === "string") picks.answer(m.pickId, false); break;
       case "clax:composer-ready": if (typeof m.pickId === "string") picks.answer(m.pickId, true); break;
       case "clax:key": {
