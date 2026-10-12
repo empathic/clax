@@ -15,6 +15,10 @@ import 'new_sheet.dart';
 /// artifact ID it returns goes to [open]. A request the person has not
 /// made yet (the sheet closed, Cancel, or Edit after a failure) is kept for
 /// the next New.
+///
+/// The list is loaded at start and again whenever the event stream says
+/// events may have been missed: `resync`, or a `ready` that did not resume
+/// (a new daemon, or a reconnect it could not resume).
 class Launcher extends StatefulWidget {
   const Launcher({
     super.key,
@@ -23,15 +27,20 @@ class Launcher extends StatefulWidget {
     required this.make,
     required this.voice,
     this.openSettings,
+    this.needsKey = false,
   });
 
   final ClaxApi api;
   final void Function(String aid) open;
-  final Future<String> Function(String request) make;
+  final MakeApp make;
   final VoiceInput voice;
 
   /// Shows Settings; without it the launcher shows no settings button.
   final VoidCallback? openSettings;
+
+  /// Whether the agent cannot run until an API key is added: the launcher
+  /// then says so above the apps, with Add key opening Settings.
+  final bool needsKey;
 
   @override
   State<Launcher> createState() => _LauncherState();
@@ -42,6 +51,9 @@ class _LauncherState extends State<Launcher> {
   Object? _loadError;
   StreamSubscription<ClaxEvent>? _events;
   String _draft = '';
+
+  /// Bumped by each load, so only the newest load's answer is kept.
+  int _loads = 0;
 
   @override
   void initState() {
@@ -59,15 +71,16 @@ class _LauncherState extends State<Launcher> {
   }
 
   Future<void> _load() async {
+    final load = ++_loads;
     try {
       final apps = await widget.api.listArtifacts();
-      if (!mounted) return;
+      if (!mounted || load != _loads) return;
       setState(() {
         _apps = _newestFirst(apps);
         _loadError = null;
       });
     } catch (e) {
-      if (mounted) setState(() => _loadError = e);
+      if (mounted && load == _loads) setState(() => _loadError = e);
     }
   }
 
@@ -75,6 +88,11 @@ class _LauncherState extends State<Launcher> {
       List.of(apps)..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
 
   Future<void> _onEvent(ClaxEvent e) async {
+    if (e.type == 'resync' ||
+        (e.type == 'ready' && e.data['resumed'] != true)) {
+      await _load();
+      return;
+    }
     final aid = e.data['artifact_id'];
     if (aid is! String) return;
     if (e.type == 'artifact_deleted') {
@@ -149,6 +167,8 @@ class _LauncherState extends State<Launcher> {
                 const SizedBox(width: 4),
               ],
             ),
+            if (widget.needsKey)
+              SliverToBoxAdapter(child: _KeyBanner(onAdd: widget.openSettings)),
             if (apps == null && _loadError != null)
               SliverFillRemaining(
                 hasScrollBody: false,
@@ -209,11 +229,8 @@ class _AppTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final (bg, fg) = switch (app.id.codeUnits.fold(0, (a, b) => a + b) % 3) {
-      0 => (scheme.primaryContainer, scheme.onPrimaryContainer),
-      1 => (scheme.secondaryContainer, scheme.onSecondaryContainer),
-      _ => (scheme.tertiaryContainer, scheme.onTertiaryContainer),
-    };
+    final tile = _tileScheme(app.id, theme.brightness);
+    final (bg, fg) = (tile.primaryContainer, tile.onPrimaryContainer);
     return Semantics(
       button: true,
       label: app.title,
@@ -236,7 +253,22 @@ class _AppTile extends StatelessWidget {
                     color: bg,
                     borderRadius: BorderRadius.circular(16),
                   ),
-                  child: Icon(iconFor(app.icon), color: fg, size: 28),
+                  alignment: Alignment.center,
+                  child: switch (tileFace(app)) {
+                    EmojiFace(:final emoji) => Text(
+                      emoji,
+                      style: const TextStyle(fontSize: 28, height: 1),
+                    ),
+                    IconFace(:final icon) => Icon(icon, color: fg, size: 28),
+                    MonogramFace(:final letters) => Text(
+                      letters,
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        color: fg,
+                        fontWeight: FontWeight.w600,
+                        height: 1,
+                      ),
+                    ),
+                  },
                 ),
                 const Spacer(),
                 Text(
@@ -300,9 +332,132 @@ class _Message extends StatelessWidget {
   }
 }
 
+/// What an app's tile shows in its badge.
+sealed class TileFace {
+  const TileFace();
+}
+
+/// The artifact's own icon, when it is an emoji.
+class EmojiFace extends TileFace {
+  const EmojiFace(this.emoji);
+  final String emoji;
+
+  @override
+  bool operator ==(Object other) => other is EmojiFace && other.emoji == emoji;
+
+  @override
+  int get hashCode => emoji.hashCode;
+}
+
+/// The Material icon for the artifact's icon word.
+class IconFace extends TileFace {
+  const IconFace(this.icon);
+  final IconData icon;
+
+  @override
+  bool operator ==(Object other) => other is IconFace && other.icon == icon;
+
+  @override
+  int get hashCode => icon.hashCode;
+}
+
+/// One or two capital letters from the title's first words.
+class MonogramFace extends TileFace {
+  const MonogramFace(this.letters);
+  final String letters;
+
+  @override
+  bool operator ==(Object other) =>
+      other is MonogramFace && other.letters == letters;
+
+  @override
+  int get hashCode => letters.hashCode;
+}
+
+/// The badge of [app]'s tile: its icon when that is an emoji or a word
+/// [iconFor] knows, else a monogram of its title's first two words.
+TileFace tileFace(ArtifactSummary app) {
+  final icon = app.icon?.trim() ?? '';
+  if (icon.isNotEmpty && !RegExp(r'^[\x00-\x7F]+$').hasMatch(icon)) {
+    return EmojiFace(icon.characters.first);
+  }
+  final known = iconFor(icon);
+  if (known != null) return IconFace(known);
+  final words = app.title
+      .trim()
+      .split(RegExp(r'\s+'))
+      .where((w) => w.isNotEmpty);
+  if (words.isEmpty) return const MonogramFace('?');
+  return MonogramFace(
+    words.take(2).map((w) => w.characters.first.toUpperCase()).join(),
+  );
+}
+
+/// The seed colour of an artifact's tile: a hue taken from a hash of its
+/// [id], so each app keeps its colour and neighbours differ.
+Color tileSeed(String id) {
+  var h = 0x811c9dc5;
+  for (final c in id.codeUnits) {
+    h = ((h ^ c) * 0x01000193) & 0xffffffff;
+  }
+  // Mix the last bits through (murmur3's finalizer), so IDs that differ
+  // only in their last character still land on distant hues.
+  h ^= h >> 16;
+  h = (h * 0x85ebca6b) & 0xffffffff;
+  h ^= h >> 13;
+  h = (h * 0xc2b2ae35) & 0xffffffff;
+  h ^= h >> 16;
+  return HSLColor.fromAHSL(1, (h % 360).toDouble(), 0.5, 0.5).toColor();
+}
+
+final _tileSchemes = <(String, Brightness), ColorScheme>{};
+
+ColorScheme _tileScheme(String id, Brightness b) => _tileSchemes.putIfAbsent((
+  id,
+  b,
+), () => ColorScheme.fromSeed(seedColor: tileSeed(id), brightness: b));
+
+class _KeyBanner extends StatelessWidget {
+  const _KeyBanner({required this.onAdd});
+
+  final VoidCallback? onAdd;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: Material(
+        color: scheme.secondaryContainer,
+        borderRadius: BorderRadius.circular(20),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
+          child: Row(
+            children: [
+              Icon(Icons.key_rounded, color: scheme.onSecondaryContainer),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Add your Claude API key to start making apps',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: scheme.onSecondaryContainer,
+                  ),
+                ),
+              ),
+              if (onAdd != null)
+                TextButton(onPressed: onAdd, child: const Text('Add key')),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// The Material icon for an artifact's icon word (`chart`, `calendar`,
-/// `recipe`, …); a generic app icon for a word it does not know.
-IconData iconFor(String? word) => switch (word?.trim().toLowerCase()) {
+/// `recipe`, …), or null for a word it does not know.
+IconData? iconFor(String? word) => switch (word?.trim().toLowerCase()) {
   'chart' || 'graph' || 'stats' || 'analytics' => Icons.insert_chart_rounded,
   'calendar' || 'schedule' || 'date' => Icons.calendar_month_rounded,
   'recipe' || 'food' || 'cooking' || 'meal' => Icons.restaurant_rounded,
@@ -352,5 +507,6 @@ IconData iconFor(String? word) => switch (word?.trim().toLowerCase()) {
   'car' || 'drive' || 'fuel' => Icons.directions_car_rounded,
   'star' || 'favorite' || 'rating' => Icons.star_rounded,
   'settings' || 'tool' || 'tools' => Icons.build_rounded,
-  _ => Icons.widgets_rounded,
+  'app' || 'apps' || 'widget' => Icons.widgets_rounded,
+  _ => null,
 };

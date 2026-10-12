@@ -49,6 +49,10 @@ class _NewSheetState extends State<NewSheet> {
   StreamSubscription<VoiceResult>? _listen;
   String? _voiceError;
 
+  /// Asks for the voice's availability again when the app comes back to
+  /// the front, as after the person changed its access in system settings.
+  late final AppLifecycleListener _lifecycle;
+
   bool get _listening => _listen != null;
 
   @override
@@ -58,6 +62,7 @@ class _NewSheetState extends State<NewSheet> {
       widget.onChanged?.call(_text.text);
       if (mounted) setState(() {});
     });
+    _lifecycle = AppLifecycleListener(onResume: _recheck);
     widget.voice.availability().then((a) {
       if (!mounted) return;
       setState(() => _availability = a);
@@ -69,8 +74,14 @@ class _NewSheetState extends State<NewSheet> {
     });
   }
 
+  Future<void> _recheck() async {
+    final a = await widget.voice.availability();
+    if (mounted) setState(() => _availability = a);
+  }
+
   @override
   void dispose() {
+    _lifecycle.dispose();
     if (_listening) {
       _listen!.cancel();
       widget.voice.stop();
@@ -152,90 +163,120 @@ class _NewSheetState extends State<NewSheet> {
         right: 20,
         bottom: MediaQuery.viewInsetsOf(context).bottom + 20,
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text('New app', style: theme.textTheme.titleLarge),
-          const SizedBox(height: 16),
-          TextField(
-            controller: _text,
-            focusNode: _focus,
-            minLines: 2,
-            maxLines: 6,
-            textCapitalization: TextCapitalization.sentences,
-            textInputAction: TextInputAction.go,
-            style: theme.textTheme.bodyLarge,
-            decoration: const InputDecoration(
-              hintText: 'Say or type what you want',
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('New app', style: theme.textTheme.titleLarge),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _text,
+              focusNode: _focus,
+              minLines: 2,
+              maxLines: 6,
+              textCapitalization: TextCapitalization.sentences,
+              textInputAction: TextInputAction.go,
+              style: theme.textTheme.bodyLarge,
+              decoration: const InputDecoration(
+                hintText: 'Say or type what you want',
+              ),
+              onTap: () {
+                if (_listening) _stopListening();
+              },
+              onChanged: (_) {
+                if (_listening) _stopListening();
+              },
+              onSubmitted: (_) => _submit(),
             ),
-            onTap: () {
-              if (_listening) _stopListening();
-            },
-            onChanged: (_) {
-              if (_listening) _stopListening();
-            },
-            onSubmitted: (_) => _submit(),
-          ),
-          SizedBox(
-            height: 32,
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 150),
-                child: status == null
-                    ? const SizedBox.shrink()
-                    : Text(
-                        status,
-                        key: ValueKey(status),
+            if (micReason != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.mic_off_rounded,
+                      size: 18,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        micReason,
                         style: theme.textTheme.bodyMedium?.copyWith(
-                          color: _voiceError != null
-                              ? scheme.error
-                              : scheme.primary,
+                          color: scheme.onSurfaceVariant,
                         ),
                       ),
+                    ),
+                    if (a is VoiceDenied)
+                      TextButton(
+                        onPressed: widget.voice.openPermissionSettings,
+                        child: const Text('Open settings'),
+                      ),
+                  ],
+                ),
+              )
+            else
+              SizedBox(
+                height: 32,
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 150),
+                    child: status == null
+                        ? const SizedBox.shrink()
+                        : Text(
+                            status,
+                            key: ValueKey(status),
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: _voiceError != null
+                                  ? scheme.error
+                                  : scheme.primary,
+                            ),
+                          ),
+                  ),
+                ),
               ),
+            Row(
+              children: [
+                Tooltip(
+                  message: micTip,
+                  child: IconButton.filled(
+                    key: const Key('new-sheet-mic'),
+                    iconSize: 28,
+                    style: IconButton.styleFrom(
+                      fixedSize: const Size(64, 64),
+                      backgroundColor: _listening
+                          ? scheme.primary
+                          : scheme.primaryContainer,
+                      foregroundColor: _listening
+                          ? scheme.onPrimary
+                          : scheme.onPrimaryContainer,
+                    ),
+                    onPressed: micEnabled ? _toggleMic : null,
+                    icon: Icon(
+                      _listening
+                          ? Icons.stop_rounded
+                          : (micEnabled
+                                ? Icons.mic_rounded
+                                : Icons.mic_off_rounded),
+                    ),
+                  ),
+                ),
+                const Spacer(),
+                FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size(0, 52),
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                  ),
+                  onPressed: _text.text.trim().isEmpty ? null : _submit,
+                  icon: const Icon(Icons.auto_awesome_rounded),
+                  label: const Text('Make it'),
+                ),
+              ],
             ),
-          ),
-          Row(
-            children: [
-              Tooltip(
-                message: micTip,
-                child: IconButton.filled(
-                  key: const Key('new-sheet-mic'),
-                  iconSize: 28,
-                  style: IconButton.styleFrom(
-                    fixedSize: const Size(64, 64),
-                    backgroundColor: _listening
-                        ? scheme.primary
-                        : scheme.primaryContainer,
-                    foregroundColor: _listening
-                        ? scheme.onPrimary
-                        : scheme.onPrimaryContainer,
-                  ),
-                  onPressed: micEnabled ? _toggleMic : null,
-                  icon: Icon(
-                    _listening
-                        ? Icons.stop_rounded
-                        : (micEnabled
-                              ? Icons.mic_rounded
-                              : Icons.mic_off_rounded),
-                  ),
-                ),
-              ),
-              const Spacer(),
-              FilledButton.icon(
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size(0, 52),
-                  padding: const EdgeInsets.symmetric(horizontal: 24),
-                ),
-                onPressed: _text.text.trim().isEmpty ? null : _submit,
-                icon: const Icon(Icons.auto_awesome_rounded),
-                label: const Text('Make it'),
-              ),
-            ],
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

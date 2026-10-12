@@ -85,23 +85,46 @@ void main() {
     expect(fieldText(tester), 'a run log');
   });
 
-  testWidgets('a denied voice disables the mic with the reason', (
+  testWidgets('a denied voice shows why, links to settings, keeps typing', (
     tester,
   ) async {
     final voice = FakeVoice.denied('Microphone access is off');
     await pumpSheet(tester, voice);
     expect(voice.listens, 0);
-    expect(find.byTooltip('Microphone access is off'), findsOneWidget);
+    expect(find.text('Microphone access is off'), findsOneWidget);
     final mic = tester.widget<IconButton>(
       find.byKey(const Key('new-sheet-mic')),
     );
     expect(mic.onPressed, isNull);
+    await tester.tap(find.text('Open settings'));
+    await tester.pumpAndSettle();
+    expect(voice.settingsOpened, 1);
+    // Back from settings with access granted: the mic works.
+    voice.availabilityNow = const VoiceAvailable();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpAndSettle();
+    expect(find.text('Microphone access is off'), findsNothing);
+    expect(
+      tester
+          .widget<IconButton>(find.byKey(const Key('new-sheet-mic')))
+          .onPressed,
+      isNotNull,
+    );
     // Typing still works.
     await tester.enterText(find.byType(TextField), 'a timer');
     await tester.pump();
     await tester.tap(find.text('Make it'));
     await tester.pumpAndSettle();
     expect(results, ['a timer']);
+  });
+
+  testWidgets('an unsupported voice shows why, with no settings link', (
+    tester,
+  ) async {
+    await pumpSheet(tester, FakeVoice.unsupported('No speech recognizer'));
+    expect(find.text('No speech recognizer'), findsOneWidget);
+    expect(find.text('Open settings'), findsNothing);
   });
 
   testWidgets('Make it is disabled until there is text', (tester) async {

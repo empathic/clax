@@ -68,6 +68,11 @@ abstract interface class VoiceInput {
 
   /// Ends the running listen, if any.
   Future<void> stop();
+
+  /// Opens the system settings where the person can give the app the
+  /// microphone and speech access [VoiceDenied] reports. Returns whether a
+  /// settings screen was opened.
+  Future<bool> openPermissionSettings();
 }
 
 /// [VoiceInput] over the `speech_to_text` plugin. It asks for on-device
@@ -122,6 +127,32 @@ class SpeechToTextVoice implements VoiceInput {
     _current = l;
     l.start(onDevice: true);
     return l.controller.stream;
+  }
+
+  /// The app's MethodChannel to its Android activity
+  /// (`android/app/src/main/kotlin/.../MainActivity.kt`).
+  static const _native = MethodChannel('dev.empathic.clax/native');
+
+  /// macOS: the Privacy & Security pane's Microphone list.
+  static const _macMicrophonePane =
+      'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone';
+
+  @override
+  Future<bool> openPermissionSettings() async {
+    try {
+      if (Platform.isAndroid) {
+        return await _native.invokeMethod<bool>('openAppSettings') ?? false;
+      }
+      if (Platform.isMacOS) {
+        final r = await Process.run('/usr/bin/open', [_macMicrophonePane]);
+        return r.exitCode == 0;
+      }
+    } on PlatformException {
+      return false;
+    } on ProcessException {
+      return false;
+    }
+    return false;
   }
 
   @override

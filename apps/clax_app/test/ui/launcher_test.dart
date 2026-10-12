@@ -4,6 +4,7 @@ import 'package:clax_app/agent/backend.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/ui/launcher.dart';
+import 'package:clax_app/ui/making_screen.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -29,17 +30,23 @@ void main() {
     WidgetTester tester,
     ClaxApi api, {
     Future<String> Function(String)? make,
+    MakeApp? makeFull,
     FakeVoice? voice,
     VoidCallback? openSettings,
+    bool needsKey = false,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
         home: Launcher(
           api: api,
           open: opened.add,
-          make: make ?? (_) async => throw StateError('unused'),
+          make:
+              makeFull ??
+              (r, cancelled, stage) =>
+                  (make ?? (_) async => throw StateError('unused'))(r),
           voice: voice ?? FakeVoice.unsupported('No speech here'),
           openSettings: openSettings,
+          needsKey: needsKey,
         ),
       ),
     );
@@ -141,7 +148,11 @@ void main() {
     await tester.tap(find.text('Make it'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
-    expect(find.text('Making “a tracker for my runs”…'), findsOneWidget);
+    expect(
+      find.text('Making “a tracker for my runs with a weekly total”…'),
+      findsOneWidget,
+    );
+    expect(find.text('Starting the agent'), findsOneWidget);
     expect(find.text('0 s'), findsOneWidget);
     await tester.pump(const Duration(seconds: 3));
     expect(find.text('3 s'), findsOneWidget);
@@ -231,7 +242,7 @@ void main() {
         home: Launcher(
           api: api,
           open: opened.add,
-          make: (_) async => 'x',
+          make: (_, _, _) async => 'x',
           voice: FakeVoice.unsupported('No speech here'),
         ),
       ),
@@ -246,5 +257,231 @@ void main() {
       Theme.of(tester.element(find.text('Runs'))).brightness,
       Brightness.dark,
     );
+  });
+
+  Future<void> submit(WidgetTester tester, String request) async {
+    await tester.tap(find.text('New app'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), request);
+    await tester.pump();
+    await tester.tap(find.text('Make it'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+  }
+
+  /// A make that honours its cancel signal the way AgentLoop.newApp does:
+  /// it creates the artifact only when [proceed] completes first.
+  MakeApp honouring(
+    FakeClaxApi api,
+    Completer<void> proceed,
+    List<Future<void>> signals,
+  ) => (request, cancelled, stage) async {
+    signals.add(cancelled);
+    var stopped = false;
+    await Future.any<void>([
+      proceed.future,
+      cancelled.then((_) {
+        stopped = true;
+      }),
+    ]);
+    if (stopped) throw const AgentError.cancelled();
+    final aid = api.seedArtifact(request, _page);
+    api.emit(ClaxEvent(type: 'version', data: {'artifact_id': aid, 'n': 1}));
+    return aid;
+  };
+
+  testWidgets('Cancel stops the run: no app is created and nothing opens', (
+    tester,
+  ) async {
+    final api = _api();
+    final proceed = Completer<void>();
+    final signals = <Future<void>>[];
+    await pumpLauncher(tester, api, makeFull: honouring(api, proceed, signals));
+    await submit(tester, 'a stopwatch');
+    var fired = false;
+    signals.single.then((_) => fired = true);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(fired, isTrue);
+    proceed.complete();
+    await tester.pumpAndSettle();
+    expect(opened, isEmpty);
+    expect(find.text('a stopwatch'), findsNothing);
+    expect(await api.listArtifacts(), isEmpty);
+  });
+
+  testWidgets('system back on the making screen stops the run too', (
+    tester,
+  ) async {
+    final api = _api();
+    final signals = <Future<void>>[];
+    await pumpLauncher(
+      tester,
+      api,
+      makeFull: honouring(api, Completer<void>(), signals),
+    );
+    await submit(tester, 'a stopwatch');
+    var fired = false;
+    signals.single.then((_) => fired = true);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Making'), findsNothing);
+    expect(fired, isTrue);
+  });
+
+  testWidgets('Retry runs with a fresh signal; Edit stops the old one', (
+    tester,
+  ) async {
+    final signals = <Future<void>>[];
+    await pumpLauncher(
+      tester,
+      _api(),
+      makeFull: (r, cancelled, stage) async {
+        signals.add(cancelled);
+        throw const AgentError('The model is busy');
+      },
+    );
+    await submit(tester, 'a timer');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Retry'));
+    await tester.pumpAndSettle();
+    expect(signals, hasLength(2));
+    final fired = <int>[];
+    for (var i = 0; i < 2; i++) {
+      signals[i].then((_) => fired.add(i));
+    }
+    await tester.pump();
+    expect(fired, [0], reason: 'a retry ends the failed attempt only');
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+    expect(fired, [0, 1]);
+    // Edit reopens the sheet with the request.
+    expect(find.text('a timer'), findsOneWidget);
+  });
+
+  testWidgets('the making screen shows the stage make reports', (tester) async {
+    final pending = Completer<String>();
+    await pumpLauncher(
+      tester,
+      _api(),
+      makeFull: (r, cancelled, stage) {
+        stage(MakeStage.writing);
+        return pending.future;
+      },
+    );
+    await submit(tester, 'a timer');
+    await tester.pump();
+    expect(find.text('Writing your app'), findsOneWidget);
+    expect(find.text('Usually under a minute'), findsNothing);
+    await tester.pump(const Duration(seconds: 21));
+    expect(find.text('Usually under a minute'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('resync and a fresh ready reload the list; a resumed ready does '
+      'not', (tester) async {
+    final api = _api();
+    await pumpLauncher(tester, api);
+    int loads() => api.callNames.where((n) => n == 'listArtifacts').length;
+    final before = loads();
+    api.seedArtifact('Made while away', _page);
+    api.emit(const ClaxEvent(type: 'ready', data: {'resumed': true}));
+    await tester.pumpAndSettle();
+    expect(loads(), before);
+    expect(find.text('Made while away'), findsNothing);
+    api.emit(const ClaxEvent(type: 'resync', data: {}));
+    await tester.pumpAndSettle();
+    expect(find.text('Made while away'), findsOneWidget);
+    api.seedArtifact('Made after a restart', _page);
+    api.emit(const ClaxEvent(type: 'ready', data: {'resumed': false}));
+    await tester.pumpAndSettle();
+    expect(find.text('Made after a restart'), findsOneWidget);
+  });
+
+  testWidgets('without a key the launcher says so and links to Settings', (
+    tester,
+  ) async {
+    var settings = 0;
+    await pumpLauncher(
+      tester,
+      _api(),
+      needsKey: true,
+      openSettings: () => settings++,
+    );
+    expect(
+      find.text('Add your Claude API key to start making apps'),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('Add key'));
+    expect(settings, 1);
+    await pumpLauncher(tester, _api(), openSettings: () {});
+    expect(find.text('Add key'), findsNothing);
+  });
+
+  test('the making title ellipsizes a long request at a word boundary', () {
+    const long =
+        'a tracker for my runs with a weekly total and a monthly chart of pace';
+    final t = makingTitle(long);
+    expect(t, startsWith('Making “'));
+    expect(t, endsWith('…”'));
+    final quoted = t.substring('Making “'.length, t.length - 2);
+    expect(quoted.length, lessThanOrEqualTo(48));
+    expect(long.startsWith(quoted), isTrue);
+    expect(long[quoted.length], ' ', reason: 'cut at a word boundary');
+    expect(makingTitle('a timer'), 'Making “a timer”…');
+    expect(t, 'Making “a tracker for my runs with a weekly total…”');
+  });
+
+  group('tiles', () {
+    ArtifactSummary app(String id, String title, [String? icon]) =>
+        ArtifactSummary(
+          id: id,
+          title: title,
+          icon: icon,
+          currentVersion: 1,
+          updatedAt: '2026-10-12T00:00:00Z',
+        );
+
+    test('an emoji icon is shown as itself', () {
+      expect(tileFace(app('a', 'Runs', '🏃')), const EmojiFace('🏃'));
+    });
+
+    test('a known icon word maps to its Material icon', () {
+      expect(
+        tileFace(app('a', 'Runs', 'chart')),
+        const IconFace(Icons.insert_chart_rounded),
+      );
+    });
+
+    test('otherwise a monogram of the title', () {
+      expect(tileFace(app('a', 'Run log')), const MonogramFace('RL'));
+      expect(tileFace(app('a', 'water')), const MonogramFace('W'));
+      expect(
+        tileFace(app('a', 'my reading list', 'zzz')),
+        const MonogramFace('MR'),
+      );
+      expect(tileFace(app('a', '  ')), const MonogramFace('?'));
+    });
+
+    test('tile colours come from the ID', () {
+      // Sequential IDs, as the daemon hands out, still spread over hues.
+      final hues = [
+        for (var i = 1; i <= 6; i++)
+          HSLColor.fromColor(tileSeed('00000000000$i')).hue,
+      ];
+      final buckets = {for (final h in hues) h ~/ 60};
+      expect(buckets.length, greaterThanOrEqualTo(4), reason: '$hues');
+      expect(tileSeed('a1'), tileSeed('a1'));
+    });
+
+    testWidgets('tiles show monograms', (tester) async {
+      final api = _api();
+      api.seedArtifact('Run log', _page);
+      api.seedArtifact('Groceries', _page);
+      await pumpLauncher(tester, api);
+      expect(find.text('RL'), findsOneWidget);
+      expect(find.text('G'), findsOneWidget);
+    });
   });
 }

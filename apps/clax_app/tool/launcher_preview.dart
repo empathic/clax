@@ -1,6 +1,6 @@
 // A manual look at the launcher, the New sheet, the making screen and
 // Settings, over an in-memory daemon (FakeClaxApi) with a few apps. Making
-// an app waits three seconds and fails on a request containing "fail", so
+// an app takes five seconds through its stages and fails on a request containing "fail", so
 // both outcomes can be seen. Settings are kept in a temporary directory;
 // the key field is backed by an in-memory store, so nothing reaches the
 // keychain.
@@ -15,6 +15,7 @@ import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/platform/voice.dart';
 import 'package:clax_app/ui/launcher.dart';
+import 'package:clax_app/ui/making_screen.dart';
 import 'package:clax_app/ui/settings_screen.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:flutter/material.dart';
@@ -52,8 +53,16 @@ void main() {
         open: (aid) =>
             ScaffoldMessenger.of(nav.currentContext!)
                 .showSnackBar(SnackBar(content: Text('Would open $aid'))),
-        make: (request) async {
-          await Future<void>.delayed(const Duration(seconds: 3));
+        make: (request, cancelled, stage) async {
+          var stopped = false;
+          cancelled.then((_) => stopped = true);
+          for (final s in [MakeStage.writing, MakeStage.publishing]) {
+            await Future<void>.delayed(const Duration(seconds: 2));
+            if (stopped) throw const AgentError.cancelled();
+            stage(s);
+          }
+          await Future<void>.delayed(const Duration(seconds: 1));
+          if (stopped) throw const AgentError.cancelled();
           if (request.contains('fail')) {
             throw const AgentError('Add your Claude API key in Settings');
           }
