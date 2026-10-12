@@ -646,3 +646,92 @@ async fn collections_lists_paths_and_counts() {
         404
     );
 }
+
+#[tokio::test]
+async fn reader_header_is_refused_beyond_the_document_reads() {
+    let ts = TestServer::spawn().await;
+    let (a, b) = pair(&ts).await;
+    // Even with consent, the header reads documents and nothing else.
+    patch_caps(&ts, &a, json!({"db": {"read": [b]}})).await;
+    assert_eq!(grant(&ts, &a, &b).await.0, 200);
+    let tid = ts.thread(&b, 1, "hello").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let blob = "0".repeat(64);
+    let reads = [
+        format!("/api/artifacts/{b}"),
+        format!("/api/artifacts/{b}/threads"),
+        format!("/api/artifacts/{b}/threads/{tid}"),
+        format!("/api/artifacts/{b}/threads/{tid}/clip"),
+        format!("/api/artifacts/{b}/files"),
+        format!("/api/artifacts/{b}/versions"),
+        format!("/api/artifacts/{b}/versions/1"),
+        format!("/api/artifacts/{b}/versions/1/files/index.html"),
+        format!("/api/artifacts/{b}/assets"),
+        format!("/api/artifacts/{b}/sample"),
+        format!("/api/artifacts/{b}/room"),
+        format!("/api/artifacts/{b}/presence"),
+        format!("/api/artifacts/{b}/working"),
+        format!("/api/artifacts/{a}/db-grants"),
+        format!("/_blob/{blob}"),
+        format!("/c/{b}/v/1/"),
+        format!("/c/{b}/v/1/index.html"),
+        format!("/a/{b}"),
+        "/api/artifacts".to_string(),
+        "/api/threads".to_string(),
+        "/api/token".to_string(),
+        "/api/stream".to_string(),
+        format!("/api/events?artifact={b}"),
+        format!("/api/events?artifact={b}&reader={a}"),
+    ];
+    for path in &reads {
+        for m in [Method::GET, Method::HEAD] {
+            let res = authed(&ts, m.clone(), path)
+                .header("cookie", ts.owner_cookie())
+                .header(READER, &a)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(res.status(), 403, "{m} {path}");
+            if m == Method::GET {
+                let body: Value = res.json().await.unwrap();
+                assert_eq!(body["error"]["code"], "not_granted", "{path}: {body}");
+            }
+        }
+    }
+    for (m, path) in [
+        (Method::POST, format!("/api/artifacts/{b}/threads")),
+        (
+            Method::POST,
+            format!("/api/artifacts/{b}/threads/{tid}/comments"),
+        ),
+        (Method::POST, format!("/api/artifacts/{b}/versions:restore")),
+        (Method::OPTIONS, format!("/api/artifacts/{b}/docs/runs/r1")),
+    ] {
+        let (status, body) = send(
+            authed(&ts, m.clone(), &path)
+                .header(READER, &a)
+                .json(&json!({})),
+        )
+        .await;
+        assert_eq!(
+            (status, &body["error"]["code"]),
+            (403, &json!("read_only")),
+            "{m} {path}"
+        );
+    }
+    // The document reads themselves still serve the reader.
+    assert_eq!(read_as(&ts, &a, &b, "runs/r1").await.0, 200);
+    assert_eq!(list_as(&ts, &a, &b, "runs").await.0, 200);
+    let res = authed(
+        &ts,
+        Method::HEAD,
+        &format!("/api/artifacts/{b}/docs/runs/r1"),
+    )
+    .header(READER, &a)
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+}

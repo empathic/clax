@@ -558,10 +558,11 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         state.clone(),
         agent::verify_layer,
     ));
-    // A request reading for another app never writes, on any route (spec
-    // 2026-10-12-flutter-app-design §3.8).
+    // A request reading for another app only reads that app's documents
+    // (spec 2026-10-12-flutter-app-design §3.8): the header is refused on
+    // every other route and method.
     let r = r.layer(axum::middleware::from_fn(
-        clax_http::db_caller::refuse_reader_writes,
+        crate::db_caller::refuse_reader_elsewhere,
     ));
     // Live pages answer 404 to callers that may not see them, before any
     // handler runs (spec 2026-10-05-chrome-overlay-design L10).
