@@ -4,10 +4,11 @@ import { describe, expect, it } from "vitest";
 
 // The daemon attributes a request by its `x-clax-*` headers (audit spec
 // §5.2, §6.9). The shell and the bridge run beside page code, so none of
-// those headers may carry a value a page supplies: the only one they send is
+// those headers may carry a value a page supplies: the only ones they send are
 // the shell's literal `x-clax-via: page` on a page's own writes, which makes
 // the daemon count every author of the page in them (multi-person spec
-// §8.2, M11).
+// §8.2, M11), and `x-clax-reader` naming the artifact the view serves on
+// `db.artifact(id)`'s reads (caps/cross-read.ts), never an ID the page sends.
 function sources(dir: string): string[] {
   return readdirSync(dir).flatMap(name => {
     const p = join(dir, name);
@@ -36,7 +37,8 @@ describe("x-clax request headers", () => {
       }
     }
     expect(found.length).toBeGreaterThan(0);
-    expect(new Set(found)).toEqual(new Set([MARKER]));
+    expect(new Set(found)).toEqual(new Set([MARKER, `"x-clax-reader": reader`]));
+    expect(readFileSync(join(__dirname, "caps/cross-read.ts"), "utf8")).toMatch(/\n  const reader = env\.aid;\n/);
   });
 
   it("mark every write a capability handler makes for a page", () => {

@@ -2,6 +2,10 @@
 // query builders; terminal calls go to the shell, which reaches the daemon as
 // this viewer. Snapshots arrive as `db/snapshot` pushes; this module keeps the
 // previous delivery so unchanged documents stay the same frozen objects.
+// `artifact(id)` (clax-extensions.d.ts `ClaxExtensions.Db`) builds the same
+// refs, without the writes, over another app's documents: each call is one
+// `db.read` call naming that app, which the shell serves on the owner's
+// consent.
 import { CapabilityError, type Rpc, isCapabilityError } from "../rpc";
 
 export type WireDoc = { path: string; id: string; data: Record<string, unknown>; version: number };
@@ -17,6 +21,7 @@ const MAX_FILTERS = 10;
 const MAX_IN = 30;
 const OPS = new Set(["==", "!=", "<", "<=", ">", ">=", "in", "not-in", "array-contains"]);
 const SEGMENT = /^[A-Za-z0-9_\-.~:@+]{1,200}$/;
+const ARTIFACT_ID = /^[0-9a-hjkmnp-tv-z]{12}$/;
 const META = Object.freeze({ fromCache: false, hasPendingWrites: false });
 
 function segments(path: unknown): string[] {
@@ -73,6 +78,9 @@ function segment(v: unknown, what: string): string {
   if (typeof v !== "string") throw new TypeError(`${what} is a string`);
   return v;
 }
+
+/** Document `id` (a fresh one when absent) of collection `path`. */
+const childPath = (path: string, id?: string) => `${path}/${id === undefined ? newId() : segment(id, "a document ID")}`;
 
 function deepFreeze<T>(v: T): T {
   if (v && typeof v === "object") {
@@ -141,7 +149,11 @@ export function makeDb(rpc: Pick<Rpc, "call" | "on">) {
   let seq = 0;
   const active = new Set<string>();
 
-  function subscribe(spec: DbSpec, deliver: (docs: WireDoc[]) => void, error?: (e: CapabilityError) => void): () => void {
+  /** A terminal call: one of this app's methods, or a `read` op on app `src`. */
+  const call = (src: string | null, method: string, args: unknown[], read: Record<string, unknown>) =>
+    src ? rpc.call("db", "read", [{ op: method, ...(method === "unsubscribe" ? {} : { artifact: src }), ...read }]) : rpc.call("db", method, args);
+
+  function subscribe(src: string | null, spec: DbSpec, deliver: (docs: WireDoc[]) => void, error?: (e: CapabilityError) => void): () => void {
     let dead = false;
     const report = (e: CapabilityError) => {
       if (error) { try { error(e); } catch (x) { reportError(x); } } else reportError(e);
@@ -165,7 +177,7 @@ export function makeDb(rpc: Pick<Rpc, "call" | "on">) {
       offSnap();
       offErr();
       active.delete(sub);
-      void rpc.call("db", "unsubscribe", [sub]).catch(() => {});
+      void call(src, "unsubscribe", [sub], { sub }).catch(() => {});
     };
     function fail(e: unknown) {
       if (dead) return;
@@ -179,21 +191,22 @@ export function makeDb(rpc: Pick<Rpc, "call" | "on">) {
       queueMicrotask(() => fail(e));
       return () => { if (!dead) { dead = true; stop(); } };
     }
-    rpc.call("db", "subscribe", [sub, spec]).catch(fail);
+    call(src, "subscribe", [sub, spec], { sub, spec }).catch(fail);
     return () => { if (!dead) { dead = true; stop(); } };
   }
 
-  function query(s: QState) {
+  function query(s: QState, src: string | null) {
     return {
-      where: (field: string, op: string, value: unknown) => query({ ...s, where: [...s.where, [field, op, value]] }),
+      where: (field: string, op: string, value: unknown) => query({ ...s, where: [...s.where, [field, op, value]] }, src),
       orderBy: (field: string, dir: "asc" | "desc" = "asc") => {
         if (dir !== "asc" && dir !== "desc") throw new TypeError(`orderBy's direction is "asc" or "desc", not '${String(dir)}'`);
-        return query({ ...s, orderBy: field, desc: dir === "desc", orders: s.orders + 1 });
+        return query({ ...s, orderBy: field, desc: dir === "desc", orders: s.orders + 1 }, src);
       },
-      limit: (n: number) => query({ ...s, limit: n }),
+      limit: (n: number) => query({ ...s, limit: n }, src),
       async get(): Promise<QuerySnapshot> {
         checkQuery(s);
-        return querySnapshot((await rpc.call("db", "query", [specOf(s)])) as WireDoc[], null).snap;
+        const spec = specOf(s);
+        return querySnapshot((await call(src, "query", [spec], { spec })) as WireDoc[], null).snap;
       },
       onSnapshot(next: (snap: QuerySnapshot) => void, error?: (e: CapabilityError) => void): () => void {
         if (s.orders > 1) {
@@ -207,7 +220,7 @@ export function makeDb(rpc: Pick<Rpc, "call" | "on">) {
           return () => { off = true; };
         }
         let cache: SnapCache | null = null;
-        return subscribe(specOf(s), docs => {
+        return subscribe(src, specOf(s), docs => {
           const r = querySnapshot(docs, cache);
           cache = r.cache;
           if (r.changed) next(r.snap);
@@ -216,15 +229,44 @@ export function makeDb(rpc: Pick<Rpc, "call" | "on">) {
     };
   }
 
-  function docRef(path: string) {
+  /** A document's read refs: of this app (`src` null) or of app `src`. */
+  function docRef(path: string, src: string | null) {
     checkDocPath(path);
     const id = path.slice(path.lastIndexOf("/") + 1);
     return {
       id,
       path,
       async get(): Promise<DocumentSnapshot> {
-        return snapshot(id, (await rpc.call("db", "get", [path])) as WireDoc | null);
+        return snapshot(id, (await call(src, "get", [path], { path })) as WireDoc | null);
       },
+      onSnapshot(next: (snap: DocumentSnapshot) => void, error?: (e: CapabilityError) => void): () => void {
+        let last: { version: number; snap: DocumentSnapshot } | null = null;
+        return subscribe(src, { kind: "doc", path }, docs => {
+          const d = docs[0] ?? null;
+          const version = d ? d.version : 0;
+          if (last && last.version === version) return;
+          last = { version, snap: snapshot(id, d) };
+          next(last.snap);
+        }, error);
+      },
+      collection: (sub: string) => collectionRef(`${path}/${segment(sub, "a collection ID")}`, src),
+    };
+  }
+
+  function collectionRef(path: string, src: string | null) {
+    checkCollectionPath(path);
+    return {
+      ...query({ collection: path, where: [], orderBy: null, desc: false, limit: null, orders: 0 }, src),
+      path,
+      doc: (id?: string) => docRef(childPath(path, id), src),
+    };
+  }
+
+  /** This app's document: the read refs and the writes. */
+  function ownDoc(path: string) {
+    return {
+      ...docRef(path, null),
+      collection: (sub: string) => ownCollection(`${path}/${segment(sub, "a collection ID")}`),
       async set(data: Record<string, unknown>): Promise<void> {
         plainObject(data);
         await rpc.call("db", "set", [path, data]);
@@ -241,26 +283,13 @@ export function makeDb(rpc: Pick<Rpc, "call" | "on">) {
         if (options.data !== undefined) plainObject(options.data);
         return rpc.call("db", "acquire", [path, { holder: options.holder, ttlMs: options.ttlMs, data: options.data }]);
       },
-      onSnapshot(next: (snap: DocumentSnapshot) => void, error?: (e: CapabilityError) => void): () => void {
-        let last: { version: number; snap: DocumentSnapshot } | null = null;
-        return subscribe({ kind: "doc", path }, docs => {
-          const d = docs[0] ?? null;
-          const version = d ? d.version : 0;
-          if (last && last.version === version) return;
-          last = { version, snap: snapshot(id, d) };
-          next(last.snap);
-        }, error);
-      },
-      collection: (sub: string) => collectionRef(`${path}/${segment(sub, "a collection ID")}`),
     };
   }
 
-  function collectionRef(path: string) {
-    checkCollectionPath(path);
+  function ownCollection(path: string) {
     const ref = {
-      ...query({ collection: path, where: [], orderBy: null, desc: false, limit: null, orders: 0 }),
-      path,
-      doc: (id?: string) => docRef(`${path}/${id === undefined ? newId() : segment(id, "a document ID")}`),
+      ...collectionRef(path, null),
+      doc: (id?: string) => ownDoc(childPath(path, id)),
       async add(data: Record<string, unknown>) {
         const d = ref.doc();
         await d.set(data);
@@ -270,5 +299,13 @@ export function makeDb(rpc: Pick<Rpc, "call" | "on">) {
     return ref;
   }
 
-  return { doc: (path: string) => docRef(path), collection: (path: string) => collectionRef(path) };
+  return {
+    doc: (path: string) => ownDoc(path),
+    collection: (path: string) => ownCollection(path),
+    /** Read-only refs over app `id`'s documents. */
+    artifact(id: string) {
+      if (typeof id !== "string" || !ARTIFACT_ID.test(id)) throw new TypeError(`'${String(id)}' is not an artifact ID`);
+      return { doc: (path: string) => docRef(path, id), collection: (path: string) => collectionRef(path, id) };
+    },
+  };
 }
