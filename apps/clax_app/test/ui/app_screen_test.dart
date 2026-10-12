@@ -870,6 +870,41 @@ void main() {
     },
   );
 
+  testWidgets(
+    'the page is visible while the app is resumed and the screen on top',
+    (tester) async {
+      final rig = await pumpScreen(tester);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      expect(rig.surface.visibility, [true]);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pump();
+      expect(rig.surface.visibility, [true], reason: 'inactive is still shown');
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump();
+      expect(rig.surface.visibility, [true, false]);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+      expect(rig.surface.visibility, [true, false, true]);
+
+      // Another screen over it hides it; coming back shows it.
+      final nav = tester.state<NavigatorState>(find.byType(Navigator));
+      unawaited(
+        nav.push(
+          MaterialPageRoute<void>(builder: (_) => const Text('Settings')),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(rig.surface.visibility, [true, false, true, false]);
+      nav.pop();
+      await tester.pumpAndSettle();
+      expect(rig.surface.visibility, [true, false, true, false, true]);
+    },
+  );
+
   testWidgets('the screen disposes its surface', (tester) async {
     final rig = await pumpScreen(tester);
     await tester.pumpWidget(const SizedBox());

@@ -108,7 +108,7 @@ class AppScreen extends StatefulWidget {
   State<AppScreen> createState() => _AppScreenState();
 }
 
-class _AppScreenState extends State<AppScreen> {
+class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   final _pageKey = GlobalKey(debugLabel: 'app-page');
   late final TwoFingerSwipe _swipe;
   final _subs = <StreamSubscription<Object?>>[];
@@ -154,7 +154,46 @@ class _AppScreenState extends State<AppScreen> {
       ..add(widget.surface.messages.listen(_onMessage))
       ..add(widget.surface.faults.listen(_onFault))
       ..add(widget.worker.listen(_onWorker));
+    WidgetsBinding.instance.addObserver(this);
+    _lifecycleShown = _shownIn(WidgetsBinding.instance.lifecycleState);
     unawaited(widget.surface.load(AppScreen.appUrl(widget.base, widget.aid)));
+  }
+
+  // Whether the page is shown: the app in front, and this screen's route on
+  // top. The shell takes its visibility from this in app mode, since a
+  // WebView may report its document hidden while it is on screen.
+  var _lifecycleShown = true;
+  var _routeCurrent = true;
+  bool? _toldVisible;
+
+  /// Whether [state] shows the app: resumed, or inactive (on screen behind
+  /// a system dialog); unknown counts as shown.
+  static bool _shownIn(AppLifecycleState? state) => switch (state) {
+    null || AppLifecycleState.resumed || AppLifecycleState.inactive => true,
+    AppLifecycleState.hidden ||
+    AppLifecycleState.paused ||
+    AppLifecycleState.detached => false,
+  };
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _lifecycleShown = _shownIn(state);
+    _tellVisible();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // ModalRoute.of rebuilds this when the route stops or starts being on top.
+    _routeCurrent = ModalRoute.of(context)?.isCurrent ?? true;
+    _tellVisible();
+  }
+
+  void _tellVisible() {
+    final visible = _lifecycleShown && _routeCurrent;
+    if (visible == _toldVisible) return;
+    _toldVisible = visible;
+    widget.surface.setVisible(visible);
   }
 
   late final CommentsCommand _comments;
@@ -167,6 +206,7 @@ class _AppScreenState extends State<AppScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _comments.unregister(_toggleOpen);
     _ownComments?.dispose();
     for (final s in _subs) {

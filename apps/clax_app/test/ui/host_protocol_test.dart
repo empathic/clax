@@ -150,11 +150,22 @@ void main() {
 
     test('Resend and Init', () {
       expect(const Resend('t1').toJs(), 'window.claxHost?.resend("t1")');
+      // init, then the screen's visibility, in the same call once the
+      // shell's host is there.
       expect(
-        const Init('ab"c', waitMs: 500).toJs(),
-        '(function(n,t){function f(){var h=window.claxHost;'
-        'if(h&&typeof h.init==="function"){h.init({nonce:n});return}'
-        r'if(t-->0)setTimeout(f,50)}f()})("ab\"c",10)',
+        const Init('ab"c', visible: true, waitMs: 500).toJs(),
+        '(function(n,v,t){function f(){var h=window.claxHost;'
+        'if(h&&typeof h.init==="function"){h.init({nonce:n});'
+        'if(typeof h.setVisible==="function")h.setVisible(v);return}'
+        r'if(t-->0)setTimeout(f,50)}f()})("ab\"c",true,10)',
+      );
+      expect(
+        const Init('n', visible: false).toJs(),
+        contains('("n",false,200)'),
+      );
+      expect(
+        const SetVisible(false).toJs(),
+        'window.claxHost?.setVisible(false)',
       );
     });
 
@@ -323,6 +334,25 @@ void main() {
       s.urlChanged(at('/'));
       expect(s.canCall, isTrue);
       expect(s.accept(msg(init.nonce)), isA<Landed>());
+    });
+
+    test('visibility is called only after init, and each Init carries it', () {
+      final s = ShellSession(base);
+      expect(s.visibilityChanged(false), isNull, reason: 'no document');
+      s.documentStarted(shell);
+      expect(s.visibilityChanged(true), isNull, reason: 'before init');
+      final init = s.documentLoaded(shell)!;
+      expect(init.visible, isTrue, reason: 'the latest visibility');
+      expect(s.visibilityChanged(true), isNull, reason: 'unchanged');
+      expect(
+        s.visibilityChanged(false)?.toJs(),
+        'window.claxHost?.setVisible(false)',
+      );
+      // A reload: nothing until its init, which carries the visibility.
+      s.documentStarted(shell);
+      expect(s.visibilityChanged(true), isNull);
+      expect(s.visibilityChanged(false), isNull);
+      expect(s.documentLoaded(shell)!.visible, isFalse);
     });
   });
 }

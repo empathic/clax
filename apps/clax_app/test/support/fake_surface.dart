@@ -18,6 +18,9 @@ class FakeAppSurface implements AppSurface {
 
   bool disposed = false;
 
+  /// What [setVisible] was told, in order.
+  final List<bool> visibility = [];
+
   final _messages = StreamController<HostMessage>.broadcast(sync: true);
   final _faults = StreamController<SurfaceFault>.broadcast(sync: true);
 
@@ -60,6 +63,9 @@ class FakeAppSurface implements AppSurface {
 
   @override
   Stream<SurfaceFault> get faults => _faults.stream;
+
+  @override
+  void setVisible(bool visible) => visibility.add(visible);
 
   @override
   void dispose() => disposed = true;

@@ -287,19 +287,33 @@ final class OpenThread extends HostCall {
   String toJs() => 'window.claxHost?.openThread(${jsString(id)})';
 }
 
-/// Hands the shell this document's [nonce]. The shell posts nothing
-/// before it, and every message after it carries the nonce. The shell's
+/// Hands the shell this document's [nonce], then tells it whether the app
+/// shows it ([visible], `setVisible`). The shell posts nothing before
+/// init, and every message after it carries the nonce. The shell's
 /// `claxHost` may appear a moment after the document loads, so the call
 /// waits for it (up to [waitMs]) in the page.
 final class Init extends HostCall {
-  const Init(this.nonce, {this.waitMs = 10000});
+  const Init(this.nonce, {required this.visible, this.waitMs = 10000});
   final String nonce;
+  final bool visible;
   final int waitMs;
   @override
   String toJs() =>
-      '(function(n,t){function f(){var h=window.claxHost;'
-      'if(h&&typeof h.init==="function"){h.init({nonce:n});return}'
-      'if(t-->0)setTimeout(f,50)}f()})(${jsString(nonce)},${waitMs ~/ 50})';
+      '(function(n,v,t){function f(){var h=window.claxHost;'
+      'if(h&&typeof h.init==="function"){h.init({nonce:n});'
+      'if(typeof h.setVisible==="function")h.setVisible(v);return}'
+      'if(t-->0)setTimeout(f,50)}f()})'
+      '(${jsString(nonce)},$visible,${waitMs ~/ 50})';
+}
+
+/// Whether the app shows the page: the WebView reports its document as
+/// visible or not on its own terms (hidden in some hosts while on screen),
+/// so in app mode the shell takes its visibility from the app.
+final class SetVisible extends HostCall {
+  const SetVisible(this.visible);
+  final bool visible;
+  @override
+  String toJs() => 'window.claxHost?.setVisible($visible)';
 }
 
 /// Sends thread [id] to the agent again, after [SendFailed].
@@ -377,6 +391,7 @@ class ShellSession {
   final Random _random;
   String? _nonce;
   var _shell = false;
+  var _visible = true;
 
   /// An artifact ID, as the shell's `parseShellPath` takes it
   /// (`web/shell/src/route.ts`).
@@ -436,7 +451,16 @@ class ShellSession {
     final n = [for (final b in bytes) b.toRadixString(16).padLeft(2, '0')]
         .join();
     _nonce = n;
-    return Init(n);
+    return Init(n, visible: _visible);
+  }
+
+  /// The app shows the page ([visible]) or not: the call telling the
+  /// shell, or null before the document's [Init] (which carries it) or
+  /// when nothing changed.
+  SetVisible? visibilityChanged(bool visible) {
+    if (visible == _visible) return null;
+    _visible = visible;
+    return canCall ? SetVisible(visible) : null;
   }
 
   /// The message [raw] holds when it carries the current nonce; null for
