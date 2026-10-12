@@ -145,8 +145,10 @@ class DaemonSupervisor {
   carrying `inherit` under an unsandboxed parent is killed at launch.
   Entitlements:
   - `Release.entitlements`: `app-sandbox`, `network.server`,
-    `network.client`, `device.audio-input`, keychain access group for
-    `flutter_secure_storage`.
+    `network.client`, `device.audio-input`. No keychain access group: it
+    is a restricted entitlement that an ad hoc signed build cannot carry,
+    so `flutter_secure_storage` keeps the API key in the login keychain
+    (`MacOsOptions(usesDataProtectionKeychain: false)`), which needs none.
   - `DebugProfile.entitlements`: the same without `app-sandbox`, so the
     desktop build can start `claude` for `ClaudeCliBackend` (§3.6).
   - `Info.plist`: `NSMicrophoneUsageDescription`,
