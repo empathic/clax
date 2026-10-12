@@ -6,7 +6,7 @@ export const FRAME_FALLBACK_MS = 100;
 /** Runs `fn` at the next animation frame, or after `FRAME_FALLBACK_MS` when
  * none comes first (a hidden tab, or the Clax app's WebView, which may run no
  * frames while the app shows it). With `whenShown`, the timer stands in only
- * where the app's host says the page is shown (`visibility.shownByHost`): a
+ * where the app's host says the page is shown (`visibility.shown`): a
  * wait that must not end before the viewer can see the page (an armed Allow)
  * then still waits for a frame in a hidden browser tab. Returns the cancel. */
 export function nextFrame(fn: () => void, whenShown = false): () => void {
@@ -14,7 +14,7 @@ export function nextFrame(fn: () => void, whenShown = false): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const cancel = () => { clearTimeout(timer); if (raf) cancelAnimationFrame(raf); };
   const run = () => { cancel(); fn(); };
-  if (!whenShown || visibility.shownByHost()) timer = setTimeout(run, FRAME_FALLBACK_MS);
+  if (!whenShown || visibility.shown() === true) timer = setTimeout(run, FRAME_FALLBACK_MS);
   if (typeof requestAnimationFrame === "function") raf = requestAnimationFrame(run);
   return cancel;
 }

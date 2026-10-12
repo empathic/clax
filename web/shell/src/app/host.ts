@@ -319,9 +319,9 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   // What `setVisible` said before `init`, which applies from `init` on.
   let wanted = true;
   const docHidden = visibility.hidden;
-  const docShown = visibility.shownByHost;
+  const docShown = visibility.shown;
   visibility.hidden = d => hostHidden ?? docHidden(d);
-  visibility.shownByHost = () => hostHidden === false;
+  visibility.shown = () => (hostHidden === null ? null : !hostHidden);
   // The stream module, loaded on its own (the view loads it after its first
   // paint), so this chunk stays small: told of a change once it is in.
   let stream: typeof import("../stream") | null = null;
@@ -335,6 +335,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     if (hostHidden === hidden) return;
     hostHidden = hidden;
     stream?.pageStream().visibilityChanged();
+    visibility.changed();
   };
   const host: ClaxHost = {
     setVisible: v => {
@@ -403,7 +404,8 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     hostArrival.fresh = () => false;
     uninstalled = true;
     visibility.hidden = docHidden;
-    visibility.shownByHost = docShown;
+    visibility.shown = docShown;
+    if (hostHidden !== null) visibility.changed();
     if (stream && hostHidden !== null) stream.pageStream().visibilityChanged();
     if (ctl.app) ctl.app = null;
     delete w.claxHost;

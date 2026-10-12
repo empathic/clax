@@ -15,7 +15,7 @@ const PAGE = `<!doctype html><html><head><title>App</title><style>body{margin:0;
 </head>
 <body><main><h2 id="t">Quarterly goals</h2><p>Grow revenue in every region this year.</p><div class="tall"></div><p id="end">The end</p></main></body></html>`;
 
-async function openApp(page: Page, title: string, mode: "subdomain" | "sandbox", app = true, opts: { beforeGoto?: () => Promise<void>; html?: string; capabilities?: Record<string, unknown> } = {}) {
+async function openApp(page: Page, title: string, mode: "subdomain" | "sandbox", app = true, opts: { beforeGoto?: () => Promise<void>; html?: string; capabilities?: Record<string, unknown>; init?: boolean } = {}) {
   const s = await registerSession(d.base, d.token, "app");
   const html = opts.html ?? PAGE;
   const { artifact } = opts.capabilities
@@ -27,7 +27,7 @@ async function openApp(page: Page, title: string, mode: "subdomain" | "sandbox",
   await opts.beforeGoto?.();
   await page.goto(`${d.base}/a/${artifact.id}${app ? "?app=1" : ""}`);
   const frame = await contentFrame(page, artifact.id, 1);
-  if (app) await initHost(page);
+  if (app && opts.init !== false) await initHost(page);
   return { id: artifact.id, sid: s.id, frame };
 }
 
@@ -216,4 +216,23 @@ test("a version published after the hidden-page threshold still lands while the 
   await expect.poll(async () => (await ofType(page, "landed")).length, { timeout: 10_000 }).toBe(1);
   const next = await contentFrame(page, id, 2);
   await expect(next.locator("#t")).toHaveText("Quarterly goals, later");
+});
+
+test("with no animation frames, a permission dialog the page raised before the app's init arms once the app inits", async ({ page }) => {
+  await noFrames(page);
+  const html = `<!doctype html><html><head><title>Asks</title></head><body><pre id="out">waiting</pre><script>
+claude.use("permissions").then(async perm => { document.getElementById("out").textContent = JSON.stringify(await perm.request(["comments"])); });
+</script></body></html>`;
+  const { frame } = await openApp(page, "App asks early", "subdomain", true, { html, capabilities: { comments: {} }, init: false });
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("post comments on this artifact under your name");
+  const allow = dialog.getByRole("button", { name: "Allow", exact: true });
+  // No frame ever comes and the app has not said the page is shown: Allow waits.
+  await expect.poll(() => quietEval<string>(page, "typeof window.claxHost")).toBe("object");
+  await advance(page, 5_000);
+  await expect(allow).toBeDisabled();
+  await initHost(page);
+  await expect(allow).toBeEnabled();
+  await allow.tap();
+  await expect(frame.locator("#out")).toHaveText(JSON.stringify({ comments: "granted" }));
 });

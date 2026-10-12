@@ -17,6 +17,7 @@
   // alone until "Allow" is armed).
   import { after as later } from "../clock";
   import { nextFrame } from "../view/after-paint";
+  import { onHostVisibility, visibility } from "../visibility";
   import { ALLOW_DELAY_MS, type Ask } from "../view/prompt-queue";
   import { guardedAction } from "../view/trail";
   import { inertOutside, trapTab } from "./modal";
@@ -44,7 +45,10 @@
   // whose WebView may run no frames while the app shows the page, each frame
   // falls back to a short timer while the app's host says the page is shown
   // (`nextFrame` with `whenShown`), so the delay still counts from about
-  // when the dialog could first be seen.
+  // when the dialog could first be seen. Arming follows the host's word: the
+  // waits start again when it says shown (a dialog opened before the app's
+  // `init`, or while hidden), and while it says hidden "Allow" is disarmed
+  // and nothing counts, so the full delay runs again from the next shown.
   $effect(() => {
     const a = ask;
     armed = false;
@@ -53,13 +57,21 @@
     lastFresh = false;
     hint = null;
     deny?.focus();
+    let first = () => {};
     let second = () => {};
     let disarm = () => {};
-    const first = nextFrame(() => {
-      second = nextFrame(() => {
-        disarm = later(ALLOW_DELAY_MS, () => { armedAt = performance.now(); armed = true; });
+    const stop = () => { first(); second(); disarm(); armed = false; armedAt = Infinity; };
+    const start = () => {
+      stop();
+      if (visibility.shown() === false) return;
+      first = nextFrame(() => {
+        second = nextFrame(() => {
+          disarm = later(ALLOW_DELAY_MS, () => { armedAt = performance.now(); armed = true; });
+        }, true);
       }, true);
-    }, true);
+    };
+    start();
+    const offVisibility = onHostVisibility(start);
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") a.answer("dismiss"); };
     const onPress = (e: PointerEvent) => {
       lastFresh = after(e);
@@ -68,9 +80,8 @@
     addEventListener("keydown", onKey);
     addEventListener("pointerdown", onPress, true);
     return () => {
-      first();
-      second();
-      disarm();
+      offVisibility();
+      stop();
       removeEventListener("keydown", onKey);
       removeEventListener("pointerdown", onPress, true);
     };

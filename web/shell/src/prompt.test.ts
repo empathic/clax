@@ -90,13 +90,18 @@ describe("PromptDialog", () => {
     expect(answer).toHaveBeenCalledWith("allow");
   });
 
-  it("arms Allow where no animation frame comes while the app's host says the page is shown, still only after the delay", () => {
-    const shown = visibility.shownByHost;
-    visibility.shownByHost = () => true;
-    try {
+  describe("in the Clax app, where no animation frame ever comes", () => {
+    let said: boolean | null = null;
+    const shown = visibility.shown;
+    /** The app's host says shown (true), hidden (false), or has said nothing yet (null). */
+    const hostSays = (v: boolean | null) => flush(() => { said = v; visibility.changed(); });
+    beforeEach(() => { said = null; visibility.shown = () => said; });
+    afterEach(() => { visibility.shown = shown; });
+
+    it("arms Allow while the host says shown, still only after the delay", () => {
+      hostSays(true);
       const { root, answer } = mountDialog();
       const allow = button(root, "Allow");
-      // No frame ever comes (the app's WebView): each wait for one ends after FRAME_FALLBACK_MS.
       wait(2 * FRAME_FALLBACK_MS);
       wait(ALLOW_DELAY_MS - 1);
       expect(allow.disabled).toBe(true);
@@ -106,9 +111,49 @@ describe("PromptDialog", () => {
       expect(allow.disabled).toBe(false);
       pressClick(allow);
       expect(answer).toHaveBeenCalledWith("allow");
-    } finally {
-      visibility.shownByHost = shown;
-    }
+    });
+
+    it("opened before the host's init, arms the delay after it says shown", () => {
+      const { root } = mountDialog();
+      const allow = button(root, "Allow");
+      wait(10_000);
+      expect(allow.disabled).toBe(true);
+      hostSays(true);
+      wait(2 * FRAME_FALLBACK_MS + ALLOW_DELAY_MS - 1);
+      expect(allow.disabled).toBe(true);
+      wait(1);
+      expect(allow.disabled).toBe(false);
+    });
+
+    it("hidden mid-delay does not arm, and counts the full delay again from the next shown", () => {
+      hostSays(true);
+      const { root, answer } = mountDialog();
+      const allow = button(root, "Allow");
+      wait(2 * FRAME_FALLBACK_MS + ALLOW_DELAY_MS - 100);
+      hostSays(false);
+      wait(10_000);
+      expect(allow.disabled).toBe(true);
+      hostSays(true);
+      wait(2 * FRAME_FALLBACK_MS + ALLOW_DELAY_MS - 1);
+      expect(allow.disabled).toBe(true);
+      wait(1);
+      expect(allow.disabled).toBe(false);
+      // Hidden once armed: disarmed at once, and a press then counts for nothing.
+      hostSays(false);
+      expect(allow.disabled).toBe(true);
+      pressClick(allow);
+      expect(answer).not.toHaveBeenCalled();
+    });
+
+    it("opened while the host says hidden, arms only after it says shown", () => {
+      hostSays(false);
+      const { root } = mountDialog();
+      wait(10_000);
+      expect(button(root, "Allow").disabled).toBe(true);
+      hostSays(true);
+      wait(2 * FRAME_FALLBACK_MS + ALLOW_DELAY_MS);
+      expect(button(root, "Allow").disabled).toBe(false);
+    });
   });
 
   it("never arms Allow without a frame outside the app (a hidden browser tab)", () => {
