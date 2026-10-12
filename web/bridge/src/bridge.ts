@@ -61,6 +61,9 @@ import { Rpc } from "./rpc";
 import { whenParsed } from "./parsed";
 import { makeUse } from "./use";
 
+/** How often, at most, anchors are resolved again while the page scrolls or resizes. */
+const REFLOW_MS = 50;
+
 type Mode = InstanceType<CommentPart["CommentMode"]>;
 type Cache = InstanceType<CommentPart["AnchorCache"]>;
 /** Comment mode once its part has loaded. */
@@ -215,13 +218,17 @@ type PartName = keyof Parts;
     post({ type: "clax:anchors", requestId, results });
     updateFocus(l);
   };
-  let raf = 0;
+  let reflowing = false;
+  // Anchors are resolved again at most every REFLOW_MS of scrolling or
+  // resizing, by a timer: a document the browser treats as hidden (the Clax
+  // app's WebView, while the app shows it) runs no animation frames.
   const reflow = () => {
     // While the page anchors threads itself (comments.customAnchors), it
     // re-reports its placements, and the shell's anchors are not resolved.
     commentsContext.reflow?.();
-    if (commentsContext.live || !anchors.length || raf) return;
-    raf = requestAnimationFrame(() => { raf = 0; withComment(l => resolveAll(l, null)); });
+    if (commentsContext.live || !anchors.length || reflowing) return;
+    reflowing = true;
+    setTimeout(() => { reflowing = false; withComment(l => resolveAll(l, null)); }, REFLOW_MS);
   };
   addEventListener("scroll", reflow, { passive: true, capture: true });
   addEventListener("resize", reflow);

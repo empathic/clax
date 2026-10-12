@@ -3,7 +3,7 @@
 // and a newer version, published or restored, followed in place with the
 // page's documents and scroll kept. The app's side is ./app-host.ts.
 import { type CDPSession, type Frame, type Locator, type Page } from "@playwright/test";
-import { hostChannel, host, initHost, NONCE, ofType, toHost } from "./app-host";
+import { hostChannel, host, initHost, NONCE, noFrames, ofType, toHost } from "./app-host";
 import { test, expect, type Daemon, api, contentFrame, publishAs, publishNext, record, registerSession, streamLive } from "./fixtures";
 import { advance, quietEval } from "./time";
 
@@ -129,8 +129,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   });
 }
 
-test("a long-press picks and Send sends to the app session", async ({ page }) => {
-  const { id, sid, frame } = await openApp(page, "App send", "subdomain");
+for (const frames of [true, false]) {
+test(`a long-press picks and Send sends to the app session${frames ? "" : ", with no animation frames"}`, async ({ page }) => {
+  if (!frames) await noFrames(page);
+  const { id, sid, frame } = await openApp(page, `App send${frames ? "" : " no frames"}`, "subdomain");
   await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
   await host(page, "enterCommentMode()");
   await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
@@ -152,6 +154,7 @@ test("a long-press picks and Send sends to the app session", async ({ page }) =>
   const fb = await api(d.base, d.token, `/api/sessions/${sid}/feedback?wait=0`) as { threads?: { id: string }[] };
   expect(JSON.stringify(fb)).toContain(thread);
 });
+}
 
 /** A page that keeps one note in its documents: Add writes it, and the page
  * shows it while it exists. */

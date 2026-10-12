@@ -36,3 +36,13 @@ export const ofType = async (page: Page, type: string) => (await toHost(page)).f
 
 /** Calls `window.claxHost.<call>` as the app does. */
 export const host = (page: Page, call: string) => quietEval<unknown>(page, `window.claxHost.${call}`);
+
+/** Makes every frame of `page` (the shell and the artifact's page) run no
+ * animation frames, as the macOS app's WKWebView does for a document it
+ * treats as hidden: `requestAnimationFrame` never calls back. */
+export async function noFrames(page: Page) {
+  await page.addInitScript(() => {
+    window.requestAnimationFrame = () => 0;
+    window.cancelAnimationFrame = () => {};
+  });
+}

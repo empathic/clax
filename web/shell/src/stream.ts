@@ -33,6 +33,7 @@
 import { getToken } from "./api";
 import { after } from "./clock";
 import { STREAM_DOWN, connTrouble } from "./conn-notice";
+import { visibility } from "./visibility";
 import { backoff } from "./lifecycle";
 import type { HubMsg, TabMsg } from "./stream-hub";
 
@@ -44,8 +45,7 @@ export type StreamEvent = { type: string; topic?: string; [field: string]: unkno
 
 /** How long the stream may be down before the notice shows. */
 export const NOTICE_MS = 1500;
-/** Whether the page counts as hidden (see the header); app mode replaces it. */
-export const visibility = { hidden: (d: Document): boolean => d.visibilityState === "hidden" };
+export { visibility };
 
 /** How long a hidden page keeps its topics. */
 export const HIDDEN_MS = 30_000;

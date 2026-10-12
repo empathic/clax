@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommentMode, type ModeHooks, TOUCH_CLICK_WAIT_MS } from "../src/comment-mode";
+import { FRAME_FALLBACK_MS } from "../src/frame";
 
 // A backstop for a loaded machine; no test here times anything.
 vi.setConfig({ testTimeout: 20_000 });
@@ -28,6 +29,22 @@ beforeEach(() => {
 afterEach(() => { mode.set(false); });
 
 describe("CommentMode", () => {
+  it("outlines the hovered element where the document runs no animation frames (a hidden WebView)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.stubGlobal("requestAnimationFrame", () => 1);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    try {
+      mode.set(true);
+      fire(document.querySelector("h2")!, "mousemove");
+      expect(hooks.hover).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(FRAME_FALLBACK_MS);
+      expect(hooks.hover).toHaveBeenCalledWith(document.querySelector("h2"));
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
   it("outlines and reports the hovered element on the next frame", async () => {
     mode.set(true);
     fire(document.querySelector("h2")!, "mousemove");

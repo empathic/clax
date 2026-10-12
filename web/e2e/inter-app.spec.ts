@@ -5,7 +5,7 @@
 // declaration is read without asking. The refusals, the live follow and the
 // revoke are web/e2e/db-artifact.spec.ts's.
 import type { Frame, Page } from "@playwright/test";
-import { hostChannel, initHost, ofType } from "./app-host";
+import { hostChannel, initHost, noFrames, ofType } from "./app-host";
 import { test, expect, type Daemon, api, contentFrame, publishWith } from "./fixtures";
 
 let d: Daemon;
@@ -87,4 +87,18 @@ test("a share in the other app's declaration is read without asking", async ({ p
   await expect(page.getByRole("dialog")).toHaveCount(0);
   const grants = await api(d.base, d.token, `/api/artifacts/${a}/db-grants`) as { grants: unknown[] };
   expect(grants.grants).toEqual([]);
+});
+
+test("with no animation frames (the macOS app's WebView), the consent dialog's Allow still arms and the read succeeds", async ({ page }) => {
+  await noFrames(page);
+  const { a } = await apps("no frames");
+  const f = await openApp(page, a, "subdomain");
+  await f.locator("#show").tap();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("Let “Dashboard no frames” read “Runs no frames”'s data?");
+  const allow = dialog.getByRole("button", { name: "Allow", exact: true });
+  await expect(allow).toBeEnabled();
+  await allow.tap();
+  await expect(f.locator("#out")).toHaveText("5 km");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
 });

@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dispatchTrusted } from "../../bridge/test/trusted";
 import { flush, mount } from "./test/svelte";
 import PromptDialog from "./ui/PromptDialog.svelte";
+import { FRAME_FALLBACK_MS } from "./view/after-paint";
 import { ALLOW_DELAY_MS, type Ask } from "./view/prompt-queue";
+import { visibility } from "./visibility";
 
 const button = (root: Element, name: string) => Array.from(root.querySelectorAll("button")).find(b => b.textContent === name)!;
 const askFor = (answer = vi.fn()): Ask => ({ prompt: { title: "Allow this page to act as you?", body: "b", allow: "Allow", deny: "Don't allow" }, answer });
@@ -86,6 +88,33 @@ describe("PromptDialog", () => {
     expect(allow.disabled).toBe(false);
     pressClick(allow);
     expect(answer).toHaveBeenCalledWith("allow");
+  });
+
+  it("arms Allow where no animation frame comes while the app's host says the page is shown, still only after the delay", () => {
+    const shown = visibility.shownByHost;
+    visibility.shownByHost = () => true;
+    try {
+      const { root, answer } = mountDialog();
+      const allow = button(root, "Allow");
+      // No frame ever comes (the app's WebView): each wait for one ends after FRAME_FALLBACK_MS.
+      wait(2 * FRAME_FALLBACK_MS);
+      wait(ALLOW_DELAY_MS - 1);
+      expect(allow.disabled).toBe(true);
+      pressClick(allow);
+      expect(answer).not.toHaveBeenCalled();
+      wait(1);
+      expect(allow.disabled).toBe(false);
+      pressClick(allow);
+      expect(answer).toHaveBeenCalledWith("allow");
+    } finally {
+      visibility.shownByHost = shown;
+    }
+  });
+
+  it("never arms Allow without a frame outside the app (a hidden browser tab)", () => {
+    const { root } = mountDialog();
+    wait(10_000);
+    expect(button(root, "Allow").disabled).toBe(true);
   });
 
   it("disarms Allow at once for the next ask, and arms it 500 ms after the next paint", () => {
