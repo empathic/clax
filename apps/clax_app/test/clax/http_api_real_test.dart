@@ -9,7 +9,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 /// [HttpClaxApi] against the real debug `clax` named by `CLAX_TEST_BIN`
 /// (`tool/test-bin.sh` prints one), started on a free port with a scratch
-/// home and stopped by its PID.
+/// home under the repository's `target/flutter-app/`, and stopped by its
+/// PID in a tear-down, which runs on a failure or a timeout too.
 void main() {
   final bin = Platform.environment['CLAX_TEST_BIN'];
 
@@ -18,167 +19,181 @@ void main() {
     () async {
       final d = await _Daemon.start(bin!);
       final api = HttpClaxApi(() => d.endpoint);
-      try {
-        final s = await api.registerAppSession(
-          installId: 'install-1',
-          pid: pid,
-          cwd: d.dir.path,
-        );
-        expect(s.harness, 'app');
-        final again = await api.registerAppSession(
-          installId: 'install-1',
-          pid: pid,
-          cwd: d.dir.path,
-        );
-        expect(
-          again.id,
-          s.id,
-          reason: 'the install ID finds the live row again',
-        );
+      addTearDown(api.close);
+      final s = await api.registerAppSession(
+        installId: 'install-1',
+        pid: pid,
+        cwd: d.dir.path,
+      );
+      expect(s.harness, 'app');
+      final again = await api.registerAppSession(
+        installId: 'install-1',
+        pid: pid,
+        cwd: d.dir.path,
+      );
+      expect(again.id, s.id, reason: 'the install ID finds the live row again');
 
-        final created = await api.createArtifact(
-          PublishRequest(
-            title: 'Runs',
-            capabilities: {'db': <String, Object?>{}},
-            files: {'index.html': '<p>one</p>', 'app.js': 'x()'},
-          ),
-        );
-        final aid = created.artifact.id;
-        expect(created.version.n, 1);
-        expect(created.artifact.ownerSessionId, s.id);
-        expect(created.version.sessionId, s.id);
+      final created = await api.createArtifact(
+        PublishRequest(
+          title: 'Runs',
+          capabilities: {'db': <String, Object?>{}},
+          files: {'index.html': '<p>one</p>', 'app.js': 'x()'},
+        ),
+      );
+      final aid = created.artifact.id;
+      expect(created.version.n, 1);
+      expect(created.artifact.ownerSessionId, s.id);
+      expect(created.version.sessionId, s.id);
 
-        final events = StreamIterator(
-          api.events(artifacts: [aid], types: ['version']),
-        );
-        expect(await events.moveNext(), isTrue);
-        expect(events.current.type, 'ready');
+      final events = StreamIterator(
+        api.events(artifacts: [aid], types: ['version']),
+      );
+      expect(await events.moveNext(), isTrue);
+      expect(events.current.type, 'ready');
 
-        final v2 = await api.publish(
+      final v2 = await api.publish(
+        aid,
+        PublishRequest(
+          ifVersion: 1,
+          files: {'index.html': '<p>two</p>', 'app.js': null},
+        ),
+      );
+      expect(v2.version.n, 2);
+      expect(v2.version.files.keys, ['index.html']);
+      expect(await events.moveNext(), isTrue);
+      expect((events.current.type, events.current.data['n']), ('version', 2));
+      await events.cancel();
+
+      await expectLater(
+        api.publish(
           aid,
-          PublishRequest(
-            ifVersion: 1,
-            files: {'index.html': '<p>two</p>', 'app.js': null},
+          PublishRequest(ifVersion: 1, files: {'index.html': '<p>stale</p>'}),
+        ),
+        throwsA(
+          isA<ClaxApiError>()
+              .having((e) => e.isConflict, 'conflict', isTrue)
+              .having((e) => e.current, 'current', 2),
+        ),
+      );
+
+      final detail = await api.getArtifact(aid);
+      expect(detail.versions.map((v) => v.n), [1, 2]);
+      expect(await api.readFiles(aid, 1), {
+        'index.html': '<p>one</p>',
+        'app.js': 'x()',
+      });
+      expect(await api.readFiles(aid, 2), {'index.html': '<p>two</p>'});
+      expect((await api.listArtifacts()).map((a) => a.id), contains(aid));
+
+      // The person comments and sends it, as the shell does (no token).
+      final tid = await d.viewerThread(aid, 2, 'make it blue');
+      await d.viewerSend(aid, tid);
+
+      final batch = await api.pollFeedback(
+        s.id,
+        wait: const Duration(seconds: 5),
+      );
+      final item = batch.items.single;
+      expect(
+        (item.artifactId, item.threadId, item.body, item.version),
+        (aid, tid, 'make it blue', 2),
+      );
+
+      // Taken by the poll and not yet answered: what a restarted worker re-runs.
+      var t = (await api.threads(aid)).single;
+      expect(t.sentToAgent, isTrue);
+      expect(t.feedbackState?.state, 'acknowledged');
+      expect(t.stranded, isTrue);
+      final all = await api.allThreads();
+      expect(all.single.threads.single.stranded, isTrue);
+
+      await api.setWorking(
+        aid,
+        on: true,
+        note: 'Making it blue',
+        threadIds: [tid],
+      );
+      await api.ackFeedback(s.id, [item.commentId]);
+      await api.replyAsAgent(aid, tid, 'Done: blue now.');
+      t = (await api.threads(aid)).single;
+      expect(t.comments.last.byAgent, isTrue);
+      expect(t.stranded, isFalse);
+      await api.resolveAsAgent(aid, tid);
+      t = (await api.threads(aid)).single;
+      expect(t.status, 'resolved');
+      expect(t.resolvedBy, 'agent:app');
+      await api.setWorking(aid, on: false);
+      expect(await api.clip(aid, tid), isNull);
+
+      await api.batchDocs(aid, const [
+        DocWrite(op: 'set', collection: 'runs', docId: 'r1', data: {'km': 5}),
+        DocWrite(op: 'set', collection: 'runs', docId: 'r2', data: {'km': 7}),
+      ]);
+      final r1 = (await api.getDoc(aid, 'runs/r1'))!;
+      expect(r1.data, {'km': 5});
+      await api.batchDocs(aid, [
+        DocWrite(
+          op: 'update',
+          collection: 'runs',
+          docId: 'r1',
+          data: {'unit': 'km'},
+          ifVersion: r1.version,
+        ),
+      ]);
+      expect((await api.getDoc(aid, 'runs/r1'))!.data, {'km': 5, 'unit': 'km'});
+      expect(await api.getDoc(aid, 'runs/none'), isNull);
+      expect((await api.listDocs(aid, 'runs')).map((x) => x.id), ['r1', 'r2']);
+      await expectLater(
+        api.batchDocs(aid, const [
+          DocWrite(op: 'set', collection: 'runs', docId: 'r2', data: {}),
+        ]),
+        throwsA(
+          isA<ClaxApiError>().having(
+            (e) => e.code,
+            'code',
+            'if_version_required',
           ),
-        );
-        expect(v2.version.n, 2);
-        expect(v2.version.files.keys, ['index.html']);
-        expect(await events.moveNext(), isTrue);
-        expect((events.current.type, events.current.data['n']), ('version', 2));
-        await events.cancel();
+        ),
+      );
 
-        await expectLater(
-          api.publish(
-            aid,
-            PublishRequest(ifVersion: 1, files: {'index.html': '<p>stale</p>'}),
+      // Restoring version 1 brings back its files as version 3, with the
+      // documents and the capability declaration untouched.
+      final restored = await api.restoreVersion(aid, 1, ifVersion: 2);
+      expect(restored.version.n, 3);
+      expect(restored.version.label, 'Restored v1');
+      expect(restored.version.files.keys.toSet(), {'index.html', 'app.js'});
+      expect(await api.readFiles(aid, 3), {
+        'index.html': '<p>one</p>',
+        'app.js': 'x()',
+      });
+      expect((await api.getDoc(aid, 'runs/r1'))!.data, {'km': 5, 'unit': 'km'});
+      expect((await api.getArtifact(aid)).artifact.capabilities, {
+        'db': <String, Object?>{},
+      });
+      await expectLater(
+        api.restoreVersion(aid, 1, ifVersion: 2),
+        throwsA(
+          isA<ClaxApiError>()
+              .having((e) => e.isConflict, 'conflict', isTrue)
+              .having((e) => e.current, 'current', 3),
+        ),
+      );
+      await expectLater(
+        api.restoreVersion(aid, 9, ifVersion: 3),
+        throwsA(isA<ClaxApiError>().having((e) => e.isNotFound, '404', isTrue)),
+      );
+      expect((await api.getArtifact(aid)).versions, hasLength(3));
+
+      await expectLater(
+        api.pollFeedback('01J9NOSUCHSESSION0000000000'),
+        throwsA(
+          isA<ClaxApiError>().having(
+            (e) => e.isUnknownSession,
+            'unknown',
+            isTrue,
           ),
-          throwsA(
-            isA<ClaxApiError>()
-                .having((e) => e.isConflict, 'conflict', isTrue)
-                .having((e) => e.current, 'current', 2),
-          ),
-        );
-
-        final detail = await api.getArtifact(aid);
-        expect(detail.versions.map((v) => v.n), [1, 2]);
-        expect(await api.readFiles(aid, 1), {
-          'index.html': '<p>one</p>',
-          'app.js': 'x()',
-        });
-        expect(await api.readFiles(aid, 2), {'index.html': '<p>two</p>'});
-        expect((await api.listArtifacts()).map((a) => a.id), contains(aid));
-
-        // The person comments and sends it, as the shell does (no token).
-        final tid = await d.viewerThread(aid, 2, 'make it blue');
-        await d.viewerSend(aid, tid);
-
-        final batch = await api.pollFeedback(
-          s.id,
-          wait: const Duration(seconds: 5),
-        );
-        final item = batch.items.single;
-        expect(
-          (item.artifactId, item.threadId, item.body, item.version),
-          (aid, tid, 'make it blue', 2),
-        );
-
-        // Taken by the poll and not yet answered: what a restarted worker re-runs.
-        var t = (await api.threads(aid)).single;
-        expect(t.sentToAgent, isTrue);
-        expect(t.feedbackState?.state, 'acknowledged');
-        expect(t.stranded, isTrue);
-        final all = await api.allThreads();
-        expect(all.single.threads.single.stranded, isTrue);
-
-        await api.setWorking(
-          aid,
-          on: true,
-          note: 'Making it blue',
-          threadIds: [tid],
-        );
-        await api.ackFeedback(s.id, [item.commentId]);
-        await api.replyAsAgent(aid, tid, 'Done: blue now.');
-        t = (await api.threads(aid)).single;
-        expect(t.comments.last.byAgent, isTrue);
-        expect(t.stranded, isFalse);
-        await api.resolveAsAgent(aid, tid);
-        t = (await api.threads(aid)).single;
-        expect(t.status, 'resolved');
-        expect(t.resolvedBy, 'agent:app');
-        await api.setWorking(aid, on: false);
-        expect(await api.clip(aid, tid), isNull);
-
-        await api.batchDocs(aid, const [
-          DocWrite(op: 'set', collection: 'runs', docId: 'r1', data: {'km': 5}),
-          DocWrite(op: 'set', collection: 'runs', docId: 'r2', data: {'km': 7}),
-        ]);
-        final r1 = (await api.getDoc(aid, 'runs/r1'))!;
-        expect(r1.data, {'km': 5});
-        await api.batchDocs(aid, [
-          DocWrite(
-            op: 'update',
-            collection: 'runs',
-            docId: 'r1',
-            data: {'unit': 'km'},
-            ifVersion: r1.version,
-          ),
-        ]);
-        expect((await api.getDoc(aid, 'runs/r1'))!.data, {
-          'km': 5,
-          'unit': 'km',
-        });
-        expect(await api.getDoc(aid, 'runs/none'), isNull);
-        expect((await api.listDocs(aid, 'runs')).map((x) => x.id), [
-          'r1',
-          'r2',
-        ]);
-        await expectLater(
-          api.batchDocs(aid, const [
-            DocWrite(op: 'set', collection: 'runs', docId: 'r2', data: {}),
-          ]),
-          throwsA(
-            isA<ClaxApiError>().having(
-              (e) => e.code,
-              'code',
-              'if_version_required',
-            ),
-          ),
-        );
-
-        await expectLater(
-          api.pollFeedback('01J9NOSUCHSESSION0000000000'),
-          throwsA(
-            isA<ClaxApiError>().having(
-              (e) => e.isUnknownSession,
-              'unknown',
-              isTrue,
-            ),
-          ),
-        );
-      } finally {
-        api.close();
-        await d.stop();
-      }
+        ),
+      );
     },
     skip: bin == null ? 'CLAX_TEST_BIN is not set' : false,
     // macOS assesses a new executable on its first run, which can take a while.
@@ -195,7 +210,13 @@ class _Daemon {
   final DaemonEndpoint endpoint;
 
   static Future<_Daemon> start(String bin) async {
-    final dir = Directory.systemTemp.createTempSync('clax-api-real-');
+    final scratch = Directory(
+      '${Directory.current.path}/../../target/flutter-app',
+    )..createSync(recursive: true);
+    final dir = scratch.createTempSync('clax-api-real-');
+    addTearDown(() {
+      if (dir.existsSync()) dir.deleteSync(recursive: true);
+    });
     final home = Directory('${dir.path}/clax-home')..createSync();
     final probe = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
     final port = probe.port;
@@ -213,6 +234,8 @@ class _Daemon {
       includeParentEnvironment: false,
       workingDirectory: dir.path,
     );
+    // Registered before anything else can fail, and run on a timeout too.
+    addTearDown(() => _stop(p));
     unawaited(p.stdout.drain<void>());
     final stderr = StringBuffer();
     p.stderr.transform(utf8.decoder).listen(stderr.write);
@@ -254,12 +277,15 @@ class _Daemon {
             }
           } on FormatException catch (_) {
             // Written but not yet complete.
-          } on SocketException catch (_) {
-            // Not listening yet.
+          } on IOException catch (_) {
+            // Not listening yet, or the connection dropped mid-answer.
           }
         }
         await Future<void>.delayed(const Duration(milliseconds: 50));
       }
+    } on Object {
+      p.kill(ProcessSignal.sigkill);
+      rethrow;
     } finally {
       client.close(force: true);
     }
@@ -332,16 +358,15 @@ class _Daemon {
     }
   }
 
-  Future<void> stop() async {
-    process.kill(ProcessSignal.sigterm);
-    final code = await process.exitCode.timeout(
+  /// SIGTERM, then SIGKILL when [p] has not exited within 10 s.
+  static Future<void> _stop(Process p) async {
+    p.kill(ProcessSignal.sigterm);
+    await p.exitCode.timeout(
       const Duration(seconds: 10),
       onTimeout: () {
-        process.kill(ProcessSignal.sigkill);
-        return process.exitCode;
+        p.kill(ProcessSignal.sigkill);
+        return p.exitCode;
       },
     );
-    expect(code, isNotNull);
-    dir.deleteSync(recursive: true);
   }
 }

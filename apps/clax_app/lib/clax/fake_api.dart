@@ -21,9 +21,12 @@ class FakeCall {
 ///
 /// It keeps the daemon's rules that callers depend on: a publish or restore
 /// whose `ifVersion` is not the current version is 409 `conflict` with
-/// `current`; a create needs a title and `index.html`; agent replies and
-/// resolves need a registered session and a sent thread; a document write
-/// to an existing document needs its version. Every call is appended to
+/// `current`; a create needs a title and `index.html`; creates,
+/// publishes, agent replies, resolves and working marks need a registered
+/// session ([StateError] without one, `unknown_session` once it ended), and
+/// replies and resolves a sent thread; a document write to an existing
+/// document needs its version; [events] opens with `ready`. Every call is
+/// appended to
 /// [calls] before it runs. [failNext] makes the next call of a method
 /// throw instead.
 ///
@@ -224,6 +227,7 @@ class FakeClaxApi implements ClaxApi {
   @override
   Future<PublishResult> createArtifact(PublishRequest r) async {
     _call('createArtifact', {'request': r, 'session': sessionId});
+    _liveSession(_needSession());
     final title = r.title?.trim() ?? '';
     if (title.isEmpty) throw _invalid('invalid_args', 'title is required');
     final files = {
@@ -250,8 +254,9 @@ class FakeClaxApi implements ClaxApi {
   @override
   Future<PublishResult> publish(String aid, PublishRequest r) async {
     _call('publish', {'aid': aid, 'request': r, 'session': sessionId});
-    final a = _artifact(aid);
     if (r.ifVersion == null) throw ArgumentError('a publish needs ifVersion');
+    _liveSession(_needSession());
+    final a = _artifact(aid);
     _checkVersion(a, r.ifVersion!);
     for (final t in r.addresses) {
       if (!a.threads.containsKey(t)) {
@@ -412,9 +417,9 @@ class FakeClaxApi implements ClaxApi {
   @override
   Future<Uint8List?> clip(String aid, String tid) async {
     _call('clip', {'aid': aid, 'tid': tid});
-    final t = _artifact(aid).threads[tid];
-    if (t == null) throw _notFound();
-    return t.clip;
+    // The daemon answers 404 alike for an unknown artifact or thread and
+    // for no clip, and the client reads each as null.
+    return _artifacts[aid]?.threads[tid]?.clip;
   }
 
   @override
@@ -523,11 +528,29 @@ class FakeClaxApi implements ClaxApi {
   @override
   Stream<ClaxEvent> events({List<String>? artifacts, List<String>? types}) {
     _call('events', {'artifacts': artifacts, 'types': types});
-    return _events.stream.where(
-      (e) =>
-          (artifacts == null || artifacts.contains(e.data['artifact_id'])) &&
-          (types == null || types.contains(e.type)),
+    // Each listener's stream opens with `ready`, as the daemon's does, and
+    // `ready` and `resync` pass every filter.
+    late StreamController<ClaxEvent> out;
+    StreamSubscription<ClaxEvent>? sub;
+    out = StreamController<ClaxEvent>(
+      onListen: () {
+        out.add(const ClaxEvent(type: 'ready', data: {'resumed': false}));
+        sub = _events.stream
+            .where(
+              (e) =>
+                  e.type == 'ready' ||
+                  e.type == 'resync' ||
+                  ((artifacts == null ||
+                          artifacts.contains(e.data['artifact_id'])) &&
+                      (types == null || types.contains(e.type))),
+            )
+            .listen(out.add);
+      },
+      onPause: () => sub?.pause(),
+      onResume: () => sub?.resume(),
+      onCancel: () => sub?.cancel(),
     );
+    return out.stream;
   }
 
   // --- internals ---
@@ -587,7 +610,16 @@ class FakeClaxApi implements ClaxApi {
     final v = a.versions.last.info;
     if (sessionId != null) working.remove(a.id);
     _events.add(
-      ClaxEvent(type: 'version', data: {'artifact_id': a.id, 'n': v.n}),
+      ClaxEvent(
+        type: 'version',
+        data: {
+          'type': 'version',
+          'artifact_id': a.id,
+          'n': v.n,
+          'by_page': false,
+          'title': a.title,
+        },
+      ),
     );
     return PublishResult(
       artifact: a.summary(_now()),

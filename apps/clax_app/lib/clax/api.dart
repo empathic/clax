@@ -23,11 +23,13 @@ abstract interface class ClaxApi {
   Future<Map<String, String>> readFiles(String aid, int n);
 
   /// Creates an artifact as the app session; [r] needs a title and
-  /// `index.html`.
+  /// `index.html`. Without a registered session it throws [StateError]
+  /// before any request; an ended one is `unknown_session`.
   Future<PublishResult> createArtifact(PublishRequest r);
 
   /// Publishes a new version as the app session. `r.ifVersion` is required;
-  /// a stale one is 409 `conflict` with `current`.
+  /// a stale one is 409 `conflict` with `current`. The session rules are
+  /// [createArtifact]'s.
   Future<PublishResult> publish(String aid, PublishRequest r);
 
   /// `POST versions:restore`: republishes version [n]'s files as a new
@@ -64,7 +66,8 @@ abstract interface class ClaxApi {
   Future<void> resolveAsAgent(String aid, String tid);
 
   /// Marks the app session working on [aid] (with [note] and the threads
-  /// [threadIds] when given), or clears the mark when [on] is false.
+  /// [threadIds] when given), or clears the mark when [on] is false. An
+  /// unknown artifact is `not_found`; an ended session `unknown_session`.
   Future<void> setWorking(
     String aid, {
     required bool on,
@@ -72,7 +75,9 @@ abstract interface class ClaxApi {
     List<String>? threadIds,
   });
 
-  /// The PNG clip of thread [tid], or null when it has none.
+  /// The PNG clip of thread [tid], or null when it has none. The daemon
+  /// answers an unknown thread or artifact the same way, so those are null
+  /// too.
   Future<Uint8List?> clip(String aid, String tid);
 
   /// The first [limit] documents of [collection].
@@ -84,7 +89,8 @@ abstract interface class ClaxApi {
   /// Applies [writes] atomically, at the owner's level.
   Future<void> batchDocs(String aid, List<DocWrite> writes);
 
-  /// The document at [path] (`<collection>/<id>`), or null when there is none.
+  /// The document at [path] (`<collection>/<id>`), or null when there is
+  /// none. An unknown artifact is [ClaxApiError] `not_found`.
   Future<Doc?> getDoc(String aid, String path);
 
   /// Every thread of the artifact, resolved ones included, oldest first.
