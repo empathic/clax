@@ -36,6 +36,11 @@ abstract interface class BackgroundWork {
 
   /// Artifact IDs of notifications tapped while the app runs.
   Stream<String> get opened;
+
+  /// An event each time the service stopped on its own: its start was
+  /// refused, the system's time limit for it was spent, or the app's task
+  /// was removed.
+  Stream<void> get stopped;
 }
 
 /// [BackgroundWork] where there is none (macOS, tests): nothing runs and
@@ -63,6 +68,8 @@ class NoBackgroundWork implements BackgroundWork {
   Future<String?> launchArtifact() async => null;
   @override
   Stream<String> get opened => const Stream.empty();
+  @override
+  Stream<void> get stopped => const Stream.empty();
 }
 
 /// [BackgroundWork] over the `dev.empathic.clax/background` channel, which
@@ -72,7 +79,7 @@ class NoBackgroundWork implements BackgroundWork {
 /// `stop`, `ready` {title, text, artifact}, `failed` {title, text,
 /// artifact?}, `requestPermission` → bool, `launchArtifact` → String?.
 /// Platform to Dart: `opened` {artifact} when a notification is tapped
-/// while the app runs.
+/// while the app runs, and `stopped` when the service stopped on its own.
 class ChannelBackgroundWork implements BackgroundWork {
   ChannelBackgroundWork({this._channel = const MethodChannel(channelName)}) {
     _channel.setMethodCallHandler(_onCall);
@@ -82,6 +89,7 @@ class ChannelBackgroundWork implements BackgroundWork {
 
   final MethodChannel _channel;
   final _opened = StreamController<String>.broadcast();
+  final _stoppedEvents = StreamController<void>.broadcast();
 
   Future<Object?> _onCall(MethodCall call) async {
     switch (call) {
@@ -90,6 +98,8 @@ class ChannelBackgroundWork implements BackgroundWork {
         arguments: {'artifact': final String aid},
       ):
         _opened.add(aid);
+      case MethodCall(method: 'stopped'):
+        _stoppedEvents.add(null);
     }
     return null;
   }
@@ -140,6 +150,9 @@ class ChannelBackgroundWork implements BackgroundWork {
 
   @override
   Stream<String> get opened => _opened.stream;
+
+  @override
+  Stream<void> get stopped => _stoppedEvents.stream;
 }
 
 /// One run [BackgroundRuns.begin] is showing.
@@ -189,15 +202,31 @@ final class RunQuiet extends RunEnd {
 /// failed while the app is not in the foreground ([foreground] false) posts
 /// that news; in the foreground the screen already shows it.
 ///
+/// The service may not be running while runs are: its start was refused
+/// (Clax was in the background), or it stopped on its own
+/// ([BackgroundWork.stopped]). The next [begin], or [onForeground] while
+/// runs go on, starts it again.
+///
 /// Progress hook: a run's step text comes from [step]; any source of steps
 /// (the making screen's stages, the agent's streamed steps) calls it with
 /// the run's handle.
 class BackgroundRuns {
-  BackgroundRuns(this._work, {required this._foreground});
+  BackgroundRuns(this._work, {required this._foreground}) {
+    _stopped = _work.stopped.listen((_) => _down());
+  }
 
   final BackgroundWork _work;
   final bool Function() _foreground;
   final _active = <BackgroundRun>[];
+  late final StreamSubscription<void> _stopped;
+
+  /// Whether the service was asked to run and has not been refused or
+  /// stopped since.
+  var _service = false;
+
+  /// Bumped at every start and stop, so a late answer to an older start
+  /// changes nothing.
+  var _generation = 0;
 
   /// Whether any run is going.
   bool get busy => _active.isNotEmpty;
@@ -206,10 +235,10 @@ class BackgroundRuns {
   BackgroundRun begin(String title, String step) {
     final run = BackgroundRun._(title, step);
     _active.add(run);
-    if (_active.length == 1) {
-      unawaited(_work.start(title, step));
-    } else {
+    if (_service) {
       unawaited(_work.update(title, step));
+    } else {
+      _start(run);
     }
     return run;
   }
@@ -222,7 +251,7 @@ class BackgroundRuns {
     }
     run.step = text;
     run.title = title ?? run.title;
-    if (identical(_active.last, run)) {
+    if (_service && identical(_active.last, run)) {
       unawaited(_work.update(run.title, text));
     }
   }
@@ -234,8 +263,9 @@ class BackgroundRuns {
     final wasShown = identical(_active.last, run);
     _active.remove(run);
     if (_active.isEmpty) {
+      _down();
       unawaited(_work.stop());
-    } else if (wasShown) {
+    } else if (wasShown && _service) {
       unawaited(_work.update(_active.last.title, _active.last.step));
     }
     if (_foreground()) return;
@@ -247,5 +277,29 @@ class BackgroundRuns {
       case RunQuiet():
         break;
     }
+  }
+
+  /// Clax came to the foreground: starts the service again when runs go
+  /// on without it.
+  void onForeground() {
+    if (busy && !_service) _start(_active.last);
+  }
+
+  /// Stops following the service's stops.
+  void dispose() => unawaited(_stopped.cancel());
+
+  void _start(BackgroundRun run) {
+    _service = true;
+    final generation = ++_generation;
+    unawaited(
+      _work.start(run.title, run.step).then((started) {
+        if (!started && generation == _generation) _service = false;
+      }),
+    );
+  }
+
+  void _down() {
+    _service = false;
+    _generation++;
   }
 }

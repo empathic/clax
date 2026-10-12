@@ -15,9 +15,10 @@ import io.flutter.plugin.common.MethodChannel
  * `lib/platform/background_work.dart`:
  *
  * - `start` {title, text} starts [BackgroundRunService] and answers whether
- *   it started (Android refuses a foreground service started from the
+ *   it was sent (Android refuses a foreground service started from the
  *   background); `update` {title, text} changes its notification; `stop`
- *   stops it.
+ *   stops it through the service's own command queue, so a stop right
+ *   after a start never overtakes it.
  * - `ready` and `failed` {title, text, artifact?} post a notice that opens
  *   the app on that artifact.
  * - `requestPermission` asks for POST_NOTIFICATIONS once per install and
@@ -26,7 +27,8 @@ import io.flutter.plugin.common.MethodChannel
  *   launched the activity.
  *
  * It calls `opened` {artifact} when a notice is tapped while the activity
- * runs ([onNewIntent]).
+ * runs ([onNewIntent]), and `stopped` when the service stopped on its own
+ * (see [BackgroundRunService]).
  */
 class BackgroundWorkChannel(private val activity: Activity, messenger: BinaryMessenger) :
     MethodChannel.MethodCallHandler {
@@ -36,6 +38,7 @@ class BackgroundWorkChannel(private val activity: Activity, messenger: BinaryMes
 
     init {
         channel.setMethodCallHandler(this)
+        BackgroundRunService.onStopped = { channel.invokeMethod("stopped", null) }
         // A launch from recents redelivers the old intent; it opens nothing.
         if (activity.intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) {
             launchArtifact = null
@@ -71,7 +74,13 @@ class BackgroundWorkChannel(private val activity: Activity, messenger: BinaryMes
                 result.success(null)
             }
             "stop" -> {
-                activity.stopService(Intent(activity, BackgroundRunService::class.java))
+                val service = Intent(activity, BackgroundRunService::class.java)
+                try {
+                    activity.startService(service.setAction(BackgroundRunService.ACTION_STOP))
+                } catch (e: IllegalStateException) {
+                    // In the background with no service running: nothing to stop.
+                    activity.stopService(Intent(activity, BackgroundRunService::class.java))
+                }
                 result.success(null)
             }
             "ready", "failed" -> {

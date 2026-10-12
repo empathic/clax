@@ -8,10 +8,17 @@ import 'package:flutter_test/flutter_test.dart';
 class RecordingWork implements BackgroundWork {
   final calls = <String>[];
 
+  /// What the next starts answer.
+  var starts = true;
+  final stops = StreamController<void>.broadcast();
+
+  @override
+  Stream<void> get stopped => stops.stream;
+
   @override
   Future<bool> start(String title, String step) async {
     calls.add('start($title, $step)');
-    return true;
+    return starts;
   }
 
   @override
@@ -110,6 +117,69 @@ void main() {
     });
   });
 
+  group('BackgroundRuns and the service', () {
+    test('a refused start is tried again by the next run', () async {
+      final w = RecordingWork()..starts = false;
+      final runs = BackgroundRuns(w, foreground: () => true);
+      final a = runs.begin('A', 's');
+      await pumpEventQueue();
+      runs.step(a, 's2'); // no service: nothing to update
+      w.starts = true;
+      runs.begin('B', 's');
+      expect(w.calls, ['start(A, s)', 'start(B, s)']);
+    });
+
+    test('coming to the foreground restarts a refused service while runs '
+        'go on', () async {
+      final w = RecordingWork()..starts = false;
+      final runs = BackgroundRuns(w, foreground: () => true);
+      final a = runs.begin('A', 's');
+      await pumpEventQueue();
+      w.starts = true;
+      runs.onForeground();
+      await pumpEventQueue();
+      runs.onForeground(); // already running: nothing
+      runs.step(a, 's2');
+      runs.end(a, const RunQuiet());
+      runs.onForeground(); // nothing runs: nothing
+      expect(w.calls, ['start(A, s)', 'start(A, s)', 'update(A, s2)', 'stop']);
+    });
+
+    test('a service that stopped on its own is started again', () async {
+      final w = RecordingWork();
+      final runs = BackgroundRuns(w, foreground: () => true);
+      final a = runs.begin('A', 's');
+      await pumpEventQueue();
+      w.stops.add(null);
+      await pumpEventQueue();
+      runs.step(a, 's2');
+      runs.begin('B', 's');
+      expect(w.calls, ['start(A, s)', 'start(B, s)']);
+    });
+
+    test('a late refusal of an older start does not mark a newer one '
+        'down', () async {
+      final w = RecordingWork();
+      final gate = Completer<bool>();
+      var first = true;
+      final runs = BackgroundRuns(
+        _GatedStart(w, () {
+          if (!first) return Future.value(true);
+          first = false;
+          return gate.future;
+        }),
+        foreground: () => true,
+      );
+      final a = runs.begin('A', 's');
+      runs.end(a, const RunQuiet());
+      final b = runs.begin('B', 's');
+      gate.complete(false);
+      await pumpEventQueue();
+      runs.step(b, 's2');
+      expect(w.calls, ['start(A, s)', 'stop', 'start(B, s)', 'update(B, s2)']);
+    });
+  });
+
   group('ChannelBackgroundWork', () {
     late List<MethodCall> calls;
     setUp(() {
@@ -164,6 +234,22 @@ void main() {
       await sub.cancel();
     });
 
+    test('a stop by the service arrives on stopped', () async {
+      final w = ChannelBackgroundWork();
+      var stops = 0;
+      final sub = w.stopped.listen((_) => stops++);
+      await messenger.handlePlatformMessage(
+        ChannelBackgroundWork.channelName,
+        const StandardMethodCodec().encodeMethodCall(
+          const MethodCall('stopped'),
+        ),
+        (_) {},
+      );
+      await pumpEventQueue();
+      expect(stops, 1);
+      await sub.cancel();
+    });
+
     test('a platform without the channel answers false and null', () async {
       messenger.setMockMethodCallHandler(channel, null);
       final w = ChannelBackgroundWork();
@@ -181,4 +267,36 @@ void main() {
       expect(await ChannelBackgroundWork().start('T', 'S'), isFalse);
     });
   });
+}
+
+/// [RecordingWork] whose start answers [answer] instead.
+class _GatedStart implements BackgroundWork {
+  _GatedStart(this.inner, this.answer);
+  final RecordingWork inner;
+  final Future<bool> Function() answer;
+
+  @override
+  Future<bool> start(String title, String step) {
+    inner.calls.add('start($title, $step)');
+    return answer();
+  }
+
+  @override
+  Future<void> update(String title, String step) => inner.update(title, step);
+  @override
+  Future<void> stop() => inner.stop();
+  @override
+  Future<void> ready(String title, String text, String artifactId) =>
+      inner.ready(title, text, artifactId);
+  @override
+  Future<void> failed(String title, String reason, {String? artifactId}) =>
+      inner.failed(title, reason, artifactId: artifactId);
+  @override
+  Future<bool> requestPermission() => inner.requestPermission();
+  @override
+  Future<String?> launchArtifact() => inner.launchArtifact();
+  @override
+  Stream<String> get opened => inner.opened;
+  @override
+  Stream<void> get stopped => inner.stopped;
 }
