@@ -6,6 +6,7 @@ import 'package:clax_app/agent/backend.dart';
 import 'package:clax_app/agent/claude_cli_backend.dart';
 import 'package:clax_app/agent/edit_result.dart';
 import 'package:clax_app/agent/edit_schema.dart';
+import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/request.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -435,6 +436,241 @@ void main() {
     expect(e.message, contains('no-such-claude'));
     expect(e.retryable, isFalse);
     expect(scratch.listSync(), isEmpty);
+  });
+
+  group('streaming', () {
+    late List<AgentProgress> events;
+    setUp(() => events = []);
+
+    AgentRequest streamed({Future<void>? cancelled, ProgressSink? sink}) =>
+        AgentRequest(
+          kind: request.kind,
+          model: request.model,
+          systemPrompt: request.systemPrompt,
+          userText: request.userText,
+          cancelled: cancelled,
+          onProgress: sink ?? events.add,
+        );
+
+    /// One stream-json line wrapping a Messages API stream [event].
+    Map<String, Object?> line(Map<String, Object?> event) => {
+      'type': 'stream_event',
+      'event': event,
+      'session_id': 'f00d',
+      'parent_tool_use_id': null,
+    };
+
+    /// The stream-json lines of a turn whose result JSON arrives in
+    /// [pieces], as a text block or as a StructuredOutput tool's input.
+    List<Map<String, Object?>> turn(List<String> pieces, {bool tool = false}) =>
+        [
+          line({
+            'type': 'message_start',
+            'message': {
+              'id': 'msg_1',
+              'content': <Object?>[],
+              'usage': {'input_tokens': 9, 'output_tokens': 1},
+            },
+          }),
+          line({
+            'type': 'content_block_start',
+            'index': 0,
+            'content_block': tool
+                ? {
+                    'type': 'tool_use',
+                    'id': 'toolu_1',
+                    'name': 'StructuredOutput',
+                    'input': <String, Object?>{},
+                  }
+                : {'type': 'text', 'text': ''},
+          }),
+          for (final p in pieces)
+            line({
+              'type': 'content_block_delta',
+              'index': 0,
+              'delta': tool
+                  ? {'type': 'input_json_delta', 'partial_json': p}
+                  : {'type': 'text_delta', 'text': p},
+            }),
+          line({'type': 'content_block_stop', 'index': 0}),
+          line({
+            'type': 'message_delta',
+            'delta': {'stop_reason': tool ? 'tool_use' : 'end_turn'},
+            'usage': {'output_tokens': 77},
+          }),
+          line({'type': 'message_stop'}),
+        ];
+
+    String lines(List<Object> items) =>
+        [for (final i in items) i is String ? i : jsonEncode(i)]
+            .map((l) => '$l\n')
+            .join();
+
+    String file(String name, String text) =>
+        (File('${tmp.path}/$name')..writeAsStringSync(text)).path;
+
+    List<String> pieces(String text, int size) => [
+      for (var i = 0; i < text.length; i += size)
+        text.substring(i, (i + size).clamp(0, text.length)),
+    ];
+
+    final page = '<!doctype html><title>Runs — "x"</title>${'z' * 600}';
+    Map<String, Object?> result() => {
+      ...resultJson(),
+      'files': [
+        {'path': 'index.html', 'content': page},
+      ],
+    };
+
+    test('asks for stream-json with partial messages', () async {
+      final (b, _) = backend({
+        'FAKE_CLAUDE_OUT': out(lines([cliOutput(structured: result())])),
+      });
+      await b.run(streamed());
+      final args = File(log).readAsLinesSync();
+      expect(args, [
+        '-p',
+        '--output-format',
+        'stream-json',
+        '--verbose',
+        '--include-partial-messages',
+        '--json-schema',
+        jsonEncode(editSchema),
+        '--tools',
+        '',
+        '--system-prompt-file',
+        args[10],
+        '--model',
+        'claude-haiku-5-5',
+        '--effort',
+        'low',
+        '--no-session-persistence',
+        '--strict-mcp-config',
+        '--safe-mode',
+      ]);
+    });
+
+    for (final tool in [false, true]) {
+      test('reports the partial page from ${tool ? 'tool input' : 'text'} '
+          'deltas and returns the result line\'s result', () async {
+        final (b, _) = backend({
+          'FAKE_CLAUDE_OUT': out(
+            lines([
+              {'type': 'system', 'subtype': 'init', 'session_id': 'f00d'},
+              ...turn(pieces(jsonEncode(result()), 5), tool: tool),
+              'not json at all',
+              {'type': 'assistant', 'message': <String, Object?>{}},
+              cliOutput(structured: result()),
+            ]),
+          ),
+        });
+        final r = await b.run(streamed());
+        expect(r.toJson(), result());
+        final texts = [
+          for (final e in events)
+            if (e case PartialFile(:final path, :final text))
+              if (path == 'index.html') text,
+        ];
+        expect(texts.length, greaterThan(1));
+        expect(texts.last, page);
+        for (var i = 1; i < texts.length; i++) {
+          expect(texts[i].startsWith(texts[i - 1]), isTrue);
+        }
+        expect(events.whereType<OutputTokens>().map((e) => e.count), [1, 77]);
+      });
+    }
+
+    test('progress arrives while claude is still running', () async {
+      final ready = await fifo('ready');
+      final block = await fifo('block');
+      final (b, starter) = backend({
+        'FAKE_CLAUDE_EARLY': file(
+          'early',
+          lines(turn(pieces(jsonEncode(result()), 50)).sublist(0, 10)),
+        ),
+        'FAKE_CLAUDE_READY': ready,
+        'FAKE_CLAUDE_BLOCK': block,
+        'FAKE_CLAUDE_OUT': out(lines([cliOutput(structured: result())])),
+      });
+      final partial = Completer<void>();
+      final run = b.run(
+        streamed(
+          sink: (e) {
+            events.add(e);
+            if (e is PartialFile && !partial.isCompleted) partial.complete();
+          },
+        ),
+      );
+      await readyLine(ready);
+      await partial.future;
+      var exited = false;
+      unawaited(starter.processes.single.exitCode.then((_) => exited = true));
+      await pumpEventQueue();
+      expect(exited, isFalse);
+      File(block).writeAsStringSync('go\n');
+      final r = await run;
+      expect(r.files.single.content, page);
+    });
+
+    test('an is_error result line is an AgentError carrying result', () async {
+      final (b, _) = backend({
+        'FAKE_CLAUDE_OUT': out(
+          lines([cliOutput(isError: true, result: 'Credit balance too low')]),
+        ),
+        'FAKE_CLAUDE_EXIT': '1',
+      });
+      final e = await fails(b.run(streamed()));
+      expect(e.message, contains('Credit balance too low'));
+    });
+
+    test('a stream without a result line is a retryable AgentError', () async {
+      final (b, _) = backend({
+        'FAKE_CLAUDE_OUT': out(lines(turn(['{"reply":']))),
+      });
+      final e = await fails(b.run(streamed()));
+      expect(e.retryable, isTrue);
+      expect(e.message, contains('not JSON'));
+    });
+
+    test('a claude without streaming is run again without it', () async {
+      final (b, starter) = backend({
+        'FAKE_CLAUDE_NO_STREAM': '1',
+        'FAKE_CLAUDE_OUT': out(cliOutput(structured: result())),
+      });
+      final r = await b.run(streamed());
+      expect(r.files.single.content, page);
+      expect(starter.processes, hasLength(2));
+      final args = File(log).readAsLinesSync();
+      expect(args.sublist(0, 3), ['-p', '--output-format', 'json']);
+      expect(args, isNot(contains('--include-partial-messages')));
+      expect(events, isEmpty);
+      expect(scratch.listSync(), isEmpty);
+    });
+
+    test(
+      'cancelling mid-stream terminates claude and stops progress',
+      () async {
+        final ready = await fifo('ready');
+        final (b, starter) = backend({
+          'FAKE_CLAUDE_EARLY': file(
+            'early',
+            lines(turn(pieces(jsonEncode(result()), 50)).sublist(0, 10)),
+          ),
+          'FAKE_CLAUDE_READY': ready,
+          'FAKE_CLAUDE_BLOCK': await fifo('block'),
+        });
+        final cancel = Completer<void>();
+        final run = fails(b.run(streamed(cancelled: cancel.future)));
+        await readyLine(ready);
+        cancel.complete();
+        final e = await run;
+        expect(e.kind, AgentErrorKind.cancelled);
+        expect(starter.signals, [ProcessSignal.sigterm]);
+        final seen = events.length;
+        await pumpEventQueue();
+        expect(events, hasLength(seen));
+      },
+    );
   });
 
   group('find', () {

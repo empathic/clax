@@ -9,6 +9,11 @@
 #                       "$FAKE_CLAUDE_LOG.system"; the working directory
 #                       goes to "$FAKE_CLAUDE_LOG.cwd" and the environment
 #                       to "$FAKE_CLAUDE_LOG.env".
+#   FAKE_CLAUDE_NO_STREAM  when 1 and --include-partial-messages is among
+#                       the arguments, fail as a claude without streaming
+#                       would: an unknown-option error on stderr, status 1.
+#   FAKE_CLAUDE_EARLY   a file printed to stdout before FAKE_CLAUDE_READY
+#                       and FAKE_CLAUDE_BLOCK, as the start of a stream.
 #   FAKE_CLAUDE_IGNORE_TERM  when 1, SIGTERM is ignored.
 #   FAKE_CLAUDE_READY   a FIFO: after logging (and the trap), write a line to
 #                       it, so a test knows the fixture is about to block.
@@ -21,7 +26,9 @@ log="${FAKE_CLAUDE_LOG:-/dev/null}"
 : > "$log"
 system=""
 want_system=0
+partial=0
 for a in "$@"; do
+  if [ "$a" = "--include-partial-messages" ]; then partial=1; fi
   printf '%s\n' "$a" >> "$log"
   if [ "$want_system" = 1 ]; then system="$a"; want_system=0; fi
   if [ "$a" = "--system-prompt-file" ]; then want_system=1; fi
@@ -34,6 +41,11 @@ if [ "$log" != /dev/null ]; then
 else
   cat > /dev/null
 fi
+if [ "${FAKE_CLAUDE_NO_STREAM:-}" = 1 ] && [ "$partial" = 1 ]; then
+  printf "error: unknown option '--include-partial-messages'\n" >&2
+  exit 1
+fi
+if [ -n "${FAKE_CLAUDE_EARLY:-}" ]; then cat "$FAKE_CLAUDE_EARLY"; fi
 if [ "${FAKE_CLAUDE_IGNORE_TERM:-}" = 1 ]; then trap '' TERM; fi
 if [ -n "${FAKE_CLAUDE_READY:-}" ]; then printf 'ready\n' > "$FAKE_CLAUDE_READY"; fi
 if [ -n "${FAKE_CLAUDE_BLOCK:-}" ]; then
