@@ -314,12 +314,7 @@ class _AppScreenState extends State<AppScreen> {
     if (latest == null || _restoring) return;
     setState(() => _restoring = true);
     try {
-      final r = await widget.api.restoreVersion(
-        widget.aid,
-        n,
-        ifVersion: latest,
-      );
-      _changes.restored(r.version.n);
+      await widget.api.restoreVersion(widget.aid, n, ifVersion: latest);
       _call(const ReloadLatest());
     } on ClaxApiError catch (e) {
       _snack(

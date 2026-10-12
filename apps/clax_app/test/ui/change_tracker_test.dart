@@ -39,15 +39,57 @@ void main() {
     expect(timings.log, ['start', 'stop v4']);
   });
 
-  test('the frame lands before the worker reports: timed at the frame', () {
+  test(
+    'a frame before the worker reports its version waits for the report',
+    () {
+      t.sent('t1');
+      t.workerWorking(['t1']);
+      t.frame(4);
+      expect(timings.log, [
+        'start',
+      ], reason: 'v4 is not known to be this change');
+      expect(t.working, isTrue);
+      t.workerLanded(4);
+      expect(t.working, isFalse);
+      expect(timings.log, ['start', 'stop v4']);
+    },
+  );
+
+  test('the worker starting before the shell reports Send is still timed', () {
+    t.workerWorking(['t1']);
+    t.sent('t1');
+    expect(timings.log, ['start']);
+    t.workerLanded(4);
+    t.frame(4);
+    expect(t.working, isFalse);
+    expect(timings.log, ['start', 'stop v4']);
+  });
+
+  test('Send then the worker start, landing then frame, is timed once', () {
+    t.sent('t1');
+    t.workerWorking(['t1']);
+    t.workerLanded(4);
+    t.frame(4);
+    expect(timings.log, ['start', 'stop v4']);
+  });
+
+  test('a late Send is not timed while another change is', () {
+    t.sent('t1');
+    t.workerWorking(['t2']);
+    t.sent('t2');
+    expect(timings.log, ['start']);
+  });
+
+  test("another client's version does not end the running change's timing", () {
     t.sent('t1');
     t.workerWorking(['t1']);
     t.frame(4);
-    expect(timings.log, ['start', 'stop v4']);
-    expect(t.working, isTrue, reason: 'the worker has not finished');
-    t.workerLanded(4);
+    expect(timings.log, ['start']);
+    t.workerLanded(5);
+    expect(t.working, isTrue);
+    t.frame(5);
     expect(t.working, isFalse);
-    expect(timings.log, ['start', 'stop v4'], reason: 'recorded once');
+    expect(timings.log, ['start', 'stop v5']);
   });
 
   test('a frame of the same version (another page) is not a landing', () {
@@ -115,7 +157,7 @@ void main() {
   test("a Restore's frame does not end another change or its timing", () {
     t.sent('t1');
     t.workerWorking(['t1']);
-    t.restored(4);
+    // The shell may follow the restored version before its response.
     t.frame(4);
     expect(t.working, isTrue);
     expect(timings.log, ['start']);
