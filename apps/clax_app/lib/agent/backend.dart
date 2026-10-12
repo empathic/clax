@@ -22,6 +22,12 @@ enum AgentErrorKind {
 
   /// The request's [AgentRequest.cancelled] fired; nothing went wrong.
   cancelled,
+
+  /// The model could not be reached, or the connection broke before the
+  /// answer was whole (no DNS, a refused or reset connection): what a run
+  /// sees when the device cut the app's network. Nothing of the answer
+  /// was used.
+  network,
 }
 
 /// A backend failure: HTTP, timeout, refusal, truncated or unparseable
@@ -39,7 +45,7 @@ class AgentError implements Exception {
     : retryable = false,
       kind = AgentErrorKind.cancelled;
 
-  /// Whether the run failed or was cancelled.
+  /// Whether the run failed, lost the network or was cancelled.
   final AgentErrorKind kind;
 
   /// Why the call failed, fit to show the person.

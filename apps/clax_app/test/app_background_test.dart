@@ -40,6 +40,7 @@ const _dns = AgentError(
   "'api.anthropic.com' (OS Error: No address associated with hostname, "
   'errno = 7)',
   retryable: true,
+  kind: AgentErrorKind.network,
 );
 
 class _Key implements SecureKey {
