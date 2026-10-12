@@ -18,6 +18,12 @@ import { type FrameMode, contentFrame, publish, startDaemon } from "../e2e/fixtu
  * - `coldLatency`: the same, in a tab where the comment part's bytes are held
  *   back until the click has been dispatched, so loading and running the part
  *   is on the measured path (plus the harness's round trip to release it).
+ * - `appReady`: link → the shell's first `ready` to the Clax app's host
+ *   (`/a/<id>?app=1`, spec 2026-10-12-flutter-app-design §6.1), in a tab
+ *   that stands in for the app's WebView: a channel stub (`window.ClaxHost`)
+ *   and an `init` the moment the shell installs `window.claxHost`. That
+ *   `ready` ends the app's say→usable time, and it waits for the lazy host
+ *   chunk as well as the page's greeting.
  * The click and the crosshair are read from the shell's and the frame's own
  * clocks (`timeOrigin + timeStamp`, `timeOrigin + now()`); in subdomain mode
  * those are two renderer processes, whose clocks Chromium keeps on one
@@ -29,8 +35,8 @@ import { type FrameMode, contentFrame, publish, startDaemon } from "../e2e/fixtu
  * for this gate would cost a full optimised build of the workspace per run,
  * so the times here are slightly worse than shipped. */
 type Metrics = { firstPaint: number; commentReady: number };
-type Shell = { framePaint: number; readyLatency: number; coldLatency: number };
-const SHELL_KEYS = ["framePaint", "readyLatency", "coldLatency"] as const;
+type Shell = { framePaint: number; readyLatency: number; coldLatency: number; appReady: number };
+const SHELL_KEYS = ["framePaint", "readyLatency", "coldLatency", "appReady"] as const;
 type Modes<T> = { subdomain: T; sandbox: T };
 /** `enforceTargets` turns on the checks of the `Shell` metrics against their
  * budgets; `Metrics` budgets are always checked. A platform recorded before
@@ -135,6 +141,56 @@ async function quietPaint(browser: Browser, base: string, id: string, mode: Fram
   }
 }
 
+/** Runs in the shell's window of an app-mode tab before its scripts, as the
+ * Clax app's WebView sets it up: the app's channel, which keeps the epoch
+ * time of the first `ready` posted with this load's nonce, and the app's
+ * `init` with that nonce as soon as the shell defines `window.claxHost` (the
+ * app itself retries every 50 ms until it can; this measures the shell's
+ * share alone). */
+function appHost() {
+  if (window.top !== window) return;
+  const nonce = "perf-nonce-0123456789abcdef";
+  const rec = { origin: performance.timeOrigin, ready: null as number | null };
+  Object.defineProperty(window, "claxApp", { value: rec });
+  (window as unknown as { ClaxHost: unknown }).ClaxHost = { postMessage: (m: string) => {
+    const x = JSON.parse(m) as { type?: string; nonce?: string };
+    if (x.type === "ready" && x.nonce === nonce && rec.ready === null) rec.ready = performance.timeOrigin + performance.now();
+  } };
+  const define = Object.defineProperty;
+  Object.defineProperty = function <T>(o: T, k: PropertyKey, a: PropertyDescriptor & ThisType<unknown>): T {
+    const r = define(o, k, a);
+    if (o === (window as unknown) && k === "claxHost") {
+      Object.defineProperty = define;
+      queueMicrotask(() => (window as unknown as { claxHost: { init(p: { nonce: string }): void } }).claxHost.init({ nonce }));
+    }
+    return r;
+  } as typeof Object.defineProperty;
+}
+
+/** Link → the shell's first `ready` to the app, in a context set up as
+ * `sample`'s (a first tab that loaded the app's view), in a fresh tab. */
+async function appReady(browser: Browser, base: string, id: string, mode: FrameMode): Promise<number> {
+  const ctx = await browser.newContext();
+  try {
+    await ctx.addInitScript(appHost);
+    if (mode === "sandbox") await ctx.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
+    const first = await ctx.newPage();
+    await first.goto(`${base}/a/${id}?app=1`, { waitUntil: "commit" });
+    await poll(() => first.evaluate(() => (window as unknown as { claxApp: { ready: number | null } }).claxApp.ready), "the first app tab's ready");
+    await first.close();
+
+    const page = await ctx.newPage();
+    await page.goto(`${base}/a/${id}?app=1`, { waitUntil: "commit" });
+    const r = await poll(() => page.evaluate(() => {
+      const x = (window as unknown as { claxApp?: { origin: number; ready: number | null } }).claxApp;
+      return x && x.ready !== null ? x.ready - x.origin : null;
+    }), "the app's ready");
+    return r;
+  } finally {
+    await ctx.close();
+  }
+}
+
 /** Click on Comment → crosshair in a context set up as `sample`'s, in a tab
  * whose frame gets the comment part's bytes only once the click has been
  * dispatched. */
@@ -220,12 +276,14 @@ async function sample(browser: Browser, base: string, port: string, id: string, 
 
     const q = await quietPaint(browser, base, id, mode);
     const cold = await coldLatency(browser, base, id, mode);
+    const app = await appReady(browser, base, id, mode);
     return {
       firstPaint: (rec.paint ?? rec.raf)! - shell,
       commentReady: rec.crosshair! - shell,
       framePaint: q.paint,
       readyLatency: rec.crosshair! - click,
       coldLatency: cold,
+      appReady: app,
       control: ctl,
       paintSource: rec.paint !== null ? "paint" : "raf",
       framePaintSource: q.source,
@@ -277,7 +335,7 @@ function judge(mode: FrameMode, m: Metrics & Shell & { control: number }): void 
     save(next);
     return;
   }
-  const measured = `first paint ${m.firstPaint.toFixed(0)} ms, comment ready ${m.commentReady.toFixed(0)} ms, frame paint ${m.framePaint.toFixed(0)} ms, ready latency ${m.readyLatency.toFixed(0)} ms, cold ready latency ${m.coldLatency.toFixed(0)} ms, control ${m.control.toFixed(0)} ms`;
+  const measured = `first paint ${m.firstPaint.toFixed(0)} ms, comment ready ${m.commentReady.toFixed(0)} ms, frame paint ${m.framePaint.toFixed(0)} ms, ready latency ${m.readyLatency.toFixed(0)} ms, cold ready latency ${m.coldLatency.toFixed(0)} ms, app ready ${m.appReady.toFixed(0)} ms, control ${m.control.toFixed(0)} ms`;
   if (!b) {
     // No baseline for this platform (a CI runner, say): report, never fail.
     const recorded = Object.keys(all).join(", ") || "none";
@@ -289,7 +347,7 @@ function judge(mode: FrameMode, m: Metrics & Shell & { control: number }): void 
   const limit = (x: number) => x * scale;
   const bud = b.budget[mode];
   const of = (x: number | undefined) => x === undefined ? "no budget" : `budget ${x}, limit ${limit(x).toFixed(0)}`;
-  const report = `${mode}: first paint ${m.firstPaint.toFixed(0)} ms (${of(bud.firstPaint)}), comment ready ${m.commentReady.toFixed(0)} ms (${of(bud.commentReady)}), frame paint ${m.framePaint.toFixed(0)} ms (${of(bud.framePaint)}), ready latency ${m.readyLatency.toFixed(0)} ms (${of(bud.readyLatency)}), cold ready latency ${m.coldLatency.toFixed(0)} ms (${of(bud.coldLatency)}), control ${m.control.toFixed(0)} ms (scale ${scale.toFixed(2)})`;
+  const report = `${mode}: first paint ${m.firstPaint.toFixed(0)} ms (${of(bud.firstPaint)}), comment ready ${m.commentReady.toFixed(0)} ms (${of(bud.commentReady)}), frame paint ${m.framePaint.toFixed(0)} ms (${of(bud.framePaint)}), ready latency ${m.readyLatency.toFixed(0)} ms (${of(bud.readyLatency)}), cold ready latency ${m.coldLatency.toFixed(0)} ms (${of(bud.coldLatency)}), app ready ${m.appReady.toFixed(0)} ms (${of(bud.appReady)}), control ${m.control.toFixed(0)} ms (scale ${scale.toFixed(2)})`;
   console.log(report);
   // A benchmark, not a gate: a measure over its limit is reported, and the
   // run passes.
@@ -345,10 +403,10 @@ for (const mode of MODES) {
       const xs: Sample[] = [];
       for (let i = 0; i < SAMPLES; i++) xs.push(await sample(browser, d.base, port, id, mode));
       const of = (k: keyof (Metrics & Shell) | "control") => median(xs.map(x => x[k]));
-      runs.push({ median: { firstPaint: of("firstPaint"), commentReady: of("commentReady"), framePaint: of("framePaint"), readyLatency: of("readyLatency"), coldLatency: of("coldLatency"), control: of("control") }, samples: xs });
+      runs.push({ median: { firstPaint: of("firstPaint"), commentReady: of("commentReady"), framePaint: of("framePaint"), readyLatency: of("readyLatency"), coldLatency: of("coldLatency"), appReady: of("appReady"), control: of("control") }, samples: xs });
     }
     const across = (k: keyof (Metrics & Shell) | "control") => median(runs.map(r => r.median[k]));
-    const m: Metrics & Shell & { control: number } = { firstPaint: across("firstPaint"), commentReady: across("commentReady"), framePaint: across("framePaint"), readyLatency: across("readyLatency"), coldLatency: across("coldLatency"), control: across("control") };
+    const m: Metrics & Shell & { control: number } = { firstPaint: across("firstPaint"), commentReady: across("commentReady"), framePaint: across("framePaint"), readyLatency: across("readyLatency"), coldLatency: across("coldLatency"), appReady: across("appReady"), control: across("control") };
     const results = existsSync(RESULTS) ? JSON.parse(readFileSync(RESULTS, "utf8")) : {};
     results[mode] = { platform: PLATFORM, median: m, runs };
     writeFileSync(RESULTS, JSON.stringify(results, null, 2) + "\n");
