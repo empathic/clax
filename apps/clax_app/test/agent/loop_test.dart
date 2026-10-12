@@ -63,7 +63,9 @@ void main() {
       final events = <AgentProgress>[];
       await loop.newApp('a log', onProgress: events.add);
       expect(events.map((e) => '$e'), [
+        'AttemptStarted(1)',
         'PartialFile(main.html, 3 chars)',
+        'AttemptStarted(2)',
         'PartialFile(index.html, 5 chars)',
         'OutputTokens(12)',
       ]);
@@ -251,7 +253,41 @@ void main() {
         onProgress: events.add,
       );
       expect(outcome, isA<ChangeLanded>());
-      expect(events.map((e) => '$e'), ['PartialEdit(index.html, 2 chars)']);
+      expect(events.map((e) => '$e'), [
+        'AttemptStarted(1)',
+        'PartialEdit(index.html, 2 chars)',
+      ]);
+    });
+
+    test('a resend after an edit that misses starts attempt 2', () async {
+      final loop = loopWith([
+        WithProgress(const [
+          PartialEdit('index.html', 'X'),
+        ], change(edits: [edit('Nowhere', 'X')])),
+        change(edits: [edit('Save', 'Keep')]),
+      ]);
+      final item = api.sendComment(aid, 'Say Keep', queue: false);
+      final events = <AgentProgress>[];
+      await loop.change(aid, [item], session: sid, onProgress: events.add);
+      expect(events.map((e) => '$e'), [
+        'AttemptStarted(1)',
+        'PartialEdit(index.html, 1 chars)',
+        'AttemptStarted(2)',
+      ]);
+    });
+
+    test('a progress listener that throws does not stop the change', () async {
+      final loop = loopWith([
+        change(edits: [edit('Save', 'Keep')]),
+      ]);
+      final item = api.sendComment(aid, 'Say Keep', queue: false);
+      final outcome = await loop.change(
+        aid,
+        [item],
+        session: sid,
+        onProgress: (_) => throw StateError('listener bug'),
+      );
+      expect(outcome, isA<ChangeLanded>());
     });
 
     test('change publishes edits with if_version and addresses, replies, '

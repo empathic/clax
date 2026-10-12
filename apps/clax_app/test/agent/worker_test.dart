@@ -113,7 +113,7 @@ void main() {
             WorkerProgress() => 'progress',
           },
       ],
-      ['working', 'landed 2', 'working', 'landed 3'],
+      ['working', 'progress', 'landed 2', 'working', 'progress', 'landed 3'],
     );
   });
 
@@ -142,6 +142,7 @@ void main() {
       ],
       [
         'working [${item.threadId}]',
+        'AttemptStarted(1) [${item.threadId}]',
         'PartialEdit(index.html, 2 chars) [${item.threadId}]',
         'OutputTokens(30) [${item.threadId}]',
         'landed 2',
@@ -169,7 +170,7 @@ void main() {
     await idle();
     expect(api.filesOf(a, 2)['index.html'], contains('>A<'));
     expect(api.filesOf(b, 2)['index.html'], contains('>B<'));
-    expect([for (final e in events) e.artifactId], [a, a, b, b]);
+    expect([for (final e in events) e.artifactId], [a, a, a, b, b, b]);
   });
 
   test(
