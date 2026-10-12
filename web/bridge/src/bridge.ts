@@ -27,9 +27,10 @@
  * caps part, loaded on that welcome, so a page outside the app loads none of
  * it. On
  * `pagehide` it says `clax:bye`, and the shell stops sending until the next
- * document greets. Framed, it keeps the page's errors from before its first
- * script (`inspect.ts`), and answers the app's inspect view's
- * `clax:inspect` with the clip part's inspection (`clax:inspection`).
+ * document greets. In a frame the shell named `INSPECT_FRAME` it keeps the
+ * page's errors from before its first script (`inspect.ts`); it answers the
+ * app's inspect view's `clax:inspect` with the clip part's inspection
+ * (`clax:inspection`).
  * The daemon serves it right after the doctype (first in the skeleton's
  * `<head>` for a fragment), and only the document's first bridge tag runs, so
  * `window.claude` exists before any page script; shell
@@ -53,13 +54,13 @@ import { now } from "../../shell/src/clock";
 import type { Resolved } from "./anchor";
 import { acceptFromShell, forwardedKey, shellOrigins } from "./channel";
 import { commentsContext } from "./comments-context";
-import { installErrorRing } from "./inspect";
+import { type ErrorRing, installErrorRing } from "./inspect";
 import { hashFor, helloFor, isFirstBridge, readMeta } from "./meta";
 import { followInPlace, linkToHandOver } from "./nav";
 import type { CommentPart, Parts } from "./parts/types";
 import { type Clock, retrying } from "./part-loader";
 import { PickFlow } from "./pick";
-import type { Anchor, AnchorResult, Box, BridgeToShell } from "./protocol";
+import { type Anchor, type AnchorResult, type Box, type BridgeToShell, INSPECT_FRAME } from "./protocol";
 import { Rpc } from "./rpc";
 import { whenParsed } from "./parsed";
 import { makeUse } from "./use";
@@ -98,9 +99,10 @@ type PartName = keyof Parts;
   // bridge posts, nor pose as the shell.
   const shellWin = window.parent;
   const framed = shellWin !== window;
-  // The page's errors from its first script on, for an inspection
-  // (`inspect.ts`), and the observer the settle wait uses, as it is now.
-  const ring = framed ? installErrorRing(window) : null;
+  // In a frame the shell named for inspection, the page's errors from its
+  // first script on (`inspect.ts`); the observer the settle wait uses, as it
+  // is now.
+  const ring: ErrorRing = framed && window.name === INSPECT_FRAME ? installErrorRing(window) : [[], []];
   const Observer = MutationObserver;
   let shellOrigin: string | null = null;
   const post = (m: BridgeToShell, transfer: Transferable[] = []) =>
@@ -337,14 +339,7 @@ type PartName = keyof Parts;
       case "clax:composer-ready": if (typeof m.pickId === "string") picks.answer(m.pickId, true); break;
       // The app's inspect view asks what the page looks like once it settles
       // (`inspect.ts`), with the clip part; the answer goes to the shell only.
-      case "clax:inspect": {
-        const requestId = m.requestId;
-        if (typeof requestId !== "string" || !ring) break;
-        const fail = (err: unknown) => post({ type: "clax:inspection", requestId, error: err instanceof Error ? err.message : String(err) });
-        whenParsed(document, () => void clips().then(c => c.inspectPage(window, ring, m, { timers: clock, Observer, render: s => c.renderViewport(window, s) }))
-          .then(r => post({ type: "clax:inspection", requestId, ...r }, [r.png]), fail));
-        break;
-      }
+      case "clax:inspect": void clips().then(c => c.inspect(window, ring, m, post, clock, Observer), () => {}); break;
       case "clax:key": {
         const k = forwardedKey(m);
         // Keys count only in comment mode, which loads as it turns on.

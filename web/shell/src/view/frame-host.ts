@@ -1,15 +1,23 @@
+import { INSPECT_FRAME } from "../../../bridge/src/protocol";
+import { inspectQuery } from "../route";
+
 /** The sandbox a frame gets when artifacts have no origin of their own. */
 export const FRAME_SANDBOX = "allow-scripts allow-forms allow-modals allow-popups allow-downloads";
 /** The permissions every content frame delegates. */
 const FRAME_ALLOW = "clipboard-write; fullscreen";
 const FRAME_TITLE = "artifact content";
+/** The app's inspect view (`?app=1&inspect=1`, `app/host.ts`) names its
+ * frame `INSPECT_FRAME` before it loads, so the page's bridge keeps its
+ * errors from its first script (`bridge/src/inspect.ts`). */
+const inspecting = () => inspectQuery(location.search);
 
 /** Whether `el`, a frame the daemon put in the stage, is the one the shell
  * would make for `src` (fragment aside: the daemon never sees it): the same
- * `src`, `allow`, title and class, and the same sandbox, exactly, or none. */
+ * `src`, `allow`, title and class, and the same sandbox, exactly, or none.
+ * The daemon names no frame, so none is adopted in the inspect view. */
 function servedAs(el: HTMLIFrameElement, src: string, sandboxed: boolean): boolean {
   const hash = src.indexOf("#");
-  return el.getAttribute("src") === (hash < 0 ? src : src.slice(0, hash))
+  return !inspecting() && el.getAttribute("src") === (hash < 0 ? src : src.slice(0, hash))
     && el.getAttribute("sandbox") === (sandboxed ? FRAME_SANDBOX : null)
     && el.getAttribute("allow") === FRAME_ALLOW
     && el.getAttribute("title") === FRAME_TITLE
@@ -60,6 +68,7 @@ export class FrameHost {
     this.remove();
     const el = this.stage.ownerDocument.createElement("iframe");
     el.className = "frame";
+    if (inspecting()) el.name = INSPECT_FRAME;
     el.title = FRAME_TITLE;
     el.setAttribute("allow", FRAME_ALLOW);
     if (sandboxed) el.setAttribute("sandbox", FRAME_SANDBOX);
