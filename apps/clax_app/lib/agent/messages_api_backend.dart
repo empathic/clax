@@ -183,6 +183,7 @@ class MessagesApiBackend implements AgentBackend, TurnBackend {
   /// summed over `usage.iterations`, each attempt priced at its model.
   /// When [TurnRequest.cancelled] fires, the request is aborted and its
   /// connection closed, and this throws [AgentError.cancelled].
+  /// [TurnRequest.onActivity] is called on each server-sent event.
   @override
   Future<ModelTurn> turn(TurnRequest r) => _post(
     cancelled: r.cancelled,
@@ -198,7 +199,17 @@ class MessagesApiBackend implements AgentBackend, TurnBackend {
               outputBefore: r.outputBefore,
               onFallback: r.onFallback,
             );
-      return _readEvents(res, MessageStream(), onEvent: progress?.add);
+      final activity = r.onActivity;
+      return _readEvents(
+        res,
+        MessageStream(),
+        onEvent: activity == null && progress == null
+            ? null
+            : (event) {
+                activity?.call();
+                progress?.add(event);
+              },
+      );
     },
     onOk: (ex, error, log) {
       final Map<String, Object?> message;

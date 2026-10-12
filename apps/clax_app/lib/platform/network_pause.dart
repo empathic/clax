@@ -103,11 +103,20 @@ class ResumingBackend implements AgentBackend {
 }
 
 /// A [TurnBackend] that waits out a network cut by the background, turn by
-/// turn: when [inner] fails a turn with [isNetworkCut] and the app left the
-/// foreground during that turn (or is still out of it), the turn is held
-/// until the app is back in the foreground, then the same [TurnRequest] is
-/// sent again, at most [maxResumes] times a turn. Any other failure, and a
-/// network failure while the app stayed in front, is thrown as before.
+/// turn. A turn attempt is cut when [inner] fails it with [isNetworkCut],
+/// or when its stream stalls: no server-sent event for [stallAfter]
+/// ([TurnRequest.onActivity]) while the app is out of the foreground, or
+/// after it left since the last event (the attempt is then aborted). When
+/// the app left the foreground during a cut attempt (or is still out of
+/// it), the turn is held until the app is back in the foreground, then the
+/// same request is sent again. Any other failure, and a network failure
+/// while the app stayed in front, is thrown as before.
+///
+/// A hold has no time limit: it ends when the app is back in the
+/// foreground, then the turn is sent again, or when
+/// [TurnRequest.cancelled] fires, then this throws [AgentError.cancelled].
+/// What is bounded is how often one turn is sent again: at most
+/// [maxResumes] times, after which its next cut is thrown.
 ///
 /// Sending the turn again is a transport retry: a failed turn ran none of
 /// its tools and its runner added nothing to the history or the budget, so
@@ -115,14 +124,10 @@ class ResumingBackend implements AgentBackend {
 ///
 /// While held, the run's wall clock is stopped
 /// ([TurnHolds.pauseClock]/[TurnHolds.resumeClock] of
-/// [TurnRequest.holds]), so the run's time cap does not end it in the
-/// background. The holds of one run last at most [maxHeld] together
-/// (measured on [clock], summed in [TurnHolds.held]); a hold that reaches
-/// it throws the network cut, and the run fails as it would without this
-/// wrapper. [onPause] and [onResume] are called as a hold starts and ends
-/// with the turn sent again; [TurnHolds.onResend] just before it is sent.
-/// [TurnRequest.cancelled] firing while held throws
-/// [AgentError.cancelled].
+/// [TurnRequest.holds]), from the stream's last event for a stall, so the
+/// run's time cap does not end it in the background. [onPause] and
+/// [onResume] are called as a hold starts and as it ends with the turn
+/// sent again; [TurnHolds.onResend] just before it is sent.
 class ResumingTurns implements TurnBackend {
   ResumingTurns(
     this.inner,
@@ -131,13 +136,14 @@ class ResumingTurns implements TurnBackend {
     this.onPause,
     this.onResume,
     this.maxResumes = 3,
-    this.maxHeld = defaultMaxHeld,
+    this.stallAfter = defaultStallAfter,
   });
 
-  /// The longest a run's turns are held together by default: past it the
-  /// person has been away long enough that the run fails and is retried
-  /// rather than kept open.
-  static const defaultMaxHeld = Duration(minutes: 10);
+  /// How long a stream may go without an event in the background before
+  /// it counts as cut. Longer than a quiet stretch of a healthy stream (a
+  /// model thinking with its thinking not displayed sends few events), so
+  /// a run the foreground service keeps online is not held for nothing.
+  static const defaultStallAfter = Duration(seconds: 30);
 
   final TurnBackend inner;
   final AppPresence presence;
@@ -145,7 +151,7 @@ class ResumingTurns implements TurnBackend {
   final void Function()? onPause;
   final void Function()? onResume;
   final int maxResumes;
-  final Duration maxHeld;
+  final Duration stallAfter;
 
   @override
   String get name => inner.name;
@@ -153,53 +159,120 @@ class ResumingTurns implements TurnBackend {
   @override
   Future<ModelTurn> turn(TurnRequest r) async {
     final cancel = CancelWatch(r.cancelled);
-    final holds = r.holds ?? TurnHolds(pauseClock: () {}, resumeClock: () {});
+    final holds =
+        r.holds ?? TurnHolds(pauseClock: ({since}) {}, resumeClock: () {});
     for (var resumes = 0; ; resumes++) {
       final leaves = presence.leaves;
-      final AgentError cut;
+      final watch = _StallWatch(this, holds);
       try {
-        return await inner.turn(r);
+        final t = await inner.turn(
+          r.watched(
+            cancelled: Future.any([?r.cancelled, watch.stalled]),
+            onActivity: () {
+              watch.activity();
+              r.onActivity?.call();
+            },
+          ),
+        );
+        // A stall seen as the answer completed: the answer stands.
+        if (watch.isStalled) holds.resumeClock();
+        return t;
       } on AgentError catch (e) {
-        final cutByBackground =
-            !presence.foreground || presence.leaves != leaves;
-        final left = maxHeld - holds.held;
-        if (resumes >= maxResumes ||
-            !isNetworkCut(e) ||
-            !cutByBackground ||
-            left <= Duration.zero) {
-          rethrow;
+        if (watch.isStalled) {
+          // The watch paused the run's clock from the last event.
+          if (cancel.isCancelled || resumes >= maxResumes) {
+            holds.resumeClock();
+            cancel.check();
+            throw stalledError;
+          }
+        } else {
+          final cutByBackground =
+              !presence.foreground || presence.leaves != leaves;
+          if (resumes >= maxResumes || !isNetworkCut(e) || !cutByBackground) {
+            rethrow;
+          }
+          cancel.check();
+          holds.pauseClock();
         }
-        cut = e;
+      } finally {
+        watch.stop();
       }
-      cancel.check();
-      await _hold(holds, cancel, cut);
-      cancel.check();
+      await _hold(holds, cancel);
       onResume?.call();
       holds.onResend?.call();
     }
   }
 
-  /// Holds until the app is in the foreground, [cancel] fires or the run's
-  /// [maxHeld] is spent (then throws [cut]), with the run's clock stopped.
-  Future<void> _hold(
-    TurnHolds holds,
-    CancelWatch cancel,
-    AgentError cut,
-  ) async {
-    final since = clock.now();
-    var timedOut = false;
-    holds.pauseClock();
-    onPause?.call();
+  /// What a turn whose stream stalled in the background throws once it may
+  /// not be sent again.
+  static const stalledError = AgentError(
+    'The connection to the Claude API stalled while Clax was in the '
+    'background',
+    retryable: true,
+    kind: AgentErrorKind.network,
+  );
+
+  /// Holds until the app is in the foreground or [cancel] fires (then
+  /// throws [AgentError.cancelled]); resumes the run's clock, which the
+  /// caller paused, however the hold ends.
+  Future<void> _hold(TurnHolds holds, CancelWatch cancel) async {
     try {
-      await Future.any([
-        presence.whenForeground,
-        cancel.whenCancelled,
-        clock.delay(maxHeld - holds.held).then((_) => timedOut = true),
-      ]);
+      onPause?.call();
+      await Future.any([presence.whenForeground, cancel.whenCancelled]);
     } finally {
-      holds.held += clock.now().difference(since);
       holds.resumeClock();
     }
-    if (timedOut && !presence.foreground && !cancel.isCancelled) throw cut;
+    cancel.check();
+  }
+}
+
+/// Watches one turn attempt for a stall (see [ResumingTurns]); on a stall
+/// it pauses the run's clock from the last event, then aborts the attempt
+/// through [stalled].
+class _StallWatch {
+  _StallWatch(this.owner, this.holds)
+    : _last = owner.clock.now(),
+      _leaves = owner.presence.leaves {
+    _run();
+  }
+
+  final ResumingTurns owner;
+  final TurnHolds holds;
+  final _stalled = Completer<void>();
+  final _stopped = Completer<void>();
+  DateTime _last;
+  int _leaves;
+
+  /// Completes when the attempt has stalled.
+  Future<void> get stalled => _stalled.future;
+
+  bool get isStalled => _stalled.isCompleted;
+
+  void activity() {
+    _last = owner.clock.now();
+    _leaves = owner.presence.leaves;
+  }
+
+  void stop() {
+    if (!_stopped.isCompleted) _stopped.complete();
+  }
+
+  Future<void> _run() async {
+    final clock = owner.clock;
+    final presence = owner.presence;
+    while (!_stopped.isCompleted) {
+      final quiet = clock.now().difference(_last);
+      final wait = quiet >= owner.stallAfter
+          ? owner.stallAfter
+          : owner.stallAfter - quiet;
+      await Future.any([clock.delay(wait), _stopped.future]);
+      if (_stopped.isCompleted) return;
+      final away = !presence.foreground || presence.leaves != _leaves;
+      if (away && clock.now().difference(_last) >= owner.stallAfter) {
+        holds.pauseClock(since: _last);
+        _stalled.complete();
+        return;
+      }
+    }
   }
 }

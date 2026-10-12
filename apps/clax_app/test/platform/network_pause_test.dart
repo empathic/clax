@@ -19,6 +19,7 @@ import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_test/flutter_test.dart';
 
 import '../agent/tools/support.dart';
+import '../support/fake_messages_api.dart';
 
 const _result = EditResult(
   reply: 'ok',
@@ -254,8 +255,17 @@ final _ok = _turn([
   {'type': 'text', 'text': 'Done.'},
 ]);
 
+/// A turn whose stream sends one event (after [before] runs), then nothing
+/// until it is cancelled; [live] sends another event.
+class _Stall {
+  _Stall([this.before]);
+  final void Function()? before;
+  void Function()? live;
+}
+
 /// Answers each turn with the next item: a [ModelTurn] is returned, an
-/// [AgentError] thrown, a callback runs first and then [_dns] is thrown.
+/// [AgentError] thrown, a [_Stall] stalls, a callback runs first and then
+/// [_dns] is thrown.
 class _Turns implements TurnBackend {
   _Turns(this.script);
   final List<Object> script;
@@ -268,6 +278,13 @@ class _Turns implements TurnBackend {
   Future<ModelTurn> turn(TurnRequest r) async {
     seen.add(r);
     final item = script[seen.length - 1];
+    if (item is _Stall) {
+      r.onActivity?.call();
+      item.live = r.onActivity;
+      item.before?.call();
+      await r.cancelled;
+      throw const AgentError.cancelled();
+    }
     if (item is void Function()) {
       item();
       throw _dns;
@@ -277,35 +294,37 @@ class _Turns implements TurnBackend {
   }
 }
 
-/// Counts what a run's clock hooks were asked.
+/// Records what a run's clock hooks were asked.
 class _Clock {
   var pauses = 0;
   var resumes = 0;
+  final since = <DateTime?>[];
   bool get paused => pauses > resumes;
 }
 
-TurnRequest _turnRequest({
-  Future<void>? cancelled,
-  TurnHolds? holds,
-}) => TurnRequest(
-  model: 'm',
-  system: 's',
-  tools: const [],
-  messages: const [
-    {
-      'role': 'user',
-      'content': [
-        {'type': 'text', 'text': 'u'},
+TurnRequest _turnRequest({Future<void>? cancelled, TurnHolds? holds}) =>
+    TurnRequest(
+      model: 'm',
+      system: 's',
+      tools: const [],
+      messages: const [
+        {
+          'role': 'user',
+          'content': [
+            {'type': 'text', 'text': 'u'},
+          ],
+        },
       ],
-    },
-  ],
-  outputCap: 20000,
-  cancelled: cancelled,
-  holds: holds,
-);
+      outputCap: 20000,
+      cancelled: cancelled,
+      holds: holds,
+    );
 
 TurnHolds _holds(_Clock c, {void Function()? onResend}) => TurnHolds(
-  pauseClock: () => c.pauses++,
+  pauseClock: ({since}) {
+    c.pauses++;
+    c.since.add(since);
+  },
   resumeClock: () => c.resumes++,
   onResend: onResend,
 );
@@ -322,8 +341,14 @@ void turnTests() {
   void leave() => p.onLifecycle(AppLifecycleState.paused);
   void back() => p.onLifecycle(AppLifecycleState.resumed);
 
+  void sameRequest(TurnRequest a, TurnRequest b) {
+    expect(identical(a.messages, b.messages), isTrue);
+    expect((a.model, a.system, a.maxTokens), (b.model, b.system, b.maxTokens));
+    expect(identical(a.holds, b.holds), isTrue);
+  }
+
   test('a turn cut while backgrounded waits for the foreground with the run '
-      'clock stopped, then is sent again unchanged', () async {
+      'clock stopped, however long, then is sent again unchanged', () async {
     final c = _Clock();
     final events = <String>[];
     final inner = _Turns([leave, _ok]);
@@ -344,17 +369,18 @@ void turnTests() {
     expect(c.paused, isTrue);
     expect((inner.seen.length, got), (1, null));
 
-    clock.advance(const Duration(minutes: 3));
+    clock.advance(const Duration(hours: 5));
     await pumpEventQueue();
-    expect(got, isNull, reason: 'still in the background');
+    expect(got, isNull, reason: 'a hold has no time limit');
 
     back();
     await pumpEventQueue();
     expect(events, ['pause', 'resume', 'resend']);
     expect((c.pauses, c.resumes), (1, 1));
-    expect(inner.seen, [same(r), same(r)]);
+    expect(inner.seen, hasLength(2));
+    sameRequest(inner.seen[0], r);
+    sameRequest(inner.seen[1], r);
     expect(got, same(_ok));
-    expect(r.holds!.held, const Duration(minutes: 3));
   });
 
   test('a cut seen after the app came back is sent again at once', () async {
@@ -398,7 +424,7 @@ void turnTests() {
     expect(inner.seen, hasLength(1));
   });
 
-  test('a turn is resumed at most 3 times', () async {
+  test('a turn is sent again at most 3 times', () async {
     void leaveAndReturn() {
       leave();
       back();
@@ -415,6 +441,30 @@ void turnTests() {
       throwsA(same(_dns)),
     );
     expect(inner.seen, hasLength(4));
+  });
+
+  test('the limit is per turn: the next turn of a run may be resent '
+      'again', () async {
+    void leaveAndReturn() {
+      leave();
+      back();
+    }
+
+    final c = _Clock();
+    final holds = _holds(c);
+    final inner = _Turns([
+      leaveAndReturn,
+      leaveAndReturn,
+      leaveAndReturn,
+      _ok,
+      leaveAndReturn,
+      _ok,
+    ]);
+    final turns = ResumingTurns(inner, p, clock: clock);
+    expect(await turns.turn(_turnRequest(holds: holds)), same(_ok));
+    expect(await turns.turn(_turnRequest(holds: holds)), same(_ok));
+    expect(inner.seen, hasLength(6));
+    expect((c.pauses, c.resumes), (4, 4));
   });
 
   test('a cancel while held ends the turn as cancelled, the clock running '
@@ -444,51 +494,169 @@ void turnTests() {
     expect((c.pauses, c.resumes), (1, 1));
   });
 
-  test('holds of one run share maxHeld; past it the cut is thrown', () async {
+  test('a throwing onPause still leaves the run clock running', () async {
     final c = _Clock();
-    final holds = _holds(c);
-    final turns = ResumingTurns(
-      _Turns([leave, _ok, leave]),
+    final inner = _Turns([leave]);
+    final turn = ResumingTurns(
+      inner,
       p,
       clock: clock,
-      maxHeld: const Duration(minutes: 10),
-    );
-
-    final first = turns.turn(_turnRequest(holds: holds));
-    await pumpEventQueue();
-    clock.advance(const Duration(minutes: 7));
-    back();
-    expect(await first, same(_ok));
-    expect(holds.held, const Duration(minutes: 7));
-
-    // The run's next turn may hold only the 3 minutes left.
-    Object? failed;
-    unawaited(
-      turns.turn(_turnRequest(holds: holds)).catchError((Object e) {
-        failed = e;
-        return _ok;
-      }),
-    );
-    await pumpEventQueue();
-    clock.advance(const Duration(minutes: 2, seconds: 59));
-    await pumpEventQueue();
-    expect(failed, isNull);
-    clock.advance(const Duration(seconds: 1));
-    await pumpEventQueue();
-    expect(failed, same(_dns));
-    expect(holds.held, const Duration(minutes: 10));
-    expect((c.pauses, c.resumes), (2, 2));
+      onPause: () => throw StateError('notification failed'),
+    ).turn(_turnRequest(holds: _holds(c)));
+    await expectLater(turn, throwsStateError);
+    expect((c.pauses, c.resumes), (1, 1));
   });
 
-  test('a run whose holds are spent throws the next cut at once', () async {
-    final holds = TurnHolds(pauseClock: () {}, resumeClock: () {})
-      ..held = const Duration(minutes: 10);
-    final inner = _Turns([leave]);
-    await expectLater(
-      ResumingTurns(inner, p, clock: clock).turn(_turnRequest(holds: holds)),
-      throwsA(same(_dns)),
-    );
+  group('stall', () {
+    test('a stream quiet for stallAfter in the background is aborted and '
+        'held with the clock stopped from its last event', () async {
+      final c = _Clock();
+      final start = clock.now();
+      final stall = _Stall();
+      final inner = _Turns([stall, _ok]);
+      ModelTurn? got;
+      unawaited(
+        ResumingTurns(
+          inner,
+          p,
+          clock: clock,
+        ).turn(_turnRequest(holds: _holds(c))).then((t) => got = t),
+      );
+      await pumpEventQueue();
+      clock.advance(const Duration(seconds: 5));
+      stall.live!();
+      leave();
+      clock.advance(const Duration(seconds: 29));
+      await pumpEventQueue();
+      expect(c.pauses, 0, reason: '29 s quiet is not a stall');
+
+      clock.advance(const Duration(seconds: 1));
+      await pumpEventQueue();
+      expect(c.pauses, 1);
+      expect(c.since, [start.add(const Duration(seconds: 5))]);
+      expect(inner.seen, hasLength(1));
+      expect(got, isNull);
+
+      back();
+      await pumpEventQueue();
+      expect(inner.seen, hasLength(2));
+      expect(got, same(_ok));
+      expect((c.pauses, c.resumes), (1, 1));
+    });
+
+    test('a quiet stream in front is left alone', () async {
+      final c = _Clock();
+      final cancel = Completer<void>();
+      final inner = _Turns([_Stall()]);
+      final turn = ResumingTurns(
+        inner,
+        p,
+        clock: clock,
+      ).turn(_turnRequest(cancelled: cancel.future, holds: _holds(c)));
+      await pumpEventQueue();
+      for (var i = 0; i < 10; i++) {
+        clock.advance(const Duration(minutes: 1));
+        await pumpEventQueue();
+      }
+      expect(c.pauses, 0);
+      cancel.complete();
+      await expectLater(turn, throwsA(isA<AgentError>()));
+      expect(inner.seen, hasLength(1));
+    });
+
+    test('a stream that keeps sending events in the background is left '
+        'alone', () async {
+      final c = _Clock();
+      final cancel = Completer<void>();
+      final stall = _Stall(leave);
+      final turn = ResumingTurns(
+        _Turns([stall]),
+        p,
+        clock: clock,
+      ).turn(_turnRequest(cancelled: cancel.future, holds: _holds(c)));
+      await pumpEventQueue();
+      for (var i = 0; i < 10; i++) {
+        clock.advance(const Duration(seconds: 20));
+        stall.live!();
+        await pumpEventQueue();
+      }
+      expect(c.pauses, 0);
+      cancel.complete();
+      await expectLater(turn, throwsA(isA<AgentError>()));
+    });
+
+    test('a stall seen only once the app is back (the process was frozen) '
+        'still counts: the app left since the last event', () async {
+      final c = _Clock();
+      final stall = _Stall(leave);
+      final inner = _Turns([stall, _ok]);
+      final turn = ResumingTurns(
+        inner,
+        p,
+        clock: clock,
+      ).turn(_turnRequest(holds: _holds(c)));
+      await pumpEventQueue();
+      back();
+      clock.advance(const Duration(minutes: 4));
+      expect(await turn, same(_ok));
+      expect(c.since, [isNotNull]);
+      expect(inner.seen, hasLength(2));
+    });
+
+    test('a cancel while a stall is held throws cancelled', () async {
+      final c = _Clock();
+      final cancel = Completer<void>();
+      final turn = ResumingTurns(
+        _Turns([_Stall(leave)]),
+        p,
+        clock: clock,
+      ).turn(_turnRequest(cancelled: cancel.future, holds: _holds(c)));
+      await pumpEventQueue();
+      clock.advance(const Duration(seconds: 30));
+      await pumpEventQueue();
+      expect(c.paused, isTrue);
+      cancel.complete();
+      await expectLater(
+        turn,
+        throwsA(
+          isA<AgentError>().having(
+            (e) => e.kind,
+            'kind',
+            AgentErrorKind.cancelled,
+          ),
+        ),
+      );
+      expect((c.pauses, c.resumes), (1, 1));
+    });
   });
+
+  test(
+    'MessagesApiBackend reports each server-sent event as activity',
+    () async {
+      final api = await FakeMessagesApi.start([
+        sseReply(
+          streamedTurn([
+            {'type': 'text', 'text': 'Done.'},
+          ], stopReason: 'end_turn'),
+        ),
+      ]);
+      addTearDown(api.close);
+      var events = 0;
+      final backend = MessagesApiBackend(
+        apiKey: () async => 'sk-ant-test',
+        baseUrl: api.baseUrl,
+        delay: (_) async {},
+      );
+      final r = _turnRequest();
+      await backend.turn(
+        r.watched(
+          cancelled: Completer<void>().future,
+          onActivity: () => events++,
+        ),
+      );
+      expect(events, greaterThan(3));
+    },
+  );
 
   group('in MessagesApiRunner', () {
     late Completer<void> cancel;
@@ -557,7 +725,7 @@ void turnTests() {
       expect(render.calls, 1);
 
       // Far past the 45 s wall clock while held: the run is not stopped.
-      clock.advance(const Duration(minutes: 5));
+      clock.advance(const Duration(hours: 1));
       await pumpEventQueue();
       expect(out, isNull);
       expect(tb.state.budget.elapsed, const Duration(seconds: 5));
@@ -575,6 +743,35 @@ void turnTests() {
       expect(tb.state.budget.turns, 2);
       expect(tb.state.budget.usage, const Usage(input: 200, output: 20));
       expect(events.whereType<AttemptStarted>(), hasLength(1));
+    });
+
+    test('a stalled background turn is held with the wall clock taken back '
+        'to its last event, then sent again', () async {
+      final stall = _Stall();
+      final inner = _Turns([
+        stall,
+        _turn([use('t1', 'finish')]),
+      ]);
+      final tb = toolbox([_Counted('finish', ends: true)]);
+      RunOutcome? out;
+      unawaited(run(inner, tb).then((o) => out = o));
+      await pumpEventQueue();
+      clock.advance(const Duration(seconds: 5));
+      stall.live!();
+      leave();
+      // Past the stall (30 s after the last event), short of the 45 s cap.
+      clock.advance(const Duration(seconds: 31));
+      await pumpEventQueue();
+      clock.advance(const Duration(hours: 1));
+      await pumpEventQueue();
+      expect(out, isNull);
+      expect(tb.state.budget.elapsed, const Duration(seconds: 5));
+
+      back();
+      await pumpEventQueue();
+      expect(out, isA<RunFinished>());
+      expect(inner.seen, hasLength(2));
+      expect(tb.state.budget.turns, 1);
     });
 
     test('a cancel while held ends the run cancelled', () async {
@@ -605,16 +802,6 @@ void turnTests() {
         expect(inner.seen, hasLength(1));
       },
     );
-
-    test('a hold past maxHeld fails the run with the network cut', () async {
-      final inner = _Turns([leave]);
-      final tb = toolbox([_Counted('finish', ends: true)]);
-      final out = run(inner, tb);
-      await pumpEventQueue();
-      clock.advance(ResumingTurns.defaultMaxHeld);
-      await expectLater(out, throwsA(same(_dns)));
-      expect(tb.state.budget.elapsed, Duration.zero);
-    });
   });
 }
 

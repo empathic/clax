@@ -20,6 +20,7 @@ class TurnRequest {
     this.outputBefore = 0,
     this.onFallback,
     this.holds,
+    this.onActivity,
   });
 
   final String model;
@@ -56,14 +57,39 @@ class TurnRequest {
   /// back from the model (until the app is back in the foreground) uses
   /// from the run. Null: the run's clock is not paused for a hold.
   final TurnHolds? holds;
+
+  /// Called on each server-sent event of the turn as it arrives, `ping`
+  /// included, so a watcher can tell a stream that is alive from one that
+  /// has stalled.
+  final void Function()? onActivity;
+
+  /// This request with [cancelled] and [onActivity] replaced.
+  TurnRequest watched({
+    required Future<void> cancelled,
+    required void Function() onActivity,
+  }) => TurnRequest(
+    model: model,
+    system: system,
+    tools: tools,
+    messages: messages,
+    maxTokens: maxTokens,
+    outputCap: outputCap,
+    cancelled: cancelled,
+    onProgress: onProgress,
+    outputBefore: outputBefore,
+    onFallback: onFallback,
+    holds: holds,
+    onActivity: onActivity,
+  );
 }
 
-/// The time a run's turns were held back from the model, and the run's
-/// side of each hold. One per run, shared by every [TurnRequest] of it.
+/// The run's side of a turn held back from the model. One per run, shared
+/// by every [TurnRequest] of it.
 ///
-/// A backend that holds a turn calls [pauseClock] before the hold and
-/// [resumeClock] after it (whatever ended it), adds the hold's length to
-/// [held], and calls [onResend] before it sends the held turn again.
+/// A backend that holds a turn calls [pauseClock] as the hold starts (with
+/// `since`, when the hold covers a stall that began earlier) and
+/// [resumeClock] once it ends, whatever ended it, and calls [onResend]
+/// before it sends the held turn again.
 class TurnHolds {
   TurnHolds({
     required this.pauseClock,
@@ -71,9 +97,9 @@ class TurnHolds {
     this.onResend,
   });
 
-  /// Stops the run's wall clock: a held turn does not spend it, as an
-  /// `ask` waiting for the person does not.
-  final void Function() pauseClock;
+  /// Stops the run's wall clock, from `since` when given: a held turn does
+  /// not spend it, as an `ask` waiting for the person does not.
+  final void Function({DateTime? since}) pauseClock;
 
   /// Ends one [pauseClock].
   final void Function() resumeClock;
@@ -81,9 +107,6 @@ class TurnHolds {
   /// Called before a held turn is sent again: what the cut attempt
   /// streamed will not be used.
   final void Function()? onResend;
-
-  /// The run's turns' holds so far, summed.
-  Duration held = Duration.zero;
 }
 
 /// One model attempt of a turn and what it spent: a turn has more than one
