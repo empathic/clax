@@ -44,6 +44,12 @@ export class LongPress {
     this.trustedOnly = opts.trustedOnly ?? true;
   }
 
+  /** Whether a finger is down on a hold that has not ended or been
+   * abandoned (armed or not). */
+  get holding(): boolean {
+    return this.hold !== null;
+  }
+
   /** Listens to touches (capture, not passive) while on; off drops a hold
    * in progress without reporting it. */
   set(on: boolean): void {
