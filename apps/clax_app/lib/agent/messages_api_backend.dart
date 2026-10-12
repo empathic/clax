@@ -9,6 +9,8 @@ import 'json_stream.dart';
 import 'message_stream.dart';
 import 'progress.dart';
 import 'request.dart';
+import 'runner/turn.dart';
+import 'tools/budget.dart';
 
 /// Asks the Claude Messages API for one [EditResult], with [editSchema] as
 /// structured output (`output_config.format`).
@@ -35,7 +37,7 @@ import 'request.dart';
 /// The API key is read from the key callback on every run, is sent only in
 /// the `x-api-key` header, and is removed from every log line and error
 /// message.
-class MessagesApiBackend implements AgentBackend {
+class MessagesApiBackend implements AgentBackend, TurnBackend {
   MessagesApiBackend({
     required this._apiKey,
     Uri? baseUrl,
@@ -111,8 +113,184 @@ class MessagesApiBackend implements AgentBackend {
   };
 
   @override
-  Future<EditResult> run(AgentRequest r) async {
-    final cancel = CancelWatch(r.cancelled);
+  Future<EditResult> run(AgentRequest r) => _post(
+    cancelled: r.cancelled,
+    sink: r.onProgress,
+    what: 'model=${r.model} kind=${r.kind.name}',
+    body: body(r),
+    readStream: r.onProgress == null
+        ? null
+        : (res, emit) => _readStream(res, emit!),
+    onOk: (ex, error, log) => switch (ex.stream) {
+      final stream? => _parseStream(stream, error, log),
+      null => _parse(_tryDecode(ex.text), error, log),
+    },
+  );
+
+  /// The beta flags of a turn of [model]: task budgets, and server-side
+  /// refusal fallbacks for the models that have them.
+  static List<String> turnBetas(String model) => [
+    'task-budgets-2026-03-13',
+    if (_fallbackModels.contains(model)) 'server-side-fallback-2026-07-01',
+  ];
+
+  /// The models a refusal falls back from server-side.
+  static const _fallbackModels = {'claude-sonnet-5-5', 'claude-opus-5-5'};
+
+  /// The request body of a tool-loop turn (R§6.1): streamed, the system
+  /// prompt and the end of the history cached, adaptive thinking, the
+  /// tools chosen freely, and the run's output cap as the task budget.
+  static Map<String, Object?> turnBody(TurnRequest r) => {
+    'model': r.model,
+    'max_tokens': r.maxTokens,
+    'stream': true,
+    'system': [
+      {
+        'type': 'text',
+        'text': r.system,
+        'cache_control': {'type': 'ephemeral'},
+      },
+    ],
+    'tools': r.tools,
+    'tool_choice': {'type': 'auto'},
+    'thinking': {'type': 'adaptive'},
+    'output_config': {
+      'effort': effort,
+      'task_budget': {'type': 'tokens', 'total': r.outputCap},
+    },
+    'cache_control': {'type': 'ephemeral'},
+    if (_fallbackModels.contains(r.model)) 'fallbacks': 'default',
+    'messages': r.messages,
+  };
+
+  /// Asks for one streamed turn of a tool loop. Retries as [run] does;
+  /// a stream that breaks after it began, an `error` event and a
+  /// non-message answer are [AgentError]s. A turn whose tool call's input
+  /// is not a JSON object comes back [ModelTurn.broken], with no content.
+  /// When [TurnRequest.cancelled] fires, the request is aborted and its
+  /// connection closed, and this throws [AgentError.cancelled].
+  @override
+  Future<ModelTurn> turn(TurnRequest r) => _post(
+    cancelled: r.cancelled,
+    sink: r.onProgress,
+    what: 'model=${r.model} turn messages=${r.messages.length}',
+    body: turnBody(r),
+    betas: turnBetas(r.model),
+    readStream: (res, emit) {
+      final progress = emit == null
+          ? null
+          : TurnProgress(emit, outputBefore: r.outputBefore);
+      return _readEvents(res, MessageStream(), onEvent: progress?.add);
+    },
+    onOk: (ex, error, log) {
+      final Map<String, Object?> message;
+      if (ex.stream case final stream?) {
+        if (stream.error case final e?) {
+          log('$name: the stream ended with ${e.type}');
+          throw error(
+            'Claude API error mid-answer (${e.type}): ${e.message}',
+            retryable: _retriedStreamErrors.contains(e.type),
+          );
+        }
+        if (!stream.stopped) {
+          log('$name: the stream ended before message_stop');
+          throw error(
+            'The answer stopped before it finished',
+            retryable: true,
+            kind: AgentErrorKind.network,
+          );
+        }
+        try {
+          message = stream.message;
+        } on InvalidToolInput catch (e) {
+          log('$name: stop_reason=${stream.stopReason}; $e');
+          return ModelTurn(
+            content: const [],
+            stopReason: stream.stopReason ?? 'max_tokens',
+            usage: Usage.fromApi(_usageOf(stream)),
+            broken: true,
+          );
+        }
+      } else {
+        final decoded = _tryDecode(ex.text);
+        if (decoded is! Map<String, Object?>) {
+          throw error(
+            'The Claude API answered with something other than a message',
+            retryable: true,
+          );
+        }
+        message = decoded;
+      }
+      return _turnOf(message, error, log);
+    },
+  );
+
+  /// The usage a stream reported, read without rebuilding its content.
+  static Object? _usageOf(MessageStream stream) {
+    try {
+      return stream.message['usage'];
+    } on InvalidToolInput {
+      return null;
+    }
+  }
+
+  ModelTurn _turnOf(
+    Map<String, Object?> m,
+    AgentError Function(String, {required bool retryable}) error,
+    void Function(String) log,
+  ) {
+    final usage = Usage.fromApi(m['usage']);
+    final stop = m['stop_reason'];
+    log(
+      '$name: stop_reason=$stop input=${usage.input} output=${usage.output} '
+      'cache_read=${usage.cacheRead} cache_creation=${usage.cacheWrite}',
+    );
+    final content = m['content'];
+    if (stop is! String || content is! List) {
+      throw error('The answer was not a whole message', retryable: true);
+    }
+    return ModelTurn(
+      content: [
+        for (final b in content)
+          if (b is Map<String, Object?>) b,
+      ],
+      stopReason: stop,
+      stopDetails: switch (m['stop_details']) {
+        final Map<String, Object?> d => d,
+        _ => null,
+      },
+      usage: usage,
+    );
+  }
+
+  /// Sends [body] with up to [maxRetries] retries and answers the first
+  /// 200 with [onOk]. [readStream] reads an event-stream answer; it gets
+  /// [sink] wrapped so that a listener that throws is logged, and nothing
+  /// is reported once [cancelled] fires.
+  Future<T> _post<T>({
+    required Future<void>? cancelled,
+    required ProgressSink? sink,
+    required String what,
+    required Map<String, Object?> body,
+    List<String> betas = const [],
+    required Future<MessageStream> Function(
+      Stream<List<int>> res,
+      ProgressSink? emit,
+    )?
+    readStream,
+    required T Function(
+      _Exchange ex,
+      AgentError Function(
+        String, {
+        required bool retryable,
+        AgentErrorKind kind,
+      })
+      error,
+      void Function(String) log,
+    )
+    onOk,
+  }) async {
+    final cancel = CancelWatch(cancelled);
     final key = (await _apiKey())?.trim();
     cancel.check();
     if (key == null || key.isEmpty) {
@@ -125,7 +303,6 @@ class MessagesApiBackend implements AgentBackend {
       required bool retryable,
       AgentErrorKind kind = AgentErrorKind.failed,
     }) => AgentError(redact(message), retryable: retryable, kind: kind);
-    final sink = r.onProgress;
     final ProgressSink? emit = sink == null
         ? null
         : (event) {
@@ -137,19 +314,24 @@ class MessagesApiBackend implements AgentBackend {
             }
           };
 
-    final payload = utf8.encode(jsonEncode(body(r)));
+    final payload = utf8.encode(jsonEncode(body));
     final client = _client ?? HttpClient();
     try {
       for (var retry = 0; ; retry++) {
         final started = DateTime.now();
         final attempt = '${retry + 1} of ${maxRetries + 1}';
-        log(
-          '$name: POST $_endpoint model=${r.model} kind=${r.kind.name} '
-          'attempt $attempt',
-        );
+        log('$name: POST $_endpoint $what attempt $attempt');
         final _Exchange ex;
         try {
-          ex = await _send(client, key, payload, error, cancel, emit);
+          ex = await _send(
+            client,
+            key,
+            payload,
+            error,
+            cancel,
+            readStream == null ? null : (res) => readStream(res, emit),
+            betas: betas,
+          );
         } on _NoResponse catch (e) {
           log('$name: request failed: ${e.cause}');
           if (retry < maxRetries) {
@@ -169,12 +351,7 @@ class MessagesApiBackend implements AgentBackend {
           '$name: HTTP ${ex.status} in ${ms}ms '
           'request-id=${ex.requestId ?? "-"}',
         );
-        if (ex.status == HttpStatus.ok) {
-          if (ex.stream case final stream?) {
-            return _parseStream(stream, error, log);
-          }
-          return _parse(_tryDecode(ex.text), error, log);
-        }
+        if (ex.status == HttpStatus.ok) return onOk(ex, error, log);
         final failure = _httpError(ex.status, ex.text, error);
         if (_retriedStatus(ex.status) && retry < maxRetries) {
           final wait = _retryAfter(ex.retryAfter) ?? _backoff(retry);
@@ -209,8 +386,9 @@ class MessagesApiBackend implements AgentBackend {
     AgentError Function(String, {required bool retryable, AgentErrorKind kind})
     error,
     CancelWatch cancel,
-    ProgressSink? emit,
-  ) async {
+    Future<MessageStream> Function(Stream<List<int>> body)? readStream, {
+    List<String> betas = const [],
+  }) async {
     cancel.check();
     HttpClientRequest? request;
     final connection = _Connection();
@@ -226,11 +404,12 @@ class MessagesApiBackend implements AgentBackend {
         ..set('anthropic-version', apiVersion)
         ..contentType = ContentType.json
         ..contentLength = payload.length;
+      if (betas.isNotEmpty) req.headers.set('anthropic-beta', betas.join(','));
       req.add(payload);
       final res = await req.close();
       responded = true;
       final body = connection.read(res);
-      if (emit != null &&
+      if (readStream != null &&
           res.statusCode == HttpStatus.ok &&
           res.headers.contentType?.mimeType == 'text/event-stream') {
         return _Exchange(
@@ -238,7 +417,7 @@ class MessagesApiBackend implements AgentBackend {
           '',
           res.headers.value('request-id'),
           null,
-          stream: await _readStream(body, emit),
+          stream: await readStream(body),
         );
       }
       final text = await utf8.decoder.bind(body).join();
@@ -285,19 +464,35 @@ class MessagesApiBackend implements AgentBackend {
   static Future<MessageStream> _readStream(
     Stream<List<int>> res,
     ProgressSink emit,
-  ) async {
+  ) {
     final blocks = BlockProgress(emit);
-    final stream = MessageStream(
-      onDelta: blocks.delta,
-      onUsage: (n) => emit(OutputTokens(n)),
+    return _readEvents(
+      res,
+      MessageStream(
+        onDelta: blocks.delta,
+        onUsage: (n) => emit(OutputTokens(n)),
+      ),
     );
+  }
+
+  /// Reads [res]'s server-sent events into [stream], each also given to
+  /// [onEvent] first, until the stream ends, stops or sends an `error`.
+  static Future<MessageStream> _readEvents(
+    Stream<List<int>> res,
+    MessageStream stream, {
+    void Function(Object? event)? onEvent,
+  }) async {
     void event(String? data) {
       if (data == null) return;
+      final Object? decoded;
       try {
-        stream.add(jsonDecode(data));
+        decoded = jsonDecode(data);
       } on FormatException {
         // Not an event; the message is judged when the stream ends.
+        return;
       }
+      onEvent?.call(decoded);
+      stream.add(decoded);
     }
 
     final sse = SseDecoder();
