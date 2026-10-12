@@ -203,7 +203,12 @@ class AgentLoop {
       }
       final aid = created.artifact.id;
       if (r.db.isNotEmpty) {
-        final refused = await _writeDocs(aid, r.db, const {});
+        String? refused;
+        try {
+          refused = await _writeDocs(aid, r.db, const {});
+        } on ClaxApiError catch (e) {
+          refused = e.message;
+        }
         if (refused != null) {
           _log('new app $aid: its starting documents were refused: $refused');
         }
@@ -672,7 +677,8 @@ class AgentLoop {
   /// Writes [ops] in one batch, each pinned to its version in [versions]
   /// (none for a document not listed). A conflict re-reads the documents
   /// and writes once more. Returns null when written, or why the batch
-  /// was refused.
+  /// was refused. Throws the [ClaxApiError] of a batch that got no answer
+  /// (status 0), whose writes may or may not have run.
   Future<String?> _writeDocs(
     String aid,
     List<DbOp> ops,
@@ -696,6 +702,7 @@ class AgentLoop {
         ]);
         return null;
       } on ClaxApiError catch (e) {
+        if (e.status == 0) rethrow;
         if (!e.isConflict || attempt > 0) return e.message;
         final paths = pinned.keys.toList();
         final now = await Future.wait([
