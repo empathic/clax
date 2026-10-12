@@ -101,6 +101,16 @@ describe("QuestionFeed", () => {
     expect(feed.cards.map(q => q.id)).toEqual(["Q2"]);
   });
 
+  it("tells a question closing as one change: every listener sees its card, open or closed", async () => {
+    stubFetch(() => [200, { questions: [A], open: 1 }]);
+    const feed = new QuestionFeed({ after: fakeClock().after });
+    const stream = await live(feed);
+    const heard: { open: string[]; recent: string[] }[] = [];
+    feed.listen(() => heard.push({ open: feed.open.map(q => q.id), recent: feed.recent.map(q => q.id) }));
+    stream.emit("question", { question: { ...A, status: "answered" as const, answers: [] } });
+    expect(heard).toEqual([{ open: [], recent: ["Q1"] }]);
+  });
+
   it("answers through the owner route, taking a 409's question as what closed it", async () => {
     const calls = stubFetch((url, init) => {
       if (init?.method !== "POST") return [200, { questions: [A, B], open: 2 }];

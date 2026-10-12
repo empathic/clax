@@ -48,6 +48,9 @@ html.app .app-questions > .questions-slot {
   padding: 10px var(--gutter) calc(12px + env(safe-area-inset-bottom));
 }
 html.app .app-questions .side-q { margin: 0; padding: 0; border: 0; }
+/* The sheet focuses a card when it opens, by script, which a browser takes
+   as keyboard focus: the card shows no ring for it (its controls keep theirs). */
+html.app .app-questions .qcard:focus-visible { outline: none; }
 html.app .app-questions .gh { display: flex; align-items: center; gap: 8px; margin: 2px 40px 10px 0; font: 600 14px/1.2 var(--font); }
 html.app .app-questions .gh .t { flex: 1; color: var(--agent-ink); }
 html.app .app-questions .gh .c { font: 400 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }

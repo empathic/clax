@@ -1161,18 +1161,23 @@ describe("app mode's questions", { timeout: MOUNT_TIMEOUT_MS }, () => {
   const sheet = () => document.querySelector<HTMLElement>(".app-questions");
   /** Not the owner's browser: the question module never loads, so the test alone tells the host of questions. */
   const notOwner = (url: string) => (url === "/api/token" ? new Response("{}", { status: 403 }) : undefined);
-  const count = (open: number, shown: number) => document.dispatchEvent(new CustomEvent("clax-questions", { detail: { open, shown } }));
-  /** Stands a question card in the sheet's slot, as the question module mounts one. */
-  const card = () => {
+  /** The question module's word: the cards about the app, open and closed moments ago, by question ID. */
+  const tell = (open: string[], closed: string[] = []) => document.dispatchEvent(new CustomEvent("clax-questions", { detail: { open, closed } }));
+  /** Mounts question `id`'s card in the sheet's slot, as the question module does after it has told the change. */
+  const card = (id: string) => {
     const c = document.createElement("article");
     c.className = "qcard";
+    c.dataset.question = id;
     c.tabIndex = -1;
     c.innerHTML = `<label class="opt other"><input type="text"></label><textarea></textarea>`;
     sheet()!.querySelector(".questions-slot")!.append(c);
     return c;
   };
+  const cardOf = (id: string) => sheet()!.querySelector<HTMLElement>(`.qcard[data-question="${id}"]`)!;
+  /** Lets mutation observers run. */
+  const observed = () => new Promise(r => setTimeout(r, 0));
 
-  it("docks the open questions about the app in a sheet, posts questions {open} as they change, and openQuestions shows them", async () => {
+  it("docks the open questions about the app in a sheet, posts questions {open, showing} as they change, and openQuestions shows them", async () => {
     const q = questionView({ id: "Q1" });
     const { frame, host } = await appView({
       api: url => {
@@ -1190,86 +1195,128 @@ describe("app mode's questions", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const shown = await waitFor(() => sheet()!.querySelector<HTMLElement>(".qcard[data-question='Q1']"), "the question's card in the sheet");
     expect(document.querySelector(".sidebar .qcard")).toBeNull();
     await waitFor(() => ofType("questions").length, "questions posted");
-    expect(ofType("questions")).toEqual([{ type: "questions", open: 1 }]);
+    expect(ofType("questions")).toEqual([{ type: "questions", open: 1, showing: false }]);
     // It shows only when the app asks.
     expect(sheet()!.hidden).toBe(true);
-    host.openQuestions();
+    host.openQuestions({ question: "Q1" });
     expect(sheet()!.hidden).toBe(false);
     expect(document.activeElement).toBe(shown);
+    expect(ofType("questions").at(-1)).toEqual({ type: "questions", open: 1, showing: true });
     // Answered (in another browser, say): none left open; the card says so until it leaves.
     w.emit("questions", "question", { type: "question", question: { ...q, status: "answered", answered_via: "shell", answers: [] } });
-    await waitFor(() => ofType("questions").length === 2, "the count posted again");
-    expect(ofType("questions").at(-1)).toEqual({ type: "questions", open: 0 });
+    await waitFor(() => ofType("questions").at(-1)?.open === 0, "the count posted again");
+    expect(ofType("questions").at(-1)).toEqual({ type: "questions", open: 0, showing: true });
     expect(sheet()!.hidden).toBe(false);
     expect(raw.every(m => JSON.parse(m).nonce === NONCE)).toBe(true);
   });
 
-  it("posts the count only when it changes, and not before init, then the latest at init", async () => {
-    const { host } = await appView({ api: notOwner, init: false });
-    count(2, 2);
-    expect(toHost).toEqual([]);
-    host.init({ nonce: NONCE });
-    expect(ofType("questions")).toEqual([{ type: "questions", open: 2 }]);
-    count(2, 3);
-    count(1, 3);
-    count(1, 2);
-    count(0, 0);
-    expect(ofType("questions").map(m => m.open)).toEqual([2, 1, 0]);
-  });
-
-  it("posts no count while the question module has told none", async () => {
-    await appView({ api: notOwner });
-    expect(ofType("questions")).toEqual([]);
-  });
-
-  it("closes the sheet on Close, on Escape, and once no card is left; openQuestions with none waits briefly for one", async () => {
-    const t = 10_000;
+  it("openQuestions({question}) shows the sheet when that question arrives, however late, and focuses its card once it is mounted", async () => {
+    let t = 10_000;
     vi.spyOn(performance, "now").mockImplementation(() => t);
     const { host } = await appView({ api: notOwner });
-    // Nothing to show: the sheet stays closed.
-    host.openQuestions();
+    tell(["Q0"]);
+    card("Q0");
+    host.openQuestions({ question: "Q1" });
+    // Another question's card is there: the sheet waits for this one.
     expect(sheet()!.hidden).toBe(true);
-    // A card that arrives moments after the request shows.
-    const c = card();
-    count(1, 1);
+    t += 60_000;
+    // The module tells the change first, then mounts the card.
+    tell(["Q0", "Q1"]);
     expect(sheet()!.hidden).toBe(false);
+    const c = card("Q1");
+    await observed();
     expect(document.activeElement).toBe(c);
+  });
+
+  it("drops a waiting openQuestions({question}) on closeQuestions and when that question closes", async () => {
+    const { host } = await appView({ api: notOwner });
+    host.openQuestions({ question: "Q1" });
+    host.closeQuestions();
+    tell(["Q1"]);
+    card("Q1");
+    expect(sheet()!.hidden).toBe(true);
+    tell([]);
+    host.openQuestions({ question: "Q2" });
+    // Answered elsewhere before it ever showed here.
+    tell([], ["Q2"]);
+    card("Q2");
+    tell(["Q1"], ["Q2"]);
+    expect(sheet()!.hidden).toBe(true);
+    // A question that is already closed is not waited for.
+    host.openQuestions({ question: "Q2" });
+    tell(["Q1", "Q3"], ["Q2"]);
+    expect(sheet()!.hidden).toBe(true);
+  });
+
+  it("openQuestions() shows what is there and waits for nothing", async () => {
+    const { host } = await appView({ api: notOwner });
+    host.openQuestions();
+    tell(["Q1"]);
+    card("Q1");
+    expect(sheet()!.hidden).toBe(true);
+    host.openQuestions();
+    expect(sheet()!.hidden).toBe(false);
+    expect(document.activeElement).toBe(cardOf("Q1"));
+  });
+
+  it("closes the sheet on Close, Escape, closeQuestions, and once no card is left, posting showing each time", async () => {
+    const { host } = await appView({ api: notOwner });
+    tell(["Q1"]);
+    const c = card("Q1");
+    host.openQuestions();
     sheet()!.querySelector<HTMLButtonElement>("button.app-questions-close")!.click();
     expect(sheet()!.hidden).toBe(true);
     host.openQuestions();
-    expect(sheet()!.hidden).toBe(false);
     c.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(sheet()!.hidden).toBe(true);
     host.openQuestions();
+    host.closeQuestions();
+    expect(sheet()!.hidden).toBe(true);
+    host.openQuestions();
     c.remove();
-    count(0, 0);
+    tell([]);
     expect(sheet()!.hidden).toBe(true);
     // A card that comes later, unasked, does not open it.
-    card();
-    count(1, 1);
+    tell(["Q2"]);
+    card("Q2");
     expect(sheet()!.hidden).toBe(true);
+    expect(ofType("questions").map(m => [m.open, m.showing])).toEqual([
+      [1, false], [1, true], [1, false], [1, true], [1, false], [1, true], [1, false], [1, true], [0, false], [1, false],
+    ]);
   });
 
-  it("an openQuestions with nothing to show waits OPEN_WAIT_MS for a card, then is forgotten", async () => {
-    let t = 10_000;
-    vi.spyOn(performance, "now").mockImplementation(() => t);
-    const { host, m } = await appView({ api: notOwner });
+  it("does not take focus from a field of the sheet when another question is asked for", async () => {
+    const { host } = await appView({ api: notOwner });
+    tell(["Q1"]);
+    card("Q1");
     host.openQuestions();
-    t += m.OPEN_WAIT_MS - 1;
-    // A change that shows nothing (another app's question, say) keeps the request.
-    count(0, 0);
-    expect(sheet()!.hidden).toBe(true);
-    const c = card();
-    count(1, 1);
-    expect(sheet()!.hidden).toBe(false);
-    sheet()!.querySelector<HTMLButtonElement>("button.app-questions-close")!.click();
-    c.remove();
-    count(0, 0);
+    const field = cardOf("Q1").querySelector("input")!;
+    field.focus();
+    host.openQuestions({ question: "Q2" });
+    tell(["Q1", "Q2"]);
+    card("Q2");
+    await observed();
+    expect(document.activeElement).toBe(field);
+  });
+
+  it("posts the change only when it changes, and not before init, then the latest at init", async () => {
+    const { host } = await appView({ api: notOwner, init: false });
+    tell(["Q1", "Q2"]);
+    expect(toHost).toEqual([]);
+    host.init({ nonce: NONCE });
+    expect(ofType("questions")).toEqual([{ type: "questions", open: 2, showing: false }]);
+    tell(["Q1", "Q2"], ["Q3"]);
+    tell(["Q1"], ["Q2"]);
+    tell(["Q3"], ["Q2"]);
+    tell([]);
+    expect(ofType("questions").map(m => m.open)).toEqual([2, 1, 0]);
+  });
+
+  it("posts nothing while the question module has told nothing", async () => {
+    const { host } = await appView({ api: notOwner });
     host.openQuestions();
-    t += m.OPEN_WAIT_MS;
-    card();
-    count(1, 1);
-    expect(sheet()!.hidden).toBe(true);
+    host.closeQuestions();
+    expect(ofType("questions")).toEqual([]);
   });
 
   it("setDraftText fills the focused text field of a question in the sheet, before an open composer", async () => {
@@ -1277,8 +1324,8 @@ describe("app mode's questions", { timeout: MOUNT_TIMEOUT_MS }, () => {
     hello(frame, 1);
     host.composeArtifact();
     const composer = await waitFor(() => document.querySelector<HTMLTextAreaElement>(".composer textarea"), "composer");
-    const c = card();
-    count(1, 1);
+    tell(["Q1"]);
+    const c = card("Q1");
     host.openQuestions();
     const other = c.querySelector<HTMLInputElement>("input")!;
     const typed: string[] = [];
@@ -1298,8 +1345,7 @@ describe("app mode's questions", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(composer.value).toBe("for the composer");
     expect(ctl.composerText).toBe("for the composer");
     // A field of a closed sheet is not filled.
-    other.focus();
-    sheet()!.querySelector<HTMLButtonElement>("button.app-questions-close")!.click();
+    host.closeQuestions();
     other.focus();
     host.setDraftText("hidden");
     expect(other.value).toBe("a green one");
@@ -1308,17 +1354,29 @@ describe("app mode's questions", { timeout: MOUNT_TIMEOUT_MS }, () => {
   it("has no sheet in the inspect view, and openQuestions there does nothing", async () => {
     const { host } = await appView({ api: notOwner, query: "?app=1&inspect=1" });
     expect(sheet()).toBeNull();
-    host.openQuestions();
-    count(1, 1);
+    host.openQuestions({ question: "Q1" });
+    host.closeQuestions();
+    tell(["Q1"]);
     expect(ofType("questions")).toEqual([]);
   });
 
-  it("uninstall removes the sheet and stops posting counts", async () => {
+  it("ignores a malformed question ID or change", async () => {
+    const { host } = await appView({ api: notOwner });
+    tell(["Q1"]);
+    card("Q1");
+    for (const bad of [{ question: 5 }, { question: "" }, { question: "x".repeat(129) }]) host.openQuestions(bad as never);
+    expect(sheet()!.hidden).toBe(true);
+    document.dispatchEvent(new CustomEvent("clax-questions", { detail: { open: [1], closed: [] } }));
+    document.dispatchEvent(new CustomEvent("clax-questions", { detail: { open: 2 } }));
+    expect(ofType("questions")).toEqual([{ type: "questions", open: 1, showing: false }]);
+  });
+
+  it("uninstall removes the sheet and stops posting", async () => {
     const { uninstall } = await appView({ api: notOwner });
     expect(sheet()).not.toBeNull();
     uninstall();
     expect(sheet()).toBeNull();
-    count(1, 1);
+    tell(["Q1"]);
     expect(ofType("questions")).toEqual([]);
   });
 });
