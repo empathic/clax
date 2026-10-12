@@ -46,27 +46,33 @@ const request = AgentRequest(
   userText: 'A run tracker.\n"quoted" line',
 );
 
-/// Starts the fixture with the parent's environment plus [env], and
-/// records signals sent to the processes it started.
+/// Starts the fixture with the environment the backend passes plus
+/// [extra], and records what it started and the signals sent.
 class RecordingStarter {
-  RecordingStarter(this.env);
+  RecordingStarter(this.extra);
 
-  final Map<String, String> env;
+  final Map<String, String> extra;
   final List<ProcessSignal> signals = [];
   final List<String> executables = [];
+  final List<Map<String, String>> environments = [];
+  final List<Process> processes = [];
 
   Future<Process> call(
     String executable,
     List<String> arguments, {
     required String workingDirectory,
+    required Map<String, String> environment,
   }) async {
     executables.add(executable);
+    environments.add(environment);
     final p = await Process.start(
       executable,
       arguments,
       workingDirectory: workingDirectory,
-      environment: env,
+      environment: {...environment, ...extra},
+      includeParentEnvironment: false,
     );
+    processes.add(p);
     return _SignalRecordingProcess(p, signals);
   }
 }
@@ -110,6 +116,8 @@ void main() {
   (ClaudeCliBackend, RecordingStarter) backend(
     Map<String, String> env, {
     Duration timeout = const Duration(seconds: 300),
+    Duration killGrace = const Duration(seconds: 5),
+    Map<String, String>? parentEnvironment,
   }) {
     final starter = RecordingStarter({'FAKE_CLAUDE_LOG': log, ...env});
     return (
@@ -119,10 +127,33 @@ void main() {
         scratch: scratch,
         starter: starter.call,
         timeout: timeout,
+        killGrace: killGrace,
+        parentEnvironment:
+            parentEnvironment ?? {'PATH': Platform.environment['PATH']!},
       ),
       starter,
     );
   }
+
+  /// A new FIFO under the test's directory.
+  Future<String> fifo(String name) async {
+    final path = '${tmp.path}/$name';
+    final mk = await Process.run('mkfifo', [path]);
+    expect(mk.exitCode, 0, reason: '${mk.stderr}');
+    return path;
+  }
+
+  /// Completes once the fixture has written to the [ready] FIFO.
+  Future<void> readyLine(String ready) =>
+      File(ready).openRead().transform(utf8.decoder).first;
+
+  AgentRequest cancellable(Future<void> cancelled) => AgentRequest(
+    kind: request.kind,
+    model: request.model,
+    systemPrompt: request.systemPrompt,
+    userText: request.userText,
+    cancelled: cancelled,
+  );
 
   String out(Object json) {
     final f = File('${tmp.path}/out.json')
@@ -165,8 +196,11 @@ void main() {
       systemFile,
       '--model',
       'claude-haiku-5-5',
+      '--effort',
+      'low',
       '--no-session-persistence',
       '--strict-mcp-config',
+      '--safe-mode',
     ]);
     expect(systemFile, endsWith('/system.md'));
     expect(File('$log.system').readAsStringSync(), request.systemPrompt);
@@ -235,18 +269,132 @@ void main() {
   );
 
   test('a timeout kills the process and is a retryable AgentError', () async {
-    final fifo = '${tmp.path}/block';
-    final mk = await Process.run('mkfifo', [fifo]);
-    expect(mk.exitCode, 0, reason: '${mk.stderr}');
     final (b, starter) = backend({
-      'FAKE_CLAUDE_BLOCK': fifo,
+      'FAKE_CLAUDE_BLOCK': await fifo('block'),
       'FAKE_CLAUDE_OUT': out(cliOutput(structured: resultJson())),
     }, timeout: const Duration(milliseconds: 200));
     final e = await fails(b.run(request));
     expect(e.message, contains('did not finish'));
     expect(e.retryable, isTrue);
-    expect(starter.signals, isNotEmpty);
+    expect(e.kind, AgentErrorKind.failed);
+    expect(starter.signals, [ProcessSignal.sigterm]);
+    expect(
+      await starter.processes.single.exitCode,
+      -ProcessSignal.sigterm.signalNumber,
+    );
     expect(scratch.listSync(), isEmpty);
+  });
+
+  test('cancelling a running claude terminates it and is a cancelled, '
+      'non-retryable AgentError', () async {
+    final ready = await fifo('ready');
+    final (b, starter) = backend({
+      'FAKE_CLAUDE_READY': ready,
+      'FAKE_CLAUDE_BLOCK': await fifo('block'),
+      'FAKE_CLAUDE_OUT': out(cliOutput(structured: resultJson())),
+    });
+    final cancel = Completer<void>();
+    final run = fails(b.run(cancellable(cancel.future)));
+    await readyLine(ready);
+    cancel.complete();
+    final e = await run;
+    expect(e.kind, AgentErrorKind.cancelled);
+    expect(e.retryable, isFalse);
+    expect(starter.signals, [ProcessSignal.sigterm]);
+    expect(
+      await starter.processes.single.exitCode,
+      -ProcessSignal.sigterm.signalNumber,
+    );
+    expect(scratch.listSync(), isEmpty);
+  });
+
+  test('a claude that ignores SIGTERM gets SIGKILL after the grace and '
+      'exits', () async {
+    final ready = await fifo('ready');
+    final (b, starter) = backend({
+      'FAKE_CLAUDE_IGNORE_TERM': '1',
+      'FAKE_CLAUDE_READY': ready,
+      'FAKE_CLAUDE_BLOCK': await fifo('block'),
+    }, killGrace: const Duration(milliseconds: 100));
+    final cancel = Completer<void>();
+    final run = fails(b.run(cancellable(cancel.future)));
+    await readyLine(ready);
+    cancel.complete();
+    final e = await run;
+    expect(e.kind, AgentErrorKind.cancelled);
+    expect(starter.signals, [ProcessSignal.sigterm, ProcessSignal.sigkill]);
+    expect(
+      await starter.processes.single.exitCode,
+      -ProcessSignal.sigkill.signalNumber,
+    );
+  });
+
+  test('a request cancelled before the run starts no process', () async {
+    final (b, starter) = backend({
+      'FAKE_CLAUDE_OUT': out(cliOutput(structured: resultJson())),
+    });
+    final e = await fails(b.run(cancellable(Future<void>.value())));
+    expect(e.kind, AgentErrorKind.cancelled);
+    expect(starter.executables, isEmpty);
+    expect(scratch.listSync(), isEmpty);
+  });
+
+  test('a cancellation signal that never fires leaves the run alone', () async {
+    final (b, _) = backend({
+      'FAKE_CLAUDE_OUT': out(cliOutput(structured: resultJson())),
+    });
+    final r = await b.run(cancellable(Completer<void>().future));
+    expect(r.toJson(), resultJson());
+  });
+
+  test('the child gets the parent environment without Claude Code session '
+      'variables or ANTHROPIC_API_KEY', () async {
+    final (b, starter) = backend(
+      {'FAKE_CLAUDE_OUT': out(cliOutput(structured: resultJson()))},
+      parentEnvironment: {
+        'PATH': Platform.environment['PATH']!,
+        'HOME': '/Users/someone',
+        'USER': 'someone',
+        'TMPDIR': '/tmp/someone',
+        'CLAUDE_CONFIG_DIR': '/Users/someone/.claude-work',
+        'CLAUDE_CODE_OAUTH_TOKEN': 'oauth-token',
+        'CLAUDECODE': '1',
+        'CLAUDE_CODE_SESSION_ID': 'f00d',
+        'CLAUDE_CODE_CHILD_SESSION': '1',
+        'CLAUDE_CODE_MESSAGING_SOCKET': '/tmp/sock',
+        'CLAUDE_PID': '42',
+        'CLAUDE_EFFORT': 'max',
+        'CLAUDE_PLUGIN_DATA': '/tmp/plugin',
+        'ANTHROPIC_API_KEY': 'sk-ant-x',
+      },
+    );
+    await b.run(request);
+    final passed = starter.environments.single;
+    expect(passed, {
+      'PATH': Platform.environment['PATH']!,
+      'HOME': '/Users/someone',
+      'USER': 'someone',
+      'TMPDIR': '/tmp/someone',
+      'CLAUDE_CONFIG_DIR': '/Users/someone/.claude-work',
+      'CLAUDE_CODE_OAUTH_TOKEN': 'oauth-token',
+    });
+    final seen = {
+      for (final line in File('$log.env').readAsLinesSync())
+        if (line.contains('=')) line.substring(0, line.indexOf('=')),
+    };
+    expect(seen, containsAll(['HOME', 'USER', 'CLAUDE_CONFIG_DIR']));
+    for (final dropped in [
+      'CLAUDECODE',
+      'CLAUDE_CODE_SESSION_ID',
+      'CLAUDE_CODE_CHILD_SESSION',
+      'CLAUDE_CODE_MESSAGING_SOCKET',
+      'CLAUDE_PID',
+      'CLAUDE_EFFORT',
+      'CLAUDE_PLUGIN_DATA',
+      'ANTHROPIC_API_KEY',
+    ]) {
+      expect(seen, isNot(contains(dropped)), reason: dropped);
+    }
   });
 
   test('output that is not JSON is a retryable AgentError', () async {
@@ -304,6 +452,9 @@ void main() {
       pathDir = Directory('${tmp.path}/bin')..createSync();
     });
 
+    /// Only `~/.local/bin`, so this machine's Homebrew does not answer.
+    List<String> localBin() => ['${home.path}/.local/bin'];
+
     Map<String, String> env({String? path}) => {
       'HOME': home.path,
       'PATH': path ?? '${tmp.path}/empty:${pathDir.path}',
@@ -313,7 +464,11 @@ void main() {
       final configured = await exe('${tmp.path}/mine/claude');
       await exe('${pathDir.path}/claude');
       expect(
-        await ClaudeCliBackend.find(configured: configured, environment: env()),
+        await ClaudeCliBackend.find(
+          configured: configured,
+          environment: env(),
+          fallbacks: localBin(),
+        ),
         configured,
       );
     });
@@ -321,11 +476,15 @@ void main() {
     test('searches PATH when nothing usable is configured', () async {
       final onPath = await exe('${pathDir.path}/claude');
       await exe('${home.path}/.local/bin/claude');
-      expect(await ClaudeCliBackend.find(environment: env()), onPath);
+      expect(
+        await ClaudeCliBackend.find(environment: env(), fallbacks: localBin()),
+        onPath,
+      );
       expect(
         await ClaudeCliBackend.find(
           configured: '${tmp.path}/missing',
           environment: env(),
+          fallbacks: localBin(),
         ),
         onPath,
       );
@@ -334,7 +493,26 @@ void main() {
     test('falls back to ~/.local/bin/claude', () async {
       await exe('${pathDir.path}/claude', executable: false);
       final local = await exe('${home.path}/.local/bin/claude');
-      expect(await ClaudeCliBackend.find(environment: env()), local);
+      expect(
+        await ClaudeCliBackend.find(environment: env(), fallbacks: localBin()),
+        local,
+      );
+    });
+
+    test('falls back to Homebrew after ~/.local/bin', () async {
+      expect(ClaudeCliBackend.fallbackDirs('/Users/someone'), [
+        '/Users/someone/.local/bin',
+        '/opt/homebrew/bin',
+        '/usr/local/bin',
+      ]);
+      final brew = await exe('${tmp.path}/brew/bin/claude');
+      expect(
+        await ClaudeCliBackend.find(
+          environment: env(),
+          fallbacks: ['${home.path}/.local/bin', '${tmp.path}/brew/bin'],
+        ),
+        brew,
+      );
     });
 
     test('is null when no claude is executable', () async {
@@ -343,6 +521,7 @@ void main() {
       expect(
         await ClaudeCliBackend.find(
           environment: env(path: '${pathDir.path}:${pathDir.path}/sub'),
+          fallbacks: localBin(),
         ),
         isNull,
       );

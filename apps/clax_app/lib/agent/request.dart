@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import 'backend.dart' show AgentError, AgentErrorKind;
+
 /// What a request to the agent asks for.
 enum RequestKind {
   /// Make a new app from the person's description.
@@ -76,6 +78,7 @@ class AgentRequest {
     required this.systemPrompt,
     required this.userText,
     this.image,
+    this.cancelled,
   });
 
   final RequestKind kind;
@@ -87,4 +90,10 @@ class AgentRequest {
 
   /// The first comment's clip (PNG), for backends that take images.
   final Uint8List? image;
+
+  /// Completes (with a value or an error) when the caller no longer wants
+  /// the result. The backend then stops its work (ends the process, aborts
+  /// the HTTP request) and throws an [AgentError] of kind
+  /// [AgentErrorKind.cancelled]. Null: the request is never cancelled.
+  final Future<void>? cancelled;
 }

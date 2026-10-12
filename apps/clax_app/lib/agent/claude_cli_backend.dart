@@ -9,24 +9,53 @@ import 'edit_schema.dart';
 import 'request.dart';
 
 /// Starts `claude` for [ClaudeCliBackend] with its stdin, stdout and stderr
-/// piped. The child keeps the parent's environment: `claude` needs the
-/// person's login from it.
+/// piped, with exactly [environment] (nothing else is inherited).
 typedef CliProcessStarter = Future<Process> Function(
   String executable,
   List<String> arguments, {
   required String workingDirectory,
+  required Map<String, String> environment,
 });
 
-/// The default [CliProcessStarter]: `Process.start` with the parent's
+/// The default [CliProcessStarter]: `Process.start` with exactly the given
 /// environment.
-Future<Process> startWithParentEnvironment(
+Future<Process> startWithEnvironment(
   String executable,
   List<String> arguments, {
   required String workingDirectory,
-}) => Process.start(executable, arguments, workingDirectory: workingDirectory);
+  required Map<String, String> environment,
+}) => Process.start(
+  executable,
+  arguments,
+  workingDirectory: workingDirectory,
+  environment: environment,
+  includeParentEnvironment: false,
+);
+
+/// The environment `claude` runs with: [parent] without the variables of a
+/// Claude Code session the app may have been started from (`CLAUDECODE`,
+/// `CLAUDE_CODE_*` except `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_PID`,
+/// `CLAUDE_EFFORT`, `CLAUDE_PLUGIN_*`) and without `ANTHROPIC_API_KEY`, so
+/// the run uses the person's Claude login and is not tied to that session.
+/// Everything else, `HOME`, `PATH` and `CLAUDE_CONFIG_DIR` included, is kept.
+Map<String, String> claudeEnvironment(Map<String, String> parent) => {
+  for (final MapEntry(:key, :value) in parent.entries)
+    if (!_dropFromEnvironment(key)) key: value,
+};
+
+bool _dropFromEnvironment(String name) =>
+    name == 'CLAUDECODE' ||
+    name == 'CLAUDE_PID' ||
+    name == 'CLAUDE_EFFORT' ||
+    name == 'ANTHROPIC_API_KEY' ||
+    name.startsWith('CLAUDE_PLUGIN_') ||
+    (name.startsWith('CLAUDE_CODE_') && name != 'CLAUDE_CODE_OAUTH_TOKEN');
 
 /// The desktop backend: runs `claude -p` with [editSchema] as its
-/// structured output, all tools off, and the request on stdin.
+/// structured output, all tools off, at effort low, and the request on
+/// stdin. `--safe-mode` keeps the person's CLAUDE.md, auto-memory, skills,
+/// plugins, hooks and MCP servers out of the run while their login still
+/// works (`--bare` would not read the login).
 ///
 /// Each run gets its own directory under [scratch], holding `system.md`
 /// (the system prompt) and used as the working directory; it is removed
@@ -39,7 +68,9 @@ class ClaudeCliBackend implements AgentBackend {
     required this.scratch,
     CliProcessStarter? starter,
     this.timeout = const Duration(seconds: 300),
-  }) : _start = starter ?? startWithParentEnvironment;
+    this.killGrace = const Duration(seconds: 5),
+    this._parentEnvironment,
+  }) : _start = starter ?? startWithEnvironment;
 
   /// The `claude` executable (or an interpreter, with [prefixArgs]).
   final String executable;
@@ -54,10 +85,17 @@ class ClaudeCliBackend implements AgentBackend {
   /// How long a run may take before it is killed.
   final Duration timeout;
 
+  /// How long a timed-out or cancelled run has to exit after SIGTERM
+  /// before SIGKILL.
+  final Duration killGrace;
+
   final CliProcessStarter _start;
 
-  /// How long a timed-out run has to exit after SIGTERM before SIGKILL.
-  static const killGrace = Duration(seconds: 5);
+  /// The environment [claudeEnvironment] filters; this process's when null.
+  final Map<String, String>? _parentEnvironment;
+
+  /// The effort every run asks for.
+  static const effort = 'low';
 
   @override
   String get name => 'claude-cli';
@@ -79,16 +117,21 @@ class ClaudeCliBackend implements AgentBackend {
     systemPromptFile,
     '--model',
     model,
+    '--effort',
+    effort,
     '--no-session-persistence',
     '--strict-mcp-config',
+    '--safe-mode',
   ];
 
   /// The `claude` to run: [configured] when it is executable, else the first
-  /// `claude` on `PATH`, else `~/.local/bin/claude`; null when none is.
-  /// [environment] (default: this process's) supplies `PATH` and `HOME`.
+  /// `claude` on `PATH`, else the first in [fallbacks] (default
+  /// [fallbackDirs]); null when none is. [environment] (default: this
+  /// process's) supplies `PATH` and `HOME`.
   static Future<String?> find({
     String? configured,
     Map<String, String>? environment,
+    List<String>? fallbacks,
   }) async {
     final env = environment ?? Platform.environment;
     final home = env['HOME'] ?? '';
@@ -97,13 +140,23 @@ class ClaudeCliBackend implements AgentBackend {
         _expandHome(configured.trim(), home),
       for (final dir in (env['PATH'] ?? '').split(':'))
         if (dir.isNotEmpty) '$dir/claude',
-      if (home.isNotEmpty) '$home/.local/bin/claude',
+      for (final dir in fallbacks ?? fallbackDirs(home))
+        if (dir.isNotEmpty) '$dir/claude',
     ];
     for (final c in candidates) {
       if (await _isExecutable(c)) return c;
     }
     return null;
   }
+
+  /// Where [find] looks after `PATH`: the native installer's
+  /// `~/.local/bin`, then Homebrew's prefixes (Apple silicon, Intel). An app
+  /// opened from the Finder gets a `PATH` without them.
+  static List<String> fallbackDirs(String home) => [
+    if (home.isNotEmpty) '$home/.local/bin',
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+  ];
 
   /// Whether this backend can run here: macOS outside the App Sandbox.
   static bool get supported =>
@@ -119,7 +172,9 @@ class ClaudeCliBackend implements AgentBackend {
 
   @override
   Future<EditResult> run(AgentRequest request) async {
+    final cancel = CancelWatch(request.cancelled);
     await scratch.create(recursive: true);
+    cancel.check();
     final dir = await scratch.createTemp('run-');
     try {
       final systemFile = File('${dir.path}/system.md');
@@ -130,11 +185,19 @@ class ClaudeCliBackend implements AgentBackend {
       ];
       final Process p;
       try {
-        p = await _start(executable, args, workingDirectory: dir.path);
+        cancel.check();
+        p = await _start(
+          executable,
+          args,
+          workingDirectory: dir.path,
+          environment: claudeEnvironment(
+            _parentEnvironment ?? Platform.environment,
+          ),
+        );
       } on ProcessException catch (e) {
         throw AgentError("Couldn't start claude ($executable): ${e.message}");
       }
-      return await _finish(p, request.userText);
+      return await _finish(p, request.userText, cancel);
     } finally {
       try {
         await dir.delete(recursive: true);
@@ -144,7 +207,11 @@ class ClaudeCliBackend implements AgentBackend {
     }
   }
 
-  Future<EditResult> _finish(Process p, String userText) async {
+  Future<EditResult> _finish(
+    Process p,
+    String userText,
+    CancelWatch cancel,
+  ) async {
     final stdout = _collect(p.stdout);
     final stderr = _collect(p.stderr);
     // Not awaited on its own: a child that never reads stdin must still be
@@ -155,8 +222,14 @@ class ClaudeCliBackend implements AgentBackend {
     final List<int> out;
     final List<int> err;
     try {
-      final done = await Future.wait<Object>([p.exitCode, stdout, stderr])
-          .timeout(timeout);
+      final done = await Future.any<List<Object>?>([
+        Future.wait<Object>([p.exitCode, stdout, stderr]),
+        cancel.whenCancelled.then((_) => null),
+      ]).timeout(timeout);
+      if (done == null) {
+        await _kill(p);
+        throw const AgentError.cancelled();
+      }
       code = done[0] as int;
       out = done[1] as List<int>;
       err = done[2] as List<int>;
@@ -191,7 +264,7 @@ class ClaudeCliBackend implements AgentBackend {
       )
       .then((b) => b.takeBytes());
 
-  static Future<void> _kill(Process p) async {
+  Future<void> _kill(Process p) async {
     p.kill();
     try {
       await p.exitCode.timeout(killGrace);
