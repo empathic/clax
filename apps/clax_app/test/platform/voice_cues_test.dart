@@ -63,6 +63,19 @@ void main() {
       ]);
     });
 
+    test(
+      'where the platform vibrates (Android), only the channel is called',
+      () async {
+        final cues = ChannelVoiceCues(
+          enabled: () => true,
+          platformHaptics: true,
+        );
+        await cues.started();
+        await cues.stopped();
+        expect(log, ['play {cue: start}', 'play {cue: stop}']);
+      },
+    );
+
     test('turned off, neither vibrates nor sounds', () async {
       final cues = ChannelVoiceCues(enabled: () => false);
       await cues.started();

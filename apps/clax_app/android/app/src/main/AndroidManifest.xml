@@ -3,6 +3,9 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- On-device dictation. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <!-- Dictation's start and stop cues vibrate through the Vibrator
+         (CuesChannel.kt), felt even with system touch feedback off. -->
+    <uses-permission android:name="android.permission.VIBRATE"/>
     <!-- Runs keep going while the person is elsewhere: BackgroundRunService
          is a dataSync foreground service, and it and the "is ready" notices
          need POST_NOTIFICATIONS to be seen (asked for at the first make). -->

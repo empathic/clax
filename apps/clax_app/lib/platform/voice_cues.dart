@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/services.dart';
 
@@ -26,22 +27,33 @@ class NoVoiceCues implements VoiceCues {
   Future<void> stopped() async {}
 }
 
-/// [VoiceCues] as a haptic, then a short tone from the platform.
+/// [VoiceCues] as a vibration and a short tone.
 ///
-/// The start is `HapticFeedback.mediumImpact`, the stop
-/// `HapticFeedback.lightImpact`. The tone is `play` `{cue: "start"|"stop"}`
-/// on [channel] (`dev.empathic.clax/cues`), served by `CuesChannel.kt` on
-/// Android and `CuesChannel.swift` on macOS; the platform plays nothing
-/// while the device is silenced. A platform without the channel only
-/// vibrates. Each cue reads [enabled] (the person's "Dictation sounds and
-/// vibration") and does nothing when it answers false. A cue never throws.
+/// The tone (and, with [platformHaptics], the vibration) is `play`
+/// `{cue: "start"|"stop"}` on [channel] (`dev.empathic.clax/cues`), served
+/// by `CuesChannel.kt` on Android and `MainFlutterWindow.swift` on macOS;
+/// the platform plays no tone while the device is silenced. Without
+/// [platformHaptics] the vibration is `HapticFeedback.mediumImpact` to
+/// start and `HapticFeedback.lightImpact` to stop, sent first. A platform
+/// without the channel only vibrates. Each cue reads [enabled] (the
+/// person's "Dictation sounds and vibration") and does nothing when it
+/// answers false. A cue never throws.
 class ChannelVoiceCues implements VoiceCues {
-  ChannelVoiceCues({required this.enabled, this.channel = defaultChannel});
+  ChannelVoiceCues({
+    required this.enabled,
+    this.channel = defaultChannel,
+    bool? platformHaptics,
+  }) : platformHaptics = platformHaptics ?? Platform.isAndroid;
 
   static const defaultChannel = MethodChannel('dev.empathic.clax/cues');
 
   final bool Function() enabled;
   final MethodChannel channel;
+
+  /// Whether `play` vibrates too, so `HapticFeedback` is not used. True on
+  /// Android, whose `HapticFeedback` effects are faint, alike, and dropped
+  /// when the person turned touch feedback off.
+  final bool platformHaptics;
 
   @override
   Future<void> started() => _cue('start', HapticFeedback.mediumImpact);
@@ -51,10 +63,12 @@ class ChannelVoiceCues implements VoiceCues {
 
   Future<void> _cue(String cue, Future<void> Function() haptic) async {
     if (!enabled()) return;
-    try {
-      await haptic();
-    } on PlatformException {
-      // No vibrator: the tone still plays.
+    if (!platformHaptics) {
+      try {
+        await haptic();
+      } on PlatformException {
+        // No vibrator: the tone still plays.
+      }
     }
     try {
       await channel.invokeMethod<void>('play', {'cue': cue});
