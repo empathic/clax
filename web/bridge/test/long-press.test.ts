@@ -128,3 +128,18 @@ describe("LongPress", () => {
     expect(SLOP_PX).toBe(10);
   });
 });
+
+describe("LongPress.holding", () => {
+  it("is true from the finger's press until its release or abandonment", () => {
+    const f = fakeTimers(); const h = hooks();
+    lp = new LongPress(document, h, f.t, { trustedOnly: false }); lp.set(true);
+    expect(lp.holding).toBe(false);
+    touch("touchstart", [[20, 30]]); expect(lp.holding).toBe(true);
+    f.fire(); expect(lp.holding).toBe(true);
+    touch("touchend", [[20, 30]]); expect(lp.holding).toBe(false);
+    touch("touchstart", [[20, 30]]);
+    touch("touchmove", [[40, 30]]); expect(lp.holding).toBe(false);
+    touch("touchstart", [[20, 30]]);
+    lp.set(false); expect(lp.holding).toBe(false);
+  });
+});
