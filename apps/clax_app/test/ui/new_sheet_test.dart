@@ -125,4 +125,19 @@ void main() {
     expect(results, [null]);
     expect(voice.listening, isFalse);
   });
+
+  testWidgets('the sheet fits a small phone with long text and a reason', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(320, 568);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await pumpSheet(
+      tester,
+      FakeVoice.denied('Microphone or speech recognition access is turned off'),
+      initial: List.filled(40, 'a long request').join(' '),
+    );
+    expect(tester.takeException(), isNull);
+    expect(find.text('Make it'), findsOneWidget);
+  });
 }
