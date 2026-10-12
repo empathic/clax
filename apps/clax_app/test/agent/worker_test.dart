@@ -233,6 +233,51 @@ void main() {
     expect(t.status, 'resolved');
   });
 
+  test(
+    'recovery while a change runs leaves its threads to that change',
+    () async {
+      final aid = api.seedArtifact('Runs', {'index.html': page});
+      workerWith([
+        change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
+      ]).start();
+      await idle();
+      backend.gate = Completer<void>();
+      final item = api.sendComment(aid, 'Say Keep');
+      await backend.arrived.future;
+
+      // The worker registers again while the change runs: recovery lists the
+      // thread as stranded, and the running change already has it.
+      api.endSession('install');
+      api.releasePolls();
+      await until(() => registrations == 2 && api.waitingPolls == 1);
+      expect(
+        api.calls.where((c) => c.name == 'allThreads'),
+        hasLength(2),
+        reason: 'recovered on start and after the registration',
+      );
+      expect(
+        worker.isIdle,
+        isFalse,
+        reason: 'the change in flight is still running',
+      );
+
+      backend.gate!.complete();
+      backend.gate = null;
+      await until(() => api.currentVersion(aid) == 2);
+      await idle();
+      // Nothing was queued for the thread: once the change has replied, its
+      // threads are not listed again for a recheck.
+      final names = [for (final c in api.calls) c.name];
+      expect(names, contains('replyAsAgent'));
+      expect(
+        names.skip(names.lastIndexOf('replyAsAgent')),
+        isNot(contains('threads')),
+      );
+      expect(backend.seen, hasLength(1));
+      expect(api.threadOf(aid, item.threadId).comments.last.body, 'Keep.');
+    },
+  );
+
   test('a change that fails before the poll sees the restart is recovered '
       'once the worker registers again', () async {
     final aid = api.seedArtifact('Runs', {'index.html': page});
