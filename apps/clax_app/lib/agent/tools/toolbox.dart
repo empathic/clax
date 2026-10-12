@@ -118,11 +118,20 @@ sealed class RunOutcome {
 /// The run published [version] of [artifactId] (null when nothing
 /// changed); [answered] says the threads got their reply.
 final class RunFinished extends RunOutcome {
-  const RunFinished({this.artifactId, this.version, required this.answered});
+  const RunFinished({
+    this.artifactId,
+    this.version,
+    required this.answered,
+    this.docsRefused,
+  });
 
   final String? artifactId;
   final int? version;
   final bool answered;
+
+  /// For a new app: why its starting documents were not written (the app
+  /// was made without them), or null when they were, or there were none.
+  final String? docsRefused;
 }
 
 /// The run stopped without publishing, for [reason].

@@ -763,6 +763,118 @@ void main() {
       expect((await r.api.getDoc(r.aid!, 'runs/c'))!.data, {'km': 2});
     });
 
+    /// A change with a staged write and an edit, rendered, whose live
+    /// batch runs [onBatch] first.
+    Future<Rig> landedWithDocs(void Function(Rig r) onBatch) async {
+      final r = await Rig.make();
+      await r.stage([
+        op('set', 'runs/b', {'km': 1}),
+      ]);
+      await r.edit('Save', 'Keep');
+      await r.renderNow();
+      r.api.beforeLiveBatch = (_) => onBatch(r);
+      return r;
+    }
+
+    test('a re-read that fails after a landed publish restores the version '
+        'and drops the ledger record', () async {
+      final r = await landedWithDocs(
+        (r) => r.api
+          ..failNext(
+            'batchDocs',
+            const ClaxApiError(
+              status: 409,
+              code: 'conflict',
+              message: 'document runs/b changed',
+            ),
+          )
+          ..failNext(
+            'getDoc',
+            const ClaxApiError(
+              status: 500,
+              code: 'internal',
+              message: 'db busy',
+            ),
+          ),
+      );
+      await r.finish('Added.');
+      expect(
+        r.state.outcome,
+        isA<RunGaveUp>().having(
+          (o) => o.reason,
+          'reason',
+          "its data couldn't be updated: db busy",
+        ),
+      );
+      expect(r.named('restoreVersion').single.args, {
+        'aid': r.aid,
+        'n': 1,
+        'ifVersion': 2,
+      });
+      expect(r.api.currentVersion(r.aid!), 3);
+      expect(r.api.filesOf(r.aid!, 3), {'index.html': page});
+      expect(await r.ledger.of(r.aid!), isEmpty);
+      expect(r.thread().status, 'open');
+    });
+
+    test("an error that is not the daemon's after a landed publish restores "
+        'the version too', () async {
+      final r = await landedWithDocs(
+        (r) => r.api.failNext('batchDocs', StateError('socket closed')),
+      );
+      await r.finish('Added.');
+      expect(r.state.outcome, isA<RunGaveUp>());
+      expect(r.named('restoreVersion'), hasLength(1));
+      expect(r.api.filesOf(r.aid!, 3), {'index.html': page});
+      expect(await r.ledger.of(r.aid!), isEmpty);
+    });
+
+    test('a restore that is refused drops the ledger record and says the '
+        'version stays', () async {
+      final r = await landedWithDocs(
+        (r) => r.api
+          ..failNext(
+            'batchDocs',
+            const ClaxApiError(status: 400, code: 'invalid', message: 'no'),
+          )
+          ..failNext(
+            'restoreVersion',
+            const ClaxApiError(
+              status: 409,
+              code: 'conflict',
+              message: 'artifact is at version 3',
+            ),
+          ),
+      );
+      await r.finish('Added.');
+      expect(
+        r.state.outcome,
+        isA<RunGaveUp>().having(
+          (o) => o.reason,
+          'reason',
+          "its data couldn't be updated: no; version 2 is still the "
+              "current one, as it couldn't be undone: artifact is at "
+              'version 3',
+        ),
+      );
+      expect(await r.ledger.of(r.aid!), isEmpty);
+      expect(r.thread().comments.last.body, contains('version 2 is still'));
+    });
+
+    test('an app deleted after the publish drops the run', () async {
+      final r = await landedWithDocs(
+        (r) => r.api.failNext(
+          'batchDocs',
+          const ClaxApiError(status: 404, code: 'not_found', message: 'gone'),
+        ),
+      );
+      await r.finish('Added.');
+      expect(r.state.outcome, isA<RunDropped>());
+      expect(await r.ledger.of(r.aid!), isEmpty);
+      expect(r.api.callNames, isNot(contains('replyAsAgent')));
+      expect(r.named('deleteDraft'), hasLength(1));
+    });
+
     test('a batch with no answer is left for recovery', () async {
       final r = await Rig.make();
       await r.stage([
@@ -1194,6 +1306,45 @@ void main() {
         req.note,
         'Styling the list. I stopped early (90 seconds), so this may not be '
         'everything you asked.',
+      );
+    });
+
+    test('starting documents that are refused are reported with the '
+        'made app', () async {
+      final r = await Rig.make(kind: RequestKind.newApp);
+      await r.ok('write_file', {'path': 'index.html', 'content': page});
+      await r.ok('set_meta', {'title': 'Runs', 'capabilities_json': null});
+      await r.stage([
+        op('set', 'runs/a', {'km': 1}),
+      ]);
+      await r.renderNow();
+      r.api.failNext(
+        'batchDocs',
+        const ClaxApiError(
+          status: 400,
+          code: 'quota_exceeded',
+          message: 'full',
+        ),
+      );
+      final out = await r.finish('Made a run log.');
+      expect(
+        r.state.outcome,
+        isA<RunFinished>()
+            .having((o) => o.version, 'version', 1)
+            .having((o) => o.docsRefused, 'docsRefused', 'full'),
+      );
+      expect((out as ToolOk).json['docs_refused'], 'full');
+    });
+
+    test('made with its documents, nothing is reported refused', () async {
+      final r = await Rig.make(kind: RequestKind.newApp);
+      await r.ok('write_file', {'path': 'index.html', 'content': page});
+      await r.ok('set_meta', {'title': 'Runs', 'capabilities_json': null});
+      await r.renderNow();
+      await r.finish('Made it.');
+      expect(
+        r.state.outcome,
+        isA<RunFinished>().having((o) => o.docsRefused, 'docsRefused', isNull),
       );
     });
 
