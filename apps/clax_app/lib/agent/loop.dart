@@ -554,21 +554,41 @@ class AgentLoop {
           ]);
         } on ClaxApiError catch (e) {
           if (e.status == 0) rethrow;
-          if (!e.isConflict && e.code != 'if_version_required') {
+          final pinMoved = e.isConflict || e.code == 'if_version_required';
+          if (!pinMoved) {
+            // Refused: undo the version; its comments run again.
             _log('documents of $aid version ${v.n} refused: $e');
-            if (detail.artifact.currentVersion == v.n) {
-              try {
-                await _api.restoreVersion(aid, r.base, ifVersion: v.n);
-              } on ClaxApiError catch (e) {
-                if (e.status == 0) rethrow;
-                _log('restoring $aid to version ${r.base} failed: $e');
-              }
-            }
+            await _restore(aid, r.base, v.n, detail.artifact.currentVersion);
             await _forget(aid, r.base);
             undone.addAll(r.answered.keys);
             continue;
           }
-          // A pin that no longer matches: the batch already ran.
+          if (!await _written(aid, r.db)) {
+            // A pin moved and the documents do not hold the writes: the
+            // page wrote them, and whether the batch ran is unknown. Undo
+            // the version and fail, rather than skip a migration.
+            _log('documents of $aid version ${v.n} ambiguous: $e');
+            await _restore(aid, r.base, v.n, detail.artifact.currentVersion);
+            await _forget(aid, r.base);
+            undone.addAll(r.answered.keys);
+            for (final t in stranded) {
+              final done = r.answered[t.id] ?? const [];
+              if (!r.answered.containsKey(t.id) ||
+                  !pendingComments(t).every((c) => done.contains(c.id))) {
+                continue;
+              }
+              await _api.replyAsAgent(
+                aid,
+                t.id,
+                "Couldn't make that change: its data may have changed while "
+                'it was being saved; nothing was changed. Send it again to '
+                'retry.',
+              );
+              replied.add(t.id);
+            }
+            continue;
+          }
+          // The documents hold the writes: the batch already ran.
         }
         r.docsDone = true;
         await _record(r);
@@ -593,13 +613,64 @@ class AgentLoop {
   /// Whether version [v] is the one [r] published: the number it would
   /// get, the same addresses and a note that opens with the reply.
   static bool _madeBy(VersionInfo v, ChangeRecord r) {
+    // Published by the app session: not a restore (no session) and not
+    // another harness's publish.
+    if (v.sessionId == null || v.agentHarness != 'app') return false;
     if (v.addresses.length != r.addresses.length ||
         !v.addresses.every(r.addresses.contains)) {
       return false;
     }
-    final reply = _collapse(r.reply);
+    final reply = _cleanLine(r.reply);
     final head = reply.length > 40 ? reply.substring(0, 40) : reply;
-    return _collapse(v.note ?? '').startsWith(head);
+    return _cleanLine(v.note ?? '').startsWith(head);
+  }
+
+  /// [s] as the daemon stores a note (`clean_line`,
+  /// crates/clax-core/src/working.rs): control characters other than
+  /// whitespace dropped, whitespace collapsed to single spaces.
+  static String _cleanLine(String s) => _collapse(
+    String.fromCharCodes(
+      s.runes.where(
+        (c) =>
+            !((c < 0x20 || (c >= 0x7f && c <= 0x9f)) &&
+                !const {0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x85}.contains(c)),
+      ),
+    ),
+  );
+
+  /// Whether the documents hold [ops]' writes: a set's document holds its
+  /// data, an update's holds each of its fields, a delete's is gone.
+  Future<bool> _written(String aid, List<DbOp> ops) async {
+    final docs = await Future.wait([
+      for (final o in ops) _api.getDoc(aid, '${o.collection}/${o.docId}'),
+    ]);
+    for (var i = 0; i < ops.length; i++) {
+      final o = ops[i];
+      final d = docs[i];
+      final ok = switch (o.op) {
+        'delete' => d == null,
+        'set' => d != null && _jsonEquals(d.data, o.data ?? const {}),
+        _ =>
+          d != null &&
+              (o.data ?? const {}).entries.every(
+                (e) =>
+                    d.data.containsKey(e.key) &&
+                    _jsonEquals(d.data[e.key], e.value),
+              ),
+      };
+      if (!ok) return false;
+    }
+    return true;
+  }
+
+  Future<void> _restore(String aid, int base, int landed, int current) async {
+    if (current != landed) return;
+    try {
+      await _api.restoreVersion(aid, base, ifVersion: landed);
+    } on ClaxApiError catch (e) {
+      if (e.status == 0) rethrow;
+      _log('restoring $aid to version $base failed: $e');
+    }
   }
 
   Future<void> _record(ChangeRecord r) async {
@@ -897,6 +968,24 @@ extension<T> on List<T> {
     }
     return null;
   }
+}
+
+bool _jsonEquals(Object? a, Object? b) {
+  if (a is Map && b is Map) {
+    return a.length == b.length &&
+        a.entries.every(
+          (e) => b.containsKey(e.key) && _jsonEquals(e.value, b[e.key]),
+        );
+  }
+  if (a is List && b is List) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (!_jsonEquals(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  if (a is num && b is num) return a == b;
+  return a == b;
 }
 
 /// The viewer comments of [t] after its last agent comment: the ones no

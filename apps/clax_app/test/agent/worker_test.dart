@@ -512,6 +512,66 @@ void main() {
     expect(events.whereType<WorkerInterrupted>(), hasLength(1));
   });
 
+  test('a batch that ran but lost its answer is found written by its '
+      'content', () async {
+    final lossy = LostAnswerApi();
+    api = lossy;
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    workerWith([
+      change(
+        reply: 'Keep.',
+        edits: [edit('Save', 'Keep')],
+        db: const [
+          DbOp(op: 'set', collection: 'runs', docId: 'a', data: {'km': 1}),
+        ],
+      ),
+    ]).start();
+    await idle();
+    lossy.loseNextBatch = true;
+    final item = api.sendComment(aid, 'Say Keep');
+    await until(
+      () => api.threadOf(aid, item.threadId).comments.length == 2,
+      reason: 'the reply',
+    );
+    await idle();
+    expect(api.callNames, isNot(contains('restoreVersion')));
+    expect(api.threadOf(aid, item.threadId).comments.last.body, 'Keep.');
+    expect((await api.getDoc(aid, 'runs/a'))!.data, {'km': 1});
+  });
+
+  test('a batch whose pin conflicts with other content fails the change '
+      'with the thread open', () async {
+    final lossy = LostAnswerApi();
+    api = lossy;
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    workerWith([
+      change(
+        reply: 'Keep.',
+        edits: [edit('Save', 'Keep')],
+        db: const [
+          DbOp(op: 'set', collection: 'runs', docId: 'a', data: {'km': 1}),
+        ],
+      ),
+    ]).start();
+    await idle();
+    // The batch never runs; the reloaded page then creates the document
+    // with its own defaults.
+    lossy.pageWritesBeforeBatch = ('runs/a', {'km': 9});
+    final item = api.sendComment(aid, 'Say Keep');
+    await until(
+      () => api.threadOf(aid, item.threadId).comments.length == 2,
+      reason: 'the reply',
+    );
+    await idle();
+    final t = api.threadOf(aid, item.threadId);
+    expect(t.comments.last.body, startsWith("Couldn't make that change: "));
+    expect(t.status, 'open');
+    expect(backend.seen, hasLength(1));
+    final restore = api.calls.singleWhere((c) => c.name == 'restoreVersion');
+    expect(restore.args, {'aid': aid, 'n': 1, 'ifVersion': 2});
+    expect((await api.getDoc(aid, 'runs/a'))!.data, {'km': 9});
+  });
+
   test('a lost publish whose documents are then refused is undone and run '
       'again', () async {
     final lossy = LostAnswerApi();
@@ -678,10 +738,30 @@ class CommentingApi extends FakeClaxApi {
   ];
 }
 
-/// A fake whose next publish commits but answers as if the daemon were
-/// gone.
+/// A fake whose next publish or document batch can lose its answer.
 class LostAnswerApi extends FakeClaxApi {
   var loseNextPublish = false;
+
+  /// The next document batch runs but answers as if the daemon were gone.
+  var loseNextBatch = false;
+
+  /// Before the next document batch, the page writes this document, and
+  /// the batch answers as if the daemon were gone without running.
+  (String, Map<String, Object?>)? pageWritesBeforeBatch;
+
+  @override
+  Future<void> batchDocs(String aid, List<DocWrite> writes) async {
+    if (pageWritesBeforeBatch case (final path, final data)) {
+      pageWritesBeforeBatch = null;
+      putDoc(aid, path, data);
+      throw unreachable;
+    }
+    await super.batchDocs(aid, writes);
+    if (loseNextBatch) {
+      loseNextBatch = false;
+      throw unreachable;
+    }
+  }
 
   @override
   Future<PublishResult> publish(String aid, PublishRequest r) async {
