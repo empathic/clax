@@ -1,5 +1,6 @@
 import Cocoa
 import FlutterMacOS
+import WebKit
 
 class MainFlutterWindow: NSWindow {
   override func awakeFromNib() {
@@ -33,6 +34,65 @@ class MainFlutterWindow: NSWindow {
       }
     }
 
+    #if DEBUG
+      installTestInput(flutterViewController)
+    #endif
+
     super.awakeFromNib()
   }
+
+  #if DEBUG
+    /// Debug builds only: the `dev.empathic.clax/test-input` channel, with
+    /// which the macOS integration test (`integration_test/`) clicks in the
+    /// app's WebView as a person would. Its "click" method takes `x` and `y`
+    /// in the Flutter view's logical pixels from its top left and presses
+    /// and releases the left button there, as `NSEvent`s handed to the
+    /// WebView under the point, so the page gets trusted events. It answers
+    /// whether a WebView was under the point. No pointer move is sent:
+    /// WebKit drops synthesized moves while the app is not active.
+    private func installTestInput(_ controller: FlutterViewController) {
+      let channel = FlutterMethodChannel(
+        name: "dev.empathic.clax/test-input",
+        binaryMessenger: controller.engine.binaryMessenger)
+      channel.setMethodCallHandler { [weak self] call, result in
+        guard let self, call.method == "click",
+          let args = call.arguments as? [String: Any],
+          let x = args["x"] as? Double, let y = args["y"] as? Double
+        else {
+          result(FlutterMethodNotImplemented)
+          return
+        }
+        let view = controller.view
+        let point = view.convert(
+          NSPoint(x: x, y: view.isFlipped ? y : view.bounds.height - y), to: nil)
+        guard let content = self.contentView,
+          let hit = content.hitTest(content.superview?.convert(point, from: nil) ?? point),
+          let web = Self.webView(containing: hit)
+        else {
+          result(false)
+          return
+        }
+        if let e = self.mouse(.leftMouseDown, at: point) { web.mouseDown(with: e) }
+        if let e = self.mouse(.leftMouseUp, at: point) { web.mouseUp(with: e) }
+        result(true)
+      }
+    }
+
+    private func mouse(_ type: NSEvent.EventType, at p: NSPoint) -> NSEvent? {
+      NSEvent.mouseEvent(
+        with: type, location: p, modifierFlags: [],
+        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: windowNumber,
+        context: nil, eventNumber: 0, clickCount: 1,
+        pressure: type == .leftMouseDown ? 1 : 0)
+    }
+
+    private static func webView(containing view: NSView) -> WKWebView? {
+      var v: NSView? = view
+      while let cur = v {
+        if let web = cur as? WKWebView { return web }
+        v = cur.superview
+      }
+      return nil
+    }
+  #endif
 }
