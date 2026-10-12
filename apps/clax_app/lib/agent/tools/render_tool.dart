@@ -17,23 +17,29 @@ import 'toolbox.dart';
 /// The most writes one `batchDocs` call takes (the daemon's limit).
 const _batchLimit = 50;
 
+/// The longest a render waits for the inspected page, less when the run's
+/// wall clock has less left.
+const inspectLimit = Duration(seconds: 8);
+
 /// The title a new app's draft is served under before it has one.
 const _untitled = 'New app';
 
 /// Serves one run's draft and inspects it.
 ///
 /// The first render creates the draft artifact (`createDraft`, of the
-/// run's app, with a copy of its documents); later ones publish only what
-/// changed since the last upload, pinned to the draft's version. Staged
-/// document writes not yet written are applied to the draft's copy, best
-/// effort: a write the daemon refuses is listed in the result's
-/// `db_refused` and the render goes on. Then the [Inspector] loads
-/// `<baseUrl>/a/<draft>[/<file>]?app=1&inspect=1`.
+/// run's app, with a copy of its documents); later ones publish
+/// `index.html` and what else changed since the last upload, pinned to the
+/// draft's version. Staged document writes not yet written are applied to
+/// the draft's copy in order, best effort: a write the daemon refuses is
+/// listed in the result's `db_refused` and the render goes on. Then the
+/// [Inspector] loads `<baseUrl>/a/<draft>[/<file>]?app=1&inspect=1`, for
+/// at most [inspectLimit] and never past the run's wall clock.
 ///
 /// Each render records the snapshot it uploaded with
-/// [Draft.markRendered]: a render whose page logs uncaught errors, or that
-/// does not load, marks the draft as rendered with errors. A clean one
-/// emits [Inspected] and answers the inspection with the screenshot.
+/// [Draft.markRendered]: a render whose page logs uncaught errors, does
+/// not load or does not answer in time marks the draft as rendered with
+/// errors. A clean one emits [Inspected] and answers the inspection with
+/// the screenshot.
 ///
 /// One instance serves one run. [cleanup] deletes the draft artifact; the
 /// run's end (`finish`, `give_up`, a cap or a cancel) calls it, and a
@@ -118,21 +124,53 @@ class RenderTool implements Tool {
     }
     if (_stopped) return _cancelled();
 
-    final Inspection seen;
-    try {
-      seen = await inspector.inspect(
-        _pageUrl(s.draft.draftArtifactId!, file),
-        cancelled: s.ctx.cancelled,
-      );
-    } on InspectorError catch (e) {
-      if (_stopped) return _cancelled();
-      s.draft.markRendered(snap, errors: true);
-      return ToolRefused(
-        'The page did not load: ${e.message}. Look for a script that never '
-        'ends or blocks the page, fix it and render again.',
-      );
+    // The inspection ends at the first of the run's cancel, the end of its
+    // wall clock and [inspectLimit], whether or not the inspector honours
+    // the signal it is given.
+    final deadline = Completer<String>();
+    void end(String why) {
+      if (!deadline.isCompleted) deadline.complete(why);
     }
+
+    final limit = s.budget.remaining < inspectLimit
+        ? s.budget.remaining
+        : inspectLimit;
+    _cancel!.whenCancelled.then((_) => end('cancelled'));
+    s.budget.whenTimeUp.then(
+      (_) => end(
+        'The run is out of time '
+        '(${s.budget.caps.wallClock.inSeconds} seconds) before the page '
+        'answered.',
+      ),
+    );
+    s.budget.clock
+        .delay(limit)
+        .then(
+          (_) => end(
+            'The page did not answer within ${inspectLimit.inSeconds} '
+            'seconds. Look for a script that never ends or blocks the '
+            'page, fix it and render again.',
+          ),
+        );
+    final inspecting = inspector
+        .inspect(
+          _pageUrl(s.draft.draftArtifactId!, file),
+          cancelled: deadline.future,
+        )
+        .then<Object>((i) => i, onError: (Object e) => e);
+    final seen = await Future.any<Object>([inspecting, deadline.future]);
     if (_stopped) return _cancelled();
+    if (seen is! Inspection) {
+      s.draft.markRendered(snap, errors: true);
+      return ToolRefused(switch (seen) {
+        final String why => why,
+        final InspectorError e =>
+          'The page did not load: ${e.message}. Look for a script that '
+              'never ends or blocks the page, fix it and render again.',
+        final e => 'The page could not be inspected: $e.',
+      });
+    }
+    end('inspected');
 
     final uncaught = seen.uncaught.length;
     s.draft.markRendered(snap, errors: uncaught > 0);
@@ -238,7 +276,9 @@ class RenderTool implements Tool {
       ifVersion: version,
       title: title,
       capabilities: newCaps ? snap.capabilities : null,
-      files: files,
+      // The daemon takes no publish without index.html; the other
+      // unchanged files carry forward.
+      files: {'index.html': snap.files['index.html'], ...files},
     );
     final id = d.draftArtifactId!;
     PublishResult res;
@@ -256,8 +296,11 @@ class RenderTool implements Tool {
   }
 
   /// Writes the staged writes of [staged] the draft's copy has not had,
-  /// one write per document, each pinned to the version the copy holds
-  /// now. Returns `{path, reason}` for each write that did not land.
+  /// in order, so the daemon's own update merge applies to each. A round
+  /// is one batch of writes to distinct documents, each pinned to the
+  /// version the copy holds just before it; a later write to a document
+  /// already in the round starts the next round. Returns `{path, reason}`
+  /// for each write that did not land.
   Future<List<Map<String, Object?>>> _writeDocs(
     String draftId,
     List<DbOp> staged,
@@ -265,50 +308,73 @@ class RenderTool implements Tool {
     if (_applied > staged.length) _applied = 0;
     final fresh = staged.sublist(_applied);
     _applied = staged.length;
-    if (fresh.isEmpty) return const [];
-
     final refused = <Map<String, Object?>>[];
-    final pending = _coalesce(fresh);
+    var round = <String, DbOp>{};
+    Future<void> flush() async {
+      if (round.isEmpty) return;
+      final ops = round;
+      round = {};
+      await _writeRound(draftId, ops, refused);
+    }
+
+    for (final o in fresh) {
+      final path = '${o.collection}/${o.docId}';
+      if (round.containsKey(path) || round.length == _batchLimit) {
+        await flush();
+      }
+      round[path] = o;
+    }
+    await flush();
+    return refused;
+  }
+
+  /// Writes [ops] (path to its write, distinct documents) in one batch,
+  /// or one at a time when the daemon refuses the batch.
+  Future<void> _writeRound(
+    String draftId,
+    Map<String, DbOp> ops,
+    List<Map<String, Object?>> refused,
+  ) async {
     final docs = await Future.wait([
-      for (final p in pending.values) _currentDoc(draftId, p.path),
+      for (final path in ops.keys) _currentDoc(draftId, path),
     ]);
     final writes = <DocWrite>[];
-    for (final (i, p) in pending.values.indexed) {
+    for (final (i, MapEntry(key: path, value: o)) in ops.entries.indexed) {
       final (doc, error) = docs[i];
       if (error != null) {
-        refused.add({'path': p.path, 'reason': error});
+        refused.add({'path': path, 'reason': error});
         continue;
       }
-      switch (p.op) {
-        case 'delete':
-          if (doc != null) writes.add(p.write(doc.version));
-        case 'update' when p.afterDelete || doc == null:
-          refused.add({
-            'path': p.path,
-            'reason': '${p.path} does not exist; use set to create it',
-          });
-        default:
-          writes.add(p.write(doc?.version));
+      if (o.op == 'delete' && doc == null) continue;
+      if (o.op == 'update' && doc == null) {
+        refused.add({
+          'path': path,
+          'reason': '$path does not exist; use set to create it',
+        });
+        continue;
       }
-    }
-    for (var i = 0; i < writes.length; i += _batchLimit) {
-      final chunk = writes.sublist(
-        i,
-        i + _batchLimit > writes.length ? writes.length : i + _batchLimit,
+      writes.add(
+        DocWrite(
+          op: o.op,
+          collection: o.collection,
+          docId: o.docId,
+          data: o.op == 'delete' ? null : o.data ?? const {},
+          ifVersion: doc?.version,
+        ),
       );
-      try {
-        await api.batchDocs(draftId, chunk);
-      } on ClaxApiError {
-        for (final w in chunk) {
-          try {
-            await api.batchDocs(draftId, [w]);
-          } on ClaxApiError catch (e) {
-            refused.add({'path': w.path, 'reason': e.message});
-          }
+    }
+    if (writes.isEmpty) return;
+    try {
+      await api.batchDocs(draftId, writes);
+    } on ClaxApiError {
+      for (final w in writes) {
+        try {
+          await api.batchDocs(draftId, [w]);
+        } on ClaxApiError catch (e) {
+          refused.add({'path': w.path, 'reason': e.message});
         }
       }
     }
-    return refused;
   }
 
   Future<(Doc?, String?)> _currentDoc(String draftId, String path) async {
@@ -373,48 +439,4 @@ class RenderTool implements Tool {
 /// The run was cancelled before the draft artifact was created.
 class _Cancelled implements Exception {
   const _Cancelled();
-}
-
-/// The net effect of a run of staged writes on one document.
-class _Pending {
-  _Pending(this.path, this.op, this.data, {this.afterDelete = false});
-
-  final String path;
-  final String op;
-  final Map<String, Object?>? data;
-
-  /// An update that follows a delete: the document no longer exists.
-  final bool afterDelete;
-
-  DocWrite write(int? version) {
-    final slash = path.lastIndexOf('/');
-    return DocWrite(
-      op: op,
-      collection: path.substring(0, slash),
-      docId: path.substring(slash + 1),
-      data: op == 'delete' ? null : data ?? const {},
-      ifVersion: version,
-    );
-  }
-}
-
-/// [ops] folded into one write per document, in first-touched order: a
-/// later `set` or `delete` replaces what came before, and an `update`
-/// merges into the earlier `set` or `update`.
-Map<String, _Pending> _coalesce(List<DbOp> ops) {
-  final out = <String, _Pending>{};
-  for (final o in ops) {
-    final path = '${o.collection}/${o.docId}';
-    final prev = out[path];
-    out[path] = switch ((prev?.op, o.op)) {
-      (_, 'set' || 'delete') || (null, _) => _Pending(path, o.op, o.data),
-      ('set', 'update') => _Pending(path, 'set', {...?prev!.data, ...?o.data}),
-      ('update', 'update') => _Pending(path, 'update', {
-        ...?prev!.data,
-        ...?o.data,
-      }, afterDelete: prev.afterDelete),
-      _ => _Pending(path, 'update', o.data, afterDelete: true),
-    };
-  }
-  return out;
 }

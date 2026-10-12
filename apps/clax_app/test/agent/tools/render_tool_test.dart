@@ -65,7 +65,6 @@ class Rig {
     aid = kind == RequestKind.change
         ? api.seedArtifact('Runs', files, capabilities: const {'db': {}})
         : null;
-    final clock = StepClock();
     final ctx = RunContext(
       kind: kind,
       artifactId: aid,
@@ -93,6 +92,7 @@ class Rig {
     toolbox = Toolbox(state, [...fileTools(), render]);
   }
 
+  final clock = StepClock();
   final api = GatedApi();
   final inspector = FakeInspector();
   final events = <AgentProgress>[];
@@ -114,6 +114,10 @@ class Rig {
   Iterable<FakeCall> named(String name) =>
       api.calls.where((c) => c.name == name);
 }
+
+List<String> paths(FakeCall batch) => [
+  for (final w in batch.args['writes']! as List<DocWrite>) w.path,
+];
 
 void main() {
   test('the first render creates the draft, a later one publishes with '
@@ -140,6 +144,7 @@ void main() {
     expect(req.ifVersion, 1);
     // Only what changed since the last upload is sent.
     expect(req.files, {'index.html': '<p>v2</p>', 'app.js': 'go()'});
+
     expect(r.draft.draftVersion, 2);
     expect(r.named('createDraft'), hasLength(1));
     expect(r.inspector.calls, hasLength(2));
@@ -157,10 +162,37 @@ void main() {
     await r.renderNow();
     expect(r.named('publishDraft'), isEmpty);
     await r.call('delete_file', {'path': 'old.js'});
-    await r.renderNow();
+    expect(await r.renderNow(), isA<ToolOk>());
     final req =
         r.named('publishDraft').single.args['request']! as PublishRequest;
-    expect(req.files, {'old.js': null});
+    // The daemon takes no publish without index.html.
+    expect(req.files, {'index.html': '<p>a</p>', 'old.js': null});
+    expect(r.draft.renderedClean, isTrue);
+  });
+
+  test('a change to app.js alone publishes with index.html', () async {
+    final r = Rig(files: {'index.html': '<p>a</p>', 'app.js': 'go()'});
+    await r.renderNow();
+    await r.call('write_file', {'path': 'app.js', 'content': 'went()'});
+    expect(await r.renderNow(), isA<ToolOk>());
+    final req =
+        r.named('publishDraft').single.args['request']! as PublishRequest;
+    expect(req.files, {'index.html': '<p>a</p>', 'app.js': 'went()'});
+  });
+
+  test('a title-only change publishes with index.html', () async {
+    final r = Rig();
+    await r.renderNow();
+    await r.call('set_meta', {
+      'title': 'Weekly runs',
+      'capabilities_json': null,
+    });
+    expect(await r.renderNow(), isA<ToolOk>());
+    final req =
+        r.named('publishDraft').single.args['request']! as PublishRequest;
+    expect(req.title, 'Weekly runs');
+    expect(req.files, {'index.html': '<p>runs</p>'});
+    expect(r.draft.renderedClean, isTrue);
   });
 
   test('the result carries the inspection and the screenshot', () async {
@@ -228,21 +260,67 @@ void main() {
     expect(app!.data, {'km': 5});
     expect(app.version, appBefore!.version);
     expect(await r.api.getDoc(r.aid!, 'runs/b'), isNull);
-    // One batch, every write on the draft.
+    // In order, every write on the draft: runs/b's update follows its set.
     final batches = r.named('batchDocs').toList();
-    expect(batches, hasLength(1));
-    expect(batches.single.args['aid'], id);
+    expect(
+      [for (final b in batches) paths(b)],
+      [
+        ['runs/a', 'runs/b'],
+        ['runs/b'],
+      ],
+    );
+    expect(batches.every((b) => b.args['aid'] == id), isTrue);
 
     // A later render writes only the ops staged since.
     r.draft.stage([const DbOp(op: 'delete', collection: 'runs', docId: 'a')]);
     await r.renderNow();
     final second = r.named('batchDocs').toList();
-    expect(second, hasLength(2));
-    expect(
-      [for (final w in second.last.args['writes']! as List<DocWrite>) w.path],
-      ['runs/a'],
-    );
+    expect(second, hasLength(3));
+    expect(paths(second.last), ['runs/a']);
     expect(await r.api.getDoc(id, 'runs/a'), isNull);
+  });
+
+  test('staged writes reach the draft one by one in order, each pinned to '
+      'the version the write before it made', () async {
+    final r = Rig();
+    r.draft.stage([
+      const DbOp(
+        op: 'set',
+        collection: 'runs',
+        docId: 'r9',
+        data: {
+          'a': {'x': 1, 'y': 1},
+          'gone': 1,
+        },
+      ),
+      const DbOp(
+        op: 'update',
+        collection: 'runs',
+        docId: 'r9',
+        data: {
+          'a': {'y': 2},
+          'gone': {'__delete__': true},
+        },
+      ),
+    ]);
+    await r.renderNow();
+    final batches = r.named('batchDocs').toList();
+    expect(batches, hasLength(2));
+    final set = (batches[0].args['writes']! as List<DocWrite>).single;
+    final update = (batches[1].args['writes']! as List<DocWrite>).single;
+    expect((set.op, set.ifVersion), ('set', null));
+    // The daemon's merge (nested objects, the __delete__ marker) applies
+    // the update; it is sent as staged.
+    expect(update.op, 'update');
+    expect(update.data, {
+      'a': {'y': 2},
+      'gone': {'__delete__': true},
+    });
+    final id = r.draft.draftArtifactId!;
+    expect(update.ifVersion, isNotNull);
+    expect(update.ifVersion, isNot(0));
+    expect(r.api.calls.where((c) => c.name == 'getDoc').length, 2);
+    expect((await r.api.getDoc(id, 'runs/r9'))!.version, greaterThan(0));
   });
 
   test('a refused document write is listed and the others land', () async {
@@ -366,6 +444,65 @@ void main() {
     expect(r.draft.draftArtifactId, isNot(old));
   });
 
+  group('deadline', () {
+    test(
+      'a page that does not answer in 8 seconds is a failed render',
+      () async {
+        final r = Rig();
+        r.inspector.hang();
+        var done = false;
+        final out = r.renderNow()..whenComplete(() => done = true);
+        await pumpEventQueue();
+        r.clock.advance(const Duration(milliseconds: 7999));
+        await pumpEventQueue();
+        expect(done, isFalse);
+        r.clock.advance(const Duration(milliseconds: 1));
+        expect(await out, refused(contains('8 seconds')));
+        expect(r.draft.renderedRevision, r.draft.revision);
+        expect(r.draft.lastRenderHadErrors, isTrue);
+        expect(r.draft.lastClean, isNull);
+        expect(r.state.ended, isFalse);
+        // The inspector was told to stop.
+        var told = false;
+        await r.inspector.calls.single.cancelled!.then((_) => told = true);
+        expect(told, isTrue);
+        expect(await r.call('list_files'), isA<ToolOk>());
+      },
+    );
+
+    test('near the end of the wall clock the render waits only for what is '
+        'left', () async {
+      final r = Rig(); // a change: 45 seconds
+      r.clock.advance(const Duration(seconds: 40));
+      r.inspector.hang();
+      var done = false;
+      final out = r.renderNow()..whenComplete(() => done = true);
+      await pumpEventQueue();
+      r.clock.advance(const Duration(seconds: 4));
+      await pumpEventQueue();
+      expect(done, isFalse);
+      r.clock.advance(const Duration(seconds: 1));
+      expect(await out, refused(contains('out of time')));
+      expect(r.draft.lastRenderHadErrors, isTrue);
+    });
+
+    test(
+      'an inspector that ignores the deadline does not hold the render',
+      () async {
+        final r = Rig();
+        final never = Completer<Inspection>();
+        final stuck = _StuckInspector(never.future);
+        final tb = Toolbox(r.state, [
+          RenderTool(r.api, stuck, baseUrl: Uri.parse(base)),
+        ]);
+        final out = tb.call('render', {'file': null});
+        await pumpEventQueue();
+        r.clock.advance(const Duration(seconds: 8));
+        expect(await out, refused(contains('8 seconds')));
+      },
+    );
+  });
+
   group('cleanup', () {
     test('deletes the draft once', () async {
       final r = Rig();
@@ -442,4 +579,19 @@ void main() {
       expect(r.events.whereType<Inspected>(), isEmpty);
     });
   });
+}
+
+/// An inspector that answers [answer] whatever its `cancelled` does.
+class _StuckInspector implements Inspector {
+  _StuckInspector(this.answer);
+
+  final Future<Inspection> answer;
+
+  @override
+  Future<Inspection> inspect(
+    Uri url, {
+    Duration settle = const Duration(seconds: 3),
+    int maxBytes = 1 << 20,
+    Future<void>? cancelled,
+  }) => answer;
 }
