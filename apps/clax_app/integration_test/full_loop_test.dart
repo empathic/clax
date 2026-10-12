@@ -45,6 +45,9 @@ const _input = MethodChannel('dev.empathic.clax/test-input');
 /// The longest any one step may take.
 const _cap = Duration(seconds: 45);
 
+/// Past the shell stream's hidden threshold (`HIDDEN_MS`, 30 s).
+const _pastHidden = Duration(seconds: 35);
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -82,6 +85,16 @@ void main() {
     // ended): its version names the app harness.
     final made = await rig.api.getArtifact(aid);
     expect(made.versions.single.agentHarness, 'app');
+
+    // --- The shell document outlives the stream's hidden threshold
+    // (`HIDDEN_MS` in web/shell/src/stream.ts, 30 s) before the first
+    // comment: macOS's WebView reads the document hidden from load, and a
+    // stream that stopped following after that time never lands a change.
+    // The embedded clax is a release build, whose shell has no test clock,
+    // so this waits in real time, on the shell's own clock.
+    final hidden = await rig.surface!.evaluate('document.visibilityState');
+    debugPrint('shell document visibility: $hidden');
+    await rig.untilShellAge(tester, _pastHidden);
 
     // --- The panel: a two-finger swipe left over the page opens it and
     // turns comment mode on.
@@ -336,6 +349,19 @@ class _Rig {
         );
       }
       await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+  }
+
+  /// Waits until the shell document has existed for [age], by its own
+  /// clock (`performance.now()`).
+  Future<void> untilShellAge(WidgetTester tester, Duration age) async {
+    final end = DateTime.now().add(age + _cap);
+    while (true) {
+      await tester.pump();
+      final ms = num.parse('${await surface!.evaluate('performance.now()')}');
+      if (ms >= age.inMilliseconds) return;
+      if (DateTime.now().isAfter(end)) fail('the shell never reached $age');
+      await Future<void>.delayed(const Duration(milliseconds: 250));
     }
   }
 
