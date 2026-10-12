@@ -322,6 +322,8 @@ pub(super) struct VisState {
     changed: AtomicBool,
     /// `((generation + 1) << 1) | sees_all`, or 0 before the first answer.
     fast: AtomicU64,
+    /// Who is connected, read at the generation it is tagged with.
+    connected: std::sync::Mutex<Option<(u64, Arc<crate::visibility::Connected>)>>,
     listener: RwLock<Option<Listener>>,
 }
 
@@ -331,6 +333,7 @@ impl Default for VisState {
             generation: Arc::new(AtomicU64::new(0)),
             changed: AtomicBool::new(false),
             fast: AtomicU64::new(0),
+            connected: std::sync::Mutex::new(None),
             listener: RwLock::new(None),
         }
     }
@@ -436,6 +439,32 @@ impl Store {
             .fast
             .store(((g + 1) << 1) | u64::from(all), Ordering::Release);
         Ok(all)
+    }
+
+    /// Who is connected (the owner and every person, revoked ones
+    /// included), for marking unconnected authors' names (spec §9.6):
+    /// cached for the current generation, which every change to a
+    /// viewer's person flag or the owner's row bumps.
+    pub fn connected(&self) -> Result<Arc<crate::visibility::Connected>> {
+        let g = self.visibility_generation();
+        if let Some((at, c)) = self
+            .visibility
+            .connected
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            && *at == g
+        {
+            return Ok(c.clone());
+        }
+        // Tagged with the generation read before the query, as `fast` is.
+        let c = Arc::new(self.with_read(crate::visibility::Connected::read)?);
+        *self
+            .visibility
+            .connected
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some((g, c.clone()));
+        Ok(c)
     }
 
     /// Approves `author`'s content reaching the agents of `approver` (a
@@ -2220,8 +2249,41 @@ mod tests {
         bumps(&st, "a grant's narrowing set to what it was", 0);
         st.narrow_grant(DAEMON, &gid, Some(reader.clone())).unwrap();
         bumps(&st, "a grant's narrowing", 1);
-        st.narrow_grant(DAEMON, &gid, Some(reader)).unwrap();
+        st.narrow_grant(DAEMON, &gid, Some(reader.clone())).unwrap();
         bumps(&st, "a grant's narrowing set again", 0);
+        // One agent's narrowing and elevation, and its end clearing them.
+        let agent = st
+            .register_session(
+                DAEMON,
+                crate::store::sessions::RegisterSession {
+                    harness: "claude".into(),
+                    cwd: "/w".into(),
+                    grant_id: Some(gid.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        bumps(&st, "an agent registering", 0);
+        let full = crate::rights::Rights::full();
+        st.narrow_agent(DAEMON, &agent.id, Some(full.clone()))
+            .unwrap_err();
+        bumps(&st, "a refused agent narrowing", 0);
+        st.narrow_agent(DAEMON, &agent.id, Some(reader.clone()))
+            .unwrap();
+        bumps(&st, "an agent's narrowing", 1);
+        st.narrow_agent(DAEMON, &agent.id, Some(reader)).unwrap();
+        bumps(&st, "an agent's narrowing set again", 0);
+        st.elevate_agent(DAEMON, &agent.id, Some(full.clone()))
+            .unwrap();
+        bumps(&st, "an agent's elevation", 1);
+        st.elevate_agent(DAEMON, &agent.id, Some(full)).unwrap();
+        bumps(&st, "an agent's elevation set again", 0);
+        st.end_session_by_person(DAEMON, &agent.id).unwrap();
+        bumps(
+            &st,
+            "an agent's end clearing its narrowing and elevation",
+            1,
+        );
         // A second invite for someone already a person changes nothing.
         st.create_invite(DAEMON, InvitePerson::Viewer(sam.clone()), None)
             .unwrap();

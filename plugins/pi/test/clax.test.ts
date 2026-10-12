@@ -1336,7 +1336,7 @@ describe("comments", () => {
     const res = await fetch(`${daemon.base}/api/artifacts/${aid}/threads:send`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ thread_ids: ids, note: "Together" }) });
     expect(res.status).toBe(200);
     await expect.poll(() => pi.sent.length, { timeout: 15_000 }).toBe(1);
-    expect(String(pi.sent[0].content)).toMatch(/^\[clax\] 2 comments sent to you:\n\[clax\] 2 comments on "Pi batch", sent together by Viewer\. Note: "Together"\n/);
+    expect(String(pi.sent[0].content)).toMatch(/^\[clax\] 2 comments sent to you:\n\[clax\] 2 comments on "Pi batch", sent together by Viewer \(not connected\)\. Note: "Together"\n/);
     await pi.emit("session_shutdown", {}, ctx);
   });
 });

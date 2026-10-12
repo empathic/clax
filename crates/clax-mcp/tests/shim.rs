@@ -498,7 +498,7 @@ async fn piggyback_and_wait_through_the_shim() {
         "{trailing}"
     );
     assert!(
-        trailing.contains("\nViewer: \"@agent two columns\"\n"),
+        trailing.contains("\nViewer (not connected): \"@agent two columns\"\n"),
         "{trailing}"
     );
 

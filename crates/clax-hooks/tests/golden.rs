@@ -518,7 +518,7 @@ fn stop_loop(agent: &str, hsid: &str) {
         "{reason}"
     );
     assert!(
-        reason.contains("Viewer: \"@agent make it two columns\""),
+        reason.contains("Viewer (not connected): \"@agent make it two columns\""),
         "{reason}"
     );
     assert!(r.elapsed < Duration::from_secs(5));
@@ -710,7 +710,7 @@ fn a_batch_blocks_the_stop_once_with_every_thread() {
         .as_str()
         .unwrap()
         .to_string();
-    assert!(reason.starts_with("[clax] 3 comments sent to you:\n[clax] 3 comments on \"Hooked\", sent together by Viewer. Note: \"All three\"\n"), "{reason}");
+    assert!(reason.starts_with("[clax] 3 comments sent to you:\n[clax] 3 comments on \"Hooked\", sent together by Viewer (not connected). Note: \"All three\"\n"), "{reason}");
     for t in &tids {
         assert!(reason.contains(t.as_str()), "{reason}");
     }
