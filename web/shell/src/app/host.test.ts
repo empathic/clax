@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { dispatchTrusted } from "../../../bridge/test/trusted";
+import { workerWith } from "../test/fake-worker";
 import { MOUNT_TIMEOUT_MS } from "../test/timeouts";
 import { FakeES, ID, artifact, artifactViewHooks, buttonNamed, fromFrame, gesture, gestureIn, mountView, page, pick, startOf, viewerPick, waitFor } from "../test/artifact-view";
+import { view as questionView } from "../q/fixtures";
 import type { HostMessage } from "./host";
 
 type Posted = { type: string; [k: string]: unknown };
@@ -31,11 +33,15 @@ const channel = () => ({ postMessage: (m: string) => {
   delete o.nonce;
   toHost.push(o);
 } });
+/** The hosts installed by the current test, uninstalled after it: a host
+ * left installed would still hear the document's events in later tests. */
+const installed: (() => void)[] = [];
+afterEach(() => { for (const u of installed.splice(0)) u(); });
 /** While set, the artifact's answers wait for it (each answers with the
  * version that was latest when it was asked). */
 let held: Promise<void> | null = null;
 
-async function appView(opts: { pinned?: number | null; channel?: boolean; init?: boolean; threads?: unknown[]; comments?: (url: string, init?: RequestInit) => Response | undefined; query?: string } = {}) {
+async function appView(opts: { pinned?: number | null; channel?: boolean; init?: boolean; threads?: unknown[]; comments?: (url: string, init?: RequestInit) => Response | undefined; api?: (url: string) => Response | undefined; query?: string } = {}) {
   const query = opts.query ?? "?app=1";
   history.replaceState(null, "", opts.pinned ? `/a/${ID}/v/${opts.pinned}${query}` : `/a/${ID}${query}`);
   toHost = [];
@@ -48,6 +54,8 @@ async function appView(opts: { pinned?: number | null; channel?: boolean; init?:
   };
   const view = await mountView(async (url, init) => {
     note(url, init);
+    const own = opts.api?.(url);
+    if (own) return own;
     const n = latest;
     if (held) await held;
     return new Response(JSON.stringify(artifact(n, { "index.html": page })));
@@ -60,7 +68,10 @@ async function appView(opts: { pinned?: number | null; channel?: boolean; init?:
   }, undefined, opts.pinned ?? null);
   const ctl = view.controller();
   const m = await import("./host");
-  const uninstall = m.installHost(window, ctl);
+  let done = false;
+  const remove = m.installHost(window, ctl);
+  const uninstall = () => { if (!done) { done = true; remove(); } };
+  installed.push(uninstall);
   const frame = await waitFor(() => view.root.querySelector<HTMLIFrameElement>("iframe.frame"), "frame");
   const host = (window as unknown as { claxHost: import("./host").ClaxHost }).claxHost;
   if (opts.init !== false) host.init({ nonce: NONCE });
@@ -717,7 +728,7 @@ describe("app mode's host channel", { timeout: MOUNT_TIMEOUT_MS }, () => {
     toHost = [];
     raw = [];
     const m = await import("./host");
-    m.installHost(window, view.controller());
+    installed.push(m.installHost(window, view.controller()));
     expect(posted.at(-1)).toEqual({ type: "clax:greet" });
     const from = posted.length;
     hello(frame, 1);
@@ -1136,5 +1147,178 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(inspectQuery("?inspect=1")).toBe(false);
     expect(inspectQuery("?app=1")).toBe(false);
     expect(inspectQuery("?inspect=1&app=1")).toBe(true);
+  });
+});
+
+describe("app mode's questions", { timeout: MOUNT_TIMEOUT_MS }, () => {
+  artifactViewHooks();
+  afterEach(() => {
+    delete (window as unknown as { ClaxHost?: unknown }).ClaxHost;
+    delete (window as unknown as { claxHost?: unknown }).claxHost;
+    document.documentElement.classList.remove("app", "inspect");
+    latest = 1;
+  });
+  const sheet = () => document.querySelector<HTMLElement>(".app-questions");
+  /** Not the owner's browser: the question module never loads, so the test alone tells the host of questions. */
+  const notOwner = (url: string) => (url === "/api/token" ? new Response("{}", { status: 403 }) : undefined);
+  const count = (open: number, shown: number) => document.dispatchEvent(new CustomEvent("clax-questions", { detail: { open, shown } }));
+  /** Stands a question card in the sheet's slot, as the question module mounts one. */
+  const card = () => {
+    const c = document.createElement("article");
+    c.className = "qcard";
+    c.tabIndex = -1;
+    c.innerHTML = `<label class="opt other"><input type="text"></label><textarea></textarea>`;
+    sheet()!.querySelector(".questions-slot")!.append(c);
+    return c;
+  };
+
+  it("docks the open questions about the app in a sheet, posts questions {open} as they change, and openQuestions shows them", async () => {
+    const q = questionView({ id: "Q1" });
+    const { frame, host } = await appView({
+      api: url => {
+        if (url === "/api/token") return new Response(JSON.stringify({ token: "t0ken" }));
+        if (url.startsWith("/api/questions")) return new Response(JSON.stringify({ questions: [q], open: 1 }));
+        if (url.startsWith("/api/inbox")) return new Response(JSON.stringify({ unread: 0, questions: [q], latest: [] }));
+        return undefined;
+      },
+    });
+    hello(frame, 1);
+    expect(sheet()!.hidden).toBe(true);
+    // The question module loads once the view knows this is the owner's browser, and its feed goes live.
+    const w = await workerWith("questions");
+    w.live(["questions", "inbox"]);
+    const shown = await waitFor(() => sheet()!.querySelector<HTMLElement>(".qcard[data-question='Q1']"), "the question's card in the sheet");
+    expect(document.querySelector(".sidebar .qcard")).toBeNull();
+    await waitFor(() => ofType("questions").length, "questions posted");
+    expect(ofType("questions")).toEqual([{ type: "questions", open: 1 }]);
+    // It shows only when the app asks.
+    expect(sheet()!.hidden).toBe(true);
+    host.openQuestions();
+    expect(sheet()!.hidden).toBe(false);
+    expect(document.activeElement).toBe(shown);
+    // Answered (in another browser, say): none left open; the card says so until it leaves.
+    w.emit("questions", "question", { type: "question", question: { ...q, status: "answered", answered_via: "shell", answers: [] } });
+    await waitFor(() => ofType("questions").length === 2, "the count posted again");
+    expect(ofType("questions").at(-1)).toEqual({ type: "questions", open: 0 });
+    expect(sheet()!.hidden).toBe(false);
+    expect(raw.every(m => JSON.parse(m).nonce === NONCE)).toBe(true);
+  });
+
+  it("posts the count only when it changes, and not before init, then the latest at init", async () => {
+    const { host } = await appView({ api: notOwner, init: false });
+    count(2, 2);
+    expect(toHost).toEqual([]);
+    host.init({ nonce: NONCE });
+    expect(ofType("questions")).toEqual([{ type: "questions", open: 2 }]);
+    count(2, 3);
+    count(1, 3);
+    count(1, 2);
+    count(0, 0);
+    expect(ofType("questions").map(m => m.open)).toEqual([2, 1, 0]);
+  });
+
+  it("posts no count while the question module has told none", async () => {
+    await appView({ api: notOwner });
+    expect(ofType("questions")).toEqual([]);
+  });
+
+  it("closes the sheet on Close, on Escape, and once no card is left; openQuestions with none waits briefly for one", async () => {
+    const t = 10_000;
+    vi.spyOn(performance, "now").mockImplementation(() => t);
+    const { host } = await appView({ api: notOwner });
+    // Nothing to show: the sheet stays closed.
+    host.openQuestions();
+    expect(sheet()!.hidden).toBe(true);
+    // A card that arrives moments after the request shows.
+    const c = card();
+    count(1, 1);
+    expect(sheet()!.hidden).toBe(false);
+    expect(document.activeElement).toBe(c);
+    sheet()!.querySelector<HTMLButtonElement>("button.app-questions-close")!.click();
+    expect(sheet()!.hidden).toBe(true);
+    host.openQuestions();
+    expect(sheet()!.hidden).toBe(false);
+    c.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(sheet()!.hidden).toBe(true);
+    host.openQuestions();
+    c.remove();
+    count(0, 0);
+    expect(sheet()!.hidden).toBe(true);
+    // A card that comes later, unasked, does not open it.
+    card();
+    count(1, 1);
+    expect(sheet()!.hidden).toBe(true);
+  });
+
+  it("an openQuestions with nothing to show waits OPEN_WAIT_MS for a card, then is forgotten", async () => {
+    let t = 10_000;
+    vi.spyOn(performance, "now").mockImplementation(() => t);
+    const { host, m } = await appView({ api: notOwner });
+    host.openQuestions();
+    t += m.OPEN_WAIT_MS - 1;
+    // A change that shows nothing (another app's question, say) keeps the request.
+    count(0, 0);
+    expect(sheet()!.hidden).toBe(true);
+    const c = card();
+    count(1, 1);
+    expect(sheet()!.hidden).toBe(false);
+    sheet()!.querySelector<HTMLButtonElement>("button.app-questions-close")!.click();
+    c.remove();
+    count(0, 0);
+    host.openQuestions();
+    t += m.OPEN_WAIT_MS;
+    card();
+    count(1, 1);
+    expect(sheet()!.hidden).toBe(true);
+  });
+
+  it("setDraftText fills the focused text field of a question in the sheet, before an open composer", async () => {
+    const { ctl, frame, host } = await appView({ api: notOwner });
+    hello(frame, 1);
+    host.composeArtifact();
+    const composer = await waitFor(() => document.querySelector<HTMLTextAreaElement>(".composer textarea"), "composer");
+    const c = card();
+    count(1, 1);
+    host.openQuestions();
+    const other = c.querySelector<HTMLInputElement>("input")!;
+    const typed: string[] = [];
+    other.addEventListener("input", () => typed.push(other.value));
+    other.focus();
+    host.setDraftText("a green one");
+    expect(other.value).toBe("a green one");
+    expect(typed).toEqual(["a green one"]);
+    expect(composer.value).toBe("");
+    const area = c.querySelector("textarea")!;
+    area.focus();
+    host.setDraftText("no notes");
+    expect(area.value).toBe("no notes");
+    // Focus out of the sheet: the composer's text, as before.
+    area.blur();
+    host.setDraftText("for the composer");
+    expect(composer.value).toBe("for the composer");
+    expect(ctl.composerText).toBe("for the composer");
+    // A field of a closed sheet is not filled.
+    other.focus();
+    sheet()!.querySelector<HTMLButtonElement>("button.app-questions-close")!.click();
+    other.focus();
+    host.setDraftText("hidden");
+    expect(other.value).toBe("a green one");
+  });
+
+  it("has no sheet in the inspect view, and openQuestions there does nothing", async () => {
+    const { host } = await appView({ api: notOwner, query: "?app=1&inspect=1" });
+    expect(sheet()).toBeNull();
+    host.openQuestions();
+    count(1, 1);
+    expect(ofType("questions")).toEqual([]);
+  });
+
+  it("uninstall removes the sheet and stops posting counts", async () => {
+    const { uninstall } = await appView({ api: notOwner });
+    expect(sheet()).not.toBeNull();
+    uninstall();
+    expect(sheet()).toBeNull();
+    count(1, 1);
+    expect(ofType("questions")).toEqual([]);
   });
 });

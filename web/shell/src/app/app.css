@@ -22,6 +22,36 @@ html.app .composer {
   border-bottom: 0;
   padding-bottom: calc(12px + env(safe-area-inset-bottom));
 }
+/* The questions sheet (`.app-questions`, made by `host.ts`): the owner's
+   open questions about the app, docked at the bottom over the composer,
+   its list scrolling under a fixed Close. The sidebar's heading styles come
+   with the sidebar's chunk, which app mode may never load: the heading's
+   are repeated here. */
+html.app .app-questions {
+  position: fixed;
+  inset: auto 0 0 0;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  max-height: 75dvh;
+  background: var(--raised);
+  border-top: 3px solid var(--agent);
+  border-radius: var(--radius) var(--radius) 0 0;
+  box-shadow: var(--elev-lg);
+}
+html.app .app-questions[hidden] { display: none; }
+html.app .app-questions-close { position: absolute; top: 6px; right: 8px; z-index: 1; }
+html.app .app-questions > .questions-slot {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 10px var(--gutter) calc(12px + env(safe-area-inset-bottom));
+}
+html.app .app-questions .side-q { margin: 0; padding: 0; border: 0; }
+html.app .app-questions .gh { display: flex; align-items: center; gap: 8px; margin: 2px 40px 10px 0; font: 600 14px/1.2 var(--font); }
+html.app .app-questions .gh .t { flex: 1; color: var(--agent-ink); }
+html.app .app-questions .gh .c { font: 400 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+html.app .app-questions .gh .sw { width: 6px; height: 14px; flex: none; border-radius: 8px 0 0 8px; background: var(--agent); }
 /* The inspect view (`?app=1&inspect=1`, `html.app.inspect`): the page alone,
    with nothing of the comment UI or the shell's notices over it. */
 html.app.inspect .pins,
@@ -29,4 +59,5 @@ html.app.inspect .composer,
 html.app.inspect .prompt-backdrop,
 html.app.inspect .banner,
 html.app.inspect .gesture-hint,
-html.app.inspect .selbar { display: none !important; }
+html.app.inspect .selbar,
+html.app.inspect .app-questions { display: none !important; }
