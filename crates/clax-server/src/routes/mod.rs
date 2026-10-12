@@ -2,6 +2,7 @@
 //! them is `crate::router`; `guards` checks every route against the rules
 //! a handler's signature must show.
 
+pub mod app_drafts;
 pub mod approvals;
 pub mod artifacts;
 pub mod assets;

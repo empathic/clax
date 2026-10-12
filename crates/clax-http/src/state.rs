@@ -425,6 +425,8 @@ impl AppState {
             self.stream.check_reads(move |reader, source| {
                 crate::db_caller::reads_now(&store, reader, source)
             });
+            let store = self.store.clone();
+            self.stream.hide(move |aid| store.is_hidden(aid));
         }
         crate::seats::install(self);
         crate::views::inbox::listen(self);

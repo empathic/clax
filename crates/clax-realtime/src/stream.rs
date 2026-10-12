@@ -534,10 +534,16 @@ pub struct Hub {
     /// Asked before each `doc` event goes to a `docs:<B>?reader=<A>`
     /// channel; until set, those channels receive nothing.
     reads: std::sync::OnceLock<ReadCheck>,
+    /// Whether an artifact is a draft, whose events stay off the `gallery`
+    /// channel (spec 2026-10-12-flutter-app-round2-design §5.1); until set,
+    /// no artifact is.
+    hidden: std::sync::OnceLock<HiddenCheck>,
 }
 
 /// What [`Hub::on_queue`] calls.
 pub type QueueListener = Arc<dyn Fn() + Send + Sync>;
+/// [`Hub::hide`]'s test.
+type HiddenCheck = Box<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Counts for logs and tests.
 #[derive(Debug, PartialEq, Eq)]
@@ -907,6 +913,7 @@ impl Hub {
             live,
             queued: Mutex::default(),
             reads: std::sync::OnceLock::new(),
+            hidden: std::sync::OnceLock::new(),
         })
     }
 
@@ -927,6 +934,16 @@ impl Hub {
             .clone();
         if let Some(f) = f {
             f();
+        }
+    }
+
+    /// Makes `is_hidden(artifact)` keep each event of an artifact it names
+    /// off the `gallery` channel; the artifact's own topics still carry it.
+    /// Asked on the thread that publishes the event. Set once; a later call
+    /// changes nothing.
+    pub fn hide(&self, is_hidden: impl Fn(&str) -> bool + Send + Sync + 'static) {
+        if self.hidden.set(Box::new(is_hidden)).is_err() {
+            tracing::warn!("the stream hub's hidden check is already set");
         }
     }
 
@@ -1048,6 +1065,7 @@ impl Hub {
     /// their subscribers.
     pub fn dispatch(&self, ev: &Event) {
         let readers = self.reader_routes(ev);
+        let hidden = self.hidden.get().is_some_and(|h| h(ev.artifact_id()));
         let mut g = self.lock();
         if g.chans.is_empty() {
             return;
@@ -1056,6 +1074,9 @@ impl Hub {
         let live = site.is_some();
         let mut all = routes(ev);
         all.extend(readers);
+        if hidden {
+            all.retain(|(c, _)| *c != Chan::Gallery);
+        }
         // A live page's `artifact` events also go to its site's channels:
         // one per origin of its site (spec §7.2: a joined site's origins
         // hear each other's pages, origins joined later included). (Not the
@@ -2280,6 +2301,27 @@ mod tests {
         assert!(
             !got[1].1.contains("secret words"),
             "gallery threads carry no bodies"
+        );
+    }
+
+    #[test]
+    fn a_hidden_artifacts_events_skip_the_gallery_but_reach_its_topic() {
+        let hub = Hub::new(Default::default());
+        hub.hide(|aid| aid == A);
+        let c = viewer(Level::View, None);
+        let mut g = hub.open(c.clone(), true, None, None);
+        hub.update(&g.id, &c, &[Topic::Gallery], &[]).unwrap();
+        let mut t = hub.open(c.clone(), true, None, None);
+        hub.update(&t.id, &c, &[Topic::Artifact(A.into())], &[])
+            .unwrap();
+        hub.dispatch(&version(2));
+        assert!(drain(&mut g).is_empty(), "the gallery never hears a draft");
+        let got = drain(&mut t);
+        assert_eq!(got.len(), 1);
+        assert!(
+            got[0].1.contains(&format!("\"topic\":\"artifact:{A}\"")),
+            "{}",
+            got[0].1
         );
     }
 

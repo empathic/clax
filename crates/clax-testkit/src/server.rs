@@ -579,6 +579,8 @@ impl TestServer {
             state.stream.check_reads(move |reader, source| {
                 clax_http::db_caller::reads_now(&store, reader, source)
             });
+            let store = state.store.clone();
+            state.stream.hide(move |aid| store.is_hidden(aid));
         }
         clax_http::views::inbox::listen(&state);
         clax_http::views::approval::listen(&state);

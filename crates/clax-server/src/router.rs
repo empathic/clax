@@ -270,6 +270,8 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/artifacts/{aid}/docs:collections",
             get(docs::collections),
         )
+        .route("/api/drafts", get(drafts::list))
+        .route("/api/drafts/{id}", delete(drafts::delete))
         .route("/api/artifacts/{aid}/db-grants", get(docs::grants))
         .route(
             "/api/artifacts/{aid}/db-grants/{source}",
@@ -426,6 +428,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             post(remotes::drop_unsent),
         )
         .route("/api/artifacts/{aid}/push", post(remotes::push))
+        .route("/api/drafts", post(app_drafts::create.layer(publish_limit)))
         .route(
             "/api/artifacts/{aid}/versions:restore",
             post(artifacts::restore),

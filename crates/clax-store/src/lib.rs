@@ -102,6 +102,7 @@ pub mod batches;
 pub mod changelog;
 pub mod device;
 pub mod docs;
+pub mod drafts;
 pub mod elevations;
 pub mod engagement;
 pub mod exec;
@@ -212,6 +213,8 @@ pub struct Store {
     resumed_at: Mutex<String>,
     /// Each GitHub member's caps ([`Store::set_member_caps`]).
     member_caps: RwLock<Option<github::MemberCaps>>,
+    /// The hidden artifacts (drafts), for event routing.
+    hidden: drafts::HiddenIds,
 }
 
 impl Store {
@@ -296,6 +299,7 @@ impl Store {
         migrate(&mut conn)?;
         backfill::run(&mut conn, home, report)?;
         approvals::record_migration_approval(&mut conn)?;
+        let hidden = drafts::HiddenIds::load(&conn)?;
         conn.execute_batch(&format!(
             "PRAGMA analysis_limit={ANALYSIS_LIMIT}; PRAGMA optimize=0x10002;"
         ))?;
@@ -343,6 +347,7 @@ impl Store {
             resumed_at: Mutex::new(stamp(clock.now())),
             member_caps: RwLock::new(None),
             clock,
+            hidden,
         })
     }
 

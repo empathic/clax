@@ -162,6 +162,11 @@ impl From<CoreError> for ApiError {
                 code: "not_granted",
                 message,
             } => ApiError::forbidden("not_granted", message),
+            // What a draft refuses (spec 2026-10-12-flutter-app-round2-design §5.1).
+            CoreError::Invalid {
+                code: "draft",
+                message,
+            } => ApiError::forbidden("draft", message),
             CoreError::Invalid { code, message } => ApiError::bad_request(code, message),
             CoreError::ThreadTaken { name } => {
                 let message = CoreError::ThreadTaken { name: name.clone() }.to_string();

@@ -247,7 +247,7 @@ pub struct ListQuery {
 /// ([`clax_http::live_access::sees_live_pages`]), and for a person's agent every
 /// artifact its rights do not let it read, answered as if it did not
 /// exist. An agent channel's fields are filtered for its reader (spec
-/// §8.3, O9).
+/// §8.3, O9). Drafts are left out for every caller.
 pub async fn list(
     State(s): State<AppState>,
     a: Agent<ArtifactsList>,
@@ -267,6 +267,9 @@ pub async fn list(
                 let Some(a) = st.get_artifact(&id)? else {
                     return Ok(vec![]);
                 };
+                if st.is_hidden(&a.id) {
+                    return Ok(vec![]);
+                }
                 if (!local && a.kind == KIND_LIVE) || !reads.allows(&a) {
                     return Ok(vec![]);
                 }
@@ -754,6 +757,10 @@ pub async fn publish(
     let session = session_header(&headers)?;
     let grant = a.grant().map(str::to_string);
     let key = publish_key(&headers, grant.as_deref())?;
+    if session.is_some() && s.store.is_hidden(id.as_str()) {
+        // A draft is the app's own work in progress: no session owns or watches it.
+        return Err(crate::routes::app_drafts::refused("session"));
+    }
     p.by_page = by_page;
     p.person = publisher(&a.caller);
     admin_change(&s, &a.caller, &id, None, p.capabilities.clone()).await?;

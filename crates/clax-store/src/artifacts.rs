@@ -218,13 +218,15 @@ impl Store {
         self.with_read(|c| live_artifact_in(c, id.as_str()))
     }
 
-    /// Live artifacts (not deleted, at least one version): pinned first, then
-    /// most recently updated, ties broken by ID. Rows with a malformed JSON
-    /// column are logged and left out (see [`Store::corrupt_rows`]).
+    /// Live artifacts (not deleted, at least one version, not hidden
+    /// drafts): pinned first, then most recently updated, ties broken by ID.
+    /// Rows with a malformed JSON column are logged and left out (see
+    /// [`Store::corrupt_rows`]).
     pub fn list_artifacts(&self) -> Result<Vec<Artifact>> {
         self.with_read(|c| {
             let mut stmt = c.prepare(&format!(
-                "{SELECT} WHERE deleted_at IS NULL AND current_version > 0 ORDER BY pinned DESC, updated_at DESC, id"
+                "{SELECT} WHERE deleted_at IS NULL AND current_version > 0 AND hidden = 0
+                 ORDER BY pinned DESC, updated_at DESC, id"
             ))?;
             let rows = stmt.query_map([], row_to_artifact)?;
             skip_corrupt(rows.collect::<rusqlite::Result<Vec<_>>>()?)

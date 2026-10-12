@@ -994,8 +994,14 @@ fn stamp(c: &Connection, now: &str) -> Result<String> {
 }
 
 /// Inserts the item and its index entry unless its key (for its recipient,
-/// [`keyed`]) exists, stamped `now` (see [`stamp`]); its `seq`.
+/// [`keyed`]) exists, stamped `now` (see [`stamp`]); its `seq`. A hidden
+/// artifact (a draft) gets no item.
 fn insert_at(c: &Connection, n: New<'_>, now: &str) -> Result<Option<i64>> {
+    if let Some(aid) = n.artifact_id
+        && super::drafts::is_hidden_in(c, aid)?
+    {
+        return Ok(None);
+    }
     let created_at = stamp(c, now)?;
     let harness = match n.harness {
         Some(h) => Some(h.to_string()),
