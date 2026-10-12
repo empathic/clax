@@ -715,18 +715,19 @@ class AskedQuestion {
 /// [text] typed ("Other", or a free-text answer), or both for a
 /// multi-select answer. Their own words: data, not instructions.
 class QuestionAnswer {
-  const QuestionAnswer({this.selected, this.text});
+  const QuestionAnswer({this.selected = const [], this.text});
 
   factory QuestionAnswer.fromJson(Json j) => QuestionAnswer(
-    selected: j['selected'] == null
-        ? null
-        : [for (final s in _list(j['selected'])) s as String],
+    selected: [for (final s in _list(j['selected'])) s as String],
     text: j['text'] as String?,
   );
 
-  final List<String>? selected;
+  /// The labels picked; empty for none.
+  final List<String> selected;
   final String? text;
 
+  /// The answer route's shape: `selected` is always a list (the daemon
+  /// refuses null), and `text` null for none.
   Json toJson() => {'selected': selected, 'text': text};
 }
 
@@ -1003,4 +1004,33 @@ class InboxSummary {
 
   /// The five newest unread items other than questions.
   final List<InboxItem> latest;
+}
+
+/// The answer to creating a question (`POST /api/sessions/<sid>/questions`).
+class AskResult {
+  const AskResult({
+    required this.question,
+    required this.mode,
+    required this.terminalAfterS,
+    required this.surfaceOpen,
+  });
+
+  factory AskResult.fromJson(Json j) => AskResult(
+    question: QuestionView.fromJson(_map(j['question'])),
+    mode: j['mode'] as String,
+    terminalAfterS: _int(j['terminal_after_s']),
+    surfaceOpen: j['surface_open'] as bool,
+  );
+
+  final QuestionView question;
+
+  /// `wait` (the question waits in Clax) or `terminal`; always `wait` for
+  /// an `ask` question.
+  final String mode;
+  final int terminalAfterS;
+
+  /// Whether an owner surface (a stream holding `inbox` or `questions`)
+  /// was open when it was asked: when false, the person may not have Clax
+  /// open, and the asker should not count on a quick answer.
+  final bool surfaceOpen;
 }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -546,7 +548,7 @@ void main() {
     });
 
     test('a wait returns the answer, and takes it', () async {
-      final q = await api.askQuestion(sid, [unit], artifactId: aid);
+      final q = (await api.askQuestion(sid, [unit], artifactId: aid)).question;
       expect((q.isOpen, q.artifactTitle), (true, 'Runs'));
       final waiting = api.waitQuestion(
         sid,
@@ -568,15 +570,15 @@ void main() {
     });
 
     test('an answer no wait took is a late answer on the next poll', () async {
-      final q = await api.askQuestion(sid, [unit]);
+      final q = (await api.askQuestion(sid, [unit])).question;
       final poll = api.pollFeedback(sid);
       await api.declineQuestion(q.id);
       final b = await poll;
       expect(b.items, isEmpty);
       expect(b.answers.single.isDeclined, isTrue);
-      final q2 = await api.askQuestion(sid, [unit]);
+      final q2 = (await api.askQuestion(sid, [unit])).question;
       await api.answerQuestion(q2.id, [
-        {'selected': null, 'text': 'leagues'},
+        {'text': 'leagues'},
       ]);
       expect(
         (await api.pollFeedback(sid)).answers.single.answers!.single.text,
@@ -585,7 +587,7 @@ void main() {
     });
 
     test('an open wait ends with the open view when released', () async {
-      final q = await api.askQuestion(sid, [unit]);
+      final q = (await api.askQuestion(sid, [unit])).question;
       final waiting = api.waitQuestion(
         sid,
         q.id,
@@ -596,7 +598,7 @@ void main() {
     });
 
     test('answers to a closed question are question_closed; a withdraw of one is a no-op', () async {
-      final q = await api.askQuestion(sid, [unit]);
+      final q = (await api.askQuestion(sid, [unit])).question;
       await api.answerQuestion(q.id, [
         {
           'selected': ['mi'],
@@ -620,7 +622,7 @@ void main() {
       );
       await api.withdrawQuestion(sid, q.id);
       expect((await api.questions(status: 'all')).single.status, 'answered');
-      final q2 = await api.askQuestion(sid, [unit]);
+      final q2 = (await api.askQuestion(sid, [unit])).question;
       await api.withdrawQuestion(sid, q2.id);
       expect((await api.questions()).map((x) => x.id), isEmpty);
       expect((await api.questions(status: 'closed')).map((x) => x.status), [
@@ -629,8 +631,184 @@ void main() {
       ]);
     });
 
+    test('ask answers the create response: wait mode, and whether an owner surface is open', () async {
+      var asked = await api.askQuestion(sid, [unit]);
+      expect(
+        (asked.mode, asked.terminalAfterS, asked.surfaceOpen),
+        ('wait', 600, false),
+      );
+      final s = api.stream();
+      await s.subscribe(['questions']);
+      asked = await api.askQuestion(sid, [
+        {...unit, 'question': 'Again?'},
+      ]);
+      expect(asked.surfaceOpen, isTrue);
+      await s.close();
+    });
+
+    test('a zero wait answers at once with the open view', () async {
+      final q = (await api.askQuestion(sid, [unit])).question;
+      final got = await api.waitQuestion(sid, q.id, wait: Duration.zero);
+      expect(got.isOpen, isTrue);
+    });
+
+    test('a wait that runs out answers the open view', () async {
+      final timers = <(Duration, void Function())>[];
+      api = FakeClaxApi(
+        timer: (d, f) {
+          timers.add((d, f));
+          return _HeldTimer();
+        },
+      );
+      sid = (await api.registerAppSession(installId: 'i', pid: 1)).id;
+      final q = (await api.askQuestion(sid, [unit])).question;
+      var done = false;
+      final waiting = api
+          .waitQuestion(sid, q.id, wait: const Duration(seconds: 60))
+          .whenComplete(() => done = true);
+      await pumpEventQueue();
+      expect(done, isFalse);
+      expect(timers.single.$1, const Duration(seconds: 60));
+      timers.single.$2();
+      expect((await waiting).isOpen, isTrue);
+      // A later answer is a late answer: the wait did not take it.
+      await api.answerQuestion(q.id, [
+        {
+          'selected': ['km'],
+        },
+      ]);
+      expect((await api.pollFeedback(sid)).answers.single.id, q.id);
+    });
+
+    test('answers follow the daemon rules', () async {
+      const free = {'question': 'Anything else?', 'header': 'Else'};
+      const strict = {
+        'question': 'Pick one',
+        'header': 'One',
+        'options': [
+          {'label': 'a'},
+          {'label': 'b'},
+        ],
+        'other': false,
+      };
+      const many = {
+        'question': 'Pick some',
+        'header': 'Some',
+        'options': [
+          {'label': 'a'},
+          {'label': 'b'},
+        ],
+        'multi_select': true,
+      };
+      final q = (await api.askQuestion(sid, [
+        unit,
+        free,
+        strict,
+        many,
+      ])).question;
+      Future<void> refused(List<Map<String, Object?>> answers, String code) =>
+          expectLater(api.answerQuestion(q.id, answers), apiError(code));
+      Map<String, Object?> pick(List<String> labels) => {'selected': labels};
+      final ok = [
+        pick(['km']),
+        {'text': '  more  '},
+        pick(['a']),
+        {
+          'selected': ['a', 'b'],
+          'text': 'and c',
+        },
+      ];
+      List<Map<String, Object?>> with_(int i, Map<String, Object?> a) =>
+          [...ok]..[i] = a;
+      await refused(with_(0, pick(['yards'])), 'invalid_answer');
+      await refused(with_(0, pick(['km', 'km'])), 'invalid_answer');
+      await refused(with_(0, pick(['km', 'mi'])), 'invalid_answer');
+      await refused(with_(0, {'text': '   '}), 'invalid_answer');
+      await refused(
+        with_(0, {
+          'selected': ['km'],
+          'text': 'and mi',
+        }),
+        'invalid_answer',
+      );
+      await refused(with_(1, pick(['a'])), 'invalid_answer');
+      await refused(with_(1, {'text': ''}), 'invalid_answer');
+      await refused(with_(1, {'text': 'x' * 10001}), 'invalid_answer');
+      await refused(with_(2, {'text': 'c'}), 'invalid_answer');
+      await refused(with_(0, {'selected': null, 'text': 'x'}), 'invalid_json');
+      await refused(
+        with_(0, {
+          'selected': ['km'],
+          'note': 'x',
+        }),
+        'invalid_json',
+      );
+      expect(api.questionOf(q.id).isOpen, isTrue);
+      final a = await api.answerQuestion(q.id, ok);
+      expect(a.answers!.map((x) => (x.selected.join(','), x.text)), [
+        ('km', null),
+        ('', 'more'),
+        ('a', null),
+        ('a,b', 'and c'),
+      ]);
+    });
+
+    test('questions follow the daemon rules and limits', () async {
+      Future<void> refused(Map<String, Object?> q) =>
+          expectLater(api.askQuestion(sid, [q]), apiError('invalid_question'));
+      await refused({...unit, 'multiSelect': true});
+      await refused({
+        ...unit,
+        'options': [
+          {'label': 'km', 'icon': 'x'},
+          {'label': 'mi'},
+        ],
+      });
+      await refused({
+        ...unit,
+        'options': [
+          {'label': 'km', 'description': 'd' * 501},
+          {'label': 'mi'},
+        ],
+      });
+      await refused({
+        ...unit,
+        'options': [
+          {'label': 'km', 'preview': 'p' * 20001},
+          {'label': 'mi'},
+        ],
+      });
+      await refused({...unit, 'header': '   '});
+      await refused({
+        'question': 'Free?',
+        'header': 'Free',
+        'multi_select': true,
+      });
+      await refused({
+        ...unit,
+        'options': [
+          {'label': 'km', 'recommended': true},
+          {'label': 'mi', 'recommended': true},
+        ],
+      });
+      for (var i = 0; i < 8; i++) {
+        await api.askQuestion(sid, [
+          {...unit, 'question': 'Q$i?'},
+        ]);
+      }
+      await expectLater(
+        api.askQuestion(sid, [unit]),
+        throwsA(
+          isA<ClaxApiError>().having((e) => (e.status, e.code), 'error', (
+            429,
+            'limit_reached',
+          )),
+        ),
+      );
+    });
+
     test('a wrong number of answers is invalid_answer', () async {
-      final q = await api.askQuestion(sid, [unit]);
+      final q = (await api.askQuestion(sid, [unit])).question;
       await expectLater(
         api.answerQuestion(q.id, []),
         apiError('invalid_answer'),
@@ -641,9 +819,9 @@ void main() {
   group('the inbox', () {
     test('a question makes an item that its answer marks read', () async {
       final sid = (await api.registerAppSession(installId: 'i', pid: 1)).id;
-      final q = await api.askQuestion(sid, [
+      final q = (await api.askQuestion(sid, [
         {'question': 'Q?', 'header': 'H'},
-      ]);
+      ])).question;
       var page = await api.inbox();
       expect(
         (page.unread, page.items.single.kind, page.items.single.question!.id),
@@ -653,7 +831,7 @@ void main() {
       expect((summary.unread, summary.questions.single.id), (1, q.id));
       expect(summary.latest, isEmpty);
       await api.answerQuestion(q.id, [
-        {'selected': null, 'text': 'yes'},
+        {'text': 'yes'},
       ]);
       page = await api.inbox();
       expect((page.unread, page.items.single.read), (0, true));
@@ -719,11 +897,11 @@ void main() {
         expect(api.callNames, ['streamSubscribe']);
         expect(api.calls.single.args['topics'], ['inbox']);
         final sid = (await api.registerAppSession(installId: 'i', pid: 1)).id;
-        final q = await api.askQuestion(sid, [
+        final q = (await api.askQuestion(sid, [
           {'question': 'Q?', 'header': 'H'},
-        ]);
+        ])).question;
         await api.answerQuestion(q.id, [
-          {'selected': null, 'text': 'yes'},
+          {'text': 'yes'},
         ]);
         await pumpEventQueue();
         expect(got.map((e) => (e.topic, e.type)), [
@@ -750,4 +928,18 @@ void main() {
       },
     );
   });
+}
+
+/// A timer that never fires by itself: the test runs its callback.
+class _HeldTimer implements Timer {
+  var _active = true;
+
+  @override
+  bool get isActive => _active;
+
+  @override
+  int get tick => 0;
+
+  @override
+  void cancel() => _active = false;
 }

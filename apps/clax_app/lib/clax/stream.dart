@@ -45,9 +45,11 @@ abstract interface class ClaxStream {
   ///   missed: the daemon's (`behind`, `gap`), and `reconnect` when the
   ///   connection came back on a new stream (the daemon no longer held the
   ///   old one) and the topic was subscribed again. Refetch on it.
-  /// - `unsubscribed` (`{topic, code, message}`) for a topic the new
-  ///   stream refused (an artifact deleted meanwhile): no more events
-  ///   come for it.
+  /// - `unsubscribed` (`{topic, code, message}`) for a topic that could
+  ///   not be subscribed again on a new stream: one the daemon refused (an
+  ///   artifact deleted meanwhile), or one whose re-subscription kept
+  ///   failing for want of an answer (status 0 or 5xx) through every
+  ///   retry. No more events come for it; [subscribe] it again to retry.
   ///
   /// The daemon's `ready` is not passed on. A stream the daemon refuses
   /// to open (400, 403 or 404) ends [events] with an error.
@@ -79,9 +81,11 @@ typedef StreamConnect = Stream<SseMessage> Function(
 /// When the next connection opens a new stream instead (`resumed: false`,
 /// past the daemon's 60 s hold or after a restart), or a resumed one lacks
 /// a topic, the topics are subscribed again and each gets a `resync`
-/// (`reconnect`). A transient failure of that re-subscription is retried
-/// after [retryDelay] (0.5 s doubling to 30 s), unless a newer stream
-/// replaced it first.
+/// (`reconnect`). A re-subscription that fails for want of an answer
+/// (status 0 or 5xx), of all the topics or of one alone, is retried after
+/// [retryDelay] (0.5 s doubling to 30 s), [restoreAttempts] tries in all,
+/// unless a newer stream replaced it first; then its topics are dropped
+/// with `unsubscribed`.
 class SseClaxStream implements ClaxStream {
   SseClaxStream({
     required this.connect,
@@ -244,60 +248,83 @@ class SseClaxStream implements ClaxStream {
     if (again) unawaited(_restore(id).catchError((Object _) {}));
   }
 
+  /// How many times a re-subscription is tried before its topics are
+  /// dropped.
+  static const restoreAttempts = 6;
+
   /// Subscribes stream [id] to the wanted topics it lacks, then sends a
-  /// `resync` for each.
+  /// `resync` for each. All of them go in one request; when the daemon
+  /// refuses it, each goes alone, and the ones refused are dropped.
   Future<void> _restore(String id) async {
     var backoff = const Duration(milliseconds: 500);
+    var together = true;
+    var attempts = 0;
     while (!_closed && _streamId == id) {
       final missing = _wanted.difference(_held).toList();
       if (missing.isEmpty) return;
-      try {
-        await _post(id, missing);
-        _resync(id, missing);
-        return;
-      } on ClaxApiError catch (e) {
-        // A newer stream restores itself.
-        if (e.code == 'unknown_stream') return;
-        if (e.status == 0 || e.status >= 500) {
-          await _retryDelay(backoff);
-          final next = backoff * 2;
-          backoff = next > _maxBackoff ? _maxBackoff : next;
-          continue;
+      final failed = <String>[];
+      ClaxApiError? last;
+      if (together) {
+        try {
+          await _post(id, missing);
+          _resync(id, missing);
+          return;
+        } on ClaxApiError catch (e) {
+          // A newer stream restores itself.
+          if (e.code == 'unknown_stream') return;
+          if (!_transient(e)) {
+            together = false;
+            continue;
+          }
+          failed.addAll(missing);
+          last = e;
         }
-        // The whole change was refused for one topic or more: subscribe
-        // each alone and drop the ones refused.
-        await _restoreEach(id, missing);
+      } else {
+        final kept = <String>[];
+        for (final t in missing) {
+          if (_closed || _streamId != id) return;
+          try {
+            await _post(id, [t]);
+            kept.add(t);
+          } on ClaxApiError catch (e) {
+            if (e.code == 'unknown_stream') return;
+            if (_transient(e)) {
+              failed.add(t);
+              last = e;
+            } else {
+              _drop(t, e);
+            }
+          }
+        }
+        _resync(id, kept);
+        if (failed.isEmpty) return;
+      }
+      if (++attempts >= restoreAttempts) {
+        for (final t in failed) {
+          _drop(t, last!);
+        }
         return;
       }
+      await _retryDelay(backoff);
+      final next = backoff * 2;
+      backoff = next > _maxBackoff ? _maxBackoff : next;
     }
   }
 
-  Future<void> _restoreEach(String id, List<String> topics) async {
-    final kept = <String>[];
-    for (final t in topics) {
-      if (_closed || _streamId != id) return;
-      try {
-        await _post(id, [t]);
-        kept.add(t);
-      } on ClaxApiError catch (e) {
-        if (e.code == 'unknown_stream') return;
-        if (e.status == 0 || e.status >= 500) {
-          // Left for the next stream, or the next restore.
-          continue;
-        }
-        _wanted.remove(t);
-        if (!_out.isClosed) {
-          _out.add(
-            StreamEvent(
-              topic: t,
-              type: 'unsubscribed',
-              data: {'topic': t, 'code': e.code, 'message': e.message},
-            ),
-          );
-        }
-      }
-    }
-    _resync(id, kept);
+  /// Whether [e] is a failure to answer, which a later try may not meet.
+  static bool _transient(ClaxApiError e) => e.status == 0 || e.status >= 500;
+
+  /// Stops wanting topic [t] and tells the caller why.
+  void _drop(String t, ClaxApiError e) {
+    _wanted.remove(t);
+    if (_out.isClosed) return;
+    _out.add(
+      StreamEvent(
+        topic: t,
+        type: 'unsubscribed',
+        data: {'topic': t, 'code': e.code, 'message': e.message},
+      ),
+    );
   }
 
   void _resync(String id, List<String> topics) {
