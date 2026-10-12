@@ -22,6 +22,19 @@ describe("InboxRow", () => {
     m.unmount();
   });
 
+  it("links an ended agent's released threads below its row, and wraps its text", () => {
+    const onOpen = vi.fn();
+    const m = mount(InboxRow, { item: item("ended"), now, onOpen, onToggle: vi.fn() });
+    const links = [...m.root.querySelectorAll(".released a")];
+    expect(links.map(a => [a.textContent, a.getAttribute("href")])).toEqual([["Quarterly Review", "/a/7q3k9mzx2b4t?thread=01J9R0000000000000000000T1"]]);
+    // A link is not inside the row's button.
+    expect(links[0].closest("button")).toBeNull();
+    expect(m.root.querySelector(".text")!.hasAttribute("data-wrap")).toBe(true);
+    m.update({ item: item("reply"), now, onOpen, onToggle: vi.fn() });
+    expect(m.root.querySelector(".released")).toBeNull();
+    m.unmount();
+  });
+
   it("opens on the row and toggles on the dot alone", () => {
     const onOpen = vi.fn();
     const onToggle = vi.fn();

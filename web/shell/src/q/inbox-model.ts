@@ -31,6 +31,9 @@ export function itemTitle(i: InboxItem, others: InboxItem[] = []): string {
     case "published": return `${who} published ${pageOf(i)}`;
     case "question": {
       const headers = i.question?.questions.map(s => cutHeader(s.header)).join(", ");
+      // A withdrawn question stays unread (its person did not answer it),
+      // but no longer asks anything.
+      if (i.question?.status === "withdrawn") return headers ? `${who} withdrew its question: ${headers}` : `${who} withdrew a question`;
       return headers ? `${who} asks: ${headers}` : `${who} asked a question`;
     }
     case "finished": return `${who} finished on ${pageOf(i)}`;
