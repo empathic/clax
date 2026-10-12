@@ -36,6 +36,11 @@ const finishNudge = 'Call finish or give_up.';
 ///   run's [OutputTokens]; an [AttemptStarted] precedes a resent turn and
 ///   follows a mid-output fallback to another model, after which the
 ///   partial output starts again from empty;
+/// - a turn held back by its backend ([TurnHolds], for example
+///   `ResumingTurns` waiting out a background network cut) does not spend
+///   the wall clock while held, and is followed by an [AttemptStarted]
+///   when it is sent again; a failed turn is never counted and left
+///   nothing in the history, so the resent turn is the same request;
 /// - a turn is priced per model attempt (a fallback model at its own
 ///   rates).
 class MessagesApiRunner implements AgentRunner {
@@ -76,6 +81,11 @@ class _Run {
   final _stop = Completer<_Stop>();
   String? _narration;
   var _attempt = 1;
+  late final _holds = TurnHolds(
+    pauseClock: state.budget.pauseClock,
+    resumeClock: state.budget.resumeClock,
+    onResend: () => _emit(AttemptStarted(++_attempt)),
+  );
 
   bool get _cancelled => _stopReason == _Stop.cancelled;
   _Stop? _stopReason;
@@ -129,6 +139,7 @@ class _Run {
             onProgress: _emit,
             outputBefore: state.budget.usage.output,
             onFallback: () => _emit(AttemptStarted(++_attempt)),
+            holds: _holds,
           ),
         );
       } on AgentError catch (e) {
