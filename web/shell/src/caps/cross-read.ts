@@ -36,6 +36,8 @@ export type CrossRead = {
   dispose(): void;
 };
 
+/** The source app does not declare db (the daemon's `not_declared`). */
+const notDeclared = (src: string) => new CapError("not_declared", `${src} does not keep documents to share (it does not declare db)`);
 const ARTIFACT_ID = /^[0-9a-hjkmnp-tv-z]{12}$/;
 const STREAM_EVENTS = new Set(["ready", "resync", "refused", "stream_up"]);
 
@@ -43,7 +45,11 @@ export function crossRead(env: CapEnv, watch: Watch = (t, on) => pageStream().wa
   const reader = env.aid;
   /** Per source: whether the owner allowed it, asked at most once per view. */
   const asked = new Map<string, Promise<boolean>>();
-  const subs = new Map<string, { src: string; spec: Spec }>();
+  /** Every subscription, from its subscribe call on: `live` once its first
+   * read is delivered and its topic followed. A pending one holds its slot,
+   * and a reset, leave or unsubscribe meanwhile removes it, which its
+   * subscribe call sees as another entry (or none) under its ID. */
+  const subs = new Map<string, { src: string; spec: Spec; live: boolean }>();
   const watches = new Map<string, () => void>();
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   const fetches = new Map<string, number>();
@@ -73,16 +79,23 @@ export function crossRead(env: CapEnv, watch: Watch = (t, on) => pageStream().wa
     if (res.ok) return res.json();
     if (res.status === 404) return null;
     const err = ((await res.json().catch(() => ({}))) as { error?: { code?: string; message?: string } }).error ?? {};
-    // B no longer declaring db is a refusal too: the page's own `not_declared` means its declaration.
-    if (err.code === "not_granted" || err.code === "not_declared") throw new CapError("not_granted", `this app may not read ${url.split("/")[3]}'s documents`);
+    if (err.code === "not_granted") throw new CapError("not_granted", `this app may not read ${url.split("/")[3]}'s documents`);
+    if (err.code === "not_declared") throw notDeclared(url.split("/")[3]);
     throw dbError(res.status, err, false);
   }
 
-  const title = (id: string) => fetch(`/api/artifacts/${id}`, { headers: headers({}) })
-    .then(r => r.json()).then(j => (j as { artifact: { title: string } }).artifact.title || id, () => id);
+  /** Artifact `id`'s title and declaration, as far as the daemon tells the owner. */
+  const info = (id: string) => fetch(`/api/artifacts/${id}`, { headers: headers({}) })
+    .then(r => r.json()).then(j => (j as { artifact: { title: string; capabilities?: Record<string, unknown> } }).artifact, () => ({ title: "", capabilities: undefined }));
 
   async function ask(src: string): Promise<boolean> {
-    const [a, b] = await Promise.all([title(reader), title(src)]);
+    const [a0, b0] = await Promise.all([info(reader), info(src)]);
+    // A source without db has nothing a grant could open: no dialog.
+    if (b0.capabilities && !Object.hasOwn(b0.capabilities, "db")) {
+      asked.delete(src);
+      throw notDeclared(src);
+    }
+    const [a, b] = [a0.title || reader, b0.title || src];
     const answer = await env.prompt({
       title: `Let “${a}” read “${b}”'s data?`,
       body: `“${a}” will see the documents “${b}” keeps, and cannot change them. Documents private to one viewer stay private.`,
@@ -121,7 +134,7 @@ export function crossRead(env: CapEnv, watch: Watch = (t, on) => pageStream().wa
 
   async function push(sub: string): Promise<void> {
     const s = subs.get(sub);
-    if (!s) return;
+    if (!s?.live) return;
     const n = ++seq;
     fetches.set(sub, n);
     const live = () => !disposed && subs.get(sub) === s && fetches.get(sub) === n;
@@ -165,7 +178,7 @@ export function crossRead(env: CapEnv, watch: Watch = (t, on) => pageStream().wa
     if (disposed) return;
     const doc = e.type === "doc" && e.topic === topicOf(src) && (e.artifact_id === undefined || e.artifact_id === src) && typeof e.path === "string";
     if (!doc && !STREAM_EVENTS.has(e.type)) return;
-    for (const [sub, s] of subs) if (s.src === src && (!doc || touches(s.spec, e.path as string))) schedule(sub);
+    for (const [sub, s] of subs) if (s.live && s.src === src && (!doc || touches(s.spec, e.path as string))) schedule(sub);
   }
 
   const endAll = () => { for (const sub of [...subs.keys()]) drop(sub); };
@@ -191,10 +204,21 @@ export function crossRead(env: CapEnv, watch: Watch = (t, on) => pageStream().wa
           const spec = checkSpec(a.spec);
           if (!subs.has(sub) && subs.size >= MAX_SUBSCRIPTIONS) throw new CapError("resource_exhausted", `at most ${MAX_SUBSCRIPTIONS} subscriptions of other apps per view`);
           drop(sub);
-          // The first read asks for consent; only then is the topic followed.
-          const docs = await current(src, spec, true);
-          if (disposed) throw new CapError("unavailable", "this view has closed");
-          subs.set(sub, { src, spec });
+          // The slot is taken now, before any await, so a burst cannot pass the cap.
+          const entry = { src, spec, live: false };
+          subs.set(sub, entry);
+          const gone = () => new CapError("unavailable", "the page's document changed before this subscription started");
+          let docs: WireDoc[];
+          try {
+            // The first read asks for consent; only then is the topic followed.
+            docs = await current(src, spec, true);
+          } catch (e) {
+            if (subs.get(sub) !== entry) throw gone();
+            drop(sub);
+            throw e;
+          }
+          if (disposed || subs.get(sub) !== entry) throw gone();
+          entry.live = true;
           if (!watches.has(src)) watches.set(src, watch([topicOf(src)], e => onStream(src, e)));
           if (spec.kind === "doc" && docs.length) delivered.set(sub, docs[0].version);
           env.post({ type: "clax:event", ns: "db", topic: "snapshot", data: { sub, docs } });
