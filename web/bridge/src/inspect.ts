@@ -5,7 +5,9 @@
 // - The error ring (`installErrorRing`) is the only part the eager bridge
 //   carries: it starts with the bridge, before any page script, and keeps the
 //   page's newest `RING_SIZE` errors (`error` events, unhandled rejections,
-//   `console.error` calls) and the URLs of resources that failed to load.
+//   `console.error` calls) and failed loads, as raw events and arguments.
+//   It is installed only in a frame the shell named for inspection
+//   (`INSPECT_FRAME`), so other pages' `console.error` stays the browser's.
 // - The rest loads with the clip part (`parts/clip.ts`) when the shell asks:
 //   `settle` waits until the DOM has been quiet for `QUIET_MS` and the
 //   document has loaded, at most `settleMs`, on timers only (a WebView the
@@ -13,7 +15,7 @@
 //   a reader sees, within `OUTLINE_BYTES`; `inspectPage` puts them together
 //   with a screenshot of the viewport (`inspect-render.ts`), rendered again
 //   at half the scale while it is over `maxBytes`.
-import type { InspectError, Inspection } from "./protocol";
+import type { BridgeToShell, InspectError, Inspection, ShellToBridge } from "./protocol";
 
 /** How many of the page's errors, and of its failed loads, are kept. */
 export const RING_SIZE = 20;
@@ -38,36 +40,27 @@ const OUTLINE_ELEMENTS = 4000;
 export type InspectTimers = { setTimeout(f: () => void, ms: number): unknown; clearTimeout(t: unknown): void };
 type ObserverCtor = new (cb: MutationCallback) => Pick<MutationObserver, "observe" | "disconnect">;
 
-/** The page's errors and failed loads since the bridge started, newest
- * last: each error as the values it was given (`errorsOf` words them, in the
- * clip part, so the eager bridge carries no formatting), and `at`, where an
- * `error` event says it came from. */
-export type ErrorRing = { errors: { kind: InspectError["kind"]; v: unknown[]; at?: string }[]; failed: string[] };
+/** The page's errors and failed loads since the bridge started, as they
+ * came, newest last: `[0]` holds each `error` event, `unhandledrejection`
+ * event, or `console.error` call's arguments (an array), `[1]` the `error`
+ * events of elements that failed to load. The eager bridge only captures;
+ * `errorsOf` (clip part) reads and words them. */
+export type ErrorRing = [errors: (Event | unknown[])[], failed: Event[]];
 
-/** Starts keeping `win`'s errors: wraps `console.error` (the page's own
- * call still reaches the console) and listens, capturing, to `error` (an
- * element's failed load is a failed URL, any other an error) and
- * `unhandledrejection`. */
+/** Starts keeping `win`'s errors, the newest `RING_SIZE` of each list:
+ * wraps `console.error` (the page's own call still reaches the console) and
+ * listens, capturing, to `error` and `unhandledrejection`. */
 export function installErrorRing(win: Window): ErrorRing {
-  const ring: ErrorRing = { errors: [], failed: [] };
+  const ring: ErrorRing = [[], []];
   const keep = <T>(list: T[], v: T) => { if (list.push(v) > RING_SIZE) list.shift(); };
   const con = (win as Window & { console: Console }).console;
   const original = con.error;
   con.error = function (this: unknown, ...v: unknown[]) {
-    keep(ring.errors, { kind: "console", v });
+    keep(ring[0], v);
     return original.apply(this, v);
   };
-  win.addEventListener("error", e => {
-    const t = e.target as { nodeType?: number; currentSrc?: string; src?: string; href?: string } | null;
-    if (t !== (win as unknown) && t?.nodeType === 1) {
-      const url = t.currentSrc || t.src || t.href;
-      if (url) keep(ring.failed, String(url));
-    } else {
-      const ev = e as ErrorEvent;
-      keep(ring.errors, { kind: "error", v: [ev.message || ev.error], at: ev.filename && `${ev.filename}:${ev.lineno}:${ev.colno}` });
-    }
-  }, true);
-  win.addEventListener("unhandledrejection", e => keep(ring.errors, { kind: "unhandledrejection", v: [(e as PromiseRejectionEvent).reason] }));
+  win.addEventListener("error", e => { if ((e.target as Node | null)?.nodeType === 1) keep(ring[1], e); else keep(ring[0], e); }, true);
+  win.addEventListener("unhandledrejection", e => keep(ring[0], e));
   return ring;
 }
 
@@ -85,13 +78,31 @@ function words(v: unknown): string {
   }
 }
 
-/** `ring`'s errors in words, each cut to `ERROR_CHARS`. */
-export function errorsOf(ring: ErrorRing): InspectError[] {
-  return ring.errors.map(e => {
+/** One captured error in words. */
+function errorText(kind: InspectError["kind"], v: unknown): string {
+  if (kind === "console") return (v as unknown[]).map(words).join(" ");
+  if (kind === "unhandledrejection") return words((v as PromiseRejectionEvent).reason);
+  const e = v as ErrorEvent;
+  const at = e.filename ? ` (${e.filename}:${e.lineno}:${e.colno})` : "";
+  return `${e.message || words(e.error)}${at}`;
+}
+
+/** `ring`'s errors in words, and the URLs of its failed loads, each cut
+ * to `ERROR_CHARS`. */
+export function errorsOf(ring: ErrorRing): { errors: InspectError[]; failed: string[] } {
+  const errors = ring[0].map(v => {
+    const kind: InspectError["kind"] = Array.isArray(v) ? "console" : v.type === "unhandledrejection" ? "unhandledrejection" : "error";
     let text: string;
-    try { text = e.v.map(words).join(" "); } catch { text = "(an error that could not be put in words)"; }
-    return { kind: e.kind, text: cut(e.at ? `${text} (${e.at})` : text, ERROR_CHARS) };
+    try { text = errorText(kind, v); } catch { text = "(an error that could not be put in words)"; }
+    return { kind, text: cut(text, ERROR_CHARS) };
   });
+  const failed: string[] = [];
+  for (const e of ring[1]) {
+    const t = e.target as { currentSrc?: string; src?: string; href?: string } | null;
+    const url = t ? t.currentSrc || t.src || t.href : "";
+    if (typeof url === "string" && url) failed.push(cut(url, ERROR_CHARS));
+  }
+  return { errors, failed };
 }
 
 export type SettleDeps = { timers: InspectTimers; Observer: ObserverCtor };
@@ -210,5 +221,19 @@ export async function inspectPage(win: Window, ring: ErrorRing, opts: { settleMs
     if (i >= SHRINKS) throw new Error(`the screenshot is over ${maxBytes} bytes even at ${scale} scale`);
   }
   const height = doc.documentElement.scrollHeight;
-  return { png, errors: errorsOf(ring), failed: ring.failed.map(u => cut(u, ERROR_CHARS)), text: outline(doc, win), title: cut(flat(doc.title), 200), height: Number.isFinite(height) ? height : 0 };
+  return { png, ...errorsOf(ring), text: outline(doc, win), title: cut(flat(doc.title), 200), height: Number.isFinite(height) ? height : 0 };
+}
+
+/** The bridge's `clax:inspect` order, answered: `post` gets `clax:inspection`
+ * with the order's `requestId`, the inspection (its PNG transferred) or why
+ * there is none. An order without a `requestId` is dropped. */
+export async function answerInspect(win: Window, ring: ErrorRing, m: Extract<ShellToBridge, { type: "clax:inspect" }>, post: (m: BridgeToShell, transfer?: Transferable[]) => void, deps: InspectDeps): Promise<void> {
+  const requestId = m.requestId;
+  if (typeof requestId !== "string") return;
+  try {
+    const r = await inspectPage(win, ring, m, deps);
+    post({ type: "clax:inspection", requestId, ...r }, [r.png]);
+  } catch (e) {
+    post({ type: "clax:inspection", requestId, error: e instanceof Error ? e.message : String(e) });
+  }
 }

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { type InspectTimers, MAX_BYTES, errorsOf, OUTLINE_BYTES, QUIET_MS, RING_SIZE, SETTLE_MS, SHRINKS, inspectPage, installErrorRing, outline, settle } from "../src/inspect";
+import { type InspectTimers, MAX_BYTES, OUTLINE_BYTES, answerInspect, errorsOf, QUIET_MS, RING_SIZE, SETTLE_MS, SHRINKS, inspectPage, installErrorRing, outline, settle } from "../src/inspect";
 
 /** Timers that run only when the test advances them. */
 function manualTimers(): InspectTimers & { advance(ms: number): void; now: number } {
@@ -61,17 +61,33 @@ describe("the error ring", () => {
     const rejection = new Event("unhandledrejection") as Event & { reason?: unknown };
     rejection.reason = new TypeError("bad thing");
     dispatchEvent(rejection);
-    expect(errorsOf(ring)).toEqual([
+    expect(errorsOf(ring).errors).toEqual([
       { kind: "console", text: "first {\"n\":1}" },
       { kind: "error", text: "boom (https://x.test/app.js:3:7)" },
       { kind: "unhandledrejection", text: "TypeError: bad thing" },
     ]);
     expect(calls).toEqual([["first", { n: 1 }]]);
     for (let i = 0; i < RING_SIZE + 5; i++) console.error(`e${i}`);
-    const kept = errorsOf(ring);
+    const kept = errorsOf(ring).errors;
     expect(kept).toHaveLength(RING_SIZE);
     expect(kept[0].text).toBe("e5");
     expect(kept.at(-1)!.text).toBe(`e${RING_SIZE + 4}`);
+  });
+
+  it("keeps RING_SIZE of each, failed loads not pushing out errors", () => {
+    console.error = () => {};
+    const ring = installErrorRing(window);
+    console.error("kept");
+    for (let i = 0; i < RING_SIZE * 3; i++) {
+      const img = document.body.appendChild(document.createElement("img"));
+      img.src = `https://cdn.test/${i}.png`;
+      img.dispatchEvent(new Event("error"));
+    }
+    const { errors, failed } = errorsOf(ring);
+    expect(errors).toEqual([{ kind: "console", text: "kept" }]);
+    expect(failed).toHaveLength(RING_SIZE);
+    expect(failed[0]).toBe(`https://cdn.test/${RING_SIZE * 2}.png`);
+    expect(failed.at(-1)).toBe(`https://cdn.test/${RING_SIZE * 3 - 1}.png`);
   });
 
   it("lists resources that failed to load apart from the errors", () => {
@@ -79,8 +95,7 @@ describe("the error ring", () => {
     document.body.innerHTML = `<img src="https://cdn.test/missing.png"><link rel="stylesheet" href="/gone.css">`;
     document.querySelector("img")!.dispatchEvent(new Event("error"));
     document.querySelector("link")!.dispatchEvent(new Event("error"));
-    expect(ring.failed).toEqual(["https://cdn.test/missing.png", `${location.origin}/gone.css`]);
-    expect(ring.errors).toEqual([]);
+    expect(errorsOf(ring)).toEqual({ errors: [], failed: ["https://cdn.test/missing.png", `${location.origin}/gone.css`] });
   });
 
   it("cuts a long error's text, and words what cannot be serialised", () => {
@@ -90,7 +105,7 @@ describe("the error ring", () => {
     const loop: Record<string, unknown> = {};
     loop.self = loop;
     console.error(loop);
-    const [long, odd] = errorsOf(ring);
+    const [long, odd] = errorsOf(ring).errors;
     expect(long.text.length).toBeLessThanOrEqual(501);
     expect(odd.text).toBe("[object Object]");
   });
@@ -175,7 +190,10 @@ describe("outline", () => {
 });
 
 describe("inspectPage", () => {
-  const ring = { errors: [{ kind: "console" as const, v: ["oops"] }], failed: ["https://cdn.test/a.png"] };
+  const failedImg = Object.assign(document.createElement("img"), { src: "https://cdn.test/a.png" });
+  const loadError = new Event("error");
+  Object.defineProperty(loadError, "target", { value: failedImg });
+  const ring: Parameters<typeof inspectPage>[1] = [[["oops"]], [loadError]];
   const quick = () => {
     const t = manualTimers();
     return { t, deps: (render: (scale: number) => Promise<ArrayBuffer>) => ({ timers: t, Observer: FakeObserver as never, render }) };
@@ -232,5 +250,24 @@ describe("inspect.ts", () => {
   it("never waits on an animation frame (a hidden WebView runs none)", () => {
     const src = readFileSync(resolve(__dirname, "../src/inspect.ts"), "utf8");
     expect(src).not.toMatch(/requestAnimationFrame/);
+  });
+});
+
+describe("answerInspect", () => {
+  const deps = (render: (s: number) => Promise<ArrayBuffer>) => ({ timers: { setTimeout: (f: () => void) => { queueMicrotask(f); return 0; }, clearTimeout() {} }, Observer: FakeObserver as never, render });
+
+  it("posts the inspection with the requestId, the png transferred", async () => {
+    const posts: [unknown, Transferable[] | undefined][] = [];
+    await answerInspect(window, [[], []], { type: "clax:inspect", requestId: "r1", settleMs: 0 }, (m, t) => { posts.push([m, t]); }, deps(async () => new ArrayBuffer(4)));
+    const [[m, t]] = posts;
+    expect(m).toMatchObject({ type: "clax:inspection", requestId: "r1", errors: [], failed: [] });
+    expect(t).toEqual([(m as { png: ArrayBuffer }).png]);
+  });
+
+  it("posts why when the inspection fails, and nothing without a requestId", async () => {
+    const posts: unknown[] = [];
+    await answerInspect(window, [[], []], { type: "clax:inspect", requestId: "r2", settleMs: 0 }, m => { posts.push(m); }, deps(async () => { throw new Error("no canvas"); }));
+    await answerInspect(window, [[], []], { type: "clax:inspect", settleMs: 0 } as never, m => { posts.push(m); }, deps(async () => new ArrayBuffer(1)));
+    expect(posts).toEqual([{ type: "clax:inspection", requestId: "r2", error: "no canvas" }]);
   });
 });

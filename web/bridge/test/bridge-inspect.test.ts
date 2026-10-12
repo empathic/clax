@@ -17,6 +17,8 @@ const answerTo = (id: string) => posted.filter(m => m.type === "clax:inspection"
 let pageError: (m: string) => void;
 beforeAll(async () => {
   Object.defineProperty(window, "parent", { value: shell, configurable: true });
+  // The inspect view's shell names the frame before the page loads.
+  window.name = "clax-inspect";
   // The console as the bridge finds it (kept quiet here).
   vi.spyOn(console, "error").mockImplementation(() => {});
   const script = document.createElement("script");

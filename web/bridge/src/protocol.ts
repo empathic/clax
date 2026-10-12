@@ -132,6 +132,10 @@ export type ShellToBridge =
   | CallResult
   | CapEvent;
 
+/** The name (`window.name`) the app's inspect view gives its content frame:
+ * the bridge keeps the page's errors from its first script only there. A
+ * page can name its own frame so; it then only keeps its own errors. */
+export const INSPECT_FRAME = "clax-inspect";
 /** One of a page's errors since its first script (`inspect.ts`): an `error`
  * event, an unhandled promise rejection, or a `console.error` call. */
 export interface InspectError { kind: "error" | "unhandledrejection" | "console"; text: string }

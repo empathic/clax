@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { INSPECT_FRAME } from "../../../bridge/src/protocol";
 import { FRAME_SANDBOX, FrameHost } from "./frame-host";
 
 function stage() {
@@ -68,6 +69,20 @@ describe("FrameHost", () => {
     expect(host.takeFragment()).toBe(null);
     expect(host.show("/c/x/v/1/#part-2", true, "1")).toBe(served);
     expect(host.takeFragment(), "only an adoption keeps one").toBe(null);
+  });
+  it("names the frame for inspection in the app's inspect view, and adopts no served frame there", () => {
+    history.replaceState(null, "", "/a/x?app=1&inspect=1");
+    try {
+      const s = stage();
+      s.insertAdjacentHTML("afterbegin", `<iframe class="frame" title="artifact content" src="/c/x/v/1/" allow="clipboard-write; fullscreen" sandbox="${FRAME_SANDBOX}"></iframe>`);
+      const served = s.querySelector("iframe")!;
+      const el = new FrameHost(s, () => {}).show("/c/x/v/1/", true, "1-s");
+      expect(el).not.toBe(served);
+      expect(el.name).toBe(INSPECT_FRAME);
+    } finally {
+      history.replaceState(null, "", "/");
+    }
+    expect(new FrameHost(stage(), () => {}).show("/c/x/v/1/", true, "1-s").name).toBe("");
   });
   it("removes a served frame it did not adopt", () => {
     const s = stage();
