@@ -21,6 +21,11 @@ abstract interface class AppSurface {
   /// The shell's messages, in order.
   Stream<HostMessage> get messages;
 
+  /// Whether the app shows the page: on screen, resumed, and not covered
+  /// by another screen. The shell is told after each document's init and
+  /// on every change.
+  void setVisible(bool visible);
+
   /// The page's document failing to load (or its renderer going away).
   Stream<SurfaceFault> get faults;
 

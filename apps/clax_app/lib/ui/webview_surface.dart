@@ -155,6 +155,12 @@ class WebViewAppSurface implements AppSurface {
     await controller.runJavaScript(c.toJs());
   }
 
+  @override
+  void setVisible(bool visible) {
+    final c = _session.visibilityChanged(visible);
+    if (c != null) unawaited(call(c));
+  }
+
   /// Runs [js] in the page and returns its result (for integration tests).
   Future<Object?> evaluate(String js) =>
       controller.runJavaScriptReturningResult(js);
