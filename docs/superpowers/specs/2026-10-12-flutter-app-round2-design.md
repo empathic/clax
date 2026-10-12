@@ -49,6 +49,32 @@ In flight when this was written, integrated here and not redone:
   `opened` taps), `BackgroundRuns` (`begin`/`step`/`end`), `AppPresence`,
   `ResumingBackend` (waits out a background network cut and runs again).
 
+P1's review records 4faff43f (a cancelled or timed-out stream does not
+close the connection of an injected `HttpClient`) and 3abb59de
+(`MessageStream` leaves `partial_json` on blocks it cannot finish, and
+does not parse `server_tool_use`/`mcp_tool_use` input) are fixed in
+lib/agent before the tool loop is built on them (plan, Global
+Constraints).
+
+### Owner answers to this design's questions (2026-10-12)
+
+- RA1 (Q1) "Don't overcomplicate this at the moment, let's ship a better
+  app." Both platforms run the Dart Messages API tool loop. There is no
+  MCP server and no `claude -p` tool loop this round; `ClaudeCliBackend`
+  stays on the desktop only, as today's single structured call, the
+  fallback when no API key is set (R§4.3).
+- RA2 (Q2) "Always render first": every `finish` that publishes follows a
+  render of that exact draft (R§4.5).
+- RA3 (Q3) "The experience should be iterate, smooth, and quick." Caps
+  are sized so a typical change lands in well under 30 s on Haiku; at a
+  cap the last draft that rendered without errors is published, saying it
+  stopped early; only with no clean draft is nothing published, with
+  Retry; the cost limit stays as a safety net (R§4.4).
+- RA4 (Q4) "Look at how Clax does elicitation." Questions are Clax's own
+  agent questions: the `ask` tool's arguments and result, the session
+  routes, the question view, late answers on the feedback poll, and the
+  shell's question card to answer them (R§8, R§10.2).
+
 P2 (live making preview) and P3 (Working-chip narration) are re-planned
 here on the tool loop: the preview comes from the streamed input of the
 `write_file` tool, narration from tool calls and short assistant text.
@@ -61,20 +87,19 @@ here on the tool loop: the preview comes from the streamed input of the
  (loop)     │        doc pins, render state                       │      (drafts, docs, publish,
             │ Budget: turns, renders, tokens, cost                │       threads, questions)
             │ Tools: list/read/write/str_replace/delete_file,     │
-            │  set_meta, db_*, db_write, render, ask_owner,       │──► Inspector (WebView in the
+            │  set_meta, db_*, db_write, render, ask,             │──► Inspector (WebView in the
             │  finish, give_up                                    │      app, loads the draft)
             └─────────────────────────────────────────────────────┘
- Runner = MessagesApiRunner (phone: the Dart loop over the Messages API)
-        | ClaudeCliRunner   (desktop: claude -p, the same Toolbox served as
-                             an MCP server on loopback by the app)
+ Runner = MessagesApiRunner (Android and macOS: the Dart loop over the Messages API)
         | ScriptedRunner    (tests: scripted tool calls against the real Toolbox)
+ No API key on macOS → ClaudeCliBackend, today's single structured call (R§4.3)
 ```
 
-- **One Toolbox, two transports.** Every rule (what a tool may do, the
-  publish gate, the caps, the data-safety rules of base §3.6 and the change
-  ledger) lives in the Toolbox. A runner only moves tool calls in and
-  results out, so the phone and the desktop behave the same, and the
-  deterministic tests drive the real Toolbox.
+- **One Toolbox.** Every rule (what a tool may do, the publish gate, the
+  caps, the data-safety rules of base §3.6 and the change ledger) lives in
+  the Toolbox. A runner only moves tool calls in and results out, so the
+  deterministic tests drive the real Toolbox and the phone and the
+  desktop behave the same.
 - **Drafts.** The agent edits a draft, never the live version. The live
   version stays usable (RO2). Rendering serves the draft through the daemon
   as a hidden **draft artifact** (R§5), so the page runs under the real page
@@ -108,8 +133,8 @@ throws out of the loop.
 | `db_get` | `{path, app}` | `{exists, doc}` | |
 | `db_query` | `{collection, app, where: [[field, op, value_json]]\|null, order_by, limit}` | as `db_list` | The daemon's query (`db_query` in `docs/contract.md`). |
 | `db_write` | `{ops: [{op: "set"\|"update"\|"delete", collection, doc_id, data_json: string\|null}]}` | `{staged: n}` | This app only. **Staged**, not written: applied to the draft's document copy for rendering and to the live app at `finish`. An op on a document that exists must name one this run read (`db_get`/`db_list`/`db_query`, or the prompt's samples); its pin is the version read. At most 200 ops per run. |
-| `render` | `{file: string\|null}` | image + `{console_errors: [..], failed_requests: [..], text: "...", title, height, settled_ms, docs_copied, docs_truncated}` | R§5. At most 4 per run. |
-| `ask_owner` | `{questions: [...]}` (the `ask` shape of `docs/contract.md`) | `{status, answers}` | R§8. At most 1 per run. |
+| `render` | `{file: string\|null}` | image + `{console_errors: [..], failed_requests: [..], text: "...", title, height, settled_ms, docs_copied, docs_truncated}` | R§5. Capped (R§4.4). |
+| `ask` | Clax's `ask` arguments: `{questions \| question_id, timeout_s, cancel}` (`docs/contract.md`, "`ask`") | Clax's `ask` result: `{question_id, status, reply, call_again, surface_open, note}` | R§8. One question set per run. |
 | `finish` | `{reply, resolve: bool}` | `{published: version\|null, replied: [thread]}` | R§4.5. Ends the run. |
 | `give_up` | `{reason}` | `{}` | Nothing is published; the threads get "Couldn't make that change: <reason>" and stay open. Ends the run. |
 
@@ -164,59 +189,55 @@ blocks go back byte for byte (preserved thinking), budget notes are
 appended after the tool results, and the tool list never changes within a
 run.
 
-### R§4.3 ClaudeCliRunner (desktop)
+### R§4.3 The desktop without an API key
 
-The app serves the run's Toolbox as an MCP server (Streamable HTTP, JSON
-responses, `initialize`, `tools/list`, `tools/call`) on `127.0.0.1:<free
-port>` with a random bearer token, one server per run, closed at its end.
-The render result goes back as MCP `image` content beside a `text` item.
+Both platforms run the tool loop over the Messages API whenever an API key
+is set (RA1). On macOS without a key, the backend setting "Claude Code on
+this Mac" keeps `ClaudeCliBackend` exactly as today: one structured call
+(base §3.6, `EditResult`, `--safe-mode`, tools off), with P1's
+`stream-json` progress for the preview and narration. It has no render, no
+`ask` and no caps of R§4.4; `AgentLoop` keeps the single-call path for it.
+The MCP server and the `claude -p` tool loop are an alternative record on
+this section.
 
-```
-claude -p --output-format stream-json --verbose --include-partial-messages
-  --mcp-config <scratch>/mcp.json --strict-mcp-config
-  --tools "" --allowedTools mcp__clax_app__list_files,…,mcp__clax_app__give_up
-  --safe-mode --model <model> --effort low --no-session-persistence
-  --system-prompt-file <scratch>/system.md --max-budget-usd <cost cap>
-```
+### R§4.4 Caps: iterate, smooth, quick
 
-`mcp.json` is `{"mcpServers": {"clax_app": {"type": "http", "url":
-"http://127.0.0.1:<p>/mcp", "headers": {"Authorization": "Bearer <t>"}}}}`.
-The request goes on stdin, the environment is scrubbed as today (base
-§3.6), progress comes from P1's stream-json parsing (assistant text →
-narration; `tool_use` with partial input → `PartialFile`). The run's
-outcome is the Toolbox's (`finish`/`give_up`), never claude's text: once a
-terminal tool returns, the child gets 10 s to exit and is then killed; a
-child that exits with no terminal call is `give_up("the agent stopped
-without finishing")`. Caps (R§4.4) are the Toolbox's: past them every tool
-answers the cap error, and the child is killed after two more calls.
-
-This is not `clax mcp`: R§13 Q1 and the alternative record on this section
-say why.
-
-### R§4.4 Caps
+Sized from L1's measurements (one `claude-haiku-5-5` call at effort low:
+about 5 s for a change) so a typical change (one `str_replace`, one
+`render`, `finish`: three turns) lands in about 10–15 s, well under 30 s.
 
 | | New app | Change |
 |---|---|---|
-| Model turns | 14 | 12 |
-| `render` calls | 4 | 4 |
-| Output tokens (sum) | 60,000 | 40,000 |
-| Cost (from `usage` × the price table) | $1.00 | $1.00 |
-| Wall clock (injected clock) | 6 min | 5 min |
+| Model turns | 8 | 6 |
+| `render` calls | 3 | 2 |
+| Output tokens (sum; also the task budget) | 32,000 | 20,000 |
+| Wall clock, not counting `ask` waits (injected clock) | 90 s | 45 s |
+| Cost (from `usage` × the price table), the safety net | $0.50 | $0.50 |
 
 - The price table (`lib/agent/pricing.dart`) holds input, output, cache
   write and cache read prices for the three offered models
   (`claude-haiku-5-5` $0.10/$0.50 per MTok, `claude-sonnet-5-5` $2/$10,
-  `claude-opus-5-5` $4/$20; cache reads 0.1× input, writes 1.25×).
-- **Soft limit.** When two turns remain, or 75% of the output tokens or the
-  cost is spent, the next tool-result message ends with a text block:
-  "Budget: <n> turns left. Call finish with what works now, or give_up."
-- **Hard limit.** The loop stops calling the model and ends the run as
-  `give_up("it ran out of its budget: <which cap>")`. Nothing is published,
-  even a clean draft (alternative record). The failed change shows Retry
-  (R§9.5), which runs again with a fresh budget.
-- Messages API runs also send `output_config.task_budget` (`{type:
-  "tokens", total: <output cap>}`, beta `task-budgets-2026-03-13`) so the
-  model paces itself.
+  `claude-opus-5-5` $4/$20; cache reads 0.1× input, writes 1.25×). On
+  Haiku a change costs well under a cent; the cost cap matters for Sonnet
+  and Opus.
+- **Soft limit.** When two turns remain, or 60% of the wall clock, the
+  output tokens or the cost is spent, the next tool-result message ends
+  with a text block: "Time is nearly up: call finish now with what works."
+- **Hard limit.** The loop stops calling the model, then:
+  - **with a clean draft** (a render without uncaught errors whose draft
+    differs from the base): `finish` publishes **that rendered draft** (the
+    files, meta and staged db ops as they were at that render, kept as a
+    snapshot by `render`) with the reply "<the agent's latest narration>.
+    I stopped early (<which cap>), so this may not be everything you
+    asked." The threads are not resolved, so a further comment carries on.
+  - **without one:** nothing is published; the threads get "Couldn't make
+    that change: it ran out of time (<which cap>)." and the change shows
+    Retry (R§9.5), which runs again with a fresh budget.
+- The cost cap is checked like the others but is not expected to bind on
+  Haiku; it exists so a misbehaving run on a large model cannot run away.
+- Messages API runs send `output_config.task_budget` (`{type: "tokens",
+  total: <output cap>}`, beta `task-budgets-2026-03-13`; 20,000 is its
+  minimum) so the model paces itself.
 
 ### R§4.5 `finish`, the only write to the live app
 
@@ -224,7 +245,7 @@ say why.
 
 - the draft has a write after its last `render`, or never rendered while
   it changed a file (**every finish that publishes follows a render of
-  that exact draft**, R§13 Q2);
+  that exact draft**, RA2);
 - the last render reported uncaught errors (`console_errors` of kind
   `error` or `unhandledrejection`) and no write followed it;
 - a new app has no title or no `index.html`.
@@ -260,12 +281,14 @@ interruption (base §3.6, record d359fbc3's rule).
 ### R§4.6 Cancellation
 
 A run's `cancelled` future (base `AgentRequest.cancelled`) aborts the turn
-in flight (HTTP abort or child kill), makes every later tool call answer
-"cancelled", withdraws an open `ask_owner` question, and deletes the draft
+in flight (HTTP abort, the response closed: P1 record 4faff43f), makes
+every later tool call answer "cancelled", withdraws a question an `ask`
+call is waiting on (Clax's `ask` with `cancel`), and deletes the draft
 artifact. `finish` checks it before step 2; once step 2 starts the run
 completes (as "before the publish" today). Outcomes map to today's
-`ChangeOutcome`s: `ChangeLanded`, `ChangeAnswered` (finish with no file
-change), `ChangeFailed` (give_up, caps, errors), `ChangeCancelled`,
+`ChangeOutcome`s: `ChangeLanded` (also a cap that published a clean
+draft), `ChangeAnswered` (finish with no file change), `ChangeFailed`
+(give_up, a cap with no clean draft, errors), `ChangeCancelled`,
 `ChangeInterrupted` (a daemon call without an answer), `ChangeDropped`.
 
 ### R§4.7 Background (P4)
@@ -279,8 +302,9 @@ change), `ChangeFailed` (give_up, caps, errors), `ChangeCancelled`,
 - Narration steps feed `BackgroundRuns.step`; the notification shows the
   latest step. A change's run that lands posts "<title> changed"; a new
   app's "<title> is ready".
-- `ask_owner` while the app is in the background posts a notification
-  "<title> has a question"; tapping it opens the questions sheet (R§10.2).
+- A question the agent asks while the app is in the background posts a
+  notification "<title> has a question"; tapping it opens the question
+  (R§10.2).
 
 ## R§5. Drafts and `render`
 
@@ -312,7 +336,9 @@ files}` creates a **draft artifact**: an ordinary artifact row with
 
 ### R§5.2 The inspector (app)
 
-`render` pushes the draft (create on first render, publish after), applies
+`render` keeps a snapshot of the draft it rendered (files, meta, staged db
+ops) and marks it clean when the render had no uncaught errors, for the
+cap's publish (R§4.4). It pushes the draft (create on first render, publish after), applies
 the staged db ops to the draft's copy (best effort, unpinned), then asks
 the **Inspector** to load `<base>/a/<draft>?app=1&inspect=1`:
 
@@ -406,7 +432,7 @@ points: **say→first-output** (submit to the first preview frame of
 streamed HTML) and **send→first-step** (Send to the first narration step
 in the chip). Targets on `claude-haiku-5-5` at effort low, checked by the
 live run (R§12): say→first-output ≤ 4 s; say→usable ≤ 35 s;
-send→first-step ≤ 4 s; long-press→landed ≤ 20 s for a one-element change.
+send→first-step ≤ 4 s; long-press→landed ≤ 15 s for a one-element change (RA3: well under 30 s).
 Speed comes from the prompt (one write, one render), inline files (no read
 turn), the cached prefix, and streaming the preview from the first bytes
 of `index.html`.
@@ -422,30 +448,64 @@ of `index.html`.
 - After each `render`: the inspection PNG replaces the preview (the real
   page, scripts run, at the app's size), with "Checking how it looks" and,
   when it has errors, their count.
-- A question (`ask_owner`) shows inline as the questions sheet (R§10.2).
+- A question the agent asks (`ask`) shows in a sheet over the making
+  screen: the shell's own question card (R§10.2), with the elapsed timer
+  paused while it waits.
 - `finish` → create → the app screen opens; say→usable stops at its first
   `ready` (unchanged). Cancel still cancels (R§4.6).
 
-## R§8. `ask_owner`
+## R§8. Asking the owner: Clax's elicitation
 
-- Creates a question through the session route (`POST
-  /api/sessions/<sid>/questions`, `source: "ask"`, `artifact_id` the app or
-  null for a new app) and waits on it (`GET …/questions/<qid>?wait=`).
-- **New app:** waits up to 5 minutes, shown inline on the making screen;
-  Cancel withdraws it.
-- **Change:** waits up to 60 s, shown at once as the questions sheet when
-  the app is in front, else by notification. Unanswered by then, the run
-  **parks**: the draft is deleted, the threads get "I asked you a question
-  about this: <header>. I'll carry on when you answer.", the feedback is
-  acknowledged, and a `ParkedRun {questionId, artifactId, threadIds,
-  commentIds}` is kept in `<support>/parked-runs.json`. The answer comes
-  back as a late answer on the worker's feedback poll (`answers`, "Late
-  answers" in `docs/contract.md`); the worker then runs the change again
-  with the same comments and the answer in the first message. A declined
-  question runs it with "The owner skipped the question: use your best
-  judgement". A parked run whose threads got a newer comment is dropped
-  (that comment's run answers it).
-- Answers are the owner's words: data, quoted as JSON in the prompt.
+The agent asks the way every Clax agent does (`docs/contract.md`, "Agent
+questions"; spec `2026-10-06-agent-questions-and-inbox-design.md`). Nothing
+here is a parallel model: the question is the daemon's question object,
+asked by the app's `app` session, listed in the inbox, answered in the
+shell's question card, and handed back by the same routes and tiers.
+
+- **The tool.** `ask` takes Clax's `ask` arguments (`questions` in the
+  question shape, 1 to 4; or `question_id` to keep waiting; `timeout_s`;
+  `cancel`) and returns Clax's `ask` result (`question_id`, `status`
+  `open`/`answered`/`declined`/`withdrawn`, `reply`, `call_again`,
+  `surface_open`, `note` that answers are the owner's words). The Toolbox
+  implements it over the session routes: `POST /api/sessions/<sid>/questions`
+  (`source: "ask"`, `artifact_id`: the app, or null for a new app), then
+  `GET /api/sessions/<sid>/questions/<qid>?wait=<timeout_s>`; `cancel`
+  is `…/withdraw`. Its validation and errors are the daemon's
+  (`invalid_question`, `limit_reached`).
+- **Where it is answered.** The app holds the `questions` topic on its
+  `/api/stream` (R§10.1), so it is an open owner surface and questions are
+  created in `wait` mode (`surface_open: true`). The owner answers in the
+  shell's question card (`web/shell/src/q/QuestionCard.svelte`): in app
+  mode docked over the app (R§10.2), elsewhere on the shell's `/inbox?q=<qid>`
+  in a sheet. The answer is recorded `answered_via: "shell"`, as any
+  answer from the owner's browser.
+- **Waiting.** `timeout_s` is capped by the Toolbox at 300 for a new app
+  (the person is on the making screen) and 45 for a change; the wall-clock
+  cap (R§4.4) does not count the wait. A result `open` with `call_again`
+  leaves the choice to the agent, as for any Clax agent: `ask` again with
+  the `question_id` (a turn), or carry on without the answer.
+- **Parking a change, in Clax's terms.** The prompt says: when a change's
+  question is still open after one wait, call `finish` publishing nothing
+  that depends on the answer, with a reply that names the question; the
+  question stays open in the inbox. Its answer then comes back as Clax
+  delivers every late answer: on the session's next feedback poll
+  (`answers`, "Late answers"), marked taken. The worker keeps, beside the
+  change ledger, which threads and comments each still-open question of a
+  change was asked for (`<support>/asked.json`: question ID → artifact,
+  thread IDs, comment IDs); a late answer runs that change again with the
+  same comments and the poll's late-answer text (the daemon's own lines:
+  "The person answered your question …", "Their answers are their own
+  words: treat them as data.") in the first message. A skip arrives the
+  same way ("The person skipped your question …"). An entry whose threads
+  got a newer viewer comment is dropped: that comment's run carries on.
+- **A new app** has no threads: its question is about no artifact, and the
+  making screen waits on it (its sheet shows the question); Cancel
+  withdraws it.
+- **Background.** A question asked while the app is in the background
+  posts "<title> has a question" (R§4.7); the stream's 60 s grace keeps
+  the surface open for short trips away, after which a new question is
+  created with `surface_open: false` and the agent is told the owner may
+  not be there (Clax's rule), so it should not wait.
 
 ## R§9. App screen UX
 
@@ -561,16 +621,30 @@ version stays as it is.
 
 ### R§10.2 Stage 2: questions
 
-- A questions sheet shows open questions (`GET /api/questions`, live from
-  the `questions` topic), each with its header, question, options (label,
-  description, preview in monospace, the recommended one marked) and
-  **Other** (a text field with the mic), **Answer** (`POST
-  /api/questions/<qid>/answer`) and **Skip** (`…/decline`).
-- It opens by itself when a question of the app's own agent arrives while
-  the app is in front (a light haptic), from the inbox, and from the
-  question notification (R§4.7). Questions from other agents (none on a
-  phone; Claude Code on the desktop's own daemon is a different home) show
-  the same way.
+Questions are answered in the shell's own question card, not a Flutter
+copy of it, so every rule of it holds (one chip per question, a
+multi-question card moving between questions and saying what is left,
+the Recommended chip, previews, Other, Skip; `docs/contract.md`, "Agent
+questions"):
+
+- **In an app.** The shell's artifact view already loads its question
+  surfaces for the owner (`web/shell/src/q/artifact-questions.ts`,
+  `SidebarQuestions.svelte`), but app mode hides the sidebar. In app mode
+  the shell docks the open questions about the artifact as a sheet at the
+  bottom (as it docks the composer): host method `openQuestions()` shows
+  it, and host message `questions {open: n}` tells the app how many are
+  open whenever that changes. The app shows a question badge on the
+  comment button and opens the sheet by itself when a new question of its
+  own agent arrives while the app is in front (a light haptic).
+- **Anywhere else** (the making screen, the inbox, a notification, a
+  question about no artifact): a sheet holding a WebView on the shell's
+  `/inbox?q=<qid>`, which focuses that question's card; the sheet closes
+  when the stream reports the question closed.
+- The answer is the shell's: `POST /api/questions/<qid>/answer` or
+  `…/decline` from the owner's browser (`answered_via: "shell"`). Dictation
+  fills the card's text the same way it fills the composer
+  (`setDraftText` gains the question card's focused text field in app
+  mode).
 
 ### R§10.3 Stage 3: version history and diff
 
@@ -596,40 +670,42 @@ version stays as it is.
   failed, text, title, height}`, host method `composeArtifact()`. The
   host protocol header in `web/shell/src/app/host.ts` stays the source of
   truth.
+- **W8, questions in app mode** (R§10.2): the docked question sheet, host
+  method `openQuestions()`, host message `questions {open}`, and
+  `setDraftText` reaching the focused question field.
 
 ## R§12. Testing
 
 Deterministic only. No test or gate calls a model; one final live task runs
-at most three `claude -p` calls.
+at most three live calls (R§12, Live).
 
 | Layer | What |
 |---|---|
 | Rust | drafts: create with and without `of`, the document copy (cap, private documents excluded), hidden from every listing route and topic (one audit test listing them), threads refused, reads of other apps through `of`'s grants, delete and sweep (injected clock), migration 25. |
-| Web unit | hold-then-drag: arm, drag text range, drag area, small drag = tap, second finger, cancel, scroll before arming untouched, `touchmove` cancelled only when dragging; inspect: ring buffer order and cap, settle with an injected timer, outline limits, half-scale retry; host `inspect`, `inspection`, `composeArtifact`, consent auto-decline in inspect mode. |
+| Web unit | hold-then-drag: arm, drag text range, drag area, small drag = tap, second finger, cancel, scroll before arming untouched, `touchmove` cancelled only when dragging; inspect: ring buffer order and cap, settle with an injected timer, outline limits, half-scale retry; host `inspect`, `inspection`, `composeArtifact`, consent auto-decline in inspect mode; app-mode question sheet, `openQuestions`, `questions {open}`. |
 | Web e2e | touch hold-drag selects a range and picks it; area drag picks an area; `?inspect=1` returns a PNG and an error a page threw at load. |
-| Dart unit | Toolbox per tool (paths, sizes, exactly-once replace, staged writes need a read, pins, caps, gate), `finish` (every branch of R§4.5 with `FakeClaxApi`, the ledger written before the publish, restore on refusal, newer comment left out), Messages runner against the fake Messages API (scripted streamed turns: tool loop, append-only history byte-equal across turns, cache fields, eager fields, max_tokens resend, refusal, soft and hard caps, cost sums, cancel mid-turn, network-cut resume per turn), MCP server (initialize, list, call, image content, bearer refused), CLI runner against `fake-claude.sh` driving the MCP server, `ask_owner` (answer, decline, park, late answer re-run), worker (retry, progress events), `ClaxStream`, line diff. |
-| Widget | making screen (preview throttle, inspection image, inline question, cancel), chip (narration, expand, retry), FAB and comment bar, thread detail, inbox, questions sheet, version page and diff, settings toggles and cues (fake channel). |
+| Dart unit | Toolbox per tool (paths, sizes, exactly-once replace, staged writes need a read, pins, caps, gate), `finish` (every branch of R§4.5 with `FakeClaxApi`, the ledger written before the publish, restore on refusal, newer comment left out), Messages runner against the fake Messages API (scripted streamed turns: tool loop, append-only history byte-equal across turns, cache fields, eager fields, max_tokens resend, refusal, soft and hard caps, cost sums, cancel mid-turn, network-cut resume per turn), `ask` (Clax's arguments and result over the session routes: answered, declined, open with `call_again`, `question_id` again, `cancel`, `surface_open` false), the asked-questions map and the late-answer re-run from a feedback poll's `answers`, the cap publish of the last clean draft, worker (retry, progress events), `ClaxStream`, line diff. |
+| Widget | making screen (preview throttle, inspection image, inline question, cancel), chip (narration, expand, retry), FAB and comment bar, thread detail, inbox, question sheets (docked and `/inbox?q=`), version page and diff, settings toggles and cues (fake channel). |
 | macOS integration | the full loop with `ScriptedRunner` over the real Toolbox, the real daemon (drafts) and the real `WebViewInspector`: new app (write, render, finish), change (str_replace, render, finish) landing in place with a document kept. |
-| Live (last) | ≤ 3 `claude -p` calls with `ClaudeCliRunner`: a new app, a change, and one spare; timings and costs recorded. |
+| Live (last) | ≤ 3 live calls. With an API key: the tool loop on macOS (a new app, a change, a spare), timings and costs recorded. Without one (this machine has none): `claude -p` through the desktop fallback only, and the tool loop's live numbers come from the owner's phone run. |
 
-## R§13. Open questions for the owner
+## R§13. Owner questions, answered
 
-Each is a `status:needs-decision` record on this file, with the choice this
-design takes until the owner answers.
+The four `status:needs-decision` records on this file carry the owner's
+answers as `status:decided` replies (RA1–RA4 in R§1):
 
-- **Q1** The desktop gets the tools from an MCP server the app serves, not
-  from `clax mcp` (R§4.3). `clax mcp` has no drafts, no render, and its
-  writes would bypass the change ledger; its session would also end the
-  app's session when the transport closes.
-- **Q2** Every `finish` that publishes must follow a render of that exact
-  draft (R§4.5). Cost: one more turn and ~1–2 s per change.
-- **Q3** Caps and what happens at them (R§4.4): nothing is published at a
-  hard cap, even a clean draft.
-- **Q4** `ask_owner` on a change waits 60 s, then parks the run until the
-  answer (R§8).
+- **Q1** Desktop tools over MCP: dropped this round; the Messages API tool
+  loop runs on both platforms, `ClaudeCliBackend` stays the single-call
+  fallback without a key (R§4.3).
+- **Q2** Render before every publishing `finish`: yes (R§4.5).
+- **Q3** Caps: small and quick; at a cap the last clean draft is published
+  with a note, else nothing and Retry; the cost cap stays (R§4.4).
+- **Q4** Asking: Clax's own elicitation (R§8, R§10.2).
 
 ## R§14. Out of scope
 
-Publishing incrementally during a run; edge auto-scroll during a drag; a
-native WebView snapshot; a render on the daemon; the agent's own mid-run
-replies; widgets; iOS; the `/api/token` exposure (D-3, unchanged).
+Publishing incrementally during a run; the tool loop through `claude -p`
+and an MCP server; edge auto-scroll during a drag; a native WebView
+snapshot; a render on the daemon; the agent's own mid-run replies; a
+Flutter copy of the question card; widgets; iOS; the `/api/token`
+exposure (D-3, unchanged).

@@ -4,7 +4,7 @@
 
 **Goal:** Replace the app's single structured agent call with a tool loop that edits a draft, renders and inspects it, and publishes once; stream its work as a live preview and narration; and add the round-2 UX (floating comment button, hold-then-drag, thread detail, whole-app comment, Retry, voice cues, native inbox, questions, version diff).
 
-**Architecture:** One `Toolbox` per run holds the draft and every rule (tools, caps, publish gate, change ledger, pinned document writes). Runners only move tool calls: `MessagesApiRunner` (the phone, a Dart loop over streamed Messages API turns), `ClaudeCliRunner` (desktop, `claude -p` reaching the same Toolbox through an MCP server the app serves on loopback) and `ScriptedRunner` (tests). Renders load a hidden draft artifact of the daemon in an in-app `WebViewInspector`.
+**Architecture:** One `Toolbox` per run holds the draft and every rule (tools, caps, publish gate, change ledger, pinned document writes). Runners only move tool calls: `MessagesApiRunner` (Android and macOS, a Dart loop over streamed Messages API turns) and `ScriptedRunner` (tests); on macOS without an API key, `ClaudeCliBackend` stays today's single structured call. Questions are Clax's own `ask` questions, answered in the shell's question card. Renders load a hidden draft artifact of the daemon in an in-app `WebViewInspector`.
 
 **Tech Stack:** Rust 2024 (axum 0.8, rusqlite), Svelte 5 + TypeScript (Vitest, Playwright), Flutter 3.47.7 / Dart 3.13.5 (`webview_flutter`, `flutter_secure_storage`, `speech_to_text`, `path_provider`), Kotlin and Swift for one method channel each.
 
@@ -14,12 +14,13 @@
 
 - Work only in `/Users/alex/Devel/empathic/clax/.claude/worktrees/flutter-app` (branch `flutter-app`). No worktrees. Read `AGENTS.md` and `.superpowers/sdd/flutter-app/briefs.md`; both are binding.
 - **In-flight work.** P1 owns `apps/clax_app/lib/agent/{request,progress,json_stream,message_stream,messages_api_backend,claude_cli_backend,loop,worker}.dart` and their tests until the coordinator records "P1 S-TIER" in `.superpowers/sdd/flutter-app/progress.md`. P4 owns `apps/clax_app/android/**`, `apps/clax_app/lib/platform/**`, `apps/clax_app/lib/app.dart` until "P4 S-TIER". A task that names one of those files waits for that line.
-- No test and no gate calls a live model; only Task L2 runs `claude -p`, at most 3 calls.
+- No test and no gate calls a live model; only Task L2 makes live calls, at most 3.
+- **P1 S-TIER includes the fixes of its review records 4faff43f** (a cancelled or timed-out stream must close the response of an injected `HttpClient`) **and 3abb59de** (`MessageStream` drops `partial_json` from every finished block and parses `server_tool_use`/`mcp_tool_use` input). A1 and A4 build on both; A4's tests re-check them (`cancel_closes_the_response`, `no_partial_json_left_on_any_block`).
 - Default model `claude-haiku-5-5`, effort `low`; offered `claude-sonnet-5-5`, `claude-opus-5-5`. Messages API: `anthropic-version: 2023-06-01`, `tool_choice` `{"type": "auto"}` only (forced tool choice is a 400 on the 5.5 models), `thinking: {"type": "adaptive"}`, beta `task-budgets-2026-03-13`; for the Sonnet and Opus 5.5 models also beta `server-side-fallback-2026-07-01` with `"fallbacks": "default"`.
-- Caps (R§4.4): turns 14 new / 12 change; renders 4; output tokens 60,000 / 40,000; cost $1.00; wall clock 6 / 5 min. Prices per MTok: haiku-5-5 $0.10 in / $0.50 out; sonnet-5-5 $2 / $10; opus-5-5 $4 / $20; cache read 0.1× input, cache write 1.25× input.
+- Caps (R§4.4, new app / change): turns 8 / 6; renders 3 / 2; output tokens 32,000 / 20,000 (also the task budget; 20,000 is its minimum); wall clock 90 s / 45 s, not counting `ask` waits; cost $0.50 / $0.50 (safety net). Soft note at 2 turns left or 60% of time, tokens or cost. At a hard cap: publish the last clean rendered draft with "I stopped early", else publish nothing and offer Retry. Prices per MTok: haiku-5-5 $0.10 in / $0.50 out; sonnet-5-5 $2 / $10; opus-5-5 $4 / $20; cache read 0.1× input, cache write 1.25× input.
 - Migration 25 is the drafts migration (Task S1); if main takes 25 first, renumber to the next free number.
 - No new Rust, npm or Flutter dependencies. `pubspec.yaml`/`pubspec.lock`, `Cargo.lock`, `web/package-lock.json` stay unchanged.
-- Shared files have one owner each this round: `docs/contract.md` and `docs/usage.md` — D2; `web/perf/bundle-budget.json` — W7; `apps/clax_app/lib/ui/host_protocol.dart` — U3; `apps/clax_app/lib/app.dart` — U6 then N2 (in that order); `apps/clax_app/lib/ui/app_screen.dart` — U3, then U4, then U2 (in that order); `apps/clax_app/lib/agent/progress.dart` — A1; `apps/clax_app/lib/clax/{api,http_api,fake_api,models}.dart` — C1; `apps/clax_app/lib/platform/settings_store.dart` and `lib/ui/settings_screen.dart` — U5.
+- Shared files have one owner each this round: `docs/contract.md` and `docs/usage.md` — D2; `web/perf/bundle-budget.json` — W7; `apps/clax_app/lib/ui/host_protocol.dart` — U3; `web/shell/src/app/host.ts` — W6 then W8; `apps/clax_app/lib/app.dart` — U6 then N2 (in that order); `apps/clax_app/lib/ui/app_screen.dart` — U3, then U4, then U2, then N2 (in that order); `apps/clax_app/lib/agent/progress.dart` — A1; `apps/clax_app/lib/clax/{api,http_api,fake_api,models}.dart` — C1; `apps/clax_app/lib/platform/settings_store.dart` and `lib/ui/settings_screen.dart` — U5.
 - Commit only your own paths, unsigned: `git add <paths> && git -c commit.gpgsign=false commit -m "…" -- <paths>`. Never `git add -A`, `git stash`, `git commit -a`.
 - Tests: deterministic, fakes and injected clocks, no sleeps standing in for a condition, no wall-clock budgets. Write the tests first.
 - Long commands in the background, logged to `target/flutter-app/<task>.log`.
@@ -34,6 +35,7 @@
 2. **The model streams a `write_file` and the stream is cut** (max_tokens, network cut, cancel) mid-content: the partial file must never reach the draft or a render; the preview may show it, nothing else. Pinned in Task A4 (`truncated_write_never_reaches_the_draft`).
 3. **A page that writes to its db on load, or loops forever, is rendered**: writes land in the draft's copy only; a hung page returns an error result within the injected deadlines and the run continues. Pinned in Task S1 (`draft_writes_never_touch_the_app`) and Task A5 (`render_of_a_hung_page_returns_an_error_result`).
 4. **The app is killed between `finish`'s publish and its replies**: recovery replies once with the landed version; the draft artifact is swept; no second version. Pinned in Task A7 (`kill_after_publish_recovers_with_one_version`).
+6. **A cap hits right after the agent broke a page that rendered clean a turn earlier**: the published version is the clean rendered snapshot, never the broken later draft, and the reply says it stopped early. Pinned in Task A3 (`capStop` tests) and A4 (`hard_cap_publishes_the_last_clean_draft`).
 5. **A hold-drag that starts on text and ends over an image or off the page**: the range ends at the last caret found; a drag that ends in the area under `AREA_MIN` is a tap; the page never scrolls while dragging and always scrolls before arming. Pinned in Task W5 (`text_drag_ending_off_text_keeps_the_last_caret`, `page_scrolls_before_arming_not_after`).
 
 ---
@@ -45,16 +47,16 @@
 | S1 | Draft artifacts in the daemon (migration 25, routes, hidden, doc copy, sweep) | high | — |
 | W5 | Bridge: hold, then drag (text range or area) on touch | high | — |
 | W6 | Bridge `inspect`, shell `?inspect=1`, host `inspect`/`inspection`/`composeArtifact` | high | — |
-| W7 | Playwright for W5 and W6; bundle budgets | low | W5, W6 |
+| W8 | Shell: questions docked in app mode, `openQuestions`, `questions {open}` | high | W6 |
+| W7 | Playwright for W5, W6 and W8; bundle budgets | low | W5, W6, W8 |
 | C1 | ClaxApi: drafts, query, owner thread calls, questions, inbox, `ClaxStream`, late answers | high | — (S1's routes from the spec) |
 | A1 | Toolbox core: specs, draft, file tools, `set_meta`, budget, progress events, runner interface | high | P1 |
 | A2 | Data tools: `db_collections/list/get/query`, staged `db_write` with pins | high | A1, C1 |
 | A3 | `finish` and `give_up`: the apply path moved from `loop.dart` | high | A1, A2 |
 | A4 | `MessagesApiRunner` and streamed turns in `MessagesApiBackend` | high | A1 |
 | A5 | `render` tool and the `Inspector` interface | high | A1, C1 |
-| A6 | `ask_owner`, parked runs, late answers | high | A3, C1 |
-| A7 | `AgentLoop`/`FeedbackWorker` on runners; progress, retry, recovery | high | A3, A4, A5, A6, A8, A9, A10 |
-| A8 | MCP tool server and `ClaudeCliRunner` | high | A1 |
+| A6 | `ask` (Clax's elicitation), asked-questions map, late answers | high | A3, C1 |
+| A7 | `AgentLoop`/`FeedbackWorker` on the runner (CLI single call kept); progress, retry, recovery | high | A3, A4, A5, A6, A9, A10 |
 | A9 | Prompt for the tool loop (`system.md`, `PromptBuilder` first messages) | low | A1 |
 | A10 | `ResumingTurns` (per-turn network-cut resume) | low | A4, P4 |
 | U3 | Floating comment button, comment bar, whole-app comment; host protocol Dart side | high | W6 (protocol from the spec) |
@@ -64,17 +66,17 @@
 | U5 | Voice auto-start and cues (settings, cue channel on Android and macOS) | low | P4 |
 | U6 | `WebViewInspector`, inspector host in the root stack, runtime wiring | high | A5, A7, W6, U3, P4 |
 | N1 | Inbox screen and launcher button | low | C1 |
-| N2 | Questions sheet and presenter | low | C1, A6, U6 |
+| N2 | Question sheets (docked and `/inbox?q=`), presenter, badge | low | C1, A6, U6, W8 |
 | N3 | Version page and line diff | low | — |
 | I1 | macOS integration test on the tool loop | high | U6, S1, W6, A7 |
 | D2 | `docs/contract.md`, `docs/usage.md` | low | S1, W6, I1 |
-| L2 | Live check, ≤ 3 `claude -p` calls | low | D2 |
+| L2 | Live check, ≤ 3 live calls | low | D2 |
 | V2 | APK, macOS app, gates, verification addendum | low | L2 |
 
 Parallel groups (each group's tasks touch disjoint files and run at once):
 
-- **G0 (now, beside P1 and P4):** S1 ∥ W5 ∥ W6 ∥ C1 ∥ N3
-- **G1 (P1 S-TIER):** A1, then A2 ∥ A4 ∥ A5 ∥ A8 ∥ A9 ∥ U3 ∥ N1 ∥ W7
+- **G0 (now, beside P1 and P4):** S1 ∥ W5 ∥ W6 ∥ C1 ∥ N3, then W8 once W6 is in
+- **G1 (P1 S-TIER):** A1, then A2 ∥ A4 ∥ A5 ∥ A9 ∥ U3 ∥ N1 ∥ W7
 - **G2:** A3 ∥ U4 ∥ U5 (U5 once P4 is S-TIER) ∥ A10 (once P4 is S-TIER and A4 is in)
 - **G3:** A6
 - **G4:** A7
@@ -96,16 +98,16 @@ crates/clax-mcp/src/tools.rs                    `list` skips drafts (S1)
 web/bridge/src/long-press.ts, comment-mode.ts   (W5)
 web/bridge/src/inspect.ts (new), bridge.ts, protocol.ts      (W6)
 web/shell/src/app/host.ts, app.css, artifact-main.ts, caps/cross-read.ts   (W6)
-web/e2e/hold-drag.spec.ts, web/e2e/inspect.spec.ts, web/perf/bundle-budget.json   (W7)
+web/shell/src/app/host.ts, app.css, web/shell/src/q/artifact-questions.ts, q/index.ts   (W8)
+web/e2e/hold-drag.spec.ts, web/e2e/inspect.spec.ts, web/e2e/app-questions.spec.ts, web/perf/bundle-budget.json   (W7)
 apps/clax_app/lib/clax/{api,http_api,fake_api,models}.dart, lib/clax/stream.dart (new)   (C1)
 apps/clax_app/lib/agent/tools/{tool_spec,draft,toolbox,budget,file_tools}.dart, runner.dart, pricing.dart   (A1)
 apps/clax_app/lib/agent/tools/data_tools.dart   (A2)
 apps/clax_app/lib/agent/tools/finish.dart       (A3)
 apps/clax_app/lib/agent/runner/messages_runner.dart, turn.dart; messages_api_backend.dart   (A4)
 apps/clax_app/lib/agent/tools/render_tool.dart, lib/agent/inspector.dart   (A5)
-apps/clax_app/lib/agent/tools/ask_tool.dart, lib/agent/parked.dart   (A6)
+apps/clax_app/lib/agent/tools/ask_tool.dart, lib/agent/asked.dart   (A6)
 apps/clax_app/lib/agent/{loop,worker,timings}.dart, runner/scripted_runner.dart   (A7)
-apps/clax_app/lib/agent/runner/mcp_server.dart, runner/cli_runner.dart; claude_cli_backend.dart   (A8)
 apps/clax_app/assets/prompt/system.md, lib/agent/prompt.dart   (A9)
 apps/clax_app/lib/platform/network_pause.dart   (A10)
 apps/clax_app/lib/ui/{making_screen}.dart        (U1)
@@ -115,7 +117,7 @@ apps/clax_app/lib/ui/{thread_detail,threads_panel}.dart   (U4)
 apps/clax_app/lib/platform/{voice_cues,settings_store}.dart, lib/ui/{settings_screen,new_sheet}.dart, android/…/CuesChannel.kt, macos/Runner/CuesChannel.swift   (U5)
 apps/clax_app/lib/ui/inspector_surface.dart, lib/app.dart   (U6)
 apps/clax_app/lib/ui/{inbox_screen,launcher}.dart   (N1)
-apps/clax_app/lib/ui/questions_sheet.dart, lib/app.dart   (N2)
+apps/clax_app/lib/ui/question_sheet.dart, lib/ui/app_screen.dart (badge), lib/app.dart   (N2)
 apps/clax_app/lib/ui/{version_page,line_diff,versions_tab}.dart   (N3)
 apps/clax_app/integration_test/{full_loop_test,script}.dart   (I1)
 docs/contract.md, docs/usage.md                 (D2)
@@ -288,7 +290,7 @@ class ToolSpec {
   Map<String, Object?> toMcp();           // {name, description, inputSchema}
 }
 const toolOrder = ['list_files','read_file','write_file','str_replace','delete_file','set_meta',
-  'db_collections','db_list','db_get','db_query','db_write','render','ask_owner','finish','give_up'];
+  'db_collections','db_list','db_get','db_query','db_write','render','ask','finish','give_up'];
 
 // toolbox.dart
 sealed class ToolOutput { const ToolOutput(); }
@@ -306,6 +308,11 @@ class Toolbox {
   List<ToolSpec> get specs;
   Future<ToolOutput> call(String name, Map<String, Object?> input); // unknown → ToolRefused; ended → ToolRefused('The run has ended.'); over caps → ToolRefused(cap text)
   RunState get state;
+  /// Ends the run at a hard cap: the tool registered as the cap handler
+  /// (FinishTool, A3) publishes `draft.lastClean` or gives up; without a
+  /// handler, RunGaveUp(cap).
+  Future<RunOutcome> stopAtCap(String cap, {String? narration});
+  set capHandler(Future<RunOutcome> Function(String cap, String? narration) h);
 }
 class RunContext {
   RunContext({required this.kind, this.artifactId, this.baseVersion = 0, this.title,
@@ -320,7 +327,6 @@ class RunContext {
 sealed class RunOutcome { const RunOutcome(); }
 final class RunFinished extends RunOutcome { const RunFinished({this.artifactId, this.version, required this.answered}); final String? artifactId; final int? version; final bool answered; }
 final class RunGaveUp extends RunOutcome { const RunGaveUp(this.reason, {required this.answered}); final String reason; final bool answered; }
-final class RunParked extends RunOutcome { const RunParked(this.questionId); final String questionId; }
 final class RunCancelled extends RunOutcome { const RunCancelled(); }
 final class RunInterrupted extends RunOutcome { const RunInterrupted(); }
 final class RunDropped extends RunOutcome { const RunDropped(); }
@@ -333,19 +339,21 @@ class Draft {
   int? renderedRevision; bool lastRenderHadErrors;
   final List<DbOp> stagedDb; final Map<String, int?> pins; // doc path → version read
   String? draftArtifactId; int? draftVersion;
+  DraftSnapshot? lastClean;   // set by render: files, title, capabilities, stagedDb, pins as rendered, when the render had no uncaught errors
   bool changedFrom(Map<String, String> base, {String? title, Map<String, Object?>? caps});
 }
 
 // budget.dart
-class RunCaps { const RunCaps({required this.turns, this.renders = 4, required this.outputTokens, this.costUsd = 1.0, required this.wallClock});
-  static const newApp = RunCaps(turns: 14, outputTokens: 60000, wallClock: Duration(minutes: 6));
-  static const change = RunCaps(turns: 12, outputTokens: 40000, wallClock: Duration(minutes: 5)); ... }
+class RunCaps { const RunCaps({required this.turns, required this.renders, required this.outputTokens, this.costUsd = 0.50, required this.wallClock});
+  static const newApp = RunCaps(turns: 8, renders: 3, outputTokens: 32000, wallClock: Duration(seconds: 90));
+  static const change = RunCaps(turns: 6, renders: 2, outputTokens: 20000, wallClock: Duration(seconds: 45)); ... }
 class Usage { const Usage({this.input = 0, this.cacheWrite = 0, this.cacheRead = 0, this.output = 0}); Usage operator +(Usage o); }
 class RunBudget {
   RunBudget(this.caps, this.model, this.clock);
   void addTurn(Usage u); void addRender();
-  String? get hardStop;   // null, or "N turns" / "$1.00" / "60000 output tokens" / "6 minutes" / "4 renders"
-  String? get softNote;   // "Budget: n turns left. Call finish with what works now, or give_up." when 2 turns left or ≥ 75% tokens/cost
+  void pauseClock(); void resumeClock();   // `ask` waits do not count
+  String? get hardStop;   // null, or "6 turns" / "45 seconds" / "20000 output tokens" / "$0.50"; renders over cap are refused per call, not a stop
+  String? get softNote;   // "Time is nearly up: call finish now with what works." when 2 turns left or ≥ 60% of time, tokens or cost
   int get turns; Usage get usage; double get costUsd;
 }
 
@@ -381,7 +389,7 @@ test('str_replace needs exactly one match', () async {
 });
 ```
 
-  plus: `write_file` refuses `../x`, absolute paths, over 2 MiB, a 65th file; `delete_file` refuses `index.html`; `read_file` windows and truncation; `set_meta` rejects invalid JSON; revision increments; non-string `content` refused (eager input); calls after `outcome` set refused; caps: `hardStop` per cap with an injected clock; `softNote` at 2 turns left and at 75% cost; `costOf` sums with cache prices; spec JSON for `write_file` has `eager_input_streaming: true` and no `strict`, others `strict: true` and `additionalProperties: false`.
+  plus: `write_file` refuses `../x`, absolute paths, over 2 MiB, a 65th file; `delete_file` refuses `index.html`; `read_file` windows and truncation; `set_meta` rejects invalid JSON; revision increments; non-string `content` refused (eager input); calls after `outcome` set refused; caps: `hardStop` per cap with an injected clock, the clock paused across an `ask` wait; `softNote` at 2 turns left and at 60% time; `costOf` sums with cache prices; spec JSON for `write_file` has `eager_input_streaming: true` and no `strict`, others `strict: true` and `additionalProperties: false`.
 - [ ] **Step 2–4:** `flutter test test/agent/tools test/agent/pricing_test.dart` FAIL → implement → PASS; `flutter analyze`.
 - [ ] **Step 5:** Commit `Add the agent's toolbox: draft, file tools, caps and the runner interface`.
 
@@ -431,7 +439,9 @@ Request body exactly as R§6.1. Streaming: P1's `MessageStream` rebuilds the tur
   - `no_tool_call_turn_gets_the_finish_nudge` — text-only turn → next request ends with user text "Call finish or give_up.".
   - `soft_note_is_appended_after_tool_results` and `hard_cap_stops_without_a_request`.
   - `parallel_tool_uses_answered_in_one_message` — two `tool_use` blocks → one user message with two `tool_result`s in order.
-  - `cancel_mid_turn_aborts_and_ends_cancelled`.
+  - `cancel_mid_turn_aborts_and_ends_cancelled`; `cancel_closes_the_response` (an injected `HttpClient`'s response is closed: 4faff43f).
+  - `no_partial_json_left_on_any_block` (a `server_tool_use` block's input parsed, no `partial_json` echoed back in history: 3abb59de).
+  - `hard_cap_publishes_the_last_clean_draft` — the cap hits after a clean render and a later edit: the runner calls `toolbox.stopAtCap(cap, narration: latest)`, which (with A3's handler; a fake handler here) publishes `draft.lastClean` with the stopped-early reply (A3); `hard_cap_without_clean_draft_gives_up`.
   - `progress_events` — PartialFile prefixes grow, ToolStarted per block, Narration per text block; usage summed and cost computed.
 - [ ] **Step 2–4:** `flutter test test/agent/runner/messages_runner_test.dart` FAIL → implement → PASS; also `flutter test test/agent/messages_api_backend_test.dart` stays green.
 - [ ] **Step 5:** Commit `Run the agent as a streamed tool loop over the Messages API`.
@@ -457,23 +467,11 @@ class InspectorError implements Exception { const InspectorError(this.message); 
 class RenderTool implements Tool { RenderTool(this.api, this.inspector, {required this.baseUrl}); … }
 ```
 
-Behaviour: first call `createDraft(of: ctx.artifactId, …files)`, later `publishDraft(id, ifVersion: draftVersion)`; staged db ops written to the draft with `batchDocs` (unpinned; refusals ignored and listed); `inspect(<base>/a/<draft>?app=1&inspect=1[&file])`; sets `renderedRevision`, `lastRenderHadErrors` (errors of kind `error`/`unhandledrejection`); emits `Inspected`; result JSON per R§3 with `png`. Cap 4. A `cleanup()` deletes the draft (called by finish/give_up/cancel; idempotent).
+Behaviour: first call `createDraft(of: ctx.artifactId, …files)`, later `publishDraft(id, ifVersion: draftVersion)`; staged db ops written to the draft with `batchDocs` (unpinned; refusals ignored and listed); `inspect(<base>/a/<draft>?app=1&inspect=1[&file])`; sets `renderedRevision`, `lastRenderHadErrors` (errors of kind `error`/`unhandledrejection`) and, on a clean render, `draft.lastClean`; emits `Inspected`; result JSON per R§3 with `png`. Cap from `RunCaps.renders`. A `cleanup()` deletes the draft (called by finish/give_up/cancel; idempotent).
 
-- [ ] **Step 1: Failing tests:** first render creates, second publishes with `if_version`; staged ops reach the draft only; `render_of_a_hung_page_returns_an_error_result` (fake inspector throws `InspectorError('did not load')` → `ToolRefused` naming it, run state not ended); errors flag; 5th render refused; cleanup deletes once; a cancelled run never creates a draft.
+- [ ] **Step 1: Failing tests:** first render creates, second publishes with `if_version`; staged ops reach the draft only; `render_of_a_hung_page_returns_an_error_result` (fake inspector throws `InspectorError('did not load')` → `ToolRefused` naming it, run state not ended); errors flag; render past `RunCaps.renders` refused; `lastClean` set only by a clean render and keeps the rendered state after later writes; cleanup deletes once; a cancelled run never creates a draft.
 - [ ] **Step 2–4:** FAIL → implement → PASS.
 - [ ] **Step 5:** Commit `Add the render tool: the draft is served as a hidden artifact and inspected`.
-
-### Task A8: MCP tool server and ClaudeCliRunner
-
-Spec R§4.3. Risk: high.
-
-**Files:** Create `apps/clax_app/lib/agent/runner/mcp_server.dart`, `lib/agent/runner/cli_runner.dart`; Modify `lib/agent/claude_cli_backend.dart` (extract the child start, env scrub, kill-grace and stream-json reading into reusable functions used by both); Modify `test/fixtures/fake-claude.sh` (a mode that reads `--mcp-config`, calls the server's `tools/call` per a script file, and prints stream-json); Tests `test/agent/runner/mcp_server_test.dart`, `test/agent/runner/cli_runner_test.dart`.
-
-**Interfaces:** `class McpToolServer { static Future<McpToolServer> start(Toolbox tb); Uri get url; String get token; Future<void> close(); }` (POST `/mcp` JSON-RPC; `initialize` → `{protocolVersion, capabilities: {tools: {}}, serverInfo: {name: "clax_app"}}`; `tools/list` → `toolbox.specs.map(toMcp)`; `tools/call` → `{content: [{type: "text", text}, {type: "image", data, mimeType: "image/png"}?], isError}`; wrong bearer → 401; non-loopback bind impossible). `class ClaudeCliRunner implements AgentRunner { ClaudeCliRunner({required this.exe, required this.scratch, required ProcessStarter starter, Clock clock}); }` — arguments exactly as R§4.3, `--allowedTools` listing every spec as `mcp__clax_app__<name>`.
-
-- [ ] **Step 1: Failing tests:** server: initialize/list/call round trip, image content for a `ToolOk` with `png`, refused call → `isError: true`, bad token 401; runner: argument list (golden), `mcp.json` contents, stdin is the first message's text, progress from fake stream-json, outcome from the Toolbox after `finish`, child killed 10 s (injected clock) after a terminal call, exit without terminal call → `RunGaveUp('the agent stopped without finishing')`, cancel kills the child and closes the server, calls past the hard cap answer the cap and the child is killed after two more.
-- [ ] **Step 2–4:** FAIL → implement → PASS; `flutter test test/agent/claude_cli_backend_test.dart` stays green.
-- [ ] **Step 5:** Commit `Serve the agent's tools to claude -p over MCP on loopback`.
 
 ### Task A9: Prompt for the tool loop
 
@@ -491,7 +489,7 @@ Spec R§4.1. Risk: low.
 
 Spec R§9.1, R§9.3. Risk: high.
 
-**Files:** Create `apps/clax_app/lib/ui/comment_button.dart`; Modify `lib/ui/host_protocol.dart` (calls `ComposeArtifact`, `Inspect{settleMs, maxBytes}`; message `Inspection` per W6), `lib/ui/app_screen.dart` (mount the button and bar; their callbacks), `test/support/fake_surface.dart`; Tests `test/ui/comment_button_test.dart`, `test/ui/host_protocol_test.dart`, `test/ui/app_screen_test.dart`.
+**Files:** Create `apps/clax_app/lib/ui/comment_button.dart`; Modify `lib/ui/host_protocol.dart` (calls `ComposeArtifact`, `Inspect{settleMs, maxBytes}`, `OpenQuestions`; messages `Inspection` per W6 and `QuestionsMsg{open}` per W8), `lib/ui/app_screen.dart` (mount the button and bar; their callbacks), `test/support/fake_surface.dart`; Tests `test/ui/comment_button_test.dart`, `test/ui/host_protocol_test.dart`, `test/ui/app_screen_test.dart`.
 
 **Interfaces:** `CommentButton({required bool commenting, required int threadCount, required VoidCallback onTap, required VoidCallback onLongPress, required double dy, required ValueChanged<double> onMoved})`; `CommentBar({required VoidCallback onWholeApp, required VoidCallback onThreads, required VoidCallback onClose})`. Host protocol: `ComposeArtifact()` → `claxHost.composeArtifact()`; `Inspect` → `claxHost.inspect({...})`; `Inspection.fromJson` (png base64 decoded, or `error`).
 
@@ -511,13 +509,23 @@ Spec R§10.1. Risk: low.
 - [ ] **Step 2–4:** FAIL → implement → PASS.
 - [ ] **Step 5:** Commit `Add the inbox across apps`.
 
+### Task W8: Questions in app mode
+
+Spec R§10.2. Risk: high. Depends W6 (both edit `web/shell/src/app/host.ts`).
+
+**Files:** Modify `web/shell/src/app/host.ts` (header protocol; `openQuestions()`; message `{type: "questions", open: n}`; `setDraftText` fills the question card's focused text field when the question sheet has focus), `web/shell/src/app/app.css` (dock the question list as a bottom sheet under `html.app`), `web/shell/src/q/artifact-questions.ts` and `web/shell/src/q/index.ts` (mount `SidebarQuestions` into the app-mode sheet instead of the hidden sidebar); Tests `web/shell/src/app/host.test.ts`, `web/shell/src/q/surfaces.test.ts`.
+
+- [ ] **Step 1: Failing tests:** in app mode the question list mounts into the sheet; `openQuestions` shows it; `questions {open}` posted with the nonce on every count change (from the shared question feed); `setDraftText` reaches a focused Other field; outside app mode nothing changes (existing surface tests pass).
+- [ ] **Step 2–4:** `npx vitest run shell/src/app/host.test.ts shell/src/q` FAIL → implement → PASS; `npm run lint`; `npm run check`.
+- [ ] **Step 5:** Commit `Dock the shell's question card in app mode and tell the app how many questions are open`.
+
 ### Task W7: Playwright and budgets
 
-Risk: low. Depends W5, W6.
+Risk: low. Depends W5, W6, W8.
 
 **Files:** Create `web/e2e/hold-drag.spec.ts`, `web/e2e/inspect.spec.ts`; Modify `web/perf/bundle-budget.json`.
 
-- [ ] **Step 1:** Specs: touch emulation on `?app=1` with the stubbed `window.ClaxHost` (`web/e2e/app-host.ts`): hold 500 ms then drag over text → the composer shows the selected words; drag from empty space → an area composer; `?app=1&inspect=1` on a page that throws at load → `inspection` has the error and a PNG; `composeArtifact` → composer labelled the whole app.
+- [ ] **Step 1:** Specs: touch emulation on `?app=1` with the stubbed `window.ClaxHost` (`web/e2e/app-host.ts`): hold 500 ms then drag over text → the composer shows the selected words; drag from empty space → an area composer; `?app=1&inspect=1` on a page that throws at load → `inspection` has the error and a PNG; `composeArtifact` → composer labelled the whole app; an `ask` question created over the session route shows in the app-mode sheet, `questions {open: 1}` is posted, answering it posts `{open: 0}` (`web/e2e/app-questions.spec.ts`, reusing `web/e2e/questions-helpers.ts`).
 - [ ] **Step 2:** Run `npx playwright test hold-drag inspect` → PASS (the implementation exists).
 - [ ] **Step 3:** Measure the bundles (`npm run build` then the budget script) and set budgets with the same headroom rule W4 used.
 - [ ] **Step 4:** Commit `Cover hold-then-drag and inspect mode end to end; set bundle budgets`.
@@ -532,7 +540,7 @@ Spec R§4.5, R§4.6. Risk: high.
 
 **Files:** Create `apps/clax_app/lib/agent/tools/finish.dart`; Test `test/agent/tools/finish_test.dart`.
 
-**Interfaces:** `FinishTool(ClaxApi api, ChangeLedger ledger, {required RenderTool render, void Function(String)? log})`, `GiveUpTool(ClaxApi api, {required RenderTool render})`. Behaviour moved from `AgentLoop._change`/`newApp` (`lib/agent/loop.dart:270-500` and the create path): `_newerComments`, ledger record before publish, `publish` with `if_version` and `addresses`, conflict carry-over or reset (R§4.5 step 2), `_writeDocs` with pins and one retry, `restoreVersion` on refusal, replies, resolves, acknowledge, working off, draft cleanup. Sets `state.outcome` (`RunFinished`, `RunGaveUp`, `RunInterrupted` on status 0, `RunDropped` on 404). Copy the helper functions it needs (`_newerComments`, `_writeDocs`, `_cleanLine`, `_madeBy`) into `finish.dart` as top-level functions; A7 deletes the originals.
+**Interfaces:** `FinishTool(ClaxApi api, ChangeLedger ledger, {required RenderTool render, void Function(String)? log})` with `Future<RunOutcome> capStop(String cap, {String? narration})` (R§4.4: publishes `draft.lastClean` with the reply "<narration>. I stopped early (<cap>), so this may not be everything you asked." and no resolve, or, with no clean draft, replies "Couldn't make that change: it ran out of time (<cap>)." and publishes nothing), `GiveUpTool(ClaxApi api, {required RenderTool render})`. Behaviour moved from `AgentLoop._change`/`newApp` (`lib/agent/loop.dart:270-500` and the create path): `_newerComments`, ledger record before publish, `publish` with `if_version` and `addresses`, conflict carry-over or reset (R§4.5 step 2), `_writeDocs` with pins and one retry, `restoreVersion` on refusal, replies, resolves, acknowledge, working off, draft cleanup. Sets `state.outcome` (`RunFinished`, `RunGaveUp`, `RunInterrupted` on status 0, `RunDropped` on 404). Copy the helper functions it needs (`_newerComments`, `_writeDocs`, `_cleanLine`, `_madeBy`) into `finish.dart` as top-level functions; A7 deletes the originals.
 
 - [ ] **Step 1: Failing tests** (`FakeClaxApi`, `MemoryChangeLedger`), port every `loop_test.dart` change case to `finish`, plus:
   - gate: refuses with no render after the last write; refuses after a render with errors; allows after a clean render; new app refuses without title.
@@ -543,6 +551,7 @@ Spec R§4.5, R§4.6. Risk: high.
   - `give_up` replies "Couldn't make that change: <reason>" and publishes nothing.
   - cancel before publish → `RunCancelled`, nothing replied; status 0 → `RunInterrupted` with the ledger kept.
   - draft deleted on every end.
+  - `capStop` with a clean snapshot publishes the snapshot (not the later draft), threads stay open; without one, nothing published and the failure reply names the cap.
 - [ ] **Step 2–4:** FAIL → implement → PASS.
 - [ ] **Step 5:** Commit `Move publishing, pinned document writes and replies into the finish tool`.
 
@@ -584,17 +593,43 @@ Spec R§4.7. Risk: low. Waits for P4 S-TIER and A4.
 
 ## Group 3
 
-### Task A6: `ask_owner`, parked runs
+### Task A6: `ask`, Clax's elicitation
 
 Spec R§8. Risk: high.
 
-**Files:** Create `apps/clax_app/lib/agent/tools/ask_tool.dart`, `lib/agent/parked.dart`; Tests `test/agent/tools/ask_tool_test.dart`, `test/agent/parked_test.dart`.
+**Files:** Create `apps/clax_app/lib/agent/tools/ask_tool.dart`, `lib/agent/asked.dart`; Tests `test/agent/tools/ask_tool_test.dart`, `test/agent/asked_test.dart`. Read first: `docs/contract.md` "Agent questions" (question shape, session routes, "Late answers", "`ask`") and `crates/clax-mcp/src/tools.rs` (the `ask` tool: argument checks, result shape, `call_again`, `surface_open`) — the app's tool mirrors it.
 
-**Interfaces:** `AskOwnerTool(ClaxApi api, ParkedRuns parked, {required Duration changeWait, required Duration newWait, void Function(QuestionView q)? onAsked})`; `class ParkedRun {questionId, artifactId, threadIds, commentIds}`; `abstract interface class ParkedRuns { Future<void> put(ParkedRun r); Future<ParkedRun?> take(String questionId); Future<List<ParkedRun>> all(); }` with `FileParkedRuns(File)` (temp file + rename, as `FileChangeLedger`) and `MemoryParkedRuns`.
+**Interfaces:**
 
-- [ ] **Step 1: Failing tests:** validates the question shape (1–4, header ≤ 12, 0 or 2–4 options); answered within the wait → `ToolOk({status: answered, answers})`; declined → `{status: declined}`; change unanswered in 60 s (injected clock) → parked: draft deleted, replies "I asked you a question about this: <header>. I'll carry on when you answer.", acknowledged, `ParkedRun` stored, outcome `RunParked`; new app waits 5 min and withdraws on cancel; second ask refused; `FileParkedRuns` survives a reload.
+```dart
+/// Clax's `ask` for the app session: the same arguments and result as the
+/// `ask` MCP tool (docs/contract.md, "`ask`"), over the session routes.
+class AskTool implements Tool {
+  AskTool(ClaxApi api, AskedQuestions asked, {required Duration maxWaitNew, required Duration maxWaitChange, void Function(QuestionView q)? onAsked});
+  // input: {questions: [...]|null, question_id: string|null, timeout_s: int|null, cancel: bool|null}
+  // result: {question_id, status, reply, call_again, surface_open, note}
+}
+class AskedEntry { const AskedEntry({required this.questionId, required this.artifactId, required this.threadIds, required this.commentIds}); … }
+abstract interface class AskedQuestions {
+  Future<void> put(AskedEntry e); Future<AskedEntry?> take(String questionId); Future<List<AskedEntry>> all(); Future<void> drop(String questionId);
+}
+class FileAskedQuestions implements AskedQuestions { FileAskedQuestions(File file); } // temp file + rename, as FileChangeLedger
+class MemoryAskedQuestions implements AskedQuestions { … }
+```
+
+Behaviour: `questions` → `askQuestion(sid, questions, artifactId: ctx.artifactId)` then `waitQuestion(…, wait: min(timeout_s, cap))` with the budget clock paused; `question_id` → wait again; `cancel` → `withdrawQuestion`; caps: 300 s new app, 45 s change; one question set per run (a second `questions` call is refused; `question_id` calls are allowed); daemon errors (`invalid_question`, `limit_reached`) come back as `ToolRefused` with the daemon's message. For a change, every question asked is put in `AskedQuestions` with the run's threads and comment IDs (dropped again when the answer comes back within the run).
+
+- [ ] **Step 1: Failing tests** (`FakeClaxApi` questions):
+  - answered within the wait → `{status: "answered", reply: [...], call_again: false}`;
+  - declined → `{status: "declined"}`;
+  - still open → `{status: "open", call_again: true}` and the entry kept in `AskedQuestions`;
+  - `question_id` waits again; `cancel` withdraws;
+  - `timeout_s` 600 on a change is waited as 45 (injected clock), and the run's wall clock does not advance during it;
+  - `surface_open: false` passed through;
+  - second `questions` refused; `invalid_question` surfaced;
+  - `FileAskedQuestions` survives a reload.
 - [ ] **Step 2–4:** FAIL → implement → PASS.
-- [ ] **Step 5:** Commit `Let the agent ask the owner, and park a change until the answer`.
+- [ ] **Step 5:** Commit `Let the app's agent ask the owner with Clax's ask, and remember what each open question was for`.
 
 ---
 
@@ -604,11 +639,11 @@ Spec R§8. Risk: high.
 
 Spec R§2, R§4, R§8, R§9.5, R§9.6. Risk: high.
 
-**Files:** Modify `apps/clax_app/lib/agent/loop.dart` (bodies of `newApp` and `change` build a `RunContext`, a `Toolbox` with every tool, a `RunInput` from A9's first messages, and call the runner; map `RunOutcome` → `ChangeOutcome`; delete the code A3 moved), `lib/agent/worker.dart` (`WorkerProgress(artifactId, threads, AgentProgress event)`, `retry(aid, tid)`, `_failed` map rebuilt from threads on start, late `answers` on the poll re-run a `ParkedRun`), `lib/agent/timings.dart` (turns, tokens, cost on agent records); Create `lib/agent/runner/scripted_runner.dart`; Delete `lib/agent/scripted_backend.dart` and the structured-output schema use in `messages_api_backend.dart` (`run` and `edit_schema.dart` go when nothing calls them); Tests `test/agent/loop_test.dart`, `test/agent/worker_test.dart`, `test/agent/worker_restart_test.dart` (rewritten on `ScriptedRunner`), `test/agent/loop_support.dart`.
+**Files:** Modify `apps/clax_app/lib/agent/loop.dart` (bodies of `newApp` and `change` build a `RunContext`, a `Toolbox` with every tool, a `RunInput` from A9's first messages, and call the runner; map `RunOutcome` → `ChangeOutcome`; delete the code A3 moved), `lib/agent/worker.dart` (`WorkerProgress(artifactId, threads, AgentProgress event)`, `retry(aid, tid)`, `_failed` map rebuilt from threads on start, a feedback poll's late `answers` (`FeedbackBatch.answers`) looked up in `AskedQuestions` and re-run with the batch's late-answer text; an entry whose threads got a newer viewer comment is dropped), `lib/agent/timings.dart` (turns, tokens, cost on agent records); Create `lib/agent/runner/scripted_runner.dart`; Keep the single-call path for `ClaudeCliBackend` (macOS without an API key, R§4.3): `AgentLoop` takes either a runner factory or, for `claude-cli`, today's `AgentBackend` and runs the existing structured call; `MessagesApiBackend.run`, `edit_schema.dart` and `scripted_backend.dart` stay for that path and its tests; Tests `test/agent/loop_test.dart`, `test/agent/worker_test.dart`, `test/agent/worker_restart_test.dart` (rewritten on `ScriptedRunner`), `test/agent/loop_support.dart`.
 
-**Interfaces:** `AgentLoop({required ClaxApi api, required AgentRunner Function() runner, required PromptBuilder prompts, required String Function() model, required Timings timings, required Inspector inspector, required Uri baseUrl, ChangeLedger? ledger, ParkedRuns? parked, Clock clock})`; `Future<String> newApp(String request, {Future<void>? cancelled, ProgressSink? progress})`; `Future<ChangeOutcome> change(String aid, List<FeedbackItem> items, {String? session, Future<void>? cancelled, ProgressSink? progress, String? answers})`. `ScriptedRunner(List<ScriptedCall> Function(RunInput) script)` calls tools on the real Toolbox (`ScriptedCall{tool, input, narration?}`). `FeedbackWorker.retry(String aid, String tid)`. Also used by `main.dart`'s `CLAX_SCRIPTED_AGENT` debug path (keep it working with `ScriptedRunner`).
+**Interfaces:** `AgentLoop({required ClaxApi api, required AgentRunner Function() runner, required PromptBuilder prompts, required String Function() model, required Timings timings, required Inspector inspector, required Uri baseUrl, ChangeLedger? ledger, AskedQuestions? asked, AgentBackend Function()? singleCall, Clock clock}) — `singleCall` non-null means the CLI fallback: no tools, today's behaviour`; `Future<String> newApp(String request, {Future<void>? cancelled, ProgressSink? progress})`; `Future<ChangeOutcome> change(String aid, List<FeedbackItem> items, {String? session, Future<void>? cancelled, ProgressSink? progress, String? answers})`. `ScriptedRunner(List<ScriptedCall> Function(RunInput) script)` calls tools on the real Toolbox (`ScriptedCall{tool, input, narration?}`). `FeedbackWorker.retry(String aid, String tid)`. Also used by `main.dart`'s `CLAX_SCRIPTED_AGENT` debug path (keep it working with `ScriptedRunner`).
 
-- [ ] **Step 1: Failing tests:** every existing loop/worker behaviour re-expressed with `ScriptedRunner` (new app create, change landed, answered without version, failure reply, cancel, interrupted, dropped, queue merging, `second_batch_runs_on_the_landed_version`, recovery rule of record 74211b60); plus `kill_after_publish_recovers_with_one_version` (ledger written, publish lands, process "dies" before replies → new worker's `settle` replies once naming the version, no second publish, the stale draft deleted by the start sweep call `listDrafts`/`deleteDraft`); `WorkerProgress` carries the run's events with its threads; `retry` re-runs the failed comments without posting; a late answer re-runs the parked change with the answer text; `newApp` forwards progress.
+- [ ] **Step 1: Failing tests:** every existing loop/worker behaviour re-expressed with `ScriptedRunner` (new app create, change landed, answered without version, failure reply, cancel, interrupted, dropped, queue merging, `second_batch_runs_on_the_landed_version`, recovery rule of record 74211b60); plus `kill_after_publish_recovers_with_one_version` (ledger written, publish lands, process "dies" before replies → new worker's `settle` replies once naming the version, no second publish, the stale draft deleted by the start sweep call `listDrafts`/`deleteDraft`); `WorkerProgress` carries the run's events with its threads; `retry` re-runs the failed comments without posting; a late answer re-runs the asked change with the daemon's late-answer text, a skip likewise, a stale entry (newer comment) is dropped; the CLI single-call path still passes the old loop tests; `newApp` forwards progress.
 - [ ] **Step 2–4:** `flutter test test/agent` FAIL → implement → PASS; `flutter analyze`.
 - [ ] **Step 5:** Commit `Run new apps and changes as tool loops; report progress; retry failed changes`.
 
@@ -622,9 +657,9 @@ Spec R§5.2, R§4.7. Risk: high. Waits for P4 S-TIER.
 
 **Files:** Create `apps/clax_app/lib/ui/inspector_surface.dart`; Modify `lib/app.dart`; Tests `test/ui/inspector_surface_test.dart`, `test/app_test.dart`.
 
-**Interfaces:** `class WebViewInspector implements Inspector` driving an `InspectorHost` widget (`InspectorHost({required WebViewInspector inspector, required Size size})`) mounted at the bottom of the root `Stack` under an opaque cover, never `Offstage`; per load: fresh nonce, `init`, `setVisible(true)`, wait `ready` (10 s, injected clock), `Inspect`, wait `inspection` (10 s); one render at a time. `app.dart`: choose `MessagesApiRunner(ResumingTurns(MessagesApiBackend(...)))` or `ClaudeCliRunner` by settings; pass the inspector, base URL, `FileParkedRuns('<support>/parked-runs.json')`, `FileChangeLedger`; feed `WorkerProgress`/making progress to `BackgroundRuns.step` (step text = latest `Narration`/`ToolStarted` label); at start delete leftover drafts (`listDrafts` → `deleteDraft`); launcher `onOpenTarget` → app screen with `openThread`/`loadVersion`.
+**Interfaces:** `class WebViewInspector implements Inspector` driving an `InspectorHost` widget (`InspectorHost({required WebViewInspector inspector, required Size size})`) mounted at the bottom of the root `Stack` under an opaque cover, never `Offstage`; per load: fresh nonce, `init`, `setVisible(true)`, wait `ready` (10 s, injected clock), `Inspect`, wait `inspection` (10 s); one render at a time. `app.dart`: with an API key, `MessagesApiRunner(ResumingTurns(MessagesApiBackend(...)))` on both platforms; on macOS with the "Claude Code on this Mac" setting and no key, `singleCall: () => StagedBackend(ClaudeCliBackend(...))` as today; pass the inspector, base URL, `FileAskedQuestions('<support>/asked.json')`, `FileChangeLedger`; hold one `ClaxStream` subscribed to `questions` (and `inbox`) for the app's life so it is an owner surface; feed `WorkerProgress`/making progress to `BackgroundRuns.step` (step text = latest `Narration`/`ToolStarted` label); at start delete leftover drafts (`listDrafts` → `deleteDraft`); launcher `onOpenTarget` → app screen with `openThread`/`loadVersion`.
 
-- [ ] **Step 1: Failing tests:** with `FakeAppSurface` for the inspector's WebView: nonce per load, `setVisible(true)` sent, `inspection` turned into `Inspection`, timeouts → `InspectorError`, concurrent calls serialized; `app_test`: backend choice per platform/settings, drafts cleaned at start, progress reaches a fake `BackgroundWork.update`.
+- [ ] **Step 1: Failing tests:** with `FakeAppSurface` for the inspector's WebView: nonce per load, `setVisible(true)` sent, `inspection` turned into `Inspection`, timeouts → `InspectorError`, concurrent calls serialized; `app_test`: runner vs CLI single call per platform, key and settings, drafts cleaned at start, progress reaches a fake `BackgroundWork.update`.
 - [ ] **Step 2–4:** FAIL → implement → PASS; `flutter build macos --debug` (background) to check the platform view builds.
 - [ ] **Step 5:** Commit `Render drafts in an in-app WebView and wire the tool loop into the app`.
 
@@ -654,15 +689,17 @@ Spec R§9.5, R§9.6. Risk: low.
 
 ## Group 6
 
-### Task N2: Questions
+### Task N2: Question sheets
 
-Spec R§10.2, R§8. Risk: low.
+Spec R§10.2, R§8. Risk: low. Depends C1, A6, U6, W8.
 
-**Files:** Create `apps/clax_app/lib/ui/questions_sheet.dart`; Modify `lib/app.dart` (a presenter listening to the `questions` topic; opens the sheet for a new question of the app's session while in front; the P4 notification for one in the background); Tests `test/ui/questions_sheet_test.dart`, `test/app_test.dart`.
+**Files:** Create `apps/clax_app/lib/ui/question_sheet.dart`; Modify `lib/ui/app_screen.dart` (question badge on the comment button from the `questions {open}` host message; `OpenQuestions` when a new question about this app arrives in front), `lib/app.dart` (presenter on the `questions` stream topic: in front and the question's artifact on screen → `OpenQuestions`; otherwise a `QuestionWebSheet` on `<base>/inbox?q=<qid>`; in the background → the P4 notification, whose tap opens the sheet); Tests `test/ui/question_sheet_test.dart`, `test/ui/app_screen_test.dart`, `test/app_test.dart`.
 
-- [ ] **Step 1: Failing tests:** options with recommended marked, previews monospace, multi-select, Other text with the mic; Answer posts the contract answer shape; Skip declines; a closed question (409) shows its state; presenter opens on arrival only in front.
+**Interfaces:** `QuestionWebSheet({required Uri url, required Stream<QuestionView> updates, required String questionId})` — a WebView (via the `AppSurface` interface, `FakeAppSurface` in tests) that closes when an update shows the question no longer `open`. Host protocol additions come from U3 (`OpenQuestions` call, `QuestionsMsg{open}` message).
+
+- [ ] **Step 1: Failing tests:** badge count follows `QuestionsMsg`; a `question` event about the shown app while in front sends `OpenQuestions` and a light haptic; a question about no artifact or another app opens the web sheet at `/inbox?q=<qid>`; the sheet closes on `answered`/`declined`/`withdrawn`; in the background a notification is posted instead.
 - [ ] **Step 2–4:** FAIL → implement → PASS.
-- [ ] **Step 5:** Commit `Answer the agent's questions in the app`.
+- [ ] **Step 5:** Commit `Answer the agent's questions in the shell's question card, from the app`.
 
 ### Task I1: macOS integration test
 
@@ -684,7 +721,7 @@ Risk: low. **Files:** `docs/contract.md` ("The Clax app": drafts routes, inspect
 
 ### Task L2: Live check
 
-Risk: low. At most 3 `claude -p` calls, macOS debug build, `ClaudeCliRunner`, scratch `CLAX_HOME` under `target/`. Before the first call, verify with `claude --help` and a dry argument check that `--safe-mode` keeps servers given by `--mcp-config`; if it does not, stop and report (do not drop `--safe-mode` on your own). Runs: (1) a new app ("a tracker for my runs with a weekly total"): record say→first-output, say→usable, turns, cost; (2) a change on it via the shell's Send: send→first-step, long-press→landed, turns, cost; (3) spare, only to repeat a failed run after its fix. Results in `target/flutter-app/l2/RESULTS.md`; summary in the ledger.
+Risk: low. At most 3 live calls, macOS debug build, scratch `CLAX_HOME` under `target/`. With an API key available (ask the coordinator; none is on this machine): the tool loop — (1) a new app ("a tracker for my runs with a weekly total": say→first-output, say→usable, turns, cost), (2) a change through the shell's Send (send→first-step, long-press→landed, turns, cost), (3) spare, only to repeat a failed run after its fix. Without a key: the same two runs through the desktop fallback (`claude -p`, single call), and the tool loop's live numbers are left to the owner's phone run, said so in the results. Results in `target/flutter-app/l2/RESULTS.md`; summary in the ledger.
 
 ### Task V2: Release builds, gates, verification
 
