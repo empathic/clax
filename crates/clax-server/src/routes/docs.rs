@@ -19,9 +19,14 @@
 //! `acquire` without data) stay allowed and add the writer to its
 //! authors, so they never make it the writer's. A lease in force on it is
 //! busy whatever its holder.
+//!
+//! The read routes also serve another app reading these documents
+//! (`X-Clax-Reader`, [`crate::db_caller`]); the owner's grants for that and
+//! the collection listing for the agent live here too.
 
 use super::artifacts::{JsonBytes, body, parse_body, parse_id, path};
-use crate::db_caller::CallerParts;
+use crate::auth::RequireToken;
+use crate::db_caller::{CallerParts, not_granted, reader_of};
 use crate::error::ApiError;
 use crate::feedback::{Vis, VisFor};
 use crate::state::AppState;
@@ -29,6 +34,7 @@ use crate::viewer::SameOrigin;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use clax_core::audit::AuditCtx;
 use clax_core::db::invalid_argument;
 use clax_core::store::docs::{
@@ -513,4 +519,83 @@ pub async fn acquire(
         })
         .await??;
     Ok(Json(got))
+}
+
+/// `GET /api/artifacts/<aid>/docs:collections` (token): every collection of
+/// the artifact's documents with its document count, sorted by path,
+/// without private `data/users/<id>/` ones: `{collections: [{path, count}]}`.
+/// A request reading for another app (`X-Clax-Reader`) is refused 403
+/// `not_granted`: the listing ignores the read rules, so it is the owner's.
+pub async fn collections(
+    State(s): State<AppState>,
+    _t: RequireToken,
+    headers: HeaderMap,
+    aid: Result<Path<String>, PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let id = parse_id(&path(aid)?)?;
+    if let Some(reader) = reader_of(&headers)? {
+        return Err(not_granted(&reader, &id).into());
+    }
+    let cs = s.store_call(move |st| st.doc_collections(&id)).await?;
+    let cs: Vec<Value> = cs
+        .into_iter()
+        .map(|(path, count)| json!({"path": path, "count": count}))
+        .collect();
+    Ok(Json(json!({"collections": cs})))
+}
+
+type GrantParams = Result<Path<(String, String)>, PathRejection>;
+
+/// `PUT /api/artifacts/<reader>/db-grants/<source>` (token): the owner lets
+/// `reader` read `source`'s documents once it declares the read:
+/// `{grant: {source_id, granted_at}}`. Granting again keeps the first grant.
+/// 404 for an unknown artifact, 400 `invalid_args` when both are one.
+pub async fn grant(
+    State(s): State<AppState>,
+    _t: RequireToken,
+    audit: AuditCtx,
+    p: GrantParams,
+) -> Result<Json<Value>, ApiError> {
+    let (reader, source) = path(p)?;
+    let (reader, source) = (parse_id(&reader)?, parse_id(&source)?);
+    let g = s
+        .store_call(move |st| {
+            st.grant_read(&audit, &reader, &source)?;
+            st.grants_of(&reader)?
+                .into_iter()
+                .find(|g| g.source_id == source.as_str())
+                .ok_or(clax_core::CoreError::NotFound)
+        })
+        .await?;
+    Ok(Json(json!({"grant": g})))
+}
+
+/// `DELETE /api/artifacts/<reader>/db-grants/<source>` (token): removes the
+/// owner's grant: `{revoked}` (`false` when there was none). A share the
+/// source declares is not a grant and stays. Errors as [`grant`].
+pub async fn revoke(
+    State(s): State<AppState>,
+    _t: RequireToken,
+    audit: AuditCtx,
+    p: GrantParams,
+) -> Result<Json<Value>, ApiError> {
+    let (reader, source) = path(p)?;
+    let (reader, source) = (parse_id(&reader)?, parse_id(&source)?);
+    let revoked = s
+        .store_call(move |st| st.revoke_read(&audit, &reader, &source))
+        .await?;
+    Ok(Json(json!({"revoked": revoked})))
+}
+
+/// `GET /api/artifacts/<reader>/db-grants` (token): the owner's grants to
+/// `reader`, oldest first: `{grants: [{source_id, granted_at}]}`. 404 for an
+/// unknown artifact.
+pub async fn grants(
+    State(s): State<AppState>,
+    _t: RequireToken,
+    aid: Result<Path<String>, PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let id = parse_id(&path(aid)?)?;
+    let gs = s.store_call(move |st| st.grants_of(&id)).await?;
+    Ok(Json(json!({"grants": gs})))
 }

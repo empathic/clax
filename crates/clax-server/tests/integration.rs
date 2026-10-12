@@ -15,6 +15,7 @@ mod api_caching;
 mod api_canary;
 mod api_changelog;
 mod api_content;
+mod api_db_read;
 mod api_docs;
 mod api_events;
 mod api_extension;

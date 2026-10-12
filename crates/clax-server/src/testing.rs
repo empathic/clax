@@ -273,6 +273,12 @@ impl TestServer {
         f(&mut state);
         state.audit_wake.install(&state.store);
         state.stream.listen(&state.events);
+        {
+            let store = state.store.clone();
+            state.stream.check_reads(move |reader, source| {
+                crate::db_caller::reads_now(&store, reader, source)
+            });
+        }
         crate::inbox::listen(&state);
         crate::approvals::listen(&state);
         crate::routes::people::listen(&state);

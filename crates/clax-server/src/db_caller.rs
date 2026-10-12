@@ -10,6 +10,13 @@
 //! browser writer of documents), so they add the page's publisher to a
 //! document's authors as well as the writer (spec
 //! 2026-10-08-multi-agent-multi-person §8.2).
+//!
+//! A request carrying `X-Clax-Reader: <A>` reads another app's documents on
+//! A's behalf (spec 2026-10-12-flutter-app-design §3.8): it is served only
+//! when [`Store::may_read`] says `Granted`, at `min(level, view)` with no
+//! viewer identity, so neither a rule above `view` nor a private
+//! `data/users/<id>/` document is ever readable that way. Writes with the
+//! header are refused before any handler runs ([`refuse_reader_writes`]).
 
 use crate::error::ApiError;
 use crate::identity::Identity;
@@ -18,7 +25,94 @@ use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use clax_core::db::{Caller, Level};
 use clax_core::visibility::Author;
+use clax_core::store::grants::ReadAccess;
 use clax_core::{ArtifactId, CoreError, Store};
+
+/// The header naming the app a request reads another app's documents for.
+pub const READER_HEADER: &str = "x-clax-reader";
+
+/// The artifact `X-Clax-Reader` names; `Ok(None)` without the header.
+///
+/// # Errors
+/// 400 `invalid_args` when the header is repeated or its value is not an
+/// artifact ID.
+pub fn reader_of(headers: &axum::http::HeaderMap) -> Result<Option<ArtifactId>, ApiError> {
+    let mut values = headers.get_all(READER_HEADER).iter();
+    let Some(v) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(ApiError::bad_request(
+            "invalid_args",
+            "X-Clax-Reader names one artifact",
+        ));
+    }
+    v.to_str()
+        .ok()
+        .and_then(|v| ArtifactId::parse(v).ok())
+        .map(Some)
+        .ok_or_else(|| ApiError::bad_request("invalid_args", "X-Clax-Reader is not an artifact ID"))
+}
+
+/// 403 `read_only` for a request that carries `X-Clax-Reader` with a method
+/// other than `GET`, `HEAD` or `OPTIONS`, on any route: a reader only ever
+/// reads. Runs before every handler.
+pub async fn refuse_reader_writes(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::http::Method;
+    use axum::response::IntoResponse;
+    let safe = matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
+    if !safe && req.headers().contains_key(READER_HEADER) {
+        return ApiError::forbidden(
+            "read_only",
+            "a request with X-Clax-Reader only reads another app's documents",
+        )
+        .into_response();
+    }
+    next.run(req).await
+}
+
+/// The caller `reader` reading `source`'s documents with the credentials
+/// that give `level`: `min(level, view)` with no viewer, once
+/// [`Store::may_read`] says `Granted` and `source` declares `db`.
+///
+/// # Errors
+/// `NotFound` when either artifact is missing; `not_granted` (403) without
+/// consent; [`CoreError::NotDeclared`] when `source` does not declare `db`.
+pub fn reader_caller(
+    st: &Store,
+    reader: &ArtifactId,
+    source: &ArtifactId,
+    level: Level,
+) -> clax_core::Result<Caller> {
+    if st.may_read(reader, source)? != ReadAccess::Granted {
+        return Err(not_granted(reader, source));
+    }
+    if !st.doc_declared(source)? {
+        return Err(CoreError::NotDeclared { capability: "db" });
+    }
+    Ok(Caller::new(level.min(Level::View), None))
+}
+
+/// Whether app `reader` may read `source`'s documents now (both artifact
+/// IDs, as the stream hub holds them), as [`reader_caller`] decides; an
+/// error is no.
+pub fn reads_now(st: &Store, reader: &str, source: &str) -> bool {
+    match (ArtifactId::parse(reader), ArtifactId::parse(source)) {
+        (Ok(r), Ok(s)) => reader_caller(st, &r, &s, Level::View).is_ok(),
+        _ => false,
+    }
+}
+
+/// 403 `not_granted`: `reader` may not read `source`'s documents.
+pub fn not_granted(reader: &ArtifactId, source: &ArtifactId) -> CoreError {
+    CoreError::invalid(
+        "not_granted",
+        format!("{reader} may not read {source}'s documents"),
+    )
+}
 
 /// The value of the first `key=` parameter of `parts`' query string,
 /// percent-decoded (`+` is a space). `Some(None)` when the value's encoding
@@ -119,9 +213,11 @@ pub fn caller_of(st: &Store, token: bool, who: &Identity) -> clax_core::Result<C
 }
 
 /// Who is making a `db` request: whether it carries the bearer token, its
-/// viewer cookie, and the `?as_level=` it narrows to (percent-decoded).
+/// viewer cookie, the `?as_level=` it narrows to (percent-decoded), and the
+/// app it reads for (`X-Clax-Reader`, [`reader_of`]).
 /// Rejects an `as_level` other than `view`, `interact`, or `admin`, or one
-/// not validly encoded, with 400 `invalid_argument`.
+/// not validly encoded, with 400 `invalid_argument`, and a reader header
+/// that names no artifact with 400 `invalid_args`.
 pub struct CallerParts {
     pub token: bool,
     pub who: Identity,
@@ -135,6 +231,7 @@ pub struct CallerParts {
     /// It names itself a page's (`x-clax-via: page`, which the shell's `db`
     /// capability sends): its writes add the page's authors.
     pub page: bool,
+    pub reader: Option<ArtifactId>,
 }
 
 impl FromRequestParts<AppState> for CallerParts {
@@ -189,14 +286,15 @@ impl FromRequestParts<AppState> for CallerParts {
                 axum::http::Method::GET | axum::http::Method::HEAD
             ),
             page,
+            reader: reader_of(&parts.headers)?,
         })
     }
 }
 
 impl CallerParts {
     /// The caller, looking up the cookie's viewer (a cookie with no viewer row
-    /// is no viewer).
-    pub fn resolve(&self, st: &Store) -> clax_core::Result<Caller> {
+    /// is no viewer), before any reader clamp.
+    fn resolve(&self, st: &Store) -> clax_core::Result<Caller> {
         let base = base_caller(st, self.token, &self.who)?;
         self.narrowed(base)
     }
@@ -215,13 +313,18 @@ impl CallerParts {
     /// [`CoreError::NotDeclared`] when the artifact's current declaration
     /// does not include `db` (a publish or a metadata edit can drop it); the
     /// token keeps access, so agents can seed data before the page that
-    /// reads it is published.
+    /// reads it is published. With a reader, the caller is
+    /// [`reader_caller`]'s, whatever the token.
     ///
     /// A person's agent's level is its rights' `clax-db` level for the
     /// request's action at `id` (`view` when none), its viewer its person's
     /// (the owner's for a grant of the owner's row); it needs the
     /// declaration as a viewer does.
     pub fn resolve_for(&self, st: &Store, id: &ArtifactId) -> clax_core::Result<Caller> {
+        if let Some(reader) = &self.reader {
+            let level = self.resolve(st)?.level;
+            return reader_caller(st, reader, id, level);
+        }
         if let Some((person, rights)) = &self.agent {
             if !st.doc_declared(id)? {
                 return Err(CoreError::NotDeclared { capability: "db" });
