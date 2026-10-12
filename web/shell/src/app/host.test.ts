@@ -1228,6 +1228,19 @@ describe("app mode's questions", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(document.activeElement).toBe(c);
   });
 
+  it("keeps a waiting openQuestions({question}) across a change that leaves this app no card", async () => {
+    const { host } = await appView({ api: notOwner });
+    host.openQuestions({ question: "X" });
+    // Another app's question changed the feed before it heard X: nothing about this app.
+    tell([]);
+    expect(sheet()!.hidden).toBe(true);
+    tell(["X"]);
+    expect(sheet()!.hidden).toBe(false);
+    card("X");
+    await observed();
+    expect(document.activeElement).toBe(cardOf("X"));
+  });
+
   it("drops a waiting openQuestions({question}) on closeQuestions and when that question closes", async () => {
     const { host } = await appView({ api: notOwner });
     host.openQuestions({ question: "Q1" });

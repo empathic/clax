@@ -511,8 +511,10 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     focusCard(id);
     postQuestions();
   };
+  /** Hides the sheet. A waiting `openQuestions` stays: only the person or
+   * the app closing the sheet (`dismissQuestions`), or the awaited question
+   * closing, drops it. */
   const hideQuestions = () => {
-    awaited = null;
     if (!dock || dock.hidden) return;
     mounting?.disconnect();
     mounting = null;
@@ -520,6 +522,10 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     dock.hidden = true;
     if (had) (doc.activeElement as HTMLElement | null)?.blur?.();
     postQuestions();
+  };
+  const dismissQuestions = () => {
+    awaited = null;
+    hideQuestions();
   };
   const onQuestions = (e: Event) => {
     const d = (e as CustomEvent<{ open?: unknown; closed?: unknown }>).detail;
@@ -541,14 +547,14 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     close.className = "ghost icon app-questions-close";
     close.setAttribute("aria-label", "Close questions");
     close.innerHTML = CLOSE_ICON;
-    close.addEventListener("click", hideQuestions);
+    close.addEventListener("click", dismissQuestions);
     const slot = doc.createElement("div");
     slot.className = "questions-slot";
     dock.append(close, slot);
     dock.addEventListener("keydown", e => {
       if (e.key !== "Escape" || e.defaultPrevented) return;
       e.preventDefault();
-      hideQuestions();
+      dismissQuestions();
     });
     doc.body.append(dock);
     doc.addEventListener("clax-questions", onQuestions);
@@ -684,7 +690,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       if (told?.open.includes(id)) showQuestions(id);
       else awaited = id;
     },
-    closeQuestions: () => { if (dock) hideQuestions(); },
+    closeQuestions: () => { if (dock) dismissQuestions(); },
   };
   Object.defineProperty(w, "claxHost", { value: host, configurable: true });
 
