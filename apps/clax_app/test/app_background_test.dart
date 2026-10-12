@@ -7,9 +7,11 @@ import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/prompt.dart';
 import 'package:clax_app/agent/request.dart';
 import 'package:clax_app/app.dart';
+import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/daemon/supervisor.dart';
 import 'package:clax_app/platform/background_work.dart';
+import 'package:clax_app/platform/pending_make.dart';
 import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_screen.dart';
@@ -72,6 +74,9 @@ class _Work implements BackgroundWork {
   final _opened = StreamController<String>.broadcast();
 
   void tap(String aid) => _opened.add(aid);
+
+  @override
+  Stream<void> get stopped => const Stream.empty();
 
   @override
   Future<bool> start(String title, String step) async {
@@ -149,6 +154,7 @@ void main() {
           supportDir: dir.path,
           prompts: PromptBuilder(rootBundle),
           background: work,
+          pendingMake: PendingMake(File('${dir.path}/pending-make.json')),
           pid: 42,
         ),
       ),
@@ -172,6 +178,29 @@ void main() {
       await tester.pump(const Duration(milliseconds: 10));
     }
     fail('condition not reached: $condition (calls: ${work.calls})');
+  }
+
+  /// Pumps until [text] shows, letting the app's real file reads finish
+  /// (they do not settle in fake time).
+  Future<void> pumpUntilShown(WidgetTester tester, String text) async {
+    for (var i = 0; i < 200; i++) {
+      if (find.text(text).evaluate().isNotEmpty) return;
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+      await tester.pump(const Duration(milliseconds: 10));
+    }
+    fail('"$text" never showed');
+  }
+
+  /// Lets the app's queued file writes finish in real time.
+  Future<void> settleFiles(WidgetTester tester) async {
+    for (var i = 0; i < 60; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+      await tester.pump();
+    }
   }
 
   Future<void> pumpRoute(WidgetTester tester) async {
@@ -338,5 +367,124 @@ void main() {
       'stop',
       'ready(Runs changed, Tap to see it)',
     ]);
+  });
+
+  testWidgets('a cancelled make stops the service and posts nothing, even '
+      'in the background', (tester) async {
+    await pumpApp(tester);
+    final gate = Completer<void>();
+    agent.steps.add((r) async {
+      await Future.any([gate.future, r.cancelled!]);
+      throw const AgentError.cancelled();
+    });
+    await submit(tester, 'a tracker for my runs');
+    await pumpUntil(tester, () => agent.runs == 1);
+    await pumpRoute(tester);
+    await settleFiles(tester);
+    expect(
+      File('${dir.path}/pending-make.json').readAsStringSync(),
+      contains('a tracker for my runs'),
+      reason: 'the make in flight is kept',
+    );
+    leave(tester);
+    await tester.tap(find.text('Cancel'));
+    await pumpUntil(tester, () => work.calls.contains('stop'));
+    await pumpRoute(tester);
+    expect(work.calls.last, 'stop');
+    expect(work.calls.where((c) => c.startsWith('failed')), isEmpty);
+    await settleFiles(tester);
+    expect(File('${dir.path}/pending-make.json').existsSync(), isFalse);
+  });
+
+  testWidgets('a failed make stops the service', (tester) async {
+    await pumpApp(tester);
+    agent.steps.add((_) async => throw const AgentError('Claude refused'));
+    await submit(tester, 'a tracker for my runs');
+    await pumpRoute(tester);
+    expect(find.text("Couldn't make it"), findsOneWidget);
+    expect(work.calls.last, 'stop');
+    await settleFiles(tester);
+    expect(File('${dir.path}/pending-make.json').existsSync(), isFalse);
+  });
+
+  testWidgets('a change cut off by quitting stops the service and posts '
+      'nothing', (tester) async {
+    final aid = api.seedArtifact('Runs', {'index.html': _page});
+    await pumpApp(tester);
+    await pumpUntil(tester, () => api.waitingPolls == 1);
+    agent.steps.add((r) async {
+      await r.cancelled;
+      throw const AgentError.cancelled();
+    });
+    api.sendComment(aid, 'Call it My runs');
+    await pumpUntil(tester, () => agent.runs == 1);
+    leave(tester);
+    await tester.binding.handleRequestAppExit();
+    await pumpUntil(tester, () => work.calls.contains('stop'));
+    expect(work.calls.where((c) => c.startsWith('ready')), isEmpty);
+    expect(work.calls.where((c) => c.startsWith('failed')), isEmpty);
+  });
+
+  testWidgets('an interrupted change stops the service and posts nothing', (
+    tester,
+  ) async {
+    final aid = api.seedArtifact('Runs', {'index.html': _page});
+    await pumpApp(tester);
+    await pumpUntil(tester, () => api.waitingPolls == 1);
+    agent.steps
+      ..add(
+        (_) async => change(edits: [edit('<h1>Runs</h1>', '<h1>My runs</h1>')]),
+      )
+      // The worker runs an interrupted change again; that run never ends.
+      ..add((_) => Completer<EditResult>().future);
+    api.failNext(
+      'publish',
+      const ClaxApiError(
+        status: 0,
+        code: 'daemon_unreachable',
+        message: 'no answer',
+      ),
+    );
+    leave(tester);
+    api.sendComment(aid, 'Call it My runs');
+    await pumpUntil(tester, () => work.calls.contains('stop'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(work.calls.where((c) => c.startsWith('ready')), isEmpty);
+    expect(work.calls.where((c) => c.startsWith('failed')), isEmpty);
+  });
+
+  testWidgets('a make the last run never finished is offered again at '
+      'launch', (tester) async {
+    // Seeded synchronously: real file futures do not settle in a widget
+    // test's body.
+    File('${dir.path}/pending-make.json')
+        .writeAsStringSync('{"request": "a tracker for my runs"}');
+    agent.steps.add((_) async => _made);
+    await pumpApp(tester);
+    await pumpUntilShown(tester, 'Make it again?');
+    expect(
+      find.text('Clax closed before it finished “a tracker for my runs”.'),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('Make it again'));
+    await pumpRoute(tester);
+    await pumpRoute(tester);
+    expect(agent.runs, 1);
+    expect(find.byType(AppScreen), findsOneWidget);
+    await settleFiles(tester);
+    expect(File('${dir.path}/pending-make.json').existsSync(), isFalse);
+  });
+
+  testWidgets('Not now forgets the lost make', (tester) async {
+    File('${dir.path}/pending-make.json')
+        .writeAsStringSync('{"request": "laps"}');
+    await pumpApp(tester);
+    await pumpUntilShown(tester, 'Not now');
+    await tester.tap(find.text('Not now'));
+    await pumpRoute(tester);
+    expect(find.text('Make it again?'), findsNothing);
+    expect(agent.runs, 0);
+    await settleFiles(tester);
+    expect(File('${dir.path}/pending-make.json').existsSync(), isFalse);
   });
 }

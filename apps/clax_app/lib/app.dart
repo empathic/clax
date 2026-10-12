@@ -21,6 +21,7 @@ import 'clax/api.dart';
 import 'daemon/supervisor.dart';
 import 'platform/background_work.dart';
 import 'platform/network_pause.dart';
+import 'platform/pending_make.dart';
 import 'platform/secure_key.dart';
 import 'platform/settings_store.dart';
 import 'platform/voice.dart';
@@ -53,8 +54,10 @@ class AppServices {
     this.ledger,
     this.cliSupported = false,
     this.background = const NoBackgroundWork(),
+    PendingMake? pendingMake,
     int? pid,
-  }) : pid = pid ?? io.pid;
+  }) : pid = pid ?? io.pid,
+       pendingMake = pendingMake ?? PendingMake();
 
   /// Starts and watches the embedded daemon.
   final DaemonSupervisor supervisor;
@@ -99,6 +102,10 @@ class AppServices {
 
   /// The foreground service and notifications of runs the person leaves.
   final BackgroundWork background;
+
+  /// The make in flight, offered again at the next launch when the app
+  /// ended before it did; in memory unless given.
+  final PendingMake pendingMake;
 
   /// The app's process ID, given to the daemon with the session.
   final int pid;
@@ -345,6 +352,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     unawaited(_worker?.cancel());
     unawaited(_opened?.cancel());
     unawaited(_runtime.close());
+    _runs.dispose();
     _comments.dispose();
     _endpoint.dispose();
     _revision.dispose();
@@ -382,6 +390,10 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           _pendingOpen = null;
           scheduleMicrotask(() => _openFromNotice(aid));
         }
+        if (!_offeredLostMake) {
+          _offeredLostMake = true;
+          scheduleMicrotask(() => unawaited(_offerLostMake()));
+        }
       case Failed():
         _wasUp = false;
         _nav.currentState?.popUntil((r) => r.isFirst);
@@ -397,6 +409,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     switch (state) {
       case AppLifecycleState.resumed:
         unawaited(_s.supervisor.onResume());
+        _runs.onForeground();
       case AppLifecycleState.detached:
         unawaited(_shutDown());
       case _:
@@ -475,6 +488,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     final settings = _settings;
     final backend = _s.backend(settings, _s.key);
     unawaited(_s.background.requestPermission());
+    unawaited(_s.pendingMake.save(request));
     final run = _runs.begin(makingTitle(request), MakeStage.starting.label);
     // Progress hook: anything that knows the run's step (these stages, or
     // streamed steps) shows it with `_runs.step(run, text)`.
@@ -508,6 +522,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     } catch (e) {
       _runs.end(run, RunFailed("Couldn't make your app", '$e'));
       rethrow;
+    } finally {
+      unawaited(_s.pendingMake.clear());
     }
     unawaited(
       _titleOf(aid, fallback: request).then(
@@ -524,6 +540,48 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       },
     );
     return aid;
+  }
+
+  /// Whether the launch's lost make was looked for.
+  var _offeredLostMake = false;
+
+  /// Offers to make again the request of a make the app's last run ended
+  /// before finishing.
+  Future<void> _offerLostMake() async {
+    final request = await _s.pendingMake.take();
+    // A context below the navigator, which showDialog looks up from.
+    final context = _nav.currentState?.overlay?.context;
+    if (request == null || context == null || !context.mounted) return;
+    final again = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Make it again?'),
+        content: Text('Clax closed before it finished “$request”.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Make it again'),
+          ),
+        ],
+      ),
+    );
+    final nav = _nav.currentState;
+    if (again != true || nav == null) return;
+    final result = await nav.push<MakingResult>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => MakingScreen(
+          request: request,
+          make: _make,
+          openSettings: () => unawaited(_openSettings()),
+        ),
+      ),
+    );
+    if (result case Made(:final aid)) _open(aid);
   }
 
   /// The title of [aid], or [fallback] when the daemon cannot say.
