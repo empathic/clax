@@ -127,8 +127,10 @@ export type ClaxHost = {
    * finger's arrival there until its release (at most `HELD_MAX_MS`;
    * `caps/gesture.ts`, "App mode's host attestation"); its release counts
    * for `ATTEST_MS`, and only a release whose press so counted: a press on a
-   * shell control (which may be gone by the release) never does. */
-  attestPointer(p: { pointer: number; phase: "down" | "up"; x: number; y: number }): void;
+   * shell control (which may be gone by the release) never does. A `cancel`
+   * (the OS took the touch back) ends the pointer's press and counts as
+   * nothing. */
+  attestPointer(p: { pointer: number; phase: "down" | "up" | "cancel"; x: number; y: number }): void;
   /** Opens the composer on the whole app (an `artifact` anchor, no
    * screenshot), unless one holding typed text is open. Not in the inspect view. */
   composeArtifact(): void;
@@ -159,9 +161,10 @@ const WHOLE_NO_CLIP = "it is about the whole app";
  * and a press's with no pairing: a long-press's pick comes at most about
  * 400 ms after the release (`web/bridge/src/comment-mode.ts`). */
 export const ATTEST_MS = 1000;
-/** How long an attested press counts while its release is not attested: a
- * hold, then a drag, takes seconds, and a release the host never reports
- * (the app paused mid-touch) must not leave the frame's gesture standing. */
+/** How long an attested press counts, from that press, while its release is
+ * not attested: a hold, then a drag, takes seconds, and a release the host
+ * never reports (the app paused mid-touch) must not leave the frame's
+ * gesture standing; the press is then forgotten. */
 export const HELD_MAX_MS = 30_000;
 /** How near (CSS pixels, each way) a shell press is to an attested press for
  * both to be the same finger: the app's and the WebView's coordinates of a
@@ -408,11 +411,22 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   // app's hooks (no `ready`, no `app: true`): it is asked to greet again.
   if (ctl.gate.open) ctl.send({ type: "clax:greet" });
 
+  // When the latest counted attestation (a press or a paired release) ran.
   let attestedAt = -Infinity;
-  // The pointers whose press was attested on the frame, until their release.
-  const pressed = new Set<number>();
-  hostArrival.fresh = since => attestedAt > since && now() - attestedAt < (pressed.size > 0 ? HELD_MAX_MS : ATTEST_MS);
-  hostArrival.pending = () => pressed.size > 0;
+  // The pointers whose press was attested on the frame, with when, until
+  // their release or cancel, or `HELD_MAX_MS` after that press.
+  const pressed = new Map<number, number>();
+  /** Drops presses held longer than `HELD_MAX_MS`: their release is lost. */
+  const live = () => {
+    const t = now();
+    for (const [p, at] of pressed) if (t - at >= HELD_MAX_MS) pressed.delete(p);
+    return pressed;
+  };
+  hostArrival.fresh = since => {
+    for (const at of live().values()) if (at > since) return true;
+    return attestedAt > since && now() - attestedAt < ATTEST_MS;
+  };
+  hostArrival.pending = () => live().size > 0;
   const composer = () => doc.querySelector<HTMLFormElement>(".stage form.composer");
   // The app's word on visibility: null until `init` (the document's own applies).
   let hostHidden: boolean | null = null;
@@ -498,8 +512,14 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
         const at = doc.elementFromPoint(x, y);
         const t = now();
         const onShell = shellPresses.some(q => t - q.at < ATTEST_MS && Math.abs(q.x - x) <= NEAR_PX && Math.abs(q.y - y) <= NEAR_PX);
-        if (at && at === ctl.frame?.el && !onShell) { pressed.add(pointer); attestedAt = now(); hostArrival.attested(); } else pressed.delete(pointer);
-      } else if (phase === "up" && pressed.delete(pointer)) { attestedAt = now(); hostArrival.attested(); }
+        if (at && at === ctl.frame?.el && !onShell) { pressed.set(pointer, t); attestedAt = t; hostArrival.attested(); } else pressed.delete(pointer);
+      } else if (phase === "up") {
+        if (live().delete(pointer)) { attestedAt = now(); hostArrival.attested(); }
+      } else if (phase === "cancel") {
+        // The OS took the touch back (a system gesture, the app paused): the
+        // press ends, and nothing is attested.
+        pressed.delete(pointer);
+      }
     },
     composeArtifact: () => {
       const v = s();
