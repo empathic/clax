@@ -18,6 +18,7 @@ class TurnRequest {
     this.cancelled,
     this.onProgress,
     this.outputBefore = 0,
+    this.onFallback,
   });
 
   final String model;
@@ -44,7 +45,16 @@ class TurnRequest {
   /// Output tokens the run spent before this turn, so [OutputTokens]
   /// reports the run's total.
   final int outputBefore;
+
+  /// Called when a `fallback` block streams: the model was switched
+  /// mid-output, and what the declined attempt streamed so far will not be
+  /// used.
+  final void Function()? onFallback;
 }
+
+/// One model attempt of a turn and what it spent: a turn has more than one
+/// when a refusal fell back to another model.
+typedef TurnAttempt = ({String model, Usage usage});
 
 /// A turn as the model ended it.
 class ModelTurn {
@@ -53,6 +63,7 @@ class ModelTurn {
     required this.stopReason,
     this.stopDetails,
     required this.usage,
+    this.attempts = const [],
     this.broken = false,
   });
 
@@ -63,7 +74,13 @@ class ModelTurn {
   /// `end_turn`, `tool_use`, `max_tokens`, `refusal`, `pause_turn`, …
   final String stopReason;
   final Map<String, Object?>? stopDetails;
+
+  /// The turn's usage, summed over [attempts].
   final Usage usage;
+
+  /// Each model attempt with its own usage, to price at its own model;
+  /// empty when [usage] is all the requested model's.
+  final List<TurnAttempt> attempts;
 
   /// A tool call's streamed input is not a JSON object (the turn was cut
   /// off, or the model wrote invalid input): none of the turn may be used,
@@ -96,11 +113,18 @@ const _streamedText = {'write_file': 'content', 'str_replace': 'new_str'};
 /// The most characters of one [Narration].
 const narrationMax = 90;
 
+/// The text of a progress block that stands in for work a cut-off answer
+/// did not finish; it is not narration.
+const interruptedNote =
+    'This part of the response was interrupted before it finished.';
+
 /// Turns the raw events of one streamed turn into progress on [sink]:
 ///
-/// - [Narration]: the first sentence of each text block, at most
-///   [narrationMax] characters, once it ends (`.` before a space, `…`, a
-///   newline) or at the block's end;
+/// - [Narration]: the first sentence of each text block, and of each
+///   thinking block that streams text (a progress note under thinking
+///   display `updates`), at most [narrationMax] characters, once it ends
+///   (`.` before a space, `…`, a newline) or at the block's end; never
+///   [interruptedNote];
 /// - [ToolStarted]: once per `tool_use` block, with its label from
 ///   [toolLabel] as soon as the field the label names has arrived (or at
 ///   the block's end);
@@ -111,11 +135,19 @@ const narrationMax = 90;
 ///
 /// It never throws, and a listener that throws is the caller's to guard.
 class TurnProgress {
-  TurnProgress(this.sink, {this.outputBefore = 0, this.minGrowth = 256});
+  TurnProgress(
+    this.sink, {
+    this.outputBefore = 0,
+    this.minGrowth = 256,
+    this.onFallback,
+  });
 
   final ProgressSink sink;
   final int outputBefore;
   final int minGrowth;
+
+  /// Called at a `fallback` block's start.
+  final void Function()? onFallback;
   final _blocks = <int, _Block>{};
 
   /// Reads one decoded stream event.
@@ -141,6 +173,8 @@ class TurnProgress {
           switch ((_blocks[i], d['type'], d['text'], d['partial_json'])) {
             case (final _Text t, 'text_delta', final String s, _):
               t.add(s);
+            case (final _Text t, 'thinking_delta', _, _):
+              if (d['thinking'] case final String s) t.add(s);
             case (final _ToolCall c, 'input_json_delta', _, final String s):
               c.add(s);
           }
@@ -162,6 +196,10 @@ class TurnProgress {
     switch (b['type']) {
       case 'text':
         _blocks[i] = _Text(sink)..add('${b['text'] ?? ''}');
+      case 'thinking':
+        _blocks[i] = _Text(sink)..add('${b['thinking'] ?? ''}');
+      case 'fallback':
+        onFallback?.call();
       case 'tool_use':
         _blocks[i] = _ToolCall(
           sink,
@@ -198,6 +236,7 @@ class _Text extends _Block {
 
   void _say(String sentence) {
     _said = true;
+    if (sentence.trim() == interruptedNote) return;
     if (narrationOf(sentence) case final n?) sink(Narration(n));
   }
 

@@ -117,6 +117,10 @@ class MessageStream {
     _ => null,
   };
 
+  /// The latest message without its content (`model`, `stop_reason`,
+  /// `usage`, …), which never throws.
+  Map<String, Object?> get head => Map.unmodifiable(_message);
+
   /// The latest message as rebuilt so far. Throws [InvalidToolInput] when
   /// a tool call's streamed input is not a JSON object. A text block with
   /// no text is left out, since the API refuses an empty text block in an
@@ -128,6 +132,58 @@ class MessageStream {
         if (!_emptyText(_blocks[i]!)) _block(i, _blocks[i]!),
     ],
   };
+
+  /// The latest message as it may be sent back, after a mid-output
+  /// fallback too: before the last `fallback` block (where a declined
+  /// attempt gave way to another model), only `text` blocks, `fallback`
+  /// blocks and server tool calls paired with their results are kept; the
+  /// declined attempt's thinking, tool calls and anything else are left
+  /// out, and only kept blocks must have whole JSON input. Without a
+  /// `fallback` block this is [message]. Throws [InvalidToolInput] as
+  /// [message] does, for a kept block.
+  Map<String, Object?> get echoMessage {
+    final keys = _blocks.keys.toList()..sort();
+    final boundary = keys.lastWhere(
+      (i) => _blocks[i]!['type'] == 'fallback',
+      orElse: () => -1,
+    );
+    final before = [
+      for (final i in keys)
+        if (i < boundary) _blocks[i]!,
+    ];
+    bool isCall(Map<String, Object?> b) =>
+        b['type'] == 'server_tool_use' || b['type'] == 'mcp_tool_use';
+    bool isResult(Map<String, Object?> b) =>
+        b['type'] is String &&
+        (b['type'] as String).endsWith('_tool_result') &&
+        b['type'] != 'tool_result';
+    final calls = {
+      for (final b in before)
+        if (isCall(b)) b['id'],
+    };
+    final answered = {
+      for (final b in before)
+        if (isResult(b)) b['tool_use_id'],
+    };
+    bool kept(int i, Map<String, Object?> b) {
+      if (i > boundary) return true;
+      return switch (b['type']) {
+        'text' || 'fallback' => true,
+        _ when isCall(b) => answered.contains(b['id']),
+        _ when isResult(b) => calls.contains(b['tool_use_id']),
+        _ => false,
+      };
+    }
+
+    return {
+      ..._message,
+      'content': [
+        for (final i in keys)
+          if (kept(i, _blocks[i]!) && !_emptyText(_blocks[i]!))
+            _block(i, _blocks[i]!),
+      ],
+    };
+  }
 
   static bool _emptyText(Map<String, Object?> b) =>
       b['type'] == 'text' && (b['text'] is! String || b['text'] == '');

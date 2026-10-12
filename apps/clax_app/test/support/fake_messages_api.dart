@@ -329,18 +329,25 @@ class OpenStreamServer {
 /// sent as `input_json_delta`s of [piece] characters; a `json` string
 /// instead of `input` is sent as is, so it may be cut or invalid). Then
 /// [stopReason], [stopDetails] and the usage; no `message_stop` unless
-/// [stop].
+/// [stop]. A `fallback` block (a mid-output switch to another model) is
+/// sent whole. [outputTokens] defaults to 20000 for a `max_tokens` stop (a
+/// change run's whole output cap, which its turn's `max_tokens` is) and to
+/// 50 otherwise. [iterations] goes into the final usage, [model] into
+/// `message_start`.
 List<Map<String, Object?>> streamedTurn(
   List<Map<String, Object?>> blocks, {
   int piece = 9,
   String stopReason = 'tool_use',
   Map<String, Object?>? stopDetails,
   int inputTokens = 100,
-  int outputTokens = 50,
+  int? outputTokens,
   int cacheRead = 0,
   int cacheWrite = 0,
+  List<Map<String, Object?>>? iterations,
+  String model = 'claude-haiku-5-5',
   bool stop = true,
 }) {
+  final output = outputTokens ?? (stopReason == 'max_tokens' ? 20000 : 50);
   List<String> pieces(String s) => [
     for (var i = 0; i < s.length; i += piece)
       s.substring(i, (i + piece).clamp(0, s.length)),
@@ -352,7 +359,7 @@ List<Map<String, Object?>> streamedTurn(
         'id': 'msg_turn',
         'type': 'message',
         'role': 'assistant',
-        'model': 'claude-haiku-5-5',
+        'model': model,
         'content': <Object?>[],
         'stop_reason': null,
         'usage': {
@@ -402,6 +409,10 @@ List<Map<String, Object?>> streamedTurn(
           },
           {'type': 'content_block_stop', 'index': i},
         ],
+        'fallback' => [
+          {'type': 'content_block_start', 'index': i, 'content_block': b},
+          {'type': 'content_block_stop', 'index': i},
+        ],
         _ => [
           {
             'type': 'content_block_start',
@@ -431,7 +442,7 @@ List<Map<String, Object?>> streamedTurn(
         'stop_sequence': null,
         'stop_details': ?stopDetails,
       },
-      'usage': {'output_tokens': outputTokens},
+      'usage': {'output_tokens': output, 'iterations': ?iterations},
     },
     if (stop) {'type': 'message_stop'},
   ];
