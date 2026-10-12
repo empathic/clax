@@ -345,15 +345,15 @@ one is. To run
 one file's tests: `cargo nextest run -p clax-server -E 'test(/^api_batch::/)'`,
 or `cargo test -p clax-server --test integration api_batch::`.
 
-`scripts/quality_gates.sh` runs every check CI runs: the justfile, plugin wrapper (`scripts/test-ensure-clax.sh`, `just wrapper-test`), release script, release installer and dev script tests (`scripts/test-release.sh`, `scripts/test-install.sh` (`just install-test`), `scripts/test-dev.sh`), and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the four skill copies and `docs/contract.md` share the page contract word for word, that the skill copies share the comment loop word for word, that the plugins wire their Stop and prompt hooks, that the workspace, the plugin manifests, the Pi package and the plugins' wrapper's `CLAX_VERSION` carry one version (`scripts/check-version.sh`), that the four plugins carry the same wrapper and pin the newest `v*` release tag, that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`, and, through `scripts/sync-skill-tools.py --check`, that each skill's generated tool block and the tool lists in `docs/contract.md` and the READMEs name exactly that fixture's tools), the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build (before the Rust tests and the release build, which serve or embed it), `cargo fmt`, clippy with `-D warnings` over every target and again over the libraries and binaries alone (without the test-only features), the Rust tests (`cargo nextest`, or `cargo test` with a warning where nextest is not installed: `cargo install --locked cargo-nextest`), the comment-loop smoke (`scripts/smoke-comment-loop.sh`: a scripted Claude Code session, no model, through tiers 1, 2, 4 and 5 with a fake `codex`), the Pi extension's typecheck and tests, the three perf gates in their quick mode, and the Playwright end-to-end tests. `just web-test` runs the web lint, typecheck, and unit tests.
+`scripts/quality_gates.sh` runs every check CI runs: the justfile, plugin wrapper (`scripts/test-ensure-clax.sh`, `just wrapper-test`), release script, release installer and dev script tests (`scripts/test-release.sh`, `scripts/test-install.sh` (`just install-test`), `scripts/test-dev.sh`), the Clax app's build script test (`scripts/test-build-app-clax.sh`, a dry run with no build), and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the four skill copies and `docs/contract.md` share the page contract word for word, that the skill copies share the comment loop word for word, that the plugins wire their Stop and prompt hooks, that the workspace, the plugin manifests, the Pi package and the plugins' wrapper's `CLAX_VERSION` carry one version (`scripts/check-version.sh`), that the four plugins carry the same wrapper and pin the newest `v*` release tag, that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`, and, through `scripts/sync-skill-tools.py --check`, that each skill's generated tool block and the tool lists in `docs/contract.md` and the READMEs name exactly that fixture's tools), the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build (before the Rust tests and the release build, which serve or embed it), `cargo fmt`, clippy with `-D warnings` over every target and again over the libraries and binaries alone (without the test-only features), the Rust tests (`cargo nextest`, or `cargo test` with a warning where nextest is not installed: `cargo install --locked cargo-nextest`), the comment-loop smoke (`scripts/smoke-comment-loop.sh`: a scripted Claude Code session, no model, through tiers 1, 2, 4 and 5 with a fake `codex`), the Pi extension's typecheck and tests, the Clax app's gate (`apps/clax_app/tool/check.sh`, skipped where `flutter` is not installed; see "The Clax app" below), the three perf gates in their quick mode, and the Playwright end-to-end tests. `just web-test` runs the web lint, typecheck, and unit tests.
 
-The web UI is built first (`scripts/build-web.sh`, which keeps the modification times of output it did not change, so an unchanged web UI does not rebuild the release binary that embeds it) and its unit tests run next, alone, since some are timing-sensitive. The other gates then run in concurrent lanes (web e2e, the Rust tests, clippy and `cargo fmt`, web lint and typecheck, the release build, Pi, the scripts), the longest first, each printing a line as it finishes; a failed gate prints its output. The Rust tests are built before clippy runs, so they start as soon as they can. `npm ci` runs in `web/` and `plugins/pi/` only when `node_modules` was not installed from the current `package-lock.json` by the same Node and npm (a hash in `node_modules/.clax-ci-stamp`; `CLAX_NPM_CI=always` ignores it). One debug `clax` is built for the whole run and given to the tests that cannot name it and to the browser tests' daemons as `CLAX_TEST_BIN` (`just test` does the same for the Rust tests), and one release `clax` to the perf gates as `CLAX_PERF_BIN`. The perf gates then run alone, one at a time. The run ends with each gate's time and the total; a slow gate is reported, never failed. On a warm build cache and an otherwise idle machine, the whole run takes under two minutes.
+The web UI is built first (`scripts/build-web.sh`, which keeps the modification times of output it did not change, so an unchanged web UI does not rebuild the release binary that embeds it) and its unit tests run next, alone, since some are timing-sensitive. The other gates then run in concurrent lanes (web e2e, the Rust tests, clippy and `cargo fmt`, web lint and typecheck, the release build, Pi, the scripts, the Clax app), the longest first, each printing a line as it finishes; a failed gate prints its output. The Rust tests are built before clippy runs, so they start as soon as they can. `npm ci` runs in `web/` and `plugins/pi/` only when `node_modules` was not installed from the current `package-lock.json` by the same Node and npm (a hash in `node_modules/.clax-ci-stamp`; `CLAX_NPM_CI=always` ignores it). One debug `clax` is built for the whole run and given to the tests that cannot name it and to the browser tests' daemons as `CLAX_TEST_BIN` (`just test` does the same for the Rust tests), and one release `clax` to the perf gates as `CLAX_PERF_BIN`. The perf gates then run alone, one at a time. The run ends with each gate's time and the total; a slow gate is reported, never failed. On a warm build cache and an otherwise idle machine, the whole run takes under two minutes.
 
 The perf gates, each with the same budgets and the same scaling by the run's own idle latency in its quick and full versions; `just perf` runs the full versions:
 
 - daemon latency (`scripts/perf-daemon.sh`): a release `clax` on a scratch home seeded with 300 artifacts, 2,400 threads and 7,200 comments by one viewer; while a gallery tab refreshes, ten galleries load, 12 MB `docs:batch` writes, long polls and event streams, and 16 MB publishes run in turn, `/healthz`, `/a/<id>`, `/c/<id>/v/1/` and `/api/artifacts/<id>` must keep a p95 of 50 ms and a max of 250 ms, and the gallery's list and attention requests alone, each timed against a fixed SQLite calibration read that the daemon runs on its own store workers, interleaved with it, must stay within about 1.4 times their measured ratios to it, so either query getting twice as slow fails on a fast machine, a slow one or a loaded one; medians over three rounds of 3 s windows per load (0.5 s in the quick mode), limits scaled by the run's own idle latency, and under the ten galleries to at least twice the galleries' own mean request latency; with two people connected by `clax connect` (6,000 comments by four authors, 50 approvals each), a person's agent's threads read and feedback poll (half the rows withheld) within 2 ms and 1 ms of the single-owner baseline that `scripts/perf-vis-baseline.sh <commit>` measures, the gateway's median signature verification within 150 µs, and a signed client polling beside every load; budgets in `scripts/perf-daemon-budget.json`;
 - realtime clients (`scripts/perf-clients.sh`): 1,000 `/api/stream` clients on one release daemon, judged on delivery latency, cheap requests under load, memory per client, idle CPU and a client that never reads; a 16 s idle and a 15 s load window (3 s and 9 s in the quick mode: the load makes at least 40 writes, so one write held up by its commit cannot set the delivery p95 alone), budgets in `scripts/perf-clients-budget.json`;
-- time to usable (`cd web && npm run perf`): link to first paint and to comment mode in a fresh tab, per frame mode, against `web/perf/budget.json`; the quick mode (`CLAX_PERF_QUICK=1`) takes 5 samples per mode instead of 9.
+- time to usable (`cd web && npm run perf`): link to first paint and to comment mode in a fresh tab, and link to the shell's first `ready` to the Clax app's host (`/a/<id>?app=1`, the end of the app's say → usable time), per frame mode, against `web/perf/budget.json`; the quick mode (`CLAX_PERF_QUICK=1`) takes 5 samples per mode instead of 9.
 
 One run of the gates at a time per checkout: a run holds
 `quality-gates.lock` in the checkout's git directory, a second run in the
@@ -367,6 +367,109 @@ or a fresh `cargo build`, never your installed `clax`; it refuses to run when
 a scratch directory would fall inside your home, never reads or copies an
 auth file, and runs Clax on a scratch port. The Pi session check, which needs
 a model, runs only with `VERIFY_PI_SESSION=1` and a provider key you export.
+
+### The Clax app
+
+`apps/clax_app` is a Flutter app for Android and macOS. It runs `clax serve`
+on the device, with a home of its own under the app's support directory
+(`clax-home/`) on a free loopback port, shows each app full screen in a
+WebView, and runs its own agent: the Claude API with your key, or, in a
+desktop debug build, Claude Code. Its design is
+`docs/superpowers/specs/2026-10-12-flutter-app-design.md`; what it relies on
+from the daemon and the shell is in `docs/contract.md` ("The Clax app's
+agent", "The Clax app", "Reading another app's documents").
+
+**Toolchains.** Flutter (stable; 3.47 is what it is built with), Xcode for
+macOS, and for Android a JDK 17, the Android SDK (platform 36, build tools,
+platform tools, command-line tools) and NDK 28.2.13676358. Point Flutter at
+them once, and accept the SDK licences:
+
+```
+flutter config --jdk-dir "$(ls -d ~/Library/Java/jdk-17*/Contents/Home | head -1)"
+flutter config --android-sdk ~/Library/Android/sdk
+flutter doctor --android-licenses
+flutter doctor
+```
+
+`scripts/build-app-clax.sh` takes the NDK from `ANDROID_NDK_HOME`, else
+`~/Library/Android/sdk/ndk/28.2.13676358`, and adds the Rust targets
+`aarch64-linux-android` and `x86_64-linux-android` itself.
+
+**Recipes.**
+
+- `just app-clax [android|macos|all] [--debug]` builds `clax` for the app
+  and places it where the app's build picks it up: the host binary at
+  `apps/clax_app/build-native/macos/clax`, and stripped Android binaries at
+  `apps/clax_app/android/app/src/main/jniLibs/{arm64-v8a,x86_64}/libclax.so`
+  (all git-ignored). A release build (the default) embeds `web/dist`, so it
+  builds the web UI first. Each binary is renamed into place, never copied
+  over one that may be running.
+- `just app-test` runs the app's gate, `apps/clax_app/tool/check.sh`:
+  `flutter analyze`, the unit and widget tests (against a debug `clax` kept
+  by content, for the tests that start the daemon), and
+  `scripts/sync-app-prompt.sh --check`, which checks that the prompt assets
+  in `apps/clax_app/assets/prompt` still copy `docs/contract.md`'s "Page
+  contract" and "Runtime capabilities" sections and the served type
+  definitions. After changing either section, run
+  `scripts/sync-app-prompt.sh` and commit the assets with it.
+- `just app-integration` builds the macOS `clax` and runs the integration
+  tests on macOS (`flutter test integration_test -d macos`).
+- `just app-apk` builds the Android binaries and a release APK, at
+  `apps/clax_app/build/app/outputs/flutter-apk/app-release.apk`. It is
+  signed with the debug key, which is enough to install it on your own
+  phone.
+- `just app-macos` builds the macOS `clax` and a release (sandboxed) app,
+  at `apps/clax_app/build/macos/Build/Products/Release/clax_app.app`.
+
+No test and no gate calls a model: the agent is tested against a scripted
+backend and a fake Messages API server. Runs against a live model are
+manual. A debug build given `--dart-define=CLAX_SCRIPTED_AGENT=<file>`
+answers with the scripted results in that file (a JSON array of edit
+results, or `{"error": "<message>"}` items) instead of a model, which drives
+the whole app without one.
+
+**On an Android phone.** Turn on developer options and USB debugging, plug
+the phone in, and check that `adb devices` lists it (`adb` is in
+`~/Library/Android/sdk/platform-tools`). Then:
+
+```
+just app-apk
+adb install -r apps/clax_app/build/app/outputs/flutter-apk/app-release.apk
+```
+
+`flutter run --release -d <device>` from `apps/clax_app` builds, installs
+and starts it in one step, once `just app-clax android` has placed the
+binaries. The app needs Android 10 (API 29) or later on an arm64 or x86_64
+device. Open it, tap Settings on the launcher (a banner says so while no
+key is set), and paste a Claude API key into "Claude API key"; it is kept in
+the phone's Keystore-backed secure storage and sent only to the Claude API.
+Pick a model there too (Haiku 5.5 by default). Then New: say or type what
+you want. The app's daemon, its documents and every version stay on the
+phone; only the model call leaves it. Its port is reachable by other apps
+on the phone (see "Security model" in `docs/contract.md`).
+
+**On a Mac, with Claude Code instead of a key.** A sandboxed app cannot
+start `claude`, so the Claude Code backend is offered only in a debug
+build, which runs without the App Sandbox:
+
+```
+just app-clax macos
+cd apps/clax_app && flutter run -d macos   # or: flutter build macos --debug
+```
+
+In Settings choose "Claude Code on this Mac" (it uses your Claude Code
+login; set "Claude Code path" when `claude` is not on `PATH` or in
+`~/.local/bin`). Each change runs `claude -p` with tools off, at effort low,
+with `--safe-mode`, so your CLAUDE.md, memory, skills, plugins, hooks and
+MCP servers stay out of it. The release build (`just app-macos`) is
+sandboxed and offers only the Claude API with a key, kept in the login
+keychain.
+
+The app keeps its own records in its application support directory
+(inside `~/Library/Containers/dev.empathic.clax` for the sandboxed macOS
+build): `settings.json`, `timings.jsonl` (say → usable and long-press →
+landed times, also listed in Settings), `agent-timings.jsonl`, and
+`clax-home/`, the daemon's home. It never touches `~/.clax` or port 7480.
 
 ## Releasing
 

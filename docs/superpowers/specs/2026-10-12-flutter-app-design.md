@@ -213,9 +213,19 @@ chrome, driven by its host.
   in one press. The composer, its anchor, its screenshot and its wait for
   the screenshot are today's.
 - **Auto-follow.** In app mode, when a newer version arrives and the view
-  is not pinned to a version, the view loads it at once, on the same page
-  and fragment, and asks the bridge to restore the last scroll position the
-  bridge reported (`clax:scroll` / `clax:restore-scroll`, §3.5).
+  is not pinned to a version, the view loads it at once (or, while a
+  composer is open, once it closes), on the same page and fragment, and
+  asks the bridge to restore the last scroll position the bridge reported:
+  the first welcome of the new page carries `restoreScroll: <y>` (§3.5).
+- **Protocol.** The header of `web/shell/src/app/host.ts` is the source of
+  truth for the channel protocol, and `docs/contract.md` ("The Clax app")
+  documents it. The host is installed only in the top-level document at
+  `/a/<id>[/v/<n>][/<file>]` with `app=1`. The WebView injects `ClaxHost`
+  into every frame, the page's included, so the app makes a fresh nonce
+  per load of the shell document and calls `claxHost.init({nonce})`; the
+  shell posts nothing before it, every message after it carries the nonce,
+  and the app drops any message without it. The app lets the top level
+  navigate only to that shell path on the daemon's origin.
 - **`window.claxHost`** (Flutter → page, by `runJavaScript`):
 
   | Method | Effect |
@@ -227,6 +237,9 @@ chrome, driven by its host.
   | `submitDraft()` | Presses Send on the open composer (waits for its screenshot as Send does). |
   | `cancelDraft()` | Closes the composer. |
   | `openThread(id)` | Selects the thread and scrolls the page to it. |
+  | `init({nonce})` | Starts the channel with this load's nonce (first valid call only). |
+  | `resend(id)` | Sends an open, unsent thread again after `sendFailed`. |
+  | `attestPointer({pointer, phase, x, y})` | Attests a real finger press or release on the WebView (§3.5, the gesture on Android). |
 
 - **Messages to the host** go through the webview_flutter JavaScriptChannel
   `ClaxHost` (`window.ClaxHost.postMessage(JSON)`); a page without it (a
@@ -235,10 +248,11 @@ chrome, driven by its host.
   | `type` | Fields | When |
   |---|---|---|
   | `ready` | `artifact`, `version`, `latest`, `file` | Each frame load. |
-  | `state` | `commenting`, `draft: {label, text, clip: "pending"\|"ready"\|"none"} \| null`, `busy` | Any change of those. |
-  | `threads` | `threads: [{id, status, summary, sent, comments, version}]` | Any change of the view's threads. |
+  | `state` | `commenting`, `draft: {label, text, clip: "pending"\|"ready"\|"none", byPage?} \| null`, `busy` | Any change of those. `label` names the anchor in words. |
+  | `threads` | `threads: [{id, status, summary, label, sent, comments, version}]` | Any change of the view's threads. |
   | `sent` | `thread` | After Send posted and sent a thread. |
-  | `landed` | `version` | After auto-follow loaded a newer version. |
+  | `sendFailed` | `thread`, `text` | The send failed; the thread stays posted and unsent. |
+  | `landed` | `version` | The page of a version auto-follow loaded has greeted. |
   | `notice` | `text` | A shell notice (post failed, …). |
 
 ### 3.5 Bridge additions (`web/bridge/src/`)
@@ -252,16 +266,27 @@ chrome, driven by its host.
   `touchend`, not while a finger rests, and the shell takes a pick only with
   the frame's activation. Moving beyond the slop, a second finger, or
   `touchcancel` abandons it. A short tap keeps today's behaviour (the
-  synthesized click picks). The timer is injected for tests.
-- **Selection and callout guard.** While comment mode is on the document
-  gets `-webkit-user-select: none; user-select: none;
-  -webkit-touch-callout: none`, and `contextmenu` and `selectstart` are
-  cancelled, so a long-press neither selects text nor opens a menu. Off
-  again, the page's own styles return.
+  synthesized click picks). The click the browser sends after a
+  long-press's release picks too; when none comes within 400 ms (Android
+  may send none), comment mode moves focus into the page and picks what is
+  under the finger itself. The timer is injected for tests.
+- **The gesture on Android.** A finger on the cross-origin frame sends the
+  shell nothing, so the app attests each real press and release it sees
+  over the WebView (`claxHost.attestPointer`); a press on the frame itself,
+  and its release, count as the finger's arrival on the frame for 1 s
+  (`hostArrival` in `web/shell/src/caps/gesture.ts`).
+- **Selection and callout guard.** While a finger is held in comment mode,
+  `contextmenu` and `selectstart` are cancelled, so a long-press neither
+  selects text nor opens a menu; while comment mode is on, the document
+  gets only `-webkit-touch-callout: none`. `user-select: none` for the
+  whole mode would break mouse drag-select comments, Option+drag widening
+  and right-click menus on desktop.
 - **Scroll report.** After the shell's welcome with `app: true`, the bridge
-  posts `clax:scroll {file, y}` at most every 250 ms while the page
-  scrolls, and on `clax:restore-scroll {y}` scrolls the document there
-  (once its height allows, within 2 s of load).
+  posts `clax:scroll {file, y}` at once and then at most every 250 ms while
+  the page scrolls. The welcome itself carries the restore: the first
+  welcome of a newer version's page has `restoreScroll: <y>`, and the page
+  scrolls there once its document is tall enough, or after 2 s as far as
+  it reaches. There is no `clax:restore-scroll` message.
 
 ### 3.6 Agent (Dart, `lib/agent/`)
 
@@ -303,9 +328,14 @@ abstract interface class AgentBackend {
   schema (§12, D-1).
 - **`ClaudeCliBackend`** (desktop, offered only when the app is not
   sandboxed) runs `claude -p --output-format json --json-schema
-  <schema> --tools "" --system-prompt <prompt> --model <model>
-  --no-session-persistence --strict-mcp-config` with the request on
-  stdin, from a scratch directory, with a 300 s timeout. It reads the
+  <schema> --tools "" --system-prompt-file <file> --model <model>
+  --effort low --no-session-persistence --strict-mcp-config --safe-mode`
+  with the request on stdin, from a scratch directory per run, with a
+  300 s timeout, and with Claude Code's session variables and
+  `ANTHROPIC_API_KEY` dropped from its environment. `--safe-mode` keeps
+  the person's CLAUDE.md, memory, skills, plugins, hooks and MCP servers
+  out of the run while their login still works (`--bare` would not read
+  the login). It reads the
   structured result from the JSON's `structured_output`, else parses
   `result` as JSON. The executable is found on `PATH` and at
   `~/.local/bin/claude`, overridable in settings. It sends no image: with
@@ -394,20 +424,26 @@ abstract interface class AgentBackend {
 
 - **Declaring.** App A declares `{"db": {"read": ["<B ID>", …]}}`; B may
   declare `{"db": {"share": {"read": ["<A ID>", …]}}}`. Both are validated by
-  `Rules::from_capabilities` (at most 16 IDs each, valid artifact IDs, not
-  itself).
-- **Consent.** A may read B's documents when A declares the read and either
+  `ReadDecl` (`crates/clax-core/src/db.rs`; at most 16 IDs each, valid
+  artifact IDs, not itself, `db.share` holding only `read`).
+- **Consent.** A may read B's documents when A declares the read, B
+  declares `db` (else 403 `not_declared`, the token included), and either
   B shares with A or the owner granted it. Grants are rows of
   `db_read_grants(reader_id, source_id, granted_at)` (migration 24), made
   by `PUT /api/artifacts/<A>/db-grants/<B>` and removed by `DELETE` (token),
   listed by `GET /api/artifacts/<A>/db-grants`. Deleting either artifact
   removes its rows.
 - **Reading.** The db read routes of B (`GET …/docs`, `GET …/docs/<path>`)
-  accept `X-Clax-Reader: <A ID>` (and `?reader=` for the event stream):
-  the caller's level is that of a reader, read-only, judged by B's rules at
-  `view`; without consent it is 403 `not_granted` (code also used by the
-  shell). Writes with the header are 403 `read_only`. Private
-  `data/users/<id>/` documents are never readable this way.
+  accept `X-Clax-Reader: <A ID>`: the caller's level is that of a reader,
+  read-only, judged by B's rules at `view` with no viewer; without consent
+  it is 403 `not_granted` (code also used by the shell). Writes with the
+  header are 403 `read_only`, and the header on any other route
+  (`docs:collections` included) is 403 `not_granted`, before any handler
+  runs. Private `data/users/<id>/` documents are never readable this way.
+  Following changes: `GET /api/events?reader=<A>`, or on `/api/stream` the
+  topic `docs:<B>?reader=<A>` (never `docs:<B>`, whose events reach a
+  stream at its own level); each `doc` event is checked against consent as
+  it is sent.
 - **Shell and bridge.** `db.artifact(id)` in the page returns a read-only
   handle with `doc(path).get()`, `collection(path).get()/query()/onSnapshot()`.
   The shell checks A's declaration, asks the owner once when there is
@@ -427,7 +463,7 @@ abstract interface class AgentBackend {
 | Change | Where | Contract |
 |---|---|---|
 | Harness `app` | `routes/sessions.rs` `HARNESSES`; `push_info` (`tier: "wait"`, available); feedback tier mapping (`store/feedback.rs`); display name "Clax app" (`toolpath/mod.rs`) | Registration accepts `app`; comments sent to an `app` session wait for its feedback poll. |
-| Version restore | `POST /api/artifacts/<aid>/versions:restore` `{"version": n, "if_version": cur}` | Publishes version `n`'s files as a new version (`label: "Restored v<n>"`, `note`), atomically, in one store transaction, reusing the stored blobs; carried-forward files not in `n` are removed; capabilities and documents are untouched. 409 `conflict` as publish; 404 for an unknown `n`. Emits `version`. |
+| Version restore | `POST /api/artifacts/<aid>/versions:restore` `{"version": n, "if_version": cur}` | Publishes version `n`'s files as a new version (`label: "Restored v<n>"`, `note: "Restored version <n>"`), atomically, in one store transaction, writing each of `n`'s files again into the new version's directory with its bytes, type and hash (the store keeps a directory per version, so each restore adds `n`'s size on disk); carried-forward files not in `n` are removed; capabilities and documents are untouched. 409 `conflict` as publish; 404 for an unknown `n`. Emits `version`; the audit's `version.publish` adds `restored_from: n`, and its `carried` names only files unchanged from the previous version. |
 | `db.read` / `db.share` | `db.rs`, `capabilities.rs`, `store/docs.rs`, `db_caller.rs`, `routes/docs.rs`, migration 24 | §3.8. |
 | `docs:collections` | `routes/docs.rs` | §3.8. |
 

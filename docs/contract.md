@@ -229,6 +229,24 @@ answer `{artifact, version, url, note_truncated}`: `note_truncated` is `true`
 when the given `note` was longer than 280 characters and was cut to them,
 else `false`. The tool result passes it on.
 
+`POST /api/artifacts/<id>/versions:restore` (token required) with
+`{"version": <n>, "if_version": <current>}` makes version `n`'s files the
+next version, in one store transaction: every file of `n`, `index.html`
+included, with its bytes, content type and hash, so the new version's
+`content_sha256` equals `n`'s, and no file of the current version that `n`
+lacks. The new version is labelled `Restored v<n>` with the note `Restored
+version <n>`; the title, description, icon and capabilities stay as they
+are, and documents are not touched. An `X-Clax-Session`, when given, must
+name a live session (400 `unknown_session` otherwise), which the version
+records. It
+answers as a publish does (201 `{artifact, version, url, note_truncated}`),
+and a `version` event follows. Errors: 409 `conflict` with `current` when
+`if_version` is not the current version; 404 `not_found` for an unknown
+artifact or version; 400 `invalid_args` when `version` or `if_version` is
+missing; 400 `live_page` for a live page. Each restore stores `n`'s files
+again under the new version, so it adds their size on disk. The Clax app's
+Versions tab uses it for undo.
+
 The declaration can also be changed without publishing a version:
 `PATCH /api/artifacts/<id>` (token required) with `{"capabilities": {...}}`
 replaces it the same way (omitted or `null` keeps, `{}` clears) and returns
@@ -804,12 +822,12 @@ The shim takes `harness_session_id` from `CLAUDE_CODE_SESSION_ID` under Claude
 Code and from `GROK_SESSION_ID` under Grok Build, else from `CLAX_SESSION_ID`
 for any harness, else sends none.
 
-A session row has `harness` (`claude`, `codex`, `grok`, `pi`), `harness_session_id`
-(the harness's own ID, when known), `cwd`, `pid` (the shim or Pi process),
-`parent_pid`, and timestamps. Registration and join accept only those four
-harness names (anything else is 400 `invalid_args` `harness must be one of
-claude, codex, grok, pi`); an empty `harness_session_id` on registration counts as
-none. The daemon matches registrations to existing
+A session row has `harness` (`claude`, `codex`, `grok`, `pi`, `app`),
+`harness_session_id` (the harness's own ID, when known), `cwd`, `pid` (the
+shim, Pi or Clax app process), `parent_pid`, and timestamps. Registration and
+join accept only those five harness names (anything else is 400
+`invalid_args` `harness must be one of claude, codex, grok, pi, app`); an
+empty `harness_session_id` on registration counts as none. The daemon matches registrations to existing
 live rows so that a shim and a hook for the same conversation share one row:
 
 - A registration with a `harness_session_id` reuses the live row with the same
@@ -946,6 +964,31 @@ when it does not finish, the first tool call registers instead. On
 `session_shutdown` the extension ends the row (3 s deadline). It sends no
 heartbeat: a row whose Pi process has exited without a clean shutdown is ended
 by the reaper.
+
+### The Clax app's agent
+
+The Clax app (`apps/clax_app`) runs its own daemon and its own agent on the
+device (see "The Clax app" under "Comments and feedback"). Its agent
+registers once the daemon is up: `POST /api/sessions` with `{"harness":
+"app", "harness_session_id": <install ID>, "cwd": "", "pid": <the app's
+PID>}`, where the install ID is a random UUID the app keeps in its support
+directory, so a restarted daemon or app reuses the live row. It creates
+apps with `X-Clax-Session` naming that row, so the session owns and watches
+them, and registers again when a call answers `unknown_session`. It has no
+hooks and no MCP, and sends no heartbeat.
+
+Comments sent to an `app` session wait on tier `wait` (`push` reports
+`{"tier": "wait", "available": true}`), armed or not: the app long-polls
+`GET /api/sessions/<sid>/feedback?tier=wait&wait=50` one poll at a time,
+and the thread reads "waiting on its next feedback poll". A row is
+acknowledged when that poll hands it over and is never resent; a change
+that the app's or the daemon's exit cut short is found again from the
+threads when the app starts (an open thread sent to the app's session,
+whose feedback is `acknowledged`, with no agent comment after its last
+viewer comment) and run again. The app replies, resolves, marks itself
+working and acknowledges with the session routes the shim uses. People
+see this agent as "Clax app", and its Toolpath steps carry the harness
+"Clax app" (company `anthropic`).
 
 ### No session
 
@@ -1137,6 +1180,22 @@ when it closes, nor does one the viewer turned comment mode on and off over
 with the Comment button, nor one that closes after the artifact was deleted.
 Comment mode still ends when the viewer presses Comment or presses Escape
 with no composer open.
+
+On a touch screen, comment mode picks with a long-press: one finger held
+450 ms within 10 px of where it went down outlines the target under it (the
+same target rules as the pointer, oversized elements included), and lifting
+it there picks that target as a click would. The pick waits for the release
+because the browser grants user activation on `touchend`, not while a finger
+rests. The click the browser sends after the release picks, as a tap's does;
+when none comes within 400 ms (after a long-press on Android, say), comment
+mode moves focus into the page, as an area drag's press does, and picks what
+is under the finger itself. Moving beyond 10 px, a second finger, or
+`touchcancel` abandons the hold; a release before 450 ms is an ordinary tap.
+Only the viewer's own touches count. While a finger is held in comment mode,
+`selectstart` and `contextmenu` are cancelled, so a long-press neither
+selects text nor opens a menu, and while comment mode is on the page gets
+`-webkit-touch-callout: none`, so it opens no link callout. A mouse or pen
+keeps selecting text and opening its menu.
 
 Every HTML page of a version is commentable: `index.html` and every supporting
 file stored as `text/html` are served with the bridge (a fragment inside the
@@ -1629,8 +1688,9 @@ Clax extension (not in claude.ai's contract; declared in
 `onWorking(fn)` report which agents are working on this artifact:
 `{working: boolean, agents: [{harness, label, message, since, threads,
 otherThreads}]}`. `threads` are handles of threads this document created;
-`otherThreads` counts the rest. `harness` is `claude`, `codex` or `pi`;
-`label` is its product name (`Claude Code`, `Codex`, `Pi`); `message` is
+`otherThreads` counts the rest. `harness` is `claude`, `codex`, `pi` or
+`app`; `label` is its product name (`Claude Code`, `Codex`, `Pi`, `Clax
+app`); `message` is
 the agent's message or `null`; `since` is when the work started. Available
 under either declaration form,
 without consent or gesture.
@@ -1669,6 +1729,100 @@ fragment (`/a/<id>/source.html#docs%2Fcontract.md`) opens the frame at it,
 back and forward carry it to the frame, and a fragment change inside the page
 (a link or a script) replaces the address bar's fragment without a history
 entry of the shell's own; copy link includes it.
+
+### The Clax app
+
+The Clax app (`apps/clax_app`, Android and macOS) runs `clax serve` on the
+device, on `127.0.0.1` with a home of its own, and shows each artifact
+full screen in a WebView at `/a/<id>?app=1`: the artifact view without
+chrome, driven by the app. `/a/<id>/v/<n>?app=1` and the page forms
+(`/a/<id>/<file>?app=1`) work the same way. Of the shell URL's query only
+`app=1` is carried as the view moves from page to page; any other query
+stays where it was given. The source of truth for this protocol is the
+header of `web/shell/src/app/host.ts`.
+
+**The view.** With `app=1` in its query, the top-level shell document at an
+artifact path loads the app host module (`web/shell/src/app/host.ts`) and
+marks `<html class="app">`; a browser's view carries none of it, and no
+other document (a frame, another shell path) installs it. In app mode the
+top bar, the sidebar and the phone tabs are hidden, the frame fills the
+viewport, pins show only while comment mode is on, and the composer is a
+sheet docked at the bottom. The composer's primary button is **Send**: one
+press posts the thread and sends it to the agent the view sends to. When
+the send fails, the thread stays posted and unsent; the host hears
+`sendFailed` and may call `resend`.
+
+**Auto-follow.** When a newer version is published and the view is not
+pinned to a version, the view loads it in place at once (or, while a
+composer is open, once it closes), on the page and fragment the frame shows.
+After the welcome with `app: true`, a page reports its scroll position as
+`clax:scroll {file, y}`, at once and then at most every 250 ms while it
+scrolls. The first welcome of the newer version's page carries
+`restoreScroll: <y>` (CSS pixels), the last position that page reported, and
+the page scrolls there once its document is tall enough, or after 2 s as far
+as the document then reaches. Later welcomes of the same document carry
+none, so a re-greet never moves the page back. There is no
+`clax:restore-scroll` message.
+
+**`window.claxHost`** (the app calls it by `runJavaScript` in the shell's
+document; a page cannot reach it, since its frame is cross-origin to the
+shell in subdomain mode and an opaque origin in sandbox mode):
+
+| Method | Effect |
+|---|---|
+| `init({nonce})` | Starts the channel with this load's nonce (16 to 128 characters of `A-Z a-z 0-9 _ -`); only the first valid call in a document counts. It posts the current `state` and `threads` at once, and `ready` when a page has greeted. |
+| `enterCommentMode()` / `exitCommentMode()` | Turns comment mode on or off; nothing when it already is. |
+| `loadVersion(n)` | Shows version `n`, or the latest for `null`. |
+| `reloadLatest()` | Loads the latest version in place, keeping page, fragment and scroll, pinned or not, composer or not. |
+| `setDraftText(text)` | Replaces the open composer's text (dictation); nothing without a composer. |
+| `submitDraft()` | Presses Send on the open composer, waiting for its screenshot as Send does. |
+| `cancelDraft()` | Closes the composer. |
+| `openThread(id)` | Selects the thread and brings it into view. |
+| `resend(id)` | Sends an open thread that is not yet sent (after `sendFailed`), as Send does. |
+| `attestPointer({pointer, phase, x, y})` | A real finger press (`down`) or release (`up`) the app saw reach the WebView, at CSS pixels in its viewport (see "The viewer's gesture in the Clax app" below). |
+
+**Messages to the app** go on the WebView's JavaScript channel `ClaxHost`
+(`window.ClaxHost.postMessage(<JSON>)`), and a page without it (a browser)
+drops them. Every message carries `nonce`:
+
+| `type` | Fields | When |
+|---|---|---|
+| `ready` | `artifact`, `version`, `latest`, `file` | Each document the frame loads greets. |
+| `state` | `commenting`, `draft: {label, text, clip: "pending" \| "ready" \| "none", byPage?: true} \| null`, `busy` | Any change of those. `label` says what the composer's anchor is in words (never a selector); `byPage` marks a composer the page opened. |
+| `threads` | `threads: [{id, status, summary, label, sent, comments, version}]` | Any change of the view's threads. `summary` is the first comment cut to 140 characters; `label` the anchor in words. |
+| `sent` | `thread` | Send posted a thread and sent it to the agent. |
+| `sendFailed` | `thread`, `text` | The send failed; the thread stays posted and unsent until `resend`. |
+| `landed` | `version` | The page of a version auto-follow loaded has greeted. |
+| `notice` | `text` | A shell notice (a failed post, a failed follow, …). |
+
+**The channel and its nonce.** The WebView injects `ClaxHost` into every
+frame, the artifact's page included, so the page can post on it too. The
+app therefore makes a fresh random nonce for each load of the shell
+document and, once that document has loaded, calls `claxHost.init({nonce})`
+in the main frame. Before `init` the shell posts nothing; from then on every
+message carries the nonce, and a second `init` in the same document is
+ignored. The app drops every message without this load's nonce, and every
+message before its `init`. The shell never posts the nonce to the frame.
+
+**Navigation.** The app lets the top level of its WebView be only the
+shell's app view on the daemon's own origin: the path `/a/<id>[/v/<n>][/<file>]`
+with `app=1` in its query. Any other top-level navigation is refused,
+and a refused `http`, `https` or `mailto` link to a host off the device opens
+in the system browser. Frames inside the page navigate freely. A main frame
+that fails to load, or whose web content process ends, is loaded again once;
+a second failure within 10 s waits for the person's Reload.
+
+**The viewer's gesture in the Clax app.** On Android a finger on the
+cross-origin frame sends the shell no events, and a long-press may end with
+no click, so the shell would count no arrival of the finger on the frame and
+refuse the pick. In app mode the app attests each real finger press and
+release over the WebView (`attestPointer`). A press that lands on the frame
+itself (not on a shell control over it, and not within 24 px of a press the
+shell itself saw within the last second) counts as the pointer's arrival on the
+frame for one second (`ATTEST_MS`), and so does that finger's release; a
+release whose press did not count never does. Only an attestation made after
+the viewer's latest input to the shell counts. The other conditions of "The
+viewer's gesture" still hold, and outside app mode no attestation exists.
 
 ### Tools
 
@@ -1988,7 +2142,7 @@ delivery state" below):
 
 | State | Indicator |
 |---|---|
-| `sent` | "sent, waiting for the agent · <elapsed> · waiting on <the tier: its next clax tool call, the agent finishing its current work, Codex to pick up the queued message, Pi to take the message>" |
+| `sent` | "sent, waiting for the agent · <elapsed> · waiting on <the tier: its next clax tool call, the agent finishing its current work, Codex to pick up the queued message, Pi to take the message, its next feedback poll (the Clax app)>" |
 | `delivered` | "delivered via <tier> · <elapsed> ago · not yet acknowledged" (then "· resent once" or "· resent N times"); "delivered, not acknowledged" after three resends |
 | `acknowledged` | "seen by the agent" |
 | `agent_ended` | "agent session ended; waiting for a new one" |
@@ -3952,6 +4106,8 @@ plan for:
   storing that value, and `set` rejects it `invalid_argument`. Who a viewer
   is for live updates is fixed when the browser's event stream opens; the
   shell opens a new one, for every tab, after the viewer enters a name.
+  Clax adds `db.artifact(id)`, read-only access to another app's documents
+  (see "Reading another app's documents" below).
 - `downloads`: `too_large` and `extension_not_enabled` are never returned.
 - `assets`: asset IDs are 26-character ULIDs, not 32 characters. SVG is
   checked to be an SVG document but not sanitised: it is stored as uploaded
@@ -3963,6 +4119,98 @@ plan for:
   `<name> (written by the page): "…"`. A compose `label` is shown in the
   composer but never stored, and `detail` is dropped. Pins cannot be
   dragged, so `move` is never called.
+
+### Reading another app's documents
+
+An artifact (app A) may read another artifact's (app B's) documents,
+read-only, once it declares the read and B or the owner consents.
+
+**Declaring.** A lists the artifacts it reads in `db.read`, B the
+artifacts it lets read it in `db.share.read`:
+
+```json
+{"db": {"read": ["8r4m0nay3c5v"]}}
+{"db": {"share": {"read": ["7q3k9mzx2b4t"]}}}
+```
+
+Each list holds at most 16 artifact IDs, never the artifact's own; a
+repeated ID counts once, and `db.share` holds only `read`. Anything else is
+400 `invalid_capabilities` on publish and `PATCH`. Declaring grants
+nothing alone.
+
+**Consent.** A may read B when, now, A's declaration lists B in `db.read`,
+B declares `db`, and either B's `db.share.read` lists A or the owner has
+granted it. The owner's grants are kept per pair of artifacts, with the
+token:
+
+- `PUT /api/artifacts/<A>/db-grants/<B>`: `{grant: {source_id, granted_at}}`;
+  granting again keeps the first grant.
+- `DELETE /api/artifacts/<A>/db-grants/<B>`: `{revoked}` (`false` when there
+  was none). A share B declares is not a grant and stays.
+- `GET /api/artifacts/<A>/db-grants`: `{grants: [{source_id, granted_at}]}`,
+  oldest first.
+
+Each is 404 for an unknown or deleted artifact and 400 `invalid_args` when
+A and B are one. A grant and its removal are recorded as `artifact.update`
+of A. A grant stays while A's declaration drops B, counting again when it
+lists B again; deleting either artifact removes its grants.
+
+**Reading over HTTP.** B's document reads, `GET
+/api/artifacts/<B>/docs` and `GET /api/artifacts/<B>/docs/<path>`, take
+`X-Clax-Reader: <A>`. The request is then served for A: at `view` (or the
+caller's own level, if lower) with no viewer, so documents under
+`data/users/<id>/` and paths whose read rule needs more than `view` answer
+404 as missing ones do. Without A's consent it is 403 `not_granted`; when B
+does not declare `db` it is 403 `not_declared`, the token included; an
+unknown A or B is 404; a header that names no artifact, or is repeated, is
+400 `invalid_args`. The header is refused everywhere else, before any
+handler runs: on a method other than `GET` or `HEAD` with 403 `read_only`,
+and on any other route (B's threads, files, versions, assets, content, the
+room, `docs:collections`, `/api/events`) with 403 `not_granted`.
+
+**Following changes.** `GET /api/events?reader=<A>` (an artifact ID, else
+400 `invalid_args`) judges `doc` events at `view` with no viewer, and sends
+each only while A may read its artifact, checked as it is sent, so a
+revoked grant, a withdrawn share or a dropped declaration stops the next
+one; other events are unchanged. On `GET /api/stream`, A follows B through
+the topic `docs:<B>?reader=<A>` (never `docs:<B>`, whose events reach the
+stream at the stream's own level): subscribing needs A to exist and to be
+allowed to read B then (403 `not_granted` or `not_declared`), and the topic
+carries B's `doc` events that `view` with no viewer may read, each only
+while A may read B, checked as it is dispatched. Each event's `topic` names
+the reader's topic.
+
+**Collections.** `GET /api/artifacts/<aid>/docs:collections` (token)
+answers `{collections: [{path, count}]}`: every collection of the
+artifact's documents with its document count, sorted by path, without
+private `data/users/<id>/` ones. It ignores the read rules, so it is the
+owner's: with `X-Clax-Reader` it is 403 `not_granted`.
+
+**In the page.** `(await window.claude.use("db")).artifact(id)` returns
+read-only refs over app `id`'s documents: `doc(path)` with `get`,
+`onSnapshot` and `collection`, and `collection(path)` with `where`,
+`orderBy`, `limit`, `get`, `onSnapshot` and `doc` (no writes). A value that
+is not an artifact ID throws `TypeError`. The types are `ClaxExtensions.Db`
+in `<daemon_url>/_clax/contract/clax-extensions.d.ts`. The shell is the
+consent boundary: it names the page's own artifact in `X-Clax-Reader`
+(never anything the page sends), checks each path (no `.` or `..` segment),
+reads only B's document routes, and follows only `docs:<B>?reader=<A>`, so
+nothing else of B (threads, files, versions) reaches the page. Calls, and
+the `onSnapshot` error callback, reject with:
+
+- `not_declared`: A's `capabilities.db.read` does not list `id`, or app
+  `id` does not declare `db`. Nothing was asked.
+- `not_granted`: the owner said no, or a viewer who is not the owner has no
+  share or grant to use. Render without that app's data.
+
+In the owner's own browser, the first read of a source neither shared nor
+granted asks the owner once per source and page load ("Let “A” read “B”'s
+data?", Allow or Don't allow); Allow makes the grant and the read is tried
+again. A viewer who is not the owner is never asked. A page load holds at
+most 64 subscriptions of other apps. When the owner withdraws a grant while
+the page runs, a live listener stops receiving that app's changes at once;
+its error callback gets `not_granted` at its next refresh (after a reconnect
+of the event stream), and any later `get()` rejects `not_granted`.
 
 ## Room protocol
 
@@ -4145,6 +4393,9 @@ the fetch already reflects changes nothing. Checks run once, here:
 - each subscribed artifact exists (404 `not_found` otherwise);
 - `docs:<aid>` needs the artifact to declare `db` unless the caller holds
   the token (403 `not_declared`);
+- `docs:<B>?reader=<A>` needs A to exist (404 `not_found`) and to be
+  allowed to read B's documents now (403 `not_granted` or `not_declared`),
+  whatever the caller;
 - the request comes from the caller that opened the stream (the same token
   or none, in `Authorization` or as the events cookie, and the same
   viewer), or it is 404 `unknown_stream`, as it is for a stream that is not
@@ -4168,6 +4419,7 @@ except as noted:
 | `presence:<aid>` | Its `presence` changes, and `artifact_deleted`. |
 | `working:<aid>` | Its `working` list, and `artifact_deleted`. |
 | `docs:<aid>` | Its `doc` events the caller may see, and `artifact_deleted`; needs `db` declared, or the token. |
+| `docs:<B>?reader=<A>` | B's `doc` events that `view` with no viewer may read, each only while app A may read B (checked as it is dispatched); subscribing needs A to exist and to be allowed to read B then (403 `not_granted` or `not_declared`). See "Reading another app's documents". |
 | `agents` | `agents` (`{topic}`, naming nothing) whenever the agents roster may have changed: an agent started, ended, was renamed or got watches back, a thread's owner changed, or a working record, question or approval request changed. Refetch `GET /api/agents`. Only the owner's and connected people's streams take it (403 `forbidden` otherwise). |
 | `site:<origin>` | What `artifact:<aid>` carries, for every live page of the origin's site (every origin joined to it, those joined later too: see "Joined sites"), those made later included, and `site` when an origin joins the site or is split off. `<origin>` is written as the daemon normalizes it (`http://localhost:5173`: scheme, lowercased host, port unless the scheme's default, no path), else 400 `invalid_topic`. Only a stream that may see live pages takes it (404 `not_found` otherwise, as for a live page's topic), and only an owner's (403 `forbidden` otherwise). The `thread_deleted` a move sends for older clients is not on it. |
 
@@ -4912,7 +5164,9 @@ thread's view in a `thread` event has no `feedback_state`, and each
 reader's own comes on `/api/stream`. The query narrows it:
 `artifact=<id>[,<id>...]` keeps the events of those artifacts, and
 `types=<name>[,<name>...]` the events of those names; `ready` and `resync`
-always come.
+always come. `reader=<A>` reads for app A (see "Reading another app's
+documents"): `doc` events are judged at `view` with no viewer, and each is
+sent only while A may read its artifact.
 
 - **Opening.** The stream opens with `event: ready` and data
   `{"resumed": <bool>}`. A `: keep-alive` comment comes every 15 s while it
@@ -5038,8 +5292,8 @@ the body below.
 | Kind | Body | Recorded at |
 |---|---|---|
 | `artifact.create` | `title, kind (html\|live), icon, capabilities, contract_version` | first publish, or a live page's creation |
-| `version.publish` | `n, label, note, title, files{path:{sha256,size,content_type}}, content_sha256, carried[paths], addresses[thread IDs], by_page` | every version write |
-| `artifact.update` | `fields{title?, description?, icon?, pinned?, capabilities?}` | pin, unpin, metadata edits |
+| `version.publish` | `n, label, note, title, files{path:{sha256,size,content_type}}, content_sha256, carried[paths], addresses[thread IDs], by_page`, and `restored_from` (the version restored) for a restore | every version write, a restore (`versions:restore`) included; for a restore, `carried` names only the files (other than `index.html`) whose bytes equal the previous version's |
+| `artifact.update` | `fields{title?, description?, icon?, pinned?, capabilities?, db_read_grants?}`; `db_read_grants` is `{"grant": <source ID>}` or `{"revoke": <source ID>}`, with the source as `artifact2_id` | pin, unpin, metadata edits, the owner's cross-app read grants (see "Reading another app's documents") |
 | `artifact.delete` | `title, current_version` | delete |
 | `asset.upload` | `asset_id, path, sha256, size, content_type` | asset store writes |
 | `asset.delete` | `asset_id, path, size, content_type` | asset deletes |
@@ -5614,6 +5868,23 @@ it with Ajv (draft 2020-12, formats asserted;
   same caller; the stream's ID, 128 random bits, keeps their streams
   apart); a stream's ID is sent only on that stream. Its `gallery` topic carries no comment text or
   author and no working message.
+- `X-Clax-Reader` only ever narrows: a request carrying it reads another
+  app's documents at `view` with no viewer, only with that app's share or
+  the owner's grant, and only on the document read routes; anywhere else,
+  or on a write, it is refused (see "Reading another app's documents").
+  Without the header, B's documents are read at the caller's own level, so
+  the web shell's `db.artifact(id)`, which always sends it with the page's
+  own artifact, is the boundary a page meets.
+- The Clax app's daemon binds `127.0.0.1` on the device. On Android,
+  loopback is shared by every app on the device: another app can reach the
+  port, read what needs no token (artifacts, content, `view`-level
+  documents), and, because `GET /api/token` answers any loopback request
+  with a local `Host` and `Sec-Fetch-Site: same-origin`, which a client
+  other than a browser can send, fetch the token. The app accepts this on
+  its owner's own phone. Its Claude API key lives only in the platform's
+  secure storage (Keychain on macOS, Keystore-backed storage on Android)
+  and is sent only to the Claude API, never to logs, the daemon, its home
+  or the WebView.
 - `artifact.publish` goes through the shell with the token, so only the
   owner's browser on this machine can republish a page, and only from the
   viewer's own gesture in the page (see "Runtime capabilities").
