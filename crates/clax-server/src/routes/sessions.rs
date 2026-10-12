@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// The harness names a session may carry.
-pub const HARNESSES: [&str; 4] = ["claude", "codex", "grok", "pi"];
+pub const HARNESSES: [&str; 5] = ["claude", "codex", "grok", "pi", "app"];
 
 /// `invalid_args` unless `harness` is one of [`HARNESSES`].
 fn check_harness(harness: &str) -> Result<(), ApiError> {
@@ -338,7 +338,9 @@ const CLAUDE_NO_PUSH: &str = "optional: comments sent to this session already ar
 /// For Grok, push is the monitor: available while `following` (a `clax
 /// feedback follow` of the session is connected). For Claude Code, the
 /// daemon reports a notice follower (a `clax feedback follow --once` or the
-/// shim's channel) as tier `notice`; the shim refines it.
+/// shim's channel) as tier `notice`; the shim refines it. The Clax app's
+/// agent (harness `app`) always long-polls its feedback, so its tier is
+/// `wait`.
 fn push_info(
     s: &Session,
     codex: &CodexPush,
@@ -359,6 +361,7 @@ fn push_info(
                 "last_error": last_error, "last_error_at": last_error_at})
         }
         "pi" => json!({"tier": "inject", "available": true, "reason": null}),
+        "app" => json!({"tier": "wait", "available": true, "reason": null}),
         "grok" => {
             let reason = (!following).then_some(
                 "no clax feedback follow is running for this session; the clax-grok skill starts one with Grok's monitor tool after a publish. Meanwhile comments arrive at the end of a turn (Stop hook), on the next clax tool call, or during wait_for_feedback",

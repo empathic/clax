@@ -734,6 +734,7 @@ impl Held {
 
 fn waiting_on(harness: &str, has_hsid: bool, armed: bool, codex_push: bool) -> Tier {
     match (harness, armed) {
+        ("app", _) => Tier::Wait,
         ("codex", true) if has_hsid && codex_push => Tier::Queue,
         ("pi", true) => Tier::Inject,
         ("claude" | "codex" | "grok", true) => Tier::StopHook,
@@ -1812,7 +1813,8 @@ impl Store {
     /// on (`queue` for an armed Codex session with a known session ID when
     /// `codex_push` and `codex queue` has not failed to take the row,
     /// `inject` for an armed Pi session, `stop_hook` for other armed
-    /// sessions, else `piggyback`); else `agent_ended`.
+    /// sessions, `wait` for an app session armed or not, else
+    /// `piggyback`); else `agent_ended`.
     pub fn feedback_state(
         &self,
         thread_id: &str,
@@ -3339,6 +3341,26 @@ mod tests {
         assert_eq!(
             st.feedback_state(&tid, false).unwrap().unwrap().tier,
             Some(Tier::StopHook)
+        );
+    }
+
+    #[test]
+    fn an_app_session_waits_on_its_feedback_poll_armed_or_not() {
+        let (_d, st) = store();
+        let app = session(&st, "app", "install-1");
+        let aid = artifact(&st, Some(&app));
+        let tid = thread(&st, &aid, "hi");
+        st.send_to_agent(DAEMON, &tid).unwrap();
+        assert_eq!(
+            st.feedback_state(&tid, true).unwrap().unwrap().tier,
+            Some(Tier::Wait),
+            "unarmed"
+        );
+        st.ensure_watch(DAEMON, &app, &aid).unwrap();
+        assert_eq!(
+            st.feedback_state(&tid, true).unwrap().unwrap().tier,
+            Some(Tier::Wait),
+            "armed"
         );
     }
 

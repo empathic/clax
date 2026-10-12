@@ -5,6 +5,7 @@
 mod api_agent_auth;
 mod api_agents;
 mod api_approvals;
+mod api_app_session;
 mod api_artifacts;
 mod api_assets;
 mod api_attention;
