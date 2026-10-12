@@ -14,6 +14,7 @@ import '../platform/voice.dart';
 import 'app_menu.dart';
 import 'app_surface.dart';
 import 'change_tracker.dart';
+import 'comment_button.dart';
 import 'host_protocol.dart';
 import 'swipe.dart';
 import 'threads_panel.dart';
@@ -26,14 +27,26 @@ import 'versions_tab.dart';
 /// - **Page.** Loads `<base>/a/<aid>?app=1` and keeps it covered until the
 ///   shell's `ready`, so the browser view never shows; a load failure
 ///   covers it again, with Reload once the surface gives up.
-/// - **Finger attestation.** Every touch and stylus down and up the page
-///   gets is passed to the shell (`attestPointer`), in the page's pixels:
-///   the shell needs it to take a long-press's pick when the WebView sends
-///   no click after the hold. A mouse's are not: the WebView reports its
-///   moves to the shell itself.
-/// - **Panel.** A two-finger swipe left, the edge handle, or (macOS)
+/// - **Finger attestation.** Every touch and stylus down, up and cancel
+///   the page gets is passed to the shell (`attestPointer`), in the page's
+///   pixels: the shell needs it to take a long-press's pick when the
+///   WebView sends no click after the hold, and a cancel (the OS took the
+///   touch back) ends that press. A mouse's are not: the WebView reports
+///   its moves to the shell itself.
+/// - **Comment button** ([CommentButton]). Over the page once it is ready,
+///   hidden while a composer is open, while the comment bar is up, and
+///   under the panel on a narrow screen. A tap turns comment mode on and
+///   puts the [CommentBar] under the page (the page shrinks above it, so
+///   none of it is covered): Whole app (`composeArtifact`), Threads (the
+///   panel) and ✕ (comment mode off). While the panel is open (beside it,
+///   on a wide screen) a tap closes the panel and comment mode. A
+///   long-press opens the panel. A composer the bar led to opens the
+///   panel's peek, and closing it goes back to the bar.
+/// - **Panel.** A two-finger swipe left, the edge handle, the comment
+///   button's long-press, or (macOS)
 ///   App › Comments (⌘K) opens it and turns comment mode on; a swipe
-///   right, back, Escape or ⌘K closes it and turns comment mode off. While
+///   right, back, Escape or ⌘K closes it and turns comment mode off (left
+///   on while the comment bar is up, which the panel then shows again). While
 ///   the shell's composer is open comment mode is the shell's: opening or
 ///   closing the panel leaves it, and a composer that closes while the
 ///   panel is closed has comment mode turned off again. On a narrow screen
@@ -68,6 +81,8 @@ class AppScreen extends StatefulWidget {
     this.clock = const SystemClock(),
     this.onReady,
     this.comments,
+    this.commentButtonDy,
+    this.onCommentButtonMoved,
   });
 
   final String aid;
@@ -94,6 +109,14 @@ class AppScreen extends StatefulWidget {
   /// panel toggle with while it is shown. Without it, the screen installs
   /// its own macOS menu bar ([ClaxMenuBar]).
   final CommentsCommand? comments;
+
+  /// Where the comment button starts: its bottom edge's height above the
+  /// page's bottom; null for [CommentButton.defaultDy].
+  final double? commentButtonDy;
+
+  /// The comment button was dragged to this height, for the caller to
+  /// keep.
+  final ValueChanged<double>? onCommentButtonMoved;
 
   /// The app view's URL for [aid] under [base].
   static Uri appUrl(Uri base, String aid) {
@@ -124,6 +147,12 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   var _busy = false;
   List<ThreadSummary> _threads = const [];
 
+  // The comment bar, and whether a composer opened the panel while the bar
+  // was up (closing the composer then closes the panel again).
+  var _bar = false;
+  var _peekFromBar = false;
+  late double _buttonDy;
+
   // The panel.
   var _open = false;
   var _tab = PanelTab.threads;
@@ -143,6 +172,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     _changes = ChangeTracker(timings: widget.timings, artifact: widget.aid);
+    _buttonDy = widget.commentButtonDy ?? CommentButton.defaultDy;
     _comments = widget.comments ?? (_ownComments = CommentsCommand());
     _comments.register(_toggleOpen);
     _swipe = TwoFingerSwipe(
@@ -237,7 +267,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         // A reloaded shell starts with comment mode off. While its composer
         // is open comment mode reads off too, and the shell turns it back
         // on itself after Send or Cancel.
-        if (_open && !_commenting && _draft == null) {
+        if (_wantComment && !_commenting && _draft == null) {
           _call(const EnterCommentMode());
         }
         final d = _detail;
@@ -252,15 +282,22 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           _commenting = m.commenting;
           _draft = m.draft;
           _busy = m.busy;
-          if (picked) _open = true;
+          if (picked && !_open) {
+            _open = true;
+            _peekFromBar = _bar;
+          }
+          if (closed && _peekFromBar) {
+            _open = false;
+            _peekFromBar = false;
+          }
         });
         if (picked && widget.settings.dictateComments) {
           unawaited(_startDictation());
         }
         if (closed) unawaited(_stopDictation());
         // The shell turns comment mode back on when a composer closes; with
-        // the panel closed meanwhile, it stays off.
-        if (m.commenting && !_open && m.draft == null) {
+        // the panel and the bar closed meanwhile, it stays off.
+        if (m.commenting && !_wantComment && m.draft == null) {
           _call(const ExitCommentMode());
         }
       case ThreadsMsg():
@@ -275,6 +312,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         setState(() => _changes.sendFailed(thread, text));
       case Notice():
         _snack(m.text);
+      case QuestionsMsg() || InspectionMsg():
+        // Questions are shown by the shell's own sheet, and an app view is
+        // never inspected.
+        break;
     }
   }
 
@@ -338,13 +379,21 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
 
   // --- the panel ---
 
+  /// Whether the screen wants the shell's comment mode on: the panel or
+  /// the comment bar is open.
+  bool get _wantComment => _open || _bar;
+
   void _setOpen(bool open) {
     if (!mounted || open == _open) return;
-    setState(() => _open = open);
+    setState(() {
+      _open = open;
+      _peekFromBar = false;
+    });
     // While a composer is open the shell keeps comment mode off and turns
     // it back on once the composer closes (the StateMsg handler turns it
-    // off then if the panel was closed meanwhile); the draft stays.
-    if (_draft == null) {
+    // off then if the panel was closed meanwhile); the draft stays. The
+    // comment bar keeps it on.
+    if (_draft == null && !_bar) {
       _call(open ? const EnterCommentMode() : const ExitCommentMode());
     }
     if (open) {
@@ -353,6 +402,39 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       unawaited(_stopDictation());
     }
   }
+
+  // --- the comment button and bar ---
+
+  void _onButtonTap() {
+    unawaited(HapticFeedback.selectionClick());
+    if (_wantComment) {
+      _setBar(false);
+      _setOpen(false);
+    } else {
+      _setBar(true);
+    }
+  }
+
+  void _onButtonLongPress() {
+    unawaited(HapticFeedback.mediumImpact());
+    setState(() => _tab = PanelTab.threads);
+    _setOpen(true);
+  }
+
+  void _setBar(bool on) {
+    if (!mounted || on == _bar) return;
+    setState(() => _bar = on);
+    if (_draft == null && !_open) {
+      _call(on ? const EnterCommentMode() : const ExitCommentMode());
+    }
+  }
+
+  void _onButtonMoved(double dy) {
+    setState(() => _buttonDy = dy);
+    widget.onCommentButtonMoved?.call(dy);
+  }
+
+  int get _openThreads => _threads.where((t) => t.status == 'open').length;
 
   Future<void> _loadVersions() async {
     try {
@@ -513,51 +595,89 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
 
   Widget _page(BuildContext context, bool wide) {
     final scheme = Theme.of(context).colorScheme;
+    final underPanel = _open && !wide;
+    final bar = _bar && !_open && _draft == null && !_covered;
+    final button = !_covered && _draft == null && !underPanel && !bar;
     return KeyedSubtree(
       key: _pageKey,
       child: ColoredBox(
         color: scheme.surface,
-        child: SafeArea(
-          bottom: !_open || wide,
-          right: !_open || !wide,
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              Listener(
-                behavior: HitTestBehavior.translucent,
-                onPointerDown: (e) {
-                  _attest(e, PointerPhase.down);
-                  _swipe.onPointerDown(e);
-                },
-                onPointerMove: _swipe.onPointerMove,
-                onPointerUp: (e) {
-                  _attest(e, PointerPhase.up);
-                  _swipe.onPointerUp(e);
-                },
-                onPointerCancel: _swipe.onPointerCancel,
-                child: widget.surface.build(context),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(
+              child: SafeArea(
+                // The bar under the page, or the panel, holds the bottom
+                // inset.
+                bottom: !bar && (!_open || wide),
+                right: !_open || !wide,
+                child: _pageStack(context, button: button),
               ),
-              if (_covered) _cover(context),
-              if (_changes.outcome != null || _changes.working)
-                Positioned(
-                  top: 8,
-                  left: 56,
-                  right: 56,
-                  child: Center(child: _chipView(context)),
-                ),
-              if (!_open && !_covered)
-                Positioned(
-                  right: 0,
-                  top: 0,
-                  bottom: 0,
-                  child: Center(child: _handle(context)),
-                ),
-            ],
-          ),
+            ),
+            if (bar)
+              CommentBar(
+                threadCount: _openThreads,
+                onWholeApp: () => _call(const ComposeArtifact()),
+                onThreads: () {
+                  setState(() => _tab = PanelTab.threads);
+                  _setOpen(true);
+                },
+                onClose: () => _setBar(false),
+              ),
+          ],
         ),
       ),
     );
   }
+
+  Widget _pageStack(BuildContext context, {required bool button}) => Stack(
+    fit: StackFit.expand,
+    children: [
+      Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: (e) {
+          _attest(e, PointerPhase.down);
+          _swipe.onPointerDown(e);
+        },
+        onPointerMove: _swipe.onPointerMove,
+        onPointerUp: (e) {
+          _attest(e, PointerPhase.up);
+          _swipe.onPointerUp(e);
+        },
+        onPointerCancel: (e) {
+          _attest(e, PointerPhase.cancel);
+          _swipe.onPointerCancel(e);
+        },
+        child: widget.surface.build(context),
+      ),
+      if (_covered) _cover(context),
+      if (_changes.outcome != null || _changes.working)
+        Positioned(
+          top: 8,
+          left: 56,
+          right: 56,
+          child: Center(child: _chipView(context)),
+        ),
+      if (!_open && !_covered)
+        Positioned(
+          right: 0,
+          top: 0,
+          bottom: 0,
+          child: Center(child: _handle(context)),
+        ),
+      if (button)
+        Positioned.fill(
+          child: CommentButton(
+            commenting: _wantComment,
+            threadCount: _openThreads,
+            onTap: _onButtonTap,
+            onLongPress: _onButtonLongPress,
+            dy: _buttonDy,
+            onMoved: _onButtonMoved,
+          ),
+        ),
+    ],
+  );
 
   Widget _cover(BuildContext context) {
     final theme = Theme.of(context);
@@ -761,6 +881,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       onThread: (id) => _call(OpenThread(id)),
       onResend: _resend,
       versions: VersionsTab(
+        api: widget.api,
         detail: _detail,
         error: _detailError,
         shown: _ready?.version,
