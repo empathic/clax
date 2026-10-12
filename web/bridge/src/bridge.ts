@@ -184,7 +184,7 @@ type PartName = keyof Parts;
         const layer: Hook = new part.LiveHook(document, post, clock, parts.live);
         const mode: Mode = new part.CommentMode(document, {
           hover: t => post({ type: "clax:hover", selector: t ? part.cssPath(t instanceof Element ? t : part.blockAncestor(t.commonAncestorContainer, window)) : null, rect: t ? box(t) : null }),
-          pickElement: el => { void picks.start(part.buildElementAnchor(document, el, meta.file), () => clips().then(c => c.renderTargetClip(el))).finally(() => mode.captured()); },
+          pickElement: el => { void picks.start(part.buildElementAnchor(document, el, meta.file), () => clips().then(c => c.renderTargetClip(el)), part.desc(el)).finally(() => mode.captured()); },
           pickRange: r => { void picks.start(part.buildRangeAnchor(document, r, meta.file), () => clips().then(c => c.renderTargetClip(r))).finally(() => mode.captured()); },
           // The clip is the drawn rectangle, placed on its element at release,
           // cropped out of a render of that element. The rectangle stays drawn

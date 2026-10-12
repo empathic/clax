@@ -46,15 +46,19 @@ import { hostArrival } from "../caps/gesture";
 import { now } from "../clock";
 import { SEND_FAILED, failureText, report, scopedNotice } from "../failure";
 import { type Thread, sendToAgent, upsert } from "../threads";
+import type { PickDesc } from "../../../bridge/src/protocol";
 import type { ArtifactController, ViewState } from "../view/artifact-controller";
-import { composerQuote } from "../view/composer-model";
+import { anchorLabel } from "./label";
 import { appQuery, parseShellPath } from "../route";
 import { setUrl } from "../view/url";
 
 export type HostMessage =
   | { type: "ready"; artifact: string; version: number; latest: number; file: string }
+  /** `draft.label`: what the composer's anchor is, in words (`label.ts`),
+   * or the label the page gave a composer it opened. */
   | { type: "state"; commenting: boolean; draft: { label: string; text: string; clip: "pending" | "ready" | "none" } | null; busy: boolean }
-  | { type: "threads"; threads: { id: string; status: string; summary: string; sent: boolean; comments: number; version: number }[] }
+  /** `label`: what each thread's anchor is, in words (`label.ts`). */
+  | { type: "threads"; threads: { id: string; status: string; summary: string; label: string; sent: boolean; comments: number; version: number }[] }
   | { type: "sent"; thread: string }
   | { type: "landed"; version: number }
   | { type: "notice"; text: string }
@@ -98,6 +102,10 @@ export type ClaxHost = {
  * long-press's pick comes at most about 400 ms after the release
  * (`web/bridge/src/comment-mode.ts`), and the release is attested too. */
 export const ATTEST_MS = 1000;
+/** How near (CSS pixels, each way) a shell press is to an attested press for
+ * both to be the same finger: the app's and the WebView's coordinates of a
+ * touch can differ by rounding and the finger's contact point. */
+export const NEAR_PX = 24;
 /** A thread's summary: its first comment, cut to this many characters. */
 const SUMMARY_CHARS = 140;
 const FOLLOW_FAILED = "Could not load the latest version";
@@ -132,6 +140,8 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
 
   // The page's last reported scroll position, per page.
   const scrolled = new Map<string, number>();
+  // The latest pick start's element description (the bridge's), by pick ID.
+  const picked = new Map<string, PickDesc>();
   // The scroll position the first welcome after a newer version loaded asks
   // the page to restore, and the version whose page's greeting is `landed`.
   let restore: { file: string; y: number } | null = null;
@@ -214,7 +224,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     const m: HostMessage = {
       type: "state",
       commenting: v.commenting,
-      draft: d ? { label: composerQuote(d), text: ctl.composerText, clip: d.capturing ? "pending" : d.clip ? "ready" : "none" } : null,
+      draft: d ? { label: d.label ?? anchorLabel(d.anchor, picked.get(d.pickId)), text: ctl.composerText, clip: d.capturing ? "pending" : d.clip ? "ready" : "none" } : null,
       busy: v.busy > 0,
     };
     const json = JSON.stringify(m);
@@ -222,11 +232,25 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     lastState = json;
     post(m);
   };
+  // The shell's own composer shows the same words for a pick (its quote line
+  // reads a draft's `label` first), so no selector is shown in the app.
+  const labelled = new Set<string>();
+  const labelDraft = (v: ViewState): boolean => {
+    const d = v.draft;
+    if (!d || d.byPage || (d.label !== undefined && !labelled.has(d.pickId))) return false;
+    const label = anchorLabel(d.anchor, picked.get(d.pickId));
+    if (d.label === label) return false;
+    labelled.add(d.pickId);
+    ctl.set(c => (c.draft === d ? { draft: { ...d, label } } : {}));
+    return true;
+  };
   const onState = (v: ViewState) => {
+    // Labelling sets the state again, which posts it.
+    if (labelDraft(v)) return;
     postState(v);
     if (v.threads !== lastThreads) {
       lastThreads = v.threads;
-      post({ type: "threads", threads: v.threads.map(t => ({ id: t.id, status: t.status, summary: summary(t), sent: t.sent_to_agent, comments: t.comments.length, version: t.version_n })) });
+      post({ type: "threads", threads: v.threads.map(t => ({ id: t.id, status: t.status, summary: summary(t), label: anchorLabel(t.anchor), sent: t.sent_to_agent, comments: t.comments.length, version: t.version_n })) });
     }
     if (v.notice !== lastNotice) {
       lastNotice = v.notice;
@@ -240,14 +264,29 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   const onInput = (e: Event) => {
     if (e.target instanceof Element && e.target.closest(".composer")) postState(s());
   };
-  // The page's scroll reports, for its current page.
+  // The page's scroll reports, for its current page, and what each pick's
+  // element is (the controller has taken the start by now: the draft's
+  // label is posted again with it).
   const onMessage = (e: MessageEvent) => {
     const m = acceptFromFrame(e, ctl.frame?.el?.contentWindow ?? null, s().origin ?? null);
+    if (m?.type === "clax:pick-start" && typeof m.pickId === "string" && m.desc) {
+      picked.clear();
+      picked.set(m.pickId, m.desc);
+      if (!labelDraft(s())) postState(s());
+    }
     if (m?.type !== "clax:scroll" || typeof m.file !== "string" || m.file !== s().file) return;
     if (typeof m.y === "number" && Number.isFinite(m.y) && m.y >= 0) scrolled.set(m.file, m.y);
   };
+  // The shell's own trusted presses and releases, where and when.
+  let shellPress: { x: number; y: number; at: number } | null = null;
+  const onPress = (e: Event) => {
+    const p = e as MouseEvent;
+    if (e.isTrusted) shellPress = { x: p.clientX, y: p.clientY, at: now() };
+  };
   win.addEventListener("input", onInput);
   win.addEventListener("message", onMessage);
+  win.addEventListener("pointerdown", onPress, true);
+  win.addEventListener("pointerup", onPress, true);
   // A page that greeted before this module loaded was welcomed without the
   // app's hooks (no `ready`, no `app: true`): it is asked to greet again.
   if (ctl.gate.open) ctl.send({ type: "clax:greet" });
@@ -297,8 +336,13 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       if (phase === "down") {
         // On the frame itself: not on a shell control over it (the
         // composer, a pin, a banner), whose press is the shell's own input.
+        // Hit-tested when this runs, which may be after that control closed
+        // on the tap's click: a press the shell itself saw near here within
+        // `ATTEST_MS` was that finger, on the shell.
         const at = doc.elementFromPoint(x, y);
-        if (at && at === ctl.frame?.el) { pressed.add(pointer); attestedAt = now(); } else pressed.delete(pointer);
+        const sp = shellPress;
+        const onShell = !!sp && now() - sp.at < ATTEST_MS && Math.abs(sp.x - x) <= NEAR_PX && Math.abs(sp.y - y) <= NEAR_PX;
+        if (at && at === ctl.frame?.el && !onShell) { pressed.add(pointer); attestedAt = now(); } else pressed.delete(pointer);
       } else if (phase === "up" && pressed.delete(pointer)) attestedAt = now();
     },
   };
@@ -308,6 +352,8 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     unsubscribe();
     win.removeEventListener("input", onInput);
     win.removeEventListener("message", onMessage);
+    win.removeEventListener("pointerdown", onPress, true);
+    win.removeEventListener("pointerup", onPress, true);
     hostArrival.fresh = () => false;
     if (ctl.app) ctl.app = null;
     delete w.claxHost;

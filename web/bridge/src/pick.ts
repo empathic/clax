@@ -12,7 +12,7 @@
 // makes it as it loads, before any page script), so a page replacing them
 // later cannot hold a pick open or end it.
 
-import type { Anchor, BridgeToShell } from "./protocol";
+import type { Anchor, BridgeToShell, PickDesc } from "./protocol";
 
 /** How long a pick's start waits for the shell's answer. */
 export const READY_MS = 5_000;
@@ -47,16 +47,16 @@ export class PickFlow {
     w.answer(go);
   }
 
-  /** Posts the start of a pick of `anchor`, and once the shell's composer
-   * for it has focus, renders `clip` and posts the pick with it. A pick
-   * still waiting for its answer is dropped first. */
-  async start(anchor: Anchor, clip: () => Promise<ArrayBuffer>): Promise<void> {
+  /** Posts the start of a pick of `anchor` (an element's with its `desc`),
+   * and once the shell's composer for it has focus, renders `clip` and posts
+   * the pick with it. A pick still waiting for its answer is dropped first. */
+  async start(anchor: Anchor, clip: () => Promise<ArrayBuffer>, desc?: PickDesc): Promise<void> {
     const pickId = this.newId();
     if (this.waiting) this.answer(this.waiting.pickId, false);
     const go = new Promise<boolean>(resolve => {
       this.waiting = { pickId, answer: resolve, timer: this.setTimer(() => this.answer(pickId, false), this.ms) };
     });
-    this.post({ type: "clax:pick-start", pickId, version: this.version, anchor });
+    this.post({ type: "clax:pick-start", pickId, version: this.version, anchor, desc });
     if (!(await go)) {
       this.post({ type: "clax:pick", pickId, version: this.version, anchor, clipError: NOT_TAKEN });
       return;

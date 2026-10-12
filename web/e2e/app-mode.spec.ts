@@ -128,7 +128,7 @@ test("a long-press picks and Send sends to the app session", async ({ page }) =>
   await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
   const cdp = await page.context().newCDPSession(page);
   await holdOn(cdp, frame.locator("#t"));
-  await expect.poll(async () => (await ofType(page, "state")).at(-1)?.draft ?? null).toMatchObject({ label: "«Quarterly goals»" });
+  await expect.poll(async () => (await ofType(page, "state")).at(-1)?.draft ?? null).toMatchObject({ label: "“Quarterly goals”" });
   await expect(page.getByRole("button", { name: "Send", exact: true })).toBeVisible();
   await host(page, `setDraftText("make it blue")`);
   await expect(page.locator(".composer textarea")).toHaveValue("make it blue");
@@ -138,6 +138,8 @@ test("a long-press picks and Send sends to the app session", async ({ page }) =>
   const t = await api(d.base, d.token, `/api/artifacts/${id}/threads/${thread}`) as { thread: { sent_to_agent: boolean; comments: { body: string }[] } };
   expect(t.thread.sent_to_agent).toBe(true);
   expect(t.thread.comments[0].body).toBe("make it blue");
+  // The app's thread list names what the thread is on, in words.
+  await expect.poll(async () => ((await ofType(page, "threads")).at(-1)?.threads as { id: string; label: string }[] | undefined)?.find(x => x.id === thread)?.label).toBe("“Quarterly goals”");
   // The app session's feedback poll hands it the comment.
   const fb = await api(d.base, d.token, `/api/sessions/${sid}/feedback?wait=0`) as { threads?: { id: string }[] };
   expect(JSON.stringify(fb)).toContain(thread);
