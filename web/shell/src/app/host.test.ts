@@ -16,20 +16,33 @@ const thread = (id: string, body = "make it blue", over: Record<string, unknown>
 let latest = 1;
 /** Every request the view made, in order. */
 let requests: { url: string; method: string; body: unknown }[] = [];
-/** The app's channel: every message the view posted to its host. */
+/** The app's channel: every message the view posted to its host, its nonce
+ * checked and taken off. */
 let toHost: HostMessage[] = [];
+/** The same, as posted. */
+let raw: string[] = [];
+const NONCE = "n0nce-for-this-load_0123456789";
+/** The app's channel as the WebView injects it. */
+const channel = () => ({ postMessage: (m: string) => {
+  raw.push(m);
+  const o = JSON.parse(m) as HostMessage & { nonce?: string };
+  if (o.nonce !== NONCE) throw new Error(`a message without this load's nonce: ${m}`);
+  delete o.nonce;
+  toHost.push(o);
+} });
 /** While set, the artifact's answers wait for it (each answers with the
  * version that was latest when it was asked). */
 let held: Promise<void> | null = null;
 
-async function appView(opts: { pinned?: number | null; channel?: boolean; threads?: unknown[]; comments?: (url: string, init?: RequestInit) => Response | undefined } = {}) {
+async function appView(opts: { pinned?: number | null; channel?: boolean; init?: boolean; threads?: unknown[]; comments?: (url: string, init?: RequestInit) => Response | undefined } = {}) {
   history.replaceState(null, "", opts.pinned ? `/a/${ID}/v/${opts.pinned}?app=1` : `/a/${ID}?app=1`);
   toHost = [];
+  raw = [];
   requests = [];
-  if (opts.channel !== false) (window as unknown as { ClaxHost?: unknown }).ClaxHost = { postMessage: (m: string) => toHost.push(JSON.parse(m)) };
+  if (opts.channel !== false) (window as unknown as { ClaxHost?: unknown }).ClaxHost = channel();
   const note = (url: string, init?: RequestInit) => {
-    const raw = init?.body;
-    requests.push({ url, method: init?.method ?? "GET", body: typeof raw === "string" ? JSON.parse(raw) : raw ?? null });
+    const sent = init?.body;
+    requests.push({ url, method: init?.method ?? "GET", body: typeof sent === "string" ? JSON.parse(sent) : sent ?? null });
   };
   const view = await mountView(async (url, init) => {
     note(url, init);
@@ -48,6 +61,7 @@ async function appView(opts: { pinned?: number | null; channel?: boolean; thread
   const uninstall = m.installHost(window, ctl);
   const frame = await waitFor(() => view.root.querySelector<HTMLIFrameElement>("iframe.frame"), "frame");
   const host = (window as unknown as { claxHost: import("./host").ClaxHost }).claxHost;
+  if (opts.init !== false) host.init({ nonce: NONCE });
   return { view, ctl, frame, host, uninstall, m };
 }
 
@@ -346,7 +360,7 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(() => { hello(frame, 1); host.enterCommentMode(); }).not.toThrow();
     expect(toHost).toEqual([]);
     // A channel that appears later hears what follows.
-    (window as unknown as { ClaxHost?: unknown }).ClaxHost = { postMessage: (m: string) => toHost.push(JSON.parse(m)) };
+    (window as unknown as { ClaxHost?: unknown }).ClaxHost = channel();
     host.exitCommentMode();
     expect(ofType("state").at(-1)!.commenting).toBe(false);
   });
@@ -385,7 +399,7 @@ describe("app mode's host attestation", { timeout: MOUNT_TIMEOUT_MS }, () => {
     hitTest(() => frame);
     fingerOnPage(frame);
     expect(gesture!.frameGesture()).toBe(false);
-    host.attestPointer({ x: 100, y: 100 });
+    host.attestPointer({ pointer: 1, phase: "down", x: 100, y: 100 });
     expect(gesture!.frameGesture()).toBe(true);
     expect(gesture!.frameGestureStrict()).toBe("ok");
     t += m.ATTEST_MS - 1;
@@ -393,7 +407,7 @@ describe("app mode's host attestation", { timeout: MOUNT_TIMEOUT_MS }, () => {
     t += 1;
     expect(gesture!.frameGesture()).toBe(false);
     // The release, attested too, counts afresh.
-    host.attestPointer({ x: 100, y: 120 });
+    host.attestPointer({ pointer: 1, phase: "up", x: 100, y: 120 });
     expect(gesture!.frameGesture()).toBe(true);
   });
 
@@ -403,7 +417,7 @@ describe("app mode's host attestation", { timeout: MOUNT_TIMEOUT_MS }, () => {
     host.enterCommentMode();
     hitTest(() => frame);
     fingerOnPage(frame);
-    host.attestPointer({ x: 50, y: 60 });
+    host.attestPointer({ pointer: 7, phase: "down", x: 50, y: 60 });
     fromFrame(frame.contentWindow!, startOf(pick("lp", "Quarterly goals")));
     expect(ctl.state.get().draft?.pickId).toBe("lp");
   });
@@ -414,12 +428,12 @@ describe("app mode's host attestation", { timeout: MOUNT_TIMEOUT_MS }, () => {
     document.body.append(control);
     fingerOnPage(frame);
     hitTest(() => control);
-    host.attestPointer({ x: 1, y: 1 });
+    host.attestPointer({ pointer: 1, phase: "down", x: 1, y: 1 });
     expect(gesture!.frameGesture()).toBe(false);
     hitTest(() => frame);
-    for (const bad of [null, {}, { x: "1", y: 2 }, { x: NaN, y: 2 }, { x: 1, y: Infinity }]) host.attestPointer(bad as never);
+    for (const bad of [null, {}, { pointer: 1, phase: "down", x: "1", y: 2 }, { pointer: 1, phase: "down", x: NaN, y: 2 }, { pointer: 1, phase: "down", x: 1, y: Infinity }, { pointer: 1.5, phase: "down", x: 1, y: 1 }, { pointer: 1, phase: "move", x: 1, y: 1 }, { x: 1, y: 1 }]) host.attestPointer(bad as never);
     expect(gesture!.frameGesture()).toBe(false);
-    host.attestPointer({ x: 1, y: 1 });
+    host.attestPointer({ pointer: 2, phase: "down", x: 1, y: 1 });
     expect(gesture!.frameGesture()).toBe(true);
     // The viewer's input to the shell after it: no longer the page's gesture.
     gesture!.noteShellInput();
@@ -431,7 +445,7 @@ describe("app mode's host attestation", { timeout: MOUNT_TIMEOUT_MS }, () => {
     hitTest(() => frame);
     Object.defineProperty(navigator, "userActivation", { value: { isActive: false }, configurable: true });
     frame.focus();
-    host.attestPointer({ x: 1, y: 1 });
+    host.attestPointer({ pointer: 1, phase: "down", x: 1, y: 1 });
     expect(gesture!.frameGesture()).toBe(false);
     Object.defineProperty(navigator, "userActivation", { value: { isActive: true }, configurable: true });
     (document.activeElement as HTMLElement | null)?.blur();
@@ -449,9 +463,13 @@ describe("app mode's host attestation", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(gesture!.hostArrival.fresh(-Infinity)).toBe(false);
     expect(gesture!.frameGesture()).toBe(false);
     const m = await import("./host");
+    // Not at an app shell path: nothing is installed.
+    m.installHost(window, view.controller());
+    expect((window as unknown as { claxHost?: unknown }).claxHost).toBeUndefined();
+    history.replaceState(null, "", `/a/${ID}?app=1`);
     const uninstall = m.installHost(window, view.controller());
     const host = (window as unknown as { claxHost: import("./host").ClaxHost }).claxHost;
-    host.attestPointer({ x: 1, y: 1 });
+    host.attestPointer({ pointer: 1, phase: "down", x: 1, y: 1 });
     expect(gesture!.frameGesture()).toBe(true);
     uninstall();
     expect(gesture!.frameGesture()).toBe(false);
@@ -468,5 +486,151 @@ describe("app mode's host attestation", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(gesture!.frameGesture()).toBe(false);
     fromFrame(frame.contentWindow!, startOf(pick("forged", "Forged")));
     expect(ctl.state.get().draft).toBeNull();
+  });
+
+  it("counts a release only when the same pointer's press was attested on the frame", async () => {
+    const { frame, host } = await appView();
+    const cancel = document.createElement("button");
+    document.body.append(cancel);
+    fingerOnPage(frame);
+    // A tap on a shell control over the frame that is gone by the release.
+    hitTest(() => cancel);
+    host.attestPointer({ pointer: 1, phase: "down", x: 10, y: 10 });
+    cancel.remove();
+    hitTest(() => frame);
+    host.attestPointer({ pointer: 1, phase: "up", x: 10, y: 10 });
+    expect(gesture!.frameGesture()).toBe(false);
+    // A release with no press attested at all.
+    host.attestPointer({ pointer: 3, phase: "up", x: 10, y: 10 });
+    expect(gesture!.frameGesture()).toBe(false);
+    // Another pointer's press does not make this one's release count.
+    host.attestPointer({ pointer: 4, phase: "down", x: 10, y: 10 });
+    gesture!.noteShellInput();
+    host.attestPointer({ pointer: 5, phase: "up", x: 10, y: 10 });
+    expect(gesture!.frameGesture()).toBe(false);
+    // Its own release does, once.
+    host.attestPointer({ pointer: 4, phase: "up", x: 10, y: 10 });
+    expect(gesture!.frameGesture()).toBe(true);
+    gesture!.noteShellInput();
+    host.attestPointer({ pointer: 4, phase: "up", x: 10, y: 10 });
+    expect(gesture!.frameGesture()).toBe(false);
+  });
+});
+
+describe("app mode's host channel", { timeout: MOUNT_TIMEOUT_MS }, () => {
+  artifactViewHooks();
+  afterEach(() => {
+    delete (window as unknown as { ClaxHost?: unknown }).ClaxHost;
+    delete (window as unknown as { claxHost?: unknown }).claxHost;
+    document.documentElement.classList.remove("app");
+    latest = 1;
+  });
+
+  it("posts nothing before init, then the current state, threads and ready, each with the nonce", async () => {
+    const { frame, host } = await appView({ init: false, threads: [thread("t1")] });
+    const posted = framePosts(frame);
+    hello(frame, 1);
+    host.enterCommentMode();
+    await settle();
+    expect(raw).toEqual([]);
+    host.init({ nonce: NONCE });
+    expect(toHost.map(m => m.type)).toEqual(["state", "threads", "ready"]);
+    expect(toHost[0]).toMatchObject({ commenting: true });
+    expect(raw.every(m => JSON.parse(m).nonce === NONCE)).toBe(true);
+    // Only the first init counts.
+    host.init({ nonce: "another-nonce-0123456789" });
+    host.exitCommentMode();
+    expect(raw.every(m => JSON.parse(m).nonce === NONCE)).toBe(true);
+    // The page never hears the nonce.
+    expect(JSON.stringify(posted)).not.toContain(NONCE);
+  });
+
+  it("ignores an init without a well-formed nonce", async () => {
+    const { host } = await appView({ init: false });
+    for (const bad of [undefined, {}, { nonce: 5 }, { nonce: "short" }, { nonce: "has spaces in it 0123456789" }, { nonce: "x".repeat(129) }]) host.init(bad as never);
+    host.enterCommentMode();
+    expect(raw).toEqual([]);
+    host.init({ nonce: NONCE });
+    expect(toHost.length).toBeGreaterThan(0);
+  });
+
+  it("a page that greeted before the host loaded is asked to greet again, and then gets ready and app: true", async () => {
+    history.replaceState(null, "", `/a/${ID}?app=1`);
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1, { "index.html": page }))));
+    const frame = await waitFor(() => view.root.querySelector<HTMLIFrameElement>("iframe.frame"), "frame");
+    const posted = framePosts(frame);
+    hello(frame, 1);
+    expect(posted.find(m => m.type === "clax:welcome")).toEqual({ type: "clax:welcome", mode: "view" });
+    (window as unknown as { ClaxHost?: unknown }).ClaxHost = channel();
+    toHost = [];
+    raw = [];
+    const m = await import("./host");
+    m.installHost(window, view.controller());
+    expect(posted.at(-1)).toEqual({ type: "clax:greet" });
+    const from = posted.length;
+    hello(frame, 1);
+    expect(posted.slice(from).find(x => x.type === "clax:welcome")).toEqual({ type: "clax:welcome", mode: "view", app: true });
+    (window as unknown as { claxHost: import("./host").ClaxHost }).claxHost.init({ nonce: NONCE });
+    expect(toHost.filter(x => x.type === "ready")).toEqual([{ type: "ready", artifact: ID, version: 1, latest: 1, file: "index.html" }]);
+  });
+
+  it("installs nothing outside the top-level document at an app shell path", async () => {
+    history.replaceState(null, "", `/a/${ID}`);
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1, { "index.html": page }))));
+    const m = await import("./host");
+    m.installHost(window, view.controller());
+    expect((window as unknown as { claxHost?: unknown }).claxHost).toBeUndefined();
+    history.replaceState(null, "", `/?app=1`);
+    m.installHost(window, view.controller());
+    expect((window as unknown as { claxHost?: unknown }).claxHost).toBeUndefined();
+    // At the right path, but not the top-level window.
+    history.replaceState(null, "", `/a/${ID}?app=1`);
+    const framed = new Proxy(window, { get: (t, k) => (k === "top" ? {} : (t as unknown as Record<PropertyKey, unknown>)[k]) });
+    m.installHost(framed, view.controller());
+    expect((window as unknown as { claxHost?: unknown }).claxHost).toBeUndefined();
+    expect(view.controller().app).toBeNull();
+    expect(document.documentElement.classList.contains("app")).toBe(false);
+  });
+
+  it("a failed send posts sendFailed, and resend sends the thread", async () => {
+    const posted = thread("t9");
+    let sendOk = false;
+    const { ctl, frame, host } = await appView({
+      comments: (url, init) => {
+        if (init?.method !== "POST") return undefined;
+        if (url.endsWith("/send")) return sendOk ? new Response(JSON.stringify({ thread: { ...posted, sent_to_agent: true } })) : new Response(JSON.stringify({ error: { code: "internal", message: "down" } }), { status: 500 });
+        return new Response(JSON.stringify({ thread: posted }));
+      },
+    });
+    hello(frame, 1);
+    host.enterCommentMode();
+    viewerPick(frame, { ...pick("p1", "Quarterly goals"), clipError: "none" });
+    await waitFor(() => document.querySelector(".composer textarea"), "composer");
+    host.setDraftText("make it blue");
+    host.submitDraft();
+    await waitFor(() => toHost.some(x => x.type === "sendFailed"), "sendFailed");
+    expect(toHost.find(x => x.type === "sendFailed")).toEqual({ type: "sendFailed", thread: "t9", text: "Could not send to the agent: 500 down" });
+    // Not a thread, or one already sent: nothing.
+    host.resend("nope");
+    sendOk = true;
+    host.resend("t9");
+    await waitFor(() => toHost.some(x => x.type === "sent"), "sent");
+    expect(toHost.filter(x => x.type === "sent")).toEqual([{ type: "sent", thread: "t9" }]);
+    await waitFor(() => ctl.state.get().threads.find(t => t.id === "t9")?.sent_to_agent, "sent thread");
+    expect(ctl.state.get().notice).toBeNull();
+    const sends = () => requests.filter(r => r.url.endsWith("/send")).length;
+    const before = sends();
+    host.resend("t9");
+    await settle();
+    expect(sends()).toBe(before);
+  });
+
+  it("carries only app=1 from page to page, not the rest of the query", async () => {
+    await appView();
+    history.replaceState(null, "", `/a/${ID}?app=1&thread=t1`);
+    const frame = document.querySelector<HTMLIFrameElement>("iframe.frame")!;
+    hello(frame, 1);
+    fromFrame(frame.contentWindow!, { type: "clax:navigate", file: "index.html", hash: "#b" });
+    expect(location.search).toBe("?app=1");
   });
 });

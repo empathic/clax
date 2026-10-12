@@ -25,18 +25,28 @@ async function hostChannel(page: Page) {
     (window as unknown as { ClaxHost: unknown }).ClaxHost = { postMessage: (m: string) => (window as unknown as { claxToHost: unknown[] }).claxToHost.push(JSON.parse(m)) };
   });
 }
-const toHost = (page: Page) => quietEval<HostMessage[]>(page, "window.claxToHost");
+/** This load's nonce, as the app makes one per load of the shell. */
+const NONCE = "e2e-nonce-0123456789abcdef";
+/** What the shell posted with this load's nonce (the app drops the rest). */
+const toHost = (page: Page) => quietEval<HostMessage[]>(page, `window.claxToHost.filter(m => m.nonce === ${JSON.stringify(NONCE)}).map(({ nonce, ...m }) => m)`);
+/** The app's `init`, once the shell's host module has loaded. */
+async function initHost(page: Page) {
+  await expect.poll(() => quietEval<string>(page, "typeof window.claxHost")).toBe("object");
+  await quietEval(page, `window.claxHost.init({ nonce: ${JSON.stringify(NONCE)} })`);
+}
 const ofType = async (page: Page, type: string) => (await toHost(page)).filter(m => m.type === type);
 const host = (page: Page, call: string) => quietEval<unknown>(page, `window.claxHost.${call}`);
 
-async function openApp(page: Page, title: string, mode: "subdomain" | "sandbox", app = true) {
+async function openApp(page: Page, title: string, mode: "subdomain" | "sandbox", app = true, opts: { beforeGoto?: () => Promise<void> } = {}) {
   const s = await registerSession(d.base, d.token, "app");
   const { artifact } = await publishAs(d.base, d.token, s.id, title, { "index.html": PAGE });
   if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
   await hostChannel(page);
   await record(page);
+  await opts.beforeGoto?.();
   await page.goto(`${d.base}/a/${artifact.id}${app ? "?app=1" : ""}`);
   const frame = await contentFrame(page, artifact.id, 1);
+  if (app) await initHost(page);
   return { id: artifact.id, sid: s.id, frame };
 }
 
@@ -74,6 +84,32 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       return out;
     });
     expect(tried).toEqual(["SecurityError", "SecurityError"]);
+    // Nor can it learn the nonce: it hears none of the shell's channel
+    // messages, and nothing the shell posts it carries the nonce.
+    await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
+    const heard = await frame.evaluate(() => JSON.stringify((window as unknown as { claxMsgs?: unknown[] }).claxMsgs ?? []));
+    expect(heard).not.toContain(NONCE);
+    expect(await frame.evaluate(() => JSON.stringify((window as unknown as { claxToHost?: unknown }).claxToHost ?? null))).toBe("null");
+  });
+
+  test(`${mode}: a page that greets before the host module loads still gets ready and app mode`, async ({ page }) => {
+    // The host module is held until the page has greeted the shell and been
+    // welcomed without it, as on a slow phone.
+    let held = 0;
+    const { frame } = await openApp(page, `App late host ${mode}`, mode, true, {
+      beforeGoto: async () => { await page.route(/\/_clax\/shell\/host-[^/]*\.js/, async route => {
+        held++;
+        await expect.poll(() => quietEval<boolean>(page, "(window.claxMsgs ?? []).some(m => m.type === 'clax:hello')")).toBe(true);
+        await route.continue();
+      }); },
+    });
+    expect(held).toBe(1);
+    await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
+    // Welcomed again with app: true, the page reports its scroll.
+    await expect.poll(async () => {
+      await frame.evaluate(() => scrollTo(0, scrollY === 300 ? 301 : 300));
+      return quietEval<boolean>(page, "window.claxMsgs.some(m => m.type === 'clax:scroll')");
+    }).toBe(true);
   });
 
   test(`${mode}: a browser's view has no claxHost and keeps its chrome`, async ({ page }) => {

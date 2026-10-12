@@ -12,7 +12,7 @@ import { Lifecycle, onPageCache, retrying } from "../lifecycle";
 import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
 import { artifactOrigin, cachedOriginOk, pageSrc, probeOrigin } from "../origin";
-import { parseShellPath, shellPath } from "../route";
+import { appQuery, parseShellPath, shellPath } from "../route";
 import { type Thread, type Viewer, addComment, createThread, currentViewer, getViewer, listThreads, onViewer, reopenThread, resolveThread, seedViewer, sendBatch, sendToAgent, upsert } from "../threads";
 import { after } from "../clock";
 import { afterPaint } from "./after-paint";
@@ -182,7 +182,8 @@ export class ArtifactController {
   private hostFor: { key: string; data: Loaded } | null = null;
   // Whether the frame's latest hello named the shown artifact and version
   // (see FrameGate).
-  private readonly gate = new FrameGate();
+  /** @internal */
+  readonly gate = new FrameGate();
   private readonly anchorIds = new AnchorHandles();
   private readonly threadLoad: ThreadSync;
   // The pick whose start arrived with the viewer's gesture in the frame and
@@ -396,9 +397,9 @@ export class ArtifactController {
   }
 
   /** The shell URL of the current page in `version` (null: the latest), with
-   * the shell URL's query (app mode's `?app=1`). */
+   * app mode's `?app=1` (`appQuery`). */
   here(version: number | null, s: ViewState = this.s): string {
-    return shellPath(this.id, version, this.pageNow(s), this.shown(s)) + location.search;
+    return shellPath(this.id, version, this.pageNow(s), this.shown(s)) + appQuery(location.search);
   }
 
   /** The "open raw" link: the current page in the shown version. */
@@ -564,7 +565,8 @@ export class ArtifactController {
    * origin, to a frame whose document has not greeted (`gate`). Nothing is
    * lost: the hello that opens the gate sends the welcome, the anchors and
    * the focus again. */
-  private send(m: ShellToBridge): void {
+  /** @internal */
+  send(m: ShellToBridge): void {
     if (this.held || (!this.s.origin && !this.gate.open)) return;
     sendToFrame(this.frameWin(), this.s.origin ?? null, m);
   }
@@ -711,7 +713,7 @@ export class ArtifactController {
    * still moves, with an entry of its own (the page's greeting then updates
    * the address bar in place). */
   private openPage(target: string, hash = ""): void {
-    const pushed = setUrl(shellPath(this.id, this.pinnedVersion, target, this.shown()) + location.search + hash, true);
+    const pushed = setUrl(shellPath(this.id, this.pinnedVersion, target, this.shown()) + appQuery(location.search) + hash, true);
     this.navigateFrame(target, pushed, hash);
   }
 
