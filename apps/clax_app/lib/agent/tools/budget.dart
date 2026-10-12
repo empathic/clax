@@ -147,12 +147,19 @@ class RunBudget {
   /// Counts one render.
   void addRender() => _renders++;
 
-  /// Stops the wall clock, while an `ask` waits for the person. Pauses
-  /// nest: the clock runs again at the matching [resumeClock].
-  void pauseClock() {
+  /// Stops the wall clock, while an `ask` waits for the person or a turn
+  /// is held. Pauses nest: the clock runs again at the matching
+  /// [resumeClock]. Given [since] (a turn found stalled since then), the
+  /// clock is taken to have stopped at [since]: the time from it to now is
+  /// not counted, as long as the clock was running then.
+  void pauseClock({DateTime? since}) {
     if (_ended.isCompleted) return;
     if (_pauses++ == 0) {
-      _elapsed = elapsed;
+      final now = clock.now();
+      final stop = since == null || since.isAfter(now) ? now : since;
+      if (_since case final from?) {
+        if (stop.isAfter(from)) _elapsed += stop.difference(from);
+      }
       _since = null;
       _resumed = Completer<void>();
     }

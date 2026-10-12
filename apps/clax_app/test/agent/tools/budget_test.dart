@@ -211,4 +211,32 @@ void main() {
     expect(b.canRender, isFalse);
     expect(b.hardStop, isNull, reason: 'renders over cap are refused per call');
   });
+
+  test('a pause since an earlier time takes that time back, never more '
+      'than the clock ran', () async {
+    final clock = StepClock();
+    final b = RunBudget(RunCaps.change, 'claude-haiku-5-5', clock);
+    final start = clock.now();
+    clock.advance(const Duration(seconds: 10));
+    b.pauseClock();
+    clock.advance(const Duration(minutes: 5));
+    b.resumeClock();
+    clock.advance(const Duration(seconds: 20));
+    // A stall since 8 s after the resume: 12 s are taken back.
+    b.pauseClock(since: start.add(const Duration(minutes: 5, seconds: 18)));
+    expect(b.elapsed, const Duration(seconds: 18));
+    b.resumeClock();
+
+    // Since a time before the clock last started: only the running time
+    // since then is counted, nothing taken from before.
+    clock.advance(const Duration(seconds: 4));
+    b.pauseClock(since: start);
+    expect(b.elapsed, const Duration(seconds: 18));
+    b.resumeClock();
+
+    // Since a time after now: as a pause now.
+    clock.advance(const Duration(seconds: 2));
+    b.pauseClock(since: clock.now().add(const Duration(hours: 1)));
+    expect(b.elapsed, const Duration(seconds: 20));
+  });
 }
