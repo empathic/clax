@@ -215,10 +215,13 @@ void validateResult(
     }
   }
 
+  final written = <String>{};
   for (final f in r.files) {
     _checkPath(f.path, 'files');
+    if (!written.add(f.path)) {
+      throw ResultInvalid('files writes ${_q(f.path)} twice');
+    }
   }
-  final written = {for (final f in r.files) f.path};
   for (final e in r.edits) {
     _checkPath(e.path, 'edits');
     if (!existingPaths.contains(e.path) && !written.contains(e.path)) {
@@ -236,6 +239,12 @@ void validateResult(
       throw ResultInvalid(
         'removed names ${_q(p)}, which is not a file of the app',
       );
+    }
+    if (written.contains(p)) {
+      throw ResultInvalid('${_q(p)} is both written and removed');
+    }
+    if (r.edits.any((e) => e.path == p)) {
+      throw ResultInvalid('${_q(p)} is both edited and removed');
     }
   }
 
@@ -280,6 +289,7 @@ void validateResult(
         '$at: doc_id ${_q(o.docId)} must be one non-empty segment',
       );
     }
+    _checkDocPath('${o.collection}/${o.docId}', at);
     if (o.op == 'delete' && o.data != null) {
       throw ResultInvalid('$at: data_json must be null for delete');
     }
@@ -300,11 +310,17 @@ void _checkPath(String path, String field) {
     );
   }
   for (final unit in path.codeUnits) {
-    if (unit < 0x20 || unit == 0x7f) {
+    if (unit < 0x20 || (unit >= 0x7f && unit <= 0x9f)) {
       throw ResultInvalid(
         'the path ${_q(path)} in $field contains a control character',
       );
     }
+  }
+  if (path.contains('\u2028') || path.contains('\u2029')) {
+    throw ResultInvalid(
+      'the path ${_q(path)} in $field contains a line or paragraph separator '
+      '(U+2028 or U+2029)',
+    );
   }
   if (path.contains(r'\')) {
     throw ResultInvalid(
@@ -324,6 +340,60 @@ void _checkPath(String path, String field) {
       );
     }
   }
+}
+
+/// The most bytes of one document path segment (the daemon's
+/// `MAX_SEGMENT_BYTES`, crates/clax-core/src/db.rs).
+const maxDbSegmentBytes = 200;
+
+/// The most bytes of a document path (`MAX_PATH_BYTES`).
+const maxDbPathBytes = 1000;
+
+/// The most segments of a document path (`MAX_SEGMENTS`).
+const maxDbSegments = 16;
+
+/// Applies the daemon's document path rule (`segments` and `segment_ok` in
+/// crates/clax-core/src/db.rs) to [path]: at most [maxDbPathBytes] bytes and
+/// [maxDbSegments] segments, each 1 to [maxDbSegmentBytes] bytes of ASCII
+/// letters, digits and `_ - . ~ : @ +`, and neither `.` nor `..`.
+void _checkDocPath(String path, String at) {
+  final bytes = utf8.encode(path).length;
+  if (bytes > maxDbPathBytes) {
+    throw ResultInvalid(
+      '$at: the document path is $bytes bytes; at most $maxDbPathBytes bytes '
+      'are allowed',
+    );
+  }
+  final segs = path.split('/');
+  if (segs.length > maxDbSegments) {
+    throw ResultInvalid(
+      '$at: the document path has ${segs.length} segments; at most '
+      '$maxDbSegments segments are allowed',
+    );
+  }
+  for (final s in segs) {
+    if (!_segmentOk(s)) {
+      throw ResultInvalid(
+        '$at: ${_q(s)} is not a valid path segment: letters, digits and '
+        '_ - . ~ : @ + only, 1 to $maxDbSegmentBytes bytes, not . or ..',
+      );
+    }
+  }
+}
+
+bool _segmentOk(String s) {
+  if (s.isEmpty || s == '.' || s == '..') return false;
+  final bytes = utf8.encode(s);
+  if (bytes.length > maxDbSegmentBytes) return false;
+  for (final b in bytes) {
+    final ok =
+        (b >= 0x30 && b <= 0x39) ||
+        (b >= 0x41 && b <= 0x5a) ||
+        (b >= 0x61 && b <= 0x7a) ||
+        '_-.~:@+'.codeUnits.contains(b);
+    if (!ok) return false;
+  }
+  return true;
 }
 
 /// [s] as a JSON string, so control characters and quotes stay visible.

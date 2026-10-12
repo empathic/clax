@@ -116,8 +116,14 @@ class PromptBuilder {
       b
         ..writeln()
         ..writeln('${i + 1}. Thread ${c.threadId}, by ${jsonEncode(c.author)}')
-        ..writeln('Anchored on: ${c.anchorLine}')
+        ..writeln('Anchored on: ${jsonEncode(c.anchorLine)}')
         ..writeln('Comment: ${jsonEncode(c.body)}');
+      if (i == 0 && c.clip != null) {
+        b.writeln(
+          'The attached image is comment 1\'s clip: the region of the page '
+          'it is anchored on, as the person saw it.',
+        );
+      }
     }
     _writeOthers(b, others);
     b.writeln();

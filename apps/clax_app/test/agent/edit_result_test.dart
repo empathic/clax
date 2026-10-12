@@ -176,6 +176,14 @@ void main() {
       expectRefused(withPath('a\nb'), ['control character']);
       expectRefused(withPath('a\u0000b'), ['control character']);
       expectRefused(withPath('a\u007fb'), ['control character']);
+      // As the daemon's check_path (crates/clax-core/src/publish.rs): every
+      // Unicode control character (C0, DEL, C1) and U+2028/U+2029.
+      expectRefused(withPath('a\u0080b'), ['control character']);
+      expectRefused(withPath('a\u0085b'), ['control character']);
+      expectRefused(withPath('a\u009fb'), ['control character']);
+      expectRefused(withPath('a\u2028b'), ['line or paragraph separator']);
+      expectRefused(withPath('a\u2029b'), ['line or paragraph separator']);
+      expectRefused(withPath('a/'), ['a/', 'empty segment']);
       expectRefused(withPath('${'a' * 201}.html'), ['200 characters']);
       expectRefused(
         changeJson()
@@ -203,6 +211,29 @@ void main() {
             {'path': 'ghost.js', 'old_str': 'a', 'new_str': 'b'},
           ],
         ['ghost.js', 'edit'],
+      );
+
+      // A path is written at most once, never both written and removed,
+      // and never edited when removed.
+      expectRefused(
+        withFiles([
+          {'path': 'a.css', 'content': 'x'},
+          {'path': 'a.css', 'content': 'y'},
+        ]),
+        ['a.css', 'twice'],
+      );
+      expectRefused(
+        withFiles([
+          {'path': 'app.js', 'content': 'x'},
+        ]),
+        ['app.js', 'written and removed'],
+      );
+      expectRefused(
+        changeJson()
+          ..['edits'] = [
+            {'path': 'app.js', 'old_str': 'a', 'new_str': 'b'},
+          ],
+        ['app.js', 'edited and removed'],
       );
 
       // Total content at most 8 MiB: a 20 MiB file.
@@ -270,6 +301,56 @@ void main() {
       ]);
     });
 
+    test('db paths follow the daemon\'s segment rule', () {
+      // crates/clax-core/src/db.rs segment_ok and segments: ASCII letters,
+      // digits and _ - . ~ : @ +; 1 to 200 bytes; not . or ..; at most 1000
+      // bytes and 16 segments for collection/doc_id.
+      Map<String, Object?> set(String coll, String doc) => changeJson()
+        ..['db'] = [
+          {'op': 'set', 'collection': coll, 'doc_id': doc, 'data_json': '{}'},
+        ];
+      void accepted(String coll, String doc) => validateResult(
+        EditResult.fromJson(set(coll, doc)),
+        kind: RequestKind.change,
+        existingPaths: existing,
+      );
+      final odd15 = List.filled(15, 'c').join('/');
+      final odd17 = List.filled(17, 'c').join('/');
+      final s200 = 'x' * 200;
+      final s199 = 'y' * 199;
+      const valid = <(String, String)>[
+        ('runs', 'r1'),
+        ('Runs_2026-10', 'a.b~c:d@e+f'),
+        ('runs', '...'),
+        ('runs', 'ABCxyz0189'),
+      ];
+      for (final (c, d) in valid) {
+        accepted(c, d);
+      }
+      accepted('runs', s200);
+      accepted(odd15, 'd'); // 16 segments.
+      accepted('$s200/$s200/$s200', s200); // 803 bytes.
+
+      final refused = <(String, String, String)>[
+        ('runs', 'my run', 'my run'),
+        ('runs', '..', '..'),
+        ('runs', '.', '.'),
+        ('runs', 'é', 'é'),
+        ('runs', 'a#b', 'a#b'),
+        ('runs', 'a?b', 'a?b'),
+        ('runs', 'a%20b', 'a%20b'),
+        ('runs', 'a"b', 'a\\"b'),
+        ('my runs', 'r1', 'my runs'),
+        ('runs/../x', 'r1', '..'),
+        ('runs', '${s200}z', '200 bytes'),
+        (odd17, 'd', '16 segments'),
+        (List.filled(5, s199).join('/'), 'd', '1000 bytes'),
+      ];
+      for (final (c, d, named) in refused) {
+        expectRefused(set(c, d), [named]);
+      }
+    });
+
     test('a subcollection path with an odd number of segments is accepted', () {
       validateResult(
         EditResult.fromJson(
@@ -315,6 +396,50 @@ void main() {
 
       walk(editSchema, '#');
       expect(objects, 4, reason: 'the result, a file, an edit, a db op');
+    });
+
+    test('the schema uses only keywords structured outputs accept', () {
+      // Messages API structured outputs refuse minLength/maxLength,
+      // minimum/maximum/multipleOf, maxItems, minItems above 1 and unlisted
+      // formats, and cap union-typed parameters at 16 and optional ones at
+      // 24. Pin the subset this schema uses, so an edit that adds any other
+      // keyword fails here rather than as a 400 on every request.
+      const allowed = {
+        'type',
+        'properties',
+        'required',
+        'additionalProperties',
+        'items',
+        'enum',
+        'anyOf',
+        'description',
+      };
+      var unions = 0;
+      void node(Map<String, Object?> n, String at) {
+        expect(allowed.containsAll(n.keys), isTrue, reason: '$at: ${n.keys}');
+        expect(n['type'], isNot(isA<List<Object?>>()), reason: '$at: type');
+        if (n.containsKey('anyOf')) unions++;
+        if (n['type'] == 'object') {
+          expect(
+            (n['required'] as List).length,
+            (n['properties'] as Map).length,
+            reason: '$at: no optional properties',
+          );
+        }
+        (n['properties'] as Map<String, Object?>?)?.forEach(
+          (k, v) => node(v as Map<String, Object?>, '$at/properties/$k'),
+        );
+        if (n['items'] case final Map<String, Object?> i) node(i, '$at/items');
+        if (n['anyOf'] case final List<Object?> l) {
+          for (var k = 0; k < l.length; k++) {
+            node(l[k] as Map<String, Object?>, '$at/anyOf[$k]');
+          }
+        }
+      }
+
+      node(editSchema, '#');
+      expect(unions, 3, reason: 'title, data_json, capabilities_json');
+      expect(unions, lessThanOrEqualTo(16));
       // The schema is plain JSON.
       expect(jsonDecode(jsonEncode(editSchema)), editSchema);
     });
