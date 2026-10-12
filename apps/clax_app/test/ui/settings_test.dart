@@ -220,4 +220,18 @@ void main() {
     expect(find.text('Say → usable'), findsOneWidget);
     expect(find.text('8.4 s'), findsOneWidget);
   });
+
+  testWidgets('settings fit a small phone', (tester) async {
+    tester.view.physicalSize = const Size(320, 568);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await pumpSettings(
+      tester,
+      store: SettingsStore(file),
+      key: FakeKey('sk-ant-old'),
+      cliSupported: true,
+    );
+    expect(tester.takeException(), isNull);
+    expect(find.text('A key is saved'), findsOneWidget);
+  });
 }
