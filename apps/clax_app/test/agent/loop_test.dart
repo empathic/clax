@@ -1,189 +1,262 @@
 import 'dart:async';
 
+import 'package:clax_app/agent/asked.dart';
 import 'package:clax_app/agent/backend.dart';
 import 'package:clax_app/agent/edit_result.dart';
+import 'package:clax_app/agent/failure.dart';
 import 'package:clax_app/agent/ledger.dart';
 import 'package:clax_app/agent/loop.dart';
 import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/prompt.dart';
-import 'package:clax_app/agent/request.dart';
-import 'package:clax_app/agent/scripted_backend.dart';
+import 'package:clax_app/agent/read_consent.dart';
+import 'package:clax_app/agent/runner/scripted_runner.dart';
+import 'package:clax_app/agent/tools/toolbox.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../support/fake_inspector.dart';
 import 'loop_support.dart';
+import 'tools/support.dart' show StepClock;
 
 const page = '<!doctype html><title>Runs</title><button>Save</button>';
 
+const unreachable = ClaxApiError(
+  status: 0,
+  code: 'daemon_unreachable',
+  message: 'no connection',
+);
+
+/// A question the agent asks with Clax's `ask`.
+const pick = {
+  'questions': [
+    {
+      'question': 'Kilometres or miles?',
+      'header': 'Units',
+      'options': [
+        {'label': 'km'},
+        {'label': 'mi'},
+      ],
+    },
+  ],
+  'question_id': null,
+  'timeout_s': null,
+  'cancel': null,
+};
+
+/// The tool loop's [AgentLoop] (the single call is in
+/// loop_single_call_test.dart): a [HeldRunner] over the real Toolbox, the
+/// fake daemon and a fake inspector.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   late FakeClaxApi api;
-  late HeldBackend backend;
+  late HeldRunner runner;
+  late FakeInspector inspector;
   late RecordingTimings timings;
+  late MemoryChangeLedger ledger;
+  late MemoryAskedQuestions asked;
   late String sid;
 
-  AgentLoop loopWith(List<Object> script, {String name = 'scripted'}) {
-    backend = HeldBackend(script, name: name);
+  AgentLoop loopWith(
+    List<List<ScriptedCall>> runs, {
+    bool images = true,
+    AgentReadConsent? consent,
+  }) {
+    runner = HeldRunner(runs, sendsImages: images);
     return AgentLoop(
       api: api,
-      backend: () => backend,
+      runner: () => runner,
       prompts: PromptBuilder(rootBundle),
       model: () => 'claude-haiku-5-5',
       timings: timings,
+      inspector: inspector,
+      baseUrl: () => Uri.parse('http://127.0.0.1:7999'),
+      ledger: ledger,
+      asked: asked,
+      readConsent: consent,
+      clock: StepClock(),
     );
   }
 
+  List<String> bodies(String aid, String tid) => [
+    for (final c in api.threadOf(aid, tid).comments) c.body,
+  ];
+
   setUp(() async {
     api = FakeClaxApi();
+    inspector = FakeInspector();
     timings = RecordingTimings();
+    ledger = MemoryChangeLedger();
+    asked = MemoryAskedQuestions();
     sid = (await api.registerAppSession(installId: 'install', pid: 1)).id;
   });
 
   group('newApp', () {
-    test('forwards each run\'s progress, the resent run included', () async {
-      const noIndex = EditResult(
-        reply: 'Made it.',
-        title: 'Run log',
-        files: [FileWrite(path: 'main.html', content: page)],
-      );
+    test('writes, renders and finishes: the app is created as the session, '
+        'and its draft deleted', () async {
       final loop = loopWith([
-        const WithProgress([PartialFile('main.html', '<p>')], noIndex),
-        const WithProgress(
-          [PartialFile('index.html', '<!doc'), OutputTokens(12)],
-          EditResult(
-            reply: 'Made it.',
-            title: 'Run log',
-            files: [FileWrite(path: 'index.html', content: page)],
-          ),
-        ),
+        newAppCalls(capabilities: const {'db': {}}),
       ]);
-      final events = <AgentProgress>[];
-      await loop.newApp('a log', onProgress: events.add);
-      expect(events.map((e) => '$e'), [
-        'AttemptStarted(1)',
-        'PartialFile(main.html, 3 chars)',
-        'AttemptStarted(2)',
-        'PartialFile(index.html, 5 chars)',
-        'OutputTokens(12)',
-      ]);
-      expect(backend.seen.every((r) => r.onProgress != null), isTrue);
+      final aid = await loop.newApp('a run tracker', session: sid);
+
+      final created = api.calls.singleWhere((c) => c.name == 'createArtifact');
+      expect(created.args['session'], sid);
+      final r = created.args['request']! as PublishRequest;
+      expect(r.title, 'Runs');
+      expect(r.note, 'Made a run tracker.');
+      expect(r.capabilities, {'db': <String, Object?>{}});
+      expect(api.filesOf(aid, 1)['index.html'], contains('<h1>Runs</h1>'));
+      expect(api.callNames, contains('createDraft'));
+      expect(await api.listDrafts(), isEmpty);
+      expect(inspector.calls, hasLength(1));
     });
 
-    test('without a progress sink the backend gets none', () async {
-      final loop = loopWith([
-        const WithProgress(
-          [PartialFile('index.html', '<p>')],
-          EditResult(
-            reply: 'Made it.',
-            title: 'Run log',
-            files: [FileWrite(path: 'index.html', content: page)],
-          ),
-        ),
-      ]);
-      await loop.newApp('a log');
-      expect(backend.seen.single.onProgress, isNull);
-    });
-
-    test('new app creates the artifact as the session with title, '
-        'capabilities and files, then the db ops', () async {
-      final loop = loopWith([
-        const EditResult(
-          reply: 'Made a run log.',
-          title: 'Run log',
-          files: [
-            FileWrite(path: 'index.html', content: page),
-            FileWrite(path: 'app.js', content: 'go()'),
-          ],
-          db: [
-            DbOp(
-              op: 'set',
-              collection: 'runs',
-              docId: 'first',
-              data: {'km': 5},
-            ),
-          ],
-          capabilities: {'db': {}},
-        ),
-      ]);
-      final aid = await loop.newApp('a log of my runs');
-
-      expect(api.callNames.where((n) => n != 'listArtifacts'), [
-        'registerAppSession',
-        'createArtifact',
-        'batchDocs',
-      ]);
-      final seed = api.calls.firstWhere((c) => c.name == 'batchDocs');
+    test('runs on the tool loop prompt: the tool system prompt and the '
+        'first message of a new app', () async {
+      final loop = loopWith([newAppCalls()]);
+      await loop.newApp('a run tracker', session: sid);
+      final input = runner.seen.single;
+      final system = await PromptBuilder(rootBundle).toolSystem();
+      expect(input.system, system);
+      expect(input.system, isNot(await PromptBuilder(rootBundle).system()));
       expect(
-        [for (final w in seed.args['writes']! as List<DocWrite>) w.ifVersion],
-        [null],
-        reason: 'a new artifact has no documents to read first',
+        input.first,
+        PromptBuilder(rootBundle).firstNew('a run tracker', const []),
       );
-      final create = api.calls.firstWhere((c) => c.name == 'createArtifact');
-      expect(create.args['session'], sid);
-      final r = create.args['request']! as PublishRequest;
-      expect(r.title, 'Run log');
-      expect(r.capabilities, {'db': {}});
-      expect(api.filesOf(aid, 1), {'index.html': page, 'app.js': 'go()'});
-      expect((await api.getDoc(aid, 'runs/first'))!.data, {'km': 5});
-      expect(backend.seen.single.kind, RequestKind.newApp);
-      expect(backend.seen.single.model, 'claude-haiku-5-5');
-      expect(backend.seen.single.userText, contains('a log of my runs'));
-      expect(backend.seen.single.systemPrompt, contains('## Page contract'));
+    });
+
+    test('forwards the run\'s progress from attempt 1: narration, tools, '
+        'the streamed page and the inspection', () async {
+      final loop = loopWith([newAppCalls()]);
+      final events = <AgentProgress>[];
+      await loop.newApp('x', session: sid, onProgress: events.add);
+      expect(
+        events.first,
+        isA<AttemptStarted>().having((e) => e.attempt, 'attempt', 1),
+      );
+      expect(
+        [
+          for (final e in events)
+            switch (e) {
+              Narration(:final text) => 'narration $text',
+              ToolStarted(:final name) => 'tool $name',
+              PartialFile(:final path) => 'partial $path',
+              Inspected(:final errors) => 'inspected $errors',
+              AttemptStarted(:final attempt) => 'attempt $attempt',
+              _ => '$e',
+            },
+        ],
+        [
+          'attempt 1',
+          'narration Writing the tracker',
+          'tool set_meta',
+          'tool write_file',
+          'partial index.html',
+          'tool render',
+          'inspected 0',
+          'tool finish',
+        ],
+      );
+    });
+
+    test('a progress listener that throws does not stop the run', () async {
+      final loop = loopWith([newAppCalls()]);
+      final aid = await loop.newApp(
+        'x',
+        session: sid,
+        onProgress: (_) => throw StateError('listener'),
+      );
+      expect(api.currentVersion(aid), 1);
+    });
+
+    test('other apps go in by ID and title only, and none of their documents '
+        'is read', () async {
+      final other = api.seedArtifact(
+        'Shopping',
+        {'index.html': page},
+        capabilities: const {'db': {}},
+      );
+      api.putDoc(other, 'items/milk', {'name': 'milk'});
+      final loop = loopWith([newAppCalls()]);
+      await loop.newApp('x', session: sid);
+      expect(runner.text(0), contains('{"id":"$other","title":"Shopping"}'));
+      expect(runner.text(0), isNot(contains('milk')));
+      expect([
+        for (final c in api.calls)
+          if (c.args['aid'] == other) c.name,
+      ], isEmpty);
     });
 
     test(
-      'new app result without index.html retries once then throws',
+      'a run that gives up throws its reason and deletes its draft',
       () async {
-        const noIndex = EditResult(
-          reply: 'Made it.',
-          title: 'Run log',
-          files: [FileWrite(path: 'main.html', content: page)],
-        );
-        final loop = loopWith([noIndex, noIndex]);
+        final loop = loopWith([
+          [
+            ...newAppCalls().take(3),
+            const ScriptedCall('give_up', {'reason': 'it needs a camera'}),
+          ],
+        ]);
         await expectLater(
-          loop.newApp('a log of my runs'),
+          loop.newApp('x', session: sid),
           throwsA(
             isA<AgentError>().having(
               (e) => e.message,
               'message',
-              contains('index.html'),
+              'it needs a camera',
             ),
           ),
         );
-        expect(backend.seen, hasLength(2));
-        expect(backend.seen[1].userText, contains('index.html'));
-        expect(backend.seen[1].userText, contains('could not be applied'));
         expect(api.callNames, isNot(contains('createArtifact')));
+        expect(await api.listDrafts(), isEmpty);
       },
     );
 
-    test('a backend error is thrown at once, never resent', () async {
-      final loop = loopWith([const AgentError('overloaded', retryable: true)]);
+    test('a refusal the runner ends the run on throws, and deletes the draft '
+        'its earlier render made', () async {
+      final loop = loopWith([
+        [
+          ...newAppCalls().take(3),
+          const ScriptedCall.end(
+            RunGaveUp('The model declined: cyber', answered: false),
+          ),
+        ],
+      ]);
       await expectLater(
-        loop.newApp('x'),
-        throwsA(isA<AgentError>().having((e) => e.message, 'm', 'overloaded')),
+        loop.newApp('x', session: sid),
+        throwsA(
+          isA<AgentError>().having(
+            (e) => e.message,
+            'message',
+            'The model declined: cyber',
+          ),
+        ),
       );
-      expect(backend.seen, hasLength(1));
+      expect(api.callNames, contains('createDraft'));
+      expect(await api.listDrafts(), isEmpty);
     });
 
-    test('a cancelled new app stops the backend and creates nothing', () async {
+    test('a model failure is thrown as it came, never resent, and the draft '
+        'is deleted', () async {
+      const busy = AgentError('overloaded', retryable: true);
       final loop = loopWith([
-        const EditResult(
-          reply: 'Made it.',
-          title: 'T',
-          files: [FileWrite(path: 'index.html', content: page)],
-        ),
+        [...newAppCalls().take(3), const ScriptedCall.fail(busy)],
       ]);
-      backend.gate = Completer<void>();
+      await expectLater(loop.newApp('x', session: sid), throwsA(same(busy)));
+      expect(runner.seen, hasLength(1));
+      expect(await api.listDrafts(), isEmpty);
+    });
+
+    test('a cancelled new app creates nothing and deletes its draft', () async {
       final cancel = Completer<void>();
-      final run = loop.newApp('x', cancelled: cancel.future);
-      await backend.arrived.future;
+      final loop = loopWith([newAppCalls()]);
+      runner.gate = Completer<void>();
+      final made = loop.newApp('x', session: sid, cancelled: cancel.future);
+      await runner.arrived.future;
       cancel.complete();
       await expectLater(
-        run,
+        made,
         throwsA(
           isA<AgentError>().having(
             (e) => e.kind,
@@ -192,42 +265,71 @@ void main() {
           ),
         ),
       );
-      expect(backend.seen.single.cancelled, isNotNull);
       expect(api.callNames, isNot(contains('createArtifact')));
     });
 
-    test('a result that arrives after the cancel is not created', () async {
-      final loop = loopWith([
-        const EditResult(
-          reply: 'Made it.',
-          title: 'T',
-          files: [FileWrite(path: 'index.html', content: page)],
-        ),
-      ]);
+    test('a create whose answer was lost after it landed returns the app it '
+        'made', () async {
+      final lossy = _LostCreateApi();
+      api = lossy;
+      sid = (await api.registerAppSession(installId: 'install', pid: 1)).id;
+      final before = api.seedArtifact('Older', {'index.html': page});
+      lossy.loseNextCreate = true;
+      final loop = loopWith([newAppCalls()]);
+      final aid = await loop.newApp('x', session: sid);
+      expect(aid, isNot(before));
+      expect(api.currentVersion(aid), 1);
+      expect(
+        api.calls.where((c) => c.name == 'createArtifact'),
+        hasLength(1),
+        reason: 'found, not made again',
+      );
+    });
+
+    test('a create that got no answer and did not land says to look for the '
+        'app before trying again', () async {
+      api.failNext('createArtifact', unreachable);
+      final loop = loopWith([newAppCalls()]);
       await expectLater(
-        loop.newApp('x', cancelled: Future<void>.value()),
-        throwsA(isA<AgentError>()),
+        loop.newApp('x', session: sid),
+        throwsA(
+          isA<AgentError>().having(
+            (e) => e.message,
+            'message',
+            contains('Look for it in your apps'),
+          ),
+        ),
       );
-      expect(api.callNames, isNot(contains('createArtifact')));
     });
 
-    test('the new app prompt lists other apps that keep documents', () async {
-      final other = api.seedArtifact(
-        'Shopping',
-        {'index.html': page},
-        capabilities: {'db': {}},
-      );
-      api.putDoc(other, 'items/milk', {'name': 'milk'});
+    test('a question still open when the new app ends is withdrawn', () async {
       final loop = loopWith([
-        const EditResult(
-          reply: 'Made it.',
-          title: 'T',
-          files: [FileWrite(path: 'index.html', content: page)],
-        ),
+        [const ScriptedCall('ask', pick), ...newAppCalls()],
       ]);
-      await loop.newApp('x');
-      expect(backend.seen.single.userText, contains('"id":"$other"'));
-      expect(backend.seen.single.userText, contains('"name":"milk"'));
+      await loop.newApp('x', session: sid);
+      final q = (await api.questions(status: 'all')).single;
+      expect(q.status, 'withdrawn');
+      expect(await asked.all(), isEmpty);
+    });
+
+    test('the run is timed with its model, runner, turns, tokens, cost and '
+        'outcome', () async {
+      final loop = loopWith([newAppCalls()]);
+      await loop.newApp('x', session: sid);
+      final r = timings.stopped.single;
+      expect(r.name, agentNewTiming);
+      expect(r.extra, {
+        'model': 'claude-haiku-5-5',
+        'backend': 'scripted',
+        'turns': 4,
+        'renders': 1,
+        'input_tokens': 0,
+        'cache_read_tokens': 0,
+        'cache_write_tokens': 0,
+        'output_tokens': 0,
+        'cost_usd': 0.0,
+        'outcome': 'finished',
+      });
     });
   });
 
@@ -235,985 +337,502 @@ void main() {
     late String aid;
 
     setUp(() {
-      aid = api.seedArtifact('Runs', {'index.html': page});
-    });
-
-    test('forwards the backend\'s progress to onProgress', () async {
-      final loop = loopWith([
-        WithProgress(const [
-          PartialEdit('index.html', 'Ke'),
-        ], change(reply: 'Keep.', edits: [edit('Save', 'Keep')])),
-      ]);
-      final item = api.sendComment(aid, 'Say Keep', queue: false);
-      final events = <AgentProgress>[];
-      final outcome = await loop.change(
-        aid,
-        [item],
-        session: sid,
-        onProgress: events.add,
+      aid = api.seedArtifact(
+        'Runs',
+        {'index.html': page},
+        capabilities: const {'db': {}},
       );
-      expect(outcome, isA<ChangeLanded>());
-      expect(events.map((e) => '$e'), [
-        'AttemptStarted(1)',
-        'PartialEdit(index.html, 2 chars)',
-      ]);
     });
 
-    test('a resend after an edit that misses starts attempt 2', () async {
-      final loop = loopWith([
-        WithProgress(const [
-          PartialEdit('index.html', 'X'),
-        ], change(edits: [edit('Nowhere', 'X')])),
-        change(edits: [edit('Save', 'Keep')]),
-      ]);
+    test('str_replace, render, finish: the version lands in place, the '
+        'thread is answered and resolved, the comment acknowledged', () async {
       final item = api.sendComment(aid, 'Say Keep', queue: false);
-      final events = <AgentProgress>[];
-      await loop.change(aid, [item], session: sid, onProgress: events.add);
-      expect(events.map((e) => '$e'), [
-        'AttemptStarted(1)',
-        'PartialEdit(index.html, 1 chars)',
-        'AttemptStarted(2)',
+      final loop = loopWith([
+        changeCalls(reply: 'Keep.', edits: [('Save', 'Keep')]),
       ]);
-    });
+      final out = await loop.change(aid, [item], session: sid);
 
-    test('a progress listener that throws does not stop the change', () async {
-      final loop = loopWith([
-        change(edits: [edit('Save', 'Keep')]),
-      ]);
-      final item = api.sendComment(aid, 'Say Keep', queue: false);
-      final outcome = await loop.change(
-        aid,
-        [item],
-        session: sid,
-        onProgress: (_) => throw StateError('listener bug'),
+      expect(out, isA<ChangeLanded>().having((o) => o.version, 'version', 2));
+      expect(out.answered, isTrue);
+      expect(
+        api.filesOf(aid, 2)['index.html'],
+        contains('<button>Keep</button>'),
       );
-      expect(outcome, isA<ChangeLanded>());
-    });
-
-    test('change publishes edits with if_version and addresses, replies, '
-        'resolves, acks, and clears working', () async {
-      final loop = loopWith([
-        change(
-          reply: 'The button now says Keep.',
-          edits: [edit('Save', 'Keep')],
-        ),
-      ]);
-      final item = api.sendComment(aid, 'Say Keep', queue: false);
-      final outcome = await loop.change(aid, [item], session: sid);
-
-      expect(outcome, isA<ChangeLanded>().having((o) => o.version, 'v', 2));
-      const steps = {
-        'setWorking',
-        'readFiles',
-        'publish',
-        'threads',
-        'replyAsAgent',
-        'resolveAsAgent',
-        'ackFeedback',
-      };
-      expect(api.callNames.where(steps.contains), [
-        'setWorking',
-        'readFiles',
-        'threads',
-        'publish',
-        'threads',
-        'replyAsAgent',
-        'resolveAsAgent',
-        'ackFeedback',
-        'setWorking',
-      ]);
-      final publish = api.calls.firstWhere((c) => c.name == 'publish');
+      final publish = api.calls.singleWhere((c) => c.name == 'publish');
       final r = publish.args['request']! as PublishRequest;
       expect(r.ifVersion, 1);
       expect(r.addresses, [item.threadId]);
-      expect(r.files, {'index.html': page.replaceFirst('Save', 'Keep')});
-      final t = api.threadOf(aid, item.threadId);
-      expect(t.comments.last.body, 'The button now says Keep.');
-      expect(t.status, 'resolved');
+      expect(bodies(aid, item.threadId), ['Say Keep', 'Keep.']);
+      expect(api.threadOf(aid, item.threadId).status, 'resolved');
       expect(api.acked, [item.commentId]);
       expect(api.working, isEmpty);
-      final on = api.calls.firstWhere((c) => c.name == 'setWorking');
-      expect(on.args['on'], isTrue);
-      expect(on.args['threadIds'], [item.threadId]);
-      expect(backend.seen.single.userText, contains('"Say Keep"'));
-      expect(
-        backend.seen.single.userText,
-        contains('Anchored on: "the whole artifact  (v1)"'),
+      expect(await api.listDrafts(), isEmpty);
+      expect(await ledger.of(aid), hasLength(1));
+    });
+
+    test('the first message is the tool loop\'s, with the files, the '
+        'comments and the late answers', () async {
+      final item = api.sendComment(aid, 'Say Keep', queue: false);
+      final loop = loopWith([changeCalls()]);
+      await loop.change(
+        aid,
+        [item],
+        session: sid,
+        answers: '[clax] The person answered your question "Units" (q1):',
       );
+      final input = runner.seen.single;
+      expect(input.system, await PromptBuilder(rootBundle).toolSystem());
+      final text = runner.text(0);
+      expect(text, contains('<file path="index.html">'));
+      expect(text, contains('"Say Keep"'));
+      expect(text, contains(r'The person answered your question \"Units\"'));
+    });
+
+    test('a finish with nothing changed answers without a version', () async {
+      final item = api.sendComment(aid, 'What does Save do?', queue: false);
+      final loop = loopWith([changeCalls(reply: 'It saves.', resolve: false)]);
+      final out = await loop.change(aid, [item], session: sid);
+      expect(out, isA<ChangeAnswered>());
+      expect(api.currentVersion(aid), 1);
+      expect(bodies(aid, item.threadId).last, 'It saves.');
     });
 
     test(
-      'change without resolve replies and leaves the threads open',
+      'give_up replies once with the reason and leaves the thread open',
       () async {
-        final loop = loopWith([change(reply: 'Which button?', resolve: false)]);
-        final item = api.sendComment(aid, 'Change it', queue: false);
-        final outcome = await loop.change(aid, [item], session: sid);
-        expect(outcome, isA<ChangeAnswered>());
-        expect(api.callNames, isNot(contains('publish')));
-        expect(api.callNames, isNot(contains('resolveAsAgent')));
-        final t = api.threadOf(aid, item.threadId);
-        expect(t.status, 'open');
-        expect(t.comments.last.body, 'Which button?');
-      },
-    );
-
-    test(
-      'one reply per thread when a batch holds two comments of it',
-      () async {
+        final item = api.sendComment(aid, 'x', queue: false);
         final loop = loopWith([
-          change(edits: [edit('Save', 'Keep')]),
+          [
+            const ScriptedCall('give_up', {'reason': 'it needs a camera'}),
+          ],
         ]);
-        final a = api.sendComment(aid, 'one', queue: false);
-        final b = FeedbackItem(
-          feedbackId: 'f2',
-          threadId: a.threadId,
-          commentId: 'c2',
-          artifactId: aid,
-          body: 'two',
-          author: 'Alex',
-          version: 1,
+        final out = await loop.change(aid, [item], session: sid);
+        expect(
+          out,
+          isA<ChangeFailed>()
+              .having((o) => o.reason, 'reason', 'it needs a camera')
+              .having((o) => o.answered, 'answered', isTrue),
         );
-        await loop.change(aid, [a, b], session: sid);
-        expect(api.callNames.where((n) => n == 'replyAsAgent'), hasLength(1));
-        expect(api.acked, [a.commentId, 'c2']);
+        expect(bodies(aid, item.threadId), [
+          'x',
+          failureReply('it needs a camera'),
+        ]);
+        expect(api.threadOf(aid, item.threadId).status, 'open');
       },
     );
 
-    test('ambiguous_edit_retries_then_replies', () async {
-      const twice = '<li>x</li><li>x</li>';
-      await api.publish(
-        aid,
-        PublishRequest(ifVersion: 1, files: {'index.html': '$page$twice'}),
-      );
-      final loop = loopWith([
-        change(edits: [edit('<li>x', '<li>y')]),
-        change(edits: [edit('<li>x', '<li>z')]),
-      ]);
-      final item = api.sendComment(aid, 'Make it y', queue: false);
-      final outcome = await loop.change(aid, [item], session: sid);
-
-      expect(backend.seen, hasLength(2));
-      final retry = backend.seen[1].userText;
-      expect(retry, contains('"<li>x"'));
-      expect(retry, contains('2 times'));
-      expect(retry, contains('whole files'));
-      expect(api.currentVersion(aid), 2, reason: 'nothing published');
-      expect(outcome, isA<ChangeFailed>());
-      final t = api.threadOf(aid, item.threadId);
-      expect(t.comments.last.body, startsWith("Couldn't make that change: "));
-      expect(t.comments.last.body, contains('2 times'));
-      expect(t.status, 'open');
-      expect(api.acked, [item.commentId]);
-      expect(api.working, isEmpty);
-    });
-
-    test('a retry after an ambiguous edit that succeeds publishes', () async {
-      final loop = loopWith([
-        change(edits: [edit('t', 'T')]),
-        change(
-          files: [const FileWrite(path: 'index.html', content: '$page<p>')],
-        ),
-      ]);
+    test('a refusal the runner ends the run on gets the failure reply, the '
+        'comment acknowledged and the draft deleted', () async {
       final item = api.sendComment(aid, 'x', queue: false);
-      final outcome = await loop.change(aid, [item], session: sid);
-      expect(outcome, isA<ChangeLanded>());
-      expect(api.filesOf(aid, 2)['index.html'], '$page<p>');
-    });
-
-    test('an invalid result retries once with the failure named', () async {
       final loop = loopWith([
-        change(removed: ['index.html']),
-        change(removed: ['index.html']),
+        [
+          ...changeCalls(edits: [('Save', 'Keep')]).take(2),
+          const ScriptedCall.end(
+            RunGaveUp('The model declined: cyber', answered: false),
+          ),
+        ],
       ]);
-      final item = api.sendComment(aid, 'x', queue: false);
-      final outcome = await loop.change(aid, [item], session: sid);
-      expect(backend.seen, hasLength(2));
-      expect(backend.seen[1].userText, contains('removed names "index.html"'));
-      expect(outcome, isA<ChangeFailed>());
-      expect(api.callNames, isNot(contains('publish')));
+      final out = await loop.change(aid, [item], session: sid);
       expect(
-        api.threadOf(aid, item.threadId).comments.last.body,
-        contains('removed names "index.html"'),
-      );
-    });
-
-    test('conflict re-reads and runs again once', () async {
-      final loop = loopWith([
-        change(edits: [edit('Save', 'Keep')]),
-        change(edits: [edit('Save', 'Store')]),
-      ]);
-      // Another publish lands while the first run is out.
-      backend.gate = Completer<void>();
-      final item = api.sendComment(aid, 'x', queue: false);
-      final run = loop.change(aid, [item], session: sid);
-      await backend.arrived.future;
-      await api.publish(
-        aid,
-        PublishRequest(ifVersion: 1, files: {'index.html': '$page<!-- 2 -->'}),
-      );
-      backend.gate!.complete();
-      backend.gate = null;
-      final outcome = await run;
-
-      expect(outcome, isA<ChangeLanded>().having((o) => o.version, 'v', 3));
-      expect(backend.seen, hasLength(2));
-      expect(backend.seen[1].userText, contains('<!-- 2 -->'));
-      final reads = api.calls.where((c) => c.name == 'readFiles').toList();
-      expect([for (final c in reads) c.args['n']], [1, 2]);
-      expect(api.filesOf(aid, 3)['index.html'], contains('Store'));
-      expect(api.filesOf(aid, 3)['index.html'], contains('<!-- 2 -->'));
-    });
-
-    test('a second conflict replies and publishes nothing', () async {
-      final loop = loopWith([
-        change(edits: [edit('Save', 'Keep')]),
-        change(edits: [edit('Save', 'Keep')]),
-      ]);
-      const conflict = ClaxApiError(
-        status: 409,
-        code: 'conflict',
-        message: 'artifact is at version 2',
-        body: {'current': 2},
-      );
-      api
-        ..failNext('publish', conflict)
-        ..failNext('publish', conflict);
-      final item = api.sendComment(aid, 'x', queue: false);
-      final outcome = await loop.change(aid, [item], session: sid);
-      expect(outcome, isA<ChangeFailed>());
-      expect(backend.seen, hasLength(2));
-      expect(
-        api.threadOf(aid, item.threadId).comments.last.body,
-        startsWith("Couldn't make that change: "),
-      );
-    });
-
-    test('backend error replies with the reason and acks', () async {
-      final loop = loopWith([
-        const AgentError('The API is overloaded', retryable: true),
-      ]);
-      final item = api.sendComment(aid, 'x', queue: false);
-      final outcome = await loop.change(aid, [item], session: sid);
-      expect(backend.seen, hasLength(1), reason: 'never resent');
-      expect(
-        outcome,
+        out,
         isA<ChangeFailed>()
-            .having((o) => o.reason, 'reason', 'The API is overloaded')
+            .having((o) => o.reason, 'reason', 'The model declined: cyber')
             .having((o) => o.answered, 'answered', isTrue),
       );
-      final t = api.threadOf(aid, item.threadId);
-      expect(
-        t.comments.last.body,
-        "Couldn't make that change: The API is overloaded",
-      );
-      expect(t.status, 'open');
+      expect(bodies(aid, item.threadId), [
+        'x',
+        "Couldn't make that change: The model declined: cyber",
+      ]);
       expect(api.acked, [item.commentId]);
+      expect(api.callNames, contains('createDraft'));
+      expect(await api.listDrafts(), isEmpty);
+      expect(api.currentVersion(aid), 1);
       expect(api.working, isEmpty);
     });
 
-    test('a cancelled change stops the backend, publishes and replies '
-        'nothing, and clears working', () async {
-      final loop = loopWith([
-        change(edits: [edit('Save', 'Keep')]),
-      ]);
-      backend.gate = Completer<void>();
-      final cancel = Completer<void>();
+    test('a model failure gets the failure reply with its message', () async {
       final item = api.sendComment(aid, 'x', queue: false);
-      final run = loop.change(
+      final loop = loopWith([
+        [const ScriptedCall.fail(AgentError('overloaded', retryable: true))],
+      ]);
+      final out = await loop.change(aid, [item], session: sid);
+      expect(out, isA<ChangeFailed>());
+      expect(bodies(aid, item.threadId).last, failureReply('overloaded'));
+      expect(runner.seen, hasLength(1), reason: 'never resent');
+    });
+
+    test(
+      'a runner-made ending skips a thread the person wrote on again',
+      () async {
+        final commenting = _NewerApi();
+        api = commenting;
+        sid = (await api.registerAppSession(installId: 'install', pid: 1)).id;
+        aid = api.seedArtifact('Runs', {'index.html': page});
+        final item = api.sendComment(aid, 'x', queue: false);
+        commenting.newerOn = item.threadId;
+        final loop = loopWith([
+          [
+            const ScriptedCall.end(
+              RunGaveUp('The model declined: cyber', answered: false),
+            ),
+          ],
+        ]);
+        await loop.change(aid, [item], session: sid);
+        expect(api.callNames, isNot(contains('replyAsAgent')));
+      },
+    );
+
+    test(
+      'a cap with no clean draft replies once and publishes nothing',
+      () async {
+        final item = api.sendComment(aid, 'x', queue: false);
+        final loop = loopWith([
+          [
+            for (var i = 0; i < 7; i++)
+              const ScriptedCall('list_files', {}, 'Looking'),
+          ],
+        ]);
+        final out = await loop.change(aid, [item], session: sid);
+        expect(out, isA<ChangeFailed>());
+        expect(bodies(aid, item.threadId), [
+          'x',
+          failureReply('it ran out of time (6 turns).'),
+        ]);
+        expect(api.currentVersion(aid), 1);
+      },
+    );
+
+    test('a cap after a clean render publishes that draft, saying it stopped '
+        'early, and leaves the thread open', () async {
+      final item = api.sendComment(aid, 'x', queue: false);
+      final loop = loopWith([
+        [
+          ...changeCalls(
+            edits: [('Save', 'Keep')],
+            narration: 'Renaming the button',
+          ).take(2),
+          for (var i = 0; i < 5; i++) const ScriptedCall('list_files', {}),
+        ],
+      ]);
+      final out = await loop.change(aid, [item], session: sid);
+      expect(out, isA<ChangeLanded>().having((o) => o.version, 'version', 2));
+      expect(
+        bodies(aid, item.threadId).last,
+        'Renaming the button. I stopped early (6 turns), so this may not be '
+        'everything you asked.',
+      );
+      expect(api.threadOf(aid, item.threadId).status, 'open');
+      expect(await api.listDrafts(), isEmpty);
+    });
+
+    test('a cancel ends the change with nothing published or replied, and '
+        'the draft deleted', () async {
+      final item = api.sendComment(aid, 'x', queue: false);
+      final cancel = Completer<void>();
+      final loop = loopWith([
+        changeCalls(edits: [('Save', 'Keep')]),
+      ]);
+      runner.gate = Completer<void>();
+      final out = loop.change(
         aid,
         [item],
         session: sid,
         cancelled: cancel.future,
       );
-      await backend.arrived.future;
+      await runner.arrived.future;
       cancel.complete();
-      expect(await run, isA<ChangeCancelled>());
-      expect(api.callNames, isNot(contains('publish')));
+      expect(await out, isA<ChangeCancelled>());
       expect(api.callNames, isNot(contains('replyAsAgent')));
-      expect(api.callNames, isNot(contains('ackFeedback')));
+      expect(api.callNames, isNot(contains('publish')));
       expect(api.working, isEmpty);
     });
 
-    test('a result that arrives after the cancel is not published', () async {
-      final loop = loopWith([
-        change(edits: [edit('Save', 'Keep')]),
-      ]);
+    test('a publish without an answer is interrupted: no reply, the ledger '
+        'record kept', () async {
       final item = api.sendComment(aid, 'x', queue: false);
-      final outcome = await loop.change(
-        aid,
-        [item],
-        session: sid,
-        cancelled: Future<void>.value(),
-      );
-      expect(outcome, isA<ChangeCancelled>());
-      expect(api.callNames, isNot(contains('publish')));
+      api.failNext('publish', unreachable);
+      final loop = loopWith([
+        changeCalls(edits: [('Save', 'Keep')]),
+      ]);
+      final out = await loop.change(aid, [item], session: sid);
+      expect(out, isA<ChangeInterrupted>());
       expect(api.callNames, isNot(contains('replyAsAgent')));
+      expect(await ledger.of(aid), hasLength(1));
     });
 
-    test('db ops are pinned to the version the prompt showed', () async {
-      final have = api.putDoc(aid, 'runs/a', {'km': 5});
-      final loop = loopWith([
-        change(
-          db: [
-            const DbOp(
-              op: 'update',
-              collection: 'runs',
-              docId: 'a',
-              data: {'unit': 'km'},
-            ),
-            const DbOp(
-              op: 'set',
-              collection: 'runs',
-              docId: 'b',
-              data: {'km': 7},
-            ),
-          ],
-        ),
-      ]);
-      final item = api.sendComment(aid, 'x', queue: false);
-      await loop.change(aid, [item], session: sid);
-      expect(
-        backend.seen.single.userText,
-        contains('{"path":"runs/a","version":${have.version},"data":{"km":5}}'),
-      );
-      final batch = api.calls.firstWhere((c) => c.name == 'batchDocs');
-      final writes = batch.args['writes']! as List<DocWrite>;
-      expect([for (final w in writes) w.path], ['runs/a', 'runs/b']);
-      expect(writes[0].ifVersion, have.version);
-      expect(writes[1].ifVersion, isNull);
-      expect((await api.getDoc(aid, 'runs/a'))!.data, {'km': 5, 'unit': 'km'});
-    });
-
-    test('a refused db batch restores the previous version and leaves the '
-        'threads open', () async {
-      final loop = loopWith([
-        change(
-          reply: 'Added units.',
-          edits: [edit('Save', 'Keep')],
-          db: [
-            const DbOp(
-              op: 'update',
-              collection: 'runs',
-              docId: 'gone',
-              data: {'unit': 'km'},
-            ),
-          ],
-        ),
-      ]);
-      final item = api.sendComment(aid, 'x', queue: false);
-      final outcome = await loop.change(aid, [item], session: sid);
-      expect(outcome, isA<ChangeFailed>());
-      final restore = api.calls.singleWhere((c) => c.name == 'restoreVersion');
-      expect(restore.args, {'aid': aid, 'n': 1, 'ifVersion': 2});
-      expect(api.filesOf(aid, 3), api.filesOf(aid, 1));
-      final t = api.threadOf(aid, item.threadId);
-      expect(t.comments.last.body, startsWith("Couldn't make that change: "));
-      expect(t.status, 'open');
-    });
-
-    test('a document conflict re-reads and writes once more', () async {
-      final before = api.putDoc(aid, 'runs/a', {'km': 5});
-      final loop = loopWith([
-        change(
-          edits: [edit('Save', 'Keep')],
-          db: [
-            const DbOp(
-              op: 'update',
-              collection: 'runs',
-              docId: 'a',
-              data: {'unit': 'km'},
-            ),
-          ],
-        ),
-      ]);
-      backend.gate = Completer<void>();
-      final item = api.sendComment(aid, 'x', queue: false);
-      final run = loop.change(aid, [item], session: sid);
-      await backend.arrived.future;
-      // The page writes the document while the model runs.
-      final after = api.putDoc(aid, 'runs/a', {'km': 6});
-      backend.gate!.complete();
-      final outcome = await run;
-
-      expect(outcome, isA<ChangeLanded>());
-      final batches = [
-        for (final c in api.calls)
-          if (c.name == 'batchDocs')
-            (c.args['writes']! as List<DocWrite>).single.ifVersion,
-      ];
-      expect(batches, [before.version, after.version]);
-      expect((await api.getDoc(aid, 'runs/a'))!.data, {'km': 6, 'unit': 'km'});
-    });
-
-    test('a second document conflict restores the previous version', () async {
-      final loop = loopWith([
-        change(
-          edits: [edit('Save', 'Keep')],
-          db: [
-            const DbOp(
-              op: 'set',
-              collection: 'runs',
-              docId: 'b',
-              data: {'km': 1},
-            ),
-          ],
-        ),
-      ]);
-      const conflict = ClaxApiError(
-        status: 409,
-        code: 'conflict',
-        message: 'document runs/b changed',
-      );
-      api
-        ..failNext('batchDocs', conflict)
-        ..failNext('batchDocs', conflict);
-      final item = api.sendComment(aid, 'x', queue: false);
-      final outcome = await loop.change(aid, [item], session: sid);
-      expect(outcome, isA<ChangeFailed>());
-      expect(api.callNames.where((n) => n == 'batchDocs'), hasLength(2));
-      expect(api.callNames, contains('restoreVersion'));
-      expect(api.threadOf(aid, item.threadId).status, 'open');
-    });
-
-    test(
-      'two db writes to one document retry before anything is published',
-      () async {
-        const twice = [
-          DbOp(op: 'set', collection: 'runs', docId: 'r1', data: {'km': 1}),
-          DbOp(op: 'update', collection: 'runs', docId: 'r1', data: {'u': 1}),
-        ];
-        final loop = loopWith([
-          change(edits: [edit('Save', 'Keep')], db: twice),
-          change(edits: [edit('Save', 'Keep')], db: [twice.first]),
-        ]);
-        final item = api.sendComment(aid, 'x', queue: false);
-        final outcome = await loop.change(aid, [item], session: sid);
-        expect(backend.seen, hasLength(2));
-        expect(backend.seen[1].userText, contains('written twice'));
-        expect(outcome, isA<ChangeLanded>());
-        expect(api.callNames.where((n) => n == 'publish'), hasLength(1));
-        expect((await api.getDoc(aid, 'runs/r1'))!.data, {'km': 1});
-      },
-    );
-
-    test('a write to an existing document the prompt did not show is '
-        'refused and asked for again', () async {
-      for (var i = 0; i < PromptBuilder.maxOwnDocs + 1; i++) {
-        api.putDoc(aid, 'runs/r$i', {'km': i});
-      }
-      final loop = loopWith([
-        change(
-          db: [
-            DbOp(
-              op: 'set',
-              collection: 'runs',
-              docId: 'r${PromptBuilder.maxOwnDocs}',
-              data: const {'km': 0},
-            ),
-          ],
-        ),
-        change(resolve: false),
-      ]);
-      final item = api.sendComment(aid, 'x', queue: false);
-      await loop.change(aid, [item], session: sid);
-      final first = backend.seen.first.userText;
-      expect(
-        first,
-        isNot(contains('"path":"runs/r${PromptBuilder.maxOwnDocs}"')),
-      );
-      expect(backend.seen, hasLength(2));
-      expect(backend.seen[1].userText, contains('was not shown'));
-      expect(api.callNames, isNot(contains('batchDocs')));
-    });
-
-    test(
-      'a publish with no answer is left for recovery without a reply',
-      () async {
-        final loop = loopWith([
-          change(edits: [edit('Save', 'Keep')]),
-        ]);
-        api.failNext(
-          'publish',
-          const ClaxApiError(status: 0, code: 'timeout', message: 'no answer'),
-        );
-        final item = api.sendComment(aid, 'x', queue: false);
-        final outcome = await loop.change(aid, [item], session: sid);
-        expect(outcome, isA<ChangeInterrupted>());
-        expect(outcome.answered, isFalse);
-        expect(api.callNames, isNot(contains('replyAsAgent')));
-        expect(api.callNames, isNot(contains('ackFeedback')));
-        expect(api.working, isEmpty);
-      },
-    );
-
-    test(
-      'a read with no answer is left for recovery without a reply',
-      () async {
-        final loop = loopWith([]);
-        api.failNext(
-          'readFiles',
-          const ClaxApiError(
-            status: 0,
-            code: 'daemon_unreachable',
-            message: 'no connection',
-          ),
-        );
-        final item = api.sendComment(aid, 'x', queue: false);
-        final outcome = await loop.change(aid, [item], session: sid);
-        expect(outcome, isA<ChangeInterrupted>());
-        expect(backend.seen, isEmpty);
-        expect(api.callNames, isNot(contains('replyAsAgent')));
-      },
-    );
-
-    test('a thread with a newer viewer comment is neither answered nor '
-        'resolved', () async {
-      final newer = NewerCommentApi();
-      api = newer;
-      sid = (await api.registerAppSession(installId: 'install', pid: 1)).id;
-      aid = api.seedArtifact('Runs', {'index.html': page});
-      final loop = loopWith([
-        change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
-      ]);
-      final first = api.sendComment(aid, 'Say Keep', queue: false);
-      final other = api.sendComment(aid, 'Bigger', queue: false);
-      newer.newerOn = first.threadId;
-      final outcome = await loop.change(aid, [first, other], session: sid);
-      expect(outcome, isA<ChangeLanded>());
-      final t = api.threadOf(aid, first.threadId);
-      expect(t.comments, hasLength(1));
-      expect(t.status, 'open');
-      expect(api.threadOf(aid, other.threadId).status, 'resolved');
-      expect(api.acked, [first.commentId, other.commentId]);
-    });
-
-    test(
-      'a document read but trimmed from the prompt counts as not shown',
-      () async {
-        // Two big documents: the prompt's budget keeps only the first.
-        api.putDoc(aid, 'notes/a', {'text': 'a' * 15000});
-        api.putDoc(aid, 'notes/b', {'text': 'b' * 15000});
-        final loop = loopWith([
-          change(
-            db: [
-              const DbOp(
-                op: 'set',
-                collection: 'notes',
-                docId: 'b',
-                data: {'text': ''},
-              ),
-            ],
-          ),
-          change(resolve: false),
-        ]);
-        final item = api.sendComment(aid, 'x', queue: false);
-        await loop.change(aid, [item], session: sid);
-        expect(
-          backend.seen.first.userText,
-          isNot(contains('"path":"notes/b"')),
-        );
-        expect(backend.seen, hasLength(2));
-        expect(backend.seen[1].userText, contains('was not shown'));
-        expect(api.callNames, isNot(contains('batchDocs')));
-        expect((await api.getDoc(aid, 'notes/b'))!.data['text'], 'b' * 15000);
-      },
-    );
-
-    test('a thread with a newer viewer comment is left out of addresses, '
-        'and the ledger says which comments the version answered', () async {
-      final newer = NewerCommentApi();
-      api = newer;
-      sid = (await api.registerAppSession(installId: 'install', pid: 1)).id;
-      aid = api.seedArtifact('Runs', {'index.html': page});
-      final ledger = MemoryChangeLedger();
-      backend = HeldBackend([
-        change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
-      ]);
-      final loop = AgentLoop(
-        api: api,
-        backend: () => backend,
-        prompts: PromptBuilder(rootBundle),
-        model: () => 'claude-haiku-5-5',
-        timings: timings,
-        ledger: ledger,
-      );
-      final first = api.sendComment(aid, 'Say Keep', queue: false);
-      final other = api.sendComment(aid, 'Bigger', queue: false);
-      newer.newerOn = first.threadId;
-      await loop.change(aid, [first, other], session: sid);
-      final publish = api.calls.singleWhere((c) => c.name == 'publish');
-      expect((publish.args['request']! as PublishRequest).addresses, [
-        other.threadId,
-      ]);
-      expect(api.versionOf(aid, 2).addresses, [other.threadId]);
-      final r = (await ledger.of(aid)).single;
-      expect(r.base, 1);
-      expect(r.addresses, [other.threadId]);
-      expect(r.answered, {
-        first.threadId: [first.commentId],
-        other.threadId: [other.commentId],
-      });
-    });
-
-    test('a publish refused for good leaves no ledger record', () async {
-      final ledger = MemoryChangeLedger();
-      backend = HeldBackend([
-        change(edits: [edit('Save', 'Keep')]),
-      ]);
-      final loop = AgentLoop(
-        api: api,
-        backend: () => backend,
-        prompts: PromptBuilder(rootBundle),
-        model: () => 'claude-haiku-5-5',
-        timings: timings,
-        ledger: ledger,
-      );
-      api.failNext(
-        'publish',
-        const ClaxApiError(status: 400, code: 'invalid', message: 'no'),
-      );
-      final item = api.sendComment(aid, 'x', queue: false);
-      await loop.change(aid, [item], session: sid);
-      expect(await ledger.of(aid), isEmpty);
-    });
-
-    test('every read before the model call starts at once', () async {
-      final gated = GatedListApi();
-      api = gated;
-      sid = (await api.registerAppSession(installId: 'install', pid: 1)).id;
-      aid = api.seedArtifact('Runs', {'index.html': page});
-      final loop = loopWith([change(resolve: false)]);
-      final item = api.sendComment(aid, 'x', queue: false);
-      final run = loop.change(aid, [item], session: sid);
-      await until(() => api.callNames.contains('listArtifacts'));
-      await until(() => api.callNames.contains('collections'));
-      expect(api.callNames, contains('clip'));
-      expect(api.callNames, isNot(contains('readFiles')));
-      gated.gate.complete();
-      await run;
-      expect(api.callNames, isNot(contains('getArtifact')));
-      expect(api.calls.where((c) => c.name == 'readFiles'), hasLength(1));
-    });
-
-    test('other apps summary excludes the artifact being changed', () async {
-      final mine = api.seedArtifact(
-        'Mine',
-        {'index.html': page},
-        capabilities: {'db': {}},
-      );
-      api.putDoc(mine, 'runs/a', {'km': 5});
-      final other = api.seedArtifact(
-        'Shopping',
-        {'index.html': page},
-        capabilities: {'db': {}},
-      );
-      api.putDoc(other, 'items/milk', {'name': 'milk'});
-      final loop = loopWith([change(resolve: false)]);
-      final item = api.sendComment(mine, 'x', queue: false);
-      await loop.change(mine, [item], session: sid);
-      final text = backend.seen.single.userText;
-      expect(text, contains('"id":"$other"'));
-      expect(text, isNot(contains('"id":"$mine"')));
-    });
-
-    test('the clip goes to a backend that takes images, and the prompt '
-        'says it is attached', () async {
-      final png = Uint8List.fromList([137, 80, 78, 71]);
-      final loop = loopWith([change(resolve: false)], name: 'messages-api');
-      final item = api.sendComment(
-        aid,
-        'x',
-        queue: false,
-        clip: png,
-        anchor: const {
-          'kind': 'element',
-          'selector': 'main > button',
-          'quote': 'Save',
-          'file': 'index.html',
-        },
-      );
-      await loop.change(aid, [item], session: sid);
-      expect(backend.seen.single.image, png);
-      expect(backend.seen.single.userText, contains('attached image'));
-      expect(
-        backend.seen.single.userText,
-        contains(r'Anchored on: "main > button  «Save»  (v1)"'),
-      );
-    });
-
-    test(
-      'no clip is fetched or claimed for a backend without images',
-      () async {
-        final png = Uint8List.fromList([137, 80, 78, 71]);
-        final loop = loopWith([change(resolve: false)], name: 'claude-cli');
-        final item = api.sendComment(aid, 'x', queue: false, clip: png);
-        await loop.change(aid, [item], session: sid);
-        expect(backend.seen.single.image, isNull);
-        expect(backend.seen.single.userText, isNot(contains('attached image')));
-        expect(api.callNames, isNot(contains('clip')));
-      },
-    );
-
-    test('a deleted artifact drops the change without a reply', () async {
-      final loop = loopWith([]);
+    test('a deleted app drops the change without a reply or a run', () async {
       final item = api.sendComment(aid, 'x', queue: false);
       api.failNext(
         'readFiles',
         const ClaxApiError(status: 404, code: 'not_found', message: 'gone'),
       );
-      final outcome = await loop.change(aid, [item], session: sid);
-      expect(outcome, isA<ChangeDropped>());
-      expect(backend.seen, isEmpty);
+      final loop = loopWith([changeCalls()]);
+      final out = await loop.change(aid, [item], session: sid);
+      expect(out, isA<ChangeDropped>());
+      expect(runner.seen, isEmpty);
       expect(api.callNames, isNot(contains('replyAsAgent')));
     });
 
-    test('a failure reading the artifact replies with the reason', () async {
-      final loop = loopWith([]);
-      api.failNext(
-        'readFiles',
-        const ClaxApiError(status: 500, code: 'internal', message: 'disk'),
+    test('the documents shown are this app\'s own, at their versions; '
+        'another app\'s are left out', () async {
+      final mine = api.putDoc(aid, 'notes/n1', {'t': 'mine'});
+      final other = api.seedArtifact(
+        'Other',
+        {'index.html': page},
+        capabilities: const {'db': {}},
       );
+      api.putDoc(other, 'notes/n1', {'t': 'theirs'});
+      api.putDoc(other, 'notes/n1', {'t': 'theirs again'});
       final item = api.sendComment(aid, 'x', queue: false);
-      final outcome = await loop.change(aid, [item], session: sid);
-      expect(outcome, isA<ChangeFailed>());
-      expect(backend.seen, isEmpty);
-      expect(
-        api.threadOf(aid, item.threadId).comments.last.body,
-        "Couldn't make that change: disk",
-      );
+      final loop = loopWith([changeCalls()]);
+      await loop.change(aid, [item], session: sid);
+      expect(runner.states.single.ctx.shownDocs, {'notes/n1': mine.version});
+      expect(runner.text(0), contains('"mine"'));
+      expect(runner.text(0), isNot(contains('theirs')));
     });
 
-    test(
-      'a reply that cannot be posted leaves the outcome unanswered',
-      () async {
-        final loop = loopWith([
-          change(edits: [edit('Save', 'Keep')]),
-        ]);
-        const down = ClaxApiError(
-          status: 0,
-          code: 'daemon_unreachable',
-          message: 'no connection',
-        );
-        api.failNext('replyAsAgent', down);
-        final item = api.sendComment(aid, 'x', queue: false);
-        final outcome = await loop.change(aid, [item], session: sid);
-        expect(
-          outcome,
-          isA<ChangeLanded>().having((o) => o.answered, 'answered', isFalse),
-        );
-        expect(api.callNames, isNot(contains('resolveAsAgent')));
-      },
-    );
-
-    test('the backend run is timed with its kind, model and backend', () async {
-      final loop = loopWith([change(resolve: false)]);
+    test('a shown document is written pinned to the version it was shown at, '
+        'without a read', () async {
+      api.putDoc(aid, 'runs/a', {'km': 1});
       final item = api.sendComment(aid, 'x', queue: false);
+      final loop = loopWith([
+        changeCalls(
+          edits: [('Save', 'Keep')],
+          db: const [
+            DbOp(op: 'update', collection: 'runs', docId: 'a', data: {'km': 2}),
+          ],
+        ),
+      ]);
+      final out = await loop.change(aid, [item], session: sid);
+      expect(out, isA<ChangeLanded>());
+      expect((await api.getDoc(aid, 'runs/a'))!.data, {'km': 2});
+    });
+
+    test('the clip goes with a runner that sends images, as the first '
+        'block', () async {
+      final png = Uint8List.fromList([1, 2, 3]);
+      final item = api.sendComment(aid, 'x', queue: false, clip: png);
+      final loop = loopWith([changeCalls()]);
+      await loop.change(aid, [item], session: sid);
+      expect(runner.seen.single.first.first['type'], 'image');
+    });
+
+    test('no clip is read for a runner that sends no images', () async {
+      final png = Uint8List.fromList([1, 2, 3]);
+      final item = api.sendComment(aid, 'x', queue: false, clip: png);
+      final loop = loopWith([changeCalls()], images: false);
+      await loop.change(aid, [item], session: sid);
+      expect(api.callNames, isNot(contains('clip')));
+      expect([for (final b in runner.seen.single.first) b['type']], ['text']);
+    });
+
+    test('the read consent reaches the run', () async {
+      final consent = FakeReadConsent();
+      final item = api.sendComment(aid, 'x', queue: false);
+      final loop = loopWith([changeCalls()], consent: consent);
+      await loop.change(aid, [item], session: sid);
+      expect(runner.states.single.readConsent, same(consent));
+    });
+
+    test('progress reaches onProgress, from attempt 1', () async {
+      final item = api.sendComment(aid, 'x', queue: false);
+      final loop = loopWith([
+        changeCalls(edits: [('Save', 'Keep')], narration: 'Renaming'),
+      ]);
+      final events = <AgentProgress>[];
+      await loop.change(aid, [item], session: sid, onProgress: events.add);
+      expect(events.first, isA<AttemptStarted>());
+      expect(events.whereType<Narration>().single.text, 'Renaming');
+      expect(
+        [for (final e in events.whereType<ToolStarted>()) e.name],
+        ['str_replace', 'render', 'finish'],
+      );
+      expect(events.whereType<Inspected>(), hasLength(1));
+    });
+
+    test('the run is timed with the artifact and its outcome', () async {
+      final item = api.sendComment(aid, 'x', queue: false);
+      final loop = loopWith([
+        changeCalls(edits: [('Save', 'Keep')]),
+      ]);
       await loop.change(aid, [item], session: sid);
       final r = timings.stopped.single;
       expect(r.name, agentChangeTiming);
-      expect(r.extra, {
-        'artifact': aid,
-        'model': 'claude-haiku-5-5',
-        'backend': 'scripted',
-      });
+      expect(r.extra['artifact'], aid);
+      expect(r.extra['turns'], 3);
+      expect(r.extra['outcome'], 'finished');
     });
-  });
 
-  group('settle', () {
-    late String aid;
-    late MemoryChangeLedger ledger;
-    late AgentLoop loop;
-
-    setUp(() {
-      aid = api.seedArtifact('Runs', {'index.html': page});
-      ledger = MemoryChangeLedger();
-      backend = HeldBackend([]);
-      loop = AgentLoop(
+    test('without an inspector a change is not run and says why', () async {
+      final item = api.sendComment(aid, 'x', queue: false);
+      runner = HeldRunner([changeCalls()]);
+      final loop = AgentLoop(
         api: api,
-        backend: () => backend,
+        runner: () => runner,
         prompts: PromptBuilder(rootBundle),
         model: () => 'claude-haiku-5-5',
         timings: timings,
-        ledger: ledger,
+        clock: StepClock(),
       );
+      final out = await loop.change(aid, [item], session: sid);
+      expect(out, isA<ChangeFailed>());
+      expect(runner.seen, isEmpty);
+      expect(bodies(aid, item.threadId).last, startsWith(failurePrefix));
     });
 
-    Future<ThreadView> stranded(String body) async {
-      final item = api.sendComment(aid, body);
-      await api.pollFeedback(sid);
-      return api.threadOf(aid, item.threadId);
-    }
-
-    test(
-      'a version the app session did not publish is not the record\'s',
-      () async {
-        final t = await stranded('Say Keep');
-        await api.publish(
-          aid,
-          PublishRequest(ifVersion: 1, files: {'index.html': '$page<p>'}),
-        );
-        await api.restoreVersion(aid, 1, ifVersion: 2);
-        // A record that would make version 3, the restore, by number,
-        // addresses and note.
-        await ledger.put(
-          ChangeRecord(
+    group('questions', () {
+      test('before a change runs, an earlier question asked for its '
+          'comments is taken and withdrawn', () async {
+        final item = api.sendComment(aid, 'x', queue: false);
+        final q = await api.askQuestion(sid, [
+          {
+            'question': 'Kilometres or miles?',
+            'header': 'Units',
+            'options': [
+              {'label': 'km'},
+              {'label': 'mi'},
+            ],
+          },
+        ], artifactId: aid);
+        await asked.put(
+          AskedEntry(
+            questionId: q.question.id,
             artifactId: aid,
-            base: 2,
-            addresses: const [],
-            answered: {
-              t.id: [t.comments.single.id],
-            },
-            reply: 'Restored version 1',
-            resolve: false,
+            threadIds: [item.threadId],
+            commentIds: [item.commentId],
           ),
         );
-        final got = await loop.settle(aid, [t]);
-        expect(got.answered, isEmpty);
-        expect(await ledger.of(aid), isEmpty);
-      },
-    );
-
-    test(
-      'a note the daemon cleaned of control characters still matches',
-      () async {
-        final t = await stranded('Say Keep');
-        await ledger.put(
-          ChangeRecord(
-            artifactId: aid,
-            base: 1,
-            addresses: [t.id],
-            answered: {
-              t.id: [t.comments.single.id],
-            },
-            reply: 'Keep\u0007 it\u0000 now.',
-            resolve: false,
-          ),
+        final unrelated = AskedEntry(
+          questionId: 'question-other',
+          artifactId: aid,
+          threadIds: const ['t-other'],
+          commentIds: const ['c-other'],
         );
-        // As the daemon stores the note: control characters dropped.
-        await api.publish(
-          aid,
-          PublishRequest(
-            ifVersion: 1,
-            files: {'index.html': '$page<p>'},
-            note: 'Keep it now.',
-            addresses: [t.id],
-          ),
+        await asked.put(unrelated);
+        final loop = loopWith([changeCalls()]);
+        await loop.change(aid, [item], session: sid);
+        expect(
+          (await api.questions(status: 'all'))
+              .singleWhere((x) => x.id == q.question.id)
+              .status,
+          'withdrawn',
         );
-        final got = await loop.settle(aid, [t]);
-        expect(got.replied, {t.id});
-        expect(got.answered, {t.comments.single.id});
-      },
-    );
-  });
+        expect(
+          [for (final e in await asked.all()) e.questionId],
+          ['question-other'],
+        );
+        final names = api.callNames;
+        expect(
+          names.indexOf('withdrawQuestion'),
+          lessThan(names.indexOf('setWorking')),
+        );
+      });
 
-  group('PromptBuilder.trimDocuments', () {
-    AppDocument doc(int i, [int bytes = 10]) =>
-        (path: 'runs/r$i', version: i, data: {'x': 'a' * bytes});
+      test('a change that finishes with its question open is parked: the '
+          'question and its entry stay', () async {
+        final item = api.sendComment(aid, 'x', queue: false);
+        final loop = loopWith([
+          [
+            const ScriptedCall('ask', pick),
+            ...changeCalls(reply: 'Which units? I asked you in Clax.'),
+          ],
+        ]);
+        final out = await loop.change(aid, [item], session: sid);
+        expect(out, isA<ChangeAnswered>());
+        final q = (await api.questions()).single;
+        expect(q.status, 'open');
+        final e = (await asked.all()).single;
+        expect(e.questionId, q.id);
+        expect(e.commentIds, [item.commentId]);
+      });
 
-    test('keeps at most the collection and document limits', () {
-      final kept = PromptBuilder.trimDocuments([
-        for (var c = 0; c < PromptBuilder.maxOwnCollections + 2; c++)
-          (path: 'c$c', count: 50, docs: [for (var i = 0; i < 30; i++) doc(i)]),
-      ]);
-      expect(kept, hasLength(PromptBuilder.maxOwnCollections));
-      expect(
-        kept.every((c) => c.docs.length == PromptBuilder.maxOwnDocs),
-        isTrue,
-      );
-      expect(kept.first.count, 50);
-    });
+      test('a change that gives up withdraws its open question and forgets '
+          'it', () async {
+        final item = api.sendComment(aid, 'x', queue: false);
+        final loop = loopWith([
+          [
+            const ScriptedCall('ask', pick),
+            const ScriptedCall('give_up', {'reason': 'no answer'}),
+          ],
+        ]);
+        await loop.change(aid, [item], session: sid);
+        expect((await api.questions(status: 'all')).single.status, 'withdrawn');
+        expect(await asked.all(), isEmpty);
+      });
 
-    test('drops documents from the last collection back to fit the budget', () {
-      final kept = PromptBuilder.trimDocuments([
-        (path: 'a', count: 2, docs: [doc(1, 9000), doc(2, 9000)]),
-        (path: 'b', count: 2, docs: [doc(3, 9000), doc(4, 9000)]),
-      ]);
-      expect([for (final c in kept) c.docs.length], [2, 0]);
-      expect([for (final c in kept) c.count], [2, 2]);
-    });
-  });
+      test('a cap with no clean draft withdraws the open question', () async {
+        final item = api.sendComment(aid, 'x', queue: false);
+        final loop = loopWith([
+          [
+            const ScriptedCall('ask', pick),
+            for (var i = 0; i < 6; i++) const ScriptedCall('list_files', {}),
+          ],
+        ]);
+        final out = await loop.change(aid, [item], session: sid);
+        expect(out, isA<ChangeFailed>());
+        expect((await api.questions(status: 'all')).single.status, 'withdrawn');
+        expect(await asked.all(), isEmpty);
+      });
 
-  group('anchorLine', () {
-    test('renders as the daemon payload does', () {
-      expect(
-        anchorLine(const {'kind': 'artifact', 'file': ''}, 3),
-        'the whole artifact  (v3)',
-      );
-      expect(
-        anchorLine(const {
-          'kind': 'element',
-          'selector': 'h2',
-          'file': 'about.html',
-          'route': '?tab=x',
-          'quote': '  Quarterly\n «goals» ',
-        }, 2),
-        '?tab=x › about.html › h2  «Quarterly "goals"»  (v2)',
-      );
-      expect(
-        anchorLine(const {
-          'kind': 'area',
-          'selector': 'main',
-          'file': 'index.html',
-          'area': {'x': 0.1, 'y': 0.1, 'w': 0.42, 'h': 0.004},
-        }, 1),
-        'area in main (42% × <1%)  (v1)',
-      );
-      expect(
-        anchorLine(const {'kind': 'custom', 'custom_name': 'chart'}, 1),
-        'custom:chart  (v1)',
-      );
-      final long = 'a' * 130;
-      expect(
-        anchorLine({'kind': 'range', 'selector': 'p', 'quote': long}, 1),
-        'p  «${'a' * 120}…»  (v1)',
-      );
+      test('a runner-made ending withdraws the open question', () async {
+        final item = api.sendComment(aid, 'x', queue: false);
+        final loop = loopWith([
+          [
+            const ScriptedCall('ask', pick),
+            const ScriptedCall.end(
+              RunGaveUp('The model declined: x', answered: false),
+            ),
+          ],
+        ]);
+        await loop.change(aid, [item], session: sid);
+        expect((await api.questions(status: 'all')).single.status, 'withdrawn');
+      });
     });
   });
 }
 
-/// A fake whose threads route shows one more viewer comment on [newerOn],
-/// as when the person writes again while a change runs.
-class NewerCommentApi extends FakeClaxApi {
+/// A fake whose next create lands but answers as if the daemon were gone.
+class _LostCreateApi extends FakeClaxApi {
+  var loseNextCreate = false;
+
+  @override
+  Future<PublishResult> createArtifact(PublishRequest r) async {
+    final res = await super.createArtifact(r);
+    if (loseNextCreate) {
+      loseNextCreate = false;
+      throw unreachable;
+    }
+    return res;
+  }
+}
+
+/// A fake that shows a newer viewer comment on thread [newerOn].
+class _NewerApi extends FakeClaxApi {
   String? newerOn;
 
   @override
-  Future<List<ThreadView>> threads(String aid) async {
-    final all = await super.threads(aid);
-    return [
-      for (final t in all)
-        if (t.id == newerOn)
-          ThreadView(
-            id: t.id,
-            artifactId: t.artifactId,
-            versionN: t.versionN,
-            status: t.status,
-            sentToAgent: t.sentToAgent,
-            feedbackState: t.feedbackState,
-            comments: [
-              ...t.comments,
-              const ThreadComment(
-                id: 'comment-newer',
-                authorKind: 'viewer',
-                authorName: 'Alex',
-                body: 'And make it red',
-                createdAt: '2026-10-12T00:00:01Z',
-              ),
-            ],
-          )
-        else
-          t,
-    ];
-  }
-}
-
-/// A fake whose artifact listing waits for [gate].
-class GatedListApi extends FakeClaxApi {
-  final gate = Completer<void>();
-
-  @override
-  Future<List<ArtifactSummary>> listArtifacts() async {
-    final all = super.listArtifacts();
-    await gate.future;
-    return all;
-  }
+  Future<List<ThreadView>> threads(String aid) async => [
+    for (final t in await super.threads(aid))
+      if (t.id == newerOn)
+        ThreadView(
+          id: t.id,
+          artifactId: t.artifactId,
+          versionN: t.versionN,
+          status: t.status,
+          sentToAgent: t.sentToAgent,
+          feedbackState: t.feedbackState,
+          comments: [
+            ...t.comments,
+            const ThreadComment(
+              id: 'comment-newer',
+              authorKind: 'viewer',
+              authorName: 'Alex',
+              body: 'And make it red',
+              createdAt: '2026-10-12T00:00:01Z',
+            ),
+          ],
+        )
+      else
+        t,
+  ];
 }

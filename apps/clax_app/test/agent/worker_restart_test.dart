@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:clax_app/agent/loop.dart';
 import 'package:clax_app/agent/prompt.dart';
+import 'package:clax_app/agent/runner/scripted_runner.dart';
 import 'package:clax_app/agent/worker.dart';
 import 'package:clax_app/app.dart';
 import 'package:clax_app/clax/api.dart';
@@ -10,8 +11,10 @@ import 'package:clax_app/daemon/supervisor.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../support/fake_inspector.dart';
 import '../support/fake_supervisor.dart';
 import 'loop_support.dart';
+import 'tools/support.dart' show StepClock;
 
 const page = '<!doctype html><title>Runs</title><button>Save</button>';
 
@@ -29,18 +32,21 @@ void main() {
 
   late FakeSupervisor supervisor;
   late FakeClaxApi api;
-  late HeldBackend backend;
+  late HeldRunner runner;
   late AgentRuntime runtime;
   late List<WorkerEvent> events;
 
-  AgentRuntime runtimeWith(List<Object> script) {
-    backend = HeldBackend(script);
+  AgentRuntime runtimeWith(List<List<ScriptedCall>> script) {
+    runner = HeldRunner(script);
     final loop = AgentLoop(
       api: api,
-      backend: () => backend,
+      runner: () => runner,
       prompts: PromptBuilder(rootBundle),
       model: () => 'claude-haiku-5-5',
       timings: RecordingTimings(),
+      inspector: FakeInspector(),
+      baseUrl: () => Uri.parse('http://127.0.0.1:7999'),
+      clock: StepClock(),
     );
     runtime = AgentRuntime(
       supervisor: supervisor,
@@ -56,7 +62,8 @@ void main() {
     return runtime;
   }
 
-  int registrations() => api.callNames.where((n) => n == 'registerAppSession').length;
+  int registrations() =>
+      api.callNames.where((n) => n == 'registerAppSession').length;
 
   Future<void> idle() => until(
     () => api.waitingPolls == 1 && runtime.worker.isIdle,
@@ -74,30 +81,35 @@ void main() {
     api.releasePolls();
   });
 
-  test('the worker waits for the daemon, then registers as the app session', () async {
-    runtimeWith([]);
-    await until(() => true);
-    expect(api.callNames, isEmpty, reason: 'nothing before Up');
+  test(
+    'the worker waits for the daemon, then registers as the app session',
+    () async {
+      runtimeWith([]);
+      await until(() => true);
+      expect(api.callNames, isEmpty, reason: 'nothing before Up');
 
-    supervisor.set(Up(endpoint()));
-    await idle();
-    final register = api.calls.firstWhere((c) => c.name == 'registerAppSession');
-    expect(register.args['installId'], 'install');
-    expect(register.args['pid'], 42);
-    expect(register.args['cwd'], '/support');
-  });
+      supervisor.set(Up(endpoint()));
+      await idle();
+      final register = api.calls.firstWhere(
+        (c) => c.name == 'registerAppSession',
+      );
+      expect(register.args['installId'], 'install');
+      expect(register.args['pid'], 42);
+      expect(register.args['cwd'], '/support');
+    },
+  );
 
   test('worker_survives_daemon_restart_mid_change', () async {
     final aid = api.seedArtifact('Runs', {'index.html': page});
     runtimeWith([
-      change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
-      change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
+      changeCalls(reply: 'Keep.', edits: [('Save', 'Keep')]),
+      changeCalls(reply: 'Keep.', edits: [('Save', 'Keep')]),
     ]);
     supervisor.set(Up(endpoint(pid: 1)));
     await idle();
-    backend.gate = Completer<void>();
+    runner.gate = Completer<void>();
     final item = api.sendComment(aid, 'Say Keep');
-    await backend.arrived.future;
+    await runner.arrived.future;
 
     // The daemon dies while the model runs: its long poll breaks, its
     // session is gone, and the supervisor brings up a new one.
@@ -107,17 +119,17 @@ void main() {
     api.failNext('publish', unreachable);
     supervisor.set(Up(endpoint(pid: 2)));
     await until(() => registrations() == 2 && api.waitingPolls == 1);
-    expect(backend.seen, hasLength(1), reason: 'the change in flight is kept');
+    expect(runner.seen, hasLength(1), reason: 'the change in flight is kept');
 
     // Its publish then reaches nobody; recovery runs it again from the
     // daemon's threads.
-    backend.gate!.complete();
-    backend.gate = null;
+    runner.gate!.complete();
+    runner.gate = null;
     await until(() => api.currentVersion(aid) == 2);
     await idle();
 
     expect(api.callNames, contains('allThreads'));
-    expect(backend.seen, hasLength(2), reason: 'run again exactly once');
+    expect(runner.seen, hasLength(2), reason: 'run again exactly once');
     expect(api.currentVersion(aid), 2, reason: 'exactly one new version');
     final t = api.threadOf(aid, item.threadId);
     expect([for (final c in t.comments) c.authorKind], ['viewer', 'agent']);
@@ -130,14 +142,14 @@ void main() {
       'cut-off change runs once', () async {
     final aid = api.seedArtifact('Runs', {'index.html': page});
     runtimeWith([
-      change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
-      change(reply: 'Keep.', edits: [edit('Save', 'Keep')]),
+      changeCalls(reply: 'Keep.', edits: [('Save', 'Keep')]),
+      changeCalls(reply: 'Keep.', edits: [('Save', 'Keep')]),
     ]);
     supervisor.set(Up(endpoint(pid: 1)));
     await idle();
-    backend.gate = Completer<void>();
+    runner.gate = Completer<void>();
     final item = api.sendComment(aid, 'Say Keep');
-    await backend.arrived.future;
+    await runner.arrived.future;
 
     supervisor.set(const Failed('clax stopped 5 times within a minute', []));
     await until(() => events.whereType<WorkerCancelled>().isNotEmpty);
@@ -146,7 +158,7 @@ void main() {
 
     api.endSession('install');
     api.releasePolls();
-    backend.gate = null;
+    runner.gate = null;
     supervisor.set(Up(endpoint(pid: 3)));
     await until(() => api.currentVersion(aid) == 2);
     await idle();

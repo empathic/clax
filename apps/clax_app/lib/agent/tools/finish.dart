@@ -7,6 +7,7 @@ import 'dart:convert';
 import '../../clax/api.dart';
 import '../backend.dart' show CancelWatch;
 import '../edit_result.dart' show DbOp, maxDbOps;
+import '../failure.dart';
 import '../ledger.dart';
 import '../request.dart';
 import 'draft.dart';
@@ -699,7 +700,7 @@ Future<_Ended> _failWith(
       api,
       log,
       s,
-      "Couldn't make that change: $reason",
+      failureReply(reason),
       resolve: false,
       newer: newer ?? const {},
     );

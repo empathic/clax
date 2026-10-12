@@ -499,13 +499,15 @@ void main() {
       comments: comments,
       feedbackState: feedback == null ? null : FeedbackState(state: feedback),
     );
-    ThreadComment c(String kind, String body) => ThreadComment(
-      id: body,
-      authorKind: kind,
-      authorName: '',
-      body: body,
-      createdAt: '2026-10-12T09:14:00Z',
-    );
+    ThreadComment c(String kind, String body, {String? harness}) =>
+        ThreadComment(
+          id: body,
+          authorKind: kind,
+          authorName: '',
+          body: body,
+          createdAt: '2026-10-12T09:14:00Z',
+          viaHarness: harness ?? (kind == 'agent' ? 'app' : null),
+        );
 
     test('each state', () {
       final person = [c('viewer', 'x')];
@@ -539,6 +541,19 @@ void main() {
           ),
         ),
         ThreadStatus.failed,
+      );
+      expect(
+        threadStatus(
+          view(
+            feedback: 'acknowledged',
+            comments: [
+              ...person,
+              c('agent', "Couldn't make that change: x", harness: 'claude'),
+            ],
+          ),
+        ),
+        ThreadStatus.replied,
+        reason: 'another harness\'s reply is not the app\'s failure',
       );
       expect(
         threadStatus(view(status: 'resolved', comments: person)),

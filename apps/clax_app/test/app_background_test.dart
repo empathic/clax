@@ -6,6 +6,8 @@ import 'package:clax_app/agent/edit_result.dart';
 import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/prompt.dart';
 import 'package:clax_app/agent/request.dart';
+import 'package:clax_app/agent/runner/turn.dart';
+import 'package:clax_app/agent/tools/budget.dart';
 import 'package:clax_app/app.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
@@ -20,6 +22,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'agent/loop_support.dart' show RecordingTimings, change, edit;
+import 'agent/tools/support.dart' show StepClock;
+import 'support/fake_inspector.dart';
 import 'support/fake_supervisor.dart';
 import 'support/fake_surface.dart';
 import 'support/fake_voice.dart';
@@ -65,6 +69,45 @@ class _Agent implements AgentBackend {
   @override
   Future<EditResult> run(AgentRequest request) => steps[runs++](request);
 }
+
+/// The Messages API on the tool loop: each turn runs the next of [steps].
+class _Turns implements AgentBackend, TurnBackend {
+  final steps = <Future<ModelTurn> Function(TurnRequest r)>[];
+  int turns = 0;
+
+  @override
+  String get name => backendMessagesApi;
+
+  @override
+  Future<EditResult> run(AgentRequest request) =>
+      throw StateError('the tool loop sends turns');
+
+  /// Runs the next step, then reports a [ToolStarted] for each of its
+  /// tool calls, as a streamed turn does.
+  @override
+  Future<ModelTurn> turn(TurnRequest r) async {
+    final t = await steps[turns++](r);
+    for (final b in t.content) {
+      if (b case {
+        'name': final String name,
+        'input': final Map<String, Object?> input,
+      }) {
+        r.onProgress?.call(ToolStarted(name, toolLabel(name, input)));
+      }
+    }
+    return t;
+  }
+}
+
+/// A model turn that calls [calls], each `(name, input)`.
+ModelTurn _calls(List<(String, Map<String, Object?>)> calls) => ModelTurn(
+  content: [
+    for (final (i, (name, input)) in calls.indexed)
+      {'type': 'tool_use', 'id': 'call-$i', 'name': name, 'input': input},
+  ],
+  stopReason: 'tool_use',
+  usage: const Usage(input: 100, output: 50),
+);
 
 /// Records every [BackgroundWork] call as `method(args…)`, and plays the
 /// platform's launch artifact and taps.
@@ -122,8 +165,10 @@ void main() {
   late _Agent agent;
   late _Work work;
   late List<FakeAppSurface> surfaces;
+  _Turns? turns;
 
   setUp(() {
+    turns = null;
     dir = Directory.systemTemp.createTempSync('app-bg-test-');
     supervisor = FakeSupervisor();
     api = FakeClaxApi();
@@ -139,7 +184,7 @@ void main() {
         services: AppServices(
           supervisor: supervisor,
           api: (_) => api,
-          backend: (_, _) => agent,
+          backend: (_, _) => turns ?? agent,
           voice: FakeVoice.unsupported('No speech here'),
           settings: SettingsStore(File('${dir.path}/settings.json')),
           key: _Key(),
@@ -156,6 +201,8 @@ void main() {
           background: work,
           pendingMake: PendingMake(File('${dir.path}/pending-make.json')),
           pid: 42,
+          inspector: turns == null ? null : FakeInspector(),
+          clock: StepClock(),
         ),
       ),
     );
@@ -486,5 +533,166 @@ void main() {
     expect(agent.runs, 0);
     await settleFiles(tester);
     expect(File('${dir.path}/pending-make.json').existsSync(), isFalse);
+  });
+
+  group('on the tool loop', () {
+    const page = '<!doctype html><title>Runs</title><h1>Runs</h1>';
+    final make = [
+      (
+        'set_meta',
+        <String, Object?>{'title': 'Runs', 'capabilities_json': null},
+      ),
+      ('write_file', <String, Object?>{'path': 'index.html', 'content': page}),
+      ('render', <String, Object?>{'file': null}),
+    ];
+    const done = [
+      ('finish', <String, Object?>{'reply': 'Made it.', 'resolve': false}),
+    ];
+
+    testWidgets('a make shows its narration and tools in the notification, '
+        'then opens the app', (tester) async {
+      turns = _Turns();
+      await pumpApp(tester);
+      turns!.steps
+        ..add((r) async {
+          r.onProgress?.call(const Narration('Writing the tracker'));
+          return _calls(make);
+        })
+        ..add((_) async => _calls(done));
+      await submit(tester, 'a tracker for my runs');
+      await pumpUntil(tester, () => work.calls.contains('stop'));
+      await pumpRoute(tester);
+      expect(find.byType(AppScreen), findsOneWidget);
+      expect(work.calls, [
+        'requestPermission',
+        'start($title, Starting the agent)',
+        'update($title, Writing the tracker)',
+        'update($title, Naming the app)',
+        'update($title, Writing index.html)',
+        'update($title, Checking how it looks)',
+        'update($title, Publishing)',
+        'stop',
+      ]);
+      final created = api.calls.singleWhere((c) => c.name == 'createArtifact');
+      expect((created.args['request']! as PublishRequest).title, 'Runs');
+      expect(await api.listDrafts(), isEmpty);
+    });
+
+    testWidgets('a turn cut by the background network block waits for the app '
+        'and is sent again; the run goes on', (tester) async {
+      turns = _Turns();
+      await pumpApp(tester);
+      final seen = <TurnRequest>[];
+      turns!.steps
+        ..add((r) async {
+          seen.add(r);
+          return _calls(make);
+        })
+        ..add((r) async {
+          seen.add(r);
+          leave(tester);
+          throw _dns;
+        })
+        ..add((r) async {
+          seen.add(r);
+          return _calls(done);
+        });
+      await submit(tester, 'a tracker for my runs');
+      await pumpUntil(
+        tester,
+        () => work.calls.last.contains('Waiting for Clax'),
+      );
+      expect(turns!.turns, 2, reason: 'held while the app is away');
+      comeBack(tester);
+      await pumpUntil(tester, () => work.calls.contains('stop'));
+      expect(turns!.turns, 3);
+      expect(seen[2].messages, seen[1].messages, reason: 'the same turn');
+      expect(
+        work.calls,
+        containsAllInOrder([
+          'update($title, Waiting for Clax to come back…)',
+          'update($title, Picking up where it left off)',
+          'stop',
+        ]),
+      );
+      expect(api.callNames, contains('createArtifact'));
+    });
+
+    testWidgets('a make cancelled while its turn is held ends its waiting '
+        'state with the run', (tester) async {
+      turns = _Turns();
+      await pumpApp(tester);
+      turns!.steps.add((r) async {
+        leave(tester);
+        throw _dns;
+      });
+      await submit(tester, 'a tracker for my runs');
+      await pumpUntil(
+        tester,
+        () => work.calls.last.contains('Waiting for Clax'),
+      );
+      await pumpRoute(tester);
+      await tester.tap(find.text('Cancel'));
+      await pumpUntil(tester, () => work.calls.contains('stop'));
+      await pumpRoute(tester);
+      expect(work.calls.last, 'stop');
+      expect(
+        work.calls.where((c) => c.contains('Picking up')),
+        isEmpty,
+        reason: 'no resume after a cancel',
+      );
+      expect(work.calls.where((c) => c.startsWith('failed')), isEmpty);
+      expect(api.callNames, isNot(contains('createArtifact')));
+    });
+
+    testWidgets('a change shows its narration in the notification', (
+      tester,
+    ) async {
+      turns = _Turns();
+      final aid = api.seedArtifact('Runs', {'index.html': _page});
+      await pumpApp(tester);
+      await pumpUntil(tester, () => api.waitingPolls == 1);
+      final gate = Completer<void>();
+      turns!.steps
+        ..add((r) async {
+          r.onProgress?.call(const Narration('Renaming the heading'));
+          await gate.future;
+          return _calls([
+            (
+              'str_replace',
+              {
+                'path': 'index.html',
+                'old_str': '<h1>Runs</h1>',
+                'new_str': '<h1>My runs</h1>',
+              },
+            ),
+            ('render', {'file': null}),
+          ]);
+        })
+        ..add(
+          (_) async => _calls([
+            ('finish', {'reply': 'Renamed.', 'resolve': true}),
+          ]),
+        );
+      api.sendComment(aid, 'Call it My runs');
+      await pumpUntil(
+        tester,
+        () => work.calls.any((c) => c.endsWith('Renaming the heading)')),
+      );
+      gate.complete();
+      await pumpUntil(tester, () => work.calls.contains('stop'));
+      expect(api.currentVersion(aid), 2);
+      expect(await api.listDrafts(), isEmpty);
+    });
+
+    testWidgets('the app screen\'s Retry goes to the worker', (tester) async {
+      final aid = api.seedArtifact('Runs', {'index.html': _page});
+      work.launch = aid;
+      await pumpApp(tester);
+      await pumpRoute(tester);
+      final screen = tester.widget<AppScreen>(find.byType(AppScreen));
+      expect(screen.onRetry, isNotNull);
+      expect(await screen.onRetry!(aid, 'no-such-thread'), isFalse);
+    });
   });
 }
