@@ -115,6 +115,27 @@ stop:
 doctor:
     CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" cargo run -q -p clax-cli -- doctor
 
+# Build clax for the Clax app and place it in apps/clax_app: [android|macos|all] [--debug], release by default
+[positional-arguments]
+app-clax *ARGS:
+    ./scripts/build-app-clax.sh "$@"
+
+# Run the Clax app's checks (Flutter analyze and tests) against a kept debug clax
+app-test:
+    bin="$(apps/clax_app/tool/test-bin.sh)" && cd apps/clax_app && CLAX_TEST_BIN="$bin" tool/check.sh
+
+# Build the macOS clax and run the Clax app's integration tests on macOS
+app-integration:
+    ./scripts/build-app-clax.sh macos && cd apps/clax_app && flutter test integration_test -d macos
+
+# Build the Android clax binaries and the Clax app's release APK
+app-apk:
+    ./scripts/build-app-clax.sh android && cd apps/clax_app && flutter build apk --release
+
+# Build the macOS clax and the Clax app's release macOS app
+app-macos:
+    ./scripts/build-app-clax.sh macos && cd apps/clax_app && flutter build macos --release
+
 # Try rooms and sample() in a scratch daemon (the stub provider unless ANTHROPIC_API_KEY is set)
 demo-room-sample:
     scripts/demo-room-sample.sh
