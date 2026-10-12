@@ -2,7 +2,7 @@
 //! §9). The declaration is a full set: the store replaces the stored object
 //! with it; omitting it keeps the stored one and `{}` clears it.
 
-use crate::db::Rules;
+use crate::db::{ReadDecl, Rules};
 use crate::{CoreError, Result};
 use serde_json::Value;
 
@@ -11,7 +11,9 @@ fn bad(message: impl Into<String>) -> CoreError {
 }
 
 /// Accepts a JSON object whose every value is an object. `db.rules` must pass
-/// [`Rules::from_capabilities`]; `comments.composer_only` and
+/// [`Rules::from_capabilities`]; `db.read` and `db.share` must pass
+/// [`ReadDecl::check`] (the check that a list does not name its own artifact
+/// is made where the artifact's ID is known); `comments.composer_only` and
 /// `comments.customAnchors` are booleans; `user.scopes` is an array of
 /// `"profile"` and `"email"`; `room.topics` must pass
 /// [`Topics::from_capabilities`](crate::room::Topics::from_capabilities). Other names are stored as given.
@@ -30,6 +32,7 @@ pub fn validate(caps: &Value) -> Result<()> {
         }
     }
     Rules::from_capabilities(caps)?;
+    ReadDecl::check(caps)?;
     crate::room::Topics::from_capabilities(caps)?;
     if let Some(c) = obj.get("comments") {
         for k in ["composer_only", "customAnchors"] {
@@ -66,6 +69,7 @@ mod tests {
             json!({"db": {}, "user": {"scopes": ["profile", "email"]}, "artifact": {}}),
             json!({"comments": {"composer_only": true, "customAnchors": true}}),
             json!({"self": {}, "downloads": {}, "assets": {}, "room": {"topics": {"chat": "interact"}}}),
+            json!({"db": {"read": ["7q3k9mzx2b4t"], "share": {"read": ["8r4m0nay3c5v"]}}}),
         ] {
             validate(&ok).unwrap_or_else(|e| panic!("{ok}: {e}"));
         }
@@ -83,6 +87,8 @@ mod tests {
             json!({"room": {"topics": {"Bad:topic": "interact"}}}),
             json!({"room": {"topics": {"chat": "view"}}}),
             json!({"room": {"topics": ["chat"]}}),
+            json!({"db": {"read": ["not an id"]}}),
+            json!({"db": {"share": {"write": ["7q3k9mzx2b4t"]}}}),
         ] {
             let e = validate(&bad).unwrap_err();
             assert!(

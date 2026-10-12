@@ -451,7 +451,7 @@ fn now_plus(now: chrono::DateTime<chrono::Utc>, ms: u64) -> String {
 
 /// The live artifact's declared capabilities; `NotFound` when it is missing
 /// or deleted.
-fn caps_in(c: &Connection, id: &ArtifactId) -> Result<Value> {
+pub(super) fn caps_in(c: &Connection, id: &ArtifactId) -> Result<Value> {
     let caps: Option<String> = c
         .query_row(
             "SELECT capabilities_json FROM artifacts WHERE id = ?1 AND deleted_at IS NULL AND current_version > 0",
@@ -867,6 +867,34 @@ impl Store {
                 Some(d) => Ok(Some((d, authors_in(c, id, &dp.path)?))),
                 None => Ok(None),
             }
+        })
+    }
+
+    /// Each collection holding documents, with its document count, sorted by
+    /// path. Collections under a private per-viewer prefix (`data/users/<id>`
+    /// and each `{self}` rule's prefix not opened by a rule at it) are left
+    /// out, so no viewer's public ID or private count shows.
+    ///
+    /// # Errors
+    /// `NotFound` when the artifact is missing or deleted.
+    pub fn doc_collections(&self, id: &ArtifactId) -> Result<Vec<(String, u64)>> {
+        self.with_read(|c| {
+            let rules = rules_in(c, id)?;
+            let mut stmt = c.prepare(
+                "SELECT collection, COUNT(*) FROM docs WHERE artifact_id = ?1
+                 GROUP BY collection ORDER BY collection",
+            )?;
+            let rows = stmt.query_map(params![id.as_str()], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                let (collection, n) = row?;
+                if rules.private_to(&collection).is_none() {
+                    out.push((collection, n as u64));
+                }
+            }
+            Ok(out)
         })
     }
 

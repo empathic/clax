@@ -58,6 +58,7 @@ pub mod elevations;
 pub mod exec;
 pub mod extension;
 pub mod feedback;
+pub mod grants;
 pub mod inbox;
 pub mod joined;
 pub mod live;
