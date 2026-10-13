@@ -141,6 +141,9 @@ class ChangeTracker {
   /// Whether a Retry is being queued.
   bool get retrying => _retrying;
 
+  /// The threads of the change the worker is running; empty when none.
+  List<String> get running => List.unmodifiable(_running);
+
   /// Whether to show Working: a change is in flight and the person did not
   /// dismiss it.
   bool get working => _changes.isNotEmpty && !_hidden;

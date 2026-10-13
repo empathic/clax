@@ -73,24 +73,22 @@ void main() {
       expect(s.claudePath, '/opt/claude');
     });
 
-    test(
-      "the comment button's place round trips; a bad one is dropped",
-      () async {
-        final store = SettingsStore(file);
-        expect((await store.load()).commentButtonDy, isNull);
-        await store.save(AppSettings(commentButtonDy: 212.5));
-        expect(
-          jsonDecode(file.readAsStringSync()),
-          containsPair('comment_button_dy', 212.5),
-        );
-        expect((await store.load()).commentButtonDy, 212.5);
-        expect(store.last.commentButtonDy, 212.5);
-        for (final bad in [-3, 'high', null]) {
-          file.writeAsStringSync(jsonEncode({'comment_button_dy': bad}));
-          expect((await store.load()).commentButtonDy, isNull);
-        }
-      },
-    );
+    test('the first-run hint being seen round trips; a bad value is '
+        'unseen', () async {
+      final store = SettingsStore(file);
+      expect((await store.load()).appHintSeen, isFalse);
+      await store.save(AppSettings(appHintSeen: true));
+      expect(
+        jsonDecode(file.readAsStringSync()),
+        containsPair('app_hint_seen', true),
+      );
+      expect((await store.load()).appHintSeen, isTrue);
+      expect(store.last.appHintSeen, isTrue);
+      for (final bad in [1, 'yes', null]) {
+        file.writeAsStringSync(jsonEncode({'app_hint_seen': bad}));
+        expect((await store.load()).appHintSeen, isFalse);
+      }
+    });
 
     test('a broken file or unknown values load the defaults', () async {
       file.writeAsStringSync('{not json');

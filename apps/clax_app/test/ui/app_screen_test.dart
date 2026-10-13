@@ -6,12 +6,12 @@ import 'package:clax_app/agent/worker.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/daemon/clock.dart';
+import 'package:clax_app/platform/app_notice.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_menu.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/app_surface.dart';
 import 'package:clax_app/ui/change_tracker.dart' show sendFirstStep;
-import 'package:clax_app/ui/comment_button.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/thread_detail.dart';
@@ -20,6 +20,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../support/fake_app_notice.dart';
 import '../support/fake_surface.dart';
 import '../support/fake_voice.dart';
 
@@ -77,6 +78,9 @@ class _Rig {
   final _Timings timings;
   final worker = StreamController<WorkerEvent>.broadcast(sync: true);
 
+  /// The app's Comment and Threads actions (the notice's, or the menu's).
+  final actions = StreamController<AppAction>.broadcast(sync: true);
+
   Ready ready({int version = 3, int latest = 3}) => Ready(
     artifact: aid,
     version: version,
@@ -117,6 +121,9 @@ Future<(FakeClaxApi, String)> _seeded() async {
   return (api, aid);
 }
 
+/// The rig [pumpScreen] made last.
+late _Rig _current;
+
 void main() {
   /// A phone: 360 x 780 logical pixels at a device pixel ratio of 3, with
   /// a 24 px status bar.
@@ -132,9 +139,12 @@ void main() {
     AppSettings? settings,
     FakeVoice? voice,
     Size size = const Size(360, 780),
-    double? buttonDy,
-    ValueChanged<double>? onButtonMoved,
     CommentsCommand? comments,
+    FakeAppNotice? notice,
+    AppAction? initialAction,
+    bool firstRunHint = false,
+    VoidCallback? onHintShown,
+    ValueChanged<bool>? onDictateChanged,
     Future<bool> Function(String aid, String tid)? onRetry,
     Clock? clock,
   }) async {
@@ -147,6 +157,7 @@ void main() {
       voice ?? FakeVoice(script: const ['make it', 'make it blue'], hold: true),
       _Timings(),
     );
+    _current = rig;
     await tester.pumpWidget(
       MaterialApp(
         theme: claxTheme(Brightness.light),
@@ -160,9 +171,13 @@ void main() {
           timings: rig.timings,
           worker: rig.worker.stream,
           clock: clock ?? _Clock(),
-          commentButtonDy: buttonDy,
-          onCommentButtonMoved: onButtonMoved,
           comments: comments,
+          notice: notice == null ? null : AppNoticeSlot(notice),
+          actions: rig.actions.stream,
+          initialAction: initialAction,
+          firstRunHint: firstRunHint,
+          onHintShown: onHintShown,
+          onDictateChanged: onDictateChanged,
           onRetry: onRetry,
         ),
       ),
@@ -179,9 +194,10 @@ void main() {
     }
   }
 
+  /// Opens the threads panel as the notice's Threads action does.
   Future<void> openPanel(WidgetTester tester) async {
     await tester.pump();
-    await tester.tap(find.byKey(const ValueKey('panel-handle')));
+    _current.actions.add(AppAction.threads);
     await tester.pumpAndSettle();
   }
 
@@ -307,7 +323,7 @@ void main() {
     },
   );
 
-  testWidgets('the edge handle opens the panel and back closes it', (
+  testWidgets('the Threads action opens the panel and back closes it', (
     tester,
   ) async {
     final rig = await pumpScreen(tester);
@@ -315,7 +331,6 @@ void main() {
     await tester.pump();
     await openPanel(tester);
     expect(find.byKey(const ValueKey('app-panel')), findsOneWidget);
-    expect(find.byKey(const ValueKey('panel-handle')), findsNothing);
     await tester.binding.handlePopRoute();
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('app-panel')), findsNothing);
@@ -495,10 +510,12 @@ void main() {
     rig.surface.push(const Sent('thread-1'));
     rig.surface.push(_Rig.noDraft);
     await tester.pump();
+    rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
     rig.worker.add(WorkerReplied(rig.aid));
     await tester.pump();
     expect(find.byKey(const ValueKey('chip-working')), findsNothing);
-    expect(find.text('Answered in the thread'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.text('Clax replied'), findsOneWidget);
     // A version landing later (a restore) is not this change's.
     rig.surface.push(const Landed(4));
     await tester.pump();
@@ -1017,7 +1034,7 @@ void main() {
     final rig = await pumpScreen(tester);
     rig.surface.push(rig.ready());
     await tester.pump();
-    await tester.tap(find.byKey(const ValueKey('panel-handle')));
+    rig.actions.add(AppAction.threads);
     await frames(tester);
     rig.surface.push(const Sent('thread-1'));
     rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
@@ -1063,7 +1080,7 @@ void main() {
       await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('app-panel')), findsNothing);
-      await tester.tap(find.byKey(const ValueKey('panel-handle')));
+      rig.actions.add(AppAction.threads);
       await tester.pumpAndSettle();
       expect(rig.surface.js.where((j) => j.contains('CommentMode')).toList(), [
         'window.claxHost?.enterCommentMode()',
@@ -1136,36 +1153,118 @@ void main() {
     expect(rig.surface.disposed, isTrue);
   });
 
-  group('the comment button', () {
-    final button = find.byKey(const ValueKey('comment-button'));
+  group('comment mode, the notice and the hint', () {
     final bar = find.byKey(const ValueKey('comment-bar'));
     final panel = find.byKey(const ValueKey('app-panel'));
+    final handle = find.byKey(const ValueKey('panel-handle'));
+    final hint = find.byKey(const ValueKey('first-run-hint'));
     List<String> modes(_Rig rig) =>
         rig.surface.js.where((j) => j.contains('CommentMode')).toList();
     const enter = 'window.claxHost?.enterCommentMode()';
     const exit = 'window.claxHost?.exitCommentMode()';
 
-    testWidgets('shows once the page is ready, bottom right', (tester) async {
-      final rig = await pumpScreen(tester);
-      expect(button, findsNothing, reason: 'covered until ready');
+    Future<void> comment(WidgetTester tester, _Rig rig) async {
+      rig.actions.add(AppAction.comment);
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('no Clax control is drawn over the app while notices are '
+        'allowed', (tester) async {
+      final rig = await pumpScreen(tester, notice: FakeAppNotice());
       rig.surface.push(rig.ready());
-      await tester.pump();
-      final r = tester.getRect(button);
-      expect(r.right, 360 - CommentButton.margin);
-      expect(r.bottom, 780 - CommentButton.defaultDy);
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('comment-button')), findsNothing);
+      expect(handle, findsNothing);
+      expect(bar, findsNothing);
+      expect(find.byType(Badge), findsNothing);
+    });
+
+    testWidgets('without a notice (macOS) there is no handle and no hint', (
+      tester,
+    ) async {
+      final rig = await pumpScreen(tester, firstRunHint: true);
+      rig.surface.push(rig.ready());
+      await tester.pumpAndSettle();
+      expect(handle, findsNothing);
+      expect(hint, findsNothing);
+    });
+
+    testWidgets('with notifications off the edge handle is the way in, until '
+        'they are allowed', (tester) async {
+      final notice = FakeAppNotice(allow: false);
+      final rig = await pumpScreen(tester, notice: notice);
+      rig.surface.push(rig.ready());
+      await tester.pumpAndSettle();
+      expect(notice.calls, ['allowed'], reason: 'nothing is posted');
+      await tester.tap(handle);
+      await tester.pumpAndSettle();
+      expect(panel, findsOneWidget);
+      expect(modes(rig), [enter]);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(handle, findsOneWidget);
+
+      // Allowed in system settings meanwhile: checked again on return.
+      notice.allow = true;
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(handle, findsNothing);
+      expect(notice.shown, '${rig.aid} Runs');
+    });
+
+    testWidgets('the notice names the app while its screen is in front, and '
+        'is removed as the screen leaves', (tester) async {
+      final notice = FakeAppNotice();
+      final rig = await pumpScreen(tester, notice: notice);
+      rig.surface.push(rig.ready());
+      await tester.pumpAndSettle();
+      expect(notice.shown, '${rig.aid} Runs');
+
+      // To the background, and back.
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pumpAndSettle();
+      expect(notice.shown, isNull);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pumpAndSettle();
+      expect(
+        notice.shown,
+        '${rig.aid} Runs',
+        reason: 'inactive is on screen (the shade pulled down)',
+      );
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+
+      // Another screen over it, and back.
+      final nav = tester.state<NavigatorState>(find.byType(Navigator));
+      unawaited(
+        nav.push(MaterialPageRoute<void>(builder: (_) => const Text('over'))),
+      );
+      await tester.pumpAndSettle();
+      expect(notice.shown, isNull);
+      nav.pop();
+      await tester.pumpAndSettle();
+      expect(notice.shown, '${rig.aid} Runs');
+
+      // Leaving the screen.
+      await tester.pumpWidget(const SizedBox());
+      expect(notice.shown, isNull);
     });
 
     testWidgets(
-      'tap turns comment mode on with the bar under the page; close turns it off',
+      'Comment turns comment mode on with the bar under the page; ✕ ends it',
       (tester) async {
-        final rig = await pumpScreen(tester);
+        final rig = await pumpScreen(tester, notice: FakeAppNotice());
         rig.surface.push(rig.ready());
         await tester.pump();
-        await tester.tap(button);
-        await tester.pumpAndSettle();
+        await comment(tester, rig);
         expect(modes(rig), [enter]);
         expect(bar, findsOneWidget);
-        expect(button, findsNothing, reason: 'the bar takes over');
         expect(panel, findsNothing);
         // The page sits above the bar, so nothing on it is covered.
         final page = tester.getRect(find.byKey(const ValueKey('fake-surface')));
@@ -1173,31 +1272,39 @@ void main() {
         expect(page.bottom, closeTo(b.top, 0.01));
         expect(b.bottom, 780);
 
-        // The shell confirms; nothing is turned off.
+        // The shell confirms; nothing is turned off. Comment again keeps it.
         rig.surface.push(_Rig.noDraft);
-        await tester.pump();
+        await comment(tester, rig);
         expect(modes(rig), [enter]);
 
         await tester.tap(find.byKey(const ValueKey('comment-bar-close')));
         await tester.pumpAndSettle();
         expect(modes(rig), [enter, exit]);
-        expect(bar, findsNothing);
-        expect(button, findsOneWidget);
+        expect(bar, findsNothing, reason: 'nothing stays over the app');
       },
     );
 
-    testWidgets('long-press opens the threads panel, as the swipe does', (
-      tester,
-    ) async {
+    testWidgets('Comment while the panel is open puts the bar in its place, '
+        'still commenting', (tester) async {
       final rig = await pumpScreen(tester);
       rig.surface.push(rig.ready());
-      await tester.pump();
-      await tester.longPress(button);
-      await tester.pumpAndSettle();
-      expect(panel, findsOneWidget);
+      await openPanel(tester);
+      await comment(tester, rig);
+      expect(panel, findsNothing);
+      expect(bar, findsOneWidget);
       expect(modes(rig), [enter]);
-      expect(button, findsNothing, reason: 'hidden under a narrow panel');
-      expect(find.textContaining('Hold a finger'), findsOneWidget);
+    });
+
+    testWidgets('an action the screen opened with applies once it is up', (
+      tester,
+    ) async {
+      final rig = await pumpScreen(tester, initialAction: AppAction.threads);
+      await tester.pump();
+      await tester.pump();
+      expect(panel, findsOneWidget);
+      rig.surface.push(rig.ready());
+      await tester.pumpAndSettle();
+      expect(modes(rig).last, enter, reason: 'the ready shell is told');
     });
 
     testWidgets(
@@ -1206,8 +1313,7 @@ void main() {
         final rig = await pumpScreen(tester);
         rig.surface.push(rig.ready());
         await tester.pump();
-        await tester.tap(button);
-        await tester.pumpAndSettle();
+        await comment(tester, rig);
         await tester.tap(find.byKey(const ValueKey('comment-whole-app')));
         await tester.pump();
         expect(rig.surface.js.last, 'window.claxHost?.composeArtifact()');
@@ -1226,7 +1332,6 @@ void main() {
         await tester.pumpAndSettle();
         expect(rig.voice.listens, 1, reason: 'Dictate comments is on');
         expect(find.text('The whole app'), findsOneWidget);
-        expect(button, findsNothing);
         expect(bar, findsNothing, reason: "the peek's controls take over");
 
         await tester.tap(find.byKey(const ValueKey('send')));
@@ -1250,8 +1355,7 @@ void main() {
       );
       rig.surface.push(rig.ready());
       await tester.pump();
-      await tester.tap(button);
-      await tester.pumpAndSettle();
+      await comment(tester, rig);
       await tester.tap(find.byKey(const ValueKey('comment-whole-app')));
       rig.surface.push(
         const StateMsg(
@@ -1262,6 +1366,38 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(rig.voice.listens, 0);
+    });
+
+    testWidgets("the bar's Voice turns dictation on a pick off and on, and "
+        'reports it', (tester) async {
+      final changes = <bool>[];
+      final rig = await pumpScreen(tester, onDictateChanged: changes.add);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      await comment(tester, rig);
+      final voice = find.byKey(const ValueKey('comment-voice'));
+      expect(
+        find.descendant(of: voice, matching: find.byIcon(Icons.mic)),
+        findsOneWidget,
+      );
+      await tester.tap(voice);
+      await tester.pumpAndSettle();
+      expect(changes, [false]);
+      expect(
+        find.descendant(of: voice, matching: find.byIcon(Icons.mic_off)),
+        findsOneWidget,
+      );
+      rig.surface.push(_Rig.draft);
+      await tester.pumpAndSettle();
+      expect(rig.voice.listens, 0, reason: 'dictation is off');
+      rig.surface.push(_Rig.noDraft);
+      await tester.pumpAndSettle();
+      await tester.tap(voice);
+      await tester.pumpAndSettle();
+      expect(changes, [false, true]);
+      rig.surface.push(_Rig.draft);
+      await tester.pumpAndSettle();
+      expect(rig.voice.listens, 1);
     });
 
     testWidgets(
@@ -1290,9 +1426,7 @@ void main() {
           ]),
         );
         await tester.pump();
-        expect(find.text('1'), findsOneWidget, reason: 'one open thread');
-        await tester.tap(button);
-        await tester.pumpAndSettle();
+        await comment(tester, rig);
         expect(find.text('Threads (1)'), findsOneWidget);
         await tester.tap(find.byKey(const ValueKey('comment-threads')));
         await tester.pumpAndSettle();
@@ -1312,8 +1446,7 @@ void main() {
       final rig = await pumpScreen(tester);
       rig.surface.push(rig.ready());
       await tester.pump();
-      await tester.tap(button);
-      await tester.pumpAndSettle();
+      await comment(tester, rig);
       rig.surface.push(
         const StateMsg(commenting: false, draft: null, busy: false),
       );
@@ -1322,63 +1455,17 @@ void main() {
       expect(modes(rig), [enter, enter]);
     });
 
-    testWidgets(
-      'on a wide screen it stays beside the open panel; its tap closes both',
-      (tester) async {
-        final rig = await pumpScreen(tester, size: const Size(1200, 800));
-        rig.surface.push(rig.ready());
-        await tester.pump();
-        await tester.longPress(button);
-        await tester.pumpAndSettle();
-        expect(panel, findsOneWidget);
-        expect(button, findsOneWidget);
-        expect(
-          tester.getRect(button).right,
-          lessThanOrEqualTo(tester.getRect(panel).left),
-        );
-        expect(
-          find.descendant(of: button, matching: find.byIcon(Icons.close)),
-          findsOneWidget,
-        );
-        await tester.tap(button);
-        await tester.pumpAndSettle();
-        expect(panel, findsNothing);
-        expect(bar, findsNothing);
-        expect(modes(rig), [enter, exit]);
-      },
-    );
-
-    testWidgets('a drag moves it and reports its height', (tester) async {
-      final moves = <double>[];
-      final rig = await pumpScreen(
-        tester,
-        buttonDy: 200,
-        onButtonMoved: moves.add,
-      );
-      rig.surface.push(rig.ready());
-      await tester.pump();
-      expect(tester.getRect(button).bottom, 780 - 200);
-      await tester.dragFrom(tester.getCenter(button), const Offset(-300, -100));
-      await tester.pumpAndSettle();
-      expect(moves.single, closeTo(300, 1));
-      expect(tester.getRect(button).left, CommentButton.margin);
-      expect(modes(rig), isEmpty);
-      expect(rig.surface.attests, isEmpty, reason: 'not a touch on the page');
-    });
-
     testWidgets('back with the bar up ends comment mode and keeps the screen', (
       tester,
     ) async {
       final rig = await pumpScreen(tester);
       rig.surface.push(rig.ready());
       await tester.pump();
-      await tester.tap(button);
-      await tester.pumpAndSettle();
+      await comment(tester, rig);
       await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
       expect(find.byType(AppScreen), findsOneWidget);
       expect(bar, findsNothing);
-      expect(button, findsOneWidget);
       expect(modes(rig), [enter, exit]);
     });
 
@@ -1388,8 +1475,7 @@ void main() {
       final rig = await pumpScreen(tester);
       rig.surface.push(rig.ready());
       await tester.pump();
-      await tester.tap(button);
-      await tester.pumpAndSettle();
+      await comment(tester, rig);
       await tester.tap(find.byKey(const ValueKey('comment-threads')));
       await tester.pumpAndSettle();
       expect(panel, findsOneWidget);
@@ -1404,39 +1490,44 @@ void main() {
       expect(modes(rig), [enter, exit]);
     });
 
-    testWidgets(
-      'Escape and the Comments command end comment mode from the bar',
-      (tester) async {
-        final cmd = CommentsCommand();
-        addTearDown(cmd.dispose);
-        final rig = await pumpScreen(
-          tester,
-          size: const Size(1200, 800),
-          comments: cmd,
-        );
-        rig.surface.push(rig.ready());
-        await tester.pump();
-        await tester.tap(button);
-        await tester.pumpAndSettle();
-        expect(bar, findsOneWidget);
-        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-        await tester.pumpAndSettle();
-        expect(bar, findsNothing);
-        expect(modes(rig), [enter, exit]);
+    testWidgets('Escape and the menu commands start and end comment mode', (
+      tester,
+    ) async {
+      final cmd = CommentsCommand();
+      addTearDown(cmd.dispose);
+      final rig = await pumpScreen(
+        tester,
+        size: const Size(1200, 800),
+        comments: cmd,
+      );
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      cmd.comment!();
+      await tester.pumpAndSettle();
+      expect(bar, findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(bar, findsNothing);
+      expect(modes(rig), [enter, exit]);
 
-        await tester.tap(button);
-        await tester.pumpAndSettle();
-        cmd.toggle!();
-        await tester.pumpAndSettle();
-        expect(bar, findsNothing);
-        expect(panel, findsNothing, reason: 'it ends the mode, opens nothing');
-        expect(modes(rig), [enter, exit, enter, exit]);
-        // With nothing up, the command opens the panel as before.
-        cmd.toggle!();
-        await tester.pumpAndSettle();
-        expect(panel, findsOneWidget);
-      },
-    );
+      cmd.comment!();
+      await tester.pumpAndSettle();
+      cmd.comment!();
+      await tester.pumpAndSettle();
+      expect(bar, findsNothing, reason: 'Comment again ends the mode');
+      expect(modes(rig), [enter, exit, enter, exit]);
+
+      cmd.comment!();
+      await tester.pumpAndSettle();
+      cmd.toggle!();
+      await tester.pumpAndSettle();
+      expect(bar, findsNothing);
+      expect(panel, findsNothing, reason: 'it ends the mode, opens nothing');
+      // With nothing up, Threads opens the panel as before.
+      cmd.toggle!();
+      await tester.pumpAndSettle();
+      expect(panel, findsOneWidget);
+    });
 
     testWidgets(
       'a pick from the bar puts the peek in its place: the page keeps its height',
@@ -1444,8 +1535,7 @@ void main() {
         final rig = await pumpScreen(tester);
         rig.surface.push(rig.ready());
         await tester.pump();
-        await tester.tap(button);
-        await tester.pumpAndSettle();
+        await comment(tester, rig);
         final page = find.byKey(const ValueKey('fake-surface'));
         final withBar = tester.getRect(page);
         rig.surface.push(_Rig.draft);
@@ -1465,7 +1555,143 @@ void main() {
       await tester.pump();
       await twoFingerSwipe(tester, -120);
       expect(panel, findsOneWidget);
-      expect(button, findsNothing);
+    });
+
+    testWidgets(
+      'a reply that lands shows a brief toast; View opens its thread',
+      (tester) async {
+        final rig = await pumpScreen(tester);
+        rig.surface.push(rig.ready());
+        rig.surface.push(
+          const ThreadsMsg([
+            ThreadSummary(
+              id: 't1',
+              status: 'open',
+              summary: 'bigger',
+              sent: true,
+              comments: 2,
+              version: 3,
+            ),
+          ]),
+        );
+        await tester.pump();
+        rig.worker.add(WorkerWorking(rig.aid, const ['t1']));
+        await tester.pump();
+        rig.worker.add(WorkerReplied(rig.aid));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+        expect(find.text('Clax replied'), findsOneWidget);
+        expect(
+          find.text('Answered in the thread'),
+          findsNothing,
+          reason: 'the chip ends with its change',
+        );
+        await tester.tap(find.text('View'));
+        await tester.pumpAndSettle();
+        expect(find.byType(ThreadDetail), findsOneWidget);
+        expect(
+          tester.widget<ThreadDetail>(find.byType(ThreadDetail)).tid,
+          't1',
+        );
+      },
+    );
+
+    testWidgets('the toast fades on its own', (tester) async {
+      final rig = await pumpScreen(tester);
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      rig.worker.add(WorkerReplied(rig.aid));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.text('Clax replied'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+      expect(find.text('Clax replied'), findsNothing);
+    });
+
+    testWidgets('a question that lands shows a toast; View opens the '
+        'questions', (tester) async {
+      final rig = await pumpScreen(tester);
+      rig.surface.push(rig.ready());
+      rig.surface.push(const QuestionsMsg(1));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(
+        find.text('Clax has a question'),
+        findsNothing,
+        reason: 'one already open as the app opened did not land now',
+      );
+      rig.surface.push(const QuestionsMsg(2));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.text('Clax has a question'), findsOneWidget);
+      await tester.tap(find.text('View'));
+      await tester.pump();
+      expect(rig.surface.js.last, const OpenQuestions().toJs());
+    });
+
+    testWidgets('the first-run hint says where Comment and Threads are, once', (
+      tester,
+    ) async {
+      var shown = 0;
+      final rig = await pumpScreen(
+        tester,
+        notice: FakeAppNotice(),
+        firstRunHint: true,
+        onHintShown: () => shown++,
+      );
+      await tester.pump();
+      await tester.pump();
+      expect(hint, findsNothing, reason: 'not over the loading cover');
+      rig.surface.push(rig.ready());
+      await tester.pumpAndSettle();
+      expect(hint, findsOneWidget);
+      expect(
+        find.descendant(
+          of: hint,
+          matching: find.textContaining('Pull down your notifications'),
+        ),
+        findsOneWidget,
+      );
+      expect(shown, 1);
+      await tester.tap(find.byKey(const ValueKey('hint-dismiss')));
+      await tester.pumpAndSettle();
+      expect(hint, findsNothing);
+      // Back from the background: still gone, and told once.
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(hint, findsNothing);
+      expect(shown, 1);
+    });
+
+    testWidgets('with notifications off the hint points at the handle', (
+      tester,
+    ) async {
+      final rig = await pumpScreen(
+        tester,
+        notice: FakeAppNotice(allow: false),
+        firstRunHint: true,
+      );
+      rig.surface.push(rig.ready());
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(of: hint, matching: find.textContaining('right edge')),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a used action puts the hint away', (tester) async {
+      final rig = await pumpScreen(
+        tester,
+        notice: FakeAppNotice(),
+        firstRunHint: true,
+      );
+      rig.surface.push(rig.ready());
+      await tester.pumpAndSettle();
+      expect(hint, findsOneWidget);
+      await comment(tester, rig);
+      expect(hint, findsNothing);
     });
   });
 
@@ -1487,7 +1713,8 @@ void main() {
   });
 
   testWidgets(
-    'on macOS, App > Comments (Cmd-K) toggles the panel and Escape closes it',
+    'on macOS, App > Threads (Cmd-K) toggles the panel and Escape closes it; '
+    'App > Comment (Shift-Cmd-K) toggles comment mode',
     (tester) async {
       final menus = <Object?>[];
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
@@ -1507,12 +1734,15 @@ void main() {
       rig.surface.push(rig.ready());
       await tester.pump();
 
-      final item = _findItem(menus.last, 'Comments');
+      final item = _findItem(menus.last, 'Threads');
       expect(item, isNotNull);
       expect(item!['shortcutTrigger'], LogicalKeyboardKey.keyK.keyId);
+      final comment = _findItem(menus.last, 'Comment');
+      expect(comment!['shortcutTrigger'], LogicalKeyboardKey.keyK.keyId);
+      expect(comment['enabled'], isTrue);
       // The menus are sent again on each rebuild, with new IDs.
-      Future<void> select() async {
-        final id = _findItem(menus.last, 'Comments')!['id'];
+      Future<void> select([String label = 'Threads']) async {
+        final id = _findItem(menus.last, label)!['id'];
         await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
           'flutter/menu',
           SystemChannels.menu.codec.encodeMethodCall(
@@ -1537,6 +1767,10 @@ void main() {
         'window.claxHost?.enterCommentMode()',
         'window.claxHost?.exitCommentMode()',
       ]);
+      await select('Comment');
+      expect(find.byKey(const ValueKey('comment-bar')), findsOneWidget);
+      await select('Comment');
+      expect(find.byKey(const ValueKey('comment-bar')), findsNothing);
     },
     variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );

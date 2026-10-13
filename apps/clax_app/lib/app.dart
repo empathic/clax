@@ -29,6 +29,7 @@ import 'clax/api.dart';
 import 'clax/shared_stream.dart';
 import 'daemon/clock.dart';
 import 'daemon/supervisor.dart';
+import 'platform/app_notice.dart';
 import 'platform/background_work.dart';
 import 'platform/network_pause.dart';
 import 'platform/pending_make.dart';
@@ -73,6 +74,7 @@ class AppServices {
     this.clock = const SystemClock(),
     this.cliSupported = false,
     this.background = const NoBackgroundWork(),
+    this.notice,
     PendingMake? pendingMake,
     int? pid,
   }) : pid = pid ?? io.pid,
@@ -146,6 +148,11 @@ class AppServices {
 
   /// The foreground service and notifications of runs the person leaves.
   final BackgroundWork background;
+
+  /// The open app's notice (Android), its Comment and Threads the way into
+  /// comment mode; null where there is none, and the menu bar is the way
+  /// in (macOS).
+  final AppNotice? notice;
 
   /// The make in flight, offered again at the next launch when the app
   /// ended before it did; in memory unless given.
@@ -377,8 +384,16 @@ class AgentRuntime {
 /// - **Lifecycle.** Resuming probes the daemon (`onResume`); detaching stops
 ///   the worker and the daemon. An open app reloads when the daemon was
 ///   restarted, and opens again at the new address when its port changed.
+/// - **The open app's notice.** Each app screen shows [AppServices.notice]
+///   while it is in front. A tap on it, or on its Comment or Threads, for
+///   the app on top brings that app's screen back to the top (Comment and
+///   Threads then act on it); for another app, it opens that app first,
+///   which then acts. A tap before the daemon is up waits for it, and the
+///   tap that launched Clax counts too. The first app screen of an install
+///   shows the first-run hint ([AppSettings.appHintSeen]); the comment
+///   bar's Voice is kept as [AppSettings.dictateComments].
 /// - **macOS.** The app owns the menu bar ([ClaxMenuBar]); the open app
-///   screen registers App › Comments.
+///   screen registers App › Comment and App › Threads.
 class AppRoot extends StatefulWidget {
   const AppRoot({super.key, required this.services});
 
@@ -401,6 +416,13 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   StreamSubscription<DaemonState>? _states;
   StreamSubscription<WorkerEvent>? _worker;
   StreamSubscription<String>? _opened;
+  StreamSubscription<AppNoticeTap>? _taps;
+
+  /// The notice the app screens share; null without [AppServices.notice].
+  late final AppNoticeSlot? _notice = switch (_s.notice) {
+    final n? => AppNoticeSlot(n),
+    null => null,
+  };
 
   final _presence = AppPresence();
   late final _runs = BackgroundRuns(
@@ -411,11 +433,12 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// The change running on each artifact, as shown in the background.
   final _changes = <String, BackgroundRun>{};
 
-  /// The artifacts of the open app pages, bottom to top.
-  final _openAids = <String>[];
+  /// The open app pages, bottom to top.
+  final _openApps = <_OpenApp>[];
 
-  /// An app a notification asked to open before the daemon was up.
-  String? _pendingOpen;
+  /// An app a notification asked to open (and what to do there) before
+  /// the daemon was up.
+  ({String aid, AppAction? action})? _pendingOpen;
 
   DaemonState _daemon = const Starting();
 
@@ -472,6 +495,14 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         if (aid != null && mounted) _openFromNotice(aid);
       }),
     );
+    if (_s.notice case final notice?) {
+      _taps = notice.taps.listen(_onNoticeTap);
+      unawaited(
+        notice.launchTap().then((tap) {
+          if (tap != null && mounted) _onNoticeTap(tap);
+        }),
+      );
+    }
     _start();
     unawaited(_loadSettings());
   }
@@ -482,6 +513,10 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     unawaited(_states?.cancel());
     unawaited(_worker?.cancel());
     unawaited(_opened?.cancel());
+    unawaited(_taps?.cancel());
+    for (final o in _openApps) {
+      unawaited(o.actions.close());
+    }
     unawaited(_runtime.close());
     unawaited(_stream?.close());
     if (_s.inspector case final WebViewInspector i) i.dispose();
@@ -567,9 +602,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           // A failure is retried by the stream itself.
           unawaited(stream.subscribe(streamTopics).catchError((Object _) {}));
         }
-        if (_pendingOpen case final aid?) {
+        if (_pendingOpen case (:final aid, :final action)?) {
           _pendingOpen = null;
-          scheduleMicrotask(() => _openFromNotice(aid));
+          scheduleMicrotask(() => _openFromNotice(aid, action: action));
         }
         if (!_offeredLostMake) {
           _offeredLostMake = true;
@@ -631,6 +666,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       // Quit anyway; the next launch stops a daemon left behind.
     }
     await _s.background.stop();
+    await _s.notice?.clear();
   }();
 
   Future<void> _loadSettings() async {
@@ -843,15 +879,32 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     );
   }
 
-  /// Opens [aid] for a tapped notification, unless its page is already on
-  /// top; after the daemon is up.
-  void _openFromNotice(String aid) {
+  /// A tap on the open app's notice: its body brings the app to the
+  /// front, Comment and Threads act on it.
+  void _onNoticeTap(AppNoticeTap t) => _openFromNotice(
+    t.artifact,
+    action: t.action == AppAction.open ? null : t.action,
+    toTop: true,
+  );
+
+  /// Opens [aid] for a tapped notification, then takes [action] there,
+  /// after the daemon is up. When [aid]'s page is the top app page it is
+  /// not opened again: [toTop] closes what is over it, and [action] is
+  /// taken on it.
+  void _openFromNotice(String aid, {AppAction? action, bool toTop = false}) {
     if (!_wasUp || _endpoint.value == null) {
-      _pendingOpen = aid;
+      _pendingOpen = (aid: aid, action: action);
       return;
     }
-    if (_openAids.isNotEmpty && _openAids.last == aid) return;
-    _open(aid);
+    final top = _openApps.lastOrNull;
+    if (top != null && top.aid == aid) {
+      if (toTop || action != null) {
+        _nav.currentState?.popUntil((r) => r == top.route);
+      }
+      if (action != null) top.actions.add(action);
+      return;
+    }
+    _open(aid, action: action);
   }
 
   void _onReady(String aid, Ready r) {
@@ -867,23 +920,27 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   void _openTarget(String aid, {String? thread, int? version}) =>
       _open(aid, thread: thread, version: version);
 
-  /// Keeps where the person dragged the comment button, for every later
-  /// app screen and launch.
-  Future<void> _keepButtonDy(double dy) async {
-    _settings.commentButtonDy = dy;
+  /// Makes [change] to the settings, for every later app screen and
+  /// launch.
+  Future<void> _keep(void Function(AppSettings s) change) async {
+    change(_settings);
     try {
       final saved = await _s.settings.load();
-      saved.commentButtonDy = dy;
+      change(saved);
       await _s.settings.save(saved);
     } on Object catch (e) {
-      debugPrint('clax: could not keep the comment button place: $e');
+      debugPrint('clax: could not keep a setting: $e');
     }
   }
 
-  void _open(String aid, {String? thread, int? version}) {
+  void _open(String aid, {String? thread, int? version, AppAction? action}) {
     final nav = _nav.currentState;
     if (nav == null) return;
-    unawaited(nav.push(_appRoute(aid, thread: thread, version: version)));
+    unawaited(
+      nav.push(
+        _appRoute(aid, thread: thread, version: version, action: action),
+      ),
+    );
   }
 
   /// Puts new app [aid] in the place of the making screen whose [context]
@@ -896,16 +953,19 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     );
   }
 
-  /// The route of app [aid]'s screen (see [_open], [_handOver]); it counts
-  /// in [_openAids] while it is pushed.
+  /// The route of app [aid]'s screen (see [_open], [_handOver]), which
+  /// takes [action] once it is up; it counts in [_openApps] while it is
+  /// pushed.
   Route<void> _appRoute(
     String aid, {
     String? thread,
     int? version,
     Uint8List? cover,
+    AppAction? action,
   }) {
     final settings = _settings;
-    _openAids.add(aid);
+    final actions = StreamController<AppAction>.broadcast();
+    late final _OpenApp open;
     final route = MaterialPageRoute<void>(
       builder: (_) => _AppPage(
         aid: aid,
@@ -926,15 +986,22 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           onRetry: _runtime.worker.retry,
           onReady: (r) => _onReady(aid, r),
           comments: _comments,
-          commentButtonDy: settings.commentButtonDy,
-          onCommentButtonMoved: (dy) => unawaited(_keepButtonDy(dy)),
+          notice: _notice,
+          actions: actions.stream,
+          initialAction: action,
+          firstRunHint: _notice != null && !settings.appHintSeen,
+          onHintShown: () => unawaited(_keep((s) => s.appHintSeen = true)),
+          onDictateChanged: (on) =>
+              unawaited(_keep((s) => s.dictateComments = on)),
         ),
       ),
     );
+    _openApps.add(open = _OpenApp(aid, route, actions));
     unawaited(
-      route.popped.whenComplete(
-        () => _openAids.removeAt(_openAids.lastIndexOf(aid)),
-      ),
+      route.popped.whenComplete(() {
+        _openApps.remove(open);
+        unawaited(actions.close());
+      }),
     );
     return route;
   }
@@ -1026,6 +1093,16 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     }
     return app;
   }
+}
+
+/// An open app page: app [aid]'s [route], and the [actions] its screen
+/// takes.
+class _OpenApp {
+  _OpenApp(this.aid, this.route, this.actions);
+
+  final String aid;
+  final Route<void> route;
+  final StreamController<AppAction> actions;
 }
 
 /// The open app's page: a surface for the daemon's address, loaded again

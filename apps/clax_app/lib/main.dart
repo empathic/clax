@@ -18,6 +18,7 @@ import 'daemon/health.dart';
 import 'daemon/ports.dart';
 import 'daemon/process.dart';
 import 'daemon/supervisor.dart';
+import 'platform/app_notice.dart';
 import 'platform/background_work.dart';
 import 'platform/external_links.dart';
 import 'platform/install_id.dart';
@@ -121,6 +122,7 @@ Future<AppServices> platformServices() async {
     runner: runner == null ? null : () => runner,
     cliSupported: cliSupported,
     background: android ? ChannelBackgroundWork() : const NoBackgroundWork(),
+    notice: android ? ChannelAppNotice() : null,
     pendingMake: PendingMake(File('${support.path}/pending-make.json')),
   );
 }
