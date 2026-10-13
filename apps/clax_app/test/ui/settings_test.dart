@@ -73,6 +73,25 @@ void main() {
       expect(s.claudePath, '/opt/claude');
     });
 
+    test(
+      "the comment button's place round trips; a bad one is dropped",
+      () async {
+        final store = SettingsStore(file);
+        expect((await store.load()).commentButtonDy, isNull);
+        await store.save(AppSettings(commentButtonDy: 212.5));
+        expect(
+          jsonDecode(file.readAsStringSync()),
+          containsPair('comment_button_dy', 212.5),
+        );
+        expect((await store.load()).commentButtonDy, 212.5);
+        expect(store.last.commentButtonDy, 212.5);
+        for (final bad in [-3, 'high', null]) {
+          file.writeAsStringSync(jsonEncode({'comment_button_dy': bad}));
+          expect((await store.load()).commentButtonDy, isNull);
+        }
+      },
+    );
+
     test('a broken file or unknown values load the defaults', () async {
       file.writeAsStringSync('{not json');
       expect((await SettingsStore(file).load()).model, 'claude-haiku-5-5');
