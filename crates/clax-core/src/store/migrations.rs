@@ -798,6 +798,27 @@ pub const MIGRATIONS: &[&str] = &[
     BEGIN
         DELETE FROM net_grants WHERE artifact_id = NEW.id;
     END;",
+    // 27: model use by apps (spec 2026-10-12-flutter-real-apps-design C7):
+    // the owner let `artifact_id` call `sample()` (kept until revoked), and
+    // what its calls cost each local day, in millionths of a US dollar, for
+    // the daily cost cap. Deleting the artifact removes its rows (the
+    // foreign keys on a row delete, the trigger on the soft delete).
+    "CREATE TABLE sample_grants (
+        artifact_id TEXT PRIMARY KEY REFERENCES artifacts(id) ON DELETE CASCADE,
+        granted_at TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TABLE sample_spend (
+        artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        day TEXT NOT NULL,
+        micro_usd INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (artifact_id, day)
+    ) WITHOUT ROWID;
+    CREATE TRIGGER sample_grants_on_delete AFTER UPDATE OF deleted_at ON artifacts
+    WHEN NEW.deleted_at IS NOT NULL
+    BEGIN
+        DELETE FROM sample_grants WHERE artifact_id = NEW.id;
+        DELETE FROM sample_spend WHERE artifact_id = NEW.id;
+    END;",
 ];
 
 /// The audit journal's migration, as a schema version (the
