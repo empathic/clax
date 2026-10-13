@@ -870,11 +870,19 @@ so that narrowing and elevation (§7.4) bind exactly one agent.
   only for the session the request proved. A request that matches a live
   row by harness session ID or parent PID without proving it is 401
   `invalid_session_proof`, so a sibling cannot take over a live session by
-  registering with its harness session ID.
+  registering with its harness session ID. A proof never widens the match:
+  a request whose harness session ID and parent PID match no live row, as
+  §6.7 matches them, makes a new row whichever session it proved. So an
+  agent started from another agent's shell (`claude -p`, `codex exec`),
+  which may find its parent's credential, gets a session of its own. A
+  grant's row keeps the parent PID it was made with.
 - **Ending.** A session's end, whatever its reason (§14), clears
   `secret_sha256`, so a leaked secret of an ended session proves nothing.
-  Revoking a grant ends its sessions and with them their secrets. The
-  agent side's next request naming the ended session is 401
+  Revoking a grant ends its sessions and with them their secrets. A request
+  that proved its session just before the session ended is refused too
+  (`invalid_session_proof`) rather than given the ended session's rights,
+  whose narrowing the end cleared. The agent side's next request naming
+  the ended session is 401
   `invalid_session_proof`, which the shim treats as it treats
   `unknown_session`: it registers again, getting a new row and a new
   secret.
@@ -899,27 +907,38 @@ so that narrowing and elevation (§7.4) bind exactly one agent.
 - **Where the agent side keeps it.** The shim keeps its session's secret
   in memory. Hooks and the CLI run as new processes, so the agent side also
   keeps a credential file in `<home>/remote-sessions/` (directory 0700,
-  files 0600, written whole and renamed into place) holding `{"session":
-  "<ID>", "secret": "cxs_…"}`, named `<harness>-<harness session ID>.json`;
-  a harness session ID that is not 1–128 characters of `[A-Za-z0-9._-]`,
-  or starts with `.`, is named `<harness>-h<the first 32 hex characters of
-  its SHA-256>.json`. A row with a parent PID is also named
-  `<harness>-ppid-<parent PID>.json`, for the clients that know their
-  harness process but not its session ID (Codex's shim). Whoever receives a
-  secret writes the files for every name the row has: the shim at
-  registration, the `SessionStart` hook when its join made the row, and
-  either when its proof adds a name to the row. A client looks for its
-  file by harness session ID, then by its parent's and ancestors' PIDs, in
-  the order join matches (§6.7). The shim's exit and the `SessionEnd` hook
-  remove the files. A stale file, whose session has ended, is refused, and
-  the next registration replaces it.
+  files 0600, written whole and renamed into place; the directory is set
+  to 0700 when it already exists, and neither it nor a file is followed
+  through a symbolic link) holding `{"session": "<ID>", "secret":
+  "cxs_…"}` and the harness session ID of the row it was written for. It
+  is named `<harness>-s-<harness session ID>.json`; a harness session ID
+  that is not 1–128 characters of `[A-Za-z0-9._-]` is named
+  `<harness>-h-<the first 32 hex characters of its SHA-256>.json`. A row
+  with a parent PID is also named `<harness>-p-<parent PID>.json`, for the
+  clients that know their harness process but not its session ID (Codex's
+  shim); that file also records when the parent process started, and is
+  written only when that can be told. The three forms never share a name.
+  Whoever receives a secret writes the files for every name the row has:
+  the shim at registration, the `SessionStart` hook when its join made the
+  row, and either when its proof adds a name to the row. A client looks
+  for its file as join and registration match a row (§6.7): by its
+  harness session ID, else by a parent-PID file of its parent (a hook: its
+  parent, then its ancestors), taken only when that PID still names the
+  process that started then, and only for a row with no harness session
+  ID, or with the client's own, or when the client knows none. A new
+  process given a dead harness's PID, or an agent started from another
+  agent's shell, so never takes another session's file. The shim's exit
+  and the `SessionEnd` hook remove the files. A stale file, whose session
+  has ended, is refused, and the next registration replaces it.
 - **Clients.** The shim's registration presents the secret it holds, else
   the one in its file, else none, trying the next on
-  `invalid_session_proof`; so a shim restarted within its harness session
-  keeps its row. The `SessionStart` hook joins with its file's secret when
-  there is one, else with none; when a live row needs a proof it does not
-  have yet (the shim and the hook started together, and the other made the
-  row), it waits up to one second for the file and retries once. Every
+  `invalid_session_proof` or `unknown_session` (a daemon with no such
+  session); so a shim restarted within its harness session keeps its
+  row. The `SessionStart` hook joins with its file's secret when
+  there is one, dropping it when it is refused as the shim does, else with
+  none; when a live row needs a proof it does not have yet (the shim and
+  the hook started together, and the other made the row), it waits once,
+  up to one second, for a new file and retries once. Every
   other hook needs its file: a missing or unreadable file fails the hook
   with a message naming the file, logged to `hooks.log`, and never falls
   back to acting without a session. Pi's remote mode (Task 19) keeps the
@@ -2229,3 +2248,11 @@ task, with recommendations; the owner took every recommendation
     session; §20.2: `session.start` records `secret_issued`.
   - §21, §25: one machine's agents share its OS user, which stays the hard
     boundary; People says so beside the per-agent controls.
+- **Amendment** (2026-10-12, the per-agent credential's review): §6.8
+  Matching: a proof never widens registration's or join's match, so an
+  agent started from another agent's shell gets its own session, and a
+  grant's row keeps its parent PID; a parent-PID credential file records
+  its process's start and its row's harness session ID and is taken only
+  as join would match; file names carry `-s-`, `-h-` and `-p-` so none
+  collide; a request whose session ended under it is refused; clients
+  move past `unknown_session`; the join waits once.
