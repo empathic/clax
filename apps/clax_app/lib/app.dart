@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'agent/asked.dart';
+import 'agent/stops.dart';
 import 'agent/backend.dart';
 import 'agent/claude_cli_backend.dart';
 import 'agent/edit_result.dart';
@@ -343,6 +344,7 @@ class AgentRuntime {
     String cwd = '',
     Future<void> Function(Duration)? delay,
     void Function(String line)? log,
+    StoppedThreads? stops,
   }) : worker = FeedbackWorker(
          api: api,
          loop: loop,
@@ -353,6 +355,7 @@ class AgentRuntime {
          )).id,
          delay: delay,
          log: log,
+         stops: stops,
        );
 
   final DaemonSupervisor _supervisor;
@@ -535,6 +538,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       pid: _s.pid,
       cwd: _s.supportDir,
       log: (l) => debugPrint('clax worker: $l'),
+      stops: FileStoppedThreads(File('${_s.supportDir}/stopped.json')),
     );
     _onState(_s.supervisor.state);
     _states = _s.supervisor.states.listen(_onState);
