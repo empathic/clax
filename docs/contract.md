@@ -148,6 +148,11 @@ daemon codes a tool can surface in normal operation:
 - `schema_newer` (500): the database's schema is newer than this binary
   knows. The daemon never starts on such a database, so this is not
   expected over HTTP.
+- With people connected (spec 2026-10-08 §16): `not_permitted` (403, naming
+  the right), `withheld` (403, naming the authors), `thread_taken` (409,
+  naming the owner in `taken_by`), `foreign_session`, `name_taken`,
+  `name_locked`, `invalid_name`, `nothing_withheld`, `recently_declined`,
+  `agent_cannot_read`.
 
 ### publish
 
@@ -456,7 +461,10 @@ Errors:
 
 ### status
 
-No arguments.
+Optional `name`: the agent names itself for the task at hand (letters,
+digits, `.`, `_` and `-`, unique among live agents; `name_taken`,
+`invalid_name`, and `name_locked` once its person renamed it). It needs a
+session (`no_session` on the daemon's `/mcp`).
 
 ```json
 {
@@ -501,6 +509,14 @@ No arguments.
   "binary": {"path": "/Users/alex/.cargo/bin/clax", "version": "0.3.0"}
 }
 ```
+
+`name` is the agent's name (derived from its repository and branch until it
+or its person names it), `person` whom it acts for (`{public_id, name,
+owner}`), and `rights` its rights (the access array; the daemon token's
+agents have the full preset); all three are `null` without a session.
+`remote: true` is present only when the daemon is another machine's (`clax
+connect`, spec 2026-10-08 §16): such a daemon refuses `/healthz` to agents of
+other machines, so `version` is then `null` and `daemon_version` absent.
 
 `version` is the daemon's version. `harness` and `session` are `null` when the
 tools have no registered session (the daemon's `/mcp`, or a shim or Pi
@@ -1620,6 +1636,7 @@ entry of the shell's own; copy link includes it.
 | `comments_read` | `url_or_id`; optional `thread_id`, `cursor`, `include_resolved` | `{artifact_id, url, threads: [{thread_id, status, sent_to_agent, version, anchor: {kind, selector, quote, custom_name, file, area, summary}, clip_path, comments: [{id, author_kind, author_name, via_page, body, created_at}], feedback_state, addressed_pending, page_url?, snapshot_path?}], next_cursor, note}` |
 | `comments_reply` | `url_or_id`, `thread_id`, `text`, `addressed?` (live pages only) | `{thread_id, replied: true, comment_id, addressed?}` or `{thread_id, replied: false, guidance}` |
 | `comments_resolve` | `url_or_id`, `thread_id` | `{thread_id, resolved: true, status}` or `{thread_id, resolved: false, guidance}`; a thread no version lists yet is listed as addressed in the current version |
+| `comments_handoff` | `url_or_id`, `thread_id`; optional `to` (a live agent's name) | `{artifact_id, url, released, thread, note}`: with `to`, the thread is sent to that agent, which owns it (`thread.owner`); without, the owner releases it. `thread_taken` when another live agent owns it. |
 | `watch` | `url_or_id` (an artifact, or a page URL); optional `on` (default true), `replies` (default true) | `{artifact_id, url, watching, replies_armed}`; for a page URL `{artifact_id, url, page_url, scope, watching: true, replies_armed}`, or `{page_url, watching: false, replies_armed: false}` with `on: false` (`page_url` without its route) |
 | `wait_for_feedback` | optional `url_or_id`; optional `timeout_s` (default 50) | `{feedback: [...], waited_s, call_again}` |
 | `working` | `url_or_id`; optional `thread_ids` (at most 20 open threads), `message` (at most 140 characters), `done` | `{artifact_id, url, working: true, message, thread_ids, started_at, expires_in_s, message_truncated}` or `{artifact_id, url, working: false, cleared}` |
@@ -2171,6 +2188,8 @@ nothing; the note is kept in the daemon's memory until that poll.
 | `url_or_id` | Optional, with `questions`: the artifact, or a web page's URL (its live page), the question is about. |
 | `timeout_s` | Seconds to wait, raised to 1 and capped at 600; default 600. Under Codex (whose MCP tool timeout is 60 s) the default and the cap are 50. |
 | `cancel` | With `question_id`: withdraw the question. |
+| `approval` | Instead of `questions`: ask the session's person to let the agent see what is withheld from it (spec 2026-10-08 §9.2), `{url_or_id?, thread_id?, author?}` (`author` the public ID a `withheld` summary names). |
+| `approval_id` | Keep waiting on an approval request this session made. |
 
 ```json
 {"question_id": "01J9…", "status": "answered",
@@ -2199,6 +2218,13 @@ it again even after a feedback poll handed it over as a late answer, so an
 agent that lost a result can recover it, and may see the answer twice. Tier
 1 feedback and late answers to other questions are appended as on every
 tool.
+
+With `approval` or `approval_id` the result is `{approval_id, status, scope,
+waited_s, call_again, note}`: `status` is `approved` (with the `scope` the
+person chose), `declined`, `open` (call again with `approval_id`) or
+`withdrawn`. Errors: `nothing_withheld`, `recently_declined`,
+`limit_reached`, and `invalid_args` for `approval` with `questions`,
+`question_id`, `url_or_id` or `cancel`.
 
 When the wait fails after `ask` created the question (the daemon went away,
 a deadline passed), the error carries `question_id`: the question stays
