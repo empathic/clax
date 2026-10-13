@@ -175,7 +175,7 @@ void main() {
   });
 
   test('the tools of the turn that reached the turn cap still run', () async {
-    final tb = toolboxWith(caps: RunCaps.change);
+    final tb = toolboxWith(caps: testChangeCaps);
     for (var i = 0; i < 6; i++) {
       tb.state.budget.addTurn(const Usage(output: 10));
     }

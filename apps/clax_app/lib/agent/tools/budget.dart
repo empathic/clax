@@ -17,20 +17,31 @@ class RunCaps {
     required this.wallClock,
   });
 
-  /// A new app's caps.
-  static const newApp = RunCaps(
-    turns: 8,
-    renders: 3,
-    outputTokens: 32000,
-    wallClock: Duration(seconds: 90),
+  /// A new app's first run: plan, then a usable first version.
+  static const first = RunCaps(
+    turns: 14,
+    renders: 4,
+    outputTokens: 48000,
+    costUsd: 1.50,
+    wallClock: Duration(seconds: 150),
   );
 
-  /// A change's caps.
+  /// A continue run of a build: the next features of the plan.
+  static const continueBuild = RunCaps(
+    turns: 18,
+    renders: 5,
+    outputTokens: 64000,
+    costUsd: 1.50,
+    wallClock: Duration(seconds: 240),
+  );
+
+  /// A change in answer to comments.
   static const change = RunCaps(
-    turns: 6,
-    renders: 2,
-    outputTokens: 20000,
-    wallClock: Duration(seconds: 45),
+    turns: 10,
+    renders: 3,
+    outputTokens: 32000,
+    costUsd: 1.50,
+    wallClock: Duration(seconds: 120),
   );
 
   /// Model turns.

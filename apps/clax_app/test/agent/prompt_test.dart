@@ -321,7 +321,9 @@ void main() {
       final md = await rootBundle.loadString('assets/prompt/system.md');
       expect(md, contains('present-tense'));
       expect(md, contains('Render before you finish'));
-      expect(md, contains('Finish early'));
+      expect(md, contains('Finish when the work is whole'));
+      expect(md, contains('`plan_mark` a feature `doing`'));
+      expect(md, contains('`tests/*.test.js`'));
       expect(md, contains('`surface_open`'));
       expect(md, contains('read both the old and the new shape'));
       expect(md, contains('localStorage'));
@@ -402,6 +404,37 @@ void main() {
       expect(t, isNot(contains(js)));
       expect(t, contains('"app.js"'));
       expect(t, contains('read_file'));
+    });
+
+    test('over 24 KiB, app.js and the files that fit follow index.html; '
+        'kit files are listed, never shown or counted', () {
+      final index = 'x' * (10 * 1024);
+      final app = 'a' * (6 * 1024);
+      final screen = 's' * (6 * 1024);
+      final big = 'b' * (9 * 1024);
+      final kit = 'k' * (100 * 1024);
+      final t = text(
+        change(
+          files: {
+            'index.html': index,
+            'app.js': app,
+            'screens/big.js': big,
+            'screens/today.js': screen,
+            'kit/preact.js': kit,
+          },
+        ),
+      );
+      expect(t, contains(index));
+      expect(t, contains(app));
+      expect(t, contains(screen));
+      expect(t, isNot(contains(big)));
+      expect(t, contains('"screens/big.js"'));
+      expect(t, isNot(contains('kkkk')));
+      expect(t, contains('"kit":true'));
+      final small = text(
+        change(files: {'index.html': index, 'kit/preact.js': kit}),
+      );
+      expect(small, contains('Their text'), reason: 'the kit is not counted');
     });
 
     test('an index.html with no line end in 24 KiB is cut mid line 1, '

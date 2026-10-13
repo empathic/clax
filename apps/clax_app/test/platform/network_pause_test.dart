@@ -680,7 +680,7 @@ void turnTests() {
             clock: clock,
           ),
           draft: Draft(files: files, title: 'Runs', baseVersion: 3),
-          budget: RunBudget(RunCaps.change, 'claude-haiku-5-5', clock),
+          budget: RunBudget(testChangeCaps, 'claude-haiku-5-5', clock),
           progress: events.add,
         ),
         tools,

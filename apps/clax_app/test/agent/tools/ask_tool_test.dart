@@ -156,7 +156,7 @@ class World {
           baseVersion: ctx.baseVersion,
         ),
         budget: RunBudget(
-          newApp ? RunCaps.newApp : RunCaps.change,
+          newApp ? testNewCaps : testChangeCaps,
           'claude-haiku-5-5',
           clock,
         ),
@@ -641,7 +641,7 @@ void main() {
           clock: w.clock,
         ),
         draft: Draft(files: ctx.files, baseVersion: 1),
-        budget: RunBudget(RunCaps.change, 'claude-haiku-5-5', w.clock),
+        budget: RunBudget(testChangeCaps, 'claude-haiku-5-5', w.clock),
       ),
       [
         AskTool(
