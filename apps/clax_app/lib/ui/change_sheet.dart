@@ -55,9 +55,14 @@ Future<void> showChangeSheet(
         alignment: Alignment.centerRight,
         child: SizedBox(
           width: 400,
+          height: double.infinity,
           child: Material(
             elevation: 6,
             color: Theme.of(context).colorScheme.surfaceContainerLow,
+            shape: const RoundedRectangleBorder(
+              borderRadius: BorderRadius.horizontal(left: Radius.circular(20)),
+            ),
+            clipBehavior: Clip.antiAlias,
             child: SafeArea(left: false, child: sheet(side: true)),
           ),
         ),
@@ -294,11 +299,13 @@ class _ChangeSheetState extends State<ChangeSheet> {
     final running = _running;
     return Column(
       key: const ValueKey('change-sheet'),
-      mainAxisSize: MainAxisSize.min,
+      // A side panel's actions sit at its foot.
+      mainAxisSize: widget.side ? MainAxisSize.max : MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _header(context),
         Flexible(
+          fit: widget.side ? FlexFit.tight : FlexFit.loose,
           child: SingleChildScrollView(
             padding: const EdgeInsets.fromLTRB(20, 4, 20, 16),
             child: Column(
@@ -507,6 +514,7 @@ class _ChangeSheetState extends State<ChangeSheet> {
                     child: Image.memory(
                       clip,
                       fit: BoxFit.cover,
+                      alignment: Alignment.topCenter,
                       gaplessPlayback: true,
                       semanticLabel: 'What the comment was made on',
                       errorBuilder: (_, _, _) => Icon(
