@@ -4,6 +4,7 @@ import 'package:clax_app/agent/backend.dart';
 import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
+import 'package:clax_app/ui/app_icon.dart';
 import 'package:clax_app/ui/app_menu.dart';
 import 'package:clax_app/ui/inbox_screen.dart';
 import 'package:clax_app/ui/launcher.dart';
@@ -12,6 +13,7 @@ import 'package:clax_app/ui/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_voice.dart';
@@ -933,10 +935,133 @@ void main() {
       );
     });
   });
+  group('app icons', () {
+    const icon =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">'
+        '<rect width="1024" height="1024" fill="#f80"/></svg>';
+    const other =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">'
+        '<rect width="1024" height="1024" fill="#08f"/></svg>';
+
+    Future<void> pumpWith(
+      WidgetTester tester,
+      ClaxApi api,
+      AppIcons icons,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Launcher(
+            api: api,
+            open: opened.add,
+            make: (r, cancelled, stage) => throw StateError('unused'),
+            voice: FakeVoice.unsupported('No speech here'),
+            icons: icons,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    String? shown(WidgetTester tester, String title) {
+      final tile = find.ancestor(
+        of: find.text(title),
+        matching: find.byType(InkWell),
+      );
+      final pics = find.descendant(of: tile, matching: find.byType(SvgPicture));
+      if (pics.evaluate().isEmpty) return null;
+      final loader =
+          tester.widget<SvgPicture>(pics).bytesLoader as SvgStringLoader;
+      return loader.provideSvg(null);
+    }
+
+    testWidgets('a tile shows its live version\'s icon.svg; one without '
+        'keeps its face', (tester) async {
+      final api = _api();
+      api.seedArtifact('Runs', {..._page, 'icon.svg': icon});
+      api.seedArtifact('Plain', _page);
+      await pumpWith(tester, api, AppIcons(api));
+      expect(shown(tester, 'Runs'), contains('#f80'));
+      expect(shown(tester, 'Plain'), isNull);
+      expect(find.text('P'), findsOneWidget, reason: 'the monogram face');
+    });
+
+    testWidgets('an icon outside the subset is cleaned; one that cannot be '
+        'drawn falls back to the face', (tester) async {
+      final api = _api();
+      api.seedArtifact('Runs', {
+        ..._page,
+        'icon.svg': icon.replaceFirst('</svg>', '<script>x()</script></svg>'),
+      });
+      api.seedArtifact('Wide', {
+        ..._page,
+        'icon.svg': icon.replaceFirst('0 0 1024 1024', '0 0 1024 10'),
+      });
+      await pumpWith(tester, api, AppIcons(api));
+      expect(
+        shown(tester, 'Runs'),
+        allOf(contains('#f80'), isNot(contains('script'))),
+      );
+      expect(shown(tester, 'Wide'), isNull);
+      expect(find.text('W'), findsOneWidget);
+    });
+
+    testWidgets('a new version reads the icon again; the kept icon paints '
+        'before any read', (tester) async {
+      final api = _api();
+      final aid = api.seedArtifact('Runs', {..._page, 'icon.svg': icon});
+      final store = _MemoryStore();
+      await pumpWith(tester, api, AppIcons(api, store: store));
+      expect(shown(tester, 'Runs'), contains('#f80'));
+      expect(store.kept[aid], (version: 1, svg: icon));
+
+      api.seedVersion(aid, {..._page, 'icon.svg': other});
+      api.emit(ClaxEvent(type: 'version', data: {'artifact_id': aid, 'n': 2}));
+      await tester.pumpAndSettle();
+      expect(shown(tester, 'Runs'), contains('#08f'));
+      expect(store.kept[aid]?.version, 2);
+
+      // The next launch paints the kept icon with no read at all.
+      api.calls.clear();
+      api.failNext(
+        'readFile',
+        const ClaxApiError(status: 0, code: 'timeout', message: ''),
+      );
+      await tester.pumpWidget(const SizedBox());
+      await pumpWith(tester, api, AppIcons(api, store: store));
+      expect(shown(tester, 'Runs'), contains('#08f'));
+      expect(api.callNames, isNot(contains('readFile')));
+    });
+
+    testWidgets('a failed read keeps the face and is tried again on the next '
+        'version', (tester) async {
+      final api = _api();
+      final aid = api.seedArtifact('Runs', {..._page, 'icon.svg': icon});
+      api.failNext(
+        'readFile',
+        const ClaxApiError(status: 0, code: 'timeout', message: ''),
+      );
+      await pumpWith(tester, api, AppIcons(api));
+      expect(shown(tester, 'Runs'), isNull);
+      api.seedVersion(aid, {..._page, 'icon.svg': icon});
+      api.emit(ClaxEvent(type: 'version', data: {'artifact_id': aid, 'n': 2}));
+      await tester.pumpAndSettle();
+      expect(shown(tester, 'Runs'), contains('#f80'));
+    });
+  });
 }
 
 /// Timings that keep nothing.
 class _NoTimings implements Timings {
   @override
   void noSuchMethod(Invocation i) {}
+}
+
+class _MemoryStore implements IconStore {
+  final kept = <String, IconEntry>{};
+
+  @override
+  Future<Map<String, IconEntry>> loadAll() async => Map.of(kept);
+
+  @override
+  Future<void> save(String aid, IconEntry e) async => kept[aid] = e;
 }

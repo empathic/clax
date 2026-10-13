@@ -89,6 +89,27 @@ void main() {
     expect(copied, s.runs);
   });
 
+  testWidgets('Overview shows the app icon, or the tile face without one', (
+    tester,
+  ) async {
+    final api = FakeClaxApi();
+    final withIcon = api.seedArtifact('Runs', {
+      'index.html': '<p>r</p>',
+      'icon.svg':
+          '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+          '<rect width="64" height="64" fill="#f80"/></svg>',
+    });
+    final plain = api.seedArtifact('Plain', {'index.html': '<p>p</p>'});
+    await _pump(tester, AppInspector(api: api, aid: withIcon));
+    expect(find.byKey(const ValueKey('app-icon')), findsOneWidget);
+    await _pump(
+      tester,
+      AppInspector(key: ValueKey(plain), api: api, aid: plain),
+    );
+    expect(find.byKey(const ValueKey('app-icon')), findsNothing);
+    expect(find.byKey(const ValueKey('app-face')), findsOneWidget);
+  });
+
   testWidgets('Overview opens the version history; a version opens the app '
       'there', (tester) async {
     final s = _seed();
