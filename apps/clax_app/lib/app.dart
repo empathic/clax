@@ -50,6 +50,7 @@ import 'ui/host_protocol.dart'
     show HostCall, LoadVersion, OpenRoute, OpenThread, Ready, ThreadsMsg;
 import 'ui/inspector_surface.dart';
 import 'ui/launcher.dart';
+import 'ui/make_service.dart';
 import 'ui/making_screen.dart';
 import 'ui/read_consent_dialog.dart';
 import 'ui/settings_screen.dart';
@@ -478,6 +479,14 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   AppSettings _settings = AppSettings();
   var _needsKey = false;
 
+  /// The makes going on, which outlive their build views.
+  late final _makes = MakeService(
+    _make,
+    clock: _s.clock,
+    onMade: _madeAway,
+    onFailed: _failedAway,
+  );
+
   /// The app the last Make made, until its first `ready`.
   ({String aid, Map<String, Object?> extra})? _made;
 
@@ -562,6 +571,10 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     for (final o in _openApps) {
       unawaited(o.actions.close());
     }
+    for (final m in _makes.makes) {
+      m.cancel();
+    }
+    _makes.dispose();
     unawaited(_runtime.close());
     unawaited(_stream?.close());
     if (_s.inspector case final WebViewInspector i) i.dispose();
@@ -831,7 +844,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       _runs.end(run, RunFailed("Couldn't make your app", '$e'));
       rethrow;
     } finally {
-      unawaited(_s.pendingMake.clear());
+      unawaited(_s.pendingMake.clear(request));
     }
     unawaited(
       _titleOf(aid, fallback: request).then(
@@ -861,46 +874,82 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// Whether the launch's lost make was looked for.
   var _offeredLostMake = false;
 
-  /// Offers to make again the request of a make the app's last run ended
-  /// before finishing.
+  /// Offers to make again the request of each make the app's last run
+  /// ended before finishing, then shows the first one made again.
   Future<void> _offerLostMake() async {
-    final request = await _s.pendingMake.take();
-    // A context below the navigator, which showDialog looks up from.
-    final context = _nav.currentState?.overlay?.context;
-    if (request == null || context == null || !context.mounted) return;
-    final again = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Make it again?'),
-        content: Text('Clax closed before it finished “$request”.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Not now'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Make it again'),
-          ),
-        ],
-      ),
-    );
-    final nav = _nav.currentState;
-    if (again != true || nav == null) return;
-    final result = await nav.push<MakingResult>(
-      MaterialPageRoute(
-        fullscreenDialog: true,
-        builder: (_) => MakingScreen(
-          request: request,
-          make: _make,
-          openSettings: () => unawaited(_openSettings()),
-          timings: _s.timings,
-          onMade: _handOver,
-          build: _build,
+    MakeSession? first;
+    for (final request in await _s.pendingMake.takeAll()) {
+      // A context below the navigator, which showDialog looks up from.
+      final context = _nav.currentState?.overlay?.context;
+      if (context == null || !context.mounted) return;
+      final again = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Make it again?'),
+          content: Text('Clax closed before it finished “$request”.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Not now'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Make it again'),
+            ),
+          ],
         ),
+      );
+      if (again == true) {
+        final s = _makes.start(request);
+        first ??= s;
+      }
+    }
+    final nav = _nav.currentState;
+    if (first == null || nav == null) return;
+    await nav.push<MakingResult>(_makingRoute(first));
+  }
+
+  /// The build view of make [s].
+  Route<MakingResult> _makingRoute(MakeSession s) => MaterialPageRoute(
+    fullscreenDialog: true,
+    builder: (_) => MakingScreen(
+      request: s.request,
+      session: s,
+      openSettings: () => unawaited(_openSettings()),
+      timings: _s.timings,
+      onMade: _handOver,
+      build: _build,
+    ),
+  );
+
+  /// Make [s] made [aid] while no build view showed it: a toast offers to
+  /// open it (the notification says so when Clax is in the background).
+  Future<void> _madeAway(MakeSession s, String aid) async {
+    final title = await _titleOf(aid, fallback: s.request);
+    _toast(
+      '$title is ready',
+      SnackBarAction(label: 'Open', onPressed: () => _open(aid)),
+    );
+  }
+
+  /// Make [s] failed while no build view showed it; its tile shows why.
+  void _failedAway(MakeSession s) => _toast(
+    "Couldn't make “${s.request}”",
+    SnackBarAction(
+      label: 'Show',
+      onPressed: () => unawaited(_nav.currentState?.push(_makingRoute(s))),
+    ),
+  );
+
+  void _toast(String text, SnackBarAction action) {
+    final context = _nav.currentContext;
+    if (context == null || !context.mounted) return;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      SnackBar(
+        content: Text(text, maxLines: 2, overflow: TextOverflow.ellipsis),
+        action: action,
       ),
     );
-    if (result case Made()) return;
   }
 
   /// The title of [aid], or [fallback] when the daemon cannot say.
@@ -1202,6 +1251,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       needsKey: _needsKey,
       stream: _stream,
       onOpenTarget: _openTarget,
+      makes: _makes,
       inspectorPermissions: [
         AgentReadPermissions(_consentMemory),
         if (_device case final d?) DevicePermissions(d),
@@ -1234,7 +1284,11 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       },
     );
     if (defaultTargetPlatform == TargetPlatform.macOS) {
-      app = ClaxMenuBar(comments: _comments, child: app);
+      app = ClaxMenuBar(
+        comments: _comments,
+        back: () => unawaited(_nav.currentState?.maybePop()),
+        child: app,
+      );
     }
     return app;
   }
