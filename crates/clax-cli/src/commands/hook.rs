@@ -405,8 +405,14 @@ impl RemoteSession {
         self.set(Some(cred));
     }
 
-    /// Removes this session's files once it has ended.
+    /// Removes this session's files once it has ended: those holding its
+    /// own session. A hook that knows no harness session ID removes
+    /// nothing, since the credential it would find by its parent may be
+    /// another row's.
     fn forget(&self) {
+        if self.hsid.is_none() {
+            return;
+        }
         if let Ok(Some(c)) = self.current() {
             self.files.remove(&self.keys(), &c.session);
         }
@@ -509,7 +515,7 @@ impl<'a> HookDaemon<'a> {
         let (v, used) = join_attempts(
             cred,
             |c| self.send_as(method.clone(), path, body, timeout, c),
-            |refused| wait_for_credential(remote, refused),
+            |refused| wait_for_credential(remote, refused, CREDENTIAL_WAIT),
         )?;
         remote.absorb(&v, used.as_ref());
         Ok(v)
@@ -553,13 +559,15 @@ impl<'a> HookDaemon<'a> {
 }
 
 /// A credential for `remote`'s session that is none of `refused`, looked
-/// for every [`CREDENTIAL_LOOK`] for up to [`CREDENTIAL_WAIT`]: the file
-/// the shim writes when it made the row this join needs a proof for.
+/// for every [`CREDENTIAL_LOOK`] for up to `wait` ([`CREDENTIAL_WAIT`]):
+/// the file the shim writes when it made the row this join needs a proof
+/// for.
 fn wait_for_credential(
     remote: &RemoteSession,
     refused: &[SessionCredential],
+    wait: Duration,
 ) -> Option<SessionCredential> {
-    let until = Instant::now() + CREDENTIAL_WAIT;
+    let until = Instant::now() + wait;
     loop {
         if let Ok(Some(c)) = remote.find()
             && !refused.iter().any(|t| t.same_as(&c))
@@ -1216,5 +1224,85 @@ mod join_tests {
         let (_, waits, out) = run(None, vec![Err("grant_revoked")], Some("S2"));
         assert_eq!(waits, 0);
         assert!(out.is_err());
+    }
+}
+
+#[cfg(test)]
+mod remote_session_tests {
+    use super::*;
+
+    fn cred(s: &str) -> SessionCredential {
+        SessionCredential {
+            session: s.into(),
+            secret: clax_core::secret::token(clax_core::secret::SESSION_PREFIX),
+        }
+    }
+
+    fn remote(files: &SessionFiles, input: &str) -> RemoteSession {
+        RemoteSession::new(
+            files.clone(),
+            "claude",
+            &HookInput::parse(input),
+            std::process::id(),
+        )
+    }
+
+    /// The wait passes over the credential just refused: a stale file does
+    /// not end the wait; the shim's new one does.
+    #[test]
+    fn the_wait_takes_a_new_credential_never_the_refused_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files = SessionFiles::at(tmp.path().join("remote-sessions"));
+        let r = remote(&files, r#"{"session_id": "w-1"}"#);
+        let stale = cred("A");
+        files
+            .write("claude", Some("w-1"), None, None, &stale)
+            .unwrap();
+        let refused = [stale.clone()];
+        assert!(wait_for_credential(&r, &refused, Duration::ZERO).is_none());
+        files
+            .write("claude", Some("w-1"), None, None, &cred("B"))
+            .unwrap();
+        let got = wait_for_credential(&r, &refused, Duration::ZERO).unwrap();
+        assert_eq!(got.session, "B");
+    }
+
+    /// A session's end removes only files written for its own row: a hook
+    /// that knows no session ID removes nothing, and another row's
+    /// parent-PID file of the same process stays.
+    #[test]
+    fn a_hook_forgets_only_its_own_rows_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files = SessionFiles::at(tmp.path().join("remote-sessions"));
+        let me = std::process::id();
+        files
+            .write("claude", Some("b-h"), Some(me), None, &cred("B"))
+            .unwrap();
+        let ppid = files
+            .path(&SessionKey::Parent {
+                harness: "claude",
+                pid: me,
+            })
+            .unwrap();
+        // Knowing no session ID, it would find B's file by its parent.
+        remote(&files, "{}").forget();
+        assert!(ppid.exists());
+        // Another session of the same process ends.
+        files
+            .write("claude", Some("c-h"), Some(me), None, &cred("C"))
+            .unwrap();
+        remote(&files, r#"{"session_id": "c-h"}"#).forget();
+        assert!(ppid.exists(), "B's parent-PID file stays");
+        assert!(
+            !files
+                .path(&SessionKey::Harness {
+                    harness: "claude",
+                    id: "c-h"
+                })
+                .unwrap()
+                .exists()
+        );
+        remote(&files, r#"{"session_id": "b-h"}"#).forget();
+        assert!(!ppid.exists());
     }
 }

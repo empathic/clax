@@ -721,8 +721,9 @@ impl SessionCredential {
 
 /// What a session credential's file holds: the credential, the harness
 /// session ID its row had when written (none for a row known by its parent
-/// PID alone), and, in a parent-PID file, when that process started, so a
-/// later process given the same PID never takes the file as its own.
+/// PID alone), and, in a parent-PID file, when that process started
+/// ([`process_started`]), so a later process given the same PID never
+/// takes the file as its own.
 #[derive(Serialize, Deserialize)]
 struct CredentialFile {
     session: String,
@@ -730,7 +731,7 @@ struct CredentialFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     harness_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    parent_started: Option<String>,
+    parent_started_us: Option<u64>,
 }
 
 /// A name a session's credential file is found by (spec 2026-10-08 §6.8).
@@ -773,18 +774,81 @@ impl SessionKey<'_> {
     }
 }
 
-/// When process `pid` started, as `ps` reports it; `None` when it cannot be
-/// told (no such process, or no `ps`). A parent-PID credential file
-/// records it, and is taken only while the PID still names that process.
-pub fn process_started(pid: u32) -> Option<String> {
-    let out = std::process::Command::new("ps")
-        .args(["-o", "lstart=", "-p", &pid.to_string()])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
+/// When process `pid` started, in microseconds since the Unix epoch, read
+/// from the kernel and never from text that depends on the locale or the
+/// time zone: on macOS from `proc_pidinfo`'s BSD info (the `libproc`
+/// crate), on Linux from `/proc/<pid>/stat` (field 22, clock ticks since
+/// boot) and the boot time in `/proc/stat`. Elsewhere, `ps -o lstart=` run
+/// with `LC_ALL=C` and `TZ=UTC0`, parsed, to the second. `None` when it
+/// cannot be told (no such process). A parent-PID credential file records
+/// it, and is taken only while the PID still names that process.
+pub fn process_started(pid: u32) -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        let info =
+            libproc::proc_pid::pidinfo::<libproc::bsd_info::BSDInfo>(i32::try_from(pid).ok()?, 0)
+                .ok()?;
+        info.pbi_start_tvsec
+            .checked_mul(1_000_000)?
+            .checked_add(info.pbi_start_tvusec)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let boot = std::fs::read_to_string("/proc/stat").ok()?;
+        let tick = nix::unistd::sysconf(nix::unistd::SysconfVar::CLK_TCK).ok()??;
+        linux_started(&stat, &boot, u64::try_from(tick).ok()?)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "lstart=", "-p", &pid.to_string()])
+            .env("LC_ALL", "C")
+            .env("TZ", "UTC0")
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        ps_lstart_utc(&String::from_utf8(out.stdout).ok()?)
+    }
+}
+
+/// A Linux process's start, in microseconds since the Unix epoch, from its
+/// `/proc/<pid>/stat` line (`stat`), `/proc/stat` (`boot`, its `btime`
+/// line) and the clock ticks per second.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn linux_started(stat: &str, boot: &str, ticks_per_s: u64) -> Option<u64> {
+    // The command name, field 2, is parenthesised and may hold spaces and
+    // parentheses: the fields after it follow the last ')'.
+    let after = &stat[stat.rfind(')')? + 1..];
+    // Field 3 is the first after the name; field 22 is the start time.
+    let ticks: u64 = after.split_whitespace().nth(22 - 3)?.parse().ok()?;
+    let btime: u64 = boot
+        .lines()
+        .find_map(|l| l.strip_prefix("btime "))?
+        .trim()
+        .parse()
         .ok()?;
-    let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
-    (out.status.success() && !s.is_empty()).then_some(s)
+    if ticks_per_s == 0 {
+        return None;
+    }
+    btime
+        .checked_mul(1_000_000)?
+        .checked_add(ticks.checked_mul(1_000_000)? / ticks_per_s)
+}
+
+/// `ps -o lstart=` output in the C locale and UTC (`Tue Oct 13 07:40:38
+/// 2026`), in microseconds since the Unix epoch.
+#[cfg_attr(any(target_os = "macos", target_os = "linux"), allow(dead_code))]
+fn ps_lstart_utc(s: &str) -> Option<u64> {
+    let words: Vec<&str> = s.split_whitespace().collect();
+    let t = chrono::NaiveDateTime::parse_from_str(&words.join(" "), "%a %b %d %H:%M:%S %Y").ok()?;
+    u64::try_from(t.and_utc().timestamp())
+        .ok()?
+        .checked_mul(1_000_000)
 }
 
 /// Why a session's credential file could not be used.
@@ -820,12 +884,19 @@ pub struct Seeker<'a> {
 
 /// The agent sessions' credential files of a connected machine,
 /// `<home>/remote-sessions/` (spec 2026-10-08 §6.8): the directory 0700,
-/// each file 0600, written whole and renamed into place
-/// ([`write_private`]). Neither the directory nor a file is followed
-/// through a symbolic link.
+/// each file 0600, written whole and renamed into place. Every file is
+/// opened through the directory's own handle with `O_NOFOLLOW`, so neither
+/// the directory nor a file is followed through a symbolic link, and a
+/// file that is not a regular file is refused without blocking on it.
 #[derive(Clone, Debug)]
 pub struct SessionFiles {
     dir: PathBuf,
+}
+
+/// The `O_NOFOLLOW` open flags for a file of the directory.
+fn no_follow() -> nix::fcntl::OFlag {
+    use nix::fcntl::OFlag;
+    OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC
 }
 
 impl SessionFiles {
@@ -851,38 +922,74 @@ impl SessionFiles {
         key.file_name().map(|n| self.dir.join(n))
     }
 
+    /// The directory, opened without following a symbolic link; `None`
+    /// when it does not exist.
+    fn open_dir(&self) -> std::io::Result<Option<std::os::fd::OwnedFd>> {
+        use nix::fcntl::OFlag;
+        match nix::fcntl::open(
+            &self.dir,
+            no_follow() | OFlag::O_DIRECTORY | OFlag::O_RDONLY,
+            nix::sys::stat::Mode::empty(),
+        ) {
+            Ok(fd) => Ok(Some(fd)),
+            Err(nix::errno::Errno::ENOENT) => Ok(None),
+            Err(nix::errno::Errno::ELOOP | nix::errno::Errno::ENOTDIR) => {
+                Err(std::io::Error::other(format!(
+                    "{} is a symbolic link or not a directory, which is never followed",
+                    self.dir.display()
+                )))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// The file of `key` as written, `None` when there is no such file.
     fn read_file(
         &self,
         key: &SessionKey<'_>,
-    ) -> Result<Option<(PathBuf, CredentialFile)>, CredentialUnreadable> {
-        let Some(path) = self.path(key) else {
+    ) -> Result<Option<CredentialFile>, CredentialUnreadable> {
+        use nix::fcntl::OFlag;
+        use std::io::Read;
+        let (Some(path), Some(name)) = (self.path(key), key.file_name()) else {
             return Ok(None);
         };
         let unreadable = |why: String| CredentialUnreadable {
             path: path.clone(),
             why,
         };
-        for p in [self.dir.as_path(), path.as_path()] {
-            match std::fs::symlink_metadata(p) {
-                Ok(m) if m.file_type().is_symlink() => {
-                    return Err(unreadable(format!(
-                        "{} is a symbolic link, which is never followed",
-                        p.display()
-                    )));
-                }
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                Err(e) => return Err(unreadable(e.to_string())),
+        let Some(dir) = self.open_dir().map_err(|e| unreadable(e.to_string()))? else {
+            return Ok(None);
+        };
+        let fd = match nix::fcntl::openat(
+            &dir,
+            name.as_str(),
+            no_follow() | OFlag::O_RDONLY | OFlag::O_NONBLOCK,
+            nix::sys::stat::Mode::empty(),
+        ) {
+            Ok(fd) => fd,
+            Err(nix::errno::Errno::ENOENT) => return Ok(None),
+            Err(nix::errno::Errno::ELOOP) => {
+                return Err(unreadable(
+                    "a symbolic link, which is never followed".into(),
+                ));
             }
+            Err(e) => return Err(unreadable(std::io::Error::from(e).to_string())),
+        };
+        let file = std::fs::File::from(fd);
+        let meta = file.metadata().map_err(|e| unreadable(e.to_string()))?;
+        if !meta.is_file() {
+            return Err(unreadable("not a regular file".into()));
         }
-        let bytes = std::fs::read(&path).map_err(|e| unreadable(e.to_string()))?;
+        let mut bytes = Vec::new();
+        file.take(64 * 1024)
+            .read_to_end(&mut bytes)
+            .map_err(|e| unreadable(e.to_string()))?;
         let f: CredentialFile = serde_json::from_slice(&bytes)
             .map_err(|_| unreadable("not a session credential".into()))?;
         if f.session.is_empty() || !f.secret.starts_with(crate::secret::SESSION_PREFIX) {
             return Err(unreadable("not a session credential".into()));
         }
-        Ok(Some((path, f)))
+        Ok(Some(f))
     }
 
     /// The credential in `key`'s file, whatever row it was written for:
@@ -895,7 +1002,7 @@ impl SessionFiles {
         &self,
         key: &SessionKey<'_>,
     ) -> Result<Option<SessionCredential>, CredentialUnreadable> {
-        Ok(self.read_file(key)?.map(|(_, f)| SessionCredential {
+        Ok(self.read_file(key)?.map(|f| SessionCredential {
             session: f.session,
             secret: Secret::new(f.secret),
         }))
@@ -929,7 +1036,7 @@ impl SessionFiles {
                 harness: seeker.harness,
                 pid,
             };
-            let Some((_, f)) = self.read_file(&key)? else {
+            let Some(f) = self.read_file(&key)? else {
                 continue;
             };
             let row_matches = match (seeker.harness_session_id, f.harness_session_id.as_deref()) {
@@ -937,7 +1044,7 @@ impl SessionFiles {
                 (Some(mine), Some(row)) => mine == row,
             };
             let same_process =
-                f.parent_started.is_some() && f.parent_started == process_started(pid);
+                f.parent_started_us.is_some() && f.parent_started_us == process_started(pid);
             if row_matches && same_process {
                 return Ok(Some(SessionCredential {
                     session: f.session,
@@ -953,7 +1060,10 @@ impl SessionFiles {
     /// found by: the row's harness session ID and `also` (a hook's own,
     /// which may differ when the row has none yet), and the parent PID
     /// while that process can be told apart from a later one with its PID.
-    /// The directory is made 0700, or set so when it exists.
+    /// A parent-PID file that holds another session of the same process is
+    /// kept, never replaced: one harness process may hold several sessions,
+    /// and the first is the one its shim registered. The directory is made
+    /// 0700, or set so when it exists.
     ///
     /// # Errors
     /// The first I/O error; a directory that is a symbolic link.
@@ -965,13 +1075,13 @@ impl SessionFiles {
         also: Option<&str>,
         cred: &SessionCredential,
     ) -> std::io::Result<()> {
-        self.private_dir()?;
-        let file = |parent_started: Option<String>| {
+        let dir = self.private_dir()?;
+        let file = |parent_started_us: Option<u64>| {
             let mut bytes = serde_json::to_vec(&CredentialFile {
                 session: cred.session.clone(),
                 secret: cred.secret.expose().to_string(),
                 harness_session_id: row_hsid.map(str::to_string),
-                parent_started,
+                parent_started_us,
             })
             .expect("a credential serializes");
             bytes.push(b'\n');
@@ -980,43 +1090,47 @@ impl SessionFiles {
         let mut ids: Vec<&str> = row_hsid.into_iter().chain(also).collect();
         ids.dedup();
         for id in ids.into_iter().filter(|i| !i.is_empty()) {
-            if let Some(p) = self.path(&SessionKey::Harness { harness, id }) {
-                write_private(&p, &file(None))?;
+            if let Some(name) = (SessionKey::Harness { harness, id }).file_name() {
+                write_at(&dir, &name, &file(None))?;
             }
         }
         if let Some(pid) = parent_pid
             && let Some(started) = process_started(pid)
-            && let Some(p) = self.path(&SessionKey::Parent { harness, pid })
         {
-            write_private(&p, &file(Some(started)))?;
+            let key = SessionKey::Parent { harness, pid };
+            let other_session_of_this_process = matches!(
+                self.read_file(&key),
+                Ok(Some(f)) if f.session != cred.session && f.parent_started_us == Some(started)
+            );
+            if let Some(name) = key.file_name()
+                && !other_session_of_this_process
+            {
+                write_at(&dir, &name, &file(Some(started)))?;
+            }
         }
         Ok(())
     }
 
-    /// The directory, made 0700 or set so; refused when it is a symbolic
-    /// link.
-    fn private_dir(&self) -> std::io::Result<()> {
+    /// The directory, made 0700 or set so through its own handle; refused
+    /// when it is a symbolic link or not a directory.
+    fn private_dir(&self) -> std::io::Result<std::os::fd::OwnedFd> {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-        match std::fs::symlink_metadata(&self.dir) {
-            Ok(m) if m.file_type().is_symlink() || !m.is_dir() => {
-                return Err(std::io::Error::other(format!(
-                    "{} is not a directory of its own",
-                    self.dir.display()
-                )));
-            }
-            Ok(m) if m.permissions().mode() & 0o777 != 0o700 => {
-                std::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(0o700))?;
-            }
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        let dir = match self.open_dir()? {
+            Some(d) => d,
+            None => {
                 std::fs::DirBuilder::new()
                     .recursive(true)
                     .mode(0o700)
                     .create(&self.dir)?;
+                self.open_dir()?
+                    .ok_or_else(|| std::io::Error::other("the directory vanished"))?
             }
-            Err(e) => return Err(e),
+        };
+        let handle = std::fs::File::from(dir);
+        if handle.metadata()?.permissions().mode() & 0o777 != 0o700 {
+            handle.set_permissions(std::fs::Permissions::from_mode(0o700))?;
         }
-        Ok(())
+        Ok(handle.into())
     }
 
     /// Removes every one of `keys`' files that holds session `session`,
@@ -1024,13 +1138,36 @@ impl SessionFiles {
     pub fn remove(&self, keys: &[SessionKey<'_>], session: &str) {
         for k in keys {
             let Some(path) = self.path(k) else { continue };
-            if let Ok(Some(c)) = self.read(k)
-                && c.session == session
+            if let Ok(Some(f)) = self.read_file(k)
+                && f.session == session
             {
                 let _ = std::fs::remove_file(&path);
             }
         }
     }
+}
+
+/// Writes `bytes` to `name` in directory `dir`, 0600: to a new file beside
+/// it (`O_EXCL`, never following a symbolic link), then renamed over it.
+fn write_at(dir: &std::os::fd::OwnedFd, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+    use nix::fcntl::OFlag;
+    let tmp = format!(".{name}.{}.tmp", ulid::Ulid::new());
+    let fd = nix::fcntl::openat(
+        dir,
+        tmp.as_str(),
+        no_follow() | OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL,
+        nix::sys::stat::Mode::from_bits_truncate(0o600),
+    )?;
+    let written = (|| {
+        let mut f = std::fs::File::from(fd);
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        nix::fcntl::renameat(dir, tmp.as_str(), dir, name).map_err(std::io::Error::from)
+    })();
+    if written.is_err() {
+        let _ = nix::unistd::unlinkat(dir, tmp.as_str(), nix::unistd::UnlinkatFlags::NoRemoveDir);
+    }
+    written
 }
 
 /// The names a session row is found by: its harness session ID, when it
@@ -1551,6 +1688,7 @@ mod session_file_tests {
         assert_eq!(files.find(&seek(None)).unwrap().unwrap().session, "S0");
         // A row with another harness session ID: only a client that knows
         // none, or that one, takes it.
+        let files = SessionFiles::at(tmp.path().join("other"));
         files
             .write("codex", Some("b-h"), Some(me), None, &cred("SB"))
             .unwrap();
@@ -1570,12 +1708,154 @@ mod session_file_tests {
         let mut v: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         v["harness_session_id"] = serde_json::Value::Null;
-        v["parent_started"] = "Thu Jan  1 00:00:00 1970".into();
+        v["parent_started_us"] = 1.into();
         std::fs::write(&path, v.to_string()).unwrap();
         assert!(files.find(&seek(None)).unwrap().is_none());
         // Nor without a recorded start.
-        v.as_object_mut().unwrap().remove("parent_started");
+        v.as_object_mut().unwrap().remove("parent_started_us");
         std::fs::write(&path, v.to_string()).unwrap();
         assert!(files.find(&seek(None)).unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod process_start_tests {
+    use super::*;
+
+    #[test]
+    fn a_processs_start_is_a_number_from_the_kernel_matching_ps_in_c_and_utc() {
+        let me = std::process::id();
+        let a = process_started(me).expect("this process's start");
+        assert_eq!(process_started(me), Some(a), "stable");
+        let now = u64::try_from(chrono::Utc::now().timestamp_micros()).unwrap();
+        assert!(a > 0 && a <= now, "{a} {now}");
+        // `ps` in the C locale and UTC, parsed, names the same second, while
+        // its text in another locale and time zone differs: the number does
+        // not depend on either.
+        let ps = |env: &[(&str, &str)]| {
+            let mut c = std::process::Command::new("ps");
+            c.args(["-o", "lstart=", "-p", &me.to_string()]);
+            for (k, v) in env {
+                c.env(k, v);
+            }
+            String::from_utf8(c.output().unwrap().stdout).unwrap()
+        };
+        let c_utc = ps(&[("LC_ALL", "C"), ("TZ", "UTC0")]);
+        let seconds = ps_lstart_utc(&c_utc).expect("parses") / 1_000_000;
+        assert_eq!(seconds, a / 1_000_000, "{c_utc}");
+        let elsewhere = ps(&[("LC_ALL", "de_DE.UTF-8"), ("TZ", "Asia/Tokyo")]);
+        assert_ne!(elsewhere.trim(), c_utc.trim());
+        assert!(process_started(u32::MAX - 1).is_none());
+    }
+
+    #[test]
+    fn ps_lstart_in_c_and_utc_parses_to_the_second() {
+        assert_eq!(
+            ps_lstart_utc("Tue Oct 13 07:40:38 2026\n"),
+            Some(1_791_877_238_000_000)
+        );
+        assert_eq!(ps_lstart_utc("Thu Jan  1 00:00:01 1970"), Some(1_000_000));
+        assert_eq!(ps_lstart_utc("Di. 13 Okt. 07:40:38 2026"), None);
+    }
+
+    #[test]
+    fn a_linux_start_is_the_boot_time_plus_field_22() {
+        // The command name may hold spaces and parentheses.
+        let stat =
+            "4242 (a b) c) S 1 4242 4242 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 250 1000 10";
+        let boot = "cpu  1 2 3\nbtime 1700000000\nprocesses 9\n";
+        assert_eq!(
+            linux_started(stat, boot, 100),
+            Some(1_700_000_000_000_000 + 2_500_000)
+        );
+        assert_eq!(linux_started("4242 no-parens S 1", boot, 100), None);
+        assert_eq!(linux_started(stat, "cpu 1\n", 100), None);
+    }
+}
+
+#[cfg(test)]
+mod session_file_tests_2 {
+    use super::*;
+
+    fn cred(session: &str) -> SessionCredential {
+        SessionCredential {
+            session: session.into(),
+            secret: crate::secret::token(crate::secret::SESSION_PREFIX),
+        }
+    }
+
+    #[test]
+    fn a_parent_pid_file_of_another_session_of_the_same_process_is_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files = SessionFiles::at(tmp.path().join("remote-sessions"));
+        let me = std::process::id();
+        let key = SessionKey::Parent {
+            harness: "codex",
+            pid: me,
+        };
+        files
+            .write("codex", None, Some(me), None, &cred("R1"))
+            .unwrap();
+        // A second session of the same process keeps the first's file.
+        files
+            .write("codex", Some("r2-h"), Some(me), None, &cred("R2"))
+            .unwrap();
+        assert_eq!(files.read(&key).unwrap().unwrap().session, "R1");
+        // The first, written again, replaces its own.
+        files
+            .write("codex", Some("r1-h"), Some(me), None, &cred("R1"))
+            .unwrap();
+        assert_eq!(files.read(&key).unwrap().unwrap().session, "R1");
+        // Written for an earlier process with this PID: replaced.
+        let path = files.path(&key).unwrap();
+        let mut v: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        v["parent_started_us"] = 1.into();
+        std::fs::write(&path, v.to_string()).unwrap();
+        files
+            .write("codex", Some("r2-h"), Some(me), None, &cred("R2"))
+            .unwrap();
+        assert_eq!(files.read(&key).unwrap().unwrap().session, "R2");
+    }
+
+    #[test]
+    fn removing_one_session_leaves_another_sessions_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files = SessionFiles::at(tmp.path().join("remote-sessions"));
+        let me = std::process::id();
+        files
+            .write("claude", Some("b-h"), Some(me), None, &cred("B"))
+            .unwrap();
+        let keys = [
+            SessionKey::Harness {
+                harness: "claude",
+                id: "b-h",
+            },
+            SessionKey::Parent {
+                harness: "claude",
+                pid: me,
+            },
+        ];
+        files.remove(&keys, "C");
+        assert!(keys.iter().all(|k| files.path(k).unwrap().exists()));
+        files.remove(&keys, "B");
+        assert!(keys.iter().all(|k| !files.path(k).unwrap().exists()));
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_regular_file_is_refused_without_blocking() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("remote-sessions");
+        std::fs::create_dir(&dir).unwrap();
+        let fifo = dir.join("claude-s-f-1.json");
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::from_bits_truncate(0o600)).unwrap();
+        let files = SessionFiles::at(dir);
+        let e = files
+            .read(&SessionKey::Harness {
+                harness: "claude",
+                id: "f-1",
+            })
+            .unwrap_err();
+        assert!(e.to_string().contains("not a regular file"), "{e}");
     }
 }
