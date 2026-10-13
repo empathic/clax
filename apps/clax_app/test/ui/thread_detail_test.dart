@@ -561,4 +561,155 @@ void main() {
       );
     });
   });
+
+  group('landing', () {
+    /// A thread long enough to scroll on a phone: [n] rounds of a comment
+    /// and a reply; answers the thread and the reply IDs.
+    Future<(String, List<String>)> longThread(_Rig rig, int n) async {
+      final item = rig.api.sendComment(rig.aid, 'round 0');
+      final replies = <String>[];
+      for (var i = 0; i < n; i++) {
+        await rig.api.replyAsAgent(
+          rig.aid,
+          item.threadId,
+          'Reply $i: ${'a long answer that wraps over lines ' * 4}',
+        );
+        replies.add(rig.api.threadOf(rig.aid, item.threadId).comments.last.id);
+        await rig.api.postOwnerComment(
+          rig.aid,
+          item.threadId,
+          'round ${i + 1}',
+        );
+      }
+      return (item.threadId, replies);
+    }
+
+    Future<void> pumpFocus(
+      WidgetTester tester,
+      _Rig rig,
+      String tid, {
+      String? focus,
+      bool latestReply = false,
+      List<String> run = const [],
+      ValueChanged<String>? onRun,
+    }) async {
+      tester.view.physicalSize = const Size(360, 700) * 3;
+      tester.view.devicePixelRatio = 3;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: claxTheme(Brightness.light),
+          home: ThreadDetail(
+            api: rig.api,
+            aid: rig.aid,
+            tid: tid,
+            voice: FakeVoice(),
+            autoDictate: false,
+            onPreview: (_) {},
+            onRetry: null,
+            now: () => _now,
+            focusComment: focus,
+            focusLatestReply: latestReply,
+            run: run,
+            onRun: onRun,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    double offset(WidgetTester tester) => tester
+        .state<ScrollableState>(
+          find.descendant(
+            of: find.byKey(const ValueKey('thread-list')),
+            matching: find.byType(Scrollable),
+          ),
+        )
+        .position
+        .pixels;
+
+    double maxOffset(WidgetTester tester) => tester
+        .state<ScrollableState>(
+          find.descendant(
+            of: find.byKey(const ValueKey('thread-list')),
+            matching: find.byType(Scrollable),
+          ),
+        )
+        .position
+        .maxScrollExtent;
+
+    BoxDecoration glowOf(WidgetTester tester, String id) =>
+        tester
+                .widget<AnimatedContainer>(
+                  find
+                      .descendant(
+                        of: find.byKey(ValueKey('comment-agent-$id')),
+                        matching: find.byType(AnimatedContainer),
+                      )
+                      .first,
+                )
+                .decoration!
+            as BoxDecoration;
+
+    testWidgets('without a focus it lands at the newest comment', (
+      tester,
+    ) async {
+      final rig = await _seeded();
+      final (tid, _) = await longThread(rig, 6);
+      await pumpFocus(tester, rig, tid);
+      expect(maxOffset(tester), greaterThan(0), reason: 'it scrolls');
+      expect(offset(tester), maxOffset(tester));
+      expect(find.text('round 6'), findsOneWidget);
+    });
+
+    testWidgets('a focused comment is scrolled to and lit, then fades', (
+      tester,
+    ) async {
+      final rig = await _seeded();
+      final (tid, replies) = await longThread(rig, 6);
+      await pumpFocus(tester, rig, tid, focus: replies[1]);
+      final box = tester.getRect(
+        find.byKey(ValueKey('comment-agent-${replies[1]}')),
+      );
+      expect(box.top, greaterThanOrEqualTo(0));
+      expect(box.bottom, lessThan(700));
+      expect(offset(tester), lessThan(maxOffset(tester)));
+      expect(glowOf(tester, replies[1]).color!.a, greaterThan(0));
+      expect(glowOf(tester, replies[3]).color!.a, 0);
+
+      await tester.pump(ThreadDetail.glowFor);
+      await tester.pumpAndSettle();
+      expect(glowOf(tester, replies[1]).color!.a, 0, reason: 'faded');
+    });
+
+    testWidgets('focusLatestReply lights the newest reply by Clax', (
+      tester,
+    ) async {
+      final rig = await _seeded();
+      final (tid, replies) = await longThread(rig, 3);
+      await pumpFocus(tester, rig, tid, latestReply: true);
+      expect(glowOf(tester, replies.last).color!.a, greaterThan(0));
+      await tester.pump(ThreadDetail.glowFor);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('a run of threads shows its place and moves to the next', (
+      tester,
+    ) async {
+      final rig = await _seeded();
+      final a = rig.api.sendComment(rig.aid, 'one');
+      final b = rig.api.sendComment(rig.aid, 'two');
+      final c = rig.api.sendComment(rig.aid, 'three');
+      final opened = <String>[];
+      final run = [a.threadId, b.threadId, c.threadId];
+      await pumpFocus(tester, rig, b.threadId, run: run, onRun: opened.add);
+      expect(find.text('2 of 3 threads in this change'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('thread-run-next')));
+      await tester.tap(find.byKey(const ValueKey('thread-run-previous')));
+      expect(opened, [c.threadId, a.threadId]);
+
+      await pumpFocus(tester, rig, a.threadId, run: [a.threadId]);
+      expect(find.byKey(const ValueKey('thread-run-place')), findsNothing);
+    });
+  });
 }
