@@ -17,16 +17,18 @@ import 'new_sheet.dart';
 /// made yet (the sheet closed, Cancel, or Edit after a failure) is kept for
 /// the next New.
 ///
-/// The list is loaded at start and again whenever the event stream says
-/// events may have been missed: `resync`, or a `ready` that did not resume
-/// (a new daemon, or a reconnect it could not resume).
+/// The launcher follows `gallery` and `inbox` on [stream] (the app's
+/// shared stream, which it never closes), or on a stream of its own when
+/// none is given. Once subscribed it loads the list and
+/// [ClaxApi.inboxSummary]; then each `gallery` `version` refreshes its
+/// app's tile, each `artifact_deleted` removes one, and each `inbox` event
+/// carries the unread count. A topic's `resync` loads it again, as does
+/// coming back from the inbox for the count.
 ///
-/// The top bar's inbox button shows the unread count: the launcher holds a
-/// [ClaxStream] on `inbox`, fetches [ClaxApi.inboxSummary] once subscribed
-/// (and again on `resync` and on coming back from the inbox), and takes
-/// each event's `unread`. The button pushes [InboxScreen]; an item opened
-/// there goes to [onOpenQuestion] (a question, when given), else to
-/// [onOpenTarget] with its thread or version, else to [open].
+/// The top bar's inbox button shows the unread count and pushes
+/// [InboxScreen] on the same stream; an item opened there goes to
+/// [onOpenQuestion] (a question, when given), else to [onOpenTarget] with
+/// its thread or version, else to [open].
 class Launcher extends StatefulWidget {
   const Launcher({
     super.key,
@@ -38,6 +40,7 @@ class Launcher extends StatefulWidget {
     this.needsKey = false,
     this.onOpenTarget,
     this.onOpenQuestion,
+    this.stream,
     this.retryDelay,
   });
 
@@ -61,8 +64,12 @@ class Launcher extends StatefulWidget {
   /// question about an app opens that app through [onOpenTarget].
   final void Function(String qid)? onOpenQuestion;
 
-  /// Waits between tries to subscribe `inbox` again after the stream
-  /// dropped it; [Future.delayed] when null.
+  /// The app's shared stream; when null the launcher opens its own and
+  /// closes it as it goes.
+  final ClaxStream? stream;
+
+  /// Waits between tries to subscribe a topic of the launcher's own stream
+  /// again after the stream dropped it; [Future.delayed] when null.
   final Future<void> Function(Duration)? retryDelay;
 
   @override
@@ -72,63 +79,66 @@ class Launcher extends StatefulWidget {
 class _LauncherState extends State<Launcher> {
   List<ArtifactSummary>? _apps;
   Object? _loadError;
-  StreamSubscription<ClaxEvent>? _events;
   String _draft = '';
-  ClaxStream? _inbox;
-  StreamSubscription<StreamEvent>? _inboxEvents;
+  late final ClaxStream _stream;
+  StreamSubscription<StreamEvent>? _events;
   int _unread = 0;
   int _summaries = 0;
-  bool _resubscribing = false;
+
+  /// The topics being subscribed again after an `unsubscribed`.
+  final Set<String> _resubscribing = {};
 
   /// Bumped by each load, so only the newest load's answer is kept.
   int _loads = 0;
 
+  static const _topics = ['gallery', 'inbox'];
+
   @override
   void initState() {
     super.initState();
-    _events = widget.api
-        .events(types: const ['version', 'artifact_deleted'])
-        .listen(_onEvent, onError: (Object _) {});
-    _load();
-    unawaited(_watchInbox());
+    _stream = widget.stream ?? widget.api.stream();
+    _events = _stream.events.listen(_onEvent, onError: (Object _) {});
+    unawaited(_watch());
   }
 
   @override
   void dispose() {
-    _events?.cancel();
-    unawaited(_inboxEvents?.cancel());
-    unawaited(_inbox?.close());
+    unawaited(_events?.cancel());
+    if (widget.stream == null) unawaited(_stream.close());
     super.dispose();
   }
 
-  Future<void> _watchInbox() async {
-    final inbox = _inbox = widget.api.stream();
-    _inboxEvents = inbox.events.listen(_onInboxEvent, onError: (Object _) {});
+  Future<void> _watch() async {
     try {
-      await inbox.subscribe(const ['inbox']);
+      await _stream.subscribe(_topics);
     } catch (_) {
-      // The count still shows; it only goes stale until the next fetch.
+      // The list and count still load; they only miss live changes until
+      // the next fetch.
     }
-    await _loadUnread();
+    if (!mounted) return;
+    await Future.wait([_load(), _loadUnread()]);
   }
 
-  /// Subscribes `inbox` again after the stream dropped it, then refetches
-  /// the count.
-  Future<void> _resubscribe() async {
-    final inbox = _inbox;
-    if (inbox == null || _resubscribing) return;
-    _resubscribing = true;
+  /// Subscribes [topic] again after the launcher's own stream dropped it,
+  /// then refetches what it shows.
+  Future<void> _resubscribe(String topic) async {
+    if (!_resubscribing.add(topic)) return;
     try {
       final ok = await resubscribe(
-        inbox,
-        const ['inbox'],
+        _stream,
+        [topic],
         delay: widget.retryDelay ?? Future.delayed,
         alive: () => mounted,
       );
-      if (ok && mounted) await _loadUnread();
+      if (ok && mounted) await _reload(topic);
     } finally {
-      _resubscribing = false;
+      _resubscribing.remove(topic);
     }
+  }
+
+  Future<void> _reload(String topic) async {
+    if (topic == 'gallery') await _load();
+    if (topic == 'inbox') await _loadUnread();
   }
 
   Future<void> _loadUnread() async {
@@ -143,28 +153,30 @@ class _LauncherState extends State<Launcher> {
     }
   }
 
-  void _onInboxEvent(StreamEvent e) {
+  void _onEvent(StreamEvent e) {
     if (!mounted) return;
-    if (e.type == 'unsubscribed') {
-      unawaited(_resubscribe());
-      return;
-    }
-    if (e.type == 'resync') {
-      unawaited(_loadUnread());
-      return;
-    }
-    if (e.topic != 'inbox') return;
-    if (e.data['unread'] case final num n) {
-      // A newer count than any summary still in flight.
-      _summaries++;
-      setState(() => _unread = n.toInt());
+    final topic = e.data['topic'];
+    switch (e.type) {
+      case 'unsubscribed' when topic is String && _topics.contains(topic):
+        unawaited(_resubscribe(topic));
+      case 'resync' when topic is String:
+        unawaited(_reload(topic));
+      case 'version' || 'artifact_deleted' when e.topic == 'gallery':
+        unawaited(_onGallery(e));
+      case _ when e.topic == 'inbox':
+        if (e.data['unread'] case final num n) {
+          // A newer count than any summary still in flight.
+          _summaries++;
+          setState(() => _unread = n.toInt());
+        }
     }
   }
 
   Future<void> _openInbox() async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
-        builder: (_) => InboxScreen(api: widget.api, onOpen: _openItem),
+        builder: (_) =>
+            InboxScreen(api: widget.api, onOpen: _openItem, stream: _stream),
       ),
     );
     if (mounted) await _loadUnread();
@@ -209,12 +221,7 @@ class _LauncherState extends State<Launcher> {
   static List<ArtifactSummary> _newestFirst(List<ArtifactSummary> apps) =>
       List.of(apps)..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
 
-  Future<void> _onEvent(ClaxEvent e) async {
-    if (e.type == 'resync' ||
-        (e.type == 'ready' && e.data['resumed'] != true)) {
-      await _load();
-      return;
-    }
+  Future<void> _onGallery(StreamEvent e) async {
     final aid = e.data['artifact_id'];
     if (aid is! String) return;
     if (e.type == 'artifact_deleted') {

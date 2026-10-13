@@ -86,9 +86,16 @@ void main() {
     api.emit(ClaxEvent(type: 'version', data: {'artifact_id': aid, 'n': 1}));
     await tester.pumpAndSettle();
     expect(find.text('Fresh app'), findsOneWidget);
+    expect(api.callNames, isNot(contains('events')));
+    final names = api.callNames;
     expect(
-      api.calls.where((c) => c.name == 'events').single.args['types'],
-      containsAll(['version', 'artifact_deleted']),
+      api.calls.firstWhere((c) => c.name == 'streamSubscribe').args['topics'],
+      containsAll(['gallery', 'inbox']),
+    );
+    expect(
+      names.indexOf('streamSubscribe'),
+      lessThan(names.indexOf('listArtifacts')),
+      reason: 'subscribed before the list is fetched',
     );
   });
 
@@ -381,24 +388,70 @@ void main() {
     await tester.pumpAndSettle();
   });
 
-  testWidgets('resync and a fresh ready reload the list; a resumed ready does '
-      'not', (tester) async {
+  testWidgets("gallery's resync reloads the list; inbox's reloads the count", (
+    tester,
+  ) async {
     final api = _api();
     await pumpLauncher(tester, api);
     int loads() => api.callNames.where((n) => n == 'listArtifacts').length;
-    final before = loads();
+    int counts() => api.callNames.where((n) => n == 'inboxSummary').length;
+    final (lists, sums) = (loads(), counts());
     api.seedArtifact('Made while away', _page);
-    api.emit(const ClaxEvent(type: 'ready', data: {'resumed': true}));
+    api.emitStream(
+      const StreamEvent(
+        topic: 'inbox',
+        type: 'resync',
+        data: {'topic': 'inbox', 'reason': 'reconnect'},
+      ),
+    );
     await tester.pumpAndSettle();
-    expect(loads(), before);
+    expect((loads(), counts()), (lists, sums + 1));
     expect(find.text('Made while away'), findsNothing);
-    api.emit(const ClaxEvent(type: 'resync', data: {}));
+    api.emitStream(
+      const StreamEvent(
+        topic: 'gallery',
+        type: 'resync',
+        data: {'topic': 'gallery', 'reason': 'reconnect'},
+      ),
+    );
     await tester.pumpAndSettle();
+    expect(loads(), lists + 1);
     expect(find.text('Made while away'), findsOneWidget);
-    api.seedArtifact('Made after a restart', _page);
-    api.emit(const ClaxEvent(type: 'ready', data: {'resumed': false}));
+  });
+
+  testWidgets('a shared stream is used for the launcher and its inbox, and '
+      'left open', (tester) async {
+    final api = _api();
+    final shared = api.stream();
+    final aid = api.seedArtifact('Runs', _page);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Launcher(
+          api: api,
+          open: opened.add,
+          make: (r, c, s) async => throw StateError('unused'),
+          voice: FakeVoice.unsupported('No speech here'),
+          stream: shared,
+        ),
+      ),
+    );
     await tester.pumpAndSettle();
-    expect(find.text('Made after a restart'), findsOneWidget);
+    api.emit(ClaxEvent(type: 'artifact_deleted', data: {'artifact_id': aid}));
+    await tester.pumpAndSettle();
+    expect(find.text('Runs'), findsNothing);
+    await tester.tap(find.byTooltip('Inbox'));
+    await tester.pumpAndSettle();
+    expect(find.byType(InboxScreen), findsOneWidget);
+    expect(
+      tester.widget<InboxScreen>(find.byType(InboxScreen)).stream,
+      same(shared),
+    );
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpAndSettle();
+    // Neither closed it: it still subscribes.
+    await shared.subscribe(['gallery']);
   });
 
   testWidgets('without a key the launcher says so and links to Settings', (
