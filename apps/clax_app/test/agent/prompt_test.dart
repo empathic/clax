@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:clax_app/agent/messages_api_backend.dart';
 import 'package:clax_app/agent/prompt.dart';
 import 'package:clax_app/agent/request.dart';
+import 'package:clax_app/agent/tools/kit_tool.dart' show kitApiSection;
 import 'package:clax_app/agent/tools/tool_spec.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -297,9 +298,11 @@ void main() {
       expect(tools, startsWith(ownMd));
       expect(
         tools.substring(ownMd.length),
-        single.substring(singleMd.length),
-        reason: 'the synced contract copies follow, unchanged',
+        '${single.substring(singleMd.length)}\n\n${kitApiSection()}',
+        reason: 'the synced contract copies follow, unchanged, then the kit',
       );
+      expect(tools, contains('useDoc(path, initial) -> {data'));
+      expect(tools, contains('Markup {html}'));
     });
 
     test('names every tool in toolOrder', () async {

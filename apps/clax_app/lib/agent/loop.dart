@@ -253,7 +253,9 @@ class AgentLoop {
   /// plans with `plan_set`, kept in [plans] under [planKey] (one that
   /// starts with [pendingPlanPrefix]; a fresh one when null), so a screen
   /// can watch the plan before the app exists. Once the app is made, the
-  /// plan moves to its ID; a run that made no app forgets it. The run's
+  /// plan moves to its ID. A run that made no app keeps the plan under a
+  /// [planKey] it was given, so a retry with the same key starts from it
+  /// (the first message shows it), and forgets one it made up. The run's
   /// cost is the build's first spend.
   Future<String> newApp(
     String request, {
@@ -276,7 +278,7 @@ class AgentLoop {
       try {
         if (made != null) {
           await plans.move(key, made);
-        } else {
+        } else if (planKey == null) {
           await plans.remove(key);
         }
       } on Object catch (e) {
@@ -308,6 +310,7 @@ class AgentLoop {
       ),
       _othersFrom(listing),
       _prompts.toolSystem(),
+      _plan(planKey),
     ]);
     final before = switch (reads[0]) {
       final List<ArtifactSummary> l => {for (final a in l) a.id},
@@ -315,6 +318,7 @@ class AgentLoop {
     };
     final others = reads[1]! as List<OtherApp>;
     final system = reads[2]! as String;
+    final earlier = reads[3] as Plan?;
     cancel.check();
     final scope = _RunCancel(cancelled);
     final ran = await _runTools(
@@ -329,12 +333,15 @@ class AgentLoop {
         clock: _clock,
       ),
       RunCaps.first,
-      RunInput(system: system, first: _prompts.firstNew(request, others)),
+      RunInput(
+        system: system,
+        first: _prompts.firstNew(request, others, plan: earlier),
+      ),
       onProgress,
       agentNewTiming,
       const {},
       kind: RunKind.first,
-      plan: RunPlan(plans, planKey, request: request),
+      plan: RunPlan(plans, planKey, request: request, seen: earlier?.revision),
     );
     // A new app's question is about nothing that outlives the run.
     await ran.ask.withdrawOpen();

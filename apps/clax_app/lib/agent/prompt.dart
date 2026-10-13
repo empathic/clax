@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 
 import 'plan.dart';
 import 'request.dart';
+import 'tools/kit_tool.dart' show kitApiSection;
 import 'tools/file_tools.dart' show lineCount;
 
 /// One of the changed app's own documents as a change prompt shows it: its
@@ -61,12 +62,15 @@ class PromptBuilder {
 
   /// The tool loop's system prompt: `system.md`, then the synced copies of
   /// the page contract, the runtime capabilities, `db.d.ts` and
-  /// `clax-extensions.d.ts`, in that order. Loaded once.
+  /// `clax-extensions.d.ts`, in that order, then the kit's API
+  /// ([kitApiSection]). Loaded once.
   Future<String> toolSystem() {
-    return _toolSystem ??= _loadSystem('system.md').catchError((Object e) {
-      _toolSystem = null;
-      throw e;
-    });
+    return _toolSystem ??= _loadSystem('system.md')
+        .then((t) => '$t\n\n${kitApiSection()}')
+        .catchError((Object e) {
+          _toolSystem = null;
+          throw e;
+        });
   }
 
   /// The single structured call's system prompt (the `claude -p` fallback):
@@ -97,22 +101,38 @@ class PromptBuilder {
   }
 
   /// The tool loop's first user message for a new app from the person's
-  /// [request], with the [others] by ID and title: one text block.
-  List<Map<String, Object?>> firstNew(String request, List<OtherApp> others) {
+  /// [request], with the [others] by ID and title, and the [plan] an
+  /// earlier attempt made: one text block.
+  List<Map<String, Object?>> firstNew(
+    String request,
+    List<OtherApp> others, {
+    Plan? plan,
+  }) {
     final b = StringBuffer()
       ..writeln('Make a new app.')
       ..writeln()
       ..writeln('The person asked for this (their words, as a JSON string):')
       ..writeln(jsonEncode(request));
     _writeOtherNames(b, others);
+    if (plan != null) {
+      _writePlan(b, plan);
+      b
+        ..writeln()
+        ..writeln(
+          'An earlier attempt made this plan and published nothing. Start '
+          'from it (plan_set only to revise it); then build as below.',
+        );
+    }
     b
       ..writeln()
       ..writeln(
         'This is the first run of its build. Read what they want closely, '
-        'then plan_set the app\'s features in build order. Then build a '
-        'usable first version of the core features: add the kit, set the '
-        'title, write the files, test and render; then finish. Later runs '
-        'build the rest of the plan.',
+        'then plan_set the app\'s features in build order. Then add the '
+        'kit, set the title, write index.html and app.js with the shell and '
+        'its first screen and render them clean within your first two '
+        'turns. Then grow it into a usable first version of the core '
+        'features, testing and rendering as each lands; then finish. Later '
+        'runs build the rest of the plan.',
       );
     return [_text(b)];
   }
@@ -149,7 +169,8 @@ class PromptBuilder {
         'Take the features still to build in order, from the first: mark '
         'one doing, build it fully, test it, render, mark it done, then the '
         'next while time allows. A feature marked doing was cut off by an '
-        'earlier run: finish it first. Then finish, naming what you added. '
+        'earlier run: finish it first. add_kit any kit part a feature needs '
+        'that the file list lacks. Then finish, naming what you added. '
         'Nobody is waiting on this run: do not ask.',
       );
     return [_text(b)];
