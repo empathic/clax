@@ -311,12 +311,18 @@ class ChangeTracker {
   }
 
   /// The person stopped the work in flight: every change ends, and the
-  /// worker's [workerCancelled] that follows changes nothing.
+  /// worker's [workerCancelled] that follows changes nothing. Its threads
+  /// are kept for Retry ([failedThreads]), as a failure's are.
   void stopped() {
+    final kept = List.of(threads);
     _takeRunning();
     _changes.clear();
     _idle();
-    _end(ChangeOutcome.stopped, 'Stopped. Your comment stays open.');
+    _end(
+      ChangeOutcome.stopped,
+      'Stopped. It waits until you run it again or add to the comment.',
+    );
+    _failed = kept;
   }
 
   /// The shell's `ready`: a frame shows [version], pinned or following.

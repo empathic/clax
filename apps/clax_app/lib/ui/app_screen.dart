@@ -314,6 +314,54 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   void setState(VoidCallback fn) {
     super.setState(fn);
     _updates.fire();
+    _noteChangeStep();
+  }
+
+  /// Whether the change chip shows whole (else the pill), what it last
+  /// showed whole for, and the fold it waits on.
+  var _changeOpen = false;
+  String? _changeShown;
+  var _changeFold = 0;
+
+  /// Whether the change chip (whole or the pill) shows.
+  bool get _changeChip => _changes.outcome != null || _changes.working;
+
+  /// Opens the change chip whole when what it says changed: work began, a
+  /// new step, the new version loading, or how it ended.
+  void _noteChangeStep() {
+    final c = _changes;
+    final shown = _changeChip
+        ? '${c.outcome}|${c.outcomeText}|${c.step}|${c.landing}|${c.again}|'
+              '${c.retrying}'
+        : null;
+    if (shown == _changeShown) return;
+    _changeShown = shown;
+    if (shown != null) _openChangeChip();
+  }
+
+  /// Shows the change chip whole, then folds it after [buildChipFor].
+  void _openChangeChip() {
+    final fold = ++_changeFold;
+    setState(() => _changeOpen = true);
+    unawaited(
+      widget.clock.delay(buildChipFor).then((_) {
+        if (mounted && fold == _changeFold) {
+          setState(() => _changeOpen = false);
+        }
+      }),
+    );
+  }
+
+  /// The folded change chip, in the status bar's band at the top right,
+  /// as the build's pill.
+  Widget _changePill(BuildContext context) {
+    final inset = MediaQuery.paddingOf(context).top;
+    final h = (inset - 4).clamp(20.0, 28.0);
+    return Positioned(
+      top: inset >= 22 ? (inset - h) / 2 : 4,
+      right: 12,
+      child: WorkingPill(changes: _changes, height: h, onTap: _openChangeChip),
+    );
   }
 
   /// The app's plan and its build's latest step.
@@ -651,6 +699,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       case WorkerReplied(threads: final named):
         // The chip ends with its change; the reply is told in a toast.
         final threads = named.isNotEmpty ? named : _changes.running;
+        _replied = threads;
         final sheet = _sheetOpen;
         setState(() {
           _changes.workerReplied();
@@ -658,15 +707,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           if (!sheet) _changes.dismiss();
         });
         if (!sheet) {
-          _toast(
-            'Clax replied',
-            threads.isNotEmpty
-                ? () => _openThread(threads.first, reply: true, run: threads)
-                : () {
-                    setState(() => _tab = PanelTab.threads);
-                    _setOpen(true);
-                  },
-          );
+          _toast('Clax replied', _openReplied);
         }
       case WorkerFailed(:final reason):
         setState(() => _changes.workerFailed(reason));
@@ -882,6 +923,21 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
 
   /// Whether the change sheet is open.
   var _sheetOpen = false;
+
+  /// The threads of the last reply, for the replied chip.
+  var _replied = const <String>[];
+
+  /// Opens the threads Clax last answered at the reply, else the panel's
+  /// threads.
+  void _openReplied() {
+    final threads = _replied;
+    if (threads.isNotEmpty) {
+      _openThread(threads.first, reply: true, run: threads);
+      return;
+    }
+    setState(() => _tab = PanelTab.threads);
+    _setOpen(true);
+  }
 
   /// Shows the change in progress over the app.
   Future<void> _showChange() async {
@@ -1175,6 +1231,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
                     child: _pageStack(context),
                   ),
                   if (_buildChip && !_buildOpen) _buildPill(context),
+                  if (_changeChip && !_changeOpen) _changePill(context),
                 ],
               ),
             ),
@@ -1231,7 +1288,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
             ),
           ),
         ),
-      if (_changes.outcome != null || _changes.working)
+      if (_changeChip && _changeOpen)
         Positioned(
           top: 8,
           left: 24,
@@ -1242,11 +1299,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
               clock: widget.clock,
               onDismiss: () => setState(_changes.dismiss),
               onReplied: () {
-                setState(() {
-                  _changes.dismiss();
-                  _tab = PanelTab.threads;
-                });
-                _setOpen(true);
+                setState(_changes.dismiss);
+                _openReplied();
               },
               onResend: () => _resend(_changes.retryThread),
               onRetry: widget.onRetry == null

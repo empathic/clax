@@ -468,18 +468,26 @@ void main() {
     expect(t.landed, isNull);
   });
 
-  test('Stop ends the work in flight; the worker\'s cancel changes nothing',
-      () {
-    t
-      ..sent('t1')
-      ..workerWorking(['t1'])
-      ..stopped();
-    expect(t.working, isFalse);
-    expect(t.since, isNull);
-    expect(t.outcome, ChangeOutcome.stopped);
-    expect(t.outcomeText, 'Stopped. Your comment stays open.');
-    t.workerCancelled();
-    expect(t.outcomeText, 'Stopped. Your comment stays open.');
-    expect(t.threads, isEmpty);
-  });
+  test(
+    'Stop ends the work in flight; the worker\'s cancel changes nothing',
+    () {
+      t
+        ..sent('t1')
+        ..workerWorking(['t1'])
+        ..stopped();
+      expect(t.working, isFalse);
+      expect(t.since, isNull);
+      expect(t.outcome, ChangeOutcome.stopped);
+      expect(
+        t.outcomeText,
+        'Stopped. It waits until you run it again or add to the comment.',
+      );
+      t.workerCancelled();
+      expect(
+        t.outcomeText,
+        'Stopped. It waits until you run it again or add to the comment.',
+      );
+      expect(t.threads, isEmpty);
+    },
+  );
 }
