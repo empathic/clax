@@ -91,7 +91,14 @@ class AppIcons extends ChangeNotifier {
       for (final e in kept.entries) {
         final have = _known[e.key];
         if (have == null || have.version < e.value.version) {
-          _known[e.key] = e.value;
+          // Cleaned again: the store is a file anyone could edit.
+          _known[e.key] = (
+            version: e.value.version,
+            svg: switch (e.value.svg) {
+              final svg? => cleanIcon(svg),
+              null => null,
+            },
+          );
           changed = true;
         }
       }

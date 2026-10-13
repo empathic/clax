@@ -1043,6 +1043,24 @@ void main() {
       expect(api.callNames, isNot(contains('readFile')));
     });
 
+    testWidgets('a kept icon is cleaned again before it is drawn', (
+      tester,
+    ) async {
+      final api = _api();
+      final aid = api.seedArtifact('Runs', {..._page, 'icon.svg': icon});
+      final store = _MemoryStore()
+        ..kept[aid] = (
+          version: 1,
+          svg: icon.replaceFirst('</svg>', '<script>x()</script></svg>'),
+        );
+      await pumpWith(tester, api, AppIcons(api, store: store));
+      expect(
+        shown(tester, 'Runs'),
+        allOf(contains('#f80'), isNot(contains('script'))),
+      );
+      expect(api.callNames, isNot(contains('readFile')));
+    });
+
     testWidgets('a failed read keeps the face and is tried again on the next '
         'version', (tester) async {
       final api = _api();
