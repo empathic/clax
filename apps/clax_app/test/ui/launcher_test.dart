@@ -726,12 +726,14 @@ void main() {
 
   group('inbox', () {
     late List<(String, String?, int?)> targets;
+    late List<String?> comments;
     late List<String> questionsOpened;
     late List<Duration> delays;
 
     setUp(() {
       delays = [];
       targets = [];
+      comments = [];
       questionsOpened = [];
     });
 
@@ -749,8 +751,10 @@ void main() {
             make: (_, _, _) async => throw StateError('unused'),
             voice: FakeVoice.unsupported('No speech here'),
             onOpenTarget: targetHook
-                ? (aid, {thread, version}) =>
-                      targets.add((aid, thread, version))
+                ? (aid, {thread, version, comment}) {
+                    targets.add((aid, thread, version));
+                    comments.add(comment);
+                  }
                 : null,
             onOpenQuestion: questionHook ? questionsOpened.add : null,
             retryDelay: (d) async => delays.add(d),
@@ -848,7 +852,12 @@ void main() {
       (tester) async {
         final api = _api();
         final aid = api.seedArtifact('Runs', _page);
-        api.pushInbox('reply', artifactId: aid, threadId: 't9', body: 'Fixed');
+        final reply = api.pushInbox(
+          'reply',
+          artifactId: aid,
+          threadId: 't9',
+          body: 'Fixed',
+        );
         api.pushInbox('version', artifactId: aid, versionN: 4, note: 'Totals');
         api.pushInbox('published', artifactId: aid);
         await pumpWithInbox(tester, api);
@@ -861,6 +870,8 @@ void main() {
         await tester.tap(find.text('New app'));
         await tester.pumpAndSettle();
         expect(targets, [(aid, 't9', null), (aid, null, 4), (aid, null, null)]);
+        expect(comments, [reply.replyCommentId, null, null]);
+        expect(reply.replyCommentId, isNotNull);
       },
     );
 
