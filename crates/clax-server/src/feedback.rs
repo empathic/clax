@@ -984,6 +984,38 @@ impl Vis {
         Ok(())
     }
 
+    /// An approval's view `view` ([`crate::approvals::approval_view`]) as
+    /// the reader may see it: its page's title is the title's authors',
+    /// null when the reader may not see it (spec §7.5, §8.2).
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn filter_approval(&self, st: &Store, view: &mut Value) -> clax_core::Result<()> {
+        let Some(vis) = self.filtering() else {
+            return Ok(());
+        };
+        if view["artifact_title"].is_null() {
+            return Ok(());
+        }
+        let Some(aid) = view["artifact_id"].as_str() else {
+            return Ok(());
+        };
+        let hidden = match st.get_artifact(&ArtifactId::parse(aid)?)? {
+            Some(a) => !vis
+                .withheld_authors(
+                    &visibility::authors_of_artifact_field(&a, "title"),
+                    &a.id,
+                    None,
+                )
+                .is_empty(),
+            None => true,
+        };
+        if hidden {
+            view["artifact_title"] = Value::Null;
+        }
+        Ok(())
+    }
+
     /// An artifact's view `view` (its JSON, with or without the fields of
     /// `with_owner`): each of its text fields (title, description, icon,
     /// `capabilities`) the reader may not see null, with `withheld:

@@ -2019,3 +2019,48 @@ async fn approvals_name_the_owner_as_such_and_their_page() {
     assert_eq!(of_mia["scope"], "thread", "{of_mia}");
     assert_eq!(of_mia["artifact_title"], "Quarterly Review", "{of_mia}");
 }
+
+#[tokio::test]
+async fn an_agents_approvals_withhold_a_page_title_it_may_not_see() {
+    // Sam approves Mia in one thread of the owner's artifact, and has not
+    // approved the owner: the owner's title is withheld from Sam's agent.
+    let t = Two::new().await;
+    let tid = t.mia_thread("please fix the chart").await;
+    let (status, v) = t.mia_sends_to_sam(&tid).await;
+    assert_eq!(status, 200, "{v}");
+    let rid = t.sams_requests().await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, v) = t.sam_decides(&rid, "thread").await;
+    assert_eq!(status, 200, "{v}");
+    let (status, art) = t
+        .sam_agent("GET", &format!("/api/artifacts/{}", t.aid), None)
+        .await;
+    assert_eq!(status, 200, "{art}");
+    assert_eq!(art["artifact"]["title"], Value::Null, "{art}");
+    // The withheld title's author is the owner, named as the owner.
+    let authors = &art["artifact"]["withheld"]["authors"];
+    assert_eq!(authors[0]["name"], "The owner", "{art}");
+    // The approvals list withholds the same title from the same agent.
+    let (status, v) = t.sam_agent("GET", "/api/approvals", None).await;
+    assert_eq!(status, 200, "{v}");
+    let thread = v["approvals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["scope"] == "thread")
+        .unwrap_or_else(|| panic!("Sam's thread approval: {v}"));
+    assert_eq!(thread["artifact_id"], json!(t.aid), "{thread}");
+    assert_eq!(thread["artifact_title"], Value::Null, "{thread}");
+    // Sam's browser, a person's, is not filtered: it names the page.
+    let (status, v) = t.sam_browser().call("GET", "/api/approvals", None).await;
+    assert_eq!(status, 200, "{v}");
+    let thread = v["approvals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["scope"] == "thread")
+        .unwrap();
+    assert_eq!(thread["artifact_title"], "Quarterly Review", "{thread}");
+}
