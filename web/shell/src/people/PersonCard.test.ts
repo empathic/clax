@@ -227,8 +227,17 @@ describe("PersonCard", () => {
     // The person's own view: who raised what, where.
     const self = mount(PersonCard, { view: "self", who: { public_id: "p1", display_name: "Sam", revoked_at: null, rights: COLLAB, grants: [grant()], agents: [raised] }, artifacts: art, onChanged: vi.fn() });
     const publish = [...self.root.querySelectorAll(".agent label")].find(l => l.textContent!.trim().startsWith("Publish new versions"))!;
-    expect(publish.textContent).toContain("Raised by Mia on “Mia's Notes” until this session ends");
+    expect(publish.textContent).toContain("Raised by Mia on “Mia's Notes” until this session ends; turning this off leaves the raise on there");
+    expect(publish.querySelector("input")!.checked).toBe(true);
     self.unmount();
+    // Narrowed off by its person, the action still runs where Mia raised it:
+    // the box says so rather than reading as off everywhere.
+    const narrowed = { ...raised, narrow: COLLAB.map(x => ({ ...x, actions: x.actions.filter(y => !(x.type === "clax-artifacts" && y === "update")) })).filter(x => x.actions.length) };
+    const off = mount(PersonCard, { view: "self", who: { public_id: "p1", display_name: "Sam", revoked_at: null, rights: COLLAB, grants: [grant()], agents: [narrowed] }, artifacts: art, onChanged: vi.fn() });
+    const label = [...off.root.querySelectorAll(".agent label")].find(l => l.textContent!.trim().startsWith("Publish new versions"))!;
+    expect(label.querySelector("input")!.checked).toBe(false);
+    expect(label.textContent).toContain("Off, but still on where raised: by Mia on “Mia's Notes”, until this session ends");
+    off.unmount();
     // The owner's view: read-only, beside the owner's own raise panel.
     const owner = mount(PersonCard, { view: "owner", who: person({ agents: [raised] }), artifacts: art, onChanged: vi.fn() });
     const by = owner.root.querySelector(".agent .note.by")!;
