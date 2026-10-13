@@ -14,6 +14,10 @@ files).
 | `kit.js` | Preact components over `kit.css` | Clax |
 | `chart.js` | SVG line, area, bar, pie, donut and sparkline charts | Clax |
 
+Each vendored file opens with a comment naming its packages, versions,
+licences and copyright holders; `LICENSES.txt` holds the full licence
+texts and `add_kit` copies it with every vendored file.
+
 ## How the vendored files were built
 
 In a scratch directory (`target/kit-build`), with esbuild 0.25.12:
@@ -47,7 +51,8 @@ esbuild preact-entry.js --bundle --format=esm --minify --legal-comments=none --o
 esbuild dates-entry.js --bundle --format=esm --minify --legal-comments=none --outfile=dates.js
 ```
 
-`icons.js` was generated from `lucide-static/icons/*.svg`: each icon's
+The header comments were added to the built files, and `LICENSES.txt`
+joins each package's `LICENSE` file. `icons.js` was generated from `lucide-static/icons/*.svg`: each icon's
 inner SVG elements, keyed by a camelCase name (`home` from `house.svg`,
 `trash` from `trash-2.svg`), wrapped by `icon(name, {size, stroke,
 label})`.

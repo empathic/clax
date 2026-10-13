@@ -144,7 +144,7 @@ export function TabBar({ tabs }) {
   const { path } = useContext(RouteCtx);
   const active = tabs.reduce((best, t) => (
     (path === t.path || (t.path !== '/' && path.startsWith(`${t.path}/`))) && (!best || t.path.length > best.path.length) ? t : best
-  ), null) || tabs.find((t) => t.path === '/');
+  ), null);
   return html`<nav class="k-tabbar" aria-label="Tabs">
     ${tabs.map((t) => html`<button class="k-tab" key=${t.path} aria-current=${t === active ? 'page' : undefined}
         onClick=${() => go(t.path)}>
@@ -158,7 +158,8 @@ export function TabBar({ tabs }) {
 /**
  * The top bar of a screen.
  * - `title`, `subtitle`; `large` shows a large title that folds into the bar on scroll.
- * - `back`: `true` (history back) or a path; `backLabel` the text beside the chevron.
+ * - `back`: `true` or the `back` function (history back), a path, or any function to call;
+ *   `backLabel` the text beside the chevron.
  * - `leading`, `actions`: nodes at either end (usually IconButtons).
  */
 export function AppBar({ title, subtitle, large, back: backTo, backLabel = 'Back', leading, actions }) {
@@ -170,19 +171,25 @@ export function AppBar({ title, subtitle, large, back: backTo, backLabel = 'Back
     window.addEventListener('scroll', on, { passive: true });
     return () => window.removeEventListener('scroll', on);
   }, [large]);
+  const onBack = () => {
+    if (typeof backTo === 'function') backTo();
+    else if (typeof backTo === 'string') go(backTo);
+    else back();
+  };
+  const bare = !backTo && !leading && !actions;
   const lead = backTo
-    ? html`<button class="k-icon-btn k-back-btn" style="width:auto" onClick=${() => (backTo === true ? back() : go(backTo))} aria-label=${backLabel}>
+    ? html`<button class="k-icon-btn k-back-btn" style="width:auto" onClick=${onBack} aria-label=${backLabel}>
         <${Icon} name="chevronLeft" size=${28} stroke=${2.2} /><span>${backLabel}</span></button>`
     : leading;
   return html`<${Fragment}>
-    <header class=${cx('k-appbar', scrolled && 'k-scrolled', large && 'k-large-mode')}>
+    <header class=${cx('k-appbar', scrolled && 'k-scrolled', large && 'k-large-mode', bare && 'k-bare')}>
       <div class="k-appbar-row">
         <div class="k-appbar-lead">${lead}</div>
         <h1 class="k-appbar-title">${title}</h1>
         <div class="k-appbar-actions">${actions}</div>
       </div>
     </header>
-    ${large ? html`<div class="k-large-title"><h2 class="k-large">${title}</h2>
+    ${large ? html`<div class=${cx('k-large-title', bare && 'k-bare')}><h2 class="k-large">${title}</h2>
       ${subtitle ? html`<div class="k-subtitle">${subtitle}</div>` : null}</div>` : null}
   <//>`;
 }
@@ -511,12 +518,22 @@ export function Toast({ message, tone, icon, closing, onGone }) {
 // Data: the db capability, or memory when the page has none.
 
 let dbPromise;
-/** The `db` capability, or null when the page runs without it (then data lives in memory). */
+/**
+ * The `db` capability, or null when the page runs without it (not declared, or outside the
+ * viewer); then the hooks keep data in memory, lost on reload, and warn once in the console.
+ */
 export function getDb() {
   if (!dbPromise) {
     dbPromise = Promise.resolve()
       .then(() => (window.claude && window.claude.use ? window.claude.use('db') : null))
-      .catch(() => null);
+      .catch(() => null)
+      .then((db) => {
+        if (!db) {
+          console.warn('[kit] The db capability is not available (declare {"db": {}}); '
+            + 'useDoc and useCollection keep data in memory only, lost on reload.');
+        }
+        return db;
+      });
   }
   return dbPromise;
 }
@@ -533,17 +550,29 @@ const memCollection = (col) => {
   }
   return out;
 };
+const isObj = (v) => v != null && typeof v === 'object' && !Array.isArray(v);
+// Merges as db's update does: nested objects recursively, anything else replaced.
+const deepMerge = (a, b) => {
+  const out = { ...a };
+  for (const [k, v] of Object.entries(b)) out[k] = isObj(v) && isObj(a[k]) ? deepMerge(a[k], v) : v;
+  return out;
+};
+const invalid = (message) => Object.assign(new Error(message), { code: 'invalid_argument' });
 
 /** A fresh document ID. */
 export function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
-// One write at a time per document path.
+// One write at a time per document path. A failed write shows a toast and
+// rejects the promise the caller holds.
 const writeChains = new Map();
 function serial(path, fn) {
   const prev = writeChains.get(path) || Promise.resolve();
-  const next = prev.catch(() => {}).then(fn);
+  const next = prev.catch(() => {}).then(fn).catch((e) => {
+    toast(`Could not save: ${(e && e.message) || e}`, { tone: 'danger' });
+    throw e;
+  });
   writeChains.set(path, next);
   return next;
 }
@@ -552,8 +581,9 @@ const strip = (d) => { const { id, ...rest } = d || {}; return rest; };
 
 /**
  * One document at `path` (an even number of segments, such as `settings/main`):
- * `[data, save, {ready, error}]`. `data` is `initial` until the document exists;
- * `save(next)` replaces it (`next` may be a function of the current data).
+ * `{data, save, ready, error}`. `data` is `initial` until the document exists;
+ * `save(next)` replaces it (`next` may be a function of the current data) and returns a
+ * promise that rejects, after showing a toast, when the write fails.
  */
 export function useDoc(path, initial = null) {
   const [state, setState] = useState({ data: initial, ready: false, error: null });
@@ -579,18 +609,20 @@ export function useDoc(path, initial = null) {
     const value = typeof next === 'function' ? next(current.current) : next;
     current.current = value;
     return serial(path, async () => {
+      if (!isObj(value)) throw invalid('a document must be an object');
       const db = await getDb();
       if (db) await db.doc(path).set(value);
       else { memDocs.set(path, value); memChanged(); }
     });
   }, [path]);
-  return [state.data, save, { ready: state.ready, error: state.error }];
+  return { data: state.data, save, ready: state.ready, error: state.error };
 }
 
 /**
  * The documents of collection `path` (an odd number of segments, such as `tasks`), each as
  * `{id, ...data}`. Options: `orderBy` (a field), `dir` (`asc`/`desc`), `limit`.
- * Returns `{items, ready, error, add(data) -> id, set(id, data), update(id, patch), remove(id)}`.
+ * Returns `{items, ready, error, add(data) -> id, set(id, data), update(id, patch), remove(id)}`;
+ * each write returns a promise that rejects, after showing a toast, when the write fails.
  */
 export function useCollection(path, { orderBy, dir = 'asc', limit } = {}) {
   const [state, setState] = useState({ items: [], ready: false, error: null });
@@ -630,6 +662,7 @@ export function useCollection(path, { orderBy, dir = 'asc', limit } = {}) {
     set(id, data) {
       const p = `${path}/${id}`;
       return serial(p, async () => {
+        if (!isObj(data)) throw invalid('a document must be an object');
         const db = await getDb();
         if (db) await db.doc(p).set(strip(data));
         else { memDocs.set(p, strip(data)); memChanged(); }
@@ -640,7 +673,8 @@ export function useCollection(path, { orderBy, dir = 'asc', limit } = {}) {
       return serial(p, async () => {
         const db = await getDb();
         if (db) await db.doc(p).update(strip(patch));
-        else if (memDocs.has(p)) { memDocs.set(p, { ...memDocs.get(p), ...strip(patch) }); memChanged(); }
+        else if (memDocs.has(p)) { memDocs.set(p, deepMerge(memDocs.get(p), strip(patch))); memChanged(); }
+        else throw invalid(`update of ${p}, which does not exist`);
       });
     },
     remove(id) {

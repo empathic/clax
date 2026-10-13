@@ -25,10 +25,16 @@ void main() {
     );
     expect(
       [for (final f in r['files']! as List) (f as Map)['path']],
-      ['kit/preact.js', 'kit/icons.js', 'kit/kit.css', 'kit/kit.js'],
+      [
+        'kit/preact.js',
+        'kit/icons.js',
+        'kit/kit.css',
+        'kit/kit.js',
+        'kit/LICENSES.txt',
+      ],
     );
     expect(tb.state.draft.files['kit/kit.js'], '/* kit.js */');
-    expect(tb.state.draft.revision, 4);
+    expect(tb.state.draft.revision, 5);
     expect(r['api'], allOf(contains('useCollection'), contains('html`')));
   });
 
@@ -46,7 +52,7 @@ void main() {
     expect(tb.state.draft.revision, rev);
     expect(
       [for (final f in r['files']! as List) (f as Map)['written']],
-      [false, false],
+      [false, false, false],
     );
   });
 
@@ -82,7 +88,23 @@ void main() {
     expect(pubspec, contains('- assets/kit/'));
     final tb = toolboxWith(extra: [AddKitTool(load: _diskKit)]);
     final r = _ok(await tb.call('add_kit', {'parts': kitParts.keys.toList()}));
-    expect((r['files']! as List).length, 6);
+    expect((r['files']! as List).length, 7);
+    // Each export of kit.js and chart.js is named in the API text.
+    for (final file in ['kit.js', 'chart.js']) {
+      final src = File('assets/kit/$file').readAsStringSync();
+      final exports = RegExp(
+        r'^export (?:async )?(?:function|const|let) (\w+)',
+        multiLine: true,
+      ).allMatches(src).map((m) => m.group(1)!);
+      expect(exports, isNotEmpty);
+      for (final name in exports) {
+        expect(
+          r['api'],
+          matches(RegExp('\\b$name\\b')),
+          reason: '$file exports $name',
+        );
+      }
+    }
     // Each icon name the result lists is one icons.js exports.
     final icons = File('assets/kit/icons.js').readAsStringSync();
     final api = r['api']! as String;

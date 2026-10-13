@@ -15,11 +15,11 @@ typedef KitLoader = Future<String> Function(String name);
 /// Each part the tool takes and the kit files it brings, its own and those
 /// of the parts it needs, in the order they are added.
 const kitParts = <String, List<String>>{
-  'preact': ['preact.js'],
-  'kit': ['preact.js', 'icons.js', 'kit.css', 'kit.js'],
+  'preact': ['preact.js', 'LICENSES.txt'],
+  'kit': ['preact.js', 'icons.js', 'kit.css', 'kit.js', 'LICENSES.txt'],
   'chart': ['chart.js'],
-  'dates': ['dates.js'],
-  'icons': ['icons.js'],
+  'dates': ['dates.js', 'LICENSES.txt'],
+  'icons': ['icons.js', 'LICENSES.txt'],
 };
 
 /// The directory of the draft the kit files go in.
@@ -117,36 +117,40 @@ const _api = <String, String>{
   'kit.js':
       r'kit/kit.js exports: App {routes: {"/": Home, "/item/:id": Item, '
       r'"*": NotFound}, tabs: [{path, label, icon, badge}], theme} (screens '
-      r'get {params, path, query}); go(path), back(), useRoute(); AppBar '
-      r'{title, subtitle, large, back: true|path, leading, actions}; Section '
+      r'get {params, path, query}; App draws the TabBar from tabs); go(path), '
+      r'back(), useRoute(); AppBar {title, subtitle, large, back: true|path|'
+      r'function, backLabel, leading, actions}; TabBar {tabs}; Section '
       r'{title, action}; List {header, footer}; ListItem {title, subtitle, '
       r'trail, lead: icon, leadColor, avatar: name, check: {checked, '
-      r'onChange}, onClick, href, destructive, done}; Card {title, subtitle, '
-      r'action, hero, onClick}; Button {variant: filled|tonal|outline|plain|'
-      r'danger|gradient, size: small|large, block, icon, loading}; '
-      r'IconButton {icon, label, onClick}; Field {label, type: text|number|'
-      r'date|time|email|textarea|select|toggle, value, onChange(value), '
-      r'options, placeholder, hint, error}; SegmentedControl {options, value, '
-      r'onChange}; Chips {options: [str|{value, label, icon}], value, '
-      r'onChange, multiple, wrap}; Stat {label, value, unit, delta, '
-      r'deltaLabel, icon, invert}; Empty {icon, title, body, action}; Fab '
-      r'{icon, label, onClick}; Sheet {open, onClose, title, action: {label, '
-      r'onClick, disabled}}; Dialog {open, onClose, title, body, actions: '
-      r'[{label, variant, onClick}]}; toast(message, {tone: success|danger}); '
-      r'Badge {tone}; Progress {value, max}; Check; Icon {name, size}; Markup '
-      r'{html} (for chart markup); useDoc(path, initial) -> [data, '
-      r'save(next|fn), {ready}]; useCollection(path, {orderBy, dir, limit}) '
-      r'-> {items: [{id, …}], ready, add(data) -> id, set(id, data), '
-      r'update(id, patch), remove(id)} (the db capability when declared, '
-      r'else memory); uid(); fmt.number, fmt.money(v, currency), '
-      r'fmt.percent.',
+      r'onChange}, onClick, href, destructive, done}; Check {checked, '
+      r'onChange, label}; Card {title, subtitle, action, hero, onClick}; '
+      r'Button {variant: filled|tonal|outline|plain|danger|gradient, size: '
+      r'small|large, block, icon, loading}; IconButton {icon, label, '
+      r'onClick}; Field {label, type: text|number|date|time|email|textarea|'
+      r'select|toggle, value, onChange(value), options, placeholder, hint, '
+      r'error}; SegmentedControl {options, value, onChange}; Chips {options: '
+      r'[str|{value, label, icon}], value, onChange, multiple, wrap}; Stat '
+      r'{label, value, unit, delta, deltaLabel, icon, invert}; Empty {icon, '
+      r'title, body, action}; Fab {icon, label, onClick}; Sheet {open, '
+      r'onClose, title, action: {label, onClick, disabled}}; Dialog {open, '
+      r'onClose, title, body, actions: [{label, variant, onClick}]}; '
+      r'toast(message, {tone: success|danger}) (App hosts the Toast '
+      r'component); Badge {tone}; Progress {value, max}; Icon {name, size}; '
+      r'Markup {html} (for chart markup); useDoc(path, initial) -> {data, '
+      r'save(next|fn), ready, error}; useCollection(path, {orderBy, dir, '
+      r'limit}) -> {items: [{id, …}], ready, error, add(data) -> id, set(id, '
+      r'data), update(id, patch), remove(id)}. Both use the db capability '
+      r'when declared ({"db": {}}), else memory (lost on reload; getDb() '
+      r'resolves null then); a failed write shows a toast and rejects. '
+      r'uid(); fmt.number, fmt.money(v, currency), fmt.percent.',
   'chart.js':
       r'kit/chart.js exports functions returning SVG markup (show with '
       r'<${Markup} html=${…}/>): line(data, opts), area(data, opts), '
       r'bar(data, {stacked}), pie({items: [{label, value, color}]}, {donut, '
       r'center, centerSub}), donut(…), sparkline(values, {width, height, '
       r'color}); data is {labels, series: [{name, values, color}]} or '
-      r'{labels, values}; opts {height, format, legend}.',
+      r'{labels, values}; opts {height, format, legend}. Also compact(n) '
+      r'(1200 -> 1.2k) and ticks(min, max, count).',
   'dates.js':
       r"kit/dates.js default-exports dayjs with relativeTime: "
       r"dayjs(x).fromNow(), .format('D MMM'), .add(1, 'day'), "
