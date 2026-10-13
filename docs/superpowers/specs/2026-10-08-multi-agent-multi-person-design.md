@@ -1076,11 +1076,15 @@ elevation(creator c)                     = access at the artifacts c created ∩
   replaced whole by their `PUT`. The agent's handle is the one the
   artifact's participants list (§10) carries.
 - `GET /api/people/me/raises?artifact=<aid>` (the owner's or a connected
-  person's browser) → `{creator, holds, raises: [{agent: {handle, name,
-  person, live}, access}]}`: the caller's own live elevations, of every
-  agent they raised; with `artifact`, whether the caller created it
-  (`creator`; always for the owner) and the access the caller may give
-  there (`holds`, their rights at that artifact, or null). A granter sees
+  person's browser) → `{creator, holds, raisable, raises: [{agent:
+  {handle, name, person, live}, access}]}`: the caller's own live
+  elevations, of every agent they raised; with `artifact`, whether the
+  caller created it (`creator`; for the owner, an artifact the owner
+  created), the access the caller may give there (`holds`, every action
+  there within their rights there, or null when they did not create it),
+  and, for its creator, the handles of the artifact's live participant
+  agents (§10) of connected machines, which a raise reaches
+  (`raisable`). A granter sees
   only their own elevations here; an agent's person sees every elevation
   of their agents, with who granted it, on their People card; the owner's
   People shows every agent's.
