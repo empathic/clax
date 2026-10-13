@@ -206,6 +206,31 @@ Test the app's logic, so each version keeps working as the app grows.
   empty or offline state when `use` gives null or a call fails, and no test
   depends on live network data or model output.
 
+## The device
+
+In the Clax app a page can reach the phone. Declare each capability it uses
+(`{"notify": {}, "share": {}, "file": {}, "camera": {}, "location": {}}`)
+and get it with `await window.claude.use("notify")` and so on.
+
+- `notify`: `schedule({id, title, body, at})` (an ISO time in the future)
+  or `{id, title, body, every: {hour, minute, weekdays}}` (weekdays 1 Monday
+  to 7 Sunday, optional), with an optional `route` (`#…`) a tap opens; the
+  same `id` replaces; `cancel(id)`, `list()`. Reminders may come a few
+  minutes late.
+- `share`: `text(text)`, `file({name, mime, data})` (base64).
+- `file`: `pick({accept})` gives `{name, mime, data}`;
+  `save({name, mime, data})`. At most 10 MB.
+- `camera`: `take()` and `pick()` give `{mime, data, width, height}`, a JPEG.
+- `location`: `current()` gives `{lat, lon, accuracy}`.
+
+`use` resolves null outside the Clax app and in your renders and tests, so
+the page works without them (hide or disable what needs one). Every call
+except `notify.list` and `notify.cancel` must come from the person's tap:
+a call on page load fails. The person is asked once per app; calls reject
+with a `code` of `not_granted`, `cancelled` or `unavailable` (and
+`bad_request`, `too_large`): handle each with a short message, never a
+crash.
+
 ## Asking the person
 
 Decide routine things yourself and mention the choice in `reply`. Call
