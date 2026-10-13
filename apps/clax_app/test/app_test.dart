@@ -548,12 +548,14 @@ void main() {
     );
   });
 
-  testWidgets('a WebViewInspector is kept in the root, under the app', (
-    tester,
-  ) async {
+  testWidgets('a WebViewInspector is kept in the root, under the app, and '
+      'warmed once the daemon is up', (tester) async {
     await pumpApp(tester, _Rig(key: 'sk-ant-x', webInspector: true));
+    expect(rig.inspectorSurfaces, isEmpty);
     await up(tester);
     expect(find.byType(InspectorHost), findsOneWidget);
+    // Warmed as the daemon came up, before any render.
+    expect(rig.inspectorSurfaces.single.loads.single.path, '/a/000000000000');
     expect(find.text('New app'), findsOneWidget);
     expect(
       find.ancestor(

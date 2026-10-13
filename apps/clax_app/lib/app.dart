@@ -559,6 +559,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       case Up(:final endpoint):
         _wasUp = true;
         _endpoint.value = endpoint;
+        if (_s.inspector case final WebViewInspector inspector) {
+          unawaited(inspector.warm(endpoint.base));
+        }
         if (_stream == null) {
           final stream = _stream = SharedClaxStream(_api.stream);
           // A failure is retried by the stream itself.
