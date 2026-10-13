@@ -8,7 +8,7 @@ import type { ArtifactEvent } from "../events";
 import type { Thread } from "../threads";
 import type { Working } from "../view/working-model";
 import { type Declared, type Served, declaredConfig, isAvailable } from "./availability";
-import { deviceLinked } from "./device-link";
+import { deviceLink } from "./device-link";
 import { CapError } from "./errors";
 import { Grants, type Prompt, type PromptAnswer, grantsKey } from "./grants";
 import { REGISTRY } from "./registry";
@@ -139,7 +139,7 @@ export class CapabilityHost {
     const { env, grants } = await this.ready;
     if (this.dead) return;
     const named = m.type === "clax:use" ? m.name : m.ns;
-    this.served.device = deviceLinked();
+    this.served.device = deviceLink.call !== null;
     // Only a request about sample (or permissions, which lists it) waits for the daemon's answer.
     if (named === "sample" || named === "permissions") await this.checkServed(env);
     if (this.dead) return;
