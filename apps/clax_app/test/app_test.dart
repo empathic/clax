@@ -19,7 +19,7 @@ import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/inspector_surface.dart';
 import 'package:clax_app/ui/launcher.dart';
-import 'package:clax_app/ui/making_screen.dart' show sayFirstOutput;
+import 'package:clax_app/ui/making_screen.dart' show MakingScreen, sayFirstOutput;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -344,6 +344,65 @@ void main() {
     expect(rig.api.callNames, isNot(contains('createArtifact')));
     expect(find.byType(AppScreen), findsNothing);
   });
+
+  testWidgets('back leaves the make running; once made a toast offers to '
+      'open the app', (tester) async {
+    await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+    await up(tester);
+    rig.backend.gate = Completer<void>();
+    await submit(tester, 'a tracker for my runs');
+    await rig.backend.arrived.future;
+    await pumpRoute(tester);
+    await tester.tap(find.byKey(const ValueKey('build-back')));
+    await pumpRoute(tester);
+    expect(find.byType(MakingScreen), findsNothing);
+    expect(find.byKey(const ValueKey('making-tile')), findsOneWidget);
+    final cancelled = rig.backend.seen.single.cancelled!;
+    var fired = false;
+    unawaited(cancelled.then((_) => fired = true));
+    await tester.pump();
+    expect(fired, isFalse);
+
+    rig.backend.gate!.complete();
+    await pumpRoute(tester);
+    final created = (await rig.api.listArtifacts()).single;
+    expect(find.text('${created.title} is ready'), findsOneWidget);
+    expect(find.byKey(const ValueKey('making-tile')), findsNothing);
+    await tester.tap(find.text('Open'));
+    await pumpRoute(tester);
+    expect(find.byType(AppScreen), findsOneWidget);
+  });
+
+  testWidgets('on macOS Esc leaves the build view (the make goes on) and '
+      'the chromeless app screen', (tester) async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.menu, (_) async => null);
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.menu, null),
+    );
+    await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+    await up(tester);
+    rig.backend.gate = Completer<void>();
+    await submit(tester, 'a tracker for my runs');
+    await rig.backend.arrived.future;
+    await pumpRoute(tester);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await pumpRoute(tester);
+    expect(find.byType(MakingScreen), findsNothing);
+    expect(find.byKey(const ValueKey('making-tile')), findsOneWidget);
+
+    rig.backend.gate!.complete();
+    await pumpRoute(tester);
+    final created = (await rig.api.listArtifacts()).single;
+    await tester.tap(find.text(created.title).first);
+    await pumpRoute(tester);
+    expect(find.byType(AppScreen), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await pumpRoute(tester);
+    expect(find.byType(AppScreen), findsNothing);
+    expect(find.text('New app'), findsOneWidget);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('without an API key the launcher asks for one; Claude Code '
       'needs none', (tester) async {
