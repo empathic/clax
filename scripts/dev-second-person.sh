@@ -88,7 +88,9 @@ echo "dev-second-person: connecting $home as $name's machine $slug-laptop"
 out="$("$bin" connect "$invite" --name "$slug-laptop" --yes --no-browser 2>&1)" || { printf '%s\n' "$out" >&2; exit 1; }
 printf '%s\n' "$out"
 
-# One agent of the person, from a scratch project whose repository names it.
+# One agent of the person, registered by its SessionStart hook from a
+# scratch project. A hook's join sends no repository, so the agent is named
+# after its harness (`claude`) until an MCP shim joins with the repository.
 project="$home/work/$slug-notes"
 mkdir -p "$project/.git"
 printf 'ref: refs/heads/main\n' > "$project/.git/HEAD"
