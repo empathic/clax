@@ -277,6 +277,12 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/artifacts/{aid}/db-grants/{source}",
             axum::routing::put(docs::grant).delete(docs::revoke),
         )
+        .route(
+            "/api/artifacts/{aid}/sample-grant",
+            get(sample::grant_status)
+                .put(sample::grant)
+                .delete(sample::revoke),
+        )
         .route("/api/artifacts/{aid}/working", get(working::for_artifact))
         .route("/api/artifacts/{aid}/presence", get(artifacts::presence))
         .route("/api/artifacts/{aid}/snapshot", get(snapshot::snapshot))

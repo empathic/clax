@@ -8,6 +8,12 @@
 //! route answers `available: false` to a caller without the token. The call
 //! route streams `start`, `text`, `tool_call`, and one `done` or `error` over
 //! SSE; closing the stream cancels the call.
+//!
+//! An app calls only with the owner's grant (spec
+//! 2026-10-12-flutter-real-apps-design C7), kept per artifact until revoked
+//! (`/api/artifacts/{aid}/sample-grant`; 403 `not_granted` without it), and
+//! within its daily cost cap (`[sample] daily_cost_cap_usd`, priced from each
+//! round's usage; 429 `rate_limited` once the day's spend reaches it).
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
@@ -18,6 +24,7 @@ use axum::response::sse::KeepAlive;
 use axum::response::sse::{Event as SseEvent, Sse};
 use axum::response::{IntoResponse, Response};
 use chrono::NaiveDate;
+use clax_core::audit::AuditCtx;
 use clax_http::agent::DeniedToGrants;
 use clax_http::auth::RequireToken;
 use clax_http::error::ApiError;
@@ -29,6 +36,7 @@ use clax_rt::wall::Instant;
 use clax_sample::cache::AnswerCache;
 use clax_sample::flight::Done;
 use clax_sample::flight::{self, Flight, Out};
+use clax_sample::pricing;
 use clax_sample::request::CachePolicy;
 use clax_sample::request::{self, MAX_TOOL_RESULT_BYTES, SampleBody};
 use clax_sample::{Deliver, ToolOutput};
@@ -46,6 +54,34 @@ type OnFinish = Box<dyn FnOnce(Option<&Done>) + Send>;
 /// The daemon's local date, for the daily cap.
 pub fn today() -> NaiveDate {
     chrono::Local::now().date_naive()
+}
+
+/// The daily spend's key: the local date as `YYYY-MM-DD`.
+fn day() -> String {
+    today().format("%Y-%m-%d").to_string()
+}
+
+/// Micro-USD as dollars, for JSON.
+fn usd(micro: u64) -> f64 {
+    micro as f64 / 1_000_000.0
+}
+
+/// The owner's grant and today's spend for `aid`, as the status and grant
+/// routes report them.
+async fn grant_json(s: &AppState, aid: &str) -> Result<Value, ApiError> {
+    let id = parse_id(aid)?;
+    let (granted_at, spent) = s
+        .store_call(move |st| {
+            let g = st.sample_grant(&id)?;
+            Ok((g, st.sample_spent(&id, &day())?))
+        })
+        .await?;
+    Ok(json!({
+        "granted": granted_at.is_some(),
+        "granted_at": granted_at,
+        "spent_today_usd": usd(spent),
+        "daily_cost_cap_usd": s.sample.settings.daily_cost_cap.map(usd),
+    }))
 }
 
 fn rate_limited(message: impl Into<String>) -> ApiError {
@@ -107,12 +143,16 @@ pub async fn status(
         ));
     }
     let images = s.sample.provider().is_some_and(|p| p.supports_images());
+    let grant = grant_json(&s, &canonical).await?;
     Ok(Json(json!({
         "available": s.sample.available(),
         "provider": s.sample.provider_name(),
         "limits": request::limits_json(images),
         "calls_today": s.sample.counts.today(&canonical, today()),
         "daily_call_cap": s.sample.settings.daily_call_cap,
+        "granted": grant["granted"],
+        "spent_today_usd": grant["spent_today_usd"],
+        "daily_cost_cap_usd": grant["daily_cost_cap_usd"],
     })))
 }
 
@@ -164,6 +204,21 @@ pub async fn sample(
         ));
     };
     let Json(body) = body.map_err(|e| ApiError::bad_request("invalid_request", e.body_text()))?;
+    let id = parse_id(&aid)?;
+    let (granted, spent) = s
+        .store_call(move |st| {
+            Ok((
+                st.sample_grant(&id)?.is_some(),
+                st.sample_spent(&id, &day())?,
+            ))
+        })
+        .await?;
+    if !granted {
+        return Err(ApiError::forbidden(
+            "not_granted",
+            "the owner has not allowed this app to use Claude",
+        ));
+    }
     let prepared = request::prepare(body, &s.sample.settings, provider.supports_images())?;
     let cap = s.sample.settings.daily_call_cap;
     let key = AnswerCache::key(&aid, cookie.as_deref(), &prepared.input_key);
@@ -199,6 +254,14 @@ pub async fn sample(
         .ok_or_else(|| {
             rate_limited("too many calls from this viewer at once; try again when one has finished")
         })?;
+    if let Some(c) = s.sample.settings.daily_cost_cap
+        && spent >= c
+    {
+        return Err(rate_limited(format!(
+            "this app reached its daily cost cap of ${:.2}; it resets tomorrow",
+            usd(c)
+        )));
+    }
     let calls_today =
         s.sample.counts.try_take(&aid, today(), cap).map_err(|n| {
             rate_limited(format!("this artifact reached its daily cap of {n} calls"))
@@ -221,10 +284,29 @@ pub async fn sample(
         }
         CachePolicy::Off => Box::new(|_: Option<&Done>| {}),
     };
+    let on_usage = {
+        let (st, aid) = (s.clone(), aid.clone());
+        move |model: &str, usage| {
+            let micro = pricing::cost_micro_usd(model, usage);
+            let (st, aid) = (st.clone(), aid.clone());
+            Box::pin(async move {
+                if micro == 0 {
+                    return;
+                }
+                let Ok(id) = parse_id(&aid) else { return };
+                if let Err(e) = st
+                    .store_call(move |db| db.add_sample_spend(&id, &day(), micro))
+                    .await
+                {
+                    tracing::warn!(artifact = %aid, error = ?e, "sample spend not recorded");
+                }
+            }) as futures::future::BoxFuture<'static, ()>
+        }
+    };
     let (sampler, id, flight) = (s.sample.clone(), call_id.clone(), f.clone());
     let task = clax_rt::spawn(async move {
         let _running = permit;
-        flight::drive(sampler, id, prepared, flight, on_finish).await;
+        flight::drive(sampler, id, prepared, flight, on_usage, on_finish).await;
     });
     f.set_abort(task.abort_handle());
     Ok(stream_response(
@@ -302,4 +384,45 @@ pub async fn daemon(
         "key_env": s.sample.key_env(),
         "daily_call_cap": s.sample.settings.daily_call_cap,
     }))
+}
+
+/// `GET /api/artifacts/{aid}/sample-grant` (token): the owner's grant to the
+/// app and today's spend: `{granted, granted_at, spent_today_usd,
+/// daily_cost_cap_usd}`. 404 for an unknown artifact.
+pub async fn grant_status(
+    State(s): State<AppState>,
+    _t: RequireToken,
+    Path(aid): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    Ok(Json(grant_json(&s, &aid).await?))
+}
+
+/// `PUT /api/artifacts/{aid}/sample-grant` (token): lets the app call
+/// `sample()` until the grant is revoked; answers as [`grant_status`]. The
+/// artifact must declare `sample` (403 `not_declared`).
+pub async fn grant(
+    State(s): State<AppState>,
+    _t: RequireToken,
+    audit: AuditCtx,
+    Path(aid): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let canonical = declared(&s, &aid).await?;
+    let id = parse_id(&canonical)?;
+    s.store_call(move |st| st.grant_sample(&audit, &id)).await?;
+    Ok(Json(grant_json(&s, &canonical).await?))
+}
+
+/// `DELETE /api/artifacts/{aid}/sample-grant` (token): revokes the owner's
+/// grant: `{revoked}` (`false` when there was none). The day's spend stays.
+pub async fn revoke(
+    State(s): State<AppState>,
+    _t: RequireToken,
+    audit: AuditCtx,
+    Path(aid): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let id = parse_id(&aid)?;
+    let revoked = s
+        .store_call(move |st| st.revoke_sample(&audit, &id))
+        .await?;
+    Ok(Json(json!({"revoked": revoked})))
 }
