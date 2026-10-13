@@ -85,9 +85,15 @@ class Launcher extends StatefulWidget {
   /// then says so above the apps, with Add key opening Settings.
   final bool needsKey;
 
-  /// Opens app [aid] from the inbox: at [thread] (a reply's thread) or at
+  /// Opens app [aid] from the inbox: at [thread] and [comment] (a reply) or at
   /// version [version]. When null, the app opens as [open] opens it.
-  final void Function(String aid, {String? thread, int? version})? onOpenTarget;
+  final void Function(
+    String aid, {
+    String? thread,
+    int? version,
+    String? comment,
+  })?
+  onOpenTarget;
 
   /// Shows question [qid] for an answer, from the inbox. When null, a
   /// question about an app opens that app through [onOpenTarget].
@@ -268,6 +274,7 @@ class _LauncherState extends State<Launcher> {
       aid,
       thread: item.kind == 'reply' ? item.thread?.id : null,
       version: item.kind == 'version' ? item.versionN : null,
+      comment: item.kind == 'reply' ? item.replyCommentId : null,
     );
   }
 

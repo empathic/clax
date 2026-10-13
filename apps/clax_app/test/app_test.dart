@@ -19,7 +19,9 @@ import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/inspector_surface.dart';
 import 'package:clax_app/ui/launcher.dart';
-import 'package:clax_app/ui/making_screen.dart' show MakingScreen, sayFirstOutput;
+import 'package:clax_app/ui/making_screen.dart'
+    show MakingScreen, sayFirstOutput;
+import 'package:clax_app/ui/thread_detail.dart' show ThreadDetail;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -547,18 +549,23 @@ void main() {
   });
 
   testWidgets('an inbox reply opens its app at the thread once the shell '
-      'lists it; a version item at that version', (tester) async {
+      'lists it, and its thread page at the reply; a version item at that '
+      'version', (tester) async {
     await pumpApp(tester, _Rig(key: 'sk-ant-x'));
     await up(tester);
     final aid = rig.api.seedArtifact('Runs', {'index.html': _page});
     final launcher = tester.widget<Launcher>(find.byType(Launcher));
 
-    launcher.onOpenTarget!(aid, thread: 't1');
+    launcher.onOpenTarget!(aid, thread: 't1', comment: 'c7');
     await pumpRoute(tester);
     final page = rig.surfaces.last;
+    expect(find.byType(ThreadDetail), findsNothing);
     page.push(Ready(artifact: aid, version: 2, latest: 2, file: 'index.html'));
     await tester.pump();
     expect(page.js, isNot(contains(const OpenThread('t1').toJs())));
+    await pumpRoute(tester);
+    final detail = tester.widget<ThreadDetail>(find.byType(ThreadDetail));
+    expect((detail.tid, detail.focusComment), ('t1', 'c7'));
     ThreadSummary thread(String id) => ThreadSummary(
       id: id,
       status: 'open',
@@ -578,6 +585,9 @@ void main() {
       hasLength(1),
     );
 
+    await tester.binding.handlePopRoute();
+    await pumpRoute(tester);
+    expect(find.byType(ThreadDetail), findsNothing);
     await tester.binding.handlePopRoute();
     await pumpRoute(tester);
     launcher.onOpenTarget!(aid, version: 1);
