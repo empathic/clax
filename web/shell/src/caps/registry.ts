@@ -20,7 +20,7 @@ export const REGISTRY: Record<string, HandlerFactory> = {
   db: dbHandler,
   notify: device("notify"),
   share: device("share"),
-  files: device("files"),
+  file: device("file"),
   camera: device("camera"),
   location: device("location"),
   downloads: downloadsHandler,
