@@ -243,7 +243,13 @@ void main() {
         });
       }
 
-      visit(tester.binding.pipelineOwner.semanticsOwner!.rootSemanticsNode!);
+      visit(
+        tester
+            .renderObject(find.byType(MaterialApp))
+            .owner!
+            .semanticsOwner!
+            .rootSemanticsNode!,
+      );
       return out;
     }
 
