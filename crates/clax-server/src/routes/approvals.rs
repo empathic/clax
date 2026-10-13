@@ -99,7 +99,9 @@ fn browser_approver(c: &Caller, what: &str) -> Result<Option<String>, ApiError> 
 
 /// `GET /api/approvals` → `{approvals}`: the caller's person's live
 /// approvals, oldest first; a person's agent's leaves out those about an
-/// artifact its rights exclude.
+/// artifact its rights exclude. For an agent, an approval's
+/// `artifact_title` goes through its visibility: null where the title is
+/// withheld from it.
 pub async fn list(
     State(s): State<AppState>,
     a: Agent<crate::agent::ApprovalsList>,
@@ -107,12 +109,16 @@ pub async fn list(
 ) -> Result<Json<Value>, ApiError> {
     let me = whose(&a.caller)?;
     let reads = a.read_rights();
+    let vf = crate::feedback::VisFor::of(&a.caller, &s);
     let v = s
         .store_call(move |st| {
+            let vis = vf.build(st)?;
             let mut views = Vec::new();
             for x in st.live_approvals(me.as_deref())? {
                 if may_read(st, &reads, x.artifact_id.as_deref())? {
-                    views.push(approval_view(st, &x)?);
+                    let mut view = approval_view(st, &x)?;
+                    vis.filter_approval(st, &mut view)?;
+                    views.push(view);
                 }
             }
             Ok(json!({"approvals": views}))
