@@ -219,6 +219,66 @@ void main() {
     expect(find.text('No errors on the page'), findsOneWidget);
   });
 
+  testWidgets('the live region is the step alone: elapsed time is silent', (
+    tester,
+  ) async {
+    phone(tester);
+    final handle = tester.ensureSemantics();
+    final rig = _Rig();
+    rig.tracker
+      ..sent('t1')
+      ..workerWorking(const ['t1']);
+    rig.narrate(['Changing index.html']);
+    await tester.pumpWidget(rig.build());
+
+    List<String> live() {
+      final out = <String>[];
+      void visit(SemanticsNode n) {
+        if (n.getSemanticsData().flagsCollection.isLiveRegion) {
+          out.add(n.getSemanticsData().label);
+        }
+        n.visitChildren((c) {
+          visit(c);
+          return true;
+        });
+      }
+
+      visit(tester.binding.pipelineOwner.semanticsOwner!.rootSemanticsNode!);
+      return out;
+    }
+
+    final before = live();
+    expect(before, ['Changing index.html']);
+    for (var i = 0; i < 3; i++) {
+      rig.clock.t = rig.clock.t.add(const Duration(seconds: 1));
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.text('${i + 1}s'), findsOneWidget);
+      expect(live(), before, reason: 'a tick is not announced');
+    }
+    rig.narrate(['Checking how it looks']);
+    await tester.pumpWidget(rig.build());
+    expect(live(), ['Checking how it looks'], reason: 'a new step is');
+
+    expect(
+      tester.getSemantics(
+        find
+            .descendant(
+              of: find.byKey(const ValueKey('chip-working')),
+              matching: find.byType(InkWell),
+            )
+            .first,
+      ),
+      matchesSemantics(
+        onTapHint: 'Show steps',
+        hasTapAction: true,
+        isButton: true,
+        isFocusable: true,
+        hasFocusAction: true,
+      ),
+    );
+    handle.dispose();
+  });
+
   testWidgets('nothing to show yet: a tap does not expand', (tester) async {
     phone(tester);
     final rig = _Rig();

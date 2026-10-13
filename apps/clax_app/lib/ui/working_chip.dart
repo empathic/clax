@@ -157,13 +157,17 @@ class _WorkingChipState extends State<WorkingChip> {
     final elapsed = _elapsed();
     final expandable =
         !_c.landing && (_c.stepCount > 0 || _c.inspection != null);
-    return Semantics(
-      liveRegion: true,
-      child: Material(
-        key: const ValueKey('chip-working'),
-        color: scheme.inverseSurface,
-        elevation: 2,
-        shape: const StadiumBorder(),
+    // Only the step is a live region: the elapsed seconds tick every
+    // second and would have a screen reader repeat the chip each time.
+    return Material(
+      key: const ValueKey('chip-working'),
+      color: scheme.inverseSurface,
+      elevation: 2,
+      shape: const StadiumBorder(),
+      child: Semantics(
+        container: true,
+        button: expandable,
+        onTapHint: expandable ? 'Show steps' : null,
         child: InkWell(
           customBorder: const StadiumBorder(),
           onTap: expandable ? _toggle : null,
@@ -175,22 +179,28 @@ class _WorkingChipState extends State<WorkingChip> {
                 _spinner(fg),
                 const SizedBox(width: 10),
                 Flexible(
-                  child: Text(
-                    _label,
-                    key: const ValueKey('chip-step'),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.labelLarge?.copyWith(color: fg),
+                  child: Semantics(
+                    container: true,
+                    liveRegion: true,
+                    child: Text(
+                      _label,
+                      key: const ValueKey('chip-step'),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelLarge?.copyWith(color: fg),
+                    ),
                   ),
                 ),
                 if (elapsed != null) ...[
                   const SizedBox(width: 8),
-                  Text(
-                    elapsed,
-                    key: const ValueKey('chip-elapsed'),
-                    style: theme.textTheme.labelMedium?.copyWith(
-                      color: fg.withValues(alpha: 0.7),
-                      fontFeatures: const [FontFeature.tabularFigures()],
+                  ExcludeSemantics(
+                    child: Text(
+                      elapsed,
+                      key: const ValueKey('chip-elapsed'),
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        color: fg.withValues(alpha: 0.7),
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
                     ),
                   ),
                 ],
