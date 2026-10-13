@@ -9,11 +9,11 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../agent/icon_svg.dart';
 import '../clax/api.dart';
+import 'app_icon.dart';
 import 'app_inspector_code.dart';
 import 'app_inspector_permissions.dart';
-import 'launcher.dart'
-    show tileScheme, tileFace, EmojiFace, IconFace, MonogramFace;
 import 'version_page.dart' show formatBytes, versionTime;
 import 'versions_tab.dart';
 
@@ -146,6 +146,10 @@ class _AppInspectorState extends State<AppInspector> {
             children: [
               _Overview(
                 detail: d,
+                icon: switch (_texts![appIconPath]) {
+                  final t? => cleanIcon(t),
+                  null => null,
+                },
                 collections: _collections!,
                 onHistory: () => _openHistory(d),
               ),
@@ -245,9 +249,13 @@ class _Overview extends StatelessWidget {
     required this.detail,
     required this.collections,
     required this.onHistory,
+    this.icon,
   });
 
   final ArtifactDetail detail;
+
+  /// The live version's `icon.svg`, cleaned; null shows the tile face.
+  final String? icon;
   final List<CollectionInfo> collections;
   final VoidCallback onHistory;
 
@@ -259,40 +267,13 @@ class _Overview extends StatelessWidget {
     final live = detail.versions.last;
     final size = live.files.values.fold<int>(0, (s, f) => s + f.size);
     final docs = collections.fold<int>(0, (s, c) => s + c.count);
-    final tile = tileScheme(a.id, theme.brightness);
     final caps = a.capabilities.keys.toList()..sort();
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 20, 16, 32),
       children: [
         Row(
           children: [
-            Container(
-              width: 56,
-              height: 56,
-              decoration: BoxDecoration(
-                color: tile.primaryContainer,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              alignment: Alignment.center,
-              child: switch (tileFace(a)) {
-                EmojiFace(:final emoji) => Text(
-                  emoji,
-                  style: const TextStyle(fontSize: 28, height: 1),
-                ),
-                IconFace(:final icon) => Icon(
-                  icon,
-                  color: tile.onPrimaryContainer,
-                  size: 28,
-                ),
-                MonogramFace(:final letters) => Text(
-                  letters,
-                  style: theme.textTheme.titleLarge?.copyWith(
-                    color: tile.onPrimaryContainer,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              },
-            ),
+            AppBadge(app: a, svg: icon, size: 56),
             const SizedBox(width: 16),
             Expanded(
               child: Column(

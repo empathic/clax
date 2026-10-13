@@ -8,6 +8,7 @@ import '../clax/api.dart';
 import '../platform/voice.dart';
 import '../agent/plan.dart';
 import '../agent/worker.dart';
+import 'app_icon.dart';
 import 'app_inspector.dart';
 import 'build_plan.dart';
 import 'inbox_screen.dart';
@@ -69,6 +70,7 @@ class Launcher extends StatefulWidget {
     this.inspectorPermissions = const [],
     this.build,
     this.makes,
+    this.icons,
   });
 
   final ClaxApi api;
@@ -121,6 +123,10 @@ class Launcher extends StatefulWidget {
   /// [make].
   final MakeService? makes;
 
+  /// The apps' icons, which a tile shows in its badge; when null, the
+  /// launcher keeps its own in memory.
+  final AppIcons? icons;
+
   @override
   State<Launcher> createState() => _LauncherState();
 }
@@ -144,6 +150,8 @@ class _LauncherState extends State<Launcher> {
 
   late final MakeService _makes = widget.makes ?? MakeService(widget.make);
 
+  late final AppIcons _icons = widget.icons ?? AppIcons(widget.api);
+
   @override
   void initState() {
     super.initState();
@@ -161,6 +169,7 @@ class _LauncherState extends State<Launcher> {
   void dispose() {
     _makes.removeListener(_onMakes);
     if (widget.makes == null) _makes.dispose();
+    if (widget.icons == null) _icons.dispose();
     unawaited(_events?.cancel());
     if (widget.stream == null) unawaited(_stream.close());
     super.dispose();
@@ -573,6 +582,7 @@ class _LauncherState extends State<Launcher> {
                     i -= makes.length;
                     Widget tile(({int done, int total})? building) => _AppTile(
                       app: apps[i],
+                      icons: _icons,
                       building: building,
                       onTap: () => widget.open(apps[i].id),
                       onLongPress: () => _menu(apps[i]),
@@ -601,6 +611,7 @@ class _AppTile extends StatelessWidget {
     required this.app,
     required this.onTap,
     required this.onLongPress,
+    required this.icons,
     this.building,
   });
 
@@ -620,6 +631,7 @@ class _AppTile extends StatelessWidget {
   final ArtifactSummary app;
   final VoidCallback onTap;
   final VoidCallback onLongPress;
+  final AppIcons icons;
 
   /// How far the app's build is, while it goes.
   final ({int done, int total})? building;
@@ -629,8 +641,6 @@ class _AppTile extends StatelessWidget {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final b = building;
-    final tile = tileScheme(app.id, theme.brightness);
-    final (bg, fg) = (tile.primaryContainer, tile.onPrimaryContainer);
     return Semantics(
       button: true,
       label: b == null
@@ -651,34 +661,7 @@ class _AppTile extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Container(
-                      width: _badge,
-                      height: _badge,
-                      decoration: BoxDecoration(
-                        color: bg,
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      alignment: Alignment.center,
-                      child: switch (tileFace(app)) {
-                        EmojiFace(:final emoji) => Text(
-                          emoji,
-                          style: const TextStyle(fontSize: 28, height: 1),
-                        ),
-                        IconFace(:final icon) => Icon(
-                          icon,
-                          color: fg,
-                          size: 28,
-                        ),
-                        MonogramFace(:final letters) => Text(
-                          letters,
-                          style: theme.textTheme.titleLarge?.copyWith(
-                            color: fg,
-                            fontWeight: FontWeight.w600,
-                            height: 1,
-                          ),
-                        ),
-                      },
-                    ),
+                    LiveAppBadge(app: app, icons: icons, size: _badge),
                     const Spacer(),
                     Text(
                       app.title,
