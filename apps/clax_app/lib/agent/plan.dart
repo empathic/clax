@@ -14,6 +14,9 @@ import 'tools/toolbox.dart';
 /// Where a feature of a plan stands.
 enum FeatureStatus { todo, doing, done, dropped }
 
+/// Who added a feature to a plan.
+enum FeatureBy { agent, person }
+
 /// One feature of a plan.
 class PlanFeature {
   const PlanFeature({
@@ -21,6 +24,8 @@ class PlanFeature {
     required this.title,
     this.detail = '',
     this.status = FeatureStatus.todo,
+    this.by = FeatureBy.agent,
+    this.droppedByPerson = false,
   });
 
   factory PlanFeature.fromJson(Map<String, Object?> j) => PlanFeature(
@@ -28,6 +33,8 @@ class PlanFeature {
     title: j['title']! as String,
     detail: j['detail'] as String? ?? '',
     status: FeatureStatus.values.byName(j['status'] as String? ?? 'todo'),
+    by: FeatureBy.values.byName(j['by'] as String? ?? 'agent'),
+    droppedByPerson: j['dropped_by_person'] as bool? ?? false,
   );
 
   /// Short and unique within its plan (`f1`, `export`).
@@ -38,15 +45,26 @@ class PlanFeature {
   final String detail;
   final FeatureStatus status;
 
+  /// Who added it. The agent's `plan_set` never removes a feature the
+  /// person added.
+  final FeatureBy by;
+
+  /// The person dropped it: the agent's tools never take it up again.
+  final bool droppedByPerson;
+
   PlanFeature copyWith({
     String? title,
     String? detail,
     FeatureStatus? status,
+    FeatureBy? by,
+    bool? droppedByPerson,
   }) => PlanFeature(
     id: id,
     title: title ?? this.title,
     detail: detail ?? this.detail,
     status: status ?? this.status,
+    by: by ?? this.by,
+    droppedByPerson: droppedByPerson ?? this.droppedByPerson,
   );
 
   Map<String, Object?> toJson() => {
@@ -54,6 +72,8 @@ class PlanFeature {
     'title': title,
     'detail': detail,
     'status': status.name,
+    'by': by.name,
+    if (droppedByPerson) 'dropped_by_person': true,
   };
 
   @override
@@ -62,10 +82,13 @@ class PlanFeature {
       other.id == id &&
       other.title == title &&
       other.detail == detail &&
-      other.status == status;
+      other.status == status &&
+      other.by == by &&
+      other.droppedByPerson == droppedByPerson;
 
   @override
-  int get hashCode => Object.hash(id, title, detail, status);
+  int get hashCode =>
+      Object.hash(id, title, detail, status, by, droppedByPerson);
 
   @override
   String toString() => 'PlanFeature($id, $title, ${status.name})';
@@ -265,18 +288,30 @@ class PlanStore {
   );
 
   /// Sets the status of feature [id]; throws [StateError] when there is no
-  /// such feature.
-  Future<Plan> mark(String appId, String id, FeatureStatus status) =>
-      _write(appId, (old) {
-        final p = _need(appId, old);
-        if (p.feature(id) == null) throw StateError('no feature "$id"');
-        return p.copyWith(
-          features: [
-            for (final f in p.features)
-              f.id == id ? f.copyWith(status: status) : f,
-          ],
-        );
-      });
+  /// such feature. [byPerson]: the person set it, so a drop is theirs and
+  /// any other status takes their drop back.
+  Future<Plan> mark(
+    String appId,
+    String id,
+    FeatureStatus status, {
+    bool byPerson = false,
+  }) => _write(appId, (old) {
+    final p = _need(appId, old);
+    if (p.feature(id) == null) throw StateError('no feature "$id"');
+    return p.copyWith(
+      features: [
+        for (final f in p.features)
+          f.id == id
+              ? f.copyWith(
+                  status: status,
+                  droppedByPerson: byPerson
+                      ? status == FeatureStatus.dropped
+                      : null,
+                )
+              : f,
+      ],
+    );
+  });
 
   /// Adds a feature to build after the others; returns it.
   Future<PlanFeature> addFeature(
@@ -292,7 +327,12 @@ class PlanStore {
       while (p.feature('p$n') != null) {
         n++;
       }
-      added = PlanFeature(id: 'p$n', title: title, detail: detail);
+      added = PlanFeature(
+        id: 'p$n',
+        title: title,
+        detail: detail,
+        by: FeatureBy.person,
+      );
       return p.copyWith(features: [...p.features, added]);
     });
     return added;
@@ -314,9 +354,10 @@ class PlanStore {
     );
   });
 
-  /// Drops feature [id]: it stays in the list, and is not built.
+  /// The person drops feature [id]: it stays in the list, and is not
+  /// built; the agent cannot take it up again.
   Future<Plan> drop(String appId, String id) =>
-      mark(appId, id, FeatureStatus.dropped);
+      mark(appId, id, FeatureStatus.dropped, byPerson: true);
 
   /// Puts the features in the order of [ids]; features not named keep
   /// their order after them.
@@ -487,11 +528,37 @@ class PlanSetTool implements Tool {
         'from this plan if it still needs changing.',
       );
     }
-    final saved = await plan.store.set(
-      plan.key,
-      features,
-      request: plan.request,
-    );
+    // The person's features stay, and their drops stay dropped; who added
+    // a feature is kept from the plan, never taken from the agent.
+    final kept = <PlanFeature>[];
+    for (final f in features) {
+      final was = current?.feature(f.id);
+      if (was != null &&
+          was.droppedByPerson &&
+          f.status != FeatureStatus.dropped) {
+        return ToolRefused(
+          'The person dropped "${was.title}" (${was.id}): keep it dropped.',
+        );
+      }
+      kept.add(
+        f.copyWith(
+          by: was?.by ?? FeatureBy.agent,
+          droppedByPerson: was?.droppedByPerson ?? false,
+        ),
+      );
+    }
+    final missing = [
+      for (final f in current?.features ?? const <PlanFeature>[])
+        if (f.by == FeatureBy.person && !ids.contains(f.id)) f,
+    ];
+    if (missing.isNotEmpty) {
+      return ToolRefused(
+        'The person added ${[for (final f in missing) '"${f.title}" (${f.id})'].join(', ')}: '
+        'keep every feature they added (mark one dropped only when it cannot '
+        'be done here).',
+      );
+    }
+    final saved = await plan.store.set(plan.key, kept, request: plan.request);
     plan.seen = saved.revision;
     return ToolOk({
       'features': saved.features.length,
@@ -532,6 +599,11 @@ class PlanMarkTool implements Tool {
       );
     }
     final before = await plan.store.get(plan.key);
+    if (before?.feature(id)?.droppedByPerson ?? false) {
+      throw ToolInputError(
+        'The person dropped "$id": leave it dropped and build the next one.',
+      );
+    }
     if (before?.feature(id) == null) {
       throw ToolInputError(
         before == null

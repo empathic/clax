@@ -10,7 +10,12 @@ Map<String, Object?> feature(
   String id, {
   String status = 'todo',
   String title = 'A feature',
-}) => {'id': id, 'title': title, 'detail': 'It does a thing.', 'status': status};
+}) => {
+  'id': id,
+  'title': title,
+  'detail': 'It does a thing.',
+  'status': status,
+};
 
 void main() {
   group('PlanStore', () {
@@ -142,6 +147,49 @@ void main() {
       expect(
         await tb.call('plan_mark', {'id': 'f1', 'status': 'finished'}),
         isA<ToolRefused>(),
+      );
+    });
+
+    test('plan_set keeps the person\'s features and drops; plan_mark '
+        'leaves a person\'s drop alone', () async {
+      await tb.call('plan_set', {
+        'features': [feature('f1'), feature('f2')],
+      });
+      final added = await store.addFeature('app1', title: 'Dark charts');
+      await store.drop('app1', 'f2');
+      plan.seen = (await store.get('app1'))!.revision;
+
+      final removed = await tb.call('plan_set', {
+        'features': [feature('f1'), feature('f2', status: 'dropped')],
+      });
+      expect((removed as ToolRefused).message, contains('Dark charts'));
+      final undropped = await tb.call('plan_set', {
+        'features': [feature('f1'), feature('f2'), feature(added.id)],
+      });
+      expect((undropped as ToolRefused).message, contains('keep it dropped'));
+      expect(
+        await tb.call('plan_mark', {'id': 'f2', 'status': 'doing'}),
+        isA<ToolRefused>(),
+      );
+
+      expect(
+        await tb.call('plan_set', {
+          'features': [
+            feature('f1', status: 'done'),
+            feature('f2', status: 'dropped'),
+            feature(added.id),
+          ],
+        }),
+        isA<ToolOk>(),
+      );
+      final p = (await store.get('app1'))!;
+      expect(p.feature(added.id)!.by, FeatureBy.person);
+      expect(p.feature('f2')!.droppedByPerson, isTrue);
+      // The person takes their drop back.
+      await store.mark('app1', 'f2', FeatureStatus.todo, byPerson: true);
+      expect(
+        (await store.get('app1'))!.feature('f2')!.droppedByPerson,
+        isFalse,
       );
     });
   });
