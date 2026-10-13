@@ -286,11 +286,36 @@ fn rights_of(v: &Value) -> Result<Option<Rights>, ApiError> {
     Ok(Some(Rights::parse(v)?))
 }
 
-/// An agent's view for People (spec §7.4): who it is, and its narrowing,
-/// elevation and effective rights (`null` for an agent of this machine,
-/// which the daemon token's rights do not limit).
-fn agent_view(a: &AgentRights) -> Value {
-    json!({
+/// `{public_id, name, owner}` of granter `g` (`None`: the owner); names
+/// are text (§21.9).
+fn granter_view(st: &Store, g: Option<&str>) -> clax_core::Result<Value> {
+    let raw = match g {
+        Some(p) => st.viewer_by_public_id(p)?.and_then(|v| v.display_name),
+        None => st.owner()?.and_then(|v| v.display_name),
+    };
+    let name = clax_core::feedback::person_name(raw.as_deref(), g.is_none());
+    Ok(json!({"public_id": g, "name": name, "owner": g.is_none()}))
+}
+
+/// An agent's view for People (spec §7.4, O11): who it is, its narrowing,
+/// the owner's elevation (`elevate`), every elevation with its granter
+/// (`elevations: [{granter: {public_id, name, owner}, access,
+/// created_at}]`, the owner's first) and its effective rights (`null` for
+/// an agent of this machine, which the daemon token's rights do not
+/// limit).
+fn agent_view(st: &Store, a: &AgentRights) -> clax_core::Result<Value> {
+    let elevations = a
+        .elevations
+        .iter()
+        .map(|e| {
+            Ok(json!({
+                "granter": granter_view(st, e.granter.as_deref())?,
+                "access": e.access.to_json(),
+                "created_at": e.created_at,
+            }))
+        })
+        .collect::<clax_core::Result<Vec<Value>>>()?;
+    Ok(json!({
         "handle": a.session.agent_handle,
         "name": a.session.name,
         "harness": a.session.harness,
@@ -298,23 +323,59 @@ fn agent_view(a: &AgentRights) -> Value {
         "grant_id": a.session.grant_id,
         "started_at": a.session.started_at,
         "narrow": a.narrow.as_ref().map(Rights::to_json),
-        "elevate": a.elevate.as_ref().map(Rights::to_json),
+        "elevate": a.elevation_by(None).map(Rights::to_json),
+        "elevations": elevations,
         "rights": a.rights.as_ref().map(Rights::to_json),
-    })
+    }))
 }
 
-/// A person's view for the owner's People: their rights, machines and live
-/// agents; `revoked_at` once revoked (their row stays as history).
-fn person_view(p: &PersonRow, grants: &[Grant], agents: &[AgentRights]) -> Value {
+/// The views of `agents` whose person is `person` (`None`: the owner's).
+fn agents_of(
+    st: &Store,
+    agents: &[AgentRights],
+    person: &Option<String>,
+) -> clax_core::Result<Vec<Value>> {
+    agents
+        .iter()
+        .filter(|a| a.session.person == *person)
+        .map(|a| agent_view(st, a))
+        .collect()
+}
+
+/// Person `pid`'s live approvals of the owner's content (spec §9.5, O12),
+/// oldest first: the owner reads these, and no other approval of theirs.
+/// Titles are not filtered: the owner's browser sees every artifact (§8.5).
+fn approvals_of_yours(st: &Store, pid: &str) -> clax_core::Result<Vec<Value>> {
+    let Some(owner) = st.owner()? else {
+        return Ok(Vec::new());
+    };
+    st.live_approvals(Some(pid))?
+        .iter()
+        .filter(|a| a.author == owner.public_id)
+        .map(|a| crate::approvals::approval_view(st, a))
+        .collect()
+}
+
+/// A person's view for the owner's People: their rights, machines, live
+/// agents and live approvals of the owner's content
+/// (`approvals_of_yours`); `revoked_at` once revoked (their row stays as
+/// history).
+fn person_view(
+    st: &Store,
+    p: &PersonRow,
+    grants: &[Grant],
+    agents: &[AgentRights],
+) -> clax_core::Result<Value> {
     let id = Some(p.viewer.public_id.clone());
-    json!({
+    Ok(json!({
         "public_id": p.viewer.public_id,
         "display_name": p.viewer.display_name,
         "revoked_at": p.viewer.person_revoked_at,
         "rights": p.rights.to_json(),
         "grants": grants.iter().filter(|g| g.person == id).map(grant_view).collect::<Vec<_>>(),
-        "agents": agents.iter().filter(|a| a.session.person == id).map(agent_view).collect::<Vec<_>>(),
-    })
+        "agents": agents_of(st, agents, &id)?,
+        "approvals_of_yours": approvals_of_yours(st, &p.viewer.public_id)?,
+    }))
 }
 
 /// Person `public_id`'s view, read from `st`.
@@ -324,7 +385,7 @@ fn person_of(st: &Store, public_id: &str) -> clax_core::Result<Value> {
         .into_iter()
         .find(|p| p.viewer.public_id == public_id)
         .ok_or(CoreError::NotFound)?;
-    Ok(person_view(&p, &st.list_grants()?, &st.live_agents()?))
+    person_view(st, &p, &st.list_grants()?, &st.live_agents()?)
 }
 
 /// The owner's `*unconnected` switch (spec §9.6): on while the owner's
@@ -338,10 +399,12 @@ fn unconnected_switch(st: &Store) -> clax_core::Result<Value> {
 }
 
 /// `GET /api/people` (the owner, in a browser or by hand) → `{people:
-/// [{public_id, display_name, revoked_at, rights, grants, agents}],
-/// unconnected: {on, approval_id}}` (spec §7.4, §9.6, §17): every connected
-/// person, and each revoked one as history, oldest first, with their
-/// machines and live agents; and the `*unconnected` switch, which
+/// [{public_id, display_name, revoked_at, rights, grants, agents,
+/// approvals_of_yours}], unconnected: {on, approval_id}}` (spec §7.4,
+/// §9.5, §9.6, §17): every connected person, and each revoked one as
+/// history, oldest first, with their machines, live agents and live
+/// approvals of the owner's content (O12: never their approvals of anyone
+/// else's); and the `*unconnected` switch, which
 /// `POST /api/approvals {author: "*unconnected", scope: "everywhere"}`
 /// turns on and `DELETE /api/approvals/<approval_id>` off. Agents get 403
 /// (`not_for_agents`, `forbidden`).
@@ -361,11 +424,11 @@ pub async fn list_people(
     let v = s
         .store_call(|st| {
             let (grants, agents) = (st.list_grants()?, st.live_agents()?);
-            let people: Vec<Value> = st
+            let people = st
                 .people()?
                 .iter()
-                .map(|p| person_view(p, &grants, &agents))
-                .collect();
+                .map(|p| person_view(st, p, &grants, &agents))
+                .collect::<clax_core::Result<Vec<Value>>>()?;
             Ok(json!({"people": people, "unconnected": unconnected_switch(st)?}))
         })
         .await?;
@@ -410,12 +473,7 @@ pub async fn me(
                 })
                 .map(grant_view)
                 .collect();
-            let agents: Vec<Value> = st
-                .live_agents()?
-                .iter()
-                .filter(|a| a.session.person == me)
-                .map(agent_view)
-                .collect();
+            let agents = agents_of(st, &st.live_agents()?, &me)?;
             Ok(json!({
                 "person": {
                     "public_id": owner_id,
@@ -596,7 +654,7 @@ pub async fn narrow_agent(
         .store_call(move |st| {
             let session = agent_of(st, &handle, &me, false)?;
             let a = st.narrow_agent(&audit.resolve(st)?, &session.id, narrow)?;
-            let view = agent_view(&a);
+            let view = agent_view(st, &a)?;
             announce(&state, json!({"what": "agent_narrowed", "agent": view}));
             Ok(view)
         })
@@ -604,11 +662,14 @@ pub async fn narrow_agent(
     Ok(Json(json!({"agent": agent})))
 }
 
-/// `PUT /api/agents/<handle>/elevate` `{access}` (the owner's browser,
-/// spec §7.4, M20) → `{agent}`: that agent alone may also do what `access`
-/// allows, beyond its person's rights, from its next request on and until
-/// its session ends (§14 clears it). Recorded as `agent.elevate`. 400
-/// `token_agent` for an agent of this machine, `invalid_rights`; 404 for a
+/// `PUT /api/agents/<handle>/elevate` `{access}` (spec §7.4, M20, O11) →
+/// `{agent}`: sets the caller's own elevation of that agent, from their
+/// browser: the owner's may name any location; a connected person's names
+/// only artifacts they created, with actions they hold there. That agent
+/// alone may also do what it gives, beyond its person's rights, from its
+/// next request on and until its session ends (§14 clears it). Recorded
+/// as `agent.elevate`. 400 `token_agent` for an agent of this machine,
+/// `invalid_rights`; 403 `not_creator`, `beyond_your_rights`; 404 for a
 /// handle that names no live agent.
 pub async fn elevate_agent(
     State(s): State<AppState>,
@@ -620,7 +681,7 @@ pub async fn elevate_agent(
     req: Result<Json<AccessBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
-    owner_browser(&caller, "elevates an agent")?;
+    let granter = browser_person(&caller, "raising an agent")?;
     let handle = path(handle)?;
     let b = body(req)?;
     let Some(access) = rights_of(&b.access)? else {
@@ -629,13 +690,13 @@ pub async fn elevate_agent(
             "name the access to add; DELETE removes an elevation",
         ));
     };
-    set_elevation(s, audit, handle, Some(access)).await
+    set_elevation(s, audit, handle, granter, Some(access)).await
 }
 
-/// `DELETE /api/agents/<handle>/elevate` (the owner's browser) →
-/// `{agent}`: the agent is back to its person's rights within its
-/// narrowings from its next request on. Recorded as `agent.elevate` with
-/// `access` null.
+/// `DELETE /api/agents/<handle>/elevate` (the owner's or an artifact
+/// creator's browser) → `{agent}`: removes the caller's own elevation of
+/// that agent, from its next request on; another granter's stays. Recorded
+/// as `agent.elevate` with `access` null.
 pub async fn unelevate_agent(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -645,28 +706,107 @@ pub async fn unelevate_agent(
     handle: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
-    owner_browser(&caller, "removes an agent's elevation")?;
+    let granter = browser_person(&caller, "removing a raise")?;
     let handle = path(handle)?;
-    set_elevation(s, audit, handle, None).await
+    set_elevation(s, audit, handle, granter, None).await
 }
 
 async fn set_elevation(
     s: AppState,
     audit: DeferredAudit,
     handle: String,
+    granter: Option<String>,
     access: Option<Rights>,
 ) -> Result<Json<Value>, ApiError> {
     let state = s.clone();
     let agent = s
         .store_call(move |st| {
             let session = agent_of(st, &handle, &None, true)?;
-            let a = st.elevate_agent(&audit.resolve(st)?, &session.id, access)?;
-            let view = agent_view(&a);
+            let a =
+                st.elevate_agent(&audit.resolve(st)?, &session.id, granter.as_deref(), access)?;
+            let view = agent_view(st, &a)?;
             announce(&state, json!({"what": "agent_elevated", "agent": view}));
             Ok(view)
         })
         .await?;
     Ok(Json(json!({"agent": agent})))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RaisesQuery {
+    #[serde(default)]
+    artifact: Option<String>,
+}
+
+/// `GET /api/people/me/raises?artifact=<aid>` (the owner's or a connected
+/// person's browser; spec §7.4, O11) → `{creator, holds, raisable, raises:
+/// [{agent: {handle, name, person, live}, access}]}`: the caller's own
+/// elevations of live agents, oldest first, never another granter's. With
+/// `artifact`: whether the caller created it (`creator`), what they may
+/// give there (`holds`: every action there within their rights there, or
+/// null), and the handles of its live participant agents of connected
+/// machines, which a raise reaches (`raisable`, empty unless `creator`);
+/// without, all three null. 403 for agents, the token alone, a LAN viewer.
+pub async fn raises(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    caller: Caller,
+    q: Result<axum::extract::Query<RaisesQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    let me = browser_person(&caller, "People")?;
+    let q = q
+        .map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?
+        .0;
+    let aid = q
+        .artifact
+        .map(|a| super::artifacts::parse_id(&a))
+        .transpose()?;
+    let v = s
+        .store_call(move |st| {
+            let holds = match &aid {
+                Some(a) => st.creator_holds(me.as_deref(), a.as_str())?,
+                None => None,
+            };
+            // The artifact's live agents a raise reaches: those of connected
+            // machines (this machine's act with the token, `token_agent`).
+            let mut raisable = Vec::new();
+            if let (Some(a), Some(_)) = (&aid, &holds) {
+                for x in st.participants(a)?.agents.into_iter().filter(|x| x.live) {
+                    if st
+                        .live_session_by_handle(&x.handle)?
+                        .is_some_and(|s| s.grant_id.is_some())
+                    {
+                        raisable.push(x.handle);
+                    }
+                }
+            }
+            let raises: Vec<Value> = st
+                .raises_by(me.as_deref())?
+                .into_iter()
+                .map(|r| {
+                    json!({
+                        "agent": {
+                            "handle": r.session.agent_handle,
+                            "name": r.session.name,
+                            "person": r.session.person,
+                            "live": r.session.ended_at.is_none(),
+                        },
+                        "access": r.access.to_json(),
+                    })
+                })
+                .collect();
+            Ok(json!({
+                "creator": aid.as_ref().map(|_| holds.is_some()),
+                "holds": holds.as_ref().map(Rights::to_json),
+                "raisable": aid.as_ref().map(|_| raisable),
+                "raises": raises,
+            }))
+        })
+        .await?;
+    Ok(Json(v))
 }
 
 /// `DELETE /api/agents/<handle>` (the owner's browser for any agent, a

@@ -219,4 +219,41 @@ describe("PersonCard", () => {
     expect(m.root.querySelector(".rename")).toBeNull();
     expect(document.activeElement).toBe(rename());
   });
+
+  it("shows the person's agents raised by an artifact's creator, by name and place, which only the creator removes", () => {
+    const notes = [{ type: "clax-artifacts", actions: ["update"], locations: ["n1"] }];
+    const raised = agent({ elevations: [{ granter: { public_id: "p2", name: "Mia", owner: false }, access: notes, created_at: "x" }] });
+    const art = [{ id: "n1", title: "Mia's Notes" }];
+    // The person's own view: who raised what, where.
+    const self = mount(PersonCard, { view: "self", who: { public_id: "p1", display_name: "Sam", revoked_at: null, rights: COLLAB, grants: [grant()], agents: [raised] }, artifacts: art, onChanged: vi.fn() });
+    const publish = [...self.root.querySelectorAll(".agent label")].find(l => l.textContent!.trim().startsWith("Publish new versions"))!;
+    expect(publish.textContent).toContain("Raised by Mia on “Mia's Notes” until this session ends");
+    self.unmount();
+    // The owner's view: read-only, beside the owner's own raise panel.
+    const owner = mount(PersonCard, { view: "owner", who: person({ agents: [raised] }), artifacts: art, onChanged: vi.fn() });
+    const by = owner.root.querySelector(".agent .note.by")!;
+    expect(by.textContent).toBe("Raised by Mia until this session ends: Publish new versions on “Mia's Notes”");
+    expect(by.querySelector("button, input")).toBeNull();
+    expect(owner.root.querySelector(".raise summary")!.textContent).toBe("Raise this agent");
+  });
+
+  it("shows the owner the person's approvals of the owner's content, read-only, linking to the page or thread", () => {
+    const ap = (o: object) => ({ id: "ap1", approver: "p1", author: { public_id: "o1", name: "Alex", owner: true }, scope: "artifact", artifact_id: "a1", artifact_title: "Quarterly Review", thread_id: null, created_at: "x", created_via: "shell", request_id: null, ...o });
+    const m = mount(PersonCard, { view: "owner", who: person(), ofYours: [ap({}), ap({ id: "ap2", scope: "thread", thread_id: "t1" })] as never, onChanged: vi.fn() });
+    const sec = m.root.querySelector(".approvals")!;
+    const head = [...sec.querySelectorAll("h4")].find(h => h.textContent === "Approvals of your content")!;
+    expect(head).toBeTruthy();
+    const lines = [...sec.querySelectorAll(".line.yours")];
+    expect(lines.map(l => l.textContent)).toEqual([
+      "Allowed on “Quarterly Review” · Open the page", "Allowed in one thread on “Quarterly Review” · Open the thread",
+    ]);
+    expect(lines[1].querySelector("a")!.getAttribute("href")).toBe("/a/a1?thread=t1");
+    expect(sec.querySelectorAll(".line.yours button").length).toBe(0);
+    m.unmount();
+    const none = mount(PersonCard, { view: "owner", who: person(), ofYours: [], onChanged: vi.fn() });
+    expect(none.root.querySelector(".approvals")!.textContent).toContain("Not yet: their agents see your content once they allow it.");
+    // The person's own view has no such section.
+    const self = mount(PersonCard, { view: "self", who: { public_id: "p1", display_name: "Sam", revoked_at: null, rights: COLLAB, grants: [grant()], agents: [] }, onChanged: vi.fn() });
+    expect(self.root.textContent).not.toContain("Approvals of your content");
+  });
 });

@@ -7,14 +7,18 @@
   // agents, by name and, for another person's, with their person, with what
   // they wait on (the roster's states and block times, spec 2026-10-08
   // §13, for the owner and connected people), work on or last addressed; and this
-  // viewer's name with the "Share where I'm looking" switch. Escape, Close or
+  // viewer's name with the "Share where I'm looking" switch. For the
+  // artifact's creator, each agent of a connected machine on it offers
+  // "Raise on this artifact" (spec 2026-10-08 §7.4, O11), in a chunk of its
+  // own loaded only for a creator. Escape, Close or
   // a press outside closes it; Escape and Close return focus to
   // the roster. Loaded on first open, with its styles.
   import { tick as settled, untrack } from "svelte";
   import type { ArtifactController, Loaded, ViewState } from "../view/artifact-controller";
   import { personLine, roster } from "../view/presence-model";
   import { agentNames, clock, newestFirst, stripText } from "../view/working-model";
-  import type { RosterAgent } from "../api";
+  import type { PeopleRaises, RosterAgent } from "../api";
+  import type RaiseHereT from "./RaiseHere.svelte";
   import { blockedOn, waitedFor } from "../people/strip";
   import HaikuLine from "./HaikuLine.svelte";
   import { ticker } from "./ticker.svelte";
@@ -38,6 +42,20 @@
   // The agents roster (`GET /api/agents`): a LAN viewer has none.
   let listed = $state<RosterAgent[]>([]);
   $effect(() => { void fetch("/api/agents").then(r => (r.ok ? r.json() : null)).then(b => { if (Array.isArray(b?.agents)) listed = b.agents; }, () => {}); });
+  // The viewer's raises (`GET /api/people/me/raises`): whether they created
+  // this artifact, what they may give here, which agents a raise reaches.
+  // A LAN viewer has none.
+  let raises = $state<PeopleRaises | null>(null);
+  let Raise: typeof RaiseHereT | null = $state(null);
+  function loadRaises() {
+    void fetch(`/api/people/me/raises?artifact=${encodeURIComponent(s.data.artifact.id)}`).then(r => (r.ok ? r.json() : null)).then((b: PeopleRaises | null) => {
+      raises = b;
+      if (b?.creator && b.holds && !Raise) void import("./RaiseHere.svelte").then(m => { Raise = m.default; }, () => {});
+    }, () => {});
+  }
+  $effect(() => { untrack(loadRaises); });
+  /** The viewer's own raise of agent `handle`, as given. */
+  const mineOf = (handle: string) => raises?.raises.find(r => r.agent.handle === handle)?.access ?? null;
   const personOf = (handle: string) => parts.agents.find(a => a.handle === handle)?.person;
   const theirs = (handle: string) => { const p = personOf(handle); return !!p && p.public_id !== me && (!!me || !p.owner); };
   /** What the roster says an agent waits on: its person (you, for yours), since when, and on what. */
@@ -143,6 +161,9 @@
         {#if !s.commenting}<HaikuLine seed={w.key} />{/if}
       {:else}
         <p>{idleLine(a.handle)}</p>
+      {/if}
+      {#if Raise && raises?.holds && raises.raisable?.includes(a.handle)}
+        <Raise aid={s.data.artifact.id} handle={a.handle} {name} holds={raises.holds} mine={mineOf(a.handle)} onChanged={loadRaises} />
       {/if}
     </div>
   {/each}

@@ -393,7 +393,7 @@ fn check_person_name(tx: &Transaction<'_>, name: &str, except: Option<&str>) -> 
 
 /// The rights of the person behind viewer row `viewer_id`: everything for
 /// the owner, else the stored rights or the collaborator preset.
-fn rights_of_row(c: &rusqlite::Connection, viewer_id: &str) -> Result<Rights> {
+pub(super) fn rights_of_row(c: &rusqlite::Connection, viewer_id: &str) -> Result<Rights> {
     let (owner, json): (bool, Option<String>) = c
         .query_row(
             "SELECT owner, rights_json FROM viewers WHERE id = ?1",
@@ -1643,6 +1643,7 @@ impl Store {
             )?;
             if n > 0 {
                 super::approvals::withdraw_person_in(self, tx, ctx, public_id, &now)?;
+                super::elevations::drop_granted_in(self, tx, ctx, public_id)?;
                 let rec = AuditRecord::new(AuditKind::PersonRevoke, now.as_str())
                     .with("person", public_id);
                 self.record_audit(tx, ctx, rec)?;
@@ -2062,19 +2063,30 @@ pub struct PersonRow {
     pub rights: Rights,
 }
 
-/// A live agent with the narrowing its person set and the elevation the
-/// owner gave it (spec §7.2, §7.4).
+/// A live agent with the narrowing its person set and the elevations its
+/// granters gave it (spec §7.2, §7.4, O11).
 #[derive(Clone, Debug)]
 pub struct AgentRights {
     pub session: crate::model::Session,
     /// Its person's narrowing of it alone.
     pub narrow: Option<Rights>,
-    /// The owner's elevation of it, until its session ends.
-    pub elevate: Option<Rights>,
-    /// What it may do (`(person ∩ grant.narrow ∩ narrow) ∪ elevate`); `None`
-    /// for an agent of this machine, which acts with the daemon token that
-    /// rights do not limit.
+    /// Its elevations until its session ends, one per granter, the owner's
+    /// first, each as given.
+    pub elevations: Vec<super::elevations::Elevation>,
+    /// What it may do (`(person ∩ grant.narrow ∩ narrow) ∪ elevations`);
+    /// `None` for an agent of this machine, which acts with the daemon token
+    /// that rights do not limit.
     pub rights: Option<Rights>,
+}
+
+impl AgentRights {
+    /// The elevation `granter` (`None`: the owner) gave it, as given.
+    pub fn elevation_by(&self, granter: Option<&str>) -> Option<&Rights> {
+        self.elevations
+            .iter()
+            .find(|e| e.granter.as_deref() == granter)
+            .map(|e| &e.access)
+    }
 }
 
 /// The access an agent of grant `gid` has before its own narrowing and
@@ -2106,28 +2118,25 @@ fn check_narrower(narrow: Option<&Rights>, base: &Rights) -> Result<()> {
     }
 }
 
-/// Live session `sid` on `c` with its narrowing and elevation.
-fn agent_rights_in(c: &rusqlite::Connection, sid: &str) -> Result<Option<AgentRights>> {
+/// Live session `sid` on `c` with its narrowing and elevations.
+pub(super) fn agent_rights_in(c: &rusqlite::Connection, sid: &str) -> Result<Option<AgentRights>> {
     let row = c
         .query_row(
             &format!(
                 "{} WHERE id = ?1 AND ended_at IS NULL",
-                super::sessions::SELECT.replace(
-                    " FROM sessions",
-                    ", narrow_json AS narrow_j, elevate_json AS elevate_j FROM sessions"
-                )
+                super::sessions::SELECT
+                    .replace(" FROM sessions", ", narrow_json AS narrow_j FROM sessions")
             ),
             params![sid],
             |r| {
                 Ok((
                     super::sessions::row_to_session(r)?,
                     r.get::<_, Option<String>>("narrow_j")?,
-                    r.get::<_, Option<String>>("elevate_j")?,
                 ))
             },
         )
         .optional()?;
-    let Some((session, narrow, elevate)) = row else {
+    let Some((session, narrow)) = row else {
         return Ok(None);
     };
     let rights = match &session.grant_id {
@@ -2142,7 +2151,7 @@ fn agent_rights_in(c: &rusqlite::Connection, sid: &str) -> Result<Option<AgentRi
     Ok(Some(AgentRights {
         session,
         narrow: narrow.as_deref().map(read_rights).transpose()?,
-        elevate: elevate.as_deref().map(read_rights).transpose()?,
+        elevations: super::elevations::of_session(c, sid)?,
         rights,
     }))
 }
@@ -2158,7 +2167,7 @@ fn token_agent() -> CoreError {
 
 /// The live session `sid`'s grant on `tx`: `NotFound` for one that is not
 /// live, [`token_agent`] for one of this machine.
-fn live_grant_of(tx: &Transaction<'_>, sid: &str) -> Result<String> {
+pub(super) fn live_grant_of(tx: &Transaction<'_>, sid: &str) -> Result<String> {
     let gid: Option<Option<String>> = tx
         .query_row(
             "SELECT grant_id FROM sessions WHERE id = ?1 AND ended_at IS NULL",
@@ -2191,7 +2200,7 @@ impl Store {
         })
     }
 
-    /// Every live agent with its narrowing and elevation, oldest first.
+    /// Every live agent with its narrowing and elevations, oldest first.
     pub fn live_agents(&self) -> Result<Vec<AgentRights>> {
         self.with_read(|c| {
             let ids: Vec<String> = {
@@ -2211,7 +2220,7 @@ impl Store {
         })
     }
 
-    /// Live session `sid` with its narrowing and elevation; `None` once it
+    /// Live session `sid` with its narrowing and elevations; `None` once it
     /// has ended or for no such session.
     pub fn agent_rights(&self, sid: &str) -> Result<Option<AgentRights>> {
         self.with_read(|c| agent_rights_in(c, sid))
@@ -2220,7 +2229,7 @@ impl Store {
     /// Sets (or with `None` clears) the narrowing of live agent `sid` of
     /// another machine (spec §7.4), recorded as `agent.narrow {session,
     /// access}` under `ctx`. From its next request on, it may do only
-    /// what `(person ∩ grant narrowing ∩ narrow) ∪ elevation` allows
+    /// what `(person ∩ grant narrowing ∩ narrow) ∪ elevations` allows
     /// (M17: a change bumps the visibility generation).
     ///
     /// # Errors
@@ -2231,48 +2240,17 @@ impl Store {
         &self,
         ctx: &AuditCtx,
         sid: &str,
-        narrow: Option<Rights>,
-    ) -> Result<AgentRights> {
-        self.set_agent_rights(ctx, sid, "narrow_json", AuditKind::AgentNarrow, narrow)
-    }
-
-    /// Sets (or with `None` removes) the owner's elevation of live agent
-    /// `sid` of another machine (spec §7.4): rights beyond its person's,
-    /// for it alone, until its session ends (§14 clears it). Recorded as
-    /// `agent.elevate {session, access}` under `ctx`; a change bumps the
-    /// visibility generation (M17).
-    ///
-    /// # Errors
-    /// `NotFound` for a session that is not live; `token_agent` for an
-    /// agent of this machine.
-    pub fn elevate_agent(
-        &self,
-        ctx: &AuditCtx,
-        sid: &str,
-        elevate: Option<Rights>,
-    ) -> Result<AgentRights> {
-        self.set_agent_rights(ctx, sid, "elevate_json", AuditKind::AgentElevate, elevate)
-    }
-
-    fn set_agent_rights(
-        &self,
-        ctx: &AuditCtx,
-        sid: &str,
-        column: &'static str,
-        kind: AuditKind,
         value: Option<Rights>,
     ) -> Result<AgentRights> {
         self.with_tx(|tx| {
             let gid = live_grant_of(tx, sid)?;
-            if kind == AuditKind::AgentNarrow {
-                check_narrower(value.as_ref(), &agent_base(tx, &gid)?)?;
-            }
+            check_narrower(value.as_ref(), &agent_base(tx, &gid)?)?;
             let json = value.as_ref().map(write_rights);
             let changed = tx.execute(
-                &format!("UPDATE sessions SET {column} = ?2 WHERE id = ?1 AND {column} IS NOT ?2"),
+                "UPDATE sessions SET narrow_json = ?2 WHERE id = ?1 AND narrow_json IS NOT ?2",
                 params![sid, json],
             )? > 0;
-            let mut rec = AuditRecord::new(kind, self.now())
+            let mut rec = AuditRecord::new(AuditKind::AgentNarrow, self.now())
                 .with("session", sid)
                 .with("access", value.as_ref().map(Rights::to_json));
             rec.ids.session = Some(sid.to_string());
@@ -2368,15 +2346,15 @@ pub(crate) fn grant_caller_in(
         // never widens an agent.
         None => (sessionless_narrow(c, gid)?, None),
         Some(sid) => {
-            let row: Option<(Option<String>, Option<String>, Option<String>)> = c
+            let row: Option<(Option<String>, Option<String>)> = c
                 .query_row(
-                    "SELECT narrow_json, elevate_json, ended_at FROM sessions
+                    "SELECT narrow_json, ended_at FROM sessions
                          WHERE id = ?1 AND grant_id = ?2",
                     params![sid, gid],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?;
-            let (narrow, elevate, ended) = row.ok_or_else(|| {
+            let (narrow, ended) = row.ok_or_else(|| {
                 CoreError::invalid(
                     "foreign_session",
                     "that session is not one of this credential's",
@@ -2390,7 +2368,7 @@ pub(crate) fn grant_caller_in(
             }
             (
                 narrow.as_deref().map(read_rights).transpose()?,
-                elevate.as_deref().map(read_rights).transpose()?,
+                super::elevations::given_in(c, sid)?,
             )
         }
     };
@@ -3292,7 +3270,8 @@ pub(crate) mod tests {
         let full = Rights::preset(PRESET_FULL).unwrap();
         st.with_tx(|tx| {
             tx.execute(
-                "UPDATE sessions SET elevate_json = ?2 WHERE id = ?1",
+                "INSERT INTO session_elevations (session_id, granter, access_json, created_at)
+                 VALUES (?1, NULL, ?2, 'x')",
                 params![s1.id, write_rights(&full)],
             )?;
             Ok(())
@@ -3378,7 +3357,7 @@ pub(crate) mod tests {
         assert_eq!(st.visibility_generation(), g0 + 1);
         // The owner's elevation goes beyond Sam's rights, for this agent.
         let a = st
-            .elevate_agent(DAEMON, &s1.id, Some(full.clone()))
+            .elevate_agent(DAEMON, &s1.id, None, Some(full.clone()))
             .unwrap();
         assert_eq!(st.visibility_generation(), g0 + 2);
         assert!(
@@ -3403,7 +3382,7 @@ pub(crate) mod tests {
             Err(CoreError::NotFound)
         ));
         assert!(matches!(
-            st.elevate_agent(DAEMON, &s1.id, None),
+            st.elevate_agent(DAEMON, &s1.id, None, None),
             Err(CoreError::NotFound)
         ));
         let reason: String = st
@@ -3423,7 +3402,7 @@ pub(crate) mod tests {
             "token_agent"
         );
         assert_eq!(
-            code(st.elevate_agent(DAEMON, &s0.id, Some(full))),
+            code(st.elevate_agent(DAEMON, &s0.id, None, Some(full))),
             "token_agent"
         );
     }

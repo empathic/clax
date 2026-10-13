@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PeopleAgent, PeopleGrant, Rights } from "../api";
-import { CAPS, agentCaps, elevation, expiresIn, liveInvites, machineCaps, narrowAgent, narrowGrant, narrowerOrEqual, presetOf, PRESETS, raiseCaps } from "./model";
+import { CAPS, agentCaps, creatorCaps, elevation, elevationsOf, expiresIn, liveInvites, machineCaps, narrowAgent, narrowGrant, narrowerOrEqual, presetOf, PRESETS, raiseCaps, raisersOf } from "./model";
 
 const COLLAB = PRESETS["clax:collaborator"];
 const key = (type: string, action: string) => `${type} ${action}`;
@@ -140,5 +140,32 @@ describe("people model", () => {
     expect(expiresIn("2026-10-10T10:00:00Z", now)).toBe("24 h");
     expect(expiresIn("2026-10-09T10:40:00Z", now)).toBe("40 min");
     expect(expiresIn("2026-10-09T09:00:00Z", now)).toBe("now");
+  });
+});
+
+describe("creator raises (O11)", () => {
+  it("offers a creator the actions they hold at their artifact, never creating or asking, and names who raised what", () => {
+    const holds = [
+      { type: "clax-artifacts", actions: ["read", "update"], locations: ["n1"] },
+      { type: "clax-db", actions: ["read", "write"], locations: ["n1"], level: "admin" },
+    ];
+    const mine = [{ type: "clax-artifacts", actions: ["update"], locations: ["n1", "n2"] }];
+    const caps = creatorCaps(holds, mine, "n1");
+    expect(caps.map(c => [c.label, c.on])).toEqual([
+      ["Read artifacts", false], ["Publish new versions", true], ["Read page data", false], ["Write page data", false],
+    ]);
+    // A reader who created it holds no write: none is offered.
+    expect(creatorCaps([{ type: "clax-artifacts", actions: ["read"], locations: ["n1"] }], null, "n1").map(c => c.label)).toEqual(["Read artifacts"]);
+    const a = { handle: "h", name: "x", harness: "codex", person: "p1", grant_id: "g", started_at: "x", narrow: null, rights: null,
+      elevate: [{ type: "clax-comments", actions: ["resolve"], locations: ["*"] }],
+      elevations: [
+        { granter: { public_id: null, name: "Alex", owner: true }, access: [{ type: "clax-comments", actions: ["resolve"], locations: ["*"] }], created_at: "x" },
+        { granter: { public_id: "p2", name: "Mia", owner: false }, access: mine, created_at: "x" },
+      ] };
+    expect(elevationsOf(a).length).toBe(2);
+    const publish = CAPS.find(c => c.key === "clax-artifacts update")!;
+    expect(raisersOf(a, publish)).toEqual([{ who: { public_id: "p2", name: "Mia", owner: false }, at: ["n1", "n2"] }]);
+    // An agent listed without `elevations` keeps the owner's alone.
+    expect(elevationsOf({ ...a, elevations: undefined }).map(e => e.granter.owner)).toEqual([true]);
   });
 });
