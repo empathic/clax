@@ -576,11 +576,56 @@ async fn revoking_a_person_revokes_grants_and_invites_and_keeps_history() {
         .await;
     assert_eq!(status, 201, "{v}");
     let invite = v["invite"]["id"].as_str().unwrap().to_string();
-    let gen_before = p.ts.store.visibility_generation();
-    let (status, v) = p
-        .owner("DELETE", &format!("/api/people/{}", p.sam_public), None)
+    // Sam's agent works on the artifact and waits for feedback; the owner's
+    // People listens.
+    let sid = p.sam_session.clone();
+    let r = p
+        .sam
+        .agent(
+            "PUT",
+            &format!("/api/sessions/{sid}/working/{aid}"),
+            Some(&sid),
+            Some(json!({"message": "drafting"})),
+        )
         .await;
-    assert_eq!(status, 200, "{v}");
+    assert_eq!(r.status(), 200);
+    let working = || async {
+        let (_, v) = p
+            .owner("GET", &format!("/api/artifacts/{aid}/working"), None)
+            .await;
+        v["working"].as_array().map_or(0, Vec::len)
+    };
+    assert_eq!(working().await, 1);
+    let mut people_topic = p.ts.stream_as_owner(&["people"]).await;
+    let gen_before = p.ts.store.visibility_generation();
+    let path = format!("/api/sessions/{sid}/feedback?tier=wait&wait=600");
+    let waiting = async { json_of(p.sam.agent("GET", &path, Some(&sid), None).await).await };
+    let revoke = async {
+        p.ts.wait_feedback_waiters(&sid, 1).await;
+        p.owner("DELETE", &format!("/api/people/{}", p.sam_public), None)
+            .await
+    };
+    // The revocation wakes the agent's wait: it returns, well before its
+    // ten minutes.
+    let (_, (status, v)) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::join!(waiting, revoke)
+    })
+    .await
+    .expect("the parked wait returns once its person is revoked");
+    assert!(status == 200 || status == 401, "{status}: {v}");
+    // Its working record ended, and People heard the grant end.
+    assert_eq!(
+        working().await,
+        0,
+        "the revoked agent's working record ended"
+    );
+    loop {
+        let (name, ev) = people_topic.next().await;
+        if name == "people" && ev["change"]["what"] == "grant_ended" {
+            assert_eq!(ev["change"]["grant_id"], json!(p.sam.grant_id()), "{ev}");
+            break;
+        }
+    }
     assert_eq!(v["ended_grants"], json!([p.sam.grant_id()]));
     assert_eq!(v["revoked_invites"], json!([invite]));
     assert!(v["person"]["revoked_at"].is_string(), "{v}");
@@ -619,6 +664,27 @@ async fn revoking_a_person_revokes_grants_and_invites_and_keeps_history() {
         .unwrap();
     assert!(sam["revoked_at"].is_string(), "{sam}");
     assert_eq!(sam["agents"], json!([]));
+    // What his browser writes now stays his: withheld from the owner's
+    // agents as Sam's, and never named as not connected (spec §6.4).
+    let mine =
+        p.ts.publish_as(&p.owner_session, "Mine", "<main><p>Mine</p></main>")
+            .await;
+    let mine = mine["artifact"]["id"].as_str().unwrap().to_string();
+    let t = p.ts.thread_as(&mine, &sam_viewer, "Sam after").await;
+    let later = t["id"].as_str().unwrap().to_string();
+    let (status, v) = p
+        .sams_browser(
+            "POST",
+            &format!("/api/artifacts/{mine}/threads/{later}/send"),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(status, 200, "{v}");
+    let fb = owner_feedback(&p).await;
+    let text = fb.to_string();
+    assert!(!text.contains("Sam after"), "{fb}");
+    assert!(text.contains("comments from Sam on"), "{fb}");
+    assert!(!text.contains("(not connected)"), "{fb}");
     // Mia is untouched.
     assert_eq!(
         p.ts.store.grant(&p.mia.grant_id()).unwrap().status,
@@ -697,14 +763,22 @@ async fn people_routes_are_owner_or_self() {
         assert_eq!(status, 404, "{m} {path}: {v}");
     }
     // Nor are they the owner's to narrow: narrowing is the person's.
-    let (status, _) = p
-        .owner(
-            "PUT",
-            &format!("/api/agents/{mia_h}/narrow"),
-            Some(json!({"access": "clax:reader"})),
-        )
-        .await;
-    assert_eq!(status, 404);
+    for path in [
+        format!("/api/agents/{mia_h}/narrow"),
+        format!("/api/people/me/grants/{}/narrow", p.mia.grant_id()),
+    ] {
+        let (status, v) = p
+            .owner("PUT", &path, Some(json!({"access": "clax:reader"})))
+            .await;
+        assert_eq!(status, 404, "{path}: {v}");
+    }
+    assert!(
+        p.ts.store
+            .grant(&p.mia.grant_id())
+            .unwrap()
+            .narrow
+            .is_none()
+    );
     // The owner's own agent of this machine: the token's rights are not
     // limited, so it is not narrowed.
     let (status, v) = p
@@ -856,7 +930,10 @@ async fn unconnected_switch_off_withholds_lan_viewers_from_owner_agents() {
     let fb = owner_feedback(&p).await;
     let text = fb.to_string();
     assert!(!text.contains("Lan says hi"), "{fb}");
-    assert!(text.contains("withheld"), "{fb}");
+    assert!(
+        text.contains("comments from Lan (not connected) on"),
+        "{fb}"
+    );
     // The owner's agent's thread read holds it back too.
     let (status, v) = p
         .call(
@@ -957,6 +1034,50 @@ async fn unconnected_authors_are_marked_not_connected() {
         .find(|x| x["public_id"] == json!(lan.public_id))
         .unwrap();
     assert_eq!(lan_row["display_name"], "Lan (not connected)", "{v}");
+    // Presence and the viewer lookup the owner's agents read.
+    let c = format!("clax_viewer={}", lan.cookie);
+    let (status, v) = p
+        .call(
+            Who::Browser(&c),
+            "PUT",
+            "/api/viewers/me/presence",
+            Some(json!({"artifact_id": aid, "state": "here"})),
+        )
+        .await;
+    assert!(status < 300, "{status}: {v}");
+    let (status, v) = p
+        .call(
+            Who::OwnerAgent,
+            "GET",
+            &format!("/api/artifacts/{aid}/presence"),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{v}");
+    let row = v["people"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["public_id"] == json!(lan.public_id))
+        .unwrap_or_else(|| panic!("{v}"));
+    assert_eq!(row["display_name"], "Lan (not connected)", "{v}");
+    let (status, v) = p
+        .call(
+            Who::OwnerAgent,
+            "GET",
+            &format!("/api/viewers?ids={}", lan.public_id),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(
+        v["viewers"][0]["display_name"], "Lan (not connected)",
+        "{v}"
+    );
+    let (_, v) = p
+        .owner("GET", &format!("/api/viewers?ids={}", lan.public_id), None)
+        .await;
+    assert_eq!(v["viewers"][0]["display_name"], "Lan", "{v}");
     // People are not filtered or marked: the owner's browser reads "Lan".
     let (_, v) = p
         .owner("GET", &format!("/api/artifacts/{aid}/threads/{tid}"), None)

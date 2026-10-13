@@ -101,22 +101,15 @@ pub fn announce_ended(
 ) {
     for r in ended.iter().filter(|r| r.ended) {
         grant_auth::note_stale(s.grant_auth.index.ended(&r.grant_id), "grant ended");
-        crate::feedback::apply(ctx, st, &r.touched);
-        crate::questions::announce_ids(s, st, &r.withdrawn_questions);
-        for id in &r.sessions_ended {
-            ctx.waiters.forget(id);
-            let (stopped, _) = ctx
-                .working
-                .end_session(id, clax_core::working::End::SessionEnd);
-            crate::working::settle(
-                st,
-                &clax_core::audit::AuditCtx::DAEMON,
-                &ctx.events,
-                &ctx.working,
-                &stopped,
-            );
-            ctx.followers.forget(id);
-        }
+        crate::feedback::sessions_ended(
+            s,
+            ctx,
+            st,
+            &clax_core::audit::AuditCtx::DAEMON,
+            &r.touched,
+            &r.withdrawn_questions,
+            &r.sessions_ended,
+        );
         let grant = st.grant(&r.grant_id).ok().map(|g| grant_view(&g));
         announce(
             s,

@@ -1248,7 +1248,10 @@ artifact is 404. `PUT /api/viewers/me/seen` with `{"artifact_id",
 `{"seen": <the mark after the write>}`; without a viewer cookie it is 400
 `no_viewer`. A viewer keeps marks on its 200 most recently marked artifacts;
 older ones are dropped. A viewer's seen mark is public: it is the `seen` of
-that person in the artifact's `participants`.
+that person in the artifact's `participants`, presence and the viewer lookup. History whose
+author was never recorded (comments from before viewers had public IDs,
+batches from before senders were recorded) reads the same way, whoever
+wrote it.
 
 Comments name their author: a comment view carries `author_public_id`, the
 viewer's public ID when a viewer cookie wrote it, `null` for agent comments,

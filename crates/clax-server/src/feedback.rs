@@ -458,6 +458,46 @@ pub fn publish_states(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
     }
 }
 
+/// The live side of sessions' ends (spec 2026-10-08 §14), once the store
+/// committed them with their cleanup: the feedback they released reaches
+/// its new targets ([`apply`]), their withdrawn questions are announced,
+/// and for each ended session in `sessions` its long-polls are woken and
+/// forgotten, its working records end (recorded under `audit`), and its
+/// followers stop. Every route that ends sessions calls it.
+pub fn sessions_ended(
+    s: &AppState,
+    ctx: &FeedbackCtx,
+    st: &Store,
+    audit: &clax_core::audit::AuditCtx,
+    touched: &Touched,
+    withdrawn_questions: &[String],
+    sessions: &[String],
+) {
+    crate::questions::announce_ids(s, st, withdrawn_questions);
+    sessions_stop(ctx, st, audit, touched, sessions);
+}
+
+/// [`sessions_ended`] without announcing questions (the reaper, which has
+/// no daemon state): the released feedback handed on, and each session's
+/// long-polls, working records and followers ended.
+pub fn sessions_stop(
+    ctx: &FeedbackCtx,
+    st: &Store,
+    audit: &clax_core::audit::AuditCtx,
+    touched: &Touched,
+    sessions: &[String],
+) {
+    apply(ctx, st, touched);
+    for id in sessions {
+        ctx.waiters.forget(id);
+        let (stopped, _) = ctx
+            .working
+            .end_session(id, clax_core::working::End::SessionEnd);
+        crate::working::settle(st, audit, &ctx.events, &ctx.working, &stopped);
+        ctx.followers.forget(id);
+    }
+}
+
 /// Publishes states, wakes the targets' long-polls, and pushes to Codex
 /// targets ([`crate::push::dispatch`]). Call after the change is committed.
 pub fn apply(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
@@ -632,18 +672,24 @@ fn mark_thread(vis: &Visibility, t: &Thread, view: &mut Value, senders: &[Option
     }
 }
 
-/// An artifact view's `participants` as an agent reads them: each named
-/// person who is not connected says so (spec §9.6).
-fn mark_participants(vis: &Visibility, view: &mut Value) {
-    let Some(people) = view["participants"]["people"].as_array_mut() else {
+/// Viewer views `people` (each with its public ID at `id_key` and its
+/// `display_name`) as an agent reads them: each named viewer who is not
+/// connected says so (spec §9.6).
+fn mark_viewers(vis: &Visibility, people: &mut Value, id_key: &str) {
+    let Some(people) = people.as_array_mut() else {
         return;
     };
     for p in people {
-        if let (Some(id), Some(name)) = (p["public_id"].as_str(), p["display_name"].as_str()) {
+        if let (Some(id), Some(name)) = (p[id_key].as_str(), p["display_name"].as_str()) {
             let name = vis.label(name, &Author::of_viewer(Some(id)));
             p["display_name"] = json!(name);
         }
     }
+}
+
+/// An artifact view's `participants` as an agent reads them.
+fn mark_participants(vis: &Visibility, view: &mut Value) {
+    mark_viewers(vis, &mut view["participants"]["people"], "public_id");
 }
 
 /// The visibility an agent channel's response goes through (spec §8):
@@ -738,6 +784,16 @@ impl Vis {
     /// The filtering view, unless everything is visible.
     fn filtering(&self) -> Option<&Visibility> {
         self.vis.as_ref().filter(|v| !v.is_all())
+    }
+
+    /// Viewer views `people` (an array of objects with the viewer's public
+    /// ID at `id_key` and its `display_name`) as the caller reads them: for
+    /// an agent channel, each viewer who is not connected named `<name>
+    /// (not connected)` (spec §9.6, §19 item 7); for people, as they are.
+    pub fn mark_viewers(&self, people: &mut Value, id_key: &str) {
+        if let Some(vis) = &self.vis {
+            mark_viewers(vis, people, id_key);
+        }
     }
 
     /// Whether anything may be withheld from the reader.
