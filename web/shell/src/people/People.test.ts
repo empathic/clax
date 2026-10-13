@@ -33,6 +33,15 @@ describe("People", () => {
     expect(document.title).toBe("People · Clax");
   });
 
+  it("opens Invite at once for `/people?invite`, the connection card's link, and leaves the URL at /people", async () => {
+    history.replaceState(null, "", "/people?invite");
+    stubFetch(ownerRoutes());
+    const m = mount(People, {});
+    await settle();
+    expect(m.root.querySelector(".invite")).not.toBeNull();
+    expect(location.pathname + location.search).toBe("/people");
+  });
+
   it("shows the switch once while the first invite's dialog is open, in the dialog", async () => {
     let invites: unknown[] = [];
     stubFetch(ownerRoutes({

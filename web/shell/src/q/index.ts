@@ -1,6 +1,6 @@
 // The question and inbox module (spec 2026-10-06-agent-questions-and-inbox
-// §9), loaded after the first paint (at once on `/inbox`), and only in the
-// owner's browsers: the feeds, the surfaces, the notifier and the tab's
+// §9), loaded after the first paint (at once on `/inbox`), and only in a
+// browser with an inbox (the owner's, or a connected person's): the feeds, the surfaces, the notifier and the tab's
 // count. The surfaces show once the owner routes have answered. The page's
 // stream comes from the host (the gallery's lazy module, the artifact view's
 // stream), so this module does not import it: the stream's chunk stays
@@ -31,7 +31,7 @@ let started = false;
 let undo: (() => void)[] = [];
 
 /** Starts the page's feeds (once), the count in the title and icon, and
- * notifications. Only the owner's browsers load this module. */
+ * notifications. Only a browser with an inbox loads this module. */
 export function start(stream: EventStream): void {
   if (started) return;
   started = true;
@@ -63,7 +63,7 @@ export function stop(): void {
   started = false;
 }
 
-/** The artifact view's surfaces for artifact `aid`, for the owner: **Inbox**
+/** The artifact view's surfaces for artifact `aid`, for the owner or a connected person: **Inbox**
  * in the top bar (before the island's controls), the questions about it at
  * the top of the sidebar (in the sidebar's `.questions-slot`, each time it
  * mounts), and the dot on the threads controls. `trail` is the view's

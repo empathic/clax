@@ -185,6 +185,32 @@ export type InboxConnection = {
   client: { name: string; key: string | null; peer_ip: string };
   person: { public_id: string; display_name: string | null } | null;
 };
+/** A person as an approval card names them: `owner` when it is the
+ * owner, who is named "The owner" until they choose a name. */
+export type CardPerson = { public_id: string | null; name: string; owner?: boolean };
+/** A comment an approval would let through: `by_agent` when an agent of
+ * its author wrote it. */
+export type HeldComment = { id: string; body: string; created_at: string; author_name: string | null; by_agent: boolean };
+/** What an approval request holds: its thread's comments by the author, or,
+ * outside threads, what the author holds at the page (its title and
+ * description, files, data paths and uploads). */
+export type HeldContent =
+  | { thread: { id: string; status: string } | null; comments: HeldComment[] }
+  | { title: string | null; description: string | null; files: string[]; docs: string[]; assets: { id: string; content_type: string; size: number }[] };
+/** An `approval` item's card (spec 2026-10-08-multi-agent-multi-person
+ * §9.5): the request (its author, the agent it is for, its page and
+ * thread, how much waits, its state and the scope it was approved at),
+ * the withheld content itself, and, for a page's send, the page's authors
+ * and the viewer whose browser ran it. */
+export type InboxApproval = {
+  id: string; approver: string | null; author: CardPerson; artifact_id: string; thread_id: string | null;
+  agent: { handle: string | null; name: string; harness: string; live: boolean } | null;
+  cause: string; count: number; status: "open" | "approved" | "declined" | "withdrawn";
+  scope: "thread" | "artifact" | "everywhere" | null;
+  created_at: string; updated_at?: string; decided_at: string | null;
+  content: HeldContent;
+  via_page: { authors: CardPerson[]; viewer: CardPerson } | null;
+};
 /** A thread an item names; `summary` and `status` are null when it is gone. */
 export type InboxThread = { id: string; summary: string | null; status?: string | null };
 /** The inbox item view. Each kind fills its own field (`reply` also fills
@@ -204,7 +230,8 @@ export type InboxItem = {
   /** `connection`, `approval` and `ended` items only. */
   /** `connection`: null once the request is gone. */
   connection?: InboxConnection | null;
-  approval?: { request_id: string | null };
+  /** `approval`: its card, or its ID alone once the request is gone. */
+  approval?: InboxApproval | { id: string };
   /** `ended`: what the agent's end cleaned up; `text` is the note's line
    * ("clax-claude ended · released 2 threads · withdrew 1 question"). */
   ended?: InboxEnded | null;

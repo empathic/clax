@@ -3,7 +3,7 @@ import { dispatchTrusted } from "../../../bridge/test/trusted";
 import type { InboxItem } from "../api";
 import { flush, mount } from "../test/svelte";
 import { InboxFeed, QuestionFeed } from "./feed.svelte";
-import { item, view } from "./fixtures";
+import { approvalCard, item, view } from "./fixtures";
 import InboxPage from "./InboxPage.svelte";
 
 const click = (el: Element) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
@@ -197,5 +197,48 @@ describe("InboxPage", () => {
     expect(requestPermission).toHaveBeenCalledTimes(1);
     expect([...m.root.querySelectorAll("button")].some(b => b.textContent === "Notify me")).toBe(false);
     expect(m.root.querySelector(".quiet")!.textContent).toContain("Notifications are blocked");
+  });
+  it("shows approval and connection requests as cards after the questions and before the rows, and ended agents and invited machines as rows", async () => {
+    const A = item("approval", { id: "IA", seq: 5 });
+    const C = item("connection", { id: "IC", seq: 6 });
+    const J = item("connection", { id: "IJ", seq: 4, connection: { id: "g_j", status: "approved", via: "invite", client: { name: "kim-pc", key: "SHA256:kk", peer_ip: "192.168.1.9" }, person: { public_id: "p9", display_name: "Kim" } } });
+    const E = item("ended", { id: "IE", seq: 3 });
+    stubRoutes({ "": [Q, R, A, C, J, E] });
+    const { m } = page();
+    await settle();
+    const unread = m.root.querySelector('section[aria-labelledby="inbox-unread-h"]')!;
+    const order = [...unread.querySelectorAll(".qcard, .acard, .ccard, .irow")].map(e => e.className.split(" ")[0] + (e.getAttribute("data-item") ? `:${e.getAttribute("data-item")}` : ""));
+    expect(order).toEqual(["qcard", "acard", "ccard", "irow:IR", "irow:IJ", "irow:IE"]);
+    expect(unread.querySelector('.irow[data-item="IJ"]')!.textContent).toContain("Kim connected from kim-pc");
+    expect(unread.querySelector('.irow[data-item="IE"] .released a')!.textContent).toBe("Quarterly Review");
+  });
+
+  it("keeps an approval's card where it is once decided, saying so", async () => {
+    const A = item("approval", { id: "IA", seq: 6 });
+    stubRoutes({ "": [A, R] });
+    const inbox = new InboxFeed();
+    const m = mount(InboxPage, { inbox, questions: new QuestionFeed(), go: vi.fn(), now });
+    await settle();
+    (inbox as unknown as { tell(c: unknown): void }).tell({ item: { ...A, read: true, approval: approvalCard({ status: "approved", scope: "thread" }) } });
+    await settle();
+    expect(m.root.querySelector(".acard .outcome")!.textContent).toContain("Allowed in this thread");
+  });
+
+  it("goes to the approval's card for `?approval=`, focused", async () => {
+    history.replaceState(null, "", "/inbox?approval=01J9R0000000000000000000AA");
+    stubRoutes({ "": [item("approval", { id: "IA", seq: 6 }), R] });
+    const { m } = page();
+    await settle();
+    expect(document.activeElement).toBe(m.root.querySelector(".acard"));
+  });
+
+  it("filters by the approval, connection and ended kinds", async () => {
+    history.replaceState(null, "", "/inbox?kind=connection");
+    const calls = stubRoutes();
+    const { m } = page();
+    await settle();
+    expect(m.root.querySelector('.kind[aria-pressed="true"]')!.textContent).toBe("Connections");
+    expect(calls.map(c => c.url)).toContain("/api/inbox?kind=connection&read=unread");
+    expect([...m.root.querySelectorAll(".kind")].map(k => k.textContent)).toEqual(expect.arrayContaining(["Approvals", "Connections", "Ended"]));
   });
 });

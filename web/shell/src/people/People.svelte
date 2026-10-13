@@ -14,7 +14,8 @@
   // also refetches on the stream's `people` (the owner's) and `agents`
   // topics, so a person who connects appears, and on its refusal. When
   // People stops being theirs (a person revoked), the page clears and says
-  // so, and the header's People link is told to check again.
+  // so, and the header's People link is told to check again. `/people?invite`
+  // opens Invite at once for the owner.
   import { onDestroy, onMount, tick } from "svelte";
   import { listArtifacts } from "../api";
   import type { PeopleApproval, PeopleGrant, PeopleInvite, PeopleList, PeopleMe, PeopleRequest } from "../api";
@@ -64,6 +65,11 @@
       ]);
       if (gone) return;
       me = m; list = l; invites = inv?.invites ?? []; pending = pend?.grants ?? [];
+      // `/people?invite` (the inbox's connection card links here): Invite opens at once.
+      if (owner && new URLSearchParams(location.search).has("invite")) {
+        history.replaceState(history.state, "", "/people");
+        firstInvite = invites.length === 0; inviting = true;
+      }
       approvals = aps.approvals; requests = reqs.requests.filter(r => r.status === "open"); banner = reqs.banner;
       err = null;
     } catch (e) { if (!gone) { me = m; err = msg(e); } }

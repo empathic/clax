@@ -3,7 +3,7 @@
 // change is the browser's (M20): the page's cookie, never the token. A
 // refusal throws `Refused` with the daemon's own message, which the page
 // shows as it is.
-import type { NewInvite, PeopleApproval, PeopleGrant, PeopleInvite, PeopleList, PeopleMe, PeopleRequest, Rights } from "../api";
+import type { InboxApproval, NewInvite, PeopleApproval, PeopleGrant, PeopleInvite, PeopleList, PeopleMe, PeopleRequest, Rights } from "../api";
 
 /** A route's refusal: its status, the daemon's message and code. */
 export class Refused extends Error {
@@ -39,7 +39,14 @@ export const revokePerson = (pid: string) => call<unknown>(`/api/people/${e(pid)
 export const narrowGrant = (gid: string, access: Rights | null) => call<unknown>(`/api/people/me/grants/${e(gid)}/narrow`, "PUT", { access });
 /** Disconnects a machine: ends its grant, its tokens and its agents. */
 export const revokeGrant = (gid: string) => call<unknown>(`/api/grants/${e(gid)}`, "DELETE");
-export const denyGrant = (gid: string) => call<unknown>(`/api/grants/${e(gid)}/deny`, "POST", {});
+export const denyGrant = (gid: string) => call<{ grant: PeopleGrant }>(`/api/grants/${e(gid)}/deny`, "POST", {});
+/** Approves connection request `gid` as a new person named `name`, at
+ * preset `rights`, with the code its machine shows (`user_code`). */
+export const approveGrant = (gid: string, b: { user_code: string; name: string; rights: string }) =>
+  call<{ grant: PeopleGrant }>(`/api/grants/${e(gid)}/approve`, "POST", b);
+/** Decides approval request `rid` at `scope`, or declines it. */
+export const decide = (rid: string, scope: "thread" | "artifact" | "everywhere" | "decline") =>
+  call<{ request: Omit<InboxApproval, "content" | "via_page">; approval: PeopleApproval | null }>(`/api/approvals/requests/${e(rid)}/decide`, "POST", { scope });
 export const narrowAgent = (handle: string, access: Rights | null) => call<unknown>(`/api/agents/${e(handle)}/narrow`, "PUT", { access });
 /** Raises an agent with `access`, or removes its elevation (null). */
 export const elevate = (handle: string, access: Rights | null) =>
