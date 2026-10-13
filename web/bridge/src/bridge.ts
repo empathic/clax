@@ -66,6 +66,10 @@ import { Rpc } from "./rpc";
 import { whenParsed } from "./parsed";
 import { makeUse } from "./use";
 
+/** How long the focus outline flashes after a scroll-to (`showFocus` with
+ * `flash` in comment-mode.ts: two 0.9 s pulses). */
+const FOCUS_FLASH_MS = 1800;
+
 /** How often, at most, anchors are resolved again while the page scrolls or resizes. */
 const REFLOW_MS = 50;
 
@@ -328,7 +332,12 @@ type PartName = keyof Parts;
           // The drawn area is centred, not its element (often far taller).
           const a = placeOf(l, m.anchor, r);
           scrollBy({ left: a.x + a.w / 2 - innerWidth / 2, top: a.y + a.h / 2 - innerHeight / 2, behavior });
-          setTimeout(() => l.mode.showFocus(placeOf(l, m.anchor, r), true), 350);
+          // After its flash the outline follows the focused thread again:
+          // it stays only while the shell focuses this thread.
+          setTimeout(() => {
+            l.mode.showFocus(placeOf(l, m.anchor, r), true);
+            setTimeout(() => updateFocus(l), FOCUS_FLASH_MS);
+          }, 350);
         } else {
           r.element.scrollIntoView({ block: "center", behavior });
           setTimeout(() => l.mode.flash(r.range ?? r.element), 350);

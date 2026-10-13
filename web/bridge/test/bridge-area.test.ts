@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { settle } from "../src/parts-static";
 import { dispatchTrusted } from "./trusted";
 
@@ -65,5 +65,7 @@ describe("sameVersion from the shell", () => {
     send({ type: "clax:scroll-to", anchor: area, sameVersion: true });
     await wait();
     expect(focusBox().style.display).toBe("block");
+    // No thread is focused: the outline goes once its flash ends.
+    await vi.waitFor(() => expect(focusBox().style.display).toBe("none"), { timeout: 10_000 });
   });
 });

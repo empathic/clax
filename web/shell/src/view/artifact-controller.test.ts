@@ -1041,6 +1041,34 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     ctl.dispose();
   });
 
+  it("outlines the selected thread's area in a browser, but in app mode only a hovered thread's", async () => {
+    const t9 = thread("t9");
+    const { ctl, frame } = await started({ routes: (url, init) => (init?.method === "POST" && url === `/api/artifacts/${ID}/threads` ? { thread: t9 } : undefined) });
+    const sent: { type: string; id?: string | null }[] = [];
+    frame.contentWindow!.postMessage = ((m: { type: string }) => { sent.push(m); }) as Window["postMessage"];
+    hello(frame.contentWindow!);
+    const focuses = () => sent.filter(m => m.type === "clax:focus");
+    /** The focus the shell sends after `act`, once it has. */
+    const focusAfter = async (act: () => unknown) => {
+      const n = focuses().length;
+      await act();
+      await vi.waitFor(() => expect(focuses().length).toBeGreaterThan(n));
+      return focuses().at(-1)!.id ?? null;
+    };
+    const draft = (pickId: string) => ({ pickId, anchor: t9.anchor, version: 2, clip: null, capturing: false, clipToken: pickId });
+    // A browser's view: the posted thread is selected, and its area outlined.
+    expect(await focusAfter(() => ctl.submitDraft("first", draft("p1")))).not.toBeNull();
+    expect(ctl.state.get().selected).toBe("t9");
+    expect(await focusAfter(() => ctl.set({ selected: null }))).toBeNull();
+    // App mode: the posted thread is selected, but no panel shows it, so nothing stays outlined.
+    ctl.app = { welcome: () => ({ app: true as const }), posted: vi.fn() };
+    expect(await focusAfter(() => ctl.submitDraft("second", draft("p2")))).toBeNull();
+    expect(ctl.state.get().selected).toBe("t9");
+    expect(await focusAfter(() => ctl.hover(t9))).not.toBeNull();
+    expect(await focusAfter(() => ctl.hover(null))).toBeNull();
+    ctl.dispose();
+  });
+
   it("carries app=1 in its URLs and no other query", async () => {
     const { ctl } = await started();
     history.replaceState(null, "", `/a/${ID}?thread=t1`);
