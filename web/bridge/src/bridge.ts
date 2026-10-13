@@ -235,6 +235,8 @@ type PartName = keyof Parts;
     live.then(f, () => {});
   };
 
+  /** The pending steps of the last scroll-to's flash. */
+  const flashTimers: ReturnType<typeof setTimeout>[] = [];
   const updateFocus = (l: Live, flash = false) => {
     const f = focusId === null || commentsContext.live ? undefined : anchors.find(a => a.id === focusId);
     const r = f?.anchor.kind === "area" ? l.cache().resolve(f.id, f.anchor, f.sameVersion === true) : null;
@@ -340,6 +342,8 @@ type PartName = keyof Parts;
       }
       case "clax:scroll-to": whenParsed(document, () => withComment(l => {
         if (commentsContext.live) return;
+        // A later scroll-to replaces an earlier one's flash.
+        for (const t of flashTimers.splice(0)) clearTimeout(t);
         const r = l.part.resolveAnchor(document, m.anchor, undefined, meta.file, undefined, m.sameVersion === true);
         if (!r) return;
         const behavior: ScrollBehavior = self.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
@@ -349,13 +353,13 @@ type PartName = keyof Parts;
           scrollBy({ left: a.x + a.w / 2 - innerWidth / 2, top: a.y + a.h / 2 - innerHeight / 2, behavior });
           // After its flash the outline follows the focused thread again:
           // it stays only while the shell focuses this thread.
-          setTimeout(() => {
+          flashTimers.push(setTimeout(() => {
             l.mode.showFocus(placeOf(l, m.anchor, r), true);
-            setTimeout(() => updateFocus(l), FOCUS_FLASH_MS);
-          }, 350);
+            flashTimers.push(setTimeout(() => updateFocus(l), FOCUS_FLASH_MS));
+          }, 350));
         } else {
           r.element.scrollIntoView({ block: "center", behavior });
-          setTimeout(() => l.mode.flash(r.range ?? r.element), 350);
+          flashTimers.push(setTimeout(() => l.mode.flash(r.range ?? r.element), 350));
         }
       })); break;
       // The focused thread's area is outlined once the page has parsed.

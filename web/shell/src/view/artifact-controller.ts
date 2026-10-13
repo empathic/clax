@@ -199,6 +199,9 @@ export class ArtifactController {
    * agent). */
   /** @internal */
   app: { welcome(file: string): { app: true; restoreScroll?: number }; posted(t: Thread): void } | null = null;
+  /** The thread the app's own thread view shows (`focusThread`), outlined
+   * while it is open; null when none is. */
+  private appFocus: string | null = null;
 
   /** @internal (read by the stream module) */
   disposed = false;
@@ -537,6 +540,8 @@ export class ArtifactController {
     }
     if (threadIds(prev.threads) !== threadIds(next.threads) || this.shown(prev) !== this.shown(next) || prev.origin !== next.origin) this.resolveAll();
     if (prev.commenting !== next.commenting) this.send({ type: "clax:comment-mode", on: next.commenting });
+    // The app's thread view does not outlast comment mode's end.
+    if (prev.commenting && !next.commenting && this.appFocus !== null) { this.appFocus = null; this.sendFocus(); }
     if (prev.draft !== next.draft) this.draftChanged(next.draft, next.deleted);
     if (prev.hovered !== next.hovered || prev.selected !== next.selected || prev.threads !== next.threads) this.sendFocus();
     this.liveView?.react(prev, next);
@@ -718,10 +723,11 @@ export class ArtifactController {
   /** Tells the frame which thread's drawn area to outline dashed: the
    * hovered, else the selected thread, by the handle the frame knows it by
    * (none when it was not sent to this page). In the Clax app (`app`) no
-   * shell panel shows or clears the selection, so only a hovered thread is
-   * outlined; a thread brought into view flashes its outline (`clax:scroll-to`). */
+   * shell panel shows or clears the selection: the hovered thread is
+   * outlined, else the one the app's thread view shows (`focusThread`); a
+   * thread brought into view flashes its outline (`clax:scroll-to`). */
   private sendFocus(): void {
-    const tid = this.s.hovered ?? (this.app ? null : this.s.selected);
+    const tid = this.s.hovered ?? (this.app ? this.appFocus : this.s.selected);
     this.send({ type: "clax:focus", id: tid === null ? null : this.anchorIds.known(tid) });
   }
 
@@ -1633,6 +1639,13 @@ export class ArtifactController {
     const done = () => { watch.disconnect(); cancel(); };
     watch.observe(document.body, { childList: true, subtree: true });
     this.life.defer(done);
+  }
+  /** The app's thread view opened on thread `id` (outlined while it is
+   * open), or closed (null). */
+  focusThread(id: string | null): void {
+    if (id === this.appFocus) return;
+    this.appFocus = id;
+    this.sendFocus();
   }
   /** A pin's click: the sidebar opens on its thread. */
   openPin(t: Thread): void { this.set({ panel: true }); this.selectThread(t); }

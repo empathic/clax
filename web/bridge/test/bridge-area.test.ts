@@ -68,4 +68,21 @@ describe("sameVersion from the shell", () => {
     // No thread is focused: the outline goes once its flash ends.
     await vi.waitFor(() => expect(focusBox().style.display).toBe("none"), { timeout: 10_000 });
   });
+
+  it("a second scroll-to during the first one's flash flashes in full", async () => {
+    vi.useFakeTimers();
+    try {
+      send({ type: "clax:scroll-to", anchor: area, sameVersion: true });
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(focusBox().style.display).toBe("block");
+      send({ type: "clax:scroll-to", anchor: area, sameVersion: true });
+      // The first flash would have ended 2150 ms after it began.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(focusBox().style.display).toBe("block");
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(focusBox().style.display).toBe("none");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
