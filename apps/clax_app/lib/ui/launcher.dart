@@ -6,7 +6,10 @@ import 'package:flutter/material.dart';
 import '../agent/timings.dart';
 import '../clax/api.dart';
 import '../platform/voice.dart';
+import '../agent/plan.dart';
+import '../agent/worker.dart';
 import 'app_inspector.dart';
+import 'build_plan.dart';
 import 'inbox_screen.dart';
 import 'making_screen.dart';
 import 'new_sheet.dart';
@@ -38,6 +41,10 @@ import 'new_sheet.dart';
 /// A long press on a tile opens its menu: Open, and Inspect, which pushes
 /// the [AppInspector] with [inspectorPermissions] (and a version opened
 /// from its history going to [onOpenTarget]).
+///
+/// With [build], a tile whose app's build goes shows how far it is (a ring
+/// and "3/7"), the making screen is the build view, and the inspector's
+/// Plan tab shows the app's plan.
 class Launcher extends StatefulWidget {
   const Launcher({
     super.key,
@@ -54,6 +61,7 @@ class Launcher extends StatefulWidget {
     this.handOver,
     this.retryDelay,
     this.inspectorPermissions = const [],
+    this.build,
   });
 
   final ClaxApi api;
@@ -98,6 +106,9 @@ class Launcher extends StatefulWidget {
   /// The permission kinds the app inspector lists beyond the db read
   /// grants.
   final List<PermissionSource> inspectorPermissions;
+
+  /// The plans and builds; null shows none.
+  final BuildLink? build;
 
   @override
   State<Launcher> createState() => _LauncherState();
@@ -284,6 +295,7 @@ class _LauncherState extends State<Launcher> {
           openSettings: widget.openSettings,
           timings: widget.timings,
           onMade: widget.handOver,
+          build: widget.build,
         ),
       ),
     );
@@ -297,6 +309,13 @@ class _LauncherState extends State<Launcher> {
       case null:
         break;
     }
+  }
+
+  /// How far a going build is, for its tile; null when none goes.
+  static ({int done, int total})? _building(Plan? plan, BuildState? state) {
+    if (!buildGoing(state) || plan == null) return null;
+    final c = planCount(plan);
+    return c.total == 0 ? null : c;
   }
 
   Future<void> _menu(ArtifactSummary app) async {
@@ -343,6 +362,22 @@ class _LauncherState extends State<Launcher> {
               api: widget.api,
               aid: app.id,
               permissions: widget.inspectorPermissions,
+              plan: switch (widget.build) {
+                final b? => (context, aid) => BuildWatch(
+                  link: b,
+                  appId: aid,
+                  builder: (context, plan, state) => plan == null
+                      ? const _Message(
+                          icon: Icons.checklist_rounded,
+                          text: 'No plan',
+                          hint:
+                              'Apps built from a plan show their features '
+                              'here.',
+                        )
+                      : BuildPlanPanel(plan: plan, state: state, handle: false),
+                ),
+                null => null,
+              },
               onOpenVersion: target == null
                   ? null
                   : (aid, n) => target(aid, version: n),
@@ -426,11 +461,23 @@ class _LauncherState extends State<Launcher> {
                     mainAxisExtent: _AppTile.extent(context),
                   ),
                   itemCount: apps.length,
-                  itemBuilder: (context, i) => _AppTile(
-                    app: apps[i],
-                    onTap: () => widget.open(apps[i].id),
-                    onLongPress: () => _menu(apps[i]),
-                  ),
+                  itemBuilder: (context, i) {
+                    Widget tile(({int done, int total})? building) => _AppTile(
+                      app: apps[i],
+                      building: building,
+                      onTap: () => widget.open(apps[i].id),
+                      onLongPress: () => _menu(apps[i]),
+                    );
+                    final b = widget.build;
+                    if (b == null) return tile(null);
+                    return BuildWatch(
+                      key: ValueKey('build-${apps[i].id}'),
+                      link: b,
+                      appId: apps[i].id,
+                      builder: (context, plan, state) =>
+                          tile(_building(plan, state)),
+                    );
+                  },
                 ),
               ),
           ],
@@ -445,6 +492,7 @@ class _AppTile extends StatelessWidget {
     required this.app,
     required this.onTap,
     required this.onLongPress,
+    this.building,
   });
 
   static const _padding = 16.0;
@@ -464,15 +512,21 @@ class _AppTile extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onLongPress;
 
+  /// How far the app's build is, while it goes.
+  final ({int done, int total})? building;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
+    final b = building;
     final tile = tileScheme(app.id, theme.brightness);
     final (bg, fg) = (tile.primaryContainer, tile.onPrimaryContainer);
     return Semantics(
       button: true,
-      label: app.title,
+      label: b == null
+          ? app.title
+          : '${app.title}, building, ${b.done} of ${b.total} done',
       excludeSemantics: true,
       child: Material(
         color: scheme.surfaceContainerLow,
@@ -481,46 +535,99 @@ class _AppTile extends StatelessWidget {
         child: InkWell(
           onTap: onTap,
           onLongPress: onLongPress,
-          child: Padding(
-            padding: const EdgeInsets.all(_padding),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: _badge,
-                  height: _badge,
-                  decoration: BoxDecoration(
-                    color: bg,
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  alignment: Alignment.center,
-                  child: switch (tileFace(app)) {
-                    EmojiFace(:final emoji) => Text(
-                      emoji,
-                      style: const TextStyle(fontSize: 28, height: 1),
-                    ),
-                    IconFace(:final icon) => Icon(icon, color: fg, size: 28),
-                    MonogramFace(:final letters) => Text(
-                      letters,
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        color: fg,
-                        fontWeight: FontWeight.w600,
-                        height: 1,
+          child: Stack(
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(_padding),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: _badge,
+                      height: _badge,
+                      decoration: BoxDecoration(
+                        color: bg,
+                        borderRadius: BorderRadius.circular(16),
                       ),
+                      alignment: Alignment.center,
+                      child: switch (tileFace(app)) {
+                        EmojiFace(:final emoji) => Text(
+                          emoji,
+                          style: const TextStyle(fontSize: 28, height: 1),
+                        ),
+                        IconFace(:final icon) => Icon(
+                          icon,
+                          color: fg,
+                          size: 28,
+                        ),
+                        MonogramFace(:final letters) => Text(
+                          letters,
+                          style: theme.textTheme.titleLarge?.copyWith(
+                            color: fg,
+                            fontWeight: FontWeight.w600,
+                            height: 1,
+                          ),
+                        ),
+                      },
                     ),
-                  },
+                    const Spacer(),
+                    Text(
+                      app.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleMedium,
+                    ),
+                  ],
                 ),
-                const Spacer(),
-                Text(
-                  app.title,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.titleMedium,
+              ),
+              if (b != null)
+                Positioned(
+                  top: 10,
+                  right: 10,
+                  child: _BuildRing(done: b.done, total: b.total),
                 ),
-              ],
-            ),
+            ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// A tile's building state: a ring filled to the features done, with
+/// "3/7" in it.
+class _BuildRing extends StatelessWidget {
+  const _BuildRing({required this.done, required this.total});
+
+  final int done;
+  final int total;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return SizedBox.square(
+      key: const ValueKey('tile-building'),
+      dimension: 36,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          CircularProgressIndicator(
+            value: total == 0 ? null : (done / total).clamp(0.04, 1.0),
+            strokeWidth: 3,
+            strokeCap: StrokeCap.round,
+            backgroundColor: scheme.surfaceContainerHighest,
+          ),
+          Center(
+            child: Text(
+              '$done/$total',
+              style: theme.textTheme.labelSmall?.copyWith(
+                fontWeight: FontWeight.w600,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

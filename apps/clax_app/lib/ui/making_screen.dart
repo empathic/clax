@@ -8,7 +8,10 @@ import '../agent/edit_result.dart';
 import '../agent/progress.dart';
 import '../agent/request.dart';
 import '../agent/timings.dart';
+import '../agent/plan.dart';
+import '../agent/worker.dart';
 import '../daemon/clock.dart';
+import 'build_plan.dart';
 import 'making_preview.dart';
 
 /// Makes a new app from [request] and returns its artifact ID.
@@ -40,6 +43,18 @@ final class MakeProgress implements MakeUpdate {
 
   @override
   String toString() => 'MakeProgress($event)';
+}
+
+/// The key the run keeps its plan under until the app exists
+/// (`AgentLoop.newApp(planKey: …)`), for the build view to show the plan
+/// from the first seconds.
+final class MakePlanKey implements MakeUpdate {
+  const MakePlanKey(this.key);
+
+  final String key;
+
+  @override
+  String toString() => 'MakePlanKey($key)';
 }
 
 /// What a making run is doing, as the making screen says it.
@@ -181,6 +196,8 @@ class MakingLog {
         return false;
       case MakeProgress(:final event):
         return _progress(event);
+      case MakePlanKey():
+        return false;
     }
   }
 
@@ -257,6 +274,16 @@ class MakingLog {
 ///   attempt gets its own cancel signal, completed when the attempt is
 ///   abandoned: Cancel, back, Edit, Open Settings, a Retry, or the screen
 ///   going away.
+/// - **Build view.** With [build], the screen is the build's view: once
+///   the run reports its [MakePlanKey], the plan shows as a live checklist
+///   in a sheet over the bottom ([BuildPlanPanel]), which the person edits
+///   as it builds. When the first version lands and its plan still has
+///   features to build, the screen stays: "Open app" hands the app over
+///   ([onMade]) whenever the person wants, while the worker's continue
+///   runs go on, their progress shown in the preview, the narration and
+///   the checklist, with Stop and Resume. Back then pops [Made]. Without a
+///   plan to go on with, the app is handed over at once, as without
+///   [build].
 class MakingScreen extends StatefulWidget {
   const MakingScreen({
     super.key,
@@ -266,6 +293,7 @@ class MakingScreen extends StatefulWidget {
     this.preview,
     this.timings,
     this.onMade,
+    this.build,
     this.clock = const SystemClock(),
   });
 
@@ -286,6 +314,9 @@ class MakingScreen extends StatefulWidget {
   /// (`pushReplacement(…, result: Made(aid))`).
   final void Function(BuildContext context, String aid, Uint8List? lastFrame)?
   onMade;
+
+  /// The plans and builds, for the build view; null shows none.
+  final BuildLink? build;
 
   /// Spaces the preview's loads.
   final Clock clock;
@@ -313,6 +344,17 @@ class _MakingScreenState extends State<MakingScreen> {
   /// dropped because its completer is no longer this one.
   Completer<void>? _cancel;
 
+  /// The key the plan is kept under: the run's provisional one, then the
+  /// app's ID.
+  String? _planKey;
+  Plan? _plan;
+  BuildState? _buildState;
+  StreamSubscription<Plan?>? _planSub;
+  StreamSubscription<BuildState>? _buildSub;
+
+  /// The app, once its first version landed and its build goes on here.
+  String? _made;
+
   @override
   void initState() {
     super.initState();
@@ -322,6 +364,8 @@ class _MakingScreenState extends State<MakingScreen> {
   @override
   void dispose() {
     _tick?.cancel();
+    unawaited(_planSub?.cancel());
+    unawaited(_buildSub?.cancel());
     _abandon();
     _throttle?.close();
     _view?.dispose();
@@ -376,11 +420,15 @@ class _MakingScreenState extends State<MakingScreen> {
       clock: widget.clock,
     );
     widget.timings?.start(sayFirstOutput);
+    unawaited(_planSub?.cancel());
+    _planSub = null;
     setState(() {
       _failure = null;
       _seconds = 0;
       _log = MakingLog();
       _shown = false;
+      _planKey = null;
+      _plan = null;
     });
     _tick?.cancel();
     _tick = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -389,6 +437,10 @@ class _MakingScreenState extends State<MakingScreen> {
     bool current() => mounted && identical(_cancel, cancel);
     void report(MakeUpdate u) {
       if (!current()) return;
+      if (u is MakePlanKey) {
+        _watchPlan(u.key);
+        return;
+      }
       final htmlChanged = _log.apply(u);
       if (htmlChanged) {
         throttle.offer(_log.html!);
@@ -403,8 +455,13 @@ class _MakingScreenState extends State<MakingScreen> {
     try {
       final aid = await widget.make(widget.request, cancel.future, report);
       if (!mounted || !identical(_cancel, cancel)) return;
-      _tick?.cancel();
       _cancel = null;
+      if (await _goesOn(aid)) {
+        if (mounted) _follow(aid, throttle);
+        return;
+      }
+      _tick?.cancel();
+      if (!mounted) return;
       if (widget.onMade case final onMade?) {
         onMade(context, aid, _log.png);
       } else {
@@ -418,6 +475,67 @@ class _MakingScreenState extends State<MakingScreen> {
     }
   }
 
+  /// Watches the plan kept under [key], keeping the last one shown while
+  /// the key has none (the moment the plan moves to the app's ID).
+  void _watchPlan(String key) {
+    final b = widget.build;
+    if (b == null || key == _planKey) return;
+    unawaited(_planSub?.cancel());
+    setState(() => _planKey = key);
+    _planSub = b.plans.watch(key).listen((p) {
+      if (!mounted || p == null && _plan != null) return;
+      setState(() => _plan = p);
+    });
+  }
+
+  /// Whether app [aid]'s build goes on after its first version: its plan
+  /// has features to build and is not stopped.
+  Future<bool> _goesOn(String aid) async {
+    final b = widget.build;
+    if (b == null) return false;
+    try {
+      final p = await b.plans.get(aid);
+      return p != null && !p.stopped && p.todo.isNotEmpty;
+    } on Object {
+      return false;
+    }
+  }
+
+  /// Follows app [aid]'s build here: its plan, and each continue run's
+  /// progress in the preview and the narration.
+  void _follow(String aid, PreviewThrottle throttle) {
+    final b = widget.build!;
+    _watchPlan(aid);
+    setState(() {
+      _made = aid;
+      _buildState = b.control.buildOf(aid);
+    });
+    _buildSub = b.control.builds.where((s) => s.appId == aid).listen((s) {
+      if (!mounted) return;
+      if (s.progress case final p?) {
+        if (_log.apply(MakeProgress(p))) {
+          throttle.offer(_log.html!);
+        } else if (p is ToolStarted || p is Inspected) {
+          throttle.flush();
+        }
+      }
+      if (!buildGoing(s)) _tick?.cancel();
+      setState(() => _buildState = s);
+    });
+  }
+
+  /// Hands the made app over (Open app).
+  void _openApp() {
+    final aid = _made;
+    if (aid == null) return;
+    _tick?.cancel();
+    if (widget.onMade case final onMade?) {
+      onMade(context, aid, _log.png);
+    } else {
+      Navigator.of(context).pop(Made(aid));
+    }
+  }
+
   void _leave([MakingResult? result]) {
     _abandon();
     Navigator.of(context).pop(result);
@@ -426,9 +544,13 @@ class _MakingScreenState extends State<MakingScreen> {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: true,
+      canPop: _made == null,
       onPopInvokedWithResult: (didPop, _) {
-        if (didPop) _abandon();
+        if (didPop) {
+          _abandon();
+        } else if (_made case final aid?) {
+          Navigator.of(context).pop(Made(aid));
+        }
       },
       child: Scaffold(
         body: SafeArea(
@@ -438,7 +560,7 @@ class _MakingScreenState extends State<MakingScreen> {
               child: AnimatedSwitcher(
                 duration: const Duration(milliseconds: 200),
                 child: _failure == null
-                    ? _making(context)
+                    ? _buildView(context)
                     // Scrolls, so its buttons stay reachable with large
                     // text on a small screen.
                     : SingleChildScrollView(
@@ -487,7 +609,6 @@ class _MakingScreenState extends State<MakingScreen> {
     }
 
     return LayoutBuilder(
-      key: const ValueKey('making'),
       builder: (context, c) => layout(
         c,
         (card) => [
@@ -547,17 +668,88 @@ class _MakingScreenState extends State<MakingScreen> {
           ),
           SizedBox(
             height: 24,
-            child: _seconds >= MakingScreen.slowAfter
+            child: _made == null && _seconds >= MakingScreen.slowAfter
                 ? Text('Usually under a minute', style: dim)
                 : null,
           ),
           Center(
-            child: OutlinedButton(
-              onPressed: _leave,
-              child: const Text('Cancel'),
-            ),
+            child: _made == null
+                ? OutlinedButton(onPressed: _leave, child: const Text('Cancel'))
+                : FilledButton.icon(
+                    key: const ValueKey('open-app'),
+                    onPressed: _openApp,
+                    icon: const Icon(Icons.open_in_new_rounded, size: 18),
+                    label: const Text('Open app'),
+                  ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// The making view, with the plan's sheet over its bottom once there is
+  /// a plan to show ([MakingScreen.build] and a [MakePlanKey]). The making
+  /// view keeps its place in the tree as the sheet comes, so the live
+  /// preview is not built again.
+  Widget _buildView(BuildContext context) {
+    final b = widget.build;
+    final key = _planKey;
+    final sheet = b != null && key != null;
+    final scale = MediaQuery.textScalerOf(context).scale(16) / 16;
+    final peek = 104.0 + 36 * (scale - 1).clamp(0, 2);
+    return LayoutBuilder(
+      key: const ValueKey('making'),
+      builder: (context, box) {
+        final min = (peek / box.maxHeight).clamp(0.08, 0.5);
+        return Stack(
+          children: [
+            Padding(
+              padding: EdgeInsets.only(bottom: sheet ? peek : 0),
+              child: _making(context),
+            ),
+            if (sheet)
+              DraggableScrollableSheet(
+                key: const ValueKey('plan-sheet'),
+                initialChildSize: min,
+                minChildSize: min,
+                maxChildSize: 0.85,
+                snap: true,
+                builder: (context, controller) =>
+                    _sheet(context, b, key, controller),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _sheet(
+    BuildContext context,
+    BuildLink b,
+    String key,
+    ScrollController controller,
+  ) {
+    final scheme = Theme.of(context).colorScheme;
+    final made = _made;
+    return Material(
+      color: scheme.surfaceContainerLow,
+      shape: RoundedRectangleBorder(
+        side: BorderSide(color: scheme.outlineVariant),
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: BuildPlanPanel(
+        plan: _plan,
+        state: _buildState,
+        plans: b.plans,
+        planKey: key,
+        controller: controller,
+        onStop: made == null
+            ? null
+            : () => unawaited(b.control.stopBuild(made)),
+        onResume: made == null
+            ? null
+            : () => unawaited(b.control.resumeBuild(made)),
       ),
     );
   }
