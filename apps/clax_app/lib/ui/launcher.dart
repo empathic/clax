@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../agent/timings.dart';
 import '../clax/api.dart';
 import '../platform/voice.dart';
+import 'app_inspector.dart';
 import 'inbox_screen.dart';
 import 'making_screen.dart';
 import 'new_sheet.dart';
@@ -33,6 +34,10 @@ import 'new_sheet.dart';
 /// [InboxScreen] on the same stream; an item opened there goes to
 /// [onOpenQuestion] (a question, when given), else to [onOpenTarget] with
 /// its thread or version, else to [open].
+///
+/// A long press on a tile opens its menu: Open, and Inspect, which pushes
+/// the [AppInspector] with [inspectorPermissions] (and a version opened
+/// from its history going to [onOpenTarget]).
 class Launcher extends StatefulWidget {
   const Launcher({
     super.key,
@@ -48,6 +53,7 @@ class Launcher extends StatefulWidget {
     this.timings,
     this.handOver,
     this.retryDelay,
+    this.inspectorPermissions = const [],
   });
 
   final ClaxApi api;
@@ -88,6 +94,10 @@ class Launcher extends StatefulWidget {
   /// Waits between tries to subscribe a topic of the launcher's own stream
   /// again after the stream dropped it; [Future.delayed] when null.
   final Future<void> Function(Duration)? retryDelay;
+
+  /// The permission kinds the app inspector lists beyond the db read
+  /// grants.
+  final List<PermissionSource> inspectorPermissions;
 
   @override
   State<Launcher> createState() => _LauncherState();
@@ -289,6 +299,59 @@ class _LauncherState extends State<Launcher> {
     }
   }
 
+  Future<void> _menu(ArtifactSummary app) async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+              child: Text(
+                app.title,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.open_in_new_rounded),
+              title: const Text('Open'),
+              onTap: () => Navigator.of(context).pop('open'),
+            ),
+            ListTile(
+              key: const ValueKey('inspect'),
+              leading: const Icon(Icons.manage_search_rounded),
+              title: const Text('Inspect'),
+              subtitle: const Text('Files, data and permissions'),
+              onTap: () => Navigator.of(context).pop('inspect'),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    switch (choice) {
+      case 'open':
+        widget.open(app.id);
+      case 'inspect':
+        final target = widget.onOpenTarget;
+        await Navigator.of(context).push<void>(
+          MaterialPageRoute(
+            builder: (_) => AppInspector(
+              api: widget.api,
+              aid: app.id,
+              permissions: widget.inspectorPermissions,
+              onOpenVersion: target == null
+                  ? null
+                  : (aid, n) => target(aid, version: n),
+            ),
+          ),
+        );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final apps = _apps;
@@ -366,6 +429,7 @@ class _LauncherState extends State<Launcher> {
                   itemBuilder: (context, i) => _AppTile(
                     app: apps[i],
                     onTap: () => widget.open(apps[i].id),
+                    onLongPress: () => _menu(apps[i]),
                   ),
                 ),
               ),
@@ -377,7 +441,11 @@ class _LauncherState extends State<Launcher> {
 }
 
 class _AppTile extends StatelessWidget {
-  const _AppTile({required this.app, required this.onTap});
+  const _AppTile({
+    required this.app,
+    required this.onTap,
+    required this.onLongPress,
+  });
 
   static const _padding = 16.0;
   static const _badge = 52.0;
@@ -394,6 +462,7 @@ class _AppTile extends StatelessWidget {
 
   final ArtifactSummary app;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -411,6 +480,7 @@ class _AppTile extends StatelessWidget {
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           onTap: onTap,
+          onLongPress: onLongPress,
           child: Padding(
             padding: const EdgeInsets.all(_padding),
             child: Column(
