@@ -66,6 +66,32 @@ void main() {
       expect(iconProblem(_with('<use href="#x"/>')), isNull);
     });
 
+    test('refuses <use> that expands too far or nests too deep', () {
+      // Each level uses the one below ten times: 10 + 100 + … copies.
+      final bomb = _with(
+        '<defs><rect id="a" width="1" height="1"/>'
+        '<g id="b">${'<use href="#a"/>' * 10}</g>'
+        '<g id="c">${'<use href="#b"/>' * 10}</g></defs>'
+        '<use href="#c"/>',
+      );
+      expect(iconProblem(bomb), contains('expand'));
+      expect(cleanIcon(bomb), isNull);
+      final cycle = _with(
+        '<defs><g id="a"><use href="#b"/></g><g id="b"><use href="#a"/></g>'
+        '</defs><use href="#a"/>',
+      );
+      expect(iconProblem(cycle), contains('nest'));
+      expect(
+        iconProblem(
+          _with(
+            '<defs><circle id="d" r="9"/></defs>'
+            '${'<use href="#d"/>' * 8}',
+          ),
+        ),
+        isNull,
+      );
+    });
+
     test('refuses a huge, malformed, non-svg or non-square file', () {
       final huge = _with('<path d="${'M0 0 L1 1 ' * 4000}"/>');
       expect(iconProblem(huge), contains('at most 32 KB'));
