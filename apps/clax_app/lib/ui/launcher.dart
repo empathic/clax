@@ -567,9 +567,9 @@ class _LauncherState extends State<Launcher> {
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 112),
                 sliver: SliverGrid.builder(
                   gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-                    maxCrossAxisExtent: 176,
-                    mainAxisSpacing: 12,
-                    crossAxisSpacing: 12,
+                    maxCrossAxisExtent: _AppTile.maxWidth,
+                    mainAxisSpacing: 8,
+                    crossAxisSpacing: 4,
                     mainAxisExtent: _AppTile.extent(context),
                   ),
                   itemCount: _makes.makes.length + apps.length,
@@ -613,6 +613,61 @@ class _LauncherState extends State<Launcher> {
   }
 }
 
+/// One cell of the launcher's home-screen grid: [icon] centred in a
+/// rounded square of [_AppTile.iconSize], with [label] centred below it,
+/// on no card of its own.
+class _HomeCell extends StatelessWidget {
+  const _HomeCell({
+    super.key,
+    required this.semantics,
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.onLongPress,
+  });
+
+  final String semantics;
+  final Widget icon;
+  final Widget label;
+  final VoidCallback onTap;
+  final VoidCallback? onLongPress;
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    button: true,
+    label: semantics,
+    excludeSemantics: true,
+    child: InkWell(
+      onTap: onTap,
+      onLongPress: onLongPress,
+      borderRadius: BorderRadius.circular(20),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(4, _AppTile._top, 4, 4),
+        child: Column(
+          children: [
+            SizedBox.square(dimension: _AppTile.iconSize, child: icon),
+            const SizedBox(height: _AppTile._gap),
+            label,
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+/// The style of a launcher cell's label.
+TextStyle _labelStyle(BuildContext context) =>
+    Theme.of(context).textTheme.bodyMedium!.copyWith(height: 1.25);
+
+/// A centred label of at most [lines] lines.
+Widget _label(String text, TextStyle style, {int lines = 2}) => Text(
+  text,
+  maxLines: lines,
+  overflow: TextOverflow.ellipsis,
+  textAlign: TextAlign.center,
+  style: style,
+);
+
 class _AppTile extends StatelessWidget {
   const _AppTile({
     required this.app,
@@ -622,17 +677,26 @@ class _AppTile extends StatelessWidget {
     this.building,
   });
 
-  static const _padding = 16.0;
-  static const _badge = 52.0;
-  static const _gap = 12.0;
+  /// The side of a cell's icon.
+  static const iconSize = 60.0;
 
-  /// The tile's height: padding, the badge, a gap and two lines of the
-  /// title at the current text scale, so a wrapped title always fits.
+  /// The corner radius of a cell's icon.
+  static const iconRadius = 15.0;
+
+  static const _top = 8.0;
+  static const _gap = 8.0;
+
+  /// The widest a cell may be: four to a row on a phone, more on wider
+  /// screens.
+  static const maxWidth = 112.0;
+
+  /// A cell's height: the icon, a gap and two lines of the label at the
+  /// current text scale, so a wrapped title always fits.
   static double extent(BuildContext context) {
-    final style = Theme.of(context).textTheme.titleMedium!;
+    final style = _labelStyle(context);
     final size = MediaQuery.textScalerOf(context).scale(style.fontSize!);
-    final line = (size * (style.height ?? 1.2)).ceilToDouble();
-    return _padding * 2 + _badge + _gap + line * 2;
+    final line = (size * style.height!).ceilToDouble();
+    return _top + iconSize + _gap + line * 2 + 4;
   }
 
   final ArtifactSummary app;
@@ -645,50 +709,36 @@ class _AppTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
+    final scheme = Theme.of(context).colorScheme;
     final b = building;
-    return Semantics(
-      button: true,
-      label: b == null
+    return _HomeCell(
+      semantics: b == null
           ? app.title
           : '${app.title}, building, ${b.done} of ${b.total} done',
-      excludeSemantics: true,
-      child: Material(
-        color: scheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(24),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: onTap,
-          onLongPress: onLongPress,
-          child: Stack(
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(_padding),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    LiveAppBadge(app: app, icons: icons, size: _badge),
-                    const Spacer(),
-                    Text(
-                      app.title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.titleMedium,
-                    ),
-                  ],
-                ),
-              ),
-              if (b != null)
-                Positioned(
-                  top: 10,
-                  right: 10,
-                  child: _BuildRing(done: b.done, total: b.total),
-                ),
-            ],
+      onTap: onTap,
+      onLongPress: onLongPress,
+      icon: Stack(
+        fit: StackFit.expand,
+        children: [
+          LiveAppBadge(
+            app: app,
+            icons: icons,
+            size: iconSize,
+            radius: iconRadius,
           ),
-        ),
+          if (b != null)
+            DecoratedBox(
+              decoration: BoxDecoration(
+                color: scheme.surface.withValues(alpha: 0.82),
+                borderRadius: BorderRadius.circular(iconRadius),
+              ),
+              child: Center(
+                child: _BuildRing(done: b.done, total: b.total),
+              ),
+            ),
+        ],
       ),
+      label: _label(app.title, _labelStyle(context)),
     );
   }
 }
@@ -741,76 +791,47 @@ class MakingTile extends StatelessWidget {
         : 'Making…';
     // Making shows its ring; the others say where they stand in words.
     final said = failed || session.interrupted || session.queued;
-    return Semantics(
-      button: true,
-      label: '${session.request}, $status',
-      excludeSemantics: true,
-      child: Material(
-        key: const ValueKey('making-tile'),
-        color: scheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(24),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: onTap,
-          child: Stack(
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(_AppTile._padding),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      width: _AppTile._badge,
-                      height: _AppTile._badge,
-                      decoration: BoxDecoration(
-                        color: failed
-                            ? scheme.errorContainer
-                            : scheme.primaryContainer,
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      alignment: Alignment.center,
-                      child: Icon(
-                        failed
-                            ? Icons.error_outline_rounded
-                            : Icons.auto_awesome_rounded,
-                        color: failed
-                            ? scheme.onErrorContainer
-                            : scheme.onPrimaryContainer,
-                        size: 28,
-                      ),
-                    ),
-                    const Spacer(),
-                    Text(
-                      session.request,
-                      maxLines: said ? 1 : 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.titleMedium,
-                    ),
-                    if (said)
-                      Text(
-                        status,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          color: failed
-                              ? scheme.error
-                              : scheme.onSurfaceVariant,
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-              if (!said)
-                Positioned(
-                  top: 10,
-                  right: 10,
-                  child: count == null || count.total == 0
-                      ? const _MakingRing()
-                      : _BuildRing(done: count.done, total: count.total),
-                ),
-            ],
-          ),
+    final style = _labelStyle(context);
+    return _HomeCell(
+      key: const ValueKey('making-tile'),
+      semantics: '${session.request}, $status',
+      onTap: onTap,
+      icon: DecoratedBox(
+        decoration: BoxDecoration(
+          color: failed ? scheme.errorContainer : scheme.primaryContainer,
+          borderRadius: BorderRadius.circular(_AppTile.iconRadius),
         ),
+        child: Center(
+          child: !said
+              ? count == null || count.total == 0
+                    ? const _MakingRing()
+                    : _BuildRing(done: count.done, total: count.total)
+              : Icon(
+                  failed
+                      ? Icons.error_outline_rounded
+                      : session.interrupted
+                      ? Icons.replay_rounded
+                      : Icons.hourglass_empty_rounded,
+                  color: failed
+                      ? scheme.onErrorContainer
+                      : scheme.onPrimaryContainer,
+                  size: 28,
+                ),
+        ),
+      ),
+      label: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _label(session.request, style, lines: said ? 1 : 2),
+          if (said)
+            _label(
+              status,
+              style.copyWith(
+                color: failed ? scheme.error : scheme.onSurfaceVariant,
+              ),
+              lines: 1,
+            ),
+        ],
       ),
     );
   }
