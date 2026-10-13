@@ -147,6 +147,14 @@ void main() {
         const OpenThread('t"1').toJs(),
         r'window.claxHost?.openThread("t\"1")',
       );
+      expect(
+        const FocusThread('t"1').toJs(),
+        r'window.claxHost?.focusThread("t\"1")',
+      );
+      expect(
+        const FocusThread(null).toJs(),
+        'window.claxHost?.focusThread(null)',
+      );
     });
 
     test('Resend and Init', () {

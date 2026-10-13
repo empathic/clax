@@ -432,6 +432,16 @@ final class OpenThread extends HostCall {
   String toJs() => 'window.claxHost?.openThread(${jsString(id)})';
 }
 
+/// The app's own thread view opened on thread [id] (its area stays
+/// outlined while it is open), or closed (null).
+final class FocusThread extends HostCall {
+  const FocusThread(this.id);
+  final String? id;
+  @override
+  String toJs() =>
+      'window.claxHost?.focusThread(${id == null ? 'null' : jsString(id!)})';
+}
+
 /// The page global holding the latest visibility the app gave this
 /// document, which [Init] applies once the shell's host is there.
 const _visibleGlobal = 'window.__claxHostVisible';

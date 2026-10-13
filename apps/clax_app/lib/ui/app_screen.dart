@@ -293,6 +293,23 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   /// Whether [AppScreen.initialThread] was opened.
   var _openedInitial = false;
 
+  /// Each thread view's claim on the shell's focused thread; only the
+  /// latest one clears it as it closes.
+  var _focusClaim = 0;
+
+  /// Tells the shell a thread view shows thread [id]; answers the claim
+  /// that [_unfocus] takes back.
+  int _focusOn(String id) {
+    _call(FocusThread(id));
+    return ++_focusClaim;
+  }
+
+  /// A thread view of [claim] closed: the shell's outline goes, unless a
+  /// later view claimed it since.
+  void _unfocus(int claim) {
+    if (mounted && claim == _focusClaim) _call(const FocusThread(null));
+  }
+
   @override
   void setState(VoidCallback fn) {
     super.setState(fn);
@@ -818,9 +835,11 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     bool reply = false,
     List<String> run = const [],
   }) {
+    final claim = _focusOn(id);
     unawaited(
       Navigator.of(context)
-          .push(_threadRoute(id, focus: focus, reply: reply, run: run)),
+          .push(_threadRoute(id, focus: focus, reply: reply, run: run))
+          .whenComplete(() => _unfocus(claim)),
     );
   }
 
@@ -838,10 +857,14 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         focusComment: focus,
         focusLatestReply: reply,
         run: run,
-        onRun: (tid) => unawaited(
-          Navigator.of(route)
-              .pushReplacement(_threadRoute(tid, reply: reply, run: run)),
-        ),
+        onRun: (tid) {
+          final claim = _focusOn(tid);
+          unawaited(
+            Navigator.of(route)
+                .pushReplacement(_threadRoute(tid, reply: reply, run: run))
+                .whenComplete(() => _unfocus(claim)),
+          );
+        },
         api: widget.api,
         aid: widget.aid,
         tid: id,
@@ -864,6 +887,8 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   Future<void> _showChange() async {
     if (_sheetOpen) return;
     _sheetOpen = true;
+    final first = _changes.threads.firstOrNull;
+    final claim = first == null ? null : _focusOn(first);
     try {
       await showChangeSheet(
         context,
@@ -889,6 +914,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       );
     } finally {
       _sheetOpen = false;
+      if (claim != null) _unfocus(claim);
     }
     // An outcome the sheet showed was seen there.
     if (mounted && _changes.outcome == ChangeOutcome.replied) {
