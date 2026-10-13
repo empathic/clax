@@ -69,10 +69,10 @@ List<Tool> dataTools(ClaxApi api) => [
   DbWriteTool(api),
 ];
 
-final _appProperty = nullable(
+final _appProperty = optional(
   'string',
   description:
-      "null: this app. Else another app's ID from the first message; the "
+      "Omitted: this app. Else another app's ID from the first message; the "
       'owner is asked first and may refuse.',
 );
 
@@ -118,12 +118,12 @@ class DbListTool implements Tool {
   @override
   final spec = ToolSpec(
     'db_list',
-    'Lists documents of a collection: at most $maxReadDocs (null limit: '
+    'Lists documents of a collection: at most $maxReadDocs (no limit: '
         '$maxReadDocs) or 32 KiB; truncated says more follow.',
     objectSchema({
       'collection': {'type': 'string'},
       'app': _appProperty,
-      'limit': nullable('integer'),
+      'limit': optional('integer'),
     }),
   );
 
@@ -193,36 +193,28 @@ class DbQueryTool implements Tool {
     'Queries a collection: documents matching every where clause '
         '(at most $maxWhereClauses; value_json is the value as JSON text), '
         'ordered by order_by (documents without the field come last); at '
-        'most $maxReadDocs (null limit: $maxReadDocs) or 32 KiB.',
+        'most $maxReadDocs (no limit: $maxReadDocs) or 32 KiB.',
     objectSchema({
       'collection': {'type': 'string'},
       'app': _appProperty,
-      'where': {
-        'anyOf': [
-          {
-            'type': 'array',
-            'items': objectSchema({
-              'field': {'type': 'string'},
-              'op': {'type': 'string', 'enum': _whereOps},
-              'value_json': {'type': 'string'},
-            }),
+      'where': Optional({
+        'type': 'array',
+        'items': objectSchema({
+          'field': {'type': 'string'},
+          'op': {'type': 'string', 'enum': _whereOps},
+          'value_json': {'type': 'string'},
+        }),
+      }),
+      'order_by': Optional(
+        objectSchema({
+          'field': {'type': 'string'},
+          'direction': {
+            'type': 'string',
+            'enum': ['asc', 'desc'],
           },
-          {'type': 'null'},
-        ],
-      },
-      'order_by': {
-        'anyOf': [
-          objectSchema({
-            'field': {'type': 'string'},
-            'direction': {
-              'type': 'string',
-              'enum': ['asc', 'desc'],
-            },
-          }),
-          {'type': 'null'},
-        ],
-      },
-      'limit': nullable('integer'),
+        }),
+      ),
+      'limit': optional('integer'),
     }),
   );
 
@@ -264,12 +256,12 @@ class DbWriteTool implements Tool {
     "Stages writes to this app's documents: applied to the draft's copy "
         'when it renders and to the app at finish, all or none. set creates '
         'or replaces, update merges, delete removes; data_json is the data '
-        'as a JSON object (null for delete). A document that exists must be '
+        'as a JSON object (omitted for delete). A document that exists must be '
         'read first (db_get, db_list or db_query, or shown in the first '
         'message). Each document at most once a run, at most $maxRunDbOps '
-        'writes a run. Other apps are read-only: app must be null.',
+        'writes a run. Other apps are read-only: omit app.',
     objectSchema({
-      'app': nullable('string'),
+      'app': optional('string'),
       'ops': {
         'type': 'array',
         'items': objectSchema({
@@ -279,7 +271,7 @@ class DbWriteTool implements Tool {
           },
           'collection': {'type': 'string'},
           'doc_id': {'type': 'string'},
-          'data_json': nullable('string'),
+          'data_json': optional('string'),
         }),
       },
     }),
@@ -293,7 +285,7 @@ class DbWriteTool implements Tool {
     if (app != null && app != aid) {
       throw const ToolInputError(
         "Other apps' documents are read-only; db_write writes only this "
-        'app (app null).',
+        'app (app omitted).',
       );
     }
     final raw = switch (input['ops']) {

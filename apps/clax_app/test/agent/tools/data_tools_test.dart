@@ -115,8 +115,8 @@ void main() {
         final schema = j['input_schema']! as Map;
         expect(schema['additionalProperties'], false, reason: s.name);
         expect(
-          (schema['required']! as List).toSet(),
           (schema['properties']! as Map).keys.toSet(),
+          containsAll(schema['required']! as List),
           reason: s.name,
         );
       }

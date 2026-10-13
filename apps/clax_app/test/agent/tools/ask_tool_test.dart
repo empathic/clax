@@ -187,7 +187,7 @@ void main() {
 
   setUp(() => w = World());
 
-  test('the spec is strict, with Clax ask arguments', () {
+  test('the spec is not strict, with Clax ask arguments', () {
     final spec = AskTool(
       w.api,
       w.asked,
@@ -195,7 +195,8 @@ void main() {
       maxWaitChange: askWaitChange,
     ).spec;
     expect(spec.name, 'ask');
-    expect(spec.strict, isTrue);
+    expect(spec.strict, isFalse);
+    expect(spec.toMessagesApi().containsKey('strict'), isFalse);
     expect(spec.eager, isFalse);
     final schema = spec.inputSchema;
     expect((schema['properties']! as Map).keys, [
@@ -209,8 +210,8 @@ void main() {
         if (s['type'] == 'object') {
           expect(s['additionalProperties'], false);
           expect(
-            (s['required']! as List).toSet(),
             (s['properties']! as Map).keys.toSet(),
+            containsAll(s['required']! as List),
           );
         }
         s.values.forEach(strictObjects);
