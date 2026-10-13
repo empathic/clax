@@ -96,6 +96,11 @@ export type ShellToBridge =
    * page settles (at most `settleMs`), then answers `clax:inspection` with
    * the same `requestId`, its screenshot at most `maxBytes`. */
   | { type: "clax:inspect"; requestId: string; settleMs?: number; maxBytes?: number }
+  /** The app's inspect view asks the bridge to run the draft's test files
+   * (`harness.ts`), paths relative to the page, each test for at most
+   * `testMs`, the run for at most `totalMs`; `clax:tests` answers with the
+   * same `requestId`. Honoured only in the frame named `INSPECT_FRAME`. */
+  | { type: "clax:test"; requestId: string; files: string[]; testMs?: number; totalMs?: number }
   | UseResult
   | CallResult
   | CapEvent;
@@ -111,6 +116,10 @@ export interface InspectError { kind: "error" | "unhandledrejection" | "console"
  * the URLs of resources that failed to load; `text`, an outline of the
  * page; `height`, the document's scroll height in CSS pixels. */
 export interface Inspection { png: ArrayBuffer; errors: InspectError[]; failed: string[]; text: string; title: string; height: number }
+/** What a test run found (`harness.ts`): how many tests `passed`, each that
+ * `failed` (or test file that did not load) with why, and how many were
+ * `skipped` because the run's time ran out. */
+export interface TestResults { passed: number; failed: { name: string; error: string }[]; skipped: number }
 
 /** What a picked element is, for the app's words about it (`describe.ts`):
  * its tag, its ARIA role and its accessible name, as the page gives them. */
@@ -145,7 +154,7 @@ export type BridgeToShell =
    * say); sent once per part, after the welcome. `message` is the browser's
    * error, for debugging: the page can post this too, so the shell shows only
    * its own words for `part`. */
-  | { type: "clax:degraded"; part: "comment" | "clip" | "caps" | "room" | "sample"; message: string }
+  | { type: "clax:degraded"; part: "comment" | "clip" | "caps" | "room" | "sample" | "test"; message: string }
   /** The page's vertical scroll position (CSS pixels) on its `file`, after a
    * welcome with `app: true`: at most every 250 ms while the page scrolls,
    * the last position of a burst always sent; only the app shell reads it
@@ -156,8 +165,12 @@ export type BridgeToShell =
    * and height; or why there is none. The page can post this too, so the
    * shell takes it only for the request it has open and checks its shape. */
   | ({ type: "clax:inspection"; requestId: string } & (Inspection | { error: string }))
+  /** The answer to `clax:test` (`harness.ts`), or why there is none. The page
+   * can post this too: the shell takes it only for the request it has open
+   * and checks its shape. */
+  | ({ type: "clax:tests"; requestId: string } & (TestResults | { error: string }))
   | UseRequest
   | CallRequest;
 
-export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:greet", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:inspect", "clax:use-result", "clax:call-result", "clax:event"]);
-export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:scroll", "clax:inspection", "clax:use", "clax:call"]);
+export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:greet", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:inspect", "clax:test", "clax:use-result", "clax:call-result", "clax:event"]);
+export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:scroll", "clax:inspection", "clax:tests", "clax:use", "clax:call"]);

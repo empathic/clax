@@ -30,7 +30,8 @@
  * document greets. In a frame the shell named `INSPECT_FRAME` it keeps the
  * page's errors from before its first script (`inspect.ts`); it answers the
  * app's inspect view's `clax:inspect` with the clip part's inspection
- * (`clax:inspection`).
+ * (`clax:inspection`), and there only, its `clax:test` with the test part's
+ * run of the draft's test files (`clax:tests`).
  * The daemon serves it right after the doctype (first in the skeleton's
  * `<head>` for a fragment), and only the document's first bridge tag runs, so
  * `window.claude` exists before any page script; shell
@@ -102,7 +103,8 @@ type PartName = keyof Parts;
   // In a frame the shell named for inspection, the page's errors from its
   // first script on (`inspect.ts`); the observer the settle wait uses, as it
   // is now.
-  const ring: ErrorRing = framed && window.name === INSPECT_FRAME ? installErrorRing(window) : [[], []];
+  const inspectFrame = framed && window.name === INSPECT_FRAME;
+  const ring: ErrorRing = inspectFrame ? installErrorRing(window) : [[], []];
   const Observer = MutationObserver;
   let shellOrigin: string | null = null;
   const post = (m: BridgeToShell, transfer: Transferable[] = []) =>
@@ -120,7 +122,7 @@ type PartName = keyof Parts;
     const next = retrying(name, load, failed(name), clock);
     return () => parsed ? next() : whenDone.then(next);
   };
-  const parts = { comment: onNeed("comment", loaders.comment), clip: onNeed("clip", loaders.clip), caps: onNeed("caps", loaders.caps), room: onNeed("room", loaders.room), sample: onNeed("sample", loaders.sample) };
+  const parts = { comment: onNeed("comment", loaders.comment), clip: onNeed("clip", loaders.clip), caps: onNeed("caps", loaders.caps), room: onNeed("room", loaders.room), sample: onNeed("sample", loaders.sample), test: onNeed("test", loaders.test) };
   const clips = () => parts.clip();
   const rpc = new Rpc(m => post(m));
   const use = makeUse({
@@ -340,6 +342,12 @@ type PartName = keyof Parts;
       // The app's inspect view asks what the page looks like once it settles
       // (`inspect.ts`), with the clip part; the answer goes to the shell only.
       case "clax:inspect": void clips().then(c => c.inspect(window, ring, m, post, clock, Observer), () => {}); break;
+      // The inspect view asks the draft's page to run its test files
+      // (`harness.ts`), with the test part, only in the frame it named.
+      case "clax:test": if (inspectFrame && typeof m.requestId === "string") {
+        const requestId = m.requestId;
+        void parts.test().then(t => t.test(window, m, post, clock), err => post({ type: "clax:tests", requestId, error: `the test harness did not load: ${err instanceof Error ? err.message : String(err)}` }));
+      } break;
       case "clax:key": {
         const k = forwardedKey(m);
         // Keys count only in comment mode, which loads as it turns on.

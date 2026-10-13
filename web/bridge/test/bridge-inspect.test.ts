@@ -65,6 +65,13 @@ describe("the bridge's inspection", () => {
     expect(answerTo("i2")[0]).toEqual({ type: "clax:inspection", requestId: "i2", error: expect.stringMatching(/over/) });
   });
 
+  it("runs the test part's harness on clax:test and answers clax:tests with the requestId", async () => {
+    send({ type: "clax:test", requestId: "t1", files: [] });
+    await vi.waitFor(() => expect(posted.filter(m => m.type === "clax:tests")).toHaveLength(1), { timeout: 3000 });
+    expect(posted.find(m => m.type === "clax:tests")).toEqual({ type: "clax:tests", requestId: "t1", passed: 0, failed: [], skipped: 0 });
+    expect(typeof (window as unknown as { test?: unknown }).test).toBe("function");
+  });
+
   it("takes the order only from the shell, and only with a requestId", async () => {
     send({ type: "clax:inspect", requestId: "i3", settleMs: 0 }, page);
     send({ type: "clax:inspect", settleMs: 0 });

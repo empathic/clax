@@ -1107,6 +1107,46 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(otherFramed.filter(m => m.type === "clax:inspect")).toEqual([]);
   });
 
+  it("runTests asks the page to run the test files and posts the checked results", async () => {
+    const { frame, host } = await appView({ query: INSPECT });
+    const framed = framePosts(frame);
+    hello(frame, 1);
+    host.runTests({ files: ["tests/a.test.js", "tests/sub/b.test.js"], testMs: 2000 });
+    const ask = framed.find(m => m.type === "clax:test")!;
+    expect(ask).toEqual({ type: "clax:test", requestId: expect.any(String), files: ["tests/a.test.js", "tests/sub/b.test.js"], testMs: 2000, totalMs: 30000 });
+    // Another request's answer, or one from elsewhere, is not taken.
+    fromFrame(frame.contentWindow!, { type: "clax:tests", requestId: "other", passed: 1, failed: [], skipped: 0 });
+    fromFrame(window, { type: "clax:tests", requestId: ask.requestId, passed: 1, failed: [], skipped: 0 });
+    expect(ofType("tests")).toEqual([]);
+    fromFrame(frame.contentWindow!, { type: "clax:tests", requestId: ask.requestId, passed: 2, failed: [{ name: "adds", error: "Expected: 1 to be 2" }, { name: 3 }, "x"], skipped: 1, extra: true });
+    expect(ofType("tests")).toEqual([{ type: "tests", passed: 2, failed: [{ name: "adds", error: "Expected: 1 to be 2" }], skipped: 1 }]);
+    expect(raw.filter(r => r.includes("\"tests\"")).every(r => JSON.parse(r).nonce === NONCE)).toBe(true);
+    // Answered once; a bad shape is an error.
+    fromFrame(frame.contentWindow!, { type: "clax:tests", requestId: ask.requestId, passed: 3, failed: [], skipped: 0 });
+    expect(ofType("tests")).toHaveLength(1);
+    host.runTests({ files: ["tests/a.test.js"] });
+    const again = framed.filter(m => m.type === "clax:test").at(-1)!;
+    fromFrame(frame.contentWindow!, { type: "clax:tests", requestId: again.requestId, passed: -1, failed: [], skipped: 0 });
+    expect(ofType("tests").at(-1)).toEqual({ type: "tests", error: "the page sent no test results" });
+  });
+
+  it("runTests refuses paths outside tests/, before the page greets, and outside the inspect view", async () => {
+    const { frame, host } = await appView({ query: INSPECT });
+    const framed = framePosts(frame);
+    host.runTests({ files: ["tests/a.test.js"] });
+    expect(ofType("tests")).toEqual([{ type: "tests", error: "the page has not loaded" }]);
+    hello(frame, 1);
+    for (const files of [[], ["index.html"], ["tests/../x.test.js"], ["https://x.test/tests/a.test.js"], "tests/a.test.js"]) host.runTests({ files: files as string[] });
+    expect(ofType("tests")).toHaveLength(6);
+    expect(ofType("tests").slice(1).every(m => "error" in m && /^files is a list/.test(m.error as string))).toBe(true);
+    expect(framed.filter(m => m.type === "clax:test")).toEqual([]);
+    const other = await appView();
+    hello(other.frame, 1);
+    toHost = [];
+    other.host.runTests({ files: ["tests/a.test.js"] });
+    expect(ofType("tests")).toEqual([{ type: "tests", error: "this view is not the inspect view" }]);
+  });
+
   it("shows no comment UI: comment mode, a whole-app composer and a page's composer stay closed", async () => {
     const { ctl, frame, host } = await appView({ query: INSPECT });
     hello(frame, 1);
