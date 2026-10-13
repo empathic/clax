@@ -12,12 +12,13 @@ import '../agent/plan.dart';
 import '../agent/worker.dart';
 import '../daemon/clock.dart';
 import 'build_plan.dart';
+import 'make_service.dart';
 import 'making_preview.dart';
 
 /// Makes a new app from [request] and returns its artifact ID.
 ///
-/// [cancelled] completes when the person leaves the making screen (Cancel,
-/// back, Edit, Open Settings) or retries; pass it on as
+/// [cancelled] completes when the person stops the make (Cancel, Edit,
+/// Open Settings) or retries; pass it on as
 /// `AgentLoop.newApp(request, cancelled: …)` so a run nobody waits for
 /// creates nothing. [report] takes what the run is doing: its [MakeStage]s
 /// (see [StagedBackend]) and, wrapped in [MakeProgress], each event of
@@ -122,6 +123,11 @@ class Made extends MakingResult {
 /// The person chose to change the request after a failure.
 class EditRequest extends MakingResult {
   const EditRequest();
+}
+
+/// The person went back to the apps, leaving the make (or the build) going.
+class MakingLeft extends MakingResult {
+  const MakingLeft();
 }
 
 /// The longest part of a request the making title quotes.
@@ -254,11 +260,18 @@ class MakingLog {
   }
 }
 
-/// Runs [make] for [request] while showing [makingTitle], what the run is
-/// doing ([MakingLog.line] and the steps before it), the seconds elapsed
-/// (with "Usually under a minute" after [slowAfter]) and Cancel. Pops
-/// [Made] with the new artifact's ID, or, with [onMade], hands the new app
-/// to it instead (which replaces this route, completing it with [Made]).
+/// Shows a make ([session], or one of its own running [make] for
+/// [request]) with [makingTitle], what the run is doing ([MakingLog.line]
+/// and the steps before it), the seconds elapsed (with "Usually under a
+/// minute" after [slowAfter]) and Cancel. Pops [Made] with the new
+/// artifact's ID, or, with [onMade], hands the new app to it instead (which
+/// replaces this route, completing it with [Made]).
+///
+/// - **Leaving.** The top bar's "Back to apps" (and the platform's back)
+///   pops [MakingLeft] and leaves a [session]'s make running; attached
+///   again later, the screen catches up from the session (the preview, the
+///   plan, the narration, a failure). Cancel stops the make and pops null.
+///   A make of the screen's own (no [session]) stops as the screen goes.
 ///
 /// - **Preview.** While `index.html` is written, a [PreviewView] from
 ///   [preview] shows it, loaded at most four times a second
@@ -272,8 +285,7 @@ class MakingLog {
 /// - **Failure** stays on the screen with its reason, the request, Retry
 ///   and Edit, and a link to Settings when the reason names them. Each
 ///   attempt gets its own cancel signal, completed when the attempt is
-///   abandoned: Cancel, back, Edit, Open Settings, a Retry, or the screen
-///   going away.
+///   abandoned: Cancel, Edit, Open Settings or a Retry.
 /// - **Build view.** With [build], the screen is the build's view (a
 ///   Retry starts from the plan the failed run left, the person's edits
 ///   included): once
@@ -283,14 +295,14 @@ class MakingLog {
 ///   features to build, the screen stays: "Open app" hands the app over
 ///   ([onMade]) whenever the person wants, while the worker's continue
 ///   runs go on, their progress shown in the preview, the narration and
-///   the checklist, with Stop and Resume. Back then pops [Made]. Without a
-///   plan to go on with, the app is handed over at once, as without
-///   [build].
+///   the checklist, with Stop and Resume. Without a plan to go on with, the
+///   app is handed over at once, as without [build].
 class MakingScreen extends StatefulWidget {
   const MakingScreen({
     super.key,
     required this.request,
-    required this.make,
+    this.make,
+    this.session,
     this.openSettings,
     this.preview,
     this.timings,
@@ -300,7 +312,12 @@ class MakingScreen extends StatefulWidget {
   });
 
   final String request;
-  final MakeApp make;
+
+  /// Runs the screen's own make, when there is no [session].
+  final MakeApp? make;
+
+  /// The make to show, which goes on when the screen goes.
+  final MakeSession? session;
   final VoidCallback? openSettings;
 
   /// Makes the live preview's view; null uses a [WebViewPreview] where the
@@ -334,17 +351,16 @@ class _MakingScreenState extends State<MakingScreen> {
   Timer? _tick;
   int _seconds = 0;
   String? _failure;
-  var _log = MakingLog();
+
+  late final MakeSession _session;
+  StreamSubscription<MakeUpdate>? _updates;
+  MakingLog get _log => _session.log;
 
   PreviewView? _view;
   PreviewThrottle? _throttle;
 
   /// Whether the current attempt's preview has loaded a frame yet.
   var _shown = false;
-
-  /// The running attempt's cancel signal; a stale attempt's result is
-  /// dropped because its completer is no longer this one.
-  Completer<void>? _cancel;
 
   /// The key the plan is kept under: the run's provisional one, then the
   /// app's ID.
@@ -360,10 +376,36 @@ class _MakingScreenState extends State<MakingScreen> {
   /// The plan a failed run left, for the Retry's run to start from.
   Plan? _carry;
 
+  /// Whether the session's made app was taken up here.
+  var _tookMade = false;
+
   @override
   void initState() {
     super.initState();
-    _run();
+    final own = widget.session == null;
+    _session =
+        widget.session ??
+        MakeSession(
+          widget.request,
+          widget.make ?? (throw ArgumentError('a make or a session')),
+          clock: widget.clock,
+        );
+    _session.attach();
+    _session.addListener(_onSession);
+    _updates = _session.updates.listen(_onUpdate);
+    if (own || !_session.started) {
+      // After this build: starting tells the session's listeners (the
+      // launcher's tiles), which must not rebuild during it.
+      _attempt(
+        () => scheduleMicrotask(() {
+          if (!_session.cancelled && !_session.started) {
+            unawaited(_session.start());
+          }
+        }),
+      );
+    } else {
+      _catchUp();
+    }
   }
 
   @override
@@ -371,17 +413,76 @@ class _MakingScreenState extends State<MakingScreen> {
     _tick?.cancel();
     unawaited(_planSub?.cancel());
     unawaited(_buildSub?.cancel());
-    _abandon();
+    unawaited(_updates?.cancel());
+    _session.removeListener(_onSession);
+    _session.detach();
+    // A make of the screen's own has nobody else to show it.
+    if (widget.session == null) _session.cancel();
     _throttle?.close();
     _view?.dispose();
     super.dispose();
   }
 
-  /// Completes the running attempt's cancel signal.
-  void _abandon() {
-    final c = _cancel;
-    _cancel = null;
-    if (c != null && !c.isCompleted) c.complete();
+  /// Shows what [_session] has done so far: its page in the preview, its
+  /// plan, its seconds, and how it ended.
+  void _catchUp() {
+    _fresh();
+    _seconds = _session.running
+        ? widget.clock.now().difference(_session.startedAt).inSeconds
+        : 0;
+    if (_session.running && _log.html == null) {
+      widget.timings?.start(sayFirstOutput);
+    }
+    if (_session.planKey case final key?) _watchPlan(key);
+    if (_log.html case final html?) _throttle!.offer(html);
+    if (_session.running) _ticking();
+    _onSession();
+  }
+
+  /// A fresh preview throttle, for a new attempt or a catch-up.
+  void _fresh() {
+    _throttle?.close();
+    _throttle = PreviewThrottle(load: _load, clock: widget.clock);
+    _shown = false;
+  }
+
+  void _ticking() {
+    _tick?.cancel();
+    _tick = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted && !_log.asking) setState(() => _seconds++);
+    });
+  }
+
+  /// One update of the running attempt, which the session's log took.
+  void _onUpdate(MakeUpdate u) {
+    if (!mounted) return;
+    if (u is MakePlanKey) {
+      _watchPlan(u.key);
+      return;
+    }
+    final throttle = _throttle!;
+    if (_session.lastChangedHtml) {
+      throttle.offer(_log.html!);
+    } else if (u is MakeProgress &&
+        (u.event is ToolStarted || u.event is Inspected)) {
+      // A write ended: its last text shows now, not a beat later.
+      throttle.flush();
+    }
+    setState(() {});
+  }
+
+  /// The session made its app, failed or was cancelled.
+  void _onSession() {
+    if (!mounted) return;
+    if (_session.aid case final aid? when !_tookMade) {
+      _tookMade = true;
+      unawaited(_onMade(aid));
+    } else if (_session.failure case final f? when !_session.running) {
+      if (_failure == f) return;
+      _tick?.cancel();
+      _throttle?.clear();
+      setState(() => _failure = f);
+    }
   }
 
   PreviewView? _makeView() {
@@ -415,71 +516,40 @@ class _MakingScreenState extends State<MakingScreen> {
     }
   }
 
-  Future<void> _run() async {
-    _abandon();
-    final cancel = Completer<void>();
-    _cancel = cancel;
-    _throttle?.close();
-    final throttle = _throttle = PreviewThrottle(
-      load: _load,
-      clock: widget.clock,
-    );
+  /// Starts an attempt with [start]: a fresh preview, seconds and plan.
+  void _attempt(void Function() start) {
+    _fresh();
     widget.timings?.start(sayFirstOutput);
     unawaited(_planSub?.cancel());
     _planSub = null;
     // A Retry starts from the plan the failed run left, edits included.
     final carry = _plan;
     _carry = carry != null && carry.features.isNotEmpty ? carry : null;
-    setState(() {
-      _failure = null;
-      _seconds = 0;
-      _log = MakingLog();
-      _shown = false;
-      _planKey = null;
-      _plan = null;
-    });
-    _tick?.cancel();
-    _tick = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted && !_log.asking) setState(() => _seconds++);
-    });
-    bool current() => mounted && identical(_cancel, cancel);
-    void report(MakeUpdate u) {
-      if (!current()) return;
-      if (u is MakePlanKey) {
-        _watchPlan(u.key);
-        return;
-      }
-      final htmlChanged = _log.apply(u);
-      if (htmlChanged) {
-        throttle.offer(_log.html!);
-      } else if (u is MakeProgress &&
-          (u.event is ToolStarted || u.event is Inspected)) {
-        // A write ended: its last text shows now, not a beat later.
-        throttle.flush();
-      }
-      setState(() {});
-    }
+    _failure = null;
+    _seconds = 0;
+    _planKey = null;
+    _plan = null;
+    _ticking();
+    start();
+    if (mounted) setState(() {});
+  }
 
-    try {
-      final aid = await widget.make(widget.request, cancel.future, report);
-      if (!mounted || !identical(_cancel, cancel)) return;
-      _cancel = null;
-      if (await _goesOn(aid)) {
-        if (mounted) _follow(aid, throttle);
-        return;
-      }
-      _tick?.cancel();
-      if (!mounted) return;
-      if (widget.onMade case final onMade?) {
-        onMade(context, aid, _log.png);
-      } else {
-        Navigator.of(context).pop(Made(aid));
-      }
-    } catch (e) {
-      if (!current()) return;
-      _tick?.cancel();
-      throttle.clear();
-      setState(() => _failure = e is AgentError ? e.message : '$e');
+  /// Retry after a failure.
+  void _run() => _attempt(() => unawaited(_session.start()));
+
+  /// The made app [aid]: its build goes on here, or it is handed over.
+  Future<void> _onMade(String aid) async {
+    final throttle = _throttle!;
+    if (await _goesOn(aid)) {
+      if (mounted) _follow(aid, throttle);
+      return;
+    }
+    _tick?.cancel();
+    if (!mounted) return;
+    if (widget.onMade case final onMade?) {
+      onMade(context, aid, _log.png);
+    } else {
+      Navigator.of(context).pop(Made(aid));
     }
   }
 
@@ -553,45 +623,66 @@ class _MakingScreenState extends State<MakingScreen> {
     }
   }
 
+  /// Stops the make and pops [result] (null: Cancel).
   void _leave([MakingResult? result]) {
-    _abandon();
+    _session.cancel();
     Navigator.of(context).pop(result);
   }
+
+  /// Back to the apps; the make or the build goes on.
+  void _back() => Navigator.of(context).pop(const MakingLeft());
 
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: _made == null,
+      canPop: false,
       onPopInvokedWithResult: (didPop, _) {
-        if (didPop) {
-          _abandon();
-        } else if (_made case final aid?) {
-          Navigator.of(context).pop(Made(aid));
-        }
+        if (!didPop) _back();
       },
       child: Scaffold(
         body: SafeArea(
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 480),
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 200),
-                child: _failure == null
-                    ? _buildView(context)
-                    // Scrolls, so its buttons stay reachable with large
-                    // text on a small screen.
-                    : SingleChildScrollView(
-                        key: const ValueKey('failed'),
-                        padding: const EdgeInsets.all(24),
-                        child: _failed(context),
-                      ),
+          child: Column(
+            children: [
+              _topBar(context),
+              Expanded(
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 480),
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 200),
+                      child: _failure == null
+                          ? _buildView(context)
+                          // Scrolls, so its buttons stay reachable with
+                          // large text on a small screen.
+                          : SingleChildScrollView(
+                              key: const ValueKey('failed'),
+                              padding: const EdgeInsets.all(24),
+                              child: _failed(context),
+                            ),
+                    ),
+                  ),
+                ),
               ),
-            ),
+            ],
           ),
         ),
       ),
     );
   }
+
+  /// "Back to apps", which leaves the make running.
+  Widget _topBar(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(4, 4, 16, 0),
+    child: Align(
+      alignment: Alignment.centerLeft,
+      child: TextButton.icon(
+        key: const ValueKey('build-back'),
+        onPressed: _back,
+        icon: const Icon(Icons.arrow_back_rounded),
+        label: const Text('Back to apps'),
+      ),
+    ),
+  );
 
   Widget _making(BuildContext context) {
     final theme = Theme.of(context);
@@ -825,6 +916,7 @@ class _MakingScreenState extends State<MakingScreen> {
                       fit: BoxFit.fitWidth,
                       alignment: Alignment.topCenter,
                       gaplessPlayback: true,
+                      errorBuilder: (_, _, _) => const SizedBox.shrink(),
                     ),
                   ),
                 ),
@@ -843,9 +935,12 @@ class _MakingScreenState extends State<MakingScreen> {
 
   Widget _placeholder(ThemeData theme) {
     final scheme = theme.colorScheme;
+    // Large text on a small phone may not fit the card: the hint is cut
+    // rather than overflowing.
     return Center(
       key: const ValueKey('placeholder'),
-      child: Padding(
+      child: SingleChildScrollView(
+        physics: const NeverScrollableScrollPhysics(),
         padding: const EdgeInsets.all(24),
         child: Column(
           mainAxisSize: MainAxisSize.min,

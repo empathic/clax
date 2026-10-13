@@ -10,6 +10,8 @@ import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/build_plan.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/launcher.dart';
+import 'package:clax_app/ui/make_service.dart';
+import 'package:clax_app/ui/making_preview.dart';
 import 'package:clax_app/ui/making_screen.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:clax_app/ui/working_chip.dart';
@@ -46,6 +48,22 @@ class FakeBuilds implements BuildControl {
   Future<void> resumeBuild(String appId) async {
     calls.add('resume $appId');
   }
+}
+
+/// A preview that keeps what it loaded.
+class _Preview implements PreviewView {
+  _Preview(this.loads);
+
+  final List<String> loads;
+
+  @override
+  Future<void> loadHtml(String html) async => loads.add(html);
+
+  @override
+  Widget build(BuildContext context) => const SizedBox.expand();
+
+  @override
+  void dispose() {}
 }
 
 /// Plans whose adds fail.
@@ -271,6 +289,71 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('open-app')));
       await frames(tester);
       expect(handed, ['a1']);
+    });
+
+    testWidgets('attached to a running make it catches up with its '
+        'narration, plan and page; back leaves the make running, Cancel '
+        'stops it', (tester) async {
+      phone(tester);
+      final made = Completer<String>();
+      late void Function(MakeUpdate) report;
+      Future<void>? cancelled;
+      final makes = MakeService((_, c, r) {
+        report = r;
+        cancelled = c;
+        return made.future;
+      });
+      final s = makes.start('a run tracker');
+      report(const MakePlanKey('new:1'));
+      await plans.set('new:1', _features);
+      report(const MakeProgress(Narration('Laying out the runs')));
+      report(const MakeProgress(PartialFile('index.html', '<h1>Runs</h1>')));
+      final loads = <String>[];
+      final results = <MakingResult?>[];
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: claxTheme(Brightness.light),
+          home: Builder(
+            builder: (context) => TextButton(
+              onPressed: () async => results.add(
+                await Navigator.of(context).push<MakingResult>(
+                  MaterialPageRoute(
+                    builder: (_) => MakingScreen(
+                      request: s.request,
+                      session: s,
+                      build: link,
+                      preview: () => _Preview(loads),
+                    ),
+                  ),
+                ),
+              ),
+              child: const Text('show'),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('show'));
+      await frames(tester);
+      expect(find.text('Laying out the runs'), findsOneWidget);
+      expect(find.text('Plan · 1 of 4 done'), findsOneWidget);
+      expect(loads, ['<h1>Runs</h1>']);
+
+      await tester.tap(find.byKey(const ValueKey('build-back')));
+      await frames(tester);
+      expect(results.single, isA<MakingLeft>());
+      expect(s.running, isTrue);
+      var stopped = false;
+      unawaited(cancelled!.then((_) => stopped = true));
+      await frames(tester, 40);
+      expect(stopped, isFalse);
+
+      await tester.tap(find.text('show'));
+      await frames(tester);
+      expect(find.text('Laying out the runs'), findsOneWidget);
+      await tester.tap(find.text('Cancel'));
+      await frames(tester);
+      expect(stopped, isTrue);
+      expect(makes.makes, isEmpty);
     });
 
     testWidgets('hands the app over at once when nothing is left to build', (

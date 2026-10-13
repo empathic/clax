@@ -11,6 +11,7 @@ import '../agent/worker.dart';
 import 'app_inspector.dart';
 import 'build_plan.dart';
 import 'inbox_screen.dart';
+import 'make_service.dart';
 import 'making_screen.dart';
 import 'new_sheet.dart';
 
@@ -18,12 +19,17 @@ import 'new_sheet.dart';
 /// events, and the New app button.
 ///
 /// New opens the New sheet (listening at once when dictation is available);
-/// a submitted request goes to [make] behind the making screen, and the
-/// artifact ID it returns goes to [handOver] (which puts the app's route in
-/// the making screen's place), else to [open] once the making screen has
-/// closed. A request the person has not
-/// made yet (the sheet closed, Cancel, or Edit after a failure) is kept for
-/// the next New.
+/// a submitted request starts a make on [makes] (one of the launcher's own
+/// over [make] when null) and shows it in the build view; the artifact ID
+/// it returns goes to [handOver] (which puts the app's route in the build
+/// view's place), else to [open] once the build view has closed. A request
+/// the person has not made yet (the sheet closed, Cancel, or Edit after a
+/// failure) is kept for the next New.
+///
+/// Each make going on (or failed) shows as a tile before the apps, with
+/// its request, a ring (the plan's progress once there is one) and how it
+/// stands; a tap shows its build view again, caught up. Back from the build
+/// view leaves the make going.
 ///
 /// The launcher follows `gallery` and `inbox` on [stream] (the app's
 /// shared stream, which it never closes), or on a stream of its own when
@@ -62,6 +68,7 @@ class Launcher extends StatefulWidget {
     this.retryDelay,
     this.inspectorPermissions = const [],
     this.build,
+    this.makes,
   });
 
   final ClaxApi api;
@@ -110,6 +117,10 @@ class Launcher extends StatefulWidget {
   /// The plans and builds; null shows none.
   final BuildLink? build;
 
+  /// The makes going on; when null, the launcher keeps its own over
+  /// [make].
+  final MakeService? makes;
+
   @override
   State<Launcher> createState() => _LauncherState();
 }
@@ -131,16 +142,25 @@ class _LauncherState extends State<Launcher> {
 
   static const _topics = ['gallery', 'inbox'];
 
+  late final MakeService _makes = widget.makes ?? MakeService(widget.make);
+
   @override
   void initState() {
     super.initState();
+    _makes.addListener(_onMakes);
     _stream = widget.stream ?? widget.api.stream();
     _events = _stream.events.listen(_onEvent, onError: (Object _) {});
     unawaited(_watch());
   }
 
+  void _onMakes() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
+    _makes.removeListener(_onMakes);
+    if (widget.makes == null) _makes.dispose();
     unawaited(_events?.cancel());
     if (widget.stream == null) unawaited(_stream.close());
     super.dispose();
@@ -286,12 +306,18 @@ class _LauncherState extends State<Launcher> {
     );
     if (request == null || !mounted) return;
     _draft = request;
+    // The build view starts it, once it is up.
+    await _showMake(_makes.add(request));
+  }
+
+  /// Shows make [s] in the build view, caught up with what it did.
+  Future<void> _showMake(MakeSession s) async {
     final result = await Navigator.of(context).push<MakingResult>(
       MaterialPageRoute(
         fullscreenDialog: true,
         builder: (_) => MakingScreen(
-          request: request,
-          make: widget.make,
+          request: s.request,
+          session: s,
           openSettings: widget.openSettings,
           timings: widget.timings,
           onMade: widget.handOver,
@@ -302,12 +328,15 @@ class _LauncherState extends State<Launcher> {
     if (!mounted) return;
     switch (result) {
       case Made(:final aid):
-        _draft = '';
+        if (_draft == s.request) _draft = '';
         if (widget.handOver == null) widget.open(aid);
+      case MakingLeft():
+        if (_draft == s.request) _draft = '';
       case EditRequest():
+        _draft = s.request;
         await _newApp();
       case null:
-        break;
+        _draft = s.request;
     }
   }
 
@@ -479,7 +508,7 @@ class _LauncherState extends State<Launcher> {
                 hasScrollBody: false,
                 child: SizedBox.shrink(),
               )
-            else if (apps.isEmpty)
+            else if (apps.isEmpty && _makes.makes.isEmpty)
               const SliverFillRemaining(
                 hasScrollBody: false,
                 child: _Message(
@@ -498,8 +527,19 @@ class _LauncherState extends State<Launcher> {
                     crossAxisSpacing: 12,
                     mainAxisExtent: _AppTile.extent(context),
                   ),
-                  itemCount: apps.length,
+                  itemCount: _makes.makes.length + apps.length,
                   itemBuilder: (context, i) {
+                    final makes = _makes.makes;
+                    if (i < makes.length) {
+                      final m = makes[i];
+                      return MakingTile(
+                        key: ObjectKey(m),
+                        session: m,
+                        link: widget.build,
+                        onTap: () => unawaited(_showMake(m)),
+                      );
+                    }
+                    i -= makes.length;
                     Widget tile(({int done, int total})? building) => _AppTile(
                       app: apps[i],
                       building: building,
@@ -630,6 +670,139 @@ class _AppTile extends StatelessWidget {
       ),
     );
   }
+}
+
+/// A make going on, as a launcher tile: its request and a ring
+/// (indeterminate until its plan has features, then filled to the features
+/// done), or "Couldn't make it" once it failed.
+class MakingTile extends StatelessWidget {
+  const MakingTile({
+    super.key,
+    required this.session,
+    required this.onTap,
+    this.link,
+  });
+
+  final MakeSession session;
+  final VoidCallback onTap;
+
+  /// The plans, for the ring; null shows it indeterminate.
+  final BuildLink? link;
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: session,
+    builder: (context, _) {
+      final key = session.planKey;
+      final b = link;
+      if (b == null || key == null) return _tile(context, null);
+      return BuildWatch(
+        key: ValueKey('make-plan-$key'),
+        link: b,
+        appId: key,
+        builder: (context, plan, _) =>
+            _tile(context, plan == null ? null : planCount(plan)),
+      );
+    },
+  );
+
+  Widget _tile(BuildContext context, ({int done, int total})? count) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final failed = session.failure != null && !session.running;
+    final status = failed ? "Couldn't make it" : 'Making…';
+    return Semantics(
+      button: true,
+      label: '${session.request}, $status',
+      excludeSemantics: true,
+      child: Material(
+        key: const ValueKey('making-tile'),
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(24),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Stack(
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(_AppTile._padding),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: _AppTile._badge,
+                      height: _AppTile._badge,
+                      decoration: BoxDecoration(
+                        color: failed
+                            ? scheme.errorContainer
+                            : scheme.primaryContainer,
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      alignment: Alignment.center,
+                      child: Icon(
+                        failed
+                            ? Icons.error_outline_rounded
+                            : Icons.auto_awesome_rounded,
+                        color: failed
+                            ? scheme.onErrorContainer
+                            : scheme.onPrimaryContainer,
+                        size: 28,
+                      ),
+                    ),
+                    const Spacer(),
+                    Text(
+                      session.request,
+                      maxLines: failed ? 1 : 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleMedium,
+                    ),
+                    // A making tile says so with its ring; a failed one in
+                    // words.
+                    if (failed)
+                      Text(
+                        status,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          color: scheme.error,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              if (!failed)
+                Positioned(
+                  top: 10,
+                  right: 10,
+                  child: count == null || count.total == 0
+                      ? const _MakingRing()
+                      : _BuildRing(done: count.done, total: count.total),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A make's ring before its plan has features.
+class _MakingRing extends StatelessWidget {
+  const _MakingRing();
+
+  @override
+  Widget build(BuildContext context) => SizedBox.square(
+    key: const ValueKey('tile-making'),
+    dimension: 36,
+    child: Padding(
+      padding: const EdgeInsets.all(4),
+      child: CircularProgressIndicator(
+        strokeWidth: 3,
+        strokeCap: StrokeCap.round,
+        backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+      ),
+    ),
+  );
 }
 
 /// A tile's building state: a ring filled to the features done, with

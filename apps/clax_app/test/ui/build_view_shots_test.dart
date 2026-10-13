@@ -1,6 +1,6 @@
 // Renders the build view, the build chip and sheet over an app, and the
-// launcher's building tile at phone size, light and dark, for a person to
-// look at. Off by default; run with
+// launcher's building and making tiles at phone size, light and dark, for
+// a person to look at. Off by default; run with
 //   CLAX_X1_SHOTS=1 flutter test --update-goldens test/ui/build_view_shots_test.dart
 // after rendering the page images into target/flutter-app/u1/src (see
 // making_screen_shots_test.dart), and look at target/flutter-app/x1/*.png.
@@ -17,6 +17,7 @@ import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/build_plan.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/launcher.dart';
+import 'package:clax_app/ui/make_service.dart';
 import 'package:clax_app/ui/making_preview.dart';
 import 'package:clax_app/ui/making_screen.dart';
 import 'package:clax_app/ui/theme.dart';
@@ -287,6 +288,63 @@ void main() {
       );
       control.emit(BuildState(aid, BuildPhase.running, featureId: 'f3'));
       await shot(tester, '6-launcher');
+    });
+
+    testWidgets('launcher with two making tiles, $scheme', skip: !_on, (
+      tester,
+    ) async {
+      await setUp(tester);
+      final plans = PlanStore();
+      final link = BuildLink(plans: plans, control: FakeBuilds());
+      var t = 0;
+      final api = FakeClaxApi(
+        clock: () => '2026-10-12T00:00:${(t++).toString().padLeft(2, '0')}Z',
+      );
+      api.seedArtifact('Groceries', {'index.html': '<p>x</p>'});
+      api.seedArtifact('Run log', {'index.html': '<p>x</p>'});
+      final reports = <void Function(MakeUpdate)>[];
+      final makes = MakeService((_, _, r) {
+        reports.add(r);
+        return Completer<String>().future;
+      });
+      makes.start('a habit tracker with streaks');
+      makes.start('a focus timer with a log of today’s sessions');
+      reports[0](const MakePlanKey('new:1'));
+      await plans.set('new:1', _features.take(5).toList());
+      await tester.pumpWidget(
+        app(
+          Launcher(
+            api: api,
+            open: (_) {},
+            make: (_, _, _) async => throw StateError('unused'),
+            voice: FakeVoice.unsupported('no'),
+            build: link,
+            makes: makes,
+          ),
+        ),
+      );
+      await shot(tester, '8-launcher-making');
+    });
+
+    testWidgets('build view top bar, $scheme', skip: !_on, (tester) async {
+      final png = await setUp(tester);
+      final makes = MakeService((_, _, r) {
+        r(MakeStage.writing);
+        r(const MakeProgress(Narration('Writing the habit list')));
+        r(const MakeProgress(PartialFile('index.html', '<p>x</p>')));
+        return Completer<String>().future;
+      });
+      final s = makes.start('a habit tracker with streaks');
+      await tester.pumpWidget(
+        app(
+          MakingScreen(
+            request: s.request,
+            session: s,
+            preview: () => _ShotPreview(png),
+          ),
+        ),
+      );
+      await shot(tester, '9-top-bar');
     });
   }
 }

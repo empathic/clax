@@ -363,9 +363,45 @@ void main() {
     expect(await api.listArtifacts(), isEmpty);
   });
 
-  testWidgets('system back on the making screen stops the run too', (
-    tester,
-  ) async {
+  /// A few frames: the making tiles' rings never settle.
+  Future<void> frames(WidgetTester tester) async {
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+  }
+
+  testWidgets('back leaves the make running as a tile, which shows it again; '
+      'it lands as its app', (tester) async {
+    final api = _api();
+    final proceed = Completer<void>();
+    final signals = <Future<void>>[];
+    await pumpLauncher(tester, api, makeFull: honouring(api, proceed, signals));
+    await submit(tester, 'a stopwatch');
+    var fired = false;
+    unawaited(signals.single.then((_) => fired = true));
+    await tester.binding.handlePopRoute();
+    await frames(tester);
+    expect(find.text('Making “a stopwatch”…'), findsNothing);
+    expect(fired, isFalse, reason: 'leaving never cancels');
+    expect(find.byKey(const ValueKey('making-tile')), findsOneWidget);
+    expect(find.byKey(const ValueKey('tile-making')), findsOneWidget);
+
+    await tester.tap(find.text('a stopwatch'));
+    await frames(tester);
+    expect(find.text('Making “a stopwatch”…'), findsOneWidget);
+    expect(signals, hasLength(1), reason: 'it attaches to the running make');
+
+    await tester.tap(find.byKey(const ValueKey('build-back')));
+    await frames(tester);
+    proceed.complete();
+    await frames(tester);
+    expect(find.byKey(const ValueKey('making-tile')), findsNothing);
+    expect(find.text('a stopwatch'), findsOneWidget, reason: 'its app tile');
+    expect(opened, isEmpty, reason: 'nothing opens by itself');
+  });
+
+  testWidgets('two makes show two tiles; Cancel in one build view stops '
+      'only that one', (tester) async {
     final api = _api();
     final signals = <Future<void>>[];
     await pumpLauncher(
@@ -374,12 +410,29 @@ void main() {
       makeFull: honouring(api, Completer<void>(), signals),
     );
     await submit(tester, 'a stopwatch');
-    var fired = false;
-    signals.single.then((_) => fired = true);
-    await tester.binding.handlePopRoute();
-    await tester.pumpAndSettle();
-    expect(find.textContaining('Making'), findsNothing);
-    expect(fired, isTrue);
+    await tester.tap(find.byKey(const ValueKey('build-back')));
+    await frames(tester);
+    await tester.tap(find.text('New app'));
+    await frames(tester);
+    await tester.enterText(find.byType(TextField), 'a habit tracker');
+    await tester.pump();
+    await tester.tap(find.text('Make it'));
+    await frames(tester);
+    await tester.tap(find.byKey(const ValueKey('build-back')));
+    await frames(tester);
+    expect(find.byKey(const ValueKey('making-tile')), findsNWidgets(2));
+
+    final fired = <int>[];
+    for (var i = 0; i < 2; i++) {
+      unawaited(signals[i].then((_) => fired.add(i)));
+    }
+    await tester.tap(find.text('a stopwatch'));
+    await frames(tester);
+    await tester.tap(find.text('Cancel'));
+    await frames(tester);
+    expect(fired, [0]);
+    expect(find.byKey(const ValueKey('making-tile')), findsOneWidget);
+    expect(find.text('a habit tracker'), findsOneWidget);
   });
 
   testWidgets('Retry runs with a fresh signal; Edit stops the old one', (
