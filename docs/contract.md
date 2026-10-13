@@ -4078,9 +4078,10 @@ What a page written for claude.ai meets in Clax, beyond the gesture rules:
   the room: each view stays on its version until it reloads. A viewer's
   level is fixed per connection; entering a name reconnects at the new level.
 - `sample`: the person's own API key pays for every call, not the viewer's
-  account, so only their browser can call it. Allowing lasts for the view,
-  not for the artifact. Answers are cached per browser in the daemon and
-  forgotten, with the day's call counts, when it restarts. A daemon
+  account, so only their browser can call it. Allowing lasts for the app
+  until revoked, not for the view. Answers are cached per browser in the
+  daemon and forgotten, with the day's call counts, when it restarts; the
+  day's spend against the cost cap is stored and survives a restart. A daemon
   restart under an open tab ends its calls with `session_expired`.
 
 ## Runtime capabilities in detail
