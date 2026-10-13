@@ -276,15 +276,17 @@ export type PeopleInvite = {
 };
 /** A new invite: `command` carries its code, shown this once. */
 export type NewInvite = { id: string; command: string; expires_at: string; person: { public_id: string | null; display_name: string | null } };
-/** An approval: `approver`'s agents may see `author`'s content at `scope`. */
+/** An approval: `approver`'s agents may see `author`'s content at `scope`;
+ * `author.owner` when the author is the owner; `artifact_title` is its
+ * page's title while the page is live. */
 export type PeopleApproval = {
-  id: string; approver: string | null; author: { public_id: string | null; name: string };
-  scope: "thread" | "artifact" | "everywhere"; artifact_id: string | null; thread_id: string | null;
+  id: string; approver: string | null; author: { public_id: string | null; name: string; owner?: boolean };
+  scope: "thread" | "artifact" | "everywhere"; artifact_id: string | null; artifact_title?: string | null; thread_id: string | null;
   created_at: string; created_via: string; request_id: string | null;
 };
 /** An approval request, never with the withheld content. */
 export type PeopleRequest = {
-  id: string; author: { public_id: string; name: string }; artifact_id: string; thread_id: string | null;
+  id: string; author: { public_id: string; name: string; owner?: boolean }; artifact_id: string; thread_id: string | null;
   agent: { handle: string | null; name: string; harness: string; live: boolean } | null;
   cause: string; count: number; status: string; created_at: string;
 };

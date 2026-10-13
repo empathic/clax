@@ -14,6 +14,7 @@
   // also refetches on the stream's `people` (the owner's) and `agents`
   // topics, so a person who connects appears.
   import { onDestroy, onMount } from "svelte";
+  import { listArtifacts } from "../api";
   import type { PeopleApproval, PeopleGrant, PeopleInvite, PeopleList, PeopleMe, PeopleRequest } from "../api";
   import type { EventStream } from "../stream";
   import * as api from "./api";
@@ -33,6 +34,10 @@
   let approvals = $state<PeopleApproval[]>([]);
   let requests = $state<PeopleRequest[]>([]);
   let banner = $state<string | null>(null);
+  // The live artifacts, for raising an agent at one: loaded when a raise
+  // panel opens, or when an agent of the viewer's is raised at one.
+  let artifacts = $state<{ id: string; title: string }[] | null>(null);
+  let artifactsWanted = false;
   let inviting = $state(false);
   // The open dialog is the first invite's: the switch shows in it, not apart.
   let firstInvite = $state(false);
@@ -53,7 +58,12 @@
       approvals = aps.approvals; requests = reqs.requests.filter(r => r.status === "open"); banner = reqs.banner;
       err = null;
     } catch (e) { if (!gone) { me = m; err = msg(e); } }
+    if (artifactsWanted || m.agents.some(a => a.elevate?.some(x => x.locations?.some(l => l !== "*")))) void needArtifacts();
     if (!off && stream && !gone) off = stream.watch(owner ? ["people", "agents"] : ["agents"], e => { if (e.type !== "stream_down" && e.type !== "stream_up" && e.type !== "refused") reload(); });
+  }
+  async function needArtifacts() {
+    artifactsWanted = true;
+    try { const l = await listArtifacts(); if (!gone) artifacts = l.map(a => ({ id: a.id, title: a.title })); } catch { /* raises name artifact IDs meanwhile */ }
   }
   // One load at a time; a change during one loads once more after it.
   let loading = false;
@@ -69,6 +79,12 @@
   const revoked = $derived(list?.people.filter(p => p.revoked_at) ?? []);
   const live = $derived(liveInvites(invites, clock()));
   const SCOPE = { everywhere: "everywhere", artifact: "on one page", thread: "in one thread" } as const;
+  /** An approval's scope, naming its page when the daemon names it. */
+  const scopeOf = (ap: PeopleApproval) => !ap.artifact_title || ap.scope === "everywhere" ? SCOPE[ap.scope]
+    : ap.scope === "artifact" ? `on “${ap.artifact_title}”` : `in one thread on “${ap.artifact_title}”`;
+  /** Whose content an approval or request is about; the owner marked as
+   * such (the daemon names an unnamed owner "The owner"). */
+  const authorOf = (a: { name: string; owner?: boolean }) => (a.owner && a.name !== "The owner" ? `${a.name} (the owner)` : a.name);
   async function act(fn: () => Promise<unknown>, ask?: string) {
     if (ask && !confirm(ask)) return;
     try { await fn(); reload(); } catch (e) { err = msg(e); }
@@ -120,12 +136,12 @@
   {/if}
 
   {#if self}
-    <PersonCard view="self" owner={owner} who={self} onChanged={reload} />
+    <PersonCard view="self" owner={owner} who={self} {artifacts} onChanged={reload} />
   {/if}
 
   {#if owner}
     {#each people as p (p.public_id)}
-      <PersonCard view="owner" who={p} approvals={approvals.filter(a => a.author.public_id === p.public_id)} waiting={requests.filter(r => r.author.public_id === p.public_id)} onChanged={reload} />
+      <PersonCard view="owner" who={p} approvals={approvals.filter(a => a.author.public_id === p.public_id)} waiting={requests.filter(r => r.author.public_id === p.public_id)} {artifacts} {needArtifacts} onChanged={reload} />
     {:else}
       {#if list}<p class="note">No one is connected yet. Invite a person to let their agents work with yours.</p>{/if}
     {/each}
@@ -139,14 +155,14 @@
     <section class="pcard approvals">
       <h3>Who reaches your agents</h3>
       {#each approvals as ap (ap.id)}
-        <div class="line"><span>{ap.author.name}</span><span class="meta">{SCOPE[ap.scope]}</span><span class="sp"></span>
+        <div class="line"><span>{authorOf(ap.author)}</span><span class="meta">{scopeOf(ap)}</span><span class="sp"></span>
           <button type="button" class="ghost" onclick={() => act(() => api.revokeApproval(ap.id))}>Revoke</button></div>
       {:else}
         <p class="none">No one yet: your agents ask you first.</p>
       {/each}
       {#if requests.length}
         <h4>Waiting</h4>
-        {#each requests as r (r.id)}<div class="line"><span>{r.count} from {r.author.name}{r.agent ? ` for ${r.agent.name}` : ""}</span></div>{/each}
+        {#each requests as r (r.id)}<div class="line wait"><span>{r.count} from {authorOf(r.author)}{r.agent ? ` for ${r.agent.name}` : ""}</span></div>{/each}
       {/if}
     </section>
   {/if}
@@ -186,6 +202,11 @@
     .ppl .rename input { width: 180px; max-width: 100%; }
     .ppl a { color: var(--fg); }
     .ppl .wait { color: var(--fg); font-size: 13.5px; }
+    .ppl select { min-width: 0; max-width: 100%; }
+    .ppl .where { display: flex; flex-wrap: wrap; margin: 4px 0 2px; }
+    .ppl .where select { flex: 0 1 auto; }
+    .ppl .raises { margin: 4px 0; padding-left: 18px; font-size: 13px; overflow-wrap: anywhere; }
+    .ppl .raised { display: block; color: var(--muted); font-size: 12px; }
     @media (max-width: 700px) {
       .ppl .pcard { padding: 12px; }
       .ppl .caps { grid-template-columns: 1fr; }
