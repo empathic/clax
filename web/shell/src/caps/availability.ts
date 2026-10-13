@@ -4,7 +4,8 @@
 // `room` when declared; `sample` to the owner shell, when declared and the
 // daemon has a provider; the device capabilities (`notify`, `share`, `files`,
 // `camera`, `location`) when declared and the Clax app hosts the view
-// (device-link.ts); claude.ai's `files` and `mcp` never.
+// (device-link.ts); `net` to the owner shell when declared; claude.ai's
+// `files` and `mcp` never.
 
 export type Declared = Record<string, Record<string, unknown> | undefined>;
 
@@ -29,6 +30,8 @@ export function isAvailable(name: string, declared: Declared, owner: boolean, se
     // The owner's browser only: the key is the owner's, and a LAN viewer cannot spend it.
     case "sample": return owner && declares(name, declared) && served.sample === true;
     case "notify": case "share": case "files": case "camera": case "location": return declares(name, declared) && served.device === true;
+    // The owner's views only: the fetch route takes the token (net.ts).
+    case "net": return owner && declares(name, declared);
     default: return false;
   }
 }
