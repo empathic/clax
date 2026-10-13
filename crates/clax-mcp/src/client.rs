@@ -14,6 +14,8 @@ use clax_core::remote::{
 };
 use clax_core::secret::Secret;
 use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -1105,6 +1107,133 @@ impl DaemonClient {
             .await
     }
 
+    /// `PATCH /api/sessions/<sid>` `{name}`: the agent names itself (spec
+    /// §11); `{session}`.
+    pub async fn set_name(&self, name: &str) -> Result<Value> {
+        let body = json!({"name": name});
+        self.json(|c| {
+            c.request(reqwest::Method::PATCH, &c.session_path())
+                .json(&body)
+        })
+        .await
+    }
+
+    /// `POST /api/sessions/<sid>/approvals` `{artifact_id?, thread_id?,
+    /// author?}` (spec §9.2): `{approval_id, status, scope, request,
+    /// requests}`.
+    pub async fn approval_ask(&self, body: &Value) -> Result<Value> {
+        self.json(|c| {
+            c.request(
+                reqwest::Method::POST,
+                &format!("{}/approvals", c.session_path()),
+            )
+            .json(body)
+        })
+        .await
+    }
+
+    /// `GET /api/sessions/<sid>/approvals/<rid>?wait=<wait_s>`:
+    /// `{approval_id, status, scope, request, waited_s}`; the deadline is
+    /// `wait_s` plus 10 s. `rid` must be a ULID.
+    pub async fn approval_wait(&self, rid: &str, wait_s: u64) -> Result<Value> {
+        let q = [("wait", wait_s.to_string())];
+        let deadline = Duration::from_secs(wait_s + 10);
+        self.json(|c| {
+            c.request(
+                reqwest::Method::GET,
+                &format!("{}/approvals/{rid}", c.session_path()),
+            )
+            .query(&q)
+            .timeout(deadline)
+        })
+        .await
+    }
+
+    /// `POST /api/sessions/<sid>/threads/<tid>/handoff` `{to?}` (spec §12):
+    /// `{thread}`. `tid` must be a ULID.
+    pub async fn handoff(&self, tid: &str, to: Option<&str>) -> Result<Value> {
+        let body = match to {
+            Some(t) => json!({"to": t}),
+            None => json!({}),
+        };
+        self.json(|c| {
+            c.request(
+                reqwest::Method::POST,
+                &format!("{}/threads/{tid}/handoff", c.session_path()),
+            )
+            .json(&body)
+        })
+        .await
+    }
+
+    /// Thread `tid`'s clip on artifact `aid`
+    /// (`GET /api/artifacts/<aid>/threads/<tid>/clip`), as bytes.
+    pub async fn clip_bytes(&self, aid: &str, tid: &str) -> Result<Vec<u8>> {
+        let path = format!("/api/artifacts/{aid}/threads/{tid}/clip");
+        let res = self
+            .send(|c| c.request(reqwest::Method::GET, &path))
+            .await?;
+        res.bytes()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(|e| transport_error(e).error)
+    }
+
+    /// For a remote daemon (spec §16): `text` with its `Clip:` lines
+    /// rewritten to the clips fetched (signed) into
+    /// `<home>/remote-cache/clips/` ([`clax_core::clips::rewrite_text`]).
+    /// The local daemon's text as it is.
+    pub async fn rewrite_clip_text(&self, text: &str) -> String {
+        let Some(fetched) = self.fetch_clips(&clip_refs_in_text(text)).await else {
+            return text.to_string();
+        };
+        clax_core::clips::rewrite_text(text, &mut |a, t| lookup(&fetched, a, t))
+    }
+
+    /// For a remote daemon: each of `items` (feedback items or thread
+    /// views) with its `clip_path` rewritten as
+    /// [`DaemonClient::rewrite_clip_text`] rewrites a line
+    /// ([`clax_core::clips::rewrite_json`]).
+    pub async fn rewrite_clip_items(&self, items: &mut [Value]) {
+        let refs: Vec<(String, String)> = items
+            .iter()
+            .filter_map(|v| v["clip_path"].as_str())
+            .filter_map(clax_core::clips::parse_reference)
+            .collect();
+        let Some(fetched) = self.fetch_clips(&refs).await else {
+            return;
+        };
+        for v in items {
+            clax_core::clips::rewrite_json(v, &mut |a, t| lookup(&fetched, a, t));
+        }
+    }
+
+    /// Each clip of `refs` fetched into the remote cache, or why not;
+    /// `None` for the local daemon.
+    async fn fetch_clips(
+        &self,
+        refs: &[(String, String)],
+    ) -> Option<HashMap<(String, String), std::result::Result<PathBuf, String>>> {
+        let remote = self.inner.remote.as_ref()?;
+        let dir = remote.clip_cache();
+        let mut out = HashMap::new();
+        for (aid, tid) in refs {
+            if out.contains_key(&(aid.clone(), tid.clone())) {
+                continue;
+            }
+            let got = match self.clip_bytes(aid, tid).await {
+                Ok(bytes) => clax_core::clips::store(&dir, aid, tid, &bytes)
+                    .map_err(|e| format!("could not be cached: {e}")),
+                Err(ClientError::Api { error, .. }) => {
+                    Err(error["code"].as_str().unwrap_or("refused").to_string())
+                }
+                Err(e) => Err(e.to_string()),
+            };
+            out.insert((aid.clone(), tid.clone()), got);
+        }
+        Some(out)
+    }
+
     /// `GET /api/sessions/<sid>/watches`: `{watches}`.
     pub async fn watches(&self) -> Result<Value> {
         self.json(|c| {
@@ -1292,6 +1421,26 @@ impl DaemonClient {
         }
         remote.sessions.remove(&keys, &s.id);
     }
+}
+
+/// The clip references of `text`'s `Clip:` lines.
+fn clip_refs_in_text(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|l| l.strip_prefix("Clip: "))
+        .filter_map(clax_core::clips::parse_reference)
+        .collect()
+}
+
+/// The fetched clip of `(aid, tid)` in `fetched`, or why there is none.
+fn lookup(
+    fetched: &HashMap<(String, String), std::result::Result<PathBuf, String>>,
+    aid: &str,
+    tid: &str,
+) -> std::result::Result<PathBuf, String> {
+    fetched
+        .get(&(aid.to_string(), tid.to_string()))
+        .cloned()
+        .unwrap_or_else(|| Err("not fetched".into()))
 }
 
 /// The names a registration's session is found by (spec 2026-10-08 §6.8):

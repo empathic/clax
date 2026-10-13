@@ -128,6 +128,12 @@ pub struct JoinBody {
     /// without it keeps the recorded value.
     #[serde(default)]
     transcript_path: Option<String>,
+    /// The repository and branch of the hook's `cwd` (spec §11), which
+    /// name a row the join makes or a hook's row named from its harness.
+    #[serde(default)]
+    repo: Option<String>,
+    #[serde(default)]
+    branch: Option<String>,
 }
 
 /// Joins a harness session ID to its session among the caller's
@@ -167,6 +173,8 @@ pub async fn join(
                     cwd: b.cwd,
                     ancestor_pids: b.ancestor_pids,
                     transcript_path: transcript,
+                    repo: b.repo,
+                    branch: b.branch,
                 },
                 grant.as_deref(),
                 Proved::Session(proved.as_deref()),
@@ -272,25 +280,50 @@ pub async fn list(
     Ok(Json(json!({"sessions": sessions})))
 }
 
-/// One of the caller's sessions and how feedback can be pushed to it
-/// ([`push_info`]); needs a credential, as [`list`] does.
+/// One of the caller's sessions, how feedback can be pushed to it
+/// ([`push_info`]), and whom it acts for and with which rights (spec §16,
+/// the `status` tool): `person` is `{public_id, name, owner}` (the
+/// owner's agents act for the owner, whose `public_id` is null before the
+/// owner has an identity), and `rights` the caller's rights (the access
+/// array; the daemon token's are the full preset). Needs a credential, as
+/// [`list`] does.
 pub async fn get(
     State(s): State<AppState>,
-    _a: TokenOrAgent<SessionsGet>,
+    TokenOrAgent(a): TokenOrAgent<SessionsGet>,
     id: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = path(id)?;
-    let (session, codex_home, push_error) = s
+    let rights = match &a.caller {
+        crate::auth::Caller::PersonAgent { rights, .. } => rights.to_json(),
+        _ => clax_core::rights::Rights::full().to_json(),
+    };
+    let (session, codex_home, push_error, person) = s
         .store_call(move |st| {
             let session = st.get_session(&id)?.ok_or(CoreError::NotFound)?;
             let codex_home = st.codex_home(&id)?;
             let push_error = st.push_error(&id)?;
-            Ok((session, codex_home, push_error))
+            let person = match &session.person {
+                Some(p) => {
+                    let v = st.viewer_by_public_id(p)?;
+                    json!({"public_id": p, "owner": false,
+                           "name": clax_core::feedback::person_name(
+                               v.as_ref().and_then(|v| v.display_name.as_deref()), false)})
+                }
+                None => {
+                    let v = st.owner()?;
+                    json!({"public_id": v.as_ref().map(|v| v.public_id.clone()), "owner": true,
+                           "name": clax_core::feedback::person_name(
+                               v.as_ref().and_then(|v| v.display_name.as_deref()), true)})
+                }
+            };
+            Ok((session, codex_home, push_error, person))
         })
         .await?;
     let following = s.followers.is_following(&session.id);
     let push = push_info(&session, &s.codex, codex_home, push_error, following);
-    Ok(Json(json!({"session": session, "push": push})))
+    Ok(Json(
+        json!({"session": session, "push": push, "person": person, "rights": rights}),
+    ))
 }
 
 /// Why nothing wakes an idle Claude Code session that no notice follower

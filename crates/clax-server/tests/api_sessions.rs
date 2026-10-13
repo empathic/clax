@@ -701,3 +701,42 @@ async fn renaming_an_agent_is_its_persons_or_the_owners_from_a_browser_or_the_cl
     let (st, _) = rename(&ts, &handle, "ended", |r| ts.authed(r)).await;
     assert_eq!(st, 404, "an ended agent is not renamed");
 }
+
+/// Spec §16: an agent reading its own session learns who it acts for and
+/// with which rights, as the `status` tool reports them: the owner's
+/// agents act for the owner with full rights, a person's agent for that
+/// person with the person's rights.
+#[tokio::test]
+async fn a_session_names_its_person_and_rights() {
+    use clax_core::rights::Rights;
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let mine = ts.register_session("claude", "h1").await;
+    let v: Value = ts
+        .get_authed(&format!("/api/sessions/{}", mine["id"].as_str().unwrap()))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["person"]["owner"], true, "{v}");
+    assert_eq!(v["person"]["name"], "The owner", "{v}");
+    assert_eq!(v["rights"], Rights::full().to_json(), "{v}");
+    let sam = ts.connect_person("Sam", "clax:reader").await;
+    let s = sam.register("claude", "sam-1").await;
+    let sid = s["id"].as_str().unwrap();
+    let v: Value = sam
+        .get(Some(sid), &format!("/api/sessions/{sid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["person"]["owner"], false, "{v}");
+    assert_eq!(v["person"]["name"], "Sam", "{v}");
+    assert_eq!(v["person"]["public_id"], s["person"], "{v}");
+    assert_eq!(
+        v["rights"],
+        Rights::preset(clax_core::rights::PRESET_READER)
+            .unwrap()
+            .to_json(),
+        "{v}"
+    );
+}

@@ -550,6 +550,34 @@ impl<'a> HookDaemon<'a> {
             .request_with(method, path, body, timeout, &headers)
     }
 
+    /// For a remote daemon, `text` with each clip it names by reference
+    /// fetched (signed, as the hook's session) into
+    /// `<home>/remote-cache/clips/` and its `Clip:` line rewritten (spec
+    /// §16); the local daemon's text as it is.
+    fn remote_text(&self, text: String) -> String {
+        let (Some(remote), Some(r)) = (self.client.remote(), &self.remote) else {
+            return text;
+        };
+        let cred = r.current().ok().flatten();
+        let dir = remote.clip_cache();
+        clax_core::clips::rewrite_text(&text, &mut |aid, tid| {
+            let mut headers: Vec<(&str, &str)> = Vec::new();
+            if let Some(c) = &cred {
+                headers.push(("x-clax-session", &c.session));
+                headers.push((SESSION_SECRET_HEADER, c.secret.expose()));
+            }
+            let bytes = self
+                .client
+                .get_bytes_with(
+                    &format!("/api/artifacts/{aid}/threads/{tid}/clip"),
+                    &headers,
+                )
+                .map_err(|e| error_code(&format!("{e:#}")))?;
+            clax_core::clips::store(&dir, aid, tid, &bytes)
+                .map_err(|e| format!("could not be cached: {e}"))
+        })
+    }
+
     /// Removes a remote session's credential files: its session has ended.
     fn forget_session(&self) {
         if let Some(r) = &self.remote {
@@ -596,6 +624,9 @@ impl Daemon for HookDaemon<'_> {
     }
     fn patch(&self, path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
         self.send(reqwest::Method::PATCH, path, Some(body), None)
+    }
+    fn agent_text(&self, text: String) -> String {
+        self.remote_text(text)
     }
 }
 

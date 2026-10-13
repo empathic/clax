@@ -1140,6 +1140,14 @@ impl Store {
             if stale_view(self, vis) {
                 return Ok(None);
             }
+            let remote: bool = tx
+                .query_row(
+                    "SELECT grant_id IS NOT NULL FROM sessions WHERE id = ?1",
+                    params![q.session_id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .unwrap_or(false);
             let mut stmt = tx.prepare_cached(TAKE_FEEDBACK)?;
             let rows = stmt
                 .query_map(
@@ -1228,8 +1236,15 @@ impl Store {
                 };
                 let withheld = withheld.filter(|w| !w.is_empty());
                 let shown = withheld.as_ref();
-                let clip_path = (p.has_clip && !shown.is_some_and(|w| w.clip))
-                    .then(|| self.home.clip_path(&aid, &p.thread_id).to_string_lossy().into_owned());
+                // A grant session's agent is on another machine: it fetches
+                // the clip by reference (spec §16), never by this path.
+                let clip_path = (p.has_clip && !shown.is_some_and(|w| w.clip)).then(|| {
+                    if remote {
+                        crate::clips::reference(aid.as_str(), &p.thread_id)
+                    } else {
+                        self.home.clip_path(&aid, &p.thread_id).to_string_lossy().into_owned()
+                    }
+                });
                 if let Some(w) = shown {
                     if w.title.is_some() {
                         p.title = crate::visibility::placeholder::title_by(
@@ -3269,6 +3284,43 @@ mod delivery {
             body: "on it".into(),
             via_page: false,
         }
+    }
+
+    /// Spec §16: a grant session's payload names its clip by reference,
+    /// never by a path on the daemon's machine; the token's agents keep
+    /// the path.
+    #[test]
+    fn a_grant_sessions_clip_is_a_reference() {
+        let w = two_people();
+        let aid = w.publish(&w.sam, "Sam's plan", "Sam's words");
+        let owners = owner_agent(&w, &aid);
+        let tid = w.thread(&aid, &w.sam, "SAMWORDS", "Sam's words", 1);
+        let items = w.take(Tier::Wait, &w.sam_vis()).items;
+        assert_eq!(
+            items[0].clip_path.as_deref(),
+            Some(crate::clips::reference(aid.as_str(), &tid).as_str())
+        );
+        let text = crate::feedback::render_item(&items[0]);
+        assert!(
+            text.contains(&format!("\nClip: clax-clip:{}/{tid}\n", aid.as_str())),
+            "{text}"
+        );
+        let mine =
+            w.st.take_feedback(
+                DAEMON,
+                &TakeFeedback {
+                    session_id: owners,
+                    tier: Tier::Wait,
+                    artifact_id: None,
+                    include_resends: true,
+                },
+                BASE,
+                &Visibility::all(),
+            )
+            .unwrap()
+            .items;
+        let path = mine[0].clip_path.clone().unwrap();
+        assert!(std::path::Path::new(&path).is_absolute(), "{path}");
     }
 
     #[test]

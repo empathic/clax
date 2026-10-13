@@ -51,6 +51,11 @@ pub struct JoinSession {
     /// recorded one.
     pub transcript_path: Option<String>,
     pub ancestor_pids: Vec<u32>,
+    /// The repository and branch the hook's `cwd` is in (spec §11): a row
+    /// made here, or a hook's row named from its harness alone, is named
+    /// after them.
+    pub repo: Option<String>,
+    pub branch: Option<String>,
 }
 
 /// What a new session got back from its harness session's last end, an
@@ -748,7 +753,10 @@ impl Store {
             cwd,
             ancestor_pids,
             transcript_path,
+            repo,
+            branch,
         } = j;
+        let (repo, branch) = (repo.as_deref(), branch.as_deref());
         let (harness, harness_session_id) = (harness.as_str(), harness_session_id.as_str());
         let cwd = cwd.as_deref();
         let transcript_path = transcript_path.as_deref();
@@ -799,6 +807,20 @@ impl Store {
                     if after != before {
                         self.record_session(tx, ctx, AuditKind::SessionJoin, &id, harness)?;
                     }
+                    // A row without a name, or a hook's row (no process)
+                    // named from its harness alone, takes the name the
+                    // join's repository gives (spec §11).
+                    let named = fetch(tx, &id)?;
+                    let hook_row = named.pid.is_none()
+                        && named.name_source.as_deref() == Some(NameSource::Derived.as_str())
+                        && repo.is_some();
+                    if named.name.is_none() || hook_row {
+                        let name = derived_name(tx, repo, branch, harness, Some(&id))?;
+                        tx.execute(
+                            "UPDATE sessions SET name = ?2, name_source = 'derived' WHERE id = ?1",
+                            params![id, name],
+                        )?;
+                    }
                     // A row the shim made without the harness session ID
                     // (Codex's) gets it here: what its last idle end saved
                     // comes back now.
@@ -809,7 +831,7 @@ impl Store {
                 }
                 None => {
                     let id = new_ulid();
-                    let name = derived_name(tx, None, None, harness, None)?;
+                    let name = derived_name(tx, repo, branch, harness, None)?;
                     secret = issue_secret(grant_id);
                     tx.execute(
                         "INSERT INTO sessions (id, harness, harness_session_id, cwd, pid, parent_pid,
@@ -1722,6 +1744,8 @@ mod tests {
             cwd: cwd.map(String::from),
             ancestor_pids: ancestor_pids.to_vec(),
             transcript_path: None,
+            repo: None,
+            branch: None,
         }
     }
 
@@ -2517,6 +2541,8 @@ mod tests {
                         cwd: None,
                         ancestor_pids: vec![],
                         transcript_path: None,
+                        repo: None,
+                        branch: None,
                     },
                     None,
                 )
@@ -2539,6 +2565,66 @@ mod tests {
             assert_eq!(
                 (shim.id.as_str(), shim.name.as_deref()),
                 (hook.id.as_str(), Some("web-axis"))
+            );
+        }
+
+        /// Spec §11: a hook's join names the row after the repository it
+        /// sends, whether the join makes the row or finds a hook's row
+        /// named from its harness alone; a shim's row keeps its name.
+        #[test]
+        fn a_hooks_join_names_its_row_after_the_repository() {
+            let (_d, _c, st) = store();
+            let hook = |hsid: &str, pid: u32, repo: Option<&str>| JoinSession {
+                harness: "claude".into(),
+                parent_pid: pid,
+                harness_session_id: hsid.into(),
+                repo: repo.map(str::to_string),
+                branch: Some("feature/chart-axis".into()),
+                ..Default::default()
+            };
+            let made = st
+                .join_session(DAEMON, hook("h1", 5, Some("web")), None)
+                .unwrap();
+            assert_eq!(made.name.as_deref(), Some("web-chart-axis"));
+            let bare = st.join_session(DAEMON, hook("h2", 6, None), None).unwrap();
+            assert_eq!(bare.name.as_deref(), Some("claude"));
+            let again = st
+                .join_session(DAEMON, hook("h2", 6, Some("api")), None)
+                .unwrap();
+            assert_eq!(
+                (again.id.as_str(), again.name.as_deref()),
+                (bare.id.as_str(), Some("api-chart-axis"))
+            );
+            // The shim's row, named from its own repository, keeps it.
+            let shim = st
+                .register_session(
+                    DAEMON,
+                    RegisterSession {
+                        harness: "codex".into(),
+                        cwd: "/w".into(),
+                        pid: Some(10),
+                        parent_pid: Some(7),
+                        repo: Some("docs".into()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            let joined = st
+                .join_session(
+                    DAEMON,
+                    JoinSession {
+                        harness: "codex".into(),
+                        parent_pid: 7,
+                        harness_session_id: "cx".into(),
+                        repo: Some("other".into()),
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .unwrap();
+            assert_eq!(
+                (joined.id.as_str(), joined.name.as_deref()),
+                (shim.id.as_str(), Some("docs"))
             );
         }
 
@@ -3344,6 +3430,8 @@ mod tests {
                         cwd: None,
                         transcript_path: None,
                         ancestor_pids: vec![],
+                        repo: None,
+                        branch: None,
                     },
                     Some(&w.grant),
                 )
@@ -3449,6 +3537,8 @@ mod tests {
                 cwd: None,
                 transcript_path: None,
                 ancestor_pids: vec![],
+                repo: None,
+                branch: None,
             };
             let first = st.register_session(DAEMON, shim(10)).unwrap().id;
             st.join_session(DAEMON, hook(10), None).unwrap();

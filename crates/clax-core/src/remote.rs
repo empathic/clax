@@ -920,11 +920,18 @@ impl SessionFiles {
         &self,
         key: &SessionKey<'_>,
     ) -> Result<Option<CredentialFile>, CredentialUnreadable> {
-        use nix::fcntl::OFlag;
-        use std::io::Read;
-        let (Some(path), Some(name)) = (self.path(key), key.file_name()) else {
+        let Some(name) = key.file_name() else {
             return Ok(None);
         };
+        self.read_named(&name)
+    }
+
+    /// The file `name` of the directory as written, `None` when there is
+    /// no such file.
+    fn read_named(&self, name: &str) -> Result<Option<CredentialFile>, CredentialUnreadable> {
+        use nix::fcntl::OFlag;
+        use std::io::Read;
+        let path = self.dir.join(name);
         let unreadable = |why: String| CredentialUnreadable {
             path: path.clone(),
             why,
@@ -934,7 +941,7 @@ impl SessionFiles {
         };
         let fd = match nix::fcntl::openat(
             &dir,
-            name.as_str(),
+            name,
             no_follow() | OFlag::O_RDONLY | OFlag::O_NONBLOCK,
             nix::sys::stat::Mode::empty(),
         ) {
@@ -978,6 +985,46 @@ impl SessionFiles {
             session: f.session,
             secret: Secret::new(f.secret),
         }))
+    }
+
+    /// The credential of session `session`, in whichever file holds it
+    /// (a client told its session's ID, such as `clax feedback follow
+    /// --session`): `None` when no file does.
+    ///
+    /// # Errors
+    /// [`CredentialUnreadable`] when the directory cannot be listed.
+    pub fn by_session(
+        &self,
+        session: &str,
+    ) -> Result<Option<SessionCredential>, CredentialUnreadable> {
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(CredentialUnreadable {
+                    path: self.dir.clone(),
+                    why: e.to_string(),
+                });
+            }
+        };
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| !n.starts_with('.') && n.ends_with(".json"))
+            .collect();
+        names.sort();
+        for name in names {
+            // A file that cannot be read is another session's problem.
+            if let Ok(Some(f)) = self.read_named(&name)
+                && f.session == session
+            {
+                return Ok(Some(SessionCredential {
+                    session: f.session,
+                    secret: Secret::new(f.secret),
+                }));
+            }
+        }
+        Ok(None)
     }
 
     /// The credential `seeker` may use, found as registration and join
@@ -1189,6 +1236,16 @@ impl Remote {
     /// The access token's credential.
     pub fn grant(&self) -> Credential<'_> {
         Credential::Grant(&self.config.access_token)
+    }
+
+    /// `<home>/remote-cache/clips`: where the agent side keeps the clips
+    /// it fetched from the remote daemon (spec §16), beside the sessions'
+    /// credential directory.
+    pub fn clip_cache(&self) -> PathBuf {
+        self.sessions
+            .dir()
+            .with_file_name("remote-cache")
+            .join("clips")
     }
 
     /// The URL people open for `path` on the remote daemon.

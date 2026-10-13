@@ -1,4 +1,4 @@
-//! The Clax MCP tool set: twenty-four tools that call the daemon's REST API.
+//! The Clax MCP tool set: twenty-five tools that call the daemon's REST API.
 
 use crate::client::{ClientError, DaemonClient};
 use crate::render;
@@ -151,7 +151,11 @@ pub struct AssetUploadArgs {
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct StatusArgs {}
+pub struct StatusArgs {
+    /// Name yourself for this task, such as `fix-chart-axis`: letters,
+    /// digits, `.`, `_` and `-`, unique among live agents.
+    pub name: Option<String>,
+}
 
 /// Default `timeout_s` of `wait_for_feedback`.
 pub const DEFAULT_WAIT_S: u64 = 50;
@@ -196,6 +200,18 @@ pub struct CommentsResolveArgs {
     pub url_or_id: String,
     /// The thread to resolve.
     pub thread_id: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CommentsHandoffArgs {
+    /// Artifact URL or ID, or a web page's URL (its live page).
+    pub url_or_id: String,
+    /// The thread to hand off or release.
+    pub thread_id: String,
+    /// The live agent (its name) to hand the thread to; without it, the
+    /// thread is released.
+    pub to: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -259,6 +275,26 @@ pub struct AskArgs {
     pub timeout_s: Option<u64>,
     /// With `question_id`: withdraw the question.
     pub cancel: Option<bool>,
+    /// Ask your person to let you see what is withheld from you instead of
+    /// asking questions: `url_or_id`, and optionally `thread_id` and
+    /// `author` (the public ID a `withheld` summary names).
+    pub approval: Option<ApprovalArg>,
+    /// Keep waiting on an approval you asked for (after `call_again`).
+    pub approval_id: Option<String>,
+}
+
+/// What `ask`'s `approval` asks to see (spec §9.2).
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalArg {
+    /// The artifact (URL or ID) the withheld content is on.
+    pub url_or_id: Option<String>,
+    /// The thread holding it; without one, what is withheld on the
+    /// artifact outside its threads.
+    pub thread_id: Option<String>,
+    /// Only this author's content: the public ID a `withheld` summary
+    /// names.
+    pub author: Option<String>,
 }
 
 /// The note every `ask` result carries.
@@ -598,6 +634,13 @@ pub fn thread_summary(t: &Value) -> Value {
     if let Some(page) = t.get("page_url") {
         out["page_url"] = page.clone();
         out["snapshot_path"] = t["snapshot_path"].clone();
+    }
+    // Who owns the thread (spec §12): the owner, or the name of another
+    // live agent that took it.
+    for k in ["owner", "taken_by"] {
+        if let Some(v) = t.get(k).filter(|v| !v.is_null()) {
+            out[k] = v.clone();
+        }
     }
     if anchor_withheld {
         out["anchor_withheld"] = json!(true);
@@ -1341,8 +1384,19 @@ impl ClaxTools {
         Ok(json!({"assets": assets}))
     }
 
-    async fn do_status(&self) -> Outcome {
-        let h = self.client.healthz().await.map_err(|e| self.fail(e))?;
+    async fn do_status(&self, a: StatusArgs) -> Outcome {
+        if let Some(name) = &a.name {
+            self.require_session().await?;
+            self.client.set_name(name).await.map_err(|e| self.fail(e))?;
+        }
+        // A remote daemon refuses `/healthz` to another machine's agents
+        // (spec §7.5): its version is not asked, the session is.
+        let h = if self.client.is_remote() {
+            self.require_session().await?;
+            json!({"version": null})
+        } else {
+            self.client.healthz().await.map_err(|e| self.fail(e))?
+        };
         let session = self.session();
         let watches = match &session {
             Some(_) => match self.client.watches().await {
@@ -1354,23 +1408,37 @@ impl ClaxTools {
             },
             None => json!([]),
         };
-        let mut out = json!({
-            "daemon_url": self.browser_base(),
-            "version": h["version"],
-            "harness": session.as_ref().map(|s| &s.harness),
-            "session": session,
-            "watches": watches,
-        });
-        out["push"] = match &session {
+        let info = match &session {
             Some(_) => match self.client.session_info().await {
-                Ok(v) => v["push"].clone(),
+                Ok(v) => v,
                 Err(e) => {
-                    tracing::warn!(error = %e, "status could not read the session's push");
+                    tracing::warn!(error = %e, "status could not read the session");
                     Value::Null
                 }
             },
             None => Value::Null,
         };
+        // The session as the daemon has it now: its name may have changed.
+        let session = match serde_json::from_value::<Session>(info["session"].clone()) {
+            Ok(s) => Some(s),
+            Err(_) => session,
+        };
+        let mut out = json!({
+            "daemon_url": self.browser_base(),
+            "version": h["version"],
+            "harness": session.as_ref().map(|s| &s.harness),
+            "name": session.as_ref().and_then(|s| s.name.clone()),
+            "person": info["person"],
+            "rights": info["rights"],
+            "session": session,
+            "watches": watches,
+        });
+        out["push"] = info["push"].clone();
+        // `remote` only on a remote daemon (spec §16): a local install's
+        // status is otherwise as before (§19).
+        if self.client.is_remote() {
+            out["remote"] = json!(true);
+        }
         if let Some(ch) = &self.channel {
             let bin = std::env::current_exe()
                 .map(|p| p.display().to_string())
@@ -1392,7 +1460,7 @@ impl ClaxTools {
             out["push"]["follow_command"] = json!(crate::channel::grok_follow_command(&bin, hs));
         }
         // Version skew between these tools and the daemon they call.
-        if h["version"].as_str() != Some(env!("CARGO_PKG_VERSION")) {
+        if !h["version"].is_null() && h["version"].as_str() != Some(env!("CARGO_PKG_VERSION")) {
             out["daemon_version"] = h["version"].clone();
         }
         // Version skew between the installed plugin and these tools.
@@ -1424,7 +1492,7 @@ impl ClaxTools {
         }
         match self.client.feedback("piggyback", 0, None).await {
             Ok(res) => {
-                let h = render::Handover::of(&res);
+                let h = self.handover(&res).await;
                 self.forget_answered(&h);
                 h
             }
@@ -1433,6 +1501,19 @@ impl ClaxTools {
                 render::Handover::default()
             }
         }
+    }
+
+    /// The handover of feedback response `res`, its clips fetched and its
+    /// `Clip:` lines rewritten when the daemon is remote (spec §16).
+    async fn handover(&self, res: &Value) -> render::Handover {
+        let mut h = render::Handover::of(res);
+        if self.client.is_remote() {
+            if let Some(t) = &h.text {
+                h.text = Some(self.client.rewrite_clip_text(t).await);
+            }
+            self.client.rewrite_clip_items(&mut h.feedback).await;
+        }
+        h
     }
 
     /// Renders an outcome; a success carries tier 1 feedback.
@@ -1499,11 +1580,48 @@ impl ClaxTools {
                 tracing::debug!(error = %e, "acknowledging read threads failed");
             }
         }
+        let mut summaries: Vec<Value> = threads.iter().map(thread_summary).collect();
+        if self.client.is_remote() {
+            // A remote daemon's path is never handed over (spec §16).
+            self.client.rewrite_clip_items(&mut summaries).await;
+        }
         Ok(json!({
             "artifact_id": id,
             "url": self.artifact_url(&id),
-            "threads": threads.iter().map(thread_summary).collect::<Vec<_>>(),
+            "threads": summaries,
             "next_cursor": next,
+            "note": clax_core::feedback::UNTRUSTED_NOTE,
+        }))
+    }
+
+    /// `comments_handoff` (spec §12): hands thread `thread_id` to the live
+    /// agent `to` names, or without `to` releases it; the thread as the
+    /// session now sees it, with its `owner`.
+    async fn do_comments_handoff(&self, a: CommentsHandoffArgs) -> Outcome {
+        let id = self.resolve_id(&a.url_or_id).await?;
+        check_thread_id(&a.thread_id)?;
+        if a.to.as_deref().is_some_and(|t| t.trim().is_empty()) {
+            return Err(invalid(
+                "to names a live agent; leave it out to release the thread",
+            ));
+        }
+        self.require_session().await?;
+        let v = self
+            .client
+            .handoff(&a.thread_id, a.to.as_deref())
+            .await
+            .map_err(|e| self.fail(e))?;
+        let mut thread = thread_summary(&v["thread"]);
+        if self.client.is_remote() {
+            self.client
+                .rewrite_clip_items(std::slice::from_mut(&mut thread))
+                .await;
+        }
+        Ok(json!({
+            "artifact_id": id,
+            "url": self.artifact_url(&id),
+            "released": a.to.is_none(),
+            "thread": thread,
             "note": clax_core::feedback::UNTRUSTED_NOTE,
         }))
     }
@@ -1663,6 +1781,9 @@ impl ClaxTools {
     }
 
     async fn do_ask(&self, a: AskArgs) -> Outcome {
+        if a.approval.is_some() || a.approval_id.is_some() {
+            return self.do_ask_approval(a).await;
+        }
         let cancel = a.cancel.unwrap_or(false);
         match (&a.questions, &a.question_id) {
             (Some(qs), None) if !cancel => {
@@ -1743,6 +1864,71 @@ impl ClaxTools {
             render::client_error_with(e, &self.log_path, extra)
         })?;
         Ok(self.ask_result(&v["question"], v["waited_s"].as_u64().unwrap_or(0)))
+    }
+
+    /// `ask` with `approval` or `approval_id` (spec §9.2): makes (or joins)
+    /// a request to the session's person for what is withheld there, or
+    /// keeps waiting on one, and waits for the decision as a question
+    /// waits for its answer.
+    async fn do_ask_approval(&self, a: AskArgs) -> Outcome {
+        if a.questions.is_some() || a.question_id.is_some() || a.url_or_id.is_some() {
+            return Err(invalid(
+                "approval and approval_id go without questions, question_id and url_or_id (name the artifact in approval.url_or_id)",
+            ));
+        }
+        if a.cancel.is_some() {
+            return Err(invalid("an approval request is not cancelled; let it be"));
+        }
+        let session = self.require_session().await?;
+        let wait = a
+            .timeout_s
+            .unwrap_or_else(|| default_ask_wait(&session.harness))
+            .clamp(MIN_WAIT_S, max_ask_wait(&session.harness));
+        let (rid, created) = match (a.approval, a.approval_id) {
+            (Some(ap), None) => {
+                let mut body = json!({});
+                if let Some(r) = &ap.url_or_id {
+                    body["artifact_id"] = json!(self.resolve_id(r).await?);
+                }
+                if let Some(t) = &ap.thread_id {
+                    check_thread_id(t)?;
+                    body["thread_id"] = json!(t);
+                }
+                if body.as_object().is_some_and(Map::is_empty) {
+                    return Err(invalid(
+                        "approval names the artifact (url_or_id) or the thread (thread_id) holding what is withheld",
+                    ));
+                }
+                if let Some(au) = &ap.author {
+                    body["author"] = json!(au);
+                }
+                let res = self
+                    .client
+                    .approval_ask(&body)
+                    .await
+                    .map_err(|e| self.fail(e))?;
+                let rid = res["approval_id"].as_str().unwrap_or_default().to_string();
+                (rid, true)
+            }
+            (None, Some(rid)) => {
+                if !clax_core::is_ulid(&rid) {
+                    return Err(invalid(format!("'{rid}' is not an approval ID")));
+                }
+                (rid, false)
+            }
+            _ => return Err(invalid("pass `approval` or `approval_id`, not both")),
+        };
+        let v = self.client.approval_wait(&rid, wait).await.map_err(|e| {
+            // A request this call made stays open: name it, so the agent
+            // can wait on it again.
+            let extra = if created {
+                json!({"approval_id": rid})
+            } else {
+                json!({})
+            };
+            render::client_error_with(e, &self.log_path, extra)
+        })?;
+        Ok(approval_result(&v))
     }
 
     /// Remembers whether an owner surface was open when question `qid` was
@@ -2017,7 +2203,7 @@ impl ClaxTools {
         {
             Err(e) => self.fail(e),
             Ok(res) => {
-                let h = render::Handover::of(&res);
+                let h = self.handover(&res).await;
                 self.forget_answered(&h);
                 // A note alone is no feedback: the agent still calls again.
                 let call_again =
@@ -2029,6 +2215,36 @@ impl ClaxTools {
             }
         }
     }
+}
+
+/// The note an approval's result carries, by its status.
+fn approval_note(status: &str) -> &'static str {
+    match status {
+        "approved" => {
+            "Your person approved: what was withheld reaches you with your next Clax tool result; read the thread again with comments_read."
+        }
+        "declined" => {
+            "Your person declined: continue without what is withheld, and do not ask again for it."
+        }
+        "open" => {
+            "Your person has not decided yet: call ask again with approval_id to keep waiting."
+        }
+        _ => "The request was withdrawn: its thread or artifact is gone, or your person changed.",
+    }
+}
+
+/// The `ask` result for approval poll `v` (spec §9.2): `{approval_id,
+/// status, scope, waited_s, call_again, note}`.
+fn approval_result(v: &Value) -> Value {
+    let status = v["status"].as_str().unwrap_or("open");
+    json!({
+        "approval_id": v["approval_id"],
+        "status": status,
+        "scope": v["scope"],
+        "waited_s": v["waited_s"].as_u64().unwrap_or(0),
+        "call_again": status == "open",
+        "note": approval_note(status),
+    })
 }
 
 /// How long [`open_in_browser`] waits for the opener to exit.
@@ -2221,14 +2437,19 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "Report the Clax daemon's URL and version and the session publishes are attributed to.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        description = "Report the Clax daemon's URL and version, the session publishes are attributed to, your agent `name`, the `person` you act for, your `rights`, and `remote: true` when the daemon is on another machine. Pass `name` to name yourself for the task at hand, such as `fix-chart-axis` (letters, digits, `.`, `_` and `-`; unique among live agents; once your person renames you, the name is theirs).",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     pub async fn status(
         &self,
-        Parameters(_args): Parameters<StatusArgs>,
+        Parameters(args): Parameters<StatusArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.finish(self.do_status().await).await
+        self.finish(self.do_status(args).await).await
     }
 
     #[tool(
@@ -2275,6 +2496,22 @@ impl ClaxTools {
     }
 
     #[tool(
+        description = "Hand a comment thread you own to another live agent (`to`: its name), which then owns it and is sent the thread; without `to`, release the thread so any agent may take it. On a thread another live agent owns, the error `thread_taken` names it.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    pub async fn comments_handoff(
+        &self,
+        Parameters(args): Parameters<CommentsHandoffArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.finish(self.do_comments_handoff(args).await).await
+    }
+
+    #[tool(
         description = "Watch an artifact, or a web page by its URL (your dev server's, such as `http://localhost:5173/`, which covers every page under it, on every address of its site when the person joined several into one), so comments sent to the agent on it reach this session (`on`, default true; `on: false` stops). `replies` (default true) lets them end your turn through the Stop hook or wake the session where the harness allows. Publishing an artifact already watches it with replies on.",
         annotations(
             read_only_hint = false,
@@ -2318,7 +2555,7 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. Pass `url_or_id` when the question is about a page. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words.",
+        description = "Ask the person one to four questions in Clax and wait for the answers (up to `timeout_s`, default 600 s). Each question has a short `header` (at most 12 characters) and two to four `options` (`label`, optional `description`, `preview` text, `recommended`) or none for a free-text answer; `multi_select` allows several; the person may also type an \"Other\" answer. Pass `url_or_id` when the question is about a page. If the result says `call_again`, call `ask` again with `question_id`. The answers come back in `reply`, in the person's own words. To ask your person to let you see content withheld from you, pass `approval` (`url_or_id`, optional `thread_id`, and `author` from the `withheld` summary) instead of `questions`: the result's `status` is `approved`, `declined` or `open` (then call again with `approval_id`).",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -2649,6 +2886,17 @@ mod tests {
                 assert!(a.destructive_hint.is_some(), "{}", t.name);
             }
         }
+    }
+
+    /// Spec §16: twenty-five tools, `comments_handoff` among them.
+    #[test]
+    fn tool_count_is_25() {
+        assert_eq!(ClaxTools::tool_count(), 25);
+        assert!(
+            ClaxTools::tools()
+                .iter()
+                .any(|t| t.name == "comments_handoff")
+        );
     }
 
     #[test]

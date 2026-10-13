@@ -5,9 +5,8 @@
 //! agents' only; and the owner's question list holds the owner's agents'
 //! questions only.
 //!
-//! The filter is live for every route and every agent channel but the Pi
-//! extension's, whose sweep is ignored until the task that filters it
-//! lifts it.
+//! The filter is live for every route and every agent channel, the real Pi
+//! with the Clax extension among them.
 
 use crate::common::TestServer;
 use crate::common::clients::{HARNESS_ENVS, RealClients};
@@ -357,7 +356,6 @@ async fn no_canary_reaches_an_agent_through_a_real_client() {
 }
 
 #[tokio::test]
-#[ignore = "lifted by Task 19: the Pi extension is filtered then"]
 async fn no_canary_reaches_an_agent_through_pi() {
     let w = World::two_people().await;
     let outs = vec![RealClients::new(&w).pi().await];
@@ -365,8 +363,38 @@ async fn no_canary_reaches_an_agent_through_pi() {
     assert!(leaks.is_empty(), "{}", leaks.join("\n"));
 }
 
+/// Spec §16: the real Pi on a connected machine acts as its person's
+/// agent on the remote daemon, signed and proving its session, and no
+/// canary of Mia's reaches it.
+#[tokio::test]
+async fn no_canary_reaches_a_persons_agent_through_pi_in_remote_mode() {
+    let w = World::two_people().await;
+    let out = RealClients::new(&w).pi_remote().await;
+    let leaks = leaks(&w, std::slice::from_ref(&out));
+    assert!(leaks.is_empty(), "{}", leaks.join("\n"));
+    assert!(out.text.contains(r#"\"remote\": true"#), "{}", out.text);
+    assert!(out.text.contains(&w.read.artifact), "{}", out.text);
+    // Mia's documents are counted, never listed.
+    assert!(
+        out.text.contains(r#"\"withheld_count\": 2"#),
+        "{}",
+        out.text
+    );
+    // Its session was Sam's grant's, and ended with Pi.
+    let db = rusqlite::Connection::open(w.ts.home.db_path()).unwrap();
+    let (grant, ended): (Option<String>, Option<String>) = db
+        .query_row(
+            "SELECT grant_id, ended_at FROM sessions WHERE harness = 'pi'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(grant, Some(w.sam.grant_id()));
+    assert!(ended.is_some());
+}
+
 /// The real clients run, each printing what it hands its agent: the
-/// harness the ignored sweep above uses.
+/// harness the sweeps above use.
 #[tokio::test]
 async fn every_real_client_runs_against_the_test_daemon() {
     let w = World::two_people().await;
