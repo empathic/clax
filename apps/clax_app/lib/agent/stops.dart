@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -33,33 +32,21 @@ class MemoryStoppedThreads implements StoppedThreads {
 
 /// [StoppedThreads] kept in [file] as `{"version": 1, "stops": {tid: id}}`,
 /// written whole through a temporary file and a rename; a file that does
-/// not parse reads as empty.
+/// not parse reads as empty. The file is small and read and written
+/// synchronously, so the worker's recovery never waits on the event loop
+/// for it.
 class FileStoppedThreads implements StoppedThreads {
   FileStoppedThreads(this.file);
 
   final File file;
-  final _memory = MemoryStoppedThreads();
-  Future<void> _tail = Future.value();
-  var _loaded = false;
+  Map<String, String>? _stops;
 
-  Future<T> _serial<T>(Future<T> Function() work) {
-    final out = _tail.then((_) async {
-      if (!_loaded) {
-        _loaded = true;
-        for (final e in (await _read()).entries) {
-          await _memory.put(e.key, e.value);
-        }
-      }
-      return work();
-    });
-    _tail = out.then<void>((_) {}, onError: (Object _) {});
-    return out;
-  }
+  Map<String, String> get _all => _stops ??= _read();
 
-  Future<Map<String, String>> _read() async {
+  Map<String, String> _read() {
     try {
-      if (!await file.exists()) return const {};
-      final j = jsonDecode(await file.readAsString());
+      if (!file.existsSync()) return {};
+      final j = jsonDecode(file.readAsStringSync());
       if (j case {'stops': final Map<String, Object?> stops}) {
         return {
           for (final e in stops.entries)
@@ -69,31 +56,30 @@ class FileStoppedThreads implements StoppedThreads {
     } on Object {
       // Unreadable: nothing is stopped.
     }
-    return const {};
+    return {};
   }
 
-  Future<void> _save() async {
-    await file.parent.create(recursive: true);
+  void _save() {
+    file.parent.createSync(recursive: true);
     final tmp = File('${file.path}.tmp');
-    await tmp.writeAsString(
-      jsonEncode({'version': 1, 'stops': await _memory.all()}),
+    tmp.writeAsStringSync(
+      jsonEncode({'version': 1, 'stops': _all}),
       flush: true,
     );
-    await tmp.rename(file.path);
+    tmp.renameSync(file.path);
   }
 
   @override
-  Future<Map<String, String>> all() => _serial(_memory.all);
+  Future<Map<String, String>> all() async => Map.of(_all);
 
   @override
-  Future<void> put(String tid, String commentId) => _serial(() async {
-    await _memory.put(tid, commentId);
-    await _save();
-  });
+  Future<void> put(String tid, String commentId) async {
+    _all[tid] = commentId;
+    _save();
+  }
 
   @override
-  Future<void> remove(String tid) => _serial(() async {
-    await _memory.remove(tid);
-    await _save();
-  });
+  Future<void> remove(String tid) async {
+    if (_all.remove(tid) != null) _save();
+  }
 }
