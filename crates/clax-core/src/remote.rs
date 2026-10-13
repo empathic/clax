@@ -731,7 +731,7 @@ struct CredentialFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     harness_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    parent_started_us: Option<u64>,
+    parent_started_s: Option<u64>,
 }
 
 /// A name a session's credential file is found by (spec 2026-10-08 §6.8).
@@ -774,30 +774,28 @@ impl SessionKey<'_> {
     }
 }
 
-/// When process `pid` started, in microseconds since the Unix epoch, read
-/// from the kernel and never from text that depends on the locale or the
-/// time zone: on macOS from `proc_pidinfo`'s BSD info (the `libproc`
-/// crate), on Linux from `/proc/<pid>/stat` (field 22, clock ticks since
-/// boot) and the boot time in `/proc/stat`. Elsewhere, `ps -o lstart=` run
-/// with `LC_ALL=C` and `TZ=UTC0`, parsed, to the second. `None` when it
-/// cannot be told (no such process). A parent-PID credential file records
-/// it, and is taken only while the PID still names that process.
+/// When process `pid` started, in seconds since the Unix epoch, read from
+/// the kernel and never from text that depends on the locale or the time
+/// zone: on macOS and Linux through the `sysinfo` crate (`proc_pidinfo`;
+/// `/proc/<pid>/stat` and the boot time). Elsewhere, `ps -o lstart=` run
+/// with `LC_ALL=C` and `TZ=UTC0`, parsed. `None` when it cannot be told
+/// (no such process): a parent-PID credential file is then neither written
+/// nor taken. A parent-PID credential file records it, and is taken only
+/// while the PID still names that process.
 pub fn process_started(pid: u32) -> Option<u64> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
-        let info =
-            libproc::proc_pid::pidinfo::<libproc::bsd_info::BSDInfo>(i32::try_from(pid).ok()?, 0)
-                .ok()?;
-        info.pbi_start_tvsec
-            .checked_mul(1_000_000)?
-            .checked_add(info.pbi_start_tvusec)
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let boot = std::fs::read_to_string("/proc/stat").ok()?;
-        let tick = nix::unistd::sysconf(nix::unistd::SysconfVar::CLK_TCK).ok()??;
-        linux_started(&stat, &boot, u64::try_from(tick).ok()?)
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+        let pid = Pid::from_u32(pid);
+        let mut sys = System::new();
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing(),
+        );
+        sys.process(pid)
+            .map(sysinfo::Process::start_time)
+            .filter(|t| *t > 0)
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
@@ -816,39 +814,13 @@ pub fn process_started(pid: u32) -> Option<u64> {
     }
 }
 
-/// A Linux process's start, in microseconds since the Unix epoch, from its
-/// `/proc/<pid>/stat` line (`stat`), `/proc/stat` (`boot`, its `btime`
-/// line) and the clock ticks per second.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn linux_started(stat: &str, boot: &str, ticks_per_s: u64) -> Option<u64> {
-    // The command name, field 2, is parenthesised and may hold spaces and
-    // parentheses: the fields after it follow the last ')'.
-    let after = &stat[stat.rfind(')')? + 1..];
-    // Field 3 is the first after the name; field 22 is the start time.
-    let ticks: u64 = after.split_whitespace().nth(22 - 3)?.parse().ok()?;
-    let btime: u64 = boot
-        .lines()
-        .find_map(|l| l.strip_prefix("btime "))?
-        .trim()
-        .parse()
-        .ok()?;
-    if ticks_per_s == 0 {
-        return None;
-    }
-    btime
-        .checked_mul(1_000_000)?
-        .checked_add(ticks.checked_mul(1_000_000)? / ticks_per_s)
-}
-
 /// `ps -o lstart=` output in the C locale and UTC (`Tue Oct 13 07:40:38
-/// 2026`), in microseconds since the Unix epoch.
+/// 2026`), in seconds since the Unix epoch.
 #[cfg_attr(any(target_os = "macos", target_os = "linux"), allow(dead_code))]
 fn ps_lstart_utc(s: &str) -> Option<u64> {
     let words: Vec<&str> = s.split_whitespace().collect();
     let t = chrono::NaiveDateTime::parse_from_str(&words.join(" "), "%a %b %d %H:%M:%S %Y").ok()?;
-    u64::try_from(t.and_utc().timestamp())
-        .ok()?
-        .checked_mul(1_000_000)
+    u64::try_from(t.and_utc().timestamp()).ok()
 }
 
 /// Why a session's credential file could not be used.
@@ -1044,7 +1016,7 @@ impl SessionFiles {
                 (Some(mine), Some(row)) => mine == row,
             };
             let same_process =
-                f.parent_started_us.is_some() && f.parent_started_us == process_started(pid);
+                f.parent_started_s.is_some() && f.parent_started_s == process_started(pid);
             if row_matches && same_process {
                 return Ok(Some(SessionCredential {
                     session: f.session,
@@ -1076,12 +1048,12 @@ impl SessionFiles {
         cred: &SessionCredential,
     ) -> std::io::Result<()> {
         let dir = self.private_dir()?;
-        let file = |parent_started_us: Option<u64>| {
+        let file = |parent_started_s: Option<u64>| {
             let mut bytes = serde_json::to_vec(&CredentialFile {
                 session: cred.session.clone(),
                 secret: cred.secret.expose().to_string(),
                 harness_session_id: row_hsid.map(str::to_string),
-                parent_started_us,
+                parent_started_s,
             })
             .expect("a credential serializes");
             bytes.push(b'\n');
@@ -1100,7 +1072,7 @@ impl SessionFiles {
             let key = SessionKey::Parent { harness, pid };
             let other_session_of_this_process = matches!(
                 self.read_file(&key),
-                Ok(Some(f)) if f.session != cred.session && f.parent_started_us == Some(started)
+                Ok(Some(f)) if f.session != cred.session && f.parent_started_s == Some(started)
             );
             if let Some(name) = key.file_name()
                 && !other_session_of_this_process
@@ -1708,11 +1680,11 @@ mod session_file_tests {
         let mut v: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         v["harness_session_id"] = serde_json::Value::Null;
-        v["parent_started_us"] = 1.into();
+        v["parent_started_s"] = 1.into();
         std::fs::write(&path, v.to_string()).unwrap();
         assert!(files.find(&seek(None)).unwrap().is_none());
         // Nor without a recorded start.
-        v.as_object_mut().unwrap().remove("parent_started_us");
+        v.as_object_mut().unwrap().remove("parent_started_s");
         std::fs::write(&path, v.to_string()).unwrap();
         assert!(files.find(&seek(None)).unwrap().is_none());
     }
@@ -1727,7 +1699,7 @@ mod process_start_tests {
         let me = std::process::id();
         let a = process_started(me).expect("this process's start");
         assert_eq!(process_started(me), Some(a), "stable");
-        let now = u64::try_from(chrono::Utc::now().timestamp_micros()).unwrap();
+        let now = u64::try_from(chrono::Utc::now().timestamp()).unwrap();
         assert!(a > 0 && a <= now, "{a} {now}");
         // `ps` in the C locale and UTC, parsed, names the same second, while
         // its text in another locale and time zone differs: the number does
@@ -1741,8 +1713,7 @@ mod process_start_tests {
             String::from_utf8(c.output().unwrap().stdout).unwrap()
         };
         let c_utc = ps(&[("LC_ALL", "C"), ("TZ", "UTC0")]);
-        let seconds = ps_lstart_utc(&c_utc).expect("parses") / 1_000_000;
-        assert_eq!(seconds, a / 1_000_000, "{c_utc}");
+        assert_eq!(ps_lstart_utc(&c_utc), Some(a), "{c_utc}");
         let elsewhere = ps(&[("LC_ALL", "de_DE.UTF-8"), ("TZ", "Asia/Tokyo")]);
         assert_ne!(elsewhere.trim(), c_utc.trim());
         assert!(process_started(u32::MAX - 1).is_none());
@@ -1752,24 +1723,10 @@ mod process_start_tests {
     fn ps_lstart_in_c_and_utc_parses_to_the_second() {
         assert_eq!(
             ps_lstart_utc("Tue Oct 13 07:40:38 2026\n"),
-            Some(1_791_877_238_000_000)
+            Some(1_791_877_238)
         );
-        assert_eq!(ps_lstart_utc("Thu Jan  1 00:00:01 1970"), Some(1_000_000));
+        assert_eq!(ps_lstart_utc("Thu Jan  1 00:00:01 1970"), Some(1));
         assert_eq!(ps_lstart_utc("Di. 13 Okt. 07:40:38 2026"), None);
-    }
-
-    #[test]
-    fn a_linux_start_is_the_boot_time_plus_field_22() {
-        // The command name may hold spaces and parentheses.
-        let stat =
-            "4242 (a b) c) S 1 4242 4242 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 250 1000 10";
-        let boot = "cpu  1 2 3\nbtime 1700000000\nprocesses 9\n";
-        assert_eq!(
-            linux_started(stat, boot, 100),
-            Some(1_700_000_000_000_000 + 2_500_000)
-        );
-        assert_eq!(linux_started("4242 no-parens S 1", boot, 100), None);
-        assert_eq!(linux_started(stat, "cpu 1\n", 100), None);
     }
 }
 
@@ -1810,7 +1767,7 @@ mod session_file_tests_2 {
         let path = files.path(&key).unwrap();
         let mut v: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        v["parent_started_us"] = 1.into();
+        v["parent_started_s"] = 1.into();
         std::fs::write(&path, v.to_string()).unwrap();
         files
             .write("codex", Some("r2-h"), Some(me), None, &cred("R2"))
