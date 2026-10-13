@@ -15,7 +15,11 @@
 // cannot pick for them with synthetic events. The outline is clamped to the viewport so all four borders show,
 // with a tint judged from the background behind the target. A selection that
 // already existed when the mode was turned on is not a pick; turning the
-// mode off drops any pending hover, drag, and widening. The overlay lives in
+// mode off drops any pending hover, drag, and widening. The pointer leaving
+// the page drops the outline; a drag whose release never reached the page
+// (its button up as the pointer leaves or comes back, or the page losing
+// focus) is dropped, and a pick hook that throws ends its capture at once,
+// so nothing stays drawn over the page. The overlay lives in
 // a shadow root on <html>, so it never changes the page's body, selectors, or
 // text; it also draws the dashed outline of a focused thread's area.
 // On a touch screen a finger held still outlines its target, and lifting it
@@ -180,11 +184,15 @@ export class CommentMode {
       ["selectstart", this.onHeld],
       ["touchstart", this.onTouchStart as EventListener],
       ["scroll", this.onScroll],
+      ["mouseout", this.onOut as EventListener],
     ];
     for (const [type, fn] of listeners) {
       if (on) this.doc.addEventListener(type, fn, true);
       else this.doc.removeEventListener(type, fn, true);
     }
+    const win = this.doc.defaultView;
+    if (on) win?.addEventListener("blur", this.onBlur);
+    else win?.removeEventListener("blur", this.onBlur);
     this.longPress.set(on);
     this.swallowTap = false;
     this.dropOffer();
@@ -230,6 +238,18 @@ export class CommentMode {
    * while the tab's screenshot is taken). */
   setVisible(on: boolean): void {
     this.host.style.visibility = on ? "" : "hidden";
+  }
+
+  /** Starts a pick with `hook`: no other pick starts until `captured`. A
+   * hook that throws has started nothing, so the capture ends at once. */
+  private startPick(hook: () => void): void {
+    this.capturing = true;
+    try {
+      hook();
+    } catch (e) {
+      console.warn("clax: the pick could not start", e);
+      this.captured();
+    }
   }
 
   /** The pick's clip was taken (the pick was posted): an area's rectangle is
@@ -514,9 +534,9 @@ export class CommentMode {
     // A click the browser may still send for the release picks nothing.
     this.suppressClick = true;
     const offer: Offer = area
-      ? { kind: "area", pick: () => { this.capturing = true; this.areaBox.style.display = "block"; this.areaBox.classList.add("capturing"); this.hooks.pickArea(area); } }
+      ? { kind: "area", pick: () => { this.areaBox.style.display = "block"; this.areaBox.classList.add("capturing"); this.startPick(() => this.hooks.pickArea(area)); } }
       : range
-        ? { kind: "text", pick: () => { this.capturing = true; this.hooks.pickRange(range); } }
+        ? { kind: "text", pick: () => this.startPick(() => this.hooks.pickRange(range)) }
         : { kind: "target", pick: () => this.pickAt(this.elementAt(d.x, d.y), d.x, d.y, false) };
     if (!this.confirmDrag()) {
       this.endTouchDrag();
@@ -656,9 +676,8 @@ export class CommentMode {
       if (!isClickSized(r)) {
         this.suppressClick = true;
         this.hovered = null;
-        this.capturing = true;
         this.areaBox.classList.add("capturing");
-        this.hooks.pickArea(r);
+        this.startPick(() => this.hooks.pickArea(r));
         return;
       }
       this.areaBox.style.display = "none";
@@ -677,10 +696,9 @@ export class CommentMode {
     if (this.widen.active || e.altKey) {
       // Option widens a drag selection like a click: to the enclosing element.
       const w = widenedTarget(r, Math.max(1, this.widen.level)).target;
-      if (w instanceof Element) { this.capturing = true; this.hooks.pickElement(w); return; }
+      if (w instanceof Element) { this.startPick(() => this.hooks.pickElement(w)); return; }
     }
-    this.capturing = true;
-    this.hooks.pickRange(r);
+    this.startPick(() => this.hooks.pickRange(r));
   };
 
   private onClick = (e: MouseEvent) => {
@@ -717,10 +735,33 @@ export class CommentMode {
     if (this.capturing) return;
     let t = this.choose(el, x, y);
     if (t && (this.widen.active || alt)) t = widenedTarget(t, this.widen.active ? this.widen.level : 1).target;
-    if (t) this.capturing = true;
-    if (t instanceof Element) this.hooks.pickElement(t);
-    else if (t) this.hooks.pickRange(t);
+    if (t instanceof Element) this.startPick(() => this.hooks.pickElement(t));
+    else if (t) this.startPick(() => this.hooks.pickRange(t));
   }
+
+  /** The pointer left the page (into the shell, or out of the WebView or the
+   * window, where no further move reaches the page): the outline and the pin
+   * go, and nothing is hovered. A mouse drag still drawing stays (the
+   * rectangle is clamped to the viewport) while its button is held; with the
+   * button up its release was lost, and the drag is dropped. A held finger
+   * and an offer keep what they show. */
+  private onOut = (e: MouseEvent) => {
+    if (!this.real(e) || e.relatedTarget !== null || this.touchDrag || this.longPress.holding || this.offer) return;
+    if (this.drag) {
+      if (!(e.buttons & 1)) this.endDrag();
+      return;
+    }
+    this.frame?.();
+    this.frame = null;
+    this.pin.style.display = "none";
+    this.unhover();
+  };
+
+  /** The page lost focus (the viewer switched windows or apps): a mouse
+   * drag's release will not reach the page, so the drag is dropped. */
+  private onBlur = () => {
+    if (this.drag && !this.touchDrag) this.endDrag();
+  };
 
   private onKey = (e: KeyboardEvent) => {
     if (!this.real(e)) return;
