@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const artifact = vi.fn(() => () => {});
 vi.mock("../q", () => ({ artifact }));
 const owner = vi.fn(async (_signal?: AbortSignal) => true);
-vi.mock("../owner", () => ({ ownerBrowser: (s?: AbortSignal) => owner(s) }));
+vi.mock("../owner", () => ({ inboxBrowser: (s?: AbortSignal) => owner(s) }));
 vi.mock("../stream", () => ({ pageStream: () => ({}) }));
 
 const { artifactQuestions } = await import("./artifact-questions");
@@ -11,7 +11,7 @@ const { artifactQuestions } = await import("./artifact-questions");
 afterEach(() => { vi.useRealTimers(); artifact.mockClear(); owner.mockClear(); });
 
 describe("artifactQuestions", () => {
-  it("loads the question module for the owner once the browser is idle, and ends it with the view", async () => {
+  it("loads the question module for a browser with an inbox (the owner's or a connected person's) once the browser is idle, and ends it with the view", async () => {
     vi.useFakeTimers();
     const ended = vi.fn();
     artifact.mockReturnValueOnce(ended);
@@ -31,7 +31,7 @@ describe("artifactQuestions", () => {
     expect(artifact).not.toHaveBeenCalled();
   });
 
-  it("loads nothing for a browser that is not the owner's, and aborts a check still asking", async () => {
+  it("loads nothing for a browser without an inbox, and aborts a check still asking", async () => {
     vi.useFakeTimers();
     owner.mockImplementationOnce(async () => false);
     artifactQuestions("7q3k9mzx2b4t");

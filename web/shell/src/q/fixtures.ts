@@ -1,6 +1,6 @@
 // Test fixtures for the question card and the inbox: a question view with
 // one question of each kind, and an inbox item of each kind.
-import type { InboxItem, InboxKind, QuestionView } from "../api";
+import type { InboxApproval, InboxItem, InboxKind, QuestionView } from "../api";
 
 export const AGENT = { handle: "a_1f3a00", harness: "claude", project: "clax" };
 
@@ -82,7 +82,10 @@ export function item(kind: InboxKind, over: Partial<InboxItem> = {}): InboxItem 
       });
       break;
     case "approval":
-      Object.assign(base, { approval: { request_id: "01J9R0000000000000000000AA" }, url: "/inbox?approval=01J9R0000000000000000000AA" });
+      Object.assign(base, {
+        agent: null, thread: { id: "01J9T0000000000000000000AA", summary: "main > h2 «Quarterly goals»", status: "open" },
+        approval: approvalCard(), url: "/inbox?approval=01J9R0000000000000000000AA",
+      });
       break;
     case "ended":
       Object.assign(base, { url: "/inbox", ended: { name: "clax-claude", reason: "idle", text: "clax-claude ended · released 1 thread · withdrew 1 question", questions: 1, requests: 0,
@@ -90,4 +93,21 @@ export function item(kind: InboxKind, over: Partial<InboxItem> = {}): InboxItem 
       break;
   }
   return { ...base, ...over };
+}
+
+/** An open approval request's card: Mia's one comment in a thread on
+ * Quarterly Review, for Sam's agent clax-multi-person; `over` replaces fields. */
+export function approvalCard(over: Partial<InboxApproval> = {}): InboxApproval {
+  return {
+    id: "01J9R0000000000000000000AA", approver: "p1", author: { public_id: "p4", name: "Mia", owner: false },
+    artifact_id: "7q3k9mzx2b4t", thread_id: "01J9T0000000000000000000AA",
+    agent: { handle: "a_1f3a00", name: "clax-multi-person", harness: "codex", live: true },
+    cause: "routing", count: 1, status: "open", scope: null,
+    created_at: "2026-10-07T09:12:03.120Z", decided_at: null,
+    content: { thread: { id: "01J9T0000000000000000000AA", status: "open" }, comments: [
+      { id: "c1", body: "The goals table needs a Q4 column.", created_at: "2026-10-07T09:12:00.000Z", author_name: "Mia", by_agent: false },
+    ] },
+    via_page: null,
+    ...over,
+  };
 }

@@ -3,7 +3,8 @@
 <script lang="ts">
   // **Inbox** with the unread count (spec 2026-10-06-agent-questions-and-inbox
   // §9.4), linking to `/inbox`, in the gallery's header and the artifact
-  // view's top bar; the count is hidden at 0. Shown to the owner only. At
+  // view's top bar; the count is hidden at 0. Shown to the owner and to a
+  // connected person, whose inbox it is. At
   // phone width the artifact view's moves from the top bar to the phone's
   // tab bar. Its styles also carry the
   // dot the artifact view's threads controls show while a question about
