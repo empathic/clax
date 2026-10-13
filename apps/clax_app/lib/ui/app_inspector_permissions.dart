@@ -2,16 +2,17 @@
 /// lists it: one [PermissionSource] per kind of permission, each listing
 /// its [Permission]s for an app and revoking them.
 ///
-/// The db read grants and the agent's remembered read consents are here.
-/// Device capabilities, network hosts and AI use each add a source of
-/// their own, of [PermissionSource.kind] `device`, `net` and `ai`; until
-/// one is given, the section shows that kind as coming
-/// ([plannedPermissionKinds]).
+/// The db read grants, the agent's remembered read consents, the device
+/// capabilities' answers ([DevicePermissions]), the network hosts
+/// ([NetPermissions]) and AI use ([AiPermissions]) are here. A kind no
+/// source is given for shows as coming ([plannedPermissionKinds]).
 library;
 
 import 'package:flutter/material.dart';
 
 import '../clax/api.dart';
+import '../platform/device/device_grants.dart';
+import '../platform/device/device_host.dart';
 import 'read_consent_dialog.dart';
 
 /// The app being inspected, and every app's title by ID, for naming the
@@ -205,6 +206,129 @@ class AgentReadPermissions implements PermissionSource {
             label: 'Reads this app while building ${app.titleOf(reader)}',
             revoke: () => memory.forget(reader, source),
           ),
+    ];
+  }
+}
+
+/// The person's answers to the app's device capabilities (notifications,
+/// sharing, files, camera, location), Allow or Don't allow. Revoking one
+/// forgets it, so the app's next call asks again; revoking notifications
+/// also cancels the app's reminders.
+class DevicePermissions implements PermissionSource {
+  const DevicePermissions(this.device);
+
+  final DeviceHost device;
+
+  @override
+  String get kind => 'device';
+
+  @override
+  String get title => 'Device';
+
+  @override
+  String get description =>
+      'Notifications, sharing, files, camera and location.';
+
+  @override
+  IconData get icon => Icons.phone_android_rounded;
+
+  static String _capitalised(String s) =>
+      s.isEmpty ? s : '${s[0].toUpperCase()}${s.substring(1)}';
+
+  @override
+  Future<List<Permission>> load(InspectedApp app) async => [
+    for (final MapEntry(key: cap, value: d) in (await device.grants.list(
+      app.id,
+    )).entries)
+      Permission(
+        label: d.allowed
+            ? _capitalised(deviceCapWords[cap] ?? cap)
+            : 'Not allowed to ${deviceCapWords[cap] ?? 'use $cap'}',
+        detail: d.allowed
+            ? 'You allowed this ${versionDay(d.at.toIso8601String())}'
+            : 'You said no ${versionDay(d.at.toIso8601String())}; '
+                  'reset it to be asked again',
+        revoke: () => device.revoke(app.id, cap),
+        revokeLabel: d.allowed ? 'Revoke' : 'Reset',
+      ),
+  ];
+}
+
+/// The web hosts the owner let the app fetch from (its `net` declaration);
+/// revoking takes back every host at once, and the app asks again.
+class NetPermissions implements PermissionSource {
+  const NetPermissions(this.api);
+
+  final ClaxApi api;
+
+  @override
+  String get kind => 'net';
+
+  @override
+  String get title => 'Network';
+
+  @override
+  String get description => 'The web hosts this app may reach.';
+
+  @override
+  IconData get icon => Icons.public_rounded;
+
+  @override
+  Future<List<Permission>> load(InspectedApp app) async {
+    final g = await api.netGrants(app.id);
+    if (g.granted.isEmpty) return const [];
+    final hosts = [for (final h in g.granted) h.host];
+    final when = g.granted
+        .map((h) => h.grantedAt)
+        .reduce((a, b) => a.compareTo(b) >= 0 ? a : b);
+    return [
+      Permission(
+        label: 'Reaches ${hosts.join(', ')}',
+        detail: 'You allowed this ${versionDay(when)}',
+        revoke: () => api.revokeNet(app.id),
+      ),
+    ];
+  }
+}
+
+/// The owner's grant to the app to call the model, with today's spend
+/// against the daily cap.
+class AiPermissions implements PermissionSource {
+  const AiPermissions(this.api);
+
+  final ClaxApi api;
+
+  @override
+  String get kind => 'ai';
+
+  @override
+  String get title => 'AI';
+
+  @override
+  String get description => 'Using the model from inside the app.';
+
+  @override
+  IconData get icon => Icons.auto_awesome_rounded;
+
+  static String _usd(double v) => '\$${v.toStringAsFixed(2)}';
+
+  @override
+  Future<List<Permission>> load(InspectedApp app) async {
+    final g = await api.sampleGrant(app.id);
+    if (!g.granted) return const [];
+    final spent = switch (g.dailyCapUsd) {
+      final cap? => '${_usd(g.spentTodayUsd)} of ${_usd(cap)} spent today',
+      null => '${_usd(g.spentTodayUsd)} spent today',
+    };
+    return [
+      Permission(
+        label: 'Uses the model',
+        detail: switch (g.grantedAt) {
+          final at? => 'You allowed this ${versionDay(at)} · $spent',
+          null => spent,
+        },
+        revoke: () => api.revokeSample(app.id),
+      ),
     ];
   }
 }

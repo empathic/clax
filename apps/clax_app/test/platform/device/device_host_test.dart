@@ -189,7 +189,7 @@ void main() {
     );
 
     test(
-      'a refusal answers not_granted and is not asked again this run',
+      'a refusal answers not_granted, is kept, and asks again once revoked',
       () async {
         final s = setup()..consent.answer = false;
         final r = await s.host.handle(aid, req('camera', 'take'));
@@ -199,9 +199,95 @@ void main() {
           'not_granted',
         );
         expect(s.consent.asked, hasLength(1));
-        expect(await s.grants.list(aid), isEmpty);
+        expect((await s.grants.list(aid))['camera']?.allowed, isFalse);
+        await s.host.revoke(aid, 'camera');
+        s.consent.answer = true;
+        s.camera.next = Photo('image/jpeg', Uint8List(1), 1, 1);
+        expect((await s.host.handle(aid, req('camera', 'take'))).code, isNull);
+        expect(s.consent.asked, hasLength(2));
       },
     );
+
+    test('a deleted app\'s reminders and answers go', () async {
+      final s = setup();
+      await s.host.handle(
+        aid,
+        req('notify', 'schedule', [
+          {
+            'id': 'a',
+            'title': 'A',
+            'every': {'hour': 9, 'minute': 0},
+          },
+        ]),
+      );
+      expect(s.notifier.scheduled, hasLength(1));
+      await s.host.forget(aid);
+      expect(s.notifier.scheduled, isEmpty);
+      expect(await s.grants.list(aid), isEmpty);
+    });
+
+    test(
+      'an app keeps at most 64 reminders; replacing one still works',
+      () async {
+        final s = setup();
+        for (var i = 0; i < maxReminders; i++) {
+          final r = await s.host.handle(
+            aid,
+            req('notify', 'schedule', [
+              {
+                'id': 'r$i',
+                'title': 'R',
+                'every': {'hour': 9, 'minute': 0},
+              },
+            ]),
+          );
+          expect(r.code, isNull);
+        }
+        final over = await s.host.handle(
+          aid,
+          req('notify', 'schedule', [
+            {
+              'id': 'one-more',
+              'title': 'R',
+              'every': {'hour': 9, 'minute': 0},
+            },
+          ]),
+        );
+        expect(over.code, 'bad_request');
+        final again = await s.host.handle(
+          aid,
+          req('notify', 'schedule', [
+            {
+              'id': 'r0',
+              'title': 'R0',
+              'every': {'hour': 10, 'minute': 0},
+            },
+          ]),
+        );
+        expect(again.code, isNull);
+      },
+    );
+
+    test('a file over 4 MB is too large', () async {
+      final s = setup();
+      s.files.next = FileData(
+        'big.bin',
+        'application/octet-stream',
+        Uint8List(deviceMaxBytes + 1),
+      );
+      expect(deviceMaxBytes, 4 * 1024 * 1024);
+      expect((await s.host.handle(aid, req('file', 'pick'))).code, 'too_large');
+      final data = base64Encode(Uint8List(deviceMaxBytes + 3));
+      expect(
+        (await s.host.handle(
+          aid,
+          req('share', 'file', [
+            {'name': 'x.bin', 'data': data},
+          ]),
+        )).code,
+        'too_large',
+      );
+    });
 
     test('a revoked grant asks again', () async {
       final s = setup();
@@ -239,7 +325,7 @@ void main() {
           'capability_removed',
         );
         expect(
-          (await s.host.handle(aid, req('files', 'pick'))).code,
+          (await s.host.handle(aid, req('file', 'pick'))).code,
           'cancelled',
         );
       },
@@ -267,7 +353,7 @@ void main() {
       );
       final picked = await s.host.handle(
         aid,
-        req('files', 'pick', [
+        req('file', 'pick', [
           {
             'accept': ['.CSV', 'application/json'],
           },
@@ -281,7 +367,7 @@ void main() {
       });
       await s.host.handle(
         aid,
-        req('files', 'pick', [
+        req('file', 'pick', [
           {
             'accept': ['image/*'],
           },
@@ -290,7 +376,7 @@ void main() {
       expect(s.files.asked, isEmpty);
       final saved = await s.host.handle(
         aid,
-        req('files', 'save', [
+        req('file', 'save', [
           {'name': 'out.json', 'mime': 'application/json', 'data': 'e30='},
         ]),
       );
@@ -299,7 +385,7 @@ void main() {
       expect(
         (await s.host.handle(
           aid,
-          req('files', 'save', [
+          req('file', 'save', [
             {'name': '../x', 'data': 'e30='},
           ]),
         )).code,
@@ -499,24 +585,27 @@ void main() {
     setUp(() => dir = Directory.systemTemp.createTempSync('grants'));
     tearDown(() => dir.deleteSync(recursive: true));
 
-    test('keeps grants across instances until revoked', () async {
+    test('keeps answers across instances until revoked or forgotten', () async {
       final file = File('${dir.path}/device-grants.json');
-      final a = FileDeviceGrants(file, now: () => DateTime.utc(2026, 10, 12));
+      final t = DateTime.utc(2026, 10, 12);
+      final a = FileDeviceGrants(file, now: () => t);
       final changes = <String>[];
       a.changes.listen(changes.add);
-      await a.grant(aid, 'camera');
-      await a.grant(aid, 'notify');
+      await a.decide(aid, 'camera', allowed: true);
+      await a.decide(aid, 'notify', allowed: false);
       final b = FileDeviceGrants(file);
-      expect(await b.granted(aid, 'camera'), isTrue);
+      expect((await b.decision(aid, 'camera'))?.allowed, isTrue);
       expect(await b.list(aid), {
-        'notify': DateTime.utc(2026, 10, 12),
-        'camera': DateTime.utc(2026, 10, 12),
+        'notify': DeviceDecision(allowed: false, at: t),
+        'camera': DeviceDecision(allowed: true, at: t),
       });
       await b.revoke(aid, 'camera');
-      expect(await a.granted(aid, 'camera'), isFalse);
+      expect(await a.decision(aid, 'camera'), isNull);
       expect(await a.list('other'), isEmpty);
+      await a.forget(aid);
+      expect(await b.list(aid), isEmpty);
       await pumpEventQueue();
-      expect(changes, [aid, aid]);
+      expect(changes, [aid, aid, aid]);
     });
   });
 

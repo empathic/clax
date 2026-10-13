@@ -1,4 +1,4 @@
-/// The app's side of the device capabilities (`notify`, `share`, `files`,
+/// The app's side of the device capabilities (`notify`, `share`, `file`,
 /// `camera`, `location`; `web/contract/clax-extensions.d.ts`, `Device`):
 /// each [DeviceRequest] the shell forwards is checked, asked of the person
 /// once per app and capability, made through the ports, and answered with
@@ -18,7 +18,7 @@ export 'device_ports.dart' show DeviceError;
 export 'reminders.dart' show ReminderTap;
 
 /// The largest file a page may pick, share or save.
-const deviceMaxBytes = 10 * 1024 * 1024;
+const deviceMaxBytes = 4 * 1024 * 1024;
 
 /// Asks the person whether app [aid] may use [cap].
 abstract interface class DeviceConsent {
@@ -48,10 +48,6 @@ class DeviceHost {
 
   final _taps = StreamController<ReminderTap>.broadcast();
 
-  /// "Don't allow" answers of this run, by app and capability: the page is
-  /// not asked again until the app restarts or the person allows it.
-  final _refused = <(String, String)>{};
-
   /// The consent asked now, by app and capability, so calls made together
   /// share one dialog.
   final _asking = <(String, String), Future<bool>>{};
@@ -77,11 +73,17 @@ class DeviceHost {
     }
   }
 
-  /// Revokes app [aid]'s [cap], cancelling its reminders when it is
-  /// `notify`.
+  /// Forgets the person's answer for app [aid]'s [cap] (Allow or Don't
+  /// allow), cancelling its reminders when it is `notify`.
   Future<void> revoke(String aid, String cap) async {
     await grants.revoke(aid, cap);
     if (cap == 'notify') await reminders.cancelAll(aid);
+  }
+
+  /// App [aid] was deleted: cancels its reminders and forgets its answers.
+  Future<void> forget(String aid) async {
+    await reminders.cancelAll(aid);
+    await grants.forget(aid);
   }
 
   /// Makes request [r] of app [aid] and answers it.
@@ -126,20 +128,20 @@ class DeviceHost {
       case ('share', 'file'):
         final f = _file(arg);
         return {'shared': await share.file(f.name, f.mime, f.data)};
-      case ('files', 'pick'):
+      case ('file', 'pick'):
         final picked = await files.pick(_extensions(arg));
         if (picked == null) {
           throw const DeviceError.cancelled('no file was picked');
         }
         if (picked.data.length > deviceMaxBytes) {
-          throw const DeviceError('too_large', 'the file is over 10 MB');
+          throw const DeviceError('too_large', 'the file is over 4 MB');
         }
         return {
           'name': picked.name,
           'mime': picked.mime,
           'data': base64Encode(picked.data),
         };
-      case ('files', 'save'):
+      case ('file', 'save'):
         final f = _file(arg);
         return {'saved': await files.save(f.name, f.mime, f.data)};
       case ('camera', 'take' || 'pick'):
@@ -168,7 +170,7 @@ class DeviceHost {
   static const _methods = {
     'notify': ['schedule', 'cancel', 'list'],
     'share': ['text', 'file'],
-    'files': ['pick', 'save'],
+    'file': ['pick', 'save'],
     'camera': ['take', 'pick'],
     'location': ['current'],
   };
@@ -182,29 +184,31 @@ class DeviceHost {
     }
   }
 
-  /// Asks the person unless app [aid] holds [cap]; throws `not_granted`
-  /// when they do not allow it.
+  /// Asks the person unless they answered for app [aid] and [cap] before;
+  /// throws `not_granted` when they do not allow it. The answer is kept
+  /// either way, until revoked.
   Future<void> _allow(String aid, String cap) async {
-    if (await grants.granted(aid, cap)) return;
-    final key = (aid, cap);
-    if (_refused.contains(key)) {
+    final before = await grants.decision(aid, cap);
+    if (before?.allowed == true) return;
+    if (before != null) {
       throw DeviceError.notGranted(
         'the person did not allow $cap for this app',
       );
     }
+    final key = (aid, cap);
     // The cleanup returns nothing: whenComplete would wait on a returned
     // future, and the removed value is this very one.
     final ok = await (_asking[key] ??= consent.ask(aid, cap).whenComplete(() {
       _asking.remove(key);
     }));
+    if ((await grants.decision(aid, cap))?.allowed != ok) {
+      await grants.decide(aid, cap, allowed: ok);
+    }
     if (!ok) {
-      _refused.add(key);
       throw DeviceError.notGranted(
         'the person did not allow $cap for this app',
       );
     }
-    _refused.remove(key);
-    if (!await grants.granted(aid, cap)) await grants.grant(aid, cap);
   }
 
   static ({String name, String mime, Uint8List data}) _file(Object? f) {
@@ -224,7 +228,7 @@ class DeviceHost {
     }
     final data = f['data'] as String;
     if (data.length > deviceMaxBytes * 4 ~/ 3 + 4) {
-      throw const DeviceError('too_large', 'the file is over 10 MB');
+      throw const DeviceError('too_large', 'the file is over 4 MB');
     }
     try {
       final bytes = base64Decode(data);
@@ -241,7 +245,7 @@ class DeviceHost {
     }
   }
 
-  /// The extensions of `files.pick`'s `{accept}` (`csv`, `.csv`), and
+  /// The extensions of `file.pick`'s `{accept}` (`csv`, `.csv`), and
   /// those of the MIME types it names; empty for any file.
   static List<String> _extensions(Object? opts) {
     final accept = opts is Map ? opts['accept'] : null;

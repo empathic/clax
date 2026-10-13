@@ -433,6 +433,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   StreamSubscription<String>? _opened;
   StreamSubscription<AppNoticeTap>? _taps;
   StreamSubscription<ReminderTap>? _reminderTaps;
+  StreamSubscription<StreamEvent>? _deletions;
 
   /// The device capabilities, asking in a dialog over the app.
   late final DeviceHost? _device = _s.device?.call(
@@ -552,6 +553,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     unawaited(_opened?.cancel());
     unawaited(_taps?.cancel());
     unawaited(_reminderTaps?.cancel());
+    unawaited(_deletions?.cancel());
     for (final o in _openApps) {
       unawaited(o.actions.close());
     }
@@ -641,6 +643,13 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           final stream = _stream = SharedClaxStream(_api.stream);
           // A failure is retried by the stream itself.
           unawaited(stream.subscribe(streamTopics).catchError((Object _) {}));
+          // A deleted app's reminders stop and its device answers go.
+          _deletions = stream.events.listen((e) {
+            final aid = e.data['artifact_id'];
+            if (e.type == 'artifact_deleted' && aid is String) {
+              unawaited(_device?.forget(aid));
+            }
+          });
         }
         if (_pendingOpen case (:final aid, :final action)?) {
           _pendingOpen = null;
@@ -921,8 +930,29 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     );
   }
 
-  /// A tapped reminder of app [aid]: the app in front, at its route.
-  void _onReminderTap(ReminderTap t) {
+  /// A tapped reminder of app [aid]: the app in front, at its route. An
+  /// app that is gone says so, and its reminders are cancelled.
+  void _onReminderTap(ReminderTap t) => unawaited(_reminderTapped(t));
+
+  Future<void> _reminderTapped(ReminderTap t) async {
+    if (_wasUp) {
+      try {
+        await _api.getArtifact(t.aid);
+      } on ClaxApiError catch (e) {
+        if (e.status == 404) {
+          unawaited(_device?.forget(t.aid));
+          final context = _nav.currentContext;
+          if (context != null && context.mounted) {
+            ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+              const SnackBar(content: Text('That app was deleted')),
+            );
+          }
+          return;
+        }
+      } on Object {
+        // The daemon is unreachable: opening the app shows why.
+      }
+    }
     if (t.route case final r?) _routes[t.aid] = r;
     _openFromNotice(t.aid, toTop: true);
     _openRoute(t.aid);
@@ -1132,7 +1162,12 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       needsKey: _needsKey,
       stream: _stream,
       onOpenTarget: _openTarget,
-      inspectorPermissions: [AgentReadPermissions(_consentMemory)],
+      inspectorPermissions: [
+        AgentReadPermissions(_consentMemory),
+        if (_device case final d?) DevicePermissions(d),
+        NetPermissions(_api),
+        AiPermissions(_api),
+      ],
     );
   }
 

@@ -13,6 +13,10 @@ import 'device_ports.dart';
 /// own notices (`BackgroundRunService.kt` uses 1 to 66535).
 const firstReminderId = 1 << 20;
 
+/// The most reminders one app keeps (a weekly one takes one alarm per
+/// weekday; Android refuses an app's alarms past 500).
+const maxReminders = 64;
+
 /// What a tapped reminder asks: open app [aid] at [route] (`#…`, or the
 /// start page when null).
 class ReminderTap {
@@ -108,6 +112,12 @@ class Reminders {
     final spec = _check(r);
     final book = _load();
     final items = _items(book);
+    if (items.where((i) => i['aid'] == aid && i['id'] != spec['id']).length >=
+        maxReminders) {
+      throw const DeviceError.badRequest(
+        'an app keeps at most $maxReminders reminders: cancel one first',
+      );
+    }
     for (final old in items.where(
       (i) => i['aid'] == aid && i['id'] == spec['id'],
     )) {
