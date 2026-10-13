@@ -257,6 +257,10 @@ class FeedbackWorker {
   final _builds = StreamController<BuildState>.broadcast();
   final _buildStates = <String, BuildState>{};
 
+  /// Builds whose continue run was interrupted since the last
+  /// registration.
+  final _interruptedBuilds = <String>{};
+
   /// The app whose continue run is going, and its cancel.
   String? _building;
   Completer<void>? _buildCancel;
@@ -445,6 +449,9 @@ class FeedbackWorker {
         return;
       case ChangeInterrupted():
         _setBuild(state(BuildPhase.queued));
+        // Once more at once; after that the next registration's recovery
+        // takes it up, so a dead daemon is not polled in a loop.
+        if (_interruptedBuilds.add(aid)) startBuild(aid);
         return;
       case ChangeDropped():
         await _quietPlan(() async {
@@ -533,6 +540,7 @@ class FeedbackWorker {
           _sid = await _session();
           _generation++;
           _interrupted.clear();
+          _interruptedBuilds.clear();
           register = false;
           if (!_swept) {
             _swept = true;
