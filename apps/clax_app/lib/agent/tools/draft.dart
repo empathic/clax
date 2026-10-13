@@ -102,13 +102,17 @@ class Draft {
   bool get lastRenderHadErrors => _lastRenderHadErrors;
   var _lastRenderHadErrors = false;
 
+  /// Whether the latest render ran the draft's tests and any failed.
+  bool get lastRenderFailedTests => _lastRenderFailedTests;
+  var _lastRenderFailedTests = false;
+
   /// The hidden draft artifact a render serves the draft as, and its
   /// version.
   String? draftArtifactId;
   int? draftVersion;
 
-  /// The snapshot the latest render without uncaught errors rendered, on
-  /// the current [baseVersion]; a [reset] clears it.
+  /// The snapshot the latest render without uncaught errors or failing
+  /// tests rendered, on the current [baseVersion]; a [reset] clears it.
   DraftSnapshot? get lastClean => _lastClean;
   DraftSnapshot? _lastClean;
 
@@ -120,9 +124,11 @@ class Draft {
   };
 
   /// Whether the current draft, at its latest revision, rendered without
-  /// uncaught errors: the gate for publishing it.
+  /// uncaught errors or failing tests: the gate for publishing it.
   bool get renderedClean =>
-      _renderedRevision == _revision && !_lastRenderHadErrors;
+      _renderedRevision == _revision &&
+      !_lastRenderHadErrors &&
+      !_lastRenderFailedTests;
 
   /// Creates or replaces [path]; returns whether it was created.
   bool writeFile(String path, String content) {
@@ -194,12 +200,19 @@ class Draft {
   /// Records a render of [rendered], the [snapshot] the render took before
   /// it uploaded the draft. The current draft counts as rendered only when
   /// nothing changed since ([renderedClean]). A render without uncaught
-  /// [errors] keeps [rendered] as [lastClean], unless it is built on a base
-  /// other than the current one.
-  void markRendered(DraftSnapshot rendered, {required bool errors}) {
+  /// [errors] and without [testsFailed] keeps [rendered] as [lastClean],
+  /// unless it is built on a base other than the current one.
+  void markRendered(
+    DraftSnapshot rendered, {
+    required bool errors,
+    bool testsFailed = false,
+  }) {
     _renderedRevision = rendered.revision;
     _lastRenderHadErrors = errors;
-    if (!errors && rendered.baseVersion == baseVersion) _lastClean = rendered;
+    _lastRenderFailedTests = testsFailed;
+    if (!errors && !testsFailed && rendered.baseVersion == baseVersion) {
+      _lastClean = rendered;
+    }
   }
 
   /// Whether the draft differs from the app's [base] files, [title] and

@@ -56,6 +56,7 @@ sealed class HostMessage {
           text: m['text'] as String? ?? '',
         ),
         'inspection' => InspectionMsg.fromJson(m),
+        'tests' => TestsMsg.fromJson(m),
         'questions' => QuestionsMsg(_count(m['open'])),
         _ => null,
       };
@@ -280,6 +281,44 @@ final class InspectionMsg extends HostMessage {
   final String? error;
 }
 
+/// The inspect view's answer to [RunTests]: how many tests [passed], each
+/// that [failed] (or test file that did not load) with why, and how many
+/// were [skipped] for lack of time; or [error], why there was no run (then
+/// the rest is empty).
+final class TestsMsg extends HostMessage {
+  const TestsMsg({
+    required this.passed,
+    required this.failed,
+    required this.skipped,
+  }) : error = null;
+
+  const TestsMsg.failed(String this.error)
+    : passed = 0,
+      failed = const [],
+      skipped = 0;
+
+  /// The message [m] holds; a [TypeError] for any other shape.
+  factory TestsMsg.fromJson(Map<String, Object?> m) {
+    final error = m['error'];
+    if (error is String) return TestsMsg.failed(error);
+    return TestsMsg(
+      passed: _count(m['passed']),
+      failed: [
+        for (final f in m['failed'] as List)
+          (name: (f as Map)['name'] as String, error: f['error'] as String),
+      ],
+      skipped: _count(m['skipped']),
+    );
+  }
+
+  final int passed;
+  final List<({String name, String error})> failed;
+  final int skipped;
+
+  /// Why there was no run, when there was none.
+  final String? error;
+}
+
 /// How many of the agent's questions about this app are [open]; posted
 /// whenever that changes.
 final class QuestionsMsg extends HostMessage {
@@ -441,6 +480,54 @@ final class Inspect extends HostCall {
   @override
   String toJs() =>
       'window.claxHost?.inspect({settleMs:$settleMs,maxBytes:$maxBytes})';
+}
+
+/// In the inspect view, asks the page to run the draft's test [files]
+/// (`tests/<name>.test.js`), each test for at most [testMs], the run for at
+/// most [totalMs]: a [TestsMsg] answers. A later call replaces an earlier
+/// one; anywhere else the shell answers with an error.
+final class RunTests extends HostCall {
+  const RunTests(this.files, {this.testMs = 5000, this.totalMs = 30000});
+  final List<String> files;
+  final int testMs;
+  final int totalMs;
+  @override
+  String toJs() =>
+      'window.claxHost?.runTests({files:[${files.map(jsString).join(',')}],'
+      'testMs:$testMs,totalMs:$totalMs})';
+}
+
+/// The app's answer to [DeviceRequest] [id]: [value] when [code] is null,
+/// else the coded error ([code], [message]) the page's call rejects with.
+final class DeviceResult extends HostCall {
+  const DeviceResult.ok(this.id, this.value) : code = null, message = null;
+  const DeviceResult.error(this.id, String this.code, String this.message)
+    : value = null;
+
+  final String id;
+  final Object? value;
+  final String? code;
+  final String? message;
+
+  @override
+  String toJs() {
+    final a = code == null
+        ? {'id': id, 'ok': true, 'value': value}
+        : {
+            'id': id,
+            'ok': false,
+            'error': {'code': code, 'message': message},
+          };
+    return 'window.claxHost?.deviceResult(JSON.parse(${jsString(jsonEncode(a))}))';
+  }
+}
+
+/// Moves the page to fragment [hash] (`#…`), as a notification's tap asks.
+final class OpenRoute extends HostCall {
+  const OpenRoute(this.hash);
+  final String hash;
+  @override
+  String toJs() => 'window.claxHost?.openRoute(${jsString(hash)})';
 }
 
 /// Whether an [AttestPointer] is a press, a release, or a touch the OS

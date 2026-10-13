@@ -82,7 +82,7 @@ class Rig {
         baseVersion: ctx.baseVersion,
       ),
       budget: RunBudget(
-        caps ?? (kind == RequestKind.newApp ? RunCaps.newApp : RunCaps.change),
+        caps ?? (kind == RequestKind.newApp ? testNewCaps : testChangeCaps),
         'claude-haiku-5-5',
         clock,
       ),
@@ -444,6 +444,108 @@ void main() {
     expect(r.draft.draftArtifactId, isNot(old));
   });
 
+  group('tests', () {
+    const failing = TestRun(
+      passed: 1,
+      failed: [(name: 'adds', error: 'Expected: 1 to be 2')],
+      skipped: 0,
+    );
+
+    test('a draft without test files makes no second load', () async {
+      final r = Rig(files: {'index.html': '<p>a</p>', 'tests/notes.md': 'x'});
+      final out = okJson(await r.renderNow());
+      expect(out.containsKey('tests'), isFalse);
+      expect(r.inspector.testCalls, isEmpty);
+      expect(r.named('createDraft'), hasLength(1));
+    });
+
+    test('test files run on a scratch draft with the staged writes, which '
+        'is deleted after; the result carries tests', () async {
+      final r = Rig(
+        files: {
+          'index.html': '<p>a</p>',
+          'tests/b.test.js': 'test("b", () => {})',
+          'tests/a.test.js': 'test("a", () => {})',
+          'tests/helpers.js': 'export const x = 1',
+        },
+      );
+      r.draft.stage([
+        const DbOp(op: 'set', collection: 'runs', docId: 'a', data: {'km': 1}),
+      ]);
+      r.inspector.answerTests(failing);
+      final out = okJson(await r.renderNow());
+      expect(out['tests'], failing.toJson());
+
+      final drafts = r.named('createDraft').toList();
+      expect(drafts, hasLength(2));
+      expect(drafts.last.args['of'], r.aid);
+      expect(drafts.last.args['files'], r.draft.files);
+      final main = r.draft.draftArtifactId!;
+      final call = r.inspector.testCalls.single;
+      final scratch = call.url.pathSegments[1];
+      expect(scratch, isNot(main));
+      expect(call.url.query, 'app=1&inspect=1');
+      expect(call.files, ['tests/a.test.js', 'tests/b.test.js']);
+      expect(call.total, testLimit);
+      // The staged write reached both copies; the scratch one is gone.
+      expect([
+        for (final b in r.named('batchDocs')) b.args['aid'],
+      ], containsAll([main, scratch]));
+      expect(
+        [for (final d in r.named('deleteDraft')) d.args['draftId']],
+        [scratch],
+      );
+
+      expect(r.draft.lastRenderFailedTests, isTrue);
+      expect(r.draft.renderedClean, isFalse);
+      expect(r.draft.lastClean, isNull);
+      expect(r.events.whereType<Inspected>(), hasLength(1));
+    });
+
+    test('passing tests leave the draft rendered clean', () async {
+      final r = Rig(
+        files: {'index.html': '<p>a</p>', 'tests/a.test.js': 'test()'},
+      );
+      final out = okJson(await r.renderNow());
+      expect(out['tests'], {'passed': 1, 'failed': <Object?>[], 'skipped': 0});
+      expect(r.draft.renderedClean, isTrue);
+      expect(r.draft.lastClean, isNotNull);
+    });
+
+    test('a page with uncaught errors runs no tests', () async {
+      final r = Rig(
+        files: {'index.html': '<p>a</p>', 'tests/a.test.js': 'test()'},
+      );
+      r.inspector.answer(
+        r.inspector.clean(errors: [(kind: 'error', text: 'boom')]),
+      );
+      final out = okJson(await r.renderNow());
+      expect(out.containsKey('tests'), isFalse);
+      expect(r.inspector.testCalls, isEmpty);
+      expect(r.draft.lastRenderHadErrors, isTrue);
+    });
+
+    test('a test run that did not happen is one failure saying why', () async {
+      final r = Rig(
+        files: {'index.html': '<p>a</p>', 'tests/a.test.js': 'test()'},
+      );
+      r.inspector.failTests(const InspectorError('the page has not loaded'));
+      final out = okJson(await r.renderNow());
+      expect(out['tests'], {
+        'passed': 0,
+        'failed': [
+          {
+            'name': 'tests',
+            'error': 'The tests did not run: the page has not loaded.',
+          },
+        ],
+        'skipped': 0,
+      });
+      expect(r.draft.lastRenderFailedTests, isTrue);
+      expect(r.named('deleteDraft'), hasLength(1));
+    });
+  });
+
   group('deadline', () {
     test(
       'a page that does not answer in 8 seconds is a failed render',
@@ -594,4 +696,13 @@ class _StuckInspector implements Inspector {
     int maxBytes = 1 << 20,
     Future<void>? cancelled,
   }) => answer;
+
+  @override
+  Future<TestRun> runTests(
+    Uri url, {
+    required List<String> files,
+    Duration perTest = const Duration(seconds: 5),
+    Duration total = const Duration(seconds: 30),
+    Future<void>? cancelled,
+  }) => throw UnimplementedError();
 }

@@ -92,6 +92,79 @@ void main() {
     },
   );
 
+  test('a test run loads the URL, asks runTests after ready and returns '
+      'its results; an inspection answer is not taken', () async {
+    final f = inspector.runTests(
+      _url(),
+      files: const ['tests/a.test.js'],
+      perTest: const Duration(seconds: 2),
+      total: const Duration(seconds: 20),
+    );
+    await _settle();
+    final s = surfaces.single;
+    expect(s.loads, [_url()]);
+    s.push(_ready());
+    await _settle();
+    expect(s.js, [
+      const RunTests(['tests/a.test.js'], testMs: 2000, totalMs: 20000).toJs(),
+    ]);
+    s.push(_shot());
+    s.push(
+      const TestsMsg(
+        passed: 1,
+        failed: [(name: 'adds', error: 'Expected: 1 to be 2')],
+        skipped: 2,
+      ),
+    );
+    final r = await f;
+    expect(r.toJson(), {
+      'passed': 1,
+      'failed': [
+        {'name': 'adds', 'error': 'Expected: 1 to be 2'},
+      ],
+      'skipped': 2,
+    });
+    expect(s.visibility, [true, false]);
+  });
+
+  test("a test run's error answer, and no answer within the run's time, "
+      'are InspectorErrors', () async {
+    var f = inspector.runTests(_url(), files: const ['tests/a.test.js']);
+    await _settle();
+    surfaces.single.push(_ready());
+    await _settle();
+    surfaces.single.push(const TestsMsg.failed('the page has not loaded'));
+    await expectLater(
+      f,
+      throwsA(
+        isA<InspectorError>().having(
+          (e) => e.message,
+          'message',
+          'the page has not loaded',
+        ),
+      ),
+    );
+    f = inspector.runTests(
+      _url(),
+      files: const ['tests/a.test.js'],
+      total: const Duration(seconds: 20),
+    );
+    await _settle();
+    surfaces.single.push(_ready());
+    await _settle();
+    clock.advance(const Duration(seconds: 30));
+    await expectLater(
+      f,
+      throwsA(
+        isA<InspectorError>().having(
+          (e) => e.message,
+          'message',
+          contains('did not answer within 30 seconds'),
+        ),
+      ),
+    );
+  });
+
   test('every inspection loads a new document in the same surface', () async {
     for (var n = 0; n < 2; n++) {
       final f = inspector.inspect(_url());

@@ -28,8 +28,9 @@ import 'host_protocol.dart';
 /// 4. tells the surface it is hidden again, so the draft's page idles
 ///    until the next inspection replaces it.
 ///
-/// Inspections run one at a time, in the order asked; a later one waits for
-/// the earlier one to end. A cancel ends the call at once with
+/// A test run ([runTests]) goes the same way with `claxHost.runTests`.
+/// Inspections and test runs go one at a time, in the order asked; a later
+/// one waits for the earlier one to end. A cancel ends the call at once with
 /// [InspectorError] `cancelled`. The surface is made on the first
 /// inspection, for the daemon's address the URL names, and made again when
 /// that address changes (a daemon restarted on a new port).
@@ -65,7 +66,53 @@ class WebViewInspector implements Inspector {
     Duration settle = const Duration(seconds: 3),
     int maxBytes = 1 << 20,
     Future<void>? cancelled,
-  }) {
+  }) => _queued(cancelled, () async {
+    final (m, took) = await _ask<InspectionMsg>(
+      url,
+      Inspect(settleMs: settle.inMilliseconds, maxBytes: maxBytes),
+      settle + answerLimit,
+      cancelled,
+    );
+    if (m.error case final why?) throw InspectorError(why);
+    return Inspection(
+      png: m.png,
+      errors: m.errors,
+      failed: m.failed,
+      text: m.text,
+      title: m.title,
+      height: m.height,
+      settledMs: took.inMilliseconds,
+    );
+  });
+
+  /// Each test run loads [url] as an inspection does (steps 1, 2 and 4),
+  /// then calls `claxHost.runTests` and waits for its `tests`, at most
+  /// [total] plus [answerLimit].
+  @override
+  Future<TestRun> runTests(
+    Uri url, {
+    required List<String> files,
+    Duration perTest = const Duration(seconds: 5),
+    Duration total = const Duration(seconds: 30),
+    Future<void>? cancelled,
+  }) => _queued(cancelled, () async {
+    final (m, _) = await _ask<TestsMsg>(
+      url,
+      RunTests(
+        files,
+        testMs: perTest.inMilliseconds,
+        totalMs: total.inMilliseconds,
+      ),
+      total + answerLimit,
+      cancelled,
+    );
+    if (m.error case final why?) throw InspectorError(why);
+    return TestRun(passed: m.passed, failed: m.failed, skipped: m.skipped);
+  });
+
+  /// Runs [work] after every call before it has ended; a cancel before its
+  /// turn ends it with `cancelled`.
+  Future<T> _queued<T>(Future<void>? cancelled, Future<T> Function() work) {
     final prior = _last;
     final done = Completer<void>();
     _last = done.future;
@@ -76,7 +123,7 @@ class WebViewInspector implements Inspector {
         await Future.any<void>([prior, ?cancelled]);
         if (_disposed) throw const InspectorError('the app is closing');
         if (stopped) throw const InspectorError('cancelled');
-        return await _inspect(url, settle, maxBytes, cancelled);
+        return await work();
       } finally {
         // A cancelled call waiting its turn still lets the next one go only
         // after the inspection before it ends.
@@ -85,23 +132,25 @@ class WebViewInspector implements Inspector {
     }();
   }
 
-  Future<Inspection> _inspect(
+  /// Loads [url], waits for its `ready`, makes [call] and returns the
+  /// first [M] after it, within [limit], with how long it took.
+  Future<(M, Duration)> _ask<M extends HostMessage>(
     Uri url,
-    Duration settle,
-    int maxBytes,
+    HostCall call,
+    Duration limit,
     Future<void>? cancelled,
   ) async {
     final surface = _surfaceFor(url);
     final aid = _artifactOf(url);
     final ready = Completer<void>();
-    final answer = Completer<InspectionMsg>();
+    final answer = Completer<M>();
     var asked = false;
     final sub = surface.messages.listen((m) {
       switch (m) {
         case Ready(:final artifact) when artifact == aid:
           if (!ready.isCompleted) ready.complete();
-        case InspectionMsg() when asked:
-          if (!answer.isCompleted) answer.complete(m);
+        case final M got when asked:
+          if (!answer.isCompleted) answer.complete(got);
         case _:
           break;
       }
@@ -128,25 +177,13 @@ class WebViewInspector implements Inspector {
       );
       asked = true;
       final started = _clock.now();
-      await surface.call(
-        Inspect(settleMs: settle.inMilliseconds, maxBytes: maxBytes),
-      );
+      await surface.call(call);
       final m = await within(
         answer.future,
-        settle + answerLimit,
-        'it did not answer within '
-        '${(settle + answerLimit).inSeconds} seconds',
+        limit,
+        'it did not answer within ${limit.inSeconds} seconds',
       );
-      if (m.error case final why?) throw InspectorError(why);
-      return Inspection(
-        png: m.png,
-        errors: m.errors,
-        failed: m.failed,
-        text: m.text,
-        title: m.title,
-        height: m.height,
-        settledMs: _clock.now().difference(started).inMilliseconds,
-      );
+      return (m, _clock.now().difference(started));
     } finally {
       unawaited(sub.cancel());
       unawaited(faults.cancel());
