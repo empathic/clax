@@ -157,10 +157,13 @@ class _Job {
 }
 
 /// Takes the app session's comments and runs them through [AgentLoop]:
-/// one long poll at a time, a poll's comments grouped by artifact, one
-/// change at a time. When a run starts, every queued job of its artifact
-/// joins it, in arrival order, so comments sent while a change runs are
-/// answered by one run on the version it landed.
+/// one long poll at a time, a poll's comments grouped by artifact. Jobs of
+/// different apps run at once, at most [concurrency] (by default
+/// [maxConcurrent]); an app's jobs (its changes and its build's continue
+/// runs) run one at a time, in the order they were queued. When a run
+/// starts, every queued job of its artifact and kind joins it, in arrival
+/// order, so comments sent while a change runs are answered by one run on
+/// the version it landed.
 ///
 /// Registration and recovery: [start], and every poll failure, registers
 /// the session again (the daemon finds its row by the install ID, or makes
@@ -218,8 +221,16 @@ class FeedbackWorker {
     this._pollWait = const Duration(seconds: 50),
     Future<void> Function(Duration)? delay,
     void Function(String line)? log,
-  }) : _delay = delay ?? Future<void>.delayed,
+    this.concurrency = maxConcurrent,
+  }) : assert(concurrency > 0),
+       _delay = delay ?? Future<void>.delayed,
        _log = log ?? ((_) {});
+
+  /// How many apps' jobs run at once by default.
+  static const maxConcurrent = 3;
+
+  /// How many apps' jobs this worker runs at once.
+  final int concurrency;
 
   final ClaxApi _api;
   final AgentLoop _loop;
@@ -230,7 +241,11 @@ class FeedbackWorker {
 
   final _events = StreamController<WorkerEvent>.broadcast();
   final _queue = Queue<_Job>();
+  /// The threads of every running change.
   final _running = <String>{};
+
+  /// Each app whose job runs, and that job's end.
+  final _active = <String, Future<void>>{};
 
   /// Threads already recovered after an interruption since the last
   /// registration.
@@ -239,7 +254,6 @@ class FeedbackWorker {
   Completer<void> _stop = Completer<void>();
   String? _sid;
   var _generation = 0;
-  Future<void>? _draining;
   var _recovering = 0;
   var _swept = false;
 
@@ -261,9 +275,8 @@ class FeedbackWorker {
   /// registration.
   final _interruptedBuilds = <String>{};
 
-  /// The app whose continue run is going, and its cancel.
-  String? _building;
-  Completer<void>? _buildCancel;
+  /// The cancel of each app's going continue run.
+  final _buildCancels = <String, Completer<void>>{};
 
   /// The first wait after a failed poll; it doubles up to [maxBackoff].
   static const firstBackoff = Duration(milliseconds: 250);
@@ -284,7 +297,7 @@ class FeedbackWorker {
   /// queued or running. Not started, the worker queues it at its next
   /// recovery instead.
   void startBuild(String appId) {
-    if (_building == appId ||
+    if (_buildCancels.containsKey(appId) ||
         _queue.any((j) => j.build && j.artifactId == appId)) {
       return;
     }
@@ -307,9 +320,7 @@ class FeedbackWorker {
   Future<void> stopBuild(String appId) async {
     _queue.removeWhere((j) => j.build && j.artifactId == appId);
     final plan = await _quietPlan(() => _loop.plans.setStopped(appId, true));
-    if (_building == appId) {
-      if (_buildCancel case final c? when !c.isCompleted) c.complete();
-    }
+    if (_buildCancels[appId] case final c? when !c.isCompleted) c.complete();
     _setBuild(
       BuildState(
         appId,
@@ -400,8 +411,7 @@ class FeedbackWorker {
       );
       return;
     }
-    final cancel = _buildCancel = Completer<void>();
-    _building = aid;
+    final cancel = _buildCancels[aid] = Completer<void>();
     _setBuild(
       BuildState(
         aid,
@@ -428,8 +438,7 @@ class FeedbackWorker {
         ),
       );
     } finally {
-      _building = null;
-      _buildCancel = null;
+      _buildCancels.remove(aid);
     }
     final Plan? after;
     try {
@@ -529,11 +538,11 @@ class FeedbackWorker {
   /// The app session the worker registered last, or null before it has.
   String? get sessionId => _sid;
 
-  /// Whether no change is queued, running or being recovered.
+  /// Whether no job is queued, running or being recovered.
   bool get isIdle =>
       _queue.isEmpty &&
       _running.isEmpty &&
-      _draining == null &&
+      _active.isEmpty &&
       _recovering == 0;
 
   /// Starts polling. Does nothing when already started.
@@ -544,16 +553,16 @@ class FeedbackWorker {
     unawaited(_poll());
   }
 
-  /// Stops polling and cancels the change in flight (it publishes and
-  /// replies nothing; its threads are recovered on the next start), and
-  /// waits for it to end. A long poll still out is left to finish; its
+  /// Stops polling and cancels the jobs in flight (they publish and reply
+  /// nothing; their threads are recovered on the next start), and waits
+  /// for each to end. A long poll still out is left to finish; its
   /// comments are dropped and recovered on the next start.
   Future<void> stop() async {
     if (!_started) return;
     _started = false;
     _queue.clear();
     if (!_stop.isCompleted) _stop.complete();
-    await _draining;
+    await Future.wait(_active.values.toList());
   }
 
   Future<void> _poll() async {
@@ -658,18 +667,28 @@ class FeedbackWorker {
     }
   }
 
-  /// Runs the queue unless it is already running.
+  /// Starts the queue's next jobs, as long as fewer than [concurrency]
+  /// run: each the first queued job of an app with none running.
   void _kick() {
-    if (_draining != null || _queue.isEmpty || !_started) return;
-    _draining = _drain().whenComplete(() {
-      _draining = null;
-      _kick();
-    });
+    while (_started && _active.length < concurrency) {
+      final job = _next();
+      if (job == null) return;
+      final aid = job.artifactId;
+      _active[aid] = _runJob(job).whenComplete(() {
+        _active.remove(aid);
+        _kick();
+      });
+    }
   }
 
-  /// The next job with every queued job of its artifact merged into it.
-  _Job _next() {
-    final first = _queue.removeFirst();
+  /// The first queued job of an app with no running job, with every queued
+  /// job of its artifact and kind merged into it; null when there is none.
+  _Job? _next() {
+    final first = _queue
+        .where((j) => !_active.containsKey(j.artifactId))
+        .firstOrNull;
+    if (first == null) return null;
+    _queue.remove(first);
     final job = _Job(
       first.artifactId,
       items: List.of(first.items),
@@ -691,44 +710,51 @@ class FeedbackWorker {
     return job;
   }
 
-  Future<void> _drain() async {
-    while (_queue.isNotEmpty && _started) {
-      final job = _next();
-      final aid = job.artifactId;
-      if (job.build) {
-        await _runBuild(aid);
-        continue;
-      }
-      _running.addAll({...job.recheck, ...job.items.map((i) => i.threadId)});
+  Future<void> _runJob(_Job job) async {
+    try {
+      await _runOne(job);
+    } on Object catch (e) {
+      _log('the job of ${job.artifactId} failed: $e');
+    }
+  }
+
+  Future<void> _runOne(_Job job) async {
+    if (!_started) return;
+    final aid = job.artifactId;
+    if (job.build) {
+      await _runBuild(aid);
+      return;
+    }
+    final threads = {...job.recheck, ...job.items.map((i) => i.threadId)};
+    _running.addAll(threads);
+    try {
+      final items = await _withRechecked(job);
+      if (!_started) return;
+      final late = await _withAnswers(job, items);
+      if (items.isEmpty || !_started) return;
+      final texts = [...job.texts, ...late.texts];
+      _answering.addAll(late.questions);
+      final ChangeOutcome outcome;
       try {
-        final items = await _withRechecked(job);
-        if (!_started) continue;
-        final late = await _withAnswers(job, items);
-        if (items.isEmpty || !_started) continue;
-        final texts = [...job.texts, ...late.texts];
-        _answering.addAll(late.questions);
-        final ChangeOutcome outcome;
-        try {
-          outcome = await _runChange(
-            aid,
-            items,
-            answers: texts.isEmpty ? null : texts.join('\n\n'),
-            answering: late.questions.toSet(),
-          );
-        } finally {
-          _answering.removeAll(late.questions);
-        }
-        if (outcome is! ChangeCancelled && outcome is! ChangeInterrupted) {
-          for (final q in late.questions) {
-            await _forgetAnswer(q);
-          }
-        }
-        if (outcome is ChangeLanded || outcome is ChangeAnswered) {
-          await _maybeBuild(aid);
-        }
+        outcome = await _runChange(
+          aid,
+          items,
+          answers: texts.isEmpty ? null : texts.join('\n\n'),
+          answering: late.questions.toSet(),
+        );
       } finally {
-        _running.clear();
+        _answering.removeAll(late.questions);
       }
+      if (outcome is! ChangeCancelled && outcome is! ChangeInterrupted) {
+        for (final q in late.questions) {
+          await _forgetAnswer(q);
+        }
+      }
+      if (outcome is ChangeLanded || outcome is ChangeAnswered) {
+        await _maybeBuild(aid);
+      }
+    } finally {
+      _running.removeAll(threads);
     }
   }
 
