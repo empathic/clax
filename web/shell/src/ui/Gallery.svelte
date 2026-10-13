@@ -9,7 +9,7 @@
   // above everything and Inbox in the header. At `/inbox` the page is the
   // inbox instead, and `q` loads at once. `q` loads only in a browser with
   // an inbox: the owner's (the token is served to it) or a connected
-  // person's (`GET /api/inbox` answers it), so a person's agents' questions
+  // person's (`GET /api/viewers/me` says so), so a person's agents' questions
   // wait in Clax and are answered there; anyone else at `/inbox` is told
   // the browser has no inbox, and nothing more of it is fetched. At `/people` the
   // page is People (its own chunk, through the lazy module, with the page's
@@ -57,7 +57,7 @@
   // `/inbox` loads its page's own chunk beside the module.
   // The lazy module, once loaded (on every path): People in the header comes from it.
   let lm = $state<typeof import("./gallery-working") | null>(null);
-  const loadQ = (m: typeof import("./gallery-working")) => { if (!destroyed) lm = m; return m.inboxBrowser(life.signal).then(o => (o && !destroyed ? Promise.all([m.q(), inbox ? m.inboxPage() : null]) : null)).then(async r => {
+  const loadQ = (m: typeof import("./gallery-working")) => { if (!destroyed) lm = m; return m.inboxBrowser(mine, life.signal).then(o => (o && !destroyed ? Promise.all([m.q(), inbox ? m.inboxPage() : null]) : null)).then(async r => {
     if (destroyed) return;
     if (!r) { owner = false; return; }
     Q = r[0];
@@ -94,7 +94,9 @@
   // Grouped without a query once the grouping has loaded; until then, and
   // with a query, one list.
   const g = $derived(shown && gw && !query.trim() ? gw.groups(shown, att) : null);
-  onMount(() => { if (inbox) void lazy().then(loadQ, () => {}); else if (people) void lazy().then(m => { void loadQ(m); if (!destroyed) unPeople = m.peoplePage(document.querySelector("main.gal")!); }, () => {}); else void refresh(true); void getToken().then(t => { token = t; return fetch("/api/viewers/me"); }).then(r => r.json()).then(b => { viewer = b?.viewer; }, () => {}); });
+  // This browser's viewer, asked once (after the token: on this machine that makes it the owner's).
+  let mine: Promise<import("../people/PeopleLink.svelte").Viewer>;
+  onMount(() => { mine = getToken().then(t => { token = t; return fetch("/api/viewers/me"); }).then(r => r.json()).then(b => (viewer = b?.viewer), () => null); if (inbox) void lazy().then(loadQ, () => {}); else if (people) void lazy().then(m => { void loadQ(m); if (!destroyed) unPeople = m.peoplePage(document.querySelector("main.gal")!); }, () => {}); else void refresh(true); });
   onDestroy(() => { destroyed = true; unPeople?.(); life.dispose(); cancelStart?.(); sync?.stop(); Q?.stop(); });
 </script>
 
@@ -106,7 +108,7 @@
   <ThemeSwitch />
 </header>
 <main class="gal">
-  {#if inbox}{#if owner && Page}<Page />{:else if owner === false}<p class="empty">This browser has no inbox. The owner's is at http://localhost:{location.port}/inbox on the computer Clax runs on; a connected person's is in the browser <code>clax connect</code> opened.</p>{/if}{:else if !people}
+  {#if inbox}{#if owner && Page}<Page />{:else if owner === false}<p class="empty">This browser has no inbox: open the owner's at http://localhost:{location.port}/inbox on the computer Clax runs on.</p>{/if}{:else if !people}
   {#if Q}<Q.GallerySummary />{/if}
   {#if error}<p class="empty">Could not load artifacts: {error}</p>{/if}
   {#if artifacts && artifacts.length === 0}

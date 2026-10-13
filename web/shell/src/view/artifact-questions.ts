@@ -3,7 +3,8 @@
 // module loads this once the view knows its viewer, and none of it is in
 // the artifact entry: it waits for the browser to be idle, asks whether
 // this browser has an inbox, and only then loads the question module.
-import { inboxBrowser } from "../owner";
+import { type Me, inboxBrowser } from "../owner";
+import { getViewer } from "../threads";
 import { pageStream } from "../stream";
 import { guardedAction, keyboardTrail } from "./trail";
 
@@ -13,7 +14,7 @@ export function artifactQuestions(id: string): () => void {
   const life = new AbortController();
   let stop: (() => void) | null = null;
   const load = () => void import("../q").then(m => { if (!life.signal.aborted) stop = m.artifact(id, { keyboardTrail, guardedAction }, pageStream()); }, () => {});
-  const owner = () => void inboxBrowser(life.signal).then(o => { if (o && !life.signal.aborted) load(); });
+  const owner = () => void inboxBrowser(getViewer() as Promise<Me>, life.signal).then(o => { if (o && !life.signal.aborted) load(); });
   let cancel: () => void;
   if (typeof requestIdleCallback === "function") {
     const h = requestIdleCallback(owner, { timeout: 2000 });

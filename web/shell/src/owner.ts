@@ -14,13 +14,21 @@ export async function ownerBrowser(signal?: AbortSignal): Promise<boolean> {
   return ask("/api/token", r => r.status === 403, signal);
 }
 
-/** Whether this browser has an inbox: the owner's, or a connected
- * person's, to whom `GET /api/inbox` answers (spec
- * 2026-10-08-multi-agent-multi-person §18); a LAN viewer's has none (a
- * 4xx). As [`ownerBrowser`], a failure that is no answer is asked again
- * after a backoff, and an abort answers false. */
-export async function inboxBrowser(signal?: AbortSignal): Promise<boolean> {
-  return (await ownerBrowser(signal)) || ask("/api/inbox?limit=1", r => r.status >= 400 && r.status < 500, signal);
+/** A viewer as `GET /api/viewers/me` gives it: `person` for a connected
+ * person's browser, `person_revoked_at` once the person is revoked. */
+export type Me = { person?: boolean; person_revoked_at?: string | null } | null | undefined;
+
+/** Whether this browser has an inbox (spec
+ * 2026-10-08-multi-agent-multi-person §18): a connected person's, as `me`
+ * (the page's own `GET /api/viewers/me`, asked once, as it answers) says, or the owner's
+ * (as [`ownerBrowser`]). A LAN viewer's has none, and asks nothing of the
+ * inbox to learn it; a connected person's needs no other request. The
+ * inbox's routes stay the authority: a person revoked since is refused
+ * when the feeds start. */
+export async function inboxBrowser(me: Promise<Me>, signal?: AbortSignal): Promise<boolean> {
+  const v = await me.catch(() => null);
+  if (signal?.aborted) return false;
+  return (!!v?.person && !v.person_revoked_at) || ownerBrowser(signal);
 }
 
 /** Asks `url` until it answers: true for a success, false for a refusal

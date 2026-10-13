@@ -41,7 +41,7 @@
     if (!c) return [];
     if ("comments" in c) {
       // Every comment is the request's author's (or an agent of theirs).
-      return c.comments.flatMap(x => x.body.split("\n").map((text, n) => (n ? { text } : { who: x.by_agent ? `${x.author_name ?? "An agent"} (${named}'s agent)` : author, text })));
+      return c.comments.flatMap(x => x.body.split(/\r?\n/).map((text, n) => (n ? { text } : { who: x.by_agent ? `${x.author_name ?? "An agent"} (${named}'s agent)` : author, text })));
     }
     const out: Line[] = [];
     if (c.title) out.push({ who: "Title", text: c.title });
@@ -53,7 +53,29 @@
   });
   /** How many lines show before Show all. */
   const LINES = 3;
-  const long = $derived(lines.length > LINES || lines.slice(0, LINES).some(l => l.text.length > 160));
+  // Whether the collapsed text overflows its 3-line clamp (a line that
+  // wraps), measured from its laid-out box after each render and again
+  // whenever the box changes size, so no clipped text goes without Show all.
+  let clipped = $state(false);
+  const measure = () => {
+    if (all) return;
+    const el = document.getElementById(`held-${id}`)?.querySelector<HTMLElement>(".htext");
+    clipped = !!el && el.scrollHeight > el.clientHeight + 1;
+  };
+  $effect(() => {
+    void shown;
+    measure();
+    const el = document.getElementById(`held-${id}`)?.querySelector<HTMLElement>(".htext");
+    if (!el) return;
+    if (typeof ResizeObserver === "function") {
+      const ro = new ResizeObserver(measure);
+      ro.observe(el);
+      return () => ro.disconnect();
+    }
+    addEventListener("resize", measure);
+    return () => removeEventListener("resize", measure);
+  });
+  const long = $derived(lines.length > LINES || clipped);
   const shown = $derived(all ? lines : lines.slice(0, LINES));
   const OUTCOME: Record<string, string> = { thread: "Allowed in this thread", artifact: "Allowed on this page", everywhere: "Allowed everywhere" };
   const outcome = $derived(status === "approved" ? `${OUTCOME[scope ?? ""] ?? "Allowed"}` : status === "declined" ? "Declined" : status === "withdrawn" ? "Withdrawn: nothing waits on it any more" : "This request no longer waits for you");
