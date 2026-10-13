@@ -15,6 +15,18 @@ class FakeAppNotice implements AppNotice {
   /// The notice the platform would show now: `aid title`, or null.
   String? shown;
 
+  final _dismissed = StreamController<String>.broadcast(sync: true);
+
+  /// The person swiped the notice away.
+  void dismiss() {
+    final aid = shown?.split(' ').first;
+    shown = null;
+    if (aid != null) _dismissed.add(aid);
+  }
+
+  @override
+  Stream<String> get dismissed => _dismissed.stream;
+
   void tap(String aid, AppAction action) =>
       _taps.add(AppNoticeTap(aid, action));
 

@@ -86,6 +86,7 @@ class MainActivity : FlutterActivity() {
         BackgroundRunService.onStopped = null
         // The open app's notice belongs to this activity's screen.
         AppNoticeChannel.clear(this)
+        notice?.dispose()
         // Without its Dart run, the service has nothing to keep alive.
         if (isFinishing) {
             val stop = Intent(this, BackgroundRunService::class.java)

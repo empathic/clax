@@ -1216,6 +1216,31 @@ void main() {
       expect(notice.shown, '${rig.aid} Runs');
     });
 
+    testWidgets('a swiped-away notice leaves the edge handle until the screen '
+        'next comes to the front, which posts it again', (tester) async {
+      final notice = FakeAppNotice();
+      final rig = await pumpScreen(tester, notice: notice);
+      rig.surface.push(rig.ready());
+      await tester.pumpAndSettle();
+      expect(handle, findsNothing);
+      notice.dismiss();
+      await tester.pumpAndSettle();
+      expect(handle, findsOneWidget);
+      await tester.tap(handle);
+      await tester.pumpAndSettle();
+      expect(panel, findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(handle, findsNothing);
+      expect(notice.shown, '${rig.aid} Runs');
+    });
+
     testWidgets('the notice names the app while its screen is in front, and '
         'is removed as the screen leaves', (tester) async {
       final notice = FakeAppNotice();
