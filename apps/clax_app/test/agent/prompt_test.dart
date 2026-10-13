@@ -323,7 +323,7 @@ void main() {
       expect(md, contains('Render before you finish'));
       expect(md, contains('Finish when the work is whole'));
       expect(md, contains('`plan_mark` a feature `doing`'));
-      expect(md, contains('`tests/*.test.js`'));
+      expect(md, contains('`tests/<name>.test.js`'));
       expect(md, contains('`surface_open`'));
       expect(md, contains('read both the old and the new shape'));
       expect(md, contains('localStorage'));
