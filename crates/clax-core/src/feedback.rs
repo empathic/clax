@@ -249,6 +249,17 @@ pub fn display_name(raw: &str) -> String {
     }
 }
 
+/// A person's name as views give it: [`display_name`] of `raw`, except
+/// that the owner (`owner`) is "The owner" until they choose a name, so a
+/// viewer or person named "Viewer" is never taken for them.
+pub fn person_name(raw: Option<&str>, owner: bool) -> String {
+    match raw.filter(|r| !r.trim().is_empty()) {
+        Some(r) => display_name(r),
+        None if owner => "The owner".to_string(),
+        None => display_name(""),
+    }
+}
+
 /// `s` as a JSON string literal. Beyond what JSON requires, U+0085, U+2028,
 /// and U+2029 are escaped too, so no character inside it can read as a line
 /// break.
@@ -461,6 +472,16 @@ pub fn render_notice(n: &Notice) -> String {
 mod tests {
     use super::*;
     use crate::anchor::Anchor;
+
+    #[test]
+    fn an_unnamed_owner_is_the_owner_and_never_viewer() {
+        assert_eq!(person_name(None, true), "The owner");
+        assert_eq!(person_name(Some("  "), true), "The owner");
+        assert_eq!(person_name(Some("Alex"), true), "Alex");
+        assert_eq!(person_name(None, false), "Viewer");
+        assert_eq!(person_name(Some("Viewer"), false), "Viewer");
+        assert_eq!(person_name(Some("a:b"), false), "a b");
+    }
 
     #[test]
     fn ages_read_as_phrases() {
