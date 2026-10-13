@@ -99,7 +99,10 @@ class _Run {
   void _emit(AgentProgress event) {
     if (event case Narration(:final text)) _narration = text;
     if (_cancelled) return;
-    state.progress?.call(event);
+    // Progress is advisory: a listener that throws never ends the run.
+    try {
+      state.progress?.call(event);
+    } on Object catch (_) {}
   }
 
   Future<RunOutcome> run() async {

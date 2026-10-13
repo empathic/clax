@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
@@ -37,11 +38,15 @@ String previewDocument(String html) {
 }
 
 /// Whether the preview may navigate to [url]: only its own loaded
-/// documents (`about:` and `data:`), never the network or a file.
-bool previewAllows(String url) {
-  final scheme = Uri.tryParse(url)?.scheme.toLowerCase();
-  return scheme == 'about' || scheme == 'data';
-}
+/// documents (`about:blank`, and `about:srcdoc` for frames), never the
+/// network, a file or a `data:` document (which would leave the
+/// [previewPolicy] behind).
+bool previewAllows(String url) => url == 'about:blank' || url == 'about:srcdoc';
+
+/// Whether a preview WebView on [platform] takes a background colour:
+/// WKWebView on macOS throws on `setOpaque`, which that call uses.
+bool previewSetsBackground(TargetPlatform platform) =>
+    platform != TargetPlatform.macOS;
 
 /// [PreviewView] over a platform WebView: [WebViewController.loadHtmlString]
 /// with JavaScript off, every navigation but its own documents refused
@@ -60,9 +65,12 @@ class WebViewPreview implements PreviewView {
               : NavigationDecision.prevent,
         ),
       );
-    if (background != null) {
-      // Not every platform view takes a background colour.
-      c.setBackgroundColor(background).catchError((Object _) {});
+    if (background != null && previewSetsBackground(defaultTargetPlatform)) {
+      // Not every platform view takes a background colour, and some throw
+      // before returning a future.
+      try {
+        c.setBackgroundColor(background).catchError((Object _) {});
+      } on Object catch (_) {}
     }
   }
 

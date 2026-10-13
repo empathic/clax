@@ -82,8 +82,17 @@ void main() {
       expect(previewDocument('<p>x'), startsWith('<meta http-equiv'));
       expect(previewPolicy, startsWith("default-src 'none'"));
       expect(previewAllows('about:blank'), true);
-      expect(previewAllows('data:text/html,x'), true);
+      expect(previewAllows('about:srcdoc'), true);
+      expect(previewSetsBackground(TargetPlatform.android), true);
+      expect(previewSetsBackground(TargetPlatform.iOS), true);
+      expect(
+        previewSetsBackground(TargetPlatform.macOS),
+        false,
+        reason: 'WKWebView on macOS throws on setOpaque',
+      );
       for (final u in [
+        'data:text/html,x',
+        'about:config',
         'https://example.com',
         'http://127.0.0.1:7480/',
         'file:///etc/passwd',
@@ -344,14 +353,24 @@ class _Rig {
   /// Whether the screen makes its own (platform) preview.
   var webView = false;
 
+  /// Whether the preview factory throws.
+  var throwingPreview = false;
+  var size = const Size(400, 800);
+  double textScale = 1;
+
   /// Given to the screen as its onMade.
   void Function(BuildContext context, String aid, Uint8List? lastFrame)? onMade;
 
   Future<void> pump(WidgetTester tester) async {
-    await tester.binding.setSurfaceSize(const Size(400, 800));
+    await tester.binding.setSurfaceSize(size);
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(
       MaterialApp(
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context)
+              .copyWith(textScaler: TextScaler.linear(textScale)),
+          child: child!,
+        ),
         home: Builder(
           builder: (context) => TextButton(
             onPressed: () async {
@@ -365,6 +384,9 @@ class _Rig {
                           ? null
                           : () {
                               previews++;
+                              if (throwingPreview) {
+                                throw UnimplementedError('no preview here');
+                              }
                               return preview;
                             },
                       timings: timings,
@@ -566,6 +588,50 @@ void _screen() {
     expect(find.text('Your app appears here as it is written'), findsOneWidget);
     expect(find.text('Live'), findsNothing);
     expect(rig.timings.stopped, isEmpty);
+    await tester.tap(find.text('Cancel'));
+    await _settle(tester);
+  });
+
+  testWidgets('a preview that cannot be made leaves the placeholder and the '
+      'run going', (tester) async {
+    final rig = _Rig()..throwingPreview = true;
+    await rig.pump(tester);
+    rig.progress(const PartialFile('index.html', '<p>hi'));
+    rig.progress(const ToolStarted('render', 'Checking how it looks'));
+    rig.progress(const PartialFile('index.html', '<p>hi there'));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    expect(find.text('Your app appears here as it is written'), findsOneWidget);
+    expect(find.text('Checking how it looks'), findsOneWidget);
+    rig.make.result.complete('a1');
+    await _settle(tester);
+    expect(rig.results.single, isA<Made>());
+  });
+
+  testWidgets('at text scale 2 on a small phone the failure view scrolls to '
+      'Retry, Edit and Cancel', (tester) async {
+    final rig = _Rig()
+      ..size = const Size(360, 640)
+      ..textScale = 2;
+    await rig.pump(tester);
+    rig.make.result.completeError(
+      const AgentError(
+        'The model refused this request. Check the model in Settings, or '
+        'change the request and try again.',
+      ),
+    );
+    await _settle(tester);
+    expect(tester.takeException(), isNull);
+    for (final label in ['Retry', 'Edit', 'Cancel']) {
+      await tester.ensureVisible(find.text(label));
+      await tester.pump();
+      expect(find.text(label).hitTestable(), findsOneWidget, reason: label);
+    }
+    await tester.ensureVisible(find.text('Retry'));
+    await tester.pump();
+    await tester.tap(find.text('Retry'));
+    await _settle(tester);
+    expect(rig.make.calls, 2);
     await tester.tap(find.text('Cancel'));
     await _settle(tester);
   });
