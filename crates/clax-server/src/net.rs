@@ -251,7 +251,9 @@ impl Transport for ReqwestTransport {
                 req = req.body(b);
             }
             let mut res = req.send().await.map_err(upstream)?;
-            if res.content_length().is_some_and(|n| n > MAX_BODY as u64) {
+            // A HEAD, 204 or 304 announces a length it does not send.
+            let bodiless = hop.method == "HEAD" || matches!(res.status().as_u16(), 204 | 304);
+            if !bodiless && res.content_length().is_some_and(|n| n > MAX_BODY as u64) {
                 return Err(NetError::TooLarge);
             }
             let status = res.status().as_u16();
@@ -309,6 +311,10 @@ const DROPPED_REQUEST: &[&str] = &[
     "upgrade",
     "expect",
 ];
+
+/// The page's headers that follow a redirect to another origin; every other
+/// one (`authorization`, `x-api-key`, any custom header) is dropped there.
+const CROSS_ORIGIN_KEPT: &[&str] = &["accept", "accept-language", "content-type", "user-agent"];
 
 /// Response headers that never reach the page.
 const DROPPED_RESPONSE: &[&str] = &[
@@ -521,8 +527,12 @@ impl Net {
                 NetError::Upstream(format!("a redirect to {location:?}, which is not a URL"))
             })?;
             let next = https_url(next.as_str())?;
-            if next.host_str() != url.host_str() {
-                headers.retain(|(k, _)| k != "authorization");
+            // To another origin (host or port), only headers that carry no
+            // credential go on.
+            if (next.host_str(), next.port_or_known_default())
+                != (url.host_str(), url.port_or_known_default())
+            {
+                headers.retain(|(k, _)| CROSS_ORIGIN_KEPT.contains(&k.as_str()));
             }
             // 303, and 301/302 after a POST, continue as a GET without a body.
             if res.status == 303 || (matches!(res.status, 301 | 302) && method == "POST") {
@@ -917,5 +927,33 @@ mod tests {
         let e = ReqwestTransport.send(hop).await.unwrap_err();
         assert_eq!(e.code(), "upstream_error", "{e}");
         accepted.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_redirect_to_another_origin_carries_no_credentials() {
+        let (net, script) = setup(vec![
+            answer(302, &[("location", "/same")], ""),
+            answer(
+                302,
+                &[("location", "https://api.example.com:8443/port")],
+                "",
+            ),
+            answer(200, &[], ""),
+        ]);
+        let mut req = get("https://api.example.com/start");
+        req.headers = vec![
+            ("accept".into(), "application/json".into()),
+            ("authorization".into(), "Bearer k".into()),
+            ("x-api-key".into(), "k".into()),
+            ("x-custom".into(), "c".into()),
+        ];
+        net.fetch(&allows, req).await.unwrap();
+        let hops = script.hops.lock().unwrap();
+        let names: Vec<Vec<&str>> = hops
+            .iter()
+            .map(|h| h.headers.iter().map(|(k, _)| k.as_str()).collect())
+            .collect();
+        let all = vec!["accept", "authorization", "x-api-key", "x-custom"];
+        assert_eq!(names, vec![all.clone(), all, vec!["accept"]]);
     }
 }
