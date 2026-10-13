@@ -58,6 +58,7 @@ sealed class HostMessage {
         'inspection' => InspectionMsg.fromJson(m),
         'tests' => TestsMsg.fromJson(m),
         'questions' => QuestionsMsg(_count(m['open'])),
+        'device' => DeviceRequest.fromJson(m),
         _ => null,
       };
     } on TypeError {
@@ -325,6 +326,33 @@ final class QuestionsMsg extends HostMessage {
   const QuestionsMsg(this.open);
 
   final int open;
+}
+
+/// A device capability call of the page (`notify`, `share`, `files`,
+/// `camera`, `location`; `web/shell/src/caps/device-link.ts`), for the app
+/// to make and answer with [DeviceResult] under the same [id].
+final class DeviceRequest extends HostMessage {
+  const DeviceRequest({
+    required this.id,
+    required this.cap,
+    required this.method,
+    required this.args,
+  });
+
+  /// The message [m] holds; a [TypeError] for any other shape.
+  factory DeviceRequest.fromJson(Map<String, Object?> m) => DeviceRequest(
+    id: m['id'] as String,
+    cap: m['cap'] as String,
+    method: m['method'] as String,
+    args: List<Object?>.unmodifiable(m['args'] as List),
+  );
+
+  final String id;
+  final String cap;
+  final String method;
+
+  /// The call's arguments, as decoded JSON.
+  final List<Object?> args;
 }
 
 /// A call into the page's `window.claxHost`, run as JavaScript. Each is a
