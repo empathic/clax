@@ -117,4 +117,52 @@ describe("PersonCard", () => {
     expect(local.querySelector('input[type="checkbox"]')).toBeNull();
     expect(local.textContent).toContain("this machine");
   });
+  it("raises a Collaborator's agent to publish versions of one artifact, as section 3.4 does", async () => {
+    const calls = stubFetch({ "PUT /api/agents/h1/elevate": { agent: {} } });
+    const needArtifacts = vi.fn();
+    const artifacts = [{ id: "01QR", title: "Quarterly Review" }, { id: "01XX", title: "<b>Other</b>" }];
+    const m = mount(PersonCard, { view: "owner", who: person(), artifacts, needArtifacts, onChanged: vi.fn() });
+    const panel = m.root.querySelector<HTMLDetailsElement>(".raise")!;
+    flush(() => { panel.open = true; panel.dispatchEvent(new Event("toggle")); });
+    expect(needArtifacts).toHaveBeenCalled();
+    // At every artifact, a Collaborator's agent may publish versions of its person's own artifacts only: not held.
+    expect(byLabel(panel, "Publish new versions")!.disabled).toBe(false);
+    const at = panel.querySelector<HTMLSelectElement>(".where select")!;
+    expect([...at.options].map(o => o.textContent)).toEqual(["Every artifact", "Quarterly Review", "<b>Other</b>"]);
+    expect(panel.querySelector("b")).toBeNull();
+    at.value = "01QR";
+    change(at);
+    const publish = byLabel(panel, "Publish new versions")!;
+    expect(publish.checked).toBe(false);
+    publish.checked = true;
+    change(publish);
+    await settle();
+    expect(calls.at(-1)).toEqual({ url: "/api/agents/h1/elevate", method: "PUT", body: { access: [{ type: "clax-artifacts", actions: ["update"], locations: ["01QR"] }] } });
+    // Raised, the panel names it by the artifact's title.
+    m.update({ view: "owner", who: person({ agents: [agent({ elevate: [{ type: "clax-artifacts", actions: ["update"], locations: ["01QR"] }] })] }), artifacts, needArtifacts, onChanged: vi.fn() });
+    expect(m.root.querySelector(".raise summary")!.textContent).toContain("(raised)");
+    expect(m.root.querySelector(".raises")!.textContent).toBe("Publish new versions on “Quarterly Review”");
+  });
+
+  it("shows a person what the owner raised their agent with", () => {
+    const reader = PRESETS["clax:reader"];
+    const raised = agent({ rights: reader, elevate: [{ type: "clax-comments", actions: ["write"], locations: ["*"] }, { type: "clax-artifacts", actions: ["update"], locations: ["01QR"] }] });
+    const m = mount(PersonCard, { view: "self", who: { public_id: "p1", display_name: "Lee", revoked_at: null, rights: reader, grants: [grant()], agents: [raised] }, artifacts: [{ id: "01QR", title: "Quarterly Review" }], onChanged: vi.fn() });
+    const a = m.root.querySelector(".agent .narrow")!;
+    const comment = [...a.querySelectorAll("label")].find(l => l.textContent!.trim().startsWith("Comment"))!;
+    expect(comment.querySelector("input")!.checked).toBe(true);
+    expect(comment.querySelector("input")!.disabled).toBe(true);
+    expect(comment.textContent).toContain("Raised by the owner until this session ends");
+    const publish = [...a.querySelectorAll("label")].find(l => l.textContent!.trim().startsWith("Publish new versions"))!;
+    expect(publish.querySelector("input")!.checked).toBe(true);
+    expect(publish.textContent).toContain("Raised by the owner on “Quarterly Review” until this session ends");
+  });
+
+  it("names an approval's page when the daemon names it", () => {
+    const ap = (scope: "artifact" | "thread", id: string) => ({ id, approver: null, author: { public_id: "p1", name: "Sam" }, scope, artifact_id: "01QR", artifact_title: "Quarterly Review", thread_id: scope === "thread" ? "t1" : null, created_at: "", created_via: "inbox", request_id: null });
+    const m = mount(PersonCard, { view: "owner", who: person(), approvals: [ap("artifact", "a1"), ap("thread", "a2")], onChanged: vi.fn() });
+    const rows = [...m.root.querySelectorAll(".approvals .line span:first-child")].map(s => s.textContent);
+    expect(rows).toEqual(["Allowed on “Quarterly Review”", "Allowed in one thread on “Quarterly Review”"]);
+  });
+
 });

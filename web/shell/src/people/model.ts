@@ -89,13 +89,33 @@ export function narrowGrant(person: Rights, g: PeopleGrant, key: string, on: boo
   return off.size ? without(person, off) : null;
 }
 
-/** Agent `a`'s capabilities on machine `g`; `machineOff` for those the
- * machine's narrowing turns off, which the agent's cannot turn on. */
-export const agentCaps = (person: Rights, g: PeopleGrant | null, a: PeopleAgent): (CapRow & { machineOff: boolean })[] => {
+/** An elevation as single actions at single locations (`loc` null: an
+ * access with no locations, as `clax-ask` is). */
+type Raised = { type: string; action: string; loc: string | null; level?: string };
+const raisedOf = (r: Rights | null): Raised[] =>
+  (r ?? []).flatMap(x => x.actions.flatMap(action => (x.locations ?? [null]).map(loc => ({ type: x.type, action, loc, ...x.level && { level: x.level } }))));
+const isCap = (c: Cap) => (p: Raised) => p.type === c.type && p.action === c.action;
+
+/** Where agent `a`'s elevation raises capability `c`: `*` for every
+ * artifact, else artifact IDs; empty when it does not. */
+export const raisedAt = (a: PeopleAgent, c: Cap) => raisedOf(a.elevate).filter(isCap(c)).map(p => p.loc ?? "*");
+
+/** Agent `a`'s capabilities on machine `g`: those of its person's rights
+ * and those the owner raised it with. `machineOff` for those the machine's
+ * narrowing turns off, which the agent's cannot turn on; `raised` where the
+ * elevation adds one (`*`, or artifact IDs); `locked` when the agent's own
+ * narrowing does not decide it: raised at every artifact, or beyond its
+ * person's rights. `on` is the narrowing's, or the elevation's when locked. */
+export const agentCaps = (person: Rights, g: PeopleGrant | null, a: PeopleAgent) => {
   const machine = offIn(person, g?.narrow ?? null);
   const own = offIn(person, a.narrow);
-  return CAPS.filter(c => allows(person, c)).map(c => ({ ...c, on: !machine.has(c.key) && !own.has(c.key), machineOff: machine.has(c.key) }));
+  return CAPS.filter(c => allows(person, c) || raisedAt(a, c).length > 0).map(c => {
+    const raised = raisedAt(a, c);
+    const locked = raised.includes("*") || !allows(person, c);
+    return { ...c, raised, locked, machineOff: machine.has(c.key), on: locked || (!machine.has(c.key) && !own.has(c.key)) };
+  });
 };
+export type AgentCap = ReturnType<typeof agentCaps>[number];
 
 /** The narrowing that turns capability `key` of agent `a` on or off: its
  * person's rights less what its machine and it have off, so it lies within
@@ -107,27 +127,52 @@ export function narrowAgent(person: Rights, g: PeopleGrant | null, a: PeopleAgen
   return without(person, new Set([...machine, ...own]));
 }
 
-/** Every capability for the owner's raising of agent `a`: `has` when its
- * person's rights within its narrowings give it already, `on` when it has
- * it or it is raised. */
-export const raiseCaps = (person: Rights, g: PeopleGrant | null, a: PeopleAgent): (CapRow & { has: boolean })[] => {
-  const base = new Set(agentCaps(person, g, a).filter(r => r.on).map(r => r.key));
-  return CAPS.map(c => ({ ...c, has: base.has(c.key), on: base.has(c.key) || (!!a.elevate && allows(a.elevate, c)) }));
+/** Agent `a`'s rights without its elevation: its person's, within its
+ * machine's narrowing and its own. */
+const unraised = (person: Rights, g: PeopleGrant | null, a: PeopleAgent) =>
+  without(person, new Set([...offIn(person, g?.narrow ?? null), ...offIn(person, a.narrow)]));
+/** The access that raises capability `c` at `loc` (`*` or an artifact ID):
+ * a db write at `interact`, an ask with no locations. */
+const raiseOf = (c: Cap, loc: string): Access =>
+  A(c.type, [c.action], c.type === "clax-ask" ? undefined : [loc], c.type === "clax-db" && c.action === "write" ? "interact" : undefined);
+const placeOf = (c: Cap, loc: string) => (c.type === "clax-ask" ? null : loc);
+
+/** Every capability for the owner's raising of agent `a` at `loc` (`*`,
+ * every artifact, or one artifact's ID): `has` when the agent's rights
+ * without its elevation already allow it there; `wider` when the
+ * elevation raises it at every artifact and `loc` is one; `on` when it has
+ * it there or it is raised there. Only a capability neither `has` nor
+ * `wider` can be raised or dropped at `loc`. */
+export const raiseCaps = (person: Rights, g: PeopleGrant | null, a: PeopleAgent, loc = "*") => {
+  const base = unraised(person, g, a);
+  const up = raisedOf(a.elevate);
+  return CAPS.map(c => {
+    const here = up.some(p => isCap(c)(p) && p.loc === placeOf(c, loc));
+    const covered = narrowerOrEqual([raiseOf(c, loc)], a.elevate ?? []);
+    const has = narrowerOrEqual([raiseOf(c, loc)], base);
+    return { ...c, has, wider: covered && !here, on: has || covered };
+  });
 };
 
-/** The elevation that raises agent `a` with capability `key` or drops it,
- * at every artifact; null when nothing is raised. */
-export function elevation(person: Rights, g: PeopleGrant | null, a: PeopleAgent, key: string, on: boolean): Rights | null {
-  const raised = new Set(raiseCaps(person, g, a).filter(r => r.on && !r.has).map(r => r.key));
-  if (on) raised.add(key); else raised.delete(key);
-  const out: Rights = [];
-  for (const c of CAPS.filter(x => raised.has(x.key))) {
-    const same = out.find(x => x.type === c.type);
-    if (same) same.actions.push(c.action);
-    else out.push(A(c.type, [c.action], c.type === "clax-ask" ? undefined : ["*"]));
+/** The elevation that raises agent `a` with capability `key` at `loc`
+ * (`*` or an artifact ID), or drops it there, keeping the rest of its
+ * elevation; raising at every artifact drops that capability's raises at
+ * single artifacts. Null when nothing is left raised. */
+export function elevation(a: PeopleAgent, key: string, on: boolean, loc = "*"): Rights | null {
+  const c = CAPS.find(x => x.key === key);
+  if (!c) return a.elevate;
+  const at = placeOf(c, loc);
+  let up = raisedOf(a.elevate).filter(p => !(isCap(c)(p) && (p.loc === at || (on && at === "*"))));
+  if (on) up = [...up, { type: c.type, action: c.action, loc: at, ...raiseOf(c, loc).level && { level: "interact" } }];
+  const order = (p: Raised) => { const i = CAPS.findIndex(x => isCap(x)(p)); return i < 0 ? CAPS.length : i; };
+  const out = new Map<string, Access>();
+  for (const p of [...up].sort((x, y) => order(x) - order(y))) {
+    const k = `${p.type} ${p.loc} ${p.level ?? ""}`;
+    const same = out.get(k);
+    if (same) same.actions.push(p.action);
+    else out.set(k, A(p.type, [p.action], p.loc === null ? undefined : [p.loc], p.level));
   }
-  for (const x of out) if (x.type === "clax-db" && x.actions.includes("write")) x.level = "interact";
-  return out.length ? out : null;
+  return out.size ? [...out.values()] : null;
 }
 
 /** The invites that can still be used. */

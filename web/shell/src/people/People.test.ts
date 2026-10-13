@@ -97,4 +97,59 @@ describe("People", () => {
     expect(m.root.querySelector(".person")).toBeNull();
     expect(m.root.textContent).toContain("only the owner or a connected person has People");
   });
+  it("keeps hostile names as text in invites, requests, approvals, the waiting and the revoked", async () => {
+    const H = `<img src=x onerror="window.pwned=1">`;
+    const req = (id: string, status: string, author: { public_id: string; name: string; owner?: boolean }) => ({ id, author, artifact_id: "01QR", thread_id: null, agent: { handle: "h1", name: `${H}agent`, harness: "codex", live: true }, cause: "comment", count: 2, status, created_at: "" });
+    stubFetch(ownerRoutes({
+      "GET /api/people": { people: [person({ display_name: `${H}Sam` }), person({ public_id: "p3", display_name: `${H}Old`, revoked_at: "2026-10-01T00:00:00Z", grants: [], agents: [] })], unconnected: { on: false, approval_id: null } },
+      "GET /api/people/invites": { invites: [{ id: "i1", person: { public_id: "p9", display_name: `${H}Kim` }, owner: false, created_at: "", expires_at: "2099-01-01T00:00:00Z", used_at: null, grant_id: null, revoked_at: null }] },
+      "GET /api/grants?status=pending": { grants: [grant({ id: "g5", status: "pending", via: "request", person: null, client: { name: `${H}box`, key: "SHA256:nn", peer_ip: "192.168.1.77" } })] },
+      "GET /api/approvals": { approvals: [{ id: "a1", approver: null, author: { public_id: "p1", name: `${H}Sam` }, scope: "artifact", artifact_id: "01QR", artifact_title: `${H}Review`, thread_id: null, created_at: "", created_via: "inbox", request_id: null }] },
+      // One open request, and one decided and one withdrawn, which do not wait.
+      "GET /api/approvals/requests": { requests: [req("r1", "open", { public_id: "p1", name: `${H}Sam` }), req("r2", "approved", { public_id: "p1", name: "Sam" }), req("r3", "withdrawn", { public_id: "p1", name: "Sam" })], open: 1, banner: null },
+    }));
+    const m = mount(People, {});
+    await settle();
+    expect(m.root.querySelector("img")).toBeNull();
+    expect((window as unknown as { pwned?: number }).pwned).toBeUndefined();
+    expect(m.root.querySelector(".pcard .line span")!.textContent).toBe(`${H}Kim`);
+    expect(m.root.querySelector(".requests .mname")!.textContent).toBe(`${H}box`);
+    expect(m.root.querySelector(".revoked .line span")!.textContent).toBe(`${H}Old`);
+    expect(m.root.querySelector('[data-person="p1"] .approvals .line span')!.textContent).toBe(`Allowed on “${H}Review”`);
+    const waiting = [...m.root.querySelectorAll('[data-person="p1"] .wait')];
+    expect(waiting).toHaveLength(1);
+    expect(waiting[0].getAttribute("href")).toBe("/inbox?approval=r1");
+    expect(waiting[0].textContent).toBe(`2 from ${H}Sam for ${H}agent`);
+  });
+
+  it("shows a person only open requests as waiting, the owner named as the owner, and names as text", async () => {
+    const H = `<img src=x onerror="window.pwned=1">`;
+    const req = (id: string, status: string) => ({ id, author: { public_id: "o1", name: "The owner", owner: true }, artifact_id: "01QR", thread_id: null, agent: null, cause: "comment", count: 1, status, created_at: "" });
+    stubFetch({
+      "GET /api/people/me": { person: { public_id: "p1", display_name: "Sam", owner: false, rights: COLLAB }, grants: [grant()], agents: [agent()] },
+      "GET /api/approvals": { approvals: [
+        { id: "a2", approver: "p1", author: { public_id: "o1", name: "The owner", owner: true }, scope: "everywhere", artifact_id: null, thread_id: null, created_at: "", created_via: "connect", request_id: null },
+        { id: "a3", approver: "p1", author: { public_id: "p4", name: `${H}Mia` }, scope: "thread", artifact_id: "01QR", artifact_title: "Quarterly Review", thread_id: "t1", created_at: "", created_via: "inbox", request_id: null },
+      ] },
+      "GET /api/approvals/requests": { requests: [req("r1", "open"), req("r2", "denied")], open: 1, banner: null },
+    });
+    const m = mount(People, {});
+    await settle();
+    const rows = [...m.root.querySelectorAll(".approvals .line:not(.wait)")].map(l => [...l.querySelectorAll("span")].slice(0, 2).map(s => s.textContent));
+    expect(rows).toEqual([["The owner", "everywhere"], [`${H}Mia`, "in one thread on “Quarterly Review”"]]);
+    expect(m.root.querySelector("img")).toBeNull();
+    expect([...m.root.querySelectorAll(".approvals .wait")].map(w => w.textContent)).toEqual(["1 from The owner"]);
+  });
+
+  it("marks a named owner as the owner", async () => {
+    stubFetch({
+      "GET /api/people/me": { person: { public_id: "p1", display_name: "Sam", owner: false, rights: COLLAB }, grants: [], agents: [] },
+      "GET /api/approvals": { approvals: [{ id: "a2", approver: "p1", author: { public_id: "o1", name: "Viewer", owner: true }, scope: "everywhere", artifact_id: null, thread_id: null, created_at: "", created_via: "connect", request_id: null }] },
+      "GET /api/approvals/requests": { requests: [], open: 0, banner: null },
+    });
+    const m = mount(People, {});
+    await settle();
+    expect(m.root.querySelector(".approvals .line span")!.textContent).toBe("Viewer (the owner)");
+  });
+
 });
