@@ -847,6 +847,19 @@ void main() {
       expect(runner.states.single.budget.caps, RunCaps.first);
     });
 
+    test('a run can add the kit to its draft', () async {
+      final loop = loopWith([
+        [
+          const ScriptedCall('add_kit', {
+            'parts': ['kit'],
+          }),
+          ...newAppCalls(),
+        ],
+      ]);
+      final aid = await loop.newApp('x', session: sid);
+      expect(api.filesOf(aid, 1).keys, contains('kit/preact.js'));
+    });
+
     test('a first run that makes no app forgets its plan', () async {
       final loop = loopWith([
         [
