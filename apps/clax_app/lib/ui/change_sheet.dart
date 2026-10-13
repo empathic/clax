@@ -768,14 +768,17 @@ class _ChangeSheetState extends State<ChangeSheet> {
       buttons = [?openThread];
     } else {
       final retry =
-          outcome == ChangeOutcome.failed &&
+          (outcome == ChangeOutcome.failed ||
+                  outcome == ChangeOutcome.stopped) &&
               widget.onRetry != null &&
               _c.failedThreads.isNotEmpty
           ? FilledButton.icon(
               key: const ValueKey('change-retry'),
               onPressed: _c.retrying ? null : () => _thenClose(widget.onRetry!),
               icon: const Icon(Icons.refresh, size: 18),
-              label: const Text('Retry'),
+              label: Text(
+                outcome == ChangeOutcome.stopped ? 'Run again' : 'Retry',
+              ),
             )
           : null;
       buttons = [

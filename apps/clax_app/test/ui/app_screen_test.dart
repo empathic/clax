@@ -26,13 +26,23 @@ import '../support/fake_surface.dart';
 import '../support/fake_voice.dart';
 
 /// A clock that stands still unless a test moves it: every gesture is
-/// within its time window.
+/// within its time window, and a delay ends only when [lapse] ends it.
 class _Clock implements Clock {
   DateTime t = DateTime.utc(2026, 10, 12);
+  final _delays = <Completer<void>>[];
   @override
   DateTime now() => t;
   @override
-  Future<void> delay(Duration d) async {}
+  Future<void> delay(Duration d) =>
+      (_delays..add(Completer<void>())).last.future;
+
+  /// Ends every delay asked for so far.
+  void lapse() {
+    for (final c in List.of(_delays)) {
+      c.complete();
+    }
+    _delays.clear();
+  }
 }
 
 /// Timings that log what the screen asked of them: the send→first-step
@@ -1855,6 +1865,56 @@ void main() {
       expect(find.text('2 errors'), findsOneWidget);
     });
 
+    testWidgets('the chip shows whole at each step and outcome, then folds '
+        'into the pill; a tap on the pill opens it again', (tester) async {
+      final clock = _Clock();
+      final rig = await pumpScreen(tester, clock: clock);
+      final tid = await start(tester, rig);
+      final chip = find.byKey(const ValueKey('chip-working'));
+      final pill = find.byKey(const ValueKey('chip-working-pill'));
+      expect(chip, findsOneWidget);
+      expect(pill, findsNothing);
+      clock.lapse();
+      await tester.pump();
+      expect(chip, findsNothing);
+      expect(pill, findsOneWidget);
+      // The pill sits in the status bar's band, off the page.
+      expect(tester.getRect(pill).bottom, lessThanOrEqualTo(24));
+
+      rig.worker.add(WorkerWorking(rig.aid, [tid]));
+      rig.worker.add(
+        WorkerProgress(rig.aid, [tid], const Narration('Reading the title')),
+      );
+      await tester.pump();
+      expect(find.text('Reading the title'), findsOneWidget);
+      clock.lapse();
+      await tester.pump();
+      expect(pill, findsOneWidget);
+      // Elapsed seconds and a render do not open it.
+      clock.t = clock.t.add(const Duration(seconds: 5));
+      await tester.pump(const Duration(seconds: 1));
+      expect(chip, findsNothing);
+
+      await tester.tap(pill);
+      await tester.pump();
+      expect(chip, findsOneWidget);
+      await tester.tap(chip);
+      await frames(tester);
+      expect(sheet(), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('change-close')));
+      await frames(tester);
+      clock.lapse();
+      await tester.pump();
+
+      rig.worker.add(WorkerFailed(rig.aid, 'it broke'));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('chip-failed')), findsOneWidget);
+      clock.lapse();
+      await tester.pump();
+      expect(find.byKey(const ValueKey('chip-failed')), findsNothing);
+      expect(pill, findsOneWidget);
+    });
+
     testWidgets('it opens on a step and while the new version loads', (
       tester,
     ) async {
@@ -1892,7 +1952,15 @@ void main() {
       tester,
     ) async {
       final stopped = <String>[];
-      final rig = await pumpScreen(tester, onStop: stopped.add);
+      final retried = <String>[];
+      final rig = await pumpScreen(
+        tester,
+        onStop: stopped.add,
+        onRetry: (aid, tid) async {
+          retried.add(tid);
+          return true;
+        },
+      );
       final tid = await start(tester, rig);
       rig.worker.add(WorkerWorking(rig.aid, [tid]));
       await tester.pump();
@@ -1903,13 +1971,26 @@ void main() {
       expect(stopped, [rig.aid]);
       expect(sheet(), findsNothing);
       expect(find.byKey(const ValueKey('chip-stopped')), findsOneWidget);
-      expect(find.text('Stopped. Your comment stays open.'), findsOneWidget);
+      expect(
+        find.text(
+          'Stopped. It waits until you run it again or add to the comment.',
+        ),
+        findsOneWidget,
+      );
       rig.worker.add(WorkerCancelled(rig.aid));
       await tester.pump();
-      expect(find.text('Stopped. Your comment stays open.'), findsOneWidget);
+      expect(
+        find.text(
+          'Stopped. It waits until you run it again or add to the comment.',
+        ),
+        findsOneWidget,
+      );
       final t = rig.api.threadOf(rig.aid, tid);
       expect(t.isOpen, isTrue);
       expect(t.comments.map((c) => c.body), ['make the title bigger']);
+      await tester.tap(find.text('Run again'));
+      await tester.pump();
+      expect(retried, [tid]);
     });
 
     testWidgets('without a stop hook it offers no Stop', (tester) async {
@@ -1944,11 +2025,10 @@ void main() {
       expect(focus(), [FocusThread(tid).toJs()]);
       await tester.tap(find.byKey(const ValueKey('change-open-thread')));
       await frames(tester);
-      expect(
-        focus(),
-        [FocusThread(tid).toJs(), FocusThread(tid).toJs()],
-        reason: 'the sheet closing does not clear the page\'s claim',
-      );
+      expect(focus(), [
+        FocusThread(tid).toJs(),
+        FocusThread(tid).toJs(),
+      ], reason: 'the sheet closing does not clear the page\'s claim');
       await tester.pageBack();
       await frames(tester);
       expect(focus().last, const FocusThread(null).toJs());

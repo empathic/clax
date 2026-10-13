@@ -61,8 +61,18 @@ class _Clock implements Clock {
   DateTime t = DateTime.utc(2026, 10, 13, 9);
   @override
   DateTime now() => t;
+  final _delays = <Completer<void>>[];
   @override
-  Future<void> delay(Duration d) async {}
+  Future<void> delay(Duration d) =>
+      (_delays..add(Completer<void>())).last.future;
+
+  /// Ends every delay asked for so far.
+  void lapse() {
+    for (final c in List.of(_delays)) {
+      c.complete();
+    }
+    _delays.clear();
+  }
 }
 
 void main() {
@@ -136,20 +146,29 @@ void main() {
         worker.add(WorkerProgress(aid, [tid], Inspected(render, 0)));
         clock.t = clock.t.add(const Duration(seconds: 47));
         await tester.pump(const Duration(seconds: 1));
-        await tester.tap(find.byKey(const ValueKey('chip-working')));
-        for (var i = 0; i < 8; i++) {
-          await tester.pump(const Duration(milliseconds: 100));
-        }
-        await tester.runAsync(() async {
-          for (final e in find.byType(Image).evaluate()) {
-            await precacheImage((e.widget as Image).image, e);
+        Future<void> shot(String name) async {
+          for (var i = 0; i < 8; i++) {
+            await tester.pump(const Duration(milliseconds: 100));
           }
-        });
-        await tester.pump(const Duration(milliseconds: 400));
-        await expectLater(
-          find.byType(MaterialApp),
-          matchesGoldenFile('$_out/change-$form-$scheme.png'),
-        );
+          await tester.runAsync(() async {
+            for (final e in find.byType(Image).evaluate()) {
+              await precacheImage((e.widget as Image).image, e);
+            }
+          });
+          await tester.pump(const Duration(milliseconds: 400));
+          await expectLater(
+            find.byType(MaterialApp),
+            matchesGoldenFile('$_out/change-$name-$form-$scheme.png'),
+          );
+        }
+
+        await shot('1-chip');
+        clock.lapse();
+        await shot('2-pill');
+        await tester.tap(find.byKey(const ValueKey('chip-working-pill')));
+        await tester.pump();
+        await tester.tap(find.byKey(const ValueKey('chip-working')));
+        await shot('3-sheet');
         await worker.close();
       });
     }

@@ -16,8 +16,9 @@ import 'change_tracker.dart';
 /// - **Working.** A spinner, the running change's latest step ("Working…"
 ///   before the first, "Trying again…" after a Retry the worker has not
 ///   started yet, "Loading the new version" once it landed) and the
-///   seconds since the work began, ticking on [clock]. A tap, in any of
-///   these, calls [onOpen] (the app screen shows the change in progress:
+///   seconds since the work began, ticking on [clock]. The app screen
+///   shows it whole for a few seconds at each of these, then as a
+///   [WorkingPill]. A tap, in any of these, calls [onOpen] (the app screen shows the change in progress:
 ///   its comments, steps, render, Stop and Open thread).
 /// - **Failed.** The reason, and Retry when [onRetry] is given and the
 ///   change kept its threads; while it is queued the button reads
@@ -245,7 +246,7 @@ class _WorkingChipState extends State<WorkingChip> {
       ),
     };
     final retry =
-        outcome == ChangeOutcome.failed &&
+        (outcome == ChangeOutcome.failed || outcome == ChangeOutcome.stopped) &&
             widget.onRetry != null &&
             c.failedThreads.isNotEmpty
         ? FilledButton.icon(
@@ -268,7 +269,13 @@ class _WorkingChipState extends State<WorkingChip> {
                     ),
                   )
                 : const Icon(Icons.refresh, size: 18),
-            label: Text(c.retrying ? 'Retrying…' : 'Retry'),
+            label: Text(
+              c.retrying
+                  ? 'Retrying…'
+                  : outcome == ChangeOutcome.stopped
+                  ? 'Run again'
+                  : 'Retry',
+            ),
           )
         : null;
     final resend = outcome == ChangeOutcome.sendFailed
@@ -339,6 +346,91 @@ class _WorkingChipState extends State<WorkingChip> {
           customBorder: shape,
           onTap: outcome == ChangeOutcome.replied ? widget.onReplied : null,
           child: body,
+        ),
+      ),
+    );
+  }
+}
+
+/// The Working chip folded into a small pill of [height] for the status
+/// bar's band: a spinner while the change runs, else an icon for how it
+/// ended. A tap calls [onTap] (the app screen opens the chip whole).
+class WorkingPill extends StatelessWidget {
+  const WorkingPill({
+    super.key,
+    required this.changes,
+    required this.onTap,
+    this.height = 24,
+  });
+
+  final ChangeTracker changes;
+  final VoidCallback onTap;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final outcome = changes.outcome;
+    final (Color bg, Color fg) = switch (outcome) {
+      ChangeOutcome.failed || ChangeOutcome.sendFailed => (
+        scheme.errorContainer,
+        scheme.onErrorContainer,
+      ),
+      _ => (
+        scheme.inverseSurface.withValues(alpha: 0.88),
+        scheme.onInverseSurface,
+      ),
+    };
+    final icon = switch (outcome) {
+      null => null,
+      ChangeOutcome.failed || ChangeOutcome.sendFailed => Icons.error_outline,
+      ChangeOutcome.stopped => Icons.pause_circle_outline,
+      ChangeOutcome.replied => Icons.forum_outlined,
+    };
+    final ring = height * 0.55;
+    final label = switch (outcome) {
+      null =>
+        changes.landing
+            ? 'Loading the new version'
+            : changes.step ?? (changes.again ? 'Trying again…' : 'Working…'),
+      _ => changes.outcomeText,
+    };
+    return Semantics(
+      button: true,
+      label: label,
+      onTapHint: 'Show the change',
+      excludeSemantics: true,
+      child: Material(
+        key: const ValueKey('chip-working-pill'),
+        color: bg,
+        shape: const StadiumBorder(),
+        child: InkWell(
+          customBorder: const StadiumBorder(),
+          onTap: onTap,
+          child: SizedBox(
+            height: height,
+            child: Padding(
+              padding: EdgeInsets.symmetric(horizontal: height * 0.3),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (icon == null)
+                    SizedBox.square(
+                      dimension: ring,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: fg,
+                      ),
+                    )
+                  else
+                    Icon(icon, size: ring + 2, color: fg),
+                  SizedBox(width: height * 0.22),
+                  Icon(Icons.edit_note, size: ring + 2, color: fg),
+                ],
+              ),
+            ),
+          ),
         ),
       ),
     );
