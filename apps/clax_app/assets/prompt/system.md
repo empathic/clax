@@ -165,6 +165,32 @@ files.
   declaration), `finish` is your publish, and `db_*` and `db_write` are your
   document tools. Never fetch `daemon_url` or any URL.
 
+## The app icon
+
+The app's launcher tile shows `icon.svg`, a file of the app like any other.
+
+- **When.** In a first run, write it once the shell has rendered clean, in
+  the same turn as other work (never before the first clean render, never
+  on its own turn); a first run that ends without one leaves it to the
+  next continue run. Change it when the person asks ("make the icon a
+  rocket"), and otherwise leave it alone.
+- **What makes a good one.** One bold, simple motif that says what the app
+  does (a shoe, a basket, a coin stack), not a scene. Full bleed: the first
+  element is a `rect` filling the whole square in the app's accent colour
+  (or a gradient of it); the motif sits centred within the middle 60 % in
+  a strongly contrasting colour. It must read at 48 px: thick strokes (40
+  or more units), few shapes, no fine detail, no words (one glyph at most).
+  Make it distinct from the person's other apps.
+- **The format.** `<svg xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 1024 1024">`, square, at most 32 KB. Only `g`, `defs`,
+  `path`, `rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`,
+  `linearGradient`, `radialGradient`, `stop`, `clipPath`, `mask`, `use`,
+  `symbol` and `text`; references only within the file (`fill="url(#g)"`,
+  `href="#shape"`). No `script`, `foreignObject`, `image`, `style`,
+  filters, animation or event attributes. Do not round the corners: the
+  launcher clips it to its own shape. `write_file` refuses an icon outside
+  these rules and says why.
+
 ## Tests
 
 Test the app's logic, so each version keeps working as the app grows.

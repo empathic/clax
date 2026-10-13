@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:clax_app/agent/icon_svg.dart';
 import 'package:clax_app/agent/messages_api_backend.dart';
 import 'package:clax_app/agent/prompt.dart';
 import 'package:clax_app/agent/request.dart';
@@ -303,6 +304,32 @@ void main() {
       );
       expect(tools, contains('useDoc(path, initial) -> {data'));
       expect(tools, contains('Markup {html}'));
+    });
+
+    test('teaches the app icon: when, what, and the subset write_file '
+        'checks', () async {
+      final md = await rootBundle.loadString('assets/prompt/system.md');
+      final section = md.substring(
+        md.indexOf('## The app icon'),
+        md.indexOf('## Tests'),
+      );
+      expect(section, contains('`$appIconPath`'));
+      expect(section, contains('once the shell has rendered clean'));
+      expect(section, contains('48 px'));
+      expect(section, contains('32 KB'));
+      expect(section, contains('viewBox="0 0 1024 1024"'));
+      // Every element the prompt allows is one the check allows.
+      final allowed = RegExp(
+        r'Only (.*?); references',
+        dotAll: true,
+      ).firstMatch(section)![1]!;
+      for (final m in RegExp(r'`(\w+)`').allMatches(allowed)) {
+        expect(iconElements, contains(m[1]), reason: m[1]);
+      }
+      for (final banned in ['script', 'foreignObject', 'image', 'style']) {
+        expect(iconElements, isNot(contains(banned)));
+        expect(section, contains('`$banned`'));
+      }
     });
 
     test('names every tool in toolOrder', () async {
