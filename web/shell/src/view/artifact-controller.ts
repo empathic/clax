@@ -717,9 +717,11 @@ export class ArtifactController {
 
   /** Tells the frame which thread's drawn area to outline dashed: the
    * hovered, else the selected thread, by the handle the frame knows it by
-   * (none when it was not sent to this page). */
+   * (none when it was not sent to this page). In the Clax app (`app`) no
+   * shell panel shows or clears the selection, so only a hovered thread is
+   * outlined; a thread brought into view flashes its outline (`clax:scroll-to`). */
   private sendFocus(): void {
-    const tid = this.s.hovered ?? this.s.selected;
+    const tid = this.s.hovered ?? (this.app ? null : this.s.selected);
     this.send({ type: "clax:focus", id: tid === null ? null : this.anchorIds.known(tid) });
   }
 
