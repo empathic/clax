@@ -699,6 +699,32 @@ void main() {
       expect(api.callNames, isNot(contains('restoreVersion')));
     });
 
+    test('a document re-read that fails after the publish restores the '
+        'version and forgets its ledger record', () async {
+      final failing = _ReReadFailsApi();
+      api = failing;
+      sid = (await api.registerAppSession(installId: 'install', pid: 1)).id;
+      final aid = api.seedArtifact('Runs', {'index.html': page});
+      final loop = loopWith([
+        change(
+          edits: [edit('Save', 'Keep')],
+          db: const [
+            DbOp(op: 'set', collection: 'runs', docId: 'b', data: {'km': 1}),
+          ],
+        ),
+      ]);
+      final item = api.sendComment(aid, 'x', queue: false);
+      final outcome = await loop.change(aid, [item], session: sid);
+      expect(outcome, isA<ChangeFailed>());
+      final restore = api.calls.singleWhere((c) => c.name == 'restoreVersion');
+      expect(restore.args, {'aid': aid, 'n': 1, 'ifVersion': 2});
+      expect(await loop.ledger.of(aid), isEmpty);
+      expect(
+        api.threadOf(aid, item.threadId).comments.last.body,
+        startsWith(failurePrefix),
+      );
+    });
+
     test('a second document conflict restores the previous version', () async {
       final loop = loopWith([
         change(
@@ -1269,5 +1295,32 @@ class GatedListApi extends FakeClaxApi {
     final all = super.listArtifacts();
     await gate.future;
     return all;
+  }
+}
+
+/// A fake whose first document batch conflicts and whose document reads
+/// fail from then on, as a re-read after that conflict would.
+class _ReReadFailsApi extends FakeClaxApi {
+  var _conflicted = false;
+
+  @override
+  Future<void> batchDocs(String aid, List<DocWrite> writes) async {
+    if (!_conflicted) {
+      _conflicted = true;
+      throw const ClaxApiError(status: 409, code: 'conflict', message: 'moved');
+    }
+    return super.batchDocs(aid, writes);
+  }
+
+  @override
+  Future<Doc?> getDoc(String aid, String path, {String? reader}) async {
+    if (_conflicted) {
+      throw const ClaxApiError(
+        status: 500,
+        code: 'internal',
+        message: 'db busy',
+      );
+    }
+    return super.getDoc(aid, path, reader: reader);
   }
 }

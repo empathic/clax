@@ -1044,7 +1044,19 @@ class AgentLoop {
         }
 
         if (r.db.isNotEmpty) {
-          final refused = await writeStagedDocs(_api, aid, r.db, shown);
+          String? refused;
+          try {
+            refused = await writeStagedDocs(_api, aid, r.db, shown);
+          } on ClaxApiError catch (e) {
+            // No answer, or the app is gone: as for any call.
+            if (e.status == 0 ||
+                (e.code == 'not_found' && e.body['path'] == null)) {
+              rethrow;
+            }
+            // Any other failure (a re-read after a conflict) is a refusal:
+            // the landed version is undone, as finish does.
+            refused = e.message;
+          }
           if (refused != null) {
             if (landed != null) {
               try {
@@ -1222,7 +1234,9 @@ class AgentLoop {
   /// that already ran them with this answer and landed but never replied
   /// (its publish lost its answer, the run ended interrupted). Such a
   /// record of [ledger] answered every comment of [e], its version stands
-  /// ([madeBy]), and no thread it addresses carries its reply yet. Its
+  /// ([madeBy]), and no thread it addresses has an agent comment made at
+  /// or after that version (an unreadable time counts as replied, so
+  /// nothing runs on a guess). Its
   /// documents are finished as [settle] does, then its reply (and resolve)
   /// is posted on the threads whose latest viewer comment is still one of
   /// [e]'s. Returns true when the change was settled this way (or failed
@@ -1250,15 +1264,19 @@ class AgentLoop {
           .where((x) => x.n == r.base + 1 && madeBy(x, r))
           .firstOrNull;
       if (v == null) continue;
-      final head = _head(r.reply);
+      final landedAt = DateTime.tryParse(v.createdAt);
       final mine = [
         for (final t in threads)
           if (r.addresses.contains(t.id) && e.threadIds.contains(t.id)) t,
       ];
+      // Replied when an agent comment came at or after the version: the
+      // parked run's reply came before it.
       final replied = mine.any(
-        (t) => t.comments.any(
-          (c) => c.byAgent && cleanLine(c.body).startsWith(head),
-        ),
+        (t) => t.comments.any((c) {
+          if (!c.byAgent) return false;
+          final at = DateTime.tryParse(c.createdAt);
+          return landedAt == null || at == null || !at.isBefore(landedAt);
+        }),
       );
       if (mine.isEmpty || replied) continue;
       final docs = await _settleDocs(aid, r, v, detail);
@@ -1282,12 +1300,6 @@ class AgentLoop {
       return true;
     }
     return false;
-  }
-
-  /// The opening of [reply] as a stored note or comment starts.
-  static String _head(String reply) {
-    final r = cleanLine(reply);
-    return r.length > 40 ? r.substring(0, 40) : r;
   }
 
   /// Whether the documents hold [ops]' writes, as finish judges it
