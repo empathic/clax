@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
@@ -15,6 +16,8 @@ import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/host_protocol.dart';
+import 'package:clax_app/ui/inspector_surface.dart';
+import 'package:clax_app/ui/launcher.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -39,9 +42,13 @@ class _Key implements SecureKey {
 
 /// Everything AppRoot is given, as fakes the test can reach.
 class _Rig {
-  _Rig({String? key, AppSettings? settings, this.cliSupported = false})
-    : dir = Directory.systemTemp.createTempSync('app-test-'),
-      key = _Key(key) {
+  _Rig({
+    String? key,
+    AppSettings? settings,
+    this.cliSupported = false,
+    this.webInspector = false,
+  }) : dir = Directory.systemTemp.createTempSync('app-test-'),
+       key = _Key(key) {
     if (settings != null) {
       File('${dir.path}/settings.json').writeAsStringSync(
         '{"backend": "${settings.backend}", "model": "${settings.model}"}',
@@ -52,6 +59,11 @@ class _Rig {
   final Directory dir;
   final _Key key;
   final bool cliSupported;
+
+  /// Whether the app gets a [WebViewInspector] over fake surfaces
+  /// ([inspectorSurfaces]).
+  final bool webInspector;
+  final inspectorSurfaces = <FakeAppSurface>[];
   final supervisor = FakeSupervisor();
   final api = FakeClaxApi();
   final timings = RecordingTimings();
@@ -98,6 +110,15 @@ class _Rig {
     supportDir: dir.path,
     prompts: PromptBuilder(rootBundle),
     cliSupported: cliSupported,
+    inspector: webInspector
+        ? WebViewInspector(
+            surface: (_) {
+              final s = FakeAppSurface();
+              inspectorSurfaces.add(s);
+              return s;
+            },
+          )
+        : null,
     pid: 42,
   );
 
@@ -171,8 +192,11 @@ void main() {
     expect(find.text('New app'), findsOneWidget);
 
     rig.supervisor.set(
-      const Failed('clax stopped 5 times within a minute; last: exited with '
-          'code 1', ['error: database is locked', 'clax exiting']),
+      const Failed(
+        'clax stopped 5 times within a minute; last: exited with '
+        'code 1',
+        ['error: database is locked', 'clax exiting'],
+      ),
     );
     await tester.pumpAndSettle();
     expect(find.text('New app'), findsNothing);
@@ -247,10 +271,7 @@ void main() {
     final polls = rig.api.callNames.where((n) => n == 'pollFeedback').length;
     rig.api.releasePolls();
     await tester.pump();
-    expect(
-      rig.api.callNames.where((n) => n == 'pollFeedback').length,
-      polls,
-    );
+    expect(rig.api.callNames.where((n) => n == 'pollFeedback').length, polls);
     // A detach after the quit does not stop it twice.
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.detached);
     await tester.pump();
@@ -277,11 +298,9 @@ void main() {
       AppScreen.appUrl(Uri.parse('http://127.0.0.1:7999'), created.id),
     ]);
     expect(rig.backend.seen.single.userText, contains('a tracker for my runs'));
-    expect(
-      rig.agentTimings.stopped.map((r) => r.name),
-      [agentNewTiming],
-      reason: 'the agent run goes to its own store',
-    );
+    expect(rig.agentTimings.stopped.map((r) => r.name), [
+      agentNewTiming,
+    ], reason: 'the agent run goes to its own store');
     expect(rig.timings.stopped, isEmpty);
 
     rig.surfaces.single.push(
@@ -427,6 +446,123 @@ void main() {
     variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
 
+  testWidgets('once the daemon is up the app holds one stream on gallery, '
+      'inbox and questions, which the launcher follows', (tester) async {
+    await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+    expect(rig.api.callNames, isNot(contains('streamSubscribe')));
+    await up(tester);
+    final subscribed = [
+      for (final c in rig.api.calls)
+        if (c.name == 'streamSubscribe') c.args['topics'],
+    ];
+    expect(subscribed.first, ['gallery', 'inbox', 'questions']);
+    final launcher = tester.widget<Launcher>(find.byType(Launcher));
+    expect(launcher.stream, isNotNull);
+    // The launcher's list follows the shared stream's gallery topic.
+    final aid = rig.api.seedArtifact('Runs', {'index.html': _page});
+    rig.api.emit(ClaxEvent(type: 'version', data: {'artifact_id': aid}));
+    await tester.pumpAndSettle();
+    expect(find.text('Runs'), findsOneWidget);
+  });
+
+  testWidgets('drafts a previous run left are deleted once the daemon is up', (
+    tester,
+  ) async {
+    final r = _Rig(key: 'sk-ant-x');
+    await r.api.createDraft(title: 'Draft', files: {'index.html': _page});
+    await pumpApp(tester, r);
+    await up(tester);
+    for (var i = 0; i < 20 && (await r.api.listDrafts()).isNotEmpty; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(await r.api.listDrafts(), isEmpty);
+    expect(r.api.callNames, contains('deleteDraft'));
+  });
+
+  testWidgets('an inbox reply opens its app at the thread once the shell '
+      'lists it; a version item at that version', (tester) async {
+    await pumpApp(tester, _Rig(key: 'sk-ant-x'));
+    await up(tester);
+    final aid = rig.api.seedArtifact('Runs', {'index.html': _page});
+    final launcher = tester.widget<Launcher>(find.byType(Launcher));
+
+    launcher.onOpenTarget!(aid, thread: 't1');
+    await pumpRoute(tester);
+    final page = rig.surfaces.last;
+    page.push(Ready(artifact: aid, version: 2, latest: 2, file: 'index.html'));
+    await tester.pump();
+    expect(page.js, isNot(contains(const OpenThread('t1').toJs())));
+    ThreadSummary thread(String id) => ThreadSummary(
+      id: id,
+      status: 'open',
+      summary: 'Bigger',
+      sent: true,
+      comments: 2,
+      version: 1,
+    );
+    page.push(ThreadsMsg([thread('t0')]));
+    await tester.pump();
+    expect(page.js, isNot(contains(const OpenThread('t1').toJs())));
+    page.push(ThreadsMsg([thread('t0'), thread('t1')]));
+    page.push(ThreadsMsg([thread('t0'), thread('t1')]));
+    await tester.pump();
+    expect(
+      page.js.where((j) => j == const OpenThread('t1').toJs()),
+      hasLength(1),
+    );
+
+    await tester.binding.handlePopRoute();
+    await pumpRoute(tester);
+    launcher.onOpenTarget!(aid, version: 1);
+    await pumpRoute(tester);
+    final again = rig.surfaces.last;
+    expect(again, isNot(same(page)));
+    again.push(Ready(artifact: aid, version: 2, latest: 2, file: 'index.html'));
+    await tester.pump();
+    expect(again.js, contains(const LoadVersion(1).toJs()));
+  });
+
+  testWidgets("the comment button's place is kept for later app screens and "
+      'launches', (tester) async {
+    final r = _Rig(key: 'sk-ant-x');
+    File('${r.dir.path}/settings.json')
+        .writeAsStringSync('{"comment_button_dy": 140}');
+    await pumpApp(tester, r);
+    await up(tester);
+    final aid = rig.api.seedArtifact('Runs', {'index.html': _page});
+    await openApp(tester, aid);
+    var screen = tester.widget<AppScreen>(find.byType(AppScreen));
+    expect(screen.commentButtonDy, 140);
+    screen.onCommentButtonMoved!(260);
+    await tester.pump();
+    await tester.binding.handlePopRoute();
+    await pumpRoute(tester);
+    await tester.tap(find.text('Runs'));
+    await pumpRoute(tester);
+    screen = tester.widget<AppScreen>(find.byType(AppScreen));
+    expect(screen.commentButtonDy, 260);
+    expect(
+      jsonDecode(File('${r.dir.path}/settings.json').readAsStringSync()),
+      containsPair('comment_button_dy', 260),
+    );
+  });
+
+  testWidgets('a WebViewInspector is kept in the root, under the app', (
+    tester,
+  ) async {
+    await pumpApp(tester, _Rig(key: 'sk-ant-x', webInspector: true));
+    await up(tester);
+    expect(find.byType(InspectorHost), findsOneWidget);
+    expect(find.text('New app'), findsOneWidget);
+    expect(
+      find.ancestor(
+        of: find.byType(Launcher),
+        matching: find.byType(InspectorHost),
+      ),
+      findsOneWidget,
+    );
+  });
+
   test('the backend follows the settings, and Claude Code only where it '
       'runs', () {
     final scratch = Directory.systemTemp.createTempSync('backend-');
@@ -440,6 +576,33 @@ void main() {
     expect(pick(backendMessagesApi, cli: true).name, backendMessagesApi);
     expect(pick(backendClaudeCli, cli: true).name, backendClaudeCli);
     expect(pick(backendClaudeCli, cli: false).name, backendMessagesApi);
+  });
+
+  test('the tool loop runs on the Messages API, or a scripted runner, with '
+      'an inspector; Claude Code and a missing inspector take the single '
+      'call', () {
+    final scratch = Directory.systemTemp.createTempSync('backend-');
+    addTearDown(() => scratch.deleteSync(recursive: true));
+    final inspector = WebViewInspector(surface: (_) => FakeAppSurface());
+    AgentBackend pick(String backend) => chooseBackend(
+      AppSettings(backend: backend),
+      _Key('sk-ant-x'),
+      cliSupported: true,
+      scratch: scratch,
+    );
+    final api = pick(backendMessagesApi);
+    final cli = pick(backendClaudeCli);
+    expect(usesToolLoop(api, inspector: inspector), isTrue);
+    expect(usesToolLoop(cli, inspector: inspector), isFalse);
+    expect(usesToolLoop(api, inspector: null), isFalse);
+    expect(
+      usesToolLoop(
+        HeldBackend([], name: backendMessagesApi),
+        inspector: inspector,
+        runner: () => throw StateError('unused'),
+      ),
+      isTrue,
+    );
   });
 
   test('a scripted agent file reads results and errors', () {

@@ -31,6 +31,7 @@ class AppSettings {
     this.dictateComments = true,
     this.dictationCues = true,
     this.claudePath,
+    this.commentButtonDy,
   }) : model = model ?? modelChoices.first.id;
 
   /// [backendMessagesApi] or [backendClaudeCli]. The CLI is used only where
@@ -51,12 +52,18 @@ class AppSettings {
   /// The `claude` executable to run; null finds it on `PATH`.
   String? claudePath;
 
+  /// Where the person last dragged an app screen's comment button: its
+  /// bottom edge's height above the page's bottom, in logical pixels; null
+  /// for the button's default place.
+  double? commentButtonDy;
+
   AppSettings copy() => AppSettings(
     backend: backend,
     model: model,
     dictateComments: dictateComments,
     dictationCues: dictationCues,
     claudePath: claudePath,
+    commentButtonDy: commentButtonDy,
   );
 
   Map<String, Object?> toJson() => {
@@ -65,6 +72,7 @@ class AppSettings {
     'dictate_comments': dictateComments,
     'dictation_cues': dictationCues,
     'claude_path': claudePath,
+    'comment_button_dy': commentButtonDy,
   };
 
   /// Reads [j], keeping the default for any value that is missing, of the
@@ -83,6 +91,8 @@ class AppSettings {
     if (cues is bool) s.dictationCues = cues;
     final path = j['claude_path'];
     if (path is String && path.trim().isNotEmpty) s.claudePath = path.trim();
+    final dy = j['comment_button_dy'];
+    if (dy is num && dy.isFinite && dy >= 0) s.commentButtonDy = dy.toDouble();
     return s;
   }
 }

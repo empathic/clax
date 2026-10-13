@@ -27,13 +27,15 @@ import 'platform/settings_store.dart';
 import 'platform/timings.dart';
 import 'platform/voice.dart';
 import 'platform/voice_cues.dart';
+import 'ui/inspector_surface.dart';
+import 'ui/read_consent_dialog.dart';
 import 'ui/webview_surface.dart';
 
 /// A debug build given `--dart-define=CLAX_SCRIPTED_AGENT=<path>` answers
 /// from that file instead of a model: an array of single-call results
 /// ([readAgentScript]), or `{"runs": …}`, tool calls a [ScriptedRunner]
-/// plays on the tool loop ([readRunnerScript]; it renders once an inspector
-/// is there).
+/// plays on the tool loop ([readRunnerScript]), rendering in the app's
+/// inspector.
 const scriptedAgentPath = String.fromEnvironment('CLAX_SCRIPTED_AGENT');
 
 Future<void> main() async {
@@ -49,7 +51,12 @@ Future<void> main() async {
 /// `CLAX_HOME`), `settings.json`, `install-id`, `timings.jsonl` (the
 /// defended numbers), `agent-timings.jsonl` (the agent's runs) and
 /// `change-ledger.json`, `asked.json` (what each change's open question
-/// was asked for) and `pending-make.json` (the make in flight).
+/// was asked for), `agent-read-consent.json` (the pairs of apps the owner
+/// let the agent read always) and `pending-make.json` (the make in
+/// flight).
+///
+/// The tool loop renders its drafts in a [WebViewInspector]: a WebView of
+/// its own that follows no link out of the app.
 Future<AppServices> platformServices() async {
   final support = await getApplicationSupportDirectory();
   final cache = await getApplicationCacheDirectory();
@@ -103,6 +110,12 @@ Future<AppServices> platformServices() async {
     prompts: PromptBuilder(rootBundle),
     ledger: FileChangeLedger(File('${support.path}/change-ledger.json')),
     asked: FileAskedQuestions(File('${support.path}/asked.json')),
+    inspector: WebViewInspector(
+      surface: (base) => WebViewAppSurface(base: base),
+    ),
+    consentMemory: FileConsentMemory(
+      File('${support.path}/agent-read-consent.json'),
+    ),
     runner: runner == null ? null : () => runner,
     cliSupported: cliSupported,
     background: android ? ChannelBackgroundWork() : const NoBackgroundWork(),

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:clax_app/agent/backend.dart';
@@ -17,6 +18,7 @@ import 'package:clax_app/platform/pending_make.dart';
 import 'package:clax_app/platform/secure_key.dart';
 import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_screen.dart';
+import 'package:clax_app/ui/read_consent_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -202,6 +204,9 @@ void main() {
           pendingMake: PendingMake(File('${dir.path}/pending-make.json')),
           pid: 42,
           inspector: turns == null ? null : FakeInspector(),
+          consentMemory: FileConsentMemory(
+            File('${dir.path}/agent-read-consent.json'),
+          ),
           clock: StepClock(),
         ),
       ),
@@ -683,6 +688,53 @@ void main() {
       await pumpUntil(tester, () => work.calls.contains('stop'));
       expect(api.currentVersion(aid), 2);
       expect(await api.listDrafts(), isEmpty);
+    });
+
+    testWidgets("a change that reads another app's documents asks the owner "
+        'in a dialog first; Always is kept for the pair', (tester) async {
+      turns = _Turns();
+      final week = api.seedArtifact('Week', {'index.html': _page});
+      final aid = api.seedArtifact('Runs', {'index.html': _page});
+      await pumpApp(tester);
+      await pumpUntil(tester, () => api.waitingPolls == 1);
+      String? result;
+      turns!.steps
+        ..add(
+          (_) async => _calls([
+            ('db_list', {'collection': 'runs', 'app': week, 'limit': null}),
+          ]),
+        )
+        ..add((r) async {
+          result = jsonEncode(r.messages.last);
+          return _calls([
+            ('finish', {'reply': 'Here is your week.', 'resolve': true}),
+          ]);
+        });
+      api.sendComment(aid, 'Show my week here');
+      await pumpUntil(
+        tester,
+        () => find.byType(ReadConsentDialog).evaluate().isNotEmpty,
+      );
+      expect(
+        find.text('Let the agent read “Week” while it works on “Runs”?'),
+        findsOneWidget,
+      );
+      expect(turns!.turns, 1, reason: 'the run waits for the answer');
+      await tester.tap(find.text('Always for this app'));
+      await pumpUntil(tester, () => work.calls.contains('stop'));
+      expect(find.byType(ReadConsentDialog), findsNothing);
+      expect(result, isNot(contains('did not allow')));
+      await settleFiles(tester);
+      expect(
+        jsonDecode(
+          File('${dir.path}/agent-read-consent.json').readAsStringSync(),
+        ),
+        {
+          'always': [
+            [aid, week],
+          ],
+        },
+      );
     });
 
     testWidgets('the app screen\'s Retry goes to the worker', (tester) async {

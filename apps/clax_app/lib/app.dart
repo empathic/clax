@@ -26,6 +26,7 @@ import 'agent/runner/turn.dart';
 import 'agent/timings.dart';
 import 'agent/worker.dart';
 import 'clax/api.dart';
+import 'clax/shared_stream.dart';
 import 'daemon/clock.dart';
 import 'daemon/supervisor.dart';
 import 'platform/background_work.dart';
@@ -38,9 +39,12 @@ import 'ui/app_menu.dart';
 import 'ui/app_screen.dart';
 import 'ui/app_surface.dart';
 import 'ui/error_screen.dart';
-import 'ui/host_protocol.dart' show Ready;
+import 'ui/host_protocol.dart'
+    show HostCall, LoadVersion, OpenThread, Ready, ThreadsMsg;
+import 'ui/inspector_surface.dart';
 import 'ui/launcher.dart';
 import 'ui/making_screen.dart';
+import 'ui/read_consent_dialog.dart';
 import 'ui/settings_screen.dart';
 import 'ui/theme.dart';
 
@@ -64,6 +68,7 @@ class AppServices {
     this.asked,
     this.inspector,
     this.readConsent,
+    this.consentMemory,
     this.runner,
     this.clock = const SystemClock(),
     this.cliSupported = false,
@@ -119,9 +124,14 @@ class AppServices {
   /// single structured call (see [usesToolLoop]).
   final Inspector? inspector;
 
-  /// Asks the owner before the agent reads another app's documents;
-  /// without one such reads are refused.
+  /// Asks the owner before the agent reads another app's documents; when
+  /// null, the app asks in a dialog ([DialogReadConsent]) and keeps the
+  /// "always" answers in [consentMemory].
   final AgentReadConsent? readConsent;
+
+  /// The pairs of apps the owner let the agent read always; in memory
+  /// when null.
+  final ConsentMemory? consentMemory;
 
   /// The tool loop's runner in place of the Messages API's (a debug
   /// build's [ScriptedRunner]); used only with an [inspector].
@@ -417,7 +427,23 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// The app the last Make made, until its first `ready`.
   ({String aid, Map<String, Object?> extra})? _made;
 
+  /// The app's one `/api/stream`, from the daemon's first Up to the app's
+  /// end: `gallery` and `inbox` for the launcher and the inbox, and
+  /// `questions`, which makes the app an owner surface for the agent's
+  /// `ask` while it runs.
+  SharedClaxStream? _stream;
+
+  /// The topics [_stream] holds for the app's life.
+  static const streamTopics = ['gallery', 'inbox', 'questions'];
+
   AppServices get _s => widget.services;
+
+  late final AgentReadConsent _consent =
+      _s.readConsent ??
+      DialogReadConsent(
+        navigator: () => _nav.currentState,
+        memory: _s.consentMemory ?? MemoryConsentMemory(),
+      );
 
   @override
   void initState() {
@@ -457,6 +483,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     unawaited(_worker?.cancel());
     unawaited(_opened?.cancel());
     unawaited(_runtime.close());
+    unawaited(_stream?.close());
+    if (_s.inspector case final WebViewInspector i) i.dispose();
     _runs.dispose();
     _comments.dispose();
     _endpoint.dispose();
@@ -495,7 +523,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       asked: _asked,
       inspector: _s.inspector,
       baseUrl: () => _currentEndpoint().base,
-      readConsent: _s.readConsent,
+      readConsent: _consent,
       clock: _s.clock,
       singleCall: () {
         final b = backend();
@@ -531,6 +559,11 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       case Up(:final endpoint):
         _wasUp = true;
         _endpoint.value = endpoint;
+        if (_stream == null) {
+          final stream = _stream = SharedClaxStream(_api.stream);
+          // A failure is retried by the stream itself.
+          unawaited(stream.subscribe(streamTopics).catchError((Object _) {}));
+        }
         if (_pendingOpen case final aid?) {
           _pendingOpen = null;
           scheduleMicrotask(() => _openFromNotice(aid));
@@ -822,7 +855,26 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     _s.timings.stop(sayUsable, extra: made.extra);
   }
 
-  void _open(String aid) {
+  /// Opens app [aid] from the inbox: at [thread] (the shell selects it
+  /// once its threads are listed) or at version [version] (shown once the
+  /// page is ready); just the app without either.
+  void _openTarget(String aid, {String? thread, int? version}) =>
+      _open(aid, thread: thread, version: version);
+
+  /// Keeps where the person dragged the comment button, for every later
+  /// app screen and launch.
+  Future<void> _keepButtonDy(double dy) async {
+    _settings.commentButtonDy = dy;
+    try {
+      final saved = await _s.settings.load();
+      saved.commentButtonDy = dy;
+      await _s.settings.save(saved);
+    } on Object catch (e) {
+      debugPrint('clax: could not keep the comment button place: $e');
+    }
+  }
+
+  void _open(String aid, {String? thread, int? version}) {
     final settings = _settings;
     final nav = _nav.currentState;
     if (nav == null) return;
@@ -833,7 +885,12 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
             MaterialPageRoute<void>(
               builder: (_) => _AppPage(
                 endpoint: _endpoint,
-                surface: _s.surface,
+                surface: (base) => _aimed(
+                  _s.surface(base),
+                  aid,
+                  thread: thread,
+                  version: version,
+                ),
                 screen: (base, surface) => AppScreen(
                   key: ValueKey(base),
                   aid: aid,
@@ -847,6 +904,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
                   onRetry: _runtime.worker.retry,
                   onReady: (r) => _onReady(aid, r),
                   comments: _comments,
+                  commentButtonDy: settings.commentButtonDy,
+                  onCommentButtonMoved: (dy) => unawaited(_keepButtonDy(dy)),
                 ),
               ),
             ),
@@ -854,6 +913,42 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           .whenComplete(() => _openAids.removeAt(_openAids.lastIndexOf(aid))),
     );
   }
+
+  /// [surface], which once [aid]'s page is up selects [thread] (when the
+  /// shell lists it) or shows [version], once.
+  static AppSurface _aimed(
+    AppSurface surface,
+    String aid, {
+    String? thread,
+    int? version,
+  }) {
+    if (thread == null && version == null) return surface;
+    late final StreamSubscription<Object?> sub;
+    var ready = false;
+    void aim(HostCall c) {
+      unawaited(sub.cancel());
+      unawaited(surface.call(c));
+    }
+
+    sub = surface.messages.listen((m) {
+      switch (m) {
+        case Ready(:final artifact) when artifact == aid:
+          ready = true;
+          if (version != null) aim(LoadVersion(version));
+        case ThreadsMsg(:final threads)
+            when ready && threads.any((t) => t.id == thread):
+          aim(OpenThread(thread!));
+        case _:
+          break;
+      }
+    });
+    return surface;
+  }
+
+  static bool get _desktop => switch (defaultTargetPlatform) {
+    TargetPlatform.android || TargetPlatform.iOS => false,
+    _ => true,
+  };
 
   Widget _home(BuildContext context) {
     final d = _daemon;
@@ -873,6 +968,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       voice: _s.voice,
       openSettings: () => unawaited(_openSettings()),
       needsKey: _needsKey,
+      stream: _stream,
+      onOpenTarget: _openTarget,
     );
   }
 
@@ -887,6 +984,15 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         listenable: _revision,
         builder: (context, _) => _home(context),
       ),
+      builder: switch (_s.inspector) {
+        final WebViewInspector inspector => (context, child) => InspectorHost(
+          inspector: inspector,
+          size: inspectorSize(MediaQuery.sizeOf(context), desktop: _desktop),
+          cover: Theme.of(context).colorScheme.surface,
+          child: child ?? const SizedBox.shrink(),
+        ),
+        _ => null,
+      },
     );
     if (defaultTargetPlatform == TargetPlatform.macOS) {
       app = ClaxMenuBar(comments: _comments, child: app);
