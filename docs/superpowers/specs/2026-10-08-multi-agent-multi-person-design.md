@@ -99,7 +99,7 @@ are this design's decisions, each with its reason.
 | O8 | An untargeted send with several of the owner's agents watching: the first to take it owns it. | Owner answer (Q5). |
 | O9 | Other people's artifact titles in an agent's `list` are withheld until approved. | Owner answer (Q8). |
 | O10 | "Each agent should get its own credential": narrowing and elevation bind exactly one agent session, which a sibling agent on the same machine cannot act as, and an agent narrowed to read-only cannot regain the machine's rights by naming no session (§6.8). The machine, meaning its OS user, stays the hard boundary, and the spec and People say so. | Owner decision (2026-10-12), after a review showed a sibling naming an elevated session, and a narrowed agent naming none, acting past one agent's rights. |
-| O11 | "Agents can have the max permissions equal to that of their "owner", that owner can choose what permissions any given agent has below that bound, and an agent can be given more permission than it's "owner" by the creator of a given artifact, etc." and "The creator of an artifact is its defacto owner and the one who has responsibility for delegation": an artifact's creator elevates any agent on the artifacts they created, within what they may do there; the install's owner still elevates anywhere (§7.2, §7.4). A new session starts at the bound, its person's rights within its machine's narrowing, and inherits no other session's narrowing ("Starts at the bound", §6.8). | Owner decisions (2026-10-13). |
+| O11 | "Agents can have the max permissions equal to that of their "owner", that owner can choose what permissions any given agent has below that bound, and an agent can be given more permission than it's "owner" by the creator of a given artifact, etc." and "The creator of an artifact is its defacto owner and the one who has responsibility for delegation": an artifact's creator elevates any agent on the artifacts they created; the install's owner still elevates anywhere (§7.2, §7.4). Interpreted, not quoted (the coordinator's reading of "defacto owner" and "responsibility for delegation"): a creator gives only what they may do there themselves, and a raise is its granter's to remove (whether the agent's person or the owner may also remove one is an open owner question). A new session starts at the bound, its person's rights within its machine's narrowing, and inherits no other session's narrowing ("Starts at the bound", §6.8). | Owner decisions (2026-10-13). |
 | O12 | Approvals in both directions on People, "Your content only": on a person's card the owner also sees that person's live approvals whose author is the owner; a person's approvals of anyone else's content stay private to them (§9.5). | Owner decision (2026-10-13). |
 | R1 | A thread approval covers the author's later replies in that thread; the approval card says so. | Ruling (Q2). |
 | R2 | Only the agent's own person approves content for it; the owner cannot approve on another person's behalf. | Ruling (Q4). |
@@ -209,10 +209,12 @@ invite for themselves (**Invite → Me**).
   **Raise on this artifact** → **Publish new versions**. `notes-fix` may
   publish "Sam's Notes" until its session ends, and nothing else of
   Sam's rights reaches it; Sam could not give it anything he may not do
-  there himself, nor anything on an artifact he did not create. Mia's
-  People shows the raise on her agent's card as "Raised by Sam on “Sam's
-  Notes”"; she may still narrow or end her agent, but not remove Sam's
-  raise, which only Sam (or the agent's end) removes.
+  there himself (an interpretation, O11), nor anything on an artifact he
+  did not create. Mia's People shows the raise on her agent's card as
+  "Raised by Sam on “Sam's Notes”"; she may still narrow or end her agent.
+  As built, only Sam (or the agent's end) removes Sam's raise; that the
+  agent's person cannot is an interpretation awaiting the owner's answer
+  (O11).
 
 ### 3.5 Several agents of one person
 
@@ -1070,8 +1072,14 @@ elevation(creator c)                     = access at the artifacts c created ∩
   location must be an artifact ID the caller created that is not deleted
   (403 `not_creator` for `*`, `own`, `clax-ask`, which has no location,
   and any other artifact) and whose every action they hold there under
-  their own rights (403 `beyond_your_rights`). `DELETE` removes the
-  caller's own elevation only. For the owner the route is unchanged: the
+  their own rights (403 `beyond_your_rights`); an empty access is 400
+  `invalid_rights`. `DELETE` removes the caller's own elevation only, and
+  is 404 `not_raised`, recording nothing, when the caller has none. Both
+  answer the owner, and a person raising their own agent, with the
+  agent's whole view; a person raising another person's agent reads back
+  only `{handle, name, person, elevation}`, `elevation` their own raise
+  (or null), never the agent's narrowing, other granters' raises, rights
+  or machine (§18). For the owner the route is unchanged: the
   owner's elevation may name any location. Each granter's elevation is
   replaced whole by their `PUT`. The agent's handle is the one the
   artifact's participants list (§10) carries.
@@ -1696,18 +1704,36 @@ owner ended it). An `idle` end also saves its direct watches to
 4. `narrow_json` is cleared and its elevations (`session_elevations`)
    deleted; the name is freed; the session's secret is cleared
    (`secret_sha256`, §6.8).
-
-An elevation also ends when its granter's rights to give it end (O11):
-revoking a person deletes every elevation they granted, and deleting an
-artifact removes it from its creator's elevations (an elevation left with
-no location is deleted), each recorded as `agent.elevate` with `reason`
-`person_revoked` or `artifact_deleted`.
 5. Watches and working records end (as today).
 6. When it owned threads or had open questions or `ask` requests, one
    `ended` inbox item for its person (M25): "clax-claude ended · released 2
    threads · withdrew 1 question".
 7. Send menus and pickers drop it; the agent strip keeps it as `ended` for
    an hour.
+
+An elevation (§7.2, O11) ends with its session (step 4, `reason`
+`session_end`), when its granter removes it, and when its granter's
+standing to give it ends. Each of these deletes the stored raise and records
+`agent.elevate {session, access, granter, reason}`:
+
+- revoking a person deletes every raise they gave (`person_revoked`);
+- a person returned to a plain viewer, an invited person whose invites
+  were revoked or lapsed unredeemed (§6.4), loses every raise they gave
+  (`person_released`);
+- a viewer folded into another by a claim (§19) loses every raise it gave
+  (`viewer_folded`);
+- deleting an artifact, softly or outright (an artifact with no version,
+  or a corrupt row of a deleted one), removes it from its creator's
+  raises, and a raise left with no location is deleted
+  (`artifact_deleted`).
+
+A creator's rights reduced by the owner (`PUT /api/people/<pid>/rights`)
+delete nothing: their raise gives, at each check, only what their rights
+then allow at the artifacts they created (§7.2), so it gives less while
+the rights are lower and again what it named once they are restored.
+Whatever path leaves a raise stored, it never gives more than that check
+allows: an artifact its granter did not create, or that is deleted, and a
+granter who is not a connected, unrevoked person, give nothing.
 
 Remote sessions (with a `grant_id`) are never PID-probed; they end after 30
 minutes without a heartbeat (local sessions keep 5 minutes), counted only
@@ -1975,7 +2001,7 @@ another machine, so no `remote` channel is added.
 | `agent.name` | `name, source, previous` | the namer |
 | `session.start` (audit spec §6.8) | for a grant's session, also `secret_issued: true` (§6.8); neither the secret nor its hash is recorded | the session's agent |
 | `agent.narrow` | `session, access` | person, owner |
-| `agent.elevate` | `session, access, granter` (the granter's public ID, null for the owner); `reason` (`session_end`, `person_revoked`, `artifact_deleted`) when a change it did not ask for removes it | granter, or whoever made that change |
+| `agent.elevate` | `session, access, granter` (the granter's public ID, null for the owner); `reason` (`session_end`, `person_revoked`, `person_released`, `viewer_folded`, `artifact_deleted`, §14) when a change it did not ask for removes it; a removal that removes nothing is not recorded | granter, or whoever made that change |
 | `approval.request` | `request_id, approver, author, artifact_id, thread_id, cause, count`; recorded when a request is made and when new withheld content raises its `count` | asking agent or router |
 | `approval.decide` | `request_id, scope` (`thread`, `artifact`, `everywhere` or `decline`); one per request an approval closes | approver |
 | `approval.withdraw` | `request_id, reason (thread_resolved\|thread_deleted\|artifact_deleted\|session_end\|person_revoked\|thread_taken)` | whoever made the change that withdrew it |
@@ -2473,3 +2499,10 @@ task, with recommendations; the owner took every recommendation
     that person's live approvals of the owner's content
     (`approvals_of_yours` in `GET /api/people`), unfiltered as the
     owner's browser is; their approvals of others' content stay theirs.
+- **Amendment** (2026-10-13, Task 20b review): §7.4: a person raising
+  another person's agent reads back only their own raise of it; an empty
+  raise is 400 and a removal of nothing 404 `not_raised`, unrecorded.
+  §14: the drops of a raise are listed after the session-end steps, adding
+  a person's release and a viewer's fold, and an outright artifact delete;
+  a creator's reduced rights bound the raise at each check without
+  deleting it. O11 and §3.4 mark what interprets the owner's words.
