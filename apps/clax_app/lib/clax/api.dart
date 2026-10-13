@@ -253,10 +253,53 @@ abstract interface class ClaxApi {
   /// returns the unread count after it.
   Future<int> markAllInboxRead({int? upto, Map<String, Object?>? filter});
 
+  // --- the app inspector (the owner's reads, and revoking a grant) ---
+
+  /// One page of [collection]'s documents, at most [limit], from [cursor]
+  /// (the previous page's [DocPage.nextCursor]; null for the first).
+  Future<DocPage> pageDocs(
+    String aid,
+    String collection, {
+    int limit = 50,
+    String? cursor,
+  });
+
+  /// `GET /api/artifacts/<reader>/db-grants`: the owner's grants letting
+  /// app [reader] read another app's documents, oldest first. 404 for an
+  /// unknown artifact.
+  Future<List<ReadGrant>> readGrants(String reader);
+
+  /// `DELETE /api/artifacts/<reader>/db-grants/<source>`: removes the
+  /// owner's grant; false when there was none. A share [source] declares
+  /// is not a grant and stays.
+  Future<bool> revokeRead(String reader, String source);
+
   /// A `/api/stream` connection with the owner's token, for the `inbox`
   /// and `questions` topics (and any other). It connects on the first
   /// [ClaxStream.subscribe] or listen; [ClaxStream.close] ends it.
   ClaxStream stream();
+}
+
+/// One page of a collection's documents: [nextCursor] is null on the
+/// last page.
+class DocPage {
+  const DocPage({required this.docs, this.nextCursor});
+
+  final List<Doc> docs;
+  final String? nextCursor;
+}
+
+/// The owner's grant: the reader may read [sourceId]'s documents.
+class ReadGrant {
+  const ReadGrant({required this.sourceId, required this.grantedAt});
+
+  factory ReadGrant.fromJson(Map<String, Object?> j) => ReadGrant(
+    sourceId: j['source_id'] as String,
+    grantedAt: j['granted_at'] as String,
+  );
+
+  final String sourceId;
+  final String grantedAt;
 }
 
 /// A request the daemon refused, or one that never reached it.

@@ -861,6 +861,47 @@ void main() {
       ]);
     });
 
+    test('pageDocs pages with the cursor', () async {
+      server.json('GET', '/api/artifacts/$aid/docs', 200, {
+        'docs': [
+          {
+            'path': 'runs/r1',
+            'collection': 'runs',
+            'id': 'r1',
+            'data': {'km': 5},
+            'version': 1,
+            'updated_at': '2026-10-12T00:00:00Z',
+          },
+        ],
+        'next_cursor': 'c2',
+      });
+      final p = await api.pageDocs(aid, 'runs', limit: 1, cursor: 'c1');
+      final req = only('GET', '/api/artifacts/$aid/docs');
+      expectOwnerCall(req);
+      expect(req.uri.queryParameters, {
+        'collection': 'runs',
+        'limit': '1',
+        'cursor': 'c1',
+      });
+      expect(p.docs.single.id, 'r1');
+      expect(p.nextCursor, 'c2');
+    });
+
+    test('readGrants lists the grants and revokeRead deletes one', () async {
+      server.json('GET', '/api/artifacts/$aid/db-grants', 200, {
+        'grants': [
+          {'source_id': 'src', 'granted_at': '2026-10-12T00:00:00Z'},
+        ],
+      });
+      server.json('DELETE', '/api/artifacts/$aid/db-grants/src', 200, {
+        'revoked': true,
+      });
+      final gs = await api.readGrants(aid);
+      expect(gs.single.sourceId, 'src');
+      expect(await api.revokeRead(aid, 'src'), isTrue);
+      expectOwnerCall(only('DELETE', '/api/artifacts/$aid/db-grants/src'));
+    });
+
     test('batchDocs posts the writes with paths and versions', () async {
       server.json('POST', '/api/artifacts/$aid/docs:batch', 200, {
         'results': <Object?>[],

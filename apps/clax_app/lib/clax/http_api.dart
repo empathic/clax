@@ -517,6 +517,51 @@ class HttpClaxApi implements ClaxApi {
     int limit = 50,
   }) => queryDocs(aid, collection, limit: limit, reader: reader);
 
+  // --- the app inspector ---
+
+  @override
+  Future<DocPage> pageDocs(
+    String aid,
+    String collection, {
+    int limit = 50,
+    String? cursor,
+  }) async {
+    final j = await _json(
+      'GET',
+      '/api/artifacts/${_seg(aid)}/docs',
+      query: {'collection': collection, 'limit': '$limit', 'cursor': ?cursor},
+    );
+    return _parse(
+      () => DocPage(
+        docs: [
+          for (final d in j['docs'] as List<Object?>)
+            Doc.fromJson((d as Map).cast()),
+        ],
+        nextCursor: j['next_cursor'] as String?,
+      ),
+    );
+  }
+
+  @override
+  Future<List<ReadGrant>> readGrants(String reader) async {
+    final j = await _json('GET', '/api/artifacts/${_seg(reader)}/db-grants');
+    return _parse(
+      () => [
+        for (final g in j['grants'] as List<Object?>)
+          ReadGrant.fromJson((g as Map).cast()),
+      ],
+    );
+  }
+
+  @override
+  Future<bool> revokeRead(String reader, String source) async {
+    final j = await _json(
+      'DELETE',
+      '/api/artifacts/${_seg(reader)}/db-grants/${_seg(source)}',
+    );
+    return _parse(() => j['revoked'] as bool);
+  }
+
   // --- the owner's thread calls ---
 
   @override

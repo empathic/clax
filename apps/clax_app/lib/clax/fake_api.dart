@@ -941,6 +941,50 @@ class FakeClaxApi implements ClaxApi {
 
   // --- the owner's thread calls ---
 
+  // --- the app inspector ---
+
+  @override
+  Future<DocPage> pageDocs(
+    String aid,
+    String collection, {
+    int limit = 50,
+    String? cursor,
+  }) async {
+    _call('pageDocs', {
+      'aid': aid,
+      'collection': collection,
+      'limit': limit,
+      'cursor': cursor,
+    });
+    final all = _artifact(aid).docs.values
+        .where((d) => d.collection == collection)
+        .toList();
+    final from = cursor == null ? 0 : int.parse(cursor);
+    final end = (from + limit).clamp(0, all.length);
+    return DocPage(
+      docs: all.sublist(from.clamp(0, all.length), end),
+      nextCursor: end < all.length ? '$end' : null,
+    );
+  }
+
+  @override
+  Future<List<ReadGrant>> readGrants(String reader) async {
+    _call('readGrants', {'reader': reader});
+    _artifact(reader);
+    return [
+      for (final (r, s) in _grants)
+        if (r == reader) ReadGrant(sourceId: s, grantedAt: _now()),
+    ];
+  }
+
+  @override
+  Future<bool> revokeRead(String reader, String source) async {
+    _call('revokeRead', {'reader': reader, 'source': source});
+    _artifact(reader);
+    _artifact(source);
+    return _grants.remove((reader, source));
+  }
+
   @override
   Future<String?> ownerPublicId() async {
     _call('ownerPublicId');
