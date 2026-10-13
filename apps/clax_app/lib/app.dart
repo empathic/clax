@@ -15,6 +15,7 @@ import 'agent/inspector.dart';
 import 'agent/ledger.dart';
 import 'agent/loop.dart';
 import 'agent/messages_api_backend.dart';
+import 'agent/plan.dart';
 import 'agent/progress.dart';
 import 'agent/prompt.dart';
 import 'agent/read_consent.dart';
@@ -68,6 +69,7 @@ class AppServices {
     required this.prompts,
     this.ledger,
     this.asked,
+    this.plans,
     this.inspector,
     this.readConsent,
     this.consentMemory,
@@ -122,6 +124,10 @@ class AppServices {
   /// What each change's open question was asked for, so a late answer
   /// runs it again after an exit; in memory when null.
   final AskedQuestions? asked;
+
+  /// Each app's build plan, which a new app's first run makes and the
+  /// worker's continue runs build; in memory when null.
+  final PlanStore? plans;
 
   /// Renders the tool loop's drafts. Without one, every run takes the
   /// single structured call (see [usesToolLoop]).
@@ -542,6 +548,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       ));
 
   late final _asked = _s.asked ?? MemoryAskedQuestions();
+  late final _plans = _s.plans ?? PlanStore();
 
   /// A loop whose runs follow the settings at their start: the tool loop
   /// when [usesToolLoop], else the single call, each waiting out a
@@ -562,6 +569,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       timings: _s.agentTimings,
       ledger: _s.ledger,
       asked: _asked,
+      plans: _plans,
       inspector: _s.inspector,
       baseUrl: () => _currentEndpoint().base,
       readConsent: _consent,
@@ -767,6 +775,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
             _runs.end(run, RunReady(aid, '$title is ready', 'Tap to open it')),
       ),
     );
+    // The first run planned the app: the worker builds the rest.
+    _runtime.worker.startBuild(aid);
     _made = (
       aid: aid,
       extra: {
