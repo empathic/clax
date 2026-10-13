@@ -1074,10 +1074,15 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   }
 
   /// Opens app [aid] from the inbox: at [thread] (the shell selects it
-  /// once its threads are listed) or at version [version] (shown once the
-  /// page is ready); just the app without either.
-  void _openTarget(String aid, {String? thread, int? version}) =>
-      _open(aid, thread: thread, version: version);
+  /// once its threads are listed, and the thread page opens at [comment])
+  /// or at version [version] (shown once the page is ready); just the app
+  /// without either.
+  void _openTarget(
+    String aid, {
+    String? thread,
+    int? version,
+    String? comment,
+  }) => _open(aid, thread: thread, version: version, comment: comment);
 
   /// Makes [change] to the settings, for every later app screen and
   /// launch.
@@ -1092,12 +1097,24 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     }
   }
 
-  void _open(String aid, {String? thread, int? version, AppAction? action}) {
+  void _open(
+    String aid, {
+    String? thread,
+    int? version,
+    AppAction? action,
+    String? comment,
+  }) {
     final nav = _nav.currentState;
     if (nav == null) return;
     unawaited(
       nav.push(
-        _appRoute(aid, thread: thread, version: version, action: action),
+        _appRoute(
+          aid,
+          thread: thread,
+          version: version,
+          action: action,
+          comment: comment,
+        ),
       ),
     );
   }
@@ -1121,6 +1138,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     int? version,
     Uint8List? cover,
     AppAction? action,
+    String? comment,
   }) {
     final settings = _settings;
     final actions = StreamController<AppAction>.broadcast();
@@ -1147,6 +1165,9 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           timings: _s.timings,
           worker: _runtime.worker.events,
           onRetry: _runtime.worker.retry,
+          onStop: _runtime.worker.cancelChange,
+          initialThread: thread,
+          initialComment: comment,
           onReady: (r) {
             open.ready = true;
             _onReady(aid, r);
