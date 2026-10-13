@@ -37,6 +37,7 @@ import 'platform/secure_key.dart';
 import 'platform/settings_store.dart';
 import 'platform/voice.dart';
 import 'ui/app_menu.dart';
+import 'ui/app_inspector_permissions.dart';
 import 'ui/app_screen.dart';
 import 'ui/app_surface.dart';
 import 'ui/error_screen.dart';
@@ -461,11 +462,14 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
 
   AppServices get _s => widget.services;
 
+  late final ConsentMemory _consentMemory =
+      _s.consentMemory ?? MemoryConsentMemory();
+
   late final AgentReadConsent _consent =
       _s.readConsent ??
       DialogReadConsent(
         navigator: () => _nav.currentState,
-        memory: _s.consentMemory ?? MemoryConsentMemory(),
+        memory: _consentMemory,
       );
 
   @override
@@ -1066,6 +1070,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       needsKey: _needsKey,
       stream: _stream,
       onOpenTarget: _openTarget,
+      inspectorPermissions: [AgentReadPermissions(_consentMemory)],
     );
   }
 
