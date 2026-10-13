@@ -138,4 +138,98 @@ declare namespace ClaxExtensions {
      * {@link DbCrossReadErrorCode}s. */
     artifact(id: string): DbReadOnly;
   }
+
+  /**
+   * Clax's device capabilities, served only in the Clax app (Android; on
+   * macOS what the platform allows, else `unavailable`). Declare each one
+   * used (`{"notify": {}, "camera": {}}`) and obtain it with
+   * `await claude.use("notify")`: it resolves `null` in a browser, in the
+   * app's draft preview, and when undeclared, so render without it first.
+   * The person is asked once per app and capability, on its first call,
+   * and the answer stands until they revoke it in the app inspector.
+   *
+   * `files` here is Clax's, not claude.ai's project files (`files.d.ts`,
+   * which Clax never serves).
+   *
+   * Binary data travels as base64 strings (`data`).
+   */
+  namespace Device {
+    /**
+     * Rejection codes of every device call (as `{code, message}`):
+     * - `not_granted`: the person did not allow this capability for the
+     *   app (or the system permission is off); hide or explain the feature.
+     *   Calling again does not ask again.
+     * - `cancelled`: the person closed the picker, sheet or camera.
+     * - `unavailable`: this device cannot do it (no camera, location off, a
+     *   platform without it), or the view has closed.
+     * - `bad_request`: arguments of the wrong shape (a bug in the page).
+     * - `too_large`: a file over 10 MB (`files.pick`, `share.file`,
+     *   `files.save`).
+     */
+    type ErrorCode = "not_granted" | "cancelled" | "unavailable" | "bad_request" | "too_large";
+
+    /** A file's bytes, as base64. */
+    interface FileData {
+      name: string;
+      mime: string;
+      data: string;
+    }
+
+    /** A reminder: once `at` (ISO 8601 date-time, in the future), or
+     * repeating `every` day at `hour:minute` local time, on `weekdays` only
+     * when given (1 Monday … 7 Sunday). `route` (`#…`) is where a tap on it
+     * opens the app; the app's start page when absent. Scheduling an `id`
+     * the app already scheduled replaces it. Delivery may be a few minutes
+     * late: the device batches alarms to save battery. */
+    interface Reminder {
+      /** The page's own name for it, 1 to 64 characters. */
+      id: string;
+      title: string;
+      body?: string;
+      at?: string;
+      every?: { hour: number; minute: number; weekdays?: number[] };
+      route?: string;
+    }
+
+    interface Notify {
+      schedule(r: Reminder): Promise<{ id: string }>;
+      cancel(id: string): Promise<{ cancelled: boolean }>;
+      /** The app's reminders still to come (one-off ones not yet shown). */
+      list(): Promise<Reminder[]>;
+    }
+
+    interface Share {
+      /** Opens the system share sheet; resolves once the person chose. */
+      text(text: string): Promise<{ shared: boolean }>;
+      file(f: FileData): Promise<{ shared: boolean }>;
+    }
+
+    interface Files {
+      /** One file the person picks; `accept` is a list of extensions
+       * (`["csv", "json"]`) or MIME types (`["image/*"]`). */
+      pick(opts?: { accept?: string[] }): Promise<FileData>;
+      /** Lets the person save `f` where they choose. */
+      save(f: FileData): Promise<{ saved: boolean }>;
+    }
+
+    /** A photo, JPEG, downscaled so neither side exceeds 1600 px. */
+    interface Photo {
+      mime: string;
+      data: string;
+      width: number;
+      height: number;
+    }
+
+    interface Camera {
+      /** Takes a photo with the camera. */
+      take(): Promise<Photo>;
+      /** Picks one from the person's photos. */
+      pick(): Promise<Photo>;
+    }
+
+    interface Location {
+      /** Where the device is now: degrees, and accuracy in metres. */
+      current(): Promise<{ lat: number; lon: number; accuracy: number }>;
+    }
+  }
 }
