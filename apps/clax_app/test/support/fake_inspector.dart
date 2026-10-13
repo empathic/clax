@@ -13,14 +13,52 @@ class InspectCall {
   final Future<void>? cancelled;
 }
 
+/// One [FakeInspector.runTests] call.
+class TestCall {
+  TestCall(this.url, this.files, this.total, this.cancelled);
+
+  final Uri url;
+  final List<String> files;
+  final Duration total;
+  final Future<void>? cancelled;
+}
+
 /// An [Inspector] that answers from a script.
 ///
 /// Each call takes the next queued answer ([answer], [fail], [hang]), else
 /// a clean inspection of [png]. A [hang] answer waits until the call's
 /// `cancelled` fires (then [InspectorError] `cancelled`) or [release] ends
 /// it with `did not load`, as a page that never answers.
+///
+/// A test run takes the next of [answerTests] / [failTests], else every
+/// test passes (one per file).
 class FakeInspector implements Inspector {
   final List<InspectCall> calls = [];
+  final List<TestCall> testCalls = [];
+  final _tests = <Object>[];
+
+  /// Queues [r] as the next test run's answer.
+  void answerTests(TestRun r) => _tests.add(r);
+
+  /// Queues [e] as the next test run's answer, thrown.
+  void failTests(InspectorError e) => _tests.add(e);
+
+  @override
+  Future<TestRun> runTests(
+    Uri url, {
+    required List<String> files,
+    Duration perTest = const Duration(seconds: 5),
+    Duration total = const Duration(seconds: 30),
+    Future<void>? cancelled,
+  }) async {
+    testCalls.add(TestCall(url, files, total, cancelled));
+    final next = _tests.isEmpty
+        ? TestRun(passed: files.length, failed: const [], skipped: 0)
+        : _tests.removeAt(0);
+    if (next is InspectorError) throw next;
+    return next as TestRun;
+  }
+
   final _queue = <Object>[];
   final _hanging = <Completer<void>>[];
 

@@ -22,6 +22,48 @@ abstract interface class Inspector {
     int maxBytes = 1 << 20,
     Future<void>? cancelled,
   });
+
+  /// Loads [url] in the inspect view and runs the draft's test [files]
+  /// (`tests/<name>.test.js`) there with the page's test harness, each
+  /// test for at most [perTest], the run for at most [total].
+  ///
+  /// Throws [InspectorError] when the page does not load, the harness
+  /// does not answer in time, or [cancelled] completes first.
+  Future<TestRun> runTests(
+    Uri url, {
+    required List<String> files,
+    Duration perTest = const Duration(seconds: 5),
+    Duration total = const Duration(seconds: 30),
+    Future<void>? cancelled,
+  });
+}
+
+/// What a run of a draft's tests found.
+class TestRun {
+  const TestRun({
+    required this.passed,
+    required this.failed,
+    required this.skipped,
+  });
+
+  /// How many tests passed.
+  final int passed;
+
+  /// Each test that failed, and each test file that did not load, with
+  /// why.
+  final List<({String name, String error})> failed;
+
+  /// How many tests did not run because the run's time ran out.
+  final int skipped;
+
+  /// The run as the `render` tool reports it.
+  Map<String, Object?> toJson() => {
+    'passed': passed,
+    'failed': [
+      for (final f in failed) {'name': f.name, 'error': f.error},
+    ],
+    'skipped': skipped,
+  };
 }
 
 /// What an inspected page showed.

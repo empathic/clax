@@ -490,6 +490,38 @@ const host = { init: p => log.push('init'), setVisible: v => log.push('visible '
       expect(i.height, 1200);
     });
 
+    test('RunTests renders its call, and tests decode or carry why', () {
+      expect(
+        const RunTests(['tests/a.test.js', 'tests/b.test.js']).toJs(),
+        'window.claxHost?.runTests({files:["tests/a.test.js",'
+        '"tests/b.test.js"],testMs:5000,totalMs:30000})',
+      );
+      final t = HostMessage.parse(
+        jsonEncode({
+          'type': 'tests',
+          'passed': 2,
+          'failed': [
+            {'name': 'adds', 'error': 'Expected: 1 to be 2'},
+          ],
+          'skipped': 1,
+        }),
+      ) as TestsMsg;
+      expect((t.passed, t.skipped, t.error), (2, 1, null));
+      expect(t.failed, [(name: 'adds', error: 'Expected: 1 to be 2')]);
+      final e = HostMessage.parse(
+        '{"type":"tests","error":"the page has not loaded"}',
+      ) as TestsMsg;
+      expect((e.error, e.passed), ('the page has not loaded', 0));
+      expect(e.failed, isEmpty);
+      expect(HostMessage.parse('{"type":"tests","passed":-1}'), isNull);
+      expect(
+        HostMessage.parse(
+          '{"type":"tests","passed":1,"failed":[{"name":1}],"skipped":0}',
+        ),
+        isNull,
+      );
+    });
+
     test('an inspection that failed carries only why', () {
       final i = HostMessage.parse(
         '{"type":"inspection","error":"the page has not loaded"}',

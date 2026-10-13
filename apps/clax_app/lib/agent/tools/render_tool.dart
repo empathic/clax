@@ -21,6 +21,17 @@ const _batchLimit = 50;
 /// wall clock has less left.
 const inspectLimit = Duration(seconds: 8);
 
+/// The longest a render's test run may take, and one test in it.
+const testLimit = Duration(seconds: 30);
+const perTestLimit = Duration(seconds: 5);
+
+/// What a test run may take beyond [testLimit]: serving the scratch draft
+/// and loading its page.
+const _testSlack = Duration(seconds: 10);
+
+/// A test file of the draft, as the inspect view takes it.
+final _testFile = RegExp(r'^tests/[A-Za-z0-9_\-./]{1,200}\.test\.js$');
+
 /// The title a new app's draft is served under before it has one.
 const _untitled = 'New app';
 
@@ -35,11 +46,24 @@ const _untitled = 'New app';
 /// [Inspector] loads `<baseUrl>/a/<draft>[/<file>]?app=1&inspect=1`, for
 /// at most [inspectLimit] and never past the run's wall clock.
 ///
+/// When the page loaded without uncaught errors and the draft has test
+/// files (`tests/<name>.test.js`, which `index.html` never loads), the
+/// render then runs them ([Inspector.runTests]) in a second load: of a
+/// scratch draft artifact made for the run from the same snapshot, with a
+/// fresh copy of the app's documents and the staged writes applied, and
+/// deleted after it, so the tests write neither the person's documents nor
+/// the draft's. The run takes at most [testLimit] (each test
+/// [perTestLimit]) and never past the run's wall clock; its result is the
+/// render's `tests`, `{passed, failed: [{name, error}], skipped}`, a run
+/// that could not happen being one failure that says why. Without test
+/// files there is no second load.
+///
 /// Each render records the snapshot it uploaded with
 /// [Draft.markRendered]: a render whose page logs uncaught errors, does
 /// not load or does not answer in time marks the draft as rendered with
-/// errors. A clean one emits [Inspected] and answers the inspection with
-/// the screenshot.
+/// errors, and one whose tests fail as rendered with failing tests. A
+/// render whose page loaded emits [Inspected] and answers the inspection
+/// with the screenshot.
 ///
 /// One instance serves one run. [cleanup] deletes the draft artifact; the
 /// run's end (`finish`, `give_up`, a cap or a cancel) calls it, and a
@@ -61,7 +85,16 @@ class RenderTool implements Tool {
         'as the person would. Returns a screenshot of the first screen, '
         'console_errors, failed_requests, and a text outline of what is '
         'visible. file: a page other than index.html, or omitted. Render '
-        'after your writes and before finish; a run has only a few renders.',
+        'after your writes and before finish; a run has only a few renders. '
+        'Tests: files tests/<name>.test.js (never loaded by index.html) run '
+        'after a clean page check, in a fresh load of index.html over a '
+        'scratch copy of the documents, and render returns tests: {passed, '
+        'failed: [{name, error}], skipped}. They use the globals test(name, '
+        'fn), expect(v) (toBe, toEqual, toBeTruthy, toContain, '
+        'toBeGreaterThan) and ui (await click(selectorOrText), await '
+        'type(selector, text), text(selector?), exists(selector), await '
+        'waitFor(fn, ms), await go(hash)); 5 s a test, 30 s in all. finish '
+        'refuses failing tests.',
     objectSchema({'file': optional('string')}),
   );
 
@@ -83,6 +116,9 @@ class RenderTool implements Tool {
   /// The upload in progress, which [cleanup] waits for.
   Future<void>? _uploading;
   Future<void>? _cleaned;
+
+  /// The scratch draft artifact of the test run in progress.
+  String? _testDraft;
 
   bool get _stopped => _cleaned != null || (_cancel?.isCancelled ?? false);
 
@@ -173,7 +209,19 @@ class RenderTool implements Tool {
     end('inspected');
 
     final uncaught = seen.uncaught.length;
-    s.draft.markRendered(snap, errors: uncaught > 0);
+    final testFiles = uncaught > 0
+        ? const <String>[]
+        : ([...snap.files.keys.where(_testFile.hasMatch)]..sort());
+    TestRun? tests;
+    if (testFiles.isNotEmpty) {
+      tests = await _runTests(s, snap, testFiles);
+      if (_stopped) return _cancelled();
+    }
+    s.draft.markRendered(
+      snap,
+      errors: uncaught > 0,
+      testsFailed: tests != null && tests.failed.isNotEmpty,
+    );
     s.progress?.call(Inspected(seen.png, uncaught));
     return ToolOk({
       'console_errors': [
@@ -187,7 +235,80 @@ class RenderTool implements Tool {
       'docs_copied': _docsCopied,
       'docs_truncated': _docsTruncated,
       if (refusedDocs.isNotEmpty) 'db_refused': refusedDocs,
+      'tests': ?tests?.toJson(),
     }, png: seen.png);
+  }
+
+  /// Runs [files] on a scratch draft artifact of [snap] (see the class
+  /// comment), deleted after.
+  Future<TestRun> _runTests(
+    RunState s,
+    DraftSnapshot snap,
+    List<String> files,
+  ) async {
+    TestRun noRun(String why) =>
+        TestRun(passed: 0, failed: [(name: 'tests', error: why)], skipped: 0);
+    String? id;
+    final deadline = Completer<String>();
+    void end(String why) {
+      if (!deadline.isCompleted) deadline.complete(why);
+    }
+
+    try {
+      if (_stopped) return noRun('The run was cancelled.');
+      final info = await api.createDraft(
+        of: s.ctx.artifactId,
+        title: _titleOf(snap, s),
+        capabilities: snap.capabilities,
+        files: snap.files,
+      );
+      id = _testDraft = info.id;
+      await _writeOps(id, snap.stagedDb, []);
+      if (_stopped) return noRun('The run was cancelled.');
+
+      final all = testLimit + _testSlack;
+      final limit = s.budget.remaining < all ? s.budget.remaining : all;
+      _cancel!.whenCancelled.then((_) => end('The run was cancelled.'));
+      s.budget.whenTimeUp.then(
+        (_) => end(
+          'The run is out of time '
+          '(${s.budget.caps.wallClock.inSeconds} seconds) before the tests '
+          'ended.',
+        ),
+      );
+      s.budget.clock
+          .delay(limit)
+          .then(
+            (_) => end(
+              'The tests did not end within ${all.inSeconds} seconds. Look '
+              'for a test or a page script that never ends.',
+            ),
+          );
+      final running = inspector
+          .runTests(
+            _pageUrl(id, null),
+            files: files,
+            perTest: perTestLimit,
+            total: testLimit,
+            cancelled: deadline.future,
+          )
+          .then<Object>((r) => r, onError: (Object e) => e);
+      final got = await Future.any<Object>([running, deadline.future]);
+      return switch (got) {
+        final TestRun r => r,
+        final String why => noRun(why),
+        final InspectorError e => noRun('The tests did not run: ${e.message}.'),
+        final e => noRun('The tests did not run: $e.'),
+      };
+    } on ClaxApiError catch (e) {
+      return noRun('The tests could not be served: ${e.message}.');
+    } finally {
+      end('done');
+      if (id != null) {
+        _testDraft = null;
+        await _forget(id);
+      }
+    }
   }
 
   /// Deletes the draft artifact, after any upload in progress; later calls
@@ -196,6 +317,10 @@ class RenderTool implements Tool {
   Future<void> cleanup() => _cleaned ??= _deleteDraft();
 
   Future<void> _deleteDraft() async {
+    if (_testDraft case final t?) {
+      _testDraft = null;
+      await _forget(t);
+    }
     await _uploading;
     final d = _state?.draft;
     final id = d?.draftArtifactId;
@@ -309,6 +434,17 @@ class RenderTool implements Tool {
     final fresh = staged.sublist(_applied);
     _applied = staged.length;
     final refused = <Map<String, Object?>>[];
+    await _writeOps(draftId, fresh, refused);
+    return refused;
+  }
+
+  /// Writes [ops] to [draftId]'s documents in rounds, as [_writeDocs]
+  /// says, adding each write that did not land to [refused].
+  Future<void> _writeOps(
+    String draftId,
+    List<DbOp> ops,
+    List<Map<String, Object?>> refused,
+  ) async {
     var round = <String, DbOp>{};
     Future<void> flush() async {
       if (round.isEmpty) return;
@@ -317,7 +453,7 @@ class RenderTool implements Tool {
       await _writeRound(draftId, ops, refused);
     }
 
-    for (final o in fresh) {
+    for (final o in ops) {
       final path = '${o.collection}/${o.docId}';
       if (round.containsKey(path) || round.length == _batchLimit) {
         await flush();
@@ -325,7 +461,6 @@ class RenderTool implements Tool {
       round[path] = o;
     }
     await flush();
-    return refused;
   }
 
   /// Writes [ops] (path to its write, distinct documents) in one batch,

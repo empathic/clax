@@ -484,7 +484,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         if (before != null && open > before) {
           _toast('Clax has a question', () => _call(const OpenQuestions()));
         }
-      case InspectionMsg():
+      case InspectionMsg() || TestsMsg():
         // An app view is never inspected.
         break;
     }

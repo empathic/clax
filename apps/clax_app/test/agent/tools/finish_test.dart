@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:clax_app/agent/inspector.dart' show TestRun;
 import 'package:clax_app/agent/ledger.dart';
 import 'package:clax_app/agent/request.dart';
 import 'package:clax_app/agent/tools/budget.dart';
@@ -208,6 +209,22 @@ class Rig {
     await ok('render', {'file': null});
   }
 
+  /// Renders with a test file whose run has a failing test.
+  Future<void> renderFailingTests() async {
+    await ok('write_file', {
+      'path': 'tests/app.test.js',
+      'content': 'test("adds", () => expect(1).toBe(2));',
+    });
+    inspector.answerTests(
+      const TestRun(
+        passed: 0,
+        failed: [(name: 'adds', error: 'Expected: 1 to be 2')],
+        skipped: 0,
+      ),
+    );
+    await ok('render', {'file': null});
+  }
+
   Future<ToolOutput> finish(String reply, {bool resolve = true}) =>
       call('finish', {'reply': reply, 'resolve': resolve});
 
@@ -273,6 +290,19 @@ void main() {
       expect(await r.finish('Done.'), refused(contains('uncaught errors')));
       expect(r.state.ended, isFalse);
       expect(r.api.callNames, isNot(contains('publish')));
+    });
+
+    test('refuses after a render with failing tests, and allows the next '
+        'render whose tests pass', () async {
+      final r = await Rig.make();
+      await r.edit('Save', 'Keep');
+      await r.renderFailingTests();
+      expect(await r.finish('Done.'), refused(contains('failing tests')));
+      expect(r.state.ended, isFalse);
+      expect(r.api.callNames, isNot(contains('publish')));
+      await r.renderNow();
+      expect(await r.finish('Done.'), isA<ToolOk>());
+      expect(r.state.outcome, isA<RunFinished>());
     });
 
     test('refuses a staged document write that was never rendered', () async {
@@ -1159,6 +1189,20 @@ void main() {
       expect(r.api.callNames, isNot(contains('resolveAsAgent')));
       expect((await r.ledger.of(r.aid!)).single.resolve, isFalse);
       expect(r.named('deleteDraft'), hasLength(1));
+    });
+
+    test('at the time cap publishes the last render whose tests passed, '
+        'never a later one with failing tests', () async {
+      final r = await Rig.make();
+      await r.edit('Save', 'Keep');
+      await r.renderNow();
+      await r.edit('Keep', 'Hold');
+      await r.renderFailingTests();
+      final o = await r.toolbox.stopAtCap('150 seconds');
+      expect(o, isA<RunFinished>().having((o) => o.version, 'version', 2));
+      expect(r.api.filesOf(r.aid!, 2), {
+        'index.html': page.replaceFirst('Save', 'Keep'),
+      });
     });
 
     test('publishes the documents staged at the clean render, not later '

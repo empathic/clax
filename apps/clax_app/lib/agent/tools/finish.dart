@@ -64,8 +64,9 @@ final class _Ended extends _Step {
 ///
 /// The gate: a draft that differs from the app (files, title,
 /// capabilities or a staged document write) is published only when its
-/// latest revision rendered without uncaught errors
-/// ([Draft.renderedClean]); a new app also needs a title and
+/// latest revision rendered without uncaught errors and without failing
+/// tests ([Draft.renderedClean]); a cap stop publishes the last such
+/// render ([Draft.cleanOnBase]); a new app also needs a title and
 /// `index.html`. A refused gate answers the model and the run goes on.
 ///
 /// For a change, in order:
@@ -127,7 +128,8 @@ class FinishTool implements Tool {
     'Ends the run. When the draft changed, it is published as the new '
         'version, your staged db_write ops are written, and reply is posted '
         'on the threads (for a new app: the version note). Render the '
-        'latest draft first, without uncaught errors. reply: one or two '
+        'latest draft first, without uncaught errors or failing tests. '
+        'reply: one or two '
         'sentences saying what changed, or answering the comments. '
         'resolve: true when the comments are fully dealt with.',
     objectSchema({
@@ -218,6 +220,12 @@ class FinishTool implements Tool {
         throw const ToolInputError(
           'The last render had uncaught errors; fix them and render again, '
           'or call give_up.',
+        );
+      }
+      if (d.lastRenderFailedTests) {
+        throw const ToolInputError(
+          'The last render had failing tests; fix the app (or a test that '
+          'is wrong) and render again, or call give_up.',
         );
       }
     }
