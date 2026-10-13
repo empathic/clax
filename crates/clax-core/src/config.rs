@@ -49,6 +49,10 @@ pub struct SampleConfig {
     pub models: SampleModels,
     /// Most calls per artifact per local day that reach the provider; none when absent.
     pub daily_call_cap: Option<u32>,
+    /// Most US dollars of model use per artifact per local day, priced from
+    /// each round's reported usage; default 0.50. A call that starts under
+    /// the cap runs to its end, so the day's spend can pass it by one call.
+    pub daily_cost_cap_usd: Option<f64>,
     /// `max_tokens` of each provider request.
     pub max_tokens: u32,
     /// The stub reports image support.
@@ -65,12 +69,16 @@ impl Default for SampleConfig {
             base_url: "https://api.anthropic.com".into(),
             models: SampleModels::default(),
             daily_call_cap: None,
+            daily_cost_cap_usd: Some(DAILY_COST_CAP_USD),
             max_tokens: 16000,
             stub_images: false,
             stub_delay_ms: 40,
         }
     }
 }
+
+/// The default of [`SampleConfig::daily_cost_cap_usd`].
+pub const DAILY_COST_CAP_USD: f64 = 0.50;
 
 /// `[sample.models]`: the model ID each `modelTier` maps to.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -320,6 +328,13 @@ impl HomeConfig {
         }
         if s.max_tokens == 0 {
             return Err(bad("max_tokens must be at least 1".into()));
+        }
+        if let Some(c) = s.daily_cost_cap_usd
+            && !(c.is_finite() && c >= 0.0)
+        {
+            return Err(bad(format!(
+                "daily_cost_cap_usd must be a number of dollars, 0 or more, not {c}"
+            )));
         }
         for (tier, id) in [
             ("quick", &s.models.quick),
@@ -711,6 +726,7 @@ mod tests {
             ),
             (16000, None, false, 40)
         );
+        assert_eq!(s.daily_cost_cap_usd, Some(0.5));
     }
 
     #[test]
@@ -724,6 +740,8 @@ mod tests {
         assert_eq!(s.daily_call_cap, Some(3));
         assert_eq!(s.models.quick, "q");
         assert_eq!(s.models.default, "claude-sonnet-5-5");
+        let c = with("[sample]\ndaily_cost_cap_usd = 2\n").sample().unwrap();
+        assert_eq!(c.daily_cost_cap_usd, Some(2.0));
     }
 
     #[test]
@@ -733,6 +751,7 @@ mod tests {
             "[sample]\nunknown = 1\n",
             "[sample]\nmax_tokens = 0\n",
             "[sample]\ndaily_call_cap = -1\n",
+            "[sample]\ndaily_cost_cap_usd = -0.5\n",
             "[sample.models]\nquick = \"\"\n",
             "[sample.models]\nhuge = \"x\"\n",
             "[sample]\nbase_url = \"http://api.anthropic.com\"\n",
