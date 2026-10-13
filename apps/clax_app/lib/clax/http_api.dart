@@ -109,6 +109,17 @@ class HttpClaxApi implements ClaxApi {
   }
 
   @override
+  Future<String?> readFile(String aid, int n, String path) async {
+    final r = await _send(
+      'GET',
+      '/api/artifacts/${_seg(aid)}/versions/$n/files/${_path(path)}',
+    );
+    if (r.status == 404) return null;
+    _check(r);
+    return utf8.decode(r.body, allowMalformed: true);
+  }
+
+  @override
   Future<PublishResult> createArtifact(PublishRequest r) async {
     _needSession();
     final j = await _json(

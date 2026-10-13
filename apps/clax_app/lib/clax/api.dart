@@ -26,6 +26,11 @@ abstract interface class ClaxApi {
   /// .svg .md .txt .csv .xml`); other files are left out.
   Future<Map<String, String>> readFiles(String aid, int n);
 
+  /// The text of file [path] of version [n], or null when the version has
+  /// no such file. An unknown artifact or version is null too: the daemon
+  /// answers each 404.
+  Future<String?> readFile(String aid, int n, String path);
+
   /// Creates an artifact as the app session; [r] needs a title and
   /// `index.html`. Without a registered session it throws [StateError]
   /// before any request; an ended one is `unknown_session`.
