@@ -2,9 +2,10 @@
 //! daemon (spec §8.5, §8.6): the built `clax` binary as the MCP shim (stdio),
 //! as `clax hook --agent claude stop|prompt|session-start` with harness
 //! JSON on stdin, as `clax feedback follow --once`, and as the plain CLI
-//! with each harness's shell variables; `/mcp` over HTTP; the Pi extension
-//! under Node; and the context of every plugin slash command, run through
-//! the real `ensure-clax.sh`. Each returns everything it printed.
+//! with each harness's shell variables; `/mcp` over HTTP; the real Pi in
+//! RPC mode with the Clax extension and a scripted model; and the context
+//! of every plugin slash command, run through the real `ensure-clax.sh`.
+//! Each returns everything it printed.
 //!
 //! The clients find the daemon through the `daemon.json` this writes into
 //! its home, naming this process and the daemon's version, so none of them
@@ -409,33 +410,220 @@ impl<'a> RealClients<'a> {
         out
     }
 
-    /// The Pi extension under Node, loaded by Pi's own TypeScript loader
-    /// (jiti): its tools, `/clax` command and feedback messages for a Pi
-    /// session.
+    /// The real Pi (`pi --mode rpc`, from `plugins/pi/node_modules`) with
+    /// the Clax extension loaded, its model a scripted one
+    /// (`plugins/pi/test/fixtures/scripted-model.ts`) that calls the
+    /// reading tools on Mia's artifact in turn; then the `/clax` command's
+    /// `list`, `status` and `open`. What it printed is what Pi hands its
+    /// model or person: each tool's result (after the extension's
+    /// `tool_result` handler adds feedback), every message the extension
+    /// sends (the injection loop's follow-ups), every notification, and
+    /// any extension error. Panics when Pi does not run, or a tool gives no
+    /// result.
     pub async fn pi(&self) -> Out {
-        let driver = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pi-agent.mjs");
-        let ext = repo().join("plugins/pi/src/clax.ts");
-        let node = which("node").expect("node on PATH");
-        let mut c = self.command(
-            &node,
-            &[
-                "--no-deprecation",
-                "--import",
-                "jiti/register",
-                driver.to_str().unwrap(),
-                ext.canonicalize().unwrap().to_str().unwrap(),
-                self.w.ts.home.root().to_str().unwrap(),
-                "pi-canary",
-                &self.w.read.artifact,
-            ],
-            &[("CLAX_BIN", clax_bin().to_str().unwrap())],
-        );
-        c.current_dir(repo().join("plugins/pi"));
-        let (text, _) = self.run(c, "").await;
+        let calls: Vec<Value> = tool_calls(&self.w.read.artifact)
+            .into_iter()
+            .map(|(name, args)| json!([format!("clax_{name}"), args]))
+            .collect();
+        let commands = [
+            "/clax list".to_string(),
+            "/clax status".to_string(),
+            format!("/clax open {}", self.w.read.artifact),
+        ];
+        let text = self.run_pi(&calls, &commands, &[]).await;
+        for c in &calls {
+            let name = c[0].as_str().unwrap();
+            assert!(
+                text.contains(&format!("{name}: ")),
+                "Pi gave no result for {name}:\n{text}"
+            );
+        }
         Out {
             channel: "the Pi extension".into(),
             text,
         }
+    }
+
+    /// [`RealClients::pi`] on Sam's machine, connected to the test daemon
+    /// (`remote.json` and `remote.key` in a home of its own, spec §16): the
+    /// extension acts as Sam's agent, signed, proving its session.
+    pub async fn pi_remote(&self) -> Out {
+        use clax_core::remote::{RemoteConfig, save_key};
+        let home = self.scratch.path().join("sam-home");
+        std::fs::create_dir_all(&home).unwrap();
+        let h = clax_core::Home::at(home.clone());
+        let held = self.w.sam.held();
+        RemoteConfig {
+            url: format!("http://127.0.0.1:{}", self.w.ts.addr.port()),
+            grant_id: held.grant_id.clone().unwrap(),
+            access_token: clax_core::Secret::new(held.access.clone().unwrap()),
+            manage_token: clax_core::Secret::new(held.manage.clone().unwrap()),
+            continue_token: clax_core::Secret::new(held.continue_token.clone().unwrap()),
+            person_name: Some("Sam".into()),
+            person_id: None,
+            owner_name: Some("Alex".into()),
+            own_machine: false,
+            client_name: "sam-mbp".into(),
+            connected_at: "2026-10-13T00:00:00Z".into(),
+        }
+        .save(&h)
+        .unwrap();
+        save_key(&h, &self.w.sam.key).unwrap();
+        let calls: Vec<Value> = tool_calls(&self.w.read.artifact)
+            .into_iter()
+            .map(|(name, args)| json!([format!("clax_{name}"), args]))
+            .collect();
+        let commands = ["/clax list".to_string(), "/clax status".to_string()];
+        let text = self
+            .run_pi(&calls, &commands, &[("CLAX_HOME", home.to_str().unwrap())])
+            .await;
+        for c in &calls {
+            let name = c[0].as_str().unwrap();
+            assert!(
+                text.contains(&format!("{name}: ")),
+                "Pi gave no result for {name}:\n{text}"
+            );
+        }
+        Out {
+            channel: "the Pi extension on Sam's machine".into(),
+            text,
+        }
+    }
+
+    /// Runs the real Pi in RPC mode in this scratch environment, plus
+    /// `env`: one prompt its scripted model answers by calling `calls`
+    /// (`[tool name, arguments]`) in turn, then each of `commands` as a
+    /// prompt; what Pi handed out, one line each (see [`RealClients::pi`]).
+    pub async fn run_pi(
+        &self,
+        calls: &[Value],
+        commands: &[String],
+        env: &[(&str, &str)],
+    ) -> String {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let plugin = repo().join("plugins/pi").canonicalize().unwrap();
+        let cli = plugin.join("node_modules/@mariozechner/pi-coding-agent/dist/cli.js");
+        assert!(
+            cli.exists(),
+            "{} is missing: run `npm ci` in plugins/pi",
+            cli.display()
+        );
+        let node = which("node").expect("node on PATH");
+        let script = serde_json::to_string(calls).unwrap();
+        let bin = clax_bin();
+        let mut all_env: Vec<(&str, &str)> = vec![
+            ("CLAX_BIN", bin.to_str().unwrap()),
+            ("CLAX_SCRIPT", &script),
+        ];
+        all_env.extend_from_slice(env);
+        let ext = plugin.join("src/clax.ts");
+        let model = plugin.join("test/fixtures/scripted-model.ts");
+        let mut cmd = self.command(
+            &node,
+            &[
+                "--no-deprecation",
+                cli.to_str().unwrap(),
+                "--mode",
+                "rpc",
+                "--no-session",
+                "--no-extensions",
+                "--no-skills",
+                "--no-prompt-templates",
+                "--no-context-files",
+                "--offline",
+                "-e",
+                ext.to_str().unwrap(),
+                "-e",
+                model.to_str().unwrap(),
+                "--provider",
+                "scripted",
+                "--model",
+                "script",
+            ],
+            &all_env,
+        );
+        let mut child = cmd.spawn().expect("spawn pi");
+        let mut stdin = child.stdin.take().unwrap();
+        let mut stdout = BufReader::new(child.stdout.take().unwrap()).lines();
+        let stderr = child.stderr.take().unwrap();
+        let errors = tokio::spawn(async move {
+            let mut s = String::new();
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(l)) = lines.next_line().await {
+                s.push_str(&l);
+                s.push('\n');
+            }
+            s
+        });
+        let mut out = Vec::new();
+        let mut prompts = vec!["go".to_string()];
+        prompts.extend(commands.iter().cloned());
+        let mut keep = |v: &Value, prompts: &[String]| match v["type"].as_str() {
+            Some("tool_execution_end") => out.push(format!(
+                "{}: {}",
+                v["toolName"].as_str().unwrap_or_default(),
+                v["result"]["content"]
+            )),
+            Some("message_end") if v["message"]["role"] == "user" => {
+                let content = &v["message"]["content"];
+                if !prompts
+                    .iter()
+                    .any(|p| *content == json!([{"type": "text", "text": p}]))
+                {
+                    out.push(format!("sent: {content}"));
+                }
+            }
+            Some("extension_ui_request") if v["method"] == "notify" => out.push(format!(
+                "notify({}): {}",
+                v["notifyType"].as_str().unwrap_or_default(),
+                v["message"].as_str().unwrap_or_default()
+            )),
+            Some("extension_error") => out.push(format!("extension error: {v}")),
+            _ => {}
+        };
+        let talk = async {
+            for (i, p) in prompts.iter().enumerate() {
+                let id = format!("p{i}");
+                let line = json!({"id": id, "type": "prompt", "message": p}).to_string();
+                stdin
+                    .write_all(format!("{line}\n").as_bytes())
+                    .await
+                    .unwrap();
+                // The first prompt runs the agent to its end; a command
+                // answers once it ran.
+                let mut answered = false;
+                while let Ok(Some(l)) = stdout.next_line().await {
+                    let Ok(v) = serde_json::from_str::<Value>(&l) else {
+                        continue;
+                    };
+                    keep(&v, &prompts);
+                    if v["type"] == "response" && v["id"] == json!(id) {
+                        assert_eq!(v["success"], true, "pi refused {p}: {v}");
+                        answered = true;
+                        if i > 0 {
+                            break;
+                        }
+                    }
+                    if i == 0 && answered && v["type"] == "agent_end" {
+                        break;
+                    }
+                }
+            }
+        };
+        tokio::time::timeout(LIMIT, talk)
+            .await
+            .unwrap_or_else(|_| panic!("pi did not finish within {LIMIT:?}: {out:?}"));
+        drop(stdin);
+        let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
+            .await
+            .expect("pi exits once its input ends")
+            .unwrap();
+        let errors = errors.await.unwrap();
+        assert!(status.success(), "pi exited with {status}: {errors}");
+        let mut text = out.join("\n");
+        text.push('\n');
+        text.push_str(&errors);
+        text
     }
 }
 

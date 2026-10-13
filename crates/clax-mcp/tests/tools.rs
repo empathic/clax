@@ -373,7 +373,7 @@ async fn asset_upload_returns_blob_urls() {
 async fn status_reports_the_daemon() {
     let ts = TestServer::spawn().await;
     let t = tools_for(&ts);
-    let s = ok(t.status(Parameters(StatusArgs {})).await);
+    let s = ok(t.status(Parameters(StatusArgs::default())).await);
     assert_eq!(
         s["daemon_url"],
         format!("http://localhost:{}", ts.addr.port())
@@ -399,7 +399,7 @@ async fn unreachable_daemon_is_an_error_result_naming_the_log() {
         log.clone(),
     );
     for r in [
-        t.status(Parameters(StatusArgs {})).await,
+        t.status(Parameters(StatusArgs::default())).await,
         t.list(Parameters(ListArgs::default())).await,
         t.publish(Parameters(html("x", "<p>"))).await,
     ] {
@@ -619,7 +619,7 @@ async fn a_non_json_success_body_is_bad_response() {
         None,
         dir.path().join("daemon.log"),
     );
-    let e = err(t.status(Parameters(StatusArgs {})).await);
+    let e = err(t.status(Parameters(StatusArgs::default())).await);
     assert_eq!(e["error"]["code"], "bad_response", "{e}");
 }
 
@@ -822,7 +822,9 @@ async fn a_working_directory_filled_in_later_is_used_after_the_next_heartbeat() 
 #[tokio::test]
 async fn status_reports_the_plugin_version_and_skew_when_known() {
     let ts = TestServer::spawn().await;
-    let s = ok(tools_for(&ts).status(Parameters(StatusArgs {})).await);
+    let s = ok(tools_for(&ts)
+        .status(Parameters(StatusArgs::default()))
+        .await);
     assert!(
         s.get("plugin_version").is_none() && s.get("skew").is_none(),
         "{s}"
@@ -831,11 +833,11 @@ async fn status_reports_the_plugin_version_and_skew_when_known() {
     assert!(!s["binary"]["path"].as_str().unwrap().is_empty(), "{s}");
     assert!(s.get("upgrade_held").is_none(), "{s}");
     let old = tools_for(&ts).with_plugin_version(Some("0.1.0".into()));
-    let s = ok(old.status(Parameters(StatusArgs {})).await);
+    let s = ok(old.status(Parameters(StatusArgs::default())).await);
     assert_eq!(s["plugin_version"], "0.1.0");
     assert_eq!(s["skew"], true);
     let same = tools_for(&ts).with_plugin_version(Some(env!("CARGO_PKG_VERSION").into()));
-    let s = ok(same.status(Parameters(StatusArgs {})).await);
+    let s = ok(same.status(Parameters(StatusArgs::default())).await);
     assert_eq!(s["plugin_version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(s["skew"], false);
 }
@@ -851,7 +853,7 @@ async fn status_reports_a_failed_upgrade_that_holds_the_daemon_back() {
     });
     let s = ok(tools_for(&ts)
         .with_upgrade_hold(probe)
-        .status(Parameters(StatusArgs {}))
+        .status(Parameters(StatusArgs::default()))
         .await);
     assert_eq!(s["upgrade_held"]["reason"], "it crashed", "{s}");
     assert_eq!(
@@ -861,7 +863,7 @@ async fn status_reports_a_failed_upgrade_that_holds_the_daemon_back() {
     let none: clax_mcp::tools::UpgradeHoldProbe = std::sync::Arc::new(|_: &str| None);
     let s = ok(tools_for(&ts)
         .with_upgrade_hold(none)
-        .status(Parameters(StatusArgs {}))
+        .status(Parameters(StatusArgs::default()))
         .await);
     assert!(s.get("upgrade_held").is_none(), "{s}");
 }

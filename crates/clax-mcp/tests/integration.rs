@@ -10,6 +10,7 @@ mod db;
 mod live;
 mod open;
 mod open_status;
+mod people;
 mod remote;
 mod shim;
 mod tools;

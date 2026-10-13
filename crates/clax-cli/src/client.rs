@@ -972,6 +972,22 @@ impl Client {
         self.finish(path, self.exec(req)?)
     }
 
+    /// A `GET` of `path` with the token and channel and the `headers`
+    /// named: its body's bytes, or an error naming the refusal's code
+    /// (and, for a status other than 403, its message).
+    pub fn get_bytes_with(&self, path: &str, headers: &[(&str, &str)]) -> anyhow::Result<Vec<u8>> {
+        let mut req = self.request(reqwest::Method::GET, path);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let res = self.exec(req)?;
+        if res.status().is_success() {
+            return Ok(res.bytes()?.to_vec());
+        }
+        self.finish(path, res)
+            .and_then(|_| Err(anyhow!("HTTP error reading {path}")))
+    }
+
     /// This client with every request bounded by `timeout`.
     pub fn with_timeout(mut self, timeout: Duration) -> Client {
         self.http = reqwest::blocking::Client::builder()
@@ -1393,17 +1409,6 @@ impl Client {
     /// GET with the bearer token (the session routes need it; the others ignore it).
     pub fn get(&self, path: &str) -> anyhow::Result<serde_json::Value> {
         self.finish(path, self.exec(self.request(reqwest::Method::GET, path))?)
-    }
-    /// [`Client::get`] with this request alone bounded by `timeout`.
-    pub fn get_with_timeout(
-        &self,
-        path: &str,
-        timeout: Duration,
-    ) -> anyhow::Result<serde_json::Value> {
-        self.finish(
-            path,
-            self.exec(self.request(reqwest::Method::GET, path).timeout(timeout))?,
-        )
     }
     /// GET `path` with `query` and the bearer token, for a response read as
     /// it streams: no deadline on the whole transfer (the daemon gives up

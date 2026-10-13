@@ -9,12 +9,14 @@ import { createHash, randomBytes } from "node:crypto";
 import { encodeHeader, MAX_HEADER_BYTES, type GitField } from "./git.ts";
 
 /** The tools whose calls capture git state: every tool that changes
- * history. The read-only tools, and `open`, which only shows a page,
- * capture none. */
+ * history (`status` when it names the agent). The read-only tools, and
+ * `open`, which only shows a page, capture none. */
 export const GIT_TOOLS: ReadonlySet<string> = new Set([
   "publish",
   "comments_reply",
   "comments_resolve",
+  "comments_handoff",
+  "status",
   "watch",
   "asset_upload",
   "db_set",

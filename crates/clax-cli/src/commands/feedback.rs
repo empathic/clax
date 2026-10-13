@@ -7,6 +7,7 @@
 
 use crate::client::Client;
 use clax_core::Home;
+use clax_core::remote::{SESSION_SECRET_HEADER, SessionCredential, SessionKey};
 use serde_json::Value;
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -93,9 +94,54 @@ fn target(a: &FollowArgs, env: impl Fn(&str) -> Option<String>) -> Option<Target
         .map(|id| Target::Harness("grok", id))
 }
 
-/// The live Clax session of `(harness, id)`, if any.
-fn live_session(c: &Client, harness: &str, id: &str) -> anyhow::Result<Option<String>> {
-    let v = c.get("/api/sessions?live=true")?;
+/// The headers that name session credential `c` (spec 2026-10-08 §6.8):
+/// none without one.
+fn proof(c: Option<&SessionCredential>) -> Vec<(&str, &str)> {
+    c.map(|c| {
+        vec![
+            ("x-clax-session", c.session.as_str()),
+            (SESSION_SECRET_HEADER, c.secret.expose()),
+        ]
+    })
+    .unwrap_or_default()
+}
+
+/// What a follower of a remote daemon proves its session with: the
+/// credential in the session's file (spec 2026-10-08 §6.8). `Ok(None)` on
+/// the local daemon. A follower of a harness session whose file is not
+/// there yet waits for it as for the session; one of a Clax session must
+/// have it.
+fn credential(client: &Client, target: &Target) -> anyhow::Result<Option<SessionCredential>> {
+    let Some(remote) = client.remote() else {
+        return Ok(None);
+    };
+    let files = &remote.sessions;
+    match target {
+        Target::Harness(h, id) => Ok(files.read(&SessionKey::Harness { harness: h, id })?),
+        Target::Session(sid) => files.by_session(sid)?.map(Some).ok_or_else(|| {
+            anyhow::anyhow!(
+                "session_credential_missing: no credential for session {sid} in {}: it has not registered from this machine, or has ended",
+                files.dir().display()
+            )
+        }),
+    }
+}
+
+/// The live Clax session of `(harness, id)`, if any, asked as `cred`'s
+/// session on a remote daemon.
+fn live_session(
+    c: &Client,
+    harness: &str,
+    id: &str,
+    cred: Option<&SessionCredential>,
+) -> anyhow::Result<Option<String>> {
+    let v = c.request_with(
+        reqwest::Method::GET,
+        "/api/sessions?live=true",
+        None,
+        None,
+        &proof(cred),
+    )?;
     Ok(v["sessions"]
         .as_array()
         .into_iter()
@@ -105,10 +151,13 @@ fn live_session(c: &Client, harness: &str, id: &str) -> anyhow::Result<Option<St
         .map(str::to_string))
 }
 
-/// Whether a daemon error says the session is gone.
+/// Whether a daemon error says the session is gone: on a remote daemon,
+/// a proof refused because its session ended too.
 fn session_gone(e: &anyhow::Error) -> bool {
     let m = e.to_string();
-    m.starts_with("unknown_session:") || m.starts_with("not_found:")
+    m.starts_with("unknown_session:")
+        || m.starts_with("not_found:")
+        || m.starts_with("invalid_session_proof:")
 }
 
 /// The shortest time between the starts of two notices polls when the
@@ -140,30 +189,51 @@ pub fn run(_cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
             back_off(&mut backoff);
             continue;
         };
+        let cred = match credential(&client, &target) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("clax feedback follow: {e:#}");
+                std::process::exit(1);
+            }
+        };
+        let remote_without_file = client.remote().is_some() && cred.is_none();
         let sid = match &target {
             Target::Session(s) => s.clone(),
-            Target::Harness(h, id) => match live_session(&client, h, id) {
-                Ok(Some(s)) => {
-                    missing_since = None;
-                    s
-                }
-                Ok(None) => {
+            Target::Harness(h, id) => {
+                let found = match live_session(&client, h, id, cred.as_ref()) {
+                    // On a remote daemon the session is not this machine's
+                    // until its credential file is written.
+                    _ if remote_without_file => None,
+                    Ok(found) => found,
+                    // A credential whose session ended proves nothing: the
+                    // session is gone until one registers again.
+                    Err(e) if session_gone(&e) => None,
+                    Err(_) => {
+                        back_off(&mut backoff);
+                        continue;
+                    }
+                };
+                let Some(s) = found else {
                     let since = *missing_since.get_or_insert_with(Instant::now);
                     if since.elapsed() >= grace {
                         return Ok(());
                     }
                     std::thread::sleep(Duration::from_secs(1).min(grace));
                     continue;
-                }
-                Err(_) => {
-                    back_off(&mut backoff);
-                    continue;
-                }
-            },
+                };
+                missing_since = None;
+                s
+            }
         };
         let path = format!("/api/sessions/{sid}/notices?wait={}", poll.as_secs());
         let polled = Instant::now();
-        match client.get_with_timeout(&path, poll + Duration::from_secs(10)) {
+        match client.request_with(
+            reqwest::Method::GET,
+            &path,
+            None,
+            Some(poll + Duration::from_secs(10)),
+            &proof(cred.as_ref()),
+        ) {
             Ok(v) => {
                 backoff = Duration::from_secs(1);
                 // An empty answer that did not wait (the session is inside

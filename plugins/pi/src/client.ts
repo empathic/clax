@@ -5,6 +5,7 @@
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { currentCall, type ToolCallReport } from "./calls.ts";
 import { encodeHeader, type GitField } from "./git.ts";
+import { BACKOFF_S, credentialFileName, learnOffset, SESSION_SECRET_HEADER, SessionFiles, signedHeaders, type Remote, type SessionCredential } from "./remote.ts";
 
 /** Deadline for ordinary requests. */
 export const REQUEST_TIMEOUT_MS = 30_000;
@@ -61,6 +62,10 @@ export interface Registration {
   /** Pi's session file, the session's transcript; left out when Pi has
    * none (an older daemon ignores it). */
   transcript_path?: string;
+  /** The repository and branch of `cwd` (spec §11), which name the
+   * session; left out outside a repository. */
+  repo?: string;
+  branch?: string;
 }
 
 /** A harness session as the daemon reports it. */
@@ -74,6 +79,8 @@ export interface Session {
   started_at: string;
   last_seen_at: string;
   ended_at: string | null;
+  /** The agent's name (spec §11). */
+  name?: string | null;
 }
 
 export interface RawResponse {
@@ -118,7 +125,12 @@ function send(url: string, opts: RequestOptions): Promise<RawResponse> {
       else if (!connected) reject(new Failure(new ClientError("unreachable", `${url}: ${msg}`), true));
       else reject(new Failure(new ClientError("unreachable", `${url}: ${msg}`), false));
     };
-    const req = httpRequest(url, { method: opts.method, headers: opts.headers, signal }, res => {
+    // The path goes out as given, never normalized: a signed request
+    // signs it as sent.
+    const u = new URL(url);
+    const path = url.slice(u.origin.length) || "/";
+    const target = { protocol: u.protocol, hostname: u.hostname.replace(/^\[|\]$/g, ""), port: u.port, path };
+    const req = httpRequest({ ...target, method: opts.method, headers: opts.headers, signal }, res => {
       const chunks: Buffer[] = [];
       res.on("data", (c: Buffer) => chunks.push(c));
       res.on("error", fail);
@@ -146,21 +158,60 @@ function send(url: string, opts: RequestOptions): Promise<RawResponse> {
   });
 }
 
-/** Sends a request; a non-success status becomes an `api` failure carrying the
- * body's `error` object, refreshable when the token was refused (401) or the
- * session named by `X-Clax-Session` is no longer live (400
- * `unknown_session`). */
-async function attempt(url: string, opts: RequestOptions): Promise<RawResponse> {
-  const res = await send(url, opts);
-  if (res.status >= 200 && res.status < 300) return res;
-  let error: Record<string, unknown> | undefined;
+/** The `error` object of a refusal `res`. */
+function errorOf(res: RawResponse): Record<string, unknown> {
   try {
     const body = JSON.parse(res.body.toString("utf8"));
-    if (body && typeof body.error === "object" && body.error !== null && !Array.isArray(body.error)) error = body.error;
+    if (body && typeof body.error === "object" && body.error !== null && !Array.isArray(body.error)) return body.error;
   } catch { /* not JSON */ }
-  error ??= { code: "http_error", message: `daemon answered HTTP ${res.status}` };
-  const unknownSession = res.status === 400 && error.code === "unknown_session";
-  throw new Failure(new ClientError("api", `HTTP ${res.status}: ${JSON.stringify(error)}`, res.status, error), res.status === 401 || unknownSession);
+  return { code: "http_error", message: `daemon answered HTTP ${res.status}` };
+}
+
+/** Sends a request to the remote daemon `r` (spec §6.6): signed now, and
+ * signed anew for each retry: one on `stale_request`, after learning the
+ * daemon's clock from its `Date`; three on `limit_reached` (429) and
+ * `busy` (503), after 1, 2 and 4 s with up to a quarter more. */
+async function sendRemote(r: Remote, path: string, opts: RequestOptions): Promise<RawResponse> {
+  const body = opts.body === undefined ? Buffer.alloc(0) : Buffer.isBuffer(opts.body) ? opts.body : Buffer.from(opts.body, "utf8");
+  let staleRetried = false;
+  let backoffs = 0;
+  for (;;) {
+    const headers = signedHeaders(r, opts.method, path, body, opts.headers ?? {});
+    const res = await send(`${r.config.url}${path}`, { ...opts, headers, body });
+    if (res.status !== 401 && res.status !== 429 && res.status !== 503) return res;
+    const code = errorOf(res).code;
+    if (res.status === 401 && code === "stale_request" && !staleRetried) {
+      staleRetried = true;
+      if (learnOffset(r, res.headers.date)) continue;
+      return res;
+    }
+    if (((res.status === 429 && code === "limit_reached") || (res.status === 503 && code === "busy")) && backoffs < BACKOFF_S.length) {
+      const ms = BACKOFF_S[backoffs++]! * 1000;
+      await new Promise(done => setTimeout(done, ms + Math.random() * ms / 4));
+      continue;
+    }
+    return res;
+  }
+}
+
+/** Whether a refusal says the session a request named is not the
+ * client's to name any more, so registering again may cure it: the
+ * session ended under it (400 `unknown_session`), or a remote daemon
+ * refused its proof (401 `invalid_session_proof`, spec 2026-10-08 §6.8). */
+function sessionRefused(status: number, error: Record<string, unknown>): boolean {
+  return (status === 400 && error.code === "unknown_session") || (status === 401 && error.code === "invalid_session_proof");
+}
+
+/** Sends a request to `base` (or, for a remote daemon, signed to it); a
+ * non-success status becomes an `api` failure carrying the body's `error`
+ * object, refreshable when the local daemon refused its token (401), or
+ * the session it named is not its to name ([`sessionRefused`]). */
+async function attempt(base: string, path: string, opts: RequestOptions, remote?: Remote): Promise<RawResponse> {
+  const res = remote ? await sendRemote(remote, path, opts) : await send(`${base}${path}`, opts);
+  if (res.status >= 200 && res.status < 300) return res;
+  const error = errorOf(res);
+  const refreshable = (res.status === 401 && !remote) || sessionRefused(res.status, error);
+  throw new Failure(new ClientError("api", `HTTP ${res.status}: ${JSON.stringify(error)}`, res.status, error), refreshable);
 }
 
 function bodyJson(res: RawResponse): any {
@@ -227,10 +278,20 @@ interface Stale {
  * which the request is retried once. Tool requests may start a daemon; ending
  * the session only finds one. Every request carries `X-Clax-Session` once a
  * session is registered.
+ *
+ * With `remote` (spec 2026-10-08 §16), the client talks to the daemon of
+ * another person's machine this home is connected to: every request is
+ * signed with the machine's key, and a request naming the session carries
+ * the secret its registration answered (§6.8), which the client keeps in
+ * memory and in the session's credential file. A refused proof
+ * (`invalid_session_proof`) is treated as `unknown_session`: the client
+ * registers again.
  */
 export class DaemonClient {
   private endpoint: Endpoint | undefined;
   private sessionId: string | undefined;
+  /** A remote daemon's session's secret. */
+  private sessionSecret: string | undefined;
   private registeredSession: Session | undefined;
   /** True when the session is registered with the daemon at `endpoint`. */
   private registered = false;
@@ -244,8 +305,48 @@ export class DaemonClient {
     private readonly discoverFn: Find,
     private readonly registration: Registration,
     private readonly captureGit?: () => Promise<GitField>,
+    private readonly remote?: Remote,
   ) {}
 
+  /** Whether this client talks to a remote daemon. */
+  isRemote(): boolean {
+    return this.remote !== undefined;
+  }
+
+  /** The remote daemon this client talks to, if any. */
+  remoteOf(): Remote | undefined {
+    return this.remote;
+  }
+
+  /** The name of this session's credential file (its harness session ID's),
+   * for a remote daemon only. */
+  private credentialFile(): string | undefined {
+    const id = this.registration.harness_session_id;
+    return this.remote && id ? credentialFileName(this.registration.harness, id) : undefined;
+  }
+
+  private files(): SessionFiles | undefined {
+    return this.remote ? SessionFiles.of(this.remote.home) : undefined;
+  }
+
+  /** The credentials a remote registration presents, in order (spec
+   * 2026-10-08 §6.8): the session and secret held, then the one in the
+   * session's credential file when it differs, then none. The local
+   * daemon's: none. */
+  private registrationCredentials(): (SessionCredential | undefined)[] {
+    if (!this.remote) return [undefined];
+    const out: (SessionCredential | undefined)[] = [];
+    const held = this.sessionId && this.sessionSecret ? { session: this.sessionId, secret: this.sessionSecret } : undefined;
+    if (held) out.push(held);
+    const name = this.credentialFile();
+    let filed: SessionCredential | undefined;
+    try {
+      filed = name ? this.files()!.read(name) : undefined;
+    } catch { /* unreadable: registration makes a new one */ }
+    if (filed && !(held && held.session === filed.session && held.secret === filed.secret)) out.push(filed);
+    out.push(undefined);
+    return out;
+  }
   /** The browser base URL of the current daemon, once known. */
   browserBase(): string | undefined {
     return this.endpoint?.browserBase;
@@ -291,24 +392,52 @@ export class DaemonClient {
       }
       this.endpoint = endpoint;
       this.registered = false;
-      const headers: Record<string, string> = { authorization: `Bearer ${endpoint.token}`, "content-type": "application/json", "x-clax-channel": "agent", "x-clax-via": VIA };
+      const headers: Record<string, string> = { "content-type": "application/json", "x-clax-channel": "agent", "x-clax-via": VIA };
+      if (!this.remote) headers.authorization = `Bearer ${endpoint.token}`;
       if (call?.encoded) headers["x-clax-call"] = call.encoded;
       if (git) headers["x-clax-git"] = encodeHeader(await git);
-      let res: RawResponse;
-      try {
-        res = await attempt(`${endpoint.base}/api/sessions`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify(this.registration),
-          timeoutMs: remaining(deadline, REQUEST_TIMEOUT_MS),
-        });
-      } catch (e) {
-        throw e instanceof Failure ? e.error : e;
+      // A remote daemon's live session is refreshed only with its secret:
+      // the one held, else the one in its file, else none, which makes a new
+      // session.
+      const candidates = this.registrationCredentials();
+      for (const [i, cred] of candidates.entries()) {
+        const h = { ...headers };
+        if (cred) {
+          h["x-clax-session"] = cred.session;
+          h[SESSION_SECRET_HEADER] = cred.secret;
+        }
+        let res: RawResponse;
+        try {
+          res = await attempt(endpoint.base, "/api/sessions", {
+            method: "POST",
+            headers: h,
+            body: JSON.stringify(this.registration),
+            timeoutMs: remaining(deadline, REQUEST_TIMEOUT_MS),
+          }, this.remote);
+        } catch (e) {
+          // A credential the daemon refuses, or whose session it has no row
+          // for (another or a reset daemon): the next one.
+          if (e instanceof Failure && i < candidates.length - 1 && sessionRefused(e.error.status, e.error.error)) continue;
+          throw e instanceof Failure ? e.error : e;
+        }
+        const answer = bodyJson(res);
+        const session = sessionOf(answer);
+        const issued = typeof answer.session_secret === "string" ? answer.session_secret : undefined;
+        const secret = issued ?? (cred?.session === session.id ? cred.secret : undefined);
+        const name = this.credentialFile();
+        if (this.remote && secret && name) {
+          // A registration whose file cannot be written still acts; the
+          // agent's `clax` children then find no credential.
+          try {
+            this.files()!.write(name, session.harness_session_id, { session: session.id, secret });
+          } catch { /* see above */ }
+        }
+        this.sessionId = session.id;
+        this.sessionSecret = this.remote ? secret : undefined;
+        this.registeredSession = session;
+        this.registered = true;
+        return;
       }
-      const session = sessionOf(bodyJson(res));
-      this.sessionId = session.id;
-      this.registeredSession = session;
-      this.registered = true;
     })();
     this.refreshing = run;
     try {
@@ -320,8 +449,13 @@ export class DaemonClient {
 
   private headers(endpoint: Endpoint, extra: Record<string, string> = {}): Record<string, string> {
     // An agent channel (spec §16): every request says so.
-    const h: Record<string, string> = { authorization: `Bearer ${endpoint.token}`, "x-clax-channel": "agent", "x-clax-via": VIA, ...extra };
-    if (this.sessionId) h["x-clax-session"] = this.sessionId;
+    const h: Record<string, string> = { "x-clax-channel": "agent", "x-clax-via": VIA, ...extra };
+    // A remote daemon's requests carry the grant, added as they are signed.
+    if (!this.remote) h.authorization = `Bearer ${endpoint.token}`;
+    if (this.sessionId) {
+      h["x-clax-session"] = this.sessionId;
+      if (this.remote && this.sessionSecret) h[SESSION_SECRET_HEADER] = this.sessionSecret;
+    }
     return h;
   }
 
@@ -348,11 +482,11 @@ export class DaemonClient {
     const stale = this.stale();
     const call = await this.callHeaders(opts.method);
     const go = (ep: Endpoint) =>
-      attempt(`${ep.base}${typeof path === "function" ? path() : path}`, {
+      attempt(ep.base, typeof path === "function" ? path() : path, {
         ...opts,
         headers: this.headers(ep, { ...call, ...opts.headers }),
         timeoutMs: remaining(deadline, opts.timeoutMs ?? REQUEST_TIMEOUT_MS),
-      });
+      }, this.remote);
     try {
       return await go(endpoint);
     } catch (e) {
@@ -564,9 +698,41 @@ export class DaemonClient {
     return this.json(() => `${this.sessionPath()}/watches`, { method: "GET" });
   }
 
-  /** `GET /api/sessions/<sid>`: `{session, push}`. */
+  /** `GET /api/sessions/<sid>`: `{session, push, person, rights}`. */
   sessionInfo(): Promise<any> {
     return this.json(this.sessionPath, { method: "GET" });
+  }
+
+  /** `PATCH /api/sessions/<sid>` `{name}`: the agent names itself (spec
+   * §11); `{session}`. */
+  setName(name: string): Promise<any> {
+    return this.json(this.sessionPath, this.jsonBody("PATCH", { name }));
+  }
+
+  /** `POST /api/sessions/<sid>/approvals` `{artifact_id?, thread_id?,
+   * author?}` (spec §9.2): `{approval_id, status, scope, request, requests}`. */
+  approvalAsk(body: { artifact_id?: string; thread_id?: string; author?: string }): Promise<any> {
+    return this.json(() => `${this.sessionPath()}/approvals`, this.jsonBody("POST", body));
+  }
+
+  /** `GET /api/sessions/<sid>/approvals/<rid>?wait=<waitS>`: `{approval_id,
+   * status, scope, request, waited_s}`. The deadline is `waitS` plus 10 s.
+   * `rid` must be a ULID. */
+  approvalWait(rid: string, waitS: number): Promise<any> {
+    const q = new URLSearchParams({ wait: String(waitS) });
+    return this.json(() => `${this.sessionPath()}/approvals/${rid}?${q}`, { method: "GET", timeoutMs: (waitS + 10) * 1000 });
+  }
+
+  /** `POST /api/sessions/<sid>/threads/<tid>/handoff` `{to?}` (spec §12):
+   * `{thread}`. `tid` must be a ULID. */
+  handoff(tid: string, to?: string): Promise<any> {
+    return this.json(() => `${this.sessionPath()}/threads/${tid}/handoff`, this.jsonBody("POST", to === undefined ? {} : { to }));
+  }
+
+  /** Thread `tid`'s clip on artifact `aid`
+   * (`GET /api/artifacts/<aid>/threads/<tid>/clip`), as bytes. */
+  async clipBytes(aid: string, tid: string): Promise<Buffer> {
+    return (await this.request(`/api/artifacts/${aid}/threads/${tid}/clip`, { method: "GET" })).body;
   }
 
   /** `POST /api/sessions/<sid>/questions` with `source: "ask"`: `{question,
@@ -631,7 +797,13 @@ export class DaemonClient {
    * Never starts a daemon. `undefined` when no session was registered. */
   async endSession(timeoutMs = END_TIMEOUT_MS): Promise<Session | undefined> {
     if (!this.registeredSession) return undefined;
-    return sessionOf(await this.json(this.sessionPath, this.sessionPatch({ ended: true }), this.discoverFn, Date.now() + timeoutMs));
+    try {
+      return sessionOf(await this.json(this.sessionPath, this.sessionPatch({ ended: true }), this.discoverFn, Date.now() + timeoutMs));
+    } finally {
+      // A remote session's credential goes with it (spec 2026-10-08 §6.8).
+      const name = this.credentialFile();
+      if (name && this.sessionId) this.files()!.remove(name, this.sessionId);
+    }
   }
 
   private sessionPatch(body: unknown): RequestOptions {

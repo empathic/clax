@@ -20,6 +20,13 @@ pub trait Daemon {
     fn get_with_timeout(&self, path: &str, timeout: Duration) -> anyhow::Result<Value>;
     fn post(&self, path: &str, body: &Value) -> anyhow::Result<Value>;
     fn patch(&self, path: &str, body: &Value) -> anyhow::Result<Value>;
+    /// Feedback text as the agent is handed it. A remote daemon's names
+    /// each clip by reference (spec §16): the agent side fetches it and
+    /// rewrites the line ([`clax_core::clips::rewrite_text`]). The local
+    /// daemon's text is handed over as it is.
+    fn agent_text(&self, text: String) -> String {
+        text
+    }
 }
 
 /// Joins the harness's session ID to the session registered for the same
@@ -27,7 +34,10 @@ pub trait Daemon {
 /// nearest first, cover a wrapper shell between the hook and the harness),
 /// filling `cwd`, recording the harness's transcript file
 /// (`transcript_path`, or Grok Build's `transcriptPath`) and `codex_home`
-/// when given. Returns the daemon's answer, `{"session": …}`.
+/// when given, and sending the `repo` and `branch` of `cwd` (spec §11, read
+/// from its files with no `git` process) that name a session the join
+/// makes. A daemon from before a field that refuses it as unknown is asked
+/// again without it. Returns the daemon's answer, `{"session": …}`.
 ///
 /// # Errors
 /// When the input has no session ID or the daemon request fails.
@@ -52,6 +62,13 @@ pub fn join(
     }
     if let Some(cwd) = &input.cwd {
         body["cwd"] = json!(cwd);
+        let (repo, branch) = clax_core::names::repo_and_branch(std::path::Path::new(cwd));
+        if let Some(r) = repo {
+            body["repo"] = json!(r);
+        }
+        if let Some(b) = branch {
+            body["branch"] = json!(b);
+        }
     }
     if let Some(t) = input.transcript_path.as_deref().filter(|t| !t.is_empty()) {
         body["transcript_path"] = json!(t);
@@ -59,25 +76,29 @@ pub fn join(
     if let Some(h) = codex_home {
         body["codex_home"] = json!(h);
     }
-    match daemon.post("/api/sessions/join", &body) {
-        // A daemon from before transcript paths refuses the field: join
-        // without it.
-        Err(e) if refuses_transcript_path(&e) => {
-            if let Some(b) = body.as_object_mut() {
-                b.remove("transcript_path");
-            }
-            daemon.post("/api/sessions/join", &body)
+    loop {
+        match daemon.post("/api/sessions/join", &body) {
+            // A daemon from before one of these fields refuses it: join
+            // without it.
+            Err(e) => match refused_field(&e) {
+                Some(f) if body.as_object_mut().is_some_and(|b| b.remove(f).is_some()) => {}
+                _ => return Err(e),
+            },
+            r => return r,
         }
-        r => r,
     }
 }
 
-/// Whether `e` is an older daemon's refusal of the join's
-/// `transcript_path` as an unknown field (`invalid_json`), not a refusal of
-/// its value.
-fn refuses_transcript_path(e: &anyhow::Error) -> bool {
+/// The optional join field an older daemon refused as unknown
+/// (`invalid_json`), if `e` is such a refusal and not one of a value.
+fn refused_field(e: &anyhow::Error) -> Option<&'static str> {
     let msg = e.to_string();
-    msg.starts_with("invalid_json:") && msg.contains("unknown field `transcript_path`")
+    if !msg.starts_with("invalid_json:") {
+        return None;
+    }
+    ["transcript_path", "repo", "branch"]
+        .into_iter()
+        .find(|f| msg.contains(&format!("unknown field `{f}`")))
 }
 
 /// Joins the harness's session ID to the session registered for the same
@@ -116,7 +137,7 @@ pub fn session_start(
         && let Some(text) = rendered_text(&res)
     {
         context.push_str("\n\n");
-        context.push_str(&text);
+        context.push_str(&daemon.agent_text(text));
     }
     Ok(HookOutput::additional_context("SessionStart", &context))
 }
@@ -187,7 +208,7 @@ pub(crate) fn live_session(
 /// is the daemon's, passed through unchanged.
 fn feedback_text(daemon: &dyn Daemon, sid: &str, query: &str) -> anyhow::Result<Option<String>> {
     let res = daemon.get(&format!("/api/sessions/{sid}/feedback?{query}"))?;
-    Ok(rendered_text(&res))
+    Ok(rendered_text(&res).map(|t| daemon.agent_text(t)))
 }
 
 /// The non-empty `text` of a feedback response.
@@ -461,6 +482,107 @@ mod tests {
         };
         assert!(join("claude", 42, &[], &input, None, &d).is_err());
         assert_eq!(d.bodies.borrow().len(), 1);
+    }
+
+    /// Spec §11: the join names the repository and branch of the hook's
+    /// `cwd`, read from its files, so the session is named after them.
+    #[test]
+    fn a_join_sends_the_repository_and_branch_of_its_cwd() {
+        let d = tempfile::tempdir().unwrap();
+        let repo = d.path().join("web");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/fix/chart-axis\n").unwrap();
+        let input =
+            HookInput::parse(&json!({"session_id": "s1", "cwd": repo.join("src")}).to_string());
+        let f = Fake::default();
+        join("claude", 42, &[], &input, None, &f).unwrap();
+        let body = f.calls.borrow()[0].2.clone();
+        assert_eq!(
+            (&body["repo"], &body["branch"]),
+            (&json!("web"), &json!("fix/chart-axis")),
+            "{body}"
+        );
+        // An older daemon that refuses the fields is asked again without
+        // them.
+        let old = OldDaemon {
+            refusal: "invalid_json: Failed to deserialize the JSON body into the target type: unknown field `repo`, expected one of `harness`",
+            bodies: RefCell::new(vec![]),
+        };
+        struct NoRepo(OldDaemon);
+        impl Daemon for NoRepo {
+            fn browser_url(&self, path: &str) -> String {
+                self.0.browser_url(path)
+            }
+            fn get(&self, path: &str) -> anyhow::Result<Value> {
+                self.0.get(path)
+            }
+            fn get_with_timeout(&self, path: &str, t: Duration) -> anyhow::Result<Value> {
+                self.0.get_with_timeout(path, t)
+            }
+            fn post(&self, _: &str, body: &Value) -> anyhow::Result<Value> {
+                self.0.bodies.borrow_mut().push(body.clone());
+                if body.get("repo").is_some() {
+                    bail!("{}", self.0.refusal);
+                }
+                if body.get("branch").is_some() {
+                    bail!("{}", self.0.refusal.replace("`repo`", "`branch`"));
+                }
+                Ok(json!({"session": {"id": "S"}}))
+            }
+            fn patch(&self, path: &str, body: &Value) -> anyhow::Result<Value> {
+                self.0.patch(path, body)
+            }
+        }
+        let d = NoRepo(old);
+        assert_eq!(
+            join("claude", 42, &[], &input, None, &d).unwrap()["session"]["id"],
+            "S"
+        );
+        let bodies = d.0.bodies.borrow();
+        assert_eq!(bodies.len(), 3);
+        assert!(bodies[2].get("repo").is_none() && bodies[2].get("branch").is_none());
+    }
+
+    /// Spec §16: the feedback a hook hands over passes through the
+    /// daemon's agent-side text, which rewrites a remote daemon's clips.
+    #[test]
+    fn hooks_hand_over_feedback_through_the_agent_side_text() {
+        struct Rewriting(FeedbackFake);
+        impl Daemon for Rewriting {
+            fn browser_url(&self, path: &str) -> String {
+                self.0.browser_url(path)
+            }
+            fn get(&self, path: &str) -> anyhow::Result<Value> {
+                self.0.get(path)
+            }
+            fn get_with_timeout(&self, path: &str, t: Duration) -> anyhow::Result<Value> {
+                self.0.get_with_timeout(path, t)
+            }
+            fn post(&self, path: &str, body: &Value) -> anyhow::Result<Value> {
+                self.0.post(path, body)
+            }
+            fn patch(&self, path: &str, body: &Value) -> anyhow::Result<Value> {
+                self.0.patch(path, body)
+            }
+            fn agent_text(&self, text: String) -> String {
+                text.replace("Clip: clax-clip:a/b", "Clip: /cache/a-b.png")
+            }
+        }
+        let d = Rewriting(FeedbackFake {
+            text: Some("[clax] x\nClip: clax-clip:a/b\nMia: hi"),
+            seen: RefCell::new(vec![]),
+            posts: RefCell::new(vec![]),
+        });
+        for out in [
+            stop("claude", &input("s1"), &d).unwrap(),
+            prompt("claude", &input("s1"), &d).unwrap(),
+            session_start("claude", 42, &[], &input("s1"), None, &d).unwrap(),
+        ] {
+            let line = out.to_line().unwrap();
+            assert!(line.contains("Clip: /cache/a-b.png"), "{line}");
+            assert!(!line.contains("clax-clip:"), "{line}");
+        }
     }
 
     #[test]

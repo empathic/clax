@@ -12,12 +12,14 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 /// The tools whose calls capture git state (spec §9.3): every tool that
-/// changes history. The read-only tools, and `open`, which only shows a
-/// page, capture none.
-pub const GIT_TOOLS: [&str; 15] = [
+/// changes history (`status` when it names the agent). The read-only
+/// tools, and `open`, which only shows a page, capture none.
+pub const GIT_TOOLS: [&str; 17] = [
     "publish",
     "comments_reply",
     "comments_resolve",
+    "comments_handoff",
+    "status",
     "watch",
     "asset_upload",
     "db_set",
@@ -238,7 +240,7 @@ mod tests {
     #[test]
     fn every_tool_that_changes_history_captures_git() {
         let tools = crate::ClaxTools::tools();
-        assert_eq!(tools.len(), 24);
+        assert_eq!(tools.len(), 25);
         for t in &tools {
             let name = t.name.as_ref();
             let read_only = t

@@ -32,10 +32,11 @@ package, its skill, and the daemon's Pi sessions.
 
 ## What it adds
 
-- Twenty-four tools: `clax_publish`, `clax_read`, `clax_list`,
+- Twenty-five tools: `clax_publish`, `clax_read`, `clax_list`,
   `clax_delete`, `clax_open`, `clax_pin`, `clax_unpin`,
   `clax_asset_upload`, `clax_status`, `clax_comments_read`,
-  `clax_comments_reply`, `clax_comments_resolve`, `clax_watch`,
+  `clax_comments_reply`, `clax_comments_resolve`, `clax_comments_handoff`,
+  `clax_watch`,
   `clax_wait_for_feedback`, `clax_working`, `clax_ask`, and the data tools `clax_db_get`,
   `clax_db_list`, `clax_db_query`, `clax_db_set`,
   `clax_db_update`, `clax_db_delete`, `clax_db_str_replace`,
@@ -48,7 +49,17 @@ package, its skill, and the daemon's Pi sessions.
   directory). Publishes are attributed to that session. When no daemon can be
   started then, the first tool call tries again. If the session is ended under
   the extension, the next tool call registers a new one. On session shutdown
-  the session is ended.
+  the session is ended. The registration names the repository and branch of
+  the working directory, read from its files, which name the agent.
+- Remote mode: on a machine connected to another person's Clax with
+  `clax connect` (`remote.json` and `remote.key` in `$CLAX_HOME`, and
+  `CLAX_REMOTE` not `0`), the extension talks to that daemon instead and
+  never starts a local one. Every request is signed with the machine's key,
+  as the other clients sign them, and names the session with the secret its
+  registration was answered, which the extension keeps in memory and in
+  `$CLAX_HOME/remote-sessions/pi-s-<Pi session ID>.json` (0600) until the
+  session ends. A comment's clip is fetched into
+  `$CLAX_HOME/remote-cache/clips/` and the payload names that file.
 - The `clax` skill (`skills/clax/SKILL.md`): when to publish, the page
   contract, and the comment loop.
 - The `/clax` command: `/clax open [ID]` opens the gallery or an

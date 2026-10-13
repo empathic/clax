@@ -1,0 +1,229 @@
+// Remote mode (spec 2026-10-08 §16, §6.6, §6.8): the extension signs every
+// request as the Rust clients do, proves its session with the secret its
+// registration was answered, keeps that secret in its credential file, and
+// fetches a remote daemon's clips into its cache.
+import { createHash, generateKeyPairSync, verify, type KeyObject } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { claxExtension } from "../src/clax.ts";
+import { repoAndBranch } from "../src/git.ts";
+import { AGENT_HEADERS, canonical, credentialFileName, encodeAgentHeaders, parseClipReference, rewriteClipText } from "../src/remote.ts";
+import { FakePi, fakeContext } from "./fake-api.ts";
+
+let scratch: string;
+beforeAll(() => { scratch = mkdtempSync(join(tmpdir(), "clax-pi-remote-")); });
+afterAll(() => { rmSync(scratch, { recursive: true, force: true }); });
+
+const sha = (b: Buffer | string) => createHash("sha256").update(b).digest("hex");
+
+describe("remote mode", () => {
+  it("remote mode signs with the same canonical string as Rust", () => {
+    // `canonical_string_is_fixed` in crates/clax-core/src/sig.rs.
+    const agent = ["01J9ZK3M4N5P6Q7R8S9T0V1W2X", "agent", "mcp", undefined, ""];
+    expect(encodeAgentHeaders(agent).toString()).toBe("+26:01J9ZK3M4N5P6Q7R8S9T0V1W2X\n+5:agent\n+3:mcp\n-\n+0:\n");
+    const input = { method: "POST", pathAndQuery: "/api/artifacts?x=1", host: "192.168.1.5:7480", t: 1_760_000_000, nonce: "n0", body: Buffer.from("{}"), token: "cxg_t", agent };
+    const s = canonical(input);
+    expect(s).toBe([
+      "clax-ed25519 v2", "POST", "/api/artifacts?x=1", "192.168.1.5:7480", "1760000000", "n0",
+      "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "e363d964cd2aef8c9f8019233052f146fd7c41533e194244bd856d9dedfdfcd4",
+      "0200b59637463a41412fc63797d0699f6daaab4bed5d838ac1a4c264398d66b5",
+    ].join("\n"));
+    // A request with none of the headers.
+    expect(sha(encodeAgentHeaders(AGENT_HEADERS.map(() => undefined)))).toBe("a00d0d823baf03fa53cba1260dd2f71fc7e8694679ce444737a7168dfab351e8");
+    // The grant request has no token: its token line is empty.
+    expect(canonical({ ...input, token: undefined })).toMatch(/\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\n\n0200b5/);
+  });
+
+  it("names credential files as the Rust clients do", () => {
+    expect(credentialFileName("pi", "pi-session-1")).toBe("pi-s-pi-session-1.json");
+    const odd = "a/b c";
+    expect(credentialFileName("pi", odd)).toBe(`pi-h-${sha(odd).slice(0, 32)}.json`);
+    expect(credentialFileName("pi", "x".repeat(129))).toMatch(/^pi-h-[0-9a-f]{32}\.json$/);
+    expect(credentialFileName("Pi", "x")).toBeUndefined();
+  });
+
+  it("reads the repository and branch from the files, as the Rust clients do", () => {
+    const repo = join(scratch, "web");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    mkdirSync(join(repo, "src"), { recursive: true });
+    writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/fix/chart-axis\n");
+    expect(repoAndBranch(join(repo, "src"))).toEqual({ repo: "web", branch: "fix/chart-axis" });
+    // A worktree is named after its repository; a detached HEAD has no branch.
+    const wt = join(scratch, "web-wt");
+    const gitdir = join(repo, ".git", "worktrees", "wt");
+    mkdirSync(gitdir, { recursive: true });
+    mkdirSync(wt, { recursive: true });
+    writeFileSync(join(wt, ".git"), `gitdir: ${gitdir}\n`);
+    writeFileSync(join(gitdir, "commondir"), "../..\n");
+    writeFileSync(join(gitdir, "HEAD"), "0123456789abcdef0123456789abcdef01234567\n");
+    expect(repoAndBranch(wt)).toEqual({ repo: "web" });
+    expect(repoAndBranch("/")).toEqual({});
+  });
+
+  it("rewrites clip lines to fetched files, keeps withheld ones without a fetch, and never passes a path through", async () => {
+    const aid = "7q3k9mzx2b4t";
+    const tid = "01J9ZZZZZZZZZZZZZZZZZZZZZZ";
+    expect(parseClipReference(`clax-clip:${aid}/${tid}`)).toEqual([aid, tid]);
+    expect(parseClipReference(`clax-clip:${aid}/../remote.key`)).toBeUndefined();
+    const fetched: string[] = [];
+    const text = `[clax] x\nClip: clax-clip:${aid}/${tid}\nClip: withheld\nClip: /Users/sam/.clax/remote.key\nSnapshot: /x.png`;
+    const out = await rewriteClipText(text, async (a, t) => { fetched.push(`${a}/${t}`); return { path: "/c/x.png" }; });
+    expect(fetched).toEqual([`${aid}/${tid}`]);
+    expect(out.split("\n")).toEqual([
+      "[clax] x", "Clip: /c/x.png", "Clip: withheld",
+      "Clip: unavailable (the remote daemon named no clip)", "Snapshot: unavailable (on the remote daemon's machine)",
+    ]);
+    expect(await rewriteClipText(`Clip: clax-clip:${aid}/${tid}`, async () => ({ why: "withheld" }))).toBe("Clip: unavailable (withheld)");
+  });
+});
+
+/** A connected home: `remote.json` naming `url`, and an Ed25519 key. */
+function connectedHome(url: string): { home: string; publicKey: KeyObject } {
+  const home = join(scratch, `home-${Math.random().toString(36).slice(2)}`);
+  mkdirSync(home, { recursive: true });
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  writeFileSync(join(home, "remote.key"), privateKey.export({ format: "der", type: "pkcs8" }), { mode: 0o600 });
+  writeFileSync(join(home, "remote.json"), JSON.stringify({
+    version: 1, url, grant_id: "g1", access_token: "cxg_t", manage_token: "cxm_t", continue_token: "cxc_t",
+    person: { public_id: "u_sam", display_name: "Sam" }, owner_name: "Alex", own_machine: false, client_name: "m", connected_at: "",
+  }), { mode: 0o600 });
+  return { home, publicKey };
+}
+
+/** Whether `req` (with `body`) carries a valid signature by `key`, as the
+ * daemon checks it. */
+function signedBy(req: IncomingMessage, body: Buffer, key: KeyObject): boolean {
+  const m = /^t=(\d+), n=([A-Za-z0-9_-]{22}), s=([A-Za-z0-9_-]+)$/.exec(String(req.headers["clax-signature"] ?? ""));
+  if (!m) return false;
+  const auth = String(req.headers.authorization ?? "");
+  if (!auth.startsWith("Clax-Grant ")) return false;
+  const agent = AGENT_HEADERS.map(h => req.headers[h] as string | undefined);
+  const c = canonical({ method: req.method!, pathAndQuery: req.url!, host: String(req.headers.host), t: Number(m[1]), nonce: m[2]!, body, token: auth.slice("Clax-Grant ".length), agent });
+  return verify(null, Buffer.from(c), key, Buffer.from(m[3]!, "base64url"));
+}
+
+describe("remote mode against a daemon of another machine", () => {
+  it("signs every request, proves its session with its secret, keeps it in its credential file, and registers again when the proof is refused", async () => {
+    const seen: { what: string; signed: boolean; session?: string; secret?: string }[] = [];
+    let n = 0;
+    let secretOf = new Map<string, string>();
+    let refuseOnce = false;
+    let piggybacked = false;
+    const AID = "7q3k9mzx2b4t";
+    const TID = "01J9ZZZZZZZZZZZZZZZZZZZZZZ";
+    let home = "";
+    let publicKey!: KeyObject;
+    const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+      const chunks: Buffer[] = [];
+      req.on("data", c => chunks.push(c));
+      req.on("end", () => {
+        const body = Buffer.concat(chunks);
+        const reply = (status: number, v: unknown) => { res.statusCode = status; res.setHeader("content-type", "application/json"); res.end(JSON.stringify(v)); };
+        const session = req.headers["x-clax-session"] as string | undefined;
+        const secret = req.headers["x-clax-session-secret"] as string | undefined;
+        seen.push({ what: `${req.method} ${req.url}`, signed: signedBy(req, body, publicKey), session, secret });
+        if (!signedBy(req, body, publicKey)) return reply(401, { error: { code: "invalid_signature", message: "no" } });
+        if (session !== undefined && secretOf.get(session) !== secret) return reply(401, { error: { code: "invalid_session_proof", message: "no" } });
+        if (req.method === "POST" && req.url === "/api/sessions") {
+          const id = `S${++n}`;
+          const s = `cxs_${"a".repeat(42)}${n}`;
+          secretOf.set(id, s);
+          return reply(201, { session: { id, harness: "pi", harness_session_id: "pi-remote-1", cwd: "/", pid: null, parent_pid: null, started_at: "", last_seen_at: "", ended_at: null, name: "pi" }, session_secret: s });
+        }
+        if (req.url === "/api/artifacts" && refuseOnce) {
+          refuseOnce = false;
+          return reply(401, { error: { code: "invalid_session_proof", message: "ended" } });
+        }
+        if (req.url === "/api/artifacts") return reply(200, { artifacts: [] });
+        if (req.url?.startsWith("/api/sessions/") && req.url.includes("/feedback?tier=piggyback")) {
+          const once = !piggybacked;
+          piggybacked = true;
+          return reply(200, once ? {
+            feedback: [{ thread_id: TID, clip_path: `clax-clip:${AID}/${TID}` }], answers: [], text: `[clax] 1 comment sent to you:\nClip: clax-clip:${AID}/${TID}\nSam: "x"`,
+          } : { feedback: [], answers: [], text: null });
+        }
+        if (req.url === `/api/artifacts/${AID}/threads/${TID}/clip`) {
+          res.setHeader("content-type", "image/png");
+          return res.end(Buffer.from("png-bytes"));
+        }
+        if (req.method === "PATCH") return reply(200, { session: { id: session, harness: "pi", harness_session_id: "pi-remote-1", cwd: "/", pid: null, parent_pid: null, started_at: "", last_seen_at: "", ended_at: "x" } });
+        return reply(200, {});
+      });
+    });
+    await new Promise<void>(r => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as { port: number }).port;
+    ({ home, publicKey } = connectedHome(`http://127.0.0.1:${port}`));
+    try {
+      const pi = new FakePi();
+      claxExtension({ home, env: { ...process.env, CLAX_BIN: "/nonexistent" } })(pi.api);
+      const { ctx } = fakeContext(scratch, "pi-remote-1");
+      await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+      const file = join(home, "remote-sessions", "pi-s-pi-remote-1.json");
+      expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ session: "S1", secret: secretOf.get("S1"), harness_session_id: "pi-remote-1" });
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      expect(statSync(join(home, "remote-sessions")).mode & 0o777).toBe(0o700);
+      expect((await pi.callTool("clax_list", {}, ctx)).isError).toBe(false);
+      // The session ended under it: its proof is refused, and it registers
+      // again, getting a new session and secret.
+      refuseOnce = true;
+      expect((await pi.callTool("clax_list", {}, ctx)).isError).toBe(false);
+      expect(JSON.parse(readFileSync(file, "utf8")).session).toBe("S2");
+      // A clip the payload names by reference is fetched, signed, into the
+      // cache, and the agent is handed that file.
+      const withClip = await pi.callToolAsPi("clax_list", {}, ctx);
+      const cached = join(home, "remote-cache", "clips", `${AID}-${TID}.png`);
+      expect(readFileSync(cached, "utf8")).toBe("png-bytes");
+      expect(withClip.content.at(-1)!.text).toContain(`\nClip: ${cached}\n`);
+      expect(JSON.parse(withClip.content[0]!.text!).feedback[0].clip_path).toBe(cached);
+      for (const r of seen) expect(r.signed, r.what).toBe(true);
+      for (const r of seen.filter(r => r.session !== undefined)) expect(r.secret, r.what).toBe(secretOf.get(r.session!));
+      expect(seen.filter(r => r.what === "GET /api/artifacts").every(r => r.session !== undefined)).toBe(true);
+      await pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
+      expect(existsSync(file)).toBe(false);
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+});
+
+describe("withheld content", () => {
+  it("the db tools show a withheld document as withheld and pass a listing's withheld count on, as the Rust tools do", async () => {
+    const home = join(scratch, `withheld-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(home, { recursive: true });
+    const aid = "7q3k9mzx2b4t";
+    const authors = [{ public_id: "u_mia", name: "Mia" }];
+    const server = createServer((req, res) => {
+      const reply = (v: unknown) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(v)); };
+      req.resume();
+      req.on("end", () => {
+        if (req.url === "/healthz") return reply({ version: "0.1.0" });
+        if (req.method === "POST" && req.url === "/api/sessions") {
+          return reply({ session: { id: "s1", harness: "pi", harness_session_id: "h", cwd: "/", pid: 1, parent_pid: 1, started_at: "", last_seen_at: "", ended_at: null } });
+        }
+        if (req.url?.startsWith(`/api/artifacts/${aid}/docs/notes/d1`)) return reply({ doc: { doc_id: "d1", version: 3, withheld: { authors } } });
+        if (req.url?.startsWith(`/api/artifacts/${aid}/docs?`)) return reply({ docs: [], next_cursor: null, withheld_count: 2 });
+        return reply({});
+      });
+    });
+    await new Promise<void>(r => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as { port: number }).port;
+    writeFileSync(join(home, "daemon.json"), JSON.stringify({ port, pid: process.pid, token: "t", started_at: "2026-01-01T00:00:00Z", bind: "127.0.0.1", version: "0.1.0" }));
+    try {
+      const pi = new FakePi();
+      claxExtension({ home, env: { ...process.env, CLAX_BIN: "/nonexistent" } })(pi.api);
+      const { ctx } = fakeContext(scratch, "pi-withheld");
+      const got = JSON.parse((await pi.callTool("clax_db_get", { url_or_id: aid, collection: "notes", doc_id: "d1" }, ctx)).content[0]!.text!);
+      expect(got.doc).toEqual({ id: "d1", version: 3, withheld: { authors } });
+      const listed = JSON.parse((await pi.callTool("clax_db_list", { url_or_id: aid, collection: "notes" }, ctx)).content[0]!.text!);
+      expect(listed.withheld_count).toBe(2);
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+});

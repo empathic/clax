@@ -340,7 +340,7 @@ async fn watch_toggles_and_status_lists_watches() {
         (v["watching"].clone(), v["replies_armed"].clone()),
         (json!(true), json!(false))
     );
-    let (s, _) = blocks(&t.status(Parameters(StatusArgs {})).await.unwrap());
+    let (s, _) = blocks(&t.status(Parameters(StatusArgs::default())).await.unwrap());
     assert_eq!(s["watches"][0]["artifact_id"], aid);
     assert_eq!(s["watches"][0]["replies_armed"], false);
     let (v, _) = blocks(
@@ -353,7 +353,7 @@ async fn watch_toggles_and_status_lists_watches() {
         .unwrap(),
     );
     assert_eq!(v["watching"], false);
-    let (s, _) = blocks(&t.status(Parameters(StatusArgs {})).await.unwrap());
+    let (s, _) = blocks(&t.status(Parameters(StatusArgs::default())).await.unwrap());
     assert_eq!(s["watches"], json!([]));
 }
 
@@ -361,7 +361,7 @@ async fn watch_toggles_and_status_lists_watches() {
 async fn status_reports_the_sessions_push() {
     let ts = TestServer::spawn().await;
     let (t, _sid) = session_tools(&ts).await;
-    let (s, _) = blocks(&t.status(Parameters(StatusArgs {})).await.unwrap());
+    let (s, _) = blocks(&t.status(Parameters(StatusArgs::default())).await.unwrap());
     assert_eq!(s["push"]["tier"], Value::Null);
     assert_eq!(s["push"]["available"], false);
     assert!(
@@ -945,10 +945,10 @@ async fn a_late_answer_ends_wait_for_feedback_and_rides_on_a_tool_result_once() 
         .to_string();
     ts.answer_question(&q2, json!({"answers": [{"selected": ["B"]}]}))
         .await;
-    let (v, trailing) = blocks(&t.status(Parameters(StatusArgs {})).await.unwrap());
+    let (v, trailing) = blocks(&t.status(Parameters(StatusArgs::default())).await.unwrap());
     assert_eq!(v["answers"][0]["id"], q2.as_str());
     assert!(trailing.unwrap().contains("\"Second\""));
-    let (v, trailing) = blocks(&t.status(Parameters(StatusArgs {})).await.unwrap());
+    let (v, trailing) = blocks(&t.status(Parameters(StatusArgs::default())).await.unwrap());
     assert!(v.get("answers").is_none(), "handed over once");
     assert!(trailing.is_none());
 }
@@ -1033,7 +1033,12 @@ async fn ask_returns_the_answer_and_resumes_after_call_again() {
     assert!(got.get("feedback").is_some());
     assert!(got.get("answers").is_none(), "no late answers: {got}");
     // The answer was handed over by `ask`, so no feedback tier repeats it.
-    let (v, trailing) = blocks(&tools.status(Parameters(StatusArgs {})).await.unwrap());
+    let (v, trailing) = blocks(
+        &tools
+            .status(Parameters(StatusArgs::default()))
+            .await
+            .unwrap(),
+    );
     assert!(v.get("answers").is_none(), "{v}");
     assert!(trailing.is_none());
 }
@@ -1140,7 +1145,12 @@ async fn ask_cancel_and_foreign_ids() {
 
 /// The session ID `tools` act for, from `status`.
 async fn tools_session(tools: &ClaxTools) -> String {
-    let (v, _) = blocks(&tools.status(Parameters(StatusArgs {})).await.unwrap());
+    let (v, _) = blocks(
+        &tools
+            .status(Parameters(StatusArgs::default()))
+            .await
+            .unwrap(),
+    );
     v["session"]["id"].as_str().unwrap().to_string()
 }
 
@@ -1160,7 +1170,12 @@ async fn cancelling_an_answered_question_hands_the_answer_over_once() {
     let c = ask(&tools, json!({"question_id": qid, "cancel": true})).await;
     assert_eq!(c["status"], "answered");
     assert_eq!(c["reply"][0]["selected"], json!(["A"]));
-    let (v, _) = blocks(&tools.status(Parameters(StatusArgs {})).await.unwrap());
+    let (v, _) = blocks(
+        &tools
+            .status(Parameters(StatusArgs::default()))
+            .await
+            .unwrap(),
+    );
     assert!(v.get("answers").is_none(), "handed over once: {v}");
 }
 
@@ -1265,7 +1280,12 @@ async fn ask_keeps_its_reply_apart_from_late_answers_to_other_questions() {
         .collect();
     assert_eq!(late, [q1.as_str()], "{got}");
     // Each is handed over once.
-    let (v, _) = blocks(&tools.status(Parameters(StatusArgs {})).await.unwrap());
+    let (v, _) = blocks(
+        &tools
+            .status(Parameters(StatusArgs::default()))
+            .await
+            .unwrap(),
+    );
     assert!(v.get("answers").is_none(), "{v}");
 
     // An open result keeps `reply: null` beside late answers.

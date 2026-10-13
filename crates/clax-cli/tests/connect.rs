@@ -1380,3 +1380,346 @@ async fn a_hook_behind_a_wrapper_shell_finds_its_shims_session_by_an_ancestor() 
         Some("w-1")
     );
 }
+
+/// The questions an `AskUserQuestion` call carries.
+fn ask_input(hsid: &str) -> Value {
+    json!({"session_id": hsid, "cwd": "/w", "hook_event_name": "PreToolUse",
+           "tool_name": "AskUserQuestion", "tool_use_id": "toolu_1",
+           "tool_input": {"questions": [{"question": "Which layout?", "header": "Layout",
+               "multiSelect": false,
+               "options": [{"label": "Grid", "description": "cards"},
+                           {"label": "List", "description": "rows"}]}]}})
+}
+
+/// Spec §16, 2026-10-06-agent-questions-and-inbox-design §4.4: on a
+/// connected machine, Claude Code's `AskUserQuestion` is mirrored into the
+/// person's Clax as their agent's question, through the hook's session
+/// and its proof; with no Clax surface of theirs open, the terminal
+/// dialog is left to ask.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_remote_hooks_ask_mirrors_the_question() {
+    let ts = lan_server().await;
+    let m = connected(&ts, "Sam").await;
+    let start = json!({"session_id": "cc-ask", "cwd": "/w"});
+    let out = m.hook("claude", "session-start", &start).await;
+    assert!(out.stderr.is_empty(), "{}", text(&out));
+    let sid = m.credential_json("claude-s-cc-ask.json")["session"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let out = m.hook("claude", "ask", &ask_input("cc-ask")).await;
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty(), "{}", text(&out));
+    let log = std::fs::read_to_string(m.home().join("logs/hooks.log")).unwrap();
+    let line = log.lines().rfind(|l| l.contains(" ask ")).unwrap();
+    assert!(line.contains("outcome=terminal"), "{line}");
+    let db = rusqlite::Connection::open(ts.home.db_path()).unwrap();
+    let asked: String = db
+        .query_row(
+            "SELECT questions_json FROM questions WHERE session_id = ?1",
+            [&sid],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(asked.contains("Which layout?"), "{asked}");
+}
+
+/// Spec §16: a remote hook finds its session through the grant's own
+/// listing (`GET /api/sessions`), named by its proof: the Stop hook hands
+/// over what was sent to it.
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_hooks_find_their_session() {
+    let w = World::two_people().await;
+    let m = sams_machine(&w);
+    let start = json!({"session_id": "cc-stop", "cwd": "/w", "stop_hook_active": false});
+    let out = m.hook("claude", "session-start", &start).await;
+    assert!(out.stderr.is_empty(), "{}", text(&out));
+    let cred = m.credential_json("claude-s-cc-stop.json");
+    let (sid, secret) = (
+        cred["session"].as_str().unwrap().to_string(),
+        cred["secret"].as_str().unwrap().to_string(),
+    );
+    // Sam's agent watches a page of the owner's, where Sam's own comment
+    // is sent to the agents.
+    let aid =
+        w.ts.publish("Notes", &[("index.html", "<h2>notes</h2>")])
+            .await["artifact"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+    let r = w
+        .sam
+        .agent_proving(
+            "PUT",
+            &format!("/api/sessions/{sid}/watches/{aid}"),
+            Some(&sid),
+            Some(&secret),
+            None,
+        )
+        .await;
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    let sam = w.ts.store.viewer_of_grant(&w.sam.grant_id()).unwrap();
+    // Sam let the owner's pages reach his agents, as `clax connect --yes`
+    // does, so the clip of the owner's page is not withheld.
+    let owner = w.ts.store.owner_viewer(false).unwrap();
+    w.ts.store
+        .approve(
+            &clax_core::audit::AuditCtx::DAEMON,
+            Some(&sam.public_id),
+            &owner.public_id,
+            clax_core::store::approvals::Scope::Everywhere,
+            clax_core::store::approvals::Via::Connect,
+        )
+        .unwrap();
+    // Sam's comment, with a clip.
+    let form = reqwest::multipart::Form::new()
+        .text("anchor", clax_server::testing::element_anchor().to_string())
+        .text("body", "SAMSAYS tighten it")
+        .text("version", "1")
+        .part(
+            "clip",
+            reqwest::multipart::Part::bytes(clax_server::testing::FAKE_PNG.to_vec())
+                .file_name("clip.png")
+                .mime_str("image/png")
+                .unwrap(),
+        );
+    let r =
+        w.ts.client
+            .post(format!("{}/api/artifacts/{aid}/threads", w.ts.base))
+            .header("cookie", format!("clax_viewer={}", sam.id))
+            .multipart(form)
+            .send()
+            .await
+            .unwrap();
+    assert_eq!(r.status(), 201);
+    let tid = r.json::<Value>().await.unwrap()["thread"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r =
+        w.ts.client
+            .post(format!(
+                "{}/api/artifacts/{aid}/threads/{tid}/send",
+                w.ts.base
+            ))
+            .header("cookie", format!("clax_viewer={}", sam.id))
+            .send()
+            .await
+            .unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    let out = m.hook("claude", "stop", &start).await;
+    assert!(out.stderr.is_empty(), "{}", text(&out));
+    let said = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(said.contains("SAMSAYS tighten it"), "{said}");
+    // Its clip was fetched into this machine's cache, and the payload
+    // names that file (spec §16).
+    let cached = m
+        .home()
+        .join("remote-cache/clips")
+        .join(format!("{aid}-{tid}.png"));
+    let v: Value = serde_json::from_str(said.trim()).unwrap();
+    let reason = v["reason"].as_str().unwrap();
+    assert!(
+        reason.contains(&format!("\nClip: {}\n", cached.display())),
+        "{reason}"
+    );
+    assert_eq!(
+        std::fs::read(&cached).unwrap(),
+        clax_server::testing::FAKE_PNG
+    );
+    assert!(!reason.contains("clax-clip:"), "{reason}");
+}
+
+/// Spec 2026-10-06-agent-questions-and-inbox-design §4.4 on a connected
+/// machine: while Sam has Clax open and his agent has a page, the hook
+/// waits for his answer there and hands it to Claude Code.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_remote_hooks_ask_waits_for_the_persons_answer() {
+    use clax_server::testing::EventReader;
+    let w = World::two_people().await;
+    let m = sams_machine(&w);
+    let start = json!({"session_id": "cc-wait", "cwd": "/w"});
+    let out = m.hook("claude", "session-start", &start).await;
+    assert!(out.stderr.is_empty(), "{}", text(&out));
+    let cred = m.credential_json("claude-s-cc-wait.json");
+    let (sid, secret) = (
+        cred["session"].as_str().unwrap().to_string(),
+        cred["secret"].as_str().unwrap().to_string(),
+    );
+    let aid =
+        w.ts.publish("Layouts", &[("index.html", "<h2>layouts</h2>")])
+            .await["artifact"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+    let r = w
+        .sam
+        .agent_proving(
+            "PUT",
+            &format!("/api/sessions/{sid}/watches/{aid}"),
+            Some(&sid),
+            Some(&secret),
+            None,
+        )
+        .await;
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    // Sam's browser holds his questions.
+    let sam = w.ts.store.viewer_of_grant(&w.sam.grant_id()).unwrap();
+    let cookie = format!("clax_viewer={}", sam.id);
+    let res =
+        w.ts.client
+            .get(format!("{}/api/stream", w.ts.base))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap();
+    let mut events = EventReader::from_response(res);
+    let stream = events.next_named("ready").await["stream"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r =
+        w.ts.client
+            .post(format!("{}/api/stream/{stream}", w.ts.base))
+            .header("cookie", &cookie)
+            .json(&json!({"subscribe": ["questions"]}))
+            .send()
+            .await
+            .unwrap();
+    assert_eq!(r.status(), 200);
+    let input = ask_input("cc-wait");
+    let hook = m.hook("claude", "ask", &input);
+    let answer = async {
+        let qid = loop {
+            let db = rusqlite::Connection::open(w.ts.home.db_path()).unwrap();
+            let q: Option<String> = db
+                .query_row(
+                    "SELECT id FROM questions WHERE session_id = ?1",
+                    [&sid],
+                    |r| r.get(0),
+                )
+                .ok();
+            if let Some(q) = q {
+                break q;
+            }
+            tokio::task::yield_now().await;
+        };
+        w.ts.wait_question_waiters(&qid, 1).await;
+        let r =
+            w.ts.client
+                .post(format!("{}/api/questions/{qid}/answer", w.ts.base))
+                .header("cookie", &cookie)
+                .json(&json!({"answers": [{"selected": ["Grid"]}]}))
+                .send()
+                .await
+                .unwrap();
+        assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    };
+    let (out, ()) = tokio::join!(hook, answer);
+    assert!(out.stderr.is_empty(), "{}", text(&out));
+    let said = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(said.contains("\"Which layout?\":\"Grid\""), "{said}");
+    drop(events);
+}
+
+/// Spec 2026-10-08 §6.8, §16: `clax feedback follow` on a connected
+/// machine names its session with the session's proof, found in the
+/// session's credential file by the harness session or by the session.
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_follow_names_its_session_with_its_proof() {
+    let w = World::two_people().await;
+    let m = sams_machine(&w);
+    let start = json!({"session_id": "cc-follow", "cwd": "/w"});
+    let out = m.hook("claude", "session-start", &start).await;
+    assert!(out.stderr.is_empty(), "{}", text(&out));
+    let cred = m.credential_json("claude-s-cc-follow.json");
+    let (sid, secret) = (
+        cred["session"].as_str().unwrap().to_string(),
+        cred["secret"].as_str().unwrap().to_string(),
+    );
+    let aid =
+        w.ts.publish("Notes", &[("index.html", "<h2>notes</h2>")])
+            .await["artifact"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+    let r = w
+        .sam
+        .agent_proving(
+            "PUT",
+            &format!("/api/sessions/{sid}/watches/{aid}"),
+            Some(&sid),
+            Some(&secret),
+            None,
+        )
+        .await;
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    let sam = w.ts.store.viewer_of_grant(&w.sam.grant_id()).unwrap();
+    let send = |body: &'static str| {
+        let (w, aid, cookie) = (&w, aid.clone(), sam.id.clone());
+        async move {
+            let tid = w.ts.thread_as(&aid, &cookie, body).await["id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            let r =
+                w.ts.client
+                    .post(format!(
+                        "{}/api/artifacts/{aid}/threads/{tid}/send",
+                        w.ts.base
+                    ))
+                    .header("cookie", format!("clax_viewer={cookie}"))
+                    .send()
+                    .await
+                    .unwrap();
+            assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+            tid
+        }
+    };
+    let first = send("first").await;
+    let out = m
+        .run(&[
+            "feedback",
+            "follow",
+            "--agent",
+            "claude",
+            "--harness-session",
+            "cc-follow",
+            "--once",
+            "--poll-secs",
+            "1",
+        ])
+        .await;
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains(&first), "{}", text(&out));
+    let second = send("second").await;
+    let out = m
+        .run(&[
+            "feedback",
+            "follow",
+            "--session",
+            &sid,
+            "--once",
+            "--poll-secs",
+            "1",
+        ])
+        .await;
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains(&second), "{}", text(&out));
+    // A session this machine holds no credential for is refused at once.
+    let out = m
+        .run(&[
+            "feedback",
+            "follow",
+            "--session",
+            &clax_core::new_ulid(),
+            "--once",
+        ])
+        .await;
+    assert!(!out.status.success());
+    assert!(
+        text(&out).contains("session_credential_missing"),
+        "{}",
+        text(&out)
+    );
+}

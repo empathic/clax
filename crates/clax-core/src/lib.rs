@@ -4,6 +4,7 @@ pub mod anchor;
 pub mod audit;
 pub mod capabilities;
 pub mod changelog;
+pub mod clips;
 pub mod config;
 pub mod db;
 pub mod error;

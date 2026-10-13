@@ -5,8 +5,8 @@
 // captures must report alike.
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { statSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { closeSync, openSync, readSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 /** How long a capture may run; past it, every git child is killed and the
  * outcome is `timeout`. */
@@ -643,5 +643,75 @@ export async function capture(git: string, cwd: string, deadline: number, env: N
     return { capture: e instanceof Failed ? e.outcome : "unavailable" };
   } finally {
     r.cancel();
+  }
+}
+
+/** The first line of the small file at `path` (at most 4 KiB read),
+ * trimmed; `undefined` when it cannot be read. */
+function headLine(path: string): string | undefined {
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch {
+    return undefined;
+  }
+  try {
+    const buf = Buffer.alloc(4096);
+    const n = readSync(fd, buf, 0, buf.length, 0);
+    return buf.subarray(0, n).toString("utf8").split(/\r?\n/)[0]!.trim();
+  } catch {
+    return undefined;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** The repository `cwd` is in and its branch (spec §11), read from the
+ * files with no `git` process, as `clax_core::names::repo_and_branch`
+ * reads them: the nearest directory at or above `cwd` holding `.git` (a
+ * directory, or a worktree's file naming its git directory) gives the
+ * branch its `HEAD` names (none when detached); the repository is named
+ * after its common git directory (a worktree's `commondir` names it), so a
+ * worktree is named after its repository. Neither outside a repository. */
+export function repoAndBranch(cwd: string): { repo?: string; branch?: string } {
+  if (!cwd) return {};
+  let dir = resolve(cwd);
+  for (;;) {
+    const dot = join(dir, ".git");
+    let st;
+    try {
+      st = statSync(dot);
+    } catch {
+      st = undefined;
+    }
+    let gitDir: string | undefined;
+    if (st?.isDirectory()) gitDir = dot;
+    else if (st?.isFile()) {
+      const l = headLine(dot);
+      if (l?.startsWith("gitdir:")) {
+        const p = l.slice("gitdir:".length).trim();
+        gitDir = isAbsolute(p) ? p : join(dir, p);
+      }
+    }
+    if (st?.isDirectory() || st?.isFile()) {
+      let common: string | undefined;
+      const c = gitDir ? headLine(join(gitDir, "commondir")) : undefined;
+      if (c) {
+        try {
+          common = realpathSync(isAbsolute(c) ? c : join(gitDir!, c));
+        } catch { /* none */ }
+      }
+      let name = common === undefined ? basename(dir) : basename(common) === ".git" ? basename(dirname(common)) : basename(common);
+      if (name.endsWith(".git")) name = name.slice(0, -4);
+      const head = gitDir ? headLine(join(gitDir, "HEAD")) : undefined;
+      const branch = head?.startsWith("ref: refs/heads/") ? head.slice("ref: refs/heads/".length).trim() : undefined;
+      const out: { repo?: string; branch?: string } = {};
+      if (name) out.repo = name;
+      if (branch) out.branch = branch;
+      return out;
+    }
+    const up = dirname(dir);
+    if (up === dir) return {};
+    dir = up;
   }
 }

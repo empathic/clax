@@ -277,3 +277,154 @@ async fn a_credential_for_a_session_the_daemon_does_not_know_is_passed_over() {
         json!(sid)
     );
 }
+
+/// A thread Sam's browser (cookie `cookie`) starts on `aid` with a clip.
+async fn thread_with_clip(ts: &TestServer, aid: &str, cookie: &str, body: &str) -> String {
+    let form = reqwest::multipart::Form::new()
+        .text("anchor", clax_server::testing::element_anchor().to_string())
+        .text("body", body.to_string())
+        .text("version", "1")
+        .part(
+            "clip",
+            reqwest::multipart::Part::bytes(clax_server::testing::FAKE_PNG.to_vec())
+                .file_name("clip.png")
+                .mime_str("image/png")
+                .unwrap(),
+        );
+    let res = ts
+        .client
+        .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+        .header("cookie", format!("clax_viewer={cookie}"))
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    res.json::<serde_json::Value>().await.unwrap()["thread"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// Spec §16: a remote session's payload names its clip `clax-clip:…`; the
+/// shim fetches it, signed, into `<home>/remote-cache/clips/` and hands
+/// the agent that file. A clip withheld from the session stays `Clip:
+/// withheld`, fetched by no one.
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_clip_lines_are_rewritten_to_cached_files() {
+    use clax_mcp::ClaxTools;
+    use clax_mcp::tools::WaitArgs;
+    use rmcp::handler::server::wrapper::Parameters;
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let mia = ts.connect_person("Mia", "clax:collaborator").await;
+    let dir = tempfile::tempdir().unwrap();
+    let client = DaemonClient::managed_remote(remote_of(&ts, &sam, None, &dir), registration());
+    let tools = ClaxTools::new(client.clone(), String::new(), None, ts.home.log_path());
+    let made = client
+        .create(&json!({"title": "Sam's notes",
+                        "files": {"index.html": {"content": "<p>notes</p>", "encoding": "utf8"}}}))
+        .await
+        .unwrap();
+    let aid = made["artifact"]["id"].as_str().unwrap().to_string();
+    let sam_cookie = ts.store.viewer_of_grant(&sam.grant_id()).unwrap().id;
+    let mia_cookie = ts.store.viewer_of_grant(&mia.grant_id()).unwrap().id;
+    let send = |tid: String| {
+        let (ts, aid, cookie) = (&ts, aid.clone(), sam_cookie.clone());
+        async move {
+            let r = ts
+                .client
+                .post(format!(
+                    "{}/api/artifacts/{aid}/threads/{tid}/send",
+                    ts.base
+                ))
+                .header("cookie", format!("clax_viewer={cookie}"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+        }
+    };
+    let mine = thread_with_clip(&ts, &aid, &sam_cookie, "Sam's own words").await;
+    send(mine.clone()).await;
+    // Mia's thread, whose clip is hers, with Sam's visible reply.
+    let hers = thread_with_clip(&ts, &aid, &mia_cookie, "Mia's words").await;
+    ts.reply_as(&aid, &hers, &sam_cookie, "Sam replies under it")
+        .await;
+    send(hers.clone()).await;
+    let r = tools
+        .wait_for_feedback(Parameters(WaitArgs {
+            url_or_id: None,
+            timeout_s: Some(1),
+        }))
+        .await
+        .unwrap();
+    let text: Vec<String> = r
+        .content
+        .iter()
+        .map(|c| c.as_text().unwrap().text.clone())
+        .collect();
+    let trailing = text.get(1).expect("the payload's prose");
+    let cached = dir
+        .path()
+        .join("remote-cache/clips")
+        .join(format!("{aid}-{mine}.png"));
+    assert!(
+        trailing.contains(&format!("\nClip: {}\n", cached.display())),
+        "{trailing}"
+    );
+    assert_eq!(
+        std::fs::read(&cached).unwrap(),
+        clax_server::testing::FAKE_PNG
+    );
+    assert!(!trailing.contains("clax-clip:"), "{trailing}");
+    assert!(trailing.contains("\nClip: withheld\n"), "{trailing}");
+    let first: serde_json::Value = serde_json::from_str(&text[0]).unwrap();
+    let item = first["feedback"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["thread_id"] == json!(mine))
+        .unwrap();
+    assert_eq!(item["clip_path"], json!(cached.display().to_string()));
+    assert!(
+        !dir.path()
+            .join("remote-cache/clips")
+            .join(format!("{aid}-{hers}.png"))
+            .exists(),
+        "a withheld clip is not fetched"
+    );
+}
+
+/// Spec §16, §7.5: `status` on a remote daemon reports the agent's name,
+/// its person and rights and that the daemon is remote; `/healthz` is
+/// refused to another machine's agents, so the daemon's version is not
+/// asked.
+#[tokio::test(flavor = "multi_thread")]
+async fn status_on_a_remote_daemon_reports_the_person_and_rights() {
+    use clax_mcp::ClaxTools;
+    use clax_mcp::tools::StatusArgs;
+    use rmcp::handler::server::wrapper::Parameters;
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let sam = ts.connect_person("Sam", "clax:reader").await;
+    let dir = tempfile::tempdir().unwrap();
+    let client = DaemonClient::managed_remote(remote_of(&ts, &sam, None, &dir), registration());
+    let tools = ClaxTools::new(client, String::new(), None, ts.home.log_path());
+    let r = tools
+        .status(Parameters(StatusArgs {
+            name: Some("sams-review".into()),
+        }))
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&r.content[0].as_text().unwrap().text).unwrap();
+    assert!(r.is_error != Some(true), "{v}");
+    assert_eq!(v["remote"], true, "{v}");
+    assert_eq!(v["name"], "sams-review", "{v}");
+    assert_eq!(v["person"]["name"], "Sam", "{v}");
+    assert_eq!(
+        v["rights"],
+        clax_core::rights::Rights::preset(clax_core::rights::PRESET_READER)
+            .unwrap()
+            .to_json()
+    );
+}
