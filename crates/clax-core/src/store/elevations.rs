@@ -554,4 +554,48 @@ mod tests {
             Err(CoreError::NotFound)
         ));
     }
+
+    /// Spec §7.2: what a creator's elevation gives is decided at every
+    /// check, not only when it is given: a stored raise naming an artifact
+    /// its granter did not create, or by a granter since revoked, gives
+    /// nothing, whatever wrote it.
+    #[test]
+    fn a_stored_raise_gives_only_what_its_granter_may_give_now() {
+        let (_d, _c, st) = store();
+        let (sam_g, _, _) = approved(&st, "Sam", KEY_A);
+        let (mia_g, _, _) = approved(&st, "Mia", KEY_B);
+        let sam = st.grant(&sam_g).unwrap().person.unwrap();
+        let notes = artifact(&st, None);
+        let qr = artifact(&st, None);
+        let agent = st.register_session(DAEMON, reg(&mia_g)).unwrap().id;
+        let raw = |sid: &str, json: String| {
+            st.with_tx(|tx| {
+                tx.execute(
+                    "INSERT INTO session_elevations (session_id, granter, access_json, created_at)
+                     VALUES (?1, ?2, ?3, 'x')",
+                    params![sid, sam, json],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        };
+        st.with_tx(|tx| {
+            tx.execute(
+                "UPDATE artifacts SET person = ?2 WHERE id = ?1",
+                params![notes.as_str(), sam],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        // Naming the owner's artifact beside his own: only his own counts.
+        let both = access(json!([{"type": "clax-artifacts", "actions": ["update"],
+            "locations": [notes.as_str(), qr.as_str()]}]));
+        raw(&agent, both.to_json().to_string());
+        assert!(may_update(&st, &mia_g, &agent, notes.as_str()));
+        assert!(!may_update(&st, &mia_g, &agent, qr.as_str()));
+        // Revoked, he gives nothing, even through a raise still stored.
+        st.revoke_person(DAEMON, &sam).unwrap();
+        raw(&agent, both.to_json().to_string());
+        assert!(!may_update(&st, &mia_g, &agent, notes.as_str()));
+    }
 }
