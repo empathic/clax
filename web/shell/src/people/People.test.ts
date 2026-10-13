@@ -152,4 +152,42 @@ describe("People", () => {
     expect(m.root.querySelector(".approvals .line span")!.textContent).toBe("Viewer (the owner)");
   });
 
+  it("clears the page and tells the header when People stops being the viewer's", async () => {
+    let revoked = false;
+    stubFetch({
+      "GET /api/people/me": () => (revoked ? [403, { error: { code: "forbidden", message: "only the owner or a connected person has People" } }] : { person: { public_id: "p1", display_name: "Sam", owner: false, rights: COLLAB }, grants: [grant()], agents: [agent()] }),
+      "GET /api/approvals": { approvals: [] },
+      "GET /api/approvals/requests": { requests: [], open: 0, banner: null },
+    });
+    let hear: ((e: { type: string }) => void) | null = null;
+    const watch = vi.fn((_t: string[], on: (e: { type: string }) => void) => { hear = on; return () => {}; });
+    const gone = vi.fn();
+    addEventListener("clax:people-gone", gone);
+    const m = mount(People, { stream: { watch } as unknown as import("../stream").EventStream });
+    await settle();
+    expect(m.root.querySelector(".person")).not.toBeNull();
+    revoked = true;
+    hear!({ type: "refused" });
+    await settle();
+    removeEventListener("clax:people-gone", gone);
+    expect(m.root.querySelector(".person")).toBeNull();
+    expect(m.root.querySelector(".approvals")).toBeNull();
+    expect(m.root.textContent).toContain("only the owner or a connected person has People");
+    expect(gone).toHaveBeenCalledTimes(1);
+  });
+
+  it("focuses Name when the invite form opens, and Invite a person when it closes", async () => {
+    stubFetch(ownerRoutes());
+    const m = mount(People, {});
+    await settle();
+    const { flush } = await import("../test/svelte");
+    flush(() => { m.root.querySelector<HTMLButtonElement>(".invite-open")!.click(); });
+    await settle();
+    const name = m.root.querySelector<HTMLInputElement>('.invite input[name="name"]')!;
+    expect(document.activeElement).toBe(name);
+    expect(name.maxLength).toBe(60);
+    flush(() => { [...m.root.querySelectorAll<HTMLButtonElement>(".invite button")].find(b => b.textContent === "Cancel")!.click(); });
+    await settle();
+    expect(document.activeElement).toBe(m.root.querySelector(".invite-open"));
+  });
 });
