@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/agent/worker.dart';
 import 'package:clax_app/clax/api.dart';
@@ -9,6 +10,7 @@ import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_menu.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/app_surface.dart';
+import 'package:clax_app/ui/change_tracker.dart' show sendFirstStep;
 import 'package:clax_app/ui/comment_button.dart';
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/theme.dart';
@@ -21,24 +23,33 @@ import 'package:flutter_test/flutter_test.dart';
 import '../support/fake_surface.dart';
 import '../support/fake_voice.dart';
 
-/// A clock that stands still: every gesture is within its time window.
+/// A clock that stands still unless a test moves it: every gesture is
+/// within its time window.
 class _Clock implements Clock {
+  DateTime t = DateTime.utc(2026, 10, 12);
   @override
-  DateTime now() => DateTime.utc(2026, 10, 12);
+  DateTime now() => t;
   @override
   Future<void> delay(Duration d) async {}
 }
 
-/// Timings that log what the screen asked of them.
+/// Timings that log what the screen asked of them: the send→first-step
+/// timing in [stepLog], the others in [log].
 class _Timings implements Timings {
   final log = <String>[];
   final extras = <Map<String, Object?>>[];
+  final stepLog = <String>[];
 
   @override
-  void start(String name) => log.add('start $name');
+  void start(String name) =>
+      (name == sendFirstStep ? stepLog : log).add('start $name');
 
   @override
   TimingRecord? stop(String name, {Map<String, Object?> extra = const {}}) {
+    if (name == sendFirstStep) {
+      stepLog.add('stop $name ${extra['artifact']}');
+      return null;
+    }
     log.add('stop $name');
     extras.add(extra);
     return TimingRecord(
@@ -125,6 +136,7 @@ void main() {
     ValueChanged<double>? onButtonMoved,
     CommentsCommand? comments,
     Future<bool> Function(String aid, String tid)? onRetry,
+    Clock? clock,
   }) async {
     phone(tester, size: size);
     final (api, aid) = await _seeded();
@@ -147,7 +159,7 @@ void main() {
           settings: settings ?? AppSettings(),
           timings: rig.timings,
           worker: rig.worker.stream,
-          clock: _Clock(),
+          clock: clock ?? _Clock(),
           commentButtonDy: buttonDy,
           onCommentButtonMoved: onButtonMoved,
           comments: comments,
@@ -457,14 +469,14 @@ void main() {
       rig.worker.add(WorkerLanded(rig.aid, 4));
       await tester.pump();
       expect(
-        find.text('Working…'),
+        find.text('Loading the new version'),
         findsOneWidget,
         reason: 'until the frame shows it',
       );
 
       rig.surface.push(const Landed(4));
       await tester.pump();
-      expect(find.text('Working…'), findsNothing);
+      expect(find.byKey(const ValueKey('chip-working')), findsNothing);
       expect(rig.timings.log, [
         'start $longpressLanded',
         'stop $longpressLanded',
@@ -485,7 +497,7 @@ void main() {
     await tester.pump();
     rig.worker.add(WorkerReplied(rig.aid));
     await tester.pump();
-    expect(find.text('Working…'), findsNothing);
+    expect(find.byKey(const ValueKey('chip-working')), findsNothing);
     expect(find.text('Answered in the thread'), findsOneWidget);
     // A version landing later (a restore) is not this change's.
     rig.surface.push(const Landed(4));
@@ -502,7 +514,7 @@ void main() {
       await tester.pump();
       rig.worker.add(WorkerFailed(rig.aid, 'The API key was refused'));
       await tester.pump();
-      expect(find.text('Working…'), findsNothing);
+      expect(find.byKey(const ValueKey('chip-working')), findsNothing);
       expect(find.byKey(const ValueKey('chip-failed')), findsOneWidget);
       expect(find.textContaining('The API key was refused'), findsOneWidget);
 
@@ -538,7 +550,7 @@ void main() {
       rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
       rig.worker.add(WorkerLanded(rig.aid, 4));
       await tester.pump();
-      expect(find.text('Working…'), findsNothing);
+      expect(find.byKey(const ValueKey('chip-working')), findsNothing);
       expect(find.text('Version 4 is ready'), findsOneWidget);
       await tester.pumpAndSettle();
       await tester.tap(find.text('Show'));
@@ -836,6 +848,134 @@ void main() {
     },
   );
 
+  group('narration and Retry', () {
+    testWidgets(
+      "the chip shows the running change's latest step and elapsed time",
+      (tester) async {
+        final clock = _Clock();
+        final rig = await pumpScreen(tester, clock: clock);
+        rig.surface.push(rig.ready());
+        rig.surface.push(const Sent('thread-1'));
+        rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
+        await tester.pump();
+        expect(find.text('Working…'), findsOneWidget);
+        expect(rig.timings.stepLog, ['start $sendFirstStep']);
+
+        rig.worker.add(
+          WorkerProgress(rig.aid, const [
+            'thread-1',
+          ], const ToolStarted('str_replace', 'Changing index.html')),
+        );
+        rig.worker.add(
+          WorkerProgress(rig.aid, const [
+            'thread-1',
+          ], const Narration('Adding the weekly total')),
+        );
+        clock.t = clock.t.add(const Duration(seconds: 9));
+        await tester.pump(const Duration(seconds: 1));
+        expect(find.text('Adding the weekly total'), findsOneWidget);
+        expect(find.text('9s'), findsOneWidget);
+        expect(rig.timings.stepLog, [
+          'start $sendFirstStep',
+          'stop $sendFirstStep ${rig.aid}',
+        ]);
+
+        await tester.tap(find.byKey(const ValueKey('chip-working')));
+        await tester.pump();
+        expect(find.text('Changing index.html'), findsOneWidget);
+
+        rig.worker.add(WorkerLanded(rig.aid, 4));
+        await tester.pump();
+        expect(find.byKey(const ValueKey('chip-expanded')), findsNothing);
+        rig.surface.push(const Landed(4));
+        await tester.pump();
+        expect(find.byKey(const ValueKey('chip-working')), findsNothing);
+      },
+    );
+
+    testWidgets("another thread's or app's steps are ignored", (tester) async {
+      final rig = await pumpScreen(tester);
+      rig.surface.push(rig.ready());
+      rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
+      rig.worker.add(
+        WorkerProgress(rig.aid, const ['thread-2'], const Narration('Other')),
+      );
+      rig.worker.add(
+        WorkerProgress('other', const ['thread-1'], const Narration('Else')),
+      );
+      await tester.pump();
+      expect(find.text('Working…'), findsOneWidget);
+      expect(find.text('Other'), findsNothing);
+      expect(find.text('Else'), findsNothing);
+    });
+
+    testWidgets(
+      'a failed change offers Retry, which asks the worker and runs again',
+      (tester) async {
+        final asked = <String>[];
+        final answer = Completer<bool>();
+        final rig = await pumpScreen(
+          tester,
+          onRetry: (aid, tid) {
+            asked.add('$aid/$tid');
+            return answer.future;
+          },
+        );
+        rig.surface.push(rig.ready());
+        rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
+        rig.worker.add(WorkerFailed(rig.aid, 'the connection dropped'));
+        await tester.pump();
+        expect(find.textContaining('the connection dropped'), findsOneWidget);
+
+        await tester.tap(find.byKey(const ValueKey('retry-change')));
+        await tester.pump();
+        expect(asked, ['${rig.aid}/thread-1']);
+        expect(find.text('Retrying…'), findsOneWidget);
+        await tester.tap(find.byKey(const ValueKey('retry-change')));
+        expect(asked, hasLength(1), reason: 'one Retry at a time');
+
+        answer.complete(true);
+        await tester.pump();
+        expect(find.byKey(const ValueKey('chip-failed')), findsNothing);
+        expect(find.text('Trying again…'), findsOneWidget);
+
+        rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
+        rig.worker.add(
+          WorkerProgress(rig.aid, const [
+            'thread-1',
+          ], const Narration('Changing the colour')),
+        );
+        await tester.pump();
+        expect(find.text('Changing the colour'), findsOneWidget);
+        expect(rig.timings.stepLog, isEmpty, reason: 'a Retry is not a Send');
+      },
+    );
+
+    testWidgets('a Retry the worker refuses says so', (tester) async {
+      final rig = await pumpScreen(tester, onRetry: (_, _) async => false);
+      rig.surface.push(rig.ready());
+      rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
+      rig.worker.add(WorkerFailed(rig.aid, 'x'));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('retry-change')));
+      await tester.pump();
+      expect(find.textContaining('Nothing to run again'), findsOneWidget);
+      expect(find.byKey(const ValueKey('retry-change')), findsNothing);
+    });
+
+    testWidgets('without a retry hook a failed change offers no Retry', (
+      tester,
+    ) async {
+      final rig = await pumpScreen(tester);
+      rig.surface.push(rig.ready());
+      rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
+      rig.worker.add(WorkerFailed(rig.aid, 'x'));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('chip-failed')), findsOneWidget);
+      expect(find.byKey(const ValueKey('retry-change')), findsNothing);
+    });
+  });
+
   testWidgets('a failure that comes before Send still ends Working', (
     tester,
   ) async {
@@ -846,7 +986,7 @@ void main() {
     rig.worker.add(WorkerFailed(rig.aid, 'The API key was refused'));
     rig.surface.push(const Sent('thread-1'));
     await tester.pump();
-    expect(find.text('Working…'), findsNothing);
+    expect(find.byKey(const ValueKey('chip-working')), findsNothing);
     expect(find.byKey(const ValueKey('chip-failed')), findsOneWidget);
   });
 
@@ -859,11 +999,11 @@ void main() {
     rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
     rig.worker.add(WorkerLanded(rig.aid, 4));
     await tester.pump();
-    expect(find.text('Working…'), findsOneWidget);
+    expect(find.text('Loading the new version'), findsOneWidget);
     rig.surface.fault(const SurfaceFault('gone', reloading: true));
     rig.surface.push(rig.ready(version: 4, latest: 4));
     await tester.pump();
-    expect(find.text('Working…'), findsNothing);
+    expect(find.byKey(const ValueKey('chip-working')), findsNothing);
     expect(rig.timings.log, [
       'start $longpressLanded',
       'stop $longpressLanded',
@@ -900,7 +1040,7 @@ void main() {
     await tester.pump();
     await tester.tap(find.byKey(const ValueKey('chip-dismiss')));
     await tester.pump();
-    expect(find.text('Working…'), findsNothing);
+    expect(find.byKey(const ValueKey('chip-working')), findsNothing);
     rig.worker.add(WorkerWorking(rig.aid, const ['thread-1']));
     await tester.pump();
     expect(find.text('Working…'), findsOneWidget);
