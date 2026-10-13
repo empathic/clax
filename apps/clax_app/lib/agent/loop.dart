@@ -24,6 +24,7 @@ import 'tools/data_tools.dart';
 import 'tools/draft.dart';
 import 'tools/file_tools.dart';
 import 'tools/finish.dart';
+import 'tools/kit_tool.dart';
 import 'tools/render_tool.dart';
 import 'tools/tool_spec.dart';
 import 'tools/toolbox.dart';
@@ -949,8 +950,7 @@ class AgentLoop {
     void ended() => byTool = byTool || state.ended;
     final toolbox = Toolbox(state, [
       if (plan != null) ...[PlanSetTool(plan), PlanMarkTool(plan)],
-      // K1's kit tool (lib/agent/tools/kit_tool.dart) joins here once it
-      // lands: `KitTool(...)`, named `add_kit` in toolOrder.
+      AddKitTool(),
       ...fileTools(),
       ...dataTools(_api),
       render,
