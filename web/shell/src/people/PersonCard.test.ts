@@ -60,7 +60,7 @@ describe("PersonCard", () => {
     change(publish);
     await settle();
     expect(calls.at(-1)).toEqual({ url: "/api/agents/h1/elevate", method: "PUT", body: { access: [{ type: "clax-artifacts", actions: ["update"], locations: ["*"] }] } });
-    click([...a.querySelectorAll("button")].find(b => b.textContent === "End")!);
+    click(a.querySelector('button[aria-label="End clax-multi-person"]')!);
     await settle();
     expect(calls.at(-1)).toEqual({ url: "/api/agents/h1", method: "DELETE", body: undefined });
     expect(onChanged).toHaveBeenCalledTimes(3);
@@ -71,7 +71,10 @@ describe("PersonCard", () => {
     const ask = vi.fn(() => true);
     vi.stubGlobal("confirm", ask);
     const m = mount(PersonCard, { view: "owner", who: person(), onChanged: vi.fn() });
-    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Revoke Sam")!);
+    // The name is the button's accessible name; its text is short, so a long name cannot widen the card.
+    const revoke = m.root.querySelector<HTMLButtonElement>('button[aria-label="Revoke Sam"]')!;
+    expect(revoke.textContent).toBe("Revoke");
+    click(revoke);
     await settle();
     expect(ask).toHaveBeenCalled();
     expect(calls.at(-1)).toEqual({ url: "/api/people/p1", method: "DELETE", body: undefined });
@@ -163,6 +166,57 @@ describe("PersonCard", () => {
     const m = mount(PersonCard, { view: "owner", who: person(), approvals: [ap("artifact", "a1"), ap("thread", "a2")], onChanged: vi.fn() });
     const rows = [...m.root.querySelectorAll(".approvals .line span:first-child")].map(s => s.textContent);
     expect(rows).toEqual(["Allowed on “Quarterly Review”", "Allowed in one thread on “Quarterly Review”"]);
+    expect(m.root.querySelector('.approvals button[aria-label="Always allow Sam"]')!.textContent).toBe("Always allow");
   });
 
+  it("keeps the keyboard's focus on a control while its change is in flight, and moves it to a heading when the control goes", async () => {
+    let answer: (v: Response) => void = () => {};
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(r => { answer = r; })));
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    const m = mount(PersonCard, { view: "owner", who: person(), onChanged: vi.fn() });
+    const panel = m.root.querySelector<HTMLDetailsElement>(".raise")!;
+    flush(() => { panel.open = true; });
+    const publish = byLabel(panel, "Publish new versions")!;
+    publish.focus();
+    publish.checked = true;
+    change(publish);
+    expect(m.root.querySelector("article")!.getAttribute("aria-busy")).toBe("true");
+    expect(publish.disabled).toBe(false);
+    expect(document.activeElement).toBe(publish);
+    // A second change while the first is in flight is ignored and put back.
+    const del = byLabel(panel, "Delete artifacts")!;
+    del.checked = true;
+    change(del);
+    expect(del.checked).toBe(false);
+    answer(new Response("{}"));
+    await settle();
+    expect(document.activeElement).toBe(publish);
+    // Ending the agent: its row goes, so the focus moves to the Agents heading.
+    const end = m.root.querySelector<HTMLButtonElement>('button[aria-label="End clax-multi-person"]')!;
+    end.focus();
+    click(end);
+    answer(new Response("{}"));
+    await settle();
+    expect(document.activeElement!.textContent).toBe("Agents");
+  });
+
+  it("focuses the new name on Rename, and Rename again on Save or Cancel", async () => {
+    stubFetch({ "PUT /api/agents/h1": { agent: {} } });
+    const m = mount(PersonCard, { view: "self", who: { public_id: "p1", display_name: "Sam", revoked_at: null, rights: COLLAB, grants: [grant()], agents: [agent()] }, onChanged: vi.fn() });
+    const rename = () => m.root.querySelector<HTMLButtonElement>('button[aria-label="Rename clax-multi-person"]');
+    click(rename()!);
+    await settle();
+    const input = m.root.querySelector<HTMLInputElement>(".rename input")!;
+    expect(document.activeElement).toBe(input);
+    click([...m.root.querySelectorAll(".rename button")].find(b => b.textContent === "Cancel")!);
+    await settle();
+    expect(document.activeElement).toBe(rename());
+    click(rename()!);
+    await settle();
+    flush(() => { const i = m.root.querySelector<HTMLInputElement>(".rename input")!; i.value = "sam-notes"; i.dispatchEvent(new Event("input", { bubbles: true })); });
+    flush(() => { m.root.querySelector(".rename")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    await settle();
+    expect(m.root.querySelector(".rename")).toBeNull();
+    expect(document.activeElement).toBe(rename());
+  });
 });
