@@ -116,6 +116,19 @@ class Draft {
   DraftSnapshot? get lastClean => _lastClean;
   DraftSnapshot? _lastClean;
 
+  /// The snapshot the latest render without uncaught errors rendered,
+  /// whatever its tests did, on the current [baseVersion]; a [reset]
+  /// clears it.
+  DraftSnapshot? get lastPageClean => _lastPageClean;
+  DraftSnapshot? _lastPageClean;
+
+  /// [lastPageClean] when it is built on the current [baseVersion], else
+  /// null: what a cap stop publishes when no render passed its tests.
+  DraftSnapshot? get pageCleanOnBase => switch (_lastPageClean) {
+    final c? when c.baseVersion == baseVersion => c,
+    _ => null,
+  };
+
   /// [lastClean] when it is built on the current [baseVersion], else null:
   /// the only snapshot a cap stop may publish.
   DraftSnapshot? get cleanOnBase => switch (_lastClean) {
@@ -183,6 +196,7 @@ class Draft {
       ..addAll(stagedDb);
     this.baseVersion = baseVersion;
     _lastClean = null;
+    _lastPageClean = null;
     _revision++;
   }
 
@@ -210,8 +224,9 @@ class Draft {
     _renderedRevision = rendered.revision;
     _lastRenderHadErrors = errors;
     _lastRenderFailedTests = testsFailed;
-    if (!errors && !testsFailed && rendered.baseVersion == baseVersion) {
-      _lastClean = rendered;
+    if (!errors && rendered.baseVersion == baseVersion) {
+      _lastPageClean = rendered;
+      if (!testsFailed) _lastClean = rendered;
     }
   }
 

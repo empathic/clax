@@ -43,6 +43,9 @@ class FakeInspector implements Inspector {
   /// Queues [e] as the next test run's answer, thrown.
   void failTests(InspectorError e) => _tests.add(e);
 
+  /// Queues a test run that answers only `cancelled`, once told to stop.
+  void hangTests() => _tests.add(#hang);
+
   @override
   Future<TestRun> runTests(
     Uri url, {
@@ -56,6 +59,10 @@ class FakeInspector implements Inspector {
         ? TestRun(passed: files.length, failed: const [], skipped: 0)
         : _tests.removeAt(0);
     if (next is InspectorError) throw next;
+    if (next == #hang) {
+      await cancelled;
+      throw const InspectorError('cancelled');
+    }
     return next as TestRun;
   }
 

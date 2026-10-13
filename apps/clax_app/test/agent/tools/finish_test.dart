@@ -1205,6 +1205,25 @@ void main() {
       });
     });
 
+    test('at the time cap with no render whose tests passed, publishes the '
+        'last render without uncaught errors and says checks failed', () async {
+      final r = await Rig.make();
+      await r.edit('Save', 'Keep');
+      await r.renderFailingTests();
+      await r.edit('Keep', 'Hold');
+      await r.renderBroken();
+      final o = await r.toolbox.stopAtCap('150 seconds');
+      expect(o, isA<RunFinished>().having((o) => o.version, 'version', 2));
+      expect(
+        r.api.filesOf(r.aid!, 2)['index.html'],
+        page.replaceFirst('Save', 'Keep'),
+      );
+      expect(
+        r.thread().comments.last.body,
+        endsWith('Some of its checks failed.'),
+      );
+    });
+
     test('publishes the documents staged at the clean render, not later '
         'ones', () async {
       final r = await Rig.make();
