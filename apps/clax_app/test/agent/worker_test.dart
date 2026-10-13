@@ -10,6 +10,7 @@ import 'package:clax_app/agent/loop.dart';
 import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/prompt.dart';
 import 'package:clax_app/agent/runner/scripted_runner.dart';
+import 'package:clax_app/agent/stops.dart';
 import 'package:clax_app/agent/worker.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
@@ -43,6 +44,7 @@ void main() {
   FeedbackWorker workerWith(
     List<List<ScriptedCall>> script, {
     FakeInspector? inspector,
+    StoppedThreads? stops,
   }) {
     runner = HeldRunner(script);
     final loop = AgentLoop(
@@ -65,6 +67,7 @@ void main() {
         return (await api.registerAppSession(installId: 'install', pid: 1)).id;
       },
       delay: (d) async => delays.add(d),
+      stops: stops,
     );
     worker.events.listen(events.add);
     return worker;
@@ -457,8 +460,8 @@ void main() {
     runner.gate = Completer<void>();
     final item = api.sendComment(aid, 'Say Keep');
     await runner.arrived.future;
-    expect(worker.cancelChange('other'), isFalse);
-    expect(worker.cancelChange(aid), isTrue);
+    expect(await worker.cancelChange('other'), isFalse);
+    expect(await worker.cancelChange(aid), isTrue);
     await until(() => events.last is WorkerCancelled);
     await idle();
     expect(api.currentVersion(aid), 1);
@@ -466,7 +469,69 @@ void main() {
     expect(t.comments, hasLength(1));
     expect(t.isOpen, isTrue);
     expect(api.callNames, isNot(contains('replyAsAgent')));
-    expect(worker.cancelChange(aid), isFalse, reason: 'nothing left to stop');
+    expect(await api.listDrafts(), isEmpty, reason: 'its draft is gone');
+    expect(
+      await worker.cancelChange(aid),
+      isFalse,
+      reason: 'nothing left to stop',
+    );
+  });
+
+  test('a stopped change is not run again at a restart, until a newer '
+      'comment on its thread', () async {
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    final stops = MemoryStoppedThreads();
+    workerWith([
+      changeCalls(edits: [('Save', 'Keep')]),
+      changeCalls(reply: 'Red.', edits: [('<button>', '<button class=red>')]),
+    ], stops: stops).start();
+    await idle();
+    runner.gate = Completer<void>();
+    final item = api.sendComment(aid, 'Say Keep');
+    await runner.arrived.future;
+    await worker.cancelChange(aid);
+    await until(() => events.last is WorkerCancelled);
+    runner.gate = null;
+    expect(await stops.all(), {item.threadId: item.commentId});
+
+    // A restart: the worker registers again and recovers.
+    await worker.stop();
+    api.releasePolls();
+    final before = registrations;
+    worker.start();
+    await until(() => registrations > before);
+    await idle();
+    expect(runner.seen, hasLength(1), reason: 'the stopped thread waits');
+    expect(api.currentVersion(aid), 1);
+
+    // A newer comment on the thread takes it up again.
+    await api.postOwnerComment(aid, item.threadId, 'make it red after all');
+    await worker.stop();
+    api.releasePolls();
+    worker.start();
+    await until(() => runner.seen.length == 2);
+    await idle();
+    expect(await stops.all(), isEmpty);
+    expect(api.currentVersion(aid), 2);
+  });
+
+  test('Retry runs a stopped change again', () async {
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    workerWith([
+      changeCalls(edits: [('Save', 'Keep')]),
+      changeCalls(edits: [('Save', 'Keep')]),
+    ]).start();
+    await idle();
+    runner.gate = Completer<void>();
+    final item = api.sendComment(aid, 'Say Keep');
+    await runner.arrived.future;
+    await worker.cancelChange(aid);
+    await until(() => events.last is WorkerCancelled);
+    runner.gate = null;
+    await idle();
+    expect(await worker.retry(aid, item.threadId), isTrue);
+    await until(() => events.last is WorkerLanded);
+    expect(api.currentVersion(aid), 2);
   });
 
   test('a reply names the threads it answered', () async {

@@ -9,6 +9,7 @@ import 'failure.dart';
 import 'loop.dart';
 import 'plan.dart';
 import 'progress.dart';
+import 'stops.dart';
 
 /// What the worker is doing, for the UI. Every [WorkerWorking] is followed
 /// by any number of [WorkerProgress] events and then exactly one of the
@@ -229,7 +230,9 @@ class FeedbackWorker {
     void Function(String line)? log,
     this.concurrency = maxConcurrent,
     DateTime Function()? now,
+    StoppedThreads? stops,
   }) : assert(concurrency > 0),
+       _stops = stops ?? MemoryStoppedThreads(),
        _made = (now ?? DateTime.now)(),
        _delay = delay ?? Future<void>.delayed,
        _log = log ?? ((_) {});
@@ -293,6 +296,16 @@ class FeedbackWorker {
   /// The cancel of each app's going change job.
   final _changeCancels = <String, Completer<void>>{};
 
+  /// The threads of each app's going change job.
+  final _changeThreads = <String, Set<String>>{};
+
+  /// Where stopped threads are kept, and their copy here (read once,
+  /// before the first recovery): thread ID to the newest viewer comment at
+  /// the stop ('' until read).
+  final StoppedThreads _stops;
+  final _stopped = <String, String>{};
+  var _stopsRead = false;
+
   /// The first wait after a failed poll; it doubles up to [maxBackoff].
   static const firstBackoff = Duration(milliseconds: 250);
   static const maxBackoff = Duration(seconds: 10);
@@ -348,17 +361,69 @@ class FeedbackWorker {
 
   /// Stops [appId]'s change: a running one is cancelled (it publishes and
   /// replies nothing, and ends [WorkerCancelled]), and its queued comments
-  /// are dropped. Their threads stay open and unanswered, so the next
-  /// recovery (the next start or registration) runs them again, as does a
-  /// new comment on them. Answers whether there was a change to stop.
-  bool cancelChange(String appId) {
-    final before = _queue.length;
-    _queue.removeWhere((j) => !j.build && j.artifactId == appId);
-    final dropped = _queue.length != before;
+  /// are dropped. Their threads stay open and unanswered, and are kept as
+  /// stopped ([StoppedThreads]): no recovery runs them, after a restart
+  /// too, until a newer comment arrives on one or [retry] runs it. Answers
+  /// whether there was a change to stop.
+  Future<bool> cancelChange(String appId) async {
+    final threads = <String>{};
+    _queue.removeWhere((j) {
+      if (j.build || j.artifactId != appId) return false;
+      threads
+        ..addAll(j.recheck)
+        ..addAll(j.items.map((i) => i.threadId));
+      return true;
+    });
     final c = _changeCancels[appId];
-    final running = c != null && !c.isCompleted;
-    if (running) c.complete();
-    return dropped || running;
+    if (c != null && !c.isCompleted) {
+      threads.addAll(_changeThreads[appId] ?? const {});
+      c.complete();
+    }
+    if (threads.isEmpty) return false;
+    for (final t in threads) {
+      _stopped[t] = '';
+    }
+    // Each stop is kept at the thread's newest viewer comment.
+    var views = const <ThreadView>[];
+    try {
+      views = await _api.threads(appId);
+    } on ClaxApiError catch (e) {
+      _log('stop of $appId: threads unavailable: $e');
+    }
+    for (final tid in threads) {
+      final at = _newestViewer(views.where((t) => t.id == tid).firstOrNull);
+      if (_stopped[tid] != '') continue;
+      _stopped[tid] = at ?? '';
+      await _quietStops(() => _stops.put(tid, at ?? ''));
+    }
+    return true;
+  }
+
+  static String? _newestViewer(ThreadView? t) =>
+      t?.comments.where((c) => c.authorKind == 'viewer').lastOrNull?.id;
+
+  Future<void> _quietStops(Future<void> Function() f) async {
+    try {
+      await f();
+    } on Object catch (e) {
+      _log('keeping stopped threads failed: $e');
+    }
+  }
+
+  /// Thread [tid] is no longer stopped.
+  void _unstop(String tid) {
+    if (_stopped.remove(tid) == null) return;
+    unawaited(_quietStops(() => _stops.remove(tid)));
+  }
+
+  /// Whether [t] is stopped and has no viewer comment since; one with a
+  /// newer comment is no longer stopped.
+  bool _isStopped(ThreadView t) {
+    final at = _stopped[t.id];
+    if (at == null) return false;
+    if (at.isEmpty || at == _newestViewer(t)) return true;
+    _unstop(t.id);
+    return false;
   }
 
   /// Takes up [appId]'s stopped or failed build again.
@@ -608,6 +673,14 @@ class FeedbackWorker {
             _swept = true;
             await _sweepDrafts();
           }
+          if (!_stopsRead) {
+            _stopsRead = true;
+            try {
+              _stopped.addAll(await _stops.all());
+            } on Object catch (e) {
+              _log('stopped threads unavailable: $e');
+            }
+          }
           await _recover();
         }
         final batch = await _api.pollFeedback(_sid!, wait: _pollWait);
@@ -638,6 +711,11 @@ class FeedbackWorker {
   void _enqueue(List<FeedbackItem> items) {
     final byArtifact = <String, List<FeedbackItem>>{};
     for (final i in items) {
+      // A new comment on a stopped thread takes it up again.
+      if (_stopped[i.threadId] case final at? when at != i.commentId) {
+        _unstop(i.threadId);
+      }
+      if (_stopped.containsKey(i.threadId)) continue;
       byArtifact.putIfAbsent(i.artifactId, () => []).add(i);
     }
     for (final e in byArtifact.entries) {
@@ -757,6 +835,7 @@ class FeedbackWorker {
     final threads = {...job.recheck, ...job.items.map((i) => i.threadId)};
     _running.addAll(threads);
     final cancel = _changeCancels[aid] = Completer<void>();
+    _changeThreads[aid] = threads;
     try {
       final items = await _withRechecked(job);
       if (!_started || cancel.isCompleted) return;
@@ -786,7 +865,10 @@ class FeedbackWorker {
       }
     } finally {
       _running.removeAll(threads);
-      if (identical(_changeCancels[aid], cancel)) _changeCancels.remove(aid);
+      if (identical(_changeCancels[aid], cancel)) {
+        _changeCancels.remove(aid);
+        _changeThreads.remove(aid);
+      }
     }
   }
 
@@ -988,8 +1070,8 @@ class FeedbackWorker {
     return out.isEmpty ? null : out;
   }
 
-  /// Runs the failed change of thread [tid] on [aid] again, without
-  /// posting anything: its comments are queued as they were. Answers
+  /// Runs the failed or stopped change of thread [tid] on [aid] again,
+  /// without posting anything: its comments are queued as they were. Answers
   /// whether a change was queued: false when the worker is not running,
   /// the thread is already queued or running, or its last comment is not
   /// this app's failure reply (it was answered or written on since).
@@ -1003,6 +1085,17 @@ class FeedbackWorker {
       return false;
     }
     if (t == null || !t.isOpen || !_started || _known(aid, tid)) return false;
+    if (_stopped.containsKey(tid)) {
+      // A stopped change runs again with the comments it had.
+      final items = [
+        for (final c in pendingComments(t)) _item(aid, t, c),
+      ];
+      if (items.isEmpty) return false;
+      _unstop(tid);
+      _queue.add(_Job(aid, items: items));
+      _kick();
+      return true;
+    }
     final kept = switch (_failed[tid]) {
       final k? when k.artifactId == aid => k,
       _ => null,
@@ -1044,7 +1137,8 @@ class FeedbackWorker {
         }
         final stranded = {
           for (final t in at.threads)
-            if (t.stranded && !_known(at.artifactId, t.id)) t.id,
+            if (t.stranded && !_known(at.artifactId, t.id) && !_isStopped(t))
+              t.id,
         };
         if (stranded.isNotEmpty) {
           jobs.add(_Job(at.artifactId, recheck: stranded));
