@@ -1314,7 +1314,7 @@ async fn a_codex_hook_finds_its_shims_session_by_its_parent_and_never_by_a_reuse
     v["session"] = json!(other.session.id);
     v["secret"] = json!(other.secret.unwrap().expose());
     v["harness_session_id"] = Value::Null;
-    v["parent_started_us"] = json!(1);
+    v["parent_started_s"] = json!(1);
     std::fs::write(&ppid, v.to_string()).unwrap();
     let input = json!({"session_id": "x-2", "cwd": "/w"});
     let out = m.hook("codex", "stop", &input).await;

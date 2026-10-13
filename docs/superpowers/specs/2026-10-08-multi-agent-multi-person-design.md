@@ -919,11 +919,11 @@ so that narrowing and elevation (§7.4) bind exactly one agent.
   with a parent PID is also named `<harness>-p-<parent PID>.json`, for the
   clients that know their harness process but not its session ID (Codex's
   shim); that file also records when the parent process started, in
-  microseconds since the epoch, read from the kernel (macOS: the process's
-  BSD info through `proc_pidinfo`; Linux: `/proc/<pid>/stat` field 22 and
-  the boot time), never from text that depends on the locale or the time
-  zone (elsewhere, `ps -o lstart` in the C locale and UTC, to the second),
-  and it is written only when that can be told. A parent-PID file that
+  seconds since the epoch, read from the kernel through the `sysinfo`
+  crate on macOS and Linux, never from text that depends on the locale or
+  the time zone (elsewhere, `ps -o lstart` in the C locale and UTC), and
+  it is written only when that can be told. PIDs are handed out in turn,
+  so a PID reused within the same second would need a full wrap. A parent-PID file that
   holds another session of the same process is kept, not replaced: one
   harness process may hold several sessions. The three forms never share
   a name.
@@ -2273,3 +2273,6 @@ task, with recommendations; the owner took every recommendation
   removes nothing;
   credential files are opened with `O_NOFOLLOW` through the directory's
   handle and must be regular files.
+- **Amendment** (2026-10-13, ruling): the parent process's start is read
+  through `sysinfo`, to the second, rather than `libproc`, whose build
+  needs libclang and the Command Line Tools SDK on every macOS build.
