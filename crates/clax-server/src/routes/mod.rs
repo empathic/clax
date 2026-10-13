@@ -388,6 +388,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
     let shell_routes = Router::new()
         .route("/", get(shell::gallery_page))
         .route("/inbox", get(shell::gallery_page))
+        .route("/people", get(shell::gallery_page))
         .route("/a/{aid}", get(shell::artifact_page))
         .route("/a/{aid}/", get(shell::artifact_page))
         .route("/a/{aid}/v/{n}", get(shell::artifact_page))

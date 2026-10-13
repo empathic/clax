@@ -1874,14 +1874,21 @@ agents not to.
 
 ## 26. Open questions
 
-- **UI questions for the owner, in one batch before the first UI task**
-  (recommendations in brackets): (a) People as its own page [own page] or a
-  tab of the inbox; (b) the approval card: four buttons [four] or "Allow ▾"
-  with scopes in a menu; (c) the agent strip: chips above the inbox
-  [chips] or a left rail on wide screens; (d) withheld content on the
-  approver's card: first 3 lines then "Show all" [yes] or collapsed; (e)
-  the owner chip on thread cards: name only [name only] or name and person
-  always.
+None. The UI questions went to the owner in one batch before the first UI
+task, with recommendations; the owner took every recommendation
+(2026-10-09):
+
+- (a) People is a page of its own, `/people`, linked as **People** from the
+  gallery's header (not a tab of the inbox).
+- (b) The approval card has four buttons, the ones §9.5 names (this
+  thread, including later replies; this page; everywhere; decline), not
+  "Allow ▾" with scopes in a menu.
+- (c) The agent strip is a row of chips above the inbox, not a left rail.
+- (d) Withheld content on the approver's card shows its first 3 lines, then
+  "Show all".
+- (e) The owner chip on thread cards shows the agent's name only; its
+  person shows on hover, or with the name when the agent is another
+  person's.
 
 ## Revision history
 
@@ -2071,3 +2078,5 @@ agents not to.
   - §9.6 and §19 item 7: unattributed history is marked `(not connected)`
     too, the owner's own included (the owner's decision, 2026-10-12: "Keep
     the mark", record 7fdbaaf5).
+- **Amendment** (2026-10-12, plan Task 20): §26 records the owner's answers
+  to the UI questions (2026-10-09: every recommendation).

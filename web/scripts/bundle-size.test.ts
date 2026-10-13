@@ -40,9 +40,13 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
   // lazy module's own import (which the artifact view has not loaded), and
   // one file of its own.
   for (const f of ["w.js", "as.js", "s.js", "q.js", "qd.js"]) dist(`_clax/shell/${f}`, f.repeat(100));
+  // The People page imports the gallery's lazy module's import too, and one file of its own.
+  for (const f of ["p.js", "pd.js"]) dist(`_clax/shell/${f}`, f.repeat(100));
   dist(".vite/manifest.json", JSON.stringify({
     "index.html": { file: "_clax/shell/a.js" }, "artifact.html": { file: "_clax/shell/a.js" },
-    "src/ui/gallery-working.ts": { file: "_clax/shell/w.js", isDynamicEntry: true, imports: ["index.html", "_s.js"], dynamicImports: ["_index-q.js"] },
+    "src/ui/gallery-working.ts": { file: "_clax/shell/w.js", isDynamicEntry: true, imports: ["index.html", "_s.js"], dynamicImports: ["_index-q.js", "src/people/People.svelte"] },
+    "src/people/People.svelte": { file: "_clax/shell/p.js", isDynamicEntry: true, imports: ["index.html", "_s.js", "_pd.js"] },
+    "_pd.js": { file: "_clax/shell/pd.js" },
     "src/view/artifact-stream.ts": { file: "_clax/shell/as.js", isDynamicEntry: true, imports: ["artifact.html"], dynamicImports: ["_index-q.js"] },
     "src/ui/MoreMenu.svelte": { file: "_clax/shell/as.js", isDynamicEntry: true },
     "src/ui/Who.svelte": { file: "_clax/shell/as.js", isDynamicEntry: true },
@@ -76,7 +80,7 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
 }
 
 describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
-  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partRoom: 10_000, partSample: 10_000, extOverlay: 10_000, extWorker: 10_000, extComposer: 10_000, extPanel: 10_000, questions: 10_000 };
+  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partRoom: 10_000, partSample: 10_000, extOverlay: 10_000, extWorker: 10_000, extComposer: 10_000, extPanel: 10_000, questions: 10_000, people: 10_000 };
 
   it("passes within budget", () => {
     expect(run(full).status).toBe(0);
@@ -217,10 +221,21 @@ describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
     expect(r.stderr).toContain("questions");
   });
 
+  it("counts the People page with what it imports beyond the gallery and its lazy module", () => {
+    const size = (r: ReturnType<typeof run>) => Number(/people (\d+)/.exec(r.stdout)?.[1]);
+    const p = size(run(full));
+    const one = (f: string) => pako.gzip(f.repeat(100), { level: 9 }).length;
+    expect(p).toBe(one("p.js") + one("pd.js"));
+    rmSync(root, { recursive: true, force: true });
+    const r = run({ ...full, people: p - 1 });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("people");
+  });
+
   it("never records the extension's ceilings or the question module's, nor adds a missing one", () => {
     expect(run(full, ENTRY, ["--record"]).status).toBe(0);
     const recorded = JSON.parse(readFileSync(join(root, "web/perf/bundle-budget.json"), "utf8"));
-    for (const k of ["extOverlay", "extWorker", "extComposer", "extPanel", "questions"]) expect(recorded[k], k).toBe(10_000);
+    for (const k of ["extOverlay", "extWorker", "extComposer", "extPanel", "questions", "people"]) expect(recorded[k], k).toBe(10_000);
     expect(recorded.gallery).toBeLessThan(10_000);
     rmSync(root, { recursive: true, force: true });
     const { extPanel: _, ...noPanel } = full;

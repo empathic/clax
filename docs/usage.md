@@ -263,6 +263,16 @@ just dev claude --resume  # extra arguments go to the harness
   plugin, with your own `~/.grok`, on the fresh build and `~/.clax-dev`. To
   try plugin, skill or hook changes in Grok, run `just install`.
 
+**A second person: `scripts/dev-second-person.sh <invite>`.** To try People
+(`/people`) and the other multi-person surfaces alone, run the dev daemon on
+the LAN (`just watch --bind 0.0.0.0`), open People as the owner
+(http://localhost:7481/people), choose **Invite a person**, and pass the
+command's invite URL to the script. It connects a scratch Clax home (never
+`~/.clax` or the dev home) as that person's machine, prints the browser link
+that makes a browser that person (open it at the LAN address), and
+registers one agent of theirs. `scripts/dev-second-person.sh --off <home>`
+disconnects it and removes the home.
+
 Edit the plugin, skill or hooks, then start a new `just dev` session to pick
 them up. A dev-home daemon left by an earlier `just dev`, whose temporary
 binary is gone, is stopped at the next `just dev` or `just watch`, which says

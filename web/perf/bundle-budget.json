@@ -12,5 +12,6 @@
   "extOverlay": 32768,
   "extWorker": 24576,
   "extComposer": 28672,
-  "extPanel": 65536
+  "extPanel": 65536,
+  "people": 16384
 }

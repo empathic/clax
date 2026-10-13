@@ -229,3 +229,62 @@ export type InboxSummary = { unread: number; questions: QuestionView[]; latest: 
 /** The inbox page's search: text (`q`), kinds, an artifact ID, an agent
  * (harness or handle), dates (`YYYY-MM-DD` or RFC 3339), and read state. */
 export type InboxFilter = { q?: string; kind?: InboxKind[]; artifact?: string; agent?: string; since?: string; until?: string; read?: "unread" | "read" | "all" };
+
+// People (spec 2026-10-08-multi-agent-multi-person §6, §7.4, §9, §17). The
+// owner's and a connected person's People page reads these; its fetchers
+// load with the page (`people/api.ts`). Names are people's and agents'
+// text: untrusted, rendered as text.
+
+/** A GNAP access object (§7.1): `locations` are `*`, `own`, artifact IDs
+ * (and, in computed rights, `own:<id>`); `level` is the db level. */
+export type Access = { type: string; actions: string[]; locations?: string[]; level?: string };
+/** A rights array: what any one access object allows. */
+export type Rights = Access[];
+/** A connected machine (a grant), as the owner and its person see it. */
+export type PeopleGrant = {
+  id: string; status: string; via: string;
+  /** `key` is the key's fingerprint (`SHA256:…`). */
+  client: { name: string; key: string | null; peer_ip: string };
+  person: { public_id: string; display_name: string | null } | null;
+  /** A machine of the owner's. */
+  owner: boolean;
+  narrow: Rights | null;
+  created_at: string; decided_at: string | null; last_used_at: string | null; ended_at: string | null; ended_by: string | null;
+};
+/** A live agent with its narrowing, elevation and effective rights;
+ * `grant_id` and `rights` are null for an agent of the daemon's own
+ * machine, which rights do not limit. */
+export type PeopleAgent = {
+  handle: string; name: string; harness: string; person: string | null; grant_id: string | null; started_at: string;
+  narrow: Rights | null; elevate: Rights | null; rights: Rights | null;
+};
+/** A person as the owner's People lists them; `revoked_at` once revoked. */
+export type PeoplePerson = {
+  public_id: string; display_name: string | null; revoked_at: string | null;
+  rights: Rights; grants: PeopleGrant[]; agents: PeopleAgent[];
+};
+/** `GET /api/people/me`: the caller, their machines and their live agents. */
+export type PeopleMe = {
+  person: { public_id: string | null; display_name: string | null; owner: boolean; rights: Rights };
+  grants: PeopleGrant[]; agents: PeopleAgent[];
+};
+/** `GET /api/people`: everyone, and the `*unconnected` switch (§9.6). */
+export type PeopleList = { people: PeoplePerson[]; unconnected: { on: boolean; approval_id: string | null } };
+export type PeopleInvite = {
+  id: string; person: { public_id: string | null; display_name: string | null }; owner: boolean;
+  created_at: string; expires_at: string; used_at: string | null; grant_id: string | null; revoked_at: string | null;
+};
+/** A new invite: `command` carries its code, shown this once. */
+export type NewInvite = { id: string; command: string; expires_at: string; person: { public_id: string | null; display_name: string | null } };
+/** An approval: `approver`'s agents may see `author`'s content at `scope`. */
+export type PeopleApproval = {
+  id: string; approver: string | null; author: { public_id: string | null; name: string };
+  scope: "thread" | "artifact" | "everywhere"; artifact_id: string | null; thread_id: string | null;
+  created_at: string; created_via: string; request_id: string | null;
+};
+/** An approval request, never with the withheld content. */
+export type PeopleRequest = {
+  id: string; author: { public_id: string; name: string }; artifact_id: string; thread_id: string | null;
+  agent: { handle: string | null; name: string; harness: string; live: boolean } | null;
+  cause: string; count: number; status: string; created_at: string;
+};

@@ -387,6 +387,67 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
   });
 });
 
+describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
+  beforeEach(() => { vi.resetModules(); FakeWorker.all = []; vi.stubGlobal("SharedWorker", FakeWorker); });
+  afterEach(() => { unmountGallery?.(); unmountGallery = null; vi.unstubAllGlobals(); document.body.replaceChildren(); history.replaceState(null, "", "/"); });
+  const COLLAB = [{ type: "clax-artifacts", actions: ["read"], locations: ["*"] }];
+  /** The routes as a browser sees them: the owner's (the token is served), a connected person's, or a LAN viewer's. */
+  function stubAs(who: "owner" | "person" | "viewer") {
+    const calls: Call[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, method: init?.method ?? "GET" });
+      const ok = (b: unknown) => new Response(JSON.stringify(b));
+      if (url === "/api/token") return who === "owner" ? ok({ token: "t" }) : new Response("{}", { status: 403 });
+      if (url === "/api/viewers/me") return ok({ viewer: { public_id: "v1", display_name: "Sam", created_at: "", ...who === "person" && { person: true } } });
+      if (url === "/api/artifacts") return ok({ artifacts: ARTIFACTS });
+      if (url === "/api/people/me") return who === "viewer" ? new Response(JSON.stringify({ error: { code: "forbidden", message: "only the owner or a connected person has People" } }), { status: 403 }) : ok({ person: { public_id: "v1", display_name: "Sam", owner: who === "owner", rights: COLLAB }, grants: [], agents: [] });
+      if (url === "/api/people") return ok({ people: [], unconnected: { on: true, approval_id: "ap" } });
+      if (url === "/api/people/invites") return ok({ invites: [] });
+      if (url.startsWith("/api/grants")) return ok({ grants: [] });
+      if (url === "/api/approvals") return ok({ approvals: [] });
+      if (url.startsWith("/api/approvals/requests")) return ok({ requests: [], open: 0, banner: null });
+      if (/^\/api\/(inbox|questions)/.test(url)) return ok(url.startsWith("/api/inbox/summary") ? { unread: 0, questions: [], latest: [] } : { questions: [], open: 0 });
+      return new Response("{}", { status: 404 });
+    }));
+    return calls;
+  }
+  async function mountAt(path: string) {
+    history.replaceState(null, "", path);
+    const { default: Gallery } = await import("./ui/Gallery.svelte");
+    const { mount } = await import("./test/svelte");
+    const { root, unmount } = mount(Gallery, {});
+    unmountGallery = unmount;
+    return root;
+  }
+
+  it("shows People in the header to the owner and to a connected person, and not to a LAN viewer", async () => {
+    for (const who of ["owner", "person"] as const) {
+      stubAs(who);
+      const root = await mountAt("/");
+      const link = await waitFor(() => root.querySelector<HTMLAnchorElement>(".gbar a.people-link"), `People for the ${who}`);
+      expect(link.getAttribute("href")).toBe("/people");
+      expect(link.hasAttribute("aria-current")).toBe(false);
+      unmountGallery!(); unmountGallery = null; vi.resetModules();
+    }
+    const calls = stubAs("viewer");
+    const root = await mountAt("/");
+    await waitFor(() => root.querySelector("a.card"), "the cards");
+    await waitFor(() => calls.some(c => c.url === "/api/viewers/me") && calls.some(c => c.url === "/api/token"), "the viewer and token requests");
+    await new Promise(r => setTimeout(r, 50));
+    expect(root.querySelector(".people-link")).toBeNull();
+  });
+
+  it("is the People page at /people: no artifacts are fetched, and the page follows the people and agents topics", async () => {
+    const calls = stubAs("owner");
+    const root = await mountAt("/people");
+    await waitFor(() => root.querySelector(".ppl .person"), "the People page");
+    expect(root.querySelector(".gbar a.people-link")!.getAttribute("aria-current")).toBe("page");
+    expect(root.querySelector(".gbar .search")).toBeNull();
+    expect(calls.some(c => c.url === "/api/artifacts")).toBe(false);
+    await workerWith("people", "agents");
+  });
+});
+
 describe("getToken", () => {
   beforeEach(() => { vi.resetModules(); });
   afterEach(() => { vi.unstubAllGlobals(); });
