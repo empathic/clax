@@ -1,6 +1,7 @@
-/// Which device capabilities the person allowed each app, kept until they
-/// revoke them (the app inspector lists them with [DeviceGrants.list] and
-/// revokes with [DeviceGrants.revoke]).
+/// What the person answered each app for each device capability, Allow or
+/// Don't allow, kept until they revoke it (the app inspector lists the
+/// answers with [DeviceGrants.list] and revokes with
+/// [DeviceGrants.revoke]; then the next call asks again).
 library;
 
 import 'dart:async';
@@ -8,72 +9,99 @@ import 'dart:convert';
 import 'dart:io';
 
 /// The device capabilities, in the order they are listed.
-const deviceCaps = ['notify', 'share', 'files', 'camera', 'location'];
+const deviceCaps = ['notify', 'share', 'file', 'camera', 'location'];
 
 /// What each device capability lets an app do, in words for the person.
 const deviceCapWords = {
   'notify': 'send you notifications and reminders',
   'share': 'share text and files through other apps',
-  'files': 'open files you pick and save files where you choose',
+  'file': 'open files you pick and save files where you choose',
   'camera': 'take photos and pick photos from your library',
   'location': 'see where your device is',
 };
 
+/// The person's answer for one app and capability, and when.
+class DeviceDecision {
+  const DeviceDecision({required this.allowed, required this.at});
+
+  final bool allowed;
+  final DateTime at;
+
+  @override
+  bool operator ==(Object other) =>
+      other is DeviceDecision && other.allowed == allowed && other.at == at;
+
+  @override
+  int get hashCode => Object.hash(allowed, at);
+
+  @override
+  String toString() => 'DeviceDecision(allowed: $allowed, at: $at)';
+}
+
 abstract interface class DeviceGrants {
-  /// Whether the person allowed app [aid] to use [cap].
-  Future<bool> granted(String aid, String cap);
+  /// The person's answer for app [aid] and [cap]; null when never asked
+  /// (or revoked since).
+  Future<DeviceDecision?> decision(String aid, String cap);
 
-  Future<void> grant(String aid, String cap);
+  /// Keeps the person's answer for app [aid] and [cap].
+  Future<void> decide(String aid, String cap, {required bool allowed});
 
-  /// Takes [cap] back from app [aid]; its next call asks again.
+  /// Forgets app [aid]'s answer for [cap]; its next call asks again.
   Future<void> revoke(String aid, String cap);
 
-  /// App [aid]'s grants, capability to when it was allowed, in
-  /// [deviceCaps] order.
-  Future<Map<String, DateTime>> list(String aid);
+  /// Forgets every answer of app [aid] (it was deleted).
+  Future<void> forget(String aid);
 
-  /// The ID of each app whose grants changed.
+  /// App [aid]'s answers, in [deviceCaps] order.
+  Future<Map<String, DeviceDecision>> list(String aid);
+
+  /// The ID of each app whose answers changed.
   Stream<String> get changes;
 }
+
+Map<String, DeviceDecision> _ordered(Map<String, DeviceDecision>? m) => {
+  for (final c in deviceCaps) c: ?m?[c],
+};
 
 /// [DeviceGrants] kept in memory, for tests and as a fallback.
 class MemoryDeviceGrants implements DeviceGrants {
   MemoryDeviceGrants({DateTime Function()? now}) : _now = now ?? DateTime.now;
 
   final DateTime Function() _now;
-  final _grants = <String, Map<String, DateTime>>{};
+  final _all = <String, Map<String, DeviceDecision>>{};
   final _changes = StreamController<String>.broadcast();
 
   @override
-  Future<bool> granted(String aid, String cap) async =>
-      _grants[aid]?.containsKey(cap) ?? false;
+  Future<DeviceDecision?> decision(String aid, String cap) async =>
+      _all[aid]?[cap];
 
   @override
-  Future<void> grant(String aid, String cap) async {
-    (_grants[aid] ??= {})[cap] = _now();
+  Future<void> decide(String aid, String cap, {required bool allowed}) async {
+    (_all[aid] ??= {})[cap] = DeviceDecision(allowed: allowed, at: _now());
     _changes.add(aid);
   }
 
   @override
   Future<void> revoke(String aid, String cap) async {
-    if (_grants[aid]?.remove(cap) != null) _changes.add(aid);
+    if (_all[aid]?.remove(cap) != null) _changes.add(aid);
   }
 
   @override
-  Future<Map<String, DateTime>> list(String aid) async =>
-      _ordered(_grants[aid]);
+  Future<void> forget(String aid) async {
+    if (_all.remove(aid) != null) _changes.add(aid);
+  }
+
+  @override
+  Future<Map<String, DeviceDecision>> list(String aid) async =>
+      _ordered(_all[aid]);
 
   @override
   Stream<String> get changes => _changes.stream;
 }
 
-Map<String, DateTime> _ordered(Map<String, DateTime>? m) => {
-  for (final c in deviceCaps) c: ?m?[c],
-};
-
 /// [DeviceGrants] in one JSON file (`<support>/device-grants.json`):
-/// `{"<app ID>": {"<capability>": "<ISO time allowed>"}}`. A save writes a
-/// sibling temporary file and renames it over the old one.
+/// `{"<app ID>": {"<capability>": {"allowed": bool, "at": "<ISO time>"}}}`.
+/// A save writes a sibling temporary file and renames it over the old one.
 class FileDeviceGrants implements DeviceGrants {
   FileDeviceGrants(this.file, {DateTime Function()? now})
     : _now = now ?? DateTime.now;
@@ -82,7 +110,15 @@ class FileDeviceGrants implements DeviceGrants {
   final DateTime Function() _now;
   final _changes = StreamController<String>.broadcast();
 
-  Map<String, Map<String, DateTime>> _read() {
+  static DeviceDecision? _parse(Object? v) {
+    if (v is! Map || v['allowed'] is! bool || v['at'] is! String) return null;
+    final at = DateTime.tryParse(v['at'] as String);
+    return at == null
+        ? null
+        : DeviceDecision(allowed: v['allowed'] as bool, at: at);
+  }
+
+  Map<String, Map<String, DeviceDecision>> _read() {
     try {
       final j = jsonDecode(file.readAsStringSync());
       if (j is! Map) return {};
@@ -90,9 +126,8 @@ class FileDeviceGrants implements DeviceGrants {
         for (final MapEntry(:key, :value) in j.entries)
           if (key is String && value is Map)
             key: {
-              for (final MapEntry(key: c, value: at) in value.entries)
-                if (c is String && deviceCaps.contains(c) && at is String)
-                  c: ?DateTime.tryParse(at),
+              for (final MapEntry(key: c, value: d) in value.entries)
+                if (c is String && deviceCaps.contains(c)) c: ?_parse(d),
             },
       };
     } on FileSystemException {
@@ -102,7 +137,7 @@ class FileDeviceGrants implements DeviceGrants {
     }
   }
 
-  void _write(Map<String, Map<String, DateTime>> all) {
+  void _write(Map<String, Map<String, DeviceDecision>> all) {
     file.parent.createSync(recursive: true);
     final tmp = File('${file.path}.tmp');
     tmp.writeAsStringSync(
@@ -110,8 +145,8 @@ class FileDeviceGrants implements DeviceGrants {
         for (final MapEntry(:key, :value) in all.entries)
           if (value.isNotEmpty)
             key: {
-              for (final MapEntry(key: c, value: at) in value.entries)
-                c: at.toUtc().toIso8601String(),
+              for (final MapEntry(key: c, value: d) in value.entries)
+                c: {'allowed': d.allowed, 'at': d.at.toUtc().toIso8601String()},
             },
       }),
       flush: true,
@@ -120,13 +155,13 @@ class FileDeviceGrants implements DeviceGrants {
   }
 
   @override
-  Future<bool> granted(String aid, String cap) async =>
-      _read()[aid]?.containsKey(cap) ?? false;
+  Future<DeviceDecision?> decision(String aid, String cap) async =>
+      _read()[aid]?[cap];
 
   @override
-  Future<void> grant(String aid, String cap) async {
+  Future<void> decide(String aid, String cap, {required bool allowed}) async {
     final all = _read();
-    (all[aid] ??= {})[cap] = _now();
+    (all[aid] ??= {})[cap] = DeviceDecision(allowed: allowed, at: _now());
     _write(all);
     _changes.add(aid);
   }
@@ -140,7 +175,15 @@ class FileDeviceGrants implements DeviceGrants {
   }
 
   @override
-  Future<Map<String, DateTime>> list(String aid) async =>
+  Future<void> forget(String aid) async {
+    final all = _read();
+    if (all.remove(aid) == null) return;
+    _write(all);
+    _changes.add(aid);
+  }
+
+  @override
+  Future<Map<String, DeviceDecision>> list(String aid) async =>
       _ordered(_read()[aid]);
 
   @override
