@@ -2116,6 +2116,7 @@ shell in subdomain mode and an opaque origin in sandbox mode):
 | `submitDraft()` | Presses Send on the open composer, waiting for its screenshot as Send does. |
 | `cancelDraft()` | Closes the composer. |
 | `openThread(id)` | Selects the thread and brings it into view. |
+| `focusThread(id)` | The app's own thread view opened on thread `id`: its area stays outlined while the view is open, until `focusThread(null)` (the view closed) or comment mode ends. An ID of no listed thread clears it. |
 | `resend(id)` | Sends an open thread that is not yet sent (after `sendFailed`), as Send does. |
 | `attestPointer({pointer, phase, x, y})` | A real finger press (`down`) or release (`up`) the app saw reach the WebView, at CSS pixels in its viewport (see "The viewer's gesture in the Clax app" below). |
 | `deviceResult({id, ok, value})` / `deviceResult({id, ok: false, error: {code, message}})` | The app's answer to a `device` message; an ID no call waits on is dropped. |
