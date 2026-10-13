@@ -20,6 +20,7 @@ import 'swipe.dart';
 import 'thread_detail.dart';
 import 'threads_panel.dart';
 import 'versions_tab.dart';
+import 'working_chip.dart';
 
 /// One app, full screen: the shell's app mode in [surface], with the
 /// threads and versions panel, dictation into the shell's composer, and the
@@ -59,13 +60,20 @@ import 'versions_tab.dart';
 /// - **Dictation.** A pick (the composer opening) starts dictation when
 ///   [AppSettings.dictateComments] is on; heard words replace what
 ///   dictation added to the composer's text.
-/// - **Working chip and timing** ([ChangeTracker]). Each change is kept by
-///   its thread, from the shell's `sent` or the worker's start to the
-///   frame that shows its version, whatever order those come in. The
-///   long-press→landed timing runs from Send to that frame. A reply
-///   without a version, a failure, a cancel or a failed send ends the
-///   chip and shows which it was (Retry for a failed send). The chip can
-///   always be dismissed.
+/// - **Working chip and timing** ([ChangeTracker], [WorkingChip]). Each
+///   change is kept by its thread, from the shell's `sent` or the worker's
+///   start to the frame that shows its version, whatever order those come
+///   in; the page stays usable meanwhile. The chip narrates the running
+///   change from the worker's [WorkerProgress] for its threads: the latest
+///   step and the seconds since the work began, expanding on a tap to the
+///   last steps and the last render. The long-press→landed timing runs
+///   from Send to that frame, the send→first-step timing from Send to the
+///   change's first step. A reply without a version, a failure, a cancel
+///   or a failed send ends the chip and shows which it was: Retry for a
+///   failed send sends the thread again; Retry for a failed change calls
+///   [AppScreen.onRetry] for each of its threads and shows the change
+///   running again when one was queued, or says there was nothing to run.
+///   The chip can always be dismissed.
 /// - **Thread page.** Tapping a thread in the panel opens [ThreadDetail]
 ///   over the screen, with the shell's label for its anchor. Its "Changed
 ///   in vN" closes it and previews that version (`loadVersion`); its Retry
@@ -106,7 +114,7 @@ class AppScreen extends StatefulWidget {
   /// The feedback worker's events; those of other artifacts are ignored.
   final Stream<WorkerEvent> worker;
 
-  /// The two-finger swipe's clock.
+  /// The two-finger swipe's clock, and the Working chip's.
   final Clock clock;
 
   /// Each `ready` the shell posts (the say→usable timing ends on the
@@ -128,7 +136,8 @@ class AppScreen extends StatefulWidget {
 
   /// Runs the failed change of thread `tid` of app `aid` again, posting
   /// nothing, and answers whether a change was queued; null when the app
-  /// cannot, and the thread page offers no Retry.
+  /// cannot, and neither the thread page nor the Working chip offers
+  /// Retry.
   final Future<bool> Function(String aid, String tid)? onRetry;
 
   /// The app view's URL for [aid] under [base].
@@ -184,7 +193,11 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
-    _changes = ChangeTracker(timings: widget.timings, artifact: widget.aid);
+    _changes = ChangeTracker(
+      timings: widget.timings,
+      artifact: widget.aid,
+      now: widget.clock.now,
+    );
     _buttonDy = widget.commentButtonDy ?? CommentButton.defaultDy;
     _comments = widget.comments ?? (_ownComments = CommentsCommand());
     _comments.register(_toggleOpen);
@@ -377,9 +390,28 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         setState(() => _changes.workerFailed(reason));
       case WorkerCancelled():
         setState(_changes.workerCancelled);
-      case WorkerProgress():
-        break;
+      case WorkerProgress(:final threads, :final progress):
+        if (_changes.workerProgress(threads, progress)) setState(() {});
     }
+  }
+
+  /// Runs the failed change again: asks the worker to queue each of its
+  /// threads, then shows it running, or that there was nothing to run.
+  Future<void> _retryChange() async {
+    final retry = widget.onRetry;
+    final threads = _changes.failedThreads;
+    if (retry == null || threads.isEmpty || _changes.retrying) return;
+    setState(_changes.retryStarted);
+    var queued = false;
+    for (final t in threads) {
+      try {
+        if (await retry(widget.aid, t)) queued = true;
+      } on Object {
+        // Not queued; the others may be.
+      }
+    }
+    if (!mounted) return;
+    setState(queued ? _changes.retried : _changes.retryRefused);
   }
 
   /// Sends thread [id] to the agent again.
@@ -695,9 +727,26 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       if (_changes.outcome != null || _changes.working)
         Positioned(
           top: 8,
-          left: 56,
-          right: 56,
-          child: Center(child: _chipView(context)),
+          left: 24,
+          right: 24,
+          child: Center(
+            child: WorkingChip(
+              changes: _changes,
+              clock: widget.clock,
+              onDismiss: () => setState(_changes.dismiss),
+              onReplied: () {
+                setState(() {
+                  _changes.dismiss();
+                  _tab = PanelTab.threads;
+                });
+                _setOpen(true);
+              },
+              onResend: () => _resend(_changes.retryThread),
+              onRetry: widget.onRetry == null
+                  ? null
+                  : () => unawaited(_retryChange()),
+            ),
+          ),
         ),
       if (!_open && !_covered)
         Positioned(
@@ -791,115 +840,6 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
                 borderRadius: BorderRadius.circular(3),
               ),
             ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _chipView(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final outcome = _changes.outcome;
-    final text = _changes.outcomeText;
-    final (
-      String key,
-      Color bg,
-      Color fg,
-      Widget lead,
-      String label,
-    ) = switch (outcome) {
-      null => (
-        'working',
-        scheme.inverseSurface,
-        scheme.onInverseSurface,
-        SizedBox.square(
-          dimension: 14,
-          child: CircularProgressIndicator(
-            strokeWidth: 2,
-            color: scheme.onInverseSurface,
-          ),
-        ),
-        'Working…',
-      ),
-      ChangeOutcome.replied => (
-        'replied',
-        scheme.secondaryContainer,
-        scheme.onSecondaryContainer,
-        Icon(
-          Icons.forum_outlined,
-          size: 16,
-          color: scheme.onSecondaryContainer,
-        ),
-        text,
-      ),
-      ChangeOutcome.stopped => (
-        'stopped',
-        scheme.surfaceContainerHighest,
-        scheme.onSurfaceVariant,
-        Icon(
-          Icons.pause_circle_outline,
-          size: 16,
-          color: scheme.onSurfaceVariant,
-        ),
-        text,
-      ),
-      ChangeOutcome.failed || ChangeOutcome.sendFailed => (
-        outcome == ChangeOutcome.failed ? 'failed' : 'sendFailed',
-        scheme.errorContainer,
-        scheme.onErrorContainer,
-        Icon(Icons.error_outline, size: 16, color: scheme.onErrorContainer),
-        text,
-      ),
-    };
-    return Material(
-      key: ValueKey('chip-$key'),
-      color: bg,
-      elevation: 2,
-      shape: const StadiumBorder(),
-      child: InkWell(
-        customBorder: const StadiumBorder(),
-        onTap: outcome == ChangeOutcome.replied
-            ? () {
-                setState(() {
-                  _changes.dismiss();
-                  _tab = PanelTab.threads;
-                });
-                _setOpen(true);
-              }
-            : null,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 8, 4, 8),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              lead,
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  label,
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.labelLarge?.copyWith(color: fg),
-                ),
-              ),
-              if (outcome == ChangeOutcome.sendFailed)
-                TextButton(
-                  key: const ValueKey('retry-send'),
-                  style: TextButton.styleFrom(foregroundColor: fg),
-                  onPressed: () => _resend(_changes.retryThread),
-                  child: const Text('Retry'),
-                ),
-              IconButton(
-                key: const ValueKey('chip-dismiss'),
-                tooltip: 'Dismiss',
-                visualDensity: VisualDensity.compact,
-                iconSize: 16,
-                color: fg,
-                onPressed: () => setState(_changes.dismiss),
-                icon: const Icon(Icons.close),
-              ),
-            ],
           ),
         ),
       ),
