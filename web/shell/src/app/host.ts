@@ -91,7 +91,8 @@
 import appCss from "./app.css?inline";
 import { getArtifact } from "../api";
 import { acceptFromFrame } from "../bridge-link";
-import { type DeviceCall, answerDevice, linkDevice } from "../caps/device-link";
+import { type DeviceCall, deviceLink } from "../caps/device-link";
+import { CapError } from "../caps/errors";
 import { hostArrival } from "../caps/gesture";
 import { visibility } from "../visibility";
 import { now } from "../clock";
@@ -319,12 +320,18 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     const ch = w.ClaxHost;
     if (nonce !== null && ch && typeof ch.postMessage === "function") ch.postMessage(JSON.stringify({ ...m, nonce } satisfies Posted));
   };
-  // Device calls made before `init`, posted by it.
+  // The page's device calls waiting for the app's answer, by request ID,
+  // and those made before `init`, which posts them.
+  const devicePending = new Map<string, { resolve(v: unknown): void; reject(e: CapError): void }>();
   const deviceQueue: DeviceCall[] = [];
-  const unlinkDevice = inspecting ? () => {} : linkDevice(c => {
+  let deviceSeq = 0;
+  const deviceCall = (cap: DeviceCall["cap"], method: string, args: unknown[]) => new Promise<unknown>((resolve, reject) => {
+    const c: DeviceCall = { id: `d${++deviceSeq}`, cap, method, args };
+    devicePending.set(c.id, { resolve, reject });
     if (nonce === null) deviceQueue.push(c);
     else post({ type: "device", ...c });
   });
+  if (!inspecting) deviceLink.call = deviceCall;
   const s = () => ctl.state.get();
 
   // The page's last reported scroll position, per page.
@@ -772,7 +779,15 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
       else awaited = id;
     },
     closeQuestions: () => { if (dock) dismissQuestions(); },
-    deviceResult: a => answerDevice(a),
+    deviceResult: a => {
+      const { id, ok, value, error } = (a && typeof a === "object" ? a : {}) as { id?: unknown; ok?: unknown; value?: unknown; error?: unknown };
+      const p = typeof id === "string" ? devicePending.get(id) : undefined;
+      if (!p) return;
+      devicePending.delete(id as string);
+      if (ok === true) { p.resolve(value ?? null); return; }
+      const e = (error && typeof error === "object" ? error : {}) as { code?: unknown; message?: unknown };
+      p.reject(new CapError(typeof e.code === "string" ? e.code : "unavailable", typeof e.message === "string" ? e.message : "the device call failed"));
+    },
     openRoute: hash => {
       if (typeof hash !== "string" || !hash.startsWith("#") || hash.length > 512) return;
       win.location.hash = hash;
@@ -782,7 +797,9 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
 
   return () => {
     unsubscribe();
-    unlinkDevice();
+    if (deviceLink.call === deviceCall) deviceLink.call = null;
+    for (const p of devicePending.values()) p.reject(new CapError("unavailable", "the app closed this view"));
+    devicePending.clear();
     win.removeEventListener("input", onInput);
     win.removeEventListener("message", onMessage);
     win.removeEventListener("pointerdown", onPress, true);

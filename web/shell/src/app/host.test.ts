@@ -1444,31 +1444,32 @@ describe("app mode's device link", { timeout: MOUNT_TIMEOUT_MS }, () => {
   });
 
   it("posts the page's device calls under the nonce, those before init at init, and resolves the app's answers", async () => {
-    const link = await import("../caps/device-link");
+    const { deviceLink } = await import("../caps/device-link");
     const { host } = await appView({ init: false });
-    expect(link.deviceLinked()).toBe(true);
-    const early = link.callDevice("location", "current", []);
+    const early = deviceLink.call!("location", "current", []);
     expect(raw).toEqual([]);
     host.init({ nonce: NONCE });
     const [first] = ofType("device");
     expect(first).toEqual({ type: "device", id: expect.any(String), cap: "location", method: "current", args: [] });
-    const later = link.callDevice("share", "text", ["hi"]);
+    const later = deviceLink.call!("share", "text", ["hi"]);
     const second = ofType("device")[1];
     expect(second).toMatchObject({ cap: "share", method: "text", args: ["hi"] });
+    host.deviceResult({ id: "d-unknown", ok: true, value: 1 });
     host.deviceResult({ id: first.id, ok: true, value: { lat: 1, lon: 2, accuracy: 3 } });
     host.deviceResult({ id: second.id, ok: false, error: { code: "cancelled", message: "the person closed the sheet" } });
     await expect(early).resolves.toEqual({ lat: 1, lon: 2, accuracy: 3 });
     await expect(later).rejects.toMatchObject({ code: "cancelled" });
   });
 
-  it("links nothing in the inspect view, and unlinks on uninstall", async () => {
-    const link = await import("../caps/device-link");
+  it("links nothing in the inspect view, and on uninstall unlinks and rejects the calls still waiting", async () => {
+    const { deviceLink } = await import("../caps/device-link");
     const { uninstall } = await appView();
-    expect(link.deviceLinked()).toBe(true);
+    const waiting = deviceLink.call!("camera", "take", []);
     uninstall();
-    expect(link.deviceLinked()).toBe(false);
+    expect(deviceLink.call).toBeNull();
+    await expect(waiting).rejects.toMatchObject({ code: "unavailable" });
     await appView({ query: "?app=1&inspect=1" });
-    expect(link.deviceLinked()).toBe(false);
+    expect(deviceLink.call).toBeNull();
   });
 
   it("openRoute moves the shell's fragment, refusing anything but a short #fragment", async () => {

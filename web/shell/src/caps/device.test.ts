@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ShellToBridge } from "../../../bridge/src/protocol";
-import { type DeviceCall, answerDevice, callDevice, deviceLinked, linkDevice } from "./device-link";
+import { type DeviceCall, deviceLink } from "./device-link";
+import { CapError } from "./errors";
 import { CapabilityHost, type CapEnv } from "./host";
 import { REGISTRY } from "./registry";
 
@@ -17,17 +18,17 @@ function env(declared: CapEnv["declared"]) {
   return { e, posted };
 }
 
-const unlinks: (() => void)[] = [];
-afterEach(() => { for (const u of unlinks.splice(0)) u(); });
+afterEach(() => { deviceLink.call = null; });
+/** Links a fake app: each call is kept, with its answer's resolve and reject. */
 function link() {
-  const sent: DeviceCall[] = [];
-  unlinks.push(linkDevice(c => sent.push(c)));
+  const sent: (Omit<DeviceCall, "id"> & { resolve(v: unknown): void; reject(e: unknown): void })[] = [];
+  deviceLink.call = (cap, method, args) => new Promise((resolve, reject) => { sent.push({ cap, method, args, resolve, reject }); });
   return sent;
 }
 
 describe("the device capabilities", () => {
   it("resolve null outside the Clax app, even when declared", async () => {
-    expect(deviceLinked()).toBe(false);
+    expect(deviceLink.call).toBeNull();
     const { e, posted } = env({ notify: {}, camera: {} });
     const host = new CapabilityHost(Promise.resolve(e), REGISTRY, null);
     await host.handle({ type: "clax:use", id: "u1", name: "notify" });
@@ -45,8 +46,8 @@ describe("the device capabilities", () => {
     const at = { id: "water", title: "Water", body: "Drink", at: "2026-10-13T09:00:00Z", route: "#/plants" };
     const done = host.handle({ type: "clax:call", id: "c1", ns: "notify", method: "schedule", args: [at] });
     await vi.waitFor(() => expect(sent).toHaveLength(1));
-    expect(sent[0]).toEqual({ id: expect.stringMatching(/^d\d+$/), cap: "notify", method: "schedule", args: [at] });
-    answerDevice({ id: sent[0].id, ok: true, value: { id: "water" } });
+    expect(sent[0]).toMatchObject({ cap: "notify", method: "schedule", args: [at] });
+    sent[0].resolve({ id: "water" });
     await done;
     expect(posted.at(-1)).toEqual({ type: "clax:call-result", id: "c1", ok: true, value: { id: "water" } });
   });
@@ -64,8 +65,7 @@ describe("the device capabilities", () => {
     const host = new CapabilityHost(Promise.resolve(e), REGISTRY, null);
     const done = host.handle({ type: "clax:call", id: "c1", ns: "location", method: "current", args: [] });
     await vi.waitFor(() => expect(sent).toHaveLength(1));
-    answerDevice({ id: "d-unknown", ok: true, value: 1 });
-    answerDevice({ id: sent[0].id, ok: false, error: { code: "not_granted", message: "the person did not allow location" } });
+    sent[0].reject(new CapError("not_granted", "the person did not allow location"));
     await done;
     expect(posted.at(-1)).toEqual({ type: "clax:call-result", id: "c1", ok: false, error: { code: "not_granted", message: "the person did not allow location" } });
   });
@@ -78,14 +78,5 @@ describe("the device capabilities", () => {
     await host.handle({ type: "clax:call", id: "c2", ns: "share", method: "text", args: [new Blob(["x"])] });
     expect(posted.map(m => (m as { error: { code: string } }).error.code)).toEqual(["capability_removed", "bad_request"]);
     expect(sent).toEqual([]);
-  });
-
-  it("rejects calls still waiting when the app unlinks", async () => {
-    const unlink = linkDevice(() => {});
-    const p = callDevice("camera", "take", []);
-    unlink();
-    await expect(p).rejects.toMatchObject({ code: "unavailable" });
-    expect(deviceLinked()).toBe(false);
-    await expect(callDevice("camera", "take", [])).rejects.toMatchObject({ code: "unavailable" });
   });
 });
