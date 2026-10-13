@@ -17,6 +17,7 @@ import '../platform/voice.dart';
 import 'app_menu.dart';
 import 'app_surface.dart';
 import 'build_plan.dart';
+import 'change_sheet.dart';
 import 'change_tracker.dart';
 import 'comment_bar.dart';
 import 'host_protocol.dart';
@@ -91,8 +92,11 @@ import 'working_chip.dart';
 ///   start to the frame that shows its version, whatever order those come
 ///   in; the page stays usable meanwhile. The chip narrates the running
 ///   change from the worker's [WorkerProgress] for its threads: the latest
-///   step and the seconds since the work began, expanding on a tap to the
-///   last steps and the last render. The long-press→landed timing runs
+///   step and the seconds since the work began. A tap on it opens the
+///   change in progress ([showChangeSheet]): the comments it answers, its
+///   steps and last render, live, with Stop ([AppScreen.onStop]; the
+///   threads stay open), Open thread and a waiting question. The
+///   long-press→landed timing runs
 ///   from Send to that frame, the send→first-step timing from Send to the
 ///   change's first step. A reply without a version, a failure, a cancel
 ///   or a failed send ends the chip and shows which it was: Retry for a
@@ -113,7 +117,11 @@ import 'working_chip.dart';
 ///   to plan: the comment becomes the plan's last feature, the composer
 ///   closes without sending, and the build takes it up.
 /// - **Thread page.** Tapping a thread in the panel opens [ThreadDetail]
-///   over the screen, with the shell's label for its anchor. Its "Changed
+///   over the screen, with the shell's label for its anchor. View on the
+///   "Clax replied" toast opens it at Clax's newest reply, stepping through
+///   the change's threads when it answered several, and
+///   [AppScreen.initialThread] opens it once the page is up (at
+///   [AppScreen.initialComment]). Its "Changed
 ///   in vN" closes it and previews that version (`loadVersion`); its Retry
 ///   calls [AppScreen.onRetry], and is not offered without one.
 /// - **Versions.** Tap to preview, Restore (or Undo) to republish an
@@ -141,6 +149,9 @@ class AppScreen extends StatefulWidget {
     this.onHintShown,
     this.onDictateChanged,
     this.onRetry,
+    this.onStop,
+    this.initialThread,
+    this.initialComment,
     this.device,
     this.build,
   });
@@ -196,6 +207,15 @@ class AppScreen extends StatefulWidget {
   /// cannot, and neither the thread page nor the Working chip offers
   /// Retry.
   final Future<bool> Function(String aid, String tid)? onRetry;
+
+  /// Stops app `aid`'s change in flight, leaving its threads open; null
+  /// offers no Stop.
+  final void Function(String aid)? onStop;
+
+  /// A thread to open the thread page at once the page is first up, at
+  /// comment [initialComment] (else at its newest comment).
+  final String? initialThread;
+  final String? initialComment;
 
   /// Makes the page's device capability calls (`notify`, `share`, `files`,
   /// `camera`, `location`); without it each is answered `unavailable`.
@@ -265,6 +285,19 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
 
   /// The changes in flight, for the chip and the long-press→landed timing.
   late final ChangeTracker _changes;
+
+  /// Fires on every rebuild of the screen, for the change sheet, which
+  /// reads [_changes] then.
+  final _updates = _Updates();
+
+  /// Whether [AppScreen.initialThread] was opened.
+  var _openedInitial = false;
+
+  @override
+  void setState(VoidCallback fn) {
+    super.setState(fn);
+    _updates.fire();
+  }
 
   /// The app's plan and its build's latest step.
   Plan? _plan;
@@ -451,6 +484,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _updates.dispose();
     WidgetsBinding.instance.removeObserver(this);
     widget.notice?.clear(this);
     _comments.unregister(_toggleOpen);
@@ -491,6 +525,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           _loadVersions();
         }
         widget.onReady?.call(m);
+        if (widget.initialThread case final tid? when !_openedInitial) {
+          _openedInitial = true;
+          _openThread(tid, focus: widget.initialComment);
+        }
       case StateMsg():
         final picked = _draft == null && m.draft != null;
         final closed = _draft != null && m.draft == null;
@@ -593,22 +631,26 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
             ),
           );
         }
-      case WorkerReplied():
+      case WorkerReplied(threads: final named):
         // The chip ends with its change; the reply is told in a toast.
-        final threads = _changes.running;
+        final threads = named.isNotEmpty ? named : _changes.running;
+        final sheet = _sheetOpen;
         setState(() {
           _changes.workerReplied();
-          _changes.dismiss();
+          // An open change sheet tells it, with the way to the reply.
+          if (!sheet) _changes.dismiss();
         });
-        _toast(
-          'Clax replied',
-          threads.length == 1
-              ? () => _openThread(threads.single)
-              : () {
-                  setState(() => _tab = PanelTab.threads);
-                  _setOpen(true);
-                },
-        );
+        if (!sheet) {
+          _toast(
+            'Clax replied',
+            threads.isNotEmpty
+                ? () => _openThread(threads.first, reply: true, run: threads)
+                : () {
+                    setState(() => _tab = PanelTab.threads);
+                    _setOpen(true);
+                  },
+          );
+        }
       case WorkerFailed(:final reason):
         setState(() => _changes.workerFailed(reason));
       case WorkerCancelled():
@@ -767,29 +809,91 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     _call(Resend(id));
   }
 
-  /// Opens thread [id]'s page over the screen.
-  void _openThread(String id) {
+  /// Opens thread [id]'s page over the screen: at comment [focus], else
+  /// at Clax's newest reply when [reply], else at its newest comment. With
+  /// [run] (the threads of one change), the page steps through them.
+  void _openThread(
+    String id, {
+    String? focus,
+    bool reply = false,
+    List<String> run = const [],
+  }) {
+    unawaited(
+      Navigator.of(context)
+          .push(_threadRoute(id, focus: focus, reply: reply, run: run)),
+    );
+  }
+
+  Route<void> _threadRoute(
+    String id, {
+    String? focus,
+    bool reply = false,
+    List<String> run = const [],
+  }) {
     final label = _threads.where((t) => t.id == id).firstOrNull?.label;
     final retry = widget.onRetry;
-    unawaited(
-      Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (route) => ThreadDetail(
-            api: widget.api,
-            aid: widget.aid,
-            tid: id,
-            voice: widget.voice,
-            autoDictate: _dictate,
-            label: label,
-            onPreview: (n) {
-              Navigator.of(route).pop();
-              _call(LoadVersion(n));
-            },
-            onRetry: retry == null ? null : (tid) => retry(widget.aid, tid),
-          ),
+    return MaterialPageRoute<void>(
+      builder: (route) => ThreadDetail(
+        key: ValueKey('thread-$id'),
+        focusComment: focus,
+        focusLatestReply: reply,
+        run: run,
+        onRun: (tid) => unawaited(
+          Navigator.of(route)
+              .pushReplacement(_threadRoute(tid, reply: reply, run: run)),
         ),
+        api: widget.api,
+        aid: widget.aid,
+        tid: id,
+        voice: widget.voice,
+        autoDictate: _dictate,
+        label: label,
+        onPreview: (n) {
+          Navigator.of(route).pop();
+          _call(LoadVersion(n));
+        },
+        onRetry: retry == null ? null : (tid) => retry(widget.aid, tid),
       ),
     );
+  }
+
+  /// Whether the change sheet is open.
+  var _sheetOpen = false;
+
+  /// Shows the change in progress over the app.
+  Future<void> _showChange() async {
+    if (_sheetOpen) return;
+    _sheetOpen = true;
+    try {
+      await showChangeSheet(
+        context,
+        changes: _changes,
+        updates: _updates,
+        clock: widget.clock,
+        api: widget.api,
+        aid: widget.aid,
+        onThread: (tid, run, {reply = false}) =>
+            _openThread(tid, reply: reply, run: run),
+        onStop: widget.onStop == null
+            ? null
+            : () {
+                widget.onStop!(widget.aid);
+                setState(_changes.stopped);
+              },
+        questions: () => _questions ?? 0,
+        onQuestions: () => _call(const OpenQuestions()),
+        onRetry: widget.onRetry == null
+            ? null
+            : () => unawaited(_retryChange()),
+        labelOf: (tid) => _threads.where((t) => t.id == tid).firstOrNull?.label,
+      );
+    } finally {
+      _sheetOpen = false;
+    }
+    // An outcome the sheet showed was seen there.
+    if (mounted && _changes.outcome == ChangeOutcome.replied) {
+      setState(_changes.dismiss);
+    }
   }
 
   void _snack(String text, {SnackBarAction? action}) {
@@ -1122,6 +1226,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
               onRetry: widget.onRetry == null
                   ? null
                   : () => unawaited(_retryChange()),
+              onOpen: () => unawaited(_showChange()),
             ),
           ),
         ),
@@ -1291,4 +1396,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       ),
     ),
   );
+}
+
+/// A notifier the screen fires on each of its rebuilds.
+class _Updates extends ChangeNotifier {
+  void fire() => notifyListeners();
 }

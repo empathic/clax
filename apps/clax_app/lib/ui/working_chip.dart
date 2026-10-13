@@ -16,10 +16,9 @@ import 'change_tracker.dart';
 /// - **Working.** A spinner, the running change's latest step ("Working…"
 ///   before the first, "Trying again…" after a Retry the worker has not
 ///   started yet, "Loading the new version" once it landed) and the
-///   seconds since the work began, ticking on [clock]. A tap, once there
-///   are steps or a render, expands it to the step count, the last
-///   [ChangeTracker.shownSteps] steps and the last render's thumbnail with
-///   its error count; another tap, or the change landing, collapses it.
+///   seconds since the work began, ticking on [clock]. A tap, in any of
+///   these, calls [onOpen] (the app screen shows the change in progress:
+///   its comments, steps, render, Stop and Open thread).
 /// - **Failed.** The reason, and Retry when [onRetry] is given and the
 ///   change kept its threads; while it is queued the button reads
 ///   "Retrying…" and does nothing.
@@ -38,6 +37,7 @@ class WorkingChip extends StatefulWidget {
     this.onReplied,
     this.onResend,
     this.onRetry,
+    this.onOpen,
   });
 
   final ChangeTracker changes;
@@ -53,12 +53,14 @@ class WorkingChip extends StatefulWidget {
   /// Runs the failed change again; null when the app cannot.
   final VoidCallback? onRetry;
 
+  /// Shows the change in progress; null makes Working a plain status.
+  final VoidCallback? onOpen;
+
   @override
   State<WorkingChip> createState() => _WorkingChipState();
 }
 
 class _WorkingChipState extends State<WorkingChip> {
-  var _expanded = false;
   Timer? _tick;
 
   ChangeTracker get _c => widget.changes;
@@ -102,14 +104,7 @@ class _WorkingChipState extends State<WorkingChip> {
 
   @override
   Widget build(BuildContext context) {
-    final c = _c;
-    if (c.outcome == null) {
-      final expandable =
-          !c.landing && (c.stepCount > 0 || c.inspection != null);
-      if (!expandable) _expanded = false;
-      return _expanded ? _expandedView(context) : _workingView(context);
-    }
-    _expanded = false;
+    if (_c.outcome == null) return _workingView(context);
     return _outcomeView(context);
   }
 
@@ -132,12 +127,6 @@ class _WorkingChipState extends State<WorkingChip> {
     return c.step ?? (c.again ? 'Trying again…' : 'Working…');
   }
 
-  void _toggle() {
-    final c = _c;
-    if (c.landing || (c.stepCount == 0 && c.inspection == null)) return;
-    setState(() => _expanded = !_expanded);
-  }
-
   Widget _spinner(Color color) => SizedBox.square(
     dimension: 14,
     child: CircularProgressIndicator(strokeWidth: 2, color: color),
@@ -158,8 +147,7 @@ class _WorkingChipState extends State<WorkingChip> {
     final scheme = theme.colorScheme;
     final fg = scheme.onInverseSurface;
     final elapsed = _elapsed();
-    final expandable =
-        !_c.landing && (_c.stepCount > 0 || _c.inspection != null);
+    final open = widget.onOpen;
     // Only the step is a live region: the elapsed seconds tick every
     // second and would have a screen reader repeat the chip each time.
     return Material(
@@ -169,11 +157,11 @@ class _WorkingChipState extends State<WorkingChip> {
       shape: const StadiumBorder(),
       child: Semantics(
         container: true,
-        button: expandable,
-        onTapHint: expandable ? 'Show steps' : null,
+        button: open != null,
+        onTapHint: open != null ? 'Show the change' : null,
         child: InkWell(
           customBorder: const StadiumBorder(),
-          onTap: expandable ? _toggle : null,
+          onTap: open,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(14, 4, 4, 4),
             child: Row(
@@ -207,174 +195,16 @@ class _WorkingChipState extends State<WorkingChip> {
                     ),
                   ),
                 ],
-                if (expandable)
+                if (open != null)
                   Padding(
                     padding: const EdgeInsets.only(left: 2),
                     child: Icon(
-                      Icons.expand_more,
+                      Icons.chevron_right,
                       size: 18,
                       color: fg.withValues(alpha: 0.7),
                     ),
                   ),
                 _dismiss(fg),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _expandedView(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final fg = scheme.onInverseSurface;
-    final muted = fg.withValues(alpha: 0.62);
-    final c = _c;
-    final elapsed = _elapsed();
-    final steps = c.steps;
-    final shot = c.inspection;
-    final count = c.stepCount == 1 ? '1 step' : '${c.stepCount} steps';
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 400),
-      child: Material(
-        key: const ValueKey('chip-expanded'),
-        color: scheme.inverseSurface,
-        elevation: 3,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: _toggle,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 4, 14),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  children: [
-                    _spinner(fg),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text.rich(
-                        TextSpan(
-                          children: [
-                            TextSpan(
-                              text: 'Working',
-                              style: TextStyle(color: fg),
-                            ),
-                            if (c.stepCount > 0)
-                              TextSpan(
-                                text: ' · $count',
-                                style: TextStyle(color: muted),
-                              ),
-                            if (elapsed != null)
-                              TextSpan(
-                                text: ' · $elapsed',
-                                style: TextStyle(color: muted),
-                              ),
-                          ],
-                        ),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.labelLarge?.copyWith(
-                          fontFeatures: const [FontFeature.tabularFigures()],
-                        ),
-                      ),
-                    ),
-                    Icon(Icons.expand_less, size: 18, color: muted),
-                    _dismiss(fg),
-                  ],
-                ),
-                for (final (i, s) in steps.indexed)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 6, right: 12),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.only(top: 2),
-                          child: Icon(
-                            i == steps.length - 1
-                                ? Icons.arrow_right_alt
-                                : Icons.check,
-                            size: 14,
-                            color: i == steps.length - 1 ? fg : muted,
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            s,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: theme.textTheme.bodyMedium?.copyWith(
-                              color: i == steps.length - 1 ? fg : muted,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                if (shot != null) ...[
-                  const SizedBox(height: 10),
-                  Padding(
-                    padding: const EdgeInsets.only(right: 12),
-                    child: Row(
-                      children: [
-                        ClipRRect(
-                          key: const ValueKey('chip-thumbnail'),
-                          borderRadius: BorderRadius.circular(6),
-                          child: Container(
-                            width: 60,
-                            height: 108,
-                            color: fg.withValues(alpha: 0.12),
-                            child: Image.memory(
-                              shot.png,
-                              fit: BoxFit.cover,
-                              alignment: Alignment.topCenter,
-                              gaplessPlayback: true,
-                              semanticLabel: 'How the change looks',
-                              errorBuilder: (_, _, _) => Icon(
-                                Icons.image_not_supported_outlined,
-                                color: muted,
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Row(
-                            children: [
-                              Icon(
-                                shot.errors == 0
-                                    ? Icons.check_circle_outline
-                                    : Icons.error_outline,
-                                size: 16,
-                                color: shot.errors == 0
-                                    ? fg
-                                    : scheme.errorContainer,
-                              ),
-                              const SizedBox(width: 6),
-                              Flexible(
-                                child: Text(
-                                  switch (shot.errors) {
-                                    0 => 'No errors on the page',
-                                    1 => '1 error on the page',
-                                    final n => '$n errors on the page',
-                                  },
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    color: muted,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
               ],
             ),
           ),

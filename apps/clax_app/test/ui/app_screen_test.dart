@@ -11,6 +11,7 @@ import 'package:clax_app/platform/settings_store.dart';
 import 'package:clax_app/ui/app_menu.dart';
 import 'package:clax_app/ui/app_screen.dart';
 import 'package:clax_app/ui/app_surface.dart';
+import 'package:clax_app/ui/change_sheet.dart';
 import 'package:clax_app/ui/change_tracker.dart' show sendFirstStep;
 import 'package:clax_app/ui/host_protocol.dart';
 import 'package:clax_app/ui/theme.dart';
@@ -146,10 +147,14 @@ void main() {
     VoidCallback? onHintShown,
     ValueChanged<bool>? onDictateChanged,
     Future<bool> Function(String aid, String tid)? onRetry,
+    void Function(String aid)? onStop,
+    String? initialThread,
+    String? initialComment,
     Clock? clock,
+    Future<(FakeClaxApi, String)> Function()? seed,
   }) async {
     phone(tester, size: size);
-    final (api, aid) = await _seeded();
+    final (api, aid) = await (seed ?? _seeded)();
     final rig = _Rig(
       api,
       aid,
@@ -179,6 +184,9 @@ void main() {
           onHintShown: onHintShown,
           onDictateChanged: onDictateChanged,
           onRetry: onRetry,
+          onStop: onStop,
+          initialThread: initialThread,
+          initialComment: initialComment,
         ),
       ),
     );
@@ -1799,6 +1807,220 @@ void main() {
     },
     variant: TargetPlatformVariant.only(TargetPlatform.macOS),
   );
+  group('the change in progress', () {
+    /// Bytes standing for a render; they do not decode, so the frame is
+    /// what is checked.
+    final png = Uint8List.fromList(const [0x89, 0x50, 0x4e, 0x47]);
+
+    /// A change of [comment] sent and started; answers its thread.
+    Future<String> start(
+      WidgetTester tester,
+      _Rig rig, [
+      String comment = 'make the title bigger',
+    ]) async {
+      final tid = rig.api.sendComment(rig.aid, comment).threadId;
+      rig.surface.push(rig.ready());
+      rig.surface.push(Sent(tid));
+      await tester.pump();
+      return tid;
+    }
+
+    Finder sheet() => find.byKey(const ValueKey('change-sheet'));
+
+    testWidgets('a tap on Working opens it before the first step, and it '
+        'follows the change live', (tester) async {
+      final rig = await pumpScreen(tester);
+      final tid = await start(tester, rig);
+      expect(find.text('Working…'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('chip-working')));
+      await frames(tester);
+      expect(sheet(), findsOneWidget);
+      expect(find.text('Change in progress'), findsOneWidget);
+      expect(
+        find.textContaining('make the title bigger', findRichText: true),
+        findsOneWidget,
+      );
+      expect(find.byKey(ValueKey('change-thread-$tid')), findsOneWidget);
+
+      rig.worker.add(WorkerWorking(rig.aid, [tid]));
+      rig.worker.add(
+        WorkerProgress(rig.aid, [tid], const Narration('Reading the title')),
+      );
+      await tester.pump();
+      expect(find.byKey(const ValueKey('change-step-0')), findsOneWidget);
+      expect(find.byKey(const ValueKey('change-render')), findsNothing);
+      rig.worker.add(WorkerProgress(rig.aid, [tid], Inspected(png, 2)));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('change-render')), findsOneWidget);
+      expect(find.text('2 errors'), findsOneWidget);
+    });
+
+    testWidgets('it opens on a step and while the new version loads', (
+      tester,
+    ) async {
+      final rig = await pumpScreen(tester);
+      final tid = await start(tester, rig);
+      rig.worker.add(WorkerWorking(rig.aid, [tid]));
+      rig.worker.add(
+        WorkerProgress(rig.aid, [tid], const Narration('Reading the title')),
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('chip-working')));
+      await frames(tester);
+      expect(sheet(), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('change-close')));
+      await frames(tester);
+      expect(sheet(), findsNothing);
+
+      rig.worker.add(WorkerLanded(rig.aid, 4));
+      await tester.pump();
+      expect(find.text('Loading the new version'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('chip-working')));
+      await frames(tester);
+      expect(sheet(), findsOneWidget);
+
+      // The frame of v4: it lands, says so, and closes itself.
+      rig.surface.push(const Landed(4));
+      await tester.pump();
+      expect(find.text('Landed · v4'), findsOneWidget);
+      await tester.pump(ChangeSheet.closeAfter);
+      await frames(tester);
+      expect(sheet(), findsNothing);
+    });
+
+    testWidgets('Stop stops the change and keeps the thread open', (
+      tester,
+    ) async {
+      final stopped = <String>[];
+      final rig = await pumpScreen(tester, onStop: stopped.add);
+      final tid = await start(tester, rig);
+      rig.worker.add(WorkerWorking(rig.aid, [tid]));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('chip-working')));
+      await frames(tester);
+      await tester.tap(find.byKey(const ValueKey('change-stop')));
+      await frames(tester);
+      expect(stopped, [rig.aid]);
+      expect(sheet(), findsNothing);
+      expect(find.byKey(const ValueKey('chip-stopped')), findsOneWidget);
+      expect(find.text('Stopped. Your comment stays open.'), findsOneWidget);
+      rig.worker.add(WorkerCancelled(rig.aid));
+      await tester.pump();
+      expect(find.text('Stopped. Your comment stays open.'), findsOneWidget);
+      final t = rig.api.threadOf(rig.aid, tid);
+      expect(t.isOpen, isTrue);
+      expect(t.comments.map((c) => c.body), ['make the title bigger']);
+    });
+
+    testWidgets('without a stop hook it offers no Stop', (tester) async {
+      final rig = await pumpScreen(tester);
+      await start(tester, rig);
+      await tester.tap(find.byKey(const ValueKey('chip-working')));
+      await frames(tester);
+      expect(find.byKey(const ValueKey('change-stop')), findsNothing);
+    });
+
+    testWidgets('Open thread opens the thread page', (tester) async {
+      final rig = await pumpScreen(tester);
+      final tid = await start(tester, rig);
+      await tester.tap(find.byKey(const ValueKey('chip-working')));
+      await frames(tester);
+      await tester.tap(find.byKey(const ValueKey('change-open-thread')));
+      await frames(tester);
+      expect(sheet(), findsNothing);
+      expect(tester.widget<ThreadDetail>(find.byType(ThreadDetail)).tid, tid);
+    });
+
+    testWidgets('a waiting question is offered; Answer opens the questions', (
+      tester,
+    ) async {
+      final rig = await pumpScreen(tester);
+      await start(tester, rig);
+      rig.surface.push(const QuestionsMsg(1));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('chip-working')));
+      await frames(tester);
+      expect(find.text('Clax has a question for you'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('change-answer')));
+      await frames(tester);
+      expect(sheet(), findsNothing);
+      expect(rig.surface.js.last, const OpenQuestions().toJs());
+    });
+
+    testWidgets('a reply while it is open stays, with the way to the reply', (
+      tester,
+    ) async {
+      final rig = await pumpScreen(tester);
+      final tid = await start(tester, rig);
+      rig.worker.add(WorkerWorking(rig.aid, [tid]));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('chip-working')));
+      await frames(tester);
+      await rig.api.replyAsAgent(rig.aid, tid, 'Which title?');
+      rig.worker.add(WorkerReplied(rig.aid, [tid]));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('change-title')), findsOneWidget);
+      expect(
+        tester.widget<Text>(find.byKey(const ValueKey('change-title'))).data,
+        'Clax replied',
+      );
+      await tester.tap(find.text('See the reply'));
+      await frames(tester);
+      final page = tester.widget<ThreadDetail>(find.byType(ThreadDetail));
+      expect(page.tid, tid);
+      expect(page.focusLatestReply, isTrue);
+    });
+  });
+
+  group('landing on a reply', () {
+    testWidgets('View on a reply to several threads opens the first at the '
+        'reply, stepping through the others', (tester) async {
+      final rig = await pumpScreen(tester);
+      final a = rig.api.sendComment(rig.aid, 'one').threadId;
+      final b = rig.api.sendComment(rig.aid, 'two').threadId;
+      rig.surface.push(rig.ready());
+      await tester.pump();
+      rig.worker.add(WorkerWorking(rig.aid, [a, b]));
+      rig.worker.add(WorkerReplied(rig.aid, [a, b]));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.tap(find.text('View'));
+      await frames(tester);
+      var page = tester.widget<ThreadDetail>(find.byType(ThreadDetail));
+      expect(page.tid, a);
+      expect(page.focusLatestReply, isTrue);
+      expect(page.run, [a, b]);
+      expect(find.text('1 of 2 threads in this change'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('thread-run-next')));
+      await tester.pumpAndSettle();
+      page = tester.widget<ThreadDetail>(find.byType(ThreadDetail));
+      expect(page.tid, b);
+      expect(page.focusLatestReply, isTrue);
+    });
+
+    testWidgets('initialThread opens the thread page at its comment once '
+        'the page is up', (tester) async {
+      final (api, aid) = await _seeded();
+      final tid = api.sendComment(aid, 'bigger').threadId;
+      await api.replyAsAgent(aid, tid, 'Done.');
+      final reply = api.threadOf(aid, tid).comments.last.id;
+      final again = await pumpScreen(
+        tester,
+        seed: () async => (api, aid),
+        initialThread: tid,
+        initialComment: reply,
+      );
+      expect(find.byType(ThreadDetail), findsNothing, reason: 'not yet up');
+      again.surface.push(again.ready());
+      await frames(tester);
+      final page = tester.widget<ThreadDetail>(find.byType(ThreadDetail));
+      expect(page.tid, tid);
+      expect(page.focusComment, reply);
+      again.surface.push(again.ready());
+      await frames(tester);
+      expect(find.byType(ThreadDetail), findsOneWidget, reason: 'once');
+    });
+  });
 }
 
 Map<Object?, Object?>? _findItem(Object? tree, String label) {

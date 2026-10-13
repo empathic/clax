@@ -76,6 +76,7 @@ class _Rig {
                             onReplied: () => log.add('replied'),
                             onResend: () => log.add('resend'),
                             onRetry: retry ? () => log.add('retry') : null,
+                            onOpen: () => log.add('open'),
                           ),
                         ),
                       ),
@@ -177,46 +178,37 @@ void main() {
     expect(find.text('1m 15s'), findsOneWidget);
   });
 
-  testWidgets(
-    'a tap shows the last three steps and the render, and hides them',
-    (tester) async {
-      phone(tester);
-      final rig = _Rig();
-      rig.tracker.workerWorking(const ['t1']);
-      rig.narrate(['One', 'Two', 'Three', 'Four']);
-      rig.tracker.workerProgress(const ['t1'], Inspected(_png, 2));
-      await tester.pumpWidget(rig.build());
-
-      await tester.tap(find.byKey(const ValueKey('chip-working')));
-      await tester.pump();
-      expect(find.byKey(const ValueKey('chip-expanded')), findsOneWidget);
-      for (final s in ['Two', 'Three', 'Four']) {
-        expect(find.text(s), findsOneWidget);
-      }
-      expect(find.text('One'), findsNothing);
-      expect(
-        find.textContaining('4 steps', findRichText: true),
-        findsOneWidget,
-      );
-      expect(find.byKey(const ValueKey('chip-thumbnail')), findsOneWidget);
-      expect(find.text('2 errors on the page'), findsOneWidget);
-
-      await tester.tap(find.byKey(const ValueKey('chip-expanded')));
-      await tester.pump();
-      expect(find.byKey(const ValueKey('chip-expanded')), findsNothing);
-      expect(find.text('Four'), findsOneWidget);
-    },
-  );
-
-  testWidgets('a clean render says so', (tester) async {
+  testWidgets('a tap opens the change in every running state', (tester) async {
     phone(tester);
     final rig = _Rig();
-    rig.tracker.workerWorking(const ['t1']);
-    rig.tracker.workerProgress(const ['t1'], Inspected(_png, 0));
-    await tester.pumpWidget(rig.build());
+    rig.tracker
+      ..sent('t1')
+      ..workerWorking(const ['t1']);
+    final states = <String, void Function()>{
+      'Working…': () {},
+      'Reading your runs': () => rig.narrate(['Reading your runs']),
+      'Loading the new version': () => rig.tracker.workerLanded(4),
+    };
+    for (final MapEntry(key: label, value: set) in states.entries) {
+      set();
+      await tester.pumpWidget(rig.build());
+      expect(find.text(label), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('chip-working')));
+      await tester.pump();
+    }
+    expect(rig.log, ['open', 'open', 'open']);
+
+    // Trying again: a Retry the worker has not started yet.
+    final again = _Rig();
+    again.tracker
+      ..workerWorking(const ['t1'])
+      ..workerFailed('the connection dropped')
+      ..retryStarted()
+      ..retried();
+    await tester.pumpWidget(again.build());
+    expect(find.text('Trying again…'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('chip-working')));
-    await tester.pump();
-    expect(find.text('No errors on the page'), findsOneWidget);
+    expect(again.log, ['open']);
   });
 
   testWidgets('the live region is the step alone: elapsed time is silent', (
@@ -275,7 +267,7 @@ void main() {
             .first,
       ),
       matchesSemantics(
-        onTapHint: 'Show steps',
+        onTapHint: 'Show the change',
         hasTapAction: true,
         isButton: true,
         isFocusable: true,
@@ -283,32 +275,6 @@ void main() {
       ),
     );
     handle.dispose();
-  });
-
-  testWidgets('nothing to show yet: a tap does not expand', (tester) async {
-    phone(tester);
-    final rig = _Rig();
-    rig.tracker.workerWorking(const ['t1']);
-    await tester.pumpWidget(rig.build());
-    await tester.tap(find.byKey(const ValueKey('chip-working')));
-    await tester.pump();
-    expect(find.byKey(const ValueKey('chip-expanded')), findsNothing);
-  });
-
-  testWidgets('landing collapses it', (tester) async {
-    phone(tester);
-    final rig = _Rig();
-    rig.tracker.workerWorking(const ['t1']);
-    rig.narrate(['One', 'Publishing']);
-    await tester.pumpWidget(rig.build());
-    await tester.tap(find.byKey(const ValueKey('chip-working')));
-    await tester.pump();
-    expect(find.byKey(const ValueKey('chip-expanded')), findsOneWidget);
-
-    rig.tracker.workerLanded(4);
-    await tester.pumpWidget(rig.build());
-    expect(find.byKey(const ValueKey('chip-expanded')), findsNothing);
-    expect(find.text('Loading the new version'), findsOneWidget);
   });
 
   testWidgets('a failed change shows its reason and a Retry', (tester) async {
@@ -430,7 +396,7 @@ void main() {
         r.narrate(['Reading your runs', 'Adding the weekly total']);
         r.clock.t = r.clock.t.add(const Duration(seconds: 12));
       },
-      'expanded': (r) {
+      'steps': (r) {
         r.tracker.workerWorking(const ['t1']);
         r.narrate([
           'Reading your runs',
@@ -476,9 +442,6 @@ void main() {
               rig.build(brightness: b, textScale: scale, boundary: key),
             );
             await tester.pump(const Duration(seconds: 1));
-            if (name == 'expanded') {
-              await tester.tap(find.byKey(const ValueKey('chip-working')));
-            }
             // Let the thumbnail decode.
             await tester.runAsync(
               () => Future<void>.delayed(const Duration(milliseconds: 50)),
