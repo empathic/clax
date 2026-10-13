@@ -49,16 +49,34 @@ class CommentsCommand extends ChangeNotifier {
 
 /// The macOS menu bar: the app menu (About, Services, Hide, Quit, as the
 /// platform provides them), App › Comment (⇧⌘K) and App › Threads (⌘K)
-/// running [comments]. They are the macOS way into comment mode and the
-/// threads panel, since nothing of Clax's is drawn over an app.
+/// running [comments], and App › Back to Apps (⌘[) running [back]. They are
+/// the macOS way into comment mode, the threads panel and out of a screen,
+/// since nothing of Clax's is drawn over an app. Esc runs [back] too, when
+/// nothing nearer the focus takes it (a dialog, a sheet, a menu); it does
+/// not reach Flutter while an app's page has the keyboard focus, where
+/// ⌘[ (a key equivalent of the menu) still does.
 /// Flutter allows one menu bar at a time, so the app installs one, above
 /// every screen. The key equivalent works while the WebView has the
 /// keyboard focus, where Flutter's shortcuts do not reach.
 class ClaxMenuBar extends StatelessWidget {
-  const ClaxMenuBar({super.key, required this.comments, required this.child});
+  const ClaxMenuBar({
+    super.key,
+    required this.comments,
+    required this.child,
+    this.back,
+  });
 
   final CommentsCommand comments;
   final Widget child;
+
+  /// Goes back one screen (`Navigator.maybePop`); null disables the item.
+  final VoidCallback? back;
+
+  /// Back to Apps' key equivalent.
+  static const backShortcut = SingleActivator(
+    LogicalKeyboardKey.bracketLeft,
+    meta: true,
+  );
 
   static PlatformMenuItemGroup? _provided(
     List<PlatformProvidedMenuItemType> types,
@@ -110,10 +128,25 @@ class ClaxMenuBar extends StatelessWidget {
               ),
               onSelected: comments.toggle,
             ),
+            PlatformMenuItemGroup(
+              members: [
+                PlatformMenuItem(
+                  label: 'Back to Apps',
+                  shortcut: backShortcut,
+                  onSelected: back,
+                ),
+              ],
+            ),
           ],
         ),
       ],
-      child: child!,
+      child: switch (back) {
+        final back? => CallbackShortcuts(
+          bindings: {const SingleActivator(LogicalKeyboardKey.escape): back},
+          child: child!,
+        ),
+        null => child!,
+      },
     ),
   );
 }

@@ -59,7 +59,8 @@ import 'working_chip.dart';
 ///   Voice (whether a pick starts dictation, reported to
 ///   [AppScreen.onDictateChanged]) and ✕ (comment mode off); back, Escape
 ///   and the menu's Comment end it too, closing the panel first when it is
-///   open over the bar. Comment while the panel is open puts the bar in its
+///   open over the bar. Without comment mode, back and Escape leave the
+///   app. Comment while the panel is open puts the bar in its
 ///   place. A composer the bar led to opens the panel's peek in the bar's
 ///   place, at the bar's height, and closing it goes back to the bar.
 /// - **Toasts.** A reply from the agent for this app, or a new question
@@ -1000,8 +1001,13 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         },
       ),
     );
+    // Escape is back: it closes the panel or the bar first (the PopScope
+    // below), then leaves the app.
     screen = CallbackShortcuts(
-      bindings: {const SingleActivator(LogicalKeyboardKey.escape): _closeTop},
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.escape): () =>
+            unawaited(Navigator.maybePop(context)),
+      },
       child: Focus(autofocus: true, child: screen),
     );
     final own = _ownComments;
