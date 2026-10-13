@@ -483,6 +483,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   late final _makes = MakeService(
     _make,
     clock: _s.clock,
+    pending: _s.pendingMake,
     onMade: _madeAway,
     onFailed: _failedAway,
   );
@@ -874,39 +875,13 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// Whether the launch's lost make was looked for.
   var _offeredLostMake = false;
 
-  /// Offers to make again the request of each make the app's last run
-  /// ended before finishing, then shows the first one made again.
+  /// Shows each make the app's last run ended before finishing as an
+  /// interrupted tile, for the person to make again or discard.
   Future<void> _offerLostMake() async {
-    MakeSession? first;
     for (final request in await _s.pendingMake.takeAll()) {
-      // A context below the navigator, which showDialog looks up from.
-      final context = _nav.currentState?.overlay?.context;
-      if (context == null || !context.mounted) return;
-      final again = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Make it again?'),
-          content: Text('Clax closed before it finished “$request”.'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Not now'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('Make it again'),
-            ),
-          ],
-        ),
-      );
-      if (again == true) {
-        final s = _makes.start(request);
-        first ??= s;
-      }
+      if (!mounted) return;
+      _makes.lost(request);
     }
-    final nav = _nav.currentState;
-    if (first == null || nav == null) return;
-    await nav.push<MakingResult>(_makingRoute(first));
   }
 
   /// The build view of make [s].
@@ -1262,11 +1237,17 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     );
   }
 
+  /// Goes back one screen, as the platform's back would.
+  void _back() => unawaited(_nav.currentState?.maybePop());
+
   @override
   Widget build(BuildContext context) {
+    final macOS = defaultTargetPlatform == TargetPlatform.macOS;
     Widget app = MaterialApp(
       title: 'Clax',
       navigatorKey: _nav,
+      shortcuts: macOS ? escapeShortcuts() : null,
+      actions: macOS ? escapeActions(_back) : null,
       theme: claxTheme(Brightness.light),
       darkTheme: claxTheme(Brightness.dark),
       home: ListenableBuilder(
@@ -1283,12 +1264,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         _ => null,
       },
     );
-    if (defaultTargetPlatform == TargetPlatform.macOS) {
-      app = ClaxMenuBar(
-        comments: _comments,
-        back: () => unawaited(_nav.currentState?.maybePop()),
-        child: app,
-      );
+    if (macOS) {
+      app = ClaxMenuBar(comments: _comments, back: _back, child: app);
     }
     return app;
   }

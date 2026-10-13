@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../agent/backend.dart';
 import '../daemon/clock.dart';
+import '../platform/pending_make.dart';
 import 'making_screen.dart';
 
 /// One new app's first run, which goes on whether or not a build view
@@ -44,6 +45,15 @@ class MakeSession extends ChangeNotifier {
   /// Whether an attempt was ever started.
   var started = false;
 
+  /// Waiting for a free slot ([MakeService.maxRunning]); the service starts
+  /// it.
+  var queued = false;
+
+  /// A make the app's last run ended before finishing, kept until the
+  /// person makes it again or discards it ([MakeService.resume],
+  /// [MakeService.dismiss]).
+  var interrupted = false;
+
   /// When the current attempt started.
   DateTime startedAt;
 
@@ -76,6 +86,7 @@ class MakeSession extends ChangeNotifier {
     _abandon();
     final cancel = _cancel = Completer<void>();
     started = true;
+    queued = false;
     _running = true;
     log = MakingLog();
     planKey = null;
@@ -127,22 +138,33 @@ class MakeSession extends ChangeNotifier {
 }
 
 /// The makes going on, newest first, owned by the app's root so that each
-/// survives leaving its build view. Several run at once.
+/// survives leaving its build view. At most [maxRunning] run at once; a
+/// later one waits ([MakeSession.queued]) and starts, oldest first, as one
+/// ends.
 ///
 /// A make leaves [makes] once it made its app (the app's own tile takes
 /// its place) or was cancelled; a failed one stays, for its build view's
 /// Retry, Edit and Cancel. A make that ends while no build view shows it
-/// goes to [onMade] or [onFailed] (a toast).
+/// goes to [onMade] or [onFailed] (a toast). Interrupted makes ([lost]) are
+/// kept in [pending] until the person makes them again or discards them.
 class MakeService extends ChangeNotifier {
   MakeService(
     this._make, {
     this.onMade,
     this.onFailed,
+    this.pending,
+    this.maxRunning = 3,
     this._clock = const SystemClock(),
   });
 
   final MakeApp _make;
   final Clock _clock;
+
+  /// How many makes run at once.
+  final int maxRunning;
+
+  /// Where interrupted makes are kept across launches.
+  final PendingMake? pending;
 
   /// Make [s] made app [aid] while no build view showed it.
   void Function(MakeSession s, String aid)? onMade;
@@ -152,20 +174,49 @@ class MakeService extends ChangeNotifier {
 
   final _makes = <MakeSession>[];
 
-  /// The makes going on or failed, newest first.
+  /// The makes going on, waiting, interrupted or failed, newest first.
   List<MakeSession> get makes => List.unmodifiable(_makes);
 
-  /// Starts making an app from [request].
+  /// Makes that hold a slot: running, or about to be started by their
+  /// build view.
+  int get _busy => _makes
+      .where((m) => m.running || (!m.started && !m.queued && !m.interrupted))
+      .length;
+
+  /// Starts making an app from [request], or queues it when [maxRunning]
+  /// run.
   MakeSession start(String request) {
     final s = add(request);
-    unawaited(s.start());
+    if (!s.queued) unawaited(s.start());
     return s;
   }
 
   /// A make of [request], not started yet: the build view it is shown in
-  /// first starts it ([MakeSession.started]).
+  /// first starts it ([MakeSession.started]), unless it waits for a slot
+  /// ([MakeSession.queued]).
   MakeSession add(String request) {
     final s = MakeSession(request, _make, clock: _clock);
+    s.queued = _busy >= maxRunning;
+    return _keep(s);
+  }
+
+  /// An interrupted make of [request], kept in [pending] until settled.
+  MakeSession lost(String request) {
+    final s = MakeSession(request, _make, clock: _clock)..interrupted = true;
+    unawaited(pending?.save(request));
+    return _keep(s);
+  }
+
+  /// Takes interrupted make [s] up again, as [add] does.
+  void resume(MakeSession s) {
+    if (!s.interrupted) return;
+    s.interrupted = false;
+    unawaited(pending?.clear(s.request));
+    s.queued = _busy >= maxRunning;
+    notifyListeners();
+  }
+
+  MakeSession _keep(MakeSession s) {
     _makes.insert(0, s);
     s.addListener(() => _changed(s));
     notifyListeners();
@@ -174,8 +225,10 @@ class MakeService extends ChangeNotifier {
 
   /// Forgets [s], cancelling it when it still runs.
   void dismiss(MakeSession s) {
+    if (s.interrupted) unawaited(pending?.clear(s.request));
     s.cancel();
     if (_makes.remove(s)) notifyListeners();
+    _fill();
   }
 
   void _changed(MakeSession s) {
@@ -189,5 +242,17 @@ class MakeService extends ChangeNotifier {
       onFailed?.call(s);
     }
     notifyListeners();
+    _fill();
   }
+
+  /// Starts waiting makes, oldest first, while slots are free.
+  void _fill() {
+    while (_busy < maxRunning) {
+      final next = _makes.lastWhere((m) => m.queued, orElse: () => _none);
+      if (identical(next, _none)) return;
+      unawaited(next.start());
+    }
+  }
+
+  static final _none = MakeSession('', (_, _, _) async => '');
 }

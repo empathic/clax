@@ -379,6 +379,9 @@ class _MakingScreenState extends State<MakingScreen> {
   /// Whether the session's made app was taken up here.
   var _tookMade = false;
 
+  /// Whether the screen shows a make waiting for a slot.
+  var _waiting = false;
+
   @override
   void initState() {
     super.initState();
@@ -393,12 +396,12 @@ class _MakingScreenState extends State<MakingScreen> {
     _session.attach();
     _session.addListener(_onSession);
     _updates = _session.updates.listen(_onUpdate);
-    if (own || !_session.started) {
+    if (own || !_session.started && !_session.queued) {
       // After this build: starting tells the session's listeners (the
       // launcher's tiles), which must not rebuild during it.
       _attempt(
         () => scheduleMicrotask(() {
-          if (!_session.cancelled && !_session.started) {
+          if (!_session.cancelled && !_session.started && !_session.queued) {
             unawaited(_session.start());
           }
         }),
@@ -427,6 +430,7 @@ class _MakingScreenState extends State<MakingScreen> {
   /// plan, its seconds, and how it ended.
   void _catchUp() {
     _fresh();
+    _waiting = _session.queued;
     _seconds = _session.running
         ? widget.clock.now().difference(_session.startedAt).inSeconds
         : 0;
@@ -474,6 +478,12 @@ class _MakingScreenState extends State<MakingScreen> {
   /// The session made its app, failed or was cancelled.
   void _onSession() {
     if (!mounted) return;
+    if (_waiting && _session.running) {
+      // The service started the make this screen waited on.
+      _waiting = false;
+      _attempt(() {});
+      return;
+    }
     if (_session.aid case final aid? when !_tookMade) {
       _tookMade = true;
       unawaited(_onMade(aid));
@@ -757,8 +767,8 @@ class _MakingScreenState extends State<MakingScreen> {
                     children: [...previous, ?current],
                   ),
                   child: Text(
-                    log.line,
-                    key: ValueKey(log.line),
+                    _waiting ? 'Waiting for another make to finish' : log.line,
+                    key: ValueKey(_waiting ? 'waiting' : log.line),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.titleMedium,

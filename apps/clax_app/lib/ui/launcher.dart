@@ -310,6 +310,35 @@ class _LauncherState extends State<Launcher> {
     await _showMake(_makes.add(request));
   }
 
+  /// Asks whether to make interrupted make [s] again (then shows it) or to
+  /// discard it; closing the question leaves it as it is.
+  Future<void> _offerAgain(MakeSession s) async {
+    final again = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Make it again?'),
+        content: Text('Clax closed before it finished “${s.request}”.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Discard'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Make it again'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || again == null) return;
+    if (!again) {
+      _makes.dismiss(s);
+      return;
+    }
+    _makes.resume(s);
+    await _showMake(s);
+  }
+
   /// Shows make [s] in the build view, caught up with what it did.
   Future<void> _showMake(MakeSession s) async {
     final result = await Navigator.of(context).push<MakingResult>(
@@ -536,7 +565,9 @@ class _LauncherState extends State<Launcher> {
                         key: ObjectKey(m),
                         session: m,
                         link: widget.build,
-                        onTap: () => unawaited(_showMake(m)),
+                        onTap: () => unawaited(
+                          m.interrupted ? _offerAgain(m) : _showMake(m),
+                        ),
                       );
                     }
                     i -= makes.length;
@@ -674,7 +705,8 @@ class _AppTile extends StatelessWidget {
 
 /// A make going on, as a launcher tile: its request and a ring
 /// (indeterminate until its plan has features, then filled to the features
-/// done), or "Couldn't make it" once it failed.
+/// done); or "Waiting…" (for a slot), "Interrupted" (the app's last run
+/// ended before it), or "Couldn't make it" once it failed.
 class MakingTile extends StatelessWidget {
   const MakingTile({
     super.key,
@@ -710,7 +742,15 @@ class MakingTile extends StatelessWidget {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final failed = session.failure != null && !session.running;
-    final status = failed ? "Couldn't make it" : 'Making…';
+    final status = failed
+        ? "Couldn't make it"
+        : session.interrupted
+        ? 'Interrupted'
+        : session.queued
+        ? 'Waiting…'
+        : 'Making…';
+    // Making shows its ring; the others say where they stand in words.
+    final said = failed || session.interrupted || session.queued;
     return Semantics(
       button: true,
       label: '${session.request}, $status',
@@ -752,25 +792,25 @@ class MakingTile extends StatelessWidget {
                     const Spacer(),
                     Text(
                       session.request,
-                      maxLines: failed ? 1 : 2,
+                      maxLines: said ? 1 : 2,
                       overflow: TextOverflow.ellipsis,
                       style: theme.textTheme.titleMedium,
                     ),
-                    // A making tile says so with its ring; a failed one in
-                    // words.
-                    if (failed)
+                    if (said)
                       Text(
                         status,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: theme.textTheme.titleMedium?.copyWith(
-                          color: scheme.error,
+                          color: failed
+                              ? scheme.error
+                              : scheme.onSurfaceVariant,
                         ),
                       ),
                   ],
                 ),
               ),
-              if (!failed)
+              if (!said)
                 Positioned(
                   top: 10,
                   right: 10,
