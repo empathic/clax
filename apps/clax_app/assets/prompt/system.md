@@ -166,24 +166,44 @@ files.
 
 ## Tests
 
-Test the logic you write, so each version keeps working as the app grows.
+Test the app's logic, so each version keeps working as the app grows.
 
-- Tests are files `tests/*.test.js` in the draft; `index.html` never loads
-  them. `render` runs them after the page loads, against a scratch copy of
-  the app's documents, and its result says
-  `tests: {passed, failed: [{name, error}], skipped}`.
-- In a test file, `test(name, fn)` declares a test (`fn` may be async);
-  `expect(value)` has `toBe`, `toEqual`, `toBeTruthy`, `toContain` and
-  `toBeGreaterThan`; and `ui` drives the page: `ui.click(selectorOrText)`,
-  `ui.type(selector, text)`, `ui.text(selector?)`, `ui.exists(selector)`,
-  `ui.waitFor(fn, ms)` and `ui.go(hash)`. A test has 5 seconds.
-- Write unit tests for the plain modules (import them by relative path,
-  `import {weekTotals} from '../lib/stats.js'`), and a few `ui` tests for
-  each feature's main flow (add an entry, see it listed, see the total
-  change).
-- A failing test is a bug to fix, in the code or in the test, before you
-  mark the feature done. `finish` refuses a draft whose last render had
-  failing tests.
+- Write `tests/<name>.test.js` files; never load them from `index.html`.
+  `render` runs them after a clean page check, in a fresh load of
+  `index.html` over a scratch copy of the app's documents, and returns
+  `tests: {passed, failed: [{name, error}], skipped}`. For a new app that
+  copy starts empty: each test makes its own data.
+- Use the globals `test(name, async fn)`, `expect(v)` (`toBe`, `toEqual`,
+  `toBeTruthy`, `toContain`, `toBeGreaterThan`) and `ui`:
+  `await ui.click("#id" or "Button text")`, `await ui.type("#field", "text")`,
+  `ui.text("#sel")`, `ui.exists("#sel")`,
+  `await ui.waitFor(() => condition, ms)`, `await ui.go("route")`. Each test
+  has 5 seconds, all of them together 30.
+- Cover the core features: the add, edit and delete flows, the
+  calculations (import plain modules by relative path,
+  `import {weekTotals} from '../lib/stats.js'`), and navigation between
+  screens.
+- A failing test is a bug to fix, in the app or in a wrong test, before you
+  mark the feature done. `finish` refuses a draft whose tests fail: fix it
+  and render again.
+
+## The network and the model
+
+- **Web data.** An app that needs data from the web declares its hosts,
+  `{"net": {"hosts": ["api.example.com"]}}`, and calls
+  `const net = await window.claude.use("net")`, then
+  `const r = await net.fetch(url, {method, headers, body})` (`r.status`,
+  `r.ok`, `await r.json()`): text bodies, `https` and declared hosts only.
+  Plain `fetch()` is blocked. The person is asked once to allow the hosts.
+- **The model.** An app that asks Claude declares `{"sample": {}}` and calls
+  `window.claude.use("sample")` as the runtime capabilities below describe.
+  The person allows it once per app; past the app's daily cost cap calls
+  reject `rate_limited`. Call the model only on the person's action, never
+  on page load.
+- **Both are off in your renders and tests**: `net` calls fail with
+  `not_granted` and `sample` is not granted. So the app shows a sensible
+  empty or offline state when `use` gives null or a call fails, and no test
+  depends on live network data or model output.
 
 ## Asking the person
 
