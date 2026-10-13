@@ -6,15 +6,17 @@
 // scripts, and each page with the scripts and stylesheets it names), of the
 // question module (`questions`: the `q` chunk, which the gallery loads
 // through its lazy module, with what it imports that the gallery has not
-// loaded by then),
+// loaded by then), and of the People page (`people`: its chunk, which the
+// gallery loads at `/people` through its lazy module, with what it imports
+// that the gallery has not loaded by then),
 // against web/perf/bundle-budget.json. The shell sets its type in the
 // system's faces, so the build may carry no font file and no entry may load
 // one. The extension's release manifest may grant no host and declare no
 // content script, and its build may carry no key file and no test hook.
 // --record lowers the shell's and the bridge's budgets to the measured
 // sizes plus 10%, never raising one, and adds one that is missing; the
-// extension's and the question module's budgets are the spec's ceilings and
-// are never recorded.
+// extension's, the question module's and the People page's budgets are the
+// spec's ceilings and are never recorded.
 //
 // Sizes are deflated by pako (a pinned JavaScript port of reference zlib), not
 // node:zlib: Node links whichever zlib its build chose (the official builds
@@ -116,6 +118,15 @@ const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), 
   const beyond = hosts => { const loaded = files(hosts); return [...files([q])].filter(f => !loaded.has(f)).reduce((n, f) => n + gz(f), 0); };
   sizes.questions = Math.max(beyond(["index.html", lazy]), beyond(["artifact.html", stream, ...painted]));
 }
+// The People page: its chunk and what it imports beyond the gallery's entry
+// and its lazy module, through which `/people` loads it.
+{
+  const lazy = Object.keys(manifest).find(m => m.endsWith("src/ui/gallery-working.ts"));
+  const page = Object.keys(manifest).find(m => m.endsWith("src/people/People.svelte"));
+  if (!lazy || !page) throw new Error("dist has no gallery-working or People page chunk");
+  const loaded = new Set([...closure("index.html"), ...closure(lazy)].map(k => manifest[k].file));
+  sizes.people = [...new Set([...closure(page)].map(k => manifest[k].file))].filter(f => !loaded.has(f)).reduce((n, f) => n + gz(f), 0);
+}
 for (const [name, key] of Object.entries(partKeys)) sizes[key] = part(name);
 
 // The extension's release build.
@@ -147,10 +158,10 @@ for (const [key, html] of [["extComposer", "composer.html"], ["extPanel", "sidep
   const files = [...text.matchAll(/(?:src|href)="\.\/(assets\/[^"]+)"/g)].map(m => m[1]);
   sizes[key] = extGz(html) + files.reduce((n, f) => n + extGz(f), 0);
 }
-console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, questions ${sizes.questions}, eager bridge ${sizes.bridge}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, room ${sizes.partRoom}, sample ${sizes.partSample}, extension: overlay ${sizes.extOverlay}, worker ${sizes.extWorker}, composer ${sizes.extComposer}, panel ${sizes.extPanel}`);
+console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, questions ${sizes.questions}, people ${sizes.people}, eager bridge ${sizes.bridge}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, room ${sizes.partRoom}, sample ${sizes.partSample}, extension: overlay ${sizes.extOverlay}, worker ${sizes.extWorker}, composer ${sizes.extComposer}, panel ${sizes.extPanel}`);
 
 const RECORDED = ["gallery", "artifact", "bridge", ...Object.values(partKeys)];
-const EXTENSION = ["extOverlay", "extWorker", "extComposer", "extPanel", "questions"];
+const EXTENSION = ["extOverlay", "extWorker", "extComposer", "extPanel", "questions", "people"];
 const MEASURED = [...RECORDED, ...EXTENSION];
 const KEYS = [...MEASURED, "bridgeBaseline"];
 const budget = existsSync(budgetFile) ? JSON.parse(readFileSync(budgetFile, "utf8")) : null;

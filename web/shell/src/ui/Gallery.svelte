@@ -9,7 +9,10 @@
   // above everything and Inbox in the header. At `/inbox` the page is the
   // inbox instead, and `q` loads at once. `q` loads only in the owner's
   // browsers (those the token is served to); anyone else at `/inbox` is told
-  // the inbox is the owner's, and nothing of it is fetched.
+  // the inbox is the owner's, and nothing of it is fetched. At `/people` the
+  // page is People (its own chunk, through the lazy module, with the page's
+  // stream), and no artifacts are fetched. **People** is in the header for
+  // the owner and for a connected person, once the lazy module has loaded.
   import { onDestroy, onMount } from "svelte";
   import { ApiError, type Artifact, type AttentionSummary, deleteArtifact, getAttention, getToken, listArtifacts, patchArtifact } from "../api";
   import { REQUEST_STUCK, connTrouble } from "../conn-notice";
@@ -24,8 +27,11 @@
   let error = $state<string | null>(null);
   let token = $state<string | null>(null);
   let query = $state("");
-  let me = $state<string | null>(null);
-  let meId = $state<string | null>(null);
+  // This browser's viewer (`GET /api/viewers/me`): its name, public ID, and
+  // whether it is a connected person's.
+  let viewer = $state<import("../people/PeopleLink.svelte").Viewer>(null);
+  const me = $derived(viewer?.display_name);
+  const meId = $derived(viewer?.public_id ?? null);
   // This viewer's attention, by artifact: {} until it arrives (or on failure),
   // so the cards show in one list first and regroup once.
   let att = $state<Record<string, AttentionSummary>>({});
@@ -36,6 +42,8 @@
   let feed = $state<import("./working-feed.svelte").WorkingFeed | null>(null);
   let sync: import("./card-sync").CardSync | null = null;
   const inbox = location.pathname === "/inbox";
+  const people = location.pathname === "/people";
+  let unPeople: (() => void) | undefined;
   let Q = $state<typeof import("../q") | null>(null);
   let Page = $state<typeof import("../q/InboxPage.svelte").default | null>(null);
   // Whether this is the owner's inbox: null until known.
@@ -45,14 +53,16 @@
   // A gallery destroyed meanwhile asks no more and imports nothing: a late
   // import would load the question module after the page (or a test) moved on.
   // `/inbox` loads its page's own chunk beside the module.
-  const loadQ = (m: typeof import("./gallery-working")) => m.ownerBrowser(life.signal).then(o => (o && !destroyed ? Promise.all([m.q(), inbox ? m.inboxPage() : null]) : null)).then(async r => {
+  // The lazy module, once loaded (on every path): People in the header comes from it.
+  let lm = $state<typeof import("./gallery-working") | null>(null);
+  const loadQ = (m: typeof import("./gallery-working")) => { if (!destroyed) lm = m; return m.ownerBrowser(life.signal).then(o => (o && !destroyed ? Promise.all([m.q(), inbox ? m.inboxPage() : null]) : null)).then(async r => {
     if (destroyed) return;
     if (!r) { owner = false; return; }
     Q = r[0];
     Q.start(m.pageStream());
     owner = true;
     Page = r[1]?.default ?? null;
-  }, () => {});
+  }, () => {}); };
   const describe = (e: unknown) => (e instanceof Error ? e.message : String(e));
   // Each list seeds the working feed; the first one, once rendered, starts its stream.
   let cancelStart: (() => void) | null = null;
@@ -82,18 +92,19 @@
   // Grouped without a query once the grouping has loaded; until then, and
   // with a query, one list.
   const g = $derived(shown && gw && !query.trim() ? gw.groups(shown, att) : null);
-  onMount(() => { if (inbox) void lazy().then(loadQ, () => {}); else void refresh(true); void getToken().then(t => { token = t; return fetch("/api/viewers/me"); }).then(r => r.json()).then(b => { me = b?.viewer?.display_name ?? null; meId = b?.viewer?.public_id ?? null; }, () => {}); });
-  onDestroy(() => { destroyed = true; life.dispose(); cancelStart?.(); sync?.stop(); Q?.stop(); });
+  onMount(() => { if (inbox) void lazy().then(loadQ, () => {}); else if (people) void lazy().then(m => { void loadQ(m); if (!destroyed) unPeople = m.peoplePage(document.querySelector("main.gal")!); }, () => {}); else void refresh(true); void getToken().then(t => { token = t; return fetch("/api/viewers/me"); }).then(r => r.json()).then(b => { viewer = b?.viewer; }, () => {}); });
+  onDestroy(() => { destroyed = true; unPeople?.(); life.dispose(); cancelStart?.(); sync?.stop(); Q?.stop(); });
 </script>
 
 <header class="gbar">
   <Mark playful /><h1>Clax</h1><span class="sub hide-sm">local artifacts{#if me}{` · seen as ${me}`}{/if}</span>
-  {#if !inbox}<input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" value={query} oninput={e => { query = e.currentTarget.value; }} />{/if}
+  {#if !inbox && !people}<input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" value={query} oninput={e => { query = e.currentTarget.value; }} />{/if}
   {#if Q}<Q.InboxLink current={inbox} />{/if}
+  {#if lm}<lm.PeopleLink current={people} owner={!!token} {viewer} />{/if}
   <ThemeSwitch />
 </header>
 <main class="gal">
-  {#if inbox}{#if owner && Page}<Page />{:else if owner === false}<p class="empty">The inbox is its owner's: open it at http://localhost:{location.port}/inbox on the computer Clax runs on.</p>{/if}{:else}
+  {#if inbox}{#if owner && Page}<Page />{:else if owner === false}<p class="empty">The inbox is its owner's: open it at http://localhost:{location.port}/inbox on the computer Clax runs on.</p>{/if}{:else if !people}
   {#if Q}<Q.GallerySummary />{/if}
   {#if error}<p class="empty">Could not load artifacts: {error}</p>{/if}
   {#if artifacts && artifacts.length === 0}
