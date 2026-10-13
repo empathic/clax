@@ -20,6 +20,19 @@ pub struct AgentView {
     pub handle: String,
     pub harness: String,
     pub live: bool,
+    /// Its agent name (spec 2026-10-08 §11), when it has one.
+    pub name: Option<String>,
+    /// Whose agent it is (§10, §11 "Display"): names are not filtered (§21.9).
+    pub person: AgentPerson,
+}
+/// The person an agent works for: `owner` for the owner's agents, whose
+/// `public_id` is the owner's (null before the owner exists) and whose
+/// `name` is "The owner" until they choose one.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct AgentPerson {
+    pub public_id: Option<String>,
+    pub name: String,
+    pub owner: bool,
 }
 #[derive(Serialize, Debug, Clone, PartialEq, Default)]
 pub struct Participants {
@@ -130,7 +143,7 @@ macro_rules! agents_sql {
                 UNION SELECT a.id, a.owner, v.session_id FROM arts a CROSS JOIN versions v ON v.artifact_id = a.id
                        WHERE v.session_id IS NOT NULL),
             ranked AS (
-                SELECT k.aid, s.id, s.agent_handle, s.harness,
+                SELECT k.aid, s.id, s.agent_handle, s.harness, s.name, s.person,
                        (s.ended_at IS NULL AND (s.id IS k.owner OR EXISTS
                           (SELECT 1 FROM watches w WHERE w.session_id = s.id AND w.artifact_id = k.aid))) AS live,
                        MAX(COALESCE((SELECT MAX(v.created_at) FROM versions v WHERE v.artifact_id = k.aid AND v.session_id = s.id), ''),
@@ -139,8 +152,8 @@ macro_rules! agents_sql {
                            COALESCE((SELECT w.created_at FROM watches w WHERE w.session_id = s.id AND w.artifact_id = k.aid), ''),
                            s.started_at) AS active_at
                   FROM rel k CROSS JOIN sessions s ON s.id = k.sid)
-            SELECT aid, agent_handle, harness, live FROM
-              (SELECT aid, agent_handle, harness, live,
+            SELECT aid, agent_handle, harness, live, name, person FROM
+              (SELECT aid, agent_handle, harness, live, name, person,
                       ROW_NUMBER() OVER (PARTITION BY aid ORDER BY live DESC, active_at DESC, id) AS rn
                  FROM ranked)
              WHERE rn <= :limit ORDER BY aid, rn"
@@ -172,6 +185,12 @@ impl Store {
     /// artifact with neither people nor agents may be missing.
     pub fn participants_all(&self) -> Result<BTreeMap<String, Participants>> {
         self.with_read(|c| participants_in(c, None))
+    }
+
+    /// The person of an agent whose session's `person` is `pid` (`None`:
+    /// the owner's agents), as participant lists name it.
+    pub fn agent_person(&self, pid: Option<&str>) -> Result<AgentPerson> {
+        self.with_read(|c| agent_person(c, pid))
     }
 
     /// The live owner or watcher of `aid` whose handle is `handle`, as a session ID.
@@ -369,12 +388,55 @@ fn participants_in(c: &Connection, aid: Option<&str>) -> Result<BTreeMap<String,
         Some(aid) => st.query(named_params! {":aid": aid, ":limit": limit})?,
         None => st.query(named_params! {":limit": limit})?,
     };
+    let mut people: BTreeMap<Option<String>, AgentPerson> = BTreeMap::new();
     while let Some(r) = rows.next()? {
+        let person: Option<String> = r.get(5)?;
+        let person = match people.get(&person) {
+            Some(p) => p.clone(),
+            None => {
+                let p = agent_person(c, person.as_deref())?;
+                people.insert(person, p.clone());
+                p
+            }
+        };
         out.entry(r.get(0)?).or_default().agents.push(AgentView {
             handle: r.get(1)?,
             harness: r.get(2)?,
             live: r.get(3)?,
+            name: r.get(4)?,
+            person,
         });
     }
     Ok(out)
+}
+
+/// The person of an agent whose session's `person` is `pid` (`None`: the
+/// owner's agents), read on `c`.
+pub(crate) fn agent_person(c: &Connection, pid: Option<&str>) -> Result<AgentPerson> {
+    let row: Option<(String, Option<String>, bool)> = match pid {
+        None => c
+            .query_row(
+                "SELECT public_id, display_name, 1 FROM viewers WHERE owner = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?,
+        Some(p) => c
+            .query_row(
+                "SELECT public_id, display_name, owner FROM viewers WHERE public_id = ?1",
+                params![p],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?,
+    };
+    let owner = pid.is_none() || row.as_ref().is_some_and(|r| r.2);
+    let raw = row.as_ref().and_then(|r| r.1.as_deref());
+    Ok(AgentPerson {
+        public_id: row
+            .as_ref()
+            .map(|r| r.0.clone())
+            .or_else(|| pid.map(str::to_string)),
+        name: crate::feedback::person_name(raw, owner),
+        owner,
+    })
 }

@@ -1,17 +1,21 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
-  // A Send that names its agent (spec §10). The caret, shown only when more
-  // than one agent is live, picks another; the choice is remembered. `onSend`
-  // hears the activation, so the caller can guard it (`guardedAction`).
+  // A Send that names its agent (spec §10). The caret, shown when more than
+  // one agent is live or the one live agent is another person's, opens the
+  // menu (`SendMenu`, loaded on first open) that picks another; the choice
+  // is remembered. `me` is this viewer's public ID (`undefined`: unknown,
+  // the owner's), `firsts` the thread's `approves_first`. `onSend` hears
+  // the activation, so the caller can guard it (`guardedAction`).
   import type { AgentView } from "../view/working-model";
 
-  let { label, agents, names, target, disabled = false, onSend, onChoose }: {
-    label: string; agents: AgentView[]; names: Map<string, string>; target: string | null; disabled?: boolean; onSend(e: Event): void; onChoose(h: string): void;
+  let { label, agents, names, target, me, firsts = [], disabled = false, onSend, onChoose }: {
+    label: string; agents: AgentView[]; names?: Map<string, string>; target: string | null; me?: string | null; firsts?: (string | null)[]; disabled?: boolean; onSend(e: Event): void; onChoose(h: string): void;
   } = $props();
   let open = $state(false);
   let root: HTMLElement | undefined = $state();
   const live = $derived(agents.filter(a => a.live));
+  const others = $derived(live.some(a => a.person && (me === undefined ? !a.person.owner : a.person.public_id !== me)));
   // A press outside the menu closes it.
   const outside = (e: PointerEvent) => { if (open && root && !root.contains(e.target as Node)) open = false; };
 </script>
@@ -20,16 +24,12 @@
 
 <span class="send" bind:this={root}>
   <button type="button" class="primary" {disabled} onclick={onSend}>{label}</button>
-  {#if live.length > 1}
+  {#if live.length > 1 || others}
     <button type="button" class="primary caret" aria-label="Choose the agent" aria-haspopup="menu" aria-expanded={open} onclick={() => { open = !open; }}>▾</button>
     {#if open}
-      <!-- Escape closes the menu. -->
-      <!-- svelte-ignore a11y_interactive_supports_focus -->
-      <div class="send-menu" role="menu" tabindex="-1" onkeydown={e => { if (e.key === "Escape") { e.stopPropagation(); open = false; } }}>
-        {#each live as a (a.handle)}
-          <button type="button" role="menuitemradio" aria-checked={a.handle === target} class="ghost" onclick={() => { onChoose(a.handle); open = false; }}>{names.get(a.handle) ?? a.harness}</button>
-        {/each}
-      </div>
+      {#await import("./SendMenu.svelte") then { default: SendMenu }}
+        <SendMenu {agents} {names} {me} {firsts} {target} {onChoose} onClose={() => { open = false; }} />
+      {/await}
     {/if}
   {/if}
 </span>
@@ -43,9 +43,5 @@
     .send .caret { min-width: 28px; padding: 0 6px; border-left: 1px solid color-mix(in srgb, var(--on-accent) 35%, transparent); font-family: var(--mono); }
     .send > button.primary:not(:last-child) { border-top-right-radius: 0; border-bottom-right-radius: 0; }
     .send .caret { border-top-left-radius: 0; border-bottom-left-radius: 0; }
-    .send-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 160px; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius); box-shadow: var(--elev-lg); display: flex; flex-direction: column; padding: 4px 0; }
-    .send-menu button { justify-content: flex-start; border: 0; border-radius: 0; min-height: 32px; }
-    .send-menu button[aria-checked="true"]::before { content: "✓"; margin-right: 6px; }
-    @media (max-width: 700px) { .send-menu button { min-height: 40px; } }
   }
 </style>

@@ -92,6 +92,12 @@
      * `version`, posted through `host` (the artifact view's controller).
      * Without it the panel has no box (the extension's side panel). */
     compose?: { version: number; host: WholeHost };
+    /** What goes above a thread's card, at the sidebar's clock: the shell
+     * puts this viewer's approval card above a thread waiting for their
+     * approval (spec 2026-10-08 §9.5); the extension's panel, nothing. */
+    above?: Snippet<[Thread, Date]>;
+    /** The threads whose approval is this viewer's (its card is above them). */
+    yours?: string[];
   };
   let p: Props = $props();
   // Each second while a waiting label counts; otherwise often enough for "N min ago".
@@ -124,6 +130,9 @@
       justResolved = null;
     }
   });
+  // The thread's people who approve a send to their agent first; for the selection, any of its threads'.
+  const me = $derived(p.me ? p.me.public_id : undefined);
+  const firstsOf = (ids: string[]) => [...new Set(p.threads.filter(t => ids.includes(t.id)).flatMap(t => t.approves_first ?? []))];
   // Every Send names the same agent: the target's name, else the publishing agent's.
   const target = $derived(agentsByHandle.get(p.sendTo ?? "") ?? p.agent);
   const ticked = $derived(new Set(p.selection?.ids ?? []));
@@ -176,14 +185,15 @@
 
 {#snippet cards(list: Thread[])}
   {#each list as t (t.id)}
-    <ThreadCard {t} n={(p.numbers ?? s.numbers).get(t.id)} now={clock.now} me={p.me} selected={p.selected} file={s.file}
+    {@render p.above?.(t, clock.now)}
+    <ThreadCard {t} yours={p.yours?.includes(t.id)} n={(p.numbers ?? s.numbers).get(t.id)} now={clock.now} me={p.me} selected={p.selected} file={s.file}
       history={historyOf(t, p.versions, names(t), { working: t.status === "open" ? threadAgent(p.working ?? [], t.id, agentsByHandle) : null })}
       marker={t.status === "open" ? threadMarker(p.working ?? [], t.id, agentsByHandle) : null} outdated={isOutdated(t, p.resolved[t.id], p.shown)} agent={p.agent} when={relativeTime(t.created_at, clock.now)}
       versions={p.versions} onSeen={p.onSeen} fold={foldOf(t)} clip={p.clip} tools={far(t) ? go : undefined}
       checked={ticked.has(t.id)} onToggle={p.onToggle && selectable(t, false) ? toggleCard : undefined}
       onSelect={p.onSelect} onSend={p.onSend} onResolve={resolve} onReply={p.onReply} onHover={p.onHover}>
       {#snippet send(guard: (e: Event, act: () => void) => void)}
-        <SendButton label={`Send to ${target}`} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null}
+        <SendButton label={`Send to ${target}`} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null} {me} firsts={t.approves_first}
           onSend={e => guard(e, () => p.onSend(t))} onChoose={h => p.onChoose?.(h)} />
       {/snippet}
     </ThreadCard>
@@ -214,7 +224,7 @@
       <SelectionBar count={p.selection.ids.length} note={p.batchNote ?? ""} busy={p.batchBusy ?? false}
         onNote={v => p.onNote?.(v)} onClear={() => p.onClear?.()} onSend={() => p.onSendSelection?.()}>
         {#snippet send(go: (e: Event) => void)}
-          <SendButton label={sendLabel(p.selection!.ids.length, target)} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null}
+          <SendButton label={sendLabel(p.selection!.ids.length, target)} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null} {me} firsts={firstsOf(p.selection!.ids)}
             disabled={p.batchBusy} onSend={go} onChoose={h => p.onChoose?.(h)} />
         {/snippet}
       </SelectionBar>

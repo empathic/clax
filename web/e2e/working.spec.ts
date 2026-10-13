@@ -33,6 +33,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   // page, the same in either mode: one mode each.
   if (mode === "subdomain") test(`${mode}: the summary, roster, marker, pin and gallery chip follow the working record`, async ({ page }) => {
     const s = await registerSession(d.base, d.token, "claude", `work-${mode}`);
+    // The shell names the agent (spec 2026-10-08 §19 item 1): `claude`, or
+    // `claude-2` and so on while other tests' agents on this daemon hold it.
+    const n = s.name ?? "claude";
     const { artifact } = await publishAs(d.base, d.token, s.id, `Working ${mode}`, { "index.html": PAGE });
     const t = await postThread(d.base, artifact.id, "@agent two columns");
     await openArtifact(page, d.base, artifact.id, 1, mode);
@@ -42,19 +45,19 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // The view's topics are live, so the record reaches it as an event.
     await expect.poll(() => page.evaluate(() => (window as unknown as { claxStreamLive?: number }).claxStreamLive ?? 0)).toBeGreaterThan(0);
     await api(d.base, d.token, `/api/sessions/${s.id}/feedback?tier=piggyback`);
-    await expect(line1).toHaveText("claude working on 1");
+    await expect(line1).toHaveText(`${n} working on 1`);
     await expect(page.locator(".who .agt .tok.work")).toHaveCount(1);
     await expect(page.locator(".topbar")).toHaveClass(/working/);
     if (!(await page.locator("aside.sidebar").isVisible())) await page.getByRole("button", { name: /Threads/ }).first().click();
     const card = page.locator(`.thread-card[data-thread="${t.id}"]`);
-    await expect(card.locator(".st.ag")).toContainText("claude is working on it");
-    await expect(card.locator(".hist")).toContainText("claude working on it");
+    await expect(card.locator(".st.ag")).toContainText(`${n} is working on it`);
+    await expect(card.locator(".hist")).toContainText(`${n} working on it`);
     await expect(page.locator(".thread-pin.onit")).toHaveCount(1);
     await setWorking(d.base, d.token, s.id, artifact.id, { message: "Two columns" });
-    await expect(line1).toHaveText("claude: Two columns");
+    await expect(line1).toHaveText(`${n}: Two columns`);
     const gallery = await page.context().newPage();
     await gallery.goto(`${d.base}/`);
-    await expect(gallery.locator(".card-wrap", { hasText: `Working ${mode}` }).locator(".chip.ag")).toHaveText("claude working on 1");
+    await expect(gallery.locator(".card-wrap", { hasText: `Working ${mode}` }).locator(".chip.ag")).toHaveText(`${n} working on 1`);
     await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads/${t.id}/comments`, { method: "POST", session: s.id, body: JSON.stringify({ body: "Done.", author_kind: "agent" }) });
     await expect(card.locator(".st.ag")).toHaveCount(0);
     await expect(line1).toHaveText("Nobody working");

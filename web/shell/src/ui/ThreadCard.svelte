@@ -29,6 +29,8 @@
     versions?: VersionTag[];
     /** The card has been at least half visible for a second (decided: Q4). */
     onSeen?(t: Thread): void;
+    /** The approval its sends wait for is this viewer's (its card is above): "waiting for your approval". */
+    yours?: boolean;
     /** The card's box is ticked for a batch send (spec §8). */
     checked?: boolean;
     /** Ticks or unticks the card; `shift` asks for the range from the last one ticked. Without it the card has no box. */
@@ -50,7 +52,7 @@
     /** `onResolve` resolves an open thread and reopens a resolved one. */
     onSelect(t: Thread): void; onSend(t: Thread): void; onResolve(t: Thread): void; onReply(t: Thread, body: string): void; onHover?(t: Thread | null): void;
   };
-  let { t, n, now, selected, file, history, outdated, agent, when, marker = null, versions = [], onSeen, checked = false, onToggle, send: sendButton, fold, badge, meta, tools, clip, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
+  let { t, n, now, me, selected, file, history, outdated, agent, when, marker = null, versions = [], onSeen, yours = false, checked = false, onToggle, send: sendButton, fold, badge, meta, tools, clip, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
   // A thread about the whole artifact (anchor kind `artifact`) has no spot to name.
   const anchorLabel = (a: Thread["anchor"]) => (a.kind === "artifact" ? "The whole artifact" : pickLabel(a));
   let reply = $state("");
@@ -83,7 +85,12 @@
   const guardSend = (e: Event, act: () => void) => {
     hint = guardedAction(e, "send", () => { if (card?.contains(document.activeElement)) head?.focus(); act(); });
   };
-  const label = $derived(t.status === "open" && t.sent_to_agent ? waitingLabel(t.feedback_state, now) : null);
+  const label = $derived(t.status === "open" && t.sent_to_agent ? (yours && t.feedback_state?.state === "withheld" ? "waiting for your approval" : waitingLabel(t.feedback_state, now)) : null);
+  // The owner agent (spec 2026-10-08 §12, §26 (e)): its name, with its
+  // person when it is not this viewer's (the owner's agents have none; a
+  // viewer unknown is taken for the owner); the person shows on hover.
+  const owner = $derived(t.owner?.live ? t.owner : null);
+  const mine = $derived(!!owner && (me && !me.owner ? owner.person === me.public_id : owner.person === null));
   const open = $derived(!fold || fold.open);
   const replies = $derived(t.comments.length - 1);
   /** Folds or opens the card; focus left inside what folds goes to its head. */
@@ -107,12 +114,12 @@
     {#if fold}
       <button type="button" class="card-head" bind:this={head} aria-expanded={fold.open} aria-controls={body}
         onclick={e => { e.stopPropagation(); toggle(!fold.open); }}
-        ><span class="fold-caret" aria-hidden="true"></span><span class="anchor-label">{anchorLabel(t.anchor)}</span>{@render badge?.()}{#if t.anchor.file !== file && t.anchor.kind !== "artifact"}<span class="file-label muted small" title={pageLabel(t.anchor.file)}>on {pageLabel(t.anchor.file)}</span>{/if}<span class="muted small">{when}</span
+        ><span class="fold-caret" aria-hidden="true"></span><span class="anchor-label">{anchorLabel(t.anchor)}</span>{@render badge?.()}{#if t.anchor.file !== file && t.anchor.kind !== "artifact"}<span class="file-label muted small" title={pageLabel(t.anchor.file)}>on {pageLabel(t.anchor.file)}</span>{/if}{@render chip()}<span class="muted small">{when}</span
       ></button>
     {:else}
       <button type="button" class="card-head" bind:this={head} aria-pressed={selected === t.id} onclick={e => { e.stopPropagation(); onSelect(t); }}
         >{#if n !== undefined}<span class="thread-num">{n}</span>{/if}<span class="anchor-label">{anchorLabel(t.anchor)}</span
-        >{#if outdated}<span class="vt out">outdated</span>{/if}{#if t.anchor.file !== file && t.anchor.kind !== "artifact"}<span class="file-label muted small" title={pageLabel(t.anchor.file)}>on {pageLabel(t.anchor.file)}</span>{/if}<span class="muted small">{when}</span
+        >{#if outdated}<span class="vt out">outdated</span>{/if}{#if t.anchor.file !== file && t.anchor.kind !== "artifact"}<span class="file-label muted small" title={pageLabel(t.anchor.file)}>on {pageLabel(t.anchor.file)}</span>{/if}{@render chip()}<span class="muted small">{when}</span
       ></button>
     {/if}
   </header>
@@ -157,6 +164,8 @@
   {/if}
 </article>
 
+{#snippet chip()}{#if owner}<span class="owner-chip" title={`${owner.person_name}'s agent`}>{owner.name}{mine ? "" : ` · ${owner.person_name}`}</span>{/if}{/snippet}
+
 {#snippet actions()}
   <!-- Only stops a click on these controls from also selecting the card. -->
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
@@ -182,6 +191,7 @@
     .thread-card header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; min-width: 0; }
     .thread-card .card-head { display: flex; gap: 8px; align-items: center; width: 100%; min-width: 0; min-height: 0; background: none; border: 0; padding: 0; color: var(--muted); text-align: left; font: 400 12.5px var(--font); }
     .thread-card .card-head:not(:disabled):hover { background-color: transparent; }
+    .thread-card .owner-chip { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 7px; border-radius: 999px; font: 600 11.5px/18px var(--font); color: var(--agent-ink); background: var(--accent-tint); }
     .thread-card .anchor-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
     .thread-card.far .anchor-label { color: var(--fg); font-weight: 500; }
     .fold-caret::before { content: "▸"; color: var(--fg); font-size: 13px; line-height: 1; }

@@ -255,7 +255,9 @@ describe("Panel: the site's other pages", () => {
     // Send names the page's first live agent, and its picker offers the others, as on that page.
     await fireEvent.click(within(card).getByRole("button", { name: "Send to claude" }), { detail: 1 });
     await fireEvent.click(within(card).getByRole("button", { name: "Choose the agent" }));
-    await fireEvent.click(within(card).getByRole("menuitemradio", { name: "codex" }));
+    // The menu loads on first open (loaded first here, so a busy run does not outwait the query).
+    await import("../../../shell/src/ui/SendMenu.svelte");
+    await fireEvent.click(await within(card).findByRole("menuitemradio", { name: "codex" }));
     await fireEvent.click(within(card).getByRole("button", { name: "Send to codex" }), { detail: 1 });
     await fireEvent.click(within(card).getByRole("button", { name: "Resolve" }), { detail: 1 });
     expect(l.sent.filter(m => m.t !== "suggest")).toEqual([

@@ -1582,6 +1582,48 @@ fn withheld_outside_threads(
 }
 
 impl Store {
+    /// For each of `threads`, in order, the people whose agents a send
+    /// naming one of them would ask first (§10, "Sam approves first"):
+    /// each person with a live agent whose agents may not see an author of
+    /// the thread's comments that a routing request names (§9.2, M18),
+    /// by public ID (`None`: the owner), in the order their agents started.
+    /// Empty for every thread while no viewer is a person (§19).
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn approves_first(&self, threads: &[Thread]) -> Result<Vec<Vec<Option<String>>>> {
+        let mut out = vec![Vec::new(); threads.len()];
+        if threads.is_empty() || !self.people_present()? {
+            return Ok(out);
+        }
+        let (owner, people) = self.with_read(|c| {
+            let mut st = c.prepare_cached(
+                "SELECT person FROM sessions WHERE ended_at IS NULL
+                 GROUP BY person ORDER BY MIN(started_at), person",
+            )?;
+            let people = st
+                .query_map([], |r| r.get::<_, Option<String>>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok((owner_pid(c)?, people))
+        })?;
+        let generation = self.visibility_generation();
+        for person in people {
+            let reader = match &person {
+                Some(p) => Reader::Person(p.clone()),
+                None => Reader::Owner,
+            };
+            let vis = Visibility::for_reader(self, &reader, generation)?;
+            for (t, firsts) in threads.iter().zip(out.iter_mut()) {
+                if t.comments.iter().any(|c| c.author_kind == AUTHOR_VIEWER)
+                    && !withheld_in_thread(&vis, t, owner.as_deref()).is_empty()
+                {
+                    firsts.push(person.clone());
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Asks session `q.session_id`'s person for the content withheld from
     /// its agent at `q.thread_id` (its comments' bodies), or else at
     /// `q.artifact_id` outside threads, of `q.author` alone when given

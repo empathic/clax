@@ -514,3 +514,29 @@ async fn no_page_may_frame_the_shell() {
     assert_eq!(again.status(), 304);
     unframeable(&again, "304");
 }
+
+/// The owner's browser is marked as the owner's, in the boot payload as in
+/// `GET /api/viewers/me` (its agents are "Your agents", spec
+/// 2026-10-08-multi-agent-multi-person §10).
+#[tokio::test]
+async fn boot_marks_the_owners_viewer() {
+    let _dist = dist().await;
+    let ts = TestServer::spawn().await;
+    let id = ts.publish("V", &[("index.html", "<p>x</p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let cookie = ts.owner_cookie();
+    let me: Value = page(&ts, "/api/viewers/me", &[("cookie", cookie.clone())])
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(me["viewer"]["owner"], true, "{me}");
+    let html = page(&ts, &format!("/a/{id}"), &[("cookie", cookie)])
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(boot(&html).1["viewer"], me["viewer"]);
+}

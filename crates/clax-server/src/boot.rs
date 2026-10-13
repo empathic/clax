@@ -172,6 +172,7 @@ pub async fn assemble(
         return Ok(None);
     };
     let who = crate::identity::Identity::of(headers, &s.token, peer);
+    let owner_browser = who.is_owner();
     let codex = s.feedback_ctx().codex_push();
     let lookup = id.clone();
     let working = s.working.for_artifact(id.as_str());
@@ -241,6 +242,10 @@ pub async fn assemble(
     });
     if let Some(att) = attention {
         boot["attention"] = json!(att);
+    }
+    // As `GET /api/viewers/me` marks it.
+    if owner_browser && boot["viewer"].is_object() {
+        boot["viewer"]["owner"] = json!(true);
     }
     Ok(Some(Injected {
         boot: script_json(&boot),

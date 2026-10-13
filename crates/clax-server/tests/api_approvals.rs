@@ -2064,3 +2064,65 @@ async fn an_agents_approvals_withhold_a_page_title_it_may_not_see() {
         .unwrap();
     assert_eq!(thread["artifact_title"], "Quarterly Review", "{thread}");
 }
+
+/// What the Send menu and the owner chip read (spec §10, §11 "Display",
+/// §12): a thread names whose approval a send naming their agent asks
+/// first until they approve (browsers only), its owner names its person,
+/// the artifact's agents carry their name and person, and the owner's
+/// browser is marked as the owner's.
+#[tokio::test]
+async fn the_send_menu_names_agents_their_people_and_who_approves_first() {
+    let t = Two::new().await;
+    let tid = t.mia_thread("please fix the chart").await;
+    let sam = json!(t.sam_public());
+    // The owner's live agent, too, waits for the owner to approve Mia
+    // (`null`: the owner).
+    let th = t.owner_thread(&tid).await;
+    assert_eq!(th["approves_first"], json!([null, sam]), "{th}");
+    // An agent's view leaves it out.
+    let (status, v) = t
+        .sam_agent(
+            "GET",
+            &format!("/api/artifacts/{}/threads/{tid}", t.aid),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{v}");
+    assert!(v["thread"].get("approves_first").is_none(), "{v}");
+    // The artifact's agents: Sam's, named, as Sam's.
+    let (status, a) = t
+        .owner_browser()
+        .call("GET", &format!("/api/artifacts/{}", t.aid), None)
+        .await;
+    assert_eq!(status, 200, "{a}");
+    let agents = a["artifact"]["participants"]["agents"].as_array().unwrap();
+    let agent = agents
+        .iter()
+        .find(|x| x["handle"] == json!(t.sam_handle))
+        .unwrap();
+    assert_eq!(
+        agent["person"],
+        json!({"public_id": sam, "name": "Sam", "owner": false}),
+        "{agent}"
+    );
+    assert!(agent["name"].is_string(), "{agent}");
+    // The owner's browser is the owner's; Sam's is not.
+    let (_, me) = t.owner_browser().call("GET", "/api/viewers/me", None).await;
+    assert_eq!(me["viewer"]["owner"], true, "{me}");
+    let (_, me) = t.sam_browser().call("GET", "/api/viewers/me", None).await;
+    assert!(me["viewer"].get("owner").is_none(), "{me}");
+    // Sent to Sam's agent, the thread is his agent's, and names Sam.
+    let (status, v) = t.mia_sends_to_sam(&tid).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["thread"]["owner"]["person"], sam, "{v}");
+    assert_eq!(v["thread"]["owner"]["person_name"], "Sam", "{v}");
+    // Once Sam approves the thread, a send to his agent asks no one.
+    let rid = t.sams_requests().await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, v) = t.sam_decides(&rid, "thread").await;
+    assert_eq!(status, 200, "{v}");
+    let th = t.owner_thread(&tid).await;
+    assert_eq!(th["approves_first"], json!([null]), "{th}");
+}

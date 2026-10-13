@@ -39,8 +39,8 @@
   <span class="hub" aria-hidden="true"></span>
   <span class="side agt">
     {#each p.agents.slice(0, p.max) as a (a.handle)}
-      {#if busy.has(a.handle)}<span class="tok a work" title={a.harness}>{AGENT[a.harness] ?? a.harness.slice(0, 2)}</span>
-      {:else}<span class="tok a" title={a.harness}>{AGENT[a.harness] ?? a.harness.slice(0, 2)}</span>{/if}
+      {#if busy.has(a.handle)}<span class="tok a work" title={a.name ?? a.harness}>{AGENT[a.harness] ?? a.harness.slice(0, 2)}</span>
+      {:else}<span class="tok a" title={a.name ?? a.harness}>{AGENT[a.harness] ?? a.harness.slice(0, 2)}</span>{/if}
     {/each}
     {#if p.agents.length > p.max}<span class="tok more">+{p.agents.length - p.max}</span>{/if}
   </span>

@@ -4,7 +4,9 @@
   // The people panel (spec §8, §10 "Presence"), opened from the roster: the
   // people on the artifact and the viewers present, with where they look when
   // they share it and the last version each viewed (public, decided: Q7); the
-  // agents, with what they work on or what they last addressed; and this
+  // agents, by name and, for another person's, with their person, with what
+  // they wait on (the roster's states and block times, spec 2026-10-08
+  // §13, for the owner and connected people), work on or last addressed; and this
   // viewer's name with the "Share where I'm looking" switch. Escape, Close or
   // a press outside closes it; Escape and Close return focus to
   // the roster. Loaded on first open, with its styles.
@@ -12,6 +14,8 @@
   import type { ArtifactController, Loaded, ViewState } from "../view/artifact-controller";
   import { personLine, roster } from "../view/presence-model";
   import { agentNames, clock, newestFirst, stripText } from "../view/working-model";
+  import type { RosterAgent } from "../api";
+  import { blockedOn, waitedFor } from "../people/strip";
   import HaikuLine from "./HaikuLine.svelte";
   import { ticker } from "./ticker.svelte";
   import ViewerName from "./ViewerName.svelte";
@@ -31,6 +35,19 @@
   const names = $derived(agentNames(s.working, parts.agents));
   const agents = $derived([...names.keys()].map(handle => ({ handle, harness: parts.agents.find(a => a.handle === handle)?.harness ?? s.working.find(w => w.agent === handle)?.harness ?? "agent" })));
   const mine = $derived(new Set(s.attention?.open_in ?? []));
+  // The agents roster (`GET /api/agents`): a LAN viewer has none.
+  let listed = $state<RosterAgent[]>([]);
+  $effect(() => { void fetch("/api/agents").then(r => (r.ok ? r.json() : null)).then(b => { if (Array.isArray(b?.agents)) listed = b.agents; }, () => {}); });
+  const personOf = (handle: string) => parts.agents.find(a => a.handle === handle)?.person;
+  const theirs = (handle: string) => { const p = personOf(handle); return !!p && p.public_id !== me && (!!me || !p.owner); };
+  /** What the roster says an agent waits on: its person (you, for yours), since when, and on what. */
+  function waiting(handle: string, name: string): string | null {
+    const r = listed.find(x => x.handle === handle) ?? listed.find(x => !x.handle && x.name === name && x.live);
+    const since = r?.blocked?.since ?? (r?.state === "waiting" ? r.since : null);
+    if (!r || !since) return null;
+    const on = r.blocked && blockedOn(r.blocked) ? ` (${blockedOn(r.blocked)})` : "";
+    return `Waiting on ${theirs(handle) ? personOf(handle)!.name : "you"} ${waitedFor(since, tick.now)}${on}`;
+  }
   const AGENT: Record<string, string> = { claude: "cl", codex: "cx", pi: "pi" };
   const initials = (n: string | null) => {
     const w = (n ?? "?").trim().split(/\s+/);
@@ -115,10 +132,13 @@
   {#each agents as a (a.handle)}
     {@const name = names.get(a.handle) ?? a.harness}
     {@const w = newestFirst(s.working).find(x => x.agent === a.handle)}
-    <div class="prow">
+    {@const held = waiting(a.handle, name)}
+    <div class="prow agent">
       <span class={["tok a", w && "work"]} aria-hidden="true">{AGENT[a.harness] ?? a.harness.slice(0, 2)}</span>
-      <b>{name}</b>
-      {#if w}
+      <b title={personOf(a.handle) ? `${personOf(a.handle)!.name}'s agent` : undefined}>{theirs(a.handle) ? `${name} · ${personOf(a.handle)!.name}` : name}</b>
+      {#if held}
+        <p class="on">{held}</p>
+      {:else if w}
         <p><span class="on">{onWhat(stripText(w, names, numbers, mine), name)}</span> · {clock(w.started_at, tick.now)}</p>
         {#if !s.commenting}<HaikuLine seed={w.key} />{/if}
       {:else}

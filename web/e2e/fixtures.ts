@@ -132,7 +132,7 @@ export async function registerSession(base: string, token: string, harness = "cl
   const res = await fetch(`${base}/api/sessions`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
     body: JSON.stringify({ harness, harness_session_id: hsid, cwd: "/tmp" }) });
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
-  return (await res.json()).session as { id: string; harness: string };
+  return (await res.json()).session as { id: string; harness: string; name?: string | null };
 }
 
 /** Publishes as `sessionId` (which then owns and watches the artifact). */

@@ -1989,7 +1989,7 @@ async fn views_show_owner_and_taken_by() {
     let t = &v["thread"];
     assert_eq!(
         t["owner"],
-        json!({"handle": web_handle, "name": "web", "person": null, "live": true})
+        json!({"handle": web_handle, "name": "web", "person": null, "person_name": "The owner", "live": true})
     );
     assert_eq!(t["taken_by"], "web");
     assert!(
