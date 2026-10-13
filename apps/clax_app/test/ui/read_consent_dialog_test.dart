@@ -1,0 +1,151 @@
+import 'dart:async';
+import 'dart:io';
+
+import 'package:clax_app/agent/read_consent.dart';
+import 'package:clax_app/ui/read_consent_dialog.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  final nav = GlobalKey<NavigatorState>();
+
+  Future<void> pumpApp(WidgetTester tester) => tester.pumpWidget(
+    MaterialApp(
+      navigatorKey: nav,
+      home: const Scaffold(body: Text('home')),
+    ),
+  );
+
+  DialogReadConsent consent([ConsentMemory? memory]) => DialogReadConsent(
+    navigator: () => nav.currentState,
+    memory: memory ?? MemoryConsentMemory(),
+  );
+
+  Future<ConsentAnswer> ask(
+    DialogReadConsent c, {
+    String? reader = 'a0000000000a',
+    String? readerTitle = 'Dashboard',
+    Future<void>? cancelled,
+  }) => c.ask(
+    reader: reader,
+    readerTitle: readerTitle,
+    source: 'b0000000000b',
+    sourceTitle: 'Runs',
+    cancelled: cancelled,
+  );
+
+  testWidgets('the dialog names both apps and offers the three answers', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+    final c = consent();
+    final answer = ask(c);
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Let the agent read “Runs” while it works on “Dashboard”?'),
+      findsOneWidget,
+    );
+    expect(find.text('Allow once'), findsOneWidget);
+    expect(find.text('Always for this app'), findsOneWidget);
+    expect(find.text('Don’t allow'), findsOneWidget);
+    await tester.tap(find.text('Allow once'));
+    await tester.pumpAndSettle();
+    expect(await answer, ConsentAnswer.once);
+    expect(find.byType(AlertDialog), findsNothing);
+  });
+
+  testWidgets("Don't allow, and dismissing the dialog, deny", (tester) async {
+    await pumpApp(tester);
+    final c = consent();
+    var answer = ask(c);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Don’t allow'));
+    await tester.pumpAndSettle();
+    expect(await answer, ConsentAnswer.denied);
+
+    answer = ask(c);
+    await tester.pumpAndSettle();
+    await tester.tapAt(const Offset(5, 5));
+    await tester.pumpAndSettle();
+    expect(await answer, ConsentAnswer.denied);
+  });
+
+  testWidgets('Always is remembered for the pair, and asked no more', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+    final c = consent();
+    var answer = ask(c);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Always for this app'));
+    await tester.pumpAndSettle();
+    expect(await answer, ConsentAnswer.always);
+
+    answer = ask(c);
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(await answer, ConsentAnswer.always);
+
+    // Another app working on the same source is asked.
+    answer = ask(c, reader: 'c0000000000c', readerTitle: 'Week');
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsOneWidget);
+    await tester.tap(find.text('Don’t allow'));
+    await tester.pumpAndSettle();
+    expect(await answer, ConsentAnswer.denied);
+  });
+
+  testWidgets('a new app is offered no Always', (tester) async {
+    await pumpApp(tester);
+    final answer = ask(consent(), reader: null, readerTitle: null);
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Let the agent read “Runs” while it works on your new app?'),
+      findsOneWidget,
+    );
+    expect(find.text('Always for this app'), findsNothing);
+    await tester.tap(find.text('Allow once'));
+    await tester.pumpAndSettle();
+    expect(await answer, ConsentAnswer.once);
+  });
+
+  testWidgets('a cancelled run takes the dialog down and is denied', (
+    tester,
+  ) async {
+    await pumpApp(tester);
+    final cancel = Completer<void>();
+    final answer = ask(consent(), cancelled: cancel.future);
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsOneWidget);
+    cancel.complete();
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(await answer, ConsentAnswer.denied);
+    expect(find.text('home'), findsOneWidget);
+  });
+
+  test('without a navigator the answer is denied', () async {
+    final c = DialogReadConsent(
+      navigator: () => null,
+      memory: MemoryConsentMemory(),
+    );
+    expect(await ask(c), ConsentAnswer.denied);
+  });
+
+  test('FileConsentMemory keeps the pairs across loads and ignores a broken '
+      'file', () async {
+    final dir = Directory.systemTemp.createTempSync('consent-');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final file = File('${dir.path}/agent-read-consent.json');
+    final m = FileConsentMemory(file);
+    expect(await m.allowed('a', 'b'), isFalse);
+    await m.allow('a', 'b');
+    final again = FileConsentMemory(file);
+    expect(await again.allowed('a', 'b'), isTrue);
+    expect(await again.allowed('b', 'a'), isFalse);
+    expect(File('${file.path}.tmp').existsSync(), isFalse);
+
+    file.writeAsStringSync('{not json');
+    expect(await FileConsentMemory(file).allowed('a', 'b'), isFalse);
+  });
+}
