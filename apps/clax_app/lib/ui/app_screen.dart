@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../agent/plan.dart';
 import '../agent/timings.dart';
 import '../agent/worker.dart';
 import '../clax/api.dart';
@@ -15,6 +16,7 @@ import '../platform/settings_store.dart';
 import '../platform/voice.dart';
 import 'app_menu.dart';
 import 'app_surface.dart';
+import 'build_plan.dart';
 import 'change_tracker.dart';
 import 'comment_bar.dart';
 import 'host_protocol.dart';
@@ -97,6 +99,14 @@ import 'working_chip.dart';
 ///   [AppScreen.onRetry] for each of its threads and shows the change
 ///   running again when one was queued, or says there was nothing to run.
 ///   The chip can always be dismissed.
+/// - **Build** ([AppScreen.build]). While the app's build goes (queued or
+///   running) and no change is in flight, the chip is the [BuildChip]
+///   ("Building · Export · 3/7"); a tap opens the build sheet
+///   ([showBuildSheet]) with the plan and Stop or Resume. When the build
+///   ends a toast says how: every feature built, the spending cap, stopped
+///   (Undo resumes it) or failed (Resume). The composer's peek offers Add
+///   to plan: the comment becomes the plan's last feature, the composer
+///   closes without sending, and the build takes it up.
 /// - **Thread page.** Tapping a thread in the panel opens [ThreadDetail]
 ///   over the screen, with the shell's label for its anchor. Its "Changed
 ///   in vN" closes it and previews that version (`loadVersion`); its Retry
@@ -127,6 +137,7 @@ class AppScreen extends StatefulWidget {
     this.onDictateChanged,
     this.onRetry,
     this.device,
+    this.build,
   });
 
   final String aid;
@@ -184,6 +195,9 @@ class AppScreen extends StatefulWidget {
   /// Makes the page's device capability calls (`notify`, `share`, `files`,
   /// `camera`, `location`); without it each is answered `unavailable`.
   final DeviceHost? device;
+
+  /// The plans and builds; null shows no build and offers no Add to plan.
+  final BuildLink? build;
 
   /// The app view's URL for [aid] under [base].
   static Uri appUrl(Uri base, String aid) {
@@ -247,6 +261,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   /// The changes in flight, for the chip and the long-press→landed timing.
   late final ChangeTracker _changes;
 
+  /// The app's plan and its build's latest step.
+  Plan? _plan;
+  BuildState? _build;
+
   // Dictation.
   Future<VoiceAvailability>? _availability;
   StreamSubscription<VoiceResult>? _listen;
@@ -272,6 +290,18 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       ..add(widget.surface.faults.listen(_onFault))
       ..add(widget.worker.listen(_onWorker));
     if (widget.actions case final actions?) _subs.add(actions.listen(_act));
+    if (widget.build case final b?) {
+      _build = b.control.buildOf(widget.aid);
+      _subs
+        ..add(
+          b.plans.watch(widget.aid).listen((p) {
+            if (mounted) setState(() => _plan = p);
+          }),
+        )
+        ..add(
+          b.control.builds.where((s) => s.appId == widget.aid).listen(_onBuild),
+        );
+    }
     if (widget.notice case final notice?) {
       _subs.add(
         notice.dismissed.listen((aid) {
@@ -569,6 +599,71 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         setState(_changes.workerCancelled);
       case WorkerProgress(:final threads, :final progress):
         if (_changes.workerProgress(threads, progress)) setState(() {});
+    }
+  }
+
+  // --- the build ---
+
+  void _onBuild(BuildState s) {
+    if (!mounted) return;
+    final was = _build;
+    setState(() => _build = s);
+    if (was?.phase == s.phase) return;
+    final b = widget.build!;
+    final aid = widget.aid;
+    switch (s.phase) {
+      case BuildPhase.done:
+        _buildToast('Every feature is built');
+      case BuildPhase.capped:
+        _buildToast('The build reached its spending cap');
+      case BuildPhase.stopped:
+        _buildToast(
+          'Build stopped',
+          action: 'Undo',
+          onAction: () => unawaited(b.control.resumeBuild(aid)),
+        );
+      case BuildPhase.failed:
+        _buildToast(
+          'Build stopped: ${s.reason ?? 'it failed'}',
+          action: 'Resume',
+          onAction: () => unawaited(b.control.resumeBuild(aid)),
+        );
+      case BuildPhase.queued || BuildPhase.running:
+        break;
+    }
+  }
+
+  /// A toast about the build that fades on its own; only while the screen
+  /// is in front.
+  void _buildToast(String text, {String? action, VoidCallback? onAction}) {
+    if (_toldVisible != true) return;
+    ScaffoldMessenger.maybeOf(context)
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          key: const ValueKey('build-toast'),
+          content: Text(text),
+          duration: toastFor,
+          persist: false,
+          behavior: SnackBarBehavior.floating,
+          action: action == null
+              ? null
+              : SnackBarAction(label: action, onPressed: onAction!),
+        ),
+      );
+  }
+
+  /// Adds the open composer's text to the plan instead of sending it.
+  Future<void> _addToPlan() async {
+    final b = widget.build;
+    final text = _draft?.text.trim() ?? '';
+    if (b == null || text.isEmpty) return;
+    _call(const CancelDraft());
+    try {
+      final f = await b.addToPlan(widget.aid, text);
+      if (mounted) _buildToast('Added “${f.title}” to the plan');
+    } on Object catch (e) {
+      if (mounted) _snack('Couldn’t add it to the plan: $e');
     }
   }
 
@@ -907,6 +1002,24 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         child: widget.surface.build(context),
       ),
       if (_covered) _cover(context),
+      if (_changes.outcome == null &&
+          !_changes.working &&
+          buildGoing(_build) &&
+          _plan != null &&
+          widget.build != null)
+        Positioned(
+          top: 8,
+          left: 24,
+          right: 24,
+          child: Center(
+            child: BuildChip(
+              plan: _plan,
+              state: _build!,
+              onTap: () =>
+                  unawaited(showBuildSheet(context, widget.build!, widget.aid)),
+            ),
+          ),
+        ),
       if (_changes.outcome != null || _changes.working)
         Positioned(
           top: 8,
@@ -1081,6 +1194,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       dictation: _dictation,
       onMic: () => unawaited(_toggleMic()),
       onSend: () => _call(const SubmitDraft()),
+      onAddToPlan: widget.build == null ? null : () => unawaited(_addToPlan()),
       threads: _threads,
       onThread: _openThread,
       onResend: _resend,
