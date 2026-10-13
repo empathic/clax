@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const artifact = vi.fn(() => () => {});
 vi.mock("../q", () => ({ artifact }));
 const owner = vi.fn(async (_signal?: AbortSignal) => true);
-vi.mock("../owner", () => ({ inboxBrowser: (s?: AbortSignal) => owner(s) }));
+vi.mock("../owner", () => ({ inboxBrowser: (_me: unknown, s?: AbortSignal) => owner(s) }));
 vi.mock("../stream", () => ({ pageStream: () => ({}) }));
 
 const { artifactQuestions } = await import("./artifact-questions");

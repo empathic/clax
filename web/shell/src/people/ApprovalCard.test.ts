@@ -87,6 +87,36 @@ describe("ApprovalCard", () => {
     expect(mount(ApprovalCard, { item: item("approval"), now }).root.querySelector(".show")).toBeNull();
   });
 
+  it("offers Show all when 3 lines wrap past the clamp, measured from the laid-out box, and again on resize", () => {
+    // jsdom lays nothing out: the clamped text's box is stubbed, overflowing by `over` px.
+    let over = 0;
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get(this: HTMLElement) { return this.classList.contains("htext") ? 57 + over : 0; } });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get(this: HTMLElement) { return this.classList.contains("htext") ? 57 : 0; } });
+    try {
+      const line = (c: string) => c.repeat(145);
+      const body = [line("a"), line("b"), line("c")].join("\r\n");
+      over = 38;
+      const card = approvalCard({ content: { thread: { id: "t", status: "open" }, comments: [{ id: "c", body, created_at: "", author_name: "Mia", by_agent: false }] } });
+      const m = mount(ApprovalCard, { item: item("approval", { approval: card }), now });
+      const more = m.root.querySelector<HTMLButtonElement>(".show");
+      expect(more?.textContent).toBe("Show all");
+      // Lines split on CRLF keep no carriage return.
+      expect(m.root.querySelector(".held")!.textContent).not.toContain("\r");
+      m.unmount();
+      // Not clipped at first; the page narrows, the lines wrap, and Show all appears.
+      over = 0;
+      const n = mount(ApprovalCard, { item: item("approval", { approval: card }), now });
+      expect(n.root.querySelector(".show")).toBeNull();
+      over = 38;
+      flush(() => { dispatchEvent(new Event("resize")); });
+      expect(n.root.querySelector(".show")?.textContent).toBe("Show all");
+    } finally {
+      // The prototype's own stubs go; Element's getters show through again.
+      delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
+      delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight;
+    }
+  });
+
   it("leaves out the thread button outside threads, and names a deleted page as one page", () => {
     const card = approvalCard({ thread_id: null, count: 2, content: { title: "Quarterly Review", description: "Goals", files: ["index.html"], docs: ["rows/1"], assets: [] } });
     const m = mount(ApprovalCard, { item: item("approval", { approval: card, thread: null, artifact: { id: "7q3k9mzx2b4t", title: null, kind: null, page_url: null } }), now });

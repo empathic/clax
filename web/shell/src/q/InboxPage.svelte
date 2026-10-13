@@ -16,10 +16,12 @@
   // 2026-10-08-multi-agent-multi-person §9.5) and connection requests
   // (§3.2) are cards after the questions, in either section, and stay
   // where they are once decided, saying how; `?approval=<request>` focuses
-  // that card. A machine that connected with an invite and an agent that
-  // ended are rows. At phone width the filters sit behind **Filters**.
+  // that card, and the read section leaves out what Unread still shows. A
+  // machine that connected with an invite and an agent that ended are rows.
+  // Only the owner's browser offers the Connections filter. At phone width
+  // the filters sit behind **Filters**.
   import { onMount } from "svelte";
-  import { type InboxFilter, type InboxItem, type InboxKind, listArtifacts } from "../api";
+  import { type InboxFilter, type InboxItem, type InboxKind, getToken, listArtifacts } from "../api";
   import { after } from "../clock";
   import type { InboxFeed, QuestionFeed } from "./feed.svelte";
   import { INBOX_KINDS, filterFromUrl, filterToUrl, newestSeq } from "./inbox-model";
@@ -64,6 +66,8 @@
   let busy = $state(false);
   let error = $state<string | null>(null);
   let filtersOpen = $state(false);
+  // The owner's browser (the token is served): connection requests are the owner's alone, so only theirs filters by them.
+  let owner = $state(false);
   // Question items shown as cards: open when first listed, they stay cards, showing what closed them.
   let asCard = $state<string[]>([]);
   const N = typeof Notification === "undefined" ? undefined : Notification;
@@ -77,7 +81,9 @@
   const decision = (i: InboxItem) => i.kind === "approval" || (i.kind === "connection" && i.connection?.via !== "invite");
   const decisions = (s: Section | null) => (s?.items ?? []).filter(decision).sort((a, b) => a.seq - b.seq);
   const rows = $derived((unread?.items ?? []).filter(i => !asCard.includes(i.id) && !decision(i)));
-  const readRows = $derived((read?.items ?? []).filter(i => !decision(i)));
+  // The read section leaves out what Unread still shows (a card kept there once decided).
+  const readShown = $derived(read && { ...read, items: read.items.filter(i => !unread?.items.some(u => u.id === i.id)) });
+  const readRows = $derived((readShown?.items ?? []).filter(i => !decision(i)));
   // Harnesses and agents seen, as [value, label].
   // The pickers' options, [value, label]: the pages and the harnesses and
   // agents of the items listed, and the one chosen.
@@ -207,6 +213,14 @@
   const soon = () => { refetchSoon?.(); refetchSoon = after(DEBOUNCE_MS, () => { refetchSoon = undefined; void load(); }); };
   function take(item: InboxItem): void {
     const put = (s: Section | null) => (s?.items.some(x => x.id === item.id) ? { ...s, items: s.items.map(x => (x.id === item.id ? item : x)) } : null);
+    // An item Unread lists that was read (a decision, a mark elsewhere), or
+    // unread again, moves the sections' counts with it.
+    const was = unread?.items.find(x => x.id === item.id);
+    if (was && was.read !== item.read) {
+      const d = item.read ? -1 : 1;
+      if (unread && typeof unread.total === "number") unread = { ...unread, total: Math.max(0, unread.total + d) };
+      if (typeof readCount === "number") readCount = Math.max(0, readCount - d);
+    }
     const u = put(unread);
     const r = put(read);
     if (u) unread = u;
@@ -216,6 +230,7 @@
 
   onMount(() => {
     document.title = "Inbox · Clax";
+    void getToken().then(t => { owner = !!t; });
     void listArtifacts().then(a => { artifacts = a.map(x => [x.id, x.title]); }, () => {});
     // Fetched once on open: now, or when the inbox topic first goes live.
     const off = inbox.listen(c => { if ("item" in c) take(c.item); else if (unread) soon(); else void load(); });
@@ -247,7 +262,7 @@
   </div>
   <div class="filters" id="inbox-filters" data-open={filtersOpen ? "" : undefined}>
     <div class="kinds" role="group" aria-label="Kinds">
-      {#each INBOX_KINDS as k (k)}
+      {#each INBOX_KINDS.filter(k => k !== "connection" || owner || filter.kind?.includes(k)) as k (k)}
         <button type="button" class="kind" aria-pressed={!!filter.kind?.includes(k)} onclick={() => toggleKind(k)}>{KIND_LABEL[k]}</button>
       {/each}
     </div>
@@ -294,7 +309,7 @@
       {#if readOpen}
         <div id="inbox-read">
           {#if read}
-            {@render decided(read)}
+            {@render decided(readShown)}
             {#if readRows.length}<ul class="rows">{#each readRows as i (i.id)}<InboxRow item={i} others={read.items} now={p.now} onOpen={open} onToggle={toggle} />{/each}</ul>{/if}
             {#if read.next}<button type="button" class="more" onclick={() => more("read")}>Show more</button>{/if}
           {:else}<p class="note">Loading…</p>{/if}

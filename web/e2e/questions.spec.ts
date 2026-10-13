@@ -126,25 +126,19 @@ test("a question about an artifact shows above its threads, and another page's t
   if (shots) await page.screenshot({ path: `${shots}/shell-sidebar-question-and-in-place.png` });
 });
 
-test("a LAN viewer sees no questions and no inbox, and asks for neither beyond one refused look at the inbox per page", async ({ page, freshDaemon: d }) => {
+test("a LAN viewer sees no questions and no inbox, and asks for neither", async ({ page, freshDaemon: d }) => {
   const s = await registerSession(d.base, d.token);
   const { artifact } = await publishAs(d.base, d.token, s.id, "Board", PAGE);
   await askAs(d.base, d.token, s.id, { source: "ask", questions: [{ question: "Q", header: "H" }] });
   const asked: string[] = [];
-  const refused: number[] = [];
-  page.on("request", r => { const u = new URL(r.url()); if (/^\/api\/(questions|inbox)/.test(u.pathname)) asked.push(u.pathname + u.search); });
-  page.on("response", r => { if (new URL(r.url()).pathname === "/api/inbox") refused.push(r.status()); });
+  page.on("request", r => { const u = new URL(r.url()); if (/^\/api\/(questions|inbox)/.test(u.pathname)) asked.push(u.pathname); });
   await openArtifact(page, d.base, artifact.id, 1, "sandbox", { lan: true });
   await expect(page.locator(".sidebar")).toBeVisible();
   await expect(page.locator(".sidebar .qcard, .inbox-link")).toHaveCount(0);
   await page.goto(`${d.base}/`);
   await expect(page.locator(".card", { hasText: "Board" }).first()).toBeVisible();
   await expect(page.locator(".inbox-sum .qcard, .inbox-sum .irow, .inbox-link")).toHaveCount(0);
-  // Whether this browser has an inbox (a connected person's would): one look per page, refused.
-  await expect.poll(() => refused.length).toBe(asked.length);
-  expect(asked.length).toBeLessThanOrEqual(2);
-  expect(new Set(asked)).toEqual(new Set(asked.length ? ["/api/inbox?limit=1"] : []));
-  expect(refused.every(st => st === 403)).toBe(true);
+  expect(asked).toEqual([]);
 });
 
 test("a notification fires when no Clax tab has focus", async ({ page, freshDaemon: d }) => {

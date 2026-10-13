@@ -172,29 +172,30 @@ describe("EventStream", () => {
     expect(await no).toBe(false);
   });
 
-  it("knows a browser with an inbox: the owner's, or one `/api/inbox` answers; a 4xx is no, a failure is asked again", async () => {
-    // A connected person's: the token refused, the inbox answered after a failure.
-    let answers: Record<string, (number | "down")[]> = { "/api/token": [403, 403], "/api/inbox?limit=1": ["down", 503, 200] };
+  it("knows a browser with an inbox: a connected person's by its viewer, with no other request; else the owner's by the token", async () => {
     const asked: string[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (url: string) => { asked.push(url); const a = answers[url].shift(); if (a === "down") throw new TypeError("network"); return new Response("{}", { status: a }); }));
+    let token = 403;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => { asked.push(url); return new Response(JSON.stringify({ token: "t" }), { status: token }); }));
     vi.resetModules();
-    const yes = (await import("./owner")).inboxBrowser();
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(await yes).toBe(true);
-    // A LAN viewer's: both refused.
-    answers = { "/api/token": [403, 403], "/api/inbox?limit=1": [403] };
-    vi.resetModules();
-    const no = (await import("./owner")).inboxBrowser();
+    const { inboxBrowser } = await import("./owner");
+    // A connected person's: no request at all.
+    expect(await inboxBrowser(Promise.resolve({ person: true }))).toBe(true);
+    expect(asked).toEqual([]);
+    // A revoked person's, and a LAN viewer's: the token refused; never a look at the inbox.
+    const revoked = inboxBrowser(Promise.resolve({ person: true, person_revoked_at: "2026-10-01T00:00:00Z" }));
     await vi.advanceTimersByTimeAsync(0);
-    expect(await no).toBe(false);
-    // The owner's: the token alone, no look at the inbox.
-    answers = { "/api/token": [200, 200] };
-    asked.length = 0;
+    expect(await revoked).toBe(false);
     vi.resetModules();
-    const owner = (await import("./owner")).inboxBrowser();
+    const viewer = (await import("./owner")).inboxBrowser(Promise.resolve({}));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await viewer).toBe(false);
+    expect(asked.every(u => u === "/api/token")).toBe(true);
+    // The owner's: the token; a viewer lookup that failed changes nothing.
+    token = 200;
+    vi.resetModules();
+    const owner = (await import("./owner")).inboxBrowser(Promise.reject(new Error("down")));
     await vi.advanceTimersByTimeAsync(0);
     expect(await owner).toBe(true);
-    expect(asked).not.toContain("/api/inbox?limit=1");
   });
 
   it("keeps its topics through a short hide", async () => {

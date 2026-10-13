@@ -11,7 +11,8 @@
   // card says that a machine of someone already connected, or of the
   // owner, takes an invite, and links to Invite on People. A decided
   // request says how it went. Every change is the owner's browser's (M20);
-  // the daemon's refusals show as they are. Names are text.
+  // the daemon's refusals show as they are. Escape in the form, or Cancel,
+  // closes it. Names are text.
   import { tick } from "svelte";
   import type { InboxItem, PeopleGrant } from "../api";
   import { relativeTime } from "../format";
@@ -53,6 +54,13 @@
   }
   const approve = (e: Event) => { e.preventDefault(); if (g && ready) void run(() => api.approveGrant(g.id, { user_code: code.trim(), name: name.trim(), rights: preset })); };
   const deny = () => { if (g) void run(() => api.denyGrant(g.id)); };
+  const esc = (e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); void cancel(); } };
+  /** Closes the form (Cancel, or Escape in it); the keyboard's focus goes back to Approve…. */
+  async function cancel() {
+    open = false; err = null;
+    await tick();
+    card()?.querySelector<HTMLButtonElement>(".acts .primary")?.focus();
+  }
 </script>
 
 <article class="ccard" data-grant={g?.id ?? ""} data-status={status} tabindex="-1" aria-label="Connection request">
@@ -71,22 +79,22 @@
         <p class="meta">Approving makes a new person. To add this machine to someone already connected, or to you, make an invite instead: <a href="/people?invite">Invite</a></p>
         <div class="row">
           <label class="field">Code shown on {g!.client.name}
-            <input name="code" autocomplete="off" spellcheck="false" autocapitalize="characters" placeholder="WXYZ-4821" value={code} oninput={e => { code = e.currentTarget.value; }} /></label>
+            <input name="code" onkeydown={esc} autocomplete="off" spellcheck="false" autocapitalize="characters" placeholder="WXYZ-4821" value={code} oninput={e => { code = e.currentTarget.value; }} /></label>
           <label class="field">Name for the new person
-            <input name="name" autocomplete="off" maxlength="60" value={name} oninput={e => { name = e.currentTarget.value; }} /></label>
+            <input name="name" onkeydown={esc} autocomplete="off" maxlength="60" value={name} oninput={e => { name = e.currentTarget.value; }} /></label>
           <label class="field">Rights
-            <select onchange={e => { preset = e.currentTarget.value; }}>
+            <select onkeydown={esc} onchange={e => { preset = e.currentTarget.value; }}>
               {#each Object.keys(PRESET_NAMES) as v (v)}<option value={v} selected={v === preset}>{PRESET_NAMES[v]}</option>{/each}
             </select></label>
         </div>
         <div class="acts">
           <button type="submit" class="primary" disabled={!ready || busy}>Approve</button>
-          <button type="button" class="ghost" disabled={busy} onclick={() => { open = false; err = null; }}>Cancel</button>
+          <button type="button" class="ghost" disabled={busy} onclick={cancel}>Cancel</button>
         </div>
       </form>
     {:else}
       <div class="acts">
-        <button type="button" class="primary" onclick={begin}>Approve…</button>
+        <button type="button" class="primary" disabled={busy} onclick={begin}>Approve…</button>
         <button type="button" class="ghost" disabled={busy} onclick={deny}>Deny</button>
       </div>
     {/if}
