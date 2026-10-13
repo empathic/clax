@@ -76,14 +76,21 @@ fn access_in(c: &Connection, id: &ArtifactId) -> Result<NetAccess> {
 }
 
 impl Store {
-    /// Grants every host the artifact's current version declares in
-    /// `capabilities.net.hosts`; hosts already granted keep their time. The
-    /// new grants are recorded as one `artifact.update` under `audit`.
+    /// Grants each host of `hosts` (the list the owner was shown) that the
+    /// artifact's current version declares in `capabilities.net.hosts`;
+    /// other hosts are ignored, so a host the owner did not see is never
+    /// granted. Hosts already granted keep their time. The new grants are
+    /// recorded as one `artifact.update` under `audit`.
     ///
     /// # Errors
     /// `NotFound` when the artifact is missing or deleted; `not_declared`
     /// (invalid) when it declares no `net`.
-    pub fn grant_net(&self, audit: &AuditCtx, id: &ArtifactId) -> Result<NetAccess> {
+    pub fn grant_net(
+        &self,
+        audit: &AuditCtx,
+        id: &ArtifactId,
+        hosts: &[String],
+    ) -> Result<NetAccess> {
         self.with_tx(|tx| {
             let before = access_in(tx, id)?;
             if before.declared.is_empty() {
@@ -94,7 +101,7 @@ impl Store {
             }
             let now = Store::now();
             let mut added = Vec::new();
-            for h in &before.declared {
+            for h in before.declared.iter().filter(|h| hosts.contains(h)) {
                 let n = tx.execute(
                     "INSERT OR IGNORE INTO net_grants (artifact_id, host, granted_at) VALUES (?1, ?2, ?3)",
                     params![id.as_str(), h, now],
@@ -158,6 +165,28 @@ mod tests {
         .unwrap();
     }
 
+    fn hosts(h: &[&str]) -> Vec<String> {
+        h.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn only_the_shown_hosts_that_are_declared_are_granted() {
+        let (_d, st) = store();
+        let a = artifact_with_caps(
+            &st,
+            json!({"net": {"hosts": ["a.example.com", "b.example.com"]}}),
+        );
+        let acc = st
+            .grant_net(DAEMON, &a, &hosts(&["a.example.com", "x.example.com"]))
+            .unwrap();
+        assert!(acc.allows("a.example.com"));
+        assert!(!acc.allows("b.example.com"), "not shown, not granted");
+        assert!(!acc.all_granted());
+        assert_eq!(acc.grants.len(), 1, "an undeclared host is never stored");
+        let acc = st.grant_net(DAEMON, &a, &hosts(&[])).unwrap();
+        assert_eq!(acc.grants.len(), 1);
+    }
+
     fn rows(st: &Store) -> i64 {
         st.with_read(|c| Ok(c.query_row("SELECT COUNT(*) FROM net_grants", [], |r| r.get(0))?))
             .unwrap()
@@ -171,10 +200,13 @@ mod tests {
         assert_eq!(acc.declared, vec!["api.example.com"]);
         assert!(!acc.allows("api.example.com") && !acc.all_granted());
 
-        let acc = st.grant_net(DAEMON, &a).unwrap();
+        let acc = st
+            .grant_net(DAEMON, &a, &hosts(&["api.example.com", "new.example.com"]))
+            .unwrap();
         assert!(acc.allows("api.example.com") && acc.all_granted());
         assert!(!acc.allows("other.example.com"));
-        st.grant_net(DAEMON, &a).unwrap();
+        st.grant_net(DAEMON, &a, &hosts(&["api.example.com", "new.example.com"]))
+            .unwrap();
         assert_eq!(rows(&st), 1, "granting again changes nothing");
 
         set_caps(
@@ -197,7 +229,7 @@ mod tests {
             "a dropped declaration reaches nothing"
         );
         assert!(matches!(
-            st.grant_net(DAEMON, &a),
+            st.grant_net(DAEMON, &a, &hosts(&["api.example.com", "new.example.com"])),
             Err(CoreError::Invalid {
                 code: "not_declared",
                 ..
@@ -214,7 +246,8 @@ mod tests {
     fn grants_go_with_the_artifact_and_are_audited() {
         let (_d, st) = store();
         let a = artifact_with_caps(&st, json!({"net": {"hosts": ["api.example.com"]}}));
-        st.grant_net(DAEMON, &a).unwrap();
+        st.grant_net(DAEMON, &a, &hosts(&["api.example.com", "new.example.com"]))
+            .unwrap();
         st.revoke_net(DAEMON, &a).unwrap();
         let bodies: Vec<String> = st
             .with_read(|c| {
@@ -238,10 +271,14 @@ mod tests {
             ]
         );
 
-        st.grant_net(DAEMON, &a).unwrap();
+        st.grant_net(DAEMON, &a, &hosts(&["api.example.com", "new.example.com"]))
+            .unwrap();
         st.delete_artifact(DAEMON, &a).unwrap();
         assert_eq!(rows(&st), 0);
         assert!(matches!(st.net_access(&a), Err(CoreError::NotFound)));
-        assert!(matches!(st.grant_net(DAEMON, &a), Err(CoreError::NotFound)));
+        assert!(matches!(
+            st.grant_net(DAEMON, &a, &hosts(&["api.example.com", "new.example.com"])),
+            Err(CoreError::NotFound)
+        ));
     }
 }

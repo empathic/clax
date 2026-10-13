@@ -119,17 +119,29 @@ pub async fn grants(
     ))
 }
 
-/// `PUT /api/artifacts/<id>/net-grants` (token): the owner lets the app
-/// fetch from every host its live version declares; answers as [`grants`].
-/// 404 for an unknown artifact, 400 `not_declared` when it declares none.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrantBody {
+    hosts: Vec<String>,
+}
+
+/// `PUT /api/artifacts/<id>/net-grants` (token), body `{hosts: [host]}`,
+/// the hosts the owner was shown: the owner lets the app fetch from each of
+/// them its live version declares (others are ignored); answers as
+/// [`grants`]. 404 for an unknown artifact, 400 `not_declared` when it
+/// declares none, 400 `invalid_argument` without `hosts`.
 pub async fn grant(
     State(s): State<AppState>,
     _t: RequireToken,
     audit: AuditCtx,
     aid: Result<Path<String>, PathRejection>,
+    body: Result<Json<GrantBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
-    let acc = s.store_call(move |st| st.grant_net(&audit, &id)).await?;
+    let Json(b) = body.map_err(|e| ApiError::bad_request("invalid_argument", e.body_text()))?;
+    let acc = s
+        .store_call(move |st| st.grant_net(&audit, &id, &b.hosts))
+        .await?;
     Ok(Json(
         json!({"declared": acc.declared, "grants": acc.grants, "granted": acc.all_granted()}),
     ))

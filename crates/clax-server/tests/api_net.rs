@@ -107,7 +107,27 @@ async fn a_fetch_needs_the_owners_grant_and_ends_with_its_revocation() {
     );
     assert!(echo.0.lock().unwrap().is_empty());
 
+    // Only the hosts the owner was shown are granted; a PUT names them.
     let (status, body) = send(authed(&ts, Method::PUT, &grants)).await;
+    assert_eq!(
+        (status, body["error"]["code"].as_str()),
+        (400, Some("invalid_argument"))
+    );
+    let (status, body) =
+        send(authed(&ts, Method::PUT, &grants).json(&json!({"hosts": ["intranet.example.com"]})))
+            .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["granted"], json!(false));
+    let (status, body) = fetch(&ts, &aid, req.clone()).await;
+    assert_eq!(
+        (status, body["error"]["code"].as_str()),
+        (403, Some("not_granted"))
+    );
+
+    let (status, body) = send(authed(&ts, Method::PUT, &grants).json(
+        &json!({"hosts": ["api.example.com", "intranet.example.com", "unseen.example.com"]}),
+    ))
+    .await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["granted"], json!(true));
     assert_eq!(body["grants"].as_array().unwrap().len(), 2);
@@ -151,11 +171,14 @@ async fn a_fetch_needs_the_owners_grant_and_ends_with_its_revocation() {
 async fn refusals_before_any_request() {
     let (ts, echo) = spawn().await;
     let aid = app(&ts, json!({"net": {"hosts": ["api.example.com"]}})).await;
-    let (status, _) = send(authed(
-        &ts,
-        Method::PUT,
-        &format!("/api/artifacts/{aid}/net-grants"),
-    ))
+    let (status, _) = send(
+        authed(
+            &ts,
+            Method::PUT,
+            &format!("/api/artifacts/{aid}/net-grants"),
+        )
+        .json(&json!({"hosts": ["api.example.com"]})),
+    )
     .await;
     assert_eq!(status, 200);
     for (body, want) in [
@@ -186,11 +209,14 @@ async fn refusals_before_any_request() {
         (status, got["error"]["code"].as_str()),
         (403, Some("not_declared"))
     );
-    let (status, got) = send(authed(
-        &ts,
-        Method::PUT,
-        &format!("/api/artifacts/{plain}/net-grants"),
-    ))
+    let (status, got) = send(
+        authed(
+            &ts,
+            Method::PUT,
+            &format!("/api/artifacts/{plain}/net-grants"),
+        )
+        .json(&json!({"hosts": ["api.example.com"]})),
+    )
     .await;
     assert_eq!(
         (status, got["error"]["code"].as_str()),
