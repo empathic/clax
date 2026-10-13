@@ -92,6 +92,60 @@ void main() {
     });
   });
 
+  group('icon.svg', () {
+    const good =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">'
+        '<rect width="1024" height="1024" fill="#f80"/></svg>';
+
+    test('write_file takes a good icon', () async {
+      final tb = toolboxWith();
+      final r = await tb.call('write_file', {
+        'path': 'icon.svg',
+        'content': good,
+      });
+      expect(okJson(r)['created'], true);
+      expect(tb.state.draft.files['icon.svg'], good);
+    });
+
+    test(
+      'write_file refuses an icon with a script, and keeps the draft',
+      () async {
+        final tb = toolboxWith();
+        final r = await tb.call('write_file', {
+          'path': 'icon.svg',
+          'content': good.replaceFirst('</svg>', '<script>x()</script></svg>'),
+        });
+        expect(r, refused(contains('<script>')));
+        expect(tb.state.draft.files.containsKey('icon.svg'), isFalse);
+      },
+    );
+
+    test(
+      'str_replace refuses an edit that makes the icon not square',
+      () async {
+        final tb = toolboxWith(
+          files: {'index.html': '<p>hi</p>', 'icon.svg': good},
+        );
+        final r = await tb.call('str_replace', {
+          'path': 'icon.svg',
+          'old_str': '0 0 1024 1024',
+          'new_str': '0 0 1024 500',
+        });
+        expect(r, refused(contains('not square')));
+        expect(tb.state.draft.files['icon.svg'], good);
+      },
+    );
+
+    test('another .svg file is not checked as an icon', () async {
+      final tb = toolboxWith();
+      final r = await tb.call('write_file', {
+        'path': 'img/logo.svg',
+        'content': '<svg><script/></svg>',
+      });
+      expect(r, isA<ToolOk>());
+    });
+  });
+
   group('write_file', () {
     test('creates and replaces, reporting bytes and lines', () async {
       final tb = toolboxWith();

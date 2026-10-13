@@ -5,6 +5,7 @@ import 'dart:convert';
 
 import '../apply.dart';
 import '../edit_result.dart';
+import '../icon_svg.dart';
 import 'tool_spec.dart';
 import 'toolbox.dart';
 
@@ -137,7 +138,8 @@ class WriteFileTool implements Tool {
     'write_file',
     'Creates or replaces a draft file with content. Paths are relative, '
         'with / between segments. At most 2 MiB a file and $maxDraftFiles '
-        'files.',
+        'files. icon.svg is the app icon: a square viewBox, at most 32 KB, '
+        'shapes, paths and gradients only.',
     objectSchema({
       'path': {'type': 'string'},
       'content': {'type': 'string'},
@@ -153,6 +155,7 @@ class WriteFileTool implements Tool {
     final content = _string(input, 'content');
     final bytes = utf8.encode(content).length;
     _checkSize(path, bytes);
+    _checkIcon(path, content);
     final d = s.draft;
     if (!d.files.containsKey(path) && d.files.length >= maxDraftFiles) {
       throw const ToolInputError(
@@ -214,6 +217,7 @@ class StrReplaceTool implements Tool {
       throw ToolInputError('${_capital(e.reason)}.');
     }
     _checkSize(path, utf8.encode(text).length);
+    _checkIcon(path, text);
     d.writeFile(path, text);
     return ToolOk({'path': path, 'replaced': 1});
   }
@@ -332,6 +336,12 @@ void _checkSize(String path, int bytes) {
       '2 MiB ($maxFileBytes bytes).',
     );
   }
+}
+
+/// Refuses an `icon.svg` outside the icon subset ([iconProblem]).
+void _checkIcon(String path, String content) {
+  if (path != appIconPath) return;
+  if (iconProblem(content) case final p?) throw ToolInputError(p);
 }
 
 ToolInputError _noFile(String path) =>
