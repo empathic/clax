@@ -1,27 +1,49 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
 import '../agent/backend.dart';
 import '../agent/edit_result.dart';
+import '../agent/progress.dart';
 import '../agent/request.dart';
+import '../agent/timings.dart';
+import '../daemon/clock.dart';
+import 'making_preview.dart';
 
 /// Makes a new app from [request] and returns its artifact ID.
 ///
 /// [cancelled] completes when the person leaves the making screen (Cancel,
 /// back, Edit, Open Settings) or retries; pass it on as
 /// `AgentLoop.newApp(request, cancelled: …)` so a run nobody waits for
-/// creates nothing. [stage] reports what the run is doing (see
-/// [StagedBackend]). Throws `AgentError`; an `AgentError.cancelled` after
-/// [cancelled] fired is not shown.
+/// creates nothing. [report] takes what the run is doing: its [MakeStage]s
+/// (see [StagedBackend]) and, wrapped in [MakeProgress], each event of
+/// `AgentLoop.newApp`'s `onProgress`, which the screen shows as the live
+/// preview and narration. Throws `AgentError`; an `AgentError.cancelled`
+/// after [cancelled] fired is not shown.
 typedef MakeApp = Future<String> Function(
   String request,
   Future<void> cancelled,
-  void Function(MakeStage stage) stage,
+  void Function(MakeUpdate update) report,
 );
 
+/// What a making run reports to the making screen: a [MakeStage] or a
+/// [MakeProgress].
+sealed class MakeUpdate {}
+
+/// One progress event of the run (narration, a tool call, the page as it
+/// is written, a render's screenshot).
+final class MakeProgress implements MakeUpdate {
+  const MakeProgress(this.event);
+
+  final AgentProgress event;
+
+  @override
+  String toString() => 'MakeProgress($event)';
+}
+
 /// What a making run is doing, as the making screen says it.
-enum MakeStage {
+enum MakeStage implements MakeUpdate {
   /// Before the model is asked: reading the other apps, building the prompt.
   starting('Starting the agent'),
 
@@ -112,25 +134,152 @@ String makingTitle(String request) {
   return 'Making “${words.join(' ')}…”';
 }
 
-/// Runs [make] for [request] while showing [makingTitle], the run's
-/// [MakeStage], the seconds elapsed (with "Usually under a minute" after
-/// [slowAfter]) and Cancel. Pops [Made] with the new artifact's ID.
+/// The say→first-output timing: from Make to the first frame of the new
+/// app's streamed `index.html` in the making screen's preview.
+const sayFirstOutput = 'say-first-output';
+
+/// What the making screen shows of one attempt, built from its
+/// [MakeUpdate]s:
 ///
-/// A failure stays on the screen with its reason, the request, Retry and
-/// Edit, and a link to Settings when the reason names them. Each attempt
-/// gets its own cancel signal, completed when the attempt is abandoned:
-/// Cancel, back, Edit, Open Settings, a Retry, or the screen going away.
+/// - [line]: the latest step (a [Narration] or a [ToolStarted] label), or
+///   the [stage] before any, or while the run waits out a network cut;
+/// - [earlier]: up to two steps before it, oldest first;
+/// - [html]: `index.html` as written so far, for the live preview;
+/// - [png] and [errors]: the last render's screenshot and its uncaught
+///   errors, shown while [inspected] (until `index.html` is written again);
+/// - [asking]: the agent waits on a question to the person.
+///
+/// The preview never shrinks within a step: text shorter than [html] (a
+/// rewrite of the page, or a resend after [AttemptStarted], starting over)
+/// is held, and the screenshot with it, until the text is as long again or
+/// the next step begins, so neither blanks what is shown.
+class MakingLog {
+  MakeStage stage = MakeStage.starting;
+  final List<String> _steps = [];
+  String? html;
+  Uint8List? png;
+  int errors = 0;
+  bool inspected = false;
+  bool asking = false;
+
+  /// `index.html` text shorter than [html], held until the next step.
+  String? _held;
+
+  String get line => switch (stage) {
+    MakeStage.paused || MakeStage.resuming => stage.label,
+    _ => _steps.isEmpty ? stage.label : _steps.last,
+  };
+
+  List<String> get earlier =>
+      _steps.isEmpty ? const [] : _steps.sublist(0, _steps.length - 1);
+
+  /// Takes [u]; returns whether [html] changed.
+  bool apply(MakeUpdate u) {
+    switch (u) {
+      case final MakeStage s:
+        stage = s;
+        return false;
+      case MakeProgress(:final event):
+        return _progress(event);
+    }
+  }
+
+  bool _progress(AgentProgress e) {
+    switch (e) {
+      case AttemptStarted():
+        asking = false;
+        return false;
+      case Narration(:final text):
+        _step(text);
+        asking = false;
+        return _release();
+      case ToolStarted(:final name, :final label):
+        _step(label);
+        asking = name == 'ask';
+        if (stage == MakeStage.starting) stage = MakeStage.writing;
+        return _release();
+      case PartialFile(:final path, :final text) when path == 'index.html':
+        asking = false;
+        if (text.length < (html?.length ?? 0)) {
+          _held = text;
+          return false;
+        }
+        _held = null;
+        html = text;
+        inspected = false;
+        return true;
+      case Inspected(png: final shot, errors: final n):
+        png = shot;
+        errors = n;
+        inspected = true;
+        asking = false;
+        return false;
+      case PartialFile() || PartialEdit() || OutputTokens():
+        return false;
+    }
+  }
+
+  /// Ends a hold: the held text shows, even though shorter.
+  bool _release() {
+    final held = _held;
+    if (held == null) return false;
+    _held = null;
+    html = held;
+    inspected = false;
+    return true;
+  }
+
+  void _step(String text) {
+    final t = text.trim();
+    if (t.isEmpty || (_steps.isNotEmpty && _steps.last == t)) return;
+    _steps.add(t);
+    if (_steps.length > 3) _steps.removeAt(0);
+  }
+}
+
+/// Runs [make] for [request] while showing [makingTitle], what the run is
+/// doing ([MakingLog.line] and the steps before it), the seconds elapsed
+/// (with "Usually under a minute" after [slowAfter]) and Cancel. Pops
+/// [Made] with the new artifact's ID.
+///
+/// - **Preview.** While `index.html` is written, a [PreviewView] from
+///   [preview] shows it, loaded at most four times a second
+///   ([PreviewThrottle] on [clock]); after a render, its screenshot shows
+///   instead, with the number of errors it found. The first preview load
+///   of an attempt stops [sayFirstOutput] on [timings], which each attempt
+///   starts. Without a preview (no WebView on the platform) the card keeps
+///   its placeholder.
+/// - **Questions.** While the agent waits on a question, the elapsed
+///   seconds stop.
+/// - **Failure** stays on the screen with its reason, the request, Retry
+///   and Edit, and a link to Settings when the reason names them. Each
+///   attempt gets its own cancel signal, completed when the attempt is
+///   abandoned: Cancel, back, Edit, Open Settings, a Retry, or the screen
+///   going away.
 class MakingScreen extends StatefulWidget {
   const MakingScreen({
     super.key,
     required this.request,
     required this.make,
     this.openSettings,
+    this.preview,
+    this.timings,
+    this.clock = const SystemClock(),
   });
 
   final String request;
   final MakeApp make;
   final VoidCallback? openSettings;
+
+  /// Makes the live preview's view; null uses a [WebViewPreview] where the
+  /// platform has a WebView.
+  final PreviewView Function()? preview;
+
+  /// Where [sayFirstOutput] is recorded; null records nothing.
+  final Timings? timings;
+
+  /// Spaces the preview's loads.
+  final Clock clock;
 
   /// When the "Usually under a minute" hint appears.
   static const slowAfter = 20;
@@ -143,7 +292,13 @@ class _MakingScreenState extends State<MakingScreen> {
   Timer? _tick;
   int _seconds = 0;
   String? _failure;
-  MakeStage _stage = MakeStage.starting;
+  var _log = MakingLog();
+
+  PreviewView? _view;
+  PreviewThrottle? _throttle;
+
+  /// Whether the current attempt's preview has loaded a frame yet.
+  var _shown = false;
 
   /// The running attempt's cancel signal; a stale attempt's result is
   /// dropped because its completer is no longer this one.
@@ -159,6 +314,8 @@ class _MakingScreenState extends State<MakingScreen> {
   void dispose() {
     _tick?.cancel();
     _abandon();
+    _throttle?.close();
+    _view?.dispose();
     super.dispose();
   }
 
@@ -169,24 +326,60 @@ class _MakingScreenState extends State<MakingScreen> {
     if (c != null && !c.isCompleted) c.complete();
   }
 
+  PreviewView? _makeView() {
+    final make = widget.preview;
+    if (make != null) return make();
+    if (!WebViewPreview.available) return null;
+    return WebViewPreview(background: Theme.of(context).colorScheme.surface);
+  }
+
+  void _load(String html) {
+    final view = _view ??= _makeView();
+    if (view == null) return;
+    unawaited(view.loadHtml(html).catchError((Object _) {}));
+    if (!_shown) {
+      _shown = true;
+      widget.timings?.stop(sayFirstOutput, extra: {'chars': html.length});
+      if (mounted) setState(() {});
+    }
+  }
+
   Future<void> _run() async {
     _abandon();
     final cancel = Completer<void>();
     _cancel = cancel;
+    _throttle?.close();
+    final throttle = _throttle = PreviewThrottle(
+      load: _load,
+      clock: widget.clock,
+    );
+    widget.timings?.start(sayFirstOutput);
     setState(() {
       _failure = null;
       _seconds = 0;
-      _stage = MakeStage.starting;
+      _log = MakingLog();
+      _shown = false;
     });
     _tick?.cancel();
     _tick = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() => _seconds++);
+      if (mounted && !_log.asking) setState(() => _seconds++);
     });
     bool current() => mounted && identical(_cancel, cancel);
+    void report(MakeUpdate u) {
+      if (!current()) return;
+      final htmlChanged = _log.apply(u);
+      if (htmlChanged) {
+        throttle.offer(_log.html!);
+      } else if (u is MakeProgress &&
+          (u.event is ToolStarted || u.event is Inspected)) {
+        // A write ended: its last text shows now, not a beat later.
+        throttle.flush();
+      }
+      setState(() {});
+    }
+
     try {
-      final aid = await widget.make(widget.request, cancel.future, (s) {
-        if (current()) setState(() => _stage = s);
-      });
+      final aid = await widget.make(widget.request, cancel.future, report);
       if (!mounted || !identical(_cancel, cancel)) return;
       _tick?.cancel();
       _cancel = null;
@@ -194,6 +387,7 @@ class _MakingScreenState extends State<MakingScreen> {
     } catch (e) {
       if (!current()) return;
       _tick?.cancel();
+      throttle.clear();
       setState(() => _failure = e is AgentError ? e.message : '$e');
     }
   }
@@ -215,12 +409,15 @@ class _MakingScreenState extends State<MakingScreen> {
           child: Center(
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 480),
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 200),
-                  child: _failure == null ? _making(context) : _failed(context),
-                ),
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 200),
+                child: _failure == null
+                    ? _making(context)
+                    : Padding(
+                        key: const ValueKey('failed'),
+                        padding: const EdgeInsets.all(24),
+                        child: _failed(context),
+                      ),
               ),
             ),
           ),
@@ -232,59 +429,178 @@ class _MakingScreenState extends State<MakingScreen> {
   Widget _making(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    return Column(
+    final log = _log;
+    final dim = theme.textTheme.bodyMedium?.copyWith(
+      color: scheme.onSurfaceVariant,
+    );
+    return Padding(
       key: const ValueKey('making'),
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Icon(Icons.auto_awesome_rounded, size: 40, color: scheme.primary),
-        const SizedBox(height: 24),
-        Text(
-          makingTitle(widget.request),
-          textAlign: TextAlign.center,
-          style: theme.textTheme.headlineSmall,
-        ),
-        const SizedBox(height: 24),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(4),
-          child: const LinearProgressIndicator(minHeight: 6),
-        ),
-        const SizedBox(height: 16),
-        AnimatedSwitcher(
-          duration: const Duration(milliseconds: 200),
-          child: Text(
-            _stage.label,
-            key: ValueKey(_stage),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            makingTitle(widget.request),
             textAlign: TextAlign.center,
-            style: theme.textTheme.titleMedium,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.titleLarge,
           ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          '$_seconds s',
-          textAlign: TextAlign.center,
-          style: theme.textTheme.bodyMedium?.copyWith(
-            color: scheme.onSurfaceVariant,
-            fontFeatures: const [FontFeature.tabularFigures()],
+          const SizedBox(height: 12),
+          Expanded(child: _card(context)),
+          const SizedBox(height: 12),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: const LinearProgressIndicator(minHeight: 4),
           ),
-        ),
-        SizedBox(
-          height: 24,
-          child: _seconds >= MakingScreen.slowAfter
-              ? Text(
-                  'Usually under a minute',
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: scheme.onSurfaceVariant,
+          const SizedBox(height: 12),
+          for (final step in log.earlier)
+            Text(
+              step,
+              key: ValueKey('earlier:$step'),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: dim?.copyWith(
+                color: scheme.onSurfaceVariant.withValues(alpha: 0.7),
+              ),
+            ),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Expanded(
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 200),
+                  layoutBuilder: (current, previous) => Stack(
+                    alignment: Alignment.centerLeft,
+                    children: [...previous, ?current],
                   ),
-                )
-              : null,
+                  child: Text(
+                    log.line,
+                    key: ValueKey(log.line),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleMedium,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Text(
+                log.asking ? 'waiting for you' : '$_seconds s',
+                style: dim?.copyWith(
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+            ],
+          ),
+          SizedBox(
+            height: 24,
+            child: _seconds >= MakingScreen.slowAfter
+                ? Text('Usually under a minute', style: dim)
+                : null,
+          ),
+          Center(
+            child: OutlinedButton(
+              onPressed: _leave,
+              child: const Text('Cancel'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// The preview card: a placeholder until the live preview has a frame;
+  /// the render's screenshot over the preview after a render, until the
+  /// page is written again. The live view stays mounted under the
+  /// screenshot, so going back to it starts no new platform view.
+  Widget _card(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final log = _log;
+    final png = log.png;
+    final view = _view;
+    final live = _shown && view != null;
+    final shot = log.inspected && png != null;
+    final badge = switch ((shot, log.errors)) {
+      (true, 0) => 'Checked',
+      (true, 1) => '1 error to fix',
+      (true, final n) => '$n errors to fix',
+      _ when live => 'Live',
+      _ => null,
+    };
+    const fade = Duration(milliseconds: 250);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(19),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            AnimatedOpacity(
+              opacity: live ? 0 : 1,
+              duration: fade,
+              child: _placeholder(theme),
+            ),
+            if (live)
+              KeyedSubtree(
+                key: const ValueKey('preview'),
+                child: view.build(context),
+              ),
+            if (png != null)
+              IgnorePointer(
+                child: AnimatedOpacity(
+                  opacity: shot ? 1 : 0,
+                  duration: fade,
+                  child: ColoredBox(
+                    color: scheme.surface,
+                    child: Image.memory(
+                      png,
+                      key: const ValueKey('inspection'),
+                      fit: BoxFit.fitWidth,
+                      alignment: Alignment.topCenter,
+                      gaplessPlayback: true,
+                    ),
+                  ),
+                ),
+              ),
+            if (badge != null)
+              Positioned(
+                top: 8,
+                right: 8,
+                child: _Badge(text: badge, error: shot && log.errors > 0),
+              ),
+          ],
         ),
-        const SizedBox(height: 16),
-        Center(
-          child: OutlinedButton(onPressed: _leave, child: const Text('Cancel')),
+      ),
+    );
+  }
+
+  Widget _placeholder(ThemeData theme) {
+    final scheme = theme.colorScheme;
+    return Center(
+      key: const ValueKey('placeholder'),
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.auto_awesome_rounded, size: 40, color: scheme.primary),
+            const SizedBox(height: 16),
+            Text(
+              'Your app appears here as it is written',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
         ),
-      ],
+      ),
     );
   }
 
@@ -349,6 +665,36 @@ class _MakingScreenState extends State<MakingScreen> {
           ],
         ),
       ],
+    );
+  }
+}
+
+/// A small label over the preview's corner: "Live", "Checked", or the
+/// errors a render found.
+class _Badge extends StatelessWidget {
+  const _Badge({required this.text, required this.error});
+
+  final String text;
+  final bool error;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final bg = error ? scheme.errorContainer : scheme.secondaryContainer;
+    final fg = error ? scheme.onErrorContainer : scheme.onSecondaryContainer;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        child: Text(
+          text,
+          style: theme.textTheme.labelMedium?.copyWith(color: fg),
+        ),
+      ),
     );
   }
 }
