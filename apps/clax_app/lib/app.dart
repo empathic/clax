@@ -42,6 +42,7 @@ import 'platform/voice.dart';
 import 'ui/app_menu.dart';
 import 'ui/app_inspector_permissions.dart';
 import 'ui/app_screen.dart';
+import 'ui/build_notices.dart';
 import 'ui/build_plan.dart';
 import 'ui/app_surface.dart';
 import 'ui/error_screen.dart';
@@ -521,7 +522,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     _onState(_s.supervisor.state);
     _states = _s.supervisor.states.listen(_onState);
     _worker = _runtime.worker.events.listen(_onWorker);
-    _builds = _runtime.worker.builds.listen(_onBuild);
+    _builds = _runtime.worker.builds.listen(_buildNotices.onBuild);
     _runtime.attach();
     _opened = _s.background.opened.listen(_openFromNotice);
     unawaited(
@@ -553,6 +554,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     unawaited(_states?.cancel());
     unawaited(_worker?.cancel());
     unawaited(_builds?.cancel());
+    _buildNotices.dispose();
     unawaited(_opened?.cancel());
     unawaited(_taps?.cancel());
     unawaited(_reminderTaps?.cancel());
@@ -589,10 +591,13 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   );
   StreamSubscription<BuildState>? _builds;
 
-  /// The build running on each app, as shown in the background, and the
-  /// apps' titles it is shown with.
-  final _buildRuns = <String, BackgroundRun>{};
-  final _buildTitles = <String, String>{};
+  /// Each going build, shown as a background run.
+  late final _buildNotices = BuildNotices(
+    runs: _runs,
+    plans: _plans,
+    clock: _s.clock,
+    title: _titleOf,
+  );
 
   /// A loop whose runs follow the settings at their start: the tool loop
   /// when [usesToolLoop], else the single call, each waiting out a
@@ -964,62 +969,6 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   /// Shows each going build as a background run ("Building Budget · 3/7"
   /// and the step), and ends it with news when it is done, capped or
   /// failed.
-  void _onBuild(BuildState s) {
-    final aid = s.appId;
-    if (buildGoing(s)) {
-      final run = _buildRuns[aid] ??= _runs.begin(
-        'Building your app',
-        'Up next',
-      );
-      unawaited(_stepBuild(run, s));
-      return;
-    }
-    final run = _buildRuns.remove(aid);
-    if (run == null) return;
-    unawaited(
-      _titleOf(aid, fallback: 'Your app').then(
-        (t) => _runs.end(run, switch (s.phase) {
-          BuildPhase.done => RunReady(aid, '$t is built', 'Tap to open it'),
-          BuildPhase.capped => RunReady(
-            aid,
-            '$t: build paused',
-            'It reached the build’s spending cap',
-          ),
-          BuildPhase.failed => RunFailed(
-            "Couldn't finish building $t",
-            s.reason ?? 'The build stopped',
-            artifactId: aid,
-          ),
-          _ => const RunQuiet(),
-        }),
-      ),
-    );
-  }
-
-  Future<void> _stepBuild(BackgroundRun run, BuildState s) async {
-    final aid = s.appId;
-    final title = _buildTitles[aid] ??= await _titleOf(
-      aid,
-      fallback: 'your app',
-    );
-    Plan? plan;
-    try {
-      plan = await _plans.get(aid);
-    } on Object {
-      plan = null;
-    }
-    final count = plan == null ? null : planCount(plan);
-    final feature = buildFeature(plan, s);
-    _runs.step(
-      run,
-      (s.progress == null ? null : progressStep(s.progress!)) ??
-          (feature == null ? 'Up next' : 'Building ${feature.title}'),
-      title: count == null || count.total == 0
-          ? 'Building $title'
-          : 'Building $title · ${count.done}/${count.total}',
-    );
-  }
-
   /// A tapped reminder of app [aid]: the app in front, at its route. An
   /// app that is gone says so, and its reminders are cancelled.
   void _onReminderTap(ReminderTap t) => unawaited(_reminderTapped(t));
