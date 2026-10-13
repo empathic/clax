@@ -144,6 +144,71 @@ fn thread_of(st: &Store, id: &ArtifactId, tid: &str) -> clax_core::Result<Thread
     }
 }
 
+/// Most threads one `GET /api/artifacts/{aid}/approves-first` names.
+pub const MAX_FIRSTS_THREADS: usize = 200;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirstsQuery {
+    /// Thread IDs, comma-separated.
+    #[serde(default)]
+    threads: Option<String>,
+}
+
+/// `GET /api/artifacts/{aid}/approves-first?threads=<tid,…>` → `{approves_first:
+/// [<public ID> | null]}`: the people a send of those threads naming one of
+/// their agents asks first (spec 2026-10-08 §10, "Sam approves first";
+/// `null` is the owner), among the people with a live agent on the
+/// artifact ([`Store::approves_first`]), for the Send menu as it opens.
+/// Approval state is the owner's and connected people's to see (§18): a
+/// LAN viewer, an anonymous caller and agents get 403 `forbidden`. A thread
+/// of another artifact or none is 404; more than [`MAX_FIRSTS_THREADS`]
+/// is 400 `invalid_query`. A request with a foreign `Origin` is refused.
+pub async fn approves_first(
+    State(s): State<AppState>,
+    d: crate::agent::DeniedToGrants,
+    _o: SameOrigin,
+    who: Identity,
+    p: Result<Path<String>, PathRejection>,
+    q: Result<Query<FirstsQuery>, QueryRejection>,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    crate::inbox::recipient_of(&s, &who).await.map_err(|_| {
+        ApiError::forbidden(
+            "forbidden",
+            "only the owner or a connected person sees who approves first",
+        )
+    })?;
+    let id = parse_id(&path(p)?)?;
+    let q = q
+        .map(|Query(q)| q)
+        .map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
+    let ids: Vec<String> = q
+        .threads
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .collect();
+    if ids.len() > MAX_FIRSTS_THREADS {
+        return Err(ApiError::bad_request(
+            "invalid_query",
+            format!("at most {MAX_FIRSTS_THREADS} threads"),
+        ));
+    }
+    let v = s
+        .store_call(move |st| {
+            let threads = ids
+                .iter()
+                .map(|tid| thread_of(st, &id, tid))
+                .collect::<clax_core::Result<Vec<_>>>()?;
+            Ok(json!({"approves_first": st.approves_first(&id, &threads)?}))
+        })
+        .await?;
+    Ok(Json(v))
+}
+
 #[derive(Deserialize)]
 pub struct ListQuery {
     #[serde(default)]

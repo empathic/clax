@@ -165,8 +165,9 @@ export type QuestionSpec = { question: string; header: string; options: QOption[
 export type QAnswer = { selected: string[]; text: string | null };
 /** The answer body: one entry per question, in order. */
 export type AnswerBody = { answers: QAnswer[] };
-/** The asking agent; `project` is the last component of its working directory. */
-export type QAgent = { handle: string; harness: string; project: string };
+/** The asking agent; `project` is the last component of its working
+ * directory; `name` its agent name (spec 2026-10-08 §11), when it has one. */
+export type QAgent = { handle: string; harness: string; project: string; name?: string | null };
 export type QuestionStatus = "open" | "answered" | "declined" | "released" | "withdrawn";
 /** The question view, as every owner route and `question` event gives it. */
 export type QuestionView = {

@@ -429,7 +429,8 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
       return Promise.resolve(new Response(body));
     }));
     FakeES.last!.emit("ready", {});
-    await vi.waitFor(() => expect(ctl.state.get().sendTo).toBe(agent.handle));
+    await vi.waitFor(() => expect(ctl.state.get().agents.filter(a => a.live)).toEqual([agent]));
+    ctl.chooseTarget(agent.handle);
     // The agent ends: its artifacts' topics hear `agents`, naming nothing.
     live = false;
     FakeES.last!.emit("agents", { type: "agents" });
@@ -879,11 +880,13 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     };
     afterEach(() => localStorage.clear());
 
-    it("ticks a range, sends it as one batch to the default agent with the note, then clears", async () => {
+    it("ticks a range, sends it as one batch to the chosen agent with the note, then clears", async () => {
       const { ctl } = await started(batchSeed);
       await vi.waitFor(() => expect(ctl.state.get().threads.length).toBe(2));
       const [t1, t2] = ctl.state.get().threads;
-      expect(ctl.state.get().sendTo).toBe("a_cl");
+      // None is chosen until the viewer (or the sidebar, for their own agent) chooses one.
+      expect(ctl.state.get().sendTo).toBeNull();
+      ctl.chooseTarget("a_cl");
       ctl.toggleSelect(t1, false);
       ctl.toggleSelect(t2, true);
       ctl.setBatchNote("Before the demo");

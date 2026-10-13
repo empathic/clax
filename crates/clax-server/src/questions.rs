@@ -227,6 +227,7 @@ pub fn view(st: &Store, q: &QuestionRow) -> clax_core::Result<Value> {
     let agent = st.get_session(&q.session_id)?.map(|s| {
         json!({
             "handle": s.agent_handle,
+            "name": s.name,
             "harness": s.harness,
             "project": std::path::Path::new(&s.cwd)
                 .file_name()

@@ -85,7 +85,7 @@ fn render(st: &Store, i: &ItemRow, s: Sources) -> clax_core::Result<Value> {
     // alone (spec §13).
     let agent = s.agent.as_ref().map(|a| {
         let shown = i.recipient.is_none() || i.recipient == a.person;
-        json!({"handle": a.handle, "harness": a.harness,
+        json!({"handle": a.handle, "name": a.name, "harness": a.harness,
                "project": shown.then(|| project(&a.cwd))})
     });
     // A live page is the owner's alone (L10): a person, whose browser may
@@ -447,6 +447,7 @@ mod tests {
                 harness: "claude".into(),
                 cwd: "/home/alex/secret-project".into(),
                 person: person.map(Into::into),
+                name: Some("web".into()),
             }),
             artifact: Some(artifact),
             page_url: Some("http://localhost:5173/LIVECANARYpath".into()),

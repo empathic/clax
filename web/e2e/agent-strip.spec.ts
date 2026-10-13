@@ -58,6 +58,7 @@ test("the inbox groups by agent, threads name their owners and wait for approval
   const sam = mkdtempSync(join(tmpdir(), "clax-e2e-sam-"));
   const ownerCtx = await browser.newContext();
   const samCtx = await browser.newContext();
+  const lanCtx = await browser.newContext();
   let agent: Awaited<ReturnType<typeof mcpAgent>> | null = null;
   try {
     const asOwner = { cookie: ownerCookie(d.base, d.token), origin: d.base, "content-type": "application/json" };
@@ -70,6 +71,7 @@ test("the inbox groups by agent, threads name their owners and wait for approval
     const link = /http:\/\/\S+\/connect\/b\/\S+/.exec(out.stdout + out.stderr)![0];
     const lan = new URL(link).origin;
 
+    await fetch(`${d.base}/api/viewers/me`, { method: "PUT", headers: asOwner, body: JSON.stringify({ display_name: "Alex" }) });
     // The owner's two agents on the page: claude publishes it, codex watches it.
     const claude = await registerSession(d.base, d.token, "claude");
     const codex = await registerSession(d.base, d.token, "codex");
@@ -110,11 +112,31 @@ test("the inbox groups by agent, threads name their owners and wait for approval
     await expect(samItem.locator(".send-name")).toHaveText("sam-notes");
     await expect(samItem.locator(".send-first")).toHaveText("Sam approves first");
     await samItem.click();
-    await card.getByRole("button", { name: "Send to sam-notes" }).click();
+    // Chosen, the button names Sam's agent with Sam.
+    await card.getByRole("button", { name: "Send to sam-notes (Sam's)" }).click();
     // Sent, it waits for Sam, and names its owner with Sam's name.
     await expect(card.locator(".waiting")).toHaveText("waiting for Sam's approval");
     await expect(card.locator(".owner-chip")).toHaveText("sam-notes · Sam");
-    await expect(card.locator(".owner-chip")).toHaveAttribute("title", "Sam's agent");
+    await expect(card.locator(".owner-chip")).toHaveAttribute("title", "sam-notes, Sam's agent");
+
+    // A LAN viewer has no agents: Send opens the menu, which names each
+    // agent's person and never who approves first (the daemon refuses it).
+    const t2 = (await (await fetch(`${d.base}/api/artifacts/${aid}/threads`, { method: "POST", body: (() => { const f = new FormData(); f.set("anchor", form.get("anchor") as string); f.set("body", "Another note."); f.set("version", "1"); return f; })(), headers: { cookie: asOwner.cookie, origin: d.base } })).json()).thread.id as string;
+    const l = await lanCtx.newPage();
+    const refused: number[] = [];
+    l.on("response", r => { if (r.url().includes("/approves-first")) refused.push(r.status()); });
+    await l.goto(`${lan}/a/${aid}?thread=${t2}`);
+    const lanCard = l.locator(`.thread-card[data-thread="${t2}"]`);
+    const lanSend = lanCard.locator(".send > button.primary:not(.caret)");
+    await expect(lanSend).toHaveText("Send to …");
+    await lanSend.click();
+    const lanMenu = lanCard.getByRole("menu");
+    await expect(lanMenu.locator(".send-group-h")).toHaveCount(2);
+    expect((await lanMenu.locator(".send-group-h").allTextContents()).sort()).toEqual(["Alex's agents", "Sam's agents"]);
+    await expect(lanMenu.locator(".send-person")).toHaveCount(3);
+    await expect.poll(() => refused).toEqual([403]);
+    await expect(lanMenu.locator(".send-first")).toHaveCount(0);
+    await expect(l.locator(".thread-approval")).toHaveCount(0);
 
     // Sam's browser: his approval card above the thread, and his agent by name only.
     const s = await samCtx.newPage();
@@ -133,6 +155,7 @@ test("the inbox groups by agent, threads name their owners and wait for approval
     agent?.stop();
     await ownerCtx.close();
     await samCtx.close();
+    await lanCtx.close();
     await d.stop();
     rmSync(sam, { recursive: true, force: true });
   }

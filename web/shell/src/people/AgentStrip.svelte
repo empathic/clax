@@ -6,7 +6,8 @@
   // block on you, blocked-longest first: "clax-claude · waiting on you
   // 12 min (1 question)", "web · 3 unread", "pi · ended". A chip filters
   // the inbox by its agent; pressed again, it clears the filter. Names are
-  // agents' text, rendered as text.
+  // agents' text, rendered as text. An agent filtered by that has since
+  // left the strip keeps a chip of its own, which clears the filter.
   import type { StripAgent } from "../api";
   import { blockedOn, stripOrder, waitedFor } from "./strip";
 
@@ -14,7 +15,7 @@
   const list = $derived(stripOrder(agents));
 </script>
 
-{#if list.length}
+{#if list.length || selected}
   <div class="astrip" role="group" aria-label="Agents">
     {#each list as a (a.handle)}
       <button type="button" class="achip" data-blocked={a.blocked ? "" : undefined} aria-pressed={a.handle === selected}
@@ -23,6 +24,9 @@
         >{#if a.blocked}{" "}<span>· waiting on you {waitedFor(a.blocked.since, now)}</span>{#if blockedOn(a.blocked)}{" "}<small>({blockedOn(a.blocked)})</small>{/if
         }{:else}{#if !a.live}{" "}<span>· ended</span>{/if}{#if a.unread}{" "}<span>· {a.unread} unread</span>{/if}{/if}</button>
     {/each}
+    {#if selected && !list.some(a => a.handle === selected)}
+      <button type="button" class="achip" aria-pressed="true" onclick={() => onPick(null)}><b>This agent</b>{" "}<span>· clear the filter</span></button>
+    {/if}
   </div>
 {/if}
 

@@ -134,6 +134,10 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             post(threads::send_batch),
         )
         .route(
+            "/api/artifacts/{aid}/approves-first",
+            get(threads::approves_first),
+        )
+        .route(
             "/api/artifacts/{aid}/threads/{tid}/resolve",
             post(threads::resolve),
         )

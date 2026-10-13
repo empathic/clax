@@ -132,9 +132,14 @@
   });
   // The thread's people who approve a send to their agent first; for the selection, any of its threads'.
   const me = $derived(p.me ? p.me.public_id : undefined);
-  const firstsOf = (ids: string[]) => [...new Set(p.threads.filter(t => ids.includes(t.id)).flatMap(t => t.approves_first ?? []))];
-  // Every Send names the same agent: the target's name, else the publishing agent's.
-  const target = $derived(agentsByHandle.get(p.sendTo ?? "") ?? p.agent);
+  // Every Send names the same agent: the target's name, with its person
+  // when it is another's (spec 2026-10-08 §11); with no target while
+  // agents are live (only other people's), Send opens the menu ("Send
+  // to …"); with none live, the publishing agent's name.
+  const chosen = $derived(p.agents?.find(a => a.handle === p.sendTo));
+  const pick = $derived(!chosen && !!p.agents?.some(a => a.live));
+  const theirs = $derived(!!chosen?.person && (me === undefined ? !chosen.person.owner : chosen.person.public_id !== me));
+  const target = $derived(chosen ? `${agentsByHandle.get(chosen.handle)}${theirs ? ` (${chosen.person!.name}'s)` : ""}` : pick ? "…" : p.agent);
   const ticked = $derived(new Set(p.selection?.ids ?? []));
   // The cards in the order shown, for a Shift range: the Addressed group, Open, then Detached.
   const order = $derived([...group, ...open, ...detached].filter(t => selectable(t, false)).map(t => t.id));
@@ -193,7 +198,7 @@
       checked={ticked.has(t.id)} onToggle={p.onToggle && selectable(t, false) ? toggleCard : undefined}
       onSelect={p.onSelect} onSend={p.onSend} onResolve={resolve} onReply={p.onReply} onHover={p.onHover}>
       {#snippet send(guard: (e: Event, act: () => void) => void)}
-        <SendButton label={`Send to ${target}`} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null} {me} firsts={t.approves_first}
+        <SendButton label={`Send to ${target}`} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null} {me} aid={t.artifact_id} threads={[t.id]}
           onSend={e => guard(e, () => p.onSend(t))} onChoose={h => p.onChoose?.(h)} />
       {/snippet}
     </ThreadCard>
@@ -214,7 +219,7 @@
       <WorkingStrip {w} text={stripText(w, agentsByHandle, s.numbers, new Set(p.mine ?? []))} commenting={p.commenting ?? false} />
     {/await}
   {/each}
-  {#if unsentCount && p.onSendUnsent}
+  {#if unsentCount && p.onSendUnsent && !pick}
     <button type="button" class="primary send-unsent" disabled={p.batchBusy}
       onclick={e => { unsentHint = guardedAction(e, "send", () => p.onSendUnsent?.()); }}>{unsentLabel(unsentCount, target)}</button>
     <p class="act-hint" role="status">{unsentHint ?? ""}</p>
@@ -224,7 +229,7 @@
       <SelectionBar count={p.selection.ids.length} note={p.batchNote ?? ""} busy={p.batchBusy ?? false}
         onNote={v => p.onNote?.(v)} onClear={() => p.onClear?.()} onSend={() => p.onSendSelection?.()}>
         {#snippet send(go: (e: Event) => void)}
-          <SendButton label={sendLabel(p.selection!.ids.length, target)} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null} {me} firsts={firstsOf(p.selection!.ids)}
+          <SendButton label={sendLabel(p.selection!.ids.length, target)} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null} {me} aid={p.threads[0]?.artifact_id} threads={p.selection!.ids}
             disabled={p.batchBusy} onSend={go} onChoose={h => p.onChoose?.(h)} />
         {/snippet}
       </SelectionBar>

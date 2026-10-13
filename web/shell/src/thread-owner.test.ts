@@ -14,6 +14,7 @@ const withheld = { thread_id: TID, state: "withheld" as const, tier: null, since
 const thread = (o: Partial<Thread> = {}): Thread => ({ ...base, id: TID, anchor, status: "open", sent_to_agent: true, comments: [comment], ...o });
 const OWNER: Viewer = { public_id: "u_alex", display_name: "Alex", created_at: base.created_at, owner: true };
 const SAM: Viewer = { public_id: "u_sam", display_name: "Sam", created_at: base.created_at, person: true };
+const LAN: Viewer = { public_id: "u_lucy", display_name: "Lucy", created_at: base.created_at };
 const HOSTILE = `<img src=x onerror="window.pwned=1">`;
 // What the sidebar loads on demand, loaded here first: it then lands within a few tasks.
 await import("./people/ApprovalCard.svelte");
@@ -26,10 +27,10 @@ function render(threads: Thread[], more: Record<string, unknown> = {}) {
     onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn(), ...more });
 }
 /** The artifact view's sidebar, over a controller that holds `threads`. */
-function shell(threads: Thread[], me: Viewer) {
+function shell(threads: Thread[], me: Viewer, more: Record<string, unknown> = {}, ctl: Record<string, unknown> = {}) {
   const s = { threads, resolved: {}, selected: null, file: "index.html", me, data: { versions: [], artifact: { owner_harness: "claude" } }, working: [], commenting: false,
-    agents: [], attention: null, decided: null, selection: { ids: [], anchor: null }, batchNote: "", batchBusy: false, sendTo: null };
-  return mount(ShellSidebar, { ctl: { holds: () => true, shown: () => 1 } as never, s: s as never });
+    agents: [], attention: null, decided: null, selection: { ids: [], anchor: null }, batchNote: "", batchBusy: false, sendTo: null, ...more };
+  return mount(ShellSidebar, { ctl: { holds: () => true, shown: () => 1, ...ctl } as never, s: s as never });
 }
 const chip = (root: Element) => root.querySelector<HTMLElement>(".thread-card .owner-chip");
 
@@ -39,13 +40,14 @@ describe("a thread's owner and delivery state", () => {
   it("shows its owner agent's name only, with its person on hover, when the agent is yours", () => {
     const m = render([thread({ owner: { name: "clax-claude", person: null, person_name: "Alex", live: true } })], { me: OWNER });
     expect(chip(m.root)!.textContent).toBe("clax-claude");
-    expect(chip(m.root)!.title).toBe("Alex's agent");
+    expect(chip(m.root)!.title).toBe("clax-claude, your agent");
   });
 
   it("shows another person's agent with its person", () => {
     const m = render([thread({ owner: { name: "sam-web", person: "u_sam", person_name: "Sam", live: true } })], { me: OWNER });
     expect(chip(m.root)!.textContent).toBe("sam-web · Sam");
-    expect(chip(m.root)!.title).toBe("Sam's agent");
+    // The hover names the agent whole too: at phone width the chip clips it.
+    expect(chip(m.root)!.title).toBe("sam-web, Sam's agent");
     // Sam's own browser: his agent, by name only.
     m.unmount();
     const s = render([thread({ owner: { name: "sam-web", person: "u_sam", person_name: "Sam", live: true } })], { me: SAM });
@@ -85,12 +87,65 @@ describe("a thread's owner and delivery state", () => {
     expect(m.root.querySelectorAll(".acard")).toHaveLength(1);
   });
 
-  it("asks for no approval card where the host shows none (the extension's panel), or for no withheld thread", async () => {
+  it("puts the card above a thread whose newest comment went through while an earlier one waits", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ items: [item("approval")], next_cursor: null, unread: 1 }))));
+    const sent = { ...withheld, state: "sent" as const, tier: "piggyback" as const, approver: undefined };
+    const plusOne = { ...comment, id: "c2", author_name: "Alex", body: "+1" };
+    const m = shell([thread({ feedback_state: sent, comments: [comment, plusOne] })], SAM);
+    await settle();
+    const card = m.root.querySelector<HTMLElement>(`.thread-card[data-thread="${TID}"]`)!;
+    expect(card.previousElementSibling!.querySelector(".acard")).not.toBeNull();
+    expect(card.querySelector(".waiting")!.textContent).toBe("waiting for your approval");
+  });
+
+  it("asks for no approval card where the host shows none (the extension's panel), for a thread never sent, or in a browser with no inbox", async () => {
     const f = vi.fn(async () => new Response("{}"));
     vi.stubGlobal("fetch", f);
     render([thread({ feedback_state: withheld })], { me: OWNER });
-    shell([thread()], OWNER);
+    shell([thread({ sent_to_agent: false })], OWNER);
+    shell([thread({ feedback_state: withheld })], LAN);
     await settle();
     expect(f).not.toHaveBeenCalled();
+  });
+});
+
+describe("the Send target (spec 2026-10-08 §10, §11)", () => {
+  const ALEX_P = { public_id: "u_alex", name: "Alex", owner: true };
+  const SAM_P = { public_id: "u_sam", name: "Sam", owner: false };
+  const sams = { handle: "a_sam", harness: "claude", live: true, name: "sam-notes", person: SAM_P };
+  const mine = { handle: "a_cx", harness: "codex", live: true, name: "codex", person: ALEX_P };
+  const unsent = thread({ sent_to_agent: false });
+  const button = (root: Element) => root.querySelector<HTMLButtonElement>(".thread-card .send > button.primary")!;
+
+  it("names another person's agent with its person on the button and the unsent bar", () => {
+    const m = render([unsent], { me: OWNER, agents: [sams, mine], sendTo: "a_sam", onSendUnsent: vi.fn() });
+    expect(button(m.root).textContent).toBe("Send to sam-notes (Sam's)");
+    expect(m.root.querySelector(".send-unsent")!.textContent).toBe("Send 1 unsent to sam-notes (Sam's)");
+    m.unmount();
+    const own = render([unsent], { me: OWNER, agents: [sams, mine], sendTo: "a_cx", onSendUnsent: vi.fn() });
+    expect(button(own.root).textContent).toBe("Send to codex");
+  });
+
+  it("with only other people's agents live and no target, Send opens the menu and nothing sends in one press", async () => {
+    await import("./ui/SendMenu.svelte");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ approves_first: ["u_sam"] }))));
+    const onSend = vi.fn();
+    const m = render([unsent], { me: OWNER, agents: [sams], sendTo: null, onSend, onSendUnsent: vi.fn() });
+    expect(button(m.root).textContent).toBe("Send to …");
+    expect(m.root.querySelector(".send-unsent")).toBeNull();
+    flush(() => button(m.root).click());
+    await settle();
+    expect(onSend).not.toHaveBeenCalled();
+    const entry = m.root.querySelector('[role="menu"] [role="menuitemradio"]')!;
+    expect(entry.textContent).toBe("sam-notes Sam's agent Sam approves first");
+  });
+
+  it("in the artifact view, a Send with none chosen goes to this viewer's own agent, chosen as it sends", () => {
+    const calls: string[] = [];
+    const ctl = { chooseTarget: (h: string) => calls.push(`choose ${h}`), sendThread: (t: Thread) => calls.push(`send ${t.id}`) };
+    const m = shell([unsent], OWNER, { agents: [sams, mine] }, ctl);
+    expect(button(m.root).textContent).toBe("Send to codex");
+    flush(() => button(m.root).click());
+    expect(calls).toEqual(["choose a_cx", `send ${TID}`]);
   });
 });
