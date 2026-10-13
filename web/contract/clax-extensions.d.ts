@@ -146,12 +146,14 @@ declare namespace ClaxExtensions {
    * `await claude.use("notify")`: it resolves `null` in a browser, in the
    * app's draft preview, and when undeclared, so render without it first.
    * The person is asked once per app and capability, on its first call,
-   * and the answer stands until they revoke it in the app inspector.
+   * and the answer (Allow or Don't allow) stands until they revoke it in
+   * the app inspector.
    *
-   * `files` here is Clax's, not claude.ai's project files (`files.d.ts`,
-   * which Clax never serves).
+   * Every call except `notify.list` and `notify.cancel` must come from the
+   * person's tap or key press in the page (a click handler), or it rejects
+   * `no_gesture`.
    *
-   * Binary data travels as base64 strings (`data`).
+   * Binary data travels as base64 strings (`data`), at most 4 MB a file.
    */
   namespace Device {
     /**
@@ -163,10 +165,12 @@ declare namespace ClaxExtensions {
      * - `unavailable`: this device cannot do it (no camera, location off, a
      *   platform without it), or the view has closed.
      * - `bad_request`: arguments of the wrong shape (a bug in the page).
-     * - `too_large`: a file over 10 MB (`files.pick`, `share.file`,
-     *   `files.save`).
+     * - `too_large`: a file over 4 MB (`file.pick`, `share.file`,
+     *   `file.save`).
+     * - `no_gesture`: called outside the person's tap or key press in the
+     *   page; call it from a click handler.
      */
-    type ErrorCode = "not_granted" | "cancelled" | "unavailable" | "bad_request" | "too_large";
+    type ErrorCode = "not_granted" | "cancelled" | "unavailable" | "bad_request" | "too_large" | "no_gesture";
 
     /** A file's bytes, as base64. */
     interface FileData {
@@ -179,7 +183,7 @@ declare namespace ClaxExtensions {
      * repeating `every` day at `hour:minute` local time, on `weekdays` only
      * when given (1 Monday … 7 Sunday). `route` (`#…`) is where a tap on it
      * opens the app; the app's start page when absent. Scheduling an `id`
-     * the app already scheduled replaces it. Delivery may be a few minutes
+     * the app already scheduled replaces it; an app keeps at most 64. Delivery may be a few minutes
      * late: the device batches alarms to save battery. */
     interface Reminder {
       /** The page's own name for it, 1 to 64 characters. */
@@ -204,7 +208,8 @@ declare namespace ClaxExtensions {
       file(f: FileData): Promise<{ shared: boolean }>;
     }
 
-    interface Files {
+    /** The `file` capability. */
+    interface FilePicker {
       /** One file the person picks; `accept` is a list of extensions
        * (`["csv", "json"]`) or MIME types (`["image/*"]`). */
       pick(opts?: { accept?: string[] }): Promise<FileData>;

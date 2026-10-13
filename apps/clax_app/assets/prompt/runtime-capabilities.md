@@ -58,6 +58,12 @@ capability first and light features up when it resolves.
   once per app for its host list. Only the person's own views get it:
   elsewhere `use("net")` resolves `null`. Types:
   `ClaxExtensions.Net` in `clax-extensions.d.ts`.
+- `notify`, `share`, `file`, `camera`, `location`: Clax's device
+  capabilities, served only in the Clax app and `null` everywhere else;
+  their types are `ClaxExtensions.Device` in `clax-extensions.d.ts`. Call
+  them from a click handler (all but `notify.list` and `notify.cancel`
+  reject `no_gesture` otherwise). See "Device capabilities in the Clax
+  app" below.
 - `permissions`: `state()` and `request()`; the only prompt is the consent
   to the first page-written comment.
 
