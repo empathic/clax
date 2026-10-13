@@ -25,6 +25,12 @@ const iconElements = {
   'symbol', 'text', 'tspan',
 };
 
+/// The most `<use>` copies an icon may draw, every expansion counted.
+const maxIconUses = 64;
+
+/// The deepest a `<use>` may reach through other `<use>`s.
+const maxIconUseDepth = 3;
+
 /// Why [svg] is not a usable icon, as a sentence for the model to act on;
 /// null when it is one.
 String? iconProblem(String svg) {
@@ -59,7 +65,34 @@ String? iconProblem(String svg) {
       if (_attributeProblem(a) case final p?) return 'icon.svg: $p';
     }
   }
-  return null;
+  return _useProblem(root);
+}
+
+/// Refuses `<use>`s that expand past [maxIconUses] copies or nest deeper
+/// than [maxIconUseDepth] (a reference cycle among them).
+String? _useProblem(XmlElement root) {
+  final byId = <String, XmlElement>{
+    for (final e in root.descendantElements)
+      if (e.getAttribute('id') case final id?) id: e,
+  };
+  var copies = 0;
+  // Counts the copies [e]'s subtree draws; false once past a limit.
+  bool walk(XmlElement e, int depth) {
+    for (final u in [e, ...e.descendantElements]) {
+      if (u.name.local != 'use') continue;
+      if (depth >= maxIconUseDepth) return false;
+      if (++copies > maxIconUses) return false;
+      final href = u.getAttribute('href') ?? u.getAttribute('xlink:href');
+      final target = href == null ? null : byId[href.substring(1)];
+      if (target != null && !walk(target, depth + 1)) return false;
+    }
+    return true;
+  }
+
+  if (walk(root, 0)) return null;
+  return 'icon.svg\'s <use> elements expand to more than $maxIconUses '
+      'copies, or nest more than $maxIconUseDepth deep: draw the shapes '
+      'directly instead.';
 }
 
 /// [svg] with every element outside [iconElements] and every unsafe
@@ -76,6 +109,7 @@ String? cleanIcon(String svg) {
   if (doc.children.any((n) => n is XmlDoctype)) return null;
   final root = doc.rootElement;
   if (root.name.local != 'svg' || _squareViewBox(root) != null) return null;
+  if (_useProblem(root) != null) return null;
   void clean(XmlElement e) {
     e.attributes.removeWhere((a) => _attributeProblem(a) != null);
     e.children.removeWhere(
