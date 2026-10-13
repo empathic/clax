@@ -10,11 +10,19 @@
   // §17, owner's answer (a)), linking to `/people`, for the owner (`owner`:
   // the token is served) and a connected person who is not revoked. It
   // loads with the gallery's lazy module, as Inbox does, so the gallery's
-  // first paint carries none of it.
+  // first paint carries none of it. When the People page finds People is no
+  // longer the viewer's (`clax:people-gone`), it asks `GET /api/viewers/me`
+  // again and follows that answer.
+  import { onDestroy } from "svelte";
   const p: { current?: boolean; owner: boolean; viewer: Viewer } = $props();
+  let fresh = $state<Viewer>(undefined);
+  const viewer = $derived(fresh === undefined ? p.viewer : fresh);
+  const recheck = () => { void fetch("/api/viewers/me").then(r => r.json()).then((b: { viewer?: Viewer }) => { fresh = b?.viewer ?? null; }, () => {}); };
+  addEventListener("clax:people-gone", recheck);
+  onDestroy(() => { removeEventListener("clax:people-gone", recheck); });
 </script>
 
-{#if p.owner || (p.viewer?.person && !p.viewer.person_revoked_at)}
+{#if p.owner || (viewer?.person && !viewer.person_revoked_at)}
 <a class="people-link" href="/people" aria-label="People" aria-current={p.current ? "page" : undefined}>
   <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="6" cy="5.5" r="2.3" /><path d="M1.8 13c.4-2.4 2.1-3.7 4.2-3.7s3.8 1.3 4.2 3.7M10.6 3.4a2.2 2.2 0 1 1 0 4.3M12 9.6c1.3.5 2 1.6 2.2 3.4" /></svg>
   <span class="word">People</span>
