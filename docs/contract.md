@@ -4667,8 +4667,10 @@ capability first and light features up when it resolves.
 - `sample`: `sample(input, options)`, `sample.json`, and `sample.limits` ask
   Claude with the API key configured on the person's machine, and only in
   the person's own browser: everywhere else, and when no key is configured,
-  `use("sample")` resolves `null`. The first call in each view asks the
-  person to allow it.
+  `use("sample")` resolves `null`. The first call asks the person to allow
+  it, once per app: the daemon keeps the grant until the person revokes it.
+  Each app may spend up to `daily_cost_cap_usd` a day (default $0.50); past
+  it, calls reject `rate_limited`.
 - `net` (Clax's own): `fetch(url, {method, headers, body})` resolves
   `{status, ok, url, headers, text(), json()}`, made by the daemon (the
   page itself cannot connect). Declare every host,
@@ -5055,15 +5057,22 @@ reaches the next document.
 `sample` spends the API key configured on the person's machine, so only the
 person's own browser (the token and the owner cookie) can call it. The shell
 offers `sample` only when it holds the token, so `use("sample")` resolves
-`null` for a viewer on another machine, and every call waits on the consent
-given in that view. The frame never reaches these routes itself.
+`null` for a viewer on another machine. Consent is once per app, kept by the
+daemon until revoked: a view's first call reads the grant, the shell asks the
+person only when there is none, and Allow saves it (`PUT …/sample-grant`).
+Each app's spend is priced from the usage of every round it ran (the list
+prices of its model) and summed per local day. The frame never reaches these
+routes itself.
 
 | Route | Caller | Body | Answer |
 |---|---|---|---|
-| `GET /api/artifacts/<aid>/sample` | SameOrigin; the token decides | — | `{available, provider, limits, calls_today, daily_call_cap}`; without the token `available: false`, `provider: null` |
+| `GET /api/artifacts/<aid>/sample` | SameOrigin; the token decides | — | `{available, provider, limits, calls_today, daily_call_cap, granted, spent_today_usd, daily_cost_cap_usd}`; without the token `available: false`, `provider: null` |
 | `POST /api/artifacts/<aid>/sample` | SameOrigin, token, owner cookie | `{input, verb, model_tier, tools, images, cache}` | `text/event-stream` |
 | `POST /api/artifacts/<aid>/sample/<call_id>/tool_result` | SameOrigin, token, owner cookie | `{id, content, is_error}` | 204 |
 | `GET /api/sample` | token | — | `{available, provider, reason, detail, key_env, daily_call_cap}` (`clax doctor`) |
+| `GET /api/artifacts/<aid>/sample-grant` | token | — | `{granted, granted_at, spent_today_usd, daily_cost_cap_usd}` (`granted_at` null without a grant) |
+| `PUT /api/artifacts/<aid>/sample-grant` | token | — | as `GET`; 403 `not_declared` when the artifact does not declare `sample`; recorded as `artifact.update` (`fields.sample_grant: "grant"`) |
+| `DELETE /api/artifacts/<aid>/sample-grant` | token | — | `{revoked}` (`false` when there was none); the day's spend stays |
 
 `input` is a string or `[{role, content}]`; `verb` is `text` or `json`;
 `model_tier` is `quick`, `default` or `complex`; `tools` is
@@ -5078,10 +5087,14 @@ given in that view. The frame never reaches these routes itself.
 `unauthorized` (no token), 403 `forbidden` (no browser: neither the owner
 cookie nor a viewer cookie), 403
 `forbidden_origin`, 404 `not_found`, 403 `not_declared`, 403
-`sampling_disabled` (no provider), 400 `invalid_request`, 400
+`sampling_disabled` (no provider), 403 `not_granted` (the person has not
+allowed this app, or revoked it), 400 `invalid_request`, 400
 `prompt_too_large`, 400 `images_unavailable`, 400 `image_rejected`, and 429
-`rate_limited` (the browser's queue is full, or the artifact reached
-`daily_call_cap`).
+`rate_limited` (the browser's queue is full, the artifact reached
+`daily_call_cap`, or its spend today reached `daily_cost_cap_usd`; the
+message says which). A call that starts under the cost cap runs to its end,
+so a day's spend can pass the cap by one call; a cached answer costs nothing
+and is served past it.
 
 **SSE frames**, in order: one `start` `{call_id, cached, calls_today,
 daily_call_cap}`; then any number of `text` `{delta}` and `tool_call`
@@ -5704,6 +5717,7 @@ api_key_env = "ANTHROPIC_API_KEY"
 base_url = "https://api.anthropic.com"
 max_tokens = 16000
 daily_call_cap = 200            # optional; per artifact, per local day
+daily_cost_cap_usd = 0.5        # per artifact, per local day (the default)
 stub_images = false             # stub only
 stub_delay_ms = 40              # stub only
 
@@ -5714,9 +5728,13 @@ complex = "claude-opus-5-5"
 ```
 
 Without the table, the provider is `anthropic` with the key in
-`ANTHROPIC_API_KEY`, and there is no daily cap. A `[sample]` table that is
-invalid (not a table, an unknown key, another provider, `max_tokens = 0`, an
-empty model ID, or a `base_url` that is not `https://`, or `http://` on
+`ANTHROPIC_API_KEY`, there is no daily call cap, and the daily cost cap is
+$0.50 per artifact. The Clax app writes its daemon's `config.toml` at each
+start with `quick` and `default` set to `claude-haiku-5-5` and `complex` to
+`claude-sonnet-5-5`, and passes the key saved in its settings as
+`ANTHROPIC_API_KEY`, restarting the daemon when the key changes. A `[sample]`
+table that is invalid (not a table, an unknown key, another provider,
+`max_tokens = 0`, a negative `daily_cost_cap_usd`, an empty model ID, or a `base_url` that is not `https://`, or `http://` on
 `localhost`, `127.0.0.1` or `[::1]`) turns sample off and the daemon starts anyway; `clax doctor` prints it as a
 `warn` line. The key is read from the named environment variable once, when
 the daemon starts, and is sent only to `base_url`, in the `x-api-key` header;
