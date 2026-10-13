@@ -16,6 +16,13 @@ import '../agent/read_consent.dart';
 abstract interface class ConsentMemory {
   Future<bool> allowed(String reader, String source);
   Future<void> allow(String reader, String source);
+
+  /// Every remembered `(reader, source)` pair.
+  Future<List<(String, String)>> pairs();
+
+  /// Forgets the pair, so the agent asks again; a pair not remembered is
+  /// left as it is.
+  Future<void> forget(String reader, String source);
 }
 
 /// [ConsentMemory] for the app's life only.
@@ -29,6 +36,13 @@ class MemoryConsentMemory implements ConsentMemory {
   @override
   Future<void> allow(String reader, String source) async =>
       _pairs.add((reader, source));
+
+  @override
+  Future<List<(String, String)>> pairs() async => _pairs.toList();
+
+  @override
+  Future<void> forget(String reader, String source) async =>
+      _pairs.remove((reader, source));
 }
 
 /// [ConsentMemory] kept in [file] as `{"always": [[reader, source], …]}`.
@@ -65,6 +79,20 @@ class FileConsentMemory implements ConsentMemory {
   Future<void> allow(String reader, String source) async {
     final pairs = _load();
     if (!pairs.add((reader, source))) return;
+    _save(pairs);
+  }
+
+  @override
+  Future<List<(String, String)>> pairs() async => _load().toList();
+
+  @override
+  Future<void> forget(String reader, String source) async {
+    final pairs = _load();
+    if (!pairs.remove((reader, source))) return;
+    _save(pairs);
+  }
+
+  void _save(Set<(String, String)> pairs) {
     file.parent.createSync(recursive: true);
     final tmp = File('${file.path}.tmp');
     tmp.writeAsStringSync(
