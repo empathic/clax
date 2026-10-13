@@ -2,7 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../agent/plan.dart';
+import '../agent/worker.dart';
 import '../daemon/clock.dart';
+import 'build_plan.dart';
 import 'change_tracker.dart';
 
 /// The Working chip over an app's page: what the agent is doing about the
@@ -506,6 +509,87 @@ class _WorkingChipState extends State<WorkingChip> {
           customBorder: shape,
           onTap: outcome == ChangeOutcome.replied ? widget.onReplied : null,
           child: body,
+        ),
+      ),
+    );
+  }
+}
+
+/// The Working chip while an app's build goes (queued or running) and no
+/// change is in flight: "Building · Export · 3/7" ([planCount]). A tap
+/// calls [onTap] (the build sheet). It exists only while the build goes;
+/// its parent removes it after.
+class BuildChip extends StatelessWidget {
+  const BuildChip({
+    super.key,
+    required this.plan,
+    required this.state,
+    required this.onTap,
+  });
+
+  final Plan? plan;
+  final BuildState state;
+  final VoidCallback onTap;
+
+  /// The chip's text.
+  static String label(Plan? plan, BuildState state) {
+    final feature = buildFeature(plan, state);
+    final count = plan == null ? null : planCount(plan);
+    return [
+      state.phase == BuildPhase.queued ? 'Build up next' : 'Building',
+      if (state.phase == BuildPhase.running && feature != null) feature.title,
+      if (count != null && count.total > 0) '${count.done}/${count.total}',
+    ].join(' · ');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final fg = scheme.onInverseSurface;
+    return Material(
+      key: const ValueKey('chip-building'),
+      color: scheme.inverseSurface,
+      elevation: 2,
+      shape: const StadiumBorder(),
+      child: Semantics(
+        container: true,
+        button: true,
+        onTapHint: 'Show the plan',
+        child: InkWell(
+          customBorder: const StadiumBorder(),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox.square(
+                  dimension: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: fg),
+                ),
+                const SizedBox(width: 10),
+                Flexible(
+                  child: Semantics(
+                    liveRegion: true,
+                    child: Text(
+                      label(plan, state),
+                      key: const ValueKey('chip-build-label'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelLarge?.copyWith(color: fg),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Icon(
+                  Icons.expand_more,
+                  size: 18,
+                  color: fg.withValues(alpha: 0.7),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );

@@ -28,7 +28,8 @@ class Dictation {
 
 /// The threads and versions panel over an app. While the shell has a
 /// composer open ([draft]) it is only its peek: the mic and Send for that
-/// composer.
+/// composer, and, with [onAddToPlan], Add to plan (the comment becomes a
+/// feature of the app's plan instead of a change now).
 class AppPanel extends StatelessWidget {
   const AppPanel({
     super.key,
@@ -45,6 +46,7 @@ class AppPanel extends StatelessWidget {
     required this.onThread,
     required this.onResend,
     required this.versions,
+    this.onAddToPlan,
   });
 
   /// A side panel (true) or a bottom sheet.
@@ -67,6 +69,10 @@ class AppPanel extends StatelessWidget {
 
   /// The Versions tab's content.
   final Widget versions;
+
+  /// Adds the open composer's text to the app's plan; null offers no Add
+  /// to plan.
+  final VoidCallback? onAddToPlan;
 
   /// The peek's height above the bottom inset.
   static const peekHeight = 76.0;
@@ -255,6 +261,15 @@ class AppPanel extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
+            if (onAddToPlan case final add?) ...[
+              IconButton.outlined(
+                key: const ValueKey('add-to-plan'),
+                tooltip: 'Add to plan',
+                onPressed: busy || d.text.trim().isEmpty ? null : add,
+                icon: const Icon(Icons.playlist_add_rounded),
+              ),
+              const SizedBox(width: 4),
+            ],
             // At large text scales the label would take the status's room.
             if (MediaQuery.textScalerOf(context).scale(14) > 22)
               IconButton.filled(
