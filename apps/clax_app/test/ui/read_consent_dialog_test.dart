@@ -148,4 +148,19 @@ void main() {
     file.writeAsStringSync('{not json');
     expect(await FileConsentMemory(file).allowed('a', 'b'), isFalse);
   });
+
+  test('FileConsentMemory lists its pairs and forgets one across loads',
+      () async {
+    final dir = Directory.systemTemp.createTempSync('consent-');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final file = File('${dir.path}/agent-read-consent.json');
+    final m = FileConsentMemory(file);
+    await m.allow('a', 'b');
+    await m.allow('a', 'c');
+    expect(await m.pairs(), unorderedEquals([('a', 'b'), ('a', 'c')]));
+    await m.forget('a', 'b');
+    final again = FileConsentMemory(file);
+    expect(await again.pairs(), [('a', 'c')]);
+    expect(await again.allowed('a', 'b'), isFalse);
+  });
 }
