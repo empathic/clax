@@ -10,6 +10,7 @@ import 'agent/asked.dart';
 import 'agent/ledger.dart';
 import 'agent/prompt.dart';
 import 'agent/runner/scripted_runner.dart';
+import 'agent/plan.dart';
 import 'agent/scripted_backend.dart';
 import 'app.dart';
 import 'clax/http_api.dart';
@@ -120,6 +121,7 @@ Future<AppServices> platformServices() async {
     prompts: PromptBuilder(rootBundle),
     ledger: FileChangeLedger(File('${support.path}/change-ledger.json')),
     asked: FileAskedQuestions(File('${support.path}/asked.json')),
+    plans: PlanStore(file: File('${support.path}/plans.json')),
     inspector: WebViewInspector(
       surface: (base) => WebViewAppSurface(base: base),
     ),
