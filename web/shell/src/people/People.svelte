@@ -12,8 +12,10 @@
   // and what waits on them. Anyone else is told People is not theirs.
   // Every change is the browser's (M20) and refetches the page; the page
   // also refetches on the stream's `people` (the owner's) and `agents`
-  // topics, so a person who connects appears.
-  import { onDestroy, onMount } from "svelte";
+  // topics, so a person who connects appears, and on its refusal. When
+  // People stops being theirs (a person revoked), the page clears and says
+  // so, and the header's People link is told to check again.
+  import { onDestroy, onMount, tick } from "svelte";
   import { listArtifacts } from "../api";
   import type { PeopleApproval, PeopleGrant, PeopleInvite, PeopleList, PeopleMe, PeopleRequest } from "../api";
   import type { EventStream } from "../stream";
@@ -47,7 +49,14 @@
 
   async function load() {
     let m: PeopleMe;
-    try { m = await api.me(); } catch (e) { if (!gone) denied = msg(e); return; }
+    try { m = await api.me(); } catch (e) {
+      if (gone) return;
+      const had = !!me;
+      denied = msg(e); me = null; list = null; invites = []; pending = []; approvals = []; requests = []; banner = null; inviting = false;
+      if (had) dispatchEvent(new Event("clax:people-gone"));
+      return;
+    }
+    denied = null;
     const owner = m.person.owner;
     try {
       const [l, inv, pend, aps, reqs] = await Promise.all([
@@ -59,7 +68,7 @@
       err = null;
     } catch (e) { if (!gone) { me = m; err = msg(e); } }
     if (artifactsWanted || m.agents.some(a => a.elevate?.some(x => x.locations?.some(l => l !== "*")))) void needArtifacts();
-    if (!off && stream && !gone) off = stream.watch(owner ? ["people", "agents"] : ["agents"], e => { if (e.type !== "stream_down" && e.type !== "stream_up" && e.type !== "refused") reload(); });
+    if (!off && stream && !gone) off = stream.watch(owner ? ["people", "agents"] : ["agents"], e => { if (e.type !== "stream_down" && e.type !== "stream_up") reload(); });
   }
   async function needArtifacts() {
     artifactsWanted = true;
@@ -82,23 +91,33 @@
   /** An approval's scope, naming its page when the daemon names it. */
   const scopeOf = (ap: PeopleApproval) => !ap.artifact_title || ap.scope === "everywhere" ? SCOPE[ap.scope]
     : ap.scope === "artifact" ? `on “${ap.artifact_title}”` : `in one thread on “${ap.artifact_title}”`;
+  /** Runs one change, after asking `ask` when given, then refetches. The
+   * row of event `e`'s control goes with it: the keyboard's focus moves to
+   * its section's heading, or the page's when it was the section's last. */
+  async function act(e: Event, fn: () => Promise<unknown>, ask?: string) {
+    const sec = (e.currentTarget as Element).closest("section");
+    const to = sec && sec.querySelectorAll(".line").length > 1 ? sec.querySelector("h3") : (e.currentTarget as Element).closest(".ppl")?.querySelector("h2");
+    if (ask && !confirm(ask)) return;
+    try { await fn(); reload(); to?.focus(); } catch (x) { err = msg(x); }
+  }
+  async function closeInvite() {
+    inviting = false;
+    await tick();
+    document.querySelector<HTMLElement>(".ppl .invite-open")?.focus();
+  }
   /** Whose content an approval or request is about; the owner marked as
    * such (the daemon names an unnamed owner "The owner"). */
   const authorOf = (a: { name: string; owner?: boolean }) => (a.owner && a.name !== "The owner" ? `${a.name} (the owner)` : a.name);
-  async function act(fn: () => Promise<unknown>, ask?: string) {
-    if (ask && !confirm(ask)) return;
-    try { await fn(); reload(); } catch (e) { err = msg(e); }
-  }
   onMount(() => { document.title = "People · Clax"; reload(); });
   onDestroy(() => { gone = true; off?.(); });
 </script>
 
 <div class="ppl">
   <div class="phead">
-    <h2>People</h2>
+    <h2 tabindex="-1">People</h2>
     {#if owner}<span class="pcount">{people.length === 1 ? "1 person" : `${people.length} people`}</span>{/if}
     <span class="sp"></span>
-    {#if owner && !inviting}<button type="button" class="primary" onclick={() => { firstInvite = invites.length === 0; inviting = true; }}>Invite a person</button>{/if}
+    {#if owner && !inviting}<button type="button" class="primary invite-open" onclick={() => { firstInvite = invites.length === 0; inviting = true; }}>Invite a person</button>{/if}
   </div>
   {#if denied}<p class="note">{denied}</p>{/if}
   {#if err}<p class="err" role="alert">{err}</p>{/if}
@@ -106,24 +125,24 @@
 
   {#if owner && list}
     {#if inviting}
-      <InviteDialog first={firstInvite} unconnected={list.unconnected} now={clock()} onMade={reload} onSwitched={reload} onClose={() => { inviting = false; }} />
+      <InviteDialog first={firstInvite} unconnected={list.unconnected} now={clock()} onMade={reload} onSwitched={reload} onClose={closeInvite} />
     {/if}
     {#if live.length}
       <section class="pcard">
-        <h3>Invites</h3>
+        <h3 tabindex="-1">Invites</h3>
         {#each live as i (i.id)}
           <div class="line"><span>{i.owner ? "You, on another machine" : i.person.display_name}</span><span class="meta">expires in {expiresIn(i.expires_at, clock())}</span><span class="sp"></span>
-            <button type="button" class="ghost" onclick={() => act(() => api.revokeInvite(i.id))}>Revoke</button></div>
+            <button type="button" class="ghost" aria-label={i.owner ? "Revoke the invite for your other machine" : `Revoke ${i.person.display_name}'s invite`} onclick={e => act(e, () => api.revokeInvite(i.id))}>Revoke</button></div>
         {/each}
       </section>
     {/if}
     {#if pending.length}
       <section class="pcard requests">
-        <h3>Connection requests</h3>
+        <h3 tabindex="-1">Connection requests</h3>
         {#each pending as g (g.id)}
           <div class="line"><span class="mname">{g.client.name}</span><span class="key">key {g.client.key ?? "unknown"}</span><span class="ip">{g.client.peer_ip}</span><span class="sp"></span>
             <a href="/inbox?kind=connection">Approve in the inbox</a>
-            <button type="button" class="ghost" onclick={() => act(() => api.denyGrant(g.id))}>Deny</button></div>
+            <button type="button" class="ghost" aria-label="Deny {g.client.name}" onclick={e => act(e, () => api.denyGrant(g.id))}>Deny</button></div>
         {/each}
       </section>
     {/if}
@@ -153,10 +172,10 @@
     {/if}
   {:else if me}
     <section class="pcard approvals">
-      <h3>Who reaches your agents</h3>
+      <h3 tabindex="-1">Who reaches your agents</h3>
       {#each approvals as ap (ap.id)}
         <div class="line"><span>{authorOf(ap.author)}</span><span class="meta">{scopeOf(ap)}</span><span class="sp"></span>
-          <button type="button" class="ghost" onclick={() => act(() => api.revokeApproval(ap.id))}>Revoke</button></div>
+          <button type="button" class="ghost" aria-label="Revoke the approval of {authorOf(ap.author)}, {scopeOf(ap)}" onclick={e => act(e, () => api.revokeApproval(ap.id))}>Revoke</button></div>
       {:else}
         <p class="none">No one yet: your agents ask you first.</p>
       {/each}
@@ -202,7 +221,11 @@
     .ppl .rename input { width: 180px; max-width: 100%; }
     .ppl a { color: var(--fg); }
     .ppl .wait { color: var(--fg); font-size: 13.5px; }
+    /* A name in a button or a long title in a select wraps or narrows; it never widens the page. */
+    .ppl button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: start; }
     .ppl select { min-width: 0; max-width: 100%; }
+    .ppl [tabindex="-1"]:focus { outline: none; }
+    .ppl .acts { display: inline-flex; gap: 4px; margin-left: auto; }
     .ppl .where { display: flex; flex-wrap: wrap; margin: 4px 0 2px; }
     .ppl .where select { flex: 0 1 auto; }
     .ppl .raises { margin: 4px 0; padding-left: 18px; font-size: 13px; overflow-wrap: anywhere; }
@@ -211,5 +234,7 @@
       .ppl .pcard { padding: 12px; }
       .ppl .caps { grid-template-columns: 1fr; }
     }
+    /* At phone width an agent's harness and machine take a row of their own, below its name and Rename and End. */
+    @media (max-width: 520px) { .ppl .agent .meta { order: 3; flex-basis: 100%; } }
   }
 </style>

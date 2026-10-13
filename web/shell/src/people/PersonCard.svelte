@@ -15,6 +15,7 @@
   // limit: it gets no rights controls (the daemon refuses them,
   // `token_agent`). Each change goes to the daemon at once; a refusal is
   // shown as the daemon words it. Names are text.
+  import { tick } from "svelte";
   import type { PeopleAgent, PeopleApproval, PeopleGrant, PeopleRequest, Rights } from "../api";
   import * as api from "./api";
   import { agentCaps, CAPS, elevation, MACHINE_BOUNDARY, machineCaps, narrowAgent, narrowGrant, PRESET_NAMES, presetOf, raiseCaps, raisedAt } from "./model";
@@ -41,6 +42,9 @@
   let { view, who, owner, approvals, waiting, artifacts, needArtifacts, onChanged }: Props = $props();
   const aps = $derived(approvals ?? []);
   const wait = $derived(waiting ?? []);
+  // A change in flight: further changes are ignored until it answers. No
+  // control is disabled meanwhile, so the keyboard's focus stays on the one
+  // just used.
   let busy = $state(false);
   let err = $state<string | null>(null);
   let renaming = $state<string | null>(null);
@@ -57,45 +61,70 @@
   const raises = (a: PeopleAgent) => CAPS.flatMap(c => raisedAt(a, c).map(loc => `${c.label} on ${where(loc)}`));
   /** The note on a capability the owner raised, in its person's view. */
   const raisedNote = (at: string[]) => `Raised by the owner${at.includes("*") ? "" : ` on ${at.map(where).join(", ")}`} until this session ends`;
+  /** The heading of the section event `e`'s control is in: where the
+   * keyboard's focus goes when that control goes. */
+  const heading = (e: Event) => (e.currentTarget as Element).closest("section")?.querySelector("h4") ?? null;
+  const focus = (el: Element | null | undefined) => { if (el instanceof HTMLElement) el.focus(); };
+  const putBack = (el?: HTMLInputElement | HTMLSelectElement) => {
+    if (el instanceof HTMLInputElement) el.checked = !el.checked;
+    else if (el) el.value = preset ?? "";
+  };
   /** Runs one change, after asking `ask` when given; then the page
-   * refetches. A refused change puts control `el` back as it was. */
-  async function act(fn: () => Promise<unknown>, ask?: string, el?: HTMLInputElement | HTMLSelectElement) {
-    if (ask && !confirm(ask)) return;
+   * refetches and the focus moves to `to`, if given. A refused change, or
+   * one made while another is in flight, puts control `el` back as it was. */
+  async function act(fn: () => Promise<unknown>, o: { ask?: string; el?: HTMLInputElement | HTMLSelectElement; to?: Element | null } = {}) {
+    if (busy) { putBack(o.el); return false; }
+    if (o.ask && !confirm(o.ask)) return false;
     busy = true; err = null;
-    try { await fn(); onChanged(); } catch (e) {
+    try { await fn(); onChanged(); focus(o.to); return true; } catch (e) {
       err = e instanceof Error ? e.message : String(e);
-      if (el instanceof HTMLInputElement) el.checked = !el.checked;
-      else if (el) el.value = preset ?? "";
+      putBack(o.el);
+      return false;
     } finally { busy = false; }
   }
   /** Turns a capability on or off from its checkbox's change. */
-  const toggle = (e: Event, fn: (on: boolean) => Promise<unknown>) => { const el = e.currentTarget as HTMLInputElement; void act(() => fn(el.checked), undefined, el); };
+  const toggle = (e: Event, fn: (on: boolean) => Promise<unknown>) => { const el = e.currentTarget as HTMLInputElement; void act(() => fn(el.checked), { el }); };
   const SCOPE = { everywhere: "Allowed everywhere", artifact: "Allowed on one page", thread: "Allowed in one thread" } as const;
   /** An approval's scope, naming its page when the daemon names it. */
   const scopeOf = (ap: PeopleApproval) => !ap.artifact_title || ap.scope === "everywhere" ? SCOPE[ap.scope]
     : ap.scope === "artifact" ? `Allowed on “${ap.artifact_title}”` : `Allowed in one thread on “${ap.artifact_title}”`;
   const everywhere = $derived(aps.some(a => a.scope === "everywhere"));
-  const rename = (a: PeopleAgent) => act(async () => { await api.rename(a.handle, newName.trim()); renaming = null; });
+  /** Rename's button for agent `handle` in `card`, once it shows again. */
+  async function closeRename(handle: string, card: Element | null) {
+    renaming = null;
+    await tick();
+    focus([...card?.querySelectorAll<HTMLElement>("[data-rename]") ?? []].find(b => b.dataset.rename === handle));
+  }
+  async function openRename(e: Event, a: PeopleAgent) {
+    const card = (e.currentTarget as Element).closest("article");
+    renaming = a.handle; newName = a.name;
+    await tick();
+    card?.querySelector<HTMLInputElement>(".rename input")?.focus();
+  }
+  const save = async (e: Event, a: PeopleAgent) => {
+    const card = (e.currentTarget as Element).closest("article");
+    if (await act(() => api.rename(a.handle, newName.trim()))) await closeRename(a.handle, card);
+  };
 </script>
 
-<article class="pcard person" data-person={who.public_id}>
+<article class="pcard person" data-person={who.public_id} aria-busy={busy}>
   <header>
-    <h3>{name}{#if view === "self" && who.display_name}<span class="you">{" (you)"}</span>{/if}</h3>
+    <h3 tabindex="-1">{name}{#if view === "self" && who.display_name}<span class="you">{" (you)"}</span>{/if}</h3>
     <span class="sp"></span>
     {#if view === "owner"}
       <label class="pick">Rights
-        <select class="preset" disabled={busy} onchange={e => { const el = e.currentTarget; if (el.value && who.public_id) void act(() => api.setRights(who.public_id!, el.value), undefined, el); }}>
+        <select class="preset" onchange={e => { const el = e.currentTarget; if (el.value && who.public_id) void act(() => api.setRights(who.public_id!, el.value), { el }); }}>
           {#if !preset}<option value="" disabled selected>Custom</option>{/if}
           {#each Object.keys(PRESET_NAMES) as v (v)}<option value={v} selected={v === preset}>{PRESET_NAMES[v]}</option>{/each}
         </select>
       </label>
-      <button type="button" class="danger" disabled={busy} onclick={() => act(() => api.revokePerson(who.public_id!), `Revoke ${name}? Their machines disconnect and their agents end. What they wrote stays theirs.`)}>Revoke {name}</button>
+      <button type="button" class="danger" aria-label="Revoke {name}" onclick={e => act(() => api.revokePerson(who.public_id!), { ask: `Revoke ${name}? Their machines disconnect and their agents end. What they wrote stays theirs.`, to: (e.currentTarget as Element).closest(".ppl")?.querySelector("h2") })}>Revoke</button>
     {/if}
   </header>
   {#if err}<p class="err" role="alert">{err}</p>{/if}
 
   <section class="part">
-    <h4>Machines</h4>
+    <h4 tabindex="-1">Machines</h4>
     {#each machines as g (g.id)}
       <div class="machine">
         <div class="line">
@@ -103,14 +132,14 @@
           <span class="key">key {g.client.key ?? "unknown"}</span>
           <span class="ip">{g.client.peer_ip}</span>
           <span class="sp"></span>
-          {#if view === "owner"}<button type="button" class="ghost" disabled={busy} onclick={() => act(() => api.revokeGrant(g.id), `Disconnect ${g.client.name}? Its agents end.`)}>Disconnect</button>{/if}
+          {#if view === "owner"}<button type="button" class="ghost" aria-label="Disconnect {g.client.name}" onclick={e => act(() => api.revokeGrant(g.id), { ask: `Disconnect ${g.client.name}? Its agents end.`, to: heading(e) })}>Disconnect</button>{/if}
         </div>
         {#if view === "self"}
           <details class="narrow">
             <summary>What its agents may do</summary>
             <div class="caps">
               {#each machineCaps(who.rights, g) as c (c.key)}
-                <label><input type="checkbox" checked={c.on} disabled={busy} onchange={e => toggle(e, on => api.narrowGrant(g.id, narrowGrant(who.rights, g, c.key, on)))} /> {c.label}</label>
+                <label><input type="checkbox" checked={c.on} onchange={e => toggle(e, on => api.narrowGrant(g.id, narrowGrant(who.rights, g, c.key, on)))} /> {c.label}</label>
               {/each}
             </div>
           </details>
@@ -122,25 +151,26 @@
   </section>
 
   <section class="part">
-    <h4>Agents</h4>
+    <h4 tabindex="-1">Agents</h4>
     {#each who.agents as a (a.handle)}
       {@const g = grantOf(a)}
       {@const loc = raiseAt[a.handle] ?? "*"}
       <div class="agent">
         <div class="line">
           {#if renaming === a.handle}
-            <form class="rename" onsubmit={e => { e.preventDefault(); void rename(a); }}>
-              <input aria-label="New name for {a.name}" value={newName} oninput={e => { newName = e.currentTarget.value; }} maxlength="32" />
-              <button type="submit" disabled={busy || !newName.trim()}>Save</button>
-              <button type="button" class="ghost" onclick={() => { renaming = null; }}>Cancel</button>
+            <form class="rename" onsubmit={e => { e.preventDefault(); void save(e, a); }}>
+              <input aria-label="New name for {a.name}" value={newName} oninput={e => { newName = e.currentTarget.value; }} onkeydown={e => { if (e.key === "Escape") void closeRename(a.handle, e.currentTarget.closest("article")); }} maxlength="32" />
+              <button type="submit" disabled={!newName.trim()}>Save</button>
+              <button type="button" class="ghost" onclick={e => closeRename(a.handle, e.currentTarget.closest("article"))}>Cancel</button>
             </form>
           {:else}
             <span class="aname">{a.name}</span>
           {/if}
           <span class="meta">{a.harness} · {g ? g.client.name : "this machine"}</span>
-          <span class="sp"></span>
-          {#if renaming !== a.handle}<button type="button" class="ghost" disabled={busy} onclick={() => { renaming = a.handle; newName = a.name; }}>Rename</button>{/if}
-          <button type="button" class="ghost" disabled={busy} onclick={() => act(() => api.endAgent(a.handle), `End ${a.name}? Its questions are withdrawn and its threads released.`)}>End</button>
+          <span class="acts">
+            {#if renaming !== a.handle}<button type="button" class="ghost" data-rename={a.handle} aria-label="Rename {a.name}" onclick={e => openRename(e, a)}>Rename</button>{/if}
+            <button type="button" class="ghost" aria-label="End {a.name}" onclick={e => act(() => api.endAgent(a.handle), { ask: `End ${a.name}? Its questions are withdrawn and its threads released.`, to: heading(e) })}>End</button>
+          </span>
         </div>
         {#if !a.grant_id}
           <p class="note">On this machine: it acts with Clax's own token, which rights do not limit.</p>
@@ -150,7 +180,7 @@
             <p class="note">{MACHINE_BOUNDARY}</p>
             <div class="caps">
               {#each agentCaps(who.rights, g, a) as c (c.key)}
-                <label title={c.machineOff && !c.locked ? "Off for the whole machine" : undefined}><input type="checkbox" checked={c.on} disabled={busy || c.locked || c.machineOff} onchange={e => toggle(e, on => api.narrowAgent(a.handle, narrowAgent(who.rights, g, a, c.key, on)))} /> <span>{c.label}{#if c.raised.length}<span class="raised">{raisedNote(c.raised)}</span>{/if}</span></label>
+                <label title={c.machineOff && !c.locked ? "Off for the whole machine" : undefined}><input type="checkbox" checked={c.on} disabled={c.locked || c.machineOff} onchange={e => toggle(e, on => api.narrowAgent(a.handle, narrowAgent(who.rights, g, a, c.key, on)))} /> <span>{c.label}{#if c.raised.length}<span class="raised">{raisedNote(c.raised)}</span>{/if}</span></label>
               {/each}
             </div>
           </details>
@@ -167,7 +197,7 @@
             </label>
             <div class="caps">
               {#each raiseCaps(who.rights, g, a, loc) as c (c.key)}
-                <label title={c.wider ? "Raised at every artifact" : undefined}><input type="checkbox" checked={c.on} disabled={busy || c.has || c.wider} onchange={e => toggle(e, on => api.elevate(a.handle, elevation(a, c.key, on, loc)))} /> {c.label}</label>
+                <label title={c.wider ? "Raised at every artifact" : undefined}><input type="checkbox" checked={c.on} disabled={c.has || c.wider} onchange={e => toggle(e, on => api.elevate(a.handle, elevation(a, c.key, on, loc)))} /> {c.label}</label>
               {/each}
             </div>
           </details>
@@ -180,17 +210,17 @@
 
   {#if view === "owner"}
     <section class="part approvals">
-      <h4>Their content reaching your agents</h4>
+      <h4 tabindex="-1">Their content reaching your agents</h4>
       {#each aps as ap (ap.id)}
-        <div class="line"><span>{scopeOf(ap)}</span><span class="sp"></span><button type="button" class="ghost" disabled={busy} onclick={() => act(() => api.revokeApproval(ap.id))}>Revoke</button></div>
+        <div class="line"><span>{scopeOf(ap)}</span><span class="sp"></span><button type="button" class="ghost" aria-label="Revoke approval of {name}'s content: {scopeOf(ap)}" onclick={e => act(() => api.revokeApproval(ap.id), { to: heading(e) })}>Revoke</button></div>
       {:else}
         <p class="none">Not yet: your agents ask you first.</p>
       {/each}
-      {#if !everywhere && who.public_id}<button type="button" disabled={busy} onclick={() => act(() => api.allow(who.public_id!))}>Always allow {name}</button>{/if}
+      {#if !everywhere && who.public_id}<button type="button" aria-label="Always allow {name}" onclick={e => act(() => api.allow(who.public_id!), { to: heading(e) })}>Always allow</button>{/if}
       {#if wait.length}
         <h4>Waiting</h4>
         {#each wait as r (r.id)}
-          <a class="line wait" href="/inbox?approval={encodeURIComponent(r.id)}">{r.count} from {name}{r.agent ? ` for ${r.agent.name}` : ""}</a>
+          <a class="line wait" href="/inbox?approval={encodeURIComponent(r.id)}"><span>{r.count} from {name}{r.agent ? ` for ${r.agent.name}` : ""}</span></a>
         {/each}
       {/if}
     </section>
