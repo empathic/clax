@@ -4,6 +4,7 @@ import 'package:clax_app/agent/tools/ask_tool.dart';
 import 'package:clax_app/agent/tools/data_tools.dart';
 import 'package:clax_app/agent/tools/file_tools.dart';
 import 'package:clax_app/agent/tools/finish.dart';
+import 'package:clax_app/agent/tools/kit_tool.dart';
 import 'package:clax_app/agent/tools/render_tool.dart';
 import 'package:clax_app/agent/tools/tool_spec.dart';
 import 'package:clax_app/agent/tools/toolbox.dart';
@@ -22,6 +23,7 @@ List<Tool> _runTools() {
   );
   return [
     ...fileTools(),
+    AddKitTool(load: (_) async => ''),
     ...dataTools(api),
     render,
     AskTool(
