@@ -21,6 +21,19 @@
 //!
 //! A module of clax-server's `integration` test binary; it changes no
 //! process-wide state, and uses no shared test module.
+//!
+//! Until plan Task 25 compares it on every run, each task checks the golden
+//! by hand with `the_golden_differs_only_as_section_19_lists` (ignored; run
+//! it with `--ignored --exact
+//! golden_single_owner::the_golden_differs_only_as_section_19_lists` and an
+//! absolute `CLAX_TEST_BIN`). It collects the outputs now and compares them
+//! with the committed golden ([`compare_with_section_19`]): §19 item 6's
+//! additive keys are left out on both sides, and every other difference
+//! must be item 7's ` (not connected)` mark inserted after a name. The marks
+//! are counted per name and compared with [`EXPECTED_MARKS`], so a mark on
+//! an author the fixture does not hold unattributed or as a LAN viewer
+//! fails; a mark on a comment the owner's public ID wrote fails whatever the
+//! counts.
 
 use clax_core::Tier;
 use clax_core::model::Session;
@@ -869,6 +882,145 @@ async fn golden_now() -> Value {
         out.insert(tier.as_str().to_string(), got);
     }
     Value::Object(out)
+}
+
+/// §19 item 6's additive keys, left out of both sides of a comparison.
+pub const ADDITIVE_KEYS: [&str; 6] = ["owner", "taken_by", "name", "person", "withheld", "rights"];
+
+/// §19 item 7's mark.
+const NOT_CONNECTED: &str = " (not connected)";
+
+/// The ` (not connected)` marks the fixture's outputs carry, by the name
+/// marked: its two LAN viewers (`Mia`, and the unnamed `Viewer`), and the
+/// owner's unattributed history (`Alex`: the comments from before
+/// migration 12 and the batch from before migration 25, spec §9.6).
+pub const EXPECTED_MARKS: [(&str, usize); 3] = [("Alex", 61), ("Mia", 35), ("Viewer", 35)];
+
+/// What [`compare_with_section_19`] found.
+#[derive(Debug, Default, PartialEq)]
+pub struct Section19 {
+    /// Each name marked ` (not connected)`, with how many times.
+    pub marks: std::collections::BTreeMap<String, usize>,
+    /// The marks on a comment whose `author_public_id` is the owner's.
+    pub on_owner: Vec<String>,
+    /// Every other difference: its path and both values.
+    pub other: Vec<String>,
+}
+
+/// Compares `now` with the `committed` golden as §19 allows: item 6's keys
+/// left out on both sides, item 7's marks counted per name (the word before
+/// each), and anything else listed in [`Section19::other`]. A mark inside
+/// an object whose `author_public_id` is `owner` is listed in
+/// [`Section19::on_owner`].
+pub fn compare_with_section_19(committed: &Value, now: &Value, owner: &str) -> Section19 {
+    fn walk(a: &Value, b: &Value, path: &str, owned: bool, owner: &str, out: &mut Section19) {
+        match (a, b) {
+            (Value::Object(x), Value::Object(y)) => {
+                let owned =
+                    owned || y.get("author_public_id").and_then(Value::as_str) == Some(owner);
+                let keys: std::collections::BTreeSet<&String> = x
+                    .keys()
+                    .chain(y.keys())
+                    .filter(|k| !ADDITIVE_KEYS.contains(&k.as_str()))
+                    .collect();
+                for k in keys {
+                    match (x.get(k), y.get(k)) {
+                        (Some(p), Some(q)) => walk(p, q, &format!("{path}/{k}"), owned, owner, out),
+                        _ => out.other.push(format!("{path}/{k}: on one side only")),
+                    }
+                }
+            }
+            (Value::Array(x), Value::Array(y)) if x.len() == y.len() => {
+                for (i, (p, q)) in x.iter().zip(y).enumerate() {
+                    walk(p, q, &format!("{path}[{i}]"), owned, owner, out);
+                }
+            }
+            (Value::String(x), Value::String(y))
+                if x != y && y.replace(NOT_CONNECTED, "") == *x =>
+            {
+                for (at, _) in y.match_indices(NOT_CONNECTED) {
+                    let name: String = y[..at]
+                        .chars()
+                        .rev()
+                        .take_while(|c| !c.is_whitespace() && !"\"':(".contains(*c))
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect();
+                    *out.marks.entry(name).or_default() += 1;
+                    if owned {
+                        out.on_owner.push(path.to_string());
+                    }
+                }
+            }
+            (x, y) if x != y => out.other.push(format!("{path}: {x} != {y}")),
+            _ => {}
+        }
+    }
+    let mut out = Section19::default();
+    walk(committed, now, "", false, owner, &mut out);
+    out
+}
+
+#[test]
+fn the_section_19_comparison_counts_marks_per_name_and_flags_the_owners() {
+    let committed = json!({"comments": [
+        {"author_public_id": null, "author_name": "Alex", "body": "x"},
+        {"author_public_id": "u_lan", "author_name": "Mia", "body": "y"},
+        {"author_public_id": "u_owner", "author_name": "Alex", "body": "z"},
+    ], "text": "Mia: \"y\"\nsent together by Alex. Note"});
+    let mut now = committed.clone();
+    now["comments"][0]["author_name"] = json!("Alex (not connected)");
+    now["comments"][1]["author_name"] = json!("Mia (not connected)");
+    now["comments"][1]["owner"] = json!({"name": "claude"});
+    now["text"] = json!("Mia (not connected): \"y\"\nsent together by Alex (not connected). Note");
+    let got = compare_with_section_19(&committed, &now, "u_owner");
+    assert_eq!(
+        got.marks.into_iter().collect::<Vec<_>>(),
+        [("Alex".to_string(), 2), ("Mia".to_string(), 2)]
+    );
+    assert!(got.on_owner.is_empty() && got.other.is_empty());
+    // A mark on the owner's attributed comment, and any other change.
+    now["comments"][2]["author_name"] = json!("Alex (not connected)");
+    now["comments"][2]["body"] = json!("changed");
+    let got = compare_with_section_19(&committed, &now, "u_owner");
+    assert_eq!(got.on_owner, ["/comments[2]/author_name"]);
+    assert_eq!(got.other.len(), 1, "{:?}", got.other);
+}
+
+/// The per-task golden check (module docs): the outputs now differ from
+/// the committed golden only as §19 lists, with exactly
+/// [`EXPECTED_MARKS`]'s marks and none on the owner's attributed comments.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "collects every tier: run by hand as each task's golden check"]
+async fn the_golden_differs_only_as_section_19_lists() {
+    let committed: Value =
+        serde_json::from_str(&std::fs::read_to_string(fixtures_dir().join(GOLDEN)).unwrap())
+            .unwrap();
+    let owner = {
+        let ts = TestServer::from_fixture_with_clock(FIXTURE, FIXED_T).await;
+        ts.store
+            .owner()
+            .unwrap()
+            .expect("the fixture's owner")
+            .public_id
+    };
+    let got = compare_with_section_19(&committed, &golden_now().await, &owner);
+    assert!(
+        got.other.is_empty(),
+        "differences §19 does not list: {:#?}",
+        got.other
+    );
+    assert!(
+        got.on_owner.is_empty(),
+        "marks on the owner's own comments: {:?}",
+        got.on_owner
+    );
+    let want: std::collections::BTreeMap<String, usize> = EXPECTED_MARKS
+        .iter()
+        .map(|(n, c)| (n.to_string(), *c))
+        .collect();
+    assert_eq!(got.marks, want, "(not connected) marks per name");
 }
 
 /// Writes the golden. Run by hand, only where the plan allows it.
