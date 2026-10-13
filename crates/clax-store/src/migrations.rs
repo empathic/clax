@@ -1186,6 +1186,22 @@ pub const MIGRATIONS: &[&str] = &[
     "ALTER TABLE artifacts ADD COLUMN draft_of TEXT;
     ALTER TABLE artifacts ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
     CREATE INDEX artifacts_hidden ON artifacts(hidden, created_at) WHERE hidden = 1;",
+    // 26: network grants (spec 2026-10-12-flutter-real-apps-design C6): the
+    // owner let `artifact_id` fetch from `host`, one of the hosts its
+    // `capabilities.net.hosts` declared when the owner allowed it. Deleting
+    // the artifact removes its rows (the foreign key on a row delete, the
+    // trigger on the soft delete).
+    "CREATE TABLE net_grants (
+        artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        host TEXT NOT NULL,
+        granted_at TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, host)
+    ) WITHOUT ROWID;
+    CREATE TRIGGER net_grants_on_delete AFTER UPDATE OF deleted_at ON artifacts
+    WHEN NEW.deleted_at IS NOT NULL
+    BEGIN
+        DELETE FROM net_grants WHERE artifact_id = NEW.id;
+    END;",
 ];
 
 /// The audit journal's migration, as a schema version (the
