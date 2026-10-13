@@ -5,8 +5,11 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
 import android.graphics.drawable.Icon
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
@@ -29,15 +32,35 @@ import io.flutter.plugin.common.MethodChannel
  * Its body and its "Comment" and "Threads" actions are explicit, immutable
  * activity intents to [MainActivity] (single top) carrying [EXTRA_ARTIFACT]
  * and [EXTRA_ACTION]; a tap while the activity runs reaches [onNewIntent],
- * which calls `tapped` {artifact, action}.
+ * which calls `tapped` {artifact, action}. Each has its own intent action
+ * ([ACTION_OPEN], [ACTION_COMMENT], [ACTION_THREADS]), so none matches
+ * another notification's PendingIntent.
+ *
+ * Swiping the notice away (Android 14 and later allow it for an ongoing
+ * notification without a foreground service) sends its delete intent, an
+ * immutable broadcast to this package's [ACTION_DISMISSED], which the
+ * receiver registered while the activity lives turns into `dismissed`
+ * {artifact}. Call [dispose] from the activity's `onDestroy`.
  */
 class AppNoticeChannel(private val activity: Activity, messenger: BinaryMessenger) :
     MethodChannel.MethodCallHandler {
     private val channel = MethodChannel(messenger, NAME)
     private var launchTap: Map<String, String>? = tapOf(activity.intent)
+    private val dismissals = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val aid = intent.getStringExtra(EXTRA_ARTIFACT) ?: return
+            channel.invokeMethod("dismissed", mapOf("artifact" to aid))
+        }
+    }
 
     init {
         channel.setMethodCallHandler(this)
+        val filter = IntentFilter(ACTION_DISMISSED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            activity.registerReceiver(dismissals, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            activity.registerReceiver(dismissals, filter)
+        }
         // A launch from recents redelivers the old intent; it asks for nothing.
         if (activity.intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) {
             launchTap = null
@@ -69,6 +92,15 @@ class AppNoticeChannel(private val activity: Activity, messenger: BinaryMessenge
         }
     }
 
+    /** From the activity's `onDestroy`. */
+    fun dispose() {
+        try {
+            activity.unregisterReceiver(dismissals)
+        } catch (e: IllegalArgumentException) {
+            // Not registered.
+        }
+    }
+
     /** From the activity's `onNewIntent`. */
     fun onNewIntent(intent: Intent) {
         val tap = tapOf(intent) ?: return
@@ -82,7 +114,12 @@ class AppNoticeChannel(private val activity: Activity, messenger: BinaryMessenge
         const val NOTIFICATION = 2
         const val EXTRA_ARTIFACT = "dev.empathic.clax.notice.artifact"
         const val EXTRA_ACTION = "dev.empathic.clax.notice.action"
+        const val ACTION_OPEN = "dev.empathic.clax.notice.OPEN"
+        const val ACTION_COMMENT = "dev.empathic.clax.notice.COMMENT"
+        const val ACTION_THREADS = "dev.empathic.clax.notice.THREADS"
+        const val ACTION_DISMISSED = "dev.empathic.clax.notice.DISMISSED"
         private val ACTIONS = listOf("open", "comment", "threads")
+        private val INTENT_ACTIONS = listOf(ACTION_OPEN, ACTION_COMMENT, ACTION_THREADS)
 
         private fun tapOf(intent: Intent?): Map<String, String>? {
             val aid = intent?.getStringExtra(EXTRA_ARTIFACT) ?: return null
@@ -117,6 +154,7 @@ class AppNoticeChannel(private val activity: Activity, messenger: BinaryMessenge
         /** A tap on the notice asking for [action] on [artifact]. */
         private fun tap(context: Context, artifact: String, action: String): PendingIntent {
             val intent = Intent(context, MainActivity::class.java)
+                .setAction(INTENT_ACTIONS[ACTIONS.indexOf(action)])
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 .putExtra(EXTRA_ARTIFACT, artifact)
                 .putExtra(EXTRA_ACTION, action)
@@ -129,6 +167,16 @@ class AppNoticeChannel(private val activity: Activity, messenger: BinaryMessenge
         }
 
         private const val REQUEST_BASE = 7410
+
+        /** The broadcast a swipe of [artifact]'s notice sends. */
+        private fun dismissed(context: Context, artifact: String): PendingIntent =
+            PendingIntent.getBroadcast(
+                context,
+                REQUEST_BASE + ACTIONS.size,
+                Intent(ACTION_DISMISSED).setPackage(context.packageName)
+                    .putExtra(EXTRA_ARTIFACT, artifact),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
 
         fun show(context: Context, artifact: String, title: String) {
             val nm = context.getSystemService(NotificationManager::class.java) ?: return
@@ -143,6 +191,7 @@ class AppNoticeChannel(private val activity: Activity, messenger: BinaryMessenge
                 .setShowWhen(false)
                 .setCategory(Notification.CATEGORY_STATUS)
                 .setContentIntent(tap(context, artifact, "open"))
+                .setDeleteIntent(dismissed(context, artifact))
                 .addAction(Notification.Action.Builder(icon, "Comment", tap(context, artifact, "comment")).build())
                 .addAction(Notification.Action.Builder(icon, "Threads", tap(context, artifact, "threads")).build())
                 .build()

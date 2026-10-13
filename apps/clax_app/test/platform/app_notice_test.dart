@@ -61,6 +61,13 @@ void main() {
           );
         }
         await platformSays(const MethodCall('tapped', {'action': 'comment'}));
+        final gone = <String>[];
+        final sub2 = n.dismissed.listen(gone.add);
+        await platformSays(const MethodCall('dismissed', {'artifact': 'a9'}));
+        await platformSays(const MethodCall('dismissed', {'artifact': 3}));
+        await pumpEventQueue();
+        expect(gone, ['a9']);
+        await sub2.cancel();
         await platformSays(
           const MethodCall('tapped', {'artifact': '', 'action': 'comment'}),
         );

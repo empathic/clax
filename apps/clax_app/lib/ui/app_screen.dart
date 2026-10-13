@@ -46,8 +46,10 @@ import 'working_chip.dart';
 ///   inactive, and its route on top) it shows the notice named after the
 ///   app, and clears it as it leaves, goes under another route or the app
 ///   goes to the background. Each time it comes to the front it asks
-///   whether notifications are allowed; when they are not, a thin handle
-///   on the right edge opens the panel instead.
+///   whether notifications are allowed; when they are not, or the person
+///   swiped the notice away (until the screen next comes to the front and
+///   shows it again), a thin handle on the right edge opens the panel
+///   instead.
 /// - **Comment mode.** Comment turns it on and puts the [CommentBar] under
 ///   the page (the page shrinks above it, so none of it is covered): Whole
 ///   app (`composeArtifact`), Threads (the panel) with the open count,
@@ -217,6 +219,10 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   // The notice: whether it can be seen (null until asked), the app's title
   // it shows, and the first-run hint.
   bool? _noticeAllowed;
+
+  /// The person swiped the notice away; until the screen next comes to the
+  /// front, the edge handle is the way in.
+  var _noticeDismissed = false;
   Future<String>? _title;
   var _hint = false;
   var _hintAsked = false;
@@ -260,6 +266,15 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       ..add(widget.surface.faults.listen(_onFault))
       ..add(widget.worker.listen(_onWorker));
     if (widget.actions case final actions?) _subs.add(actions.listen(_act));
+    if (widget.notice case final notice?) {
+      _subs.add(
+        notice.dismissed.listen((aid) {
+          if (mounted && aid == widget.aid && _toldVisible == true) {
+            setState(() => _noticeDismissed = true);
+          }
+        }),
+      );
+    }
     if (widget.initialAction case final a?) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _act(a));
     }
@@ -319,6 +334,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     if (!mounted) return;
     setState(() {
       _noticeAllowed = allowed;
+      _noticeDismissed = false;
       if (widget.firstRunHint && !_hintAsked) {
         _hintAsked = true;
         _hint = true;
@@ -893,7 +909,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           ),
         ),
       // Only where the notice cannot be seen: the way in then.
-      if (!_open && !_covered && _noticeAllowed == false)
+      if (!_open && !_covered && (_noticeAllowed == false || _noticeDismissed))
         Positioned(
           right: 0,
           top: 0,

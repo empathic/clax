@@ -56,6 +56,9 @@ abstract interface class AppNotice {
   /// Taps on the notice while Clax runs.
   Stream<AppNoticeTap> get taps;
 
+  /// The artifact IDs of notices the person swiped away while Clax runs.
+  Stream<String> get dismissed;
+
   /// The tap that launched Clax, once; null for any other launch.
   Future<AppNoticeTap?> launchTap();
 }
@@ -65,7 +68,8 @@ abstract interface class AppNotice {
 ///
 /// Dart to platform: `show` {artifact, title}, `clear`, `allowed` → bool,
 /// `launchTap` → {artifact, action}?. Platform to Dart: `tapped`
-/// {artifact, action}, the action `open`, `comment` or `threads`.
+/// {artifact, action}, the action `open`, `comment` or `threads`, and
+/// `dismissed` {artifact} when the notice is swiped away.
 class ChannelAppNotice implements AppNotice {
   ChannelAppNotice({this._channel = const MethodChannel(channelName)}) {
     _channel.setMethodCallHandler(_onCall);
@@ -75,6 +79,7 @@ class ChannelAppNotice implements AppNotice {
 
   final MethodChannel _channel;
   final _taps = StreamController<AppNoticeTap>.broadcast();
+  final _dismissed = StreamController<String>.broadcast();
 
   /// Reads a tap from the platform's {artifact, action}; null for anything
   /// else.
@@ -89,8 +94,14 @@ class ChannelAppNotice implements AppNotice {
   };
 
   Future<Object?> _onCall(MethodCall call) async {
-    if (call.method == 'tapped') {
-      if (tapOf(call.arguments) case final tap?) _taps.add(tap);
+    switch (call) {
+      case MethodCall(method: 'tapped', :final arguments):
+        if (tapOf(arguments) case final tap?) _taps.add(tap);
+      case MethodCall(
+        method: 'dismissed',
+        arguments: {'artifact': final String aid},
+      ):
+        _dismissed.add(aid);
     }
     return null;
   }
@@ -119,6 +130,9 @@ class ChannelAppNotice implements AppNotice {
   Stream<AppNoticeTap> get taps => _taps.stream;
 
   @override
+  Stream<String> get dismissed => _dismissed.stream;
+
+  @override
   Future<AppNoticeTap?> launchTap() async =>
       tapOf(await _call<Object?>('launchTap'));
 }
@@ -133,6 +147,9 @@ class AppNoticeSlot {
 
   final AppNotice notice;
   Object? _owner;
+
+  /// The artifact IDs of notices the person swiped away.
+  Stream<String> get dismissed => notice.dismissed;
 
   /// Whether the notice can be seen ([AppNotice.allowed]).
   Future<bool> allowed() async {
