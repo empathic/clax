@@ -48,6 +48,16 @@ class FakeBuilds implements BuildControl {
   }
 }
 
+/// Plans whose adds fail.
+class _BrokenPlans extends PlanStore {
+  @override
+  Future<PlanFeature> addFeature(
+    String appId, {
+    required String title,
+    String detail = '',
+  }) => Future.error(StateError('disk full'));
+}
+
 class _NoTimings implements Timings {
   @override
   void start(String name) {}
@@ -316,10 +326,39 @@ void main() {
       await frames(tester);
       expect(find.text('Building · Weekly chart · 1/4'), findsOneWidget);
 
-      await tester.tap(find.byType(BuildChip));
+      // It folds into the pill, and opens again on a new step or a tap.
+      await tester.pump(const Duration(seconds: 4));
+      await frames(tester);
+      expect(find.byKey(const ValueKey('chip-building')), findsNothing);
+      expect(find.byKey(const ValueKey('chip-building-pill')), findsOneWidget);
+      expect(find.text('1/4'), findsOneWidget);
+      control.emit(
+        BuildState(
+          aid,
+          BuildPhase.running,
+          featureId: 'f2',
+          progress: const Narration('Drawing'),
+        ),
+      );
+      await frames(tester);
+      expect(
+        find.byKey(const ValueKey('chip-building-pill')),
+        findsOneWidget,
+        reason: 'progress within a feature does not open it',
+      );
+      await plans.mark(aid, 'f2', FeatureStatus.done);
+      await frames(tester);
+      expect(find.byKey(const ValueKey('chip-building')), findsOneWidget);
+      await tester.pump(const Duration(seconds: 4));
+      await frames(tester);
+      await tester.tap(find.byKey(const ValueKey('chip-building-pill')));
+      await frames(tester);
+      expect(find.text('Building · Weekly chart · 2/4'), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('chip-building')));
       await frames(tester, 20);
       expect(find.byKey(const ValueKey('build-sheet')), findsOneWidget);
-      expect(find.text('Plan · 1 of 4 done'), findsOneWidget);
+      expect(find.text('Plan · 2 of 4 done'), findsOneWidget);
 
       await tester.tap(find.byKey(const ValueKey('build-stop')));
       await frames(tester);
@@ -328,6 +367,7 @@ void main() {
       expect(find.text('Build stopped'), findsWidgets);
       // The sheet says so while it is open; the chip is gone under it.
       expect(find.byType(BuildChip), findsNothing);
+      await tester.pump(const Duration(seconds: 5));
     });
 
     testWidgets('a toast says the build is done', (tester) async {
@@ -338,6 +378,7 @@ void main() {
       await frames(tester);
       expect(find.byType(BuildChip), findsNothing);
       expect(find.text('Every feature is built'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 5));
     });
 
     testWidgets('Add to plan makes the comment a feature and closes the '
@@ -365,6 +406,85 @@ void main() {
       expect(control.calls, ['resume $aid']);
       expect(find.text('Added “Add a dark mode” to the plan'), findsOneWidget);
     });
+  });
+
+  testWidgets('a failed Add to plan keeps the composer and its text', (
+    tester,
+  ) async {
+    plans = _BrokenPlans();
+    link = BuildLink(plans: plans, control: control);
+    phone(tester);
+    final api = FakeClaxApi();
+    final aid = api.seedArtifact('Runs', {'index.html': '<h1>Runs</h1>'});
+    final surface = FakeAppSurface();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppScreen(
+          aid: aid,
+          base: Uri.parse('http://127.0.0.1:7999'),
+          api: api,
+          surface: surface,
+          voice: FakeVoice.unsupported('no'),
+          settings: AppSettings(),
+          timings: _NoTimings(),
+          worker: const Stream.empty(),
+          build: link,
+        ),
+      ),
+    );
+    surface
+      ..push(Ready(artifact: aid, version: 1, latest: 1, file: 'index.html'))
+      ..push(
+        const StateMsg(
+          commenting: true,
+          draft: Draft(label: 'h1', text: 'Dark mode', clip: DraftClip.ready),
+          busy: false,
+        ),
+      );
+    await frames(tester);
+    await tester.tap(find.byKey(const ValueKey('add-to-plan')));
+    await frames(tester);
+    expect(surface.hostCalls, isNot(contains(isA<CancelDraft>())));
+    expect(find.textContaining('Couldn’t add it to the plan'), findsOneWidget);
+    expect(control.calls, isEmpty);
+  });
+
+  testWidgets('Retry after a failed first run starts from its plan, the '
+      'person\'s edits included', (tester) async {
+    phone(tester);
+    var n = 0;
+    final keys = <String>[];
+    final runs = <Completer<String>>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MakingScreen(
+          request: 'a run tracker',
+          make: (_, _, report) {
+            final key = 'new:${++n}';
+            keys.add(key);
+            report(MakePlanKey(key));
+            return (runs..add(Completer<String>())).last.future;
+          },
+          build: link,
+        ),
+      ),
+    );
+    await frames(tester);
+    await plans.set('new:1', _features);
+    await plans.addFeature('new:1', title: 'Dark mode');
+    await frames(tester);
+    await plans.remove('new:1');
+    runs.first.completeError(StateError('the run failed'));
+    await frames(tester);
+    await tester.tap(find.text('Retry'));
+    await frames(tester);
+    expect(keys, ['new:1', 'new:2']);
+    final p = (await plans.get('new:2'))!;
+    expect(
+      [for (final f in p.features) f.title],
+      ['Log a run', 'Weekly chart', 'Export CSV', 'Goals', 'Dark mode'],
+    );
+    expect(await plans.get('new:1'), isNull);
   });
 
   group('the launcher', () {
@@ -401,6 +521,24 @@ void main() {
       await tester.longPress(find.text('Runs'));
       await frames(tester);
       expect(find.text('Inspect'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('resume-build')),
+        findsNothing,
+        reason: 'a finished build has nothing to resume',
+      );
+      await tester.tapAt(const Offset(10, 10));
+      await frames(tester);
+
+      await plans.setStopped(aid, true);
+      control.emit(BuildState(aid, BuildPhase.stopped));
+      await tester.longPress(find.text('Runs'));
+      await frames(tester);
+      await tester.tap(find.byKey(const ValueKey('resume-build')));
+      await frames(tester);
+      expect(control.calls, ['resume $aid']);
+
+      await tester.longPress(find.text('Runs'));
+      await frames(tester);
       await tester.tap(find.byKey(const ValueKey('inspect')));
       await frames(tester, 20);
       await tester.ensureVisible(find.widgetWithText(Tab, 'Plan'));
@@ -410,6 +548,9 @@ void main() {
       expect(find.text('Weekly chart', findRichText: true), findsOneWidget);
       expect(find.text('Plan · 1 of 4 done'), findsOneWidget);
       expect(find.byKey(const ValueKey('add-feature-field')), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('build-resume')));
+      await frames(tester);
+      expect(control.calls, ['resume $aid', 'resume $aid']);
     });
   });
 }

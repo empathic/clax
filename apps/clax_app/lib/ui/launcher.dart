@@ -318,7 +318,28 @@ class _LauncherState extends State<Launcher> {
     return c.total == 0 ? null : c;
   }
 
+  /// Whether [aid]'s build stopped (stopped, capped or failed) with
+  /// features still to build, so the menu offers Resume build.
+  Future<bool> _resumable(String aid) async {
+    final b = widget.build;
+    if (b == null) return false;
+    final Plan? plan;
+    try {
+      plan = await b.plans.get(aid);
+    } on Object {
+      return false;
+    }
+    if (plan == null || plan.todo.isEmpty) return false;
+    final phase = b.control.buildOf(aid)?.phase;
+    return plan.stopped ||
+        phase == BuildPhase.stopped ||
+        phase == BuildPhase.capped ||
+        phase == BuildPhase.failed;
+  }
+
   Future<void> _menu(ArtifactSummary app) async {
+    final resume = await _resumable(app.id);
+    if (!mounted) return;
     final choice = await showModalBottomSheet<String>(
       context: context,
       builder: (context) => SafeArea(
@@ -345,6 +366,14 @@ class _LauncherState extends State<Launcher> {
               subtitle: const Text('Files, data and permissions'),
               onTap: () => Navigator.of(context).pop('inspect'),
             ),
+            if (resume)
+              ListTile(
+                key: const ValueKey('resume-build'),
+                leading: const Icon(Icons.play_arrow_rounded),
+                title: const Text('Resume build'),
+                subtitle: const Text('Build the rest of its plan'),
+                onTap: () => Navigator.of(context).pop('resume'),
+              ),
             const SizedBox(height: 8),
           ],
         ),
@@ -354,6 +383,8 @@ class _LauncherState extends State<Launcher> {
     switch (choice) {
       case 'open':
         widget.open(app.id);
+      case 'resume':
+        await widget.build?.control.resumeBuild(app.id);
       case 'inspect':
         final target = widget.onOpenTarget;
         await Navigator.of(context).push<void>(
@@ -374,7 +405,14 @@ class _LauncherState extends State<Launcher> {
                               'Apps built from a plan show their features '
                               'here.',
                         )
-                      : BuildPlanPanel(plan: plan, state: state, handle: false),
+                      : BuildPlanPanel(
+                          plan: plan,
+                          state: state,
+                          handle: false,
+                          onResume: plan.todo.isEmpty
+                              ? null
+                              : () => unawaited(b.control.resumeBuild(aid)),
+                        ),
                 ),
                 null => null,
               },

@@ -274,7 +274,9 @@ class MakingLog {
 ///   attempt gets its own cancel signal, completed when the attempt is
 ///   abandoned: Cancel, back, Edit, Open Settings, a Retry, or the screen
 ///   going away.
-/// - **Build view.** With [build], the screen is the build's view: once
+/// - **Build view.** With [build], the screen is the build's view (a
+///   Retry starts from the plan the failed run left, the person's edits
+///   included): once
 ///   the run reports its [MakePlanKey], the plan shows as a live checklist
 ///   in a sheet over the bottom ([BuildPlanPanel]), which the person edits
 ///   as it builds. When the first version lands and its plan still has
@@ -355,6 +357,9 @@ class _MakingScreenState extends State<MakingScreen> {
   /// The app, once its first version landed and its build goes on here.
   String? _made;
 
+  /// The plan a failed run left, for the Retry's run to start from.
+  Plan? _carry;
+
   @override
   void initState() {
     super.initState();
@@ -422,6 +427,9 @@ class _MakingScreenState extends State<MakingScreen> {
     widget.timings?.start(sayFirstOutput);
     unawaited(_planSub?.cancel());
     _planSub = null;
+    // A Retry starts from the plan the failed run left, edits included.
+    final carry = _plan;
+    _carry = carry != null && carry.features.isNotEmpty ? carry : null;
     setState(() {
       _failure = null;
       _seconds = 0;
@@ -482,6 +490,15 @@ class _MakingScreenState extends State<MakingScreen> {
     if (b == null || key == _planKey) return;
     unawaited(_planSub?.cancel());
     setState(() => _planKey = key);
+    if (_carry case final carry?) {
+      _carry = null;
+      // The run's first plan_set then finds this plan and is shown it.
+      unawaited(
+        b.plans
+            .set(key, carry.features, request: carry.request)
+            .catchError((Object _) => carry),
+      );
+    }
     _planSub = b.plans.watch(key).listen((p) {
       if (!mounted || p == null && _plan != null) return;
       setState(() => _plan = p);

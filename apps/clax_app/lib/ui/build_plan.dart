@@ -53,6 +53,8 @@ class BuildLink {
 
   /// Adds [text] (a comment) as a feature at the end of app [aid]'s plan
   /// and takes its build up again, so the next continue run builds it.
+  /// Throws when the feature could not be added; a build that cannot be
+  /// taken up again leaves the feature added (Resume build takes it up).
   Future<PlanFeature> addToPlan(String aid, String text) async {
     final t = text.trim();
     final title = featureTitle(t);
@@ -61,7 +63,11 @@ class BuildLink {
       title: title,
       detail: title == t ? '' : t,
     );
-    await control.resumeBuild(aid);
+    try {
+      await control.resumeBuild(aid);
+    } on Object {
+      // The feature is in the plan; the build is resumed later.
+    }
     return f;
   }
 }
@@ -260,6 +266,7 @@ class BuildPlanPanel extends StatelessWidget {
     final stopped =
         s?.phase == BuildPhase.stopped ||
         s?.phase == BuildPhase.failed ||
+        s?.phase == BuildPhase.capped ||
         (s == null && (p?.stopped ?? false));
     final Widget? action = switch ((going, stopped)) {
       (true, _) when onStop != null => TextButton.icon(
@@ -421,13 +428,23 @@ class _PlanChecklistState extends State<PlanChecklist> {
   Future<void> _submit() async {
     final text = _add.text.trim();
     if (text.isEmpty) return;
-    _add.clear();
     final title = featureTitle(text);
-    await widget.plans!.addFeature(
-      widget.planKey!,
-      title: title,
-      detail: title == text ? '' : text,
-    );
+    try {
+      await widget.plans!.addFeature(
+        widget.planKey!,
+        title: title,
+        detail: title == text ? '' : text,
+      );
+    } on Object catch (e) {
+      // The field keeps the text, to add again.
+      if (mounted) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          SnackBar(content: Text('Couldn’t add it to the plan: $e')),
+        );
+      }
+      return;
+    }
+    if (_add.text.trim() == text) _add.clear();
   }
 
   void _drop(PlanFeature f) {
