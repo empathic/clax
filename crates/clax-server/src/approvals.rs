@@ -11,13 +11,30 @@ use clax_core::visibility::{self, Author};
 use clax_core::{Event, Store};
 use serde_json::{Value, json};
 
-/// `{public_id, name}` of viewer `pid`: names are not filtered (§21.9).
+/// `{public_id, name, owner}` of viewer `pid`: names are not filtered
+/// (§21.9). `owner` when `pid` is the owner's, who is named "The owner"
+/// until they choose a name, so a person named "Viewer" is not taken for
+/// them.
 fn person(st: &Store, pid: &str) -> clax_core::Result<Value> {
+    let owner = st.owner()?.is_some_and(|o| o.public_id == pid);
     let name = st
         .viewer_by_public_id(pid)?
         .and_then(|v| v.display_name)
-        .unwrap_or_default();
-    Ok(json!({"public_id": pid, "name": clax_core::feedback::display_name(&name)}))
+        .filter(|n| !n.trim().is_empty());
+    let name = match name {
+        Some(n) => clax_core::feedback::display_name(&n),
+        None if owner => "The owner".to_owned(),
+        None => clax_core::feedback::display_name(""),
+    };
+    Ok(json!({"public_id": pid, "name": name, "owner": owner}))
+}
+
+/// The title of live artifact `aid`, or `None` once it is gone.
+fn artifact_title(st: &Store, aid: Option<&str>) -> clax_core::Result<Option<String>> {
+    let Some(id) = aid.and_then(|a| clax_core::ids::ArtifactId::parse(a).ok()) else {
+        return Ok(None);
+    };
+    Ok(st.get_artifact(&id)?.map(|a| a.title))
 }
 
 /// A request's view (§7.5: author, thread, count and state, never the
@@ -49,7 +66,8 @@ pub fn request_view(st: &Store, r: &ApprovalRequest) -> clax_core::Result<Value>
     }))
 }
 
-/// An approval's view: who may see whose content, at which scope.
+/// An approval's view: who may see whose content, at which scope, with
+/// its page's title (`artifact_title`) while the page is live.
 pub fn approval_view(st: &Store, a: &Approval) -> clax_core::Result<Value> {
     let author = if a.author == clax_core::store::approvals::UNCONNECTED {
         json!({"public_id": null, "name": "Viewers who are not connected"})
@@ -62,6 +80,7 @@ pub fn approval_view(st: &Store, a: &Approval) -> clax_core::Result<Value> {
         "author": author,
         "scope": a.scope,
         "artifact_id": a.artifact_id,
+        "artifact_title": artifact_title(st, a.artifact_id.as_deref())?,
         "thread_id": a.thread_id,
         "created_at": a.created_at,
         "created_via": a.created_via,

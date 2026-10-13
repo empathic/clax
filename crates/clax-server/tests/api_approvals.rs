@@ -1983,3 +1983,39 @@ async fn owner_handles_are_shown_only_to_their_person() {
     let (_, v) = t.sam_browser().call("GET", &path, None).await;
     assert!(v["thread"]["owner"].get("handle").is_none(), "{v}");
 }
+
+#[tokio::test]
+async fn approvals_name_the_owner_as_such_and_their_page() {
+    let t = Two::new().await;
+    sam_approves_the_owner(&t).await;
+    let tid = t.mia_thread("please fix the chart").await;
+    let (status, v) = t.mia_sends_to_sam(&tid).await;
+    assert_eq!(status, 200, "{v}");
+    let rid = t.sams_requests().await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, v) = t.sam_decides(&rid, "thread").await;
+    assert_eq!(status, 200, "{v}");
+    let (status, v) = t.sam_browser().call("GET", "/api/approvals", None).await;
+    assert_eq!(status, 200, "{v}");
+    let aps = v["approvals"].as_array().unwrap();
+    let owner = t.w.ts.owner_public_id().await;
+    // The owner, unnamed, is "The owner", never "Viewer".
+    let of_owner = aps
+        .iter()
+        .find(|a| a["author"]["public_id"] == json!(owner))
+        .expect("Sam's approval of the owner");
+    assert_eq!(of_owner["author"]["owner"], true, "{of_owner}");
+    assert_eq!(of_owner["author"]["name"], "The owner", "{of_owner}");
+    assert_eq!(of_owner["artifact_title"], Value::Null, "{of_owner}");
+    // A thread's approval names its page.
+    let of_mia = aps
+        .iter()
+        .find(|a| a["author"]["public_id"] == json!(t.w.mia_public))
+        .expect("Sam's approval of Mia in the thread");
+    assert_eq!(of_mia["author"]["owner"], false, "{of_mia}");
+    assert_eq!(of_mia["author"]["name"], "Mia", "{of_mia}");
+    assert_eq!(of_mia["scope"], "thread", "{of_mia}");
+    assert_eq!(of_mia["artifact_title"], "Quarterly Review", "{of_mia}");
+}
