@@ -160,6 +160,10 @@ export type ClaxHost = {
   cancelDraft(): void;
   /** Selects the thread and brings it into view. */
   openThread(id: string): void;
+  /** The app's own thread view opened on thread `id`: its area stays
+   * outlined while the view is open, until `focusThread(null)` (the view
+   * closed) or comment mode ends. An ID of no listed thread clears it. */
+  focusThread(id: string | null): void;
   /** Sends an open thread that is not yet sent to the agent (after
    * `sendFailed`), as Send does: `sent`, or `sendFailed` again. */
   resend(id: string): void;
@@ -716,6 +720,9 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     openThread: id => {
       const t = s().threads.find(x => x.id === id);
       if (t) ctl.selectThread(t);
+    },
+    focusThread: id => {
+      ctl.focusThread(typeof id === "string" && s().threads.some(t => t.id === id) ? id : null);
     },
     resend: id => {
       const t = s().threads.find(x => x.id === id);

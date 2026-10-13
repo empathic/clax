@@ -121,6 +121,30 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     ctl.dispose();
   });
 
+  it("outlines the app's focused thread in app mode only, and the selected one in a browser", async () => {
+    const { ctl, frame } = await started({ threads: [thread("t1"), thread("t2")] });
+    const posted: { type: string; id?: string | null }[] = [];
+    frame.contentWindow!.postMessage = ((m: { type: string }) => { posted.push(m); }) as Window["postMessage"];
+    hello(frame.contentWindow!);
+    await vi.waitFor(() => expect(posted.some(m => m.type === "clax:resolve-anchors")).toBe(true));
+    const focus = () => posted.filter(m => m.type === "clax:focus").at(-1)?.id ?? null;
+    // A browser: the app's focus means nothing, the selection is outlined.
+    ctl.focusThread("t1");
+    expect(focus()).toBeNull();
+    ctl.set({ selected: "t2" });
+    await vi.waitFor(() => expect(focus()).not.toBeNull());
+    const t2 = focus();
+    // The app: the selection is not outlined, the app's focus is.
+    ctl.app = { welcome: () => ({ app: true as const }), posted: () => {} };
+    ctl.focusThread(null);
+    expect(focus()).toBeNull();
+    ctl.focusThread("t2");
+    expect(focus()).toBe(t2);
+    ctl.focusThread(null);
+    expect(focus()).toBeNull();
+    ctl.dispose();
+  });
+
   it("asks a greeted page to greet again after a load with no hello, and reopens the gate on its hello", async () => {
     const { ctl, frame } = await started();
     const posted: { type: string }[] = [];

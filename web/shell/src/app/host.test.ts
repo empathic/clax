@@ -368,6 +368,29 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(ctl.state.get().selected).toBe("t1");
   });
 
+  it("focusThread outlines the thread while the app's thread view is open, until it closes or comment mode ends", async () => {
+    const { ctl, frame, host } = await appView({ threads: [thread("t1")] });
+    const posted = framePosts(frame);
+    hello(frame, 1);
+    await waitFor(() => ctl.state.get().threads.length, "threads");
+    const focus = () => posted.filter(m => m.type === "clax:focus").at(-1)?.id;
+    await waitFor(() => posted.some(m => m.type === "clax:resolve-anchors"), "anchors sent");
+    host.focusThread("t1");
+    const handle = focus();
+    expect(typeof handle).toBe("string");
+    host.focusThread(null);
+    expect(focus()).toBeNull();
+    host.focusThread("nope");
+    expect(focus()).toBeNull();
+    host.focusThread("t1");
+    expect(focus()).toBe(handle);
+    host.enterCommentMode();
+    await waitFor(() => posted.some(m => m.type === "clax:comment-mode" && m.on === true), "comment mode on");
+    expect(focus()).toBe(handle);
+    host.exitCommentMode();
+    await waitFor(() => focus() === null, "the outline cleared as comment mode ends");
+  });
+
   it("messages are dropped when window.ClaxHost is absent", async () => {
     const { frame, host } = await appView({ channel: false });
     expect(() => { hello(frame, 1); host.enterCommentMode(); }).not.toThrow();
