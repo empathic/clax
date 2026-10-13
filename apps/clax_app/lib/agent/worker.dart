@@ -348,9 +348,23 @@ class FeedbackWorker {
       before = await _loop.plans.get(aid);
     } on Object catch (e) {
       _log('the plan of $aid is unavailable: $e');
+      _setBuild(
+        BuildState(
+          aid,
+          BuildPhase.failed,
+          version: _buildStates[aid]?.version,
+          reason: 'The plan could not be read',
+        ),
+      );
       return;
     }
-    if (before == null) return;
+    if (before == null) {
+      // Nothing to build: the build ends rather than staying queued.
+      _setBuild(
+        BuildState(aid, BuildPhase.done, version: _buildStates[aid]?.version),
+      );
+      return;
+    }
     final last = _buildStates[aid]?.version;
     if (before.stopped) {
       _setBuild(
@@ -422,6 +436,18 @@ class FeedbackWorker {
       after = await _loop.plans.get(aid);
     } on Object catch (e) {
       _log('the plan of $aid is unavailable: $e');
+      _setBuild(
+        BuildState(
+          aid,
+          BuildPhase.failed,
+          spentUsd: before.spentUsd,
+          version: switch (outcome) {
+            ChangeLanded(:final version) => version,
+            _ => last,
+          },
+          reason: 'The plan could not be read',
+        ),
+      );
       return;
     }
     final spent = after?.spentUsd ?? before.spentUsd;
