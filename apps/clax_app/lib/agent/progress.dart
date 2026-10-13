@@ -112,6 +112,8 @@ String toolLabel(String name, Map<String, Object?> partialInput) {
     null => null,
   };
   return switch (name) {
+    'plan_set' => 'Planning the app',
+    'plan_mark' => 'Updating the plan',
     'list_files' => 'Looking at the files',
     'read_file' => path == null ? 'Reading a file' : 'Reading $path',
     'write_file' => path == null ? 'Writing a file' : 'Writing $path',
