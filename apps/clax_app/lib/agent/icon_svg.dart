@@ -72,8 +72,7 @@ String? iconProblem(String svg) {
 /// than [maxIconUseDepth] (a reference cycle among them).
 String? _useProblem(XmlElement root) {
   final byId = <String, XmlElement>{
-    for (final e in root.descendantElements)
-      if (e.getAttribute('id') case final id?) id: e,
+    for (final e in root.descendantElements) ?e.getAttribute('id'): e,
   };
   var copies = 0;
   // Counts the copies [e]'s subtree draws; false once past a limit.
