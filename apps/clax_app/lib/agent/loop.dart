@@ -1127,58 +1127,24 @@ class AgentLoop {
         await _forget(aid, r.base);
         continue;
       }
-      if (!r.docsDone && r.db.isNotEmpty) {
-        try {
-          await _api.batchDocs(aid, [
-            for (final o in r.db)
-              DocWrite(
-                op: o.op,
-                collection: o.collection,
-                docId: o.docId,
-                data: o.data,
-                ifVersion: r.pins['${o.collection}/${o.docId}'],
-              ),
-          ]);
-        } on ClaxApiError catch (e) {
-          if (e.status == 0) rethrow;
-          final pinMoved = e.isConflict || e.code == 'if_version_required';
-          if (!pinMoved) {
-            // Refused: undo the version; its comments run again.
-            _log('documents of $aid version ${v.n} refused: $e');
-            await _restore(aid, r.base, v.n, detail.artifact.currentVersion);
-            await _forget(aid, r.base);
-            undone.addAll(r.answered.keys);
-            continue;
-          }
-          if (!await _written(aid, r.db)) {
-            // A pin moved and the documents do not hold the writes: the
-            // page wrote them, and whether the batch ran is unknown. Undo
-            // the version and fail, rather than skip a migration.
-            _log('documents of $aid version ${v.n} ambiguous: $e');
-            await _restore(aid, r.base, v.n, detail.artifact.currentVersion);
-            await _forget(aid, r.base);
-            undone.addAll(r.answered.keys);
-            for (final t in stranded) {
-              final done = r.answered[t.id] ?? const [];
-              if (!r.answered.containsKey(t.id) ||
-                  !pendingComments(t).every((c) => done.contains(c.id))) {
-                continue;
-              }
-              await _api.replyAsAgent(
-                aid,
-                t.id,
-                "Couldn't make that change: its data may have changed while "
-                'it was being saved; nothing was changed. Send it again to '
-                'retry.',
-              );
-              replied.add(t.id);
+      switch (await _settleDocs(aid, r, v, detail)) {
+        case _Docs.undone:
+          undone.addAll(r.answered.keys);
+          continue;
+        case _Docs.ambiguous:
+          undone.addAll(r.answered.keys);
+          for (final t in stranded) {
+            final done = r.answered[t.id] ?? const [];
+            if (!r.answered.containsKey(t.id) ||
+                !pendingComments(t).every((c) => done.contains(c.id))) {
+              continue;
             }
-            continue;
+            await _api.replyAsAgent(aid, t.id, _ambiguousReply);
+            replied.add(t.id);
           }
-          // The documents hold the writes: the batch already ran.
-        }
-        r.docsDone = true;
-        await _record(r);
+          continue;
+        case _Docs.done:
+          break;
       }
       for (final ids in r.answered.values) {
         answered.addAll(ids);
@@ -1195,6 +1161,133 @@ class AgentLoop {
       }
     }
     return (answered: answered, replied: replied, undone: undone);
+  }
+
+  static final _ambiguousReply = failureReply(
+    'its data may have changed while it was being saved; nothing was '
+    'changed. Send it again to retry.',
+  );
+
+  /// Finishes the document writes of record [r], whose version [v]
+  /// stands: sends them again with their pins unless they are done. A
+  /// refusal undoes the version ([_Docs.undone]); a pin that moved over
+  /// documents that do not hold the writes undoes it too
+  /// ([_Docs.ambiguous]: whether the batch ran is unknown). Throws the
+  /// [ClaxApiError] of a call that got no answer.
+  Future<_Docs> _settleDocs(
+    String aid,
+    ChangeRecord r,
+    VersionInfo v,
+    ArtifactDetail detail,
+  ) async {
+    if (r.docsDone || r.db.isEmpty) return _Docs.done;
+    try {
+      await _api.batchDocs(aid, [
+        for (final o in r.db)
+          DocWrite(
+            op: o.op,
+            collection: o.collection,
+            docId: o.docId,
+            data: o.data,
+            ifVersion: r.pins['${o.collection}/${o.docId}'],
+          ),
+      ]);
+    } on ClaxApiError catch (e) {
+      if (e.status == 0) rethrow;
+      final pinMoved = e.isConflict || e.code == 'if_version_required';
+      if (!pinMoved) {
+        // Refused: undo the version; its comments run again.
+        _log('documents of $aid version ${v.n} refused: $e');
+        await _restore(aid, r.base, v.n, detail.artifact.currentVersion);
+        await _forget(aid, r.base);
+        return _Docs.undone;
+      }
+      if (!await _written(aid, r.db)) {
+        // A pin moved and the documents do not hold the writes: the page
+        // wrote them, and whether the batch ran is unknown. Undo the
+        // version and fail, rather than skip a migration.
+        _log('documents of $aid version ${v.n} ambiguous: $e');
+        await _restore(aid, r.base, v.n, detail.artifact.currentVersion);
+        await _forget(aid, r.base);
+        return _Docs.ambiguous;
+      }
+      // The documents hold the writes: the batch already ran.
+    }
+    r.docsDone = true;
+    await _record(r);
+    return _Docs.done;
+  }
+
+  /// For a late answer about to run [e]'s comments again: settles a change
+  /// that already ran them with this answer and landed but never replied
+  /// (its publish lost its answer, the run ended interrupted). Such a
+  /// record of [ledger] answered every comment of [e], its version stands
+  /// ([madeBy]), and no thread it addresses carries its reply yet. Its
+  /// documents are finished as [settle] does, then its reply (and resolve)
+  /// is posted on the threads whose latest viewer comment is still one of
+  /// [e]'s. Returns true when the change was settled this way (or failed
+  /// with the reply that says so), and the answer must not run again;
+  /// false when there is no such record, or its version was undone. Throws
+  /// [ClaxApiError] when the daemon gives no answer.
+  Future<bool> settleAnswered(String aid, AskedEntry e) async {
+    final List<ChangeRecord> records;
+    try {
+      records = await ledger.of(aid);
+    } on Object catch (err) {
+      _log('change ledger unavailable: $err');
+      return false;
+    }
+    final ids = e.commentIds.toSet();
+    final candidates = [
+      for (final r in records)
+        if (ids.every((c) => r.answered.values.any((l) => l.contains(c)))) r,
+    ];
+    if (candidates.isEmpty) return false;
+    final detail = await _api.getArtifact(aid);
+    final threads = await _api.threads(aid);
+    for (final r in candidates) {
+      final v = detail.versions
+          .where((x) => x.n == r.base + 1 && madeBy(x, r))
+          .firstOrNull;
+      if (v == null) continue;
+      final head = _head(r.reply);
+      final mine = [
+        for (final t in threads)
+          if (r.addresses.contains(t.id) && e.threadIds.contains(t.id)) t,
+      ];
+      final replied = mine.any(
+        (t) => t.comments.any(
+          (c) => c.byAgent && cleanLine(c.body).startsWith(head),
+        ),
+      );
+      if (mine.isEmpty || replied) continue;
+      final docs = await _settleDocs(aid, r, v, detail);
+      if (docs == _Docs.undone) return false;
+      for (final t in mine) {
+        final viewer = [
+          for (final c in t.comments)
+            if (c.authorKind == 'viewer') c,
+        ];
+        if (viewer.isEmpty || !ids.contains(viewer.last.id)) continue;
+        if (docs == _Docs.ambiguous) {
+          await _api.replyAsAgent(aid, t.id, _ambiguousReply);
+          continue;
+        }
+        await _api.replyAsAgent(aid, t.id, r.reply);
+        if (r.resolve) {
+          await _quiet('resolve ${t.id}', () => _api.resolveAsAgent(aid, t.id));
+        }
+      }
+      _log('late answer on $aid: version ${v.n} had landed; settled');
+      return true;
+    }
+    return false;
+  }
+
+  /// The opening of [reply] as a stored note or comment starts.
+  static String _head(String reply) {
+    final r = cleanLine(reply);
+    return r.length > 40 ? r.substring(0, 40) : r;
   }
 
   /// Whether the documents hold [ops]' writes, as finish judges it
@@ -1433,6 +1526,9 @@ class AgentLoop {
     }
   }
 }
+
+/// How [AgentLoop._settleDocs] left a record's documents.
+enum _Docs { done, undone, ambiguous }
 
 /// A run's cancel signal: [future] completes when the caller's signal
 /// fires while the run is going, never after [end]. The worker passes one

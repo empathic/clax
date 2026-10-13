@@ -1073,6 +1073,39 @@ void main() {
       },
     );
 
+    test('a late-answer run whose publish lost its answer is settled from '
+        'the ledger, never published twice', () async {
+      final lossy = LostAnswerApi();
+      api = lossy;
+      final aid = api.seedArtifact('Runs', {'index.html': page});
+      workerWith([
+        parking(),
+        changeCalls(reply: 'Kilometres.', edits: [('Save', 'km')]),
+        changeCalls(reply: 'Kilometres.', edits: [('Save', 'km')]),
+      ]).start();
+      await idle();
+      final q = await park(aid);
+      final tid = (await api.threads(aid)).single.id;
+      lossy.loseNextPublish = true;
+      await api.answerQuestion(q.id, [
+        {
+          'selected': ['km'],
+          'text': null,
+        },
+      ]);
+      await until(() => events.whereType<WorkerInterrupted>().isNotEmpty);
+      await idle();
+      await until(
+        () => api.threadOf(aid, tid).comments.last.body == 'Kilometres.',
+        reason: 'the landed reply',
+      );
+      await idle();
+      expect(runner.seen, hasLength(2), reason: 'not run a third time');
+      expect(api.currentVersion(aid), 2, reason: 'exactly one version');
+      expect(api.calls.where((c) => c.name == 'publish'), hasLength(1));
+      expect(await asked.all(), isEmpty);
+    });
+
     test('Retry of a failed late-answer run sends the answer again', () async {
       final aid = api.seedArtifact('Runs', {'index.html': page});
       workerWith([
