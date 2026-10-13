@@ -746,6 +746,24 @@ void main() {
         expect(e.commentIds, [item.commentId]);
       });
 
+      test('a cancel that fires after the run ended leaves its parked '
+          'question alone', () async {
+        final item = api.sendComment(aid, 'x', queue: false);
+        final cancel = Completer<void>();
+        final loop = loopWith([
+          [
+            const ScriptedCall('ask', pick),
+            ...changeCalls(reply: 'I asked you in Clax.', resolve: false),
+          ],
+        ]);
+        await loop.change(aid, [item], session: sid, cancelled: cancel.future);
+        cancel.complete();
+        await until(() => true);
+        await Future<void>.delayed(Duration.zero);
+        expect((await api.questions()).single.status, 'open');
+        expect(await asked.all(), hasLength(1));
+      });
+
       test('a change that gives up withdraws its open question and forgets '
           'it', () async {
         final item = api.sendComment(aid, 'x', queue: false);

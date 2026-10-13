@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:clax_app/agent/asked.dart';
 import 'package:clax_app/agent/edit_result.dart';
@@ -34,7 +35,7 @@ void main() {
   late HeldRunner runner;
   late FeedbackWorker worker;
   late MemoryChangeLedger ledger;
-  late MemoryAskedQuestions asked;
+  late AskedQuestions asked;
   late List<WorkerEvent> events;
   late int registrations;
   late List<Duration> delays;
@@ -970,6 +971,133 @@ void main() {
       'timeout_s': null,
       'cancel': null,
     };
+
+    /// Parks a change with its question open and returns the question.
+    Future<QuestionView> park(String aid) async {
+      api.sendComment(aid, 'Show my total');
+      await until(() => events.whereType<WorkerReplied>().isNotEmpty);
+      await idle();
+      return (await api.questions()).single;
+    }
+
+    List<ScriptedCall> parking() => [
+      const ScriptedCall('ask', units),
+      ...changeCalls(reply: 'I asked you which units in Clax.', resolve: false),
+    ];
+
+    /// Turns the event loop, with real time for file writes, until
+    /// [condition] holds; fails after [turns] turns.
+    Future<void> untilAsync(
+      Future<bool> Function() condition, {
+      int turns = 500,
+    }) async {
+      for (var i = 0; i < turns; i++) {
+        if (await condition()) return;
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+      }
+      throw StateError('condition not reached');
+    }
+
+    test('an answer polled as the worker stops runs once at the next start, '
+        'from asked.json', () async {
+      final dir = await Directory.systemTemp.createTemp('worker_asked');
+      addTearDown(() => dir.delete(recursive: true));
+      final file = File('${dir.path}/asked.json');
+      asked = FileAskedQuestions(file);
+      final aid = api.seedArtifact('Runs', {'index.html': page});
+      final first = workerWith([parking()])..start();
+      await idle();
+      final q = await park(aid);
+
+      // The answer is handed to the waiting poll, and the app quits at once.
+      unawaited(
+        api.answerQuestion(q.id, [
+          {
+            'selected': ['km'],
+            'text': null,
+          },
+        ]),
+      );
+      await first.stop();
+      await untilAsync(
+        () async =>
+            (await FileAskedQuestions(file).all()).single.answer != null,
+      );
+      api.releasePolls();
+
+      asked = FileAskedQuestions(file);
+      workerWith([
+        changeCalls(reply: 'Kilometres.', edits: [('Save', 'km')]),
+      ]).start();
+      await until(() => api.currentVersion(aid) == 2);
+      await idle();
+      expect(runner.seen, hasLength(1));
+      expect(runner.text(0), contains('The person answered your question'));
+      expect(await FileAskedQuestions(file).all(), isEmpty);
+    });
+
+    test(
+      'an answer whose run a stop cancels runs once at the next start',
+      () async {
+        final aid = api.seedArtifact('Runs', {'index.html': page});
+        final first = workerWith([
+          parking(),
+          changeCalls(reply: 'Kilometres.', edits: [('Save', 'km')]),
+        ])..start();
+        await idle();
+        final q = await park(aid);
+        final held = runner
+          ..arrived = Completer<void>()
+          ..gate = Completer<void>();
+        await api.answerQuestion(q.id, [
+          {
+            'selected': ['km'],
+            'text': null,
+          },
+        ]);
+        await held.arrived.future;
+        await first.stop();
+        await until(() => events.last is WorkerCancelled);
+        expect((await asked.all()).single.answer, isNotNull);
+        api.releasePolls();
+
+        workerWith([
+          changeCalls(reply: 'Kilometres.', edits: [('Save', 'km')]),
+        ]).start();
+        await until(() => api.currentVersion(aid) == 2);
+        await idle();
+        expect(runner.seen, hasLength(1));
+        expect(runner.text(0), contains('The person answered your question'));
+        expect(await asked.all(), isEmpty);
+        expect(api.currentVersion(aid), 2);
+      },
+    );
+
+    test('Retry of a failed late-answer run sends the answer again', () async {
+      final aid = api.seedArtifact('Runs', {'index.html': page});
+      workerWith([
+        parking(),
+        [
+          const ScriptedCall('give_up', {'reason': 'the network dropped'}),
+        ],
+        changeCalls(reply: 'Kilometres.', edits: [('Save', 'km')]),
+      ]).start();
+      await idle();
+      final q = await park(aid);
+      await api.answerQuestion(q.id, [
+        {
+          'selected': ['km'],
+          'text': null,
+        },
+      ]);
+      await until(() => events.whereType<WorkerFailed>().isNotEmpty);
+      await idle();
+      expect(await asked.all(), isEmpty, reason: 'the failed run took it');
+      final tid = (await api.threads(aid)).single.id;
+      expect(await worker.retry(aid, tid), isTrue);
+      await until(() => api.currentVersion(aid) == 2);
+      expect(runner.text(2), contains('The person answered your question'));
+    });
 
     test(
       'a parked change runs again with the answer and its comments',
