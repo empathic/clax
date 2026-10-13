@@ -1057,7 +1057,7 @@ async fn remote_hooks_find_their_session_by_its_credential_file() {
     let out = m.hook("claude", "session-start", &input).await;
     assert!(out.status.success());
     assert!(out.stderr.is_empty(), "{}", text(&out));
-    let file = m.credential("claude-cc-1.json");
+    let file = m.credential("claude-s-cc-1.json");
     assert_eq!(mode(&file), 0o600);
     assert_eq!(mode(&m.home().join("remote-sessions")), 0o700);
     let cred: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
@@ -1104,13 +1104,13 @@ async fn a_remote_hook_without_its_credential_fails_clearly() {
     let out = m.hook("claude", "stop", &input).await;
     let said = text(&out);
     assert!(said.contains("session_credential_missing"), "{said}");
-    assert!(said.contains("claude-cc-2.json"), "{said}");
+    assert!(said.contains("claude-s-cc-2.json"), "{said}");
     assert!(
         said.contains(&m.home().join("remote-sessions").display().to_string()),
         "{said}"
     );
     // A file that is not a credential names itself.
-    let file = m.credential("claude-cc-2.json");
+    let file = m.credential("claude-s-cc-2.json");
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, b"{\"not\": \"a credential\"}").unwrap();
     let out = m.hook("claude", "stop", &input).await;
@@ -1130,7 +1130,8 @@ async fn a_remote_hook_without_its_credential_fails_clearly() {
     let out = m.hook("claude", "session-start", &start).await;
     assert!(out.stderr.is_empty(), "{}", text(&out));
     let cred: Value =
-        serde_json::from_slice(&std::fs::read(m.credential("claude-cc-3.json")).unwrap()).unwrap();
+        serde_json::from_slice(&std::fs::read(m.credential("claude-s-cc-3.json")).unwrap())
+            .unwrap();
     let sid = cred["session"].as_str().unwrap();
     ts.store
         .end_session(&clax_core::audit::AuditCtx::DAEMON, sid)
@@ -1144,4 +1145,132 @@ async fn a_remote_hook_without_its_credential_fails_clearly() {
     // `clax connect --off` removes every credential.
     m.ok(&["connect", "--off"]).await;
     assert!(!m.home().join("remote-sessions").exists());
+}
+
+impl Machine {
+    /// The credential file `name` under `remote-sessions/`, as JSON.
+    fn credential_json(&self, name: &str) -> Value {
+        serde_json::from_slice(&std::fs::read(self.credential(name)).unwrap()).unwrap()
+    }
+}
+
+/// Spec 2026-10-08 §6.8: an agent started from another agent's shell
+/// (`claude -p` in agent B's terminal) runs its `SessionStart` hook under
+/// the same parent process before its own shim has written anything. It
+/// must not find B's parent-PID file and become B: it gets a session of
+/// its own, and B's row and files stay B's.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_nested_agents_hook_never_becomes_its_parents_session() {
+    let ts = lan_server().await;
+    let m = connected(&ts, "Sam").await;
+    let b_input = json!({"session_id": "b-h", "cwd": "/w"});
+    let out = m.hook("claude", "session-start", &b_input).await;
+    assert!(out.stderr.is_empty(), "{}", text(&out));
+    let b = m.credential_json("claude-s-b-h.json");
+    let b_sid = b["session"].as_str().unwrap().to_string();
+    let b_row = ts.store.get_session(&b_sid).unwrap().unwrap();
+    // B's parent-PID file names this process, the hooks' parent.
+    let ppid = m.credential(&format!("claude-p-{}.json", std::process::id()));
+    assert!(ppid.exists());
+    let c_input = json!({"session_id": "c-h", "cwd": "/w"});
+    let out = m.hook("claude", "session-start", &c_input).await;
+    assert!(out.stderr.is_empty(), "{}", text(&out));
+    let c = m.credential_json("claude-s-c-h.json");
+    assert_ne!(c["session"], json!(b_sid), "the nested agent is not B");
+    assert_ne!(c["secret"], b["secret"]);
+    let after = ts.store.get_session(&b_sid).unwrap().unwrap();
+    assert_eq!(
+        (after.harness_session_id, after.parent_pid, after.ended_at),
+        (b_row.harness_session_id, b_row.parent_pid, None)
+    );
+    assert_eq!(m.credential_json("claude-s-b-h.json"), b);
+    // The nested agent ends: B's session stays live.
+    let out = m.hook("claude", "session-end", &c_input).await;
+    assert!(out.stderr.is_empty(), "{}", text(&out));
+    assert!(
+        ts.store
+            .get_session(&b_sid)
+            .unwrap()
+            .unwrap()
+            .ended_at
+            .is_none()
+    );
+}
+
+/// Spec 2026-10-08 §6.8: Codex's shim registers without a harness session
+/// ID and keeps its credential under its parent's PID; the Codex hooks,
+/// children of that process, find it there and join that session. A file
+/// written for an earlier process that had the PID is never taken.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_hook_finds_its_shims_session_by_its_parent_and_never_by_a_reused_pid() {
+    use clax_core::remote::{SessionCredential, SessionFiles};
+    let ts = lan_server().await;
+    let m = connected(&ts, "Sam").await;
+    let gid = m.remote_json()["grant_id"].as_str().unwrap().to_string();
+    let me = std::process::id();
+    let shim = |hsid: Option<&str>| clax_core::RegisterSession {
+        harness: "codex".into(),
+        harness_session_id: hsid.map(str::to_string),
+        cwd: "/w".into(),
+        parent_pid: Some(me),
+        grant_id: Some(gid.clone()),
+        ..Default::default()
+    };
+    let reg = ts
+        .store
+        .register_session_proved(
+            &clax_core::audit::AuditCtx::DAEMON,
+            shim(None),
+            clax_core::Proved::Unchecked,
+        )
+        .unwrap();
+    let files = SessionFiles::of(&Home::at(m.home()));
+    files
+        .write(
+            "codex",
+            None,
+            Some(me),
+            None,
+            &SessionCredential {
+                session: reg.session.id.clone(),
+                secret: reg.secret.clone().unwrap(),
+            },
+        )
+        .unwrap();
+    let input = json!({"session_id": "x-1", "cwd": "/w"});
+    let out = m.hook("codex", "session-start", &input).await;
+    assert!(out.stderr.is_empty(), "{}", text(&out));
+    assert_eq!(
+        m.credential_json("codex-s-x-1.json")["session"],
+        json!(reg.session.id)
+    );
+    let row = ts.store.get_session(&reg.session.id).unwrap().unwrap();
+    assert_eq!(row.harness_session_id.as_deref(), Some("x-1"));
+    // The same parent-PID file, as if written for an earlier process that
+    // had this PID: a new hook does not take it.
+    ts.store
+        .end_session(&clax_core::audit::AuditCtx::DAEMON, &reg.session.id)
+        .unwrap();
+    let other = ts
+        .store
+        .register_session_proved(
+            &clax_core::audit::AuditCtx::DAEMON,
+            shim(None),
+            clax_core::Proved::Unchecked,
+        )
+        .unwrap();
+    let ppid = m.credential(&format!("codex-p-{me}.json"));
+    let mut v: Value = serde_json::from_slice(&std::fs::read(&ppid).unwrap()).unwrap();
+    v["session"] = json!(other.session.id);
+    v["secret"] = json!(other.secret.unwrap().expose());
+    v["harness_session_id"] = Value::Null;
+    v["parent_started"] = json!("Thu Jan  1 00:00:00 1970");
+    std::fs::write(&ppid, v.to_string()).unwrap();
+    let input = json!({"session_id": "x-2", "cwd": "/w"});
+    let out = m.hook("codex", "stop", &input).await;
+    assert!(
+        text(&out).contains("session_credential_missing"),
+        "{}",
+        text(&out)
+    );
 }

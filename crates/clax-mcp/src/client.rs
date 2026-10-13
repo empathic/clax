@@ -8,8 +8,8 @@ use clax_core::RegisterSession;
 use clax_core::audit::ToolCallReport;
 use clax_core::model::Session;
 use clax_core::remote::{
-    MAX_RESPONSE_BYTES, Next, Remote, Retry, SESSION_SECRET_HEADER, SessionCredential, SessionKey,
-    clock_skew_message, keys_of_row, path_and_query, prepare_headers, refusal_message,
+    MAX_RESPONSE_BYTES, Next, Remote, Retry, SESSION_SECRET_HEADER, Seeker, SessionCredential,
+    SessionKey, clock_skew_message, keys_of_row, path_and_query, prepare_headers, refusal_message,
     sign_headers,
 };
 use clax_core::secret::Secret;
@@ -534,7 +534,9 @@ impl DaemonClient {
             }
             let res = match self.send_once(req).await {
                 Ok(res) => res,
-                Err(f) if i < last && proof_refused(&f.error) => continue,
+                // A credential the daemon refuses, or whose session it has
+                // no row for (another or a reset daemon): the next one.
+                Err(f) if i < last && credential_refused(&f.error) => continue,
                 Err(f) => return Err(f.error),
             };
             let mut answer = body_json(res).await?;
@@ -548,14 +550,14 @@ impl DaemonClient {
                     session: session.id.clone(),
                     secret: secret.clone(),
                 };
-                let reg = &m.registration;
-                let mut keys = keys_of_row(
+                let written = r.sessions.write(
                     &session.harness,
                     session.harness_session_id.as_deref(),
                     session.parent_pid,
+                    m.registration.harness_session_id.as_deref(),
+                    &cred,
                 );
-                keys.extend(registration_keys(reg));
-                if let Err(e) = r.sessions.write(&keys, &cred) {
+                if let Err(e) = written {
                     tracing::warn!("the session's credential file could not be written: {e}");
                 }
             }
@@ -589,7 +591,14 @@ impl DaemonClient {
         if let Some(h) = &held {
             out.push(Some(h.clone()));
         }
-        match remote.sessions.find(&registration_keys(&m.registration)) {
+        let r = &m.registration;
+        let pids: Vec<u32> = r.parent_pid.into_iter().collect();
+        let seeker = Seeker {
+            harness: &r.harness,
+            harness_session_id: r.harness_session_id.as_deref(),
+            pids: &pids,
+        };
+        match remote.sessions.find(&seeker) {
             Ok(Some(f)) if !held.as_ref().is_some_and(|h| h.same_as(&f)) => out.push(Some(f)),
             Ok(_) => {}
             Err(e) => tracing::warn!("{e}"),
@@ -1281,7 +1290,7 @@ impl DaemonClient {
         if let Some(m) = &self.inner.managed {
             keys.extend(registration_keys(&m.registration));
         }
-        remote.sessions.remove(&keys, Some(&s.id));
+        remote.sessions.remove(&keys, &s.id);
     }
 }
 
@@ -1291,10 +1300,13 @@ fn registration_keys(r: &RegisterSession) -> Vec<SessionKey<'_>> {
     keys_of_row(&r.harness, r.harness_session_id.as_deref(), r.parent_pid)
 }
 
-/// Whether `e` is a remote daemon's 401 `invalid_session_proof`: the
-/// session named is not proved by the secret sent (spec 2026-10-08 §6.8).
-fn proof_refused(e: &ClientError) -> bool {
+/// Whether `e` refuses the credential a registration presented (spec
+/// 2026-10-08 §6.8): a remote daemon's 401 `invalid_session_proof` (the
+/// secret does not prove the session) or 400 `unknown_session` (the daemon
+/// has no such session).
+fn credential_refused(e: &ClientError) -> bool {
     matches!(e, ClientError::Api { status: 401, error } if error["code"] == "invalid_session_proof")
+        || matches!(e, ClientError::Api { status: 400, error } if error["code"] == "unknown_session")
 }
 
 /// The error for a request that failed with `original` and whose refresh

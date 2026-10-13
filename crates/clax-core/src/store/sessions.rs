@@ -330,27 +330,27 @@ fn agent_grant(ctx: &AuditCtx) -> Option<&str> {
 /// The live row a registration or join of credential `grant` refreshes,
 /// given `matched`, the row its harness session ID or parent PID matched
 /// (spec 2026-10-08 §6.7, §6.8). For a grant's checked call, a matched row
-/// must be the session `proved` names, and with no match the proved
-/// session (live, of the same harness) is the one refreshed.
+/// must be the session `proved` names. A proof never widens the match: a
+/// call whose harness session ID and parent PID match no live row makes a
+/// new one, whichever session it proved, so an agent started from another
+/// agent's shell, holding its parent's credential, never becomes its
+/// parent's session.
 ///
 /// # Errors
 /// [`invalid_session_proof`] when a grant's call matches a live row it did
 /// not prove.
 fn proved_row(
-    tx: &Transaction<'_>,
     grant: Option<&str>,
-    harness: &str,
     matched: Option<String>,
     proved: Proved<'_>,
 ) -> Result<Option<String>> {
-    let (Some(g), Proved::Session(p)) = (grant, proved) else {
+    let (Some(_), Proved::Session(p)) = (grant, proved) else {
         return Ok(matched);
     };
     match (matched, p) {
         (Some(m), Some(p)) if m == p => Ok(Some(m)),
         (Some(_), _) => Err(invalid_session_proof()),
-        (None, Some(p)) => find_live(tx, Some(g), "id = ?1 AND harness = ?2", params![p, harness]),
-        (None, None) => Ok(None),
+        (None, _) => Ok(None),
     }
 }
 
@@ -557,9 +557,8 @@ impl Store {
             let grant = r.grant_id.as_deref();
             let person = person_of_grant(tx, grant)?;
             let now = self.now();
-            let recent = super::stamp(
-                self.now_utc() - Duration::from_secs(Self::SESSION_IDLE_SECS),
-            );
+            let recent =
+                super::stamp(self.now_utc() - Duration::from_secs(Self::SESSION_IDLE_SECS));
             let existing = match (&r.harness_session_id, r.parent_pid) {
                 (Some(hid), parent) => {
                     match find_live(
@@ -588,17 +587,27 @@ impl Store {
                 )?,
                 (None, None) => None,
             };
-            let existing = proved_row(tx, grant, &r.harness, existing, proved)?;
+            let existing = proved_row(grant, existing, proved)?;
             if let Some(id) = existing {
                 let before = fetch(tx, &id)?;
                 let facts_before = facts(tx, &id)?;
                 tx.execute(
-                    "UPDATE sessions SET pid = COALESCE(?2, pid), parent_pid = COALESCE(?3, parent_pid),
+                    "UPDATE sessions SET pid = COALESCE(?2, pid),
+                        parent_pid = CASE WHEN grant_id IS NULL THEN COALESCE(?3, parent_pid)
+                                          ELSE COALESCE(parent_pid, ?3) END,
                         harness_session_id = COALESCE(harness_session_id, ?4), last_seen_at = ?5,
                         cwd = CASE WHEN cwd = '' THEN ?6 ELSE cwd END,
                         transcript_path = COALESCE(?7, transcript_path)
                      WHERE id = ?1",
-                    params![id, r.pid, r.parent_pid, r.harness_session_id, now, r.cwd, r.transcript_path],
+                    params![
+                        id,
+                        r.pid,
+                        r.parent_pid,
+                        r.harness_session_id,
+                        now,
+                        r.cwd,
+                        r.transcript_path
+                    ],
                 )?;
                 if facts(tx, &id)? != facts_before {
                     self.record_session(tx, ctx, AuditKind::SessionJoin, &id, &r.harness)?;
@@ -638,13 +647,7 @@ impl Store {
                 });
             }
             let id = new_ulid();
-            let name = derived_name(
-                tx,
-                r.repo.as_deref(),
-                r.branch.as_deref(),
-                &r.harness,
-                None,
-            )?;
+            let name = derived_name(tx, r.repo.as_deref(), r.branch.as_deref(), &r.harness, None)?;
             let secret = issue_secret(grant);
             tx.execute(
                 "INSERT INTO sessions (id, harness, harness_session_id, cwd, pid, parent_pid,
@@ -778,7 +781,7 @@ impl Store {
                     found
                 }
             };
-            let existing = proved_row(tx, grant_id, harness, existing, proved)?;
+            let existing = proved_row(grant_id, existing, proved)?;
             let mut restored = None;
             let mut secret = None;
             let id = match existing {
