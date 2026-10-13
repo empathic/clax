@@ -1780,6 +1780,8 @@ shell in subdomain mode and an opaque origin in sandbox mode):
 | `openThread(id)` | Selects the thread and brings it into view. |
 | `resend(id)` | Sends an open thread that is not yet sent (after `sendFailed`), as Send does. |
 | `attestPointer({pointer, phase, x, y})` | A real finger press (`down`) or release (`up`) the app saw reach the WebView, at CSS pixels in its viewport (see "The viewer's gesture in the Clax app" below). |
+| `deviceResult({id, ok, value})` / `deviceResult({id, ok: false, error: {code, message}})` | The app's answer to a `device` message; an ID no call waits on is dropped. |
+| `openRoute(hash)` | Moves the page to fragment `hash` (`#` and at most 511 more characters), as a tapped reminder asks. |
 
 **Messages to the app** go on the WebView's JavaScript channel `ClaxHost`
 (`window.ClaxHost.postMessage(<JSON>)`), and a page without it (a browser)
@@ -1794,6 +1796,7 @@ drops them. Every message carries `nonce`:
 | `sendFailed` | `thread`, `text` | The send failed; the thread stays posted and unsent until `resend`. |
 | `landed` | `version` | The page of a version auto-follow loaded has greeted. |
 | `notice` | `text` | A shell notice (a failed post, a failed follow, …). |
+| `device` | `id`, `cap`, `method`, `args` | The page called a device capability (see "Device capabilities in the Clax app" below). Calls made before `init` are posted by it. Not in the inspect view. |
 
 **The channel and its nonce.** The WebView injects `ClaxHost` into every
 frame, the artifact's page included, so the page can post on it too. The
@@ -3971,7 +3974,7 @@ Declare what the page uses in `capabilities` on `publish`, for example
 `{"db": {}, "user": {"scopes": ["profile"]}}`. The object is the full set:
 passing it replaces the stored one, omitting it keeps it, and `{}` clears it.
 `use()` never rejects: it resolves `null` for a name the page did not declare,
-for `files` and `mcp`, and outside the Clax viewer, so render without the
+for claude.ai's `files` and `mcp`, and outside the Clax viewer, so render without the
 capability first and light features up when it resolves.
 `permissions` and `user` need no declaration.
 
@@ -4018,6 +4021,9 @@ capability first and light features up when it resolves.
   once per app for its host list. Only the person's own views get it:
   elsewhere `use("net")` resolves `null`. Types:
   `ClaxExtensions.Net` in `clax-extensions.d.ts`.
+- `notify`, `share`, `files`, `camera`, `location`: Clax's device
+  capabilities, served only in the Clax app (see "Device capabilities in
+  the Clax app" below); `null` everywhere else.
 - `permissions`: `state()` and `request()`; the only prompt is the consent
   to the first page-written comment.
 
@@ -4089,7 +4095,8 @@ What a page written for claude.ai meets in Clax, beyond the gesture rules:
 Further differences from the 0.2.61 contract, which a page rarely needs to
 plan for:
 
-- Everywhere: `files` and `mcp` resolve `null`. `use()` resolves `null` at
+- Everywhere: claude.ai's `files` (project files) and `mcp` resolve `null`;
+  `files` is Clax's device capability in the Clax app. `use()` resolves `null` at
   once in a page that is not framed, and after 10 seconds in a frame that is
   not the Clax viewer. A call the shell never answers
   stays pending; it does not reject `upstream_error`.
@@ -4130,6 +4137,41 @@ plan for:
   `<name> (written by the page): "…"`. A compose `label` is shown in the
   composer but never stored, and `detail` is dropped. Pins cannot be
   dragged, so `move` is never called.
+
+### Device capabilities in the Clax app
+
+In the Clax app (`apps/clax_app`), a page that declares them reaches the
+device: `{"notify": {}, "share": {}, "files": {}, "camera": {}, "location":
+{}}`. The types are `ClaxExtensions.Device` in
+`<daemon_url>/_clax/contract/clax-extensions.d.ts`. In a browser, in the
+app's draft preview (the inspect view), and when undeclared, `use()`
+resolves `null` for them.
+
+- `notify`: `schedule({id, title, body?, at | every: {hour, minute,
+  weekdays?}, route?})` (an ISO time in the future, or every day at a local
+  time, on weekdays 1 Monday to 7 Sunday when given; the same `id`
+  replaces), `cancel(id)`, `list()`. A tap on a reminder opens the app at
+  `route` (`#…`). Reminders are inexact alarms, so they may come a few
+  minutes late; they survive a reboot.
+- `share`: `text(text)`, `file({name, mime, data})` (base64), through the
+  system share sheet.
+- `files`: `pick({accept})` → `{name, mime, data}` (`accept`: extensions or
+  MIME types), `save({name, mime, data})` where the person chooses. At most
+  10 MB a file (`too_large`).
+- `camera`: `take()` and `pick()` → `{mime, data, width, height}`, a JPEG
+  downscaled to at most 1600 px a side.
+- `location`: `current()` → `{lat, lon, accuracy}` (degrees, metres).
+
+The shell forwards each call to the app (the `device` message and
+`deviceResult` above). The app asks the person once per app and
+capability ("Let “Plants” see where your device is?"), keeps an Allow until
+it is revoked in the app inspector (revoking `notify` cancels that app's
+reminders), and keeps a Don't allow until the app restarts; Android asks
+its own runtime permission on top (notifications, location). Calls reject
+`{code, message}` with `not_granted` (not allowed, or the system permission
+is off), `cancelled` (the person closed the picker, sheet or camera),
+`unavailable` (no such feature here: macOS has no camera source and no
+location), `bad_request`, or `too_large`.
 
 ### Reading another app's documents
 
