@@ -6,6 +6,7 @@ import { assetsLocals } from "./assets";
 import { type CapsEnv, commentsLocals } from "./comments";
 import { makeDb } from "./db";
 import { downloadsLocals } from "./downloads";
+import { netLocals } from "./net";
 
 export function localsFor(name: CapabilityName, rpc: Rpc, config: unknown, env: CapsEnv): Local {
   switch (name) {
@@ -19,6 +20,8 @@ export function localsFor(name: CapabilityName, rpc: Rpc, config: unknown, env: 
       return makeDb(rpc) as unknown as Local;
     case "downloads":
       return downloadsLocals(rpc);
+    case "net":
+      return netLocals(rpc);
     default:
       return {};
   }
