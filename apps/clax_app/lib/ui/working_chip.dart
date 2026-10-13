@@ -517,19 +517,26 @@ class _WorkingChipState extends State<WorkingChip> {
 
 /// The Working chip while an app's build goes (queued or running) and no
 /// change is in flight: "Building · Export · 3/7" ([planCount]). A tap
-/// calls [onTap] (the build sheet). It exists only while the build goes;
-/// its parent removes it after.
+/// calls [onTap]. It exists only while the build goes; its parent removes
+/// it after, and shows it [compact] between the build's steps.
+///
+/// [compact]: a small pill of [height], a ring filled to the features done
+/// and "3/7", for the status bar's band.
 class BuildChip extends StatelessWidget {
   const BuildChip({
     super.key,
     required this.plan,
     required this.state,
     required this.onTap,
+    this.compact = false,
+    this.height = 24,
   });
 
   final Plan? plan;
   final BuildState state;
   final VoidCallback onTap;
+  final bool compact;
+  final double height;
 
   /// The chip's text.
   static String label(Plan? plan, BuildState state) {
@@ -543,7 +550,66 @@ class BuildChip extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) =>
+      compact ? _pill(context) : _full(context);
+
+  Widget _pill(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final fg = scheme.onInverseSurface;
+    final count = plan == null ? null : planCount(plan!);
+    final ring = height * 0.55;
+    return Semantics(
+      button: true,
+      label: label(plan, state),
+      onTapHint: 'Show the build',
+      excludeSemantics: true,
+      child: Material(
+        key: const ValueKey('chip-building-pill'),
+        color: scheme.inverseSurface.withValues(alpha: 0.88),
+        shape: const StadiumBorder(),
+        child: InkWell(
+          customBorder: const StadiumBorder(),
+          onTap: onTap,
+          child: SizedBox(
+            height: height,
+            child: Padding(
+              padding: EdgeInsets.symmetric(horizontal: height * 0.3),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox.square(
+                    dimension: ring,
+                    child: CircularProgressIndicator(
+                      value: count == null || count.total == 0
+                          ? null
+                          : (count.done / count.total).clamp(0.08, 1.0),
+                      strokeWidth: 2,
+                      color: fg,
+                      backgroundColor: fg.withValues(alpha: 0.25),
+                    ),
+                  ),
+                  if (count != null && count.total > 0) ...[
+                    SizedBox(width: height * 0.22),
+                    Text(
+                      '${count.done}/${count.total}',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: fg,
+                        fontWeight: FontWeight.w600,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _full(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final fg = scheme.onInverseSurface;

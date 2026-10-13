@@ -20,7 +20,6 @@ import 'package:clax_app/ui/launcher.dart';
 import 'package:clax_app/ui/making_preview.dart';
 import 'package:clax_app/ui/making_screen.dart';
 import 'package:clax_app/ui/theme.dart';
-import 'package:clax_app/ui/working_chip.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -118,6 +117,8 @@ void main() {
       });
       tester.view.physicalSize = const Size(1080, 2340);
       tester.view.devicePixelRatio = 1080 / 412;
+      // A 24 dp status bar.
+      tester.view.padding = const FakeViewPadding(top: 24 * 1080 / 412);
       addTearDown(tester.view.reset);
       return png;
     }
@@ -236,8 +237,28 @@ void main() {
         ),
       );
       await shot(tester, '4-chip');
-      await tester.tap(find.byType(BuildChip));
+      await tester.pump(const Duration(seconds: 4));
+      await shot(tester, '4b-pill');
+      await tester.tap(find.byKey(const ValueKey('chip-building-pill')));
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.tap(find.byKey(const ValueKey('chip-building')));
       await shot(tester, '5-sheet');
+      Navigator.of(tester.element(find.byKey(const ValueKey('build-sheet'))))
+          .pop();
+      await tester.pump(const Duration(seconds: 5));
+      surface.push(
+        const StateMsg(
+          commenting: true,
+          draft: Draft(
+            label: 'Today',
+            text: 'Add a weekly streak',
+            clip: DraftClip.ready,
+          ),
+          busy: false,
+        ),
+      );
+      await shot(tester, '7-add-to-plan');
+      await tester.pump(const Duration(seconds: 5));
     });
 
     testWidgets('launcher tile, $scheme', skip: !_on, (tester) async {

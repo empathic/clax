@@ -262,13 +262,26 @@ class AppPanel extends StatelessWidget {
             ),
             const SizedBox(width: 8),
             if (onAddToPlan case final add?) ...[
-              IconButton.outlined(
-                key: const ValueKey('add-to-plan'),
-                tooltip: 'Add to plan',
-                onPressed: busy || d.text.trim().isEmpty ? null : add,
-                icon: const Icon(Icons.playlist_add_rounded),
-              ),
-              const SizedBox(width: 4),
+              // Labelled where the peek is wide enough; else the icon,
+              // named by its tooltip.
+              if (MediaQuery.sizeOf(context).width >= 380 &&
+                  MediaQuery.textScalerOf(context).scale(14) <= 16)
+                OutlinedButton(
+                  key: const ValueKey('add-to-plan'),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                  ),
+                  onPressed: busy || d.text.trim().isEmpty ? null : add,
+                  child: const Text('Add to plan'),
+                )
+              else
+                IconButton.outlined(
+                  key: const ValueKey('add-to-plan'),
+                  tooltip: 'Add to plan',
+                  onPressed: busy || d.text.trim().isEmpty ? null : add,
+                  icon: const Icon(Icons.playlist_add_rounded),
+                ),
+              const SizedBox(width: 6),
             ],
             // At large text scales the label would take the status's room.
             if (MediaQuery.textScalerOf(context).scale(14) > 22)
