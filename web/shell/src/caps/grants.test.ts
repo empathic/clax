@@ -65,17 +65,23 @@ describe("Grants", () => {
     expect(g.state("comments")).toBe("granted");
   });
 
-  it("sample: the owner's browser only, when served; asked in its own dialog; allowed for this view only", async () => {
+  it("sample: the owner's browser only, when served; asked in its own dialog; held here for this view only (the daemon keeps it)", async () => {
     const storage = new MemoryStorage();
     const ask = vi.fn(async (_p: Prompt) => "allow" as const);
     const key = grantsKey("7q3k9mzx2b4t", "u_00000000000000000000aa");
     const g = new Grants(key, storage as unknown as Storage, { sample: {} }, true, ask, { sample: true });
     expect(g.state("sample")).toBe("prompt");
     await g.request(["sample"]);
-    expect(ask.mock.calls[0][0]).toMatchObject({ title: "Let this page ask Claude?", body: expect.stringContaining("Anthropic API key") });
+    expect(ask.mock.calls[0][0]).toMatchObject({ title: "Let this app ask Claude?", body: expect.stringContaining("Anthropic API key") });
     expect(g.state("sample")).toBe("granted");
-    // A new view asks again: the allow was never stored.
-    expect(new Grants(key, storage as unknown as Storage, { sample: {} }, true, ask, { sample: true }).state("sample")).toBe("prompt");
+    // A new view starts at prompt: the allow was never stored here.
+    const fresh = new Grants(key, storage as unknown as Storage, { sample: {} }, true, ask, { sample: true });
+    expect(fresh.state("sample")).toBe("prompt");
+    fresh.allow("sample");
+    expect(fresh.state("sample")).toBe("granted");
+    fresh.forget("sample");
+    expect(fresh.state("sample")).toBe("prompt");
+    expect(storage.getItem(key) ?? "[]").not.toContain("sample");
     expect(new Grants(key, storage as unknown as Storage, { sample: {} }, true, ask).state("sample")).toBe("unavailable");
     expect(new Grants(key, storage as unknown as Storage, { sample: {} }, false, ask, { sample: true }).state("sample")).toBe("unavailable");
   });

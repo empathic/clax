@@ -45,7 +45,7 @@ test.describe("with the stub provider", () => {
       expect(JSON.parse(await f.locator("#limits").textContent() ?? "null")).toEqual({ maxPromptBytes: 65536, tools: { maxCount: 16 } });
     });
 
-    test(`${mode}: consent lasts for the view: a reload asks again`, async ({ page }) => {
+    test(`${mode}: consent lasts for the app until revoked: a reload does not ask`, async ({ page }) => {
       const { artifact } = await publishWith(d.base, d.token, `Sample reload ${mode}`, PAGE, { sample: {} });
       const f = await openArtifact(page, d.base, artifact.id, 1, mode);
       await expect(f.locator("#status")).toHaveText("ready");
@@ -54,8 +54,18 @@ test.describe("with the stub provider", () => {
       await page.reload();
       const again = await contentFrame(page, artifact.id, 1);
       await expect(again.locator("#status")).toHaveText("ready");
-      await ask(page, again, "second");
+      await again.locator("#prompt").fill("second");
+      await again.locator("#ask").click();
       await expect(again.locator("#note")).toHaveText("done");
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      // Revoked, the next view asks again.
+      const res = await fetch(`${d.base}/api/artifacts/${artifact.id}/sample-grant`, { method: "DELETE", headers: { authorization: `Bearer ${d.token}` } });
+      expect(res.status).toBe(200);
+      await page.reload();
+      const third = await contentFrame(page, artifact.id, 1);
+      await expect(third.locator("#status")).toHaveText("ready");
+      await ask(page, third, "third");
+      await expect(third.locator("#note")).toHaveText("done");
     });
 
     test(`${mode}: a declined viewer gets not_granted without asking again`, async ({ page }) => {

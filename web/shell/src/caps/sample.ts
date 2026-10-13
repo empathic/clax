@@ -1,6 +1,8 @@
 // The `sample` capability's shell side, in the owner's browser only (the
-// host offers `sample` only with the token): consent before the first call of
-// the view (Grants: one dialog, an allow that is never stored), the call over
+// host offers `sample` only with the token): consent once per app, kept by the
+// daemon until the owner revokes it (`/api/artifacts/<aid>/sample-grant`): the
+// first call of a view reads the grant, and asks (Grants: one dialog) only
+// when there is none; Allow makes the grant. Then the call over
 // `POST /api/artifacts/<aid>/sample` with the bearer token, each SSE frame
 // relayed to the page as `clax:event {ns: "sample", topic: "frame", data:
 // {call, event, data}}`, cancellation, page tool results, and the top bar's
@@ -39,8 +41,29 @@ export const sampleHandler: HandlerFactory = (env, grants) => {
   const frame = (call: string, event: string, data: unknown) =>
     env.post({ type: "clax:event", ns: "sample", topic: "frame", data: { call, event, data } });
 
+  let consenting: Promise<void> | null = null;
+  const grantUrl = `/api/artifacts/${env.aid}/sample-grant`;
+
+  /** The daemon's grant when there is one, else the owner's answer; Allow is
+   * saved as the grant. A grant that cannot be saved leaves the view
+   * asking again on its next call. */
+  async function consent(): Promise<void> {
+    const kept = await fetch(grantUrl, { headers: auth }).then(r => (r.ok ? r.json() : null), () => null) as { granted?: unknown } | null;
+    if (kept?.granted === true) { grants.allow("sample"); return; }
+    await grants.request(["sample"]);
+    if (grants.state("sample") !== "granted") return;
+    const res = await fetch(grantUrl, { method: "PUT", headers: auth }).catch(() => null);
+    if (!res?.ok) {
+      grants.forget("sample");
+      throw new CapError("upstream_error", "Clax could not save the permission; try again");
+    }
+  }
+
   async function run(call: string, req: unknown): Promise<null> {
-    if (grants.state("sample") === "prompt") await grants.request(["sample"]);
+    if (grants.state("sample") === "prompt") {
+      consenting ??= consent().finally(() => { consenting = null; });
+      await consenting;
+    }
     if (cancelled.has(call)) { cancelled.delete(call); return null; }
     if (grants.state("sample") !== "granted") throw new CapError("not_granted", "the viewer has not allowed this page to use Claude");
     const ctl = new AbortController();
