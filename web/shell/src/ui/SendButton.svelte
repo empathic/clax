@@ -4,13 +4,16 @@
   // A Send that names its agent (spec §10). The caret, shown when more than
   // one agent is live or the one live agent is another person's, opens the
   // menu (`SendMenu`, loaded on first open) that picks another; the choice
-  // is remembered. `me` is this viewer's public ID (`undefined`: unknown,
-  // the owner's), `firsts` the thread's `approves_first`. `onSend` hears
-  // the activation, so the caller can guard it (`guardedAction`).
+  // is remembered. With no target while agents are live (only other
+  // people's: spec 2026-10-08 §10), the button opens the menu too: there is
+  // no one-press send to another person's agent. `me` is this viewer's
+  // public ID (`undefined`: unknown, the owner's); the menu asks who
+  // approves first for `threads` of `aid`. `onSend` hears the activation,
+  // so the caller can guard it (`guardedAction`).
   import type { AgentView } from "../view/working-model";
 
-  let { label, agents, names, target, me, firsts = [], disabled = false, onSend, onChoose }: {
-    label: string; agents: AgentView[]; names?: Map<string, string>; target: string | null; me?: string | null; firsts?: (string | null)[]; disabled?: boolean; onSend(e: Event): void; onChoose(h: string): void;
+  let { label, agents, names, target, me, aid, threads, disabled = false, onSend, onChoose }: {
+    label: string; agents: AgentView[]; names?: Map<string, string>; target: string | null; me?: string | null; aid?: string; threads?: string[]; disabled?: boolean; onSend(e: Event): void; onChoose(h: string): void;
   } = $props();
   let open = $state(false);
   let root: HTMLElement | undefined = $state();
@@ -23,12 +26,12 @@
 <svelte:window onpointerdown={outside} />
 
 <span class="send" bind:this={root}>
-  <button type="button" class="primary" {disabled} onclick={onSend}>{label}</button>
+  <button type="button" class="primary" {disabled} aria-haspopup={target === null && live.length ? "menu" : undefined} onclick={e => { if (target === null && live.length) open = !open; else onSend(e); }}>{label}</button>
   {#if live.length > 1 || others}
     <button type="button" class="primary caret" aria-label="Choose the agent" aria-haspopup="menu" aria-expanded={open} onclick={() => { open = !open; }}>▾</button>
     {#if open}
       {#await import("./SendMenu.svelte") then { default: SendMenu }}
-        <SendMenu {agents} {names} {me} {firsts} {target} {onChoose} onClose={() => { open = false; }} />
+        <SendMenu {agents} {names} {me} {aid} {threads} {target} {onChoose} onClose={() => { open = false; }} />
       {/await}
     {/if}
   {/if}

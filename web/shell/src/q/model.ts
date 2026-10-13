@@ -64,10 +64,12 @@ export function previewOf(s: QuestionSpec, focused: string | null, a: Draft[numb
   return s.options.find(o => o.label === label)?.preview ?? "";
 }
 
-/** An agent's name: its harness, with the first four hex digits of its
- * handle when another agent of the same harness is among `others`. */
+/** An agent's name: its agent name, else its harness, with the first four
+ * hex digits of its handle when another agent of the same harness is
+ * among `others`. */
 export function agentLabel(agent: QAgent | null, others: (QAgent | null)[]): string {
   if (!agent) return "an agent";
+  if (agent.name) return agent.name;
   const twin = others.some(o => o && o.harness === agent.harness && o.handle !== agent.handle);
   return twin ? `${agent.harness} ${agent.handle.replace(/^a_/, "").slice(0, 4)}` : agent.harness;
 }

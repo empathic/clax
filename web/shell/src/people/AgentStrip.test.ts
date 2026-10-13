@@ -68,4 +68,13 @@ describe("AgentStrip", () => {
     expect(m.root.querySelector("img")).toBeNull();
     expect(chips(m.root)[0].textContent).toContain(HOSTILE);
   });
+
+  it("keeps a chip that clears the filter when the filtered agent has left the strip", () => {
+    const onPick = vi.fn();
+    const m = mount(AgentStrip, { agents: [] as StripAgent[], now, selected: "a_gone" as string | null, onPick });
+    const c = chips(m.root);
+    expect(c.map(x => [x.textContent!.replace(/\s+/g, " ").trim(), x.getAttribute("aria-pressed")])).toEqual([["This agent · clear the filter", "true"]]);
+    click(c[0]);
+    expect(onPick).toHaveBeenLastCalledWith(null);
+  });
 });

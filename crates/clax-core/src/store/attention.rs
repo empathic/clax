@@ -27,7 +27,9 @@ pub struct AgentView {
 }
 /// The person an agent works for: `owner` for the owner's agents, whose
 /// `public_id` is the owner's (null before the owner exists) and whose
-/// `name` is "The owner" until they choose one.
+/// `name` is "The owner" until they choose one. `name` is the stored
+/// display name, for browsers; agent channels get it through
+/// [`crate::feedback::display_name`].
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct AgentPerson {
     pub public_id: Option<String>,
@@ -436,7 +438,17 @@ pub(crate) fn agent_person(c: &Connection, pid: Option<&str>) -> Result<AgentPer
             .as_ref()
             .map(|r| r.0.clone())
             .or_else(|| pid.map(str::to_string)),
-        name: crate::feedback::person_name(raw, owner),
+        name: browser_name(raw, owner),
         owner,
     })
+}
+
+/// A person's name as browsers show it (rendered as text): their display
+/// name as stored, or "The owner" (the owner without one) or "Viewer".
+/// Agent payloads take [`crate::feedback::display_name`] of it.
+fn browser_name(raw: Option<&str>, owner: bool) -> String {
+    match raw.filter(|r| !r.trim().is_empty()) {
+        Some(r) => r.to_string(),
+        None => crate::feedback::person_name(None, owner),
+    }
 }

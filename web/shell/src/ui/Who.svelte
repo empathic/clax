@@ -13,6 +13,7 @@
   // Not needed for the first paint: the artifact entry loads it after (`more-menu.svelte.ts`).
   import type { ArtifactController, Loaded, ViewState } from "../view/artifact-controller";
   import { presenceMap, roster } from "../view/presence-model";
+  import { withPeople } from "../view/agent-display";
   import { agentNames, summary } from "../view/working-model";
   import Roster from "./Roster.svelte";
   import { ticker } from "./ticker.svelte";
@@ -28,7 +29,8 @@
   const tick = ticker(() => p.s.working.length > 0, () => undefined);
   // The agents as last refetched (they join and end as the stream says), the people as loaded.
   const parts = $derived({ people: p.s.data.artifact.participants?.people ?? [], agents: p.s.agents });
-  const names = $derived(agentNames(p.s.working, parts.agents));
+  // Agents by name, each with its person when another person's agents are among them.
+  const names = $derived(withPeople(agentNames(p.s.working, parts.agents), parts.agents, p.s.me?.public_id));
   const busy = $derived(new Set(p.s.working.map(w => w.agent)));
   const sum = $derived(summary({
     working: p.s.working, names, mine: new Set(p.s.attention?.open_in ?? []), open: p.open, now: tick.now,
