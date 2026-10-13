@@ -252,18 +252,18 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
     }
   });
 
-  it("loads nothing of the inbox for a browser with none, after one refused look", async () => {
+  it("loads nothing of the inbox, and asks nothing of it, for a browser with none", async () => {
     FakeWorker.all = [];
     vi.stubGlobal("SharedWorker", FakeWorker);
     // No token, and the inbox refused: neither the owner's browser nor a connected person's (a LAN viewer).
     const calls = stubApi(403, "ok", 403);
     const root = await mountGallery();
     await workerWith("gallery");
-    await waitFor(() => calls.some(c => c.url === "/api/inbox?limit=1"), "the inbox look");
+    await waitFor(() => calls.some(c => c.url === "/api/viewers/me"), "the viewer lookup");
     await new Promise(r => setTimeout(r, 50));
     expect(root.querySelector(".inbox-sum, .inbox-link")).toBeNull();
     expect(FakeWorker.all.some(w => w.topics.includes("inbox"))).toBe(false);
-    expect(calls.filter(c => /^\/api\/(inbox|questions)/.test(c.url)).map(c => c.url)).toEqual(["/api/inbox?limit=1"]);
+    expect(calls.some(c => /^\/api\/(inbox|questions)/.test(c.url))).toBe(false);
   });
 
   it("shows no inbox at /inbox to a browser with none, and fetches nothing of it", async () => {
@@ -274,7 +274,7 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
       await waitFor(() => root.querySelector("main .empty"), "the note");
       expect(root.querySelector("main .empty")!.textContent).toContain("This browser has no inbox");
       expect(root.querySelector(".inbox, .inbox-link")).toBeNull();
-      expect(calls.filter(c => /^\/api\/(inbox|questions|artifacts)/.test(c.url)).map(c => c.url)).toEqual(["/api/inbox?limit=1"]);
+      expect(calls.some(c => /^\/api\/(inbox|questions|artifacts)/.test(c.url))).toBe(false);
     } finally {
       history.replaceState(null, "", "/");
     }
@@ -447,7 +447,8 @@ describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
     (await workerWith("inbox", "questions")).live(["inbox", "questions"]);
     await waitFor(() => root.querySelector(".gbar .inbox-link"), "the Inbox link");
     expect(root.querySelector("main .empty")).toBeNull();
-    expect(calls.some(c => c.url === "/api/inbox?limit=1")).toBe(true);
+    // Its viewer said so: no look at the inbox first.
+    expect(calls.some(c => c.url === "/api/inbox?limit=1")).toBe(false);
   });
 
   it("is the People page at /people: no artifacts are fetched, and the page follows the people and agents topics", async () => {

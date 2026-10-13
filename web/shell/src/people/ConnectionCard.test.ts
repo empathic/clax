@@ -82,6 +82,24 @@ describe("ConnectionCard", () => {
     expect(button(m.root, "Approve…")).toBeNull();
   });
 
+  it("closes the form with Escape, focus back on Approve…, and holds Approve… while a Deny is in flight", async () => {
+    let answer: (r: Response) => void = () => {};
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(r => { answer = r; })));
+    const m = mount(ConnectionCard, { item: item("connection"), now });
+    click(button(m.root, "Approve…")!);
+    await settle();
+    const code = m.root.querySelector<HTMLInputElement>('input[name="code"]')!;
+    flush(() => { code.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    await settle();
+    expect(m.root.querySelector("form")).toBeNull();
+    expect(document.activeElement).toBe(button(m.root, "Approve…"));
+    click(button(m.root, "Deny")!);
+    expect(button(m.root, "Approve…")!.disabled).toBe(true);
+    answer(new Response(JSON.stringify({ grant: grant({ id: "g_abc", status: "denied", via: "request", person: null }) })));
+    await settle();
+    expect(m.root.querySelector(".outcome")!.textContent).toContain("Denied");
+  });
+
   it("keeps the machine's name as text", () => {
     const req = item("connection", { connection: { id: "g", status: "pending", via: "request", client: { name: `${HOSTILE}box`, key: null, peer_ip: "10.0.0.2" }, person: null } });
     const m = mount(ConnectionCard, { item: req, now });

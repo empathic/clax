@@ -213,15 +213,58 @@ describe("InboxPage", () => {
     expect(unread.querySelector('.irow[data-item="IE"] .released a')!.textContent).toBe("Quarterly Review");
   });
 
-  it("keeps an approval's card where it is once decided, saying so", async () => {
+  it("keeps an approval's card where it is once decided, through a refetch, once, with the counts moved", async () => {
     const A = item("approval", { id: "IA", seq: 6 });
-    stubRoutes({ "": [A, R] });
+    const lists: Record<string, InboxItem[]> = { "": [A, R] };
+    stubRoutes(lists);
     const inbox = new InboxFeed();
     const m = mount(InboxPage, { inbox, questions: new QuestionFeed(), go: vi.fn(), now });
     await settle();
-    (inbox as unknown as { tell(c: unknown): void }).tell({ item: { ...A, read: true, approval: approvalCard({ status: "approved", scope: "thread" }) } });
+    expect(m.root.querySelector("#inbox-unread-h")!.textContent).toBe("Unread2");
+    const decided = { ...A, read: true, approval: approvalCard({ status: "approved", scope: "thread" }) };
+    (inbox as unknown as { tell(c: unknown): void }).tell({ item: decided });
     await settle();
     expect(m.root.querySelector(".acard .outcome")!.textContent).toContain("Allowed in this thread");
+    // Read now: Unread counts one fewer.
+    expect(m.root.querySelector("#inbox-unread-h")!.textContent).toBe("Unread1");
+    // Fetched again, the daemon no longer lists it as unread: the card stays.
+    lists[""] = [R];
+    (inbox as unknown as { tell(c: unknown): void }).tell({ refetch: true });
+    await new Promise(r => setTimeout(r, 300));
+    await settle();
+    expect(m.root.querySelectorAll(".acard")).toHaveLength(1);
+    expect(m.root.querySelector(".acard .outcome")!.textContent).toContain("Allowed in this thread");
+  });
+
+  it("shows a decided card once when the read section, which lists it too, is open", async () => {
+    const A = item("approval", { id: "IA", seq: 6 });
+    const decided = { ...A, read: true, approval: approvalCard({ status: "declined" }) };
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      calls.push(url);
+      const ok = (b: unknown) => new Response(JSON.stringify(b));
+      if (url === "/api/artifacts") return ok({ artifacts: [] });
+      const u = new URL(url, "http://x");
+      if (u.searchParams.get("read") === "unread") return ok({ items: [A], next_cursor: null, unread: 1, total: 1 });
+      return ok({ items: [decided], next_cursor: null, unread: 0, total: 1 });
+    }));
+    const inbox = new InboxFeed();
+    const m = mount(InboxPage, { inbox, questions: new QuestionFeed(), go: vi.fn(), now });
+    await settle();
+    (inbox as unknown as { tell(c: unknown): void }).tell({ item: decided });
+    await settle();
+    click(m.root.querySelector(".fold")!);
+    await settle();
+    expect(m.root.querySelectorAll('.acard[data-approval="01J9R0000000000000000000AA"]')).toHaveLength(1);
+  });
+
+  it("offers the Connections filter to the owner alone", async () => {
+    stubRoutes();
+    const { m } = page();
+    await settle();
+    const kinds = () => [...m.root.querySelectorAll(".kind")].map(k => k.textContent);
+    expect(kinds()).not.toContain("Connections");
+    expect(kinds()).toEqual(expect.arrayContaining(["Approvals", "Ended"]));
   });
 
   it("goes to the approval's card for `?approval=`, focused", async () => {
