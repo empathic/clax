@@ -587,6 +587,27 @@ MCP servers stay out of it. The release build (`just app-macos`) is
 sandboxed and offers only the Claude API with a key, kept in the login
 keychain.
 
+**Signing the Mac app, so the keychain stops asking.** By default the
+macOS app and its embedded `clax` are signed ad hoc: each build is a new
+signature, the keychain item trusts only the build that saved it, and
+macOS asks "clax_app wants to use your confidential information stored in
+'flutter_secure_storage_service'" after every rebuild (once a launch: the
+app reads the key once a process). With a free Apple Development
+certificate (Xcode → Settings → Accounts → add your Apple Account →
+Manage Certificates → + Apple Development), sign with it instead:
+
+```
+security find-certificate -c "Apple Development" -p | openssl x509 -noout -subject   # OU= is your team ID
+sed 's/XXXXXXXXXX/<team ID>/' apps/clax_app/macos/Signing.xcconfig.example > apps/clax_app/macos/Signing.xcconfig
+just app-macos
+```
+
+`apps/clax_app/macos/Signing.xcconfig` is gitignored; without it builds
+stay ad hoc. On the first launch of a signed build the keychain asks once
+more, since the saved item still lists only the ad-hoc build: click Always
+Allow (or save the key again in Settings). After that, rebuilds keep the
+same signature and do not ask.
+
 The app keeps its own records in its application support directory
 (inside `~/Library/Containers/dev.empathic.clax` for the sandboxed macOS
 build): `settings.json`, `timings.jsonl` (say → usable and long-press →
