@@ -112,6 +112,13 @@ String relativeTime(String iso, DateTime now) {
 /// - **Resolve** / **Reopen** as the owner.
 /// - **Versions.** "Changed in vN" for each version that addressed the
 ///   thread calls [onPreview].
+/// - **Landing.** Once the thread is first read, the page scrolls to
+///   [focusComment] (or, with [focusLatestReply], to the newest comment
+///   by Clax) and highlights it briefly; without either, or when it is not
+///   there, it lands at the newest comment, at the bottom.
+/// - **A run's threads.** With [run] of two or more thread IDs (the
+///   threads one change answered, this one among them), a bar reads
+///   "1 of 3" with Previous and Next, which call [onRun] with that thread.
 ///
 /// The thread is read again on every `thread`, `comment`,
 /// `thread_resolved`, `thread_deleted`, `feedback_state` and `version`
@@ -128,7 +135,28 @@ class ThreadDetail extends StatefulWidget {
     required this.onRetry,
     this.label,
     this.now = DateTime.now,
+    this.focusComment,
+    this.focusLatestReply = false,
+    this.run = const [],
+    this.onRun,
   });
+
+  /// The comment to land on and highlight.
+  final String? focusComment;
+
+  /// Whether to land on the newest comment by Clax when [focusComment] is
+  /// null or not found.
+  final bool focusLatestReply;
+
+  /// The thread IDs of the change this thread came from, in order; the
+  /// switcher shows for two or more.
+  final List<String> run;
+
+  /// Opens thread `tid` of [run] in this page's place.
+  final ValueChanged<String>? onRun;
+
+  /// How long a landed-on comment stays highlighted before it fades.
+  static const glowFor = Duration(milliseconds: 1400);
 
   final ClaxApi api;
   final String aid;
@@ -179,6 +207,13 @@ class _ThreadDetailState extends State<ThreadDetail> {
   /// The owner's public ID, once read; null before the owner exists.
   String? _owner;
 
+  // Landing.
+  final _scroll = ScrollController();
+  var _landed = false;
+  String? _highlighted;
+  var _glow = false;
+  Timer? _fade;
+
   // Dictation.
   StreamSubscription<VoiceResult>? _listen;
   var _listening = false;
@@ -223,6 +258,8 @@ class _ThreadDetailState extends State<ThreadDetail> {
     }
     _reply.dispose();
     _focus.dispose();
+    _scroll.dispose();
+    _fade?.cancel();
     super.dispose();
   }
 
@@ -268,7 +305,58 @@ class _ThreadDetailState extends State<ThreadDetail> {
     final retried = _retriedAt;
     if (retried != null && t.comments.length != retried) _retriedAt = null;
     _thread = t;
+    if (!_landed) {
+      _landed = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _land(t));
+    }
   }
+
+  /// The comment to land on in [t], if any.
+  String? _target(ThreadView t) {
+    final ids = {for (final c in t.comments) c.id};
+    if (widget.focusComment case final id? when ids.contains(id)) return id;
+    if (!widget.focusLatestReply) return null;
+    return t.comments.reversed.where((c) => c.byAgent).firstOrNull?.id;
+  }
+
+  /// Scrolls to the newest comment, then to the focused one and lights it.
+  void _land(ThreadView t) {
+    if (!mounted) return;
+    _toBottom();
+    final target = _target(t);
+    if (target == null) return;
+    setState(() {
+      _highlighted = target;
+      _glow = true;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final ctx = _commentKeys[target]?.currentContext;
+      if (ctx != null) {
+        unawaited(
+          Scrollable.ensureVisible(
+            ctx,
+            alignment: 0.2,
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeOutCubic,
+          ),
+        );
+      }
+      _fade = Timer(ThreadDetail.glowFor, () {
+        if (mounted) setState(() => _glow = false);
+      });
+    });
+  }
+
+  void _toBottom() {
+    if (_scroll.hasClients) _scroll.jumpTo(_scroll.position.maxScrollExtent);
+  }
+
+  bool get _atBottom =>
+      _scroll.hasClients &&
+      _scroll.offset >= _scroll.position.maxScrollExtent - 1;
+
+  final _commentKeys = <String, GlobalKey>{};
 
   void _fetchClip() {
     final t = _thread;
@@ -277,7 +365,14 @@ class _ThreadDetailState extends State<ThreadDetail> {
     unawaited(() async {
       try {
         final png = await widget.api.clip(widget.aid, widget.tid);
-        if (mounted && png != null) setState(() => _clip = png);
+        if (!mounted || png == null) return;
+        // The clip goes above the comments: a page at the newest comment
+        // stays there.
+        final bottom = _atBottom && _highlighted == null;
+        setState(() => _clip = png);
+        if (bottom) {
+          WidgetsBinding.instance.addPostFrameCallback((_) => _toBottom());
+        }
       } on ClaxApiError {
         // The page goes without its clip.
       }
@@ -402,9 +497,14 @@ class _ThreadDetailState extends State<ThreadDetail> {
   @override
   Widget build(BuildContext context) {
     final t = _thread;
+    final run = widget.run;
+    final at = run.indexOf(widget.tid);
     return Scaffold(
       appBar: AppBar(
         title: const Text('Thread'),
+        bottom: run.length > 1 && at >= 0 && widget.onRun != null
+            ? _runBar(context, run, at)
+            : null,
         actions: [
           if (t != null && t.isOpen)
             TextButton(
@@ -437,6 +537,44 @@ class _ThreadDetailState extends State<ThreadDetail> {
     );
   }
 
+  PreferredSizeWidget _runBar(BuildContext context, List<String> run, int at) {
+    final theme = Theme.of(context);
+    return PreferredSize(
+      preferredSize: const Size.fromHeight(44),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 8, 4),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                '${at + 1} of ${run.length} threads in this change',
+                key: const ValueKey('thread-run-place'),
+                style: theme.textTheme.labelLarge?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+            IconButton(
+              key: const ValueKey('thread-run-previous'),
+              tooltip: 'Previous thread',
+              onPressed: at > 0 ? () => widget.onRun!(run[at - 1]) : null,
+              icon: const Icon(Icons.chevron_left),
+            ),
+            TextButton.icon(
+              key: const ValueKey('thread-run-next'),
+              onPressed: at < run.length - 1
+                  ? () => widget.onRun!(run[at + 1])
+                  : null,
+              iconAlignment: IconAlignment.end,
+              icon: const Icon(Icons.chevron_right),
+              label: const Text('Next'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _body(BuildContext context, ThreadView? t) {
     final theme = Theme.of(context);
     if (_gone) {
@@ -465,43 +603,52 @@ class _ThreadDetailState extends State<ThreadDetail> {
     return Column(
       children: [
         Expanded(
-          child: ListView(
+          // Laid out whole (a thread is short), so landing knows where its
+          // end and each comment are.
+          child: SingleChildScrollView(
             key: const ValueKey('thread-list'),
+            controller: _scroll,
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-            children: [
-              Text(_sentence(label), style: theme.textTheme.titleLarge),
-              const SizedBox(height: 2),
-              Text(
-                'On version ${t.versionN}',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(_sentence(label), style: theme.textTheme.titleLarge),
+                const SizedBox(height: 2),
+                Text(
+                  'On version ${t.versionN}',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 12),
-              _statusCard(context, t),
-              if (_clip != null) ...[
                 const SizedBox(height: 12),
-                _clipView(context, _clip!),
+                _statusCard(context, t),
+                if (_clip != null) ...[
+                  const SizedBox(height: 12),
+                  _clipView(context, _clip!),
+                ],
+                if (t.addressedIn.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final n in t.addressedIn)
+                        ActionChip(
+                          key: ValueKey('changed-in-$n'),
+                          avatar: const Icon(
+                            Icons.visibility_outlined,
+                            size: 18,
+                          ),
+                          label: Text('Changed in v$n'),
+                          onPressed: () => widget.onPreview(n),
+                        ),
+                    ],
+                  ),
+                ],
+                const SizedBox(height: 16),
+                for (final c in t.comments) _comment(context, c, now),
               ],
-              if (t.addressedIn.isNotEmpty) ...[
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    for (final n in t.addressedIn)
-                      ActionChip(
-                        key: ValueKey('changed-in-$n'),
-                        avatar: const Icon(Icons.visibility_outlined, size: 18),
-                        label: Text('Changed in v$n'),
-                        onPressed: () => widget.onPreview(n),
-                      ),
-                  ],
-                ),
-              ],
-              const SizedBox(height: 16),
-              for (final c in t.comments) _comment(context, c, now),
-            ],
+            ),
           ),
         ),
         _composer(context),
@@ -707,10 +854,21 @@ class _ThreadDetailState extends State<ThreadDetail> {
         ? (failed ? scheme.onErrorContainer : scheme.onSecondaryContainer)
         : scheme.onSurface;
     final time = relativeTime(c.createdAt, now);
+    final lit = _glow && _highlighted == c.id;
     return MergeSemantics(
       key: ValueKey('comment-${agent ? 'agent' : 'person'}-${c.id}'),
-      child: Padding(
-        padding: const EdgeInsets.only(bottom: 14),
+      child: AnimatedContainer(
+        key: _commentKeys.putIfAbsent(c.id, GlobalKey.new),
+        duration: const Duration(milliseconds: 700),
+        curve: Curves.easeOut,
+        margin: const EdgeInsets.only(bottom: 2),
+        padding: const EdgeInsets.all(6),
+        decoration: BoxDecoration(
+          color: lit
+              ? scheme.primaryContainer.withValues(alpha: 0.7)
+              : scheme.primaryContainer.withValues(alpha: 0),
+          borderRadius: BorderRadius.circular(16),
+        ),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
