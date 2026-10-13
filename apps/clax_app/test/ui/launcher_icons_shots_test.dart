@@ -3,11 +3,13 @@
 // look at. Off by default; run with
 //   CLAX_X4_SHOTS=1 flutter test --update-goldens test/ui/launcher_icons_shots_test.dart
 // and look at target/flutter-app/x4/*.png.
+import 'dart:async';
 import 'dart:io';
 
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:clax_app/ui/app_icon.dart';
 import 'package:clax_app/ui/launcher.dart';
+import 'package:clax_app/ui/make_service.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -57,6 +59,16 @@ void main() {
         tester.view.physicalSize = Size(width * 2, height * 2);
         tester.view.devicePixelRatio = 2;
         addTearDown(tester.view.reset);
+        // Shadows as on a device: flutter_test turns them off by default.
+        debugDisableShadows = false;
+        final makes = MakeService(
+          (r, cancelled, stage) => Completer<String>().future,
+          maxRunning: 1,
+        );
+        addTearDown(makes.dispose);
+        makes.lost('A water reminder every two hours');
+        makes.add('A reading log');
+        makes.start('A packing list for trips');
         var t = 0;
         final api = FakeClaxApi(
           clock: () => '2026-10-12T00:00:${(t++).toString().padLeft(2, '0')}Z',
@@ -82,14 +94,20 @@ void main() {
               make: (r, cancelled, stage) => throw StateError('unused'),
               voice: FakeVoice.unsupported('No speech here'),
               icons: AppIcons(api),
+              makes: makes,
             ),
           ),
         );
-        await tester.pumpAndSettle();
+        // The making ring spins, so pump a while rather than settle.
+        for (var i = 0; i < 10; i++) {
+          await tester.pump(const Duration(milliseconds: 100));
+        }
         await expectLater(
           find.byType(MaterialApp),
           matchesGoldenFile('$_out/launcher-$form-$scheme.png'),
         );
+        // Back before the test ends, which checks it was left as found.
+        debugDisableShadows = true;
       });
     }
   }
