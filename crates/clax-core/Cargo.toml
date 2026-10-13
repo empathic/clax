@@ -16,7 +16,7 @@ icu_properties = "2"
 unicode-security = "0.1"
 chrono.workspace = true
 mime_guess.workspace = true
-nix = { workspace = true, features = ["fs", "feature"] }
+nix = { workspace = true, features = ["fs"] }
 rand.workspace = true
 ring.workspace = true
 sha2 = "0.11"
@@ -33,9 +33,9 @@ ulid.workspace = true
 url.workspace = true
 
 # A process's start time, for telling a parent-PID credential file's process
-# from a later one given its PID (spec 2026-10-08 §6.8). Linux reads /proc.
-[target.'cfg(target_os = "macos")'.dependencies]
-libproc = "0.14"
+# from a later one given its PID (spec 2026-10-08 §6.8).
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 
 [dev-dependencies]
 tempfile.workspace = true
