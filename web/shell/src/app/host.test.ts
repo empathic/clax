@@ -1451,6 +1451,9 @@ describe("app mode's device link", { timeout: MOUNT_TIMEOUT_MS }, () => {
     host.init({ nonce: NONCE });
     const [first] = ofType("device");
     expect(first).toEqual({ type: "device", id: expect.any(String), cap: "location", method: "current", args: [] });
+    // A random prefix per load: an earlier load's answer cannot resolve this call.
+    expect(first.id).toMatch(/^[0-9a-f]{12}-1$/);
+    host.deviceResult({ id: "d1", ok: true, value: "stale" });
     const later = deviceLink.call!("share", "text", ["hi"]);
     const second = ofType("device")[1];
     expect(second).toMatchObject({ cap: "share", method: "text", args: ["hi"] });

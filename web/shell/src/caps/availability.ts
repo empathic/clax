@@ -2,7 +2,7 @@
 // spec §9): declared ones, `permissions` and `user` always (user.d.ts: its
 // universal members need no declaration), `assets` only to the owner shell;
 // `room` when declared; `sample` to the owner shell, when declared and the
-// daemon has a provider; the device capabilities (`notify`, `share`, `files`,
+// daemon has a provider; the device capabilities (`notify`, `share`, `file`,
 // `camera`, `location`) when declared and the Clax app hosts the view
 // (device-link.ts); `net` to the owner shell when declared; claude.ai's
 // `files` and `mcp` never.
@@ -29,7 +29,7 @@ export function isAvailable(name: string, declared: Declared, owner: boolean, se
     case "assets": return owner && declares(name, declared);
     // The owner's browser only: the key is the owner's, and a LAN viewer cannot spend it.
     case "sample": return owner && declares(name, declared) && served.sample === true;
-    case "notify": case "share": case "files": case "camera": case "location": return declares(name, declared) && served.device === true;
+    case "notify": case "share": case "file": case "camera": case "location": return declares(name, declared) && served.device === true;
     // The owner's views only: the fetch route takes the token (net.ts).
     case "net": return owner && declares(name, declared);
     default: return false;

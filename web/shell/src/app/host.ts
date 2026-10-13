@@ -78,7 +78,7 @@
 //   browser, after the first paint: until it has told a change, no
 //   `questions` message is posted. The inspect view has no sheet.
 // - Device capabilities (`caps/device-link.ts`): outside the inspect view the
-//   host links itself as the way to the app for `notify`, `share`, `files`,
+//   host links itself as the way to the app for `notify`, `share`, `file`,
 //   `camera` and `location`. Each call the page makes is posted as `device
 //   {id, cap, method, args}` (calls made before `init` wait for it), and the
 //   app answers with `deviceResult({id, ok, value})` or `deviceResult({id,
@@ -324,9 +324,12 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   // and those made before `init`, which posts them.
   const devicePending = new Map<string, { resolve(v: unknown): void; reject(e: CapError): void }>();
   const deviceQueue: DeviceCall[] = [];
+  // Request IDs carry a random prefix per load: an answer the app makes to
+  // a call of an earlier load of this document resolves nothing here.
+  const devicePrefix = Array.from(crypto.getRandomValues(new Uint8Array(6)), b => b.toString(16).padStart(2, "0")).join("");
   let deviceSeq = 0;
   const deviceCall = (cap: DeviceCall["cap"], method: string, args: unknown[]) => new Promise<unknown>((resolve, reject) => {
-    const c: DeviceCall = { id: `d${++deviceSeq}`, cap, method, args };
+    const c: DeviceCall = { id: `${devicePrefix}-${++deviceSeq}`, cap, method, args };
     devicePending.set(c.id, { resolve, reject });
     if (nonce === null) deviceQueue.push(c);
     else post({ type: "device", ...c });
