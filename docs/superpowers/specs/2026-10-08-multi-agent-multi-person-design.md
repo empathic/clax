@@ -83,8 +83,8 @@ Owner's statements (2026-10-08, verbatim, in order):
 O1–O5 are the owner's decisions of 2026-10-08; O6–O9 are the owner's
 answers to the first draft's open questions, and R1–R4 the coordinator's
 rulings where the owner deferred to the draft's recommendations, the same
-day. All are binding. M1–M27 are this design's decisions, each with its
-reason.
+day. All are binding. O10 is the owner's decision of 2026-10-12. M1–M28
+are this design's decisions, each with its reason.
 
 | # | Decision | Reason |
 |---|---|---|
@@ -97,6 +97,7 @@ reason.
 | O7 | No TLS this round; document "use a trusted LAN"; a later design may add a self-signed certificate whose fingerprint the invite carries. | Owner answer (Q3). |
 | O8 | An untargeted send with several of the owner's agents watching: the first to take it owns it. | Owner answer (Q5). |
 | O9 | Other people's artifact titles in an agent's `list` are withheld until approved. | Owner answer (Q8). |
+| O10 | "Each agent should get its own credential": narrowing and elevation bind exactly one agent session, which a sibling agent on the same machine cannot act as, and an agent narrowed to read-only cannot regain the machine's rights by naming no session (§6.8). The machine, meaning its OS user, stays the hard boundary, and the spec and People say so. | Owner decision (2026-10-12), after a review showed a sibling naming an elevated session, and a narrowed agent naming none, acting past one agent's rights. |
 | R1 | A thread approval covers the author's later replies in that thread; the approval card says so. | Ruling (Q2). |
 | R2 | Only the agent's own person approves content for it; the owner cannot approve on another person's behalf. | Ruling (Q4). |
 | R3 | Cross-person agent name collisions get a suffix; the person is shown beside the name. | Ruling (Q6). |
@@ -127,6 +128,7 @@ reason.
 | M24 | **Handoff is a tool** (`comments_handoff`); taken threads refuse other agents' replies and resolves (409 `thread_taken`). | Explicit, and two agents never answer one thread. |
 | M25 | **Session end cleans up** and makes one `ended` inbox note when the session owned threads or had open questions or approval requests. This reads O4's "one inbox note" as one note per ended session that had something to clean up; a session that ends with nothing open makes none. | O4, interpreted so idle sessions make no noise. |
 | M26 | **Another machine is a remote, not a second daemon.** `clax connect` writes `<home>/remote.json` and the key; while it exists, the shim, hooks, CLI and Pi extension talk to that daemon (signed) instead of starting one. | One switch in the client keeps every harness working unchanged. |
+| M28 | **Each agent session proves itself with its own secret** (O10, §6.8). A grant's new session gets a random secret, answered once, kept only as a hash; every grant request naming a session carries that session's secret (`X-Clax-Session-Secret`), else 401 `invalid_session_proof`; a session's end clears it. A grant request naming no session gets the machine's rights narrowed by every live narrowing of its sessions. Hooks and the CLI find the secret in a 0600 file named for their harness session. | The grant's key proves the machine, not the agent: without a per-agent proof any agent of the machine could name a sibling's session (listed by `GET /api/sessions`) and act with its rights. A secret beside the signature is the smallest addition: no second signature and no change to the canonical string. |
 | M27 | **Migrations 24–26** (people and grants; visibility; per-person inbox), numbered after main's 23 (the audit journal). The numbers are relative: each schema task takes the next free number on main when it is implemented, and amends this text. The `toolpath-audit` branch landed on main first and kept 23; these follow it. | Contiguous migrations; no build of an unmerged branch has run on a real home. |
 
 ## 3. User flows
@@ -255,7 +257,8 @@ invite for themselves (**Invite → Me**).
 2. **One grant per machine, agents as sub-identities (M3).** A grant per
    agent session would put an approval in the owner's inbox for every new
    terminal. Agents are named by `X-Clax-Session` inside a grant, bound to
-   it (M4).
+   it (M4), and each proves its session with a secret of its own (M28,
+   §6.8), which needs no approval.
 3. **Invites are pre-approved grants**, carried as a top-level `clax.invite`
    field of the grant request in place of interaction. GNAP has no invite.
    Redeeming binds the key presented first; a second redemption is 400
@@ -364,6 +367,9 @@ ALTER TABLE sessions ADD COLUMN elevate_json TEXT;     -- the owner's elevation 
 ALTER TABLE sessions ADD COLUMN ended_reason TEXT
     CHECK (ended_reason IN ('idle', 'exit', 'revoked', 'person'));   -- why it ended (§14)
 ALTER TABLE sessions ADD COLUMN ended_watches_json TEXT;   -- idle ends: the direct watches it held, for §6.7's restore
+-- SHA-256 hex of a grant's session's secret (§6.8); NULL for the token's
+-- sessions and once the session has ended.
+ALTER TABLE sessions ADD COLUMN secret_sha256 TEXT;
 CREATE UNIQUE INDEX sessions_live_name ON sessions(name COLLATE NOCASE)
     WHERE ended_at IS NULL AND name IS NOT NULL;
 CREATE INDEX sessions_by_grant ON sessions(grant_id, harness, parent_pid) WHERE grant_id IS NOT NULL;
@@ -533,7 +539,7 @@ gives every handler one `Caller` (M8):
 |---|---|---|
 | `Owner {browser}` | an owner browser credential (owner cookie, events cookie, extension: `browser` true), or the daemon token on a request that names no session and carries no agent-channel marker (`browser` false): the CLI used by hand outside any harness, and scripts | none: not an agent channel (§8.5) |
 | `OwnerAgent {session}` | the daemon token on a request that names a token session in its path (`/api/sessions/{id}/…`: the hooks, `clax feedback follow`) or in `X-Clax-Session` (the shim, Pi), or that carries `X-Clax-Channel: agent` (every agent-side client sends it, including `/mcp`'s internal client and the shim before its registration completes, and the CLI whenever it runs under a harness (§16: `CLAX_CHANNEL=agent`, which the plugins' wrapper exports, or a harness's shell variables); `session` none then). The marker counts only with the token | the owner |
-| `PersonAgent {person, grant, session}` | `Authorization: Clax-Grant` with a valid signature (§6.6); `session` from `X-Clax-Session`, optional (§6.7) | the person (the owner when the grant's person is the owner row) |
+| `PersonAgent {person, grant, session}` | `Authorization: Clax-Grant` with a valid signature (§6.6); `session` from `X-Clax-Session` with that session's `X-Clax-Session-Secret` (§6.8), optional (§6.7) | the person (the owner when the grant's person is the owner row) |
 | `Person {viewer}` | a `clax_viewer` cookie naming a connected, unrevoked person row | none |
 | `Viewer {viewer}` | any other `clax_viewer` cookie | none |
 | `Anonymous` | nothing | none |
@@ -694,7 +700,9 @@ of them more than once is 401 `invalid_signature`, whatever the values. So
 ```
 
 (`crates/clax-core/src/sig.rs`, `canonical_string_is_fixed`, pins this
-vector). The daemon reads these values from the request it verifies, the
+vector). `X-Clax-Session-Secret` (§6.8) is not among them: the line
+already fixes which session a request names, so changing or removing the
+secret can only turn a signed request into a refusal. The daemon reads these values from the request it verifies, the
 same request the handler then reads, before the body. `v2` is the only
 version: every signer (the CLI's remote client, the shim and hooks in
 remote mode, Pi) sends it, and the daemon accepts nothing else. Without
@@ -768,7 +776,10 @@ costs about 20 µs and verifying about 50 µs.
   by `(harness, harness_session_id)` and by `(harness, parent_pid)` are
   restricted to rows with the caller's `grant_id` (`IS NULL` for the
   token). A grant's registration makes its row with `grant_id`, and
-  `person` from the grant's viewer (NULL for the owner row).
+  `person` from the grant's viewer (NULL for the owner row). A grant's
+  registration or join that matches a live row refreshes it only when the
+  request proved that session (§6.8); else it is 401
+  `invalid_session_proof`.
 - **Join** (`POST /api/sessions/join`, every hook): the same restriction,
   for every candidate it tries (harness session ID, parent PID,
   ancestors).
@@ -783,14 +794,16 @@ costs about 20 µs and verifying about 50 µs.
   `foreign_session`. A session ID that names no session is 400
   `unknown_session` for a grant (the shim and Pi register again on it), and
   left to the handler for the token (today's answers). A grant's request
-  whose path names one of its sessions acts with that session's rights,
-  whichever of its sessions the header names. The check is in the
+  naming one of its sessions must prove it (§6.8): its path session and
+  its `X-Clax-Session` are then the same session, whose rights it acts
+  with. The check is in the
   `Agent<N>` extractor (M7), which reads the same `Path` as the handler.
 - **Remote processes:** a grant's registration keeps no `pid`: it is a
   process of another machine, which the reaper must not probe as a local
   one (§14); its `parent_pid` stays, for matching within the grant.
 - **Session-less grant requests** (the remote CLI): rights are `person ∩
-  grant.narrow`, the reader is the person, and session routes are refused
+  grant.narrow ∩` every live narrowing of the grant's sessions (§6.8),
+  the reader is the person, and session routes are refused
   (400 `no_session`). The commands that work remotely are `clax list`,
   `read`, `open`, `versions`, `db …`, `comments <artifact>` (and `clax
   comments` without an artifact, which in remote mode lists through
@@ -820,6 +833,107 @@ costs about 20 µs and verifying about 50 µs.
   machine's). The rule is the same for both, and a watch comes back only
   where the session's rights still allow watching.
 
+### 6.8 One credential per agent (O10, M28)
+
+The grant's key proves the machine. Each agent session also proves itself,
+so that narrowing and elevation (§7.4) bind exactly one agent.
+
+- **Issuing.** When a grant's registration (`POST /api/sessions`) or join
+  (`POST /api/sessions/join`) makes a session row, the daemon draws a
+  session secret: `cxs_` and 43 base64url characters (32 random bytes). It
+  answers the secret once, beside the session (`{"session": …,
+  "session_secret": "cxs_…"}`), and keeps only its SHA-256
+  (`sessions.secret_sha256`). A refresh or join of a row that already
+  exists issues nothing: the request proved the secret it holds. The
+  re-registration after an idle end (§6.7) makes a new row, so it gets a
+  new secret. `session.start` records `secret_issued: true`, never the
+  secret (§20.2). The token's sessions get none: this machine's agents act
+  with the daemon token, trusted at the owner's level (§21), and narrowing
+  them stays refused (`token_agent`, §7.4).
+- **Proving.** A grant request that names a session, in `X-Clax-Session`
+  or in its path, carries `X-Clax-Session-Secret: <secret>` of that
+  session. The daemon checks it in `Identity::caller`, after
+  `unknown_session` and `foreign_session`, comparing SHA-256 hashes in
+  constant time. A missing or repeated header, or a secret that is not the
+  session's (a sibling's, or one whose session has ended), is 401
+  `invalid_session_proof`. A path session must be the session the header
+  names. The header carries the secret itself, as `Authorization` carries
+  the access token: a LAN sniffer who reads it still cannot sign without
+  the machine's key, and the signature already fixes which session is
+  named (§6.6), so the canonical string is unchanged. An HMAC over the
+  canonical string would keep the secret off the wire, but the daemon
+  would have to hold the secret, or a value as good as it, to check one;
+  a key pair per session would cost a second signature on every request
+  and Ed25519 in every client. Neither stops what the trust limit below
+  leaves open.
+- **Matching.** Registration and join (§6.7) refresh a grant's live row
+  only for the session the request proved. A request that matches a live
+  row by harness session ID or parent PID without proving it is 401
+  `invalid_session_proof`, so a sibling cannot take over a live session by
+  registering with its harness session ID.
+- **Ending.** A session's end, whatever its reason (§14), clears
+  `secret_sha256`, so a leaked secret of an ended session proves nothing.
+  Revoking a grant ends its sessions and with them their secrets. The
+  agent side's next request naming the ended session is 401
+  `invalid_session_proof`, which the shim treats as it treats
+  `unknown_session`: it registers again, getting a new row and a new
+  secret.
+- **Rights without a session.** A grant request that names no session (the
+  remote CLI, run by a person or by an agent through its shell) gets
+
+  ```
+  person_rights ∩ grant.narrow ∩ narrow(s₁) ∩ … ∩ narrow(sₙ)
+  ```
+
+  over the grant's live sessions that carry a narrowing, and never an
+  elevation. An agent narrowed to read-only therefore cannot regain the
+  machine's rights by leaving its session out: while its narrowing lives,
+  it binds every session-less request of its machine. The alternative,
+  refusing a grant's session-less content writes while any of its sessions
+  is narrowed, is not sound: a narrowing can take reads away too (an
+  artifact left out of `locations`), which that rule would leave open. The
+  intersection covers every action with §7.2's own operator and is never
+  wider than any one agent's narrowing; its cost is that a person's own
+  remote CLI is held to their narrowest live agent, which People's machine
+  view shows.
+- **Where the agent side keeps it.** The shim keeps its session's secret
+  in memory. Hooks and the CLI run as new processes, so the agent side also
+  keeps a credential file in `<home>/remote-sessions/` (directory 0700,
+  files 0600, written whole and renamed into place) holding `{"session":
+  "<ID>", "secret": "cxs_…"}`, named `<harness>-<harness session ID>.json`;
+  a harness session ID that is not 1–128 characters of `[A-Za-z0-9._-]`,
+  or starts with `.`, is named `<harness>-h<the first 32 hex characters of
+  its SHA-256>.json`. A row with a parent PID is also named
+  `<harness>-ppid-<parent PID>.json`, for the clients that know their
+  harness process but not its session ID (Codex's shim). Whoever receives a
+  secret writes the files for every name the row has: the shim at
+  registration, the `SessionStart` hook when its join made the row, and
+  either when its proof adds a name to the row. A client looks for its
+  file by harness session ID, then by its parent's and ancestors' PIDs, in
+  the order join matches (§6.7). The shim's exit and the `SessionEnd` hook
+  remove the files. A stale file, whose session has ended, is refused, and
+  the next registration replaces it.
+- **Clients.** The shim's registration presents the secret it holds, else
+  the one in its file, else none, trying the next on
+  `invalid_session_proof`; so a shim restarted within its harness session
+  keeps its row. The `SessionStart` hook joins with its file's secret when
+  there is one, else with none; when a live row needs a proof it does not
+  have yet (the shim and the hook started together, and the other made the
+  row), it waits up to one second for the file and retries once. Every
+  other hook needs its file: a missing or unreadable file fails the hook
+  with a message naming the file, logged to `hooks.log`, and never falls
+  back to acting without a session. Pi's remote mode (Task 19) keeps the
+  secret in memory and writes the same file.
+- **The trust limit.** Every agent on a machine runs as the same OS user.
+  An agent with a shell can read the machine's key and its siblings'
+  credential files, or register a new session of its own, which starts
+  without any narrowing. Per-agent credentials stop mistakes, and stop
+  well-behaved agents from acting as one another or past their own
+  narrowing; they do not stop a hostile agent with a shell. The machine,
+  meaning its OS user, is the hard boundary: to bind every agent of a
+  machine, narrow the machine (§7.4). People says this beside the
+  per-agent controls.
+
 ## 7. Rights
 
 ### 7.1 Access objects
@@ -839,7 +953,7 @@ never grantable (the route table, §7.5, marks it `Denied`).
 
 ```
 effective(agent)                         = (person_rights ∩ grant.narrow ∩ session.narrow) ∪ session.elevate
-effective(session-less grant request)    = person_rights ∩ grant.narrow
+effective(session-less grant request)    = person_rights ∩ grant.narrow ∩ ⋂ live session.narrow
 ```
 
 - `person_rights` is `clax:full` for the owner row and `viewers.rights_json`
@@ -848,6 +962,9 @@ effective(session-less grant request)    = person_rights ∩ grant.narrow
   takes the lower. A missing narrowing is no narrowing.
 - `∪` adds the owner's elevation, which may exceed `person_rights` and ends
   with the session (M2).
+- `⋂ live session.narrow` is every narrowing of the grant's live sessions
+  (§6.8): a request naming no session is never wider than any of them.
+- A session's rights are reached only with its secret (§6.8).
 - `own` is resolved at check time.
 - Rights are cached per session and follow the generation counter (M17).
 
@@ -1411,7 +1528,8 @@ owner ended it). An `idle` end also saves its direct watches to
 2. Open `cause: ask` requests of this session are withdrawn; `cause:
    routing` requests stay.
 3. Threads it owns are released.
-4. `narrow_json` and `elevate_json` are cleared; the name is freed.
+4. `narrow_json` and `elevate_json` are cleared; the name is freed; the
+   session's secret is cleared (`secret_sha256`, §6.8).
 5. Watches and working records end (as today).
 6. When it owned threads or had open questions or `ask` requests, one
    `ended` inbox item for its person (M25): "clax-claude ended · released 2
@@ -1484,7 +1602,9 @@ The route table (§7.5) is the agents' contract. New routes:
   `remote.json` when present (and `CLAX_REMOTE` is not `0`): no daemon
   discovery or auto-start, every request signed and marked
   `X-Clax-Channel: agent` when it comes from an agent-side client. `clax serve` still serves a local daemon for local
-  use.
+  use. A request naming a session carries its secret (§6.8), which the
+  shim keeps in memory and hooks read from `<home>/remote-sessions/`;
+  `clax connect --off` removes that directory.
 - **`clax people`** (owner): lists people, machines and agents. **`clax
   agents`**: list, `rename`. **`clax approvals`**: list. Invites, rights,
   elevation, narrowing and approval changes print the People link (M20).
@@ -1669,6 +1789,7 @@ another machine, so no `remote` channel is added.
 | `grant.narrow` | `grant_id, narrow` | person |
 | `person.rights`, `person.revoke` | `person, rights` / `person` | owner |
 | `agent.name` | `name, source, previous` | the namer |
+| `session.start` (audit spec §6.8) | for a grant's session, also `secret_issued: true` (§6.8); neither the secret nor its hash is recorded | the session's agent |
 | `agent.narrow`, `agent.elevate` | `session, access` | person, owner |
 | `approval.request` | `request_id, approver, author, artifact_id, thread_id, cause, count`; recorded when a request is made and when new withheld content raises its `count` | asking agent or router |
 | `approval.decide` | `request_id, scope` (`thread`, `artifact`, `everywhere` or `decline`); one per request an approval closes | approver |
@@ -1702,7 +1823,12 @@ around the filter. **An owner agent with shell access is trusted at the
 owner's level:** it runs as the owner's user, so it can read `~/.clax`,
 run the CLI by hand, and fetch the owner's browser credential from
 `/api/token`; Clax neither can nor tries to stop that. The skills tell
-agents not to.
+agents not to. The same holds among one connected machine's agents: they
+run as one OS user, so each can read the machine's key and its siblings'
+session credentials (§6.8). Per-agent credentials keep one agent's
+narrowing and elevation from reaching another by mistake or by a
+well-behaved agent's call; the machine, meaning its OS user, is the hard
+boundary.
 
 1. **What the filter is (§8.5).** A guarantee for every Clax agent channel,
    field by field, for the owner's and every person's agents alike,
@@ -1718,6 +1844,11 @@ agents not to.
      beside an agent's name.
    - *Of a session by another grant:* sessions are bound to their grant in
      registration, join, listing, paths and headers (M4).
+   - *Of a session by a sibling on the same machine:* naming a session
+     needs its secret as well as the machine's key (M28, §6.8), so a
+     sibling cannot use an elevation it was not given, and a narrowed agent
+     naming no session is still bound by its narrowing. A hostile agent
+     with a shell can read the secret: the machine is the boundary.
    - *Of the owner or an existing person by a new machine:* a request can
      only make a new person (§6.3), so "approve WXYZ-4821, I'm Sam" yields
      a new person named as the owner chose, never Sam's identity or the
@@ -1865,6 +1996,11 @@ agents not to.
 - Remote Codex sessions have no tier 5; remote agents have no live pages.
 - Agent names are unique only among live sessions.
 - Approvals are per person, not per agent.
+- Per-agent narrowing and elevation bind against mistakes and
+  well-behaved agents, not against a hostile agent with a shell on the
+  same machine, which can read its siblings' session credentials or
+  register a fresh session (§6.8, §21): narrow the machine to bind all
+  its agents.
 - Names are a small unfiltered injection surface (§21.9).
 - A sniffed access token without its key cannot make a verified request,
   but it can hold its victim's large-body permit (and a queue of 4 behind
@@ -2080,3 +2216,16 @@ task, with recommendations; the owner took every recommendation
     the mark", record 7fdbaaf5).
 - **Amendment** (2026-10-12, plan Task 20): §26 records the owner's answers
   to the UI questions (2026-10-09: every recommendation).
+- **Amendment** (2026-10-12, owner decision O10, "Each agent should get its
+  own credential"):
+  - §6.8, M28: a grant's new session gets a secret, answered once and kept
+    only as a hash (§5.1 `sessions.secret_sha256`); a request naming a
+    session carries it (`X-Clax-Session-Secret`, else 401
+    `invalid_session_proof`); registration and join refresh a live row only
+    for the session proved; a session's end clears it.
+  - §6.7, §7.2: a grant request naming no session is narrowed by every live
+    narrowing of the grant's sessions; a path session must be the header's.
+  - §16: hooks read the secret from a 0600 file named for their harness
+    session; §20.2: `session.start` records `secret_issued`.
+  - §21, §25: one machine's agents share its OS user, which stays the hard
+    boundary; People says so beside the per-agent controls.
