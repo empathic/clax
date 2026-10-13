@@ -682,13 +682,45 @@ void main() {
       expect(glowOf(tester, replies[1]).color!.a, 0, reason: 'faded');
     });
 
-    testWidgets('focusLatestReply lights the newest reply by Clax', (
-      tester,
-    ) async {
+    testWidgets('focusLatestReply waits for the reply to the last comment, '
+        'and lights it when it arrives', (tester) async {
       final rig = await _seeded();
       final (tid, replies) = await longThread(rig, 3);
       await pumpFocus(tester, rig, tid, latestReply: true);
-      expect(glowOf(tester, replies.last).color!.a, greaterThan(0));
+      expect(
+        glowOf(tester, replies.last).color!.a,
+        0,
+        reason: 'an earlier reply is not the one asked for',
+      );
+      await rig.api.replyAsAgent(rig.aid, tid, 'Here it is.');
+      final reply = rig.api.threadOf(rig.aid, tid).comments.last.id;
+      rig.api.emit(
+        ClaxEvent(
+          type: 'comment',
+          data: {'artifact_id': rig.aid, 'thread_id': tid},
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(glowOf(tester, reply).color!.a, greaterThan(0));
+      await tester.pump(ThreadDetail.glowFor);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('a focused comment missing from the first read is lit once '
+        'a later read holds it', (tester) async {
+      final api = _StaleApi(clock: () => '2026-10-12T09:14:00Z');
+      final aid = api.seedArtifact('Runs', {'index.html': '<h1>Runs</h1>'});
+      await api.registerAppSession(installId: 'install', pid: 1);
+      final rig = _Rig(api, aid);
+      final (tid, replies) = await longThread(rig, 2);
+      await api.replyAsAgent(aid, tid, 'Later.');
+      final id = api.threadOf(aid, tid).comments.last.id;
+      api.stale = true;
+      await pumpFocus(tester, rig, tid, focus: id);
+      expect(api.staleServed, isTrue, reason: 'the first read lacked it');
+      await tester.pumpAndSettle();
+      expect(glowOf(tester, id).color!.a, greaterThan(0));
+      expect(glowOf(tester, replies.last).color!.a, 0);
       await tester.pump(ThreadDetail.glowFor);
       await tester.pumpAndSettle();
     });
@@ -712,4 +744,33 @@ void main() {
       expect(find.byKey(const ValueKey('thread-run-place')), findsNothing);
     });
   });
+}
+
+/// A fake whose next thread read, once [stale] is set, lacks each thread's
+/// newest comment.
+class _StaleApi extends FakeClaxApi {
+  _StaleApi({super.clock});
+  var stale = false;
+  var staleServed = false;
+
+  @override
+  Future<List<ThreadView>> threads(String aid) async {
+    final all = await super.threads(aid);
+    if (!stale) return all;
+    stale = false;
+    staleServed = true;
+    return [
+      for (final t in all)
+        ThreadView(
+          id: t.id,
+          artifactId: t.artifactId,
+          versionN: t.versionN,
+          status: t.status,
+          sentToAgent: t.sentToAgent,
+          comments: t.comments.sublist(0, t.comments.length - 1),
+          anchor: t.anchor,
+          createdAt: t.createdAt,
+        ),
+    ];
+  }
 }
