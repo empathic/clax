@@ -42,6 +42,7 @@ import 'platform/voice.dart';
 import 'ui/app_menu.dart';
 import 'ui/app_inspector_permissions.dart';
 import 'ui/app_screen.dart';
+import 'ui/build_plan.dart';
 import 'ui/app_surface.dart';
 import 'ui/error_screen.dart';
 import 'ui/host_protocol.dart'
@@ -520,6 +521,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     _onState(_s.supervisor.state);
     _states = _s.supervisor.states.listen(_onState);
     _worker = _runtime.worker.events.listen(_onWorker);
+    _builds = _runtime.worker.builds.listen(_onBuild);
     _runtime.attach();
     _opened = _s.background.opened.listen(_openFromNotice);
     unawaited(
@@ -550,6 +552,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_states?.cancel());
     unawaited(_worker?.cancel());
+    unawaited(_builds?.cancel());
     unawaited(_opened?.cancel());
     unawaited(_taps?.cancel());
     unawaited(_reminderTaps?.cancel());
@@ -577,6 +580,19 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
 
   late final _asked = _s.asked ?? MemoryAskedQuestions();
   late final _plans = _s.plans ?? PlanStore();
+
+  /// The plans and the worker's builds, for the build view, the Working
+  /// chip, the launcher and the inspector.
+  late final _build = BuildLink(
+    plans: _plans,
+    control: WorkerBuildControl(_runtime.worker),
+  );
+  StreamSubscription<BuildState>? _builds;
+
+  /// The build running on each app, as shown in the background, and the
+  /// apps' titles it is shown with.
+  final _buildRuns = <String, BackgroundRun>{};
+  final _buildTitles = <String, String>{};
 
   /// A loop whose runs follow the settings at their start: the tool loop
   /// when [usesToolLoop], else the single call, each waiting out a
@@ -776,6 +792,13 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       if (progressStep(p) case final text?) _runs.step(run, text);
     }
 
+    // The tool loop plans first: the making screen shows the plan, kept
+    // under this key until the app exists.
+    String? planKey;
+    if (usesToolLoop(backend, inspector: _s.inspector, runner: _s.runner)) {
+      planKey = '$pendingPlanPrefix${_s.clock.now().microsecondsSinceEpoch}';
+      stage(MakePlanKey(planKey));
+    }
     _s.timings.start(sayUsable);
     final String aid;
     try {
@@ -789,6 +812,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
             cancelled: cancelled,
             onProgress: progress,
             session: _runtime.worker.sessionId,
+            planKey: planKey,
           );
     } on AgentError catch (e) {
       _runs.end(
@@ -810,8 +834,14 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
             _runs.end(run, RunReady(aid, '$title is ready', 'Tap to open it')),
       ),
     );
-    // The first run planned the app: the worker builds the rest.
-    _runtime.worker.startBuild(aid);
+    // The first run planned the app: the worker builds the rest. The
+    // single call, or a run that set no plan, has no build.
+    if (planKey != null) {
+      final plan = await _plans.get(aid).catchError((Object _) => null);
+      if (plan != null && !plan.stopped && plan.todo.isNotEmpty) {
+        _runtime.worker.startBuild(aid);
+      }
+    }
     _made = (
       aid: aid,
       extra: {
@@ -861,6 +891,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           openSettings: () => unawaited(_openSettings()),
           timings: _s.timings,
           onMade: _handOver,
+          build: _build,
         ),
       ),
     );
@@ -927,6 +958,65 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           _ => const RunQuiet(),
         }),
       ),
+    );
+  }
+
+  /// Shows each going build as a background run ("Building Budget · 3/7"
+  /// and the step), and ends it with news when it is done, capped or
+  /// failed.
+  void _onBuild(BuildState s) {
+    final aid = s.appId;
+    if (buildGoing(s)) {
+      final run = _buildRuns[aid] ??= _runs.begin(
+        'Building your app',
+        'Up next',
+      );
+      unawaited(_stepBuild(run, s));
+      return;
+    }
+    final run = _buildRuns.remove(aid);
+    if (run == null) return;
+    unawaited(
+      _titleOf(aid, fallback: 'Your app').then(
+        (t) => _runs.end(run, switch (s.phase) {
+          BuildPhase.done => RunReady(aid, '$t is built', 'Tap to open it'),
+          BuildPhase.capped => RunReady(
+            aid,
+            '$t: build paused',
+            'It reached the build’s spending cap',
+          ),
+          BuildPhase.failed => RunFailed(
+            "Couldn't finish building $t",
+            s.reason ?? 'The build stopped',
+            artifactId: aid,
+          ),
+          _ => const RunQuiet(),
+        }),
+      ),
+    );
+  }
+
+  Future<void> _stepBuild(BackgroundRun run, BuildState s) async {
+    final aid = s.appId;
+    final title = _buildTitles[aid] ??= await _titleOf(
+      aid,
+      fallback: 'your app',
+    );
+    Plan? plan;
+    try {
+      plan = await _plans.get(aid);
+    } on Object {
+      plan = null;
+    }
+    final count = plan == null ? null : planCount(plan);
+    final feature = buildFeature(plan, s);
+    _runs.step(
+      run,
+      (s.progress == null ? null : progressStep(s.progress!)) ??
+          (feature == null ? 'Up next' : 'Building ${feature.title}'),
+      title: count == null || count.total == 0
+          ? 'Building $title'
+          : 'Building $title · ${count.done}/${count.total}',
     );
   }
 
@@ -1083,6 +1173,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
             _openRoute(aid);
           },
           device: _device,
+          build: _build,
           comments: _comments,
           notice: _notice,
           actions: actions.stream,
@@ -1168,6 +1259,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         NetPermissions(_api),
         AiPermissions(_api),
       ],
+      build: _build,
     );
   }
 
