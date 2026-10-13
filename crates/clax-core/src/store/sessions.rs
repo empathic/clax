@@ -3,6 +3,7 @@
 use super::Store;
 use crate::audit::{Actor, AgentActor, AuditCtx, AuditKind, AuditRecord, SystemReason};
 use crate::model::Session;
+use crate::secret::Secret;
 use crate::{CoreError, Result, new_ulid};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -65,6 +66,39 @@ pub struct Restored {
     pub threads: Vec<String>,
     /// The note the session's first tool result carries.
     pub note: String,
+}
+
+/// What a registration or join answered (spec 2026-10-08 §6.7, §6.8).
+#[derive(Debug)]
+pub struct Registered {
+    pub session: Session,
+    /// What a new row got back from an earlier `idle` end.
+    pub restored: Option<Restored>,
+    /// A grant's new session's secret, issued once when the call made the
+    /// row ([`crate::secret::SESSION_PREFIX`]); `None` for a refresh and for
+    /// the daemon token's sessions, which get none.
+    pub secret: Option<Secret>,
+}
+
+/// Which of its grant's sessions a registration or join proved with the
+/// session's secret (spec 2026-10-08 §6.8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Proved<'a> {
+    /// No proof is asked: the daemon token's sessions, and the store's own
+    /// callers outside a request.
+    Unchecked,
+    /// The request proved this session (`None`: no session). A grant's
+    /// live row is refreshed only when it is this one.
+    Session(Option<&'a str>),
+}
+
+/// 401 `invalid_session_proof`: the request names, or matches, one of its
+/// grant's sessions without that session's secret (spec 2026-10-08 §6.8).
+pub fn invalid_session_proof() -> CoreError {
+    CoreError::invalid(
+        "invalid_session_proof",
+        "this request does not prove its agent session: send that session's X-Clax-Session-Secret",
+    )
 }
 
 /// What a reaper pass ended, which feedback it released, and which open
@@ -213,7 +247,11 @@ impl Store {
             actor: Actor::Agent(agent),
             ..ctx.clone()
         };
-        let rec = session_record(kind, &self.now(), id, harness, f);
+        let mut rec = session_record(kind, &self.now(), id, harness, f);
+        if kind == AuditKind::SessionStart && agent_grant(&ctx).is_some() {
+            // The secret itself, and its hash, are never recorded.
+            rec = rec.with("secret_issued", true);
+        }
         self.record_audit(tx, &ctx, rec)?;
         if kind == AuditKind::SessionStart {
             self.agents_changed(tx, id)?;
@@ -279,6 +317,47 @@ fn find_live(
             |r| r.get(0),
         )
         .optional()?)
+}
+
+/// The grant of `ctx`'s agent actor, if it is a grant's agent.
+fn agent_grant(ctx: &AuditCtx) -> Option<&str> {
+    match &ctx.actor {
+        Actor::Agent(a) => a.grant_id.as_deref(),
+        _ => None,
+    }
+}
+
+/// The live row a registration or join of credential `grant` refreshes,
+/// given `matched`, the row its harness session ID or parent PID matched
+/// (spec 2026-10-08 §6.7, §6.8). For a grant's checked call, a matched row
+/// must be the session `proved` names, and with no match the proved
+/// session (live, of the same harness) is the one refreshed.
+///
+/// # Errors
+/// [`invalid_session_proof`] when a grant's call matches a live row it did
+/// not prove.
+fn proved_row(
+    tx: &Transaction<'_>,
+    grant: Option<&str>,
+    harness: &str,
+    matched: Option<String>,
+    proved: Proved<'_>,
+) -> Result<Option<String>> {
+    let (Some(g), Proved::Session(p)) = (grant, proved) else {
+        return Ok(matched);
+    };
+    match (matched, p) {
+        (Some(m), Some(p)) if m == p => Ok(Some(m)),
+        (Some(_), _) => Err(invalid_session_proof()),
+        (None, Some(p)) => find_live(tx, Some(g), "id = ?1 AND harness = ?2", params![p, harness]),
+        (None, None) => Ok(None),
+    }
+}
+
+/// A new secret for a row of credential `grant`: one for a grant's
+/// session, none for the token's (spec 2026-10-08 §6.8).
+fn issue_secret(grant: Option<&str>) -> Option<Secret> {
+    grant.map(|_| crate::secret::token(crate::secret::SESSION_PREFIX))
 }
 
 /// The person of a session registering under `grant_id`: the grant's
@@ -450,8 +529,27 @@ impl Store {
     pub fn register_session_restoring(
         &self,
         ctx: &AuditCtx,
-        mut r: RegisterSession,
+        r: RegisterSession,
     ) -> Result<(Session, Option<Restored>)> {
+        self.register_session_proved(ctx, r, Proved::Unchecked)
+            .map(|x| (x.session, x.restored))
+    }
+
+    /// [`Store::register_session_restoring`] for a request that proved
+    /// `proved` (spec 2026-10-08 §6.8): a grant's registration refreshes a
+    /// live row only when it proved that session, and a new grant row gets
+    /// a secret, answered once ([`Registered::secret`]) and kept only as
+    /// its SHA-256.
+    ///
+    /// # Errors
+    /// As [`Store::register_session`], and [`invalid_session_proof`] when a
+    /// grant's registration matches a live row it did not prove.
+    pub fn register_session_proved(
+        &self,
+        ctx: &AuditCtx,
+        mut r: RegisterSession,
+        proved: Proved<'_>,
+    ) -> Result<Registered> {
         if r.harness_session_id.as_deref() == Some("") {
             r.harness_session_id = None;
         }
@@ -490,6 +588,7 @@ impl Store {
                 )?,
                 (None, None) => None,
             };
+            let existing = proved_row(tx, grant, &r.harness, existing, proved)?;
             if let Some(id) = existing {
                 let before = fetch(tx, &id)?;
                 let facts_before = facts(tx, &id)?;
@@ -532,7 +631,11 @@ impl Store {
                 } else {
                     None
                 };
-                return Ok((fetch(tx, &id)?, restored));
+                return Ok(Registered {
+                    session: fetch(tx, &id)?,
+                    restored,
+                    secret: None,
+                });
             }
             let id = new_ulid();
             let name = derived_name(
@@ -542,11 +645,12 @@ impl Store {
                 &r.harness,
                 None,
             )?;
+            let secret = issue_secret(grant);
             tx.execute(
                 "INSERT INTO sessions (id, harness, harness_session_id, cwd, pid, parent_pid,
                     started_at, last_seen_at, agent_handle, transcript_path,
-                    grant_id, person, name, name_source)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9, ?10, ?11, ?12, 'derived')",
+                    grant_id, person, name, name_source, secret_sha256)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, ?9, ?10, ?11, ?12, 'derived', ?13)",
                 params![
                     id,
                     r.harness,
@@ -559,12 +663,17 @@ impl Store {
                     r.transcript_path,
                     grant,
                     person,
-                    name
+                    name,
+                    secret.as_ref().map(Secret::sha256_hex)
                 ],
             )?;
             self.record_session(tx, ctx, AuditKind::SessionStart, &id, &r.harness)?;
             let restored = self.restore_in(tx, ctx, &id)?;
-            Ok((fetch(tx, &id)?, restored))
+            Ok(Registered {
+                session: fetch(tx, &id)?,
+                restored,
+                secret,
+            })
         })
     }
 
@@ -610,6 +719,25 @@ impl Store {
         j: JoinSession,
         grant_id: Option<&str>,
     ) -> Result<(Session, Option<Restored>)> {
+        self.join_session_proved(ctx, j, grant_id, Proved::Unchecked)
+            .map(|x| (x.session, x.restored))
+    }
+
+    /// [`Store::join_session_restoring`] for a request that proved `proved`
+    /// (spec 2026-10-08 §6.8): a grant's join takes a live row only when it
+    /// proved that session, and a row it makes gets a secret, answered once
+    /// ([`Registered::secret`]).
+    ///
+    /// # Errors
+    /// As [`Store::join_session`], and [`invalid_session_proof`] when a
+    /// grant's join matches a live row it did not prove.
+    pub fn join_session_proved(
+        &self,
+        ctx: &AuditCtx,
+        j: JoinSession,
+        grant_id: Option<&str>,
+        proved: Proved<'_>,
+    ) -> Result<Registered> {
         let JoinSession {
             harness,
             parent_pid,
@@ -650,7 +778,9 @@ impl Store {
                     found
                 }
             };
+            let existing = proved_row(tx, grant_id, harness, existing, proved)?;
             let mut restored = None;
+            let mut secret = None;
             let id = match existing {
                 Some(id) => {
                     let before = facts(tx, &id)?;
@@ -677,11 +807,12 @@ impl Store {
                 None => {
                     let id = new_ulid();
                     let name = derived_name(tx, None, None, harness, None)?;
+                    secret = issue_secret(grant_id);
                     tx.execute(
                         "INSERT INTO sessions (id, harness, harness_session_id, cwd, pid, parent_pid,
                             started_at, last_seen_at, agent_handle, transcript_path, grant_id, person,
-                            name, name_source)
-                         VALUES (?1, ?2, ?3, ?6, NULL, ?4, ?5, ?5, ?7, ?8, ?9, ?10, ?11, 'derived')",
+                            name, name_source, secret_sha256)
+                         VALUES (?1, ?2, ?3, ?6, NULL, ?4, ?5, ?5, ?7, ?8, ?9, ?10, ?11, 'derived', ?12)",
                         params![
                             id,
                             harness,
@@ -693,7 +824,8 @@ impl Store {
                             transcript_path,
                             grant_id,
                             person,
-                            name
+                            name,
+                            secret.as_ref().map(Secret::sha256_hex)
                         ],
                     )?;
                     self.record_session(tx, ctx, AuditKind::SessionStart, &id, harness)?;
@@ -701,7 +833,38 @@ impl Store {
                     id
                 }
             };
-            Ok((fetch(tx, &id)?, restored))
+            Ok(Registered {
+                session: fetch(tx, &id)?,
+                restored,
+                secret,
+            })
+        })
+    }
+
+    /// Whether `secret` is the secret of live session `sid` of grant
+    /// `grant_id` (spec 2026-10-08 §6.8), compared by SHA-256 in constant
+    /// time. `false` for another grant's session, one that has ended (its
+    /// secret is cleared), and one that has none.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn session_secret_matches(
+        &self,
+        sid: &str,
+        grant_id: &str,
+        secret: &Secret,
+    ) -> Result<bool> {
+        self.with_read(|c| {
+            let stored: Option<Option<String>> = c
+                .prepare_cached(
+                    "SELECT secret_sha256 FROM sessions
+                     WHERE id = ?1 AND grant_id = ?2 AND ended_at IS NULL",
+                )?
+                .query_row(params![sid, grant_id], |r| r.get(0))
+                .optional()?;
+            Ok(stored.flatten().is_some_and(|h| {
+                crate::secret::constant_time_eq(h.as_bytes(), secret.sha256_hex().as_bytes())
+            }))
         })
     }
 
@@ -1386,7 +1549,7 @@ impl Store {
         unseen_before: Option<&str>,
     ) -> Result<Option<Cleanup>> {
         let n = tx.execute(
-            "UPDATE sessions SET ended_at = ?2, ended_reason = ?3
+            "UPDATE sessions SET ended_at = ?2, ended_reason = ?3, secret_sha256 = NULL
              WHERE id = ?1 AND ended_at IS NULL AND (?4 IS NULL OR last_seen_at < ?4)",
             params![id, now, reason.as_str(), unseen_before],
         )?;

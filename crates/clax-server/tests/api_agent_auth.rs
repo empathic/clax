@@ -125,12 +125,13 @@ async fn a_persons_agent_registers_under_its_grant_and_reaches_only_its_sessions
         .map(|s| s["id"].as_str().unwrap())
         .collect();
     assert_eq!(ids, vec![sid.as_str()]);
-    // A join of the same harness session ID finds the grant's own row.
+    // A join of the same harness session ID, proving the session, finds
+    // the grant's own row (spec §6.8).
     let r = sam
         .agent(
             "POST",
             "/api/sessions/join",
-            None,
+            Some(&sid),
             Some(
                 json!({"harness": "claude", "parent_pid": 4242, "harness_session_id": "h1",
                         "codex_home": "/elsewhere"}),
@@ -252,8 +253,9 @@ async fn path_session_must_belong_to_the_grant() {
         .await
         .unwrap();
     assert_eq!(r.status(), 200);
-    // The grant's own session passes, and so does another of its own
-    // named in the path (whose session then acts).
+    // The grant's own session passes; another of its own named in the
+    // path while the header proves this one does not: a path session is
+    // proved by its own secret (spec §6.8).
     let r = sam
         .get(Some(&sid), &format!("/api/sessions/{sid}/watches"))
         .await;
@@ -264,6 +266,10 @@ async fn path_session_must_belong_to_the_grant() {
         .to_string();
     let r = sam
         .get(Some(&sid), &format!("/api/sessions/{sid2}/watches"))
+        .await;
+    assert_eq!(status_code(r).await, (401, "invalid_session_proof".into()));
+    let r = sam
+        .get(Some(&sid2), &format!("/api/sessions/{sid2}/watches"))
         .await;
     assert_eq!(r.status(), 200);
 }

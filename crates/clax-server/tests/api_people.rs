@@ -1113,3 +1113,360 @@ async fn the_people_page_is_the_gallery() {
     assert_eq!(a.status(), b.status());
     assert_eq!(a.text().await.unwrap(), b.text().await.unwrap());
 }
+
+impl People {
+    /// The stored hash of session `sid`'s secret.
+    fn stored_secret(&self, sid: &str) -> Option<String> {
+        let db = rusqlite::Connection::open(self.ts.home.db_path()).unwrap();
+        db.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
+        db.query_row(
+            "SELECT secret_sha256 FROM sessions WHERE id = ?1",
+            [sid],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// Sam's agent `sid` publishes a version of `aid` over `if_version`,
+    /// proving `sid` with `secret` (none: no secret header).
+    async fn sam_publishes_proving(
+        &self,
+        sid: &str,
+        secret: Option<&str>,
+        aid: &str,
+        if_version: u32,
+    ) -> (u16, Value) {
+        json_of(
+            self.sam
+                .agent_proving(
+                    "POST",
+                    &format!("/api/artifacts/{aid}/versions"),
+                    Some(sid),
+                    secret,
+                    Some(json!({"if_version": if_version, "files": {
+                        "index.html": {"content": "<p>sibling</p>", "encoding": "utf8"}}})),
+                )
+                .await,
+        )
+        .await
+    }
+
+    /// Sam's agent `sid` ends its session.
+    async fn sam_ends(&self, sid: &str) {
+        let r = self
+            .sam
+            .agent(
+                "PATCH",
+                &format!("/api/sessions/{sid}"),
+                Some(sid),
+                Some(json!({"ended": true})),
+            )
+            .await;
+        assert_eq!(r.status(), 200);
+    }
+}
+
+/// Spec §6.8 (O10): a sibling agent on the same machine holds the
+/// machine's key but not another session's secret, so it cannot act with
+/// that session's elevation, by its header or by its path.
+#[tokio::test]
+async fn a_sibling_cannot_act_as_an_elevated_session_without_its_secret() {
+    let p = people().await;
+    let a =
+        p.ts.publish("Quarterly Review", &[("index.html", "<p>v1</p>")])
+            .await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let (status, _) = p
+        .owner(
+            "PUT",
+            &format!("/api/people/{}/rights", p.sam_public),
+            Some(json!({"rights": "clax:reader"})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let second = id(&p.sam.register("claude", "sam-h2").await);
+    let h = p.handle(&p.sam_session);
+    let access = json!([{"type": "clax-artifacts", "actions": ["update"], "locations": [aid]}]);
+    let (status, _) = p
+        .owner(
+            "PUT",
+            &format!("/api/agents/{h}/elevate"),
+            Some(json!({"access": access})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    // The sibling finds the elevated session's ID in its machine's listing.
+    let (status, v) = p
+        .sam_agent(&second, "GET", "/api/sessions?live=true", None)
+        .await;
+    assert_eq!(status, 200, "{v}");
+    assert!(v.to_string().contains(&p.sam_session), "{v}");
+    // Naming it without a secret, or with its own: refused.
+    let own = p.sam.secret_of(&second).unwrap();
+    for (what, secret) in [("no secret", None), ("its own secret", Some(own.as_str()))] {
+        let (status, v) = p
+            .sam_publishes_proving(&p.sam_session, secret, &aid, 1)
+            .await;
+        assert_eq!(
+            (status, code(&v)),
+            (401, "invalid_session_proof"),
+            "{what}: {v}"
+        );
+    }
+    // Naming it in the path while proving itself in the header: refused.
+    let (status, v) = json_of(
+        p.sam
+            .agent(
+                "POST",
+                &format!("/api/sessions/{}/working/end", p.sam_session),
+                Some(&second),
+                Some(json!({})),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!((status, code(&v)), (401, "invalid_session_proof"), "{v}");
+    // The secret twice, even the right one: refused.
+    let right = p.sam.secret_of(&p.sam_session).unwrap();
+    let r = p
+        .sam
+        .call(clax_server::testing::Call {
+            method: "GET",
+            path: "/api/artifacts",
+            authorization: Some(format!("Clax-Grant {}", p.sam.access())),
+            headers: vec![
+                ("x-clax-session", p.sam_session.clone()),
+                ("x-clax-session-secret", right.clone()),
+                ("x-clax-session-secret", right.clone()),
+            ],
+            ..Default::default()
+        })
+        .await;
+    let (status, v) = json_of(r).await;
+    assert_eq!((status, code(&v)), (401, "invalid_session_proof"), "{v}");
+    let (_, v) = p
+        .sam_agent(
+            &p.sam_session,
+            "GET",
+            &format!("/api/artifacts/{aid}"),
+            None,
+        )
+        .await;
+    assert_eq!(v["versions"].as_array().unwrap().len(), 1, "{v}");
+    // The elevated session itself, with its secret, publishes.
+    let (status, v) = p
+        .sam_publishes_proving(&p.sam_session, Some(&right), &aid, 1)
+        .await;
+    assert_eq!(status, 201, "{v}");
+    // Another person's agent naming it is still another credential's.
+    let (status, v) = json_of(
+        p.mia
+            .agent_proving(
+                "GET",
+                "/api/artifacts",
+                Some(&p.sam_session),
+                Some(&right),
+                None,
+            )
+            .await,
+    )
+    .await;
+    assert_eq!((status, code(&v)), (403, "foreign_session"), "{v}");
+}
+
+/// Spec §6.8, §7.2: a request naming no session is bound by every live
+/// narrowing of its machine's sessions, so an agent narrowed to reading
+/// cannot write by leaving its session out; the narrowing ends with it.
+#[tokio::test]
+async fn a_narrowed_agent_cannot_write_by_naming_no_session() {
+    let p = people().await;
+    let r =
+        p.ts.post_json(
+            "/api/artifacts",
+            json!({"title": "Notes", "capabilities": {"db": {}},
+                   "files": {"index.html": {"content": "<p>v1</p>", "encoding": "utf8"}}}),
+        )
+        .await;
+    assert_eq!(r.status(), 201);
+    let aid = r.json::<Value>().await.unwrap()["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let doc = format!("/api/artifacts/{aid}/docs/notes/one");
+    let write = json!({"data": {"text": "hi"}, "lww": true});
+    // Before any narrowing, the machine writes without a session.
+    let (status, v) = json_of(p.sam.agent("PUT", &doc, None, Some(write.clone())).await).await;
+    assert_eq!(status, 200, "{v}");
+    let second = id(&p.sam.register("claude", "sam-h2").await);
+    let h = p.handle(&p.sam_session);
+    let (status, _) = p
+        .sams_browser(
+            "PUT",
+            &format!("/api/agents/{h}/narrow"),
+            Some(json!({"access": "clax:reader"})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    // With its session, refused; without one, refused too.
+    let (status, v) = p
+        .sam_agent(&p.sam_session, "PUT", &doc, Some(write.clone()))
+        .await;
+    assert_eq!((status, code(&v)), (403, "not_permitted"), "{v}");
+    let (status, v) = json_of(p.sam.agent("PUT", &doc, None, Some(write.clone())).await).await;
+    assert_eq!((status, code(&v)), (403, "not_permitted"), "{v}");
+    // Reading, within the narrowing, still works without a session.
+    let (status, v) = json_of(p.sam.agent("GET", &doc, None, None).await).await;
+    assert_eq!(status, 200, "{v}");
+    // The sibling, proving its own session, keeps its own rights.
+    let (status, v) = p.sam_agent(&second, "PUT", &doc, Some(write.clone())).await;
+    assert_eq!(status, 200, "{v}");
+    // Once the narrowed agent ends, its narrowing no longer binds the machine.
+    p.sam_ends(&p.sam_session).await;
+    let (status, v) = json_of(p.sam.agent("PUT", &doc, None, Some(write.clone())).await).await;
+    assert_eq!(status, 200, "{v}");
+}
+
+/// Spec §6.8: the secret is answered once, kept as a hash, recorded only as
+/// issued, cleared at the session's end; a leaked secret of an ended
+/// session proves nothing, and registering again gets a new one. The
+/// daemon token's sessions get none.
+#[tokio::test]
+async fn a_session_secret_is_issued_once_and_dies_with_its_session() {
+    let p = people().await;
+    let secret = p.sam.secret_of(&p.sam_session).unwrap();
+    assert!(secret.starts_with("cxs_") && secret.len() == 47, "{secret}");
+    let hash = clax_core::secret::sha256_hex(&secret);
+    assert_eq!(p.stored_secret(&p.sam_session), Some(hash.clone()));
+    let started = p.audited("session.start");
+    let sams = started
+        .iter()
+        .find(|b| b["harness_session_id"] == "sam-h1")
+        .unwrap();
+    assert_eq!(sams["secret_issued"], json!(true), "{sams}");
+    let owners = started
+        .iter()
+        .find(|b| b["harness_session_id"] == "owner-h1")
+        .unwrap();
+    assert!(owners.get("secret_issued").is_none(), "{owners}");
+    // Neither the secret nor its hash is in the journal.
+    let db = rusqlite::Connection::open(p.ts.home.db_path()).unwrap();
+    db.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
+    let mut stmt = db.prepare("SELECT body FROM audit_events").unwrap();
+    for body in stmt.query_map([], |r| r.get::<_, String>(0)).unwrap() {
+        let body = body.unwrap();
+        assert!(!body.contains(&secret) && !body.contains(&hash), "{body}");
+    }
+    // The owner's agent registers with the token: no secret.
+    assert_eq!(p.stored_secret(&p.owner_session), None);
+    let r =
+        p.ts.post_json(
+            "/api/sessions",
+            json!({"harness": "claude", "harness_session_id": "owner-h9", "cwd": "/w"}),
+        )
+        .await;
+    let v: Value = r.json().await.unwrap();
+    assert!(v.get("session_secret").is_none(), "{v}");
+    // The session ends: its secret is cleared and proves nothing.
+    p.sam_ends(&p.sam_session).await;
+    assert_eq!(p.stored_secret(&p.sam_session), None);
+    let (status, v) = p
+        .sam_agent(&p.sam_session, "GET", "/api/artifacts", None)
+        .await;
+    assert_eq!((status, code(&v)), (401, "invalid_session_proof"), "{v}");
+    // The same harness session registers again: a new row, a new secret.
+    let again = id(&p.sam.register("claude", "sam-h1").await);
+    assert_ne!(again, p.sam_session);
+    let fresh = p.sam.secret_of(&again).unwrap();
+    assert_ne!(fresh, secret);
+    let (status, v) = json_of(
+        p.sam
+            .agent_proving("GET", "/api/artifacts", Some(&again), Some(&secret), None)
+            .await,
+    )
+    .await;
+    assert_eq!(
+        (status, code(&v)),
+        (401, "invalid_session_proof"),
+        "the old secret: {v}"
+    );
+    // Revoking the machine ends its sessions and clears their secrets.
+    let (status, v) = p
+        .owner("DELETE", &format!("/api/grants/{}", p.sam.grant_id()), None)
+        .await;
+    assert!(status == 200 || status == 204, "{status}: {v}");
+    assert_eq!(p.stored_secret(&again), None);
+}
+
+/// Spec §6.7, §6.8: registration and join refresh a live session only for
+/// a request that proves it, so a sibling cannot take one over by its
+/// harness session ID or its parent PID.
+#[tokio::test]
+async fn registering_over_a_live_session_needs_its_secret() {
+    let p = people().await;
+    let reg = json!({"harness": "claude", "harness_session_id": "sam-h1", "cwd": "/w"});
+    let join = json!({"harness": "claude", "harness_session_id": "sam-h1", "parent_pid": 4242});
+    for (path, body) in [("/api/sessions", &reg), ("/api/sessions/join", &join)] {
+        let (status, v) = json_of(
+            p.sam
+                .agent_proving("POST", path, None, None, Some(body.clone()))
+                .await,
+        )
+        .await;
+        assert_eq!(
+            (status, code(&v)),
+            (401, "invalid_session_proof"),
+            "{path}: {v}"
+        );
+    }
+    // A match by parent PID is refused the same way.
+    let pid_row = id(&p
+        .sam
+        .register_with(json!({"harness": "codex", "cwd": "/w", "parent_pid": 777}))
+        .await);
+    let by_pid = json!({"harness": "codex", "cwd": "/w", "parent_pid": 777});
+    let (status, v) = json_of(
+        p.sam
+            .agent_proving("POST", "/api/sessions", None, None, Some(by_pid.clone()))
+            .await,
+    )
+    .await;
+    assert_eq!((status, code(&v)), (401, "invalid_session_proof"), "{v}");
+    let (status, v) = json_of(
+        p.sam
+            .agent("POST", "/api/sessions", Some(&pid_row), Some(by_pid))
+            .await,
+    )
+    .await;
+    assert_eq!(status, 201, "{v}");
+    assert_eq!(v["session"]["id"], json!(pid_row), "{v}");
+    // With the session's secret: the same row, and no new secret.
+    for (path, body) in [("/api/sessions", reg), ("/api/sessions/join", join)] {
+        let (status, v) = json_of(
+            p.sam
+                .agent("POST", path, Some(&p.sam_session), Some(body))
+                .await,
+        )
+        .await;
+        assert!(status == 200 || status == 201, "{path}: {v}");
+        assert_eq!(v["session"]["id"], json!(p.sam_session), "{path}: {v}");
+        assert!(v.get("session_secret").is_none(), "{path}: {v}");
+    }
+    // A join that makes a row answers its secret, which then proves it.
+    let (status, v) = json_of(
+        p.sam
+            .agent(
+                "POST",
+                "/api/sessions/join",
+                None,
+                Some(json!({"harness": "claude", "harness_session_id": "sam-h7", "parent_pid": 4343})),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    assert!(v["session_secret"].as_str().unwrap().starts_with("cxs_"));
+    p.sam.keep_session(&v);
+    let made = v["session"]["id"].as_str().unwrap();
+    let (status, v) = p.sam_agent(made, "GET", "/api/artifacts", None).await;
+    assert_eq!(status, 200, "{v}");
+}

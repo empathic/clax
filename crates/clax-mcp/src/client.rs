@@ -8,9 +8,11 @@ use clax_core::RegisterSession;
 use clax_core::audit::ToolCallReport;
 use clax_core::model::Session;
 use clax_core::remote::{
-    MAX_RESPONSE_BYTES, Next, Remote, Retry, clock_skew_message, path_and_query, prepare_headers,
-    refusal_message, sign_headers,
+    MAX_RESPONSE_BYTES, Next, Remote, Retry, SESSION_SECRET_HEADER, SessionCredential, SessionKey,
+    clock_skew_message, keys_of_row, path_and_query, prepare_headers, refusal_message,
+    sign_headers,
 };
+use clax_core::secret::Secret;
 use serde_json::{Value, json};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -85,8 +87,11 @@ pub type Refresh = Arc<dyn Fn() -> anyhow::Result<Endpoint> + Send + Sync>;
 /// with [`DaemonClient::managed`] finds its daemon with a [`Refresh`] and
 /// registers a harness session there: lazily on first use, and again whenever a
 /// request cannot connect or is refused with 401 (the daemon restarted, on a new
-/// port or with a new token) or with `unknown_session` (the session was ended
-/// under it), after which the request is retried once. A heartbeat that finds
+/// port or with a new token, or a remote daemon's `invalid_session_proof`: the
+/// session ended under it) or with `unknown_session` (the session was ended
+/// under it), after which the request is retried once. A remote daemon's
+/// session proves itself with the secret its registration answered (spec
+/// 2026-10-08 §6.8), kept in memory and in its credential files. A heartbeat that finds
 /// its session ended or gone registers again. Tool requests may start a daemon;
 /// heartbeats and ending the session only find one.
 ///
@@ -140,6 +145,8 @@ struct Managed {
 struct State {
     endpoint: Option<Endpoint>,
     session_id: Option<String>,
+    /// A remote daemon's session's secret (spec 2026-10-08 §6.8).
+    session_secret: Option<Secret>,
     session: Option<Session>,
     /// True when `session` is registered with the daemon at `endpoint`.
     registered: bool,
@@ -161,6 +168,8 @@ struct Conn<'a> {
     http: &'a reqwest::Client,
     endpoint: Endpoint,
     session_id: Option<String>,
+    /// Sent beside the session it proves, to a remote daemon only.
+    session_secret: Option<Secret>,
     call: Option<Arc<CallScope>>,
     via: Option<&'static str>,
     agent: bool,
@@ -182,6 +191,9 @@ impl Conn<'_> {
         }
         if let Some(s) = &self.session_id {
             req = req.header("x-clax-session", s);
+            if let Some(secret) = self.session_secret.as_ref().filter(|_| self.remote) {
+                req = req.header(SESSION_SECRET_HEADER, secret.expose());
+            }
         }
         if let Some(h) = self.call.as_ref().and_then(|c| c.call_header()) {
             req = req.header("x-clax-call", h);
@@ -265,6 +277,7 @@ impl DaemonClient {
                 state: RwLock::new(State {
                     endpoint: Some(endpoint),
                     session_id,
+                    session_secret: None,
                     session: None,
                     registered: true,
                 }),
@@ -488,18 +501,6 @@ impl DaemonClient {
             st.endpoint = Some(endpoint.clone());
             st.registered = false;
         });
-        let conn = Conn {
-            http: &self.inner.http,
-            endpoint,
-            session_id: None,
-            call: self.call.clone(),
-            via: self.via,
-            agent: self.inner.agent,
-            remote: self.inner.remote.is_some(),
-        };
-        let mut req = conn
-            .request(reqwest::Method::POST, "/api/sessions")
-            .json(&m.registration);
         let git = match git {
             Some(crate::calls::GitStart::Ready(f)) => Some(f),
             Some(crate::calls::GitStart::Running(t)) => Some(
@@ -508,17 +509,93 @@ impl DaemonClient {
             ),
             None => None,
         };
-        if let Some(h) = git.as_ref().and_then(clax_core::gitctx::encode_header) {
-            req = req.header("x-clax-git", h);
+        let git = git.as_ref().and_then(clax_core::gitctx::encode_header);
+        // A remote daemon's live session is refreshed only with its secret
+        // (spec 2026-10-08 §6.8): the one held, else the one in its file,
+        // else none, which makes a new session.
+        let candidates = self.registration_credentials(&st, m);
+        let last = candidates.len() - 1;
+        for (i, cred) in candidates.into_iter().enumerate() {
+            let conn = Conn {
+                http: &self.inner.http,
+                endpoint: endpoint.clone(),
+                session_id: cred.as_ref().map(|c| c.session.clone()),
+                session_secret: cred.as_ref().map(|c| c.secret.clone()),
+                call: self.call.clone(),
+                via: self.via,
+                agent: self.inner.agent,
+                remote: self.inner.remote.is_some(),
+            };
+            let mut req = conn
+                .request(reqwest::Method::POST, "/api/sessions")
+                .json(&m.registration);
+            if let Some(h) = &git {
+                req = req.header("x-clax-git", h);
+            }
+            let res = match self.send_once(req).await {
+                Ok(res) => res,
+                Err(f) if i < last && proof_refused(&f.error) => continue,
+                Err(f) => return Err(f.error),
+            };
+            let mut answer = body_json(res).await?;
+            let issued = answer["session_secret"]
+                .as_str()
+                .map(|s| Secret::new(s.to_string()));
+            let session = session_of(answer.take())?;
+            let secret = issued.or(cred.filter(|c| c.session == session.id).map(|c| c.secret));
+            if let (Some(r), Some(secret)) = (&self.inner.remote, &secret) {
+                let cred = SessionCredential {
+                    session: session.id.clone(),
+                    secret: secret.clone(),
+                };
+                let reg = &m.registration;
+                let mut keys = keys_of_row(
+                    &session.harness,
+                    session.harness_session_id.as_deref(),
+                    session.parent_pid,
+                );
+                keys.extend(registration_keys(reg));
+                if let Err(e) = r.sessions.write(&keys, &cred) {
+                    tracing::warn!("the session's credential file could not be written: {e}");
+                }
+            }
+            self.update(|st| {
+                st.session_id = Some(session.id.clone());
+                st.session_secret = secret;
+                st.session = Some(session);
+                st.registered = true;
+            });
+            return Ok(());
         }
-        let res = self.send_once(req).await.map_err(|f| f.error)?;
-        let session = session_of(body_json(res).await?)?;
-        self.update(|st| {
-            st.session_id = Some(session.id.clone());
-            st.session = Some(session);
-            st.registered = true;
-        });
-        Ok(())
+        unreachable!("the last candidate returns")
+    }
+
+    /// The credentials a registration presents, in order (spec 2026-10-08
+    /// §6.8): for a remote daemon, the session and secret held, then the
+    /// one in the session's credential file when it differs, then none;
+    /// for the local daemon, none.
+    fn registration_credentials(&self, st: &State, m: &Managed) -> Vec<Option<SessionCredential>> {
+        let Some(remote) = &self.inner.remote else {
+            return vec![None];
+        };
+        let mut out = Vec::new();
+        let held = match (&st.session_id, &st.session_secret) {
+            (Some(session), Some(secret)) => Some(SessionCredential {
+                session: session.clone(),
+                secret: secret.clone(),
+            }),
+            _ => None,
+        };
+        if let Some(h) = &held {
+            out.push(Some(h.clone()));
+        }
+        match remote.sessions.find(&registration_keys(&m.registration)) {
+            Ok(Some(f)) if !held.as_ref().is_some_and(|h| h.same_as(&f)) => out.push(Some(f)),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("{e}"),
+        }
+        out.push(None);
+        out
     }
 
     fn conn(&self) -> Result<Conn<'_>> {
@@ -530,6 +607,7 @@ impl DaemonClient {
             http: &self.inner.http,
             endpoint,
             session_id: st.session_id,
+            session_secret: st.session_secret,
             call: self.call.clone(),
             via: self.via,
             agent: self.inner.agent,
@@ -1176,19 +1254,47 @@ impl DaemonClient {
     }
 
     /// `PATCH /api/sessions/<id>` `{"ended": true}` for the registered session.
-    /// Never starts a daemon. `None` when no session was registered.
+    /// Never starts a daemon. `None` when no session was registered. For a
+    /// remote daemon, the session's credential files go with it (spec
+    /// 2026-10-08 §6.8).
     pub async fn end_session(&self) -> Result<Option<Session>> {
-        if self.state().session.is_none() {
+        let Some(held) = self.state().session else {
             return Ok(None);
-        }
+        };
         let res = self
             .send_with(Mode::DiscoverOnly, |c| {
                 c.request(reqwest::Method::PATCH, &c.session_path())
                     .json(&json!({"ended": true}))
             })
-            .await?;
-        session_of(body_json(res).await?).map(Some)
+            .await;
+        self.forget_credentials(&held);
+        session_of(body_json(res?).await?).map(Some)
     }
+
+    /// Removes the credential files of session `s` (a remote daemon's),
+    /// under the names its row and its registration give.
+    fn forget_credentials(&self, s: &Session) {
+        let Some(remote) = &self.inner.remote else {
+            return;
+        };
+        let mut keys = keys_of_row(&s.harness, s.harness_session_id.as_deref(), s.parent_pid);
+        if let Some(m) = &self.inner.managed {
+            keys.extend(registration_keys(&m.registration));
+        }
+        remote.sessions.remove(&keys, Some(&s.id));
+    }
+}
+
+/// The names a registration's session is found by (spec 2026-10-08 §6.8):
+/// its harness session ID and its parent PID, when it has them.
+fn registration_keys(r: &RegisterSession) -> Vec<SessionKey<'_>> {
+    keys_of_row(&r.harness, r.harness_session_id.as_deref(), r.parent_pid)
+}
+
+/// Whether `e` is a remote daemon's 401 `invalid_session_proof`: the
+/// session named is not proved by the secret sent (spec 2026-10-08 §6.8).
+fn proof_refused(e: &ClientError) -> bool {
+    matches!(e, ClientError::Api { status: 401, error } if error["code"] == "invalid_session_proof")
 }
 
 /// The error for a request that failed with `original` and whose refresh
@@ -1308,12 +1414,14 @@ async fn attempt_signed(
             ),
             _ => (String::new(), String::new()),
         };
+        // A session that ended under the client (its secret cleared) is
+        // registered again, as `unknown_session` is (spec 2026-10-08 §6.8).
         let given_up = |code: &str, message: String| Failure {
             error: ClientError::Api {
                 status: status.as_u16(),
                 error: json!({"code": code, "message": message}),
             },
-            refreshable: false,
+            refreshable: code == "invalid_session_proof",
         };
         match retry.next(
             status.as_u16(),

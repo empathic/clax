@@ -718,6 +718,7 @@ fn forget_connection(home: &Home) {
     let _ = std::fs::remove_file(home.remote_key());
     let _ = std::fs::remove_file(home.remote_pending());
     let _ = std::fs::remove_dir_all(home.remote_cache());
+    let _ = std::fs::remove_dir_all(home.remote_sessions());
 }
 
 fn off(cli: &crate::Cli, home: &Home) -> anyhow::Result<()> {

@@ -1845,7 +1845,9 @@ impl Store {
     }
 
     /// Who a verified request of grant `gid` naming `session` speaks for
-    /// (spec §6.1, §6.7, §7.2).
+    /// (spec §6.1, §6.7, §7.2). With no session, its rights are narrowed by
+    /// every live narrowing of the grant's sessions (§6.8). It does not
+    /// check the session's secret: [`Store::session_secret_matches`] does.
     ///
     /// # Errors
     /// `grant_revoked` when `gid` is not an approved grant (it ended after
@@ -2314,6 +2316,28 @@ fn unhex32(s: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
+/// The intersection of every narrowing of grant `gid`'s live sessions
+/// (spec §6.8); `None` when none is narrowed.
+fn sessionless_narrow(c: &rusqlite::Connection, gid: &str) -> Result<Option<Rights>> {
+    let mut stmt = c.prepare_cached(
+        "SELECT narrow_json FROM sessions
+         WHERE grant_id = ?1 AND ended_at IS NULL AND narrow_json IS NOT NULL
+         ORDER BY id",
+    )?;
+    let narrowings = stmt
+        .query_map(params![gid], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut all: Option<Rights> = None;
+    for n in narrowings {
+        let n = read_rights(&n)?;
+        all = Some(match all {
+            Some(a) => a.intersect(&n),
+            None => n,
+        });
+    }
+    Ok(all)
+}
+
 /// [`Store::grant_caller`], read on `c`.
 pub(crate) fn grant_caller_in(
     c: &rusqlite::Connection,
@@ -2337,7 +2361,10 @@ pub(crate) fn grant_caller_in(
     let person_rights = rights_of_row(c, &viewer_id)?;
     let grant_narrow = narrow.as_deref().map(read_rights).transpose()?;
     let (session_narrow, elevate) = match session {
-        None => (None, None),
+        // A request naming no session is bound by every live narrowing of
+        // its grant's sessions (spec §6.8), so leaving one's session out
+        // never widens an agent.
+        None => (sessionless_narrow(c, gid)?, None),
         Some(sid) => {
             let row: Option<(Option<String>, Option<String>, Option<String>)> = c
                 .query_row(

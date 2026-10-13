@@ -527,7 +527,9 @@ pub const MIGRATIONS: &[&str] = &[
     // a viewer with `person = 1`; `person` columns hold public IDs, NULL for
     // the owner, so every existing row stays the owner's. A session's
     // harness session ID is unique within its credential (`grant_id`, NULL
-    // for the daemon token), never across credentials (M4).
+    // for the daemon token), never across credentials (M4). A grant's
+    // session keeps the SHA-256 of its secret (`secret_sha256`, §6.8),
+    // cleared when it ends.
     "ALTER TABLE viewers ADD COLUMN person INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE viewers ADD COLUMN person_revoked_at TEXT;
     ALTER TABLE viewers ADD COLUMN rights_json TEXT;
@@ -588,6 +590,7 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE sessions ADD COLUMN ended_reason TEXT
         CHECK (ended_reason IN ('idle', 'exit', 'revoked', 'person'));
     ALTER TABLE sessions ADD COLUMN ended_watches_json TEXT;
+    ALTER TABLE sessions ADD COLUMN secret_sha256 TEXT;
     CREATE UNIQUE INDEX sessions_live_name ON sessions(name COLLATE NOCASE)
         WHERE ended_at IS NULL AND name IS NOT NULL;
     CREATE INDEX sessions_by_grant ON sessions(grant_id, harness, parent_pid) WHERE grant_id IS NOT NULL;

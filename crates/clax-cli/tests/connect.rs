@@ -1008,3 +1008,140 @@ async fn doctor_checks_the_remote_connection() {
         assert!(got.contains(&(name.to_string(), false)), "{name}: {got:?}");
     }
 }
+
+impl Machine {
+    /// Runs `clax hook --agent <agent> <event>` with `input` on stdin, to
+    /// its end, off the test's runtime.
+    async fn hook(&self, agent: &str, event: &str, input: &Value) -> Output {
+        use std::io::Write;
+        let mut c = self.cmd(&["hook", "--agent", agent, event]);
+        c.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let input = input.to_string();
+        let label = format!("hook {agent} {event}");
+        tokio::time::timeout(
+            LIMIT,
+            tokio::task::spawn_blocking(move || {
+                let mut child = c.spawn().unwrap();
+                child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(input.as_bytes())
+                    .unwrap();
+                child.wait_with_output().unwrap()
+            }),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("clax {label} did not finish"))
+        .unwrap()
+    }
+
+    /// The session credential file `name` under `remote-sessions/`.
+    fn credential(&self, name: &str) -> PathBuf {
+        self.home().join("remote-sessions").join(name)
+    }
+}
+
+/// Spec 2026-10-08 §6.8: a remote `SessionStart` hook's join makes the
+/// session and keeps its secret in a 0600 file named for the harness
+/// session; the later hooks find it there and act as that session; the
+/// `SessionEnd` hook ends the session and removes the file.
+#[tokio::test(flavor = "multi_thread")]
+async fn remote_hooks_find_their_session_by_its_credential_file() {
+    let ts = lan_server().await;
+    let m = connected(&ts, "Sam").await;
+    let gid = m.remote_json()["grant_id"].as_str().unwrap().to_string();
+    let input = json!({"session_id": "cc-1", "cwd": "/w"});
+    let out = m.hook("claude", "session-start", &input).await;
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty(), "{}", text(&out));
+    let file = m.credential("claude-cc-1.json");
+    assert_eq!(mode(&file), 0o600);
+    assert_eq!(mode(&m.home().join("remote-sessions")), 0o700);
+    let cred: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let sid = cred["session"].as_str().unwrap().to_string();
+    let secret = Secret::new(cred["secret"].as_str().unwrap().to_string());
+    let s = ts.store.get_session(&sid).unwrap().unwrap();
+    assert_eq!(
+        (s.grant_id.as_deref(), s.harness_session_id.as_deref()),
+        (Some(gid.as_str()), Some("cc-1"))
+    );
+    assert!(
+        ts.store
+            .session_secret_matches(&sid, &gid, &secret)
+            .unwrap()
+    );
+    // The Stop hook acts as the session: ending its working records takes
+    // the session's proof.
+    let out = m.hook("claude", "stop", &input).await;
+    assert!(out.stderr.is_empty(), "{}", text(&out));
+    // The tool hook too.
+    let out = m.hook("claude", "tool", &input).await;
+    assert!(out.stderr.is_empty(), "{}", text(&out));
+    let out = m.hook("claude", "session-end", &input).await;
+    assert!(out.stderr.is_empty(), "{}", text(&out));
+    assert!(
+        ts.store
+            .get_session(&sid)
+            .unwrap()
+            .unwrap()
+            .ended_at
+            .is_some()
+    );
+    assert!(!file.exists());
+}
+
+/// Spec 2026-10-08 §6.8: a remote hook with no credential for its session,
+/// or one it cannot read, fails saying which file, and acts as no session.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_remote_hook_without_its_credential_fails_clearly() {
+    use std::os::unix::fs::PermissionsExt;
+    let ts = lan_server().await;
+    let m = connected(&ts, "Sam").await;
+    let input = json!({"session_id": "cc-2", "cwd": "/w"});
+    let out = m.hook("claude", "stop", &input).await;
+    let said = text(&out);
+    assert!(said.contains("session_credential_missing"), "{said}");
+    assert!(said.contains("claude-cc-2.json"), "{said}");
+    assert!(
+        said.contains(&m.home().join("remote-sessions").display().to_string()),
+        "{said}"
+    );
+    // A file that is not a credential names itself.
+    let file = m.credential("claude-cc-2.json");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, b"{\"not\": \"a credential\"}").unwrap();
+    let out = m.hook("claude", "stop", &input).await;
+    let said = text(&out);
+    assert!(said.contains("session_credential_unreadable"), "{said}");
+    assert!(said.contains(&file.display().to_string()), "{said}");
+    // So does one that cannot be read.
+    std::fs::write(&file, b"{}").unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let out = m.hook("claude", "stop", &input).await;
+    let said = text(&out);
+    assert!(said.contains("session_credential_unreadable"), "{said}");
+    assert!(said.contains(&file.display().to_string()), "{said}");
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    // A stale credential (its session ended) is refused, not acted on.
+    let start = json!({"session_id": "cc-3", "cwd": "/w"});
+    let out = m.hook("claude", "session-start", &start).await;
+    assert!(out.stderr.is_empty(), "{}", text(&out));
+    let cred: Value =
+        serde_json::from_slice(&std::fs::read(m.credential("claude-cc-3.json")).unwrap()).unwrap();
+    let sid = cred["session"].as_str().unwrap();
+    ts.store
+        .end_session(&clax_core::audit::AuditCtx::DAEMON, sid)
+        .unwrap();
+    let out = m.hook("claude", "stop", &start).await;
+    assert!(
+        text(&out).contains("invalid_session_proof"),
+        "{}",
+        text(&out)
+    );
+    // `clax connect --off` removes every credential.
+    m.ok(&["connect", "--off"]).await;
+    assert!(!m.home().join("remote-sessions").exists());
+}
