@@ -447,6 +447,39 @@ void main() {
     await until(() => events.last is WorkerCancelled);
   });
 
+  test('cancelChange stops that app\'s change in flight, keeps polling, and '
+      'leaves its thread open and unanswered', () async {
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    workerWith([
+      changeCalls(edits: [('Save', 'Keep')]),
+    ]).start();
+    await idle();
+    runner.gate = Completer<void>();
+    final item = api.sendComment(aid, 'Say Keep');
+    await runner.arrived.future;
+    expect(worker.cancelChange('other'), isFalse);
+    expect(worker.cancelChange(aid), isTrue);
+    await until(() => events.last is WorkerCancelled);
+    await idle();
+    expect(api.currentVersion(aid), 1);
+    final t = api.threadOf(aid, item.threadId);
+    expect(t.comments, hasLength(1));
+    expect(t.isOpen, isTrue);
+    expect(api.callNames, isNot(contains('replyAsAgent')));
+    expect(worker.cancelChange(aid), isFalse, reason: 'nothing left to stop');
+  });
+
+  test('a reply names the threads it answered', () async {
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    workerWith([
+      changeCalls(reply: 'Which button?', resolve: false),
+    ]).start();
+    await idle();
+    final item = api.sendComment(aid, 'Change the button');
+    await until(() => events.whereType<WorkerReplied>().isNotEmpty);
+    expect(events.whereType<WorkerReplied>().single.threads, [item.threadId]);
+  });
+
   test('comments queued while a change runs join one run', () async {
     final aid = api.seedArtifact('Runs', {'index.html': page});
     workerWith([

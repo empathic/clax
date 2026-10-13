@@ -43,9 +43,12 @@ final class WorkerLanded extends WorkerEvent {
 }
 
 /// The agent replied without a new version (a question, or documents
-/// only). No new version will arrive for this change.
+/// only) on [threads], the change's threads. No new version will arrive
+/// for this change.
 final class WorkerReplied extends WorkerEvent {
-  const WorkerReplied(super.artifactId);
+  const WorkerReplied(super.artifactId, [this.threads = const []]);
+
+  final List<String> threads;
 }
 
 /// A change failed for [reason], or its app is gone. The threads carry
@@ -56,8 +59,9 @@ final class WorkerFailed extends WorkerEvent {
   final String reason;
 }
 
-/// The change was cancelled by [FeedbackWorker.stop]; not a failure. Its
-/// threads run again on the next start.
+/// The change was cancelled by [FeedbackWorker.stop] or
+/// [FeedbackWorker.cancelChange]; not a failure. Its threads stay open and
+/// unanswered, and run again at the next recovery.
 final class WorkerCancelled extends WorkerEvent {
   const WorkerCancelled(super.artifactId);
 }
@@ -248,6 +252,7 @@ class FeedbackWorker {
 
   final _events = StreamController<WorkerEvent>.broadcast();
   final _queue = Queue<_Job>();
+
   /// The threads of every running change.
   final _running = <String>{};
 
@@ -284,6 +289,9 @@ class FeedbackWorker {
 
   /// The cancel of each app's going continue run.
   final _buildCancels = <String, Completer<void>>{};
+
+  /// The cancel of each app's going change job.
+  final _changeCancels = <String, Completer<void>>{};
 
   /// The first wait after a failed poll; it doubles up to [maxBackoff].
   static const firstBackoff = Duration(milliseconds: 250);
@@ -336,6 +344,21 @@ class FeedbackWorker {
         version: _buildStates[appId]?.version,
       ),
     );
+  }
+
+  /// Stops [appId]'s change: a running one is cancelled (it publishes and
+  /// replies nothing, and ends [WorkerCancelled]), and its queued comments
+  /// are dropped. Their threads stay open and unanswered, so the next
+  /// recovery (the next start or registration) runs them again, as does a
+  /// new comment on them. Answers whether there was a change to stop.
+  bool cancelChange(String appId) {
+    final before = _queue.length;
+    _queue.removeWhere((j) => !j.build && j.artifactId == appId);
+    final dropped = _queue.length != before;
+    final c = _changeCancels[appId];
+    final running = c != null && !c.isCompleted;
+    if (running) c.complete();
+    return dropped || running;
   }
 
   /// Takes up [appId]'s stopped or failed build again.
@@ -547,10 +570,7 @@ class FeedbackWorker {
 
   /// Whether no job is queued, running or being recovered.
   bool get isIdle =>
-      _queue.isEmpty &&
-      _running.isEmpty &&
-      _active.isEmpty &&
-      _recovering == 0;
+      _queue.isEmpty && _running.isEmpty && _active.isEmpty && _recovering == 0;
 
   /// Starts polling. Does nothing when already started.
   void start() {
@@ -736,11 +756,12 @@ class FeedbackWorker {
     }
     final threads = {...job.recheck, ...job.items.map((i) => i.threadId)};
     _running.addAll(threads);
+    final cancel = _changeCancels[aid] = Completer<void>();
     try {
       final items = await _withRechecked(job);
-      if (!_started) return;
+      if (!_started || cancel.isCompleted) return;
       final late = await _withAnswers(job, items);
-      if (items.isEmpty || !_started) return;
+      if (items.isEmpty || !_started || cancel.isCompleted) return;
       final texts = [...job.texts, ...late.texts];
       _answering.addAll(late.questions);
       final ChangeOutcome outcome;
@@ -750,6 +771,7 @@ class FeedbackWorker {
           items,
           answers: texts.isEmpty ? null : texts.join('\n\n'),
           answering: late.questions.toSet(),
+          cancel: cancel.future,
         );
       } finally {
         _answering.removeAll(late.questions);
@@ -764,6 +786,7 @@ class FeedbackWorker {
       }
     } finally {
       _running.removeAll(threads);
+      if (identical(_changeCancels[aid], cancel)) _changeCancels.remove(aid);
     }
   }
 
@@ -780,6 +803,7 @@ class FeedbackWorker {
     List<FeedbackItem> items, {
     String? answers,
     Set<String> answering = const {},
+    Future<void>? cancel,
   }) async {
     final threads = {for (final i in items) i.threadId}.toList();
     final generation = _generation;
@@ -791,7 +815,9 @@ class FeedbackWorker {
       aid,
       items,
       session: _sid,
-      cancelled: _stop.future,
+      cancelled: cancel == null
+          ? _stop.future
+          : Future.any([_stop.future, cancel]),
       onProgress: (p) => _events.add(WorkerProgress(aid, threads, p)),
       answers: answers,
       answering: answering,
@@ -810,7 +836,7 @@ class FeedbackWorker {
     }
     _events.add(switch (outcome) {
       ChangeLanded(:final version) => WorkerLanded(aid, version),
-      ChangeAnswered() => WorkerReplied(aid),
+      ChangeAnswered() => WorkerReplied(aid, threads),
       ChangeFailed(:final reason) => WorkerFailed(aid, reason),
       ChangeDropped() => WorkerFailed(aid, 'The app is gone'),
       ChangeCancelled() => WorkerCancelled(aid),
