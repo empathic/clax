@@ -101,8 +101,12 @@ import 'working_chip.dart';
 ///   The chip can always be dismissed.
 /// - **Build** ([AppScreen.build]). While the app's build goes (queued or
 ///   running) and no change is in flight, the chip is the [BuildChip]
-///   ("Building · Export · 3/7"); a tap opens the build sheet
-///   ([showBuildSheet]) with the plan and Stop or Resume. When the build
+///   ("Building · Export · 3/7") for [_AppScreenState.buildChipFor] after
+///   the build starts, a feature starts or ends, or its phase changes (on
+///   [AppScreen.clock]); then it folds into a small pill (a ring and "3/7")
+///   at the top right, in the status bar's band, off the app's own header.
+///   A tap on the pill opens the chip again; a tap on the chip opens the
+///   build sheet ([showBuildSheet]) with the plan and Stop or Resume. When the build
 ///   ends a toast says how: every feature built, the spending cap, stopped
 ///   (Undo resumes it) or failed (Resume). The composer's peek offers Add
 ///   to plan: the comment becomes the plan's last feature, the composer
@@ -265,6 +269,15 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
   Plan? _plan;
   BuildState? _build;
 
+  /// Whether the build chip shows whole (else the pill), the build step it
+  /// last showed whole for, and the fold it waits on.
+  var _buildOpen = false;
+  String? _buildStep;
+  var _fold = 0;
+
+  /// How long the build chip shows whole before it folds.
+  static const buildChipFor = Duration(seconds: 4);
+
   // Dictation.
   Future<VoiceAvailability>? _availability;
   StreamSubscription<VoiceResult>? _listen;
@@ -295,7 +308,9 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       _subs
         ..add(
           b.plans.watch(widget.aid).listen((p) {
-            if (mounted) setState(() => _plan = p);
+            if (!mounted) return;
+            setState(() => _plan = p);
+            _noteBuildStep();
           }),
         )
         ..add(
@@ -608,6 +623,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     if (!mounted) return;
     final was = _build;
     setState(() => _build = s);
+    _noteBuildStep();
     if (was?.phase == s.phase) return;
     final b = widget.build!;
     final aid = widget.aid;
@@ -631,6 +647,60 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       case BuildPhase.queued || BuildPhase.running:
         break;
     }
+  }
+
+  /// Opens the build chip whole when the build's step changed: it started,
+  /// a feature started or ended, or its phase changed.
+  void _noteBuildStep() {
+    final s = _build;
+    final p = _plan;
+    if (!buildGoing(s) || p == null) {
+      _buildStep = null;
+      return;
+    }
+    final c = planCount(p);
+    final step = '${s!.phase.name}|${s.featureId}|${c.done}/${c.total}';
+    if (step == _buildStep) return;
+    _buildStep = step;
+    _openBuildChip();
+  }
+
+  /// Shows the build chip whole, then folds it after [buildChipFor].
+  void _openBuildChip() {
+    final fold = ++_fold;
+    setState(() => _buildOpen = true);
+    unawaited(
+      widget.clock.delay(buildChipFor).then((_) {
+        if (mounted && fold == _fold) setState(() => _buildOpen = false);
+      }),
+    );
+  }
+
+  /// Whether the build chip (whole or the pill) shows: the build goes, and
+  /// no change chip is up.
+  bool get _buildChip =>
+      _changes.outcome == null &&
+      !_changes.working &&
+      buildGoing(_build) &&
+      _plan != null &&
+      widget.build != null;
+
+  /// The folded build chip, centred in the status bar's band at the top
+  /// right (or just inside the top right corner without one).
+  Widget _buildPill(BuildContext context) {
+    final inset = MediaQuery.paddingOf(context).top;
+    final h = (inset - 4).clamp(20.0, 28.0);
+    return Positioned(
+      top: inset >= 22 ? (inset - h) / 2 : 4,
+      right: 12,
+      child: BuildChip(
+        plan: _plan,
+        state: _build!,
+        compact: true,
+        height: h,
+        onTap: _openBuildChip,
+      ),
+    );
   }
 
   /// A toast about the build that fades on its own; only while the screen
@@ -658,13 +728,16 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     final b = widget.build;
     final text = _draft?.text.trim() ?? '';
     if (b == null || text.isEmpty) return;
-    _call(const CancelDraft());
+    final PlanFeature f;
     try {
-      final f = await b.addToPlan(widget.aid, text);
-      if (mounted) _buildToast('Added “${f.title}” to the plan');
+      f = await b.addToPlan(widget.aid, text);
     } on Object catch (e) {
+      // The composer keeps the text, to send or add again.
       if (mounted) _snack('Couldn’t add it to the plan: $e');
+      return;
     }
+    _call(const CancelDraft());
+    if (mounted) _buildToast('Added “${f.title}” to the plan');
   }
 
   /// Runs the failed change again: asks the worker to queue each of its
@@ -955,12 +1028,18 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Expanded(
-              child: SafeArea(
-                // The bar under the page, or the panel, holds the bottom
-                // inset.
-                bottom: !bar && (!_open || wide),
-                right: !_open || !wide,
-                child: _pageStack(context),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  SafeArea(
+                    // The bar under the page, or the panel, holds the
+                    // bottom inset.
+                    bottom: !bar && (!_open || wide),
+                    right: !_open || !wide,
+                    child: _pageStack(context),
+                  ),
+                  if (_buildChip && !_buildOpen) _buildPill(context),
+                ],
               ),
             ),
             if (bar)
@@ -1002,11 +1081,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
         child: widget.surface.build(context),
       ),
       if (_covered) _cover(context),
-      if (_changes.outcome == null &&
-          !_changes.working &&
-          buildGoing(_build) &&
-          _plan != null &&
-          widget.build != null)
+      if (_buildChip && _buildOpen)
         Positioned(
           top: 8,
           left: 24,
