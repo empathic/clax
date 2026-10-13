@@ -565,6 +565,7 @@ pub async fn serve(
         ))),
         rooms: Arc::new(crate::room::Rooms::default()),
         sample: cfg.sample.clone(),
+        net: Arc::new(crate::net::Net::default()),
         stream: crate::stream::Hub::new(live_ids.clone()),
         live_ids,
         ext_creds,

@@ -95,6 +95,8 @@ pub struct AppState {
     pub rooms: Arc<crate::room::Rooms>,
     /// The `sample` capability's provider and settings.
     pub sample: Arc<crate::sample::Sampler>,
+    /// The `net` capability's fetcher ([`crate::net::Net::default`] in the daemon).
+    pub net: Arc<crate::net::Net>,
     /// The multiplexed event stream's topics and streams (`/api/stream`);
     /// fed by `events` once [`crate::stream::Hub::listen`] has run.
     pub stream: Arc<crate::stream::Hub>,

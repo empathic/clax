@@ -13,6 +13,7 @@ pub mod health;
 pub mod inbox;
 pub mod live;
 pub mod mcp;
+pub mod net;
 pub mod people;
 pub mod perf;
 pub mod questions;
@@ -276,6 +277,10 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
                 .put(sample::grant)
                 .delete(sample::revoke),
         )
+        .route(
+            "/api/artifacts/{aid}/net-grants",
+            get(net::grants).put(net::grant).delete(net::revoke),
+        )
         .route("/api/artifacts/{aid}/working", get(working::for_artifact))
         .route("/api/artifacts/{aid}/presence", get(artifacts::presence))
         .route("/api/admin/perf/calibrate", post(perf::calibrate))
@@ -441,6 +446,11 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route(
             "/api/artifacts/{aid}/sample/{call}/tool_result",
             post(sample::tool_result),
+        )
+        // Bounded by the fetch's own deadline (`net::TIMEOUT`).
+        .route(
+            "/api/artifacts/{aid}/net:fetch",
+            post(net::fetch.layer(DefaultBodyLimit::max(net::NET_BODY_LIMIT))),
         )
         .route("/api/sessions/{id}/feedback", get(feedback::poll))
         // Streams for as long as its reader takes: no request deadline, no
@@ -793,6 +803,7 @@ mod l10 {
             "health" => include_str!("health.rs"),
             "inbox" => include_str!("inbox.rs"),
             "live" => include_str!("live.rs"),
+            "net" => include_str!("net.rs"),
             "perf" => include_str!("perf.rs"),
             "questions" => include_str!("questions.rs"),
             "room" => include_str!("room.rs"),
@@ -983,6 +994,7 @@ mod l10 {
             "sample::tool_result",
             "a page's model request; changes no history",
         ),
+        ("net::fetch", "a page's network request; changes no history"),
         (
             "perf::calibrate",
             "the latency gate's calibration read; changes no history",

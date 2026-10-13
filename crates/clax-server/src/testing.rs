@@ -240,6 +240,8 @@ impl TestServer {
             rooms: Arc::new(crate::room::Rooms::default()),
             // Sampling off; tests that sample set their own with `spawn_with`.
             sample: Arc::new(crate::sample::Sampler::disabled()),
+            // The system resolver and reqwest; tests of `net` set their own.
+            net: Arc::new(crate::net::Net::default()),
             stream: crate::stream::Hub::new(live_ids.clone()),
             live_ids,
             ext_creds,
