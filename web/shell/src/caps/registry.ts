@@ -4,6 +4,7 @@
 import { artifactHandler } from "./artifact";
 import { commentsHandler } from "./comments";
 import { dbHandler } from "./db";
+import { deviceHandler } from "./device";
 import type { HandlerFactory } from "./host";
 import { lazyHandler } from "./lazy";
 import { permissionsHandler } from "./permissions";
@@ -14,6 +15,11 @@ export const REGISTRY: Record<string, HandlerFactory> = {
   assets: lazyHandler(() => import("./assets").then(m => m.assetsHandler)),
   comments: commentsHandler,
   db: dbHandler,
+  notify: deviceHandler("notify"),
+  share: deviceHandler("share"),
+  files: deviceHandler("files"),
+  camera: deviceHandler("camera"),
+  location: deviceHandler("location"),
   downloads: lazyHandler(() => import("./downloads").then(m => m.downloadsHandler)),
   permissions: permissionsHandler,
   room: lazyHandler(() => import("./room").then(m => m.roomHandler)),
