@@ -91,8 +91,12 @@ class DaemonStopped implements Exception {
 ///
 /// The daemon runs as `<exe> --port <P> serve --foreground` with a clean
 /// environment (`CLAX_HOME` = [home], `HOME` = the support directory,
-/// `TMPDIR` = the cache directory, a system `PATH`, `RUST_LOG=warn`) and
-/// [home] as its working directory. Before each start, a daemon that
+/// `TMPDIR` = the cache directory, a system `PATH`, `RUST_LOG=warn`, and
+/// `ANTHROPIC_API_KEY` when `apiKey` gives one, read at each start so pages'
+/// `sample()` calls spend the owner's key) and [home] as its working
+/// directory. Before each start `<home>/config.toml` is written with
+/// [sampleConfig] (the app's model choices for `sample()`). The key is never
+/// logged: it is in no state, reason or message the supervisor gives. Before each start, a daemon that
 /// `<home>/daemon.json` names is stopped (SIGTERM, then SIGKILL after 3 s)
 /// when its PID is alive and `/healthz` on its port answers with that PID;
 /// a process that does not is left alone, since its PID may have been
@@ -118,8 +122,22 @@ class DaemonSupervisor {
     required this._pids,
     this._clock = const SystemClock(),
     this._android = false,
+    this._apiKey,
   }) : _support = supportDir,
        _cache = cacheDir;
+
+  /// The variable the daemon reads the key from (`[sample] api_key_env`).
+  static const keyEnv = 'ANTHROPIC_API_KEY';
+
+  /// The home's `config.toml`: `sample()` answers with Haiku 5.5 unless a
+  /// page asks for the complex tier. The daily cost cap per app is the
+  /// daemon's default ($0.50).
+  static const sampleConfig = '''# Written by the Clax app at each daemon start.
+[sample.models]
+quick = "claude-haiku-5-5"
+default = "claude-haiku-5-5"
+complex = "claude-sonnet-5-5"
+''';
 
   static const backoff = [
     Duration(milliseconds: 200),
@@ -158,6 +176,11 @@ class DaemonSupervisor {
   final PidKiller _pids;
   final Clock _clock;
   final bool _android;
+  final Future<String?> Function()? _apiKey;
+
+  /// [restart] stopped the running daemon: its exit starts the next one at
+  /// once, and is not counted as a failure.
+  bool _restartAsked = false;
 
   final _states = StreamController<DaemonState>.broadcast();
   DaemonState _state = const Starting();
@@ -233,6 +256,17 @@ class DaemonSupervisor {
     _proc?.kill(ProcessSignal.sigkill);
   }
 
+  /// Stops the running daemon (SIGTERM, then SIGKILL after 3 s) and starts
+  /// it again at once, so it reads the environment afresh (a changed API
+  /// key). The exit counts toward no failure. Does nothing when no daemon
+  /// process is running; the next start reads the key anyway.
+  Future<void> restart() async {
+    final p = _proc;
+    if (p == null || _stopping || _loopDone == null) return;
+    _restartAsked = true;
+    await _terminate(p);
+  }
+
   /// Stops the daemon (SIGTERM, then SIGKILL after 3 s) and does not
   /// restart it. Completes once it has exited.
   Future<void> stop() =>
@@ -270,6 +304,10 @@ class DaemonSupervisor {
           _proc = null;
           _forgetDaemonJson(proc.pid);
           if (_stopping) break;
+          if (_restartAsked) {
+            _restartAsked = false;
+            continue;
+          }
           // A kill by onResume keeps the reason it gave.
           if (!_skipBackoff) _lastReason = 'exited with code $code';
           if (_clock.now().difference(upAt) >= failWindow) _attempt = 0;
@@ -331,10 +369,15 @@ class DaemonSupervisor {
         Directory(d).createSync(recursive: true);
       }
       final port = await _ports.pick(preferred: _readPort());
+      _writeSampleConfig();
+      final environment = _environment();
+      final key = (await _keyOrNull())?.trim();
+      if (key != null && key.isNotEmpty) environment[keyEnv] = key;
+      if (_stopping) return null;
       final proc = p = await _starter.start(
         exe,
         ['--port', '$port', 'serve', '--foreground'],
-        environment: _environment(),
+        environment: environment,
         workingDirectory: _home,
       );
       _proc = proc;
@@ -435,6 +478,27 @@ class DaemonSupervisor {
       await _clock.delay(pollInterval);
     }
     return true;
+  }
+
+  /// The saved key; null when there is none or it cannot be read (the
+  /// daemon then starts with `sample()` off).
+  Future<String?> _keyOrNull() async {
+    try {
+      return await _apiKey?.call();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Writes [sampleConfig] to `<home>/config.toml` when it differs.
+  void _writeSampleConfig() {
+    final f = File('$_home/config.toml');
+    try {
+      if (f.existsSync() && f.readAsStringSync() == sampleConfig) return;
+      f.writeAsStringSync(sampleConfig);
+    } on FileSystemException {
+      // The daemon starts with its own defaults.
+    }
   }
 
   Map<String, String> _environment() => {

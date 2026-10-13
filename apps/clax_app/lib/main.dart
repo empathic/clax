@@ -13,6 +13,7 @@ import 'agent/runner/scripted_runner.dart';
 import 'agent/scripted_backend.dart';
 import 'app.dart';
 import 'clax/http_api.dart';
+import 'daemon/daemon_key.dart';
 import 'daemon/exe_locator.dart';
 import 'daemon/health.dart';
 import 'daemon/ports.dart';
@@ -64,6 +65,7 @@ Future<AppServices> platformServices() async {
   final home = Directory('${support.path}/clax-home')
     ..createSync(recursive: true);
   final android = Platform.isAndroid;
+  final secureKey = FlutterSecureKey();
   final supervisor = DaemonSupervisor(
     exe: android ? const AndroidExeLocator() : const MacExeLocator(),
     home: home.path,
@@ -74,6 +76,7 @@ Future<AppServices> platformServices() async {
     health: HttpHealthProbe(),
     pids: IoPidKiller(),
     android: android,
+    apiKey: secureKey.read,
   );
   final cliSupported = ClaudeCliBackend.supported;
   final scratch = Directory('${cache.path}/claude-cli');
@@ -104,7 +107,7 @@ Future<AppServices> platformServices() async {
         ),
     voice: DictationVoice.forSettings(SpeechToTextVoice(), settings),
     settings: settings,
-    key: FlutterSecureKey(),
+    key: DaemonKey(secureKey, onChanged: supervisor.restart),
     timings: FileTimings(File('${support.path}/timings.jsonl')),
     agentTimings: FileTimings(File('${support.path}/agent-timings.jsonl')),
     surface: (base) => WebViewAppSurface(base: base, openExternal: links.open),

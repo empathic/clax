@@ -1,8 +1,10 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-/// The owner's Claude API key, in the platform's secure storage. Only the
-/// Messages API backend and Settings read it; it is never logged, never
-/// written to `settings.json`, the daemon, `CLAX_HOME` or the WebView.
+/// The owner's Claude API key, in the platform's secure storage. The
+/// Messages API backend, Settings and the daemon supervisor read it (the
+/// supervisor hands it to the daemon in its environment, for pages'
+/// `sample()` calls); it is never logged, never written to
+/// `settings.json`, `CLAX_HOME` or the WebView.
 abstract interface class SecureKey {
   /// The saved key, or null when there is none.
   Future<String?> read();

@@ -8,6 +8,7 @@ import 'package:clax_app/daemon/health.dart';
 import 'package:clax_app/daemon/ports.dart';
 import 'package:clax_app/daemon/process.dart';
 import 'package:clax_app/daemon/supervisor.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// A clock whose time moves only when the test advances it; each `delay`
@@ -216,7 +217,7 @@ class Rig {
     this.sup,
   );
 
-  factory Rig({bool android = false}) {
+  factory Rig({bool android = false, Future<String?> Function()? apiKey}) {
     final dir = Directory.systemTemp.createTempSync('clax-sup-');
     final home = '${dir.path}/support/clax-home';
     final starter = FakeStarter(home);
@@ -236,6 +237,7 @@ class Rig {
       pids: pids,
       clock: clock,
       android: android,
+      apiKey: apiKey,
     );
     final rig = Rig._(dir, starter, ports, health, pids, clock, sup);
     sup.states.listen(rig.states.add);
@@ -294,6 +296,82 @@ void main() {
     expect(rig.states.first, isA<Starting>());
     expect(rig.states.last, isA<Up>());
     expect(rig.sup.state, isA<Up>());
+  });
+
+  test(
+    'hands the saved API key to the daemon in its environment, never in a log',
+    () async {
+      const key = 'sk-ant-test-0123456789';
+      var saved = key;
+      final printed = <String>[];
+      final old = debugPrint;
+      debugPrint = (String? m, {int? wrapWidth}) => printed.add(m ?? '');
+      addTearDown(() => debugPrint = old);
+      await runZoned(
+        () async {
+          rig = Rig(apiKey: () async => saved);
+          await rig.up();
+          final env = rig.starter.calls.single.environment;
+          expect(env[DaemonSupervisor.keyEnv], key);
+          expect(
+            File('${rig.home}/config.toml').readAsStringSync(),
+            contains('default = "claude-haiku-5-5"'),
+          );
+          // The daemon fails five times, writing its output: the key appears
+          // in no state, reason or message the supervisor gives.
+          for (var i = 0; i < 5; i++) {
+            rig.starter.last.writeErr('boom $i\n');
+            rig.starter.last.exit(1);
+            await rig.clock.advance(const Duration(seconds: 5));
+          }
+          expect(rig.sup.state, isA<Failed>());
+          final failed = rig.sup.state as Failed;
+          for (final s in rig.states) {
+            expect(s.toString(), isNot(contains(key)));
+          }
+          expect(failed.reason, isNot(contains(key)));
+          expect(failed.stderrTail.join('\n'), isNot(contains(key)));
+          // No key: the daemon starts without the variable.
+          saved = '';
+          await rig.up();
+        },
+        zoneSpecification: ZoneSpecification(
+          print: (self, parent, zone, line) => printed.add(line),
+        ),
+      );
+      expect(
+        rig.starter.calls.last.environment.containsKey(DaemonSupervisor.keyEnv),
+        isFalse,
+      );
+      expect(printed.where((l) => l.contains(key)), isEmpty);
+    },
+  );
+
+  test('restart starts the daemon again at once with the new key, counting no failure', () async {
+    var saved = 'sk-old';
+    rig = Rig(apiKey: () async => saved);
+    await rig.up();
+    saved = 'sk-new';
+    rig.states.clear();
+    final r = rig.sup.restart();
+    await rig.clock.advance(Duration.zero);
+    await r;
+    expect(rig.starter.calls, hasLength(2));
+    expect(rig.starter.calls.first.process.signals, [ProcessSignal.sigterm]);
+    expect(
+      rig.starter.calls.last.environment[DaemonSupervisor.keyEnv],
+      'sk-new',
+    );
+    expect(rig.states.whereType<Restarting>(), isEmpty);
+    expect(rig.sup.state, isA<Up>());
+    // Four restarts more stay clear of the five-exits-a-minute failure.
+    for (var i = 0; i < 4; i++) {
+      final r = rig.sup.restart();
+      await rig.clock.advance(Duration.zero);
+      await r;
+    }
+    expect(rig.sup.state, isA<Up>());
+    expect(rig.starter.calls, hasLength(6));
   });
 
   test('uses the Android PATH on Android', () async {
