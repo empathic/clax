@@ -570,6 +570,7 @@ void main() {
       'it first; the body brings its app back to the top', (tester) async {
     final notice = FakeAppNotice();
     await pumpApp(tester, _Rig(key: 'sk-ant-x', notice: notice));
+    expect(notice.calls, ['clear'], reason: 'a stale notice goes at launch');
     await up(tester);
     final runs = rig.api.seedArtifact('Runs', {'index.html': _page});
     final notes = rig.api.seedArtifact('Notes', {'index.html': _page});
