@@ -12,6 +12,7 @@ const toolOrder = [
   'str_replace',
   'delete_file',
   'set_meta',
+  'add_kit',
   'db_collections',
   'db_list',
   'db_get',
