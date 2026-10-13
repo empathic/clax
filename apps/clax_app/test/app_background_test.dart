@@ -507,15 +507,24 @@ void main() {
     expect(work.calls.where((c) => c.startsWith('failed')), isEmpty);
   });
 
-  testWidgets('a make the last run never finished is offered again at '
-      'launch', (tester) async {
+  testWidgets('a make the last run never finished is an interrupted tile; '
+      'Make it again runs it', (tester) async {
     // Seeded synchronously: real file futures do not settle in a widget
     // test's body.
     File('${dir.path}/pending-make.json')
         .writeAsStringSync('{"request": "a tracker for my runs"}');
     agent.steps.add((_) async => _made);
     await pumpApp(tester);
-    await pumpUntilShown(tester, 'Make it again?');
+    await pumpUntilShown(tester, 'Interrupted');
+    expect(find.text('Make it again?'), findsNothing, reason: 'no dialog');
+    await settleFiles(tester);
+    expect(
+      File('${dir.path}/pending-make.json').existsSync(),
+      isTrue,
+      reason: 'kept until the person chooses',
+    );
+    await tester.tap(find.text('a tracker for my runs'));
+    await pumpUntilShown(tester, 'Make it again');
     expect(
       find.text('Clax closed before it finished “a tracker for my runs”.'),
       findsOneWidget,
@@ -529,14 +538,23 @@ void main() {
     expect(File('${dir.path}/pending-make.json').existsSync(), isFalse);
   });
 
-  testWidgets('Not now forgets the lost make', (tester) async {
+  testWidgets('Discard forgets the lost make; closing the question keeps it', (
+    tester,
+  ) async {
     File('${dir.path}/pending-make.json')
         .writeAsStringSync('{"request": "laps"}');
     await pumpApp(tester);
-    await pumpUntilShown(tester, 'Not now');
-    await tester.tap(find.text('Not now'));
+    await pumpUntilShown(tester, 'Interrupted');
+    await tester.tap(find.text('laps'));
+    await pumpUntilShown(tester, 'Discard');
+    await tester.tapAt(const Offset(4, 4));
     await pumpRoute(tester);
-    expect(find.text('Make it again?'), findsNothing);
+    expect(find.text('Interrupted'), findsOneWidget);
+    await tester.tap(find.text('laps'));
+    await pumpUntilShown(tester, 'Discard');
+    await tester.tap(find.text('Discard'));
+    await pumpRoute(tester);
+    expect(find.text('Interrupted'), findsNothing);
     expect(agent.runs, 0);
     await settleFiles(tester);
     expect(File('${dir.path}/pending-make.json').existsSync(), isFalse);
