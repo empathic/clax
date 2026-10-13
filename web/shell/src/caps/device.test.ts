@@ -5,6 +5,10 @@ import { CapError } from "./errors";
 import { CapabilityHost, type CapEnv } from "./host";
 import { REGISTRY } from "./registry";
 
+/** Whether the viewer's gesture in the page holds, as `frameGesture` says. */
+let gesture = true;
+vi.mock("./gesture", async orig => ({ ...(await orig<typeof import("./gesture")>()), frameGesture: () => gesture }));
+
 function env(declared: CapEnv["declared"]) {
   const posted: ShellToBridge[] = [];
   const e: CapEnv = {
@@ -18,7 +22,7 @@ function env(declared: CapEnv["declared"]) {
   return { e, posted };
 }
 
-afterEach(() => { deviceLink.call = null; });
+afterEach(() => { deviceLink.call = null; gesture = true; });
 /** Links a fake app: each call is kept, with its answer's resolve and reject. */
 function link() {
   const sent: (Omit<DeviceCall, "id"> & { resolve(v: unknown): void; reject(e: unknown): void })[] = [];
@@ -39,9 +43,9 @@ describe("the device capabilities", () => {
 
   it("in the app, are granted when declared and forward each call with a request ID", async () => {
     const sent = link();
-    const { e, posted } = env({ notify: {}, share: {}, files: {}, camera: {}, location: {} });
+    const { e, posted } = env({ notify: {}, share: {}, file: {}, camera: {}, location: {} });
     const host = new CapabilityHost(Promise.resolve(e), REGISTRY, null);
-    for (const name of ["notify", "share", "files", "camera", "location"]) await host.handle({ type: "clax:use", id: name, name });
+    for (const name of ["notify", "share", "file", "camera", "location"]) await host.handle({ type: "clax:use", id: name, name });
     expect(posted.map(m => (m as { granted: boolean }).granted)).toEqual([true, true, true, true, true]);
     const at = { id: "water", title: "Water", body: "Drink", at: "2026-10-13T09:00:00Z", route: "#/plants" };
     const done = host.handle({ type: "clax:call", id: "c1", ns: "notify", method: "schedule", args: [at] });
@@ -78,5 +82,21 @@ describe("the device capabilities", () => {
     await host.handle({ type: "clax:call", id: "c2", ns: "share", method: "text", args: [new Blob(["x"])] });
     expect(posted.map(m => (m as { error: { code: string } }).error.code)).toEqual(["capability_removed", "bad_request"]);
     expect(sent).toEqual([]);
+  });
+
+  it("refuses a call that acts without the viewer's gesture, but lists and cancels reminders without one", async () => {
+    const sent = link();
+    gesture = false;
+    const { e, posted } = env({ notify: {}, camera: {} });
+    const host = new CapabilityHost(Promise.resolve(e), REGISTRY, null);
+    await host.handle({ type: "clax:call", id: "c1", ns: "camera", method: "take", args: [] });
+    await host.handle({ type: "clax:call", id: "c2", ns: "notify", method: "schedule", args: [{ id: "a" }] });
+    expect(posted.map(m => (m as { error?: { code: string } }).error?.code)).toEqual(["no_gesture", "no_gesture"]);
+    const list = host.handle({ type: "clax:call", id: "c3", ns: "notify", method: "list", args: [] });
+    const cancel = host.handle({ type: "clax:call", id: "c4", ns: "notify", method: "cancel", args: ["a"] });
+    await vi.waitFor(() => expect(sent.map(c => c.method)).toEqual(["list", "cancel"]));
+    sent[0].resolve([]);
+    sent[1].resolve({ cancelled: false });
+    await Promise.all([list, cancel]);
   });
 });

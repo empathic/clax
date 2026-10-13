@@ -15,7 +15,7 @@ export const CAPABILITY_METHODS = {
   // Clax's device capabilities, in the Clax app only (clax-extensions.d.ts `Device`).
   notify: ["schedule", "cancel", "list"],
   share: ["text", "file"],
-  files: ["pick", "save"],
+  file: ["pick", "save"],
   camera: ["take", "pick"],
   location: ["current"],
   // Clax's network, through the daemon (clax-extensions.d.ts `Net`).
