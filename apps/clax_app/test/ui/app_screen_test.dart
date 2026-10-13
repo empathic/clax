@@ -1931,6 +1931,30 @@ void main() {
       expect(tester.widget<ThreadDetail>(find.byType(ThreadDetail)).tid, tid);
     });
 
+    testWidgets('the shell outlines the thread while the sheet or the thread '
+        'page shows it, and not after', (tester) async {
+      final rig = await pumpScreen(tester);
+      final tid = await start(tester, rig);
+      List<String> focus() => [
+        for (final j in rig.surface.js)
+          if (j.contains('focusThread')) j,
+      ];
+      await tester.tap(find.byKey(const ValueKey('chip-working')));
+      await frames(tester);
+      expect(focus(), [FocusThread(tid).toJs()]);
+      await tester.tap(find.byKey(const ValueKey('change-open-thread')));
+      await frames(tester);
+      expect(
+        focus(),
+        [FocusThread(tid).toJs(), FocusThread(tid).toJs()],
+        reason: 'the sheet closing does not clear the page\'s claim',
+      );
+      await tester.pageBack();
+      await frames(tester);
+      expect(focus().last, const FocusThread(null).toJs());
+      expect(focus(), hasLength(3));
+    });
+
     testWidgets('a waiting question is offered; Answer opens the questions', (
       tester,
     ) async {
@@ -1944,7 +1968,7 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('change-answer')));
       await frames(tester);
       expect(sheet(), findsNothing);
-      expect(rig.surface.js.last, const OpenQuestions().toJs());
+      expect(rig.surface.js, contains(const OpenQuestions().toJs()));
     });
 
     testWidgets('a reply while it is open stays, with the way to the reply', (
