@@ -496,6 +496,8 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
       }),
     );
     if (_s.notice case final notice?) {
+      // A notice a process that died with an app in front left behind.
+      unawaited(notice.clear());
       _taps = notice.taps.listen(_onNoticeTap);
       unawaited(
         notice.launchTap().then((tap) {
