@@ -862,6 +862,42 @@ void main() {
     });
   });
 
+  test('the sweep keeps drafts created since the worker was made', () async {
+    var stamp = '2026-10-12T00:00:00Z';
+    api = FakeClaxApi(clock: () => stamp);
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    final old = await api.createDraft(
+      of: aid,
+      title: 'Runs',
+      files: {'index.html': page},
+    );
+    runner = HeldRunner([]);
+    worker = FeedbackWorker(
+      api: api,
+      loop: AgentLoop(
+        api: api,
+        runner: () => runner,
+        prompts: PromptBuilder(rootBundle),
+        model: () => 'claude-haiku-5-5',
+        timings: RecordingTimings(),
+      ),
+      session: () async =>
+          (await api.registerAppSession(installId: 'install', pid: 1)).id,
+      delay: (d) async {},
+      now: () => DateTime.utc(2026, 10, 12, 0, 0, 30),
+    );
+    stamp = '2026-10-12T00:01:00Z';
+    final running = await api.createDraft(
+      title: 'A new app',
+      files: {'index.html': page},
+    );
+    worker.start();
+    await until(() => api.waitingPolls == 1 && worker.isIdle);
+    final left = [for (final d in await api.listDrafts()) d.id];
+    expect(left, [running.id]);
+    expect(left, isNot(contains(old.id)));
+  });
+
   group('retry', () {
     test('runs a failed change\'s comments again without posting, and says '
         'so', () async {
