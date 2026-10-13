@@ -9,9 +9,11 @@ import GallerySites from "./GallerySites.svelte";
 import type { WorkingFeed } from "./working-feed.svelte";
 import { markers } from "../view/attention-model";
 import { agentNames, chips, type Working } from "../view/working-model";
+import { pageStream } from "../stream";
 
 export { groups } from "../view/attention-model";
 export { default as HaikuLine } from "./HaikuLine.svelte";
+export { default as PeopleLink } from "../people/PeopleLink.svelte";
 export { default as Markers } from "./Markers.svelte";
 export { default as NeedsGroup } from "./NeedsGroup.svelte";
 export { default as Roster } from "./Roster.svelte";
@@ -43,11 +45,19 @@ export class CardSync extends Sync {
   }
 }
 export { ownerBrowser } from "../owner";
-export { pageStream } from "../stream";
+export { pageStream };
 /** The question module (the inbox's summary, Inbox, notifications). */
 export const q = () => import("../q");
 /** The inbox page, its own chunk: `/inbox` loads it beside `q`. */
 export const inboxPage = () => import("../q/InboxPage.svelte");
+/** `/people`: mounts the People page (its own chunk) at the end of
+ * `target`, following the page's stream. The result removes it. */
+export function peoplePage(target: Element): () => void {
+  let view: Record<string, unknown> | null = null;
+  let gone = false;
+  void import("../people/People.svelte").then(p => { if (!gone) view = mount(p.default, { target, props: { stream: pageStream() } }); }, () => {});
+  return () => { gone = true; if (view) void unmount(view); };
+}
 
 /** A card's markers, its working agents named as its participants name them. */
 export const cardMarkers = (a: Artifact, att: AttentionSummary | undefined, working: Working[]) =>

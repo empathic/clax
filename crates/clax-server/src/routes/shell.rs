@@ -154,7 +154,8 @@ fn entry(req: &HeaderMap, name: &str) -> Result<Response, ApiError> {
     }
 }
 
-/// `/`: the gallery.
+/// `/`, `/inbox` and `/people`: the gallery's entry, which shows the
+/// gallery, the inbox or People by its path.
 pub async fn gallery_page(
     _d: crate::agent::DeniedToGrants,
     req: HeaderMap,

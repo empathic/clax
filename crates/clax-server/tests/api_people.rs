@@ -1104,3 +1104,12 @@ async fn the_extension_lists_the_owners_approval_requests_and_decides_nothing() 
     let r = ext.get("/api/people").await;
     assert_eq!(r.status(), 403);
 }
+
+#[tokio::test]
+async fn the_people_page_is_the_gallery() {
+    let ts = TestServer::spawn().await;
+    let a = ts.get("/").await;
+    let b = ts.get("/people").await;
+    assert_eq!(a.status(), b.status());
+    assert_eq!(a.text().await.unwrap(), b.text().await.unwrap());
+}
