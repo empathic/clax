@@ -115,7 +115,8 @@ pub struct LookupQuery {
 /// left out. `GET /api/viewers?q=<text>` (token only) returns up to
 /// [`MAX_SEARCH`] named viewers whose name contains the text, ignoring case.
 /// Both answer `{viewers: [{id, display_name}]}` with public IDs, never
-/// cookies.
+/// cookies; to the owner's agents, a viewer who is not connected is named
+/// `<name> (not connected)`.
 pub async fn lookup(
     State(s): State<AppState>,
     d: crate::agent::DeniedToGrants,
@@ -165,12 +166,22 @@ pub async fn lookup(
             ));
         }
     };
-    Ok(Json(json!({
-        "viewers": viewers
+    let mut viewers = json!(
+        viewers
             .iter()
             .map(|v| json!({"id": v.public_id, "display_name": v.display_name}))
             .collect::<Vec<_>>()
-    })))
+    );
+    // The owner's agents read a viewer who is not connected as `<name> (not
+    // connected)` (spec 2026-10-08 §9.6).
+    let vf = crate::feedback::VisFor::of(&d.caller(&s).await?, &s);
+    let viewers = s
+        .store_call(move |st| {
+            vf.build(st)?.mark_viewers(&mut viewers, "id");
+            Ok(viewers)
+        })
+        .await?;
+    Ok(Json(json!({ "viewers": viewers })))
 }
 
 #[derive(Deserialize)]

@@ -240,16 +240,8 @@ pub fn reap_idle(
     pid_alive: &dyn Fn(u32) -> bool,
 ) -> clax_core::Result<clax_core::Reaped> {
     let r = store.reap_sessions(idle, pid_alive)?;
-    crate::feedback::apply(ctx, store, &r.touched);
     let ttl = clax_core::audit::AuditCtx::system(clax_core::audit::SystemReason::Ttl);
-    for id in &r.ended {
-        ctx.waiters.forget(id);
-        let (ended, _) = ctx
-            .working
-            .end_session(id, clax_core::working::End::SessionEnd);
-        crate::working::settle(store, &ttl, &ctx.events, &ctx.working, &ended);
-        ctx.followers.forget(id);
-    }
+    crate::feedback::sessions_stop(ctx, store, &ttl, &r.touched, &r.ended);
     Ok(r)
 }
 

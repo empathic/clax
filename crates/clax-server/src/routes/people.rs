@@ -696,14 +696,15 @@ pub async fn end_agent(
             let id = session.id.clone();
             let audit = audit.resolve(st)?;
             let ended = st.end_session_by_person(&audit, &id)?;
-            crate::feedback::apply(&ctx, st, &ended.touched);
-            crate::questions::announce_ids(&state, st, &ended.withdrawn_questions);
-            ctx.waiters.forget(&id);
-            let (stopped, _) = ctx
-                .working
-                .end_session(&id, clax_core::working::End::SessionEnd);
-            crate::working::settle(st, &audit, &ctx.events, &ctx.working, &stopped);
-            ctx.followers.forget(&id);
+            crate::feedback::sessions_ended(
+                &state,
+                &ctx,
+                st,
+                &audit,
+                &ended.touched,
+                &ended.withdrawn_questions,
+                std::slice::from_ref(&id),
+            );
             let x = &ended.session;
             Ok(json!({"agent": {
                 "handle": x.agent_handle,
