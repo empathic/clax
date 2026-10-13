@@ -310,6 +310,23 @@ void main() {
       },
     );
 
+    test('readFile fetches one file of a version; a 404 is null', () async {
+      server.bytes(
+        'GET',
+        '/api/artifacts/$aid/versions/3/files/icon.svg',
+        200,
+        utf8.encode('<svg/>'),
+      );
+      server.json('GET', '/api/artifacts/$aid/versions/2/files/icon.svg', 404, {
+        'error': {'code': 'not_found', 'message': 'not found'},
+      });
+      expect(await api.readFile(aid, 3, 'icon.svg'), '<svg/>');
+      expect(await api.readFile(aid, 2, 'icon.svg'), isNull);
+      for (final r in server.requests) {
+        expectOwnerCall(r);
+      }
+    });
+
     test('readFiles throws the daemon error when a file is missing', () async {
       server.json('GET', '/api/artifacts/$aid/versions/1', 200, {
         'version': versionJson(1, {'index.html': meta('text/html', 1)}),

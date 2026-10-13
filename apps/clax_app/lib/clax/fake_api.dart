@@ -139,6 +139,14 @@ class FakeClaxApi implements ClaxApi {
     return aid;
   }
 
+  /// Adds a version of [aid] with [files], as another agent's publish
+  /// would, and returns its number. No event is sent.
+  int seedVersion(String aid, Map<String, String> files) {
+    final a = _artifact(aid);
+    a.versions.add(_version(aid, a.current + 1, Map.of(files)));
+    return a.current;
+  }
+
   /// Makes the next call of [method] (its [ClaxApi] name) throw [error].
   /// Several queue in order.
   void failNext(String method, Object error) =>
@@ -413,6 +421,14 @@ class FakeClaxApi implements ClaxApi {
     final a = _artifact(aid);
     if (n < 1 || n > a.versions.length) throw _notFound();
     return Map.of(a.versions[n - 1].files);
+  }
+
+  @override
+  Future<String?> readFile(String aid, int n, String path) async {
+    _call('readFile', {'aid': aid, 'n': n, 'path': path});
+    final a = _artifacts[aid];
+    if (a == null || n < 1 || n > a.versions.length) return null;
+    return a.versions[n - 1].files[path];
   }
 
   @override
