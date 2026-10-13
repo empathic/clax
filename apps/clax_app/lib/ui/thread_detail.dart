@@ -305,30 +305,39 @@ class _ThreadDetailState extends State<ThreadDetail> {
     final retried = _retriedAt;
     if (retried != null && t.comments.length != retried) _retriedAt = null;
     _thread = t;
-    if (!_landed) {
-      _landed = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) => _land(t));
+    // The first read lands at the newest comment; the focused one is lit
+    // on the first read that holds it.
+    final first = !_landed;
+    _landed = true;
+    final target = _wanted && _highlighted == null ? _target(t) : null;
+    if (target != null) {
+      _highlighted = target;
+      _glow = true;
+    }
+    if (first || target != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _land(target));
     }
   }
 
-  /// The comment to land on in [t], if any.
+  /// Whether the page was asked to land on a comment.
+  bool get _wanted => widget.focusComment != null || widget.focusLatestReply;
+
+  /// The comment to land on in [t], if it holds it yet: [focusComment],
+  /// else (with [focusLatestReply]) Clax's reply after the person's last
+  /// comment, not an earlier one while the reply is not there yet.
   String? _target(ThreadView t) {
     final ids = {for (final c in t.comments) c.id};
     if (widget.focusComment case final id? when ids.contains(id)) return id;
     if (!widget.focusLatestReply) return null;
-    return t.comments.reversed.where((c) => c.byAgent).firstOrNull?.id;
+    final last = t.comments.lastOrNull;
+    return last != null && last.byAgent ? last.id : null;
   }
 
-  /// Scrolls to the newest comment, then to the focused one and lights it.
-  void _land(ThreadView t) {
+  /// Scrolls to the newest comment, then to [target] and lights it.
+  void _land(String? target) {
     if (!mounted) return;
     _toBottom();
-    final target = _target(t);
     if (target == null) return;
-    setState(() {
-      _highlighted = target;
-      _glow = true;
-    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       final ctx = _commentKeys[target]?.currentContext;
@@ -342,6 +351,7 @@ class _ThreadDetailState extends State<ThreadDetail> {
           ),
         );
       }
+      _fade?.cancel();
       _fade = Timer(ThreadDetail.glowFor, () {
         if (mounted) setState(() => _glow = false);
       });
