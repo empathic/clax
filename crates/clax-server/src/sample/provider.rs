@@ -86,15 +86,26 @@ pub enum ProviderEvent {
         input: Value,
     },
     /// The round ended; `assistant` is the round's content blocks, to be
-    /// passed back as [`Block::Raw`] if another round follows.
+    /// passed back as [`Block::Raw`] if another round follows, and `usage`
+    /// the tokens the round was billed for.
     End {
         stop: Stop,
         assistant: Vec<Value>,
+        usage: Usage,
     },
     Error {
         code: ProviderErrorCode,
         message: String,
     },
+}
+
+/// The tokens one round was billed for, as the provider reports them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Usage {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

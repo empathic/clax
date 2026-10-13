@@ -93,7 +93,11 @@ async fn streams_text_with_the_key_and_version_headers() {
         out[2],
         ProviderEvent::End {
             stop: Stop::EndTurn,
-            assistant: vec![json!({"type": "text", "text": "Hello"})]
+            assistant: vec![json!({"type": "text", "text": "Hello"})],
+            usage: Usage {
+                output: 3,
+                ..Usage::default()
+            }
         }
     );
     let (headers, body) = seen.lock().unwrap()[0].clone();
@@ -132,7 +136,10 @@ async fn tool_calls_arrive_parsed_with_the_turn_to_echo() {
             input: json!({"shade": "dark"})
         }
     );
-    let ProviderEvent::End { stop, assistant } = &out[1] else {
+    let ProviderEvent::End {
+        stop, assistant, ..
+    } = &out[1]
+    else {
         panic!("{out:?}")
     };
     assert_eq!(*stop, Stop::ToolUse);

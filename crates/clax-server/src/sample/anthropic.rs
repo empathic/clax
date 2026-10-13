@@ -154,6 +154,7 @@ pub struct Accumulator {
     blocks: Vec<Value>,
     partial: HashMap<usize, String>,
     stop: Option<Stop>,
+    usage: Usage,
 }
 
 impl Accumulator {
@@ -168,6 +169,21 @@ impl Accumulator {
         let b = self.block(i);
         let now = format!("{}{piece}", b[field].as_str().unwrap_or(""));
         b[field] = Value::String(now);
+    }
+
+    /// Keeps the counts a `usage` object reports. `message_start` carries the
+    /// input side and `message_delta` the running totals, so a later count
+    /// replaces an earlier one and an absent count keeps it.
+    fn take_usage(&mut self, u: &Value) {
+        let set = |field: &str, slot: &mut u64| {
+            if let Some(n) = u[field].as_u64() {
+                *slot = n;
+            }
+        };
+        set("input_tokens", &mut self.usage.input);
+        set("output_tokens", &mut self.usage.output);
+        set("cache_read_input_tokens", &mut self.usage.cache_read);
+        set("cache_creation_input_tokens", &mut self.usage.cache_write);
     }
 
     /// Applies one SSE event; returns what it produced for the orchestrator.
@@ -231,10 +247,15 @@ impl Accumulator {
                     input,
                 }]
             }
+            "message_start" => {
+                self.take_usage(&v["message"]["usage"]);
+                Vec::new()
+            }
             "message_delta" => {
                 if let Some(r) = v["delta"]["stop_reason"].as_str() {
                     self.stop = Some(stop_from(r));
                 }
+                self.take_usage(&v["usage"]);
                 Vec::new()
             }
             "message_stop" => vec![ProviderEvent::End {
@@ -243,6 +264,7 @@ impl Accumulator {
                     .into_iter()
                     .filter(|b| !b.is_null())
                     .collect(),
+                usage: self.usage,
             }],
             "error" => {
                 let e = &v["error"];
@@ -382,7 +404,7 @@ mod tests {
             &[
                 (
                     "message_start",
-                    json!({"type": "message_start", "message": {"id": "msg_1"}}),
+                    json!({"type": "message_start", "message": {"id": "msg_1", "usage": {"input_tokens": 12, "cache_read_input_tokens": 3, "output_tokens": 1}}}),
                 ),
                 (
                     "content_block_start",
@@ -419,7 +441,7 @@ mod tests {
                 ),
                 (
                     "message_delta",
-                    json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}}),
+                    json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 40}}),
                 ),
                 ("message_stop", json!({"type": "message_stop"})),
             ],
@@ -435,6 +457,12 @@ mod tests {
                         json!({"type": "thinking", "thinking": "hmm", "signature": "sig"}),
                         json!({"type": "text", "text": "Hello"}),
                     ],
+                    usage: Usage {
+                        input: 12,
+                        output: 40,
+                        cache_read: 3,
+                        cache_write: 0
+                    },
                 },
             ]
         );
@@ -493,7 +521,10 @@ mod tests {
                 input: json!({})
             }
         );
-        let ProviderEvent::End { stop, assistant } = &out[2] else {
+        let ProviderEvent::End {
+            stop, assistant, ..
+        } = &out[2]
+        else {
             panic!("{out:?}")
         };
         assert_eq!(*stop, Stop::ToolUse);
@@ -523,7 +554,8 @@ mod tests {
                 out,
                 vec![ProviderEvent::End {
                     stop,
-                    assistant: vec![]
+                    assistant: vec![],
+                    usage: Usage::default()
                 }],
                 "{reason}"
             );

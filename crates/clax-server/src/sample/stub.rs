@@ -63,13 +63,25 @@ fn latest_user_text(req: &ProviderRequest) -> String {
         .unwrap_or_default()
 }
 
-fn end(stop: Stop, text: &str, extra: Vec<Value>) -> ProviderEvent {
+/// The round's end. The stub bills one input token per byte of the
+/// request's text and one output token per byte of its answer, so tests
+/// can reach a cost cap deterministically.
+fn end(stop: Stop, text: &str, extra: Vec<Value>, input: u64) -> ProviderEvent {
+    let usage = Usage {
+        input,
+        output: text.len() as u64,
+        ..Usage::default()
+    };
     let mut assistant = Vec::new();
     if !text.is_empty() {
         assistant.push(json!({"type": "text", "text": text}));
     }
     assistant.extend(extra);
-    ProviderEvent::End { stop, assistant }
+    ProviderEvent::End {
+        stop,
+        assistant,
+        usage,
+    }
 }
 
 fn directive<'a>(text: &'a str, name: &str) -> Option<&'a str> {
@@ -82,6 +94,7 @@ fn directive<'a>(text: &'a str, name: &str) -> Option<&'a str> {
 fn script(req: &ProviderRequest, delay: Duration) -> Vec<(Duration, ProviderEvent)> {
     use ProviderEvent::{Error, Text, ToolUse};
     let z = Duration::ZERO;
+    let billed = latest_user_text(req).len() as u64;
     let results: Vec<&str> = req
         .messages
         .last()
@@ -102,21 +115,21 @@ fn script(req: &ProviderRequest, delay: Duration) -> Vec<(Duration, ProviderEven
         let t = format!("tool said: {}", results.join("; "));
         return vec![
             (delay, Text(t.clone())),
-            (z, end(Stop::EndTurn, &t, vec![])),
+            (z, end(Stop::EndTurn, &t, vec![], billed)),
         ];
     }
     let prompt = latest_user_text(req);
     if let Some(say) = directive(&prompt, "say:") {
         return vec![
             (delay, Text(say.to_string())),
-            (z, end(Stop::EndTurn, say, vec![])),
+            (z, end(Stop::EndTurn, say, vec![], billed)),
         ];
     }
     if let Some(spec) = directive(&prompt, "tool:") {
         if req.final_round {
             return vec![
                 (delay, Text("no rounds left".into())),
-                (z, end(Stop::EndTurn, "no rounds left", vec![])),
+                (z, end(Stop::EndTurn, "no rounds left", vec![], billed)),
             ];
         }
         let (name, input) = match spec.split_once(' ') {
@@ -137,29 +150,29 @@ fn script(req: &ProviderRequest, delay: Duration) -> Vec<(Duration, ProviderEven
                     input,
                 },
             ),
-            (z, end(Stop::ToolUse, "Checking.", vec![call])),
+            (z, end(Stop::ToolUse, "Checking.", vec![call], billed)),
         ];
     }
     if prompt.contains("[[slow]]") {
         let mut out: Vec<(Duration, ProviderEvent)> = (0..50)
             .map(|_| (Duration::from_millis(100), Text("tick ".into())))
             .collect();
-        out.push((z, end(Stop::EndTurn, &"tick ".repeat(50), vec![])));
+        out.push((z, end(Stop::EndTurn, &"tick ".repeat(50), vec![], billed)));
         return out;
     }
     if prompt.contains("[[refuse]]") {
         return vec![
             (delay, Text("I won".into())),
-            (z, end(Stop::Refusal, "I won", vec![])),
+            (z, end(Stop::Refusal, "I won", vec![], billed)),
         ];
     }
     if prompt.contains("[[empty]]") {
-        return vec![(z, end(Stop::EndTurn, "", vec![]))];
+        return vec![(z, end(Stop::EndTurn, "", vec![], billed))];
     }
     if prompt.contains("[[truncate]]") {
         return vec![
             (delay, Text("cut".into())),
-            (z, end(Stop::MaxTokens, "cut", vec![])),
+            (z, end(Stop::MaxTokens, "cut", vec![], billed)),
         ];
     }
     if let Some(code) = directive(&prompt, "error-after:") {
@@ -198,7 +211,7 @@ fn script(req: &ProviderRequest, delay: Duration) -> Vec<(Duration, ProviderEven
         let t = format!("saw {n} images");
         return vec![
             (delay, Text(t.clone())),
-            (z, end(Stop::EndTurn, &t, vec![])),
+            (z, end(Stop::EndTurn, &t, vec![], billed)),
         ];
     }
     let whole = format!("echo: {prompt}");
@@ -208,7 +221,7 @@ fn script(req: &ProviderRequest, delay: Duration) -> Vec<(Duration, ProviderEven
         .chunks(size)
         .map(|c| (delay, Text(c.iter().collect())))
         .collect();
-    out.push((z, end(Stop::EndTurn, &whole, vec![])));
+    out.push((z, end(Stop::EndTurn, &whole, vec![], billed)));
     out
 }
 
@@ -349,6 +362,7 @@ mod tests {
         let ProviderEvent::End {
             stop: Stop::ToolUse,
             assistant,
+            ..
         } = evs.last().unwrap()
         else {
             panic!("{evs:?}")

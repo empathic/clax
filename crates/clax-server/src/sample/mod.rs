@@ -7,6 +7,7 @@ pub mod anthropic;
 pub mod cache;
 pub mod flight;
 pub mod json_reply;
+pub mod pricing;
 pub mod provider;
 pub mod quota;
 pub mod request;
@@ -26,6 +27,8 @@ pub struct SampleSettings {
     pub models: SampleModels,
     pub max_tokens: u32,
     pub daily_call_cap: Option<u32>,
+    /// Most micro-USD of model use per artifact per local day.
+    pub daily_cost_cap: Option<u64>,
     /// Most provider rounds of one call with tools; the last must answer.
     pub max_rounds: usize,
     /// How long a round waits for a page tool's result before sending an error result.
@@ -44,6 +47,7 @@ impl SampleSettings {
             models: cfg.models.clone(),
             max_tokens: cfg.max_tokens,
             daily_call_cap: cfg.daily_call_cap,
+            daily_cost_cap: cfg.daily_cost_cap_usd.map(pricing::micro),
             max_rounds: 5,
             tool_timeout: Duration::from_secs(150),
         }
@@ -301,6 +305,7 @@ mod tests {
             ..SampleConfig::default()
         };
         let s = SampleSettings::from_config(&cfg);
+        assert_eq!(s.daily_cost_cap, Some(500_000));
         assert_eq!(
             (s.daily_call_cap, s.max_tokens, s.max_rounds),
             (Some(3), 99, 5)

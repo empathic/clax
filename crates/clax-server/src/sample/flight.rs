@@ -5,7 +5,7 @@
 //! away before the flight ends, the run is aborted: the provider request is
 //! dropped (the key stops paying) and the call's tool waits are forgotten.
 
-use super::provider::{Block, ProviderEvent, ProviderRequest, Role, Stop, Turn};
+use super::provider::{Block, ProviderEvent, ProviderRequest, Role, Stop, Turn, Usage};
 use super::request::{Prepared, Tier, Verb};
 use super::{Sampler, ToolOutput, json_reply};
 use futures::{Stream, StreamExt};
@@ -169,14 +169,17 @@ fn fail(flight: &Flight, code: &'static str, message: impl Into<String>) {
 }
 
 /// Runs call `call_id` (already registered with [`Sampler::open_call`]) and
-/// pushes its frames into `flight`. `on_finish` runs once: with the answer
-/// just before a successful `Done` is pushed, with `None` on any failure or
-/// when the run is aborted.
+/// pushes its frames into `flight`. `on_usage` is awaited after each round
+/// that ends, before anything else of the call goes on, with the model and
+/// the tokens the round was billed for.
+/// `on_finish` runs once: with the answer just before a successful `Done` is
+/// pushed, with `None` on any failure or when the run is aborted.
 pub async fn drive(
     sampler: Arc<Sampler>,
     call_id: String,
     p: Prepared,
     flight: Arc<Flight>,
+    on_usage: impl Fn(&str, Usage) -> futures::future::BoxFuture<'static, ()> + Send + 'static,
     on_finish: impl FnOnce(Option<&Done>) + Send + 'static,
 ) {
     let _forget = Forget(sampler.clone(), call_id.clone());
@@ -224,7 +227,12 @@ pub async fn drive(
                     flight.push(Out::Text(d));
                 }
                 ProviderEvent::ToolUse { id, name, input } => calls.push((id, name, input)),
-                ProviderEvent::End { stop, assistant } => {
+                ProviderEvent::End {
+                    stop,
+                    assistant,
+                    usage,
+                } => {
+                    on_usage(&p.model, usage).await;
                     end = Some((stop, assistant));
                     break;
                 }
