@@ -1717,6 +1717,8 @@ pub struct AgentRef {
     pub cwd: String,
     /// The session's person (a public ID); `None`: the owner's agent.
     pub person: Option<String>,
+    /// Its agent name (spec 2026-10-08 §11), when it has one.
+    pub name: Option<String>,
 }
 
 /// A thread an item names, while it exists on a live artifact.
@@ -1764,7 +1766,8 @@ pub struct Sources {
     pub threads: Vec<ThreadRef>,
 }
 
-const SESSION_REF: &str = "SELECT agent_handle, harness, cwd, person FROM sessions WHERE id = ?1";
+const SESSION_REF: &str =
+    "SELECT agent_handle, harness, cwd, person, name FROM sessions WHERE id = ?1";
 const PAGE_URL: &str = "SELECT origin || path FROM live_pages WHERE artifact_id = ?1";
 const THREAD_REF: &str = "SELECT t.id, t.status, t.anchor_json FROM threads t
     JOIN artifacts a ON a.id = t.artifact_id WHERE a.deleted_at IS NULL AND t.id = ?1";
@@ -1824,6 +1827,7 @@ impl Store {
                                     harness: r.get(1)?,
                                     cwd: r.get(2)?,
                                     person: r.get(3)?,
+                                    name: r.get(4)?,
                                 })
                             })
                             .optional()?;

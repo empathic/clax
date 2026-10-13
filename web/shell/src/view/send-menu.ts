@@ -5,7 +5,8 @@
 // authors first says so ("Sam approves first").
 import type { AgentView } from "./working-model";
 
-export type SendItem = { handle: string; name: string; first: string | null };
+/** `person`: "Sam's agent" for another person's agent, else null. */
+export type SendItem = { handle: string; name: string; person: string | null; first: string | null };
 export type SendGroup = { label: string; mine: boolean; agents: SendItem[] };
 
 /** The live `agents` in groups, each by its name (else `names`', else its
@@ -24,7 +25,16 @@ export function sendGroups(agents: AgentView[], me: string | null | undefined, f
     const g = groups.get(key) ?? { label: mine ? "Your agents" : `${who}'s agents`, mine, agents: [] };
     groups.set(key, g);
     const asks = firsts.includes(owners ? null : p.public_id);
-    g.agents.push({ handle: a.handle, name: a.name ?? names?.get(a.handle) ?? a.harness, first: asks ? (mine ? "You approve first" : `${who} approves first`) : null });
+    g.agents.push({ handle: a.handle, name: a.name ?? names?.get(a.handle) ?? a.harness, person: mine ? null : `${who}'s agent`, first: asks ? (mine ? "You approve first" : `${who} approves first`) : null });
   }
   return [...groups.values()].sort((a, b) => Number(b.mine) - Number(a.mine));
+}
+
+/** The Send target where this viewer chose none: their own most recently
+ * active live agent (the daemon's order), else none (spec 2026-10-08 §10:
+ * no one-press send to another person's agent). An agent without a person
+ * (a daemon from before people) is taken as the viewer's; with `me`
+ * unknown, no agent with a person is. */
+export function ownTarget(agents: AgentView[], me: string | null | undefined): string | null {
+  return agents.find(a => a.live && (!a.person || a.person.public_id === me))?.handle ?? null;
 }

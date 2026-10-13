@@ -16,9 +16,6 @@ export type Thread = {
   /** The agent that owns the thread (spec 2026-10-08 §12): its name, its
    * person's public ID (null for the owner's agents) and name. */
   owner?: { handle?: string; name: string | null; person: string | null; person_name?: string; live: boolean };
-  /** The people a send naming one of their agents asks first (§10), by
-   * public ID (null: the owner); absent when none. */
-  approves_first?: (string | null)[];
   /** The versions that addressed this thread, oldest first. */
   addressed_in?: number[];
   /** Each time the thread was sent with others as one batch, oldest first:

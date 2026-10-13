@@ -561,7 +561,6 @@ fn views_and_senders(
         .map(|x| x.sends.iter().map(|b| b.sender.clone()).collect())
         .collect();
     let owners: Owners = extras.iter().map(|x| x.owner.clone()).collect();
-    let firsts = st.approves_first(threads)?;
     // Each owner's person's name, once per person (§11 "Display").
     let mut person_names: HashMap<Option<String>, String> = HashMap::new();
     for o in owners.iter().flatten() {
@@ -580,8 +579,7 @@ fn views_and_senders(
     threads
         .iter()
         .zip(extras)
-        .zip(firsts)
-        .map(|((t, x), firsts)| {
+        .map(|(t, x)| {
             let mut v = serde_json::to_value(t).expect("threads serialise");
             v["clip_url"] = if t.has_clip {
                 json!(format!(
@@ -609,11 +607,6 @@ fn views_and_senders(
             if let Some(o) = &x.owner {
                 v["owner"] = json!({"name": o.name, "person": o.person, "live": o.live,
                     "person_name": person_names.get(&o.person)});
-            }
-            // Who a send naming their agent asks first (§10); browsers only
-            // (`Vis::filter_threads` leaves it out for agents).
-            if !firsts.is_empty() {
-                v["approves_first"] = json!(firsts);
             }
             if let Some(Some(p)) = live.get(t.artifact_id.as_str()) {
                 let path = x.live_path.as_deref().unwrap_or(&p.path);
@@ -706,6 +699,14 @@ fn mark_viewers(vis: &Visibility, people: &mut Value, id_key: &str) {
 /// An artifact view's `participants` as an agent reads them.
 fn mark_participants(vis: &Visibility, view: &mut Value) {
     mark_viewers(vis, &mut view["participants"]["people"], "public_id");
+    // Agents' people by their payload-safe names.
+    if let Some(agents) = view["participants"]["agents"].as_array_mut() {
+        for a in agents {
+            if let Some(n) = a["person"]["name"].as_str().map(str::to_string) {
+                a["person"]["name"] = json!(clax_core::feedback::display_name(&n));
+            }
+        }
+    }
 }
 
 /// The visibility an agent channel's response goes through (spec §8):
@@ -840,9 +841,10 @@ impl Vis {
             }
         }
         if let Some(me) = &self.agent {
+            // A person's name in an agent's payload is the payload-safe one.
             for view in views.iter_mut() {
-                if let Some(v) = view.as_object_mut() {
-                    v.remove("approves_first");
+                if let Some(n) = view["owner"]["person_name"].as_str().map(str::to_string) {
+                    view["owner"]["person_name"] = json!(clax_core::feedback::display_name(&n));
                 }
             }
             for (view, owner) in views.iter_mut().zip(&owners) {

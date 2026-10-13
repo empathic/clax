@@ -46,6 +46,8 @@ describe("question model", () => {
     const a = view(); const b = view({ id: "x", agent: { handle: "a_9c2b00", harness: "claude", project: "p" } });
     expect(agentLabel(a.agent, [a.agent])).toBe("claude");
     expect(agentLabel(a.agent, [a.agent, b.agent])).toBe("claude 1f3a");
+    // An agent with a name goes by it (spec 2026-10-08 §11).
+    expect(agentLabel({ ...a.agent!, name: "clax-multi-person" }, [a.agent, b.agent])).toBe("clax-multi-person");
     expect(closedLabel(view({ status: "released" }))).toBe("Moved to the terminal");
     expect(closedLabel(view({ status: "withdrawn" }))).toBe("claude stopped waiting");
     expect(closedLabel(view({ status: "answered", answered_via: "terminal" }))).toBe("Answered in the terminal");

@@ -1794,7 +1794,8 @@ pub(crate) fn id_array(ids: &[String]) -> String {
     serde_json::to_string(&set).expect("strings serialise")
 }
 
-/// The feedback rows of each thread's latest forwarded comment.
+/// The feedback rows of each thread, each saying whether its comment is
+/// the thread's latest forwarded one.
 pub(crate) const FEEDBACK_STATES: &str =
     "SELECT f.thread_id, f.target_session_id, f.created_at, f.delivered_at, f.delivery_tier, f.acknowledged_at,
             f.resend_count, f.untargeted_at, s.ended_at, s.harness, s.harness_session_id IS NOT NULL,
@@ -1811,14 +1812,14 @@ pub(crate) const FEEDBACK_STATES: &str =
                                              THEN (SELECT public_id FROM viewers WHERE owner = 1)
                                              ELSE pa.author END
                                       FROM page_authors pa
-                                     WHERE pa.kind = 'comment' AND pa.id = f.comment_id))
+                                     WHERE pa.kind = 'comment' AND pa.id = f.comment_id)),
+            f.comment_id = (SELECT l.comment_id FROM feedback l WHERE l.thread_id = j.value
+                             ORDER BY l.created_at DESC, l.id DESC LIMIT 1)
        FROM json_each(?1) j
       CROSS JOIN feedback f ON f.thread_id = j.value
        JOIN threads t ON t.id = f.thread_id
        LEFT JOIN sessions s ON s.id = f.target_session_id
        LEFT JOIN watches w ON w.session_id = f.target_session_id AND w.artifact_id = t.artifact_id
-      WHERE f.comment_id = (SELECT l.comment_id FROM feedback l WHERE l.thread_id = j.value
-                             ORDER BY l.created_at DESC, l.id DESC LIMIT 1)
       ORDER BY f.thread_id, f.created_at, f.id";
 
 struct StateRow {
@@ -1841,6 +1842,8 @@ struct StateRow {
     /// Undelivered, and an open approval request of its session's person
     /// covers its comment's author there.
     requested: bool,
+    /// Its comment is the thread's latest forwarded one.
+    latest: bool,
 }
 
 pub(crate) fn feedback_states_in(
@@ -1868,6 +1871,7 @@ pub(crate) fn feedback_states_in(
             placeholder_at: r.get(13)?,
             person_name: r.get(14)?,
             requested: r.get(15)?,
+            latest: r.get(16)?,
         });
     }
     Ok(by_thread
@@ -1879,8 +1883,14 @@ pub(crate) fn feedback_states_in(
         .collect())
 }
 
-/// The state of one thread from its latest comment's rows (not empty).
-fn state_of(thread_id: &str, rows: &[StateRow], codex_push: bool) -> FeedbackState {
+/// The state of one thread from its rows (not empty): `withheld` while
+/// any row, of any of its comments, is held from its live target for its
+/// person's approval (spec 2026-10-08 §10: the thread waits for it even
+/// when a later comment went through); otherwise from its latest
+/// comment's rows.
+fn state_of(thread_id: &str, all: &[StateRow], codex_push: bool) -> FeedbackState {
+    let rows: Vec<&StateRow> = all.iter().filter(|r| r.latest).collect();
+    let rows = rows.as_slice();
     let tier_of = |r: &StateRow| r.tier.as_deref().and_then(Tier::parse);
     let state = |state, tier, since: &str, resends, exhausted| FeedbackState {
         thread_id: thread_id.to_string(),
@@ -1891,6 +1901,25 @@ fn state_of(thread_id: &str, rows: &[StateRow], codex_push: bool) -> FeedbackSta
         exhausted,
         approver: None,
     };
+    if let Some((r, at)) = all
+        .iter()
+        .filter(|r| r.delivered_at.is_none())
+        .find_map(|r| {
+            let held = match (&r.placeholder_at, r.requested) {
+                (Some(at), _) => Some(at.as_str()),
+                (None, true) => Some(r.created_at.as_str()),
+                (None, false) => None,
+            };
+            held.filter(|_| r.target.is_some() && r.ended_at.is_none())
+                .map(|at| (r, at))
+        })
+    {
+        let mut s = state(FeedbackPhase::Withheld, None, at, 0, false);
+        s.approver = Some(crate::feedback::display_name(
+            r.person_name.as_deref().unwrap_or(""),
+        ));
+        return s;
+    }
     if let Some((r, at)) = rows
         .iter()
         .filter_map(|r| r.acknowledged_at.as_deref().map(|at| (r, at)))
@@ -1906,7 +1935,7 @@ fn state_of(thread_id: &str, rows: &[StateRow], codex_push: bool) -> FeedbackSta
     }
     let delivered: Vec<(&StateRow, &str)> = rows
         .iter()
-        .filter_map(|r| r.delivered_at.as_deref().map(|at| (r, at)))
+        .filter_map(|r| r.delivered_at.as_deref().map(|at| (*r, at)))
         .collect();
     if let Some((first, at)) = delivered.iter().min_by(|a, b| a.1.cmp(b.1)) {
         let resends = delivered.iter().map(|(r, _)| r.resends).max().unwrap_or(0);
@@ -1920,21 +1949,6 @@ fn state_of(thread_id: &str, rows: &[StateRow], codex_push: bool) -> FeedbackSta
             resends,
             exhausted,
         );
-    }
-    if let Some((r, at)) = rows.iter().find_map(|r| {
-        let held = match (&r.placeholder_at, r.requested) {
-            (Some(at), _) => Some(at.as_str()),
-            (None, true) => Some(r.created_at.as_str()),
-            (None, false) => None,
-        };
-        held.filter(|_| r.target.is_some() && r.ended_at.is_none())
-            .map(|at| (r, at))
-    }) {
-        let mut s = state(FeedbackPhase::Withheld, None, at, 0, false);
-        s.approver = Some(crate::feedback::display_name(
-            r.person_name.as_deref().unwrap_or(""),
-        ));
-        return s;
     }
     if let Some(r) = rows
         .iter()

@@ -29,7 +29,7 @@
     versions?: VersionTag[];
     /** The card has been at least half visible for a second (decided: Q4). */
     onSeen?(t: Thread): void;
-    /** The approval its sends wait for is this viewer's (its card is above): "waiting for your approval". */
+    /** Its sends wait for this viewer's approval (its card is above): "waiting for your approval". */
     yours?: boolean;
     /** The card's box is ticked for a batch send (spec §8). */
     checked?: boolean;
@@ -85,7 +85,7 @@
   const guardSend = (e: Event, act: () => void) => {
     hint = guardedAction(e, "send", () => { if (card?.contains(document.activeElement)) head?.focus(); act(); });
   };
-  const label = $derived(t.status === "open" && t.sent_to_agent ? (yours && t.feedback_state?.state === "withheld" ? "waiting for your approval" : waitingLabel(t.feedback_state, now)) : null);
+  const label = $derived(t.status === "open" && t.sent_to_agent ? (yours ? "waiting for your approval" : waitingLabel(t.feedback_state, now)) : null);
   // The owner agent (spec 2026-10-08 §12, §26 (e)): its name, with its
   // person when it is not this viewer's (the owner's agents have none; a
   // viewer unknown is taken for the owner); the person shows on hover.
@@ -164,7 +164,7 @@
   {/if}
 </article>
 
-{#snippet chip()}{#if owner}<span class="owner-chip" title={`${owner.person_name}'s agent`}>{owner.name}{mine ? "" : ` · ${owner.person_name}`}</span>{/if}{/snippet}
+{#snippet chip()}{#if owner}<span class="owner-chip" title={`${owner.name ?? "agent"}, ${mine ? "your agent" : `${owner.person_name}'s agent`}`}>{owner.name}{mine ? "" : ` · ${owner.person_name}`}</span>{/if}{/snippet}
 
 {#snippet actions()}
   <!-- Only stops a click on these controls from also selecting the card. -->

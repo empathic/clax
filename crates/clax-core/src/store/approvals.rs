@@ -1582,27 +1582,42 @@ fn withheld_outside_threads(
 }
 
 impl Store {
-    /// For each of `threads`, in order, the people whose agents a send
+    /// The people whose agents a send of `threads` (of artifact `aid`)
     /// naming one of them would ask first (§10, "Sam approves first"):
-    /// each person with a live agent whose agents may not see an author of
-    /// the thread's comments that a routing request names (§9.2, M18),
-    /// by public ID (`None`: the owner), in the order their agents started.
-    /// Empty for every thread while no viewer is a person (§19).
+    /// each person with a live agent that owns or watches `aid` (the
+    /// agents its Send menu lists) whose agents may not see an author of
+    /// one of the threads' comments that a routing request names (§9.2,
+    /// M18), by public ID (`None`: the owner), in the order their agents
+    /// started. Empty while no viewer is a person (§19).
     ///
     /// # Errors
     /// The store's.
-    pub fn approves_first(&self, threads: &[Thread]) -> Result<Vec<Vec<Option<String>>>> {
-        let mut out = vec![Vec::new(); threads.len()];
+    pub fn approves_first(
+        &self,
+        aid: &crate::ArtifactId,
+        threads: &[Thread],
+    ) -> Result<Vec<Option<String>>> {
+        let mut out = Vec::new();
+        let threads: Vec<&Thread> = threads
+            .iter()
+            .filter(|t| {
+                t.artifact_id == aid.as_str()
+                    && t.comments.iter().any(|c| c.author_kind == AUTHOR_VIEWER)
+            })
+            .collect();
         if threads.is_empty() || !self.people_present()? {
             return Ok(out);
         }
         let (owner, people) = self.with_read(|c| {
             let mut st = c.prepare_cached(
-                "SELECT person FROM sessions WHERE ended_at IS NULL
-                 GROUP BY person ORDER BY MIN(started_at), person",
+                "SELECT s.person FROM sessions s
+                  WHERE s.ended_at IS NULL
+                    AND (s.id = (SELECT owner_session_id FROM artifacts WHERE id = ?1)
+                         OR EXISTS (SELECT 1 FROM watches w WHERE w.session_id = s.id AND w.artifact_id = ?1))
+                  GROUP BY s.person ORDER BY MIN(s.started_at), s.person",
             )?;
             let people = st
-                .query_map([], |r| r.get::<_, Option<String>>(0))?
+                .query_map(params![aid.as_str()], |r| r.get::<_, Option<String>>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             Ok((owner_pid(c)?, people))
         })?;
@@ -1613,12 +1628,11 @@ impl Store {
                 None => Reader::Owner,
             };
             let vis = Visibility::for_reader(self, &reader, generation)?;
-            for (t, firsts) in threads.iter().zip(out.iter_mut()) {
-                if t.comments.iter().any(|c| c.author_kind == AUTHOR_VIEWER)
-                    && !withheld_in_thread(&vis, t, owner.as_deref()).is_empty()
-                {
-                    firsts.push(person.clone());
-                }
+            if threads
+                .iter()
+                .any(|t| !withheld_in_thread(&vis, t, owner.as_deref()).is_empty())
+            {
+                out.push(person);
             }
         }
         Ok(out)

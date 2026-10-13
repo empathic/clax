@@ -2065,30 +2065,41 @@ async fn an_agents_approvals_withhold_a_page_title_it_may_not_see() {
     assert_eq!(thread["artifact_title"], "Quarterly Review", "{thread}");
 }
 
+/// `GET /api/artifacts/{aid}/approves-first?threads=…` as `b` asks it.
+async fn approves_first(b: &Browser<'_>, aid: &str, tids: &[&str]) -> (u16, Value) {
+    b.call(
+        "GET",
+        &format!(
+            "/api/artifacts/{aid}/approves-first?threads={}",
+            tids.join(",")
+        ),
+        None,
+    )
+    .await
+}
+
 /// What the Send menu and the owner chip read (spec §10, §11 "Display",
-/// §12): a thread names whose approval a send naming their agent asks
-/// first until they approve (browsers only), its owner names its person,
-/// the artifact's agents carry their name and person, and the owner's
-/// browser is marked as the owner's.
+/// §12): who a send naming their agent asks first, until they approve,
+/// asked by the owner's or a connected person's browser as the menu
+/// opens; a thread's owner with its person; the artifact's agents with
+/// their name and person; and the owner's browser marked as the owner's.
 #[tokio::test]
 async fn the_send_menu_names_agents_their_people_and_who_approves_first() {
     let t = Two::new().await;
+    owner_agent_watches(&t).await;
     let tid = t.mia_thread("please fix the chart").await;
     let sam = json!(t.sam_public());
-    // The owner's live agent, too, waits for the owner to approve Mia
-    // (`null`: the owner).
-    let th = t.owner_thread(&tid).await;
-    assert_eq!(th["approves_first"], json!([null, sam]), "{th}");
-    // An agent's view leaves it out.
-    let (status, v) = t
-        .sam_agent(
-            "GET",
-            &format!("/api/artifacts/{}/threads/{tid}", t.aid),
-            None,
-        )
-        .await;
+    // The owner's agent, too, waits for the owner to approve Mia (`null`: the owner).
+    let (status, v) = approves_first(&t.owner_browser(), &t.aid, &[&tid]).await;
     assert_eq!(status, 200, "{v}");
-    assert!(v["thread"].get("approves_first").is_none(), "{v}");
+    assert_eq!(v["approves_first"], json!([null, sam]), "{v}");
+    // Mia's own browser may ask too; no thread view carries it.
+    let (status, v) = approves_first(&t.mia_browser(), &t.aid, &[&tid]).await;
+    assert_eq!(
+        (status, v["approves_first"].clone()),
+        (200, json!([null, sam]))
+    );
+    assert!(t.owner_thread(&tid).await.get("approves_first").is_none());
     // The artifact's agents: Sam's, named, as Sam's.
     let (status, a) = t
         .owner_browser()
@@ -2123,6 +2134,143 @@ async fn the_send_menu_names_agents_their_people_and_who_approves_first() {
         .to_string();
     let (status, v) = t.sam_decides(&rid, "thread").await;
     assert_eq!(status, 200, "{v}");
-    let th = t.owner_thread(&tid).await;
-    assert_eq!(th["approves_first"], json!([null]), "{th}");
+    let (_, v) = approves_first(&t.owner_browser(), &t.aid, &[&tid]).await;
+    assert_eq!(v["approves_first"], json!([null]), "{v}");
+}
+
+/// Who approves first is approval state (spec §18): a LAN viewer, an
+/// anonymous caller and an agent never get it, in no thread view, list or
+/// event; and it names only people with a live agent on the artifact.
+#[tokio::test]
+async fn who_approves_first_reaches_only_the_owner_and_connected_people() {
+    let t = Two::new().await;
+    let tid = t.mia_thread("please fix the chart").await;
+    // An anonymous subscriber to the artifact's events, before the thread changes.
+    let mut anon =
+        t.w.ts
+            .events_as(&format!("?artifact={}", t.aid), None)
+            .await;
+    let lan = t.w.ts.viewer(Some("Lucy")).await;
+    let lucy = Browser {
+        ts: &t.w.ts,
+        cookie: format!("clax_viewer={}", lan.cookie),
+    };
+    let nobody = Browser {
+        ts: &t.w.ts,
+        cookie: String::new(),
+    };
+    // The route refuses them, and agents.
+    for b in [&lucy, &nobody] {
+        let (status, v) = approves_first(b, &t.aid, &[&tid]).await;
+        assert_eq!(status, 403, "{v}");
+    }
+    let (status, v) = t
+        .sam_agent(
+            "GET",
+            &format!("/api/artifacts/{}/approves-first?threads={tid}", t.aid),
+            None,
+        )
+        .await;
+    assert_eq!(status, 403, "{v}");
+    // No thread view, list or event carries it, to anyone.
+    for path in [
+        format!("/api/artifacts/{}/threads/{tid}", t.aid),
+        format!("/api/artifacts/{}/threads", t.aid),
+    ] {
+        for b in [&lucy, &nobody, &t.owner_browser()] {
+            let (status, v) = b.call("GET", &path, None).await;
+            assert_eq!(status, 200, "{v}");
+            assert!(!v.to_string().contains("approves_first"), "{path}: {v}");
+        }
+    }
+    let r =
+        t.w.ts
+            .client
+            .get(format!("{}/api/artifacts/{}/threads", t.w.ts.base, t.aid))
+            .send()
+            .await
+            .unwrap();
+    assert!(!r.text().await.unwrap().contains("approves_first"));
+    let (status, v) = t.mia_sends_to_sam(&tid).await;
+    assert_eq!(status, 200, "{v}");
+    loop {
+        let (name, ev) = anon.next().await;
+        assert!(!ev.to_string().contains("approves_first"), "{name}: {ev}");
+        if name == "thread" {
+            break;
+        }
+    }
+    // An artifact none of Sam's agents publishes or watches names nobody:
+    // Sam's agent is live, but not there.
+    let other =
+        t.w.ts
+            .publish(
+                "Elsewhere",
+                &[("index.html", "<main><h2>Quarterly goals</h2></main>")],
+            )
+            .await["artifact"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+    let elsewhere = t.w.ts.thread_as(&other, &t.w.mia_cookie, "a note").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, v) = approves_first(&t.owner_browser(), &other, &[&elsewhere]).await;
+    assert_eq!(
+        (status, v["approves_first"].clone()),
+        (200, json!([])),
+        "{v}"
+    );
+    // A thread of another artifact is not this one's.
+    let (status, _) = approves_first(&t.owner_browser(), &t.aid, &[&elsewhere]).await;
+    assert_eq!(status, 404);
+}
+
+/// A thread waits for an approval while any of its comments is held, not
+/// only its newest (spec §10): a LAN viewer comments, the owner replies
+/// "+1", and the owner sends the thread to Sam's agent; Sam lets the
+/// owner's content through but not the LAN viewer's.
+#[tokio::test]
+async fn a_thread_waits_for_approval_while_an_earlier_comment_is_held() {
+    let t = Two::new().await;
+    sam_approves_the_owner(&t).await;
+    let lan = t.w.ts.viewer(Some("Lucy")).await;
+    let tid =
+        t.w.ts
+            .thread_as(&t.aid, &lan.cookie, "the chart is wrong")
+            .await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+    let (status, v) = t
+        .owner_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/comments", t.aid),
+            Some(json!({"body": "+1"})),
+        )
+        .await;
+    assert_eq!(status, 201, "{v}");
+    let (status, v) = t
+        .owner_browser()
+        .call(
+            "POST",
+            &format!("/api/artifacts/{}/threads/{tid}/send", t.aid),
+            Some(json!({"to": t.sam_handle})),
+        )
+        .await;
+    assert_eq!(status, 200, "{v}");
+    let requests = t.sams_requests().await;
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert_eq!(requests[0]["thread_id"], json!(tid));
+    let st = &t.owner_thread(&tid).await["feedback_state"];
+    assert_eq!(st["state"], "withheld", "{st}");
+    assert_eq!(st["approver"], "Sam", "{st}");
+    // Once Sam lets Lucy's comment through, the thread no longer waits.
+    let rid = requests[0]["id"].as_str().unwrap().to_string();
+    let (status, v) = t.sam_decides(&rid, "thread").await;
+    assert_eq!(status, 200, "{v}");
+    let st = &t.owner_thread(&tid).await["feedback_state"];
+    assert_ne!(st["state"], "withheld", "{st}");
 }
