@@ -200,6 +200,7 @@ input, select { line-height: 1.2; }
 .prompt { background: var(--raised); color: var(--fg); border: 1px solid var(--border-hover); border-radius: var(--radius); padding: 18px; width: min(420px, 100%); box-shadow: var(--elev-lg); }
 .prompt h2 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
 .prompt p { margin: 0 0 16px; line-height: 1.6; overflow-wrap: anywhere; }
+.prompt #prompt-body { max-height: min(50vh, 320px); overflow-y: auto; }
 .prompt .actions { display: flex; gap: 8px; justify-content: flex-end; }
 .file-label { flex: 0 1 auto; min-width: 0; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer .file-label { margin: 0; }
