@@ -566,6 +566,11 @@ impl Store {
         for id in ids {
             let removed = self.with_tx(|tx| {
                 let zero = "SELECT id FROM artifacts WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL";
+                // A raise naming it goes with it (spec §14).
+                let still: bool = tx.query_row(&format!("SELECT EXISTS ({zero})"), params![id], |r| r.get(0))?;
+                if still {
+                    super::elevations::drop_artifact_in(self, tx, &AuditCtx::DAEMON, &id)?;
+                }
                 for table in ["assets", "versions", "docs", "leases"] {
                     tx.execute(
                         &format!("DELETE FROM {table} WHERE artifact_id IN ({zero})"),
@@ -627,6 +632,14 @@ impl Store {
                         )?;
                     }
                     None => {
+                        // Its soft delete dropped its raises; any left from
+                        // before go now (spec §14).
+                        super::elevations::drop_artifact_in(
+                            self,
+                            tx,
+                            &AuditCtx::DAEMON,
+                            &row.artifact_id,
+                        )?;
                         for sql in [
                             "DELETE FROM version_threads WHERE artifact_id = ?1",
                             "DELETE FROM version_threads WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",

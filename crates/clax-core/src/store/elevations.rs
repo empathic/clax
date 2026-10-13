@@ -143,6 +143,23 @@ fn holds_in(c: &Connection, granter: Option<&str>, aid: &str) -> Result<Option<R
     Ok(Some(creator_elevation(&everything, &rights, &|_| true)))
 }
 
+/// 400 `invalid_rights`: an elevation that gives nothing (spec §7.4);
+/// `DELETE` removes one.
+fn empty_raise() -> CoreError {
+    CoreError::invalid(
+        "invalid_rights",
+        "name the access to add; DELETE removes an elevation",
+    )
+}
+
+/// 404 `not_raised`: a removal of an elevation the caller never gave.
+fn not_raised() -> CoreError {
+    CoreError::invalid(
+        "not_raised",
+        "you have not raised this agent: nothing was removed",
+    )
+}
+
 /// 403 `not_creator` (spec §7.4).
 fn not_creator() -> CoreError {
     CoreError::invalid(
@@ -228,14 +245,16 @@ fn record(
     Ok(())
 }
 
-/// Deletes every elevation `granter` gave (their revocation as a person),
-/// recording each with `reason` `person_revoked`. Bumps the visibility
-/// generation when there was any.
+/// Deletes every elevation `granter` gave, recording each with `reason`:
+/// `person_revoked` (revoked as a person), `person_released` (returned to a
+/// plain viewer) or `viewer_folded` (their viewer folded into another).
+/// Bumps the visibility generation when there was any.
 pub(super) fn drop_granted_in(
     st: &Store,
     tx: &Transaction<'_>,
     ctx: &AuditCtx,
     granter: &str,
+    reason: &str,
 ) -> Result<()> {
     let sids: Vec<String> = {
         let mut stmt =
@@ -244,14 +263,7 @@ pub(super) fn drop_granted_in(
             .collect::<rusqlite::Result<_>>()?
     };
     for sid in &sids {
-        record(
-            st,
-            tx,
-            ctx,
-            (sid, Some(granter)),
-            None,
-            Some("person_revoked"),
-        )?;
+        record(st, tx, ctx, (sid, Some(granter)), None, Some(reason))?;
     }
     if !sids.is_empty() {
         st.visibility_changed();
@@ -340,7 +352,9 @@ impl Store {
     ///
     /// # Errors
     /// `NotFound` for a session that is not live; `token_agent` for an
-    /// agent of this machine; `not_creator` for a person's elevation at
+    /// agent of this machine; `invalid_rights` for an empty access;
+    /// `not_raised` for a removal when `granter` has no elevation of it;
+    /// `not_creator` for a person's elevation at
     /// `*`, `own`, `clax-ask` or an artifact they did not create (or that
     /// is deleted); `beyond_your_rights` for one giving more than they may
     /// do there.
@@ -353,11 +367,18 @@ impl Store {
     ) -> Result<super::people::AgentRights> {
         self.with_tx(|tx| {
             super::people::live_grant_of(tx, sid)?;
+            if access.as_ref().is_some_and(Rights::is_empty) {
+                return Err(empty_raise());
+            }
             if let (Some(g), Some(a)) = (granter, &access) {
                 check_creator(tx, g, a)?;
             }
             let now = self.now();
             let changed = put_in(tx, sid, granter, access.as_ref(), &now)?;
+            // Removing nothing changes nothing and records nothing.
+            if access.is_none() && !changed {
+                return Err(not_raised());
+            }
             record(self, tx, ctx, (sid, granter), access.as_ref(), None)?;
             if changed {
                 self.visibility_changed();
@@ -597,5 +618,129 @@ mod tests {
         st.revoke_person(DAEMON, &sam).unwrap();
         raw(&agent, both.to_json().to_string());
         assert!(!may_update(&st, &mia_g, &agent, notes.as_str()));
+    }
+
+    /// The audit records of `agent.elevate`, their bodies, oldest first.
+    fn elevate_records(st: &Store) -> Vec<serde_json::Value> {
+        st.with_read(|c| {
+            let mut stmt = c.prepare(
+                "SELECT body FROM audit_events WHERE kind = 'agent.elevate' ORDER BY seq",
+            )?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows
+                .iter()
+                .map(|b| serde_json::from_str(b).unwrap())
+                .collect())
+        })
+        .unwrap()
+    }
+
+    /// Spec §7.4: an empty raise is refused, and removing a raise the
+    /// granter never gave is refused and recorded nowhere.
+    #[test]
+    fn an_empty_raise_and_a_removal_of_nothing_change_and_record_nothing() {
+        let (_d, _c, st) = store();
+        let (sam_g, _, _) = approved(&st, "Sam", KEY_A);
+        let (mia_g, _, _) = approved(&st, "Mia", KEY_B);
+        let sam = st.grant(&sam_g).unwrap().person.unwrap();
+        let agent = st.register_session(DAEMON, reg(&mia_g)).unwrap().id;
+        st.elevate_agent(DAEMON, &agent, None, Some(update_at("qr")))
+            .unwrap();
+        let (g0, n0) = (st.visibility_generation(), elevate_records(&st).len());
+        for granter in [Some(sam.as_str()), None] {
+            assert_eq!(
+                code(st.elevate_agent(DAEMON, &agent, granter, Some(Rights::default()))),
+                "invalid_rights"
+            );
+        }
+        assert_eq!(
+            code(st.elevate_agent(DAEMON, &agent, Some(&sam), None)),
+            "not_raised"
+        );
+        assert_eq!(
+            (st.visibility_generation(), elevate_records(&st).len()),
+            (g0, n0)
+        );
+        // The owner's raise is still there.
+        let a = st.agent_rights(&agent).unwrap().unwrap();
+        assert_eq!(a.elevation_by(None), Some(&update_at("qr")));
+        assert_eq!(a.elevations.len(), 1);
+    }
+
+    /// Spec §14: every end of a granter's standing to give a raise drops it
+    /// and records why: an artifact deleted outright (one with no version),
+    /// a person returned to a plain viewer, a viewer folded into another.
+    #[test]
+    fn hard_deletes_releases_and_folds_drop_the_raises_left_behind() {
+        let (_d, _c, st) = store();
+        let (mia_g, _, _) = approved(&st, "Mia", KEY_B);
+        let agent = st.register_session(DAEMON, reg(&mia_g)).unwrap().id;
+        let raw = |granter: &str, aid: &str| {
+            st.with_tx(|tx| {
+                tx.execute(
+                    "INSERT INTO session_elevations (session_id, granter, access_json, created_at)
+                     VALUES (?1, ?2, ?3, 'x')",
+                    params![agent, granter, update_at(aid).to_json().to_string()],
+                )?;
+                tx.execute(
+                    "UPDATE artifacts SET person = ?2 WHERE id = ?1",
+                    params![aid, granter],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        };
+        let reasons = |st: &Store| {
+            elevate_records(st)
+                .iter()
+                .filter_map(|r| r["reason"].as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        };
+        let rows = |st: &Store| st.agent_rights(&agent).unwrap().unwrap().elevations.len();
+        // An artifact with no version, deleted outright.
+        let (sam_g, _, _) = approved(&st, "Sam", KEY_A);
+        let sam = st.grant(&sam_g).unwrap().person.unwrap();
+        let zero = artifact(&st, None);
+        raw(&sam, zero.as_str());
+        st.with_tx(|tx| {
+            tx.execute(
+                "UPDATE artifacts SET current_version = 0 WHERE id = ?1",
+                params![zero.as_str()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(st.delete_zero_version_artifacts().unwrap(), 1);
+        assert_eq!(rows(&st), 0);
+        assert_eq!(reasons(&st), ["artifact_deleted"]);
+        // A person invited, never connected, whose invite is revoked.
+        let (invite, _) = st
+            .create_invite(
+                DAEMON,
+                crate::store::people::InvitePerson::New("Kim".into()),
+                None,
+            )
+            .unwrap();
+        let kim = invite.person.clone();
+        let notes = artifact(&st, None);
+        raw(&kim, notes.as_str());
+        st.revoke_invite(DAEMON, &invite.id).unwrap();
+        assert_eq!(rows(&st), 0);
+        assert_eq!(reasons(&st), ["artifact_deleted", "person_released"]);
+        // A plain viewer folded into the owner by a claim.
+        let cookie = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+        let lan = st.mint_viewer(cookie, true).unwrap();
+        st.owner_viewer(true).unwrap();
+        let page = artifact(&st, None);
+        raw(&lan.public_id, page.as_str());
+        st.claim_for_owner(crate::audit::Via::Shell, cookie)
+            .unwrap();
+        assert_eq!(rows(&st), 0);
+        assert_eq!(
+            reasons(&st),
+            ["artifact_deleted", "person_released", "viewer_folded"]
+        );
     }
 }

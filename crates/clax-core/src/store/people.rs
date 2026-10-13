@@ -954,7 +954,7 @@ impl Store {
                 )
                 .optional()?;
             if let Some(v) = viewer
-                && release_unconnected(tx, Some(&v), &now)? > 0
+                && release_unconnected(self, tx, ctx, Some(&v), &now)? > 0
             {
                 // Back to `*unconnected` (M14, M17).
                 self.visibility_changed();
@@ -1643,7 +1643,7 @@ impl Store {
             )?;
             if n > 0 {
                 super::approvals::withdraw_person_in(self, tx, ctx, public_id, &now)?;
-                super::elevations::drop_granted_in(self, tx, ctx, public_id)?;
+                super::elevations::drop_granted_in(self, tx, ctx, public_id, "person_revoked")?;
                 let rec = AuditRecord::new(AuditKind::PersonRevoke, now.as_str())
                     .with("person", public_id);
                 self.record_audit(tx, ctx, rec)?;
@@ -2047,7 +2047,7 @@ impl Store {
                         OR (status IN ('expired', 'revoked') AND ended_at IS NOT NULL))",
                 params![retention_cutoff],
             )?;
-            if release_unconnected(tx, None, &now)? > 0 {
+            if release_unconnected(self, tx, &EXPIRY, None, &now)? > 0 {
                 self.visibility_changed();
             }
             Ok(out)
@@ -2272,17 +2272,31 @@ const UNFINISHED_STALE: &str = "((status = 'pending' AND created_at < ?1)
 /// Returns to plain viewers (and to the default rights) the people, of
 /// `viewer_id` or of every row when `None`, who never held a grant, are
 /// unrevoked, and have no live invite: an invite's person whose invites
-/// were revoked or expired unredeemed. Returns how many it returned.
-fn release_unconnected(tx: &Transaction<'_>, viewer_id: Option<&str>, now: &str) -> Result<usize> {
-    let n = tx.execute(
-        "UPDATE viewers SET person = 0, rights_json = NULL
-         WHERE person = 1 AND owner = 0 AND person_revoked_at IS NULL AND (?1 IS NULL OR id = ?1)
-           AND NOT EXISTS (SELECT 1 FROM grants g WHERE g.viewer_id = viewers.id)
-           AND NOT EXISTS (SELECT 1 FROM invites i WHERE i.viewer_id = viewers.id
-                             AND i.used_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > ?2)",
-        params![viewer_id, now],
-    )?;
-    Ok(n)
+/// were revoked or expired unredeemed. Every elevation one of them gave is
+/// dropped (`person_released`, under `ctx`). Returns how many it returned.
+fn release_unconnected(
+    st: &Store,
+    tx: &Transaction<'_>,
+    ctx: &AuditCtx,
+    viewer_id: Option<&str>,
+    now: &str,
+) -> Result<usize> {
+    let released: Vec<String> = {
+        let mut stmt = tx.prepare(
+            "UPDATE viewers SET person = 0, rights_json = NULL
+             WHERE person = 1 AND owner = 0 AND person_revoked_at IS NULL AND (?1 IS NULL OR id = ?1)
+               AND NOT EXISTS (SELECT 1 FROM grants g WHERE g.viewer_id = viewers.id)
+               AND NOT EXISTS (SELECT 1 FROM invites i WHERE i.viewer_id = viewers.id
+                                 AND i.used_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > ?2)
+             RETURNING public_id",
+        )?;
+        stmt.query_map(params![viewer_id, now], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    for p in &released {
+        super::elevations::drop_granted_in(st, tx, ctx, p, "person_released")?;
+    }
+    Ok(released.len())
 }
 
 fn unhex32(s: &str) -> Option<[u8; 32]> {
