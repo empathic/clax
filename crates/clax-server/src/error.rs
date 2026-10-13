@@ -131,6 +131,10 @@ impl From<CoreError> for ApiError {
                 message,
             } => ApiError::new(StatusCode::UNAUTHORIZED, code, message),
             CoreError::Invalid {
+                code: "not_raised",
+                message,
+            } => ApiError::new(StatusCode::NOT_FOUND, "not_raised", message),
+            CoreError::Invalid {
                 code: code @ ("denied" | "foreign_session" | "not_creator" | "beyond_your_rights"),
                 message,
             } => ApiError::new(StatusCode::FORBIDDEN, code, message),

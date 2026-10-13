@@ -1268,15 +1268,21 @@ impl Event<'_> {
                 },
                 self.row.ids.session.as_deref().unwrap_or("unknown")
             ),
-            Some(K::AgentElevate) => format!(
-                "{} the agent of session {}",
-                if self.body.get("access").is_none_or(Value::is_null) {
-                    "Cleared the elevation of"
-                } else {
-                    "Elevated"
-                },
-                self.row.ids.session.as_deref().unwrap_or("unknown")
-            ),
+            Some(K::AgentElevate) => {
+                let cleared = self.body.get("access").is_none_or(Value::is_null);
+                let session = self.row.ids.session.as_deref().unwrap_or("unknown");
+                // A creator's raise names its granter; the owner's does not.
+                match self.body.get("granter").and_then(Value::as_str) {
+                    Some(g) if cleared => {
+                        format!("Cleared {g}'s raise of the agent of session {session}")
+                    }
+                    Some(g) => format!("{g} raised the agent of session {session}"),
+                    None if cleared => {
+                        format!("Cleared the elevation of the agent of session {session}")
+                    }
+                    None => format!("Elevated the agent of session {session}"),
+                }
+            }
             Some(K::BackfillSkip) => {
                 return format!(
                     "Skipped {} row {} while recording earlier history",

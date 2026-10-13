@@ -1642,6 +1642,16 @@ impl People {
     }
 }
 
+/// The keys of object `v`, sorted.
+fn keys(v: &Value) -> Vec<String> {
+    let mut k: Vec<String> = v
+        .as_object()
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_default();
+    k.sort();
+    k
+}
+
 fn update_at(aid: &str) -> Value {
     json!([{"type": "clax-artifacts", "actions": ["update"], "locations": [aid]}])
 }
@@ -1693,12 +1703,14 @@ async fn a_creator_raises_another_persons_agent_on_their_artifact_only() {
         .await;
     assert_eq!(status, 200, "{v}");
     assert!(p.ts.store.visibility_generation() > gen_before, "bumped");
-    assert_eq!(v["agent"]["elevate"], Value::Null, "not the owner's");
+    // Sam reads back his own raise of Mia's agent, and nothing more of it.
     assert_eq!(
-        v["agent"]["elevations"][0]["granter"]["public_id"],
-        json!(p.sam_public)
+        keys(&v["agent"]),
+        ["elevation", "handle", "name", "person"],
+        "{v}"
     );
-    assert_eq!(v["agent"]["elevations"][0]["access"], update_at(&notes));
+    assert_eq!(v["agent"]["handle"], json!(mia_h));
+    assert_eq!(v["agent"]["elevation"], update_at(&notes));
     let rec = p.audited("agent.elevate");
     assert_eq!(rec.last().unwrap()["granter"], json!(p.sam_public));
     let (status, v) = p.mia_publishes(&p.mia_session, &notes, 1).await;
@@ -1719,10 +1731,10 @@ async fn a_creator_raises_another_persons_agent_on_their_artifact_only() {
         .unwrap()
         .clone();
     assert_eq!(card["elevations"][0]["granter"]["name"], json!("Sam"));
-    let (status, _) = p
+    let (status, v) = p
         .mias_browser("DELETE", &format!("/api/agents/{mia_h}/elevate"), None)
         .await;
-    assert_eq!(status, 200);
+    assert_eq!((status, code(&v)), (404, "not_raised"), "{v}");
     let (status, v) = p.mia_publishes(&p.mia_session, &notes, 2).await;
     assert_eq!(status, 201, "Sam's raise stays: {v}");
     // Sam lists his raises; Mia lists none; whether each created an
@@ -2059,4 +2071,130 @@ async fn the_owner_sees_exactly_a_persons_approvals_of_the_owners_content() {
         !theirs.to_string().contains(of_mia["id"].as_str().unwrap()),
         "{theirs}"
     );
+}
+
+/// Spec §7.4, §18: raising or removing a raise never shows a person another
+/// person's agent beyond its name and their own raise of it: not its
+/// narrowing, other granters' raises, rights or machine. Removing a raise
+/// one never gave is 404 and recorded nowhere.
+#[tokio::test]
+async fn a_raise_answers_a_person_with_their_own_raise_alone() {
+    let p = people().await;
+    let notes = p.sams_notes().await;
+    let qr =
+        p.ts.publish("Quarterly Review", &[("index.html", "<p>v1</p>")])
+            .await;
+    let qr = qr["artifact"]["id"].as_str().unwrap().to_string();
+    let (mia_h, sam_h) = (p.handle(&p.mia_session), p.handle(&p.sam_session));
+    let path = format!("/api/agents/{mia_h}/elevate");
+    // Mia narrows her agent; the owner raises it.
+    let (status, _) = p
+        .mias_browser(
+            "PUT",
+            &format!("/api/agents/{mia_h}/narrow"),
+            Some(json!({"access": "clax:reader"})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let (status, _) = p
+        .owner("PUT", &path, Some(json!({"access": update_at(&qr)})))
+        .await;
+    assert_eq!(status, 200);
+    let leaks = |v: &Value| {
+        let t = v.to_string();
+        ["narrow", "rights", "elevations", "grant_id", "harness", &qr]
+            .iter()
+            .filter(|k| t.contains(**k))
+            .map(|k| k.to_string())
+            .collect::<Vec<_>>()
+    };
+    // Sam, who never raised it, removes nothing: 404, no audit row, and
+    // nothing of the agent in the answer.
+    let before = p.audited("agent.elevate").len();
+    let (status, v) = p.sams_browser("DELETE", &path, None).await;
+    assert_eq!((status, code(&v)), (404, "not_raised"), "{v}");
+    assert_eq!(leaks(&v), Vec::<String>::new(), "{v}");
+    assert_eq!(p.audited("agent.elevate").len(), before);
+    // Sam raises it on his artifact: his own raise comes back, nothing else.
+    let (status, v) = p
+        .sams_browser("PUT", &path, Some(json!({"access": update_at(&notes)})))
+        .await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(
+        keys(&v["agent"]),
+        ["elevation", "handle", "name", "person"],
+        "{v}"
+    );
+    assert_eq!(leaks(&v), Vec::<String>::new(), "{v}");
+    // Removing it answers the same way, with no raise left.
+    let (status, v) = p.sams_browser("DELETE", &path, None).await;
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(v["agent"]["elevation"], Value::Null);
+    assert_eq!(leaks(&v), Vec::<String>::new(), "{v}");
+    // An empty raise is refused, from a person and from the owner.
+    for who in ["sam", "owner"] {
+        let body = Some(json!({"access": []}));
+        let (status, v) = if who == "sam" {
+            p.sams_browser("PUT", &path, body).await
+        } else {
+            p.owner("PUT", &path, body).await
+        };
+        assert_eq!((status, code(&v)), (400, "invalid_rights"), "{who}: {v}");
+    }
+    // Raising his own agent, Sam sees what his People shows of it.
+    let (status, v) = p
+        .sams_browser(
+            "PUT",
+            &format!("/api/agents/{sam_h}/elevate"),
+            Some(json!({"access": update_at(&notes)})),
+        )
+        .await;
+    assert_eq!(status, 200, "{v}");
+    assert!(v["agent"]["rights"].is_array(), "{v}");
+    assert_eq!(
+        v["agent"]["elevations"][0]["granter"]["public_id"],
+        json!(p.sam_public)
+    );
+}
+
+/// Spec §7.4: `raisable` and `holds` are the artifact's creator's alone:
+/// another person on it, and the owner on a person's artifact, read neither.
+#[tokio::test]
+async fn only_the_creator_reads_what_a_raise_could_give_and_reach() {
+    let p = people().await;
+    let notes = p.sams_notes().await;
+    // Mia's agent watches it, so it is on the artifact.
+    let r = p
+        .mia
+        .agent(
+            "PUT",
+            &format!("/api/sessions/{}/watches/{notes}", p.mia_session),
+            Some(&p.mia_session),
+            None,
+        )
+        .await;
+    assert!(r.status().is_success(), "{}", r.status());
+    let q = format!("/api/people/me/raises?artifact={notes}");
+    let (_, v) = p.sams_browser("GET", &q, None).await;
+    assert!(
+        v["raisable"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(p.handle(&p.mia_session))),
+        "{v}"
+    );
+    for (who, v) in [
+        ("Mia", p.mias_browser("GET", &q, None).await.1),
+        ("the owner", p.owner("GET", &q, None).await.1),
+    ] {
+        assert_eq!(
+            (
+                v["creator"].clone(),
+                v["holds"].clone(),
+                v["raisable"].clone()
+            ),
+            (json!(false), Value::Null, json!([])),
+            "{who}: {v}"
+        );
+    }
 }

@@ -209,6 +209,7 @@ fn owner_row(c: &rusqlite::Connection) -> rusqlite::Result<Option<(Viewer, bool)
 /// batch senders, agents' resolves, versions' file authors and
 /// artifacts' text authors, which become `*owner`), its approvals given and received and its
 /// approval requests (see `fold_authorship`), and its invites and grants.
+/// The elevations it gave as an artifact's creator are dropped.
 fn fold(
     st: &Store,
     ctx: &AuditCtx,
@@ -223,6 +224,9 @@ fn fold(
         |r| r.get(0),
     )?;
     let person = (!into_owner).then_some(new);
+    // The raises `from` gave name artifacts it no longer created: they go
+    // (spec §14).
+    super::elevations::drop_granted_in(st, tx, ctx, old, "viewer_folded")?;
     for (table, column) in [
         ("sessions", "person"),
         ("artifacts", "person"),

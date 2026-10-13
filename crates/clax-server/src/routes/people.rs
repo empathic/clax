@@ -663,13 +663,16 @@ pub async fn narrow_agent(
 }
 
 /// `PUT /api/agents/<handle>/elevate` `{access}` (spec §7.4, M20, O11) →
-/// `{agent}`: sets the caller's own elevation of that agent, from their
+/// `{agent}` (the agent's whole view for the owner and for its own person;
+/// for another person, `{handle, name, person, elevation}`, their own raise
+/// alone): sets the caller's own elevation of that agent, from their
 /// browser: the owner's may name any location; a connected person's names
 /// only artifacts they created, with actions they hold there. That agent
 /// alone may also do what it gives, beyond its person's rights, from its
 /// next request on and until its session ends (§14 clears it). Recorded
 /// as `agent.elevate`. 400 `token_agent` for an agent of this machine,
-/// `invalid_rights`; 403 `not_creator`, `beyond_your_rights`; 404 for a
+/// `invalid_rights` (an empty access too); 403 `not_creator`,
+/// `beyond_your_rights`; 404 for a
 /// handle that names no live agent.
 pub async fn elevate_agent(
     State(s): State<AppState>,
@@ -694,9 +697,10 @@ pub async fn elevate_agent(
 }
 
 /// `DELETE /api/agents/<handle>/elevate` (the owner's or an artifact
-/// creator's browser) → `{agent}`: removes the caller's own elevation of
-/// that agent, from its next request on; another granter's stays. Recorded
-/// as `agent.elevate` with `access` null.
+/// creator's browser) → `{agent}`, as `PUT` answers it: removes the
+/// caller's own elevation of that agent, from its next request on; another
+/// granter's stays. Recorded as `agent.elevate` with `access` null. 404
+/// `not_raised`, recording nothing, when the caller has no elevation of it.
 pub async fn unelevate_agent(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -724,12 +728,30 @@ async fn set_elevation(
             let session = agent_of(st, &handle, &None, true)?;
             let a =
                 st.elevate_agent(&audit.resolve(st)?, &session.id, granter.as_deref(), access)?;
+            // The owner's People topic gets the whole view (§18).
             let view = agent_view(st, &a)?;
             announce(&state, json!({"what": "agent_elevated", "agent": view}));
-            Ok(view)
+            Ok(granter_answer(granter.as_deref(), &a, view))
         })
         .await?;
     Ok(Json(json!({"agent": agent})))
+}
+
+/// What a raise's granter reads back (spec §7.4, §18): the owner, and a
+/// person raising their own agent, its whole view; a person raising
+/// another's agent, only that agent's handle, name and person and their own
+/// raise of it (`elevation`), never its narrowing, other granters' raises,
+/// rights or machine.
+fn granter_answer(granter: Option<&str>, a: &AgentRights, view: Value) -> Value {
+    match granter {
+        Some(g) if a.session.person.as_deref() != Some(g) => json!({
+            "handle": a.session.agent_handle,
+            "name": a.session.name,
+            "person": a.session.person,
+            "elevation": a.elevation_by(Some(g)).map(Rights::to_json),
+        }),
+        _ => view,
+    }
 }
 
 #[derive(Deserialize)]
