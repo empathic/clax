@@ -378,6 +378,7 @@ impl Store {
             };
             self.record_audit(tx, ctx, delete_record(&now, id.as_str(), &title, current))?;
             super::approvals::withdraw_artifact_in(self, tx, ctx, id.as_str(), &now)?;
+            super::elevations::drop_artifact_in(self, tx, ctx, id.as_str())?;
             tx.execute(
                 "DELETE FROM docs WHERE artifact_id = ?1",
                 params![id.as_str()],

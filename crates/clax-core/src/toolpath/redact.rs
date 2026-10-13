@@ -300,6 +300,7 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("agent.name", "name" | "previous") => Name,
         ("agent.name", "source") => Safe,
         ("agent.narrow" | "agent.elevate", "session" | "access" | "reason") => Safe,
+        ("agent.elevate", "granter") => Safe,
         (
             "approval.grant" | "approval.revoke",
             "approval_id" | "approver" | "author" | "scope" | "created_via",

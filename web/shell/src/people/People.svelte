@@ -22,7 +22,7 @@
   import type { EventStream } from "../stream";
   import * as api from "./api";
   import InviteDialog from "./InviteDialog.svelte";
-  import { expiresIn, liveInvites } from "./model";
+  import { elevationsOf, expiresIn, liveInvites } from "./model";
   import PersonCard from "./PersonCard.svelte";
   import UnconnectedSwitch from "./UnconnectedSwitch.svelte";
 
@@ -38,7 +38,7 @@
   let requests = $state<PeopleRequest[]>([]);
   let banner = $state<string | null>(null);
   // The live artifacts, for raising an agent at one: loaded when a raise
-  // panel opens, or when an agent of the viewer's is raised at one.
+  // panel opens, or when an agent shown is raised at one.
   let artifacts = $state<{ id: string; title: string }[] | null>(null);
   let artifactsWanted = false;
   let inviting = $state(false);
@@ -73,7 +73,9 @@
       approvals = aps.approvals; requests = reqs.requests.filter(r => r.status === "open"); banner = reqs.banner;
       err = null;
     } catch (e) { if (!gone) { me = m; err = msg(e); } }
-    if (artifactsWanted || m.agents.some(a => a.elevate?.some(x => x.locations?.some(l => l !== "*")))) void needArtifacts();
+    // Raises name artifacts by ID: the titles load when any agent shown has one.
+    const shown = [...m.agents, ...(list?.people.flatMap(p => p.agents) ?? [])];
+    if (artifactsWanted || shown.some(a => elevationsOf(a).some(e => e.access.some(x => x.locations?.some(l => l !== "*"))))) void needArtifacts();
     if (!off && stream && !gone) off = stream.watch(owner ? ["people", "agents"] : ["agents"], e => { if (e.type !== "stream_down" && e.type !== "stream_up") reload(); });
   }
   async function needArtifacts() {
@@ -166,7 +168,7 @@
 
   {#if owner}
     {#each people as p (p.public_id)}
-      <PersonCard view="owner" who={p} approvals={approvals.filter(a => a.author.public_id === p.public_id)} waiting={requests.filter(r => r.author.public_id === p.public_id)} {artifacts} {needArtifacts} onChanged={reload} />
+      <PersonCard view="owner" who={p} approvals={approvals.filter(a => a.author.public_id === p.public_id)} waiting={requests.filter(r => r.author.public_id === p.public_id)} ofYours={p.approvals_of_yours ?? []} {artifacts} {needArtifacts} onChanged={reload} />
     {:else}
       {#if list}<p class="note">No one is connected yet. Invite a person to let their agents work with yours.</p>{/if}
     {/each}
@@ -201,7 +203,7 @@
     .ppl .pcount, .ppl .meta, .ppl .ip { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
     .ppl .sp { flex: 1; }
     .ppl .err { margin: 0; color: var(--danger); font-size: 13px; }
-    .ppl .note, .ppl .none { margin: 4px 0; color: var(--muted); font-size: 13px; }
+    .ppl .note, .ppl .none { margin: 4px 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
     .ppl .banner { margin: 0; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--danger-tint); font-size: 13.5px; }
     .ppl .pcard { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; min-width: 0; }
     .ppl .pcard > header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }

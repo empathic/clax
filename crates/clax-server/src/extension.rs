@@ -575,6 +575,7 @@ mod tests {
             (&g, "/api/people", None),
             (&u, "/api/people/P/rights", None),
             (&u, "/api/agents/H/elevate", None),
+            (&g, "/api/people/me/raises", None),
             (&g, "/api/stream", Some(Rule::Any)),
             (&p, "/api/stream/s1", Some(Rule::Any)),
             (&g, "/api/artifacts/A", Some(Rule::Live("A"))),

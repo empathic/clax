@@ -300,14 +300,28 @@ export type PeopleGrant = {
 /** A live agent with its narrowing, elevation and effective rights;
  * `grant_id` and `rights` are null for an agent of the daemon's own
  * machine, which rights do not limit. */
+/** One granter's elevation of an agent: the owner's, or an artifact
+ * creator's on what they created (spec 2026-10-08 §7.2, O11). */
+export type PeopleElevation = { granter: { public_id: string | null; name: string; owner: boolean }; access: Rights; created_at: string };
+/** An agent as People lists it: `elevate` is the owner's elevation,
+ * `elevations` every granter's, the owner's first. */
 export type PeopleAgent = {
   handle: string; name: string; harness: string; person: string | null; grant_id: string | null; started_at: string;
-  narrow: Rights | null; elevate: Rights | null; rights: Rights | null;
+  narrow: Rights | null; elevate: Rights | null; elevations?: PeopleElevation[]; rights: Rights | null;
 };
 /** A person as the owner's People lists them; `revoked_at` once revoked. */
 export type PeoplePerson = {
   public_id: string; display_name: string | null; revoked_at: string | null;
   rights: Rights; grants: PeopleGrant[]; agents: PeopleAgent[];
+  /** Their live approvals of the owner's content (O12). */
+  approvals_of_yours?: PeopleApproval[];
+};
+/** `GET /api/people/me/raises`: the caller's own raises; with `?artifact=`,
+ * whether they created it, what they may give there, and the handles of
+ * its agents a raise reaches. */
+export type PeopleRaises = {
+  creator: boolean | null; holds: Rights | null; raisable: string[] | null;
+  raises: { agent: { handle: string; name: string; person: string | null; live: boolean }; access: Rights }[];
 };
 /** `GET /api/people/me`: the caller, their machines and their live agents. */
 export type PeopleMe = {

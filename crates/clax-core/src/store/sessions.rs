@@ -1564,7 +1564,7 @@ impl Store {
     /// direct watches to `ended_watches_json`); withdraws its open `ask`
     /// approval requests (routed ones stay); releases every thread it owns
     /// (`thread.release`, reason `grant_revoked` for a revoked end, else
-    /// `session_end`); clears its narrowing and elevation (`agent.narrow`,
+    /// `session_end`); clears its narrowing and elevations (`agent.narrow`,
     /// `agent.elevate` with `access` null, bumping the visibility
     /// generation); ends its watches and releases its undelivered feedback;
     /// withdraws its open questions; and, when it owned open threads or had
@@ -1682,36 +1682,42 @@ impl Store {
         Ok(owned)
     }
 
-    /// Clears session `id`'s narrowing and elevation, as its end does: each
-    /// one set is cleared, recorded (`agent.narrow` or `agent.elevate`
-    /// `{session, access: null}`) and marks the write as changing what
-    /// agents may see (M17).
+    /// Clears session `id`'s narrowing and elevations, as its end does: each
+    /// one set is cleared, recorded (`agent.narrow {session, access: null}`,
+    /// `agent.elevate {session, access: null, granter}`) and marks the write
+    /// as changing what agents may see (M17).
     fn clear_rights_in(&self, tx: &Transaction<'_>, ctx: &AuditCtx, id: &str) -> Result<()> {
-        let (narrow, elevate): (Option<String>, Option<String>) = tx.query_row(
-            "SELECT narrow_json, elevate_json FROM sessions WHERE id = ?1",
+        let narrow: Option<String> = tx.query_row(
+            "SELECT narrow_json FROM sessions WHERE id = ?1",
             params![id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| r.get(0),
         )?;
-        if narrow.is_none() && elevate.is_none() {
+        let elevations = super::elevations::drop_session_in(tx, id)?;
+        if narrow.is_none() && elevations.is_empty() {
             return Ok(());
         }
         tx.execute(
-            "UPDATE sessions SET narrow_json = NULL, elevate_json = NULL WHERE id = ?1",
+            "UPDATE sessions SET narrow_json = NULL WHERE id = ?1",
             params![id],
         )?;
         self.visibility_changed();
         let now = self.now();
-        for (kind, was) in [
-            (AuditKind::AgentNarrow, narrow),
-            (AuditKind::AgentElevate, elevate),
-        ] {
-            if was.is_none() {
-                continue;
-            }
-            let rec = AuditRecord::new(kind, &now)
+        let cleared = narrow
+            .map(|_| (AuditKind::AgentNarrow, None))
+            .into_iter()
+            .chain(
+                elevations
+                    .into_iter()
+                    .map(|e| (AuditKind::AgentElevate, Some(e.granter))),
+            );
+        for (kind, granter) in cleared {
+            let mut rec = AuditRecord::new(kind, &now)
                 .with("session", id)
-                .with("access", serde_json::Value::Null)
-                .with("reason", "session_end");
+                .with("access", serde_json::Value::Null);
+            if let Some(g) = granter {
+                rec = rec.with("granter", g);
+            }
+            let rec = rec.with("reason", "session_end");
             let mut rec = with_for_actor(tx, ctx, rec, id, AgentActor::default)?;
             rec.ids.session = Some(id.to_string());
             self.record_audit(tx, ctx, rec)?;
@@ -3127,7 +3133,8 @@ mod tests {
             .unwrap();
             w.st.with_tx(|tx| {
                 tx.execute(
-                    "UPDATE sessions SET elevate_json = '[]' WHERE id = ?1",
+                    "INSERT INTO session_elevations (session_id, granter, access_json, created_at)
+                     VALUES (?1, NULL, '[]', 'x')",
                     params![w.sid],
                 )?;
                 Ok(())
@@ -3206,7 +3213,8 @@ mod tests {
             let (narrow, elevate): (Option<String>, Option<String>) =
                 w.st.with_read(|c| {
                     Ok(c.query_row(
-                        "SELECT narrow_json, elevate_json FROM sessions WHERE id = ?1",
+                        "SELECT narrow_json, (SELECT access_json FROM session_elevations
+                           WHERE session_id = ?1) FROM sessions WHERE id = ?1",
                         [&w.sid],
                         |r| Ok((r.get(0)?, r.get(1)?)),
                     )?)

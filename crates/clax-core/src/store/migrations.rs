@@ -586,11 +586,18 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE sessions ADD COLUMN name TEXT;
     ALTER TABLE sessions ADD COLUMN name_source TEXT CHECK (name_source IN ('derived', 'agent', 'person'));
     ALTER TABLE sessions ADD COLUMN narrow_json TEXT;
-    ALTER TABLE sessions ADD COLUMN elevate_json TEXT;
     ALTER TABLE sessions ADD COLUMN ended_reason TEXT
         CHECK (ended_reason IN ('idle', 'exit', 'revoked', 'person'));
     ALTER TABLE sessions ADD COLUMN ended_watches_json TEXT;
     ALTER TABLE sessions ADD COLUMN secret_sha256 TEXT;
+    CREATE TABLE session_elevations (
+        session_id TEXT NOT NULL,
+        granter TEXT,
+        access_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX session_elevations_key ON session_elevations(session_id, COALESCE(granter, ''));
+    CREATE INDEX session_elevations_by_granter ON session_elevations(granter) WHERE granter IS NOT NULL;
     CREATE UNIQUE INDEX sessions_live_name ON sessions(name COLLATE NOCASE)
         WHERE ended_at IS NULL AND name IS NOT NULL;
     CREATE INDEX sessions_by_grant ON sessions(grant_id, harness, parent_pid) WHERE grant_id IS NOT NULL;

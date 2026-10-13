@@ -54,6 +54,7 @@ pub mod backfill;
 pub mod batches;
 pub mod changelog;
 pub mod docs;
+pub mod elevations;
 pub mod exec;
 pub mod extension;
 pub mod feedback;

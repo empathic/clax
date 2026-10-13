@@ -2362,10 +2362,11 @@ mod tests {
         bumps(&st, "an agent's narrowing", 1);
         st.narrow_agent(DAEMON, &agent.id, Some(reader)).unwrap();
         bumps(&st, "an agent's narrowing set again", 0);
-        st.elevate_agent(DAEMON, &agent.id, Some(full.clone()))
+        st.elevate_agent(DAEMON, &agent.id, None, Some(full.clone()))
             .unwrap();
         bumps(&st, "an agent's elevation", 1);
-        st.elevate_agent(DAEMON, &agent.id, Some(full)).unwrap();
+        st.elevate_agent(DAEMON, &agent.id, None, Some(full))
+            .unwrap();
         bumps(&st, "an agent's elevation set again", 0);
         st.end_session_by_person(DAEMON, &agent.id).unwrap();
         bumps(

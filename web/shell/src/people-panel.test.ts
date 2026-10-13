@@ -83,3 +83,89 @@ describe("PeoplePanel's agents", () => {
     v.unmount();
   });
 });
+
+describe("PeoplePanel's raise for the artifact's creator", () => {
+  afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
+  const settle = async () => { for (let i = 0; i < 12; i++) await new Promise(r => setTimeout(r, 0)); flush(); };
+  const SAM = { public_id: "u_sam", name: "Sam", owner: false };
+  const MIA = { public_id: "u_mia", name: "Mia", owner: false };
+  const HOLDS = [
+    { type: "clax-artifacts", actions: ["read", "update", "delete"], locations: ["notes"] },
+    { type: "clax-comments", actions: ["read", "write", "reply", "resolve", "send", "watch"], locations: ["notes"] },
+    { type: "clax-db", actions: ["read", "write"], locations: ["notes"], level: "admin" },
+  ];
+  const agents = [
+    { handle: "h_mia", harness: "codex", live: true, name: "notes-fix", person: MIA },
+    { handle: "h_local", harness: "claude", live: true, name: "clax-claude", person: { public_id: "u_1", name: "Alex", owner: true } },
+  ];
+  type Call = { url: string; method: string; body: unknown };
+  function open(raises: unknown) {
+    const calls: Call[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (url.startsWith("/api/people/me/raises")) return raises === null ? new Response("{}", { status: 403 }) : new Response(JSON.stringify(raises));
+      if (url === "/api/agents") return new Response(JSON.stringify({ agents: [] }));
+      return new Response(JSON.stringify({ agent: {} }));
+    }));
+    const s = view(null) as unknown as Record<string, unknown>;
+    const ctl = { numbers: () => new Map(), forgetReopen: vi.fn(), setNotice: vi.fn(), setMe: vi.fn(), setShareWhere: vi.fn() };
+    const v = mount(PeoplePanel, { ctl: ctl as never, s: { ...s, me: { public_id: SAM.public_id, display_name: "Sam", created_at: "x" }, agents, data: { artifact: { id: "notes", participants: { people: [], agents } }, versions: [] } } as never, onClose: vi.fn() });
+    return { v, calls };
+  }
+  const row = (v: { root: Element }, name: string) => [...v.root.querySelectorAll(".prow.agent")].find(r => r.querySelector("b")!.textContent!.startsWith(name))!;
+  const box = (el: Element, label: string) => [...el.querySelectorAll("label")].find(l => l.textContent!.trim() === label)!.querySelector("input")!;
+
+  it("offers the creator the actions they hold here, on the agents a raise reaches, and sets their own raise", async () => {
+    const { v, calls } = open({ creator: true, holds: HOLDS, raisable: ["h_mia"], raises: [
+      { agent: { handle: "h_mia", name: "notes-fix", person: "u_mia", live: true }, access: [{ type: "clax-artifacts", actions: ["update"], locations: ["other"] }] }] });
+    await settle();
+    expect(calls.map(c => c.url)).toContain("/api/people/me/raises?artifact=notes");
+    const mia = row(v, "notes-fix");
+    // The raise's chunk loads on first use.
+    await vi.waitFor(() => { flush(); expect(mia.querySelector(".raise-here")).not.toBeNull(); });
+    const here = mia.querySelector(".raise-here")!;
+    // This machine's agent acts with the token: no raise is offered for it.
+    expect(row(v, "clax-claude").querySelector(".raise-here")).toBeNull();
+    expect(here.querySelector("summary")!.textContent).toBe("Raise on this artifact");
+    const labels = [...here.querySelectorAll("label")].map(l => l.textContent!.trim());
+    // Creating and asking are not at an artifact: no creator raises them.
+    expect(labels).not.toContain("Publish new artifacts");
+    expect(labels).not.toContain("Ask questions");
+    expect(labels).toContain("Publish new versions");
+    const publish = box(here, "Publish new versions");
+    expect(publish.checked).toBe(false);
+    publish.checked = true;
+    flush(() => { publish.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
+    const put = calls.find(c => c.method === "PUT")!;
+    expect(put.url).toBe("/api/agents/h_mia/elevate");
+    // The raise elsewhere is kept; this artifact's is added.
+    expect(put.body).toEqual({ access: [{ type: "clax-artifacts", actions: ["update"], locations: ["other"] }, { type: "clax-artifacts", actions: ["update"], locations: ["notes"] }] });
+    expect(calls.filter(c => c.url.startsWith("/api/people/me/raises")).length).toBe(2);
+    v.unmount();
+  });
+
+  it("removes the creator's raise when its last action here is turned off", async () => {
+    const { v, calls } = open({ creator: true, holds: HOLDS, raisable: ["h_mia"], raises: [
+      { agent: { handle: "h_mia", name: "notes-fix", person: "u_mia", live: true }, access: [{ type: "clax-artifacts", actions: ["update"], locations: ["notes"] }] }] });
+    await settle();
+    const here = row(v, "notes-fix").querySelector(".raise-here")!;
+    expect(here.querySelector("summary")!.textContent).toBe("Raise on this artifact (raised)");
+    const publish = box(here, "Publish new versions");
+    expect(publish.checked).toBe(true);
+    publish.checked = false;
+    flush(() => { publish.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
+    expect(calls.find(c => c.method === "DELETE")!.url).toBe("/api/agents/h_mia/elevate");
+    v.unmount();
+  });
+
+  it("offers nothing to a viewer who did not create the artifact, or has no People", async () => {
+    for (const raises of [{ creator: false, holds: null, raisable: [], raises: [] }, null]) {
+      const { v } = open(raises);
+      await settle();
+      expect(v.root.querySelector(".raise-here")).toBeNull();
+      v.unmount();
+    }
+  });
+});

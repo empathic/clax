@@ -284,6 +284,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route("/api/people/invites/{id}", delete(grants::revoke_invite))
         .route("/api/people", get(people::list_people))
         .route("/api/people/me", get(people::me))
+        .route("/api/people/me/raises", get(people::raises))
         .route(
             "/api/people/me/grants/{gid}/narrow",
             axum::routing::put(people::narrow_grant),
@@ -586,6 +587,12 @@ mod l10 {
         Creates,
         /// It names no artifact.
         NoArtifact,
+        /// A browser route (`browser_person`) that names an artifact only to
+        /// answer whether the caller created it (`creator_holds`): a live
+        /// page is the owner's own, so a connected person reads the same
+        /// answer for one as for an artifact that does not exist, and the
+        /// owner sees live pages.
+        CreatorOnly,
         /// It refuses every caller but the owner (`who.require_owner(…)`, or
         /// the audit history's narrower token-or-owner-cookie check); every
         /// owner credential sees live pages (the extension's is
@@ -706,6 +713,7 @@ mod l10 {
         ("people::unelevate_agent", NoArtifact),
         ("people::list_people", NoArtifact),
         ("people::me", NoArtifact),
+        ("people::raises", CreatorOnly),
         ("people::narrow_grant", NoArtifact),
         ("people::revoke_person", NoArtifact),
         ("people::set_rights", NoArtifact),
@@ -1219,6 +1227,12 @@ mod l10 {
                         !src.contains("ArtifactId") && !src.contains("parse_id"),
                         "{name} names an artifact"
                     ),
+                    CreatorOnly => assert!(
+                        src.contains("browser_person(&caller")
+                            && src.contains("creator_holds(")
+                            && !src.contains("get_artifact("),
+                        "{name} reads more of an artifact than whether its caller created it"
+                    ),
                     Person => {
                         assert!(
                             sig.contains("who: Identity")
@@ -1684,6 +1698,7 @@ mod agents {
     const MUST_REFUSE: &[&str] = &[
         "people::list_people",
         "people::me",
+        "people::raises",
         "people::set_rights",
         "people::revoke_person",
         "people::narrow_grant",

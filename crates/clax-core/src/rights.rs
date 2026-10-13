@@ -597,6 +597,73 @@ impl Rights {
             .max()
     }
 
+    /// The artifact IDs these rights name, when every location is one (an
+    /// artifact ID, or `own:<id>`); `None` when any is `*` or `own`, which
+    /// `clax-ask`'s always is.
+    pub fn artifact_ids(&self) -> Option<BTreeSet<String>> {
+        let mut out = BTreeSet::new();
+        for l in self.0.iter().flat_map(|a| &a.locations) {
+            match l {
+                Location::Artifact(id) | Location::OwnArtifact(id) => {
+                    out.insert(id.clone());
+                }
+                Location::Any | Location::Own => return None,
+            }
+        }
+        Some(out)
+    }
+
+    /// These rights at the artifacts `keep` accepts only: each object keeps
+    /// the artifact IDs among its locations that `keep` accepts (an
+    /// `own:<id>` as `<id>`) and loses `*`, `own` and the rest; an object
+    /// left with no location is dropped.
+    pub fn at_artifacts(&self, keep: &dyn Fn(&str) -> bool) -> Rights {
+        let out = self
+            .0
+            .iter()
+            .filter_map(|a| {
+                let locations: Vec<Location> = a
+                    .locations
+                    .iter()
+                    .filter_map(|l| match l {
+                        Location::Artifact(id) | Location::OwnArtifact(id) if keep(id) => {
+                            Some(Location::Artifact(id.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                (!locations.is_empty()).then(|| Access {
+                    locations: canonical_locations(locations),
+                    ..a.clone()
+                })
+            })
+            .collect();
+        Rights(merge(out))
+    }
+
+    /// These rights where `own` is known to hold (a person's rights at the
+    /// artifacts they created): `own` reads as `*` and `own:<id>` as `<id>`.
+    fn where_own_holds(&self) -> Rights {
+        let out = self
+            .0
+            .iter()
+            .map(|a| Access {
+                locations: canonical_locations(
+                    a.locations
+                        .iter()
+                        .map(|l| match l {
+                            Location::Own => Location::Any,
+                            Location::OwnArtifact(id) => Location::Artifact(id.clone()),
+                            l => l.clone(),
+                        })
+                        .collect(),
+                ),
+                ..a.clone()
+            })
+            .collect();
+        Rights(merge(out))
+    }
+
     /// The GNAP access array. [`Rights::parse`] reads back rights a client
     /// could send; computed rights need `Rights::parse_internal` (the store's reader).
     pub fn to_json(&self) -> Value {
@@ -661,9 +728,26 @@ fn merge_on<K: std::hash::Hash + Eq>(
     out
 }
 
+/// What an artifact creator's elevation gives (spec §7.2, O11): `access` at
+/// the artifacts its granter created (`created`, read at check time), within
+/// the granter's own rights `granter` there, where the granter's `own`
+/// holds. It never covers another person's artifact, `*` or no artifact,
+/// and never gives what the granter may not do there.
+pub fn creator_elevation(
+    access: &Rights,
+    granter: &Rights,
+    created: &dyn Fn(&str) -> bool,
+) -> Rights {
+    access
+        .at_artifacts(created)
+        .intersect(&granter.where_own_holds())
+}
+
 /// An agent's effective rights (spec §7.2): `(person ∩ grant narrowing ∩
-/// session narrowing) ∪ owner elevation`. A missing narrowing is no
-/// narrowing; the elevation may exceed `person`.
+/// session narrowing) ∪ elevations`, `elevate` the union of the agent's
+/// elevations (the owner's as given, each creator's through
+/// [`creator_elevation`]). A missing narrowing is no narrowing; the
+/// elevation may exceed `person`.
 pub fn effective(
     person: &Rights,
     grant_narrow: Option<&Rights>,
@@ -686,6 +770,91 @@ mod tests {
     use serde_json::json;
     fn own(a: &str) -> bool {
         a == "mine"
+    }
+
+    /// Spec §7.2 (O11): a creator's elevation gives its access only at the
+    /// artifacts its granter created, and only what the granter may do
+    /// there, whatever the access names.
+    #[test]
+    fn a_creators_elevation_is_bound_to_their_artifacts_and_their_rights() {
+        // Sam, a collaborator, created "notes"; "qr" is someone else's.
+        let sam = Rights::preset(PRESET_COLLABORATOR).unwrap();
+        let created = |a: &str| a == "notes";
+        let asked = Rights::parse(&json!([
+            {"type": "clax-artifacts", "actions": ["update", "delete"], "locations": ["notes", "qr"]},
+            {"type": "clax-comments", "actions": ["resolve"], "locations": ["*"]},
+            {"type": "clax-db", "actions": ["write"], "level": "admin", "locations": ["notes", "own"]},
+            {"type": "clax-ask", "actions": ["ask"]}]))
+        .unwrap();
+        let e = creator_elevation(&asked, &sam, &created);
+        let nobody = |_: &str| false;
+        // At his own artifact, what he may do there: update, delete and a
+        // db write at admin (his `own` holds there).
+        assert!(e.allows(RightType::Artifacts, "update", Some("notes"), &nobody));
+        assert!(e.allows(RightType::Artifacts, "delete", Some("notes"), &nobody));
+        assert_eq!(e.db_level("notes", "write", &nobody), Some(Level::Admin));
+        // Never at another's artifact, at `*`, at the agent's own, nor
+        // without an artifact.
+        let everything = |_: &str| true;
+        for a in ["qr", "other"] {
+            assert!(
+                !e.allows(RightType::Artifacts, "update", Some(a), &everything),
+                "{a}"
+            );
+            assert_eq!(e.db_level(a, "write", &everything), None, "{a}");
+        }
+        assert!(!e.allows(RightType::Comments, "resolve", Some("notes"), &nobody));
+        assert!(!e.allows_somewhere(RightType::Ask, "ask"));
+        // A reader who created it gives nothing he may not do there.
+        let reader = Rights::preset(PRESET_READER).unwrap();
+        let r = creator_elevation(&asked, &reader, &created);
+        assert!(!r.allows(RightType::Artifacts, "update", Some("notes"), &nobody));
+        assert_eq!(r.db_level("notes", "write", &nobody), None);
+        // Once he no longer created it (deleted), it gives nothing.
+        assert!(creator_elevation(&asked, &sam, &nobody).is_empty());
+        // Which locations an access names, for the route's check.
+        assert_eq!(
+            asked.artifact_ids(),
+            None,
+            "`*`, `own` and ask are not artifacts"
+        );
+        let only = Rights::parse(&json!([
+            {"type": "clax-artifacts", "actions": ["update"], "locations": ["notes", "qr"]}]))
+        .unwrap();
+        assert_eq!(
+            only.artifact_ids(),
+            Some(["notes".to_string(), "qr".to_string()].into())
+        );
+    }
+
+    /// Random accesses and granters: a creator's elevation never allows
+    /// anything at an artifact its granter did not create, nor anything its
+    /// granter's rights do not allow there.
+    #[test]
+    fn a_creators_elevation_never_exceeds_its_granter_on_random_rights() {
+        let mut g = Lcg(0x5eed_0011);
+        for _ in 0..300 {
+            let (asked, granter) = (random_rights(&mut g), random_rights(&mut g));
+            let created = |a: &str| a == "a";
+            let e = creator_elevation(&asked, &granter, &created);
+            every_point(|kind, action, artifact, own| {
+                if !e.allows(kind, action, artifact, own) {
+                    return;
+                }
+                let at = artifact.expect("a creator's elevation is at artifacts only");
+                assert!(created(at), "{kind:?} {action} at {at}");
+                assert!(
+                    granter.allows(kind, action, artifact, &|_| true),
+                    "{kind:?} {action} at {at}: beyond the granter"
+                );
+                if kind == RightType::Db {
+                    assert!(
+                        e.db_level(at, action, own) <= granter.db_level(at, action, &|_| true),
+                        "{action} at {at}: above the granter's level"
+                    );
+                }
+            });
+        }
     }
 
     #[test]

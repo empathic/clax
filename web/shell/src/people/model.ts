@@ -3,7 +3,7 @@
 // turns off and an elevation adds, the presets (§7.3), and the daemon's
 // comparison of rights (`Rights::is_narrower_or_equal`), so a narrowing
 // built here is one the daemon takes as narrower.
-import type { Access, PeopleAgent, PeopleGrant, PeopleInvite, Rights } from "../api";
+import type { Access, PeopleAgent, PeopleElevation, PeopleGrant, PeopleInvite, Rights } from "../api";
 
 /** The line beside per-agent controls: what narrowing one agent of a
  * connected machine does and does not bound. */
@@ -97,9 +97,22 @@ const raisedOf = (r: Rights | null): Raised[] =>
   (r ?? []).flatMap(x => x.actions.flatMap(action => (x.locations ?? [null]).map(loc => ({ type: x.type, action, loc, ...x.level && { level: x.level } }))));
 const isCap = (c: Cap) => (p: Raised) => p.type === c.type && p.action === c.action;
 
-/** Where agent `a`'s elevation raises capability `c`: `*` for every
- * artifact, else artifact IDs; empty when it does not. */
-export const raisedAt = (a: PeopleAgent, c: Cap) => raisedOf(a.elevate).filter(isCap(c)).map(p => p.loc ?? "*");
+/** Every elevation of agent `a`, one per granter, the owner's first (the
+ * owner's `elevate` alone when the daemon lists no others). */
+export const elevationsOf = (a: PeopleAgent): PeopleElevation[] =>
+  a.elevations ?? (a.elevate ? [{ granter: { public_id: null, name: "The owner", owner: true }, access: a.elevate, created_at: "" }] : []);
+/** Where elevation `r` raises capability `c`: `*` for every artifact, else
+ * artifact IDs; empty when it does not. */
+const raisedIn = (r: Rights | null, c: Cap) => raisedOf(r).filter(isCap(c)).map(p => p.loc ?? "*");
+/** Where agent `a`'s elevations, every granter's, raise capability `c`. */
+export const raisedAt = (a: PeopleAgent, c: Cap) => [...new Set(elevationsOf(a).flatMap(e => raisedIn(e.access, c)))];
+/** Where the owner's elevation of agent `a` raises capability `c`. */
+export const ownerRaisedAt = (a: PeopleAgent, c: Cap) => raisedIn(a.elevate, c);
+/** Who raised capability `c` of agent `a`, and where, granter by granter. */
+export const raisersOf = (a: PeopleAgent, c: Cap) =>
+  elevationsOf(a).map(e => ({ who: e.granter, at: raisedIn(e.access, c) })).filter(r => r.at.length > 0);
+/** The elevations of agent `a` by anyone but the owner (artifact creators'). */
+export const othersRaises = (a: PeopleAgent) => elevationsOf(a).filter(e => !e.granter.owner);
 
 /** Agent `a`'s capabilities on machine `g`: those of its person's rights
  * and those the owner raised it with. `machineOff` for those the machine's
@@ -113,7 +126,7 @@ export const agentCaps = (person: Rights, g: PeopleGrant | null, a: PeopleAgent)
   return CAPS.filter(c => allows(person, c) || raisedAt(a, c).length > 0).map(c => {
     const raised = raisedAt(a, c);
     const locked = raised.includes("*") || !allows(person, c);
-    return { ...c, raised, locked, machineOff: machine.has(c.key), on: locked || (!machine.has(c.key) && !own.has(c.key)) };
+    return { ...c, raised, by: raisersOf(a, c), locked, machineOff: machine.has(c.key), on: locked || (!machine.has(c.key) && !own.has(c.key)) };
   });
 };
 export type AgentCap = ReturnType<typeof agentCaps>[number];
@@ -138,6 +151,14 @@ const raiseOf = (c: Cap, loc: string): Access =>
   A(c.type, [c.action], c.type === "clax-ask" ? undefined : [loc], c.type === "clax-db" && c.action === "write" ? "interact" : undefined);
 const placeOf = (c: Cap, loc: string) => (c.type === "clax-ask" ? null : loc);
 
+/** The capabilities a creator may raise an agent with at artifact `aid`,
+ * given what they hold there (`holds`) and their own elevation of it now
+ * (`mine`): `on` where `mine` raises it there. Creating and asking are not
+ * at an artifact, so no creator raises them. */
+export const creatorCaps = (holds: Rights, mine: Rights | null, aid: string) =>
+  CAPS.filter(c => c.type !== "clax-ask" && c.action !== "create" && narrowerOrEqual([raiseOf(c, aid)], holds))
+    .map(c => ({ ...c, on: raisedIn(mine, c).includes(aid) }));
+
 /** Every capability for the owner's raising of agent `a` at `loc` (`*`,
  * every artifact, or one artifact's ID): `has` when the agent's rights
  * without its elevation already allow it there; `wider` when the
@@ -159,7 +180,7 @@ export const raiseCaps = (person: Rights, g: PeopleGrant | null, a: PeopleAgent,
  * (`*` or an artifact ID), or drops it there, keeping the rest of its
  * elevation; raising at every artifact drops that capability's raises at
  * single artifacts. Null when nothing is left raised. */
-export function elevation(a: PeopleAgent, key: string, on: boolean, loc = "*"): Rights | null {
+export function elevation(a: Pick<PeopleAgent, "elevate">, key: string, on: boolean, loc = "*"): Rights | null {
   const c = CAPS.find(x => x.key === key);
   if (!c) return a.elevate;
   const at = placeOf(c, loc);
