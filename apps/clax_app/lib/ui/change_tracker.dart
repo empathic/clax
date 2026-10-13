@@ -144,6 +144,16 @@ class ChangeTracker {
   /// The threads of the change the worker is running; empty when none.
   List<String> get running => List.unmodifiable(_running);
 
+  /// The threads of the work in flight: the running change's, else those
+  /// sent and not yet started; empty when nothing is in flight.
+  List<String> get threads =>
+      _running.isNotEmpty ? running : List.unmodifiable(_changes.keys);
+
+  /// The version the last change landed as, until new work starts; null
+  /// when the last change did not land.
+  int? get landed => _landed;
+  int? _landed;
+
   /// Whether to show Working: a change is in flight and the person did not
   /// dismiss it.
   bool get working => _changes.isNotEmpty && !_hidden;
@@ -269,6 +279,7 @@ class ChangeTracker {
     for (final t in threads) {
       _changes[t]?.version = version;
     }
+    if (threads.isNotEmpty) _landed = version;
     if (_pinned) {
       for (final t in threads) {
         _changes.remove(t);
@@ -290,10 +301,23 @@ class ChangeTracker {
     _failed = threads;
   }
 
-  void workerCancelled() => _endRunning(
-    ChangeOutcome.stopped,
-    'Stopped. It runs again when the app restarts.',
-  );
+  void workerCancelled() {
+    // The person's Stop already ended it ([stopped]).
+    if (_running.isEmpty && _outcome == ChangeOutcome.stopped) return;
+    _endRunning(
+      ChangeOutcome.stopped,
+      'Stopped. It runs again when the app restarts.',
+    );
+  }
+
+  /// The person stopped the work in flight: every change ends, and the
+  /// worker's [workerCancelled] that follows changes nothing.
+  void stopped() {
+    _takeRunning();
+    _changes.clear();
+    _idle();
+    _end(ChangeOutcome.stopped, 'Stopped. Your comment stays open.');
+  }
 
   /// The shell's `ready`: a frame shows [version], pinned or following.
   void shown(int version, {required bool pinned}) {
@@ -368,6 +392,7 @@ class ChangeTracker {
 
   void _newWork() {
     _hidden = false;
+    _landed = null;
     _outcome = null;
     _retry = null;
     _failed = const [];

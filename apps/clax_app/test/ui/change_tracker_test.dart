@@ -446,4 +446,40 @@ void main() {
       expect(t.failedThreads, isEmpty);
     });
   });
+
+  test('threads names the sent threads, then the running change\'s', () {
+    expect(t.threads, isEmpty);
+    t.sent('t1');
+    expect(t.threads, ['t1']);
+    t.workerWorking(['t1', 't2']);
+    expect(t.threads, ['t1', 't2']);
+  });
+
+  test('landed keeps the version until new work starts', () {
+    t
+      ..sent('t1')
+      ..workerWorking(['t1']);
+    expect(t.landed, isNull);
+    t.workerLanded(4);
+    t.frame(4);
+    expect(t.working, isFalse);
+    expect(t.landed, 4);
+    t.sent('t2');
+    expect(t.landed, isNull);
+  });
+
+  test('Stop ends the work in flight; the worker\'s cancel changes nothing',
+      () {
+    t
+      ..sent('t1')
+      ..workerWorking(['t1'])
+      ..stopped();
+    expect(t.working, isFalse);
+    expect(t.since, isNull);
+    expect(t.outcome, ChangeOutcome.stopped);
+    expect(t.outcomeText, 'Stopped. Your comment stays open.');
+    t.workerCancelled();
+    expect(t.outcomeText, 'Stopped. Your comment stays open.');
+    expect(t.threads, isEmpty);
+  });
 }
