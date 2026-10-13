@@ -21,8 +21,8 @@ const PAGE = `<!doctype html><html><head><title>Forecast</title></head><body><p>
 })();
 </script></body></html>`;
 
-async function openApp(page: Page, title: string): Promise<{ id: string; frame: Frame }> {
-  const { artifact } = await api(d.base, d.token, "/api/artifacts", { method: "POST", body: JSON.stringify({ title, capabilities: { net: { hosts: ["api.clax.invalid"] } }, files: { "index.html": { content: PAGE, encoding: "utf8" } } }) }) as { artifact: { id: string } };
+async function openApp(page: Page, title: string, hosts = ["api.clax.invalid"]): Promise<{ id: string; frame: Frame }> {
+  const { artifact } = await api(d.base, d.token, "/api/artifacts", { method: "POST", body: JSON.stringify({ title, capabilities: { net: { hosts } }, files: { "index.html": { content: PAGE, encoding: "utf8" } } }) }) as { artifact: { id: string } };
   await hostChannel(page);
   await page.goto(`${d.base}/a/${artifact.id}?app=1`);
   const frame = await contentFrame(page, artifact.id, 1);
@@ -58,4 +58,19 @@ test("app view: Allow grants the app's hosts and the fetch goes to the daemon", 
   // The grant stands: the next call is not asked.
   expect(await go(frame)).toBe("upstream_error");
   await expect(page.getByRole("dialog")).toHaveCount(0);
+});
+
+test("app view: a long host list is shown whole, scrolling, with the buttons in view", async ({ page }) => {
+  const hosts = ["api.clax.invalid", ...Array.from({ length: 31 }, (_, i) => `service-${i}.region-${i}.clax.invalid`)];
+  const { id, frame } = await openApp(page, "Forecast many", hosts);
+  const answer = go(frame);
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("service-30.region-30.clax.invalid");
+  const body = dialog.locator("#prompt-body");
+  expect(await body.evaluate(e => e.scrollHeight > e.clientHeight)).toBe(true);
+  await expect(dialog.getByRole("button", { name: "Allow", exact: true })).toBeInViewport();
+  await dialog.getByRole("button", { name: "Allow", exact: true }).click();
+  expect(await answer).toBe("upstream_error");
+  const g = await api(d.base, d.token, `/api/artifacts/${id}/net-grants`) as { granted: boolean; grants: unknown[] };
+  expect([g.granted, g.grants.length]).toEqual([true, 32]);
 });

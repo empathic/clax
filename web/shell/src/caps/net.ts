@@ -8,8 +8,8 @@
 //   (`capabilities.net.hosts`) does not list, is refused before any request.
 // - The daemon's `not_granted` (the owner has not allowed the app's hosts)
 //   asks the owner once per view, for the whole host list ("Let “A” use the
-//   internet?"); Allow grants every declared host
-//   (`PUT /api/artifacts/<aid>/net-grants`) and the fetch is tried again.
+//   internet?", naming every host); Allow grants exactly the hosts shown
+//   (`PUT /api/artifacts/<aid>/net-grants {hosts}`) and the fetch is tried again.
 //   The grant lives in the daemon, so the next view does not ask. Nobody is
 //   asked in the app's inspect view (`?app=1&inspect=1`): a refusal stands.
 // - The answer is `{url, status, headers, body}`; the bridge builds the
@@ -80,7 +80,10 @@ export const netHandler: HandlerFactory = env => {
 
   async function ask(): Promise<boolean> {
     const a = await title();
-    const list = hosts.length <= 3 ? hosts.join(", ") : `${hosts.slice(0, 3).join(", ")} and ${hosts.length - 3} more`;
+    // Every host is shown (the dialog's text scrolls when long), and exactly
+    // these are granted: the daemon grants only those the live version still
+    // declares.
+    const list = hosts.join(", ");
     const answer = await env.prompt({
       title: `Let “${a}” use the internet?`,
       body: `“${a}” will send requests to ${list}, and read what they answer. You can take this back in the app's inspector.`,
@@ -88,7 +91,7 @@ export const netHandler: HandlerFactory = env => {
       deny: "Don't allow",
     });
     if (answer !== "allow") return false;
-    const res = await fetch(`/api/artifacts/${env.aid}/net-grants`, { method: "PUT", headers: auth }).catch(() => null);
+    const res = await fetch(`/api/artifacts/${env.aid}/net-grants`, { method: "PUT", headers: { "content-type": "application/json", ...auth }, body: JSON.stringify({ hosts }) }).catch(() => null);
     if (!res?.ok) {
       asked = null;
       throw new CapError("unavailable", "the grant could not be saved");

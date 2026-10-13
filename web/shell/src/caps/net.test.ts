@@ -74,9 +74,18 @@ describe("net in the shell", () => {
     const posts = requests.filter(r => r.url.endsWith("net:fetch"));
     expect(posts).toHaveLength(2);
     expect(posts[0]).toMatchObject({ auth: "Bearer tok", body: { url: "https://api.example.com/x", method: "POST", headers: { "content-type": "application/json" }, body: "{}" } });
-    expect(requests.some(r => r.method === "PUT" && r.url.endsWith("/net-grants"))).toBe(true);
+    expect(requests.filter(r => r.method === "PUT" && r.url.endsWith("/net-grants")).map(r => r.body)).toEqual([{ hosts: ["api.example.com", "cdn.example.com"] }]);
     await h.call("fetch", [fetchCall("https://cdn.example.com/y")]);
     expect(prompts).toHaveLength(1);
+  });
+
+  it("shows every host it asks for, however many, and grants exactly those", async () => {
+    const many = Array.from({ length: 12 }, (_, i) => `h${i}.example.com`);
+    const { h, requests, prompts } = setup({ hosts: many });
+    await h.call("fetch", [fetchCall("https://h0.example.com/")]);
+    for (const host of many) expect(prompts[0].body).toContain(host);
+    expect(prompts[0].body).not.toContain("more");
+    expect(requests.find(r => r.method === "PUT")?.body).toEqual({ hosts: many });
   });
 
   it("a denial stands for the view without asking again; a granted app is never asked", async () => {
