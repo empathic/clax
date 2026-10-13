@@ -105,6 +105,8 @@ pub struct AppState {
     pub live_layers: Arc<clax_realtime::live_layers::LiveLayers>,
     /// The `sample` capability's provider and settings.
     pub sample: Arc<clax_sample::Sampler>,
+    /// The `net` capability's fetcher ([`crate::net::Net::default`] in the daemon).
+    pub net: Arc<crate::net::Net>,
     /// The multiplexed event stream's topics and streams (`/api/stream`);
     /// fed by `events` once [`clax_realtime::stream::Hub::listen`] has run.
     pub stream: Arc<clax_realtime::stream::Hub>,
@@ -274,6 +276,7 @@ impl AppState {
             version: p.version,
             shutdown: p.shutdown,
             wrap_cache: Arc::new(WrapCache::new(crate::wrap_cache::DEFAULT_MAX_BYTES)),
+            net: Arc::new(crate::net::Net::default()),
             request_timeout: Duration::from_secs(30),
             publish_timeout: Duration::from_secs(120),
             sse_keep_alive: Duration::from_secs(15),

@@ -283,6 +283,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
                 .put(sample::grant)
                 .delete(sample::revoke),
         )
+        .route(
+            "/api/artifacts/{aid}/net-grants",
+            get(net::grants).put(net::grant).delete(net::revoke),
+        )
         .route("/api/artifacts/{aid}/working", get(working::for_artifact))
         .route("/api/artifacts/{aid}/presence", get(artifacts::presence))
         .route("/api/artifacts/{aid}/snapshot", get(snapshot::snapshot))
@@ -489,6 +493,11 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route(
             "/api/artifacts/{aid}/sample/{call}/tool_result",
             post(sample::tool_result),
+        )
+        // Bounded by the fetch's own deadline (`net::TIMEOUT`).
+        .route(
+            "/api/artifacts/{aid}/net:fetch",
+            post(net::fetch.layer(DefaultBodyLimit::max(net::NET_BODY_LIMIT))),
         )
         .route("/api/sessions/{id}/feedback", get(feedback::poll))
         .route("/api/sessions/{id}/notices", get(feedback::notices))

@@ -527,6 +527,8 @@ impl TestServer {
             live_layers: Arc::new(clax_realtime::live_layers::LiveLayers::new(clock.clone())),
             // Sampling off; tests that sample set their own with `spawn_with`.
             sample: Arc::new(clax_sample::Sampler::disabled()),
+            // The system resolver and reqwest; tests of `net` set their own.
+            net: Arc::new(clax_http::net::Net::default()),
             stream: clax_realtime::stream::Hub::new(live_ids.clone()),
             seats: clax_http::seats::LiveSeats::new(Default::default(), clock.clone()),
             sockets: Arc::default(),

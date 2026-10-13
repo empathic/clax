@@ -230,6 +230,7 @@ mod l10 {
             "health" => include_str!("health.rs"),
             "inbox" => include_str!("inbox.rs"),
             "live" => include_str!("live.rs"),
+            "net" => include_str!("net.rs"),
             "perf" => include_str!("perf.rs"),
             "questions" => include_str!("questions.rs"),
             "remotes" => include_str!("remotes.rs"),
@@ -465,6 +466,7 @@ mod l10 {
             "sample::tool_result",
             "a page's model request; changes no history",
         ),
+        ("net::fetch", "a page's network request; changes no history"),
         (
             "perf::calibrate",
             "the latency gate's calibration read; changes no history",

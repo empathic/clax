@@ -29,6 +29,7 @@ pub mod http_cache;
 pub mod identity;
 pub mod limits;
 pub mod live_access;
+pub mod net;
 pub mod perf;
 pub mod pushes;
 pub mod seats;
