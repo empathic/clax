@@ -240,7 +240,7 @@ describe("PersonCard", () => {
   it("shows the owner the person's approvals of the owner's content, read-only, linking to the page or thread", () => {
     const ap = (o: object) => ({ id: "ap1", approver: "p1", author: { public_id: "o1", name: "Alex", owner: true }, scope: "artifact", artifact_id: "a1", artifact_title: "Quarterly Review", thread_id: null, created_at: "x", created_via: "shell", request_id: null, ...o });
     const m = mount(PersonCard, { view: "owner", who: person(), ofYours: [ap({}), ap({ id: "ap2", scope: "thread", thread_id: "t1" })] as never, onChanged: vi.fn() });
-    const sec = m.root.querySelector(".approvals")!;
+    const sec = m.root.querySelector(".approvals.yours")!;
     const head = [...sec.querySelectorAll("h4")].find(h => h.textContent === "Approvals of your content")!;
     expect(head).toBeTruthy();
     const lines = [...sec.querySelectorAll(".line.yours")];
@@ -251,7 +251,7 @@ describe("PersonCard", () => {
     expect(sec.querySelectorAll(".line.yours button").length).toBe(0);
     m.unmount();
     const none = mount(PersonCard, { view: "owner", who: person(), ofYours: [], onChanged: vi.fn() });
-    expect(none.root.querySelector(".approvals")!.textContent).toContain("Not yet: their agents see your content once they allow it.");
+    expect(none.root.querySelector(".approvals.yours")!.textContent).toContain("Not yet: their agents see your content once they allow it.");
     // The person's own view has no such section.
     const self = mount(PersonCard, { view: "self", who: { public_id: "p1", display_name: "Sam", revoked_at: null, rights: COLLAB, grants: [grant()], agents: [] }, onChanged: vi.fn() });
     expect(self.root.textContent).not.toContain("Approvals of your content");

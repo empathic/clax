@@ -231,18 +231,20 @@
         <p class="none">Not yet: your agents ask you first.</p>
       {/each}
       {#if !everywhere && who.public_id}<button type="button" aria-label="Always allow {name}" onclick={e => act(() => api.allow(who.public_id!), { to: heading(e) })}>Always allow</button>{/if}
-      <h4 tabindex="-1">Approvals of your content</h4>
-      {#each yours as ap (ap.id)}
-        <div class="line yours"><span>{scopeOf(ap)}{#if ap.artifact_id && ap.artifact_title}{" · "}<a href={`/a/${encodeURIComponent(ap.artifact_id)}${ap.thread_id ? `?thread=${encodeURIComponent(ap.thread_id)}` : ""}`}>{ap.thread_id ? "Open the thread" : "Open the page"}</a>{/if}</span></div>
-      {:else}
-        <p class="none">Not yet: their agents see your content once they allow it.</p>
-      {/each}
       {#if wait.length}
         <h4>Waiting</h4>
         {#each wait as r (r.id)}
           <a class="line wait" href="/inbox?approval={encodeURIComponent(r.id)}"><span>{r.count} from {name}{r.agent ? ` for ${r.agent.name}` : ""}</span></a>
         {/each}
       {/if}
+    </section>
+    <section class="part approvals yours">
+      <h4 tabindex="-1">Approvals of your content</h4>
+      {#each yours as ap (ap.id)}
+        <div class="line yours"><span>{scopeOf(ap)}{#if ap.artifact_id && ap.artifact_title}{" · "}<a href={`/a/${encodeURIComponent(ap.artifact_id)}${ap.thread_id ? `?thread=${encodeURIComponent(ap.thread_id)}` : ""}`}>{ap.thread_id ? "Open the thread" : "Open the page"}</a>{/if}</span></div>
+      {:else}
+        <p class="none">Not yet: their agents see your content once they allow it.</p>
+      {/each}
     </section>
   {/if}
 </article>

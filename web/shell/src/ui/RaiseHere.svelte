@@ -56,7 +56,7 @@
     .raise-here { grid-column: 2; margin-top: 4px; font-size: 12.5px; }
     .raise-here summary { cursor: pointer; color: var(--accent-ink); font-weight: 600; min-height: 28px; display: flex; align-items: center; }
     .raise-here .rnote { margin: 2px 0 6px; color: var(--muted); line-height: 1.45; }
-    .raise-here .rcaps { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 4px 12px; }
+    .raise-here .rcaps { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0 12px; }
     .raise-here label { display: flex; align-items: center; gap: 6px; color: var(--fg); min-height: 28px; }
     .raise-here .rerr { margin: 6px 0 0; color: var(--danger); }
   }

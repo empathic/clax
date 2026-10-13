@@ -121,8 +121,8 @@ test("a creator raises another person's agent on their artifact from its People 
     await o.goto(`${d.base}/people`);
     const card = (name: string) => o.locator("article.person[data-person]").filter({ has: o.locator("h3", { hasText: new RegExp(`^${name}$`) }) });
     await expect(card("Mia").locator(".agent .note.by")).toHaveText("Raised by Sam until this session ends: Publish new versions on “Sam's Notes”");
-    await expect(card("Sam").locator(".approvals .line.yours")).toHaveText("Allowed everywhere");
-    await expect(card("Mia").locator(".approvals")).toContainText("Not yet: their agents see your content once they allow it.");
+    await expect(card("Sam").locator(".approvals.yours .line")).toHaveText("Allowed everywhere");
+    await expect(card("Mia").locator(".approvals.yours")).toContainText("Not yet: their agents see your content once they allow it.");
     const people = await api(d.base, d.token, "/api/people");
     const miaAgent = people.people.find((p: { display_name: string }) => p.display_name === "Mia").agents[0];
     expect(miaAgent.elevate).toBeNull();
