@@ -21,7 +21,10 @@ export type Artifact = {
   live?: { origin: string; path: string; page_url: string; origins?: string[]; merged_into?: string; merged_into_url?: string | null } | null;
 };
 /** `agents` is ordered live first, then most recently active; `live` means a send can reach it. */
-export type Participants = { people: { public_id: string; display_name: string | null; seen: number | null }[]; agents: { handle: string; harness: string; live: boolean }[] };
+/** An artifact's people and agents. An agent carries its name and its
+ * person (`owner` for the owner's agents) from daemons that name agents
+ * (spec 2026-10-08-multi-agent-multi-person §10, §11). */
+export type Participants = { people: { public_id: string; display_name: string | null; seen: number | null }[]; agents: { handle: string; harness: string; live: boolean; name?: string | null; person?: CardPerson }[] };
 export type AttentionSummary = { addressed: string[]; addressed_v: number | null; new_replies: string[]; open_in: string[]; seen: number | null };
 export type Attention = AttentionSummary & { looked: Record<string, string> };
 /** `sha256`: the file's lowercase hex SHA-256; absent on versions written before content hashes. */
@@ -248,6 +251,21 @@ export type InboxEnded = {
   requests: number;
   /** The open threads it released; `title` is null once the page is gone. */
   threads: { id: string; artifact_id: string; title: string | null; url: string }[];
+};
+/** One agent of the inbox's agent strip (`GET /api/inbox?group=agent`,
+ * spec 2026-10-08-multi-agent-multi-person §13): its unread items for the
+ * caller and, while it waits on the caller, since when and on how many
+ * open questions and approval requests. */
+export type StripAgent = {
+  handle: string; name: string | null; harness: string; live: boolean; unread: number;
+  blocked: { since: string; questions: number; approvals: number } | null;
+};
+/** One agent as `GET /api/agents` lists it (§13): another person's agent
+ * by `name`, `person`, `live`, `state` and `since` alone. */
+export type RosterAgent = {
+  handle: string | null; name: string | null; person: string | null; live: boolean;
+  state: "waiting" | "working" | "idle" | "ended"; since: string | null;
+  blocked: { since: string; questions: number; approvals: number } | null;
 };
 /** One page of `GET /api/inbox`; `total` is present when the query filters. */
 export type InboxPage = { items: InboxItem[]; next_cursor: string | null; unread: number; total?: number | "10000+" };

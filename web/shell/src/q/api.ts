@@ -4,7 +4,7 @@
 // this. A 403 (the caller is not the owner) resolves to "forbidden"; a 409
 // on an answer, a skip or a move resolves to the question as it closed;
 // any other failure throws an `ApiError`.
-import { ApiError, type AnswerBody, type InboxFilter, type InboxItem, type InboxPage, type InboxSummary, type QuestionView } from "../api";
+import { ApiError, type AnswerBody, type InboxFilter, type InboxItem, type InboxPage, type InboxSummary, type QuestionView, type StripAgent } from "../api";
 
 export type Forbidden = "forbidden";
 /** The outcome of answering, skipping or moving a question: the question
@@ -57,6 +57,8 @@ export function inboxQuery(f: InboxFilter, before?: string | null, limit?: numbe
 /** One page of items matching `f`, newest first; `before` is the previous page's `next_cursor`. */
 export const listInbox = (f: InboxFilter, before?: string | null, limit?: number) => get<InboxPage>(`/api/inbox${inboxQuery(f, before, limit)}`);
 export const inboxSummary = () => get<InboxSummary>("/api/inbox/summary");
+/** The agent strip (spec 2026-10-08-multi-agent-multi-person §13). */
+export const inboxAgents = () => get<{ agents: StripAgent[]; unread: number }>("/api/inbox?group=agent");
 /** Marks one item read or unread. */
 export const markInbox = (id: string, read: boolean) =>
   post<{ item: InboxItem; unread: number }>(`/api/inbox/${encodeURIComponent(id)}/${read ? "read" : "unread"}`);

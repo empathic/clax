@@ -71,7 +71,9 @@ pub use publish::html_title;
 pub use secret::Secret;
 pub use store::Store;
 pub use store::artifacts::{CorruptRow, MetaPatch};
-pub use store::attention::{AgentView, Attention, AttentionSummary, Participants, Person};
+pub use store::attention::{
+    AgentPerson, AgentView, Attention, AttentionSummary, Participants, Person,
+};
 pub use store::audit::AuditRow;
 pub use store::feedback::{SendTarget, TakeFeedback, Taken};
 pub use store::sessions::{

@@ -2,7 +2,9 @@ import type { Anchor } from "../../bridge/src/protocol";
 import { ApiError, getToken } from "./api";
 
 export type Tier = "piggyback" | "stop_hook" | "prompt_hook" | "wait" | "queue" | "inject";
-export type FeedbackState = { thread_id: string; state: "sent" | "delivered" | "acknowledged" | "agent_ended"; tier: Tier | null; since: string; resends: number; exhausted: boolean };
+/** `withheld`: held until `approver` (a display name) approves an author
+ * of the thread (spec 2026-10-08-multi-agent-multi-person §10). */
+export type FeedbackState = { thread_id: string; state: "sent" | "withheld" | "delivered" | "acknowledged" | "agent_ended"; tier: Tier | null; since: string; resends: number; exhausted: boolean; approver?: string };
 /** `via_page`: the page wrote it through the `comments` capability, as the viewer. */
 export type Comment = { id: string; thread_id: string; author_kind: "viewer" | "agent"; author_name: string; author_public_id?: string | null; via_harness: string | null; via_page?: boolean; body: string; created_at: string };
 export type Thread = {
@@ -11,6 +13,12 @@ export type Thread = {
   /** The display name of the viewer who resolved it, when they have one. */
   resolved_by_name?: string | null;
   comments: Comment[]; feedback_state: FeedbackState | null;
+  /** The agent that owns the thread (spec 2026-10-08 §12): its name, its
+   * person's public ID (null for the owner's agents) and name. */
+  owner?: { handle?: string; name: string | null; person: string | null; person_name?: string; live: boolean };
+  /** The people a send naming one of their agents asks first (§10), by
+   * public ID (null: the owner); absent when none. */
+  approves_first?: (string | null)[];
   /** The versions that addressed this thread, oldest first. */
   addressed_in?: number[];
   /** Each time the thread was sent with others as one batch, oldest first:
@@ -23,7 +31,9 @@ export type Thread = {
   page_url?: string;
 };
 /** The daemon's view of this viewer; `public_id` names it in `resolved_by`, the cookie never leaves the daemon. */
-export type Viewer = { public_id: string; display_name: string | null; created_at: string };
+export type Viewer = { public_id: string; display_name: string | null; created_at: string;
+  /** The owner's browser; a connected person's (`person`). */
+  owner?: boolean; person?: boolean };
 
 async function ok<T>(res: Response): Promise<T> {
   if (!res.ok) {

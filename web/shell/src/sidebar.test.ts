@@ -390,11 +390,14 @@ describe("Sidebar", () => {
       done();
     });
 
-    it("with two live agents, the caret's menu lists both and checks the target", () => {
+    it("with two live agents, the caret's menu lists both and checks the target", async () => {
+      await import("./ui/SendMenu.svelte");
       const { root, props, done } = render({ agents: two, sendTo: "a_cl" });
       const card = root.querySelector('.thread-card[data-thread="a"]')!;
       expect(card.querySelector(".send .primary")!.textContent).toBe("Send to claude");
       flush(() => card.querySelector<HTMLButtonElement>('[aria-label="Choose the agent"]')!.click());
+      for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0));
+      flush();
       const items = Array.from(card.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'));
       expect(items.map(i => [i.textContent, i.getAttribute("aria-checked")])).toEqual([["codex", "false"], ["claude", "true"]]);
       flush(() => items[0].click());
