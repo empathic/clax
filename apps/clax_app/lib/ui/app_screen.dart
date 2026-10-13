@@ -10,6 +10,7 @@ import '../agent/worker.dart';
 import '../clax/api.dart';
 import '../daemon/clock.dart';
 import '../platform/app_notice.dart';
+import '../platform/device/device_host.dart';
 import '../platform/settings_store.dart';
 import '../platform/voice.dart';
 import 'app_menu.dart';
@@ -125,6 +126,7 @@ class AppScreen extends StatefulWidget {
     this.onHintShown,
     this.onDictateChanged,
     this.onRetry,
+    this.device,
   });
 
   final String aid;
@@ -178,6 +180,10 @@ class AppScreen extends StatefulWidget {
   /// cannot, and neither the thread page nor the Working chip offers
   /// Retry.
   final Future<bool> Function(String aid, String tid)? onRetry;
+
+  /// Makes the page's device capability calls (`notify`, `share`, `files`,
+  /// `camera`, `location`); without it each is answered `unavailable`.
+  final DeviceHost? device;
 
   /// The app view's URL for [aid] under [base].
   static Uri appUrl(Uri base, String aid) {
@@ -487,7 +493,24 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
       case InspectionMsg() || TestsMsg():
         // An app view is never inspected.
         break;
+      case DeviceRequest():
+        _device(m);
     }
+  }
+
+  /// Makes the page's device call [r] and answers it in the page.
+  void _device(DeviceRequest r) {
+    final d = widget.device;
+    final answer = d == null
+        ? Future.value(
+            DeviceResult.error(r.id, 'unavailable', 'no device features here'),
+          )
+        : d.handle(widget.aid, r);
+    unawaited(
+      answer.then((a) {
+        if (mounted) unawaited(widget.surface.call(a));
+      }),
+    );
   }
 
   void _onFault(SurfaceFault f) {

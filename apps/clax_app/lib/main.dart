@@ -21,6 +21,10 @@ import 'daemon/process.dart';
 import 'daemon/supervisor.dart';
 import 'platform/app_notice.dart';
 import 'platform/background_work.dart';
+import 'platform/device/device_grants.dart';
+import 'platform/device/device_host.dart';
+import 'platform/device/device_plugins.dart';
+import 'platform/device/reminders.dart';
 import 'platform/external_links.dart';
 import 'platform/install_id.dart';
 import 'platform/pending_make.dart';
@@ -126,6 +130,18 @@ Future<AppServices> platformServices() async {
     cliSupported: cliSupported,
     background: android ? ChannelBackgroundWork() : const NoBackgroundWork(),
     notice: android ? ChannelAppNotice() : null,
+    device: (consent) => DeviceHost(
+      grants: FileDeviceGrants(File('${support.path}/device-grants.json')),
+      consent: consent,
+      reminders: Reminders(
+        PluginNotifier(),
+        file: File('${support.path}/device-reminders.json'),
+      ),
+      share: PluginShare(),
+      files: PluginFiles(),
+      camera: PluginCamera(),
+      location: PluginLocation(),
+    ),
     pendingMake: PendingMake(File('${support.path}/pending-make.json')),
   );
 }

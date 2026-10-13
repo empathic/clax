@@ -32,6 +32,8 @@ import 'daemon/clock.dart';
 import 'daemon/supervisor.dart';
 import 'platform/app_notice.dart';
 import 'platform/background_work.dart';
+import 'platform/device/device_consent_dialog.dart';
+import 'platform/device/device_host.dart';
 import 'platform/network_pause.dart';
 import 'platform/pending_make.dart';
 import 'platform/secure_key.dart';
@@ -43,7 +45,7 @@ import 'ui/app_screen.dart';
 import 'ui/app_surface.dart';
 import 'ui/error_screen.dart';
 import 'ui/host_protocol.dart'
-    show HostCall, LoadVersion, OpenThread, Ready, ThreadsMsg;
+    show HostCall, LoadVersion, OpenRoute, OpenThread, Ready, ThreadsMsg;
 import 'ui/inspector_surface.dart';
 import 'ui/launcher.dart';
 import 'ui/making_screen.dart';
@@ -78,6 +80,7 @@ class AppServices {
     this.cliSupported = false,
     this.background = const NoBackgroundWork(),
     this.notice,
+    this.device,
     PendingMake? pendingMake,
     int? pid,
   }) : pid = pid ?? io.pid,
@@ -160,6 +163,11 @@ class AppServices {
   /// comment mode; null where there is none, and the menu bar is the way
   /// in (macOS).
   final AppNotice? notice;
+
+  /// The device capabilities of the apps (`notify`, `share`, `files`,
+  /// `camera`, `location`), built with the app's consent dialog; without
+  /// it every device call is answered `unavailable`.
+  final DeviceHost Function(DeviceConsent consent)? device;
 
   /// The make in flight, offered again at the next launch when the app
   /// ended before it did; in memory unless given.
@@ -424,6 +432,19 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
   StreamSubscription<WorkerEvent>? _worker;
   StreamSubscription<String>? _opened;
   StreamSubscription<AppNoticeTap>? _taps;
+  StreamSubscription<ReminderTap>? _reminderTaps;
+
+  /// The device capabilities, asking in a dialog over the app.
+  late final DeviceHost? _device = _s.device?.call(
+    DialogDeviceConsent(
+      navigator: () => _nav.currentState,
+      title: (aid) async => (await _api.getArtifact(aid)).artifact.title,
+    ),
+  );
+
+  /// The route (`#…`) a tapped reminder asked each app to open at, until
+  /// that app's page is up.
+  final _routes = <String, String>{};
 
   /// The notice the app screens share; null without [AppServices.notice].
   late final AppNoticeSlot? _notice = switch (_s.notice) {
@@ -515,6 +536,10 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         }),
       );
     }
+    if (_device case final d?) {
+      _reminderTaps = d.taps.listen(_onReminderTap);
+      unawaited(d.start());
+    }
     _start();
     unawaited(_loadSettings());
   }
@@ -526,6 +551,7 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     unawaited(_worker?.cancel());
     unawaited(_opened?.cancel());
     unawaited(_taps?.cancel());
+    unawaited(_reminderTaps?.cancel());
     for (final o in _openApps) {
       unawaited(o.actions.close());
     }
@@ -895,6 +921,23 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
     );
   }
 
+  /// A tapped reminder of app [aid]: the app in front, at its route.
+  void _onReminderTap(ReminderTap t) {
+    if (t.route case final r?) _routes[t.aid] = r;
+    _openFromNotice(t.aid, toTop: true);
+    _openRoute(t.aid);
+  }
+
+  /// Moves app [aid]'s page to the route a reminder asked for, once that
+  /// app is the top one and its page is up.
+  void _openRoute(String aid) {
+    final top = _openApps.lastOrNull;
+    final route = _routes[aid];
+    if (route == null || top == null || top.aid != aid || !top.ready) return;
+    _routes.remove(aid);
+    unawaited(top.surface?.call(OpenRoute(route)));
+  }
+
   /// A tap on the open app's notice: its body brings the app to the
   /// front, Comment and Threads act on it.
   void _onNoticeTap(AppNoticeTap t) => _openFromNotice(
@@ -987,8 +1030,12 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
         aid: aid,
         cover: cover,
         endpoint: _endpoint,
-        surface: (base) =>
-            _aimed(_s.surface(base), aid, thread: thread, version: version),
+        surface: (base) => open.surface = _aimed(
+          _s.surface(base),
+          aid,
+          thread: thread,
+          version: version,
+        ),
         screen: (base, surface) => AppScreen(
           key: ValueKey(base),
           aid: aid,
@@ -1000,7 +1047,12 @@ class _AppRootState extends State<AppRoot> with WidgetsBindingObserver {
           timings: _s.timings,
           worker: _runtime.worker.events,
           onRetry: _runtime.worker.retry,
-          onReady: (r) => _onReady(aid, r),
+          onReady: (r) {
+            open.ready = true;
+            _onReady(aid, r);
+            _openRoute(aid);
+          },
+          device: _device,
           comments: _comments,
           notice: _notice,
           actions: actions.stream,
@@ -1120,6 +1172,10 @@ class _OpenApp {
   final String aid;
   final Route<void> route;
   final StreamController<AppAction> actions;
+
+  /// The page's surface, once built, and whether its page is up.
+  AppSurface? surface;
+  var ready = false;
 }
 
 /// The open app's page: a surface for the daemon's address, loaded again
