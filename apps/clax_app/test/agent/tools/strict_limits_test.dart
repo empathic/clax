@@ -1,5 +1,6 @@
 import 'package:clax_app/agent/asked.dart';
 import 'package:clax_app/agent/ledger.dart';
+import 'package:clax_app/agent/plan.dart';
 import 'package:clax_app/agent/tools/ask_tool.dart';
 import 'package:clax_app/agent/tools/data_tools.dart';
 import 'package:clax_app/agent/tools/file_tools.dart';
@@ -21,7 +22,10 @@ List<Tool> _runTools() {
     FakeInspector(),
     baseUrl: Uri.parse('http://127.0.0.1:1'),
   );
+  final plan = RunPlan(PlanStore(), 'a1', request: 'x');
   return [
+    PlanSetTool(plan),
+    PlanMarkTool(plan),
     ...fileTools(),
     AddKitTool(load: (_) async => ''),
     ...dataTools(api),
