@@ -19,15 +19,20 @@
   // that card, and the read section leaves out what Unread still shows. A
   // machine that connected with an invite and an agent that ended are rows.
   // Only the owner's browser offers the Connections filter. At phone width
-  // the filters sit behind **Filters**.
+  // the filters sit behind **Filters**. The agent strip (§13) opens the
+  // page, under its header: a chip filters the inbox by its agent; it is
+  // fetched again with the sections.
   import { onMount } from "svelte";
-  import { type InboxFilter, type InboxItem, type InboxKind, getToken, listArtifacts } from "../api";
+  import { type InboxFilter, type InboxItem, type InboxKind, type StripAgent, getToken, listArtifacts } from "../api";
+  import AgentStrip from "../people/AgentStrip.svelte";
+  import { ticker } from "../ui/ticker.svelte";
   import { after } from "../clock";
   import type { InboxFeed, QuestionFeed } from "./feed.svelte";
   import { INBOX_KINDS, filterFromUrl, filterToUrl, newestSeq } from "./inbox-model";
   import ApprovalCard from "../people/ApprovalCard.svelte";
   import ConnectionCard from "../people/ConnectionCard.svelte";
   import InboxRow from "./InboxRow.svelte";
+  import { inboxAgents } from "./api";
   import { openItem } from "./open";
   import QuestionList from "./QuestionList.svelte";
   import { shared } from "./shared";
@@ -70,6 +75,10 @@
   let owner = $state(false);
   // Question items shown as cards: open when first listed, they stay cards, showing what closed them.
   let asCard = $state<string[]>([]);
+  // The agent strip, and the clock its block times read (each 30 s).
+  let strip = $state<StripAgent[]>([]);
+  const clock = ticker(() => false, () => p.now, 30_000);
+  const loadStrip = () => inboxAgents().then(b => { if (b !== "forbidden" && Array.isArray(b.agents)) strip = b.agents; }, () => {});
   const N = typeof Notification === "undefined" ? undefined : Notification;
   let perm = $state(N?.permission);
 
@@ -113,6 +122,7 @@
    * here (read now, so no longer listed), for the same search. */
   async function load(keep = true): Promise<void> {
     const g = ++gen;
+    void loadStrip();
     try {
       const [u, r, shown] = await Promise.all([fetch("unread"), fetch("read", null, 1), readOpen ? fetch("read") : null]);
       if (g !== gen) return;
@@ -211,7 +221,11 @@
   // sections are fetched again (debounced, so a burst is one fetch).
   let refetchSoon: (() => void) | undefined;
   const soon = () => { refetchSoon?.(); refetchSoon = after(DEBOUNCE_MS, () => { refetchSoon = undefined; void load(); }); };
+  // An item that changed may change a block: the strip is fetched again (debounced).
+  let stripSoon: (() => void) | undefined;
   function take(item: InboxItem): void {
+    stripSoon?.();
+    stripSoon = after(DEBOUNCE_MS, () => { stripSoon = undefined; void loadStrip(); });
     const put = (s: Section | null) => (s?.items.some(x => x.id === item.id) ? { ...s, items: s.items.map(x => (x.id === item.id ? item : x)) } : null);
     // An item Unread lists that was read (a decision, a mark elsewhere), or
     // unread again, moves the sections' counts with it.
@@ -235,7 +249,7 @@
     // Fetched once on open: now, or when the inbox topic first goes live.
     const off = inbox.listen(c => { if ("item" in c) take(c.item); else if (unread) soon(); else void load(); });
     if (!inbox.waiting) void load();
-    return () => { off(); typing?.(); refetchSoon?.(); };
+    return () => { off(); typing?.(); refetchSoon?.(); stripSoon?.(); };
   });
 </script>
 
@@ -255,6 +269,7 @@
     <button type="button" class="primary" disabled={busy || !unread?.items.some(i => !i.read)} onclick={markAll}>Mark all read</button>
   </header>
   {#if perm === "denied"}<p class="quiet">Notifications are blocked for this site. The unread count shows in the tab's title.</p>{/if}
+  <AgentStrip agents={strip} now={clock.now} selected={filter.agent ?? null} onPick={h => apply({ ...filter, agent: h ?? undefined })} />
 
   <div class="find">
     <input type="search" class="isearch" placeholder="Search the inbox" aria-label="Search the inbox" value={search} oninput={e => onSearch(e.currentTarget.value)} />

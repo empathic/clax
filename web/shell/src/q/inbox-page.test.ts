@@ -14,13 +14,19 @@ const Q = item("question", { id: "IQ", seq: 9 });
 const R = item("reply", { id: "IR", seq: 8 });
 const READ = [1, 2, 3].map(n => item("published", { id: `D${n}`, seq: 4 - n, read: true }));
 
+/** The agent strip the daemon answers: one agent waiting on you since 09:05:03. */
+let STRIP: unknown[] = [];
+let stripFetches = 0;
+
 type Call = { url: string; method: string; body: unknown };
 /** The owner routes: `unread` and `read` items by search text; every request is kept. */
 function stubRoutes(unread: Record<string, InboxItem[]> = { "": [Q, R] }) {
   const calls: Call[] = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
-    calls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(String(init.body)) : undefined });
     const ok = (b: unknown) => new Response(JSON.stringify(b));
+    // The strip's fetches are counted apart: the sections' are what most tests follow.
+    if (url === "/api/inbox?group=agent") { stripFetches++; return ok({ agents: STRIP, unread: 2 }); }
+    calls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(String(init.body)) : undefined });
     if (url === "/api/artifacts") return ok({ artifacts: [] });
     if (url === "/api/inbox/read") return ok({ marked: 2, unread: 0 });
     const one = /^\/api\/inbox\/(\w+)\/read$/.exec(url);
@@ -42,7 +48,7 @@ function page(go = vi.fn()) {
 }
 
 beforeEach(() => { history.replaceState(null, "", "/inbox"); });
-afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); document.body.replaceChildren(); });
+afterEach(() => { STRIP = []; stripFetches = 0; vi.useRealTimers(); vi.unstubAllGlobals(); document.body.replaceChildren(); });
 
 describe("InboxPage", () => {
   it("lists unread items with open questions first as cards, and folds the read ones behind their count", async () => {
@@ -283,5 +289,29 @@ describe("InboxPage", () => {
     expect(m.root.querySelector('.kind[aria-pressed="true"]')!.textContent).toBe("Connections");
     expect(calls.map(c => c.url)).toContain("/api/inbox?kind=connection&read=unread");
     expect([...m.root.querySelectorAll(".kind")].map(k => k.textContent)).toEqual(expect.arrayContaining(["Approvals", "Connections", "Ended"]));
+  });
+
+  it("opens with the agent strip, whose chip filters the inbox by its agent", async () => {
+    STRIP = [
+      { handle: "a_web", name: "web", harness: "codex", live: true, unread: 2, blocked: null },
+      { handle: "a_cl", name: "clax-claude", harness: "claude", live: true, unread: 1, blocked: { since: "2026-10-07T09:05:03.120Z", questions: 1, approvals: 0 } },
+    ];
+    const calls = stubRoutes();
+    const { m } = page();
+    await settle();
+    expect(stripFetches).toBeGreaterThan(0);
+    const strip = m.root.querySelector(".astrip")!;
+    // Above the sections.
+    expect(strip.compareDocumentPosition(m.root.querySelector(".sec")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const chips = [...strip.querySelectorAll<HTMLButtonElement>(".achip")];
+    expect(chips.map(c => c.textContent!.replace(/\s+/g, " ").trim())).toEqual(["clax-claude · waiting on you 12 min (1 question)", "web · 2 unread"]);
+    click(chips[0]);
+    await settle();
+    expect(location.search).toBe("?agent=a_cl");
+    expect(calls.map(c => c.url)).toContain("/api/inbox?agent=a_cl&read=unread");
+    expect(m.root.querySelector('.achip[aria-pressed="true"]')!.textContent).toContain("clax-claude");
+    click(m.root.querySelector('.achip[aria-pressed="true"]')!);
+    await settle();
+    expect(location.search).toBe("");
   });
 });

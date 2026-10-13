@@ -100,7 +100,7 @@
 <article class="acard" data-approval={id} data-status={status} tabindex="-1" aria-label={a ? `${author} wants to reach your agent` : "An approval request"}>
   {#if a}
     <header class="ahead">
-      <span><span class="who">{author}</span> wants to reach your {#if a.agent}agent <span class="agent">{a.agent.name}</span>{:else}agents{/if}</span>
+      <span><span class="aauthor">{author}</span> wants to reach your {#if a.agent}agent <span class="agent">{a.agent.name}</span>{:else}agents{/if}</span>
       <time datetime={a.created_at}>{relativeTime(a.created_at, now ?? new Date())}</time>
     </header>
     {#if page}<p class="via">{page.authors.map(personName).join(", ")}'s page, via {personName(page.viewer)}'s browser</p>{/if}

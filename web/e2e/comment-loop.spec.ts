@@ -48,7 +48,9 @@ for (const mode of ["subdomain", "sandbox"] as const) test(`${mode}: comment in 
   expect(existsSync(clip)).toBe(true);
   expect([...readFileSync(clip).subarray(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   // Taking the comment marks the agent working on it, which replaces the waiting line.
-  await expect(card.locator(".st.ag")).toContainText("claude is working on it");
+  // The shell names the agent (spec 2026-10-08 §19 item 1): `claude`, or
+  // `claude-2` and so on while other tests' agents on this daemon hold it.
+  await expect(card.locator(".st.ag")).toContainText(`${s.name ?? "claude"} is working on it`);
   await expect(card.locator(".waiting")).toHaveCount(0);
 
   // The agent replies and resolves; the browser shows both live.

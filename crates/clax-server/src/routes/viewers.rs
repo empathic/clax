@@ -32,6 +32,7 @@ pub struct NameBody {
 
 async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Response, ApiError> {
     let fresh = (!who.is_owner() && who.cookie.is_none()).then(new_ulid);
+    let owner = who.is_owner();
     let minted = fresh.clone();
     let (before, viewer) = s
         .store_call(move |st| {
@@ -61,6 +62,11 @@ async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Res
         for aid in s.presence.rename(&v.public_id, v.display_name.as_deref()) {
             crate::presence::announce(&s.events, &s.presence, &aid);
         }
+    }
+    // `owner` marks the owner's browser (its agents are "Your agents", §10).
+    let mut viewer = json!(viewer);
+    if owner && viewer.is_object() {
+        viewer["owner"] = json!(true);
     }
     let mut res = Json(json!({"viewer": viewer})).into_response();
     if let Some(id) = fresh {

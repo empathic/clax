@@ -561,6 +561,15 @@ fn views_and_senders(
         .map(|x| x.sends.iter().map(|b| b.sender.clone()).collect())
         .collect();
     let owners: Owners = extras.iter().map(|x| x.owner.clone()).collect();
+    let firsts = st.approves_first(threads)?;
+    // Each owner's person's name, once per person (§11 "Display").
+    let mut person_names: HashMap<Option<String>, String> = HashMap::new();
+    for o in owners.iter().flatten() {
+        if !person_names.contains_key(&o.person) {
+            let p = st.agent_person(o.person.as_deref())?;
+            person_names.insert(o.person.clone(), p.name);
+        }
+    }
     let mut live: HashMap<&str, Option<LivePage>> = HashMap::new();
     for t in threads {
         if !live.contains_key(t.artifact_id.as_str()) {
@@ -571,7 +580,8 @@ fn views_and_senders(
     threads
         .iter()
         .zip(extras)
-        .map(|(t, x)| {
+        .zip(firsts)
+        .map(|((t, x), firsts)| {
             let mut v = serde_json::to_value(t).expect("threads serialise");
             v["clip_url"] = if t.has_clip {
                 json!(format!(
@@ -597,7 +607,13 @@ fn views_and_senders(
             };
             // The owner's handle only through [`Vis`], to those it may name.
             if let Some(o) = &x.owner {
-                v["owner"] = json!({"name": o.name, "person": o.person, "live": o.live});
+                v["owner"] = json!({"name": o.name, "person": o.person, "live": o.live,
+                    "person_name": person_names.get(&o.person)});
+            }
+            // Who a send naming their agent asks first (§10); browsers only
+            // (`Vis::filter_threads` leaves it out for agents).
+            if !firsts.is_empty() {
+                v["approves_first"] = json!(firsts);
             }
             if let Some(Some(p)) = live.get(t.artifact_id.as_str()) {
                 let path = x.live_path.as_deref().unwrap_or(&p.path);
@@ -824,6 +840,11 @@ impl Vis {
             }
         }
         if let Some(me) = &self.agent {
+            for view in views.iter_mut() {
+                if let Some(v) = view.as_object_mut() {
+                    v.remove("approves_first");
+                }
+            }
             for (view, owner) in views.iter_mut().zip(&owners) {
                 if let Some(o) = owner
                     && o.live
