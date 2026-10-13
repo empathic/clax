@@ -90,7 +90,7 @@ class World {
           baseVersion: ctx.baseVersion,
         ),
         budget: RunBudget(
-          newApp ? RunCaps.newApp : RunCaps.change,
+          newApp ? testNewCaps : testChangeCaps,
           'claude-haiku-5-5',
           clock,
         ),

@@ -73,10 +73,28 @@ Toolbox toolboxWith({
       baseVersion: baseVersion,
     ),
     budget: RunBudget(
-      caps ?? (kind == RequestKind.newApp ? RunCaps.newApp : RunCaps.change),
+      caps ?? (kind == RequestKind.newApp ? testNewCaps : testChangeCaps),
       'claude-haiku-5-5',
       c,
     ),
   );
   return Toolbox(state, [...fileTools(), ...extra]);
 }
+
+/// Small caps the tool tests count against: 8 turns, 3 renders, 32000
+/// output tokens, 90 seconds and \$0.50.
+const testNewCaps = RunCaps(
+  turns: 8,
+  renders: 3,
+  outputTokens: 32000,
+  wallClock: Duration(seconds: 90),
+);
+
+/// Small caps the tool tests count against: 6 turns, 2 renders, 20000
+/// output tokens, 45 seconds and \$0.50.
+const testChangeCaps = RunCaps(
+  turns: 6,
+  renders: 2,
+  outputTokens: 20000,
+  wallClock: Duration(seconds: 45),
+);

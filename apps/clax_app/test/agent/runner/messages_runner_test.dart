@@ -102,7 +102,7 @@ void main() {
 
   Toolbox toolbox({
     Map<String, String> files = const {'index.html': _page},
-    RunCaps caps = RunCaps.change,
+    RunCaps caps = testChangeCaps,
     String model = 'claude-haiku-5-5',
     List<Tool> extra = const [],
     ProgressSink? progress,
@@ -459,7 +459,7 @@ void main() {
       ),
       sseReply(streamedTurn([_use('t2', 'finish', {})])),
     ]);
-    await run(toolbox(caps: RunCaps.newApp, extra: [_Finish()]));
+    await run(toolbox(caps: testNewCaps, extra: [_Finish()]));
     expect((api.seen[0].body! as Map)['max_tokens'], 32000);
     expect((api.seen[1].body! as Map)['max_tokens'], 27000);
   });

@@ -7,6 +7,7 @@ import '../clax/api.dart';
 import 'asked.dart';
 import 'failure.dart';
 import 'loop.dart';
+import 'plan.dart';
 import 'progress.dart';
 
 /// What the worker is doing, for the UI. Every [WorkerWorking] is followed
@@ -67,6 +68,63 @@ final class WorkerInterrupted extends WorkerEvent {
   const WorkerInterrupted(super.artifactId);
 }
 
+/// Where an app's build stands.
+enum BuildPhase {
+  /// A continue run is waiting its turn.
+  queued,
+
+  /// A continue run is building.
+  running,
+
+  /// The person stopped the build; [FeedbackWorker.resumeBuild] goes on.
+  stopped,
+
+  /// Every feature of the plan is done or dropped.
+  done,
+
+  /// The build spent [buildCapUsd].
+  capped,
+
+  /// A continue run failed, or made no progress; the build is stopped, and
+  /// [FeedbackWorker.resumeBuild] tries again.
+  failed,
+}
+
+/// An app's build as the worker runs it, for the build view.
+class BuildState {
+  const BuildState(
+    this.appId,
+    this.phase, {
+    this.featureId,
+    this.progress,
+    this.version,
+    this.spentUsd = 0,
+    this.reason,
+  });
+
+  final String appId;
+  final BuildPhase phase;
+
+  /// The feature being built when [phase] is running: the plan's first
+  /// still to build as the run started.
+  final String? featureId;
+
+  /// The running run's latest progress.
+  final AgentProgress? progress;
+
+  /// The last version the build published.
+  final int? version;
+
+  /// What the build has cost so far, in US dollars.
+  final double spentUsd;
+
+  /// Why a [BuildPhase.failed] build stopped.
+  final String? reason;
+
+  @override
+  String toString() => 'BuildState($appId, ${phase.name})';
+}
+
 /// One queued run: comments a poll handed over, threads recovery found
 /// stranded, which are checked again just before the run, questions whose
 /// late answers ([AskedEntry.answer]) run the comments they were asked
@@ -79,6 +137,7 @@ class _Job {
     Set<String>? recheck,
     Set<String>? answers,
     List<String>? texts,
+    this.build = false,
   }) : items = items ?? [],
        recheck = recheck ?? {},
        answers = answers ?? {},
@@ -89,6 +148,9 @@ class _Job {
   final Set<String> recheck;
   final Set<String> answers;
   final List<String> texts;
+
+  /// A build's continue run, not a change.
+  final bool build;
 
   bool names(String tid) =>
       recheck.contains(tid) || items.any((i) => i.threadId == tid);
@@ -137,6 +199,17 @@ class _Job {
 ///
 /// At its first registration the worker deletes the draft artifacts a
 /// previous run of the app left behind (`listDrafts`, `deleteDraft`).
+///
+/// Builds (C3): [startBuild] queues a continue run of an app with a plan
+/// ([AgentLoop.continueBuild]); each run that ends queues the next, behind
+/// any comments, until no feature is left to build ([BuildPhase.done]),
+/// the build has spent [buildCapUsd] ([BuildPhase.capped]), the person
+/// stops it ([stopBuild]), or a run fails or marks no feature done or
+/// dropped ([BuildPhase.failed], which stops it). A change that leaves
+/// features to build starts the build again, unless it is stopped. Each
+/// recovery queues the builds of every app whose plan has features to
+/// build, is not stopped and is under the cap. [builds] tells each step.
+/// Builds make no [WorkerEvent]s: those are the comments' changes.
 class FeedbackWorker {
   FeedbackWorker({
     required this._api,
@@ -181,12 +254,244 @@ class FeedbackWorker {
   /// Questions whose late-answer run is going.
   final _answering = <String>{};
 
+  final _builds = StreamController<BuildState>.broadcast();
+  final _buildStates = <String, BuildState>{};
+
+  /// The app whose continue run is going, and its cancel.
+  String? _building;
+  Completer<void>? _buildCancel;
+
   /// The first wait after a failed poll; it doubles up to [maxBackoff].
   static const firstBackoff = Duration(milliseconds: 250);
   static const maxBackoff = Duration(seconds: 10);
 
   /// Changes started and how each ended.
   Stream<WorkerEvent> get events => _events.stream;
+
+  /// Each step of every build.
+  Stream<BuildState> get builds => _builds.stream;
+
+  /// The latest step of [appId]'s build, or null when it has had none
+  /// since the worker was made.
+  BuildState? buildOf(String appId) => _buildStates[appId];
+
+  /// Queues a continue run of [appId]'s build (after its first run, or
+  /// when a plan gains features). Nothing happens when one is already
+  /// queued or running. Not started, the worker queues it at its next
+  /// recovery instead.
+  void startBuild(String appId) {
+    if (_building == appId ||
+        _queue.any((j) => j.build && j.artifactId == appId)) {
+      return;
+    }
+    if (!_started) return;
+    _queue.add(_Job(appId, build: true));
+    _setBuild(
+      BuildState(
+        appId,
+        BuildPhase.queued,
+        spentUsd: _buildStates[appId]?.spentUsd ?? 0,
+        version: _buildStates[appId]?.version,
+      ),
+    );
+    _kick();
+  }
+
+  /// Stops [appId]'s build: a queued continue run is dropped, a running
+  /// one cancelled (it publishes nothing), and the plan is marked stopped,
+  /// so no recovery starts it again.
+  Future<void> stopBuild(String appId) async {
+    _queue.removeWhere((j) => j.build && j.artifactId == appId);
+    final plan = await _quietPlan(() => _loop.plans.setStopped(appId, true));
+    if (_building == appId) {
+      if (_buildCancel case final c? when !c.isCompleted) c.complete();
+    }
+    _setBuild(
+      BuildState(
+        appId,
+        BuildPhase.stopped,
+        spentUsd: plan?.spentUsd ?? 0,
+        version: _buildStates[appId]?.version,
+      ),
+    );
+  }
+
+  /// Takes up [appId]'s stopped or failed build again.
+  Future<void> resumeBuild(String appId) async {
+    await _quietPlan(() => _loop.plans.setStopped(appId, false));
+    startBuild(appId);
+  }
+
+  Future<Plan?> _quietPlan(Future<Plan?> Function() f) async {
+    try {
+      return await f();
+    } on Object catch (e) {
+      _log('the plan could not be updated: $e');
+      return null;
+    }
+  }
+
+  void _setBuild(BuildState s) {
+    _buildStates[s.appId] = s;
+    _builds.add(s);
+  }
+
+  /// Runs one continue run of [aid]'s build, then queues the next or says
+  /// why the build ended.
+  Future<void> _runBuild(String aid) async {
+    final Plan? before;
+    try {
+      before = await _loop.plans.get(aid);
+    } on Object catch (e) {
+      _log('the plan of $aid is unavailable: $e');
+      return;
+    }
+    if (before == null) return;
+    final last = _buildStates[aid]?.version;
+    if (before.stopped) {
+      _setBuild(
+        BuildState(
+          aid,
+          BuildPhase.stopped,
+          spentUsd: before.spentUsd,
+          version: last,
+        ),
+      );
+      return;
+    }
+    final next = before.todo.firstOrNull;
+    if (next == null) {
+      _setBuild(
+        BuildState(
+          aid,
+          BuildPhase.done,
+          spentUsd: before.spentUsd,
+          version: last,
+        ),
+      );
+      return;
+    }
+    if (before.spentUsd >= buildCapUsd) {
+      _setBuild(
+        BuildState(
+          aid,
+          BuildPhase.capped,
+          spentUsd: before.spentUsd,
+          version: last,
+        ),
+      );
+      return;
+    }
+    final cancel = _buildCancel = Completer<void>();
+    _building = aid;
+    _setBuild(
+      BuildState(
+        aid,
+        BuildPhase.running,
+        featureId: next.id,
+        spentUsd: before.spentUsd,
+        version: last,
+      ),
+    );
+    final ChangeOutcome outcome;
+    try {
+      outcome = await _loop.continueBuild(
+        aid,
+        cancelled: Future.any([_stop.future, cancel.future]),
+        onProgress: (p) => _setBuild(
+          BuildState(
+            aid,
+            BuildPhase.running,
+            featureId: next.id,
+            progress: p,
+            spentUsd: before!.spentUsd,
+            version: last,
+          ),
+        ),
+      );
+    } finally {
+      _building = null;
+      _buildCancel = null;
+    }
+    final Plan? after;
+    try {
+      after = await _loop.plans.get(aid);
+    } on Object catch (e) {
+      _log('the plan of $aid is unavailable: $e');
+      return;
+    }
+    final spent = after?.spentUsd ?? before.spentUsd;
+    final version = switch (outcome) {
+      ChangeLanded(:final version) => version,
+      _ => last,
+    };
+    BuildState state(BuildPhase phase, {String? reason}) => BuildState(
+      aid,
+      phase,
+      spentUsd: spent,
+      version: version,
+      reason: reason,
+    );
+    Future<void> fail(String reason) async {
+      await _quietPlan(() => _loop.plans.setStopped(aid, true));
+      _setBuild(state(BuildPhase.failed, reason: reason));
+    }
+
+    switch (outcome) {
+      case ChangeCancelled():
+        // Stopped by the person (already said), or by the worker's stop:
+        // the next start's recovery takes it up again.
+        if (!cancel.isCompleted) _setBuild(state(BuildPhase.queued));
+        return;
+      case ChangeInterrupted():
+        _setBuild(state(BuildPhase.queued));
+        return;
+      case ChangeDropped():
+        await _quietPlan(() async {
+          await _loop.plans.remove(aid);
+          return null;
+        });
+        _setBuild(state(BuildPhase.failed, reason: 'The app is gone'));
+        return;
+      case ChangeFailed(:final reason):
+        await fail(reason);
+        return;
+      case ChangeLanded() || ChangeAnswered():
+        break;
+    }
+    if (after == null) return;
+    int settled(Plan p) => p.features
+        .where(
+          (f) =>
+              f.status == FeatureStatus.done ||
+              f.status == FeatureStatus.dropped,
+        )
+        .length;
+    if (after.todo.isEmpty) {
+      _setBuild(state(BuildPhase.done));
+    } else if (spent >= buildCapUsd) {
+      _setBuild(state(BuildPhase.capped));
+    } else if (settled(after) <= settled(before)) {
+      await fail('The last run finished no feature');
+    } else {
+      startBuild(aid);
+    }
+  }
+
+  /// After a change on [aid]: starts its build when its plan has features
+  /// to build, is not stopped and is under the cap.
+  Future<void> _maybeBuild(String aid) async {
+    final Plan? p;
+    try {
+      p = await _loop.plans.get(aid);
+    } on Object {
+      return;
+    }
+    if (p != null && _buildable(p)) startBuild(aid);
+  }
+
+  static bool _buildable(Plan p) =>
+      !p.stopped && p.todo.isNotEmpty && p.spentUsd < buildCapUsd;
 
   /// The app session the worker registered last, or null before it has.
   String? get sessionId => _sid;
@@ -337,9 +642,12 @@ class FeedbackWorker {
       recheck: Set.of(first.recheck),
       answers: Set.of(first.answers),
       texts: List.of(first.texts),
+      build: first.build,
     );
     _queue.removeWhere((j) {
-      if (j.artifactId != job.artifactId) return false;
+      if (j.artifactId != job.artifactId || j.build != job.build) {
+        return false;
+      }
       job.items.addAll(j.items);
       job.recheck.addAll(j.recheck);
       job.answers.addAll(j.answers);
@@ -353,6 +661,10 @@ class FeedbackWorker {
     while (_queue.isNotEmpty && _started) {
       final job = _next();
       final aid = job.artifactId;
+      if (job.build) {
+        await _runBuild(aid);
+        continue;
+      }
       _running.addAll({...job.recheck, ...job.items.map((i) => i.threadId)});
       try {
         final items = await _withRechecked(job);
@@ -376,6 +688,9 @@ class FeedbackWorker {
           for (final q in late.questions) {
             await _forgetAnswer(q);
           }
+        }
+        if (outcome is ChangeLanded || outcome is ChangeAnswered) {
+          await _maybeBuild(aid);
         }
       } finally {
         _running.clear();
@@ -644,6 +959,7 @@ class FeedbackWorker {
         _queue.addAll(jobs);
         _kick();
       }
+      await _recoverBuilds();
       // Late answers kept before a quit, a failed daemon or a cancelled
       // run.
       final List<AskedEntry> entries;
@@ -661,6 +977,25 @@ class FeedbackWorker {
       }
     } finally {
       _recovering--;
+    }
+  }
+
+  /// Queues the build of every app whose plan has features to build, is
+  /// not stopped and is under the cap; a first run's provisional plan is
+  /// left alone.
+  Future<void> _recoverBuilds() async {
+    final Map<String, Plan> all;
+    try {
+      all = await _loop.plans.all();
+    } on Object catch (e) {
+      _log('plans unavailable: $e');
+      return;
+    }
+    for (final e in all.entries) {
+      if (e.key.startsWith(pendingPlanPrefix) || !_buildable(e.value)) {
+        continue;
+      }
+      startBuild(e.key);
     }
   }
 

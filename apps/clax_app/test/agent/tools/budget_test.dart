@@ -6,17 +6,22 @@ import 'support.dart';
 const note = 'Time is nearly up: call finish now with what works.';
 
 void main() {
-  test('the caps of a new app and a change', () {
-    expect(RunCaps.newApp.turns, 8);
-    expect(RunCaps.newApp.renders, 3);
-    expect(RunCaps.newApp.outputTokens, 32000);
-    expect(RunCaps.newApp.wallClock, const Duration(seconds: 90));
-    expect(RunCaps.newApp.costUsd, 0.50);
-    expect(RunCaps.change.turns, 6);
-    expect(RunCaps.change.renders, 2);
-    expect(RunCaps.change.outputTokens, 20000);
-    expect(RunCaps.change.wallClock, const Duration(seconds: 45));
-    expect(RunCaps.change.costUsd, 0.50);
+  test('the caps of a first run, a continue run and a change', () {
+    expect(RunCaps.first.turns, 14);
+    expect(RunCaps.first.renders, 4);
+    expect(RunCaps.first.outputTokens, 48000);
+    expect(RunCaps.first.wallClock, const Duration(seconds: 150));
+    expect(RunCaps.continueBuild.turns, 18);
+    expect(RunCaps.continueBuild.renders, 5);
+    expect(RunCaps.continueBuild.outputTokens, 64000);
+    expect(RunCaps.continueBuild.wallClock, const Duration(seconds: 240));
+    expect(RunCaps.change.turns, 10);
+    expect(RunCaps.change.renders, 3);
+    expect(RunCaps.change.outputTokens, 32000);
+    expect(RunCaps.change.wallClock, const Duration(seconds: 120));
+    for (final c in [RunCaps.first, RunCaps.continueBuild, RunCaps.change]) {
+      expect(c.costUsd, 1.50);
+    }
   });
 
   test('usage adds field by field and reads the API usage', () {
@@ -40,7 +45,7 @@ void main() {
 
   group('hardStop', () {
     test('turns', () {
-      final b = RunBudget(RunCaps.change, 'claude-haiku-5-5', StepClock());
+      final b = RunBudget(testChangeCaps, 'claude-haiku-5-5', StepClock());
       for (var i = 0; i < 5; i++) {
         b.addTurn(const Usage(output: 1));
       }
@@ -52,7 +57,7 @@ void main() {
 
     test('wall clock', () {
       final clock = StepClock();
-      final b = RunBudget(RunCaps.change, 'claude-haiku-5-5', clock);
+      final b = RunBudget(testChangeCaps, 'claude-haiku-5-5', clock);
       clock.advance(const Duration(seconds: 44));
       expect(b.hardStop, isNull);
       clock.advance(const Duration(seconds: 1));
@@ -61,7 +66,7 @@ void main() {
     });
 
     test('output tokens', () {
-      final b = RunBudget(RunCaps.change, 'claude-haiku-5-5', StepClock());
+      final b = RunBudget(testChangeCaps, 'claude-haiku-5-5', StepClock());
       b.addTurn(const Usage(output: 19999));
       expect(b.hardStop, isNull);
       b.addTurn(const Usage(output: 1));
@@ -69,7 +74,7 @@ void main() {
     });
 
     test('cost', () {
-      final b = RunBudget(RunCaps.change, 'claude-opus-5-5', StepClock());
+      final b = RunBudget(testChangeCaps, 'claude-opus-5-5', StepClock());
       // 100,000 input tokens on Opus 5.5 cost $0.40.
       b.addTurn(const Usage(input: 100000));
       expect(b.costUsd, closeTo(0.40, 1e-9));
@@ -80,7 +85,7 @@ void main() {
 
     test('the clock is paused across an ask wait', () {
       final clock = StepClock();
-      final b = RunBudget(RunCaps.change, 'claude-haiku-5-5', clock);
+      final b = RunBudget(testChangeCaps, 'claude-haiku-5-5', clock);
       clock.advance(const Duration(seconds: 10));
       b.pauseClock();
       clock.advance(const Duration(minutes: 10));
@@ -93,7 +98,7 @@ void main() {
 
     test('nested pauses resume on the last resume', () {
       final clock = StepClock();
-      final b = RunBudget(RunCaps.change, 'claude-haiku-5-5', clock);
+      final b = RunBudget(testChangeCaps, 'claude-haiku-5-5', clock);
       b.pauseClock();
       b.pauseClock();
       clock.advance(const Duration(seconds: 30));
@@ -107,7 +112,7 @@ void main() {
 
   group('softNote', () {
     test('at two turns left', () {
-      final b = RunBudget(RunCaps.change, 'claude-haiku-5-5', StepClock());
+      final b = RunBudget(testChangeCaps, 'claude-haiku-5-5', StepClock());
       for (var i = 0; i < 3; i++) {
         b.addTurn(const Usage(output: 1));
       }
@@ -118,7 +123,7 @@ void main() {
 
     test('at 60% of the time', () {
       final clock = StepClock();
-      final b = RunBudget(RunCaps.change, 'claude-haiku-5-5', clock);
+      final b = RunBudget(testChangeCaps, 'claude-haiku-5-5', clock);
       clock.advance(const Duration(seconds: 26));
       expect(b.softNote, isNull);
       clock.advance(const Duration(seconds: 1));
@@ -126,13 +131,13 @@ void main() {
     });
 
     test('at 60% of the output tokens or the cost', () {
-      final b = RunBudget(RunCaps.change, 'claude-haiku-5-5', StepClock());
+      final b = RunBudget(testChangeCaps, 'claude-haiku-5-5', StepClock());
       b.addTurn(const Usage(output: 11999));
       expect(b.softNote, isNull);
       b.addTurn(const Usage(output: 1));
       expect(b.softNote, note);
 
-      final c = RunBudget(RunCaps.newApp, 'claude-opus-5-5', StepClock());
+      final c = RunBudget(testNewCaps, 'claude-opus-5-5', StepClock());
       c.addTurn(const Usage(input: 74999));
       expect(c.softNote, isNull);
       c.addTurn(const Usage(input: 1));
@@ -143,7 +148,7 @@ void main() {
   group('deadline', () {
     test('remaining is the wall clock left, paused time excluded', () {
       final clock = StepClock();
-      final b = RunBudget(RunCaps.change, 'claude-haiku-5-5', clock);
+      final b = RunBudget(testChangeCaps, 'claude-haiku-5-5', clock);
       expect(b.remaining, const Duration(seconds: 45));
       clock.advance(const Duration(seconds: 20));
       b.pauseClock();
@@ -157,7 +162,7 @@ void main() {
     test('whenTimeUp completes when the wall clock runs out, not while an '
         'ask waits', () async {
       final clock = StepClock();
-      final b = RunBudget(RunCaps.change, 'claude-haiku-5-5', clock);
+      final b = RunBudget(testChangeCaps, 'claude-haiku-5-5', clock);
       var fired = false;
       b.whenTimeUp.then((_) => fired = true);
       clock.advance(const Duration(seconds: 30));
@@ -181,7 +186,7 @@ void main() {
       'whenTimeUp is complete at once when the time is already up',
       () async {
         final clock = StepClock();
-        final b = RunBudget(RunCaps.change, 'claude-haiku-5-5', clock);
+        final b = RunBudget(testChangeCaps, 'claude-haiku-5-5', clock);
         clock.advance(const Duration(seconds: 50));
         await b.whenTimeUp;
         expect(identical(b.whenTimeUp, b.whenTimeUp), isTrue);
@@ -191,19 +196,19 @@ void main() {
 
   test('each turn is priced on its own, so the long-prompt rate applies per '
       'request', () {
-    final short = RunBudget(RunCaps.newApp, 'claude-haiku-5-5', StepClock());
+    final short = RunBudget(testNewCaps, 'claude-haiku-5-5', StepClock());
     short.addTurn(const Usage(input: 60000));
     short.addTurn(const Usage(input: 60000));
     // Two 60K-token prompts at $0.10/MTok.
     expect(short.costUsd, closeTo(0.012, 1e-12));
-    final long = RunBudget(RunCaps.newApp, 'claude-haiku-5-5', StepClock());
+    final long = RunBudget(testNewCaps, 'claude-haiku-5-5', StepClock());
     long.addTurn(const Usage(input: 120000));
     // One 120K-token prompt at the long-prompt $0.50/MTok.
     expect(long.costUsd, closeTo(0.06, 1e-12));
   });
 
   test('renders are counted against their cap', () {
-    final b = RunBudget(RunCaps.change, 'claude-haiku-5-5', StepClock());
+    final b = RunBudget(testChangeCaps, 'claude-haiku-5-5', StepClock());
     expect(b.canRender, isTrue);
     b.addRender();
     b.addRender();
@@ -215,7 +220,7 @@ void main() {
   test('a pause since an earlier time takes that time back, never more '
       'than the clock ran', () async {
     final clock = StepClock();
-    final b = RunBudget(RunCaps.change, 'claude-haiku-5-5', clock);
+    final b = RunBudget(testChangeCaps, 'claude-haiku-5-5', clock);
     final start = clock.now();
     clock.advance(const Duration(seconds: 10));
     b.pauseClock();

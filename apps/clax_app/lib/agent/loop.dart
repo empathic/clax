@@ -11,6 +11,7 @@ import 'edit_result.dart';
 import 'failure.dart';
 import 'inspector.dart';
 import 'ledger.dart';
+import 'plan.dart';
 import 'progress.dart';
 import 'prompt.dart';
 import 'read_consent.dart';
@@ -32,6 +33,13 @@ const agentNewTiming = 'agent-new';
 
 /// The timing name of a change's run.
 const agentChangeTiming = 'agent-change';
+
+/// The timing name of a build's continue run.
+const agentContinueTiming = 'agent-continue';
+
+/// The prefix of the key a first run keeps its plan under until its app
+/// has an ID.
+const pendingPlanPrefix = 'new:';
 
 /// The single-call backends that send [AgentRequest.image] to the model.
 /// `claude-cli` runs with tools off and cannot read an image. A tool-loop
@@ -182,6 +190,7 @@ class AgentLoop {
     this._baseUrl,
     ChangeLedger? ledger,
     AskedQuestions? asked,
+    PlanStore? plans,
     this._readConsent,
     AgentBackend? Function()? singleCall,
     this._clock = const SystemClock(),
@@ -194,6 +203,7 @@ class AgentLoop {
        ),
        ledger = ledger ?? MemoryChangeLedger(),
        asked = asked ?? MemoryAskedQuestions(),
+       plans = plans ?? PlanStore(),
        _runner = runner,
        _singleCall = singleCall,
        _sendsImage = sendsImage ?? ((b) => imageBackends.contains(b.name)),
@@ -205,6 +215,9 @@ class AgentLoop {
   /// What each change's still-open question was asked for, so a late
   /// answer runs that change again; in memory unless given.
   final AskedQuestions asked;
+
+  /// Each app's build plan; in memory unless given.
+  final PlanStore plans;
 
   final ClaxApi _api;
   final AgentRunner Function()? _runner;
@@ -234,17 +247,41 @@ class AgentLoop {
   /// made by the app session, and returns it when found; else it throws,
   /// saying to look for it before trying again, so a Retry does not make
   /// it twice.
+  ///
+  /// The tool loop's run is a build's **first** run ([RunCaps.first]): it
+  /// plans with `plan_set`, kept in [plans] under [planKey] (one that
+  /// starts with [pendingPlanPrefix]; a fresh one when null), so a screen
+  /// can watch the plan before the app exists. Once the app is made, the
+  /// plan moves to its ID; a run that made no app forgets it. The run's
+  /// cost is the build's first spend.
   Future<String> newApp(
     String request, {
     Future<void>? cancelled,
     ProgressSink? onProgress,
     String? session,
+    String? planKey,
   }) async {
     final single = _singleCall?.call();
     if (single != null) {
       return _newAppSingle(single, request, cancelled, onProgress);
     }
-    return _newAppTools(request, cancelled, onProgress, session);
+    final key =
+        planKey ?? '$pendingPlanPrefix${_clock.now().microsecondsSinceEpoch}';
+    String? made;
+    try {
+      made = await _newAppTools(request, cancelled, onProgress, session, key);
+      return made;
+    } finally {
+      try {
+        if (made != null) {
+          await plans.move(key, made);
+        } else {
+          await plans.remove(key);
+        }
+      } on Object catch (e) {
+        _log('keeping the plan of $key failed: $e');
+      }
+    }
   }
 
   Future<String> _newAppTools(
@@ -252,6 +289,7 @@ class AgentLoop {
     Future<void>? cancelled,
     ProgressSink? onProgress,
     String? session,
+    String planKey,
   ) async {
     final cancel = CancelWatch(cancelled);
     final runner = _requireRunner();
@@ -289,11 +327,13 @@ class AgentLoop {
         cancelled: scope.future,
         clock: _clock,
       ),
-      RunCaps.newApp,
+      RunCaps.first,
       RunInput(system: system, first: _prompts.firstNew(request, others)),
       onProgress,
       agentNewTiming,
       const {},
+      kind: RunKind.first,
+      plan: RunPlan(plans, planKey, request: request),
     );
     // A new app's question is about nothing that outlives the run.
     await ran.ask.withdrawOpen();
@@ -500,6 +540,139 @@ class AgentLoop {
     return outcome;
   }
 
+  /// Runs the next features of artifact [aid]'s plan: a build's
+  /// **continue** run ([RunCaps.continueBuild], its cost cap no more than
+  /// what is left of [buildCapUsd]). Never throws.
+  ///
+  /// The plan is read at the start, so the person's edits made since the
+  /// last run count; with no plan, or nothing to build, it returns
+  /// [ChangeAnswered] without a run. The first message holds the plan, the
+  /// app's files (as a change's does) and its documents. The run marks
+  /// features as it builds them, and publishes a version as a change does,
+  /// with no thread to answer; the working mark carries the next feature's
+  /// title. A run that ends without publishing is [ChangeFailed] (its
+  /// [ChangeFailed.answered] true: there is no thread to reply on).
+  Future<ChangeOutcome> continueBuild(
+    String aid, {
+    Future<void>? cancelled,
+    ProgressSink? onProgress,
+  }) async {
+    final cancel = CancelWatch(cancelled);
+    final Plan? plan;
+    try {
+      plan = await plans.get(aid);
+    } on Object catch (e) {
+      return ChangeFailed('its plan could not be read: $e', answered: true);
+    }
+    final next = plan?.todo.firstOrNull;
+    if (plan == null || next == null) return const ChangeAnswered();
+    final left = buildCapUsd - plan.spentUsd;
+    if (left <= 0) return const ChangeAnswered();
+    await _quiet(
+      'mark working',
+      () => _api.setWorking(aid, on: true, note: next.title, threadIds: []),
+    );
+    try {
+      final AgentRunner runner;
+      final Uri base;
+      final _Snapshot snap;
+      final List<OtherApp> others;
+      final String system;
+      try {
+        runner = _requireRunner();
+        base = _baseUrl!();
+        final listing = _api.listArtifacts();
+        final reads = await Future.wait<Object?>([
+          _firstSnapshot(aid, listing),
+          _othersFrom(listing, exclude: aid),
+          _prompts.toolSystem(),
+        ]);
+        snap = reads[0]! as _Snapshot;
+        others = reads[1]! as List<OtherApp>;
+        system = reads[2]! as String;
+      } on ClaxApiError catch (e) {
+        if (e.status == 0) return const ChangeInterrupted();
+        if (e.isNotFound && e.code == 'not_found') return const ChangeDropped();
+        return ChangeFailed(e.message, answered: true);
+      } on AgentError catch (e) {
+        return ChangeFailed(e.message, answered: true);
+      } on Object catch (e) {
+        _log('continue on $aid failed before its run: $e');
+        return ChangeFailed('$e', answered: true);
+      }
+      if (cancel.isCancelled) return const ChangeCancelled();
+      final documents = PromptBuilder.trimDocuments(snap.docs);
+      const caps = RunCaps.continueBuild;
+      final scope = _RunCancel(cancelled);
+      final ran = await _runTools(
+        runner,
+        base,
+        scope,
+        RunContext(
+          kind: RequestKind.change,
+          artifactId: aid,
+          baseVersion: snap.artifact.currentVersion,
+          title: snap.artifact.title,
+          capabilities: snap.artifact.capabilities,
+          files: snap.files,
+          shownDocs: {
+            for (final c in documents)
+              for (final d in c.docs) d.path: d.version,
+          },
+          cancelled: scope.future,
+          clock: _clock,
+        ),
+        RunCaps(
+          turns: caps.turns,
+          renders: caps.renders,
+          outputTokens: caps.outputTokens,
+          costUsd: left < caps.costUsd ? left : caps.costUsd,
+          wallClock: caps.wallClock,
+        ),
+        RunInput(
+          system: system,
+          first: _prompts.firstContinue(
+            title: snap.artifact.title,
+            plan: plan,
+            files: snap.files,
+            others: others,
+            documents: snap.docs,
+          ),
+        ),
+        onProgress,
+        agentContinueTiming,
+        {'artifact': aid},
+        kind: RunKind.continueBuild,
+        plan: RunPlan(plans, aid, request: plan.request, seen: plan.revision),
+      );
+      // A continue run has no one waiting on its question.
+      await ran.ask.withdrawOpen();
+      return switch (ran.outcome) {
+        RunFinished(:final version?) => ChangeLanded(version),
+        RunFinished() => const ChangeAnswered(),
+        RunGaveUp(:final reason) => ChangeFailed(
+          ran.error?.message ?? reason,
+          answered: true,
+        ),
+        RunCancelled() => const ChangeCancelled(),
+        RunInterrupted() => const ChangeInterrupted(),
+        RunDropped() => const ChangeDropped(),
+      };
+    } finally {
+      await _quiet('clear working', () => _api.setWorking(aid, on: false));
+    }
+  }
+
+  /// The plan of [aid], or null when it has none or it cannot be read.
+  Future<Plan?> _plan(String aid) async {
+    try {
+      return await plans.get(aid);
+    } on Object catch (e) {
+      _log('the plan of $aid is unavailable: $e');
+      return null;
+    }
+  }
+
   /// Takes every [AskedEntry] whose comments overlap [items] and withdraws
   /// its question, as [session]; a question that is closed or gone stays
   /// so.
@@ -561,6 +734,7 @@ class AgentLoop {
     final List<OtherApp> others;
     final Uint8List? clip;
     final String system;
+    final Plan? plan;
     try {
       runner = _requireRunner();
       base = _baseUrl!();
@@ -572,11 +746,13 @@ class AgentLoop {
             ? _clip(aid, items.first.threadId)
             : Future<Uint8List?>.value(),
         _prompts.toolSystem(),
+        _plan(aid),
       ]);
       snap = reads[0]! as _Snapshot;
       others = reads[1]! as List<OtherApp>;
       clip = reads[2] as Uint8List?;
       system = reads[3]! as String;
+      plan = reads[4] as Plan?;
     } on ClaxApiError catch (e) {
       if (e.status == 0) {
         _log('change on $aid interrupted: $e');
@@ -638,11 +814,19 @@ class AgentLoop {
           others: others,
           documents: snap.docs,
           answers: answers,
+          plan: plan,
         ),
       ),
       onProgress,
       agentChangeTiming,
       {'artifact': aid},
+      kind: RunKind.change,
+      plan: RunPlan(
+        plans,
+        aid,
+        request: snap.artifact.title,
+        seen: plan?.revision,
+      ),
     );
 
     final outcome = ran.outcome;
@@ -731,8 +915,10 @@ class AgentLoop {
     RunInput input,
     ProgressSink? onProgress,
     String timing,
-    Map<String, Object?> extra,
-  ) async {
+    Map<String, Object?> extra, {
+    required RunKind kind,
+    RunPlan? plan,
+  }) async {
     // [_requireRunner] made [runner], so the inspector is there.
     final inspector = _inspector!;
     final model = _model();
@@ -762,6 +948,9 @@ class AgentLoop {
     var byTool = false;
     void ended() => byTool = byTool || state.ended;
     final toolbox = Toolbox(state, [
+      if (plan != null) ...[PlanSetTool(plan), PlanMarkTool(plan)],
+      // K1's kit tool (lib/agent/tools/kit_tool.dart) joins here once it
+      // lands: `KitTool(...)`, named `add_kit` in toolOrder.
       ...fileTools(),
       ...dataTools(_api),
       render,
@@ -811,6 +1000,7 @@ class AgentLoop {
           'cache_write_tokens': b.usage.cacheWrite,
           'output_tokens': b.usage.output,
           'cost_usd': b.costUsd,
+          'run': kind.name,
           'outcome': switch (state.outcome) {
             RunFinished() => 'finished',
             RunGaveUp() => 'gave up',
@@ -825,6 +1015,14 @@ class AgentLoop {
     state.outcome ??= outcome;
     // Every end deletes the draft, the runner's own ends included.
     await render.cleanup();
+    if (plan != null && kind != RunKind.change) {
+      // A build's runs count against its cost cap.
+      try {
+        await plans.spend(plan.key, state.budget.costUsd);
+      } on Object catch (e) {
+        _log('counting the cost of ${plan.key} failed: $e');
+      }
+    }
     return (
       outcome: outcome,
       byTool: byTool,

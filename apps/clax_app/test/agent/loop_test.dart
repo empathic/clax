@@ -6,10 +6,12 @@ import 'package:clax_app/agent/edit_result.dart';
 import 'package:clax_app/agent/failure.dart';
 import 'package:clax_app/agent/ledger.dart';
 import 'package:clax_app/agent/loop.dart';
+import 'package:clax_app/agent/plan.dart';
 import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/prompt.dart';
 import 'package:clax_app/agent/read_consent.dart';
 import 'package:clax_app/agent/runner/scripted_runner.dart';
+import 'package:clax_app/agent/tools/budget.dart';
 import 'package:clax_app/agent/tools/toolbox.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
@@ -57,6 +59,7 @@ void main() {
   late RecordingTimings timings;
   late MemoryChangeLedger ledger;
   late MemoryAskedQuestions asked;
+  late PlanStore plans;
   late String sid;
 
   AgentLoop loopWith(
@@ -75,6 +78,7 @@ void main() {
       baseUrl: () => Uri.parse('http://127.0.0.1:7999'),
       ledger: ledger,
       asked: asked,
+      plans: plans,
       readConsent: consent,
       clock: StepClock(),
     );
@@ -90,6 +94,7 @@ void main() {
     timings = RecordingTimings();
     ledger = MemoryChangeLedger();
     asked = MemoryAskedQuestions();
+    plans = PlanStore();
     sid = (await api.registerAppSession(installId: 'install', pid: 1)).id;
   });
 
@@ -328,6 +333,7 @@ void main() {
         'cache_write_tokens': 0,
         'output_tokens': 0,
         'cost_usd': 0.0,
+        'run': 'first',
         'outcome': 'finished',
       });
     });
@@ -488,7 +494,7 @@ void main() {
         final item = api.sendComment(aid, 'x', queue: false);
         final loop = loopWith([
           [
-            for (var i = 0; i < 7; i++)
+            for (var i = 0; i < 11; i++)
               const ScriptedCall('list_files', {}, 'Looking'),
           ],
         ]);
@@ -496,7 +502,7 @@ void main() {
         expect(out, isA<ChangeFailed>());
         expect(bodies(aid, item.threadId), [
           'x',
-          failureReply('it ran out of time (6 turns).'),
+          failureReply('it ran out of time (10 turns).'),
         ]);
         expect(api.currentVersion(aid), 1);
       },
@@ -511,14 +517,14 @@ void main() {
             edits: [('Save', 'Keep')],
             narration: 'Renaming the button',
           ).take(2),
-          for (var i = 0; i < 5; i++) const ScriptedCall('list_files', {}),
+          for (var i = 0; i < 9; i++) const ScriptedCall('list_files', {}),
         ],
       ]);
       final out = await loop.change(aid, [item], session: sid);
       expect(out, isA<ChangeLanded>().having((o) => o.version, 'version', 2));
       expect(
         bodies(aid, item.threadId).last,
-        'Renaming the button. I stopped early (6 turns), so this may not be '
+        'Renaming the button. I stopped early (10 turns), so this may not be '
         'everything you asked.',
       );
       expect(api.threadOf(aid, item.threadId).status, 'open');
@@ -805,6 +811,133 @@ void main() {
         await loop.change(aid, [item], session: sid);
         expect((await api.questions(status: 'all')).single.status, 'withdrawn');
       });
+    });
+  });
+
+  group('builds', () {
+    Map<String, Object?> f(String id, String title, [String status = 'todo']) =>
+        {'id': id, 'title': title, 'detail': '', 'status': status};
+
+    test('a first run plans under its key, which moves to the app once it '
+        'is made', () async {
+      final loop = loopWith([
+        [
+          ScriptedCall('plan_set', {
+            'features': [f('f1', 'Log a run'), f('f2', 'Weekly chart')],
+          }, 'Planning the tracker'),
+          const ScriptedCall('plan_mark', {'id': 'f1', 'status': 'done'}),
+          ...newAppCalls(),
+        ],
+      ]);
+      final seen = <Plan?>[];
+      final sub = plans.watch('new:k1').listen(seen.add);
+      final aid = await loop.newApp(
+        'a run tracker',
+        session: sid,
+        planKey: 'new:k1',
+      );
+      await pumpEventQueue();
+      await sub.cancel();
+      expect(runner.seen.single.first.toString(), contains('plan_set'));
+      expect(seen.whereType<Plan>(), isNotEmpty, reason: 'watched live');
+      expect(await plans.get('new:k1'), isNull);
+      final p = (await plans.get(aid))!;
+      expect(p.request, 'a run tracker');
+      expect([for (final x in p.todo) x.id], ['f2']);
+      expect(runner.states.single.budget.caps, RunCaps.first);
+    });
+
+    test('a first run that makes no app forgets its plan', () async {
+      final loop = loopWith([
+        [
+          ScriptedCall('plan_set', {
+            'features': [f('f1', 'Log a run')],
+          }),
+          const ScriptedCall('give_up', {'reason': 'no'}),
+        ],
+      ]);
+      await expectLater(
+        loop.newApp('x', session: sid, planKey: 'new:k2'),
+        throwsA(isA<AgentError>()),
+      );
+      expect(await plans.all(), isEmpty);
+    });
+
+    test('a continue run reads the plan with the person\'s edits, builds the '
+        'next feature and publishes a version', () async {
+      final aid = api.seedArtifact('Runs', {
+        'index.html': page,
+        'kit/preact.js': 'export const h = 1;',
+      });
+      await plans.set(aid, const [
+        PlanFeature(id: 'f1', title: 'Log a run', status: FeatureStatus.done),
+        PlanFeature(id: 'f2', title: 'Weekly chart'),
+      ], request: 'a run tracker');
+      await plans.addFeature(aid, title: 'Dark charts');
+      final loop = loopWith([
+        [
+          const ScriptedCall('plan_mark', {'id': 'f2', 'status': 'doing'}),
+          ...changeCalls(edits: [('Save', 'Keep')]).take(2),
+          const ScriptedCall('plan_mark', {'id': 'f2', 'status': 'done'}),
+          const ScriptedCall('finish', {
+            'reply': 'Added the weekly chart.',
+            'resolve': true,
+          }),
+        ],
+      ]);
+      final out = await loop.continueBuild(aid);
+      expect(out, isA<ChangeLanded>().having((o) => o.version, 'version', 2));
+      final t = runner.text(0);
+      expect(t, contains('Continue building'));
+      expect(t, contains('Dark charts'));
+      expect(t, contains('"a run tracker"'));
+      expect(t, contains('"kit":true'));
+      expect(t, isNot(contains('export const h')), reason: 'kit not inlined');
+      expect(runner.states.single.budget.caps.turns, 18);
+      expect(runner.states.single.ctx.sessionId, isNull);
+      final p = (await plans.get(aid))!;
+      expect(p.feature('f2')!.status, FeatureStatus.done);
+      expect(api.working[aid], isNull);
+      expect(
+        api.calls.where((c) => c.name == 'setWorking').first.args['note'],
+        'Weekly chart',
+      );
+    });
+
+    test('with nothing left to build, or over the build cap, a continue run '
+        'does not start', () async {
+      final aid = api.seedArtifact('Runs', {'index.html': page});
+      final loop = loopWith(const []);
+      expect(await loop.continueBuild(aid), isA<ChangeAnswered>());
+      await plans.set(aid, const [PlanFeature(id: 'f1', title: 'x')]);
+      await plans.spend(aid, buildCapUsd);
+      expect(await loop.continueBuild(aid), isA<ChangeAnswered>());
+      expect(runner.seen, isEmpty);
+    });
+
+    test('a change shows the plan and may add a feature to it', () async {
+      final aid = api.seedArtifact('Runs', {'index.html': page});
+      await plans.set(aid, const [PlanFeature(id: 'f1', title: 'Log a run')]);
+      final item = api.sendComment(aid, 'add an export', queue: false);
+      final loop = loopWith([
+        [
+          ScriptedCall('plan_set', {
+            'features': [f('f1', 'Log a run'), f('f2', 'Export to CSV')],
+          }),
+          const ScriptedCall('finish', {
+            'reply': 'Added export to the plan.',
+            'resolve': true,
+          }),
+        ],
+      ]);
+      final out = await loop.change(aid, [item], session: sid);
+      expect(out, isA<ChangeAnswered>());
+      expect(runner.text(0), contains('"Log a run"'));
+      expect(
+        [for (final x in (await plans.get(aid))!.todo) x.id],
+        ['f1', 'f2'],
+      );
+      expect(runner.states.single.budget.caps, RunCaps.change);
     });
   });
 }
