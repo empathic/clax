@@ -73,13 +73,58 @@ describe("people model", () => {
     const rows = raiseCaps(reader, grant(), a);
     expect(rows.find(r => r.key === key("clax-artifacts", "read"))).toMatchObject({ on: true, has: true });
     expect(rows.find(r => r.key === PUBLISH)).toMatchObject({ on: false, has: false });
-    const up = elevation(reader, grant(), a, PUBLISH, true)!;
+    const up = elevation(a, PUBLISH, true)!;
     expect(up).toEqual([{ type: "clax-artifacts", actions: ["update"], locations: ["*"] }]);
-    expect(raiseCaps(reader, grant(), agent({ rights: reader, elevate: up })).find(r => r.key === PUBLISH)).toMatchObject({ on: true, has: false });
-    expect(elevation(reader, grant(), agent({ elevate: up }), PUBLISH, false)).toBeNull();
+    expect(raiseCaps(reader, grant(), agent({ rights: reader, elevate: up })).find(r => r.key === PUBLISH)).toMatchObject({ on: true, has: false, wider: false });
+    expect(elevation(agent({ elevate: up }), PUBLISH, false)).toBeNull();
     // A db write is raised at interact; ask takes no locations.
-    expect(elevation(reader, grant(), a, key("clax-db", "write"), true)).toEqual([{ type: "clax-db", actions: ["write"], locations: ["*"], level: "interact" }]);
+    expect(elevation(a, key("clax-db", "write"), true)).toEqual([{ type: "clax-db", actions: ["write"], locations: ["*"], level: "interact" }]);
     expect(CAPS.map(c => c.key)).toContain(key("clax-ask", "ask"));
+  });
+
+  it("counts an action as held only where the agent's rights allow it, so a Collaborator's agent can be raised to publish versions", () => {
+    // A Collaborator updates and deletes only their own artifacts.
+    const a = agent();
+    const every = raiseCaps(COLLAB, grant(), a, "*");
+    expect(every.find(r => r.key === PUBLISH)).toMatchObject({ has: false, on: false });
+    expect(every.find(r => r.key === DELETE)).toMatchObject({ has: false, on: false });
+    expect(every.find(r => r.key === SEND)).toMatchObject({ has: true, on: true });
+    const one = raiseCaps(COLLAB, grant(), a, "01QR");
+    expect(one.find(r => r.key === PUBLISH)).toMatchObject({ has: false, on: false });
+    expect(one.find(r => r.key === key("clax-ask", "ask"))).toMatchObject({ has: true });
+    // Publish versions of one artifact.
+    const here = elevation(a, PUBLISH, true, "01QR")!;
+    expect(here).toEqual([{ type: "clax-artifacts", actions: ["update"], locations: ["01QR"] }]);
+    const raised = agent({ elevate: here });
+    expect(raiseCaps(COLLAB, grant(), raised, "01QR").find(r => r.key === PUBLISH)).toMatchObject({ on: true, has: false, wider: false });
+    expect(raiseCaps(COLLAB, grant(), raised, "*").find(r => r.key === PUBLISH)).toMatchObject({ on: false });
+    expect(raiseCaps(COLLAB, grant(), raised, "01XX").find(r => r.key === PUBLISH)).toMatchObject({ on: false });
+    // A second artifact keeps the first; dropping one keeps the other.
+    const two = elevation(raised, PUBLISH, true, "01XX")!;
+    expect(two).toEqual([{ type: "clax-artifacts", actions: ["update"], locations: ["01QR"] }, { type: "clax-artifacts", actions: ["update"], locations: ["01XX"] }]);
+    expect(elevation(agent({ elevate: two }), PUBLISH, false, "01QR")).toEqual([{ type: "clax-artifacts", actions: ["update"], locations: ["01XX"] }]);
+    // Raised at every artifact: it covers each one, and replaces the single ones.
+    const all = elevation(agent({ elevate: two }), PUBLISH, true, "*")!;
+    expect(all).toEqual([{ type: "clax-artifacts", actions: ["update"], locations: ["*"] }]);
+    expect(raiseCaps(COLLAB, grant(), agent({ elevate: all }), "01QR").find(r => r.key === PUBLISH)).toMatchObject({ on: true, wider: true });
+    // An action the agent's machine has off can be raised even where its person has it.
+    const g = grant(narrowGrant(COLLAB, grant(), SEND, false));
+    expect(raiseCaps(COLLAB, g, a, "01QR").find(r => r.key === SEND)).toMatchObject({ has: false });
+  });
+
+  it("shows a person their agent's capabilities with the owner's raises", () => {
+    const reader = PRESETS["clax:reader"];
+    const write = key("clax-comments", "write");
+    // Raised beyond the person's rights: listed, on, and not the person's to narrow.
+    const a = agent({ rights: reader, elevate: [{ type: "clax-comments", actions: ["write"], locations: ["*"] }] });
+    expect(agentCaps(reader, grant(), a).find(r => r.key === write)).toMatchObject({ on: true, locked: true, raised: ["*"] });
+    expect(agentCaps(reader, grant(), agent({ rights: reader })).find(r => r.key === write)).toBeUndefined();
+    // Narrowed off by the person, then raised everywhere by the owner: on.
+    const n = narrowAgent(COLLAB, grant(), agent(), DELETE, false);
+    expect(agentCaps(COLLAB, grant(), agent({ narrow: n, elevate: [{ type: "clax-artifacts", actions: ["delete"], locations: ["*"] }] })).find(r => r.key === DELETE)).toMatchObject({ on: true, locked: true });
+    // Raised at one artifact only: the person's narrowing still decides the rest.
+    const one = agentCaps(COLLAB, grant(), agent({ elevate: [{ type: "clax-artifacts", actions: ["update"], locations: ["01QR"] }] })).find(r => r.key === PUBLISH)!;
+    expect(one).toMatchObject({ on: true, locked: false, raised: ["01QR"] });
   });
 
   it("keeps the invites that can still be used, and says when one expires", () => {

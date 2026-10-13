@@ -5,18 +5,19 @@
   // §7.4, §9.5, §17): their machines with key fingerprints, and their live
   // agents by machine. For the owner (`view` "owner"): the person's preset,
   // Revoke, Disconnect per machine, raising one agent (an elevation at every
-  // artifact, until its session ends), ending one, renaming one, and the
+  // artifact or at one, until its session ends), ending one, renaming one, and the
   // approvals of theirs the owner made ("Their content reaching your
   // agents", with Revoke, and Always allow) and what waits on the owner.
   // For the viewer themself (`view` "self"): narrowing a machine's agents
-  // or one agent, renaming and ending their agents. An agent of the
+  // or one agent, renaming and ending their agents, with what the owner
+  // raised an agent with shown beside its narrowing. An agent of the
   // daemon's own machine (no grant) acts with the token, which rights do not
   // limit: it gets no rights controls (the daemon refuses them,
   // `token_agent`). Each change goes to the daemon at once; a refusal is
   // shown as the daemon words it. Names are text.
   import type { PeopleAgent, PeopleApproval, PeopleGrant, PeopleRequest, Rights } from "../api";
   import * as api from "./api";
-  import { agentCaps, elevation, MACHINE_BOUNDARY, machineCaps, narrowAgent, narrowGrant, PRESET_NAMES, presetOf, raiseCaps } from "./model";
+  import { agentCaps, CAPS, elevation, MACHINE_BOUNDARY, machineCaps, narrowAgent, narrowGrant, PRESET_NAMES, presetOf, raiseCaps, raisedAt } from "./model";
 
   type Who = { public_id: string | null; display_name: string | null; revoked_at: string | null; rights: Rights; grants: PeopleGrant[]; agents: PeopleAgent[] };
   type Props = {
@@ -28,21 +29,34 @@
     approvals?: PeopleApproval[];
     /** Open requests for this person's content, waiting on the owner. */
     waiting?: PeopleRequest[];
+    /** The live artifacts, by ID and title: where a raise can apply, and
+     * how a raise names its artifact; null until asked for. */
+    artifacts?: { id: string; title: string }[] | null;
+    /** Asks for `artifacts` (a raise panel opened). */
+    needArtifacts?(): void;
     onChanged(): void;
   };
   // No defaults: a default would load Svelte's prop helper, which the
   // artifact view's entry then shares with this chunk.
-  let { view, who, owner, approvals, waiting, onChanged }: Props = $props();
+  let { view, who, owner, approvals, waiting, artifacts, needArtifacts, onChanged }: Props = $props();
   const aps = $derived(approvals ?? []);
   const wait = $derived(waiting ?? []);
   let busy = $state(false);
   let err = $state<string | null>(null);
   let renaming = $state<string | null>(null);
   let newName = $state("");
+  // Where the owner raises each agent (by handle): `*`, or an artifact ID.
+  let raiseAt = $state<Record<string, string>>({});
   const name = $derived(who.display_name ?? (view === "self" ? "You" : "Unnamed"));
   const machines = $derived(who.grants.filter(g => g.status === "approved" && !g.ended_at));
   const grantOf = (a: PeopleAgent) => who.grants.find(g => g.id === a.grant_id) ?? null;
   const preset = $derived(presetOf(who.rights));
+  /** An artifact a raise names, by title: "every artifact" for `*`. */
+  const where = (loc: string) => (loc === "*" ? "every artifact" : `“${artifacts?.find(x => x.id === loc)?.title ?? loc}”`);
+  /** What the owner raised agent `a` with, one line per action and place. */
+  const raises = (a: PeopleAgent) => CAPS.flatMap(c => raisedAt(a, c).map(loc => `${c.label} on ${where(loc)}`));
+  /** The note on a capability the owner raised, in its person's view. */
+  const raisedNote = (at: string[]) => `Raised by the owner${at.includes("*") ? "" : ` on ${at.map(where).join(", ")}`} until this session ends`;
   /** Runs one change, after asking `ask` when given; then the page
    * refetches. A refused change puts control `el` back as it was. */
   async function act(fn: () => Promise<unknown>, ask?: string, el?: HTMLInputElement | HTMLSelectElement) {
@@ -57,6 +71,9 @@
   /** Turns a capability on or off from its checkbox's change. */
   const toggle = (e: Event, fn: (on: boolean) => Promise<unknown>) => { const el = e.currentTarget as HTMLInputElement; void act(() => fn(el.checked), undefined, el); };
   const SCOPE = { everywhere: "Allowed everywhere", artifact: "Allowed on one page", thread: "Allowed in one thread" } as const;
+  /** An approval's scope, naming its page when the daemon names it. */
+  const scopeOf = (ap: PeopleApproval) => !ap.artifact_title || ap.scope === "everywhere" ? SCOPE[ap.scope]
+    : ap.scope === "artifact" ? `Allowed on “${ap.artifact_title}”` : `Allowed in one thread on “${ap.artifact_title}”`;
   const everywhere = $derived(aps.some(a => a.scope === "everywhere"));
   const rename = (a: PeopleAgent) => act(async () => { await api.rename(a.handle, newName.trim()); renaming = null; });
 </script>
@@ -108,6 +125,7 @@
     <h4>Agents</h4>
     {#each who.agents as a (a.handle)}
       {@const g = grantOf(a)}
+      {@const loc = raiseAt[a.handle] ?? "*"}
       <div class="agent">
         <div class="line">
           {#if renaming === a.handle}
@@ -132,17 +150,24 @@
             <p class="note">{MACHINE_BOUNDARY}</p>
             <div class="caps">
               {#each agentCaps(who.rights, g, a) as c (c.key)}
-                <label title={c.machineOff ? "Off for the whole machine" : undefined}><input type="checkbox" checked={c.on} disabled={busy || c.machineOff} onchange={e => toggle(e, on => api.narrowAgent(a.handle, narrowAgent(who.rights, g, a, c.key, on)))} /> {c.label}</label>
+                <label title={c.machineOff && !c.locked ? "Off for the whole machine" : undefined}><input type="checkbox" checked={c.on} disabled={busy || c.locked || c.machineOff} onchange={e => toggle(e, on => api.narrowAgent(a.handle, narrowAgent(who.rights, g, a, c.key, on)))} /> <span>{c.label}{#if c.raised.length}<span class="raised">{raisedNote(c.raised)}</span>{/if}</span></label>
               {/each}
             </div>
           </details>
         {:else}
-          <details class="raise">
+          <details class="raise" ontoggle={e => { if (e.currentTarget.open) needArtifacts?.(); }}>
             <summary>Raise this agent{a.elevate ? " (raised)" : ""}</summary>
             <p class="note">{MACHINE_BOUNDARY} A raise lasts until the agent's session ends.</p>
+            {#if a.elevate}<ul class="raises">{#each raises(a) as r (r)}<li>{r}</li>{/each}</ul>{/if}
+            <label class="pick where">Where
+              <select onchange={e => { raiseAt[a.handle] = e.currentTarget.value; }}>
+                <option value="*" selected={loc === "*"}>Every artifact</option>
+                {#each artifacts ?? [] as x (x.id)}<option value={x.id} selected={x.id === loc}>{x.title}</option>{/each}
+              </select>
+            </label>
             <div class="caps">
-              {#each raiseCaps(who.rights, g, a) as c (c.key)}
-                <label><input type="checkbox" checked={c.on} disabled={busy || c.has} onchange={e => toggle(e, on => api.elevate(a.handle, elevation(who.rights, g, a, c.key, on)))} /> {c.label}</label>
+              {#each raiseCaps(who.rights, g, a, loc) as c (c.key)}
+                <label title={c.wider ? "Raised at every artifact" : undefined}><input type="checkbox" checked={c.on} disabled={busy || c.has || c.wider} onchange={e => toggle(e, on => api.elevate(a.handle, elevation(a, c.key, on, loc)))} /> {c.label}</label>
               {/each}
             </div>
           </details>
@@ -157,7 +182,7 @@
     <section class="part approvals">
       <h4>Their content reaching your agents</h4>
       {#each aps as ap (ap.id)}
-        <div class="line"><span>{SCOPE[ap.scope]}</span><span class="sp"></span><button type="button" class="ghost" disabled={busy} onclick={() => act(() => api.revokeApproval(ap.id))}>Revoke</button></div>
+        <div class="line"><span>{scopeOf(ap)}</span><span class="sp"></span><button type="button" class="ghost" disabled={busy} onclick={() => act(() => api.revokeApproval(ap.id))}>Revoke</button></div>
       {:else}
         <p class="none">Not yet: your agents ask you first.</p>
       {/each}
