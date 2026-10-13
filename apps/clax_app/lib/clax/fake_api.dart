@@ -202,8 +202,22 @@ class FakeClaxApi implements ClaxApi {
     _polls.clear();
   }
 
-  /// Sends [e] to [events] listeners whose filters keep it.
-  void emit(ClaxEvent e) => _events.add(e);
+  /// Sends [e] to [events] listeners whose filters keep it. A `version` or
+  /// `artifact_deleted` naming an `artifact_id` also goes to every [stream]
+  /// holding `gallery`, as the daemon sends it on both.
+  void emit(ClaxEvent e) {
+    _events.add(e);
+    if (const {'version', 'artifact_deleted'}.contains(e.type) &&
+        e.data['artifact_id'] is String) {
+      emitStream(
+        StreamEvent(
+          topic: 'gallery',
+          type: e.type,
+          data: {...e.data, 'topic': 'gallery'}..remove('type'),
+        ),
+      );
+    }
+  }
 
   /// Version [n]'s files of [aid].
   Map<String, String> filesOf(String aid, int n) =>
@@ -1631,7 +1645,7 @@ class FakeClaxApi implements ClaxApi {
       );
     }
     if (sessionId != null) working.remove(a.id);
-    _events.add(
+    emit(
       ClaxEvent(
         type: 'version',
         data: {

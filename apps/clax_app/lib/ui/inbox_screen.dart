@@ -8,8 +8,9 @@ import 'launcher.dart' show tileScheme;
 /// The owner's inbox across apps: the agents' replies, new versions, new
 /// apps, questions and finished work, newest first, live.
 ///
-/// On open it subscribes a [ClaxStream] to `inbox` and `questions` (so the
-/// app counts as an owner surface while the inbox is open), then fetches
+/// On open it subscribes [stream] (the stream it is given, which it never
+/// closes, else one of its own) to `inbox` and `questions` (so the app
+/// counts as an owner surface while the inbox is open), then fetches
 /// the first page, then applies `inbox_item` events on top: each one
 /// upserts its item by ID. `inbox_read` and `resync` refetch. Events that
 /// arrive while a fetch is in flight are applied again on its result.
@@ -32,6 +33,7 @@ class InboxScreen extends StatefulWidget {
     this.timer,
     this.now,
     this.searchDelay = const Duration(milliseconds: 300),
+    this.stream,
     this.retryDelay,
   });
 
@@ -48,6 +50,10 @@ class InboxScreen extends StatefulWidget {
   final DateTime Function()? now;
 
   final Duration searchDelay;
+
+  /// The stream to follow the inbox on, which the screen leaves open; when
+  /// null the screen opens its own and closes it as it goes.
+  final ClaxStream? stream;
 
   /// Waits between tries to subscribe a topic again; [Future.delayed]
   /// when null.
@@ -101,7 +107,7 @@ class _InboxScreenState extends State<InboxScreen> {
   }
 
   Future<void> _start() async {
-    final stream = _stream = widget.api.stream();
+    final stream = _stream = widget.stream ?? widget.api.stream();
     _events = stream.events.listen(_onEvent, onError: (Object _) {});
     try {
       await stream.subscribe(const ['inbox', 'questions']);
@@ -116,7 +122,7 @@ class _InboxScreenState extends State<InboxScreen> {
     _searchTimer?.cancel();
     _search.dispose();
     unawaited(_events?.cancel());
-    unawaited(_stream?.close());
+    if (widget.stream == null) unawaited(_stream?.close());
     super.dispose();
   }
 
