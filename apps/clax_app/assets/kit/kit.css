@@ -21,7 +21,7 @@
   --k-surface: #ffffff;
   --k-surface-2: #f7f7fa;
   --k-surface-3: #e9e9ef;
-  --k-bar: rgba(249, 249, 251, 0.82);
+  --k-bar: rgba(249, 249, 251, 0.94);
   --k-fg: #111114;
   --k-fg-2: #5c5c66;
   --k-fg-3: #9696a0;
@@ -91,7 +91,7 @@
     --k-surface: #1c1c1f;
     --k-surface-2: #242428;
     --k-surface-3: #2e2e33;
-    --k-bar: rgba(22, 22, 24, 0.8);
+    --k-bar: rgba(22, 22, 24, 0.94);
     --k-fg: #f4f4f6;
     --k-fg-2: #a9a9b3;
     --k-fg-3: #6f6f78;
@@ -123,7 +123,7 @@
   --k-surface: #1c1c1f;
   --k-surface-2: #242428;
   --k-surface-3: #2e2e33;
-  --k-bar: rgba(22, 22, 24, 0.8);
+  --k-bar: rgba(22, 22, 24, 0.94);
   --k-fg: #f4f4f6;
   --k-fg-2: #a9a9b3;
   --k-fg-3: #6f6f78;
@@ -205,6 +205,9 @@ a { color: var(--k-accent); text-decoration: none; }
   padding-bottom: calc(var(--k-s6) + var(--k-safe-bottom));
 }
 .k-app.k-has-tabs .k-main { padding-bottom: calc(var(--k-tab-h) + var(--k-s6) + var(--k-safe-bottom)); }
+/* A screen with a FAB leaves room to scroll its last row clear of it. */
+.k-main:has(.k-fab) { padding-bottom: calc(56px + var(--k-gutter) + var(--k-s6) + var(--k-safe-bottom)); }
+.k-app.k-has-tabs .k-main:has(.k-fab) { padding-bottom: calc(var(--k-tab-h) + 56px + var(--k-gutter) + var(--k-s6) + var(--k-safe-bottom)); }
 /* Fill backwards only: a transform left applied would make the screen the
    containing block of its fixed sheets, dialogs and FAB. */
 .k-screen { animation: k-screen-in var(--k-med) var(--k-ease) backwards; }
@@ -238,7 +241,17 @@ a { color: var(--k-accent); text-decoration: none; }
   transition: opacity var(--k-fast) linear, transform var(--k-fast) var(--k-ease);
 }
 .k-appbar.k-large-mode:not(.k-scrolled) .k-appbar-title { opacity: 0; transform: translateY(4px); }
-.k-large-title { padding: 2px var(--k-gutter) var(--k-s2); }
+/* Large mode: the bar floats over the large title, clear until the page
+   scrolls; the title block makes room for the bar's buttons only when
+   there are any. */
+.k-appbar.k-large-mode { position: fixed; left: 0; right: 0; }
+.k-appbar.k-large-mode:not(.k-scrolled) {
+  background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+.k-appbar.k-large-mode.k-bare:not(.k-scrolled) { pointer-events: none; }
+.k-large-title { padding-top: calc(var(--k-safe-top) + var(--k-bar-h)); }
+.k-large-title.k-bare { padding-top: calc(var(--k-safe-top) + var(--k-s4)); }
+.k-large-title { padding-left: var(--k-gutter); padding-right: var(--k-gutter); padding-bottom: var(--k-s2); }
 .k-large-title .k-large { overflow-wrap: anywhere; }
 .k-large-title .k-subtitle { color: var(--k-fg-2); font: var(--k-text-subhead); margin-top: 2px; }
 .k-icon-btn.k-back-btn { display: inline-flex; align-items: center; color: var(--k-accent); padding-right: 8px; gap: 0; margin-left: -6px; }
@@ -257,8 +270,8 @@ a { color: var(--k-accent); text-decoration: none; }
 .k-tab {
   position: relative; flex: 1 1 0; min-width: 0; min-height: 48px;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
-  background: none; border: 0; padding: 4px 0; color: var(--k-fg-3); cursor: pointer;
-  font: 600 10.5px/1.1 var(--k-font); letter-spacing: 0.01em;
+  background: none; border: 0; padding: 4px 0; color: var(--k-fg-2); cursor: pointer;
+  font: 600 11px/1.1 var(--k-font); letter-spacing: 0.01em;
   transition: color var(--k-fast) linear;
 }
 .k-tab-icon {
@@ -291,7 +304,7 @@ a { color: var(--k-accent); text-decoration: none; }
 .k-btn.k-plain { background: transparent; color: var(--k-accent); padding: 0 var(--k-s3); }
 .k-btn.k-danger { background: var(--k-danger); color: #fff; }
 .k-btn.k-danger.k-tonal { background: color-mix(in srgb, var(--k-danger) 14%, transparent); color: var(--k-danger); }
-.k-btn.k-gradient { background: linear-gradient(135deg, var(--k-accent), var(--k-accent-2)); color: #fff; box-shadow: 0 6px 18px color-mix(in srgb, var(--k-accent) 35%, transparent); }
+.k-btn.k-gradient { background: linear-gradient(135deg, var(--k-accent), var(--k-accent-2)); color: var(--k-on-accent); box-shadow: 0 6px 18px color-mix(in srgb, var(--k-accent) 35%, transparent); }
 .k-btn .k-spinner { width: 18px; height: 18px; }
 .k-icon-btn {
   display: inline-grid; place-items: center; width: var(--k-touch); height: var(--k-touch);

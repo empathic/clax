@@ -49,7 +49,7 @@ function useSpending() {
 
 function Home() {
   const { items } = useSpending();
-  const [budget] = useDoc('settings/main', { budget: 2000 });
+  const { data: budget } = useDoc('settings/main', { budget: 2000 });
   const [adding, setAdding] = useState(false);
   const total = items.reduce((a, s) => a + s.amount, 0);
   const days = [...Array(7)].map((_, i) => dayjs().subtract(6 - i, 'day'));
@@ -156,7 +156,7 @@ function Detail({ params }) {
 }
 
 function Settings() {
-  const [s, save] = useDoc('settings/main', { budget: 2000, alerts: true, currency: 'USD' });
+  const { data: s, save } = useDoc('settings/main', { budget: 2000, alerts: true, currency: 'USD' });
   return html`
     <${AppBar} title="Settings" back=${true} />
     <div class="k-section k-stack">
