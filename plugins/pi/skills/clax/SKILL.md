@@ -490,8 +490,24 @@ capability first and light features up when it resolves.
 - `sample`: `sample(input, options)`, `sample.json`, and `sample.limits` ask
   Claude with the API key configured on the person's machine, and only in
   the person's own browser: everywhere else, and when no key is configured,
-  `use("sample")` resolves `null`. The first call in each view asks the
-  person to allow it.
+  `use("sample")` resolves `null`. The first call asks the person to allow
+  it, once per app: the daemon keeps the grant until the person revokes it.
+  Each app may spend up to `daily_cost_cap_usd` a day (default $0.50); past
+  it, calls reject `rate_limited`.
+- `net` (Clax's own): `fetch(url, {method, headers, body})` resolves
+  `{status, ok, url, headers, text(), json()}`, made by the daemon (the
+  page itself cannot connect). Declare every host,
+  `{"net": {"hosts": ["api.example.com"]}}`; only `https` URLs on those
+  hosts are fetched, at most 5 MB each way and 20 s. The person is asked
+  once per app for its host list. Only the person's own views get it:
+  elsewhere `use("net")` resolves `null`. Types:
+  `ClaxExtensions.Net` in `clax-extensions.d.ts`.
+- `notify`, `share`, `file`, `camera`, `location`: Clax's device
+  capabilities, served only in the Clax app and `null` everywhere else;
+  their types are `ClaxExtensions.Device` in `clax-extensions.d.ts`. Call
+  them from a click handler (all but `notify.list` and `notify.cancel`
+  reject `no_gesture` otherwise). See "Device capabilities in the Clax
+  app" below.
 - `permissions`: `state()` and `request()`; the only prompt is the consent
   to the first page-written comment.
 
@@ -552,9 +568,10 @@ What a page written for claude.ai meets in Clax, beyond the gesture rules:
   the room: each view stays on its version until it reloads. A viewer's
   level is fixed per connection; entering a name reconnects at the new level.
 - `sample`: the person's own API key pays for every call, not the viewer's
-  account, so only their browser can call it. Allowing lasts for the view,
-  not for the artifact. Answers are cached per browser in the daemon and
-  forgotten, with the day's call counts, when it restarts. A daemon
+  account, so only their browser can call it. Allowing lasts for the app
+  until revoked, not for the view. Answers are cached per browser in the
+  daemon and forgotten, with the day's call counts, when it restarts; the
+  day's spend against the cost cap is stored and survives a restart. A daemon
   restart under an open tab ends its calls with `session_expired`.
 
 ## What is not yet available
