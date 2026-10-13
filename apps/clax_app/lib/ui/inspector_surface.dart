@@ -156,6 +156,39 @@ class WebViewInspector implements Inspector {
     }
   }
 
+  /// An artifact ID no artifact has, for [warm]'s load.
+  static const _warmId = '000000000000';
+
+  /// Makes the surface for the daemon at [base] and loads the shell's
+  /// inspect view in it once, so the WebView, the shell and its chunks are
+  /// warm before the first inspection; call it as the daemon comes up. It
+  /// waits for any inspection in progress, and does nothing when the
+  /// surface for [base] is already made.
+  Future<void> warm(Uri base) {
+    final prior = _last;
+    final done = Completer<void>();
+    _last = done.future;
+    return () async {
+      try {
+        await prior;
+        final b = Uri(scheme: base.scheme, host: base.host, port: base.port);
+        if (_disposed || (_surface.value != null && b == _base)) return;
+        final surface = _surfaceFor(b);
+        surface.setVisible(false);
+        await surface.load(
+          b.replace(
+            path: '/a/$_warmId',
+            queryParameters: const {'app': '1', 'inspect': '1'},
+          ),
+        );
+      } on Object {
+        // The first inspection loads it anyway.
+      } finally {
+        done.complete();
+      }
+    }();
+  }
+
   AppSurface _surfaceFor(Uri url) {
     final base = Uri(scheme: url.scheme, host: url.host, port: url.port);
     final current = _surface.value;

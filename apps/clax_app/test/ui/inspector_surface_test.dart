@@ -268,6 +268,42 @@ void main() {
     expect(s.loads, hasLength(2));
   });
 
+  test('warm makes the surface and loads the inspect view once, hidden; '
+      'the first inspection reuses it', () async {
+    await inspector.warm(_base);
+    await inspector.warm(_base);
+    final s = surfaces.single;
+    expect(inspector.surface.value, same(s));
+    expect(s.loads, [
+      Uri.parse('http://127.0.0.1:7999/a/000000000000?app=1&inspect=1'),
+    ]);
+    expect(s.visibility, [false]);
+    final f = inspector.inspect(_url());
+    await _settle();
+    expect(surfaces, hasLength(1));
+    s.push(_ready());
+    await _settle();
+    s.push(_shot());
+    await f;
+    expect(s.loads.last, _url());
+  });
+
+  test('warm waits for an inspection in progress; a new address warms a '
+      'new surface', () async {
+    final f = inspector.inspect(_url());
+    final w = inspector.warm(Uri.parse('http://127.0.0.1:8123'));
+    await _settle();
+    expect(surfaces, hasLength(1));
+    surfaces.single.push(_ready());
+    await _settle();
+    surfaces.single.push(_shot());
+    await f;
+    await w;
+    expect(surfaces, hasLength(2));
+    expect(surfaces.first.disposed, isTrue);
+    expect(surfaces.last.loads.single.port, 8123);
+  });
+
   testWidgets('the host keeps the surface laid out at its size under an '
       'opaque cover and the app, never Offstage', (tester) async {
     await tester.pumpWidget(
