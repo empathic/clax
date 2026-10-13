@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:clax_app/agent/asked.dart';
 import 'package:clax_app/agent/loop.dart';
 import 'package:clax_app/agent/prompt.dart';
 import 'package:clax_app/agent/runner/scripted_runner.dart';
@@ -35,6 +36,7 @@ void main() {
   late HeldRunner runner;
   late AgentRuntime runtime;
   late List<WorkerEvent> events;
+  late MemoryAskedQuestions asked;
 
   AgentRuntime runtimeWith(List<List<ScriptedCall>> script) {
     runner = HeldRunner(script);
@@ -46,6 +48,7 @@ void main() {
       timings: RecordingTimings(),
       inspector: FakeInspector(),
       baseUrl: () => Uri.parse('http://127.0.0.1:7999'),
+      asked: asked,
       clock: StepClock(),
     );
     runtime = AgentRuntime(
@@ -73,6 +76,7 @@ void main() {
   setUp(() {
     supervisor = FakeSupervisor();
     api = FakeClaxApi();
+    asked = MemoryAskedQuestions();
     events = [];
   });
 
@@ -166,5 +170,61 @@ void main() {
     expect(api.currentVersion(aid), 2);
     final t = api.threadOf(aid, item.threadId);
     expect([for (final c in t.comments) c.authorKind], ['viewer', 'agent']);
+  });
+
+  test('a late answer whose run a failed daemon cancels runs once after '
+      'Restart', () async {
+    final aid = api.seedArtifact('Runs', {'index.html': page});
+    runtimeWith([
+      [
+        const ScriptedCall('ask', {
+          'questions': [
+            {
+              'question': 'Kilometres or miles?',
+              'header': 'Units',
+              'options': [
+                {'label': 'km'},
+                {'label': 'mi'},
+              ],
+            },
+          ],
+          'question_id': null,
+          'timeout_s': null,
+          'cancel': null,
+        }),
+        ...changeCalls(reply: 'I asked you in Clax.', resolve: false),
+      ],
+      changeCalls(reply: 'Kilometres.', edits: [('Save', 'km')]),
+      changeCalls(reply: 'Kilometres.', edits: [('Save', 'km')]),
+    ]);
+    supervisor.set(Up(endpoint(pid: 1)));
+    await idle();
+    api.sendComment(aid, 'Show my total');
+    await until(() => events.whereType<WorkerReplied>().isNotEmpty);
+    await idle();
+    final q = (await api.questions()).single;
+    runner
+      ..arrived = Completer<void>()
+      ..gate = Completer<void>();
+    await api.answerQuestion(q.id, [
+      {
+        'selected': ['km'],
+        'text': null,
+      },
+    ]);
+    await runner.arrived.future;
+
+    supervisor.set(const Failed('clax stopped 5 times within a minute', []));
+    await until(() => events.whereType<WorkerCancelled>().isNotEmpty);
+    expect(api.currentVersion(aid), 1);
+    api.releasePolls();
+    runner.gate = null;
+    supervisor.set(Up(endpoint(pid: 3)));
+    await until(() => api.currentVersion(aid) == 2);
+    await idle();
+    expect(runner.seen, hasLength(3), reason: 'the answer ran once more');
+    expect(runner.text(2), contains('The person answered your question'));
+    expect(api.currentVersion(aid), 2);
+    expect(await asked.all(), isEmpty);
   });
 }

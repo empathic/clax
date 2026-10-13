@@ -277,14 +277,16 @@ class AgentLoop {
     final others = reads[1]! as List<OtherApp>;
     final system = reads[2]! as String;
     cancel.check();
+    final scope = _RunCancel(cancelled);
     final ran = await _runTools(
       runner,
       base,
+      scope,
       RunContext(
         kind: RequestKind.newApp,
         files: const {},
         sessionId: session,
-        cancelled: cancelled,
+        cancelled: scope.future,
         clock: _clock,
       ),
       RunCaps.newApp,
@@ -435,7 +437,9 @@ class AgentLoop {
   /// the run's end replies; clear the working mark.
   ///
   /// [answers] is the daemon's late-answer text for a question an earlier
-  /// run of these comments asked; the first message carries it.
+  /// run of these comments asked; the first message carries it. The
+  /// entries of [answering], the questions it answers, are left to the
+  /// caller, which takes them once the run ended for good.
   ///
   /// A thread whose latest viewer comment is not one of [items] (the
   /// person wrote again while this ran) gets neither the reply nor the
@@ -452,12 +456,13 @@ class AgentLoop {
     Future<void>? cancelled,
     ProgressSink? onProgress,
     String? answers,
+    Set<String> answering = const {},
   }) async {
     if (items.isEmpty) return const ChangeAnswered();
     final threadIds = [
       ...{for (final i in items) i.threadId},
     ];
-    await _takeOverQuestions(items, session);
+    await _takeOverQuestions(items, session, keep: answering);
     await _quiet(
       'mark working',
       () => _api.setWorking(
@@ -500,8 +505,9 @@ class AgentLoop {
   /// so.
   Future<void> _takeOverQuestions(
     List<FeedbackItem> items,
-    String? session,
-  ) async {
+    String? session, {
+    Set<String> keep = const {},
+  }) async {
     final ids = {for (final i in items) i.commentId};
     final List<AskedEntry> entries;
     try {
@@ -511,7 +517,9 @@ class AgentLoop {
       return;
     }
     for (final e in entries) {
-      if (!e.commentIds.any(ids.contains)) continue;
+      if (keep.contains(e.questionId) || !e.commentIds.any(ids.contains)) {
+        continue;
+      }
       try {
         await asked.take(e.questionId);
       } on Object catch (err) {
@@ -588,9 +596,11 @@ class AgentLoop {
     if (cancel.isCancelled) return const ChangeCancelled();
 
     final documents = PromptBuilder.trimDocuments(snap.docs);
+    final scope = _RunCancel(cancelled);
     final ran = await _runTools(
       runner,
       base,
+      scope,
       RunContext(
         kind: RequestKind.change,
         artifactId: aid,
@@ -606,7 +616,7 @@ class AgentLoop {
             for (final d in c.docs) d.path: d.version,
         },
         sessionId: session,
-        cancelled: cancelled,
+        cancelled: scope.future,
         clock: _clock,
       ),
       RunCaps.change,
@@ -715,6 +725,7 @@ class AgentLoop {
   Future<_Ran> _runTools(
     AgentRunner runner,
     Uri base,
+    _RunCancel scope,
     RunContext ctx,
     RunCaps caps,
     RunInput input,
@@ -783,6 +794,9 @@ class AgentLoop {
       error = AgentError('$e');
       outcome = state.outcome ?? RunGaveUp('$e', answered: false);
     } finally {
+      // A cancel after this point (the worker stopping later) no longer
+      // reaches the run's tools: its question stays parked.
+      scope.end();
       final b = state.budget;
       _timings.stop(
         timing,
@@ -1418,6 +1432,27 @@ class AgentLoop {
       _log('$what failed: $e');
     }
   }
+}
+
+/// A run's cancel signal: [future] completes when the caller's signal
+/// fires while the run is going, never after [end]. The worker passes one
+/// signal to every run, and a run's tools (`ask` withdrawing its question)
+/// must not act on a cancel that comes after the run ended.
+class _RunCancel {
+  _RunCancel(Future<void>? outer) {
+    outer?.then((_) => _fire(), onError: (Object _) => _fire());
+  }
+
+  final _fired = Completer<void>();
+  var _over = false;
+
+  Future<void> get future => _fired.future;
+
+  void _fire() {
+    if (!_over && !_fired.isCompleted) _fired.complete();
+  }
+
+  void end() => _over = true;
 }
 
 /// A tool that ends a run (`finish`, `give_up`), telling [ended] after

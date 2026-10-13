@@ -67,28 +67,28 @@ final class WorkerInterrupted extends WorkerEvent {
   const WorkerInterrupted(super.artifactId);
 }
 
-/// A late answer a feedback poll handed over: the question and its
-/// late-answer text.
-typedef _LateAnswer = ({String questionId, String text});
-
 /// One queued run: comments a poll handed over, threads recovery found
-/// stranded, which are checked again just before the run, and late
-/// answers to questions earlier runs of this artifact asked, whose
-/// comments are looked up just before the run.
+/// stranded, which are checked again just before the run, questions whose
+/// late answers ([AskedEntry.answer]) run the comments they were asked
+/// for, looked up just before the run, and late-answer [texts] a Retry
+/// sends again.
 class _Job {
   _Job(
     this.artifactId, {
     List<FeedbackItem>? items,
     Set<String>? recheck,
-    List<_LateAnswer>? answers,
+    Set<String>? answers,
+    List<String>? texts,
   }) : items = items ?? [],
        recheck = recheck ?? {},
-       answers = answers ?? [];
+       answers = answers ?? {},
+       texts = texts ?? [];
 
   final String artifactId;
   final List<FeedbackItem> items;
   final Set<String> recheck;
-  final List<_LateAnswer> answers;
+  final Set<String> answers;
+  final List<String> texts;
 
   bool names(String tid) =>
       recheck.contains(tid) || items.any((i) => i.threadId == tid);
@@ -116,14 +116,19 @@ class _Job {
 /// registered while it ran; an interrupted one ([ChangeInterrupted]) is
 /// also recovered once without a registration, and again after the next.
 ///
-/// Late answers (R§8): a poll's `answers` are matched to the
-/// [AgentLoop.asked] entry of their question and queued on its artifact
-/// with the daemon's late-answer text ([lateAnswerText]). Just before the
-/// run the entry is taken: an entry already gone was taken by the asking
-/// run itself (its `ask` got the answer while it still ran), so nothing
-/// runs twice; an entry whose threads got a newer viewer comment is
-/// dropped, as that comment's run carries on; else its comments run again
-/// with the answer in the first message.
+/// Late answers (R§8): a poll's `answers` are kept on the
+/// [AgentLoop.asked] entry of their question with the daemon's late-answer
+/// text ([lateAnswerText], [AskedQuestions.answer]) before anything else,
+/// even when the worker is stopping, since the daemon hands an answer over
+/// once; then queued on its artifact. Each recovery queues again every
+/// entry that holds an answer and is not queued or running, so a quit, a
+/// failed daemon or a process kill before the run loses nothing. Just
+/// before the run the entry is read: one already gone was taken by the
+/// asking run itself (its `ask` got the answer while it still ran), so
+/// nothing runs twice; one whose threads got a newer viewer comment is
+/// dropped, as that comment's run carries on; else its comments run with
+/// the answer in the first message, and the entry is taken once that run
+/// ends, unless it was cancelled or interrupted (it then runs again).
 ///
 /// Failed changes (R§9.5): the comments of a change that ended
 /// [ChangeFailed] are kept by thread, and rebuilt at each recovery from
@@ -165,8 +170,16 @@ class FeedbackWorker {
   var _recovering = 0;
   var _swept = false;
 
-  /// The comments of each thread whose change failed, by thread ID.
-  final _failed = <String, ({String artifactId, List<String> commentIds})>{};
+  /// The comments of each thread whose change failed, by thread ID, with
+  /// the late-answer text that run had.
+  final _failed =
+      <
+        String,
+        ({String artifactId, List<String> commentIds, String? answers})
+      >{};
+
+  /// Questions whose late-answer run is going.
+  final _answering = <String>{};
 
   /// The first wait after a failed poll; it doubles up to [maxBackoff].
   static const firstBackoff = Duration(milliseconds: 250);
@@ -223,10 +236,14 @@ class FeedbackWorker {
           await _recover();
         }
         final batch = await _api.pollFeedback(_sid!, wait: _pollWait);
+        // Kept before anything else: the daemon hands an answer over once.
+        final kept = batch.answers.isEmpty
+            ? const <AskedEntry>[]
+            : await _keepAnswers(batch);
         if (stop.isCompleted) return;
         failures = 0;
         _enqueue(batch.items);
-        if (batch.answers.isNotEmpty) await _enqueueAnswers(batch);
+        _queueAnswers(kept);
       } on Object catch (e) {
         if (stop.isCompleted) return;
         if (e is! ClaxApiError || !e.isUnknownSession) {
@@ -254,31 +271,35 @@ class FeedbackWorker {
     _kick();
   }
 
-  /// Queues each late answer of [batch] on the artifact of its question's
-  /// [AskedEntry], with its late-answer text; an answer with no entry (a
-  /// new app's question, or one its run already took) is not run.
-  Future<void> _enqueueAnswers(FeedbackBatch batch) async {
-    final List<AskedEntry> entries;
-    try {
-      entries = await _loop.asked.all();
-    } on Object catch (e) {
-      _log('asked questions unavailable: $e');
-      return;
-    }
-    final jobs = <_Job>[];
+  /// Keeps each late answer of [batch] on its question's [AskedEntry]
+  /// and returns the entries that hold one; an answer with no entry (a new
+  /// app's question, or one its run already took) is not kept.
+  Future<List<AskedEntry>> _keepAnswers(FeedbackBatch batch) async {
+    final kept = <AskedEntry>[];
     for (final q in batch.answers) {
-      final e = entries.where((x) => x.questionId == q.id).firstOrNull;
-      if (e == null) continue;
-      jobs.add(
-        _Job(
-          e.artifactId,
-          answers: [(questionId: q.id, text: lateAnswerText(batch, q))],
-        ),
-      );
+      try {
+        final e = await _loop.asked.answer(q.id, lateAnswerText(batch, q));
+        if (e != null) kept.add(e);
+      } on Object catch (e) {
+        _log('keeping the answer to ${q.id} failed: $e');
+      }
     }
-    if (jobs.isEmpty || !_started) return;
-    _queue.addAll(jobs);
-    _kick();
+    return kept;
+  }
+
+  /// Queues a late-answer run for each of [entries] not already queued or
+  /// running.
+  void _queueAnswers(Iterable<AskedEntry> entries) {
+    var queued = false;
+    for (final e in entries) {
+      if (_answering.contains(e.questionId) ||
+          _queue.any((j) => j.answers.contains(e.questionId))) {
+        continue;
+      }
+      _queue.add(_Job(e.artifactId, answers: {e.questionId}));
+      queued = true;
+    }
+    if (queued) _kick();
   }
 
   /// Deletes every draft artifact the daemon holds: none of them belongs
@@ -314,13 +335,15 @@ class FeedbackWorker {
       first.artifactId,
       items: List.of(first.items),
       recheck: Set.of(first.recheck),
-      answers: List.of(first.answers),
+      answers: Set.of(first.answers),
+      texts: List.of(first.texts),
     );
     _queue.removeWhere((j) {
       if (j.artifactId != job.artifactId) return false;
       job.items.addAll(j.items);
       job.recheck.addAll(j.recheck);
       job.answers.addAll(j.answers);
+      job.texts.addAll(j.texts);
       return true;
     });
     return job;
@@ -333,19 +356,46 @@ class FeedbackWorker {
       _running.addAll({...job.recheck, ...job.items.map((i) => i.threadId)});
       try {
         final items = await _withRechecked(job);
-        final answers = await _withAnswers(job, items);
+        if (!_started) continue;
+        final late = await _withAnswers(job, items);
         if (items.isEmpty || !_started) continue;
-        await _runChange(aid, items, answers: answers);
+        final texts = [...job.texts, ...late.texts];
+        _answering.addAll(late.questions);
+        final ChangeOutcome outcome;
+        try {
+          outcome = await _runChange(
+            aid,
+            items,
+            answers: texts.isEmpty ? null : texts.join('\n\n'),
+            answering: late.questions.toSet(),
+          );
+        } finally {
+          _answering.removeAll(late.questions);
+        }
+        if (outcome is! ChangeCancelled && outcome is! ChangeInterrupted) {
+          for (final q in late.questions) {
+            await _forgetAnswer(q);
+          }
+        }
       } finally {
         _running.clear();
       }
     }
   }
 
-  Future<void> _runChange(
+  Future<void> _forgetAnswer(String questionId) async {
+    try {
+      await _loop.asked.take(questionId);
+    } on Object catch (e) {
+      _log('forgetting the answer to $questionId failed: $e');
+    }
+  }
+
+  Future<ChangeOutcome> _runChange(
     String aid,
     List<FeedbackItem> items, {
     String? answers,
+    Set<String> answering = const {},
   }) async {
     final threads = {for (final i in items) i.threadId}.toList();
     final generation = _generation;
@@ -360,6 +410,7 @@ class FeedbackWorker {
       cancelled: _stop.future,
       onProgress: (p) => _events.add(WorkerProgress(aid, threads, p)),
       answers: answers,
+      answering: answering,
     );
     if (outcome is ChangeFailed) {
       for (final t in threads) {
@@ -369,6 +420,7 @@ class FeedbackWorker {
             for (final i in items)
               if (i.threadId == t) i.commentId,
           ],
+          answers: answers,
         );
       }
     }
@@ -380,20 +432,21 @@ class FeedbackWorker {
       ChangeCancelled() => WorkerCancelled(aid),
       ChangeInterrupted() => WorkerInterrupted(aid),
     });
-    if (outcome.answered || !_started) return;
+    if (outcome.answered || !_started) return outcome;
     final again = switch (outcome) {
       ChangeCancelled() || ChangeDropped() => false,
       ChangeInterrupted() =>
         generation != _generation || threads.every(_interrupted.add),
       _ => generation != _generation,
     };
-    if (!again) return;
+    if (!again) return outcome;
     _running.removeAll(threads);
     try {
       await _recover();
     } on Object catch (e) {
       _log('recovery after $aid failed: $e');
     }
+    return outcome;
   }
 
   /// [job]'s items, plus the comments of its rechecked threads that are
@@ -449,37 +502,45 @@ class FeedbackWorker {
     return items;
   }
 
-  /// The late-answer text of [job]'s answers, joined, after adding the
-  /// comments each answered question was asked for to [items]. Each
-  /// answer's [AskedEntry] is taken now: one already gone was taken by
+  /// The questions of [job] whose late answers this run carries, and
+  /// their texts, after adding the comments each was asked for to [items].
+  /// Each [AskedEntry] is read, not taken: one already gone was taken by
   /// the run that asked (it got the answer itself), and one whose threads
-  /// got a newer viewer comment, or are closed or gone, is dropped. Null
-  /// when no answer is left to run.
-  Future<String?> _withAnswers(_Job job, List<FeedbackItem> items) async {
-    if (job.answers.isEmpty) return null;
-    final aid = job.artifactId;
+  /// got a newer viewer comment, or are closed or gone, is dropped.
+  Future<({List<String> questions, List<String> texts})> _withAnswers(
+    _Job job,
+    List<FeedbackItem> items,
+  ) async {
+    final questions = <String>[];
     final texts = <String>[];
+    if (job.answers.isEmpty) return (questions: questions, texts: texts);
+    final aid = job.artifactId;
     List<ThreadView>? threads;
     final seen = {for (final i in items) i.commentId};
-    for (final a in job.answers) {
-      try {
-        final e = await _loop.asked.take(a.questionId);
-        if (e == null) continue;
+    try {
+      final entries = await _loop.asked.all();
+      for (final qid in job.answers) {
+        final e = entries.where((x) => x.questionId == qid).firstOrNull;
+        final text = e?.answer;
+        if (e == null || text == null) continue;
         threads ??= await _api.threads(aid);
         final found = _askedItems(aid, e, threads);
         if (found == null) {
-          _log('question ${a.questionId}: its comments moved on; dropped');
+          _log('question $qid: its comments moved on; dropped');
+          await _forgetAnswer(qid);
           continue;
         }
         for (final i in found) {
           if (seen.add(i.commentId)) items.add(i);
         }
-        texts.add(a.text);
-      } on Object catch (err) {
-        _log('late answer to ${a.questionId} not run: $err');
+        questions.add(qid);
+        texts.add(text);
       }
+    } on Object catch (err) {
+      // Left for the next recovery, which queues the entries again.
+      _log('late answers of $aid not run: $err');
     }
-    return texts.isEmpty ? null : texts.join('\n\n');
+    return (questions: questions, texts: texts);
   }
 
   /// The comments [e] was asked for, as items, from [threads]; null when a
@@ -523,18 +584,20 @@ class FeedbackWorker {
       return false;
     }
     if (t == null || !t.isOpen || !_started || _known(aid, tid)) return false;
-    final kept = _failed[tid];
-    final ids =
-        (kept != null && kept.artifactId == aid ? kept.commentIds : null) ??
-        failedComments(t);
-    if (ids == null || failedComments(t) == null) return false;
+    final kept = switch (_failed[tid]) {
+      final k? when k.artifactId == aid => k,
+      _ => null,
+    };
+    final ids = kept?.commentIds ?? failedComments(t);
+    if (ids == null || t.comments.isEmpty) return false;
+    if (!isAppFailureReply(t.comments.last)) return false;
     final items = [
       for (final c in t.comments)
         if (ids.contains(c.id)) _item(aid, t, c),
     ];
     if (items.isEmpty) return false;
     _failed.remove(tid);
-    _queue.add(_Job(aid, items: items));
+    _queue.add(_Job(aid, items: items, texts: [?kept?.answers]));
     _kick();
     return true;
   }
@@ -544,8 +607,8 @@ class FeedbackWorker {
       _queue.any((j) => j.artifactId == aid && j.names(tid));
 
   /// Queues the stranded threads that are not already queued or running,
-  /// to be checked again just before their run; throws when the daemon
-  /// cannot list them.
+  /// to be checked again just before their run, and the kept late answers
+  /// that are not either; throws when the daemon cannot list the threads.
   Future<void> _recover() async {
     _recovering++;
     try {
@@ -554,7 +617,10 @@ class FeedbackWorker {
       for (final at in all) {
         for (final t in at.threads) {
           if (failedComments(t) case final ids?) {
-            _failed[t.id] = (artifactId: at.artifactId, commentIds: ids);
+            _failed[t.id] = switch (_failed[t.id]) {
+              final k? when k.artifactId == at.artifactId => k,
+              _ => (artifactId: at.artifactId, commentIds: ids, answers: null),
+            };
           }
         }
         final stranded = {
@@ -568,6 +634,21 @@ class FeedbackWorker {
       if (jobs.isNotEmpty && _started) {
         _queue.addAll(jobs);
         _kick();
+      }
+      // Late answers kept before a quit, a failed daemon or a cancelled
+      // run.
+      final List<AskedEntry> entries;
+      try {
+        entries = await _loop.asked.all();
+      } on Object catch (e) {
+        _log('asked questions unavailable: $e');
+        return;
+      }
+      if (_started) {
+        _queueAnswers([
+          for (final e in entries)
+            if (e.answer != null) e,
+        ]);
       }
     } finally {
       _recovering--;

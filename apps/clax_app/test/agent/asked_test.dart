@@ -27,6 +27,18 @@ void main() {
       expect(await m.all(), isEmpty);
     });
 
+    test(
+      'answer keeps the late-answer text on an entry that is there',
+      () async {
+        final m = MemoryAskedQuestions();
+        await m.put(entry('q1'));
+        expect((await m.answer('q1', 'km'))?.answer, 'km');
+        expect((await m.all()).single.answer, 'km');
+        expect(await m.answer('gone', 'x'), isNull);
+        expect(await m.all(), hasLength(1));
+      },
+    );
+
     test('a put of the same question replaces it', () async {
       final m = MemoryAskedQuestions();
       await m.put(entry('q1'));
@@ -68,6 +80,22 @@ void main() {
       expect(all.single.artifactId, 'a1');
       expect(all.single.threadIds, ['t-q1']);
       expect(all.single.commentIds, ['c-q1', 'c2-q1']);
+    });
+
+    test('a late answer is kept across a reload', () async {
+      final a = FileAskedQuestions(file);
+      await a.put(entry('q1'));
+      await a.put(entry('q2'));
+      await a.answer('q1', '[clax] The person answered …');
+      final all = await FileAskedQuestions(file).all();
+      expect(
+        [for (final e in all) e.answer],
+        ['[clax] The person answered …', null],
+      );
+      expect(
+        jsonDecode(file.readAsStringSync())['entries'][1],
+        isNot(contains('answer')),
+      );
     });
 
     test('a take is kept across a reload', () async {

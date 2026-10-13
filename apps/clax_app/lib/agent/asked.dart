@@ -7,13 +7,15 @@ import 'dart:io';
 
 /// One question a change asked and left open: the app, the threads and
 /// the comments its run answered. A late answer to [questionId] runs the
-/// change again with those comments.
+/// change again with those comments; [answer] holds its late-answer text
+/// from the poll that handed it over until that run ends.
 class AskedEntry {
   const AskedEntry({
     required this.questionId,
     required this.artifactId,
     required this.threadIds,
     required this.commentIds,
+    this.answer,
   });
 
   /// Reads [toJson]'s form; throws [FormatException] on any other shape.
@@ -35,6 +37,11 @@ class AskedEntry {
           artifactId: a,
           threadIds: strings(t, 'thread_ids'),
           commentIds: strings(c, 'comment_ids'),
+          answer: switch (j['answer']) {
+            null => null,
+            final String s => s,
+            _ => throw const FormatException('answer is not a string'),
+          },
         ),
       _ => throw const FormatException('not an asked-question entry'),
     };
@@ -47,11 +54,26 @@ class AskedEntry {
   /// The comment IDs the run answered, in the order it was given them.
   final List<String> commentIds;
 
+  /// The late-answer text a feedback poll handed over for [questionId]
+  /// (the daemon marks it taken, so it is kept here until it runs), or
+  /// null while the question is open.
+  final String? answer;
+
+  /// This entry with its late-answer [text].
+  AskedEntry withAnswer(String text) => AskedEntry(
+    questionId: questionId,
+    artifactId: artifactId,
+    threadIds: threadIds,
+    commentIds: commentIds,
+    answer: text,
+  );
+
   Map<String, Object?> toJson() => {
     'question_id': questionId,
     'artifact_id': artifactId,
     'thread_ids': threadIds,
     'comment_ids': commentIds,
+    'answer': ?answer,
   };
 
   @override
@@ -69,6 +91,11 @@ abstract interface class AskedQuestions {
 
   /// Every entry, oldest first.
   Future<List<AskedEntry>> all();
+
+  /// Keeps [text] as the late answer of [questionId]'s entry, when there
+  /// is one, and returns the entry as kept; null when there is none. One
+  /// step, so an entry taken or dropped meanwhile is not put back.
+  Future<AskedEntry?> answer(String questionId, String text);
 
   /// Removes the entry of [questionId], when there is one.
   Future<void> drop(String questionId);
@@ -108,6 +135,16 @@ class MemoryAskedQuestions implements AskedQuestions {
 
   @override
   Future<List<AskedEntry>> all() async => List.unmodifiable(_entries);
+
+  @override
+  Future<AskedEntry?> answer(String questionId, String text) async =>
+      _answer(questionId, text);
+
+  AskedEntry? _answer(String questionId, String text) {
+    final i = _entries.indexWhere((x) => x.questionId == questionId);
+    if (i < 0) return null;
+    return _entries[i] = _entries[i].withAnswer(text);
+  }
 
   @override
   Future<void> drop(String questionId) async => _take(questionId);
@@ -205,4 +242,12 @@ class FileAskedQuestions implements AskedQuestions {
   Future<void> drop(String questionId) => _serial(() async {
     if (_memory._take(questionId) != null) await _save();
   });
+
+  @override
+  Future<AskedEntry?> answer(String questionId, String text) =>
+      _serial(() async {
+        final e = _memory._answer(questionId, text);
+        if (e != null) await _save();
+        return e;
+      });
 }
