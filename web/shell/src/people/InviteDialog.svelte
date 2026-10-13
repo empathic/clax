@@ -7,7 +7,9 @@
   // command (its code is shown this once), "expires in 24 h, one use", the
   // LAN warning and, beside the first invite, the `*unconnected` switch
   // (§9.6). A daemon listening on loopback only answers `not_on_lan`, whose
-  // message says how to restart it; no invite is made then.
+  // message says how to restart it; no invite is made then. Opened, the
+  // keyboard's focus is on Name; made, on Copy.
+  import { onMount, tick } from "svelte";
   import type { NewInvite } from "../api";
   import * as api from "./api";
   import { expiresIn, PRESET_NAMES } from "./model";
@@ -30,14 +32,22 @@
   let err = $state<string | null>(null);
   let made = $state<NewInvite | null>(null);
   let copied = $state(false);
+  // A second submit while one is in flight is ignored; the button stays
+  // enabled so the keyboard's focus stays on it.
   const create = async (e: Event) => {
     e.preventDefault();
+    if (busy) return;
     busy = true; err = null;
     try {
       made = (await api.invite(who === "me" ? { me: true } : { name: name.trim() }, who === "me" ? undefined : preset)).invite;
       onMade();
+      await tick();
+      document.querySelector<HTMLElement>(".invite .cmd button")?.focus();
     } catch (x) { err = x instanceof Error ? x.message : String(x); } finally { busy = false; }
   };
+  // By query, not `bind:this`: its helper would be split into a chunk the
+  // artifact view's entry then loads.
+  onMount(() => { document.querySelector<HTMLElement>('.invite input[name="name"]')?.focus(); });
   const copy = () => { if (made) void navigator.clipboard?.writeText(made.command).then(() => { copied = true; }, () => {}); };
 </script>
 
@@ -58,13 +68,13 @@
       </fieldset>
       {#if who === "name"}
         <div class="row">
-          <label class="field">Name <input name="name" autocomplete="off" required maxlength="64" value={name} oninput={e => { name = e.currentTarget.value; }} /></label>
+          <label class="field">Name <input name="name" autocomplete="off" required maxlength="60" value={name} oninput={e => { name = e.currentTarget.value; }} /></label>
           <label class="field">Rights <select onchange={e => { preset = e.currentTarget.value; }}>
             {#each Object.keys(PRESET_NAMES) as v (v)}<option value={v} selected={v === preset}>{PRESET_NAMES[v]}</option>{/each}
           </select></label>
         </div>
       {/if}
-      <div class="row"><button class="primary" type="submit" disabled={busy || (who === "name" && !name.trim())}>Create invite</button></div>
+      <div class="row"><button class="primary" type="submit" disabled={who === "name" && !name.trim()}>Create invite</button></div>
     </form>
   {/if}
   {#if err}<p class="err" role="alert">{err}</p>{/if}
