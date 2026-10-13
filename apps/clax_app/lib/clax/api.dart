@@ -274,6 +274,22 @@ abstract interface class ClaxApi {
   /// is not a grant and stays.
   Future<bool> revokeRead(String reader, String source);
 
+  /// `GET /api/artifacts/<aid>/net-grants`: the hosts app [aid]'s live
+  /// version declares and those the owner let it fetch from.
+  Future<NetGrants> netGrants(String aid);
+
+  /// `DELETE /api/artifacts/<aid>/net-grants`: revokes every network grant
+  /// of app [aid]; how many there were.
+  Future<int> revokeNet(String aid);
+
+  /// `GET /api/artifacts/<aid>/sample-grant`: whether the owner lets app
+  /// [aid] call the model, and today's spend against the daily cap.
+  Future<SampleGrant> sampleGrant(String aid);
+
+  /// `DELETE /api/artifacts/<aid>/sample-grant`: revokes it; false when
+  /// there was none.
+  Future<bool> revokeSample(String aid);
+
   /// A `/api/stream` connection with the owner's token, for the `inbox`
   /// and `questions` topics (and any other). It connects on the first
   /// [ClaxStream.subscribe] or listen; [ClaxStream.close] ends it.
@@ -287,6 +303,49 @@ class DocPage {
 
   final List<Doc> docs;
   final String? nextCursor;
+}
+
+/// An app's network hosts: those its live version [declared], and those
+/// the owner [granted], with when.
+class NetGrants {
+  const NetGrants({required this.declared, required this.granted});
+
+  factory NetGrants.fromJson(Map<String, Object?> j) => NetGrants(
+    declared: [for (final h in j['declared'] as List<Object?>) h as String],
+    granted: [
+      for (final g in j['grants'] as List<Object?>)
+        (
+          host: (g as Map)['host'] as String,
+          grantedAt: g['granted_at'] as String,
+        ),
+    ],
+  );
+
+  final List<String> declared;
+  final List<({String host, String grantedAt})> granted;
+}
+
+/// The owner's grant to an app to call the model: [grantedAt] when
+/// [granted], and today's spend against the daily cap (null: no cap).
+class SampleGrant {
+  const SampleGrant({
+    required this.granted,
+    this.grantedAt,
+    required this.spentTodayUsd,
+    this.dailyCapUsd,
+  });
+
+  factory SampleGrant.fromJson(Map<String, Object?> j) => SampleGrant(
+    granted: j['granted'] as bool,
+    grantedAt: j['granted_at'] as String?,
+    spentTodayUsd: (j['spent_today_usd'] as num).toDouble(),
+    dailyCapUsd: (j['daily_cost_cap_usd'] as num?)?.toDouble(),
+  );
+
+  final bool granted;
+  final String? grantedAt;
+  final double spentTodayUsd;
+  final double? dailyCapUsd;
 }
 
 /// The owner's grant: the reader may read [sourceId]'s documents.

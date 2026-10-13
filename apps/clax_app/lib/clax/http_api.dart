@@ -562,6 +562,30 @@ class HttpClaxApi implements ClaxApi {
     return _parse(() => j['revoked'] as bool);
   }
 
+  @override
+  Future<NetGrants> netGrants(String aid) async {
+    final j = await _json('GET', '/api/artifacts/${_seg(aid)}/net-grants');
+    return _parse(() => NetGrants.fromJson(j));
+  }
+
+  @override
+  Future<int> revokeNet(String aid) async {
+    final j = await _json('DELETE', '/api/artifacts/${_seg(aid)}/net-grants');
+    return _parse(() => j['revoked'] as int);
+  }
+
+  @override
+  Future<SampleGrant> sampleGrant(String aid) async {
+    final j = await _json('GET', '/api/artifacts/${_seg(aid)}/sample-grant');
+    return _parse(() => SampleGrant.fromJson(j));
+  }
+
+  @override
+  Future<bool> revokeSample(String aid) async {
+    final j = await _json('DELETE', '/api/artifacts/${_seg(aid)}/sample-grant');
+    return _parse(() => j['revoked'] as bool);
+  }
+
   // --- the owner's thread calls ---
 
   @override

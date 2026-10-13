@@ -67,6 +67,15 @@ class FakeClaxApi implements ClaxApi {
   int _ids = 0;
   int _docVersions = 0;
   final Set<(String, String)> _grants = {};
+
+  /// Network hosts by app: declared, and granted with when ([grantNet]).
+  final netDeclared = <String, List<String>>{};
+  final netGranted = <String, Map<String, String>>{};
+
+  /// Apps the owner lets call the model, with when, and today's spend.
+  final sampleGranted = <String, String>{};
+  final sampleSpent = <String, double>{};
+  double? sampleDailyCap = 0.5;
   final Map<String, _FakeQuestion> _questions = {};
   final List<Map<String, Object?>> _inbox = [];
   int _inboxSeq = 0;
@@ -983,6 +992,45 @@ class FakeClaxApi implements ClaxApi {
     _artifact(reader);
     _artifact(source);
     return _grants.remove((reader, source));
+  }
+
+  @override
+  Future<NetGrants> netGrants(String aid) async {
+    _call('netGrants', {'aid': aid});
+    _artifact(aid);
+    return NetGrants(
+      declared: netDeclared[aid] ?? const [],
+      granted: [
+        for (final MapEntry(:key, :value) in (netGranted[aid] ?? {}).entries)
+          (host: key, grantedAt: value),
+      ],
+    );
+  }
+
+  @override
+  Future<int> revokeNet(String aid) async {
+    _call('revokeNet', {'aid': aid});
+    _artifact(aid);
+    return netGranted.remove(aid)?.length ?? 0;
+  }
+
+  @override
+  Future<SampleGrant> sampleGrant(String aid) async {
+    _call('sampleGrant', {'aid': aid});
+    _artifact(aid);
+    return SampleGrant(
+      granted: sampleGranted.containsKey(aid),
+      grantedAt: sampleGranted[aid],
+      spentTodayUsd: sampleSpent[aid] ?? 0,
+      dailyCapUsd: sampleDailyCap,
+    );
+  }
+
+  @override
+  Future<bool> revokeSample(String aid) async {
+    _call('revokeSample', {'aid': aid});
+    _artifact(aid);
+    return sampleGranted.remove(aid) != null;
   }
 
   @override
