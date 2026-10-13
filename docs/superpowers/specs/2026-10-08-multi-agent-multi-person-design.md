@@ -908,16 +908,25 @@ so that narrowing and elevation (§7.4) bind exactly one agent.
   in memory. Hooks and the CLI run as new processes, so the agent side also
   keeps a credential file in `<home>/remote-sessions/` (directory 0700,
   files 0600, written whole and renamed into place; the directory is set
-  to 0700 when it already exists, and neither it nor a file is followed
-  through a symbolic link) holding `{"session": "<ID>", "secret":
+  to 0700 when it already exists; every file is opened through the
+  directory's own handle with `O_NOFOLLOW`, so neither the directory nor a
+  file is followed through a symbolic link, and a file that is not a
+  regular file is refused without blocking on it) holding `{"session": "<ID>", "secret":
   "cxs_…"}` and the harness session ID of the row it was written for. It
   is named `<harness>-s-<harness session ID>.json`; a harness session ID
   that is not 1–128 characters of `[A-Za-z0-9._-]` is named
   `<harness>-h-<the first 32 hex characters of its SHA-256>.json`. A row
   with a parent PID is also named `<harness>-p-<parent PID>.json`, for the
   clients that know their harness process but not its session ID (Codex's
-  shim); that file also records when the parent process started, and is
-  written only when that can be told. The three forms never share a name.
+  shim); that file also records when the parent process started, in
+  microseconds since the epoch, read from the kernel (macOS: the process's
+  BSD info through `proc_pidinfo`; Linux: `/proc/<pid>/stat` field 22 and
+  the boot time), never from text that depends on the locale or the time
+  zone (elsewhere, `ps -o lstart` in the C locale and UTC, to the second),
+  and it is written only when that can be told. A parent-PID file that
+  holds another session of the same process is kept, not replaced: one
+  harness process may hold several sessions. The three forms never share
+  a name.
   Whoever receives a secret writes the files for every name the row has:
   the shim at registration, the `SessionStart` hook when its join made the
   row, and either when its proof adds a name to the row. A client looks
@@ -928,7 +937,8 @@ so that narrowing and elevation (§7.4) bind exactly one agent.
   ID, or with the client's own, or when the client knows none. A new
   process given a dead harness's PID, or an agent started from another
   agent's shell, so never takes another session's file. The shim's exit
-  and the `SessionEnd` hook remove the files. A stale file, whose session
+  and the `SessionEnd` hook remove the files that hold their own session;
+  a hook that knows no harness session ID removes nothing. A stale file, whose session
   has ended, is refused, and the next registration replaces it.
 - **Clients.** The shim's registration presents the secret it holds, else
   the one in its file, else none, trying the next on
@@ -2256,3 +2266,10 @@ task, with recommendations; the owner took every recommendation
   as join would match; file names carry `-s-`, `-h-` and `-p-` so none
   collide; a request whose session ended under it is refused; clients
   move past `unknown_session`; the join waits once.
+- **Amendment** (2026-10-13, the per-agent credential's re-review): §6.8: a
+  parent-PID credential file records its process's start as a number read
+  from the kernel, not `ps` text; it is never replaced by another session
+  of the same process, and a hook that knows no harness session ID
+  removes nothing;
+  credential files are opened with `O_NOFOLLOW` through the directory's
+  handle and must be regular files.
