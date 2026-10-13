@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:clax_app/agent/backend.dart';
 import 'package:clax_app/agent/edit_result.dart';
+import 'package:clax_app/agent/failure.dart';
 import 'package:clax_app/agent/ledger.dart';
 import 'package:clax_app/agent/loop.dart';
 import 'package:clax_app/agent/progress.dart';
@@ -621,13 +622,64 @@ void main() {
       expect(t.status, 'open');
     });
 
-    test('a document conflict re-reads and writes once more', () async {
-      final before = api.putDoc(aid, 'runs/a', {'km': 5});
+    for (final (name, op) in [
+      (
+        'an update of a field the page also wrote',
+        const DbOp(
+          op: 'update',
+          collection: 'runs',
+          docId: 'a',
+          data: {'km': 7},
+        ),
+      ),
+      (
+        'a set',
+        const DbOp(op: 'set', collection: 'runs', docId: 'a', data: {'km': 7}),
+      ),
+    ]) {
+      test(
+        '$name on a document the page changed while the model ran never '
+        'writes over it: the version is restored and the change fails',
+        () async {
+          api.putDoc(aid, 'runs/a', {'km': 5});
+          final loop = loopWith([
+            change(edits: [edit('Save', 'Keep')], db: [op]),
+          ]);
+          backend.gate = Completer<void>();
+          final item = api.sendComment(aid, 'x', queue: false);
+          final run = loop.change(aid, [item], session: sid);
+          await backend.arrived.future;
+          // The page writes the document while the model runs.
+          api.putDoc(aid, 'runs/a', {'km': 6});
+          backend.gate!.complete();
+          final outcome = await run;
+
+          expect(outcome, isA<ChangeFailed>());
+          expect((await api.getDoc(aid, 'runs/a'))!.data, {'km': 6});
+          final restore = api.calls.singleWhere(
+            (c) => c.name == 'restoreVersion',
+          );
+          expect(restore.args, {'aid': aid, 'n': 1, 'ifVersion': 2});
+          final t = api.threadOf(aid, item.threadId);
+          expect(t.comments.last.body, startsWith(failurePrefix));
+          expect(t.status, 'open');
+          expect(
+            api.calls.where((c) => c.name == 'batchDocs'),
+            hasLength(1),
+            reason: 'never sent again at the new version',
+          );
+        },
+      );
+    }
+
+    test('a write the moved document already holds is dropped and the change '
+        'lands', () async {
+      api.putDoc(aid, 'runs/a', {'km': 5});
       final loop = loopWith([
         change(
           edits: [edit('Save', 'Keep')],
-          db: [
-            const DbOp(
+          db: const [
+            DbOp(
               op: 'update',
               collection: 'runs',
               docId: 'a',
@@ -640,19 +692,11 @@ void main() {
       final item = api.sendComment(aid, 'x', queue: false);
       final run = loop.change(aid, [item], session: sid);
       await backend.arrived.future;
-      // The page writes the document while the model runs.
-      final after = api.putDoc(aid, 'runs/a', {'km': 6});
+      api.putDoc(aid, 'runs/a', {'km': 5, 'unit': 'km'});
       backend.gate!.complete();
-      final outcome = await run;
-
-      expect(outcome, isA<ChangeLanded>());
-      final batches = [
-        for (final c in api.calls)
-          if (c.name == 'batchDocs')
-            (c.args['writes']! as List<DocWrite>).single.ifVersion,
-      ];
-      expect(batches, [before.version, after.version]);
-      expect((await api.getDoc(aid, 'runs/a'))!.data, {'km': 6, 'unit': 'km'});
+      expect(await run, isA<ChangeLanded>());
+      expect((await api.getDoc(aid, 'runs/a'))!.data, {'km': 5, 'unit': 'km'});
+      expect(api.callNames, isNot(contains('restoreVersion')));
     });
 
     test('a second document conflict restores the previous version', () async {
