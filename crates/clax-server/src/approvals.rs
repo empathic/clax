@@ -17,15 +17,8 @@ use serde_json::{Value, json};
 /// them.
 fn person(st: &Store, pid: &str) -> clax_core::Result<Value> {
     let owner = st.owner()?.is_some_and(|o| o.public_id == pid);
-    let name = st
-        .viewer_by_public_id(pid)?
-        .and_then(|v| v.display_name)
-        .filter(|n| !n.trim().is_empty());
-    let name = match name {
-        Some(n) => clax_core::feedback::display_name(&n),
-        None if owner => "The owner".to_owned(),
-        None => clax_core::feedback::display_name(""),
-    };
+    let raw = st.viewer_by_public_id(pid)?.and_then(|v| v.display_name);
+    let name = clax_core::feedback::person_name(raw.as_deref(), owner);
     Ok(json!({"public_id": pid, "name": name, "owner": owner}))
 }
 

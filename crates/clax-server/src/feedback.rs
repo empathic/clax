@@ -1400,11 +1400,9 @@ impl<'a> Withhold<'a> {
                         _ => viewer.as_ref().map(|v| v.public_id.clone()),
                     },
                     name: self.vis.label(
-                        &clax_core::feedback::display_name(
-                            viewer
-                                .as_ref()
-                                .and_then(|v| v.display_name.as_deref())
-                                .unwrap_or(""),
+                        &clax_core::feedback::person_name(
+                            viewer.as_ref().and_then(|v| v.display_name.as_deref()),
+                            *a == Author::Owner,
                         ),
                         a,
                     ),
