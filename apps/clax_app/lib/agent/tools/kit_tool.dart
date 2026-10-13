@@ -1,0 +1,168 @@
+/// The `add_kit` tool: copies the vendored Clax kit into the draft.
+library;
+
+import 'dart:convert';
+
+import 'package:flutter/services.dart' show rootBundle;
+
+import 'file_tools.dart' show maxDraftFiles;
+import 'tool_spec.dart';
+import 'toolbox.dart';
+
+/// Reads one kit file by its name in `assets/kit/` (such as `kit.js`).
+typedef KitLoader = Future<String> Function(String name);
+
+/// Each part the tool takes and the kit files it brings, its own and those
+/// of the parts it needs, in the order they are added.
+const kitParts = <String, List<String>>{
+  'preact': ['preact.js'],
+  'kit': ['preact.js', 'icons.js', 'kit.css', 'kit.js'],
+  'chart': ['chart.js'],
+  'dates': ['dates.js'],
+  'icons': ['icons.js'],
+};
+
+/// The directory of the draft the kit files go in.
+const kitDir = 'kit';
+
+/// Reads the kit from the app's bundled assets.
+Future<String> bundledKit(String name) =>
+    rootBundle.loadString('assets/kit/$name');
+
+/// Copies the parts of the kit a page imports into the draft under
+/// `kit/`. A file already there with the same text is left alone, so a
+/// repeated call changes nothing.
+class AddKitTool implements Tool {
+  AddKitTool({KitLoader? load}) : _load = load ?? bundledKit;
+
+  final KitLoader _load;
+
+  @override
+  final spec = ToolSpec(
+    'add_kit',
+    'Adds the Clax kit to the draft under kit/: preact (Preact, hooks and '
+        'htm as kit/preact.js), kit (kit.css, the design system, and kit.js, '
+        'its components; brings preact and icons), chart (SVG charts), '
+        'dates (dayjs with relativeTime), icons (about 100 icons). The '
+        'result lists the API. Pages link ./kit/kit.css and import '
+        "'./kit/<part>.js'. Repeating it is harmless.",
+    objectSchema({
+      'parts': {
+        'type': 'array',
+        'items': {'type': 'string', 'enum': kitParts.keys.toList()},
+      },
+    }),
+  );
+
+  @override
+  Future<ToolOutput> call(Map<String, Object?> input, RunState s) async {
+    final parts = switch (input['parts']) {
+      final List<Object?> l when l.every(kitParts.containsKey) =>
+        l.cast<String>(),
+      _ => throw ToolInputError(
+        'parts must be a list of ${kitParts.keys.join(', ')}.',
+      ),
+    };
+    if (parts.isEmpty) {
+      throw ToolInputError(
+        'parts is empty; name at least one of ${kitParts.keys.join(', ')}.',
+      );
+    }
+    final names = <String>{for (final p in parts) ...kitParts[p]!};
+    final d = s.draft;
+    final added = names.where((n) => !d.files.containsKey('$kitDir/$n'));
+    if (d.files.length + added.length > maxDraftFiles) {
+      throw ToolInputError(
+        'The draft would have ${d.files.length + added.length} files; it may '
+        'have at most $maxDraftFiles. Delete some first.',
+      );
+    }
+    final texts = {for (final n in names) n: await _load(n)};
+    final out = <Map<String, Object?>>[];
+    for (final n in names) {
+      final path = '$kitDir/$n';
+      final text = texts[n]!;
+      final same = d.files[path] == text;
+      if (!same) d.writeFile(path, text);
+      out.add({
+        'path': path,
+        'bytes': utf8.encode(text).length,
+        'written': !same,
+      });
+    }
+    return ToolOk({
+      'files': out,
+      'api': [for (final n in names) ?_api[n]].join('\n'),
+    });
+  }
+}
+
+/// What each file offers, for the model: the names, the props and the
+/// shape of a call.
+const _api = <String, String>{
+  'preact.js':
+      r"kit/preact.js exports h, html, render, Fragment, createContext, "
+      r'useState, useEffect, useMemo, useRef, useReducer, useCallback, '
+      r'useContext, useLayoutEffect. Write views as html`<${Comp} prop=${v}/>` '
+      r"(close a component with <//>), render(html`<${App} …/>`, "
+      r'document.body), from <script type="module">.',
+  'kit.css':
+      r'kit/kit.css: tokens --k-accent, --k-accent-2 (gradient end), '
+      r'--k-bg, --k-surface, --k-fg, --k-fg-2, --k-line, --k-radius, '
+      r'--k-chart-1..6; give the app its own look by overriding --k-accent '
+      r'and --k-accent-2 on :root and in both dark blocks. Classes: '
+      r'k-section (gutter block), k-stack, k-row, k-spread, k-grid-2, '
+      r'k-grid-3, k-large, k-title, k-title-2, k-title-3, k-headline, '
+      r'k-subhead, k-footnote, k-caption, k-muted, k-num.',
+  'kit.js':
+      r'kit/kit.js exports: App {routes: {"/": Home, "/item/:id": Item, '
+      r'"*": NotFound}, tabs: [{path, label, icon, badge}], theme} (screens '
+      r'get {params, path, query}); go(path), back(), useRoute(); AppBar '
+      r'{title, subtitle, large, back: true|path, leading, actions}; Section '
+      r'{title, action}; List {header, footer}; ListItem {title, subtitle, '
+      r'trail, lead: icon, leadColor, avatar: name, check: {checked, '
+      r'onChange}, onClick, href, destructive, done}; Card {title, subtitle, '
+      r'action, hero, onClick}; Button {variant: filled|tonal|outline|plain|'
+      r'danger|gradient, size: small|large, block, icon, loading}; '
+      r'IconButton {icon, label, onClick}; Field {label, type: text|number|'
+      r'date|time|email|textarea|select|toggle, value, onChange(value), '
+      r'options, placeholder, hint, error}; SegmentedControl {options, value, '
+      r'onChange}; Chips {options: [str|{value, label, icon}], value, '
+      r'onChange, multiple, wrap}; Stat {label, value, unit, delta, '
+      r'deltaLabel, icon, invert}; Empty {icon, title, body, action}; Fab '
+      r'{icon, label, onClick}; Sheet {open, onClose, title, action: {label, '
+      r'onClick, disabled}}; Dialog {open, onClose, title, body, actions: '
+      r'[{label, variant, onClick}]}; toast(message, {tone: success|danger}); '
+      r'Badge {tone}; Progress {value, max}; Check; Icon {name, size}; Markup '
+      r'{html} (for chart markup); useDoc(path, initial) -> [data, '
+      r'save(next|fn), {ready}]; useCollection(path, {orderBy, dir, limit}) '
+      r'-> {items: [{id, …}], ready, add(data) -> id, set(id, data), '
+      r'update(id, patch), remove(id)} (the db capability when declared, '
+      r'else memory); uid(); fmt.number, fmt.money(v, currency), '
+      r'fmt.percent.',
+  'chart.js':
+      r'kit/chart.js exports functions returning SVG markup (show with '
+      r'<${Markup} html=${…}/>): line(data, opts), area(data, opts), '
+      r'bar(data, {stacked}), pie({items: [{label, value, color}]}, {donut, '
+      r'center, centerSub}), donut(…), sparkline(values, {width, height, '
+      r'color}); data is {labels, series: [{name, values, color}]} or '
+      r'{labels, values}; opts {height, format, legend}.',
+  'dates.js':
+      r"kit/dates.js default-exports dayjs with relativeTime: "
+      r"dayjs(x).fromNow(), .format('D MMM'), .add(1, 'day'), "
+      r".isSame(y, 'day').",
+  'icons.js':
+      r'kit/icons.js: icon(name, {size, stroke}) -> SVG markup, and names. '
+      r'Icon names (kit.js takes them as icon props): home search plus minus '
+      r'x check chevronLeft chevronRight chevronDown chevronUp arrowLeft '
+      r'arrowRight arrowUp arrowDown menu more moreVertical settings user '
+      r'users heart star bookmark calendar clock bell mail phone message send '
+      r'share trash pencil edit copy download upload filter sliders list grid '
+      r'image camera pin map globe link lock unlock eye eyeOff info alert '
+      r'warning help checkCircle xCircle plusCircle refresh play pause stop '
+      r'skip music mic volume sun moon cloud zap flame droplet leaf coffee '
+      r'utensils cart bag tag wallet card dollar piggyBank trendingUp '
+      r'trendingDown barChart pieChart activity target trophy gift book '
+      r'bookOpen file folder inbox archive flag dumbbell timer sparkles smile '
+      r'car plane checkSquare circle compass repeat history logOut.',
+};
