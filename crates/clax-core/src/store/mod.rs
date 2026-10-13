@@ -64,6 +64,7 @@ pub mod inbox;
 pub mod joined;
 pub mod live;
 pub mod migrations;
+pub mod net_grants;
 pub mod people;
 #[cfg(test)]
 mod plans;
