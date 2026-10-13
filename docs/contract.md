@@ -4669,6 +4669,14 @@ capability first and light features up when it resolves.
   the person's own browser: everywhere else, and when no key is configured,
   `use("sample")` resolves `null`. The first call in each view asks the
   person to allow it.
+- `net` (Clax's own): `fetch(url, {method, headers, body})` resolves
+  `{status, ok, url, headers, text(), json()}`, made by the daemon (the
+  page itself cannot connect). Declare every host,
+  `{"net": {"hosts": ["api.example.com"]}}`; only `https` URLs on those
+  hosts are fetched, at most 5 MB each way and 20 s. The person is asked
+  once per app for its host list. Only the person's own views get it:
+  elsewhere `use("net")` resolves `null`. Types:
+  `ClaxExtensions.Net` in `clax-extensions.d.ts`.
 - `permissions`: `state()` and `request()`; the only prompt is the consent
   to the first page-written comment.
 
@@ -4877,6 +4885,81 @@ most 64 subscriptions of other apps. When the owner withdraws a grant while
 the page runs, a live listener stops receiving that app's changes at once;
 its error callback gets `not_granted` at its next refresh (after a reconnect
 of the event stream), and any later `get()` rejects `not_granted`.
+
+### Fetching from the network (`net`)
+
+An app page cannot connect anywhere itself (its content security policy
+keeps `connect-src 'none'`). It fetches through the daemon instead, from
+hosts it declares and the owner allows.
+
+**Declaring.** `{"net": {"hosts": ["api.example.com", "cdn.example.com"]}}`:
+1 to 32 lowercase host names (at least two labels, the last not numeric;
+no scheme, port, path, wildcard, trailing dot or IP address). A repeated
+host is kept once. Anything else is 400 `invalid_capabilities` on publish
+and `PATCH`. Declaring grants nothing alone.
+
+**Consent.** The owner's grants are kept per artifact and host (migration
+26), with the token:
+
+- `PUT /api/artifacts/<id>/net-grants`: grants every host the live version
+  declares; hosts already granted keep their time. 400 `not_declared` when
+  it declares none.
+- `DELETE /api/artifacts/<id>/net-grants`: `{revoked}`, how many grants
+  there were.
+- `GET /api/artifacts/<id>/net-grants`: `{declared: [host], grants:
+  [{host, granted_at}], granted}`, `granted` true when every declared host
+  is granted.
+
+`PUT` and `GET` answer the same shape. Each is 404 for an unknown or
+deleted artifact. A grant and its removal are recorded as `artifact.update`
+of the artifact (`fields.net_grants`). A host is reachable while the live
+version declares it and a grant names it: a host a new version adds waits
+for consent; one it drops reaches nothing. Deleting the artifact removes
+its grants.
+
+**Fetching.** `POST /api/artifacts/<id>/net:fetch` (token), body `{url,
+method?, headers?, body?}` (`method` `GET` when absent, `headers` an object
+of strings, `body` a string), answers `{url, status, headers, body}`: the
+final URL, the status (4xx and 5xx included), the headers (lowercase
+names, repeats joined with `, `) and the body as text (UTF-8, invalid bytes
+replaced). The daemon, for the first request and each redirect:
+
+- takes only `https` URLs without a user name or password;
+- takes only a host the live version declares and the owner granted;
+- resolves the host and refuses it if any address is not public unicast
+  (loopback, private, shared, link-local, multicast, unspecified,
+  documentation, benchmarking or reserved, IPv4 inside IPv6 judged as
+  IPv4), then connects only to those addresses, so a second DNS answer
+  cannot move the request;
+- follows at most 3 redirects (`301`, `302`, `303`, `307`, `308`), `303`
+  and a `301`/`302` after a `POST` continuing as `GET` without a body, and
+  drops `Authorization` when a redirect changes host;
+- drops the page's `Cookie`, `Host`, `Content-Length`, `Expect`,
+  `Proxy-*`, `Sec-*` and hop-by-hop headers, and the response's
+  `Set-Cookie` and hop-by-hop headers (with any `Connection` names); keeps
+  no cookies and uses no proxy.
+
+Bodies are capped at 5 MB each way, and the whole fetch at 20 s. Errors:
+404 for an unknown artifact; 403 `not_declared` (the URL's host is not
+declared, or nothing is), `not_granted` (not allowed by the owner),
+`redirect_refused`, `blocked_address`; 400 `invalid_argument` (a malformed
+URL, method, header or body) or `https_only`; 413 `too_large`; 504
+`timeout`; 502 `too_many_redirects` or `upstream_error` (resolution,
+connection, TLS).
+
+**In the page.** `const net = await window.claude.use("net")` resolves the
+namespace in the owner's views (the Clax app, or the owner's browser) when
+`net` is declared, and `null` elsewhere. `net.fetch(url, init)` resolves
+`{status, ok, url, headers, text(), json()}`; the types are
+`ClaxExtensions.Net` in `clax-extensions.d.ts`. The shell refuses, before
+any request, a URL that is not `https` (`https_only`) or whose host is not
+declared (`not_declared`). The daemon's `not_granted` asks the owner once
+per view ("Let “A” use the internet?", naming the hosts, Allow or Don't
+allow); Allow grants every declared host and the fetch is tried again, and
+the grant stands in later views. The app's inspect view never asks: there
+a refusal stands. Other codes reach the page as the daemon answers them;
+the shell adds `unavailable` (the daemon could not be reached) and
+`session_expired`.
 
 ## Room protocol
 

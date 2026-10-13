@@ -232,4 +232,69 @@ declare namespace ClaxExtensions {
       current(): Promise<{ lat: number; lon: number; accuracy: number }>;
     }
   }
+
+  /**
+   * The network, through the Clax daemon (the page itself may not connect:
+   * its content security policy keeps `connect-src 'none'`). Served to the
+   * owner (in the Clax app, or the owner's browser). Declare the hosts the
+   * app talks to, `{"net": {"hosts": ["api.example.com"]}}` (lowercase
+   * host names, no scheme, port or wildcard; at most 32), and obtain it
+   * with `await claude.use("net")`: it resolves `null` when undeclared or
+   * for another viewer, so render without it first.
+   *
+   * The owner is asked once per app, on the first fetch, for the whole host
+   * list; a host a later version adds is asked again. The answer stands
+   * until revoked in the app inspector. Requests go only to `https` URLs on
+   * a declared host whose every address is public (never loopback or a
+   * private network); redirects (at most 3) follow the same rules. Bodies
+   * are at most 5 MB each way, and a fetch takes at most 20 s. Cookies are
+   * neither sent nor kept.
+   */
+  namespace Net {
+    /**
+     * Rejection codes of `fetch` (as `{code, message}`):
+     * - `not_declared`: the URL's host is not in `net.hosts`.
+     * - `not_granted`: the owner did not allow this app's hosts; calling
+     *   again in this view does not ask again.
+     * - `https_only`: the URL (or a redirect) is not `https`.
+     * - `redirect_refused`: a redirect to a host the app may not reach.
+     * - `blocked_address`: the host resolves to a non-public address.
+     * - `too_large`: a body over 5 MB.
+     * - `too_many_redirects`, `timeout`, `upstream_error`: the server could
+     *   not be reached or did not answer in time. `upstream_error` is not
+     *   an HTTP error status: those resolve with their `status`.
+     * - `invalid_argument`: a malformed URL, method or header.
+     * - `unavailable`, `session_expired`: the daemon could not be reached,
+     *   or the page must be reloaded.
+     */
+    type ErrorCode = "not_declared" | "not_granted" | "https_only" | "redirect_refused" | "blocked_address" | "too_large" | "too_many_redirects" | "timeout" | "upstream_error" | "invalid_argument" | "unavailable" | "session_expired";
+
+    interface RequestInit {
+      /** `GET` when absent. */
+      method?: string;
+      /** `Cookie`, `Host` and connection headers are dropped. */
+      headers?: Record<string, string>;
+      /** Text; `JSON.stringify` an object and set `content-type`. */
+      body?: string;
+    }
+
+    interface Response {
+      /** The HTTP status; 4xx and 5xx resolve too. */
+      status: number;
+      /** `status` is 200 to 299. */
+      ok: boolean;
+      /** The final URL, after redirects. */
+      url: string;
+      /** Lowercase names; no `set-cookie`. */
+      headers: Record<string, string>;
+      /** The body as text (UTF-8). */
+      text(): Promise<string>;
+      /** The body parsed as JSON; rejects (a `SyntaxError`) when it is not JSON. */
+      json<T = unknown>(): Promise<T>;
+    }
+
+    interface Net {
+      fetch(url: string, init?: RequestInit): Promise<Response>;
+    }
+  }
 }
