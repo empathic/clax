@@ -31,13 +31,17 @@ void main() {
         back: () => nav.currentState?.maybePop(),
         child: MaterialApp(
           navigatorKey: nav,
+          shortcuts: escapeShortcuts(),
+          actions: escapeActions(() => nav.currentState?.maybePop()),
           home: const Scaffold(body: Text('apps')),
         ),
       ),
     );
     nav.currentState!.push(
       MaterialPageRoute<void>(
-        builder: (_) => const Scaffold(body: Text('pushed')),
+        builder: (_) => const Scaffold(
+          body: Column(children: [Text('pushed'), TextField()]),
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -96,5 +100,34 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('dialog'), findsNothing);
     expect(find.text('pushed'), findsOneWidget);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('Esc in a text field never goes back and keeps its text; '
+      'out of the field it does', (tester) async {
+    await pumpPushed(tester);
+    await tester.enterText(find.byType(TextField), 'a habit tracker');
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.text('pushed'), findsOneWidget);
+    expect(find.text('a habit tracker'), findsOneWidget);
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.text('pushed'), findsNothing);
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+  testWidgets('escapeOrBack unfocuses a focused field instead of going back', (
+    tester,
+  ) async {
+    await pumpPushed(tester);
+    await tester.showKeyboard(find.byType(TextField));
+    var backs = 0;
+    escapeOrBack(() => backs++);
+    expect(backs, 0);
+    await tester.pump();
+    escapeOrBack(() => backs++);
+    expect(backs, 1);
   }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 }

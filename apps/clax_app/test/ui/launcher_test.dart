@@ -4,12 +4,14 @@ import 'package:clax_app/agent/backend.dart';
 import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
+import 'package:clax_app/ui/app_menu.dart';
 import 'package:clax_app/ui/inbox_screen.dart';
 import 'package:clax_app/ui/launcher.dart';
 import 'package:clax_app/ui/making_screen.dart';
 import 'package:clax_app/ui/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_voice.dart';
@@ -434,6 +436,39 @@ void main() {
     expect(find.byKey(const ValueKey('making-tile')), findsOneWidget);
     expect(find.text('a habit tracker'), findsOneWidget);
   });
+
+  testWidgets('on macOS Esc in the New sheet keeps the typed request for '
+      'the next New', (tester) async {
+    final nav = GlobalKey<NavigatorState>();
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorKey: nav,
+        shortcuts: escapeShortcuts(),
+        actions: escapeActions(() => nav.currentState?.maybePop()),
+        home: Launcher(
+          api: _api(),
+          open: opened.add,
+          make: (_, _, _) async => throw StateError('unused'),
+          voice: FakeVoice.unsupported('No speech here'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('New app'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'a habit tracker');
+    await tester.pump();
+    // In the field, Esc is the platform's cancel, which dismisses the sheet.
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.text('Make it'), findsNothing);
+    expect(find.text('New app'), findsOneWidget, reason: 'still the apps');
+    await tester.tap(find.text('New app'));
+    await tester.pumpAndSettle();
+    expect(find.text('a habit tracker'), findsOneWidget, reason: 'kept');
+  }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
   testWidgets('Retry runs with a fresh signal; Edit stops the old one', (
     tester,

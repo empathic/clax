@@ -3,6 +3,45 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
+/// Esc on macOS, as the app maps it ([escapeShortcuts]).
+class EscapeIntent extends Intent {
+  const EscapeIntent();
+}
+
+/// The app's shortcuts on macOS: the platform's, with Esc as
+/// [EscapeIntent] in place of dismissing.
+Map<ShortcutActivator, Intent> escapeShortcuts() => {
+  ...WidgetsApp.defaultShortcuts,
+  const SingleActivator(LogicalKeyboardKey.escape): const EscapeIntent(),
+};
+
+/// The app's actions on macOS: the platform's, with [EscapeIntent] running
+/// [escapeOrBack] with [back].
+Map<Type, Action<Intent>> escapeActions(VoidCallback back) => {
+  ...WidgetsApp.defaultActions,
+  EscapeIntent: CallbackAction<EscapeIntent>(
+    onInvoke: (_) {
+      escapeOrBack(back);
+      return null;
+    },
+  ),
+};
+
+/// Esc: a focused text field loses the focus (its text stays); otherwise
+/// [back] runs. Esc never goes back from a field being typed in.
+void escapeOrBack(VoidCallback back) {
+  final focus = FocusManager.instance.primaryFocus;
+  final context = focus?.context;
+  if (focus != null &&
+      context != null &&
+      (context.widget is EditableText ||
+          context.findAncestorWidgetOfExactType<EditableText>() != null)) {
+    focus.unfocus();
+    return;
+  }
+  back();
+}
+
 /// What App › Threads (⌘K) and App › Comment (⇧⌘K) run: the open app
 /// screen registers its panel toggle and its comment-mode toggle here, and
 /// the menu items are disabled while none is registered.
@@ -51,8 +90,8 @@ class CommentsCommand extends ChangeNotifier {
 /// platform provides them), App › Comment (⇧⌘K) and App › Threads (⌘K)
 /// running [comments], and App › Back to Apps (⌘[) running [back]. They are
 /// the macOS way into comment mode, the threads panel and out of a screen,
-/// since nothing of Clax's is drawn over an app. Esc runs [back] too, when
-/// nothing nearer the focus takes it (a dialog, a sheet, a menu); it does
+/// since nothing of Clax's is drawn over an app. Esc is the app's
+/// ([escapeShortcuts], [escapeActions], given to the MaterialApp): it does
 /// not reach Flutter while an app's page has the keyboard focus, where
 /// ⌘[ (a key equivalent of the menu) still does.
 /// Flutter allows one menu bar at a time, so the app installs one, above
@@ -140,13 +179,7 @@ class ClaxMenuBar extends StatelessWidget {
           ],
         ),
       ],
-      child: switch (back) {
-        final back? => CallbackShortcuts(
-          bindings: {const SingleActivator(LogicalKeyboardKey.escape): back},
-          child: child!,
-        ),
-        null => child!,
-      },
+      child: child!,
     ),
   );
 }

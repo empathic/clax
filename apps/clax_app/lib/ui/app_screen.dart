@@ -1006,7 +1006,7 @@ class _AppScreenState extends State<AppScreen> with WidgetsBindingObserver {
     screen = CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.escape): () =>
-            unawaited(Navigator.maybePop(context)),
+            escapeOrBack(() => unawaited(Navigator.maybePop(context))),
       },
       child: Focus(autofocus: true, child: screen),
     );
