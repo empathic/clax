@@ -4,6 +4,8 @@ library;
 /// Every tool's name, in the one order a run declares them. The order never
 /// changes within a run, so the tools stay a cached prefix.
 const toolOrder = [
+  'plan_set',
+  'plan_mark',
   'list_files',
   'read_file',
   'write_file',
