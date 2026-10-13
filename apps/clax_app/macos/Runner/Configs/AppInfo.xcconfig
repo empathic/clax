@@ -12,3 +12,12 @@ PRODUCT_BUNDLE_IDENTIFIER = dev.empathic.clax
 
 // The copyright displayed in application information
 PRODUCT_COPYRIGHT = Copyright © 2026 dev.empathic. All rights reserved.
+
+// Signing. With no `macos/Signing.xcconfig` the app and its embedded
+// `clax` are signed ad hoc (the project's CODE_SIGN_IDENTITY "-"), a new
+// signature each build. The optional, gitignored `macos/Signing.xcconfig`
+// (copy `Signing.xcconfig.example`) names a team and the Apple Development
+// identity, so rebuilds keep one signature and the keychain trusts them.
+// It is included here, in the Runner target's base configuration, because
+// target settings outrank the project-level CODE_SIGN_IDENTITY "-".
+#include? "../../Signing.xcconfig"

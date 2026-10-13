@@ -1,0 +1,9 @@
+// Copy to `Signing.xcconfig` (gitignored) and set your team ID to sign the
+// macOS app and its embedded `clax` with your Apple Development
+// certificate instead of ad hoc. The team ID is the OU of the
+// certificate:
+//   security find-certificate -c "Apple Development" -p | openssl x509 -noout -subject
+// (or Xcode → Settings → Accounts → your team). The Runner target's
+// CODE_SIGN_STYLE stays Automatic, set in the project.
+DEVELOPMENT_TEAM = XXXXXXXXXX
+CODE_SIGN_IDENTITY = Apple Development
