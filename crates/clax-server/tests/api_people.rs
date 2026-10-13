@@ -1470,3 +1470,127 @@ async fn registering_over_a_live_session_needs_its_secret() {
     let (status, v) = p.sam_agent(made, "GET", "/api/artifacts", None).await;
     assert_eq!(status, 200, "{v}");
 }
+
+impl People {
+    /// A session's stored harness session ID and parent PID.
+    fn stored_row(&self, sid: &str) -> (Option<String>, Option<u32>) {
+        let s = self.ts.store.get_session(sid).unwrap().unwrap();
+        (s.harness_session_id, s.parent_pid)
+    }
+}
+
+/// Spec §6.8 Matching: a proof never widens the match. An agent started
+/// from another agent's shell (`claude -p`), holding its parent agent's
+/// credential, joins or registers with its own harness session ID and
+/// process: it gets a session of its own, and the parent's row, its
+/// harness session ID and parent PID stay as they were.
+#[tokio::test]
+async fn a_nested_agent_proving_its_parents_session_gets_its_own() {
+    let p = people().await;
+    let parent = id(&p
+        .sam
+        .register_with(json!({"harness": "claude", "harness_session_id": "b-h",
+                              "cwd": "/w", "parent_pid": 100}))
+        .await);
+    let before = p.stored_row(&parent);
+    let nested_join = json!({"harness": "claude", "harness_session_id": "c-h",
+                             "parent_pid": 300, "ancestor_pids": [250, 100]});
+    let (status, v) = json_of(
+        p.sam
+            .agent(
+                "POST",
+                "/api/sessions/join",
+                Some(&parent),
+                Some(nested_join),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    assert_ne!(v["session"]["id"], json!(parent), "{v}");
+    assert!(v["session_secret"].as_str().is_some(), "{v}");
+    assert_eq!(p.stored_row(&parent), before);
+    let nested_reg = json!({"harness": "claude", "harness_session_id": "d-h",
+                            "cwd": "/w", "parent_pid": 300});
+    let (status, v) = json_of(
+        p.sam
+            .agent("POST", "/api/sessions", Some(&parent), Some(nested_reg))
+            .await,
+    )
+    .await;
+    assert_eq!(status, 201, "{v}");
+    assert_ne!(v["session"]["id"], json!(parent), "{v}");
+    assert_eq!(p.stored_row(&parent), before, "the parent PID is kept");
+    // A proof of another harness's session is no match either.
+    let (status, v) = json_of(
+        p.sam
+            .agent(
+                "POST",
+                "/api/sessions",
+                Some(&parent),
+                Some(json!({"harness": "codex", "harness_session_id": "b-h", "cwd": "/w"})),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(status, 201, "{v}");
+    assert_ne!(v["session"]["id"], json!(parent), "{v}");
+    assert_eq!(v["session"]["harness"], "codex");
+    // The parent itself, proving its own row from another process with the
+    // same harness session ID, keeps its row and its first parent PID.
+    let (status, v) = json_of(
+        p.sam
+            .agent(
+                "POST",
+                "/api/sessions",
+                Some(&parent),
+                Some(json!({"harness": "claude", "harness_session_id": "b-h",
+                            "cwd": "/w", "parent_pid": 999})),
+            )
+            .await,
+    )
+    .await;
+    assert_eq!(
+        (status, v["session"]["id"].clone()),
+        (201, json!(parent)),
+        "{v}"
+    );
+    assert_eq!(p.stored_row(&parent), before);
+}
+
+/// Spec §6.8: every live narrowing binds a request naming no session, not
+/// only one of them, whichever session carries the narrower one.
+#[tokio::test]
+async fn every_live_narrowing_binds_a_request_naming_no_session() {
+    let p = people().await;
+    let r =
+        p.ts.post_json(
+            "/api/artifacts",
+            json!({"title": "Notes", "capabilities": {"db": {}},
+                   "files": {"index.html": {"content": "<p>v1</p>", "encoding": "utf8"}}}),
+        )
+        .await;
+    let aid = r.json::<Value>().await.unwrap()["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let doc = format!("/api/artifacts/{aid}/docs/notes/one");
+    let write = json!({"data": {"text": "hi"}, "lww": true});
+    let second = id(&p.sam.register("claude", "sam-h2").await);
+    for (wide, narrow) in [(&p.sam_session, &second), (&second, &p.sam_session)] {
+        for (sid, access) in [(wide, "clax:collaborator"), (narrow, "clax:reader")] {
+            let (status, v) = p
+                .sams_browser(
+                    "PUT",
+                    &format!("/api/agents/{}/narrow", p.handle(sid)),
+                    Some(json!({"access": access})),
+                )
+                .await;
+            assert_eq!(status, 200, "{v}");
+        }
+        let (status, v) = json_of(p.sam.agent("PUT", &doc, None, Some(write.clone())).await).await;
+        assert_eq!((status, code(&v)), (403, "not_permitted"), "{v}");
+        let (status, v) = p.sam_agent(wide, "PUT", &doc, Some(write.clone())).await;
+        assert_eq!(status, 200, "the wide one itself writes: {v}");
+    }
+}

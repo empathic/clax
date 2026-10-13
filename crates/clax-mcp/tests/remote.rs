@@ -147,7 +147,7 @@ fn credential_file(
     let path = dir
         .path()
         .join("remote-sessions")
-        .join(format!("{harness}-{hsid}.json"));
+        .join(format!("{harness}-s-{hsid}.json"));
     let bytes = std::fs::read(path).ok()?;
     Some(serde_json::from_slice(&bytes).unwrap())
 }
@@ -174,7 +174,7 @@ async fn the_shim_keeps_its_session_secret_and_its_credential_file() {
             .session_secret_matches(&sid, &sam.grant_id(), &Secret::new(secret.clone()))
             .unwrap()
     );
-    let path = dir.path().join("remote-sessions/claude-sam-cc-1.json");
+    let path = dir.path().join("remote-sessions/claude-s-sam-cc-1.json");
     let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode(&path), 0o600);
     assert_eq!(mode(&dir.path().join("remote-sessions")), 0o700);
@@ -207,7 +207,7 @@ async fn the_shim_keeps_its_session_secret_and_its_credential_file() {
     assert!(credential_file(&dir, "claude", "sam-cc-1").is_none());
     assert!(
         !dir.path()
-            .join("remote-sessions/claude-ppid-4000000001.json")
+            .join("remote-sessions/claude-p-4000000001.json")
             .exists()
     );
 }
@@ -241,5 +241,39 @@ async fn a_session_ended_under_a_remote_shim_is_registered_again() {
                 &Secret::new(old.as_str().unwrap().to_string())
             )
             .unwrap()
+    );
+}
+
+/// Spec 2026-10-08 §6.8 Clients: a credential file naming a session the
+/// daemon has no row for (written for another daemon, or one reset since)
+/// is passed over as a refused one is: the shim registers anew and writes
+/// its new credential over it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_credential_for_a_session_the_daemon_does_not_know_is_passed_over() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let sam = ts.connect_person("Sam", "clax:collaborator").await;
+    let dir = tempfile::tempdir().unwrap();
+    let remote = remote_of(&ts, &sam, None, &dir);
+    let unknown = clax_core::new_ulid();
+    remote
+        .sessions
+        .write(
+            "claude",
+            Some("sam-cc-1"),
+            None,
+            None,
+            &clax_core::remote::SessionCredential {
+                session: unknown.clone(),
+                secret: clax_core::secret::token(clax_core::secret::SESSION_PREFIX),
+            },
+        )
+        .unwrap();
+    let client = DaemonClient::managed_remote(remote, registration());
+    client.ensure_session().await.unwrap();
+    let sid = client.session().unwrap().id;
+    assert_ne!(sid, unknown);
+    assert_eq!(
+        credential_file(&dir, "claude", "sam-cc-1").unwrap()["session"],
+        json!(sid)
     );
 }

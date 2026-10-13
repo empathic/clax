@@ -719,11 +719,18 @@ impl SessionCredential {
     }
 }
 
-/// What a session credential's file holds.
+/// What a session credential's file holds: the credential, the harness
+/// session ID its row had when written (none for a row known by its parent
+/// PID alone), and, in a parent-PID file, when that process started, so a
+/// later process given the same PID never takes the file as its own.
 #[derive(Serialize, Deserialize)]
 struct CredentialFile {
     session: String,
     secret: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    harness_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent_started: Option<String>,
 }
 
 /// A name a session's credential file is found by (spec 2026-10-08 §6.8).
@@ -737,34 +744,47 @@ pub enum SessionKey<'a> {
 }
 
 impl SessionKey<'_> {
-    /// The file name: `<harness>-<harness session ID>.json` for an ID of
-    /// 1–128 characters of `[A-Za-z0-9._-]` not starting with `.`, else
-    /// `<harness>-h<the first 32 hex characters of its SHA-256>.json`;
-    /// `<harness>-ppid-<pid>.json` for a parent PID. `None` for a harness
-    /// name that is not a plain word.
+    /// The file name, which no two keys share: `<harness>-s-<harness
+    /// session ID>.json` for an ID of 1–128 characters of `[A-Za-z0-9._-]`,
+    /// else `<harness>-h-<the first 32 hex characters of its
+    /// SHA-256>.json`; `<harness>-p-<pid>.json` for a parent PID. `None`
+    /// for a harness name that is not a plain lowercase word.
     pub fn file_name(&self) -> Option<String> {
         let plain =
             |h: &str| !h.is_empty() && h.len() <= 32 && h.bytes().all(|b| b.is_ascii_lowercase());
         match *self {
             SessionKey::Harness { harness, id } if plain(harness) && !id.is_empty() => {
                 let safe = id.len() <= 128
-                    && !id.starts_with('.')
                     && id
                         .bytes()
                         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
                 Some(if safe {
-                    format!("{harness}-{id}.json")
+                    format!("{harness}-s-{id}.json")
                 } else {
                     let h = crate::secret::sha256_hex(id);
-                    format!("{harness}-h{}.json", &h[..32])
+                    format!("{harness}-h-{}.json", &h[..32])
                 })
             }
             SessionKey::Parent { harness, pid } if plain(harness) && pid > 1 => {
-                Some(format!("{harness}-ppid-{pid}.json"))
+                Some(format!("{harness}-p-{pid}.json"))
             }
             _ => None,
         }
     }
+}
+
+/// When process `pid` started, as `ps` reports it; `None` when it cannot be
+/// told (no such process, or no `ps`). A parent-PID credential file
+/// records it, and is taken only while the PID still names that process.
+pub fn process_started(pid: u32) -> Option<String> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "lstart=", "-p", &pid.to_string()])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (out.status.success() && !s.is_empty()).then_some(s)
 }
 
 /// Why a session's credential file could not be used.
@@ -787,10 +807,22 @@ impl std::fmt::Display for CredentialUnreadable {
 
 impl std::error::Error for CredentialUnreadable {}
 
+/// Who looks for a session's credential (spec 2026-10-08 §6.8): its harness,
+/// the harness session ID it knows, and the process IDs join or
+/// registration would match a row by, nearest first (a registration's
+/// parent; a hook's parent, then its ancestors).
+#[derive(Clone, Copy, Debug)]
+pub struct Seeker<'a> {
+    pub harness: &'a str,
+    pub harness_session_id: Option<&'a str>,
+    pub pids: &'a [u32],
+}
+
 /// The agent sessions' credential files of a connected machine,
 /// `<home>/remote-sessions/` (spec 2026-10-08 §6.8): the directory 0700,
 /// each file 0600, written whole and renamed into place
-/// ([`write_private`]).
+/// ([`write_private`]). Neither the directory nor a file is followed
+/// through a symbolic link.
 #[derive(Clone, Debug)]
 pub struct SessionFiles {
     dir: PathBuf,
@@ -819,7 +851,42 @@ impl SessionFiles {
         key.file_name().map(|n| self.dir.join(n))
     }
 
-    /// The credential in `key`'s file: `None` when there is no such file.
+    /// The file of `key` as written, `None` when there is no such file.
+    fn read_file(
+        &self,
+        key: &SessionKey<'_>,
+    ) -> Result<Option<(PathBuf, CredentialFile)>, CredentialUnreadable> {
+        let Some(path) = self.path(key) else {
+            return Ok(None);
+        };
+        let unreadable = |why: String| CredentialUnreadable {
+            path: path.clone(),
+            why,
+        };
+        for p in [self.dir.as_path(), path.as_path()] {
+            match std::fs::symlink_metadata(p) {
+                Ok(m) if m.file_type().is_symlink() => {
+                    return Err(unreadable(format!(
+                        "{} is a symbolic link, which is never followed",
+                        p.display()
+                    )));
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(unreadable(e.to_string())),
+            }
+        }
+        let bytes = std::fs::read(&path).map_err(|e| unreadable(e.to_string()))?;
+        let f: CredentialFile = serde_json::from_slice(&bytes)
+            .map_err(|_| unreadable("not a session credential".into()))?;
+        if f.session.is_empty() || !f.secret.starts_with(crate::secret::SESSION_PREFIX) {
+            return Err(unreadable("not a session credential".into()));
+        }
+        Ok(Some((path, f)))
+    }
+
+    /// The credential in `key`'s file, whatever row it was written for:
+    /// `None` when there is no such file.
     ///
     /// # Errors
     /// [`CredentialUnreadable`], naming the file, when it exists but
@@ -828,81 +895,138 @@ impl SessionFiles {
         &self,
         key: &SessionKey<'_>,
     ) -> Result<Option<SessionCredential>, CredentialUnreadable> {
-        let Some(path) = self.path(key) else {
-            return Ok(None);
-        };
-        let bytes = match std::fs::read(&path) {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => {
-                return Err(CredentialUnreadable {
-                    path,
-                    why: e.to_string(),
-                });
-            }
-        };
-        let f: CredentialFile =
-            serde_json::from_slice(&bytes).map_err(|_| CredentialUnreadable {
-                path: path.clone(),
-                why: "not a session credential".into(),
-            })?;
-        if f.session.is_empty() || !f.secret.starts_with(crate::secret::SESSION_PREFIX) {
-            return Err(CredentialUnreadable {
-                path,
-                why: "not a session credential".into(),
-            });
-        }
-        Ok(Some(SessionCredential {
+        Ok(self.read_file(key)?.map(|(_, f)| SessionCredential {
             session: f.session,
             secret: Secret::new(f.secret),
         }))
     }
 
-    /// The first credential found by `keys`, in order, with the file it
-    /// was read from; `None` when none of them has a file.
+    /// The credential `seeker` may use, found as registration and join
+    /// match a row (spec 2026-10-08 §6.7, §6.8): the file of its harness
+    /// session ID; else, for each of its PIDs in order, a parent-PID file
+    /// written while that PID named the process it names now, for a row
+    /// that join or registration would match: one with no harness session
+    /// ID, the seeker's own, or any when the seeker knows none. `None` when
+    /// no file qualifies.
     ///
     /// # Errors
     /// [`CredentialUnreadable`] for the first file that exists but cannot
     /// be used.
     pub fn find(
         &self,
-        keys: &[SessionKey<'_>],
+        seeker: &Seeker<'_>,
     ) -> Result<Option<SessionCredential>, CredentialUnreadable> {
-        for k in keys {
-            if let Some(c) = self.read(k)? {
-                return Ok(Some(c));
+        if let Some(id) = seeker.harness_session_id
+            && let Some(c) = self.read(&SessionKey::Harness {
+                harness: seeker.harness,
+                id,
+            })?
+        {
+            return Ok(Some(c));
+        }
+        for &pid in seeker.pids {
+            let key = SessionKey::Parent {
+                harness: seeker.harness,
+                pid,
+            };
+            let Some((_, f)) = self.read_file(&key)? else {
+                continue;
+            };
+            let row_matches = match (seeker.harness_session_id, f.harness_session_id.as_deref()) {
+                (None, _) | (_, None) => true,
+                (Some(mine), Some(row)) => mine == row,
+            };
+            let same_process =
+                f.parent_started.is_some() && f.parent_started == process_started(pid);
+            if row_matches && same_process {
+                return Ok(Some(SessionCredential {
+                    session: f.session,
+                    secret: Secret::new(f.secret),
+                }));
             }
         }
         Ok(None)
     }
 
-    /// Writes `cred` under every one of `keys`.
+    /// Writes `cred`, the credential of a `harness` row with harness session
+    /// ID `row_hsid` and parent PID `parent_pid`, under every name it is
+    /// found by: the row's harness session ID and `also` (a hook's own,
+    /// which may differ when the row has none yet), and the parent PID
+    /// while that process can be told apart from a later one with its PID.
+    /// The directory is made 0700, or set so when it exists.
     ///
     /// # Errors
-    /// The first I/O error.
-    pub fn write(&self, keys: &[SessionKey<'_>], cred: &SessionCredential) -> std::io::Result<()> {
-        let mut bytes = serde_json::to_vec(&CredentialFile {
-            session: cred.session.clone(),
-            secret: cred.secret.expose().to_string(),
-        })
-        .expect("a credential serializes");
-        bytes.push(b'\n');
-        for path in keys.iter().filter_map(|k| self.path(k)) {
-            write_private(&path, &bytes)?;
+    /// The first I/O error; a directory that is a symbolic link.
+    pub fn write(
+        &self,
+        harness: &str,
+        row_hsid: Option<&str>,
+        parent_pid: Option<u32>,
+        also: Option<&str>,
+        cred: &SessionCredential,
+    ) -> std::io::Result<()> {
+        self.private_dir()?;
+        let file = |parent_started: Option<String>| {
+            let mut bytes = serde_json::to_vec(&CredentialFile {
+                session: cred.session.clone(),
+                secret: cred.secret.expose().to_string(),
+                harness_session_id: row_hsid.map(str::to_string),
+                parent_started,
+            })
+            .expect("a credential serializes");
+            bytes.push(b'\n');
+            bytes
+        };
+        let mut ids: Vec<&str> = row_hsid.into_iter().chain(also).collect();
+        ids.dedup();
+        for id in ids.into_iter().filter(|i| !i.is_empty()) {
+            if let Some(p) = self.path(&SessionKey::Harness { harness, id }) {
+                write_private(&p, &file(None))?;
+            }
+        }
+        if let Some(pid) = parent_pid
+            && let Some(started) = process_started(pid)
+            && let Some(p) = self.path(&SessionKey::Parent { harness, pid })
+        {
+            write_private(&p, &file(Some(started)))?;
         }
         Ok(())
     }
 
-    /// Removes every one of `keys`' files that holds session `session`
-    /// (all of them for `None`), leaving another session's file alone.
-    pub fn remove(&self, keys: &[SessionKey<'_>], session: Option<&str>) {
+    /// The directory, made 0700 or set so; refused when it is a symbolic
+    /// link.
+    fn private_dir(&self) -> std::io::Result<()> {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        match std::fs::symlink_metadata(&self.dir) {
+            Ok(m) if m.file_type().is_symlink() || !m.is_dir() => {
+                return Err(std::io::Error::other(format!(
+                    "{} is not a directory of its own",
+                    self.dir.display()
+                )));
+            }
+            Ok(m) if m.permissions().mode() & 0o777 != 0o700 => {
+                std::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(0o700))?;
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::DirBuilder::new()
+                    .recursive(true)
+                    .mode(0o700)
+                    .create(&self.dir)?;
+            }
+            Err(e) => return Err(e),
+        }
+        Ok(())
+    }
+
+    /// Removes every one of `keys`' files that holds session `session`,
+    /// leaving another session's file alone.
+    pub fn remove(&self, keys: &[SessionKey<'_>], session: &str) {
         for k in keys {
             let Some(path) = self.path(k) else { continue };
-            let held = match self.read(k) {
-                Ok(Some(c)) => Some(c.session),
-                _ => None,
-            };
-            if session.is_none() || held.as_deref() == session {
+            if let Ok(Some(c)) = self.read(k)
+                && c.session == session
+            {
                 let _ = std::fs::remove_file(&path);
             }
         }
@@ -1314,5 +1438,144 @@ mod tests {
         let mut r = Retry::default();
         assert_eq!(r.next(429, "too_many", None, &s, 0.0), Next::GiveUp);
         assert_eq!(r.next(503, "unavailable", None, &s, 0.0), Next::GiveUp);
+    }
+}
+
+#[cfg(test)]
+mod session_file_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn cred(session: &str) -> SessionCredential {
+        SessionCredential {
+            session: session.into(),
+            secret: crate::secret::token(crate::secret::SESSION_PREFIX),
+        }
+    }
+
+    fn mode(p: &Path) -> u32 {
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn no_two_keys_share_a_file_name() {
+        let names = [
+            SessionKey::Harness {
+                harness: "claude",
+                id: "p-123",
+            },
+            SessionKey::Harness {
+                harness: "claude",
+                id: "ppid-123",
+            },
+            SessionKey::Parent {
+                harness: "claude",
+                pid: 123,
+            },
+            SessionKey::Harness {
+                harness: "claude",
+                id: "h-0123",
+            },
+            SessionKey::Harness {
+                harness: "claude",
+                id: "a/b",
+            },
+            SessionKey::Harness {
+                harness: "claude",
+                id: ".hidden",
+            },
+        ]
+        .map(|k| k.file_name().unwrap());
+        let mut unique = names.to_vec();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), names.len(), "{names:?}");
+        assert_eq!(names[2], "claude-p-123.json");
+        assert_eq!(names[1], "claude-s-ppid-123.json");
+        assert!(names[4].starts_with("claude-h-"), "{}", names[4]);
+    }
+
+    #[test]
+    fn the_directory_is_made_private_and_never_followed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("remote-sessions");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let files = SessionFiles::at(dir.clone());
+        files
+            .write("claude", Some("cc-1"), None, None, &cred("S1"))
+            .unwrap();
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join("claude-s-cc-1.json")), 0o600);
+        // A file that is a symbolic link is refused, not followed.
+        let elsewhere = tmp.path().join("elsewhere.json");
+        std::fs::rename(dir.join("claude-s-cc-1.json"), &elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, dir.join("claude-s-cc-1.json")).unwrap();
+        let key = SessionKey::Harness {
+            harness: "claude",
+            id: "cc-1",
+        };
+        let e = files.read(&key).unwrap_err();
+        assert!(e.to_string().contains("symbolic link"), "{e}");
+        // A directory that is a symbolic link is neither written nor read.
+        let linked = tmp.path().join("linked");
+        std::os::unix::fs::symlink(&dir, &linked).unwrap();
+        let through = SessionFiles::at(linked);
+        assert!(
+            through
+                .write("claude", Some("cc-2"), None, None, &cred("S2"))
+                .is_err()
+        );
+        assert!(through.read(&key).is_err());
+    }
+
+    #[test]
+    fn a_parent_pid_file_is_taken_only_as_join_would_match_and_by_the_same_process() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files = SessionFiles::at(tmp.path().join("remote-sessions"));
+        let me = std::process::id();
+        let pids = [me];
+        let seek = |hsid: Option<&'static str>| Seeker {
+            harness: "codex",
+            harness_session_id: hsid,
+            pids: &pids,
+        };
+        // A row with no harness session ID, whose parent is this process.
+        files
+            .write("codex", None, Some(me), None, &cred("S0"))
+            .unwrap();
+        assert_eq!(
+            files.find(&seek(Some("x-1"))).unwrap().unwrap().session,
+            "S0"
+        );
+        assert_eq!(files.find(&seek(None)).unwrap().unwrap().session, "S0");
+        // A row with another harness session ID: only a client that knows
+        // none, or that one, takes it.
+        files
+            .write("codex", Some("b-h"), Some(me), None, &cred("SB"))
+            .unwrap();
+        assert!(files.find(&seek(Some("c-h"))).unwrap().is_none());
+        assert_eq!(
+            files.find(&seek(Some("b-h"))).unwrap().unwrap().session,
+            "SB"
+        );
+        assert_eq!(files.find(&seek(None)).unwrap().unwrap().session, "SB");
+        // Written while another process had this PID: never taken.
+        let path = files
+            .path(&SessionKey::Parent {
+                harness: "codex",
+                pid: me,
+            })
+            .unwrap();
+        let mut v: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        v["harness_session_id"] = serde_json::Value::Null;
+        v["parent_started"] = "Thu Jan  1 00:00:00 1970".into();
+        std::fs::write(&path, v.to_string()).unwrap();
+        assert!(files.find(&seek(None)).unwrap().is_none());
+        // Nor without a recorded start.
+        v.as_object_mut().unwrap().remove("parent_started");
+        std::fs::write(&path, v.to_string()).unwrap();
+        assert!(files.find(&seek(None)).unwrap().is_none());
     }
 }

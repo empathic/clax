@@ -2,8 +2,8 @@ use crate::client::Client;
 use clax_core::Home;
 use clax_core::gitctx::{self, GitField};
 use clax_core::remote::{
-    CredentialUnreadable, SESSION_SECRET_HEADER, SessionCredential, SessionFiles, SessionKey,
-    keys_of_row,
+    CredentialUnreadable, SESSION_SECRET_HEADER, Seeker, SessionCredential, SessionFiles,
+    SessionKey,
 };
 use clax_core::secret::Secret;
 use clax_hooks::ask::{self, Asked, Budget};
@@ -262,16 +262,18 @@ impl HookGit {
 }
 
 /// A remote hook's agent session (spec 2026-10-08 §6.8): the credential
-/// it proves its session with, found in the machine's session files by
-/// the harness session ID of its input, else by its parent's and
-/// ancestors' PIDs, as join matches.
+/// it proves its session with, found in the machine's session files as
+/// join matches a row: by the harness session ID of its input, else by a
+/// parent-PID file of its parent or an ancestor, written for a row with no
+/// harness session ID or with this one, while that PID named the same
+/// process ([`SessionFiles::find`]).
 struct RemoteSession {
     files: SessionFiles,
     harness: &'static str,
     hsid: Option<String>,
     parent_pid: u32,
-    /// The parent's ancestors, found when first needed.
-    ancestors: OnceLock<Vec<u32>>,
+    /// The parent, then its ancestors, found when first needed.
+    pids: OnceLock<Vec<u32>>,
     cred: Mutex<Option<SessionCredential>>,
     /// Whether the files were looked in yet.
     looked: Mutex<bool>,
@@ -289,15 +291,23 @@ impl RemoteSession {
             harness,
             hsid: input.session_id.clone().filter(|s| !s.is_empty()),
             parent_pid,
-            ancestors: OnceLock::new(),
+            pids: OnceLock::new(),
             cred: Mutex::new(None),
             looked: Mutex::new(false),
         }
     }
 
+    /// The hook's parent, then its ancestors: the PIDs join tries.
+    fn pids(&self) -> &[u32] {
+        self.pids.get_or_init(|| {
+            std::iter::once(self.parent_pid)
+                .chain(ancestors(self.parent_pid))
+                .collect()
+        })
+    }
+
     /// The names this hook's session may be found by, in join's order.
     fn keys(&self) -> Vec<SessionKey<'_>> {
-        let ancestors = self.ancestors.get_or_init(|| ancestors(self.parent_pid));
         let mut keys = Vec::new();
         if let Some(id) = &self.hsid {
             keys.push(SessionKey::Harness {
@@ -305,7 +315,7 @@ impl RemoteSession {
                 id,
             });
         }
-        for pid in std::iter::once(&self.parent_pid).chain(ancestors) {
+        for pid in self.pids() {
             keys.push(SessionKey::Parent {
                 harness: self.harness,
                 pid: *pid,
@@ -314,19 +324,22 @@ impl RemoteSession {
         keys
     }
 
-    /// The first credential file found by [`RemoteSession::keys`].
+    /// The credential this hook may use, if any.
     fn find(&self) -> Result<Option<SessionCredential>, CredentialUnreadable> {
-        let hsid_key = self.hsid.as_deref().map(|id| SessionKey::Harness {
-            harness: self.harness,
-            id,
-        });
         // The harness session ID's file first: finding it needs no `ps`.
-        if let Some(k) = hsid_key
-            && let Some(c) = self.files.read(&k)?
+        if let Some(id) = self.hsid.as_deref()
+            && let Some(c) = self.files.read(&SessionKey::Harness {
+                harness: self.harness,
+                id,
+            })?
         {
             return Ok(Some(c));
         }
-        self.files.find(&self.keys())
+        self.files.find(&Seeker {
+            harness: self.harness,
+            harness_session_id: self.hsid.as_deref(),
+            pids: self.pids(),
+        })
     }
 
     /// The credential held, read from the files on first use.
@@ -380,23 +393,22 @@ impl RemoteSession {
         let parent = v["session"]["parent_pid"]
             .as_u64()
             .and_then(|p| u32::try_from(p).ok());
-        let mut keys = keys_of_row(harness, v["session"]["harness_session_id"].as_str(), parent);
-        if let Some(id) = &self.hsid {
-            keys.push(SessionKey::Harness {
-                harness: self.harness,
-                id,
-            });
-        }
         // A hook that cannot keep the file still acts this run; the next
         // one says what is missing.
-        let _ = self.files.write(&keys, &cred);
+        let _ = self.files.write(
+            harness,
+            v["session"]["harness_session_id"].as_str(),
+            parent,
+            self.hsid.as_deref(),
+            &cred,
+        );
         self.set(Some(cred));
     }
 
     /// Removes this session's files once it has ended.
     fn forget(&self) {
         if let Ok(Some(c)) = self.current() {
-            self.files.remove(&self.keys(), Some(&c.session));
+            self.files.remove(&self.keys(), &c.session);
         }
     }
 }
@@ -404,6 +416,49 @@ impl RemoteSession {
 /// Whether `e` is a 401 `invalid_session_proof`.
 fn proof_refused(e: &anyhow::Error) -> bool {
     e.to_string().starts_with("invalid_session_proof:")
+}
+
+/// Whether `e` refuses the credential a join presented: its secret does
+/// not prove the session (`invalid_session_proof`: the session ended), or
+/// the daemon has no such session (`unknown_session`: another or a reset
+/// daemon).
+fn credential_refused(e: &anyhow::Error) -> bool {
+    proof_refused(e) || e.to_string().starts_with("unknown_session:")
+}
+
+/// The join's attempts (spec 2026-10-08 §6.8), `send` making one with a
+/// credential or none: with `first`, the credential found, when there is
+/// one; then, if that credential is refused or there was none, without
+/// one, which makes the session when no live row matches; and when a live
+/// row needs a proof this hook does not have yet, one wait for a new
+/// credential (`wait`, given those already refused) and one retry with
+/// it. The answer, with the credential it was sent with.
+///
+/// # Errors
+/// The last refusal, or any other error at once.
+fn join_attempts<T>(
+    first: Option<SessionCredential>,
+    mut send: impl FnMut(Option<&SessionCredential>) -> anyhow::Result<T>,
+    wait: impl FnOnce(&[SessionCredential]) -> Option<SessionCredential>,
+) -> anyhow::Result<(T, Option<SessionCredential>)> {
+    let mut refused = Vec::new();
+    if let Some(c) = first {
+        match send(Some(&c)) {
+            Ok(v) => return Ok((v, Some(c))),
+            Err(e) if credential_refused(&e) => refused.push(c),
+            Err(e) => return Err(e),
+        }
+    }
+    let e = match send(None) {
+        Ok(v) => return Ok((v, None)),
+        Err(e) if proof_refused(&e) => e,
+        Err(e) => return Err(e),
+    };
+    let Some(c) = wait(&refused) else {
+        return Err(e);
+    };
+    let v = send(Some(&c))?;
+    Ok((v, Some(c)))
 }
 
 /// The daemon as a hook talks to it: every request names the `hook`
@@ -451,32 +506,13 @@ impl<'a> HookDaemon<'a> {
             let cred = cred.ok_or_else(|| remote.missing())?;
             return self.send_as(method, path, body, timeout, Some(&cred));
         }
-        // The join: with the credential found, else without one; a stale
-        // credential (its session ended) is dropped, and a live row this
-        // hook cannot prove yet waits briefly for its file.
-        let mut tried = Vec::new();
-        let mut next = cred;
-        loop {
-            match self.send_as(method.clone(), path, body, timeout, next.as_ref()) {
-                Ok(v) => {
-                    remote.absorb(&v, next.as_ref());
-                    return Ok(v);
-                }
-                Err(e) if proof_refused(&e) => {
-                    let was = next.take();
-                    let gave_none = was.is_none();
-                    tried.extend(was);
-                    if !gave_none {
-                        continue;
-                    }
-                    match wait_for_credential(remote, &tried) {
-                        Some(c) => next = Some(c),
-                        None => return Err(e),
-                    }
-                }
-                Err(e) => return Err(e),
-            }
-        }
+        let (v, used) = join_attempts(
+            cred,
+            |c| self.send_as(method.clone(), path, body, timeout, c),
+            |refused| wait_for_credential(remote, refused),
+        )?;
+        remote.absorb(&v, used.as_ref());
+        Ok(v)
     }
 
     fn send_as(
@@ -516,17 +552,17 @@ impl<'a> HookDaemon<'a> {
     }
 }
 
-/// A credential for `remote`'s session that is none of `tried`, looked for
-/// every [`CREDENTIAL_LOOK`] for up to [`CREDENTIAL_WAIT`]: the file the
-/// shim writes when it made the row this join needs a proof for.
+/// A credential for `remote`'s session that is none of `refused`, looked
+/// for every [`CREDENTIAL_LOOK`] for up to [`CREDENTIAL_WAIT`]: the file
+/// the shim writes when it made the row this join needs a proof for.
 fn wait_for_credential(
     remote: &RemoteSession,
-    tried: &[SessionCredential],
+    refused: &[SessionCredential],
 ) -> Option<SessionCredential> {
     let until = Instant::now() + CREDENTIAL_WAIT;
     loop {
         if let Ok(Some(c)) = remote.find()
-            && !tried.iter().any(|t| t.same_as(&c))
+            && !refused.iter().any(|t| t.same_as(&c))
         {
             return Some(c);
         }
@@ -1095,5 +1131,90 @@ mod tests {
             "request failed"
         );
         assert_eq!(error_code("no colon"), "request failed");
+    }
+}
+
+#[cfg(test)]
+mod join_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    fn cred(s: &str) -> SessionCredential {
+        SessionCredential {
+            session: s.into(),
+            secret: Secret::new(format!("cxs_{s}")),
+        }
+    }
+
+    /// The join's attempts against answers given in order: the credential
+    /// each was sent with, and the outcome.
+    fn run(
+        first: Option<&str>,
+        answers: Vec<Result<&'static str, &'static str>>,
+        waited: Option<&str>,
+    ) -> (Vec<Option<String>>, usize, anyhow::Result<Option<String>>) {
+        let sent = RefCell::new(Vec::new());
+        let answers = RefCell::new(answers.into_iter());
+        let waits = RefCell::new(0);
+        let out = join_attempts(
+            first.map(cred),
+            |c| {
+                sent.borrow_mut().push(c.map(|c| c.session.clone()));
+                match answers.borrow_mut().next().expect("an answer") {
+                    Ok(v) => Ok(v),
+                    Err(code) => Err(anyhow::anyhow!("{code}: refused")),
+                }
+            },
+            |_| {
+                *waits.borrow_mut() += 1;
+                waited.map(cred)
+            },
+        )
+        .map(|(_, c)| c.map(|c| c.session));
+        (sent.into_inner(), waits.into_inner(), out)
+    }
+
+    #[test]
+    fn a_found_credential_is_used_and_a_stale_one_dropped() {
+        let (sent, waits, out) = run(Some("S1"), vec![Ok("v")], None);
+        assert_eq!((sent, waits), (vec![Some("S1".into())], 0));
+        assert_eq!(out.unwrap(), Some("S1".into()));
+        // Refused as unproved or as unknown: joined without it.
+        for code in ["invalid_session_proof", "unknown_session"] {
+            let (sent, waits, out) = run(Some("S1"), vec![Err(code), Ok("v")], None);
+            assert_eq!((sent, waits), (vec![Some("S1".into()), None], 0), "{code}");
+            assert_eq!(out.unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn a_live_row_without_a_proof_waits_once_and_retries_once() {
+        let (sent, waits, out) = run(
+            None,
+            vec![Err("invalid_session_proof"), Ok("v")],
+            Some("S2"),
+        );
+        assert_eq!((sent, waits), (vec![None, Some("S2".into())], 1));
+        assert_eq!(out.unwrap(), Some("S2".into()));
+        // The credential it waited for is refused too: no second wait.
+        let (sent, waits, out) = run(
+            None,
+            vec![Err("invalid_session_proof"), Err("invalid_session_proof")],
+            Some("S2"),
+        );
+        assert_eq!((sent.len(), waits), (2, 1));
+        assert!(out.is_err());
+        // Nothing appears: the refusal stands.
+        let (sent, waits, out) = run(None, vec![Err("invalid_session_proof")], None);
+        assert_eq!((sent.len(), waits), (1, 1));
+        assert!(
+            out.unwrap_err()
+                .to_string()
+                .starts_with("invalid_session_proof")
+        );
+        // Any other refusal: no wait.
+        let (_, waits, out) = run(None, vec![Err("grant_revoked")], Some("S2"));
+        assert_eq!(waits, 0);
+        assert!(out.is_err());
     }
 }

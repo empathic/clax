@@ -1848,6 +1848,8 @@ impl Store {
     /// (spec §6.1, §6.7, §7.2). With no session, its rights are narrowed by
     /// every live narrowing of the grant's sessions (§6.8). It does not
     /// check the session's secret: [`Store::session_secret_matches`] does.
+    /// A session that has ended is `invalid_session_proof`: its rights are
+    /// never read after its end cleared its narrowing.
     ///
     /// # Errors
     /// `grant_revoked` when `gid` is not an approved grant (it ended after
@@ -2380,13 +2382,15 @@ pub(crate) fn grant_caller_in(
                     "that session is not one of this credential's",
                 )
             })?;
+            // An ended session's narrowing is cleared, so its rights would
+            // be wider than a request naming no session: it acts as nothing
+            // (spec §6.8, its secret proves nothing once it ended).
+            if ended.is_some() {
+                return Err(super::sessions::invalid_session_proof());
+            }
             (
                 narrow.as_deref().map(read_rights).transpose()?,
-                elevate
-                    .filter(|_| ended.is_none())
-                    .as_deref()
-                    .map(read_rights)
-                    .transpose()?,
+                elevate.as_deref().map(read_rights).transpose()?,
             )
         }
     };
@@ -3300,12 +3304,12 @@ pub(crate) mod tests {
             c.rights
                 .allows(RightType::Artifacts, "delete", Some("x"), &none)
         );
+        // An ended session acts as nothing: neither its elevation nor its
+        // cleared narrowing (spec §6.8), whatever proved it a moment before.
         st.end_session(DAEMON, &s1.id).unwrap();
-        let c = st.grant_caller(&gid, Some(&s1.id)).unwrap();
-        assert!(
-            !c.rights
-                .allows(RightType::Artifacts, "delete", Some("x"), &none),
-            "an ended session's elevation is gone"
+        assert_eq!(
+            code(st.grant_caller(&gid, Some(&s1.id))),
+            "invalid_session_proof"
         );
         // Another grant's or the token's session is foreign.
         let (g2, _, _) = approved(&st, "Mia", KEY_B);
