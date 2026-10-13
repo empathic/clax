@@ -441,6 +441,8 @@ class FeedbackWorker {
     };
     if (!again) return outcome;
     _running.removeAll(threads);
+    // Its kept answers run again with the recovered threads.
+    _answering.removeAll(answering);
     try {
       await _recover();
     } on Object catch (e) {
@@ -523,6 +525,13 @@ class FeedbackWorker {
         final e = entries.where((x) => x.questionId == qid).firstOrNull;
         final text = e?.answer;
         if (e == null || text == null) continue;
+        // A run of this answer that landed but lost its answer is settled
+        // from the ledger, never run again.
+        if (await _loop.settleAnswered(aid, e)) {
+          await _forgetAnswer(qid);
+          threads = null;
+          continue;
+        }
         threads ??= await _api.threads(aid);
         final found = _askedItems(aid, e, threads);
         if (found == null) {
