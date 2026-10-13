@@ -179,7 +179,7 @@ void main() {
     expect(events.every((e) => e.artifactId == aid), isTrue);
   });
 
-  test('batches of two artifacts run one after the other', () async {
+  test('batches of two artifacts run at once', () async {
     final a = api.seedArtifact('A', {'index.html': page});
     final b = api.seedArtifact('B', {'index.html': page});
     workerWith([
@@ -191,20 +191,18 @@ void main() {
     api.sendComment(a, 'x');
     await runner.arrived.future;
     api.sendComment(b, 'y');
-    await until(() => api.waitingPolls == 1);
-    expect(runner.seen, hasLength(1));
+    await until(() => runner.seen.length == 2, reason: "b's run starts");
     runner.gate!.complete();
     runner.gate = null;
     await idle();
     expect(api.filesOf(a, 2)['index.html'], contains('>A<'));
     expect(api.filesOf(b, 2)['index.html'], contains('>B<'));
-    expect(
-      [
-        for (final e in events)
-          if (e is! WorkerProgress) e.artifactId,
-      ],
-      [a, a, b, b],
-    );
+    final ids = [
+      for (final e in events)
+        if (e is! WorkerProgress) e.artifactId,
+    ];
+    expect(ids.take(2), [a, b]);
+    expect(ids.skip(2), unorderedEquals([a, b]));
   });
 
   test(

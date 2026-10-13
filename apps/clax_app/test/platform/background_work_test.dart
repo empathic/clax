@@ -115,6 +115,30 @@ void main() {
         'stop',
       ]);
     });
+    test('runs of several apps at once keep one service up until the last '
+        'ends, in any order', () {
+      final w = RecordingWork();
+      final runs = BackgroundRuns(w, foreground: () => true);
+      final a = runs.begin('A', 'a');
+      final b = runs.begin('B', 'b');
+      final c = runs.begin('C', 'c');
+      runs.end(b, const RunQuiet());
+      runs.end(c, const RunQuiet());
+      expect(runs.busy, isTrue);
+      expect(w.calls.where((c) => c == 'stop'), isEmpty);
+      final d = runs.begin('D', 'd');
+      runs.end(a, const RunQuiet());
+      runs.end(d, const RunQuiet());
+      expect(runs.busy, isFalse);
+      expect(w.calls, [
+        'start(A, a)',
+        'update(B, b)',
+        'update(C, c)',
+        'update(A, a)',
+        'update(D, d)',
+        'stop',
+      ]);
+    });
   });
 
   group('BackgroundRuns and the service', () {
