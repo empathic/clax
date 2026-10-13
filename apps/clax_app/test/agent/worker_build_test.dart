@@ -29,6 +29,15 @@ List<ScriptedCall> buildCalls(String id, String from, String to) => [
   ScriptedCall('finish', {'reply': 'Built $id.', 'resolve': true}),
 ];
 
+/// Plans whose reads fail while [failing].
+class _FailingPlans extends PlanStore {
+  var failing = false;
+
+  @override
+  Future<Plan?> get(String appId) =>
+      failing ? Future.error(StateError('disk')) : super.get(appId);
+}
+
 /// The worker's builds: continue runs queued until the plan is done, the
 /// person stops it, or a run fails or makes no progress.
 void main() {
@@ -176,6 +185,24 @@ void main() {
     expect(worker.buildOf(aid)!.reason, contains('no feature'));
     expect((await plans.get(aid))!.stopped, isTrue);
     expect(runner.seen, hasLength(1));
+  });
+
+  test('a build whose plan cannot be read fails, and one without a plan '
+      'ends, rather than staying queued', () async {
+    final failing = plans = _FailingPlans();
+    workerWith(const []).start();
+    await idle();
+    await seedPlan();
+    failing.failing = true;
+    worker.startBuild(aid);
+    await until(() => worker.buildOf(aid)?.phase == BuildPhase.failed);
+    expect(worker.buildOf(aid)!.reason, 'The plan could not be read');
+
+    failing.failing = false;
+    await plans.remove(aid);
+    worker.startBuild(aid);
+    await until(() => worker.buildOf(aid)?.phase == BuildPhase.done);
+    expect(runner.seen, isEmpty);
   });
 
   test('a build over its cost cap does not run', () async {
