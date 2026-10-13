@@ -208,14 +208,15 @@ pub async fn patch(
             };
             if b.ended {
                 let ended = st.end_session_touched(&audit, &id)?;
-                crate::feedback::apply(&ctx, st, &ended.touched);
-                crate::questions::announce_ids(&state, st, &ended.withdrawn_questions);
-                ctx.waiters.forget(&id);
-                let (stopped, _) = ctx
-                    .working
-                    .end_session(&id, clax_core::working::End::SessionEnd);
-                crate::working::settle(st, &audit, &ctx.events, &ctx.working, &stopped);
-                ctx.followers.forget(&id);
+                crate::feedback::sessions_ended(
+                    &state,
+                    &ctx,
+                    st,
+                    &audit,
+                    &ended.touched,
+                    &ended.withdrawn_questions,
+                    std::slice::from_ref(&id),
+                );
                 Ok(ended.session)
             } else if b.heartbeat {
                 st.heartbeat(&id)

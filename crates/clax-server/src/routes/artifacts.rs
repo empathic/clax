@@ -567,18 +567,23 @@ pub struct PatchBody {
 }
 
 /// `GET /api/artifacts/<aid>/presence` (no token): `{people}`, the viewers
-/// here, away or recently gone (spec §10, "Presence"), never a cookie.
+/// here, away or recently gone (spec §10, "Presence"), never a cookie. An
+/// agent reads a viewer who is not connected as `<name> (not connected)`
+/// (spec 2026-10-08 §9.6).
 pub async fn presence(
     State(s): State<AppState>,
-    _a: Agent<crate::agent::Presence>,
+    a: Agent<crate::agent::Presence>,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(p)?)?;
     let reg = s.presence.clone();
+    let vf = crate::feedback::VisFor::of(&a.caller, &s);
     let people = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            Ok(reg.for_artifact(id.as_str()))
+            let mut people = json!(reg.for_artifact(id.as_str()));
+            vf.build(st)?.mark_viewers(&mut people, "public_id");
+            Ok(people)
         })
         .await?;
     Ok(Json(json!({"people": people})))
