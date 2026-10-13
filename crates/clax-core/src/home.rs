@@ -102,6 +102,12 @@ impl Home {
     pub fn remote_cache(&self) -> PathBuf {
         self.root.join("remote-cache")
     }
+    /// `remote-sessions/` (0700): each agent session's credential on the
+    /// remote daemon, one 0600 file per name it is found by
+    /// ([`crate::remote::SessionFiles`], spec 2026-10-08 §6.8).
+    pub fn remote_sessions(&self) -> PathBuf {
+        self.root.join("remote-sessions")
+    }
 
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
         {

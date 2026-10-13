@@ -39,6 +39,7 @@ use axum::http::{HeaderMap, HeaderValue, header};
 use clax_core::Store;
 use clax_core::audit::{Actor, AgentActor, Via};
 use clax_core::model::Viewer;
+use clax_core::secret::Secret;
 use std::convert::Infallible;
 
 /// The owner cookie's name: `clax_owner_<port>`, the port from the request's
@@ -150,6 +151,9 @@ pub struct Identity {
     pub grant: Option<crate::agent::VerifiedGrant>,
     /// `X-Clax-Session`: the session an agent speaks for.
     pub header_session: Option<String>,
+    /// `X-Clax-Session-Secret`: the secret proving a grant's session (spec
+    /// §6.8); `Err` when the request carries it more than once.
+    pub session_secret: Option<Result<Secret, ()>>,
     /// `X-Clax-Channel: agent`; counts only with the token.
     pub agent_marker: bool,
 }
@@ -182,6 +186,7 @@ impl Identity {
                 .get(SESSION_HEADER)
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string),
+            session_secret: session_secret(headers),
             agent_marker: headers
                 .get(CHANNEL_HEADER)
                 .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"agent")),
@@ -236,9 +241,12 @@ impl Identity {
     ///   [`crate::agent::verify_layer`] verified it (else 401
     ///   `invalid_signature`); its `X-Clax-Session` and path session must be
     ///   its grant's (400 `unknown_session` for one that does not exist, 403
-    ///   `foreign_session` for another credential's), a path session needs
-    ///   `X-Clax-Session` (400 `no_session`), and its rights are those of the
-    ///   path's session when the path names one, else the header's.
+    ///   `foreign_session` for another credential's), each must be proved
+    ///   by its secret in `X-Clax-Session-Secret` (401
+    ///   `invalid_session_proof`, spec §6.8; so a path session is the
+    ///   header's), a path session needs `X-Clax-Session` (400
+    ///   `no_session`), and its rights are that session's, or with no
+    ///   session the grant's narrowed by its live sessions' narrowings.
     /// - The token is an `OwnerAgent` when the request names a session or
     ///   carries the agent-channel marker, else the `Owner`; a session it
     ///   names (path or header) that is another credential's is 403
@@ -271,6 +279,9 @@ impl Identity {
                 .flatten()
             {
                 own_session(st, sid, Some(&g.grant_id))?;
+                // The session's own secret, not the machine's key alone
+                // (spec §6.8): a sibling agent cannot act as it.
+                self.prove_session(st, sid, &g.grant_id)?;
             }
             // The agent acting is the session whose resources the path
             // names; else the one the header names.
@@ -315,6 +326,24 @@ impl Identity {
             Some(v) => Caller::Viewer { viewer: v },
             None => Caller::Anonymous,
         })
+    }
+
+    /// That the request carries the secret of grant `grant`'s session
+    /// `sid` (spec §6.8).
+    ///
+    /// # Errors
+    /// 401 `invalid_session_proof` when `X-Clax-Session-Secret` is missing,
+    /// repeated, or not that live session's secret; the store's.
+    fn prove_session(&self, st: &Store, sid: &str, grant: &str) -> Result<(), ApiError> {
+        let ok = match &self.session_secret {
+            Some(Ok(secret)) => st.session_secret_matches(sid, grant, secret)?,
+            _ => false,
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err(clax_core::store::sessions::invalid_session_proof().into())
+        }
     }
 
     /// Whose a person-scoped route's data is ([`Caller::person`]).
@@ -495,6 +524,24 @@ impl FromRequestParts<AppState> for Identity {
             &state.token,
         ))
     }
+}
+
+/// `X-Clax-Session-Secret`'s value (spec §6.8): `Err` when the header is
+/// given more than once, or is not text.
+fn session_secret(headers: &HeaderMap) -> Option<Result<Secret, ()>> {
+    let mut all = headers
+        .get_all(clax_core::remote::SESSION_SECRET_HEADER)
+        .iter();
+    let first = all.next()?;
+    if all.next().is_some() {
+        return Some(Err(()));
+    }
+    Some(
+        first
+            .to_str()
+            .map(|v| Secret::new(v.trim().to_string()))
+            .map_err(|_| ()),
+    )
 }
 
 /// That session `sid` is one of credential `grant`'s (M4).

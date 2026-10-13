@@ -123,7 +123,11 @@ impl From<CoreError> for ApiError {
                 message,
             } => ApiError::new(StatusCode::CONFLICT, code, message),
             CoreError::Invalid {
-                code: code @ ("invalid_token" | "grant_revoked" | "replayed_request"),
+                code:
+                    code @ ("invalid_token"
+                    | "grant_revoked"
+                    | "replayed_request"
+                    | "invalid_session_proof"),
                 message,
             } => ApiError::new(StatusCode::UNAUTHORIZED, code, message),
             CoreError::Invalid {

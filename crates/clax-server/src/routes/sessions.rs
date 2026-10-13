@@ -13,7 +13,7 @@ use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use clax_core::model::Session;
-use clax_core::{CoreError, JoinSession, NameSource, RegisterSession};
+use clax_core::{CoreError, JoinSession, NameSource, Proved, RegisterSession};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -39,7 +39,10 @@ fn check_harness(harness: &str) -> Result<(), ApiError> {
 /// `harness` must be one of [`HARNESSES`]. A `transcript_path` (the
 /// harness's extension API's session file) is kept as a join's is. A new
 /// session records `session.start`, and a refresh that changes it
-/// `session.join`, as its own agent (audit spec §6.8).
+/// `session.join`, as its own agent (audit spec §6.8). A grant's
+/// registration refreshes a live row only when it proved that session, and
+/// a new grant row's secret is answered once as `session_secret` (spec
+/// 2026-10-08 §6.8).
 pub async fn register(
     State(s): State<AppState>,
     TokenOrAgent(a): TokenOrAgent<SessionsRegister>,
@@ -56,11 +59,25 @@ pub async fn register(
     }
     r.transcript_path = transcript(r.transcript_path)?;
     let audit = audit.agent_side();
-    let (session, restored) = s
-        .store_call(move |st| st.register_session_restoring(&audit, r))
+    let proved = a.caller.session().map(str::to_string);
+    let reg = s
+        .store_call(move |st| {
+            st.register_session_proved(&audit, r, Proved::Session(proved.as_deref()))
+        })
         .await?;
-    restored_note(&s, &session, restored);
-    Ok((StatusCode::CREATED, Json(json!({"session": session}))))
+    restored_note(&s, &reg.session, reg.restored);
+    Ok((StatusCode::CREATED, Json(answer(&reg.session, reg.secret))))
+}
+
+/// A registration's or join's answer: `{"session": …}`, with
+/// `session_secret` when the call issued the new session's secret (spec
+/// 2026-10-08 §6.8).
+fn answer(session: &Session, secret: Option<clax_core::secret::Secret>) -> Value {
+    let mut v = json!({"session": session});
+    if let Some(secret) = secret {
+        v["session_secret"] = json!(secret.expose());
+    }
+    v
 }
 
 /// Keeps a restored session's note for its first feedback poll (spec
@@ -118,6 +135,9 @@ pub struct JoinBody {
 /// `codex_home`; a join without it keeps the recorded value. A grant's
 /// `codex_home` names a directory of another machine and is ignored. A join that makes or changes the session records
 /// `session.start` or `session.join`, as its own agent (audit spec §6.8).
+/// A grant's join takes a live row only when it proved that session, and a
+/// row it makes answers its secret once as `session_secret` (spec
+/// 2026-10-08 §6.8).
 pub async fn join(
     State(s): State<AppState>,
     TokenOrAgent(a): TokenOrAgent<SessionsJoin>,
@@ -135,9 +155,10 @@ pub async fn join(
     }
     let transcript = transcript(b.transcript_path.clone())?;
     let audit = audit.agent_side();
-    let (session, restored) = s
+    let proved = a.caller.session().map(str::to_string);
+    let reg = s
         .store_call(move |st| {
-            let (session, restored) = st.join_session_restoring(
+            let reg = st.join_session_proved(
                 &audit,
                 JoinSession {
                     harness: b.harness.clone(),
@@ -148,19 +169,20 @@ pub async fn join(
                     transcript_path: transcript,
                 },
                 grant.as_deref(),
+                Proved::Session(proved.as_deref()),
             )?;
             if let Some(h) = b
                 .codex_home
                 .as_deref()
                 .filter(|_| b.harness == "codex" && grant.is_none())
             {
-                st.set_codex_home(&session.id, h)?;
+                st.set_codex_home(&reg.session.id, h)?;
             }
-            Ok((session, restored))
+            Ok(reg)
         })
         .await?;
-    restored_note(&s, &session, restored);
-    Ok(Json(json!({"session": session})))
+    restored_note(&s, &reg.session, reg.restored);
+    Ok(Json(answer(&reg.session, reg.secret)))
 }
 
 #[derive(Deserialize, Default)]
