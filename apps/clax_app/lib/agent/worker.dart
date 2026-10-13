@@ -201,7 +201,9 @@ class _Job {
 /// ([isAppFailureReply]). [retry] runs them again without posting.
 ///
 /// At its first registration the worker deletes the draft artifacts a
-/// previous run of the app left behind (`listDrafts`, `deleteDraft`).
+/// previous run of the app left behind (`listDrafts`, `deleteDraft`): those
+/// created before the worker was made, so a make already running keeps its
+/// draft.
 ///
 /// Builds (C3): [startBuild] queues a continue run of an app with a plan
 /// ([AgentLoop.continueBuild]); each run that ends queues the next, behind
@@ -222,7 +224,9 @@ class FeedbackWorker {
     Future<void> Function(Duration)? delay,
     void Function(String line)? log,
     this.concurrency = maxConcurrent,
+    DateTime Function()? now,
   }) : assert(concurrency > 0),
+       _made = (now ?? DateTime.now)(),
        _delay = delay ?? Future<void>.delayed,
        _log = log ?? ((_) {});
 
@@ -231,6 +235,9 @@ class FeedbackWorker {
 
   /// How many apps' jobs this worker runs at once.
   final int concurrency;
+
+  /// When the worker was made; the draft sweep keeps drafts made since.
+  final DateTime _made;
 
   final ClaxApi _api;
   final AgentLoop _loop;
@@ -650,11 +657,13 @@ class FeedbackWorker {
     if (queued) _kick();
   }
 
-  /// Deletes every draft artifact the daemon holds: none of them belongs
-  /// to a run of this worker yet.
+  /// Deletes every draft artifact the daemon holds that was created before
+  /// the worker was made: those belong to an earlier run of the app.
   Future<void> _sweepDrafts() async {
     try {
       for (final d in await _api.listDrafts()) {
+        final at = DateTime.tryParse(d.createdAt ?? '');
+        if (at != null && at.isAfter(_made)) continue;
         try {
           await _api.deleteDraft(d.id);
         } on ClaxApiError catch (e) {
