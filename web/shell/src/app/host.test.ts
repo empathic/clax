@@ -1393,3 +1393,50 @@ describe("app mode's questions", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(ofType("questions")).toEqual([]);
   });
 });
+
+describe("app mode's device link", { timeout: MOUNT_TIMEOUT_MS }, () => {
+  artifactViewHooks();
+  afterEach(() => {
+    delete (window as unknown as { ClaxHost?: unknown }).ClaxHost;
+    delete (window as unknown as { claxHost?: unknown }).claxHost;
+    document.documentElement.classList.remove("app", "inspect");
+    latest = 1;
+  });
+
+  it("posts the page's device calls under the nonce, those before init at init, and resolves the app's answers", async () => {
+    const link = await import("../caps/device-link");
+    const { host } = await appView({ init: false });
+    expect(link.deviceLinked()).toBe(true);
+    const early = link.callDevice("location", "current", []);
+    expect(raw).toEqual([]);
+    host.init({ nonce: NONCE });
+    const [first] = ofType("device");
+    expect(first).toEqual({ type: "device", id: expect.any(String), cap: "location", method: "current", args: [] });
+    const later = link.callDevice("share", "text", ["hi"]);
+    const second = ofType("device")[1];
+    expect(second).toMatchObject({ cap: "share", method: "text", args: ["hi"] });
+    host.deviceResult({ id: first.id, ok: true, value: { lat: 1, lon: 2, accuracy: 3 } });
+    host.deviceResult({ id: second.id, ok: false, error: { code: "cancelled", message: "the person closed the sheet" } });
+    await expect(early).resolves.toEqual({ lat: 1, lon: 2, accuracy: 3 });
+    await expect(later).rejects.toMatchObject({ code: "cancelled" });
+  });
+
+  it("links nothing in the inspect view, and unlinks on uninstall", async () => {
+    const link = await import("../caps/device-link");
+    const { uninstall } = await appView();
+    expect(link.deviceLinked()).toBe(true);
+    uninstall();
+    expect(link.deviceLinked()).toBe(false);
+    await appView({ query: "?app=1&inspect=1" });
+    expect(link.deviceLinked()).toBe(false);
+  });
+
+  it("openRoute moves the shell's fragment, refusing anything but a short #fragment", async () => {
+    const { host } = await appView();
+    host.openRoute("#/plants/3");
+    expect(location.hash).toBe("#/plants/3");
+    host.openRoute("javascript:alert(1)");
+    host.openRoute(`#${"x".repeat(600)}`);
+    expect(location.hash).toBe("#/plants/3");
+  });
+});
