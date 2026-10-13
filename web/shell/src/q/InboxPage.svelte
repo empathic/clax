@@ -12,13 +12,19 @@
   // answered): the sections are fetched again when the search changes, on a
   // bulk mark, and when the stream resyncs. A row opens its item and marks
   // it read; its dot marks it without opening. `?q=<question>` scrolls to
-  // that question's card and focuses it. At phone width the filters sit
-  // behind **Filters**.
+  // that question's card and focuses it. Approval requests (spec
+  // 2026-10-08-multi-agent-multi-person §9.5) and connection requests
+  // (§3.2) are cards after the questions, in either section, and stay
+  // where they are once decided, saying how; `?approval=<request>` focuses
+  // that card. A machine that connected with an invite and an agent that
+  // ended are rows. At phone width the filters sit behind **Filters**.
   import { onMount } from "svelte";
   import { type InboxFilter, type InboxItem, type InboxKind, listArtifacts } from "../api";
   import { after } from "../clock";
   import type { InboxFeed, QuestionFeed } from "./feed.svelte";
   import { INBOX_KINDS, filterFromUrl, filterToUrl, newestSeq } from "./inbox-model";
+  import ApprovalCard from "../people/ApprovalCard.svelte";
+  import ConnectionCard from "../people/ConnectionCard.svelte";
   import InboxRow from "./InboxRow.svelte";
   import { openItem } from "./open";
   import QuestionList from "./QuestionList.svelte";
@@ -47,7 +53,9 @@
   const initial = filterFromUrl(location.search);
   let filter = $state<InboxFilter>(initial);
   let search = $state(initial.q ?? "");
-  let target = new URLSearchParams(location.search).get("q");
+  const asked = new URLSearchParams(location.search);
+  // The card to focus once listed: a question's (`?q=`) or an approval request's (`?approval=`).
+  let target: { q: string } | { approval: string } | null = asked.get("q") ? { q: asked.get("q")! } : asked.get("approval") ? { approval: asked.get("approval")! } : null;
   let unread = $state<Section | null>(null);
   // The read section: its count always, its items once unfolded.
   let readCount = $state<number | "10000+">(0);
@@ -65,7 +73,11 @@
   // A card's view: the question feed's (live), else the item's.
   const qview = (i: InboxItem) => (i.question && (questions.get(i.question.id) ?? i.question))!;
   const cards = $derived((unread?.items ?? []).filter(i => asCard.includes(i.id)).map(qview).sort((a, b) => a.created_at.localeCompare(b.created_at)));
-  const rows = $derived((unread?.items ?? []).filter(i => !asCard.includes(i.id)));
+  /** Whether `i` is a decision's card: an approval request, or a machine's request to connect. */
+  const decision = (i: InboxItem) => i.kind === "approval" || (i.kind === "connection" && i.connection?.via !== "invite");
+  const decisions = (s: Section | null) => (s?.items ?? []).filter(decision).sort((a, b) => a.seq - b.seq);
+  const rows = $derived((unread?.items ?? []).filter(i => !asCard.includes(i.id) && !decision(i)));
+  const readRows = $derived((read?.items ?? []).filter(i => !decision(i)));
   // Harnesses and agents seen, as [value, label].
   // The pickers' options, [value, label]: the pages and the harnesses and
   // agents of the items listed, and the one chosen.
@@ -99,13 +111,17 @@
       const [u, r, shown] = await Promise.all([fetch("unread"), fetch("read", null, 1), readOpen ? fetch("read") : null]);
       if (g !== gen) return;
       error = null;
-      const kept = keep ? cards.filter(q => q.status !== "open").map(q => unread!.items.find(i => i.question?.id === q.id)!).filter(i => !u.items.some(x => x.id === i.id)) : [];
+      // A question's card closed here, and a decision's card decided here: read now, no longer listed as unread.
+      const kept = keep ? [
+        ...cards.filter(q => q.status !== "open").map(q => unread!.items.find(i => i.question?.id === q.id)!),
+        ...decisions(unread).filter(i => i.read),
+      ].filter(i => !u.items.some(x => x.id === i.id)) : [];
       unread = { ...u, items: [...kept, ...u.items] };
       readCount = r.total;
       read = shown;
-      // `?q=`: that question's card takes focus, once.
+      // `?q=` or `?approval=`: that card takes focus, once.
       const t = target;
-      if (t) queueMicrotask(() => { if (toCard(t)) target = null; });
+      if (t) queueMicrotask(() => { if ("q" in t ? toCard(t.q) : toCard(t.approval, "approval")) target = null; });
     } catch (e) {
       if (g === gen) loadFailed(e);
     }
@@ -134,9 +150,9 @@
     } catch (e) { loadFailed(e); }
   }
 
-  /** Scrolls to question `qid`'s card and focuses it; false when no card shows it. */
-  const toCard = (qid: string): boolean => {
-    const el = [...document.querySelectorAll<HTMLElement>(".inbox [data-question]")].find(e => e.dataset.question === qid);
+  /** Scrolls to question `id`'s card (or approval request `id`'s) and focuses it; false when no card shows it. */
+  const toCard = (id: string, kind: "question" | "approval" = "question"): boolean => {
+    const el = [...document.querySelectorAll<HTMLElement>(`.inbox [data-${kind}]`)].find(e => e.dataset[kind] === id);
     el?.scrollIntoView?.({ block: "center" });
     el?.focus({ preventScroll: true });
     return !!el;
@@ -176,8 +192,8 @@
 
   // Where an item leads; a question's (`/inbox?q=…`) is this page, whose card, if shown, takes focus.
   const go = (url: string) => {
-    const m = /^\/inbox\?q=([^&]+)$/.exec(url);
-    if (m) toCard(decodeURIComponent(m[1]));
+    const m = /^\/inbox\?(q|approval)=([^&]+)$/.exec(url);
+    if (m) toCard(decodeURIComponent(m[2]), m[1] === "q" ? "question" : "approval");
     else (p.go ?? (u => location.assign(u)))(url);
   };
   const open = (i: InboxItem) => void openItem(inbox, i, go);
@@ -207,6 +223,13 @@
     return () => { off(); typing?.(); refetchSoon?.(); };
   });
 </script>
+
+{#snippet decided(s: Section | null)}
+  {@const list = decisions(s)}
+  {#if list.length}
+    <div class="dlist">{#each list as i (i.id)}{#if i.kind === "approval"}<ApprovalCard item={i} now={p.now} />{:else}<ConnectionCard item={i} now={p.now} />{/if}{/each}</div>
+  {/if}
+{/snippet}
 
 <div class="inbox">
   <header class="ihead">
@@ -252,6 +275,7 @@
       {#if !error}<p class="note">Loading…</p>{/if}
     {:else}
       <QuestionList list={cards} feed={questions} now={p.now} />
+      {@render decided(unread)}
       {#if rows.length}
         <ul class="rows">{#each rows as i (i.id)}<InboxRow item={i} others={unread.items} now={p.now} onOpen={open} onToggle={toggle} />{/each}</ul>
       {/if}
@@ -270,7 +294,8 @@
       {#if readOpen}
         <div id="inbox-read">
           {#if read}
-            <ul class="rows">{#each read.items as i (i.id)}<InboxRow item={i} others={read.items} now={p.now} onOpen={open} onToggle={toggle} />{/each}</ul>
+            {@render decided(read)}
+            {#if readRows.length}<ul class="rows">{#each readRows as i (i.id)}<InboxRow item={i} others={read.items} now={p.now} onOpen={open} onToggle={toggle} />{/each}</ul>{/if}
             {#if read.next}<button type="button" class="more" onclick={() => more("read")}>Show more</button>{/if}
           {:else}<p class="note">Loading…</p>{/if}
         </div>
@@ -301,6 +326,7 @@
     .inbox .sec h3 { display: flex; align-items: baseline; gap: 8px; margin: 0 0 10px; font-size: 15px; }
     .inbox .sec h3 .c { font: 400 12.5px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
     .inbox .sec .qlist { margin-bottom: 10px; }
+    .inbox .dlist { display: grid; gap: 10px; margin-bottom: 10px; min-width: 0; }
     .inbox .rows { margin: 0; padding: 0; }
     .inbox .note { margin: 8px 0; color: var(--muted); font-size: 13px; }
     .inbox .more { margin-top: 10px; }

@@ -44,7 +44,7 @@ export class CardSync extends Sync {
     this.#sites = null;
   }
 }
-export { ownerBrowser } from "../owner";
+export { inboxBrowser } from "../owner";
 export { pageStream };
 /** The question module (the inbox's summary, Inbox, notifications). */
 export const q = () => import("../q");

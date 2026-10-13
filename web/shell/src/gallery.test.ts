@@ -252,28 +252,29 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
     }
   });
 
-  it("loads nothing of the inbox for a browser that is not the owner's", async () => {
+  it("loads nothing of the inbox for a browser with none, after one refused look", async () => {
     FakeWorker.all = [];
     vi.stubGlobal("SharedWorker", FakeWorker);
-    // No token: not the owner's browser (a LAN viewer).
+    // No token, and the inbox refused: neither the owner's browser nor a connected person's (a LAN viewer).
     const calls = stubApi(403, "ok", 403);
     const root = await mountGallery();
     await workerWith("gallery");
-    await waitFor(() => calls.some(c => c.url === "/api/token"), "the token request");
+    await waitFor(() => calls.some(c => c.url === "/api/inbox?limit=1"), "the inbox look");
     await new Promise(r => setTimeout(r, 50));
     expect(root.querySelector(".inbox-sum, .inbox-link")).toBeNull();
     expect(FakeWorker.all.some(w => w.topics.includes("inbox"))).toBe(false);
-    expect(calls.some(c => /^\/api\/(inbox|questions)/.test(c.url))).toBe(false);
+    expect(calls.filter(c => /^\/api\/(inbox|questions)/.test(c.url)).map(c => c.url)).toEqual(["/api/inbox?limit=1"]);
   });
 
-  it("shows no inbox at /inbox to a browser that is not the owner's, and fetches nothing of it", async () => {
+  it("shows no inbox at /inbox to a browser with none, and fetches nothing of it", async () => {
     history.replaceState(null, "", "/inbox");
     try {
       const calls = stubApi(403, "ok", 403);
       const root = await mountGallery();
-      expect(root.querySelector("main .empty")!.textContent).toContain("The inbox is its owner's");
+      await waitFor(() => root.querySelector("main .empty"), "the note");
+      expect(root.querySelector("main .empty")!.textContent).toContain("This browser has no inbox");
       expect(root.querySelector(".inbox, .inbox-link")).toBeNull();
-      expect(calls.some(c => /^\/api\/(inbox|questions|artifacts)/.test(c.url))).toBe(false);
+      expect(calls.filter(c => /^\/api\/(inbox|questions|artifacts)/.test(c.url)).map(c => c.url)).toEqual(["/api/inbox?limit=1"]);
     } finally {
       history.replaceState(null, "", "/");
     }
@@ -406,6 +407,8 @@ describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
       if (url.startsWith("/api/grants")) return ok({ grants: [] });
       if (url === "/api/approvals") return ok({ approvals: [] });
       if (url.startsWith("/api/approvals/requests")) return ok({ requests: [], open: 0, banner: null });
+      if (/^\/api\/(inbox|questions)/.test(url) && who === "viewer") return new Response(JSON.stringify({ error: { code: "forbidden" } }), { status: 403 });
+      if (/^\/api\/(inbox|questions)/.test(url) && !url.startsWith("/api/inbox/summary") && !url.startsWith("/api/questions")) return ok({ items: [], next_cursor: null, unread: 0, total: 0 });
       if (/^\/api\/(inbox|questions)/.test(url)) return ok(url.startsWith("/api/inbox/summary") ? { unread: 0, questions: [], latest: [] } : { questions: [], open: 0 });
       return new Response("{}", { status: 404 });
     }));
@@ -435,6 +438,16 @@ describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => calls.some(c => c.url === "/api/viewers/me") && calls.some(c => c.url === "/api/token"), "the viewer and token requests");
     await new Promise(r => setTimeout(r, 50));
     expect(root.querySelector(".people-link")).toBeNull();
+  });
+
+  it("gives a connected person's browser its inbox at /inbox, Inbox in the header, and the inbox and questions topics", async () => {
+    const calls = stubAs("person");
+    const root = await mountAt("/inbox");
+    await waitFor(() => root.querySelector("main .inbox"), "the inbox page");
+    (await workerWith("inbox", "questions")).live(["inbox", "questions"]);
+    await waitFor(() => root.querySelector(".gbar .inbox-link"), "the Inbox link");
+    expect(root.querySelector("main .empty")).toBeNull();
+    expect(calls.some(c => c.url === "/api/inbox?limit=1")).toBe(true);
   });
 
   it("is the People page at /people: no artifacts are fetched, and the page follows the people and agents topics", async () => {

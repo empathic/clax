@@ -1,8 +1,8 @@
 // The page's open questions and inbox count (spec
 // 2026-10-06-agent-questions-and-inbox §9.2–§9.5, §9.7), following the
-// `questions` and `inbox` topics. The question module loads only in the
-// owner's browsers (those the token is served to), so a viewer who is not
-// the owner never subscribes them (ruling R8). A feed subscribes its topic
+// `questions` and `inbox` topics. The question module loads only in a
+// browser with an inbox (the owner's, or a connected person's), so a LAN
+// viewer never subscribes them (ruling R8). A feed subscribes its topic
 // as a background watcher (kept while the page is hidden) and fetches each
 // time the topic goes live or resyncs, so no change falls between a fetch
 // and the subscription, and a fetch that failed is made again when the
@@ -21,7 +21,7 @@ type Stream = Pick<EventStream, "watch">;
 type After = (ms: number, fn: () => void) => () => void;
 
 const byCreated = (a: QuestionView, b: QuestionView) => a.created_at.localeCompare(b.created_at);
-const forbidden = (): ApiError => new ApiError(403, "Only the owner may do this", "forbidden");
+const forbidden = (): ApiError => new ApiError(403, "Only the owner or a connected person may do this", "forbidden");
 
 /** A deeply reactive record. The feeds keep their state in one, not in
  * `$state` class fields, which compile to private fields the build lowers
@@ -126,7 +126,7 @@ export class QuestionFeed {
     this.upsert("question" in r ? r.question : r.closed);
   }
 
-  /** Fetches the open list (none for anyone but the owner). */
+  /** Fetches the open list (none for a browser without an inbox). */
   private async refetch(): Promise<void> {
     const r = await listQuestions().catch(() => null);
     if (!r) return;
@@ -174,7 +174,7 @@ export class InboxFeed {
   /** The five newest unread items other than questions. */
   get latest(): InboxItem[] { return this.s.latest; }
   set latest(v: InboxItem[]) { this.s.latest = v; }
-  /** The caller is the owner (the summary answered). */
+  /** The caller has an inbox, the owner's or a connected person's (the summary answered). */
   get owner(): boolean { return this.s.owner; }
 
   /** Calls `f` with each new unread count, until the returned function runs. */
@@ -208,7 +208,7 @@ export class InboxFeed {
     return () => { this.listeners.delete(f); };
   }
 
-  /** Fetches the summary: the count and `latest`, and whether the caller is the owner. */
+  /** Fetches the summary: the count and `latest`, and whether the caller has an inbox. */
   async summary(): Promise<void> {
     const r = await inboxSummary().catch(() => null);
     if (!r) return;

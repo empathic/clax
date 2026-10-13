@@ -1,11 +1,11 @@
 // The inbox's model (spec 2026-10-06-agent-questions-and-inbox §3.3, §9.2,
 // §9.7): an item's title and one-line text, the search kept in `/inbox`'s
 // URL, and a notification's text. Pure: no DOM.
-import type { InboxFilter, InboxItem, InboxKind } from "../api";
+import type { CardPerson, InboxApproval, InboxFilter, InboxItem, InboxKind } from "../api";
 import { agentLabel, answerText, cutHeader } from "./model";
 
 /** The kinds the inbox page filters by. */
-export const INBOX_KINDS: readonly InboxKind[] = ["reply", "version", "published", "question", "finished"];
+export const INBOX_KINDS: readonly InboxKind[] = ["reply", "version", "published", "question", "finished", "approval", "connection", "ended"];
 
 /** The longest notification body, in characters, "…" included. */
 export const NOTIFY_BODY = 180;
@@ -15,6 +15,30 @@ export const NOTIFY_BODY = 180;
 export const newestSeq = (items: readonly InboxItem[]): number => items.reduce((n, i) => Math.max(n, i.seq), 0);
 
 const pageOf = (i: InboxItem): string => i.artifact?.title ?? "a deleted page";
+
+/** A person as an approval names them, the owner marked as such (the
+ * daemon names an unnamed owner "The owner"). */
+export const personName = (a: Pick<CardPerson, "name" | "owner">): string => (a.owner && a.name !== "The owner" ? `${a.name} (the owner)` : a.name);
+
+/** An `approval` item's card, or null once its request is gone. */
+export const approvalOf = (i: InboxItem): InboxApproval | null => (i.approval && "status" in i.approval ? i.approval : null);
+
+/** What an approval request holds, on one line: "1 comment on Quarterly
+ * Review «Quarterly goals»"; a page whose title is unknown (deleted) is
+ * "one page". */
+export function heldText(i: InboxItem, a: InboxApproval): string {
+  const anchor = heldAnchor(i, a);
+  return `${heldCount(a)} on ${i.artifact?.title ?? "one page"}${anchor ? ` ${anchor}` : ""}`;
+}
+
+/** How much a request holds: "1 comment", "3 items" (outside threads). */
+export const heldCount = (a: InboxApproval): string =>
+  `${a.count} ${a.thread_id ? (a.count === 1 ? "comment" : "comments") : a.count === 1 ? "item" : "items"}`;
+
+/** The quoted anchor that ends a request's thread summary ("«Quarterly
+ * goals»"), if any. */
+export const heldAnchor = (i: InboxItem, a: InboxApproval): string | undefined =>
+  (a.thread_id ? /«[^»]*»\s*$/.exec(i.thread?.summary ?? "")?.[0]?.trim() : undefined);
 
 /** An item's title: who did what, on which page ("claude replied on
  * Quarterly Review"). `others` are the items listed beside it, which
@@ -44,7 +68,11 @@ export function itemTitle(i: InboxItem, others: InboxItem[] = []): string {
         ? `${c.person.display_name ?? "Someone"} connected from ${c.client.name}`
         : `Connection request from ${c.client.name} (${c.client.peer_ip})`;
     }
-    case "approval": return "An agent waits for your approval";
+    case "approval": {
+      const a = approvalOf(i);
+      if (!a) return "An approval request";
+      return `${personName(a.author)} wants to reach your ${a.agent ? `agent ${a.agent.name}` : "agents"}`;
+    }
     case "ended": return `${who} ended`;
   }
 }
@@ -55,13 +83,15 @@ const answersText = (q: NonNullable<InboxItem["question"]>): string | null =>
 
 /** An item's text on one line: the reply's body, the version's note, the
  * new artifact's description, the answers to a question (else its first
- * question), the finished work's message, or what an ended agent's end
- * cleaned up; "" when it has none. */
+ * question), what an approval request holds, a connecting machine's key,
+ * the finished work's message, or what an ended agent's end cleaned up;
+ * "" when it has none. */
 export function itemText(i: InboxItem): string {
   const t = i.kind === "reply" ? i.reply?.body
     : i.kind === "version" ? i.version?.note
     : i.kind === "published" ? i.published?.description
     : i.kind === "question" ? (i.question && answersText(i.question)) ?? i.question?.questions[0]?.question
+    : i.kind === "approval" ? ((a => a && heldText(i, a))(approvalOf(i)))
     : i.kind === "connection" ? (i.connection?.client.key ? `Key ${i.connection.client.key}` : null)
     : i.kind === "finished" ? i.work?.message
     // What the end cleaned up: the note's line after "<name> ended".

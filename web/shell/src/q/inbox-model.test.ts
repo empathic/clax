@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { item, view } from "./fixtures";
+import { approvalCard, item, view } from "./fixtures";
 import { filterFromUrl, filterToUrl, itemText, itemTitle, newestSeq, notificationText } from "./inbox-model";
 
 describe("inbox model", () => {
@@ -21,7 +21,11 @@ describe("inbox model", () => {
     expect(itemTitle(joined)).toBe("Sam connected from sam-mbp");
     expect(itemTitle(item("connection", { connection: null, gone: true }))).toBe("A connection request");
     expect(itemText(item("connection", { connection: null, gone: true }))).toBe("");
-    expect(itemTitle(item("approval"))).toBe("An agent waits for your approval");
+    expect(itemTitle(item("approval"))).toBe("Mia wants to reach your agent clax-multi-person");
+    expect(itemText(item("approval"))).toBe("1 comment on Quarterly Review «Quarterly goals»");
+    expect(itemTitle(item("approval", { approval: approvalCard({ agent: null, author: { public_id: "o1", name: "Alex", owner: true } }) }))).toBe("Alex (the owner) wants to reach your agents");
+    expect(itemText(item("approval", { approval: approvalCard({ thread_id: null, count: 3 }), thread: null, artifact: null }))).toBe("3 items on one page");
+    expect(itemTitle(item("approval", { approval: { id: "r" }, gone: true }))).toBe("An approval request");
     expect(itemTitle(item("ended"))).toBe("claude ended");
     expect(itemText(item("ended"))).toBe("released 1 thread · withdrew 1 question");
     expect(itemText(item("ended", { ended: null }))).toBe("");
