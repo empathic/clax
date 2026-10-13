@@ -49,4 +49,21 @@ void main() {
     expect(await p.take(), 'x');
     expect(await PendingMake().take(), isNull);
   });
+
+  test('several makes at once are each kept until each ends', () async {
+    final file = File('${dir.path}/pending-make.json');
+    final p = PendingMake(file);
+    await p.save('runs');
+    await p.save('habits');
+    await p.save('books');
+    await p.clear('habits');
+    expect(await PendingMake(file).takeAll(), ['runs', 'books']);
+    expect(await PendingMake(file).takeAll(), isEmpty);
+  });
+
+  test("an earlier version's file offers its one request", () async {
+    final file = File('${dir.path}/pending-make.json')
+      ..writeAsStringSync('{"request": "a tracker"}');
+    expect(await PendingMake(file).takeAll(), ['a tracker']);
+  });
 }
