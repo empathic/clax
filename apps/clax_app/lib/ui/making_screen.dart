@@ -342,9 +342,22 @@ class _MakingScreenState extends State<MakingScreen> {
     return WebViewPreview(background: Theme.of(context).colorScheme.surface);
   }
 
+  /// Whether making the preview's view failed; the card then keeps its
+  /// placeholder and the run goes on.
+  var _noView = false;
+
   void _load(String html) {
-    final view = _view ??= _makeView();
-    if (view == null) return;
+    if (_noView) return;
+    PreviewView? view;
+    try {
+      view = _view ??= _makeView();
+    } on Object catch (_) {
+      view = null;
+    }
+    if (view == null) {
+      _noView = true;
+      return;
+    }
     unawaited(view.loadHtml(html).catchError((Object _) {}));
     if (!_shown) {
       _shown = true;
@@ -426,7 +439,9 @@ class _MakingScreenState extends State<MakingScreen> {
                 duration: const Duration(milliseconds: 200),
                 child: _failure == null
                     ? _making(context)
-                    : Padding(
+                    // Scrolls, so its buttons stay reachable with large
+                    // text on a small screen.
+                    : SingleChildScrollView(
                         key: const ValueKey('failed'),
                         padding: const EdgeInsets.all(24),
                         child: _failed(context),
@@ -446,12 +461,36 @@ class _MakingScreenState extends State<MakingScreen> {
     final dim = theme.textTheme.bodyMedium?.copyWith(
       color: scheme.onSurfaceVariant,
     );
-    return Padding(
+    // With large text the card takes half the height and
+    // the whole view scrolls, so Cancel stays reachable.
+    Widget layout(BoxConstraints c, List<Widget> Function(Widget card) kids) {
+      const pad = EdgeInsets.fromLTRB(16, 12, 16, 16);
+      final scaled = MediaQuery.textScalerOf(context).scale(16) > 20;
+      if (!scaled) {
+        return Padding(
+          padding: pad,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: kids(Expanded(child: _card(context))),
+          ),
+        );
+      }
+      return SingleChildScrollView(
+        padding: pad,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: kids(
+            SizedBox(height: c.maxHeight * 0.5, child: _card(context)),
+          ),
+        ),
+      );
+    }
+
+    return LayoutBuilder(
       key: const ValueKey('making'),
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
+      builder: (context, c) => layout(
+        c,
+        (card) => [
           Text(
             makingTitle(widget.request),
             textAlign: TextAlign.center,
@@ -460,7 +499,7 @@ class _MakingScreenState extends State<MakingScreen> {
             style: theme.textTheme.titleLarge,
           ),
           const SizedBox(height: 12),
-          Expanded(child: _card(context)),
+          card,
           const SizedBox(height: 12),
           ClipRRect(
             borderRadius: BorderRadius.circular(4),

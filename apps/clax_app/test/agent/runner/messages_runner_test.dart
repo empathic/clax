@@ -393,6 +393,42 @@ void main() {
       expect(events.whereType<AttemptStarted>().map((e) => e.attempt), [2]);
     });
 
+    test('a progress listener that throws never fails the run', () async {
+      await serve([
+        sseReply(
+          streamedTurn(
+            [cutWrite('t1')],
+            stopReason: 'max_tokens',
+            outputTokens: 32000,
+          ),
+        ),
+        sseReply(
+          streamedTurn([
+            _use('t2', 'write_file', {'path': 'index.html', 'content': 'w'}),
+            _use('t3', 'finish', {}),
+          ]),
+        ),
+      ]);
+      final seen = <AgentProgress>[];
+      final tb = toolbox(
+        caps: const RunCaps(
+          turns: 6,
+          renders: 2,
+          outputTokens: 40000,
+          wallClock: Duration(seconds: 45),
+        ),
+        extra: [_Finish()],
+        progress: (e) {
+          seen.add(e);
+          throw StateError('listener broke');
+        },
+      );
+      expect(await run(tb), isA<RunFinished>());
+      expect(tb.state.draft.files['index.html'], 'w');
+      expect(seen.whereType<AttemptStarted>(), hasLength(1));
+      expect(seen.whereType<ToolStarted>(), isNotEmpty);
+    });
+
     test('invalid tool JSON without a cut is sent again at the same size, '
         'then gives up', () async {
       final bad = streamedTurn([
