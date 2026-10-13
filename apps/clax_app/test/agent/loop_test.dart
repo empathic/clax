@@ -860,21 +860,33 @@ void main() {
       expect(api.filesOf(aid, 1).keys, contains('kit/preact.js'));
     });
 
-    test('a first run that makes no app forgets its plan', () async {
-      final loop = loopWith([
-        [
+    test(
+      'a first run that makes no app forgets a plan under a key it made '
+      'up, and keeps one under a given key for the retry to start from',
+      () async {
+        List<ScriptedCall> failing() => [
           ScriptedCall('plan_set', {
             'features': [f('f1', 'Log a run')],
           }),
           const ScriptedCall('give_up', {'reason': 'no'}),
-        ],
-      ]);
-      await expectLater(
-        loop.newApp('x', session: sid, planKey: 'new:k2'),
-        throwsA(isA<AgentError>()),
-      );
-      expect(await plans.all(), isEmpty);
-    });
+        ];
+        final loop = loopWith([failing(), failing(), newAppCalls()]);
+        await expectLater(
+          loop.newApp('x', session: sid),
+          throwsA(isA<AgentError>()),
+        );
+        expect(await plans.all(), isEmpty);
+        await expectLater(
+          loop.newApp('x', session: sid, planKey: 'new:k2'),
+          throwsA(isA<AgentError>()),
+        );
+        expect((await plans.get('new:k2'))!.features.single.id, 'f1');
+        final aid = await loop.newApp('x', session: sid, planKey: 'new:k2');
+        expect(runner.text(2), contains('An earlier attempt made this plan'));
+        expect(runner.text(2), contains('"Log a run"'));
+        expect((await plans.get(aid))!.features.single.id, 'f1');
+      },
+    );
 
     test('a continue run reads the plan with the person\'s edits, builds the '
         'next feature and publishes a version', () async {

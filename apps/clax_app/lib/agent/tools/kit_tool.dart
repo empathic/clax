@@ -92,14 +92,15 @@ class AddKitTool implements Tool {
     }
     return ToolOk({
       'files': out,
-      'api': [for (final n in names) ?_api[n]].join('\n'),
+      'api': [for (final n in names) ?kitApi[n]].join('\n'),
     });
   }
 }
 
 /// What each file offers, for the model: the names, the props and the
-/// shape of a call.
-const _api = <String, String>{
+/// shape of a call. The one source of the kit's API: `add_kit`'s result
+/// and the tool loop's system prompt ([kitApiSection]) both read it.
+const kitApi = <String, String>{
   'preact.js':
       r"kit/preact.js exports h, html, render, Fragment, createContext, "
       r'useState, useEffect, useMemo, useRef, useReducer, useCallback, '
@@ -170,3 +171,13 @@ const _api = <String, String>{
       r'bookOpen file folder inbox archive flag dumbbell timer sparkles smile '
       r'car plane checkSquare circle compass repeat history logOut.',
 };
+
+/// The kit's whole API as a section of the system prompt.
+String kitApiSection() => [
+  '## Kit API',
+  '',
+  'What each file of the kit offers (add_kit copies them; import them by '
+      'relative path):',
+  '',
+  for (final t in kitApi.values) '- $t',
+].join('\n');
