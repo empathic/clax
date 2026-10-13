@@ -4946,9 +4946,10 @@ and `PATCH`. Declaring grants nothing alone.
 **Consent.** The owner's grants are kept per artifact and host (migration
 26), with the token:
 
-- `PUT /api/artifacts/<id>/net-grants`: grants every host the live version
-  declares; hosts already granted keep their time. 400 `not_declared` when
-  it declares none.
+- `PUT /api/artifacts/<id>/net-grants`, body `{hosts: [host]}` (the hosts
+  the owner was shown): grants each of them the live version declares,
+  ignoring the rest; hosts already granted keep their time. 400
+  `not_declared` when it declares none, `invalid_argument` without `hosts`.
 - `DELETE /api/artifacts/<id>/net-grants`: `{revoked}`, how many grants
   there were.
 - `GET /api/artifacts/<id>/net-grants`: `{declared: [host], grants:
@@ -4977,8 +4978,9 @@ replaced). The daemon, for the first request and each redirect:
   IPv4), then connects only to those addresses, so a second DNS answer
   cannot move the request;
 - follows at most 3 redirects (`301`, `302`, `303`, `307`, `308`), `303`
-  and a `301`/`302` after a `POST` continuing as `GET` without a body, and
-  drops `Authorization` when a redirect changes host;
+  and a `301`/`302` after a `POST` continuing as `GET` without a body; a
+  redirect to another origin (host or port) keeps only the page's
+  `Accept`, `Accept-Language`, `Content-Type` and `User-Agent` headers;
 - drops the page's `Cookie`, `Host`, `Content-Length`, `Expect`,
   `Proxy-*`, `Sec-*` and hop-by-hop headers, and the response's
   `Set-Cookie` and hop-by-hop headers (with any `Connection` names); keeps
@@ -4999,8 +5001,9 @@ namespace in the owner's views (the Clax app, or the owner's browser) when
 `ClaxExtensions.Net` in `clax-extensions.d.ts`. The shell refuses, before
 any request, a URL that is not `https` (`https_only`) or whose host is not
 declared (`not_declared`). The daemon's `not_granted` asks the owner once
-per view ("Let “A” use the internet?", naming the hosts, Allow or Don't
-allow); Allow grants every declared host and the fetch is tried again, and
+per view ("Let “A” use the internet?", naming every declared host, the
+text scrolling when long; Allow or Don't allow); Allow grants exactly the
+hosts shown and the fetch is tried again, and
 the grant stands in later views. The app's inspect view never asks: there
 a refusal stands. Other codes reach the page as the daemon answers them;
 the shell adds `unavailable` (the daemon could not be reached) and
